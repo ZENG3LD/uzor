@@ -1,0 +1,21 @@
+[package]
+name = "uzor-backend-vello-hybrid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Hybrid CPU/GPU rendering backend using vello_hybrid"
+
+[dependencies]
+uzor-render = { workspace = true }
+# vello_hybrid 0.0.6: CPU strip encoding + GPU fine rasterization.
+# Uses wgpu 27.0.1 which conflicts with vello 0.6's wgpu 0.20.
+# This crate must be compiled in isolation from uzor-backend-vello-gpu.
+vello_hybrid = { version = "0.0.6", features = ["wgpu"] }
+# vello_common is the shared foundation (re-exported by vello_hybrid but not
+# publicly accessible via vello_hybrid's namespace for kurbo/peniko/glyph types).
+vello_common = { version = "0.0.6", features = ["std", "text"] }
+# wgpu 27.x required by vello_hybrid (conflicts with vello 0.6 which uses wgpu 0.20).
+wgpu = { version = "27.0.1", default-features = false }
+skrifa = "0.37"

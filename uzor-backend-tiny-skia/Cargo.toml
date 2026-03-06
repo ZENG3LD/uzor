@@ -1,0 +1,13 @@
+[package]
+name = "uzor-backend-tiny-skia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "CPU rendering backend using tiny-skia"
+
+[dependencies]
+uzor-render = { workspace = true }
+tiny-skia = "0.11"
+fontdue = "0.9"

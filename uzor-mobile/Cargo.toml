@@ -1,0 +1,26 @@
+[package]
+name = "uzor-mobile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Mobile backend for uzor (iOS/Android)"
+
+[features]
+default = []
+android = ["ndk", "jni"]
+ios = ["objc2", "block2"]
+
+[dependencies]
+uzor-core = { workspace = true, features = ["serde"] }
+
+# Android-specific dependencies
+[target.'cfg(target_os = "android")'.dependencies]
+ndk = { version = "0.9", optional = true }
+jni = { version = "0.21", optional = true }
+
+# iOS-specific dependencies
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = { version = "0.5", optional = true }
+block2 = { version = "0.5", optional = true }

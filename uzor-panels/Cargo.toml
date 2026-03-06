@@ -1,0 +1,17 @@
+[package]
+name = "uzor-panels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Panel system for uzor UI framework"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = "1.0"
+uzor-animation = { workspace = true, optional = true }
+
+[features]
+default = ["animation"]
+animation = ["uzor-animation"]

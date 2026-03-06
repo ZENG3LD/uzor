@@ -1,0 +1,13 @@
+[package]
+name = "uzor-backend-vello-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Shared utilities for vello-based backends"
+
+[dependencies]
+uzor-render = { workspace = true }
+vello = "0.6"
+skrifa = "0.37"

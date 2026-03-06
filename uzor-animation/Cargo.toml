@@ -1,0 +1,11 @@
+[package]
+name = "uzor-animation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Animation engine for uzor — spring physics, easing, timelines, stagger"
+
+[dependencies]
+# TBD — will be a zero-dependency crate (pure math)

@@ -1,0 +1,15 @@
+[package]
+name = "uzor-scroll-fx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Scroll effects and momentum for uzor"
+
+[dependencies]
+uzor-animation = { workspace = true, optional = true }
+
+[features]
+default = ["animation"]
+animation = ["uzor-animation"]

@@ -1,0 +1,22 @@
+target/
+Cargo.lock
+/_deprecated/
+_author_rights/
+
+# Internal planning docs
+*_RPD.md
+*_SPEC.md
+ARCHITECTURE_LEVELS.md
+AGENT_README.md
+DRAG_SCROLL_MIGRATION_SPEC.md
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

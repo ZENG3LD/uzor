@@ -1,0 +1,16 @@
+[package]
+name = "uzor-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Terminal UI backend for uzor"
+
+[dependencies]
+crossterm = "0.28"
+bitflags = "2"
+vt100 = "0.16"
+unicode-width = "0.2"
+compact_str = "0.8"
+uzor-core = { workspace = true }

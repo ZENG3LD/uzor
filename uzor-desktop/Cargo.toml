@@ -1,0 +1,32 @@
+[package]
+name = "uzor-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Desktop backend for uzor (winit integration)"
+
+[dependencies]
+uzor-core = { workspace = true, features = ["serde"] }
+uzor-render = { workspace = true }
+
+# Graphics Stack (for RenderSurface provider)
+vello = "0.6"
+wgpu = "0.20"
+
+# Windowing and events
+winit = "0.30"
+
+# Async executor for vello surface creation
+pollster = "0.3"
+
+# Platform integration
+arboard = "3"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+dark-light = "1.0"
+
+[dev-dependencies]
+pollster = "0.3"
+env_logger = "0.11"

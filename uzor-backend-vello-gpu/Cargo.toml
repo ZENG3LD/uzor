@@ -1,0 +1,13 @@
+[package]
+name = "uzor-backend-vello-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "GPU rendering backend using vello + wgpu"
+
+[dependencies]
+uzor-render = { workspace = true }
+vello = "0.6"
+skrifa = "0.37"

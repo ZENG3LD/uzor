@@ -1,0 +1,17 @@
+[package]
+name = "uzor-backend-vello-cpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "CPU-only rendering backend using vello_cpu"
+
+[dependencies]
+uzor-render = { workspace = true }
+# vello_cpu 0.0.6 uses its own kurbo/peniko (via vello_common 0.0.6).
+# These differ from vello 0.6's kurbo/peniko, so we do NOT depend on
+# uzor-backend-vello-common (which ties to vello 0.6 types).
+# State management is implemented inline in this crate.
+vello_cpu = { version = "0.0.6", features = ["std", "text"] }
+skrifa = "0.37"

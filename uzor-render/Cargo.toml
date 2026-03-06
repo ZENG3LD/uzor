@@ -1,0 +1,11 @@
+[package]
+name = "uzor-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Platform-agnostic rendering trait with Canvas2D-style API"
+
+[dependencies]
+# Pure trait crate - no external dependencies

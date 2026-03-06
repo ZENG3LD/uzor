@@ -1,0 +1,45 @@
+[package]
+name = "uzor-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Web/WASM backend for uzor"
+
+[dependencies]
+uzor-core = { workspace = true, features = ["serde"] }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Window",
+    "HtmlCanvasElement",
+    "Element",
+    "Event",
+    "MouseEvent",
+    "TouchEvent",
+    "TouchList",
+    "Touch",
+    "KeyboardEvent",
+    "WheelEvent",
+    "ClipboardEvent",
+    "DataTransfer",
+    "DragEvent",
+    "FocusEvent",
+    "EventTarget",
+    "Navigator",
+    "MediaQueryList",
+    "Performance",
+    "Clipboard",
+    "CssStyleDeclaration",
+    "HtmlElement",
+    "CompositionEvent",
+] }
+js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
