@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 jobs:
   publish:
@@ -36,10 +37,12 @@ jobs:
         run: |
           set +e  # disable errexit — we handle errors manually
 
+          # crates.io allows ~10 new crates per 10 minutes.
+          # On 429, parse the "try again after <date>" header and sleep until then.
           publish_crate() {
             local pkg="$1"
             echo "::group::Publishing $pkg"
-            for attempt in 1 2 3; do
+            for attempt in 1 2 3 4 5; do
               echo "Attempt $attempt for $pkg..."
               OUTPUT=$(cargo publish --package "$pkg" --allow-dirty 2>&1)
               CODE=$?
@@ -57,13 +60,32 @@ jobs:
                 return 0
               fi
 
-              if [ $attempt -lt 3 ]; then
-                echo "⏳ $pkg failed (exit $CODE), retrying in 120s..."
-                sleep 120
+              # Parse "try again after <datetime>" from 429 response
+              if echo "$OUTPUT" | grep -q "429 Too Many Requests"; then
+                RETRY_AFTER=$(echo "$OUTPUT" | grep -oP 'try again after \K[^"]+(?= and)')
+                if [ -n "$RETRY_AFTER" ]; then
+                  RETRY_EPOCH=$(date -d "$RETRY_AFTER" +%s 2>/dev/null || echo "")
+                  NOW_EPOCH=$(date +%s)
+                  if [ -n "$RETRY_EPOCH" ] && [ "$RETRY_EPOCH" -gt "$NOW_EPOCH" ]; then
+                    WAIT_SECS=$(( RETRY_EPOCH - NOW_EPOCH + 15 ))  # +15s buffer
+                    echo "⏳ Rate limited. Waiting ${WAIT_SECS}s until $RETRY_AFTER (+15s)..."
+                    sleep "$WAIT_SECS"
+                    continue
+                  fi
+                fi
+                # Fallback if parsing fails
+                echo "⏳ Rate limited, waiting 300s..."
+                sleep 300
+                continue
+              fi
+
+              if [ $attempt -lt 5 ]; then
+                echo "⏳ $pkg failed (exit $CODE), retrying in 180s..."
+                sleep 180
               fi
             done
 
-            echo "✗ $pkg FAILED after 3 attempts"
+            echo "✗ $pkg FAILED after 5 attempts"
             echo "::endgroup::"
             return 1
           }
@@ -85,48 +107,48 @@ jobs:
           # Tier 2 — depends on Tier 1
           echo "=== TIER 2 ==="
           publish_crate uzor-core                    || FAILED="$FAILED uzor-core"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-backend-vello-common     || FAILED="$FAILED uzor-backend-vello-common"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-backend-vello-gpu        || FAILED="$FAILED uzor-backend-vello-gpu"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-backend-vello-cpu        || FAILED="$FAILED uzor-backend-vello-cpu"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-backend-vello-hybrid     || FAILED="$FAILED uzor-backend-vello-hybrid"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-backend-tiny-skia        || FAILED="$FAILED uzor-backend-tiny-skia"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-backend-canvas2d         || FAILED="$FAILED uzor-backend-canvas2d"
-          wait_between 120
+          wait_between 180
 
-          # Tier 3 — depends on Tier 2
+          # Tier 3 — depends on Tier 2 (13 crates — spread out to avoid 429)
           echo "=== TIER 3 ==="
           publish_crate uzor-layout      || FAILED="$FAILED uzor-layout"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-desktop     || FAILED="$FAILED uzor-desktop"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-web         || FAILED="$FAILED uzor-web"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-mobile      || FAILED="$FAILED uzor-mobile"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-tui         || FAILED="$FAILED uzor-tui"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-macos       || FAILED="$FAILED uzor-macos"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-panels      || FAILED="$FAILED uzor-panels"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-numbers     || FAILED="$FAILED uzor-numbers"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-text-fx     || FAILED="$FAILED uzor-text-fx"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-cursor      || FAILED="$FAILED uzor-cursor"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-scroll-fx   || FAILED="$FAILED uzor-scroll-fx"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-interactive || FAILED="$FAILED uzor-interactive"
-          wait_between 30
+          wait_between 60
           publish_crate uzor-panel-api   || FAILED="$FAILED uzor-panel-api"
-          wait_between 120
+          wait_between 180
 
           # Tier 4 — facade
           echo "=== TIER 4 ==="
