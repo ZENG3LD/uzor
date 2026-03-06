@@ -210,7 +210,5 @@ at your option.
 ---
 
 <p align="center">
-  <a href="https://zen-geldmaschine.net/">
-    <img src="assets/author.svg" alt="zengeld" />
-  </a>
+  <img src="assets/author.svg" alt="zengeld" />
 </p>
