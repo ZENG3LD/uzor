@@ -4,7 +4,8 @@
 > Geometry + Interaction + Multi-Backend Rendering
 
 [![Crates.io](https://img.shields.io/crates/v/uzor.svg)](https://crates.io/crates/uzor)
-[![License](https://img.shields.io/crates/l/uzor.svg)](https://github.com/zeng3ld/uzor#license)
+[![docs.rs](https://docs.rs/uzor/badge.svg)](https://docs.rs/uzor)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](https://github.com/zeng3ld/uzor#license)
 
 ## What is UZOR?
 
@@ -185,6 +186,18 @@ pub trait RenderContext {
 
 All coordinates are `f64`, colors are CSS hex strings. Any backend that implements this trait is plug-and-play.
 
+## Support the Project
+
+If you find this library useful, consider supporting development:
+
+| Currency | Network | Address |
+|----------|---------|---------|
+| USDT | TRC20 | `TNxMKsvVLYViQ5X5sgCYmkzH4qjhhh5U7X` |
+| USDC | Arbitrum | `0xEF3B94Fe845E21371b4C4C5F2032E1f23A13Aa6e` |
+| ETH | Ethereum | `0xEF3B94Fe845E21371b4C4C5F2032E1f23A13Aa6e` |
+| BTC | Bitcoin | `bc1qjgzthxja8umt5tvrp5tfcf9zeepmhn0f6mnt40` |
+| SOL | Solana | `DZJjmH8Cs5wEafz5Ua86wBBkurSA4xdWXa3LWnBUR94c` |
+
 ## License
 
 Licensed under either of:
@@ -193,3 +206,11 @@ Licensed under either of:
 - MIT License ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT)
 
 at your option.
+
+---
+
+<p align="center">
+  <a href="https://zen-geldmaschine.net/">
+    <img src="assets/author.svg" alt="zengeld" />
+  </a>
+</p>
