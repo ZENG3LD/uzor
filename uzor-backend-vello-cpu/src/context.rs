@@ -27,19 +27,10 @@ use uzor_render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlig
 // Embedded fonts
 // ---------------------------------------------------------------------------
 
-// Share the font files with the common backend to avoid duplicating binaries.
-static ROBOTO_REGULAR: &[u8] = include_bytes!(
-    "../../uzor-backend-vello-common/fonts/Roboto-Regular.ttf"
-);
-static ROBOTO_BOLD: &[u8] = include_bytes!(
-    "../../uzor-backend-vello-common/fonts/Roboto-Bold.ttf"
-);
-static ROBOTO_ITALIC: &[u8] = include_bytes!(
-    "../../uzor-backend-vello-common/fonts/Roboto-Italic.ttf"
-);
-static ROBOTO_BOLD_ITALIC: &[u8] = include_bytes!(
-    "../../uzor-backend-vello-common/fonts/Roboto-BoldItalic.ttf"
-);
+static ROBOTO_REGULAR: &[u8] = include_bytes!("../fonts/Roboto-Regular.ttf");
+static ROBOTO_BOLD: &[u8] = include_bytes!("../fonts/Roboto-Bold.ttf");
+static ROBOTO_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-Italic.ttf");
+static ROBOTO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-BoldItalic.ttf");
 
 // ---------------------------------------------------------------------------
 // Cached vello_cpu FontData (one per process)
