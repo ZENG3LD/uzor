@@ -45,12 +45,12 @@ jobs:
           is_published() {
             local pkg="$1"
             local ver="$2"
-            local response
-            response=$(curl -s "https://crates.io/api/v1/crates/$pkg/$ver")
-            if echo "$response" | grep -q "\"num\":\"$ver\""; then
-              return 0  # already published
+            local http_code
+            http_code=$(curl -s -o /dev/null -w "%{http_code}" "https://crates.io/api/v1/crates/$pkg/$ver")
+            if [ "$http_code" = "200" ]; then
+              return 0
             fi
-            return 1  # not published
+            return 1
           }
 
           publish_crate() {
@@ -76,8 +76,8 @@ jobs:
                 return 0
               fi
 
-              if echo "$OUTPUT" | grep -q "already uploaded"; then
-                echo "✓ $pkg already uploaded, skipping"
+              if echo "$OUTPUT" | grep -qE "already uploaded|already exists"; then
+                echo "✓ $pkg already on crates.io, skipping"
                 echo "::endgroup::"
                 return 2
               fi
