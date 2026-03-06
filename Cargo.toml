@@ -41,7 +41,7 @@ keywords = ["ui", "rendering", "framework", "headless", "gpu"]
 categories = ["gui", "rendering", "graphics"]
 
 [workspace.dependencies]
-uzor-core = { path = "./uzor-core" }
-uzor-render = { path = "./uzor-render" }
-uzor-animation = { path = "./uzor-animation" }
+uzor-core = { version = "1.0.0", path = "./uzor-core" }
+uzor-render = { version = "1.0.0", path = "./uzor-render" }
+uzor-animation = { version = "1.0.0", path = "./uzor-animation" }
 serde = { version = "1.0", features = ["derive"] }
