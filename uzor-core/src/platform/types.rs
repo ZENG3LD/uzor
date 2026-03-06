@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Unique identifier for a window
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub struct WindowId(usize);
 
 impl WindowId {
@@ -13,11 +14,6 @@ impl WindowId {
     }
 }
 
-impl Default for WindowId {
-    fn default() -> Self {
-        Self(0)
-    }
-}
 
 /// Errors that can occur in platform backends
 #[derive(Debug, thiserror::Error)]

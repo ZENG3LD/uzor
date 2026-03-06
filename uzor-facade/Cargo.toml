@@ -27,8 +27,8 @@ uzor-render = { workspace = true }
 uzor-core   = { workspace = true }
 
 # Optional backends — each pulled in only when its feature is enabled
-uzor-backend-vello-gpu    = { version = "1.0.1", path = "../uzor-backend-vello-gpu",    optional = true }
-uzor-backend-vello-cpu    = { version = "1.0.1", path = "../uzor-backend-vello-cpu",    optional = true }
-uzor-backend-vello-hybrid = { version = "1.0.1", path = "../uzor-backend-vello-hybrid", optional = true }
-uzor-backend-tiny-skia    = { version = "1.0.1", path = "../uzor-backend-tiny-skia",    optional = true }
-uzor-backend-canvas2d     = { version = "1.0.1", path = "../uzor-backend-canvas2d",     optional = true }
+uzor-backend-vello-gpu    = { version = "1.0.2", path = "../uzor-backend-vello-gpu",    optional = true }
+uzor-backend-vello-cpu    = { version = "1.0.2", path = "../uzor-backend-vello-cpu",    optional = true }
+uzor-backend-vello-hybrid = { version = "1.0.2", path = "../uzor-backend-vello-hybrid", optional = true }
+uzor-backend-tiny-skia    = { version = "1.0.2", path = "../uzor-backend-tiny-skia",    optional = true }
+uzor-backend-canvas2d     = { version = "1.0.2", path = "../uzor-backend-canvas2d",     optional = true }

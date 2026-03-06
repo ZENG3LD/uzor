@@ -116,9 +116,9 @@ impl ScrollReveal {
         let adjusted_progress = scroll_progress * (1.0 + total_stagger);
 
         // Word-specific progress
-        let word_progress = (adjusted_progress - stagger_offset).clamp(0.0, 1.0);
+        
 
-        word_progress
+        (adjusted_progress - stagger_offset).clamp(0.0, 1.0)
     }
 
     /// Interpolate opacity from base to 1.0.

@@ -315,8 +315,8 @@ impl InputCoordinator {
             let is_hovered = hovered_id.as_ref() == Some(&widget.id);
             let was_hovered = self.widget_state.hover.is_hovered(&widget.id);
 
-            if widget.sense.hover || widget.sense.click || widget.sense.drag {
-                if is_hovered || was_hovered {
+            if (widget.sense.hover || widget.sense.click || widget.sense.drag)
+                && (is_hovered || was_hovered) {
                     let mut response = WidgetResponse::new(widget.id.clone(), widget.rect, widget.sense);
                     response.hovered = is_hovered;
                     response.hover_started = is_hovered && !was_hovered;
@@ -328,12 +328,11 @@ impl InputCoordinator {
                     }
 
                     // Check drag start
-                    if is_hovered && button_down.is_some() && widget.sense.drag {
-                        if self.widget_state.drag.dragging.is_none() {
+                    if is_hovered && button_down.is_some() && widget.sense.drag
+                        && self.widget_state.drag.dragging.is_none() {
                             response.drag_started = true;
                             drag_started_this_frame = true;
                         }
-                    }
 
                     if response.clicked
                         || response.hovered
@@ -344,7 +343,6 @@ impl InputCoordinator {
                         responses.push((widget.id.clone(), response));
                     }
                 }
-            }
         }
 
         // 3. Handle ongoing drag (but not if we just started it this frame)

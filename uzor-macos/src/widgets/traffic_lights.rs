@@ -9,6 +9,7 @@ use crate::icons::paths;
 use std::f64::consts::PI;
 
 /// Render all 3 traffic light buttons. Returns total (width, height).
+#[allow(clippy::too_many_arguments)]
 pub fn render_traffic_lights(
     ctx: &mut dyn RenderContext,
     x: f64,

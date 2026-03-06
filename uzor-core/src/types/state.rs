@@ -309,8 +309,10 @@ impl ScrollState {
 
 /// Widget interaction type
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum WidgetInteraction {
     /// No interaction
+    #[default]
     None,
     /// Mouse hovering over widget
     Hover,
@@ -326,11 +328,6 @@ pub enum WidgetInteraction {
     Focus,
 }
 
-impl Default for WidgetInteraction {
-    fn default() -> Self {
-        Self::None
-    }
-}
 
 /// Custom per-widget data
 #[derive(Clone, Debug, Default)]

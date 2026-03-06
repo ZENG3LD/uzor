@@ -83,6 +83,7 @@ pub trait RenderContext {
     fn arc(&mut self, cx: f64, cy: f64, radius: f64, start_angle: f64, end_angle: f64);
 
     /// Draw ellipse (center, radii, rotation, start_angle, end_angle)
+    #[allow(clippy::too_many_arguments)]
     fn ellipse(
         &mut self,
         cx: f64,
@@ -275,6 +276,7 @@ pub trait RenderContext {
     /// * `width`, `height` - Target dimensions to draw (stretches/shrinks to fit)
     ///
     /// Default implementation does nothing. Override in platform-specific contexts.
+    #[allow(clippy::too_many_arguments)]
     fn draw_image_rgba(
         &mut self,
         data: &[u8],
@@ -456,6 +458,7 @@ pub trait RenderContext {
     /// * `accent_color` - Color for the left accent bar (theme.colors.accent)
     /// * `bg_color` - Background color (theme styled hover color)
     /// * `indicator_width` - Width of the accent bar (typically 3-4px)
+    #[allow(clippy::too_many_arguments)]
     fn draw_sidebar_hover_item(
         &mut self,
         x: f64,
@@ -486,6 +489,7 @@ pub trait RenderContext {
     /// * `accent_color` - Color for the left accent bar (theme.colors.accent)
     /// * `bg_color` - Background color (theme styled active color)
     /// * `indicator_width` - Width of the accent bar (typically 3-4px)
+    #[allow(clippy::too_many_arguments)]
     fn draw_sidebar_active_item(
         &mut self,
         x: f64,
@@ -527,6 +531,7 @@ pub trait RenderContext {
     /// * `radius` - Corner radius
     /// * `is_active` - true for pressed state (flattened bulge), false for hover
     /// * `color` - Theme color for the button (hover_bg or active_bg)
+    #[allow(clippy::too_many_arguments)]
     fn draw_glass_button_3d(
         &mut self,
         x: f64,

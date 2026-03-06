@@ -43,6 +43,7 @@ impl Default for ScrollableConfig {
 pub struct ScrollableContainer {
     viewport: Rect,
     scroll_offset: f64,
+    #[allow(dead_code)]
     is_dragging: bool,
     config: ScrollableConfig,
 }

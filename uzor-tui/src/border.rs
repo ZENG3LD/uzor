@@ -106,7 +106,7 @@ pub fn render_border(
                 } else {
                     chars.horizontal
                 };
-                buf.set(x, y1, Cell::styled(&ch.to_string(), style));
+                buf.set(x, y1, Cell::styled(ch.to_string(), style));
             }
         }
     }
@@ -122,7 +122,7 @@ pub fn render_border(
                 } else {
                     chars.horizontal
                 };
-                buf.set(x, y2, Cell::styled(&ch.to_string(), style));
+                buf.set(x, y2, Cell::styled(ch.to_string(), style));
             }
         }
     }
@@ -133,7 +133,7 @@ pub fn render_border(
         let end_y = if borders.bottom && area.height > 1 { y2 } else { area.bottom() };
         for y in start_y..end_y {
             if y < buf_h {
-                buf.set(x1, y, Cell::styled(&chars.vertical.to_string(), style));
+                buf.set(x1, y, Cell::styled(chars.vertical.to_string(), style));
             }
         }
     }
@@ -144,7 +144,7 @@ pub fn render_border(
         let end_y = if borders.bottom && area.height > 1 { y2 } else { area.bottom() };
         for y in start_y..end_y {
             if y < buf_h {
-                buf.set(x2, y, Cell::styled(&chars.vertical.to_string(), style));
+                buf.set(x2, y, Cell::styled(chars.vertical.to_string(), style));
             }
         }
     }
@@ -187,7 +187,7 @@ pub fn render_border_with_title(
         if (col as usize - title_start as usize) >= max_title_width || col >= buf_w {
             break;
         }
-        buf.set(col, y, Cell::styled(&ch.to_string(), title_style));
+        buf.set(col, y, Cell::styled(ch.to_string(), title_style));
         col += 1;
     }
 }

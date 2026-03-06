@@ -4,6 +4,7 @@ use crate::types::state::WidgetId;
 pub struct ScrollView;
 
 impl ScrollView {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(id: impl Into<WidgetId>) -> LayoutNode {
         let mut flags = LayoutFlags::CLIP_CONTENT;
         flags.insert(LayoutFlags::SCROLL_Y);
@@ -20,6 +21,7 @@ impl ScrollView {
 
 pub struct Modal;
 impl Modal {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(id: impl Into<WidgetId>) -> LayoutNode {
         // Modal is usually a full-screen overlay Stack
         LayoutNode::new(id)

@@ -7,8 +7,10 @@ use crate::types::WidgetRect;
 
 /// Widget hit test result
 #[derive(Clone, Debug, PartialEq)]
+#[derive(Default)]
 pub enum WidgetHitResult {
     /// No hit
+    #[default]
     None,
     /// Hit a widget body
     Widget { id: WidgetId },
@@ -30,11 +32,6 @@ pub enum WidgetHitResult {
     Tab { parent_id: WidgetId, tab_index: usize },
 }
 
-impl Default for WidgetHitResult {
-    fn default() -> Self {
-        Self::None
-    }
-}
 
 /// Generic widget hit test
 pub fn widget_hit_test(rect: &WidgetRect, x: f64, y: f64) -> bool {
@@ -261,6 +258,7 @@ pub struct ScrollbarInputResult {
 }
 
 /// Handle scrollbar input
+#[allow(clippy::too_many_arguments)]
 pub fn handle_scrollbar_input(
     state: &WidgetInputState,
     id: &WidgetId,

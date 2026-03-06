@@ -4,7 +4,9 @@ use bitflags::bitflags;
 
 /// Terminal color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub enum Color {
+    #[default]
     Reset,
     Black,
     Red,
@@ -20,11 +22,6 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
-impl Default for Color {
-    fn default() -> Self {
-        Color::Reset
-    }
-}
 
 bitflags! {
     /// Text modifiers as bitflags.

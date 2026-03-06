@@ -3,6 +3,8 @@
 //! This crate provides the web platform implementation for uzor,
 //! supporting browsers via WebAssembly (WASM).
 
+#![allow(dead_code)]
+
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -17,11 +19,11 @@ use web_sys::{
 use uzor_core::input::events::KeyCode;
 use uzor_core::input::state::{ModifierKeys, MouseButton};
 use uzor_core::platform::{
-    backends::{PlatformBackend, PlatformError, RenderSurface, WindowId},
-    Clipboard, ClipboardError, CursorError, CursorIcon, CursorManagement,
-    ImeEvent, ImeSupport, PlatformCapabilities, PlatformEvent, SystemError,
-    SystemIntegration, SystemTheme, WindowConfig,
+    backends::PlatformBackend,
+    types::{PlatformError, WindowId, SystemIntegration},
+    ImeEvent, PlatformEvent, SystemTheme, WindowConfig,
 };
+use uzor_core::input::cursor::CursorIcon;
 
 pub use uzor_core;
 
@@ -90,14 +92,18 @@ impl WebPlatform {
         // Create initial config from canvas size
         let width = canvas.client_width() as u32;
         let height = canvas.client_height() as u32;
-        let config = WindowConfig::new("Web Canvas")
-            .with_size(width, height);
+        let config = WindowConfig {
+            title: "Web Canvas".to_string(),
+            width,
+            height,
+            ..WindowConfig::default()
+        };
 
         let state = Rc::new(RefCell::new(WebPlatformState {
             window,
             document,
             canvas,
-            window_id: WindowId::PRIMARY,
+            window_id: WindowId::new(),
             config,
             event_queue: VecDeque::new(),
             scale_factor,
@@ -518,23 +524,7 @@ impl WebPlatform {
     }
 
     fn cursor_icon_to_css(icon: CursorIcon) -> &'static str {
-        match icon {
-            CursorIcon::Default => "default",
-            CursorIcon::Pointer => "pointer",
-            CursorIcon::Text => "text",
-            CursorIcon::Crosshair => "crosshair",
-            CursorIcon::Move => "move",
-            CursorIcon::NotAllowed => "not-allowed",
-            CursorIcon::Grab => "grab",
-            CursorIcon::Grabbing => "grabbing",
-            CursorIcon::ResizeNS => "ns-resize",
-            CursorIcon::ResizeEW => "ew-resize",
-            CursorIcon::ResizeNESW => "nesw-resize",
-            CursorIcon::ResizeNWSE => "nwse-resize",
-            CursorIcon::Wait => "wait",
-            CursorIcon::Help => "help",
-            CursorIcon::Progress => "progress",
-        }
+        icon.css_name()
     }
 }
 
@@ -552,8 +542,8 @@ unsafe impl Sync for WebPlatform {}
 // =============================================================================
 
 impl PlatformBackend for WebPlatform {
-    fn capabilities(&self) -> PlatformCapabilities {
-        PlatformCapabilities::web()
+    fn name(&self) -> &'static str {
+        todo!("not yet implemented for this platform")
     }
 
     fn create_window(&mut self, config: WindowConfig) -> Result<WindowId, PlatformError> {
@@ -565,7 +555,7 @@ impl PlatformBackend for WebPlatform {
         canvas.set_height((config.height as f64 * state.scale_factor) as u32);
 
         // Update title (if document title)
-        let _ = state.document.set_title(&config.title);
+        state.document.set_title(&config.title);
 
         state.config = config;
         state.event_queue.push_back(PlatformEvent::WindowCreated);
@@ -573,67 +563,32 @@ impl PlatformBackend for WebPlatform {
         Ok(state.window_id)
     }
 
-    fn request_redraw(&mut self, _window_id: WindowId) {
-        let mut state = self.state.borrow_mut();
-        state.event_queue.push_back(PlatformEvent::RedrawRequested);
-    }
-
-    fn poll_event(&mut self) -> Option<PlatformEvent> {
-        let mut state = self.state.borrow_mut();
-        state.event_queue.pop_front()
-    }
-
-    fn set_window_title(&mut self, _window_id: WindowId, title: &str) -> Result<(), PlatformError> {
-        let state = self.state.borrow();
-        state.document.set_title(title);
-        Ok(())
-    }
-
-    fn window_size(&self, _window_id: WindowId) -> Result<(u32, u32), PlatformError> {
-        let state = self.state.borrow();
-        Ok((state.config.width, state.config.height))
-    }
-
-    fn scale_factor(&self, _window_id: WindowId) -> Result<f64, PlatformError> {
-        let state = self.state.borrow();
-        Ok(state.scale_factor)
-    }
-
     fn close_window(&mut self, _window_id: WindowId) -> Result<(), PlatformError> {
         let mut state = self.state.borrow_mut();
         state.event_queue.push_back(PlatformEvent::WindowDestroyed);
         Ok(())
     }
-}
 
-impl Clipboard for WebPlatform {
-    fn get_text(&self) -> Option<String> {
-        // Note: Reading clipboard requires user gesture and permission in browsers
-        // This is a synchronous API but clipboard reads are async in browsers
-        // For now, return None (apps should use async clipboard API directly)
-        None
+    fn primary_window(&self) -> Option<WindowId> {
+        todo!("not yet implemented for this platform")
     }
 
-    fn set_text(&self, text: &str) -> Result<(), ClipboardError> {
-        let state = self.state.borrow();
+    fn poll_events(&mut self) -> Vec<PlatformEvent> {
+        todo!("not yet implemented for this platform")
+    }
 
-        // Try to use Clipboard API (async)
-        let clipboard = state.window.navigator().clipboard();
-        let _ = clipboard.write_text(text);
-
-        // Note: This is fire-and-forget since we can't await in synchronous context
-        // Apps using web platform should handle clipboard via async APIs if they need
-        // to verify success
-        Ok(())
+    fn request_redraw(&self, _id: WindowId) {
+        // No-op for now: web redraws are driven by requestAnimationFrame
     }
 }
 
 impl SystemIntegration for WebPlatform {
-    fn open_url(&self, url: &str) -> Result<(), SystemError> {
-        let state = self.state.borrow();
-        state.window.open_with_url(url)
-            .map_err(|_| SystemError::Failed("Failed to open URL".to_string()))?;
-        Ok(())
+    fn get_clipboard(&self) -> Option<String> {
+        todo!("not yet implemented for this platform")
+    }
+
+    fn set_clipboard(&self, _text: &str) {
+        todo!("not yet implemented for this platform")
     }
 
     fn get_system_theme(&self) -> Option<SystemTheme> {
@@ -648,96 +603,8 @@ impl SystemIntegration for WebPlatform {
 
         Some(SystemTheme::Light)
     }
-
-    fn get_scale_factor(&self) -> f64 {
-        let state = self.state.borrow();
-        state.scale_factor
-    }
 }
 
-impl CursorManagement for WebPlatform {
-    fn set_cursor(&mut self, cursor: CursorIcon) {
-        let mut state = self.state.borrow_mut();
-        state.cursor_icon = cursor;
-
-        let css_cursor = Self::cursor_icon_to_css(cursor);
-
-        if let Ok(html_canvas) = state.canvas.clone().dyn_into::<web_sys::HtmlElement>() {
-            if let Ok(style) = html_canvas.style().set_property("cursor", css_cursor) {
-                let _ = style;
-            }
-        }
-    }
-
-    fn set_cursor_visible(&mut self, visible: bool) {
-        let mut state = self.state.borrow_mut();
-        state.cursor_visible = visible;
-
-        let cursor_value = if visible {
-            Self::cursor_icon_to_css(state.cursor_icon)
-        } else {
-            "none"
-        };
-
-        if let Ok(html_canvas) = state.canvas.clone().dyn_into::<web_sys::HtmlElement>() {
-            let _ = html_canvas.style().set_property("cursor", cursor_value);
-        }
-    }
-
-    fn set_cursor_locked(&mut self, locked: bool) -> Result<(), CursorError> {
-        let state = self.state.borrow();
-
-        if locked {
-            // Request pointer lock (requires user gesture)
-            state.canvas.request_pointer_lock();
-            Ok(())
-        } else {
-            // Exit pointer lock
-            state.document.exit_pointer_lock();
-            Ok(())
-        }
-    }
-}
-
-impl ImeSupport for WebPlatform {
-    fn set_ime_position(&mut self, x: f64, y: f64) {
-        let mut state = self.state.borrow_mut();
-        state.ime_position = (x, y);
-        // Browser handles IME positioning automatically
-    }
-
-    fn set_ime_allowed(&mut self, allowed: bool) {
-        let mut state = self.state.borrow_mut();
-        state.ime_allowed = allowed;
-
-        // Set canvas tabindex to allow keyboard focus
-        if allowed {
-            let _ = state.canvas.set_attribute("tabindex", "0");
-        } else {
-            let _ = state.canvas.remove_attribute("tabindex");
-        }
-    }
-}
-
-impl RenderSurface for WebPlatform {
-    fn raw_window_handle(&self) -> Option<&dyn std::any::Any> {
-        // Web doesn't use raw window handles
-        None
-    }
-
-    fn surface_size(&self) -> (u32, u32) {
-        let state = self.state.borrow();
-        (
-            (state.config.width as f64 * state.scale_factor) as u32,
-            (state.config.height as f64 * state.scale_factor) as u32,
-        )
-    }
-
-    fn surface_scale_factor(&self) -> f64 {
-        let state = self.state.borrow();
-        state.scale_factor
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -762,9 +629,9 @@ mod tests {
     #[test]
     fn test_cursor_icon_css() {
         assert_eq!(WebPlatform::cursor_icon_to_css(CursorIcon::Default), "default");
-        assert_eq!(WebPlatform::cursor_icon_to_css(CursorIcon::Pointer), "pointer");
+        assert_eq!(WebPlatform::cursor_icon_to_css(CursorIcon::PointingHand), "pointer");
         assert_eq!(WebPlatform::cursor_icon_to_css(CursorIcon::Text), "text");
         assert_eq!(WebPlatform::cursor_icon_to_css(CursorIcon::Grab), "grab");
-        assert_eq!(WebPlatform::cursor_icon_to_css(CursorIcon::ResizeNS), "ns-resize");
+        assert_eq!(WebPlatform::cursor_icon_to_css(CursorIcon::ResizeVertical), "ns-resize");
     }
 }

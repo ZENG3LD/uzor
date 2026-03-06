@@ -4,6 +4,7 @@ use crate::colors::{AppearanceMode, WidgetState, palette};
 
 /// macOS input theme
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct InputTheme {
     pub appearance: AppearanceMode,
 }
@@ -101,13 +102,6 @@ impl InputTheme {
     }
 }
 
-impl Default for InputTheme {
-    fn default() -> Self {
-        Self {
-            appearance: AppearanceMode::default(),
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

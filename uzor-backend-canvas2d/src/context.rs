@@ -146,7 +146,7 @@ impl RenderContext for Canvas2dRenderContext {
     }
 
     fn clip(&mut self) {
-        let _ = self.ctx.clip();
+        self.ctx.clip();
     }
 
     fn stroke_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {

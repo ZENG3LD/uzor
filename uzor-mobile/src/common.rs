@@ -3,6 +3,8 @@
 //! This module contains shared functionality that both mobile platforms use,
 //! including gesture recognition and touch event processing.
 
+#![allow(dead_code)]
+
 use uzor_core::platform::PlatformEvent;
 
 // =============================================================================

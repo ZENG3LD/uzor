@@ -246,7 +246,7 @@ impl Counter {
         let place_value = spring_value % 10.0;
 
         let mut digit_offsets = [0.0f32; 10];
-        for number in 0..10 {
+        for (number, slot) in digit_offsets.iter_mut().enumerate() {
             // Algorithm from React lines 17-23
             let offset = (10.0 + number as f64 - place_value) % 10.0;
             let mut memo = offset;
@@ -256,7 +256,7 @@ impl Counter {
                 memo -= 10.0;
             }
 
-            digit_offsets[number] = memo as f32;
+            *slot = memo as f32;
         }
 
         DigitState {

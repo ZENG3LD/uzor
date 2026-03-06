@@ -57,6 +57,7 @@ pub enum Position {
 
 /// Size specification
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Default)]
 pub enum SizeSpec {
     /// Fixed size in pixels
     Fix(f64),
@@ -65,14 +66,10 @@ pub enum SizeSpec {
     /// Fill available space (flex grow)
     Fill,
     /// Size to content
+    #[default]
     Content,
 }
 
-impl Default for SizeSpec {
-    fn default() -> Self {
-        Self::Content
-    }
-}
 
 /// Insets (padding, margin)
 #[derive(Clone, Copy, Debug, PartialEq, Default)]

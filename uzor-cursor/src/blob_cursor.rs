@@ -26,16 +26,12 @@ pub struct BlobState {
 
 /// Blob cursor effect state
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct BlobCursorState {
     /// All blob states
     pub blobs: Vec<BlobState>,
 }
 
-impl Default for BlobCursorState {
-    fn default() -> Self {
-        Self { blobs: Vec::new() }
-    }
-}
 
 /// Blob shape type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +175,7 @@ impl BlobCursor {
 
 /// SVG filter parameters for gooey merge effect
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct GooeyFilter {
     /// Gaussian blur standard deviation (default: 30.0)
     pub std_deviation: f32,

@@ -93,12 +93,10 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
             } else {
                 ctx.fill_rect(tx, ty, tw, th);
             }
+        } else if tr > 0.0 {
+            ctx.stroke_rounded_rect(tx, ty, tw, th, tr);
         } else {
-            if tr > 0.0 {
-                ctx.stroke_rounded_rect(tx, ty, tw, th, tr);
-            } else {
-                ctx.stroke_rect(tx, ty, tw, th);
-            }
+            ctx.stroke_rect(tx, ty, tw, th);
         }
     }
 
@@ -221,7 +219,7 @@ fn parse_svg_paths(svg: &str, default_filled: bool) -> Vec<PathInfo> {
                         let dash_value = &tag_content[dash_content_start..dash_content_start + dash_end];
                         // Parse "4 2" or "4,2" format
                         let values: Vec<f64> = dash_value
-                            .split(|c| c == ' ' || c == ',')
+                            .split([' ', ','])
                             .filter_map(|s| s.trim().parse::<f64>().ok())
                             .collect();
                         if !values.is_empty() {
@@ -251,6 +249,7 @@ const ARC_SEGMENTS: usize = 16;
 
 /// Convert SVG arc parameters to a series of points
 /// Based on the SVG arc to bezier algorithm
+#[allow(clippy::too_many_arguments)]
 fn arc_to_points(
     start_x: f64,
     start_y: f64,
@@ -1036,6 +1035,7 @@ fn rotate_pt(px: f64, py: f64, cx: f64, cy: f64, sin_a: f64, cos_a: f64) -> (f64
 }
 
 /// Render SVG path data with rotation applied to every coordinate
+#[allow(clippy::too_many_arguments)]
 fn render_path_data_rotated(
     ctx: &mut dyn RenderContext, path_data: &str,
     offset_x: f64, offset_y: f64, scale: f64,
@@ -1311,6 +1311,7 @@ fn render_path_data_rotated(
 /// * `width`, `height` - Target dimensions
 /// * `color` - Stroke color (hex string)
 /// * `angle` - Rotation angle in radians
+#[allow(clippy::too_many_arguments)]
 pub fn draw_svg_icon_rotated(
     ctx: &mut dyn RenderContext, svg: &str,
     x: f64, y: f64, width: f64, height: f64,

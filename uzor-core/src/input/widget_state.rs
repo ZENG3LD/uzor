@@ -154,7 +154,9 @@ impl DragState {
 
 /// Widget interaction type
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum WidgetInteraction {
+    #[default]
     None,
     Hover,
     Press,
@@ -165,11 +167,6 @@ pub enum WidgetInteraction {
     Focus,
 }
 
-impl Default for WidgetInteraction {
-    fn default() -> Self {
-        Self::None
-    }
-}
 
 /// Combined widget input state
 #[derive(Clone, Debug, Default)]

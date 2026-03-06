@@ -329,6 +329,7 @@ impl ToastAnimation {
     }
 
     /// Helper: calculate offset from direction
+    #[allow(dead_code)]
     fn direction_offset(direction: ToastDirection, offset: f64) -> (f64, f64) {
         match direction {
             ToastDirection::Top => (0.0, -offset),

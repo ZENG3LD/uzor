@@ -101,6 +101,7 @@ pub struct Separator {
     /// Length perpendicular to axis (pixels)
     pub length: f32,
     /// Visual thickness (changes with state)
+    #[allow(dead_code)]
     thickness: f32,
     /// Interaction width (always 8px for easier hit testing)
     hit_width: f32,
@@ -191,12 +192,14 @@ impl Separator {
 
 /// Drag state for separator resizing
 #[derive(Clone, Debug)]
-struct SeparatorDragState {
+pub struct SeparatorDragState {
     /// Index of separator being dragged
     separator_idx: usize,
     /// Container owning the separator
+    #[allow(dead_code)]
     container_id: NodeId,
     /// Starting position of separator
+    #[allow(dead_code)]
     start_pos: f32,
     /// Original shares of all children
     start_shares: Vec<f32>,

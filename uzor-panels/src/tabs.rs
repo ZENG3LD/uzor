@@ -98,8 +98,7 @@ impl TabBar {
             // Estimate text width (8px per character)
             let text_width = tab.title.len() as f32 * 8.0;
             let width = (text_width + Self::TAB_PADDING * 2.0)
-                .max(Self::TAB_MIN_WIDTH)
-                .min(Self::TAB_MAX_WIDTH);
+                .clamp(Self::TAB_MIN_WIDTH, Self::TAB_MAX_WIDTH);
 
             tab.rect = PanelRect::new(x, y, width, self.height);
 

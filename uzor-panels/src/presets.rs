@@ -159,7 +159,7 @@ impl WindowLayout {
                     return rects;
                 }
                 let cols = (panel_count as f32).sqrt().ceil() as usize;
-                let rows = (panel_count + cols - 1) / cols; // ceil division
+                let rows = panel_count.div_ceil(cols); // ceil division
                 let cell_w = (total_width - gap * (cols as f32 - 1.0).max(0.0)) / cols as f32;
                 let cell_h = (total_height - gap * (rows as f32 - 1.0).max(0.0)) / rows as f32;
 

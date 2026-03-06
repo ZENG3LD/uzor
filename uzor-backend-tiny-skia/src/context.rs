@@ -402,24 +402,28 @@ impl TinySkiaCpuRenderContext {
     }
 
     fn fill_paint(&self) -> Paint<'static> {
-        let mut p = Paint::default();
-        p.shader    = Shader::SolidColor(self.effective_fill_color());
-        p.anti_alias = true;
-        p
+        Paint {
+            shader: Shader::SolidColor(self.effective_fill_color()),
+            anti_alias: true,
+            ..Paint::default()
+        }
     }
 
     fn stroke_paint(&self) -> Paint<'static> {
-        let mut p = Paint::default();
-        p.shader    = Shader::SolidColor(self.effective_stroke_color());
-        p.anti_alias = true;
-        p
+        Paint {
+            shader: Shader::SolidColor(self.effective_stroke_color()),
+            anti_alias: true,
+            ..Paint::default()
+        }
     }
 
     fn current_stroke(&self) -> Stroke {
-        let mut s    = Stroke::default();
-        s.width      = self.stroke_width;
-        s.line_cap   = self.line_cap;
-        s.line_join  = self.line_join;
+        let mut s = Stroke {
+            width: self.stroke_width,
+            line_cap: self.line_cap,
+            line_join: self.line_join,
+            ..Stroke::default()
+        };
         if let Some(ref dash) = self.line_dash {
             s.dash = Some(dash.clone());
         }

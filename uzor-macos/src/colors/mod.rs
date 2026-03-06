@@ -10,8 +10,10 @@ pub use helpers::color_with_alpha;
 
 /// macOS appearance mode
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub enum AppearanceMode {
     Light,
+    #[default]
     Dark,
     VibrantLight,
     VibrantDark,
@@ -21,15 +23,12 @@ pub enum AppearanceMode {
     AccessibleVibrantDark,
 }
 
-impl Default for AppearanceMode {
-    fn default() -> Self {
-        Self::Dark
-    }
-}
 
 /// Widget interaction state
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub enum WidgetState {
+    #[default]
     Normal,
     Hovered,
     Pressed,
@@ -37,11 +36,6 @@ pub enum WidgetState {
     Focused,
 }
 
-impl Default for WidgetState {
-    fn default() -> Self {
-        Self::Normal
-    }
-}
 
 /// A complete color palette for one appearance mode
 pub struct ColorPalette {

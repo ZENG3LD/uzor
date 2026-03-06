@@ -136,7 +136,7 @@ impl DecryptedTextState {
                 let middle = text_len / 2;
                 let offset = revealed_count / 2;
 
-                let next_index = if revealed_count % 2 == 0 {
+                let next_index = if revealed_count.is_multiple_of(2) {
                     middle + offset
                 } else {
                     middle.saturating_sub(offset + 1)

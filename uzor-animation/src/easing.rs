@@ -10,8 +10,10 @@ use std::f64::consts::PI;
 /// Includes all 30 Penner equations, cubic-bezier timing functions (CSS-compatible),
 /// and step functions.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default)]
 pub enum Easing {
     /// Linear interpolation (no easing)
+    #[default]
     Linear,
 
     // Quadratic (t^2)
@@ -210,11 +212,6 @@ impl Easing {
     pub const EASE_IN_OUT: Easing = Easing::CubicBezier(0.42, 0.0, 0.58, 1.0);
 }
 
-impl Default for Easing {
-    fn default() -> Self {
-        Easing::Linear
-    }
-}
 
 // ============================================================================
 // Quadratic (t^2)
@@ -618,8 +615,8 @@ fn cubic_bezier_solve(x: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
 
     // Build sample table (in practice, this should be precomputed)
     let mut samples = [0.0; SAMPLE_SIZE];
-    for i in 0..SAMPLE_SIZE {
-        samples[i] = calc_bezier(i as f64 * SAMPLE_STEP_SIZE, x1, x2);
+    for (i, sample) in samples.iter_mut().enumerate() {
+        *sample = calc_bezier(i as f64 * SAMPLE_STEP_SIZE, x1, x2);
     }
 
     // Find interval containing x

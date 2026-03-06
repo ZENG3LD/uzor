@@ -3,6 +3,7 @@ use crate::types::state::WidgetId;
 
 pub struct VBox;
 impl VBox {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(id: impl Into<WidgetId>) -> LayoutNode {
         LayoutNode::new(id)
             .with_style(LayoutStyle {
@@ -15,6 +16,7 @@ impl VBox {
 
 pub struct HBox;
 impl HBox {
+    #[allow(clippy::new_ret_no_self)]
     pub fn new(id: impl Into<WidgetId>) -> LayoutNode {
         LayoutNode::new(id)
             .with_style(LayoutStyle {

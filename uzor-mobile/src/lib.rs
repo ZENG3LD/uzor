@@ -62,16 +62,17 @@
 //! }
 //! ```
 
+#![allow(dead_code)]
+
 pub use uzor_core;
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use uzor_core::platform::{
-    backends::{PlatformBackend, PlatformError, RenderSurface, WindowId},
-    Clipboard, ClipboardError, CursorError, CursorIcon, CursorManagement, ImeSupport,
-    PlatformCapabilities, PlatformEvent, SystemError, SystemIntegration, SystemTheme,
-    WindowConfig,
+    backends::PlatformBackend,
+    types::{PlatformError, WindowId, SystemIntegration},
+    PlatformEvent, SystemTheme, WindowConfig,
 };
 
 // Platform-specific modules
@@ -117,9 +118,6 @@ struct MobileState {
     /// IME state
     ime_position: (f64, f64),
     ime_allowed: bool,
-
-    /// Cursor state (tracked for compatibility, but not displayed on mobile)
-    cursor_icon: CursorIcon,
 }
 
 struct MobileWindow {
@@ -139,11 +137,11 @@ impl MobilePlatform {
     pub fn new() -> Result<Self, PlatformError> {
         #[cfg(target_os = "android")]
         let backend = AndroidBackend::new()
-            .map_err(|e| PlatformError::Other(format!("Android backend init failed: {}", e)))?;
+            .map_err(|e| PlatformError::CreationFailed(format!("Android backend init failed: {}", e)))?;
 
         #[cfg(target_os = "ios")]
         let backend = IosBackend::new()
-            .map_err(|e| PlatformError::Other(format!("iOS backend init failed: {}", e)))?;
+            .map_err(|e| PlatformError::CreationFailed(format!("iOS backend init failed: {}", e)))?;
 
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         let backend = StubBackend::new();
@@ -155,7 +153,6 @@ impl MobilePlatform {
                 event_queue: VecDeque::new(),
                 ime_position: (0.0, 0.0),
                 ime_allowed: false,
-                cursor_icon: CursorIcon::Default,
             })),
         })
     }
@@ -196,8 +193,8 @@ impl Default for MobilePlatform {
 // =============================================================================
 
 impl PlatformBackend for MobilePlatform {
-    fn capabilities(&self) -> PlatformCapabilities {
-        PlatformCapabilities::mobile()
+    fn name(&self) -> &'static str {
+        todo!("not yet implemented for this platform")
     }
 
     fn create_window(&mut self, config: WindowConfig) -> Result<WindowId, PlatformError> {
@@ -205,12 +202,12 @@ impl PlatformBackend for MobilePlatform {
 
         // Mobile apps typically have only one window
         if state.window.is_some() {
-            return Err(PlatformError::Other(
+            return Err(PlatformError::CreationFailed(
                 "Mobile platform supports only one window".to_string(),
             ));
         }
 
-        let window_id = WindowId::PRIMARY;
+        let window_id = WindowId::new();
 
         // Get screen size from backend
         let (width, height) = state.backend.screen_size();
@@ -218,7 +215,7 @@ impl PlatformBackend for MobilePlatform {
 
         let window = MobileWindow {
             id: window_id,
-            config: config.clone(),
+            config,
             width,
             height,
             scale_factor,
@@ -228,67 +225,6 @@ impl PlatformBackend for MobilePlatform {
         state.event_queue.push_back(PlatformEvent::WindowCreated);
 
         Ok(window_id)
-    }
-
-    fn request_redraw(&mut self, window_id: WindowId) {
-        let mut state = self.state.lock().unwrap();
-
-        if let Some(window) = &state.window {
-            if window.id == window_id {
-                state.event_queue.push_back(PlatformEvent::RedrawRequested);
-            }
-        }
-    }
-
-    fn poll_event(&mut self) -> Option<PlatformEvent> {
-        let mut state = self.state.lock().unwrap();
-
-        // First, poll backend for any native events
-        if let Some(event) = state.backend.poll_event() {
-            return Some(event);
-        }
-
-        // Then, return queued events
-        state.event_queue.pop_front()
-    }
-
-    fn set_window_title(&mut self, window_id: WindowId, title: &str) -> Result<(), PlatformError> {
-        let mut state = self.state.lock().unwrap();
-
-        let window = state
-            .window
-            .as_mut()
-            .filter(|w| w.id == window_id)
-            .ok_or(PlatformError::WindowNotFound(window_id))?;
-
-        window.config.title = title.to_string();
-        state.backend.set_title(title);
-
-        Ok(())
-    }
-
-    fn window_size(&self, window_id: WindowId) -> Result<(u32, u32), PlatformError> {
-        let state = self.state.lock().unwrap();
-
-        let window = state
-            .window
-            .as_ref()
-            .filter(|w| w.id == window_id)
-            .ok_or(PlatformError::WindowNotFound(window_id))?;
-
-        Ok((window.width, window.height))
-    }
-
-    fn scale_factor(&self, window_id: WindowId) -> Result<f64, PlatformError> {
-        let state = self.state.lock().unwrap();
-
-        let window = state
-            .window
-            .as_ref()
-            .filter(|w| w.id == window_id)
-            .ok_or(PlatformError::WindowNotFound(window_id))?;
-
-        Ok(window.scale_factor)
     }
 
     fn close_window(&mut self, window_id: WindowId) -> Result<(), PlatformError> {
@@ -302,26 +238,20 @@ impl PlatformBackend for MobilePlatform {
             }
         }
 
-        Err(PlatformError::WindowNotFound(window_id))
-    }
-}
-
-// =============================================================================
-// Clipboard Implementation
-// =============================================================================
-
-impl Clipboard for MobilePlatform {
-    fn get_text(&self) -> Option<String> {
-        let state = self.state.lock().unwrap();
-        state.backend.get_clipboard_text()
+        Err(PlatformError::WindowNotFound)
     }
 
-    fn set_text(&self, text: &str) -> Result<(), ClipboardError> {
-        let mut state = self.state.lock().unwrap();
-        state
-            .backend
-            .set_clipboard_text(text)
-            .map_err(|e| ClipboardError::Unknown(e))
+    fn primary_window(&self) -> Option<WindowId> {
+        todo!("not yet implemented for this platform")
+    }
+
+    fn poll_events(&mut self) -> Vec<PlatformEvent> {
+        todo!("not yet implemented for this platform")
+    }
+
+    fn request_redraw(&self, id: WindowId) {
+        let _ = id;
+        // No-op for now: mobile redraws are driven by the OS event loop
     }
 }
 
@@ -330,101 +260,17 @@ impl Clipboard for MobilePlatform {
 // =============================================================================
 
 impl SystemIntegration for MobilePlatform {
-    fn open_url(&self, url: &str) -> Result<(), SystemError> {
-        let state = self.state.lock().unwrap();
-        state
-            .backend
-            .open_url(url)
-            .map_err(|e| SystemError::Failed(e))
+    fn get_clipboard(&self) -> Option<String> {
+        todo!("not yet implemented for this platform")
+    }
+
+    fn set_clipboard(&self, _text: &str) {
+        todo!("not yet implemented for this platform")
     }
 
     fn get_system_theme(&self) -> Option<SystemTheme> {
         let state = self.state.lock().unwrap();
         state.backend.system_theme()
-    }
-
-    fn get_scale_factor(&self) -> f64 {
-        let state = self.state.lock().unwrap();
-        state.backend.scale_factor()
-    }
-}
-
-// =============================================================================
-// CursorManagement Implementation
-// =============================================================================
-
-impl CursorManagement for MobilePlatform {
-    fn set_cursor(&mut self, cursor: CursorIcon) {
-        // Mobile devices don't have cursors, but track state for compatibility
-        let mut state = self.state.lock().unwrap();
-        state.cursor_icon = cursor;
-    }
-
-    fn set_cursor_visible(&mut self, _visible: bool) {
-        // No-op on mobile (no cursor)
-    }
-
-    fn set_cursor_locked(&mut self, _locked: bool) -> Result<(), CursorError> {
-        // Not supported on mobile
-        Err(CursorError::NotSupported)
-    }
-}
-
-// =============================================================================
-// ImeSupport Implementation
-// =============================================================================
-
-impl ImeSupport for MobilePlatform {
-    fn set_ime_position(&mut self, x: f64, y: f64) {
-        let mut state = self.state.lock().unwrap();
-        state.ime_position = (x, y);
-        state.backend.set_ime_position(x, y);
-    }
-
-    fn set_ime_allowed(&mut self, allowed: bool) {
-        let mut state = self.state.lock().unwrap();
-        state.ime_allowed = allowed;
-
-        if allowed {
-            state.backend.show_keyboard();
-        } else {
-            state.backend.hide_keyboard();
-        }
-    }
-
-    fn set_ime_cursor_area(&mut self, x: f64, y: f64, _width: f64, _height: f64) {
-        // Mobile platforms use simple position-based IME
-        self.set_ime_position(x, y);
-    }
-}
-
-// =============================================================================
-// RenderSurface Implementation
-// =============================================================================
-
-impl RenderSurface for MobilePlatform {
-    fn raw_window_handle(&self) -> Option<&dyn std::any::Any> {
-        // Platform-specific window handles should be accessed differently on mobile
-        // This would require platform-specific APIs (e.g., CAMetalLayer for iOS,
-        // ANativeWindow for Android)
-        None
-    }
-
-    fn surface_size(&self) -> (u32, u32) {
-        let state = self.state.lock().unwrap();
-        if let Some(window) = &state.window {
-            (
-                (window.width as f64 * window.scale_factor) as u32,
-                (window.height as f64 * window.scale_factor) as u32,
-            )
-        } else {
-            (0, 0)
-        }
-    }
-
-    fn surface_scale_factor(&self) -> f64 {
-        let state = self.state.lock().unwrap();
-        state.window.as_ref().map(|w| w.scale_factor).unwrap_or(1.0)
     }
 }
 
@@ -531,20 +377,6 @@ impl StubBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_platform_capabilities() {
-        let caps = PlatformCapabilities::mobile();
-
-        assert!(caps.has_clipboard);
-        assert!(caps.has_touch);
-        assert!(!caps.has_mouse);
-        assert!(caps.has_keyboard);
-        assert!(!caps.has_file_drop);
-        assert!(!caps.has_cursor_management);
-        assert!(caps.has_ime);
-        assert_eq!(caps.max_touch_points, 10);
-    }
 
     #[test]
     fn test_haptic_style_variants() {

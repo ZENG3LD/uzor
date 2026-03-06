@@ -103,18 +103,12 @@ pub struct ParticleRender {
 
 /// Click spark effect state
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct ClickSparkState {
     /// Active particles
     pub particles: Vec<Particle>,
 }
 
-impl Default for ClickSparkState {
-    fn default() -> Self {
-        Self {
-            particles: Vec::new(),
-        }
-    }
-}
 
 /// Click spark effect configuration
 pub struct ClickSpark {

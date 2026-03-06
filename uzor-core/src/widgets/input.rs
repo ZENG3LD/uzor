@@ -6,21 +6,13 @@ use crate::types::{WidgetState, Rect};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct InputConfig {
     pub value: String,
     pub placeholder: String,
     pub disabled: bool,
 }
 
-impl Default for InputConfig {
-    fn default() -> Self {
-        Self {
-            value: String::new(),
-            placeholder: String::new(),
-            disabled: false,
-        }
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct InputResponse {

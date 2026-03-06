@@ -112,6 +112,7 @@ impl PathBuilder {
     /// The `rotation` parameter is currently ignored (not supported by kurbo's
     /// `Arc` primitive for non-zero rotations — use a transform on the context
     /// instead).
+    #[allow(clippy::too_many_arguments)]
     pub fn ellipse(
         &mut self,
         cx: f64,

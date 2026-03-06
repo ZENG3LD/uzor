@@ -259,7 +259,7 @@ impl Spring {
         let duration = -self.rest_threshold.ln() / decay_rate;
 
         // Clamp to reasonable bounds
-        duration.max(0.0).min(100.0)
+        duration.clamp(0.0, 100.0)
     }
 
     /// Gentle spring - iOS-style default
@@ -313,7 +313,7 @@ impl Spring {
                 let t = i as f64 * dt;
                 let (position, _) = self.evaluate(t);
                 // Invert: spring goes from 1.0 -> 0.0, easing wants 0.0 -> 1.0
-                1.0 - position.max(0.0).min(1.0)
+                1.0 - position.clamp(0.0, 1.0)
             })
             .collect()
     }

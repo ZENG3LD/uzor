@@ -5,6 +5,7 @@
 
 /// Keyboard key codes
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Default)]
 pub enum KeyCode {
     // Letters
     A, B, C, D, E, F, G, H, I, J, K, L, M,
@@ -44,14 +45,10 @@ pub enum KeyCode {
     BracketRight,
 
     /// Unknown or unmapped key
+    #[default]
     Unknown,
 }
 
-impl Default for KeyCode {
-    fn default() -> Self {
-        KeyCode::Unknown
-    }
-}
 
 #[cfg(test)]
 mod tests {

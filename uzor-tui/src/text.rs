@@ -71,7 +71,7 @@ impl Text {
     pub fn raw(content: impl Into<String>) -> Self {
         let s: String = content.into();
         Self {
-            lines: s.lines().map(|l| Line::raw(l)).collect(),
+            lines: s.lines().map(Line::raw).collect(),
         }
     }
 

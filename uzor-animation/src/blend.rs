@@ -7,8 +7,10 @@ use crate::timeline::Animatable;
 
 /// How an animation combines with the base value
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default)]
 pub enum CompositeMode {
     /// Replace base value entirely (default)
+    #[default]
     Replace,
     /// Add to base value: result = base + animation_delta
     Add,
@@ -16,11 +18,6 @@ pub enum CompositeMode {
     Accumulate,
 }
 
-impl Default for CompositeMode {
-    fn default() -> Self {
-        CompositeMode::Replace
-    }
-}
 
 /// Blend between two animation values with a weight
 ///

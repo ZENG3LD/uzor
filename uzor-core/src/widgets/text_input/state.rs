@@ -132,7 +132,7 @@ impl TextInputState {
     /// Check if cursor should be visible based on blink timing
     pub fn is_cursor_visible(&self, current_time_ms: u64) -> bool {
         let elapsed = current_time_ms.wrapping_sub(self.blink_time);
-        (elapsed / 500) % 2 == 0
+        (elapsed / 500).is_multiple_of(2)
     }
 
     /// Stop editing and return final text

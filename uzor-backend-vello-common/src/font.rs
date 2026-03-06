@@ -100,8 +100,6 @@ impl Default for FontInfo {
 /// Unrecognised or empty strings produce [`FontInfo::default`].
 pub fn parse_css_font(font_str: &str) -> FontInfo {
     let mut info = FontInfo::default();
-    info.bold = false;
-    info.italic = false;
     info.family.clear();
 
     let lower = font_str.to_lowercase();
@@ -194,7 +192,7 @@ pub fn layout_glyphs(text: &str, font_info: &FontInfo) -> Vec<GlyphLayout> {
 
     let mut pen_x = 0.0f32;
     text.chars()
-        .filter_map(|ch| {
+        .map(|ch| {
             let gid = charmap.map(ch).unwrap_or_default();
             let advance = glyph_metrics.advance_width(gid).unwrap_or_default();
             let g = GlyphLayout {
@@ -203,7 +201,7 @@ pub fn layout_glyphs(text: &str, font_info: &FontInfo) -> Vec<GlyphLayout> {
                 y: 0.0,
             };
             pen_x += advance;
-            Some(g)
+            g
         })
         .collect()
 }

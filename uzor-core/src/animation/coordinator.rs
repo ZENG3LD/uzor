@@ -60,6 +60,7 @@ impl AnimationCoordinator {
     ///
     /// If an animation is already active on this property, it will be replaced
     /// according to the interruption strategy.
+    #[allow(clippy::too_many_arguments)]
     pub fn tween(
         &mut self,
         widget_id: WidgetId,

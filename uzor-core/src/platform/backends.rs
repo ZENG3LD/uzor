@@ -37,7 +37,14 @@ pub struct MockPlatform {
 
 struct MockWindow {
     id: WindowId,
+    #[allow(dead_code)]
     pub config: WindowConfig,
+}
+
+impl Default for MockPlatform {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MockPlatform {

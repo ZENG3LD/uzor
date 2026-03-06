@@ -566,16 +566,16 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
             .hint(true)
             .draw(
                 Fill::NonZero,
-                text.chars().filter_map(|ch| {
+                text.chars().map(|ch| {
                     let gid = charmap.map(ch).unwrap_or_default();
                     let advance = glyph_metrics.advance_width(gid).unwrap_or_default();
                     let glyph_x = pen_x;
                     pen_x += advance;
-                    Some(Glyph {
+                    Glyph {
                         id: gid.to_u32(),
                         x: glyph_x,
                         y: 0.0,
-                    })
+                    }
                 }),
             );
     }
@@ -762,16 +762,16 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
             .hint(true)
             .draw(
                 Fill::NonZero,
-                text.chars().filter_map(|ch| {
+                text.chars().map(|ch| {
                     let gid = charmap.map(ch).unwrap_or_default();
                     let advance = glyph_metrics.advance_width(gid).unwrap_or_default();
                     let glyph_x = pen_x;
                     pen_x += advance;
-                    Some(Glyph {
+                    Glyph {
                         id: gid.to_u32(),
                         x: glyph_x,
                         y: 0.0,
-                    })
+                    }
                 }),
             );
     }

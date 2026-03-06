@@ -238,7 +238,7 @@ impl<P: DockPanel> DockingManager<P> {
 
             // Tab bar (for multi-tab panels)
             if leaf.tab_count() > 1 && rect.width >= 1.0 && rect.height >= 1.0 {
-                let tab_bar = self.create_tab_bar(leaf_id, &leaf, rect);
+                let tab_bar = self.create_tab_bar(leaf_id, leaf, rect);
                 self.tab_bars.push(tab_bar);
             }
         }
@@ -295,7 +295,7 @@ impl<P: DockPanel> DockingManager<P> {
         for (i, panel) in leaf.panels.iter().enumerate() {
             let title = panel.title();
             let estimated_text_w = title.len() as f32 * 7.0; // ~7px per char
-            let tab_w: f32 = (8.0 + estimated_text_w + 24.0 + 8.0).max(80.0).min(200.0);
+            let tab_w: f32 = (8.0 + estimated_text_w + 24.0 + 8.0).clamp(80.0, 200.0);
 
             let remaining = rect.width - tab_x_offset;
             let tab_w = tab_w.min(remaining).max(0.0);
@@ -543,13 +543,12 @@ impl<P: DockPanel> DockingManager<P> {
             // Check tab bars
             if target.is_none() {
                 for bar in &self.tab_bars {
-                    if bar.rect.contains(x, y) {
-                        if bar.container_id != drag.dragged_leaf_id {
+                    if bar.rect.contains(x, y)
+                        && bar.container_id != drag.dragged_leaf_id {
                             target = Some(bar.container_id);
                             zone = Some(DropZone::Center);
                             break;
                         }
-                    }
                 }
             }
 
@@ -596,10 +595,7 @@ impl<P: DockPanel> DockingManager<P> {
 
     /// End panel drag - perform the drop action, or float the leaf if no target
     pub fn end_panel_drag(&mut self, area_width: f32, area_height: f32) -> Option<FloatingWindowId> {
-        let drag = match self.panel_drag.take() {
-            Some(d) => d,
-            None => return None,
-        };
+        let drag = self.panel_drag.take()?;
 
         let target_id = match drag.target_leaf_id {
             Some(id) => id,
@@ -615,10 +611,7 @@ impl<P: DockPanel> DockingManager<P> {
             }
         };
 
-        let zone = match drag.drop_zone {
-            Some(z) => z,
-            None => return None,
-        };
+        let zone = drag.drop_zone?;
 
         // Perform the tree restructuring based on drop zone
         self.apply_panel_drop(drag.dragged_leaf_id, target_id, zone, drag.is_window_edge);

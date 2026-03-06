@@ -41,13 +41,13 @@ impl<W: Write> Backend for CrosstermBackend<W> {
             // one column, so adjacent cells in a horizontal run need no
             // repositioning.
             let cursor_already_here = last_pos
-                .map_or(false, |(lc, lr)| lr == row && lc + 1 == col);
+                .is_some_and(|(lc, lr)| lr == row && lc + 1 == col);
             if !cursor_already_here {
                 queue!(self.writer, cursor::MoveTo(col, row))?;
             }
 
             // Only emit style escape sequences when the style actually changes.
-            let need_style = last_style.map_or(true, |s| s != cell.style);
+            let need_style = last_style != Some(cell.style);
             if need_style {
                 // Reset first
                 queue!(self.writer, SetAttribute(Attribute::Reset))?;

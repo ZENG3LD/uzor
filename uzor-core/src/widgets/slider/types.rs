@@ -75,6 +75,7 @@ impl SliderType {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn dual_with_range(
         min_value: f64,
         max_value: f64,

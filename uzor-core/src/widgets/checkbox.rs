@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 /// Checkbox configuration
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct CheckboxConfig {
     /// Checkbox label
     pub label: String,
@@ -17,15 +18,6 @@ pub struct CheckboxConfig {
     pub disabled: bool,
 }
 
-impl Default for CheckboxConfig {
-    fn default() -> Self {
-        Self {
-            label: String::new(),
-            checked: false,
-            disabled: false,
-        }
-    }
-}
 
 impl CheckboxConfig {
     pub fn new(label: &str) -> Self {

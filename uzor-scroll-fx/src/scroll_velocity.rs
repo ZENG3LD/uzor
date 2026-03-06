@@ -67,6 +67,12 @@ impl SpringState {
     }
 }
 
+impl Default for ScrollVelocity {
+    fn default() -> Self {
+        Self::new(ScrollVelocityConfig::default())
+    }
+}
+
 impl ScrollVelocity {
     /// Create a new scroll velocity animation.
     pub fn new(config: ScrollVelocityConfig) -> Self {
@@ -78,10 +84,6 @@ impl ScrollVelocity {
         }
     }
 
-    /// Create with default configuration.
-    pub fn default() -> Self {
-        Self::new(ScrollVelocityConfig::default())
-    }
 
     /// Update animation state.
     ///

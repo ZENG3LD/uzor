@@ -56,8 +56,10 @@ struct PlatformState {
 /// Desktop window wrapper
 struct DesktopWindow {
     id: WindowId,
+    #[allow(dead_code)]
     winit_id: WinitWindowId,
     window: Arc<Window>,
+    #[allow(dead_code)]
     scale_factor: f64,
 }
 

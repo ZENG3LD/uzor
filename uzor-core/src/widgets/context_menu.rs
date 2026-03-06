@@ -528,6 +528,7 @@ impl ContextMenuResult {
 ///     menu.close();
 /// }
 /// ```
+#[allow(clippy::type_complexity)]
 pub fn handle_context_menu_input(
     state: &mut ContextMenuState,
     item_rects: &[(usize, (f64, f64, f64, f64))],

@@ -281,7 +281,7 @@ impl ListAnimation {
                     .map(|index| {
                         let row = index / cols;
                         let col = index % cols;
-                        if (row + col) % 2 == 0 {
+                        if (row + col).is_multiple_of(2) {
                             *even_delay
                         } else {
                             *odd_delay
@@ -295,7 +295,7 @@ impl ListAnimation {
                     .map(|index| {
                         let row = index / cols;
                         let col = index % cols;
-                        let snake_index = if row % 2 == 0 {
+                        let snake_index = if row.is_multiple_of(2) {
                             // Even rows: left to right
                             row * cols + col
                         } else {

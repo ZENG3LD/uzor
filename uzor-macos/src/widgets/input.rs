@@ -6,6 +6,7 @@ use crate::themes::input::InputTheme;
 use crate::typography::{TypographyLevel, font_string};
 
 /// Render a macOS-style text input. Returns (width, height).
+#[allow(clippy::too_many_arguments)]
 pub fn render_input(
     ctx: &mut dyn RenderContext,
     x: f64,
@@ -80,6 +81,7 @@ pub fn render_input(
 }
 
 /// Render a multi-line text input (textarea). Returns (width, height).
+#[allow(clippy::too_many_arguments)]
 pub fn render_textarea(
     ctx: &mut dyn RenderContext,
     x: f64,
@@ -154,6 +156,7 @@ pub fn render_textarea(
 }
 
 /// Render a search field (rounded pill shape with optional icon). Returns (width, height).
+#[allow(clippy::too_many_arguments)]
 pub fn render_search_field(
     ctx: &mut dyn RenderContext,
     x: f64,

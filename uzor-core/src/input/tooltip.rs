@@ -112,11 +112,10 @@ impl TooltipState {
         }
 
         // Update visibility based on delay
-        if self.hovered_widget.is_some() && !self.visible {
-            if self.should_show(time) {
+        if self.hovered_widget.is_some() && !self.visible
+            && self.should_show(time) {
                 self.visible = true;
             }
-        }
     }
 
     /// Request a tooltip for a specific widget

@@ -267,6 +267,7 @@ impl ElectricBorder {
     }
 
     /// Multi-octave noise function
+    #[allow(clippy::too_many_arguments)]
     fn octaved_noise(
         &self,
         x: f32,
@@ -321,7 +322,7 @@ impl ElectricBorder {
 
     /// Pseudo-random function
     fn random(&self, x: f32) -> f32 {
-        ((x * 12.9898).sin() * 43758.5453) % 1.0
+        ((x * 12.9898).sin() * 43_758.547) % 1.0
     }
 
     /// Get number of sample points
