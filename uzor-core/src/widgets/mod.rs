@@ -12,6 +12,7 @@
 //! - Toast: Info, Success, Warning, Error notifications
 //! - IconButton: Icon-only buttons for toolbars
 //! - Checkbox: Checkbox with label
+//! - RadioGroup: Radio button group (single selection)
 //! - Input: Text input fields with cursor and selection
 //! - Scrollbar: Custom scrollbar with drag support
 //! - Scrollable: Scrollable container with automatic scrollbar
@@ -31,6 +32,7 @@ pub mod toast;
 
 // Existing widget modules
 pub mod checkbox;
+pub mod radio_group;
 pub mod context_menu;
 pub mod icon_button;
 pub mod input;
@@ -52,6 +54,7 @@ pub use toast::ToastType;
 
 // Re-export all existing widget types and functions
 pub use checkbox::*;
+pub use radio_group::*;
 pub use context_menu::*;
 pub use icon_button::*;
 pub use input::*;
