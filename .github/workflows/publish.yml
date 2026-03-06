@@ -37,10 +37,33 @@ jobs:
         run: |
           set +e
 
-          # Returns: 0 = newly published, 1 = failed, 2 = already uploaded (skip)
+          # Read workspace version from Cargo.toml
+          VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "Workspace version: $VERSION"
+
+          # Check if crate+version already exists on crates.io (fast, no compilation)
+          is_published() {
+            local pkg="$1"
+            local ver="$2"
+            local response
+            response=$(curl -s "https://crates.io/api/v1/crates/$pkg/$ver")
+            if echo "$response" | grep -q "\"num\":\"$ver\""; then
+              return 0  # already published
+            fi
+            return 1  # not published
+          }
+
           publish_crate() {
             local pkg="$1"
             echo "::group::Publishing $pkg"
+
+            # Fast check via API — no cargo needed
+            if is_published "$pkg" "$VERSION"; then
+              echo "✓ $pkg $VERSION already on crates.io, skipping"
+              echo "::endgroup::"
+              return 2
+            fi
+
             for attempt in 1 2 3 4 5; do
               echo "Attempt $attempt for $pkg..."
               OUTPUT=$(cargo publish --package "$pkg" --allow-dirty 2>&1)
@@ -54,7 +77,7 @@ jobs:
               fi
 
               if echo "$OUTPUT" | grep -q "already uploaded"; then
-                echo "✓ $pkg already published, skipping"
+                echo "✓ $pkg already uploaded, skipping"
                 echo "::endgroup::"
                 return 2
               fi
@@ -66,7 +89,7 @@ jobs:
                   NOW_EPOCH=$(date +%s)
                   if [ -n "$RETRY_EPOCH" ] && [ "$RETRY_EPOCH" -gt "$NOW_EPOCH" ]; then
                     WAIT_SECS=$(( RETRY_EPOCH - NOW_EPOCH + 15 ))
-                    echo "⏳ Rate limited. Waiting ${WAIT_SECS}s until $RETRY_AFTER (+15s)..."
+                    echo "⏳ Rate limited. Waiting ${WAIT_SECS}s..."
                     sleep "$WAIT_SECS"
                     continue
                   fi
@@ -77,7 +100,7 @@ jobs:
               fi
 
               if [ $attempt -lt 5 ]; then
-                echo "⏳ $pkg failed (exit $CODE), retrying in 180s..."
+                echo "⏳ Failed (exit $CODE), retrying in 180s..."
                 sleep 180
               fi
             done
@@ -87,7 +110,7 @@ jobs:
             return 1
           }
 
-          # Publish and only wait if it was a NEW publish (not a skip)
+          # Publish with post-publish wait only for NEW publishes
           pub() {
             local pkg="$1"
             local wait="$2"
@@ -96,11 +119,9 @@ jobs:
             if [ $rc -eq 1 ]; then
               FAILED="$FAILED $pkg"
             elif [ $rc -eq 0 ]; then
-              # Actually published — wait for index
               echo "Waiting ${wait}s for crates.io index..."
               sleep "$wait"
             fi
-            # rc=2 (already uploaded) — no wait needed
           }
 
           FAILED=""
