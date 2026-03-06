@@ -10,6 +10,8 @@ jobs:
     name: Publish crates in dependency order
     runs-on: ubuntu-latest
     environment: crates-io
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
     steps:
       - name: Checkout repository
@@ -29,429 +31,113 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-publish-
 
-      # -----------------------------------------------------------------------
-      # Tier 1 — leaf crates (no internal uzor deps)
-      # -----------------------------------------------------------------------
-
-      - name: "[Tier 1] Publish uzor-render"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Publish all crates
+        shell: bash
         run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-render --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
+          set +e  # disable errexit — we handle errors manually
 
-      - name: "[Tier 1] Wait between publishes"
-        run: sleep 30
+          publish_crate() {
+            local pkg="$1"
+            echo "::group::Publishing $pkg"
+            for attempt in 1 2 3; do
+              echo "Attempt $attempt for $pkg..."
+              OUTPUT=$(cargo publish --package "$pkg" --allow-dirty 2>&1)
+              CODE=$?
+              echo "$OUTPUT"
 
-      - name: "[Tier 1] Publish uzor-animation"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-animation --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
+              if [ $CODE -eq 0 ]; then
+                echo "✓ $pkg published successfully"
+                echo "::endgroup::"
+                return 0
+              fi
 
-      - name: "Wait for crates.io index to update after Tier 1"
-        run: sleep 120
+              if echo "$OUTPUT" | grep -q "already uploaded"; then
+                echo "✓ $pkg already published, skipping"
+                echo "::endgroup::"
+                return 0
+              fi
 
-      # -----------------------------------------------------------------------
-      # Tier 2 — depends on Tier 1
-      # -----------------------------------------------------------------------
+              if [ $attempt -lt 3 ]; then
+                echo "⏳ $pkg failed (exit $CODE), retrying in 120s..."
+                sleep 120
+              fi
+            done
 
-      - name: "[Tier 2] Publish uzor-core"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-core --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
+            echo "✗ $pkg FAILED after 3 attempts"
+            echo "::endgroup::"
+            return 1
+          }
 
-      - name: "[Tier 2] Wait between publishes"
-        run: sleep 30
+          wait_between() {
+            echo "Waiting ${1}s for crates.io index..."
+            sleep "$1"
+          }
 
-      - name: "[Tier 2] Publish uzor-backend-vello-common"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-backend-vello-common --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
+          FAILED=""
 
-      - name: "[Tier 2] Wait between publishes"
-        run: sleep 30
+          # Tier 1 — leaf crates (no internal deps)
+          echo "=== TIER 1 ==="
+          publish_crate uzor-render     || FAILED="$FAILED uzor-render"
+          wait_between 30
+          publish_crate uzor-animation  || FAILED="$FAILED uzor-animation"
+          wait_between 120
 
-      - name: "[Tier 2] Publish uzor-backend-vello-gpu"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-backend-vello-gpu --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
+          # Tier 2 — depends on Tier 1
+          echo "=== TIER 2 ==="
+          publish_crate uzor-core                    || FAILED="$FAILED uzor-core"
+          wait_between 30
+          publish_crate uzor-backend-vello-common     || FAILED="$FAILED uzor-backend-vello-common"
+          wait_between 30
+          publish_crate uzor-backend-vello-gpu        || FAILED="$FAILED uzor-backend-vello-gpu"
+          wait_between 30
+          publish_crate uzor-backend-vello-cpu        || FAILED="$FAILED uzor-backend-vello-cpu"
+          wait_between 30
+          publish_crate uzor-backend-vello-hybrid     || FAILED="$FAILED uzor-backend-vello-hybrid"
+          wait_between 30
+          publish_crate uzor-backend-tiny-skia        || FAILED="$FAILED uzor-backend-tiny-skia"
+          wait_between 30
+          publish_crate uzor-backend-canvas2d         || FAILED="$FAILED uzor-backend-canvas2d"
+          wait_between 120
 
-      - name: "[Tier 2] Wait between publishes"
-        run: sleep 30
+          # Tier 3 — depends on Tier 2
+          echo "=== TIER 3 ==="
+          publish_crate uzor-layout      || FAILED="$FAILED uzor-layout"
+          wait_between 30
+          publish_crate uzor-desktop     || FAILED="$FAILED uzor-desktop"
+          wait_between 30
+          publish_crate uzor-web         || FAILED="$FAILED uzor-web"
+          wait_between 30
+          publish_crate uzor-mobile      || FAILED="$FAILED uzor-mobile"
+          wait_between 30
+          publish_crate uzor-tui         || FAILED="$FAILED uzor-tui"
+          wait_between 30
+          publish_crate uzor-macos       || FAILED="$FAILED uzor-macos"
+          wait_between 30
+          publish_crate uzor-panels      || FAILED="$FAILED uzor-panels"
+          wait_between 30
+          publish_crate uzor-numbers     || FAILED="$FAILED uzor-numbers"
+          wait_between 30
+          publish_crate uzor-text-fx     || FAILED="$FAILED uzor-text-fx"
+          wait_between 30
+          publish_crate uzor-cursor      || FAILED="$FAILED uzor-cursor"
+          wait_between 30
+          publish_crate uzor-scroll-fx   || FAILED="$FAILED uzor-scroll-fx"
+          wait_between 30
+          publish_crate uzor-interactive || FAILED="$FAILED uzor-interactive"
+          wait_between 30
+          publish_crate uzor-panel-api   || FAILED="$FAILED uzor-panel-api"
+          wait_between 120
 
-      - name: "[Tier 2] Publish uzor-backend-vello-cpu"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-backend-vello-cpu --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
+          # Tier 4 — facade
+          echo "=== TIER 4 ==="
+          publish_crate uzor             || FAILED="$FAILED uzor"
 
-      - name: "[Tier 2] Wait between publishes"
-        run: sleep 30
+          # Summary
+          if [ -n "$FAILED" ]; then
+            echo ""
+            echo "::error::Failed crates:$FAILED"
+            exit 1
+          fi
 
-      - name: "[Tier 2] Publish uzor-backend-vello-hybrid"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-backend-vello-hybrid --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "[Tier 2] Wait between publishes"
-        run: sleep 30
-
-      - name: "[Tier 2] Publish uzor-backend-tiny-skia"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-backend-tiny-skia --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "[Tier 2] Wait between publishes"
-        run: sleep 30
-
-      - name: "[Tier 2] Publish uzor-backend-canvas2d"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-backend-canvas2d --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "Wait for crates.io index to update after Tier 2"
-        run: sleep 120
-
-      # -----------------------------------------------------------------------
-      # Tier 3 — depends on Tier 2
-      # -----------------------------------------------------------------------
-
-      - name: "[Tier 3] Publish uzor-layout"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-layout --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "[Tier 3] Wait between publishes"
-        run: sleep 30
-
-      - name: "[Tier 3] Publish uzor-desktop"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-desktop --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "[Tier 3] Wait between publishes"
-        run: sleep 30
-
-      - name: "[Tier 3] Publish uzor-web"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-web --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "[Tier 3] Wait between publishes"
-        run: sleep 30
-
-      - name: "[Tier 3] Publish uzor-mobile"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-mobile --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "[Tier 3] Wait between publishes"
-        run: sleep 30
-
-      - name: "[Tier 3] Publish uzor-tui"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-tui --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "[Tier 3] Wait between publishes"
-        run: sleep 30
-
-      - name: "[Tier 3] Publish uzor-macos"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-macos --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "[Tier 3] Wait between publishes"
-        run: sleep 30
-
-      - name: "[Tier 3] Publish uzor-panels"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-panels --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "[Tier 3] Wait between publishes"
-        run: sleep 30
-
-      - name: "[Tier 3] Publish uzor-numbers"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-numbers --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "[Tier 3] Wait between publishes"
-        run: sleep 30
-
-      - name: "[Tier 3] Publish uzor-text-fx"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-text-fx --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "[Tier 3] Wait between publishes"
-        run: sleep 30
-
-      - name: "[Tier 3] Publish uzor-cursor"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-cursor --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "[Tier 3] Wait between publishes"
-        run: sleep 30
-
-      - name: "[Tier 3] Publish uzor-scroll-fx"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-scroll-fx --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "[Tier 3] Wait between publishes"
-        run: sleep 30
-
-      - name: "[Tier 3] Publish uzor-interactive"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-interactive --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "[Tier 3] Wait between publishes"
-        run: sleep 30
-
-      - name: "[Tier 3] Publish uzor-panel-api"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor-panel-api --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
-
-      - name: "Wait for crates.io index to update after Tier 3"
-        run: sleep 120
-
-      # -----------------------------------------------------------------------
-      # Tier 4 — facade crate (depends on everything)
-      # -----------------------------------------------------------------------
-
-      - name: "[Tier 4] Publish uzor (facade)"
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          for i in 1 2 3; do
-            OUT=$(cargo publish --package uzor --allow-dirty 2>&1); CODE=$?
-            echo "$OUT"
-            [ $CODE -eq 0 ] && break
-            echo "$OUT" | grep -q "already uploaded" && { echo "Already published, skipping."; break; }
-            echo "Attempt $i failed (exit $CODE), waiting 120s..."
-            [ $i -lt 3 ] && sleep 120
-          done
-          echo "$OUT" | grep -q "already uploaded" && exit 0
-          exit $CODE
+          echo ""
+          echo "✓ All crates published successfully!"
