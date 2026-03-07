@@ -96,20 +96,22 @@ fn quad_instance_layout() -> wgpu::VertexBufferLayout<'static> {
 fn line_instance_layout() -> wgpu::VertexBufferLayout<'static> {
     use wgpu::VertexFormat::*;
 
-    // LineInstance fields:
+    // LineInstance fields (64 bytes):
     //  0: start      [f32;2]  @ offset  0
     //  1: end        [f32;2]  @ offset  8
     //  2: color      [f32;4]  @ offset 16
     //  3: width       f32     @ offset 32
-    //  4: _pad0      [f32;3]  @ offset 36
-    //  5: clip_rect  [f32;4]  @ offset 48
+    //  4: cap_flags   f32     @ offset 36
+    //  5: _pad0      [f32;2]  @ offset 40
+    //  6: clip_rect  [f32;4]  @ offset 48
     static ATTRS: &[wgpu::VertexAttribute] = &[
         wgpu::VertexAttribute { shader_location: 0, format: Float32x2, offset:  0 },
         wgpu::VertexAttribute { shader_location: 1, format: Float32x2, offset:  8 },
         wgpu::VertexAttribute { shader_location: 2, format: Float32x4, offset: 16 },
         wgpu::VertexAttribute { shader_location: 3, format: Float32,   offset: 32 },
-        wgpu::VertexAttribute { shader_location: 4, format: Float32x3, offset: 36 },
-        wgpu::VertexAttribute { shader_location: 5, format: Float32x4, offset: 48 },
+        wgpu::VertexAttribute { shader_location: 4, format: Float32,   offset: 36 },
+        wgpu::VertexAttribute { shader_location: 5, format: Float32x2, offset: 40 },
+        wgpu::VertexAttribute { shader_location: 6, format: Float32x4, offset: 48 },
     ];
 
     wgpu::VertexBufferLayout {

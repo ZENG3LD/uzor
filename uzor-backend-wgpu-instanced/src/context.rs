@@ -278,102 +278,216 @@ impl InstancedRenderContext {
     }
 
     /// Tessellate the current path into line instances (for `stroke()`).
+    ///
+    /// Uses a two-pass approach to assign correct cap flags per segment,
+    /// eliminating the round-cap dot artifacts at interior polyline joints.
+    ///
+    /// Cap flags encoding:
+    /// - 0.0 = round both ends (isolated segment or arc sub-segment)
+    /// - 1.0 = butt start, round end
+    /// - 2.0 = round start, butt end
+    /// - 3.0 = butt both ends (interior segment of a multi-segment subpath)
     fn tessellate_stroke(&mut self) {
         let path = std::mem::take(&mut self.path);
         let color = self.apply_alpha(self.stroke_color);
         let clip = self.current_clip();
         let width = self.stroke_width;
 
+        // ── Pass 1: collect segments grouped into subpaths ────────────────
+        //
+        // Each subpath is a Vec of (start, end) pairs collected between
+        // consecutive MoveTo commands. The `closed` flag marks whether
+        // the subpath ends with a PathCmd::Close.
+        //
+        // Arc and Rect commands are expanded inline (they're already
+        // screen-space after apply()), and each arc sub-segment is treated
+        // as an independent isolated segment (cap_flags = 0.0) because arcs
+        // are smooth curves — their sub-segments share endpoints exactly,
+        // so the "dots" problem does not apply.
+
+        struct Subpath {
+            /// (start, end) segment pairs in screen-space pixels.
+            segs: Vec<([f32; 2], [f32; 2])>,
+            /// True if the subpath was explicitly closed with PathCmd::Close.
+            closed: bool,
+            /// Arc segments are emitted with round caps regardless of position.
+            /// Each entry is Some(true) if the segment came from an arc.
+            from_arc: Vec<bool>,
+        }
+
+        let mut subpaths: Vec<Subpath> = Vec::new();
         let mut cursor = (0.0f32, 0.0f32);
-        let mut first  = (0.0f32, 0.0f32);
-        let mut first_set = false;
+        let mut subpath_start = (0.0f32, 0.0f32);
+        let mut in_subpath = false;
 
         for cmd in &path {
             match *cmd {
                 PathCmd::MoveTo(x, y) => {
-                    let (px, py) = apply(&self.transform, x, y);
-                    cursor = (px, py);
-                    if !first_set { first = cursor; first_set = true; }
+                    let p = apply(&self.transform, x, y);
+                    cursor = p;
+                    subpath_start = p;
+                    in_subpath = false; // next LineTo will open a new subpath
                 }
                 PathCmd::LineTo(x, y) => {
-                    let (px, py) = apply(&self.transform, x, y);
-                    self.draw_commands.push(DrawCmd::Line(LineInstance {
-                        start: [cursor.0, cursor.1],
-                        end: [px, py],
-                        color,
-                        width,
-                        _pad0: [0.0; 3],
-                        clip_rect: clip,
-                    }));
-                    cursor = (px, py);
+                    let p = apply(&self.transform, x, y);
+                    if !in_subpath {
+                        subpaths.push(Subpath {
+                            segs: Vec::new(),
+                            closed: false,
+                            from_arc: Vec::new(),
+                        });
+                        in_subpath = true;
+                        subpath_start = cursor;
+                    }
+                    let sp = subpaths.last_mut().unwrap();
+                    sp.segs.push(([cursor.0, cursor.1], [p.0, p.1]));
+                    sp.from_arc.push(false);
+                    cursor = p;
                 }
                 PathCmd::Close => {
-                    if first_set {
-                        self.draw_commands.push(DrawCmd::Line(LineInstance {
-                            start: [cursor.0, cursor.1],
-                            end: [first.0, first.1],
-                            color,
-                            width,
-                            _pad0: [0.0; 3],
-                            clip_rect: clip,
-                        }));
-                        cursor = first;
+                    if in_subpath {
+                        let sp = subpaths.last_mut().unwrap();
+                        // Add closing segment back to the subpath start.
+                        sp.segs.push(([cursor.0, cursor.1], [subpath_start.0, subpath_start.1]));
+                        sp.from_arc.push(false);
+                        sp.closed = true;
+                        in_subpath = false;
+                        cursor = subpath_start;
                     }
                 }
                 PathCmd::Rect(x, y, w, h) => {
+                    // Rect stroke: 4 segments forming a closed rectangle.
+                    // All 4 are butt-capped (closed subpath — no exposed endpoints).
                     let corners = [
                         apply(&self.transform, x,     y),
                         apply(&self.transform, x + w, y),
                         apply(&self.transform, x + w, y + h),
                         apply(&self.transform, x,     y + h),
                     ];
-                    for i in 0..4 {
-                        let a = corners[i];
-                        let b = corners[(i + 1) % 4];
-                        self.draw_commands.push(DrawCmd::Line(LineInstance {
-                            start: [a.0, a.1],
-                            end: [b.0, b.1],
-                            color,
-                            width,
-                            _pad0: [0.0; 3],
-                            clip_rect: clip,
-                        }));
-                    }
+                    subpaths.push(Subpath {
+                        segs: (0..4).map(|i| {
+                            let a = corners[i];
+                            let b = corners[(i + 1) % 4];
+                            ([a.0, a.1], [b.0, b.1])
+                        }).collect(),
+                        closed: true,
+                        from_arc: vec![false; 4],
+                    });
                 }
                 PathCmd::Arc { cx, cy, r, start, end } => {
-                    // Approximate arc with line segments.
-                    // Use screen-space radius for step count to handle scaled SVG icons.
                     let scale = ((self.transform[0].abs() + self.transform[3].abs()) * 0.5).max(1.0);
                     let screen_r = r * scale;
 
-                    // Bug 1 fix: skip zero-radius arcs — they produce zero-length segments
-                    // that the capsule SDF shader renders as visible glowing dots.
-                    // Just advance the cursor to the arc center point and continue.
                     if screen_r < 0.5 {
                         cursor = apply(&self.transform, cx, cy);
-                        if !first_set { first = cursor; first_set = true; }
+                        if !in_subpath {
+                            subpath_start = cursor;
+                        }
                         continue;
                     }
 
                     let sweep = (end - start).abs();
-                    // At least 8 steps per quarter-circle, scale with radius
                     let steps = ((sweep * screen_r).max(sweep * 5.0)).max(8.0) as usize;
                     let step = (end - start) / steps as f32;
                     let mut prev = apply(&self.transform, cx + r * start.cos(), cy + r * start.sin());
+
+                    if !in_subpath {
+                        subpaths.push(Subpath {
+                            segs: Vec::new(),
+                            closed: false,
+                            from_arc: Vec::new(),
+                        });
+                        in_subpath = true;
+                        subpath_start = prev;
+                    }
+
                     for i in 1..=steps {
                         let a = start + step * i as f32;
                         let next = apply(&self.transform, cx + r * a.cos(), cy + r * a.sin());
-                        self.draw_commands.push(DrawCmd::Line(LineInstance {
-                            start: [prev.0, prev.1],
-                            end: [next.0, next.1],
-                            color,
-                            width,
-                            _pad0: [0.0; 3],
-                            clip_rect: clip,
-                        }));
+                        let sp = subpaths.last_mut().unwrap();
+                        sp.segs.push(([prev.0, prev.1], [next.0, next.1]));
+                        sp.from_arc.push(true);
                         prev = next;
                     }
                     cursor = apply(&self.transform, cx + r * end.cos(), cy + r * end.sin());
+                }
+            }
+        }
+
+        // ── Pass 2: emit LineInstance for each segment with correct cap flags ──
+        //
+        // After each line segment we also emit a small circular QuadInstance
+        // (corner_radius = half_width) at the segment's endpoint to fill the
+        // gap that appears at polyline joints where butt-capped segments meet
+        // at an angle.  The rule is:
+        //
+        //   • Open subpath  — emit a dot at the endpoint of every segment
+        //     except the last one (i.e. at every interior vertex).
+        //   • Closed subpath — emit a dot at every segment endpoint (including
+        //     the close-joint vertex where the last segment meets the first).
+        //   • Arc segments  — no dot needed; arc sub-segments share endpoints
+        //     exactly and produce no visible gap.
+        //   • Single-segment open subpath — no interior vertices, no dots.
+        let half_width = width * 0.5;
+        let dot_size   = [width, width];
+
+        for sp in &subpaths {
+            let n = sp.segs.len();
+            for (i, (&(start, end), &is_arc)) in
+                sp.segs.iter().zip(sp.from_arc.iter()).enumerate()
+            {
+                // Arc sub-segments are always round-capped (they form smooth
+                // curves and their sub-segment endpoints are adjacent; we want
+                // the smooth appearance, not flat butt caps).
+                let cap_flags = if is_arc {
+                    0.0f32
+                } else if sp.closed {
+                    // Closed subpath: no exposed endpoints — butt both sides.
+                    3.0
+                } else if n == 1 {
+                    // Single isolated segment: round both caps.
+                    0.0
+                } else if i == 0 {
+                    // First segment: round start cap, butt end cap.
+                    2.0
+                } else if i == n - 1 {
+                    // Last segment: butt start cap, round end cap.
+                    1.0
+                } else {
+                    // Interior segment: butt both caps.
+                    3.0
+                };
+
+                self.draw_commands.push(DrawCmd::Line(LineInstance {
+                    start,
+                    end,
+                    color,
+                    width,
+                    cap_flags,
+                    _pad0: [0.0; 2],
+                    clip_rect: clip,
+                }));
+
+                // Emit a circular dot at the segment endpoint to fill join gaps.
+                //
+                // Conditions for emitting a dot at `end`:
+                //   • Not an arc segment (arc sub-segments need no dots).
+                //   • Closed subpath: always (every vertex is a join).
+                //   • Open subpath with more than 1 segment: every segment
+                //     except the last (the last endpoint is an open cap, not a
+                //     join, so the round cap on the last segment already covers it).
+                let needs_dot = !is_arc && (sp.closed || (n > 1 && i < n - 1));
+                if needs_dot {
+                    self.draw_commands.push(DrawCmd::Quad(QuadInstance {
+                        pos: [end[0] - half_width, end[1] - half_width],
+                        size: dot_size,
+                        color,
+                        corner_radius: half_width,
+                        border_width: 0.0,
+                        _pad0: [0.0; 2],
+                        border_color: [0.0; 4],
+                        clip_rect: clip,
+                    }));
                 }
             }
         }
@@ -778,28 +892,9 @@ impl RenderContext for InstancedRenderContext {
 
     // ── Shape helpers ───────────────────────────────────────────────────
     fn stroke_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
-        let (x, y, w, h) = (x as f32, y as f32, w as f32, h as f32);
-        let color = self.apply_alpha(self.stroke_color);
-        let clip = self.current_clip();
-        let width = self.stroke_width;
-        let corners = [
-            apply(&self.transform, x,     y),
-            apply(&self.transform, x + w, y),
-            apply(&self.transform, x + w, y + h),
-            apply(&self.transform, x,     y + h),
-        ];
-        for i in 0..4 {
-            let a = corners[i];
-            let b = corners[(i + 1) % 4];
-            self.draw_commands.push(DrawCmd::Line(LineInstance {
-                start: [a.0, a.1],
-                end: [b.0, b.1],
-                color,
-                width,
-                _pad0: [0.0; 3],
-                clip_rect: clip,
-            }));
-        }
+        // Delegate to stroke_rounded_rect with r=0: emits a single SDF quad
+        // with border_width, which has no corner-joint dot artifacts.
+        self.stroke_rounded_rect(x, y, w, h, 0.0);
     }
 
     fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {

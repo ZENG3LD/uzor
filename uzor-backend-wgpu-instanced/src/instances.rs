@@ -48,16 +48,18 @@ pub struct QuadInstance {
 ///
 /// Rendered as an oriented quad that fully encloses the segment (expanded by
 /// `width/2 + 1` px for anti-aliasing).  The fragment shader uses a capsule
-/// SDF (point-to-segment distance) with smooth-step AA.
+/// SDF (point-to-segment distance) with smooth-step AA, with optional butt
+/// caps at each end to eliminate joint dots in polylines.
 ///
 /// Memory layout (64 bytes, 16-byte aligned):
-/// - start:     8 bytes
-/// - end:       8 bytes
-/// - color:    16 bytes
-/// - width:     4 bytes
+/// - start:      8 bytes
+/// - end:        8 bytes
+/// - color:     16 bytes
+/// - width:      4 bytes
+/// - cap_flags:  4 bytes  (0=round-round, 1=butt-start, 2=butt-end, 3=butt-both)
+/// - _pad0:      8 bytes  (alignment padding before clip_rect)
 /// - clip_rect: 16 bytes
-/// - _pad:      12 bytes  (alignment padding)
-/// Total:       64 bytes
+/// Total:        64 bytes
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]
 pub struct LineInstance {
@@ -69,8 +71,14 @@ pub struct LineInstance {
     pub color: [f32; 4],
     /// Line width in logical pixels.
     pub width: f32,
-    /// Padding to align clip_rect.
-    pub _pad0: [f32; 3],
+    /// Cap style flags:
+    /// - 0.0 = round caps at both ends (default capsule)
+    /// - 1.0 = butt cap at start, round at end
+    /// - 2.0 = round cap at start, butt at end
+    /// - 3.0 = butt caps at both ends (interior polyline segment)
+    pub cap_flags: f32,
+    /// Padding to align clip_rect to 16-byte boundary.
+    pub _pad0: [f32; 2],
     /// Clip rectangle (x, y, w, h) in logical pixels.
     pub clip_rect: [f32; 4],
 }

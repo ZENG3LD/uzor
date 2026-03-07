@@ -318,8 +318,9 @@ struct LineInstance {
     @location(1) end:       vec2<f32>,
     @location(2) color:     vec4<f32>,
     @location(3) width:     f32,
-    @location(4) _pad0:     vec3<f32>,
-    @location(5) clip_rect: vec4<f32>,
+    @location(4) cap_flags: f32,   // 0=round-round, 1=butt-start, 2=butt-end, 3=butt-both
+    @location(5) _pad0:     vec2<f32>,
+    @location(6) clip_rect: vec4<f32>,
 };
 
 // ── Vertex output ─────────────────────────────────────────────────────────
@@ -331,6 +332,7 @@ struct VertexOut {
     @location(3) color:      vec4<f32>,
     @location(4) half_width: f32,
     @location(5) clip_rect:  vec4<f32>,
+    @location(6) cap_flags:  f32,
 };
 
 // Signs for the 6 vertices of the oriented quad
@@ -376,18 +378,45 @@ fn vs_main(
     out.color      = inst.color;
     out.half_width = inst.width * 0.5;
     out.clip_rect  = inst.clip_rect;
+    out.cap_flags  = inst.cap_flags;
     return out;
 }
 
 // ── SDF helpers ───────────────────────────────────────────────────────────
 
-/// Signed distance to a capsule (line segment with rounded ends).
-fn sdf_capsule(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
-    let ab = b - a;
-    let ap = p - a;
-    let t  = clamp(dot(ap, ab) / max(dot(ab, ab), 0.0001), 0.0, 1.0);
-    let closest = a + t * ab;
-    return length(p - closest) - r;
+/// Signed distance to a line segment with configurable cap styles.
+///
+/// Uses the capsule SDF as the base, then adds half-plane clip constraints
+/// for butt caps. A butt cap clips the capsule flat at the endpoint, creating
+/// a hard perpendicular cutoff that eliminates round-cap overlap artifacts
+/// at interior polyline joints.
+///
+/// cap_flags:
+///   0.0 = round caps at both ends (standard capsule)
+///   1.0 = butt cap at start (a), round cap at end (b)
+///   2.0 = round cap at start (a), butt cap at end (b)
+///   3.0 = butt caps at both ends (interior segment)
+fn sdf_line_caps(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r: f32, cap_flags: f32) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    // Project p onto the segment: t in [0,1] is along the segment.
+    let h = clamp(dot(pa, ba) / max(dot(ba, ba), 0.0001), 0.0, 1.0);
+    // Capsule SDF: distance to nearest point on the segment minus radius.
+    var d = length(pa - ba * h) - r;
+
+    // For butt caps, clip the SDF with a half-plane at the endpoint.
+    // max(d, -t_along) clips the capsule's round bulge past the endpoint.
+    let len = length(ba);
+    let along_dir = ba / max(len, 0.0001);
+    let t = dot(pa, along_dir);  // signed distance along segment from a
+
+    let butt_start = (cap_flags == 1.0 || cap_flags == 3.0);
+    let butt_end   = (cap_flags == 2.0 || cap_flags == 3.0);
+
+    if butt_start { d = max(d, -t); }           // clip before start endpoint
+    if butt_end   { d = max(d, t - len); }      // clip after end endpoint
+
+    return d;
 }
 
 @fragment
@@ -399,8 +428,8 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         discard;
     }
 
-    // ── Capsule SDF ───────────────────────────────────────────────────────
-    let dist = sdf_capsule(in.frag_world, in.seg_start, in.seg_end, in.half_width);
+    // ── Line SDF with configurable caps ───────────────────────────────────
+    let dist = sdf_line_caps(in.frag_world, in.seg_start, in.seg_end, in.half_width, in.cap_flags);
     // Clamp minimum AA kernel to 1px — prevents grainy diagonal lines
     // when fwidth underestimates at non-axis-aligned angles.
     let aa   = max(fwidth(dist), 1.0);
