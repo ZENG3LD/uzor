@@ -152,6 +152,90 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 /// by `width/2 + 1 px` for AA fringe.
 ///
 /// Fragment stage: evaluates capsule SDF, discards outside clip, outputs AA.
+/// Shader for rendering glyph (text) instances sampled from a R8Unorm atlas.
+///
+/// Vertex stage: builds a screen-space quad from `vertex_index` (0–3,
+/// triangle-strip) using `pos` and `size` from the instance buffer.
+///
+/// Fragment stage: samples the atlas, multiplies by text color, discards
+/// fragments outside the clip rectangle.
+pub const GLYPH_SHADER: &str = r#"
+// ── Uniforms (same layout as quad/line shaders) ────────────────────────────
+struct Uniforms {
+    screen_size: vec2<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> uniforms: Uniforms;
+
+// ── Atlas texture + sampler ────────────────────────────────────────────────
+@group(1) @binding(0) var atlas_tex:     texture_2d<f32>;
+@group(1) @binding(1) var atlas_sampler: sampler;
+
+// ── Instance data (matches GlyphInstance in glyph_instance.rs) ────────────
+struct GlyphInstance {
+    @location(0) pos:       vec2<f32>,  // screen top-left of the quad in px
+    @location(1) size:      vec2<f32>,  // quad width×height in px
+    @location(2) uv_pos:    vec2<f32>,  // atlas UV top-left  (0..1)
+    @location(3) uv_size:   vec2<f32>,  // atlas UV size      (0..1)
+    @location(4) color:     vec4<f32>,  // text RGBA
+    @location(5) clip_rect: vec4<f32>,  // x, y, w, h in px
+};
+
+// ── Vertex output ─────────────────────────────────────────────────────────
+struct GlyphVsOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) uv:        vec2<f32>,
+    @location(1) color:     vec4<f32>,
+    @location(2) clip_rect: vec4<f32>,
+    @location(3) frag_pos:  vec2<f32>,  // screen-space pixel position
+};
+
+@vertex
+fn vs_glyph(
+    @builtin(vertex_index) vi: u32,
+    input: GlyphInstance,
+) -> GlyphVsOut {
+    // Triangle strip: 0=TL, 1=TR, 2=BL, 3=BR
+    let x = f32(vi & 1u);
+    let y = f32((vi >> 1u) & 1u);
+
+    let pixel = input.pos + vec2<f32>(x, y) * input.size;
+
+    // NDC: top-left = (-1, +1), bottom-right = (+1, -1)
+    let ndc = vec2<f32>(
+        pixel.x / uniforms.screen_size.x *  2.0 - 1.0,
+        1.0 - pixel.y / uniforms.screen_size.y * 2.0,
+    );
+
+    var out: GlyphVsOut;
+    out.position  = vec4<f32>(ndc, 0.0, 1.0);
+    out.uv        = input.uv_pos + vec2<f32>(x, y) * input.uv_size;
+    out.color     = input.color;
+    out.clip_rect = input.clip_rect;
+    out.frag_pos  = pixel;
+    return out;
+}
+
+@fragment
+fn fs_glyph(in: GlyphVsOut) -> @location(0) vec4<f32> {
+    // ── Clip discard (clip_rect is x, y, w, h) ────────────────────────────
+    let cr = in.clip_rect;
+    if in.frag_pos.x < cr.x || in.frag_pos.y < cr.y
+       || in.frag_pos.x > cr.x + cr.z || in.frag_pos.y > cr.y + cr.w {
+        discard;
+    }
+
+    // ── Sample atlas (R8Unorm → .r is the alpha mask) ─────────────────────
+    let alpha = textureSample(atlas_tex, atlas_sampler, in.uv).r;
+    if alpha < 0.01 {
+        discard;
+    }
+
+    return vec4<f32>(in.color.rgb, in.color.a * alpha);
+}
+"#;
+
 pub const LINE_SHADER: &str = r#"
 // ── Uniforms ───────────────────────────────────────────────────────────────
 struct Uniforms {

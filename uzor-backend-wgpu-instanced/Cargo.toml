@@ -13,3 +13,4 @@ wgpu = "27"
 bytemuck = { version = "1", features = ["derive"] }
 cosmic-text = "0.12"
 skrifa = "0.40"
+etagere = "0.2"

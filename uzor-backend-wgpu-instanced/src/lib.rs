@@ -25,12 +25,16 @@
 //! ```
 
 mod context;
+mod glyph_instance;
 mod instances;
 mod renderer;
 mod shaders;
 mod text;
+mod text_atlas;
 
 pub use context::InstancedRenderContext;
+pub use glyph_instance::GlyphInstance;
 pub use instances::{LineInstance, QuadInstance};
 pub use renderer::InstancedRenderer;
 pub use text::TextAreaData;
+pub use text_atlas::{GlyphAtlas, GlyphEntry};
