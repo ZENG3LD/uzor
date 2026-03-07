@@ -1,17 +1,20 @@
 //! `RenderContext` implementation for the instanced wgpu backend.
 //!
 //! `InstancedRenderContext` accumulates draw calls into `QuadInstance` /
-//! `LineInstance` / `TextAreaData` vectors during a frame.  At the end of the
+//! `TriangleInstance` / `TextAreaData` vectors during a frame.  At the end of the
 //! frame the caller passes these vectors to `InstancedRenderer::render()`.
 
 use std::sync::OnceLock;
 
-use lyon_tessellation::{BuffersBuilder, FillOptions, FillTessellator, FillVertex, VertexBuffers};
+use lyon_tessellation::{
+    BuffersBuilder, FillOptions, FillTessellator, FillVertex, VertexBuffers,
+    StrokeTessellator, StrokeOptions, StrokeVertex, LineCap, LineJoin,
+};
 use lyon_path::math::point;
 use skrifa::MetadataProvider;
 use uzor_render::{RenderContext, RenderContextExt, TextAlign, TextBaseline};
 
-use crate::instances::{DrawCmd, LineInstance, QuadInstance, TriangleInstance};
+use crate::instances::{DrawCmd, QuadInstance, TriangleInstance};
 use crate::text::TextAreaData;
 
 // ── Embedded Roboto fonts ──────────────────────────────────────────────────
@@ -178,6 +181,8 @@ struct SavedState {
     text_align: TextAlign,
     text_baseline: TextBaseline,
     clip_depth: usize,
+    line_cap: String,
+    line_join: String,
 }
 
 // ── InstancedRenderContext ─────────────────────────────────────────────────
@@ -204,6 +209,8 @@ pub struct InstancedRenderContext {
     font_italic: bool,
     text_align: TextAlign,
     text_baseline: TextBaseline,
+    line_cap: String,
+    line_join: String,
 
     // Clip stack: each entry is [x,y,w,h] in screen-space pixels
     clip_stack: Vec<[f32; 4]>,
@@ -239,6 +246,8 @@ impl InstancedRenderContext {
             font_italic: false,
             text_align: TextAlign::Left,
             text_baseline: TextBaseline::Middle,
+            line_cap: String::new(),
+            line_join: String::new(),
             clip_stack: vec![root_clip],
             state_stack: Vec::new(),
             path: Vec::new(),
@@ -277,215 +286,151 @@ impl InstancedRenderContext {
         [color[0], color[1], color[2], a]
     }
 
-    /// Tessellate the current path into line instances (for `stroke()`).
+    /// Tessellate the current path into triangle instances (for `stroke()`).
     ///
-    /// Uses a two-pass approach to assign correct cap flags per segment,
-    /// eliminating the round-cap dot artifacts at interior polyline joints.
-    ///
-    /// Cap flags encoding:
-    /// - 0.0 = round both ends (isolated segment or arc sub-segment)
-    /// - 1.0 = butt start, round end
-    /// - 2.0 = round start, butt end
-    /// - 3.0 = butt both ends (interior segment of a multi-segment subpath)
+    /// Uses lyon `StrokeTessellator` to produce proper stroke geometry with
+    /// correct joins and caps — identical in principle to how Vello handles strokes.
+    /// Open subpaths remain open; only `PathCmd::Close` closes a subpath.
     fn tessellate_stroke(&mut self) {
         let path = std::mem::take(&mut self.path);
         let color = self.apply_alpha(self.stroke_color);
         let clip = self.current_clip();
-        let width = self.stroke_width;
 
-        // ── Pass 1: collect segments grouped into subpaths ────────────────
-        //
-        // Each subpath is a Vec of (start, end) pairs collected between
-        // consecutive MoveTo commands. The `closed` flag marks whether
-        // the subpath ends with a PathCmd::Close.
-        //
-        // Arc and Rect commands are expanded inline (they're already
-        // screen-space after apply()), and each arc sub-segment is treated
-        // as an independent isolated segment (cap_flags = 0.0) because arcs
-        // are smooth curves — their sub-segments share endpoints exactly,
-        // so the "dots" problem does not apply.
+        // Map line cap / join string settings to lyon enums.
+        let cap = match self.line_cap.as_str() {
+            "round"  => LineCap::Round,
+            "square" => LineCap::Square,
+            _        => LineCap::Butt,
+        };
+        let join = match self.line_join.as_str() {
+            "round" => LineJoin::Round,
+            "bevel" => LineJoin::Bevel,
+            _       => LineJoin::Miter,
+        };
 
-        struct Subpath {
-            /// (start, end) segment pairs in screen-space pixels.
-            segs: Vec<([f32; 2], [f32; 2])>,
-            /// True if the subpath was explicitly closed with PathCmd::Close.
-            closed: bool,
-            /// Arc segments are emitted with round caps regardless of position.
-            /// Each entry is Some(true) if the segment came from an arc.
-            from_arc: Vec<bool>,
-        }
-
-        let mut subpaths: Vec<Subpath> = Vec::new();
-        let mut cursor = (0.0f32, 0.0f32);
-        let mut subpath_start = (0.0f32, 0.0f32);
+        // Build a lyon Path from PathCmd list.
+        // Open subpaths end with builder.end(false); only PathCmd::Close calls builder.close().
+        let mut builder = lyon_path::Path::builder();
+        let transform = self.transform;
         let mut in_subpath = false;
 
         for cmd in &path {
             match *cmd {
                 PathCmd::MoveTo(x, y) => {
-                    let p = apply(&self.transform, x, y);
-                    cursor = p;
-                    subpath_start = p;
-                    in_subpath = false; // next LineTo will open a new subpath
+                    if in_subpath {
+                        builder.end(false);
+                    }
+                    let (px, py) = apply(&transform, x, y);
+                    builder.begin(point(px, py));
+                    in_subpath = true;
                 }
                 PathCmd::LineTo(x, y) => {
-                    let p = apply(&self.transform, x, y);
                     if !in_subpath {
-                        subpaths.push(Subpath {
-                            segs: Vec::new(),
-                            closed: false,
-                            from_arc: Vec::new(),
-                        });
+                        let (px, py) = apply(&transform, x, y);
+                        builder.begin(point(px, py));
                         in_subpath = true;
-                        subpath_start = cursor;
+                    } else {
+                        let (px, py) = apply(&transform, x, y);
+                        builder.line_to(point(px, py));
                     }
-                    let sp = subpaths.last_mut().unwrap();
-                    sp.segs.push(([cursor.0, cursor.1], [p.0, p.1]));
-                    sp.from_arc.push(false);
-                    cursor = p;
                 }
                 PathCmd::Close => {
                     if in_subpath {
-                        let sp = subpaths.last_mut().unwrap();
-                        // Add closing segment back to the subpath start.
-                        sp.segs.push(([cursor.0, cursor.1], [subpath_start.0, subpath_start.1]));
-                        sp.from_arc.push(false);
-                        sp.closed = true;
+                        builder.close();
                         in_subpath = false;
-                        cursor = subpath_start;
                     }
                 }
                 PathCmd::Rect(x, y, w, h) => {
-                    // Rect stroke: 4 segments forming a closed rectangle.
-                    // All 4 are butt-capped (closed subpath — no exposed endpoints).
-                    let corners = [
-                        apply(&self.transform, x,     y),
-                        apply(&self.transform, x + w, y),
-                        apply(&self.transform, x + w, y + h),
-                        apply(&self.transform, x,     y + h),
-                    ];
-                    subpaths.push(Subpath {
-                        segs: (0..4).map(|i| {
-                            let a = corners[i];
-                            let b = corners[(i + 1) % 4];
-                            ([a.0, a.1], [b.0, b.1])
-                        }).collect(),
-                        closed: true,
-                        from_arc: vec![false; 4],
-                    });
+                    // Rect is a closed subpath.
+                    if in_subpath {
+                        builder.end(false);
+                    }
+                    let tl = apply(&transform, x,     y);
+                    let tr = apply(&transform, x + w, y);
+                    let br = apply(&transform, x + w, y + h);
+                    let bl = apply(&transform, x,     y + h);
+                    builder.begin(point(tl.0, tl.1));
+                    builder.line_to(point(tr.0, tr.1));
+                    builder.line_to(point(br.0, br.1));
+                    builder.line_to(point(bl.0, bl.1));
+                    builder.close();
+                    in_subpath = false;
                 }
                 PathCmd::Arc { cx, cy, r, start, end } => {
-                    let scale = ((self.transform[0].abs() + self.transform[3].abs()) * 0.5).max(1.0);
+                    let scale = ((transform[0].abs() + transform[3].abs()) * 0.5).max(1.0);
                     let screen_r = r * scale;
 
                     if screen_r < 0.5 {
-                        cursor = apply(&self.transform, cx, cy);
-                        if !in_subpath {
-                            subpath_start = cursor;
+                        // Zero-radius arc — advance cursor to center.
+                        let center = apply(&transform, cx, cy);
+                        if in_subpath {
+                            builder.line_to(point(center.0, center.1));
+                        } else {
+                            builder.begin(point(center.0, center.1));
+                            in_subpath = true;
                         }
                         continue;
                     }
 
-                    let sweep = (end - start).abs();
-                    let steps = ((sweep * screen_r).max(sweep * 5.0)).max(8.0) as usize;
-                    let step = (end - start) / steps as f32;
-                    let mut prev = apply(&self.transform, cx + r * start.cos(), cy + r * start.sin());
+                    let sweep = end - start;
+                    let steps = ((sweep.abs() * screen_r).max(sweep.abs() * 5.0)).max(8.0) as usize;
+                    let step_angle = sweep / steps as f32;
+                    let first_pt = apply(&transform, cx + r * start.cos(), cy + r * start.sin());
 
-                    if !in_subpath {
-                        subpaths.push(Subpath {
-                            segs: Vec::new(),
-                            closed: false,
-                            from_arc: Vec::new(),
-                        });
+                    if in_subpath {
+                        builder.line_to(point(first_pt.0, first_pt.1));
+                    } else {
+                        builder.begin(point(first_pt.0, first_pt.1));
                         in_subpath = true;
-                        subpath_start = prev;
                     }
 
                     for i in 1..=steps {
-                        let a = start + step * i as f32;
-                        let next = apply(&self.transform, cx + r * a.cos(), cy + r * a.sin());
-                        let sp = subpaths.last_mut().unwrap();
-                        sp.segs.push(([prev.0, prev.1], [next.0, next.1]));
-                        sp.from_arc.push(true);
-                        prev = next;
+                        let angle = start + step_angle * i as f32;
+                        let p = apply(&transform, cx + r * angle.cos(), cy + r * angle.sin());
+                        builder.line_to(point(p.0, p.1));
                     }
-                    cursor = apply(&self.transform, cx + r * end.cos(), cy + r * end.sin());
                 }
             }
         }
 
-        // ── Pass 2: emit LineInstance for each segment with correct cap flags ──
-        //
-        // After each line segment we also emit a small circular QuadInstance
-        // (corner_radius = half_width) at the segment's endpoint to fill the
-        // gap that appears at polyline joints where butt-capped segments meet
-        // at an angle.  The rule is:
-        //
-        //   • Open subpath  — emit a dot at the endpoint of every segment
-        //     except the last one (i.e. at every interior vertex).
-        //   • Closed subpath — emit a dot at every segment endpoint (including
-        //     the close-joint vertex where the last segment meets the first).
-        //   • Arc segments  — no dot needed; arc sub-segments share endpoints
-        //     exactly and produce no visible gap.
-        //   • Single-segment open subpath — no interior vertices, no dots.
-        let half_width = width * 0.5;
-        let dot_size   = [width, width];
+        // Close any remaining open subpath (end without closing).
+        if in_subpath {
+            builder.end(false);
+        }
 
-        for sp in &subpaths {
-            let n = sp.segs.len();
-            for (i, (&(start, end), &is_arc)) in
-                sp.segs.iter().zip(sp.from_arc.iter()).enumerate()
-            {
-                // Arc sub-segments are always round-capped (they form smooth
-                // curves and their sub-segment endpoints are adjacent; we want
-                // the smooth appearance, not flat butt caps).
-                let cap_flags = if is_arc {
-                    0.0f32
-                } else if sp.closed {
-                    // Closed subpath: no exposed endpoints — butt both sides.
-                    3.0
-                } else if n == 1 {
-                    // Single isolated segment: round both caps.
-                    0.0
-                } else if i == 0 {
-                    // First segment: round start cap, butt end cap.
-                    2.0
-                } else if i == n - 1 {
-                    // Last segment: butt start cap, round end cap.
-                    1.0
-                } else {
-                    // Interior segment: butt both caps.
-                    3.0
-                };
+        let lyon_path = builder.build();
 
-                self.draw_commands.push(DrawCmd::Line(LineInstance {
-                    start,
-                    end,
-                    color,
-                    width,
-                    cap_flags,
-                    _pad0: [0.0; 2],
-                    clip_rect: clip,
-                }));
+        // Tessellate the stroke using lyon StrokeTessellator.
+        // The path coordinates are already in screen space (transformed via apply()),
+        // so stroke_width is used as-is (logical pixels match screen pixels at scale 1,
+        // and callers that pre-scale their stroke_width — e.g. svg.rs — pass screen pixels).
+        let mut geometry: VertexBuffers<[f32; 2], u16> = VertexBuffers::new();
+        let mut tessellator = StrokeTessellator::new();
+        let options = StrokeOptions::tolerance(0.5)
+            .with_line_width(self.stroke_width)
+            .with_line_cap(cap)
+            .with_line_join(join);
 
-                // Emit a circular dot at the segment endpoint to fill join gaps.
-                //
-                // Conditions for emitting a dot at `end`:
-                //   • Not an arc segment (arc sub-segments need no dots).
-                //   • Closed subpath: always (every vertex is a join).
-                //   • Open subpath with more than 1 segment: every segment
-                //     except the last (the last endpoint is an open cap, not a
-                //     join, so the round cap on the last segment already covers it).
-                let needs_dot = !is_arc && (sp.closed || (n > 1 && i < n - 1));
-                if needs_dot {
-                    self.draw_commands.push(DrawCmd::Quad(QuadInstance {
-                        pos: [end[0] - half_width, end[1] - half_width],
-                        size: dot_size,
-                        color,
-                        corner_radius: half_width,
-                        border_width: 0.0,
+        let result = tessellator.tessellate_path(
+            &lyon_path,
+            &options,
+            &mut BuffersBuilder::new(&mut geometry, |vertex: StrokeVertex| {
+                vertex.position().to_array()
+            }),
+        );
+
+        if result.is_ok() && !geometry.indices.is_empty() {
+            for tri in geometry.indices.chunks(3) {
+                if tri.len() == 3 {
+                    let v0 = geometry.vertices[tri[0] as usize];
+                    let v1 = geometry.vertices[tri[1] as usize];
+                    let v2 = geometry.vertices[tri[2] as usize];
+                    self.draw_commands.push(DrawCmd::Triangle(TriangleInstance {
+                        v0,
+                        v1,
+                        v2,
                         _pad0: [0.0; 2],
-                        border_color: [0.0; 4],
+                        color,
                         clip_rect: clip,
                     }));
                 }
@@ -775,11 +720,11 @@ impl RenderContext for InstancedRenderContext {
     fn set_line_dash(&mut self, _pattern: &[f64]) {
         // Dash patterns are not supported in this backend (SDF lines are solid).
     }
-    fn set_line_cap(&mut self, _cap: &str) {
-        // Capsule SDF always has round caps.
+    fn set_line_cap(&mut self, cap: &str) {
+        self.line_cap = cap.to_owned();
     }
-    fn set_line_join(&mut self, _join: &str) {
-        // Not applicable for the SDF line primitive.
+    fn set_line_join(&mut self, join: &str) {
+        self.line_join = join.to_owned();
     }
 
     // ── Fill style ──────────────────────────────────────────────────────
@@ -984,22 +929,26 @@ impl RenderContext for InstancedRenderContext {
             text_align: self.text_align,
             text_baseline: self.text_baseline,
             clip_depth: self.clip_stack.len(),
+            line_cap: self.line_cap.clone(),
+            line_join: self.line_join.clone(),
         };
         self.state_stack.push(state);
     }
 
     fn restore(&mut self) {
         if let Some(state) = self.state_stack.pop() {
-            self.transform    = state.transform;
-            self.fill_color   = state.fill_color;
-            self.stroke_color = state.stroke_color;
-            self.stroke_width = state.stroke_width;
-            self.global_alpha = state.global_alpha;
-            self.font_size    = state.font_size;
-            self.font_bold    = state.font_bold;
-            self.font_italic  = state.font_italic;
-            self.text_align   = state.text_align;
+            self.transform     = state.transform;
+            self.fill_color    = state.fill_color;
+            self.stroke_color  = state.stroke_color;
+            self.stroke_width  = state.stroke_width;
+            self.global_alpha  = state.global_alpha;
+            self.font_size     = state.font_size;
+            self.font_bold     = state.font_bold;
+            self.font_italic   = state.font_italic;
+            self.text_align    = state.text_align;
             self.text_baseline = state.text_baseline;
+            self.line_cap      = state.line_cap;
+            self.line_join     = state.line_join;
             // Restore clip stack to the depth at save time
             self.clip_stack.truncate(state.clip_depth);
         }
