@@ -26,6 +26,7 @@ members = [
     "uzor-backend-vello-hybrid",
     "uzor-backend-tiny-skia",
     "uzor-backend-canvas2d",
+    "uzor-backend-wgpu-instanced",
     # Facade (feature-gated re-exports)
     "uzor-facade",
 ]

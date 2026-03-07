@@ -1,0 +1,103 @@
+//! GPU instance data structures for instanced rendering.
+//!
+//! These structs are uploaded directly to GPU buffers via `bytemuck`.
+//! All fields are `f32` and the structs are `repr(C)` to ensure a
+//! well-defined memory layout compatible with WGSL vertex buffers.
+
+use bytemuck::{Pod, Zeroable};
+
+/// A filled/stroked rectangle instance.
+///
+/// Rendered as 2 triangles (6 vertices) with a rounded-rectangle SDF in the
+/// fragment shader.  The vertex shader expands each instance to a screen-space
+/// quad padded by 1 px on every side for anti-aliasing.
+///
+/// Memory layout (80 bytes, 16-byte aligned):
+/// - pos:          8 bytes
+/// - size:         8 bytes
+/// - color:       16 bytes
+/// - corner_radius: 4 bytes
+/// - border_width:  4 bytes
+/// - _pad0:         8 bytes  (alignment padding before border_color)
+/// - border_color: 16 bytes
+/// - clip_rect:    16 bytes
+/// Total:          80 bytes
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct QuadInstance {
+    /// Position (top-left corner) in logical pixels.
+    pub pos: [f32; 2],
+    /// Size in logical pixels.
+    pub size: [f32; 2],
+    /// Fill color RGBA, each component in 0.0–1.0.
+    pub color: [f32; 4],
+    /// Corner radius in pixels (0 = sharp corners).
+    pub corner_radius: f32,
+    /// Border width in pixels (0 = no border).
+    pub border_width: f32,
+    /// Padding bytes to keep border_color 16-byte aligned.
+    pub _pad0: [f32; 2],
+    /// Border color RGBA.
+    pub border_color: [f32; 4],
+    /// Clip rectangle (x, y, w, h) in logical pixels.
+    /// Fragments outside this region are discarded.
+    pub clip_rect: [f32; 4],
+}
+
+/// A line segment instance.
+///
+/// Rendered as an oriented quad that fully encloses the segment (expanded by
+/// `width/2 + 1` px for anti-aliasing).  The fragment shader uses a capsule
+/// SDF (point-to-segment distance) with smooth-step AA.
+///
+/// Memory layout (64 bytes, 16-byte aligned):
+/// - start:     8 bytes
+/// - end:       8 bytes
+/// - color:    16 bytes
+/// - width:     4 bytes
+/// - clip_rect: 16 bytes
+/// - _pad:      12 bytes  (alignment padding)
+/// Total:       64 bytes
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct LineInstance {
+    /// Start point in logical pixels.
+    pub start: [f32; 2],
+    /// End point in logical pixels.
+    pub end: [f32; 2],
+    /// Line color RGBA, each component in 0.0–1.0.
+    pub color: [f32; 4],
+    /// Line width in logical pixels.
+    pub width: f32,
+    /// Padding to align clip_rect.
+    pub _pad0: [f32; 3],
+    /// Clip rectangle (x, y, w, h) in logical pixels.
+    pub clip_rect: [f32; 4],
+}
+
+const _: () = assert!(
+    std::mem::size_of::<QuadInstance>() % 16 == 0,
+    "QuadInstance must be 16-byte aligned"
+);
+
+const _: () = assert!(
+    std::mem::size_of::<LineInstance>() % 16 == 0,
+    "LineInstance must be 16-byte aligned"
+);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quad_instance_size_is_multiple_of_16() {
+        let size = std::mem::size_of::<QuadInstance>();
+        assert_eq!(size % 16, 0, "QuadInstance size {} is not 16-byte aligned", size);
+    }
+
+    #[test]
+    fn line_instance_size_is_multiple_of_16() {
+        let size = std::mem::size_of::<LineInstance>();
+        assert_eq!(size % 16, 0, "LineInstance size {} is not 16-byte aligned", size);
+    }
+}

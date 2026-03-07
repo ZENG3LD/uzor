@@ -1,13 +1,15 @@
 [package]
-name = "uzor-backend-vello-gpu"
+name = "uzor-backend-wgpu-instanced"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "GPU rendering backend using vello + wgpu"
+description = "High-performance instanced wgpu rendering backend"
 
 [dependencies]
 uzor-render = { workspace = true }
-vello = "0.7"
+wgpu = "27"
+bytemuck = { version = "1", features = ["derive"] }
+cosmic-text = "0.12"
 skrifa = "0.40"

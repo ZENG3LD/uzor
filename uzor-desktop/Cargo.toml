@@ -12,8 +12,8 @@ uzor-core = { workspace = true, features = ["serde"] }
 uzor-render = { workspace = true }
 
 # Graphics Stack (for RenderSurface provider)
-vello = "0.6"
-wgpu = "0.20"
+vello = "0.7"
+wgpu = "27"
 
 # Windowing and events
 winit = "0.30"

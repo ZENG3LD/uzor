@@ -18,4 +18,4 @@ vello_hybrid = { version = "0.0.6", features = ["wgpu"] }
 vello_common = { version = "0.0.6", features = ["std", "text"] }
 # wgpu 27.x required by vello_hybrid (conflicts with vello 0.6 which uses wgpu 0.20).
 wgpu = { version = "27.0.1", default-features = false }
-skrifa = "0.37"
+skrifa = "0.40"

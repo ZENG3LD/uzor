@@ -14,4 +14,4 @@ uzor-render = { workspace = true }
 # uzor-backend-vello-common (which ties to vello 0.6 types).
 # State management is implemented inline in this crate.
 vello_cpu = { version = "0.0.6", features = ["std", "text"] }
-skrifa = "0.37"
+skrifa = "0.40"

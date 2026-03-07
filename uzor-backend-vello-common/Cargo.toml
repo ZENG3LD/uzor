@@ -9,5 +9,5 @@ description = "Shared utilities for vello-based backends"
 
 [dependencies]
 uzor-render = { workspace = true }
-vello = "0.6"
-skrifa = "0.37"
+vello = "0.7"
+skrifa = "0.40"

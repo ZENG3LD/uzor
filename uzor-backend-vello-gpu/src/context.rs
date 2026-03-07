@@ -463,6 +463,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
         if let Some(path) = self.path_builder.take() {
             // Push a clip layer using the path
             self.scene.push_clip_layer(
+                vello::peniko::Fill::NonZero,
                 self.transform,
                 &path,
             );
@@ -786,7 +787,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
             let clip_rect = kurbo::Rect::new(x, y, x + width, y + height);
 
             // Push clip layer (transform applies to clip shape, not content)
-            self.scene.push_clip_layer(Affine::IDENTITY, &clip_rect);
+            self.scene.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip_rect);
 
             // Draw blur image at full screen size (clipped to rect)
             // The image transform positions it at origin with screen dimensions
@@ -866,7 +867,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
         // Layer 1: Blur backdrop (same as draw_blur_background but with clip)
         // =====================================================================
         if let Some(ref blur_image) = self.blur_image {
-            self.scene.push_clip_layer(Affine::IDENTITY, &rect);
+            self.scene.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &rect);
 
             let scale_x = self.screen_width as f64 / blur_image.width as f64;
             let scale_y = self.screen_height as f64 / blur_image.height as f64;
@@ -970,7 +971,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
                     ColorStop { offset: 1.0, color: Color::from_rgba8(255, 255, 255, 0).into() },
                 ]);
 
-            self.scene.push_layer(Mix::Screen, 1.0, Affine::IDENTITY, &rect);
+            self.scene.push_layer(vello::peniko::Fill::NonZero, Mix::Screen, 1.0, Affine::IDENTITY, &rect);
             self.scene.fill(Fill::NonZero, Affine::IDENTITY, &spec_gradient, None, &highlight_rect);
             self.scene.pop_layer();
         }
@@ -992,7 +993,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
                     ColorStop { offset: 1.0, color: Color::from_rgba8(0, 0, 0, (shadow_intensity * 150.0) as u8).into() },
                 ]);
 
-            self.scene.push_layer(Mix::Multiply, 1.0, Affine::IDENTITY, &rect);
+            self.scene.push_layer(vello::peniko::Fill::NonZero, Mix::Multiply, 1.0, Affine::IDENTITY, &rect);
             self.scene.fill(Fill::NonZero, Affine::IDENTITY, &shadow_gradient, None, &rect);
             self.scene.pop_layer();
         }
@@ -1007,7 +1008,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
             let (rim_r, rim_g, rim_b) = lighten(base_r, base_g, base_b, 0.6);
             let rim_color = Color::from_rgba8(rim_r, rim_g, rim_b, (rim_intensity * 255.0) as u8);
 
-            self.scene.push_layer(Mix::Screen, 0.7, Affine::IDENTITY, &rect);
+            self.scene.push_layer(vello::peniko::Fill::NonZero, Mix::Screen, 0.7, Affine::IDENTITY, &rect);
             self.scene.stroke(&rim_stroke, Affine::IDENTITY, rim_color, None, &rect);
             self.scene.pop_layer();
         }

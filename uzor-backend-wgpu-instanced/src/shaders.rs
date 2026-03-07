@@ -1,0 +1,261 @@
+//! WGSL shader source strings for the instanced renderer.
+//!
+//! Two shaders are provided:
+//! - `QUAD_SHADER`: renders filled/bordered rounded rectangles with SDF AA.
+//! - `LINE_SHADER`: renders line segments with capsule SDF AA.
+//!
+//! Both shaders share the same `Uniforms` bind group layout (binding 0) that
+//! provides the `screen_size` in logical pixels used for NDC conversion.
+
+/// Shader for rendering quad (rectangle) instances with rounded corners.
+///
+/// Vertex stage: emits 6 vertices (2 triangles) per instance, expanding the
+/// bounding box by 1 px on every side to allow anti-aliased edges.
+///
+/// Fragment stage: evaluates a rounded-rectangle SDF, discards fragments
+/// outside the clip rectangle, and outputs anti-aliased color.
+pub const QUAD_SHADER: &str = r#"
+// ── Uniforms ───────────────────────────────────────────────────────────────
+struct Uniforms {
+    screen_size: vec2<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> uniforms: Uniforms;
+
+// ── Instance data (matches QuadInstance in instances.rs) ──────────────────
+struct QuadInstance {
+    @location(0) pos:          vec2<f32>,   // top-left in px
+    @location(1) size:         vec2<f32>,   // width × height in px
+    @location(2) color:        vec4<f32>,   // fill RGBA
+    @location(3) corner_radius: f32,
+    @location(4) border_width:  f32,
+    @location(5) _pad0:        vec2<f32>,
+    @location(6) border_color: vec4<f32>,
+    @location(7) clip_rect:    vec4<f32>,   // x, y, w, h in px
+};
+
+// ── Vertex output ─────────────────────────────────────────────────────────
+struct VertexOut {
+    @builtin(position) clip_pos: vec4<f32>,
+    // pixel-space position of this fragment relative to quad's top-left
+    @location(0) frag_pos:  vec2<f32>,
+    // quad data forwarded to fragment
+    @location(1) size:         vec2<f32>,
+    @location(2) color:        vec4<f32>,
+    @location(3) corner_radius: f32,
+    @location(4) border_width:  f32,
+    @location(5) border_color: vec4<f32>,
+    @location(6) clip_rect:    vec4<f32>,
+};
+
+// Six vertex positions for a unit quad [0,1]², two triangles
+fn quad_vert_pos(vertex_index: u32) -> vec2<f32> {
+    // indices:  0,1,2  3,4,5
+    // tris:     TL,TR,BL  TR,BR,BL
+    let xs = array<f32, 6>(0.0, 1.0, 0.0,  1.0, 1.0, 0.0);
+    let ys = array<f32, 6>(0.0, 0.0, 1.0,  0.0, 1.0, 1.0);
+    return vec2<f32>(xs[vertex_index], ys[vertex_index]);
+}
+
+@vertex
+fn vs_main(
+    @builtin(vertex_index) vertex_index: u32,
+    instance: QuadInstance,
+) -> VertexOut {
+    let aa_pad = 1.0;   // 1-pixel AA fringe on each side
+    let padded_pos  = instance.pos  - vec2<f32>(aa_pad, aa_pad);
+    let padded_size = instance.size + vec2<f32>(aa_pad * 2.0, aa_pad * 2.0);
+
+    let uv = quad_vert_pos(vertex_index);
+    let px = padded_pos + uv * padded_size;
+
+    // frag_pos = position relative to the un-padded quad's top-left
+    let frag_pos = px - instance.pos;
+
+    // NDC: top-left = (-1, 1), bottom-right = (1, -1)
+    let ndc = vec2<f32>(
+        px.x / uniforms.screen_size.x *  2.0 - 1.0,
+        px.y / uniforms.screen_size.y * -2.0 + 1.0,
+    );
+
+    var out: VertexOut;
+    out.clip_pos     = vec4<f32>(ndc, 0.0, 1.0);
+    out.frag_pos     = frag_pos;
+    out.size         = instance.size;
+    out.color        = instance.color;
+    out.corner_radius = instance.corner_radius;
+    out.border_width  = instance.border_width;
+    out.border_color  = instance.border_color;
+    out.clip_rect     = instance.clip_rect;
+    return out;
+}
+
+// ── SDF helpers ───────────────────────────────────────────────────────────
+
+/// Signed distance to a rounded rectangle centred at the origin.
+/// `half` = half-extents, `r` = corner radius.
+fn sdf_rounded_rect(p: vec2<f32>, half: vec2<f32>, r: f32) -> f32 {
+    let q = abs(p) - half + vec2<f32>(r, r);
+    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - r;
+}
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    // ── Clip discard ──────────────────────────────────────────────────────
+    // in.clip_rect is in screen-space pixels (x, y, w, h)
+    // We need the actual pixel position = frag_pos + quad top-left.
+    // Since frag_pos is already relative to quad top-left, reconstruct
+    // the absolute pixel position from the built-in clip_pos.
+    // clip_pos.xy is in NDC; convert back to pixels:
+    let px_abs = vec2<f32>(
+        (in.clip_pos.x + 1.0) * 0.5 * uniforms.screen_size.x,
+        (1.0 - in.clip_pos.y) * 0.5 * uniforms.screen_size.y,
+    );
+    let cr = in.clip_rect;
+    if px_abs.x < cr.x || px_abs.y < cr.y
+       || px_abs.x > cr.x + cr.z || px_abs.y > cr.y + cr.w {
+        discard;
+    }
+
+    // ── Rounded rect SDF ──────────────────────────────────────────────────
+    let half = in.size * 0.5;
+    let p    = in.frag_pos - half;   // position relative to centre
+    let r    = clamp(in.corner_radius, 0.0, min(half.x, half.y));
+    let dist = sdf_rounded_rect(p, half, r);
+
+    // outer edge AA
+    let aa     = fwidth(dist);
+    let fill_a = 1.0 - smoothstep(-aa, aa, dist);
+    if fill_a <= 0.0 { discard; }
+
+    // ── Border ────────────────────────────────────────────────────────────
+    var out_color = in.color;
+    if in.border_width > 0.0 {
+        let inner_dist = dist + in.border_width;
+        let border_a   = 1.0 - smoothstep(-aa, aa, inner_dist);
+        // blend: inside border region → border_color
+        let on_border = clamp(border_a - (1.0 - smoothstep(-aa, aa, dist + 0.5)), 0.0, 1.0);
+        out_color = mix(in.color, in.border_color, on_border);
+        // Also blend the fill alpha
+        out_color.a = max(in.color.a, in.border_color.a * on_border);
+    }
+
+    out_color.a *= fill_a;
+    return out_color;
+}
+"#;
+
+/// Shader for rendering line segment instances with capsule SDF.
+///
+/// Vertex stage: builds an oriented quad that encloses the segment, expanded
+/// by `width/2 + 1 px` for AA fringe.
+///
+/// Fragment stage: evaluates capsule SDF, discards outside clip, outputs AA.
+pub const LINE_SHADER: &str = r#"
+// ── Uniforms ───────────────────────────────────────────────────────────────
+struct Uniforms {
+    screen_size: vec2<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> uniforms: Uniforms;
+
+// ── Instance data (matches LineInstance in instances.rs) ──────────────────
+struct LineInstance {
+    @location(0) start:     vec2<f32>,
+    @location(1) end:       vec2<f32>,
+    @location(2) color:     vec4<f32>,
+    @location(3) width:     f32,
+    @location(4) _pad0:     vec3<f32>,
+    @location(5) clip_rect: vec4<f32>,
+};
+
+// ── Vertex output ─────────────────────────────────────────────────────────
+struct VertexOut {
+    @builtin(position) clip_pos: vec4<f32>,
+    @location(0) frag_world: vec2<f32>,   // fragment in pixel-space
+    @location(1) seg_start:  vec2<f32>,
+    @location(2) seg_end:    vec2<f32>,
+    @location(3) color:      vec4<f32>,
+    @location(4) half_width: f32,
+    @location(5) clip_rect:  vec4<f32>,
+};
+
+// Signs for the 6 vertices of the oriented quad
+fn quad_sign(idx: u32) -> vec2<f32> {
+    //       along   across
+    let alongs  = array<f32, 6>(-1.0,  1.0, -1.0,   1.0,  1.0, -1.0);
+    let acrosss = array<f32, 6>(-1.0, -1.0,  1.0,  -1.0,  1.0,  1.0);
+    return vec2<f32>(alongs[idx], acrosss[idx]);
+}
+
+@vertex
+fn vs_main(
+    @builtin(vertex_index) vertex_index: u32,
+    inst: LineInstance,
+) -> VertexOut {
+    let aa_pad   = 1.0;
+    let hw       = inst.width * 0.5 + aa_pad;
+
+    let dir = inst.end - inst.start;
+    let len = length(dir);
+    var along  = select(vec2<f32>(1.0, 0.0), dir / len, len > 0.0001);
+    let across = vec2<f32>(-along.y, along.x);
+
+    let sign = quad_sign(vertex_index);
+    // expand from midpoint outward: along ± hw along the segment axis,
+    // across ± hw perpendicular
+    let mid  = (inst.start + inst.end) * 0.5;
+    let half_len = len * 0.5 + hw;    // extends past endpoints for capsule cap
+    let px   = mid
+               + along  * (sign.x * half_len)
+               + across * (sign.y * hw);
+
+    let ndc = vec2<f32>(
+        px.x / uniforms.screen_size.x *  2.0 - 1.0,
+        px.y / uniforms.screen_size.y * -2.0 + 1.0,
+    );
+
+    var out: VertexOut;
+    out.clip_pos   = vec4<f32>(ndc, 0.0, 1.0);
+    out.frag_world = px;
+    out.seg_start  = inst.start;
+    out.seg_end    = inst.end;
+    out.color      = inst.color;
+    out.half_width = inst.width * 0.5;
+    out.clip_rect  = inst.clip_rect;
+    return out;
+}
+
+// ── SDF helpers ───────────────────────────────────────────────────────────
+
+/// Signed distance to a capsule (line segment with rounded ends).
+fn sdf_capsule(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
+    let ab = b - a;
+    let ap = p - a;
+    let t  = clamp(dot(ap, ab) / max(dot(ab, ab), 0.0001), 0.0, 1.0);
+    let closest = a + t * ab;
+    return length(p - closest) - r;
+}
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    // ── Clip discard ──────────────────────────────────────────────────────
+    let cr = in.clip_rect;
+    if in.frag_world.x < cr.x || in.frag_world.y < cr.y
+       || in.frag_world.x > cr.x + cr.z || in.frag_world.y > cr.y + cr.w {
+        discard;
+    }
+
+    // ── Capsule SDF ───────────────────────────────────────────────────────
+    let dist = sdf_capsule(in.frag_world, in.seg_start, in.seg_end, in.half_width);
+    let aa   = fwidth(dist);
+    let alpha = 1.0 - smoothstep(-aa, aa, dist);
+    if alpha <= 0.0 { discard; }
+
+    var out_color = in.color;
+    out_color.a *= alpha;
+    return out_color;
+}
+"#;
