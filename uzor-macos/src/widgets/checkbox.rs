@@ -134,8 +134,6 @@ mod tests {
     }
 
     impl RenderContext for MockContext {
-        fn chart_width(&self) -> f64 { 800.0 }
-        fn chart_height(&self) -> f64 { 600.0 }
         fn dpr(&self) -> f64 { 1.0 }
 
         fn measure_text(&self, _text: &str) -> f64 {

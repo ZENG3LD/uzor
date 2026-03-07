@@ -6,10 +6,12 @@
 
 use std::sync::OnceLock;
 
+use lyon_tessellation::{BuffersBuilder, FillOptions, FillTessellator, FillVertex, VertexBuffers};
+use lyon_path::math::point;
 use skrifa::MetadataProvider;
 use uzor_render::{RenderContext, RenderContextExt, TextAlign, TextBaseline};
 
-use crate::instances::{LineInstance, QuadInstance};
+use crate::instances::{DrawCmd, LineInstance, QuadInstance, TriangleInstance};
 use crate::text::TextAreaData;
 
 // ── Embedded Roboto fonts ──────────────────────────────────────────────────
@@ -112,6 +114,12 @@ fn parse_color(color: &str) -> [f32; 4] {
 //   | c  d  ty |
 //   | 0  0   1 |
 
+/// Approximate float equality (within 0.5px tolerance for rect detection).
+#[inline]
+fn approx_eq(a: f32, b: f32) -> bool {
+    (a - b).abs() < 0.5
+}
+
 /// Apply transform to a point.
 #[inline]
 fn apply(t: &[f32; 6], x: f32, y: f32) -> (f32, f32) {
@@ -174,15 +182,14 @@ struct SavedState {
 
 // ── InstancedRenderContext ─────────────────────────────────────────────────
 
-/// A `RenderContext` that batches draw calls into instance lists.
+/// A `RenderContext` that batches draw calls into a unified draw command list.
 ///
-/// At the end of a frame, pass `quads`, `lines`, and `text_areas` to
-/// `InstancedRenderer::render()`.
+/// At the end of a frame, pass `draw_commands` to `InstancedRenderer::render()`.
+/// The renderer processes them in order, preserving painter's z-order while
+/// batching consecutive same-type commands into efficient GPU draw calls.
 pub struct InstancedRenderContext {
-    // Output buffers
-    pub quads: Vec<QuadInstance>,
-    pub lines: Vec<LineInstance>,
-    pub text_areas: Vec<TextAreaData>,
+    // Unified draw command list — preserves painter's order.
+    pub draw_commands: Vec<DrawCmd>,
 
     // Current transform (2D affine)
     transform: [f32; 6],
@@ -221,9 +228,7 @@ impl InstancedRenderContext {
         let transform = [1.0, 0.0, 0.0, 1.0, offset_x, offset_y];
         let root_clip = [0.0, 0.0, screen_w, screen_h];
         Self {
-            quads: Vec::new(),
-            lines: Vec::new(),
-            text_areas: Vec::new(),
+            draw_commands: Vec::new(),
             transform,
             fill_color: [1.0, 1.0, 1.0, 1.0],
             stroke_color: [1.0, 1.0, 1.0, 1.0],
@@ -244,15 +249,26 @@ impl InstancedRenderContext {
 
     /// Clear all accumulated draw calls (call at the start of each frame).
     pub fn clear(&mut self) {
-        self.quads.clear();
-        self.lines.clear();
-        self.text_areas.clear();
+        self.draw_commands.clear();
     }
 
     // ── Internals ──────────────────────────────────────────────────────────
 
     fn current_clip(&self) -> [f32; 4] {
         self.clip_stack.last().copied().unwrap_or([0.0, 0.0, self.screen_w, self.screen_h])
+    }
+
+    /// Get the last point in the current path (for bezier tessellation).
+    fn last_path_point(&self) -> (f32, f32) {
+        for cmd in self.path.iter().rev() {
+            match *cmd {
+                PathCmd::MoveTo(x, y) | PathCmd::LineTo(x, y) => return (x, y),
+                PathCmd::Rect(x, y, w, h) => return (x + w, y + h),
+                PathCmd::Arc { cx, cy, r, end, .. } => return (cx + r * end.cos(), cy + r * end.sin()),
+                PathCmd::Close => continue,
+            }
+        }
+        (0.0, 0.0)
     }
 
     /// Apply global alpha to a color.
@@ -281,26 +297,26 @@ impl InstancedRenderContext {
                 }
                 PathCmd::LineTo(x, y) => {
                     let (px, py) = apply(&self.transform, x, y);
-                    self.lines.push(LineInstance {
+                    self.draw_commands.push(DrawCmd::Line(LineInstance {
                         start: [cursor.0, cursor.1],
                         end: [px, py],
                         color,
                         width,
                         _pad0: [0.0; 3],
                         clip_rect: clip,
-                    });
+                    }));
                     cursor = (px, py);
                 }
                 PathCmd::Close => {
                     if first_set {
-                        self.lines.push(LineInstance {
+                        self.draw_commands.push(DrawCmd::Line(LineInstance {
                             start: [cursor.0, cursor.1],
                             end: [first.0, first.1],
                             color,
                             width,
                             _pad0: [0.0; 3],
                             clip_rect: clip,
-                        });
+                        }));
                         cursor = first;
                     }
                 }
@@ -314,34 +330,50 @@ impl InstancedRenderContext {
                     for i in 0..4 {
                         let a = corners[i];
                         let b = corners[(i + 1) % 4];
-                        self.lines.push(LineInstance {
+                        self.draw_commands.push(DrawCmd::Line(LineInstance {
                             start: [a.0, a.1],
                             end: [b.0, b.1],
                             color,
                             width,
                             _pad0: [0.0; 3],
                             clip_rect: clip,
-                        });
+                        }));
                     }
                 }
                 PathCmd::Arc { cx, cy, r, start, end } => {
-                    // Approximate arc with line segments
-                    let steps = ((end - start).abs() * r).max(4.0) as usize;
+                    // Approximate arc with line segments.
+                    // Use screen-space radius for step count to handle scaled SVG icons.
+                    let scale = ((self.transform[0].abs() + self.transform[3].abs()) * 0.5).max(1.0);
+                    let screen_r = r * scale;
+
+                    // Bug 1 fix: skip zero-radius arcs — they produce zero-length segments
+                    // that the capsule SDF shader renders as visible glowing dots.
+                    // Just advance the cursor to the arc center point and continue.
+                    if screen_r < 0.5 {
+                        cursor = apply(&self.transform, cx, cy);
+                        if !first_set { first = cursor; first_set = true; }
+                        continue;
+                    }
+
+                    let sweep = (end - start).abs();
+                    // At least 8 steps per quarter-circle, scale with radius
+                    let steps = ((sweep * screen_r).max(sweep * 5.0)).max(8.0) as usize;
                     let step = (end - start) / steps as f32;
                     let mut prev = apply(&self.transform, cx + r * start.cos(), cy + r * start.sin());
                     for i in 1..=steps {
                         let a = start + step * i as f32;
                         let next = apply(&self.transform, cx + r * a.cos(), cy + r * a.sin());
-                        self.lines.push(LineInstance {
+                        self.draw_commands.push(DrawCmd::Line(LineInstance {
                             start: [prev.0, prev.1],
                             end: [next.0, next.1],
                             color,
                             width,
                             _pad0: [0.0; 3],
                             clip_rect: clip,
-                        });
+                        }));
                         prev = next;
                     }
+                    cursor = apply(&self.transform, cx + r * end.cos(), cy + r * end.sin());
                 }
             }
         }
@@ -365,7 +397,7 @@ impl InstancedRenderContext {
                 // Scale only — use transform scale components to compute pixel size
                 // This is a simplified approach: transform x/y corners to get size
                 let (px2, py2) = apply(&self.transform, x + w, y + h);
-                self.quads.push(QuadInstance {
+                self.draw_commands.push(DrawCmd::Quad(QuadInstance {
                     pos: [px.min(px2), py.min(py2)],
                     size: [(px2 - px).abs(), (py2 - py).abs()],
                     color,
@@ -374,12 +406,12 @@ impl InstancedRenderContext {
                     _pad0: [0.0; 2],
                     border_color: [0.0; 4],
                     clip_rect: clip,
-                });
+                }));
                 return;
             }
         }
 
-        // Detect MoveTo + 3 LineTo + Close  (rectangle pattern)
+        // Detect MoveTo + 3 LineTo + Close  (axis-aligned rectangle pattern)
         if path.len() == 5 {
             let is_move  = matches!(path[0], PathCmd::MoveTo(..));
             let is_close = matches!(path[4], PathCmd::Close);
@@ -388,37 +420,161 @@ impl InstancedRenderContext {
                 && matches!(path[3], PathCmd::LineTo(..));
             if is_move && is_close && all_lines {
                 let (x0, y0) = if let PathCmd::MoveTo(a, b) = path[0] { (a, b) } else { unreachable!() };
+                let (x1, y1) = if let PathCmd::LineTo(a, b) = path[1] { (a, b) } else { unreachable!() };
                 let (x2, y2) = if let PathCmd::LineTo(a, b) = path[2] { (a, b) } else { unreachable!() };
-                let min_x = x0.min(x2);
-                let min_y = y0.min(y2);
-                let max_x = x0.max(x2);
-                let max_y = y0.max(y2);
-                let (px1, py1) = apply(&self.transform, min_x, min_y);
-                let (px2, py2) = apply(&self.transform, max_x, max_y);
-                self.quads.push(QuadInstance {
-                    pos: [px1.min(px2), py1.min(py2)],
-                    size: [(px2 - px1).abs(), (py2 - py1).abs()],
-                    color,
-                    corner_radius: 0.0,
-                    border_width: 0.0,
-                    _pad0: [0.0; 2],
-                    border_color: [0.0; 4],
-                    clip_rect: clip,
-                });
-                return;
+                let (x3, y3) = if let PathCmd::LineTo(a, b) = path[3] { (a, b) } else { unreachable!() };
+
+                // Only use the quad fast-path if the 4 vertices form an axis-aligned rectangle.
+                // Trapezoids and other 4-point polygons must fall through to lyon tessellation.
+                let is_aabb = (approx_eq(x0, x3) && approx_eq(x1, x2) && approx_eq(y0, y1) && approx_eq(y2, y3))
+                           || (approx_eq(y0, y1) && approx_eq(y2, y3) && approx_eq(x0, x3) && approx_eq(x1, x2))
+                           || (approx_eq(x0, x1) && approx_eq(x2, x3) && approx_eq(y1, y2) && approx_eq(y0, y3))
+                           || (approx_eq(y0, y3) && approx_eq(y1, y2) && approx_eq(x0, x1) && approx_eq(x2, x3));
+
+                if is_aabb {
+                    let min_x = x0.min(x1).min(x2).min(x3);
+                    let min_y = y0.min(y1).min(y2).min(y3);
+                    let max_x = x0.max(x1).max(x2).max(x3);
+                    let max_y = y0.max(y1).max(y2).max(y3);
+                    let (px1, py1) = apply(&self.transform, min_x, min_y);
+                    let (px2, py2) = apply(&self.transform, max_x, max_y);
+                    self.draw_commands.push(DrawCmd::Quad(QuadInstance {
+                        pos: [px1.min(px2), py1.min(py2)],
+                        size: [(px2 - px1).abs(), (py2 - py1).abs()],
+                        color,
+                        corner_radius: 0.0,
+                        border_width: 0.0,
+                        _pad0: [0.0; 2],
+                        border_color: [0.0; 4],
+                        clip_rect: clip,
+                    }));
+                    return;
+                }
+                // Non-rect 4-point polygon: fall through to lyon tessellation below.
             }
         }
 
-        // Fallback: emit as stroked lines using fill color (approximate)
-        // This handles arc paths (rounded_rect), polygon paths, etc.
-        let old_color = self.stroke_color;
-        let old_width = self.stroke_width;
-        self.stroke_color = self.fill_color;
-        self.stroke_width = 1.0;
-        self.path = path;
-        self.tessellate_stroke();
-        self.stroke_color = old_color;
-        self.stroke_width = old_width;
+        // Fallback: fill for arbitrary closed paths using lyon tessellation.
+        // This correctly fills any path — concave polygons, SVG shapes, area fills, circles, arcs.
+
+        let mut builder = lyon_path::Path::builder();
+        let transform = &self.transform;
+        let mut in_subpath = false;
+
+        for cmd in &path {
+            match *cmd {
+                PathCmd::MoveTo(x, y) => {
+                    if in_subpath {
+                        builder.end(false);
+                    }
+                    let (px, py) = apply(transform, x, y);
+                    builder.begin(point(px, py));
+                    in_subpath = true;
+                }
+                PathCmd::LineTo(x, y) => {
+                    if !in_subpath {
+                        let (px, py) = apply(transform, x, y);
+                        builder.begin(point(px, py));
+                        in_subpath = true;
+                    } else {
+                        let (px, py) = apply(transform, x, y);
+                        builder.line_to(point(px, py));
+                    }
+                }
+                PathCmd::Close => {
+                    if in_subpath {
+                        builder.close();
+                        in_subpath = false;
+                    }
+                }
+                PathCmd::Rect(x, y, w, h) => {
+                    if in_subpath {
+                        builder.end(false);
+                    }
+                    let tl = apply(transform, x, y);
+                    let tr = apply(transform, x + w, y);
+                    let br = apply(transform, x + w, y + h);
+                    let bl = apply(transform, x, y + h);
+                    builder.begin(point(tl.0, tl.1));
+                    builder.line_to(point(tr.0, tr.1));
+                    builder.line_to(point(br.0, br.1));
+                    builder.line_to(point(bl.0, bl.1));
+                    builder.close();
+                    in_subpath = false;
+                }
+                PathCmd::Arc { cx, cy, r, start, end } => {
+                    let sweep = end - start;
+                    // Use screen-space radius for step count
+                    let scale = ((transform[0].abs() + transform[3].abs()) * 0.5).max(1.0);
+                    let screen_r = r * scale;
+
+                    // Bug 1 fix: skip zero-radius arcs to avoid degenerate zero-length
+                    // line segments that produce rendering artifacts.
+                    if screen_r < 0.5 {
+                        // Advance the subpath cursor to the center point
+                        let center = apply(transform, cx, cy);
+                        if in_subpath {
+                            builder.line_to(point(center.0, center.1));
+                        } else {
+                            builder.begin(point(center.0, center.1));
+                            in_subpath = true;
+                        }
+                        continue;
+                    }
+
+                    let steps = ((sweep.abs() * screen_r).max(sweep.abs() * 5.0)).max(8.0) as usize;
+                    let step_angle = sweep / steps as f32;
+                    let first_pt = apply(transform, cx + r * start.cos(), cy + r * start.sin());
+                    if in_subpath {
+                        builder.line_to(point(first_pt.0, first_pt.1));
+                    } else {
+                        builder.begin(point(first_pt.0, first_pt.1));
+                        in_subpath = true;
+                    }
+                    for i in 1..=steps {
+                        let angle = start + step_angle * i as f32;
+                        let p = apply(transform, cx + r * angle.cos(), cy + r * angle.sin());
+                        builder.line_to(point(p.0, p.1));
+                    }
+                }
+            }
+        }
+
+        // Close any remaining open subpath
+        if in_subpath {
+            builder.close();
+        }
+
+        let lyon_path = builder.build();
+
+        // Tessellate
+        let mut geometry: VertexBuffers<[f32; 2], u16> = VertexBuffers::new();
+        let mut tessellator = FillTessellator::new();
+        let result = tessellator.tessellate_path(
+            &lyon_path,
+            &FillOptions::tolerance(0.5),
+            &mut BuffersBuilder::new(&mut geometry, |vertex: FillVertex| {
+                vertex.position().to_array()
+            }),
+        );
+
+        if result.is_ok() && !geometry.indices.is_empty() {
+            for tri in geometry.indices.chunks(3) {
+                if tri.len() == 3 {
+                    let v0 = geometry.vertices[tri[0] as usize];
+                    let v1 = geometry.vertices[tri[1] as usize];
+                    let v2 = geometry.vertices[tri[2] as usize];
+                    self.draw_commands.push(DrawCmd::Triangle(TriangleInstance {
+                        v0,
+                        v1,
+                        v2,
+                        _pad0: [0.0; 2],
+                        color,
+                        clip_rect: clip,
+                    }));
+                }
+            }
+        }
     }
 
     /// Compute the bounding box of the current path in screen-space pixels.
@@ -545,20 +701,65 @@ impl RenderContext for InstancedRenderContext {
             end: end_angle as f32,
         });
     }
-    fn ellipse(&mut self, cx: f64, cy: f64, rx: f64, _ry: f64, _rotation: f64, start: f64, end: f64) {
-        // Approximate as circle using rx
-        self.arc(cx, cy, rx, start, end);
+    fn ellipse(&mut self, cx: f64, cy: f64, rx: f64, ry: f64, rotation: f64, start: f64, end: f64) {
+        if (rx - ry).abs() < 0.001 && rotation.abs() < 0.001 {
+            // Circle — delegate to arc
+            self.arc(cx, cy, rx, start, end);
+            return;
+        }
+        // Tessellate ellipse into line segments using parametric form.
+        // First point uses MoveTo (matches arc() behavior via PathCmd::Arc),
+        // rest use LineTo.
+        let sweep = end - start;
+        let steps = ((sweep.abs() * rx.max(ry)).max(sweep.abs() * 5.0)).max(16.0) as usize;
+        let (sin_rot, cos_rot) = rotation.sin_cos();
+        for i in 0..=steps {
+            let t = start + sweep * (i as f64 / steps as f64);
+            let ex = rx * t.cos();
+            let ey = ry * t.sin();
+            let px = cx + ex * cos_rot - ey * sin_rot;
+            let py = cy + ex * sin_rot + ey * cos_rot;
+            if i == 0 {
+                // Use LineTo if we're already in a subpath, MoveTo otherwise
+                if self.path.is_empty() || matches!(self.path.last(), Some(PathCmd::Close)) {
+                    self.path.push(PathCmd::MoveTo(px as f32, py as f32));
+                } else {
+                    self.path.push(PathCmd::LineTo(px as f32, py as f32));
+                }
+            } else {
+                self.path.push(PathCmd::LineTo(px as f32, py as f32));
+            }
+        }
     }
     fn quadratic_curve_to(&mut self, cpx: f64, cpy: f64, x: f64, y: f64) {
-        // Approximate with a single line segment
-        let _ = (cpx, cpy);
-        self.path.push(PathCmd::LineTo(x as f32, y as f32));
+        // Tessellate quadratic bezier into line segments.
+        let (p0x, p0y) = self.last_path_point();
+        let (cpx, cpy, ex, ey) = (cpx as f32, cpy as f32, x as f32, y as f32);
+        const N: usize = 8;
+        for i in 1..=N {
+            let t = i as f32 / N as f32;
+            let u = 1.0 - t;
+            let px = u * u * p0x + 2.0 * u * t * cpx + t * t * ex;
+            let py = u * u * p0y + 2.0 * u * t * cpy + t * t * ey;
+            self.path.push(PathCmd::LineTo(px, py));
+        }
     }
     fn bezier_curve_to(
-        &mut self, _cp1x: f64, _cp1y: f64, _cp2x: f64, _cp2y: f64, x: f64, y: f64,
+        &mut self, cp1x: f64, cp1y: f64, cp2x: f64, cp2y: f64, x: f64, y: f64,
     ) {
-        // Approximate with a single line segment
-        self.path.push(PathCmd::LineTo(x as f32, y as f32));
+        // Tessellate cubic bezier into line segments.
+        let (p0x, p0y) = self.last_path_point();
+        let (c1x, c1y) = (cp1x as f32, cp1y as f32);
+        let (c2x, c2y) = (cp2x as f32, cp2y as f32);
+        let (ex, ey) = (x as f32, y as f32);
+        const N: usize = 8;
+        for i in 1..=N {
+            let t = i as f32 / N as f32;
+            let u = 1.0 - t;
+            let px = u*u*u*p0x + 3.0*u*u*t*c1x + 3.0*u*t*t*c2x + t*t*t*ex;
+            let py = u*u*u*p0y + 3.0*u*u*t*c1y + 3.0*u*t*t*c2y + t*t*t*ey;
+            self.path.push(PathCmd::LineTo(px, py));
+        }
     }
 
     // ── Stroke / fill / clip ────────────────────────────────────────────
@@ -590,14 +791,14 @@ impl RenderContext for InstancedRenderContext {
         for i in 0..4 {
             let a = corners[i];
             let b = corners[(i + 1) % 4];
-            self.lines.push(LineInstance {
+            self.draw_commands.push(DrawCmd::Line(LineInstance {
                 start: [a.0, a.1],
                 end: [b.0, b.1],
                 color,
                 width,
                 _pad0: [0.0; 3],
                 clip_rect: clip,
-            });
+            }));
         }
     }
 
@@ -607,7 +808,7 @@ impl RenderContext for InstancedRenderContext {
         let clip = self.current_clip();
         let (px1, py1) = apply(&self.transform, x,     y);
         let (px2, py2) = apply(&self.transform, x + w, y + h);
-        self.quads.push(QuadInstance {
+        self.draw_commands.push(DrawCmd::Quad(QuadInstance {
             pos: [px1.min(px2), py1.min(py2)],
             size: [(px2 - px1).abs(), (py2 - py1).abs()],
             color,
@@ -616,7 +817,7 @@ impl RenderContext for InstancedRenderContext {
             _pad0: [0.0; 2],
             border_color: [0.0; 4],
             clip_rect: clip,
-        });
+        }));
     }
 
     // ── Text ─────────────────────────────────────────────────────────────
@@ -650,7 +851,7 @@ impl RenderContext for InstancedRenderContext {
         let clip = self.current_clip();
         let color = self.apply_alpha(self.fill_color);
 
-        self.text_areas.push(TextAreaData {
+        self.draw_commands.push(DrawCmd::Text(TextAreaData {
             text: text.to_owned(),
             x: px,
             y: py,
@@ -663,7 +864,7 @@ impl RenderContext for InstancedRenderContext {
             clip,
             estimated_width,
             estimated_height,
-        });
+        }));
     }
 
     fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {
@@ -729,7 +930,7 @@ impl RenderContext for InstancedRenderContext {
         let (px2, py2) = apply(&self.transform, x + w, y + h);
         // Corner radius in screen space (assumes uniform scale)
         let scale = ((self.transform[0].abs() + self.transform[3].abs()) * 0.5).max(0.001);
-        self.quads.push(QuadInstance {
+        self.draw_commands.push(DrawCmd::Quad(QuadInstance {
             pos: [px1.min(px2), py1.min(py2)],
             size: [(px2 - px1).abs(), (py2 - py1).abs()],
             color,
@@ -738,14 +939,32 @@ impl RenderContext for InstancedRenderContext {
             _pad0: [0.0; 2],
             border_color: [0.0; 4],
             clip_rect: clip,
-        });
+        }));
     }
 
     fn stroke_rounded_rect(&mut self, x: f64, y: f64, w: f64, h: f64, radius: f64) {
-        // Approximate with the path-based default implementation
-        self.begin_path();
-        self.rounded_rect(x, y, w, h, radius);
-        self.stroke();
+        // Bug 3 fix: emit a direct QuadInstance with border_width instead of using
+        // the path-based fallback. This avoids the zero-radius arc artifacts entirely
+        // for the common case and is GPU-efficient (single SDF quad vs many line segments).
+        let (x, y, w, h) = (x as f32, y as f32, w as f32, h as f32);
+        let r = (radius as f32).min(w / 2.0).min(h / 2.0).max(0.0);
+        let border_color = self.apply_alpha(self.stroke_color);
+        let clip = self.current_clip();
+        let (px1, py1) = apply(&self.transform, x,     y);
+        let (px2, py2) = apply(&self.transform, x + w, y + h);
+        // Scale logical radius and stroke width to screen pixels (assumes uniform scale).
+        let scale = ((self.transform[0].abs() + self.transform[3].abs()) * 0.5).max(0.001);
+        self.draw_commands.push(DrawCmd::Quad(QuadInstance {
+            pos: [px1.min(px2), py1.min(py2)],
+            size: [(px2 - px1).abs(), (py2 - py1).abs()],
+            // Transparent fill — only the border is visible.
+            color: [0.0, 0.0, 0.0, 0.0],
+            corner_radius: r * scale,
+            border_width: self.stroke_width,
+            _pad0: [0.0; 2],
+            border_color,
+            clip_rect: clip,
+        }));
     }
 }
 

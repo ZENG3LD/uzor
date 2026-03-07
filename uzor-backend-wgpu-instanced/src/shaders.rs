@@ -103,15 +103,9 @@ fn sdf_rounded_rect(p: vec2<f32>, half: vec2<f32>, r: f32) -> f32 {
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     // ── Clip discard ──────────────────────────────────────────────────────
-    // in.clip_rect is in screen-space pixels (x, y, w, h)
-    // We need the actual pixel position = frag_pos + quad top-left.
-    // Since frag_pos is already relative to quad top-left, reconstruct
-    // the absolute pixel position from the built-in clip_pos.
-    // clip_pos.xy is in NDC; convert back to pixels:
-    let px_abs = vec2<f32>(
-        (in.clip_pos.x + 1.0) * 0.5 * uniforms.screen_size.x,
-        (1.0 - in.clip_pos.y) * 0.5 * uniforms.screen_size.y,
-    );
+    // @builtin(position) in the fragment stage is framebuffer pixel coords
+    // (x, y with origin at top-left), NOT NDC.
+    let px_abs = in.clip_pos.xy;
     let cr = in.clip_rect;
     if px_abs.x < cr.x || px_abs.y < cr.y
        || px_abs.x > cr.x + cr.z || px_abs.y > cr.y + cr.w {
@@ -236,6 +230,79 @@ fn fs_glyph(in: GlyphVsOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+/// Shader for rendering filled triangle instances with barycentric edge AA.
+///
+/// Vertex stage: selects one of the three triangle vertices based on `vertex_index`
+/// (0, 1, 2) and emits barycentric coordinates for edge anti-aliasing.
+///
+/// Fragment stage: discards fragments outside the clip rect, then applies
+/// smooth edge AA via barycentric minimum distance.
+pub const TRIANGLE_SHADER: &str = r#"
+struct Uniforms {
+    screen_size: vec2<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> uniforms: Uniforms;
+
+struct TriangleInstance {
+    @location(0) v0:        vec2<f32>,
+    @location(1) v1:        vec2<f32>,
+    @location(2) v2:        vec2<f32>,
+    @location(3) _pad0:     vec2<f32>,
+    @location(4) color:     vec4<f32>,
+    @location(5) clip_rect: vec4<f32>,
+};
+
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color:     vec4<f32>,
+    @location(1) clip_rect: vec4<f32>,
+    @location(2) bary:      vec3<f32>,
+};
+
+@vertex
+fn vs_main(
+    @builtin(vertex_index) vi: u32,
+    inst: TriangleInstance,
+) -> VertexOut {
+    var px: vec2<f32>;
+    var bary: vec3<f32>;
+    switch vi {
+        case 0u: { px = inst.v0; bary = vec3<f32>(1.0, 0.0, 0.0); }
+        case 1u: { px = inst.v1; bary = vec3<f32>(0.0, 1.0, 0.0); }
+        case 2u: { px = inst.v2; bary = vec3<f32>(0.0, 0.0, 1.0); }
+        default: { px = inst.v0; bary = vec3<f32>(1.0, 0.0, 0.0); }
+    }
+
+    let ndc = vec2<f32>(
+        px.x / uniforms.screen_size.x *  2.0 - 1.0,
+        px.y / uniforms.screen_size.y * -2.0 + 1.0,
+    );
+
+    var out: VertexOut;
+    out.position  = vec4<f32>(ndc, 0.0, 1.0);
+    out.color     = inst.color;
+    out.clip_rect = inst.clip_rect;
+    out.bary      = bary;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    let px_abs = in.position.xy;
+    let cr = in.clip_rect;
+    if px_abs.x < cr.x || px_abs.y < cr.y
+       || px_abs.x > cr.x + cr.z || px_abs.y > cr.y + cr.w {
+        discard;
+    }
+
+    // Flat color — no edge AA for triangle fan fill.
+    // Barycentric AA causes visible seams on internal fan edges.
+    return in.color;
+}
+"#;
+
 pub const LINE_SHADER: &str = r#"
 // ── Uniforms ───────────────────────────────────────────────────────────────
 struct Uniforms {
@@ -279,7 +346,7 @@ fn vs_main(
     @builtin(vertex_index) vertex_index: u32,
     inst: LineInstance,
 ) -> VertexOut {
-    let aa_pad   = 1.0;
+    let aa_pad   = 1.5;
     let hw       = inst.width * 0.5 + aa_pad;
 
     let dir = inst.end - inst.start;
@@ -334,9 +401,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 
     // ── Capsule SDF ───────────────────────────────────────────────────────
     let dist = sdf_capsule(in.frag_world, in.seg_start, in.seg_end, in.half_width);
-    let aa   = fwidth(dist);
+    // Clamp minimum AA kernel to 1px — prevents grainy diagonal lines
+    // when fwidth underestimates at non-axis-aligned angles.
+    let aa   = max(fwidth(dist), 1.0);
     let alpha = 1.0 - smoothstep(-aa, aa, dist);
-    if alpha <= 0.0 { discard; }
+    if alpha < 0.01 { discard; }
 
     var out_color = in.color;
     out_color.a *= alpha;

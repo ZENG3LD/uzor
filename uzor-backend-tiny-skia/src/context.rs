@@ -184,7 +184,7 @@ fn measure_text_width(text: &str, font_info: &FontInfo) -> f64 {
 /// Approximate an arc segment with cubic bezier curves appended to `pb`.
 ///
 /// Uses the standard 4-control-point approximation for each ≤90° segment.
-fn arc_to_cubics(pb: &mut PathBuilder, cx: f32, cy: f32, r: f32, start: f32, end: f32) {
+fn arc_to_cubics(pb: &mut PathBuilder, cx: f32, cy: f32, r: f32, start: f32, end: f32, has_current_point: bool) {
     let mut sweep = end - start;
     // Clamp sweep to avoid infinite loops
     if sweep == 0.0 { return; }
@@ -199,7 +199,13 @@ fn arc_to_cubics(pb: &mut PathBuilder, cx: f32, cy: f32, r: f32, start: f32, end
     let mut a = start;
     let start_x = cx + r * a.cos();
     let start_y = cy + r * a.sin();
-    pb.line_to(start_x, start_y);
+    // Canvas2D spec: line_to from current point to arc start, but if there
+    // is no current point (fresh path after begin_path), use move_to instead.
+    if has_current_point {
+        pb.line_to(start_x, start_y);
+    } else {
+        pb.move_to(start_x, start_y);
+    }
 
     for _ in 0..n_segs {
         let a1 = a + seg_angle;
@@ -235,6 +241,7 @@ fn ellipse_to_cubics(
     ry: f32,
     start: f32,
     end: f32,
+    has_current_point: bool,
 ) {
     let mut sweep = end - start;
     if sweep == 0.0 { return; }
@@ -248,7 +255,11 @@ fn ellipse_to_cubics(
     let mut a = start;
     let start_x = cx + rx * a.cos();
     let start_y = cy + ry * a.sin();
-    pb.line_to(start_x, start_y);
+    if has_current_point {
+        pb.line_to(start_x, start_y);
+    } else {
+        pb.move_to(start_x, start_y);
+    }
 
     for _ in 0..n_segs {
         let a1 = a + seg_angle;
@@ -316,6 +327,8 @@ pub struct TinySkiaCpuRenderContext {
     transform:     Transform,
     // Current path
     path_builder:  Option<PathBuilder>,
+    // Whether the current path has a subpath (move_to/line_to called since begin_path)
+    path_has_point: bool,
     // Save/restore
     state_stack:   Vec<SavedState>,
     current_clip:  Option<Mask>,
@@ -342,6 +355,7 @@ impl TinySkiaCpuRenderContext {
             text_baseline: TextBaseline::Middle,
             transform:     Transform::identity(),
             path_builder:  None,
+            path_has_point: false,
             state_stack:   Vec::new(),
             current_clip:  None,
             dpr,
@@ -431,6 +445,7 @@ impl TinySkiaCpuRenderContext {
     }
 
     fn take_path(&mut self) -> Option<Path> {
+        self.path_has_point = false;
         self.path_builder.take()?.finish()
     }
 
@@ -518,14 +533,17 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
 
     fn begin_path(&mut self) {
         self.path_builder = Some(PathBuilder::new());
+        self.path_has_point = false;
     }
 
     fn move_to(&mut self, x: f64, y: f64) {
         self.builder().move_to(x as f32, y as f32);
+        self.path_has_point = true;
     }
 
     fn line_to(&mut self, x: f64, y: f64) {
         self.builder().line_to(x as f32, y as f32);
+        self.path_has_point = true;
     }
 
     fn close_path(&mut self) {
@@ -539,12 +557,29 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
     }
 
     fn arc(&mut self, cx: f64, cy: f64, radius: f64, start_angle: f64, end_angle: f64) {
-        // Canvas2D arc() is clockwise by default
+        let sweep = (end_angle - start_angle).abs();
+        // Full circle — use native push_circle for perfect results
+        if sweep >= std::f64::consts::TAU - 0.001 {
+            let r = radius as f32;
+            if let Some(rect) = Rect::from_xywh(
+                (cx - radius) as f32,
+                (cy - radius) as f32,
+                r * 2.0,
+                r * 2.0,
+            ) {
+                self.builder().push_oval(rect);
+                self.path_has_point = true;
+                return;
+            }
+        }
+        let has_point = self.path_has_point;
         arc_to_cubics(
             self.builder(),
             cx as f32, cy as f32, radius as f32,
             start_angle as f32, end_angle as f32,
+            has_point,
         );
+        self.path_has_point = true;
     }
 
     fn ellipse(
@@ -557,11 +592,28 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
         start: f64,
         end: f64,
     ) {
+        let sweep = (end - start).abs();
+        // Full ellipse — use native push_oval
+        if sweep >= std::f64::consts::TAU - 0.001 {
+            if let Some(rect) = Rect::from_xywh(
+                (cx - rx) as f32,
+                (cy - ry) as f32,
+                (rx * 2.0) as f32,
+                (ry * 2.0) as f32,
+            ) {
+                self.builder().push_oval(rect);
+                self.path_has_point = true;
+                return;
+            }
+        }
+        let has_point = self.path_has_point;
         ellipse_to_cubics(
             self.builder(),
             cx as f32, cy as f32, rx as f32, ry as f32,
             start as f32, end as f32,
+            has_point,
         );
+        self.path_has_point = true;
     }
 
     fn quadratic_curve_to(&mut self, cpx: f64, cpy: f64, x: f64, y: f64) {
@@ -671,9 +723,11 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
             TextAlign::Left   => 0.0,
         };
 
-        // Approximate ascent ≈ 75% of font size for vertical alignment
-        let ascent  = px * 0.75;
-        let y_off   = match self.text_baseline {
+        // Use real font metrics for vertical alignment
+        let ascent = font.horizontal_line_metrics(px)
+            .map(|m| m.ascent)
+            .unwrap_or(px * 0.75);
+        let y_off = match self.text_baseline {
             TextBaseline::Top        => ascent,
             TextBaseline::Middle     => ascent / 2.0,
             TextBaseline::Bottom     => 0.0,

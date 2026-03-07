@@ -14,3 +14,5 @@ bytemuck = { version = "1", features = ["derive"] }
 cosmic-text = "0.12"
 skrifa = "0.40"
 etagere = "0.2"
+lyon_tessellation = "1.0"
+lyon_path = "1.0"

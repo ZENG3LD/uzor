@@ -34,7 +34,7 @@ mod text_atlas;
 
 pub use context::InstancedRenderContext;
 pub use glyph_instance::GlyphInstance;
-pub use instances::{LineInstance, QuadInstance};
+pub use instances::{DrawCmd, LineInstance, QuadInstance, TriangleInstance};
 pub use renderer::InstancedRenderer;
 pub use text::TextAreaData;
 pub use text_atlas::{GlyphAtlas, GlyphEntry};

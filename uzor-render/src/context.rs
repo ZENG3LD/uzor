@@ -185,6 +185,8 @@ pub trait RenderContext {
             std::f64::consts::PI,
             std::f64::consts::PI * 1.5,
         );
+        // Close the path back to the start point so stroke/fill form a complete shape.
+        self.close_path();
     }
 
     // =========================================================================

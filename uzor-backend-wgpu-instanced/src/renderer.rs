@@ -14,10 +14,30 @@ use cosmic_text::{
 use wgpu::util::DeviceExt;
 
 use crate::glyph_instance::GlyphInstance;
-use crate::instances::{LineInstance, QuadInstance};
-use crate::shaders::{GLYPH_SHADER, LINE_SHADER, QUAD_SHADER};
+use crate::instances::{DrawCmd, LineInstance, QuadInstance, TriangleInstance};
+use crate::shaders::{GLYPH_SHADER, LINE_SHADER, QUAD_SHADER, TRIANGLE_SHADER};
 use crate::text::TextAreaData;
 use crate::text_atlas::GlyphAtlas;
+
+// ── Batch type tag ────────────────────────────────────────────────────────────
+
+/// Identifies which GPU pipeline a batch uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BatchType {
+    Quad,
+    Triangle,
+    Line,
+    Glyph,
+}
+
+/// A contiguous range of same-type instances in the typed upload buffer.
+struct Batch {
+    batch_type: BatchType,
+    /// Start index in the per-type typed vec (quads / triangles / lines / glyphs).
+    start: u32,
+    /// Number of instances in this batch.
+    count: u32,
+}
 
 // ── Embedded Roboto fonts (same bytes already included by context.rs) ──────
 static ROBOTO_REGULAR: &[u8]     = include_bytes!("../fonts/Roboto-Regular.ttf");
@@ -99,6 +119,34 @@ fn line_instance_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
+/// Creates the vertex buffer layout for `TriangleInstance`.
+///
+/// TriangleInstance fields (64 bytes):
+///  0: v0         [f32;2]  @ offset  0
+///  1: v1         [f32;2]  @ offset  8
+///  2: v2         [f32;2]  @ offset 16
+///  3: _pad0      [f32;2]  @ offset 24
+///  4: color      [f32;4]  @ offset 32
+///  5: clip_rect  [f32;4]  @ offset 48
+fn triangle_instance_layout() -> wgpu::VertexBufferLayout<'static> {
+    use wgpu::VertexFormat::*;
+
+    static ATTRS: &[wgpu::VertexAttribute] = &[
+        wgpu::VertexAttribute { shader_location: 0, format: Float32x2, offset:  0 },
+        wgpu::VertexAttribute { shader_location: 1, format: Float32x2, offset:  8 },
+        wgpu::VertexAttribute { shader_location: 2, format: Float32x2, offset: 16 },
+        wgpu::VertexAttribute { shader_location: 3, format: Float32x2, offset: 24 },
+        wgpu::VertexAttribute { shader_location: 4, format: Float32x4, offset: 32 },
+        wgpu::VertexAttribute { shader_location: 5, format: Float32x4, offset: 48 },
+    ];
+
+    wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<TriangleInstance>() as wgpu::BufferAddress,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: ATTRS,
+    }
+}
+
 /// Creates the vertex buffer layout for `GlyphInstance`.
 ///
 /// GlyphInstance fields (64 bytes):
@@ -150,6 +198,11 @@ pub struct InstancedRenderer {
     line_pipeline: wgpu::RenderPipeline,
     line_buffer:   wgpu::Buffer,
     line_capacity: usize,
+
+    // Triangle pipeline
+    triangle_pipeline: wgpu::RenderPipeline,
+    triangle_buffer:   wgpu::Buffer,
+    triangle_capacity: usize,
 
     // Shared uniform buffer (screen_size) — group 0 for all pipelines
     uniform_buffer:     wgpu::Buffer,
@@ -286,6 +339,40 @@ impl InstancedRenderer {
             cache:         None,
         });
 
+        // ── Triangle pipeline ─────────────────────────────────────────────
+        let triangle_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("triangle_shader"),
+            source: wgpu::ShaderSource::Wgsl(TRIANGLE_SHADER.into()),
+        });
+        let triangle_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label:  Some("triangle_pipeline"),
+            layout: Some(&base_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module:              &triangle_shader,
+                entry_point:         Some("vs_main"),
+                buffers:             &[triangle_instance_layout()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module:              &triangle_shader,
+                entry_point:         Some("fs_main"),
+                targets:             &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(blend),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample:   wgpu::MultisampleState::default(),
+            multiview:     None,
+            cache:         None,
+        });
+
         // ── Glyph atlas ───────────────────────────────────────────────────
         let glyph_atlas = GlyphAtlas::new(device, ATLAS_SIZE, ATLAS_SIZE);
 
@@ -374,6 +461,8 @@ impl InstancedRenderer {
             device, INITIAL_CAPACITY, std::mem::size_of::<QuadInstance>());
         let line_buffer = make_instance_buffer(
             device, INITIAL_CAPACITY, std::mem::size_of::<LineInstance>());
+        let triangle_buffer = make_instance_buffer(
+            device, INITIAL_CAPACITY, std::mem::size_of::<TriangleInstance>());
         let glyph_buffer = make_instance_buffer(
             device, INITIAL_CAPACITY, std::mem::size_of::<GlyphInstance>());
 
@@ -397,6 +486,10 @@ impl InstancedRenderer {
             line_pipeline,
             line_buffer,
             line_capacity: INITIAL_CAPACITY,
+
+            triangle_pipeline,
+            triangle_buffer,
+            triangle_capacity: INITIAL_CAPACITY,
 
             uniform_buffer,
             uniform_bind_group,
@@ -469,13 +562,13 @@ impl InstancedRenderer {
             buffer.set_text(&mut self.font_system, &ta.text, attrs, Shaping::Advanced);
             buffer.shape_until_scroll(&mut self.font_system, false);
 
-            // Compute text-area top-left for alignment.
-            let ascent  = ta.font_size * 0.8; // approximate
-            let descent = ta.font_size * 0.2;
-            let (base_x, base_y) = ta.top_left(ascent, descent);
-
             // Iterate shaped glyphs.
             for run in buffer.layout_runs() {
+                // Use real metrics from cosmic-text for precise baseline alignment.
+                let real_ascent = run.line_y; // distance from buffer top to baseline
+                let real_descent = ta.font_size * 1.2 - real_ascent; // line_height - ascent
+                let (base_x, base_y) = ta.top_left(real_ascent, real_descent);
+
                 for glyph in run.glyphs.iter() {
                     // Obtain the physical (pixel-snapped) cache key.
                     let physical = glyph.physical((0.0, 0.0), 1.0);
@@ -493,8 +586,9 @@ impl InstancedRenderer {
                         None => continue, // whitespace or zero-size glyph
                     };
 
-                    // Position: run.line_y is the baseline Y within the buffer.
-                    // physical.x / physical.y are integer offsets within the run.
+                    // Position: base_y is the top of the text area (computed from
+                    // the real ascent), run.line_y is the baseline Y within the
+                    // buffer. Together they place the glyph at the correct baseline.
                     let glyph_x = base_x + physical.x as f32 + entry.placement_left as f32;
                     let glyph_y = base_y + run.line_y + physical.y as f32 - entry.placement_top as f32;
 
@@ -513,9 +607,17 @@ impl InstancedRenderer {
         instances
     }
 
-    /// Render a complete frame.
+    /// Render a complete frame from a unified draw command list.
     ///
-    /// `clear_color` is the background color applied via `LoadOp::Clear`.
+    /// Commands are processed in submission order (painter's order / z-order).
+    /// Consecutive same-type commands are coalesced into a single GPU draw call,
+    /// while commands of different types trigger a pipeline switch.
+    ///
+    /// `clear_color`: `Some(color)` → `LoadOp::Clear`, `None` → `LoadOp::Load`
+    /// (overlay on existing content).
+    ///
+    /// `scissor`: optional `(x, y, w, h)` scissor rect to restrict rendering
+    /// to a sub-region of the target (e.g. chart area only, excluding chrome).
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -523,10 +625,9 @@ impl InstancedRenderer {
         target: &wgpu::TextureView,
         width: u32,
         height: u32,
-        quads: &[QuadInstance],
-        lines: &[LineInstance],
-        text_areas: &[TextAreaData],
-        clear_color: wgpu::Color,
+        commands: &[DrawCmd],
+        clear_color: Option<wgpu::Color>,
+        scissor: Option<(u32, u32, u32, u32)>,
     ) {
         // ── Update uniforms ───────────────────────────────────────────────
         let uniforms = Uniforms {
@@ -535,24 +636,117 @@ impl InstancedRenderer {
         };
         queue.write_buffer(&self.uniform_buffer, 0, cast_slice(&[uniforms]));
 
-        // ── Upload quad + line instances ──────────────────────────────────
+        // ── Phase 1: Split commands into typed vecs, record batch boundaries ──
+        //
+        // We scan `commands` once and:
+        // - Route each command into its typed vec (quads / triangles / lines).
+        // - Rasterize text commands into glyph instances immediately.
+        // - Record a Batch whenever the type changes, so we can replay the
+        //   correct draw calls in order during the render pass.
+
+        let mut quads:     Vec<QuadInstance>     = Vec::new();
+        let mut triangles: Vec<TriangleInstance> = Vec::new();
+        let mut lines:     Vec<LineInstance>     = Vec::new();
+        let mut glyphs:    Vec<GlyphInstance>    = Vec::new();
+        let mut batches:   Vec<Batch>            = Vec::new();
+
+        // Collect TextAreaData references so we can rasterize them in one pass
+        // (build_glyph_instances takes a slice).  We accumulate per-text-batch
+        // ranges so we can record the correct (start, count) per batch.
+        // For simplicity we rasterize each TextAreaData individually and track
+        // the glyph range produced.
+        for cmd in commands {
+            match cmd {
+                DrawCmd::Quad(q) => {
+                    let needs_new_batch = batches
+                        .last()
+                        .map_or(true, |b: &Batch| b.batch_type != BatchType::Quad);
+                    if needs_new_batch {
+                        batches.push(Batch {
+                            batch_type: BatchType::Quad,
+                            start: quads.len() as u32,
+                            count: 0,
+                        });
+                    }
+                    quads.push(*q);
+                    batches.last_mut().unwrap().count += 1;
+                }
+                DrawCmd::Triangle(t) => {
+                    let needs_new_batch = batches
+                        .last()
+                        .map_or(true, |b: &Batch| b.batch_type != BatchType::Triangle);
+                    if needs_new_batch {
+                        batches.push(Batch {
+                            batch_type: BatchType::Triangle,
+                            start: triangles.len() as u32,
+                            count: 0,
+                        });
+                    }
+                    triangles.push(*t);
+                    batches.last_mut().unwrap().count += 1;
+                }
+                DrawCmd::Line(l) => {
+                    let needs_new_batch = batches
+                        .last()
+                        .map_or(true, |b: &Batch| b.batch_type != BatchType::Line);
+                    if needs_new_batch {
+                        batches.push(Batch {
+                            batch_type: BatchType::Line,
+                            start: lines.len() as u32,
+                            count: 0,
+                        });
+                    }
+                    lines.push(*l);
+                    batches.last_mut().unwrap().count += 1;
+                }
+                DrawCmd::Text(ta) => {
+                    // Rasterize this single text area into glyph instances.
+                    // We always start a new Glyph batch here (text areas are
+                    // never auto-coalesced across other command types).
+                    let glyph_start = glyphs.len() as u32;
+                    let new_glyphs = self.build_glyph_instances(device, queue, std::slice::from_ref(ta));
+                    let glyph_count = new_glyphs.len() as u32;
+                    glyphs.extend(new_glyphs);
+
+                    if glyph_count > 0 {
+                        // Coalesce consecutive text batches into one draw call
+                        // (they share the same pipeline and bind groups).
+                        let needs_new_batch = batches
+                            .last()
+                            .map_or(true, |b: &Batch| b.batch_type != BatchType::Glyph);
+                        if needs_new_batch {
+                            batches.push(Batch {
+                                batch_type: BatchType::Glyph,
+                                start: glyph_start,
+                                count: glyph_count,
+                            });
+                        } else {
+                            batches.last_mut().unwrap().count += glyph_count;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Phase 2: Upload all typed buffers to GPU ──────────────────────
+
         Self::upload_instances(
             device, queue,
             &mut self.quad_buffer, &mut self.quad_capacity,
-            quads,
+            &quads,
+        );
+        Self::upload_instances(
+            device, queue,
+            &mut self.triangle_buffer, &mut self.triangle_capacity,
+            &triangles,
         );
         Self::upload_instances(
             device, queue,
             &mut self.line_buffer, &mut self.line_capacity,
-            lines,
+            &lines,
         );
 
-        // ── Build glyph instances (shapes text, uploads to atlas) ─────────
-        let glyph_instances = self.build_glyph_instances(device, queue, text_areas);
-
-        // Rebuild atlas bind group after atlas uploads (texture is stable, just
-        // re-bind in case the atlas was recreated — currently it is not, but
-        // this keeps the code safe).
+        // Rebuild atlas bind group after glyph atlas uploads.
         let atlas_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("atlas_bg"),
             layout:  &self.atlas_bind_group_layout,
@@ -572,10 +766,10 @@ impl InstancedRenderer {
         Self::upload_instances(
             device, queue,
             &mut self.glyph_buffer, &mut self.glyph_capacity,
-            &glyph_instances,
+            &glyphs,
         );
 
-        // ── Command encoder + render pass ─────────────────────────────────
+        // ── Phase 3: Command encoder + render pass with ordered batches ────
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("instanced_encoder"),
         });
@@ -588,7 +782,10 @@ impl InstancedRenderer {
                     resolve_target: None,
                     depth_slice:    None,
                     ops: wgpu::Operations {
-                        load:  wgpu::LoadOp::Clear(clear_color),
+                        load: match clear_color {
+                            Some(c) => wgpu::LoadOp::Clear(c),
+                            None    => wgpu::LoadOp::Load,
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -599,27 +796,64 @@ impl InstancedRenderer {
 
             pass.set_bind_group(0, &self.uniform_bind_group, &[]);
 
-            // Draw call 1: quads
-            if !quads.is_empty() {
-                pass.set_pipeline(&self.quad_pipeline);
-                pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
-                pass.draw(0..6, 0..quads.len() as u32);
+            if let Some((sx, sy, sw, sh)) = scissor {
+                pass.set_scissor_rect(sx, sy, sw, sh);
             }
 
-            // Draw call 2: lines
-            if !lines.is_empty() {
-                pass.set_pipeline(&self.line_pipeline);
-                pass.set_vertex_buffer(0, self.line_buffer.slice(..));
-                pass.draw(0..6, 0..lines.len() as u32);
-            }
+            // Execute batches in submission order — this preserves painter's z-order.
+            let mut current_pipeline = BatchType::Quad; // track to avoid redundant set_pipeline
+            let mut pipeline_set = false;
 
-            // Draw call 3: glyphs
-            if !glyph_instances.is_empty() {
-                pass.set_pipeline(&self.glyph_pipeline);
-                pass.set_bind_group(1, &self.atlas_bind_group, &[]);
-                pass.set_vertex_buffer(0, self.glyph_buffer.slice(..));
-                // Triangle strip: 4 vertices per quad (0-1-2-3 → two triangles).
-                pass.draw(0..4, 0..glyph_instances.len() as u32);
+            for batch in &batches {
+                if batch.count == 0 {
+                    continue;
+                }
+                let start = batch.start;
+                let end = batch.start + batch.count;
+
+                match batch.batch_type {
+                    BatchType::Quad => {
+                        if !pipeline_set || current_pipeline != BatchType::Quad {
+                            pass.set_pipeline(&self.quad_pipeline);
+                            pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
+                            current_pipeline = BatchType::Quad;
+                            pipeline_set = true;
+                        }
+                        // 6 vertices per instance (2 triangles forming a quad).
+                        pass.draw(0..6, start..end);
+                    }
+                    BatchType::Triangle => {
+                        if !pipeline_set || current_pipeline != BatchType::Triangle {
+                            pass.set_pipeline(&self.triangle_pipeline);
+                            pass.set_vertex_buffer(0, self.triangle_buffer.slice(..));
+                            current_pipeline = BatchType::Triangle;
+                            pipeline_set = true;
+                        }
+                        // 3 vertices per triangle instance.
+                        pass.draw(0..3, start..end);
+                    }
+                    BatchType::Line => {
+                        if !pipeline_set || current_pipeline != BatchType::Line {
+                            pass.set_pipeline(&self.line_pipeline);
+                            pass.set_vertex_buffer(0, self.line_buffer.slice(..));
+                            current_pipeline = BatchType::Line;
+                            pipeline_set = true;
+                        }
+                        // 6 vertices per instance (oriented quad enclosing the segment).
+                        pass.draw(0..6, start..end);
+                    }
+                    BatchType::Glyph => {
+                        if !pipeline_set || current_pipeline != BatchType::Glyph {
+                            pass.set_pipeline(&self.glyph_pipeline);
+                            pass.set_bind_group(1, &self.atlas_bind_group, &[]);
+                            pass.set_vertex_buffer(0, self.glyph_buffer.slice(..));
+                            current_pipeline = BatchType::Glyph;
+                            pipeline_set = true;
+                        }
+                        // Triangle strip: 4 vertices per glyph quad.
+                        pass.draw(0..4, start..end);
+                    }
+                }
             }
         }
 
