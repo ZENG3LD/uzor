@@ -1,4 +1,3 @@
-use rand::Rng;
 
 /// Decrypted text scramble/reveal effect.
 ///
@@ -86,8 +85,6 @@ impl DecryptedTextState {
             return self.current_text.clone();
         }
 
-        let mut rng = rand::thread_rng();
-
         if config.sequential {
             // Sequential mode: reveal one character per iteration
             let revealed_count = self.revealed_indices.iter().filter(|&&r| r).count();
@@ -99,7 +96,7 @@ impl DecryptedTextState {
                 }
 
                 // Scramble unrevealed characters
-                self.current_text = self.shuffle_text(config, &mut rng);
+                self.current_text = self.shuffle_text(config);
             } else {
                 self.is_complete = true;
                 self.current_text = self.original_text.clone();
@@ -112,7 +109,7 @@ impl DecryptedTextState {
                 self.is_complete = true;
                 self.current_text = self.original_text.clone();
             } else {
-                self.current_text = self.shuffle_text(config, &mut rng);
+                self.current_text = self.shuffle_text(config);
             }
         }
 
@@ -157,11 +154,7 @@ impl DecryptedTextState {
     }
 
     /// Shuffle unrevealed characters.
-    fn shuffle_text(
-        &self,
-        config: &DecryptedTextConfig,
-        rng: &mut impl Rng,
-    ) -> Vec<char> {
+    fn shuffle_text(&self, config: &DecryptedTextConfig) -> Vec<char> {
         if config.use_original_chars_only {
             // Use only characters from original text (excluding spaces)
             let available_chars: Vec<char> = self
@@ -175,7 +168,7 @@ impl DecryptedTextState {
             let mut shuffled_chars = available_chars.clone();
             // Fisher-Yates shuffle
             for i in (1..shuffled_chars.len()).rev() {
-                let j = rng.gen_range(0..=i);
+                let j = fastrand::usize(0..=i);
                 shuffled_chars.swap(i, j);
             }
 
@@ -210,7 +203,7 @@ impl DecryptedTextState {
                     } else if config.sequential && self.revealed_indices[i] {
                         self.original_text[i]
                     } else if !available_chars.is_empty() {
-                        available_chars[rng.gen_range(0..available_chars.len())]
+                        available_chars[fastrand::usize(0..available_chars.len())]
                     } else {
                         c
                     }

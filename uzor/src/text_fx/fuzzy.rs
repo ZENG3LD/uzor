@@ -1,4 +1,3 @@
-use rand::Rng;
 
 /// Fuzzy text scanline distortion effect.
 ///
@@ -134,7 +133,6 @@ impl FuzzyTextState {
         num_rows: usize,
         config: &FuzzyTextConfig,
     ) -> Vec<(f32, f32)> {
-        let mut rng = rand::thread_rng();
         let intensity = self.current_intensity;
 
         (0..num_rows)
@@ -143,7 +141,7 @@ impl FuzzyTextState {
                     config.direction,
                     FuzzyDirection::Horizontal | FuzzyDirection::Both
                 ) {
-                    intensity * (rng.gen::<f32>() - 0.5) * config.fuzz_range
+                    intensity * (fastrand::f32() - 0.5) * config.fuzz_range
                 } else {
                     0.0
                 };
@@ -152,7 +150,7 @@ impl FuzzyTextState {
                     config.direction,
                     FuzzyDirection::Vertical | FuzzyDirection::Both
                 ) {
-                    intensity * (rng.gen::<f32>() - 0.5) * config.fuzz_range * 0.5
+                    intensity * (fastrand::f32() - 0.5) * config.fuzz_range * 0.5
                 } else {
                     0.0
                 };
