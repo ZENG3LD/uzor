@@ -19,6 +19,9 @@ UZOR is a **low-level UI framework** that handles geometry, interaction detectio
 2. **Interaction Detection** — Hover, click, drag, scroll on rects
 3. **RenderContext Trait** — Canvas2D-style API with multiple backend implementations
 4. **Layout Helpers** — Alignment, stacking, grid layout utilities
+5. **Panel System** — Dockable, resizable panel management
+6. **Animation Engine** — Spring physics, easing, coordinated animations
+7. **UI Widgets** — Buttons, dropdowns, sliders, text inputs, toasts, and more
 
 ### What UZOR Does NOT Do
 
@@ -29,73 +32,82 @@ UZOR is a **low-level UI framework** that handles geometry, interaction detectio
 ## Quick Start
 
 ```toml
-# Cargo.toml — the `uzor` facade crate re-exports everything
 [dependencies]
-uzor = "1.0"  # default: vello-gpu backend
-
-# Or pick a specific backend:
-uzor = { version = "1.0", default-features = false, features = ["tiny-skia"] }
-uzor = { version = "1.0", default-features = false, features = ["vello-cpu"] }
-```
-
-## Rendering Backends
-
-UZOR's `RenderContext` trait is a pure Canvas2D-style API (33 methods, zero dependencies). Multiple backends implement it:
-
-| Backend | Crate | GPU? | Platform | Notes |
-|---------|-------|------|----------|-------|
-| **Vello GPU** | `uzor-backend-vello-gpu` | Yes | Desktop/WASM | Default. vello 0.6 + wgpu |
-| **Vello CPU** | `uzor-backend-vello-cpu` | No | Desktop | vello_cpu 0.0.6, pure software |
-| **Vello Hybrid** | `uzor-backend-vello-hybrid` | Mixed | Desktop | vello_hybrid 0.0.6 |
-| **tiny-skia** | `uzor-backend-tiny-skia` | No | Desktop | tiny-skia 0.11 + fontdue |
-| **Canvas2D** | `uzor-backend-canvas2d` | No | WASM | Browser Canvas2D via web-sys |
-
-### Feature Flags
-
-```toml
-# Individual backends
-uzor = { version = "1.0", features = ["vello-gpu"] }     # default
-uzor = { version = "1.0", features = ["vello-cpu"] }
-uzor = { version = "1.0", features = ["vello-hybrid"] }
-uzor = { version = "1.0", features = ["tiny-skia"] }
-uzor = { version = "1.0", features = ["canvas2d"] }
-
-# Convenience groups
-uzor = { version = "1.0", features = ["all-cpu"] }       # vello-cpu + tiny-skia
-uzor = { version = "1.0", features = ["all-gpu"] }       # vello-gpu + vello-hybrid
-uzor = { version = "1.0", features = ["all-wasm"] }      # canvas2d
+uzor = "1.0"                    # core library (zero platform deps)
+uzor-backend-vello-gpu = "1.0"  # pick a rendering backend
+uzor-desktop = "1.0"            # pick a platform handler
 ```
 
 ## Architecture
+
+UZOR is organized into three layers:
 
 ```
 ┌─────────────────────────────────────────────────────┐
 │  Your Application                                   │
 │  - Owns all visual rendering                        │
 │  - Owns business logic and state                    │
-│  - Uses uzor-core for geometry + interaction        │
+│  - Uses uzor for geometry + interaction + widgets   │
 │  - Uses RenderContext to draw                       │
 └─────────────────────────────────────────────────────┘
-                         |
+                         │
           ┌──────────────┼──────────────┐
           ▼              ▼              ▼
    ┌────────────┐ ┌────────────┐ ┌────────────┐
-   │ uzor-core  │ │uzor-layout │ │uzor-render │
-   │ Geometry   │ │ Helpers    │ │ Trait API  │
-   │ Interaction│ │ (optional) │ │            │
-   └────────────┘ └────────────┘ └─────┬──────┘
-                                       │
-                    ┌──────────────┬────┴────┬──────────────┐
-                    ▼              ▼         ▼              ▼
-             ┌───────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
-             │ vello-gpu │ │vello-cpu │ │tiny-skia │ │canvas2d  │
-             └───────────┘ └──────────┘ └──────────┘ └──────────┘
+   │   uzor     │ │  Backends  │ │ Platforms  │
+   │ (core lib) │ │ (renderers)│ │ (handlers) │
+   └────────────┘ └────────────┘ └────────────┘
 ```
+
+### Core: `uzor`
+
+Single crate, zero platform dependencies. Contains everything:
+
+| Module | Description |
+|--------|-------------|
+| `uzor::input` | Input state, event processing, interaction detection |
+| `uzor::render` | `RenderContext` trait (Canvas2D-style API) |
+| `uzor::widgets` | Buttons, dropdowns, sliders, text inputs, toasts |
+| `uzor::panels` | Dockable panel system with drag, resize, tabs |
+| `uzor::animation` | Spring physics, easing, timeline, coordinated recipes |
+| `uzor::layout_helpers` | Alignment, stacking, sizing utilities |
+| `uzor::macos` | macOS-style widget themes and colors |
+| `uzor::interactive` | Elastic sliders, spotlights, animated lists |
+| `uzor::text_fx` | Text effects: decrypt, fuzzy, gradient, shiny |
+| `uzor::cursor` | Cursor effects: blob, click spark, glare, magnet |
+| `uzor::numbers` | Animated number counters |
+| `uzor::scroll_fx` | Scroll effects: float, reveal, velocity |
+
+### Backends (renderers)
+
+Each backend implements the `RenderContext` trait:
+
+| Crate | GPU? | Platform | Notes |
+|-------|------|----------|-------|
+| `uzor-backend-vello-gpu` | Yes | Desktop/WASM | vello 0.6 + wgpu |
+| `uzor-backend-vello-cpu` | No | Desktop | vello_cpu, pure software |
+| `uzor-backend-vello-hybrid` | Mixed | Desktop | vello_hybrid |
+| `uzor-backend-tiny-skia` | No | Desktop | tiny-skia + fontdue |
+| `uzor-backend-canvas2d` | No | WASM | Browser Canvas2D via web-sys |
+| `uzor-backend-wgpu-instanced` | Yes | Desktop | Instanced quads/lines/text, 3 draw calls |
+
+Shared vello utilities live in `uzor-backend-vello-common`.
+
+### Platforms (handlers)
+
+Window management and event loop integration:
+
+| Crate | Platform | Dependencies |
+|-------|----------|--------------|
+| `uzor-desktop` | Desktop | winit |
+| `uzor-web` | Browser/WASM | web-sys |
+| `uzor-mobile` | iOS/Android | winit (mobile) |
+| `uzor-tui` | Terminal | crossterm |
 
 ## Example
 
 ```rust
-use uzor_core::{Context, WidgetId, Rect, WidgetState};
+use uzor::{Context, WidgetId, Rect, WidgetState};
 
 // 1. Register a rect with UZOR
 let button_id = WidgetId::new("my_button");
@@ -117,31 +129,6 @@ render_ctx.set_fill_color(color);
 render_ctx.fill_rect(response.rect.x, response.rect.y, 200.0, 40.0);
 ```
 
-## Crate Map
-
-| Crate | Description |
-|-------|-------------|
-| `uzor` | Facade — re-exports core + render + feature-gated backends |
-| `uzor-core` | Core engine: geometry, interaction, input state |
-| `uzor-render` | `RenderContext` trait (Canvas2D-style, zero deps) |
-| `uzor-layout` | Layout helpers: alignment, stacking, grid |
-| `uzor-animation` | Animation utilities |
-| `uzor-desktop` | Desktop backend (winit integration) |
-| `uzor-web` | Web/WASM backend |
-| `uzor-backend-vello-gpu` | GPU rendering via vello + wgpu |
-| `uzor-backend-vello-cpu` | CPU rendering via vello_cpu |
-| `uzor-backend-vello-hybrid` | Hybrid rendering via vello_hybrid |
-| `uzor-backend-vello-common` | Shared utilities for vello backends |
-| `uzor-backend-tiny-skia` | CPU rendering via tiny-skia |
-| `uzor-backend-canvas2d` | Browser Canvas2D via web-sys |
-
-## Design Principles
-
-1. **Core is rendering-agnostic** — no `draw_*` calls in uzor-core
-2. **Applications control visuals** — UZOR never enforces style
-3. **Backends are isolated** — core has zero platform dependencies
-4. **Pick your level of control** — use core directly, or layout helpers, or both
-
 ## `RenderContext` Trait
 
 The rendering trait follows the Canvas2D API pattern:
@@ -151,7 +138,6 @@ pub trait RenderContext {
     // State
     fn save(&mut self);
     fn restore(&mut self);
-    fn set_transform(&mut self, a: f64, b: f64, c: f64, d: f64, e: f64, f: f64);
 
     // Shapes
     fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64);
@@ -167,9 +153,9 @@ pub trait RenderContext {
     fn stroke(&mut self);
 
     // Style
-    fn set_fill_color(&mut self, color: &str);    // CSS hex: "#ff0000"
+    fn set_fill_color(&mut self, color: &str);
     fn set_stroke_color(&mut self, color: &str);
-    fn set_line_width(&mut self, width: f64);
+    fn set_stroke_width(&mut self, width: f64);
     fn set_global_alpha(&mut self, alpha: f64);
 
     // Text
@@ -177,14 +163,18 @@ pub trait RenderContext {
     fn measure_text(&self, text: &str) -> f64;
     fn set_font(&mut self, font: &str);
 
-    // Clipping
-    fn clip_rect(&mut self, x: f64, y: f64, w: f64, h: f64);
-
     // ... and more
 }
 ```
 
 All coordinates are `f64`, colors are CSS hex strings. Any backend that implements this trait is plug-and-play.
+
+## Design Principles
+
+1. **Core is rendering-agnostic** — no platform dependencies in `uzor`
+2. **Applications control visuals** — UZOR never enforces style
+3. **Backends are isolated** — each is a separate crate with its own deps
+4. **Pick your level of control** — use core directly, or widgets, or both
 
 ## Support the Project
 
