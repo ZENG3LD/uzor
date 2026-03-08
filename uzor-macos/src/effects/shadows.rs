@@ -1,1 +1,0 @@
-//! macOS shadow effect definitions

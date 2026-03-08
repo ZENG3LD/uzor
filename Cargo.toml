@@ -15,8 +15,6 @@ members = [
     "uzor-backend-tiny-skia",
     "uzor-backend-canvas2d",
     "uzor-backend-wgpu-instanced",
-    # Facade (feature-gated re-exports)
-    "uzor-facade",
 ]
 resolver = "2"
 
