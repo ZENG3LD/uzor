@@ -29,6 +29,17 @@ UZOR is a **low-level UI framework** that handles geometry, interaction detectio
 - Does NOT contain business logic (your app owns state and handlers)
 - Does NOT make rendering decisions (your app uses RenderContext to draw)
 
+## Documentation
+
+Detailed technical reference is in [`uzor/docs/`](uzor/docs/):
+
+| Guide | Contents |
+|-------|----------|
+| [01-core.md](uzor/docs/01-core.md) | Context, Types (Rect, WidgetId), Input System (InputCoordinator, z-order layers, Sense, hit testing), Layout engine |
+| [02-render-widgets.md](uzor/docs/02-render-widgets.md) | RenderContext trait (all methods), SVG rendering, Icon system, all Widgets (button, dropdown, slider, text input, toast, etc.) |
+| [03-panels-animation.md](uzor/docs/03-panels-animation.md) | Docking panel system (DockingManager, tabs, drag-and-drop, floating windows), Animation engine (spring, easing, decay, timeline, recipes) |
+| [04-fx-themes-platform.md](uzor/docs/04-fx-themes-platform.md) | macOS theme system, Interactive/Text/Cursor/Scroll effects, Number animation, Platform abstraction, State registry |
+
 ## Quick Start
 
 ```toml
