@@ -41,7 +41,7 @@ jobs:
           VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           echo "Workspace version: $VERSION"
 
-          # Check if crate+version already exists on crates.io (fast, no compilation)
+          # Check if crate+version already exists on crates.io
           is_published() {
             local pkg="$1"
             local ver="$2"
@@ -57,7 +57,6 @@ jobs:
             local pkg="$1"
             echo "::group::Publishing $pkg"
 
-            # Fast check via API — no cargo needed
             if is_published "$pkg" "$VERSION"; then
               echo "✓ $pkg $VERSION already on crates.io, skipping"
               echo "::endgroup::"
@@ -126,36 +125,26 @@ jobs:
 
           FAILED=""
 
-          echo "=== TIER 1 ==="
-          pub uzor-render 30
-          pub uzor-animation 60
+          # TIER 1: Core library (no workspace deps)
+          echo "=== TIER 1: Core ==="
+          pub uzor 60
 
-          echo "=== TIER 2 ==="
-          pub uzor-core 60
+          # TIER 2: Backends (depend on uzor)
+          echo "=== TIER 2: Backends ==="
           pub uzor-backend-vello-common 60
           pub uzor-backend-vello-gpu 60
           pub uzor-backend-vello-cpu 60
           pub uzor-backend-vello-hybrid 60
           pub uzor-backend-tiny-skia 60
-          pub uzor-backend-canvas2d 120
+          pub uzor-backend-canvas2d 60
+          pub uzor-backend-wgpu-instanced 120
 
-          echo "=== TIER 3 ==="
-          pub uzor-layout 60
+          # TIER 3: Platform handlers (depend on uzor)
+          echo "=== TIER 3: Platforms ==="
           pub uzor-desktop 60
           pub uzor-web 60
           pub uzor-mobile 60
-          pub uzor-tui 60
-          pub uzor-macos 60
-          pub uzor-panels 60
-          pub uzor-numbers 60
-          pub uzor-text-fx 60
-          pub uzor-cursor 60
-          pub uzor-scroll-fx 60
-          pub uzor-interactive 60
-          pub uzor-panel-api 120
-
-          echo "=== TIER 4 ==="
-          pub uzor 0
+          pub uzor-tui 0
 
           if [ -n "$FAILED" ]; then
             echo ""
