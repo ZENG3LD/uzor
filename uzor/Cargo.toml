@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Core UI engine — geometry, interaction, input state"
+readme = "../README.md"
 
 [dependencies]
 serde = { workspace = true }

@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Terminal UI backend for uzor"
+readme = "../README.md"
 
 [dependencies]
 crossterm = "0.28"

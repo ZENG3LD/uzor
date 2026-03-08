@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Hybrid CPU/GPU rendering backend using vello_hybrid"
+readme = "../README.md"
 
 [dependencies]
 uzor = { workspace = true }

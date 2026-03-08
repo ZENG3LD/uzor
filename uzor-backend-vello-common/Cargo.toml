@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Shared utilities for vello-based backends"
+readme = "../README.md"
 
 [dependencies]
 uzor = { workspace = true }

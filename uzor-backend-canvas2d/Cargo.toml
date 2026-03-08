@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Web Canvas2D rendering backend for WASM"
+readme = "../README.md"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Desktop backend for uzor (winit integration)"
+readme = "../README.md"
 
 [dependencies]
 uzor = { workspace = true, features = ["serde"] }

@@ -6,6 +6,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Mobile backend for uzor (iOS/Android)"
+readme = "../README.md"
 
 [features]
 default = []
