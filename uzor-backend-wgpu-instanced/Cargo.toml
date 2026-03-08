@@ -8,7 +8,7 @@ homepage.workspace = true
 description = "High-performance instanced wgpu rendering backend"
 
 [dependencies]
-uzor-render = { workspace = true }
+uzor-core = { workspace = true }
 wgpu = "27"
 bytemuck = { version = "1", features = ["derive"] }
 cosmic-text = "0.12"

@@ -10,8 +10,8 @@ description = "Panel system for uzor UI framework"
 [dependencies]
 serde = { workspace = true }
 serde_json = "1.0"
-uzor-animation = { workspace = true, optional = true }
+uzor-core = { workspace = true }
 
 [features]
 default = ["animation"]
-animation = ["uzor-animation"]
+animation = []

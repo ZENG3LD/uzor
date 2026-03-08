@@ -21,7 +21,7 @@ use tiny_skia::{
     Shader, Stroke, StrokeDash, Transform,
 };
 
-use uzor_render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlign, TextBaseline};
+use uzor_core::render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlign, TextBaseline};
 
 // ---------------------------------------------------------------------------
 // Embedded fonts

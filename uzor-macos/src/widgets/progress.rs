@@ -1,6 +1,6 @@
 //! macOS progress widget renderer
 
-use uzor_render::RenderContext;
+use uzor_core::render::RenderContext;
 use crate::themes::progress::{ProgressTheme, ProgressSize};
 use std::f64::consts::PI;
 
@@ -75,7 +75,7 @@ pub fn render_progress_ring(
 mod tests {
     use super::*;
     use crate::colors::AppearanceMode;
-    use uzor_render::{TextAlign, TextBaseline};
+    use uzor_core::render::{TextAlign, TextBaseline};
 
     // Mock RenderContext for testing
     struct MockContext;

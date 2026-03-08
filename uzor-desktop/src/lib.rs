@@ -1,14 +1,16 @@
-//! Desktop backend for uzor using winit and vello
+//! Desktop backend for uzor using winit
 //!
 //! This crate provides the desktop platform implementation for uzor,
 //! supporting Windows, macOS, and Linux.
+//!
+//! Rendering is intentionally out of scope — consumers bring their own
+//! backend (vello, wgpu-instanced, tiny-skia, …) and receive a raw
+//! `Arc<winit::window::Window>` via the event callback.
 
 pub use uzor_core;
 
-// Re-export platform dependencies to avoid version conflicts
-pub use vello;
+// Re-export windowing dependency to avoid version conflicts
 pub use winit;
-pub use pollster;
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};

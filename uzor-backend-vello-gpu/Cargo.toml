@@ -8,6 +8,6 @@ homepage.workspace = true
 description = "GPU rendering backend using vello + wgpu"
 
 [dependencies]
-uzor-render = { workspace = true }
+uzor-core = { workspace = true }
 vello = "0.7"
 skrifa = "0.40"

@@ -33,7 +33,7 @@
 
 // --- Always-available re-exports -------------------------------------------------
 
-pub use uzor_render::{
+pub use uzor_core::render::{
     RenderContext, RenderContextExt, RenderOp, RenderOps, TextAlign, TextBaseline,
     crisp, crisp_rect, draw_svg_icon, draw_svg_icon_rotated, execute_ops, icons,
 };

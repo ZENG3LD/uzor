@@ -36,7 +36,7 @@
 //! let (width, height) = render_menu(&mut ctx, 100.0, 100.0, &items, &theme);
 //! ```
 
-use uzor_render::{RenderContext, TextAlign, TextBaseline, draw_svg_icon};
+use uzor_core::render::{RenderContext, TextAlign, TextBaseline, draw_svg_icon};
 use crate::colors::WidgetState;
 use crate::themes::menu::{MenuTheme, MenuItemKind};
 use crate::icons::paths;

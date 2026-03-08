@@ -52,7 +52,7 @@ struct SpringState {
     /// Initial offset (displacement from target)
     initial_offset: f64,
     /// Spring configuration
-    spring: uzor_animation::Spring,
+    spring: uzor_core::animation::Spring,
 }
 
 #[cfg(not(feature = "animation"))]
@@ -84,7 +84,7 @@ impl SnapBackAnimation {
         #[cfg(feature = "animation")]
         {
             // Use analytical spring solution
-            let spring = uzor_animation::Spring::new()
+            let spring = uzor_core::animation::Spring::new()
                 .stiffness(300.0)
                 .damping(20.0)
                 .mass(1.0)

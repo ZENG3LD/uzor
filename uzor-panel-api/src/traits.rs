@@ -3,7 +3,7 @@
 //! The core trait that panel crates implement to become autonomous applications
 //! within the terminal.
 
-use uzor_render::RenderContext;
+use uzor_core::render::RenderContext;
 use crate::types::{PanelRect, PanelInput, PanelTheme};
 use crate::toolbar::PanelToolbarDef;
 

@@ -9,17 +9,9 @@ description = "Desktop backend for uzor (winit integration)"
 
 [dependencies]
 uzor-core = { workspace = true, features = ["serde"] }
-uzor-render = { workspace = true }
-
-# Graphics Stack (for RenderSurface provider)
-vello = "0.7"
-wgpu = "27"
 
 # Windowing and events
 winit = "0.30"
-
-# Async executor for vello surface creation
-pollster = "0.3"
 
 # Platform integration
 arboard = "3"
@@ -28,5 +20,4 @@ arboard = "3"
 dark-light = "1.0"
 
 [dev-dependencies]
-pollster = "0.3"
 env_logger = "0.11"

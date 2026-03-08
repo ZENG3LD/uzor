@@ -1,6 +1,6 @@
 //! macOS switch toggle widget renderer
 
-use uzor_render::RenderContext;
+use uzor_core::render::RenderContext;
 use crate::colors::WidgetState;
 use crate::themes::switch_toggle::SwitchTheme;
 use std::f64::consts::PI;
@@ -165,8 +165,8 @@ mod tests {
         fn set_font(&mut self, _font: &str) {}
         fn fill_text(&mut self, _text: &str, _x: f64, _y: f64) {}
         fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {}
-        fn set_text_align(&mut self, _align: uzor_render::TextAlign) {}
-        fn set_text_baseline(&mut self, _baseline: uzor_render::TextBaseline) {}
+        fn set_text_align(&mut self, _align: uzor_core::render::TextAlign) {}
+        fn set_text_baseline(&mut self, _baseline: uzor_core::render::TextBaseline) {}
         fn begin_path(&mut self) {}
         fn move_to(&mut self, _x: f64, _y: f64) {}
         fn line_to(&mut self, _x: f64, _y: f64) {}

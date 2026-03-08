@@ -72,7 +72,7 @@ use wgpu::{CommandEncoder, Device, Queue, TextureView};
 // uzor-render trait
 // ---------------------------------------------------------------------------
 
-use uzor_render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlign, TextBaseline};
+use uzor_core::render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlign, TextBaseline};
 
 // ---------------------------------------------------------------------------
 // Embedded fonts — shared with the CPU backend's font directory

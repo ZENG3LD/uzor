@@ -16,7 +16,7 @@
 //! This creates a slot-machine effect where digits roll smoothly.
 
 #[cfg(feature = "animation")]
-use uzor_animation::Spring;
+use uzor_core::animation::Spring;
 
 /// Place value in the number (powers of 10 or decimal point)
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -24,7 +24,7 @@
 //! // Begin frame with wgpu handles
 //! ctx.begin_frame(800, 600);
 //!
-//! // Draw using the uzor_render::RenderContext API
+//! // Draw using the uzor_core::render::RenderContext API
 //! ctx.set_fill_color("#1e1e1e");
 //! ctx.fill_rect(0.0, 0.0, 800.0, 600.0);
 //!

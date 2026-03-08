@@ -12,7 +12,7 @@
 //! - Can format with thousands separators
 
 #[cfg(feature = "animation")]
-use uzor_animation::Spring;
+use uzor_core::animation::Spring;
 
 /// Direction of counting
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

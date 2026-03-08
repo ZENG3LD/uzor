@@ -1,7 +1,7 @@
 //! Supporting types for animation coordination
 
 use crate::types::WidgetId;
-use uzor_animation::{Decay, Easing, Spring};
+use super::{Decay, Easing, Spring};
 
 /// Identifies a specific animated property on a specific widget
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

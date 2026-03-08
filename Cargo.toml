@@ -1,24 +1,12 @@
 [workspace]
 members = [
-    # Core
+    # Core (consolidated — contains layout_helpers, panel_api, panels, macos, interactive, text_fx, cursor, numbers, scroll_fx)
     "uzor-core",
-    "uzor-layout",
-    "uzor-render",
-    "uzor-animation",
     # Platform
     "uzor-desktop",
     "uzor-web",
     "uzor-mobile",
     "uzor-tui",
-    "uzor-macos",
-    # UI
-    "uzor-panels",
-    "uzor-numbers",
-    "uzor-text-fx",
-    "uzor-cursor",
-    "uzor-scroll-fx",
-    "uzor-interactive",
-    "uzor-panel-api",
     # Backends
     "uzor-backend-vello-common",
     "uzor-backend-vello-gpu",
@@ -43,6 +31,4 @@ categories = ["gui", "rendering", "graphics"]
 
 [workspace.dependencies]
 uzor-core = { version = "1.0.3", path = "./uzor-core" }
-uzor-render = { version = "1.0.3", path = "./uzor-render" }
-uzor-animation = { version = "1.0.3", path = "./uzor-animation" }
 serde = { version = "1.0", features = ["derive"] }

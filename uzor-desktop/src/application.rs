@@ -4,9 +4,9 @@
 //! desktop applications with uzor. It handles:
 //! - Window creation via winit
 //! - Event loop management
-//! - Vello surface setup
 //!
-//! Applications are responsible for their own rendering implementation.
+//! Rendering is the caller's responsibility — this crate only manages
+//! the window lifecycle and dispatches winit events.
 
 use std::sync::Arc;
 
@@ -14,10 +14,6 @@ use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop as WinitEventLoop};
 use winit::window::{Window, WindowId as WinitWindowId};
-
-use vello::util::{RenderContext, RenderSurface};
-use vello::wgpu::PresentMode;
-use vello::Scene;
 
 /// Configuration for application window
 #[derive(Debug, Clone)]
@@ -57,70 +53,23 @@ impl AppConfig {
     }
 }
 
-/// Render surface provider for applications
-pub struct RenderSurfaceProvider {
-    pub window: Arc<Window>,
-    pub render_context: RenderContext,
-    pub surface: RenderSurface<'static>,
-    pub scene: Scene,
-}
+/// User callback signature for application events.
+///
+/// Receives the winit `Window` (so the caller can create their own render
+/// surface) and the `WindowEvent`. Return `true` to continue, `false` to exit.
+pub type EventCallback = dyn FnMut(Arc<Window>, WindowEvent) -> bool;
 
-impl RenderSurfaceProvider {
-    /// Create a new render surface for the given window
-    pub fn new(window: Arc<Window>) -> Self {
-        let mut render_context = RenderContext::new();
-
-        let size = window.inner_size();
-        let surface = pollster::block_on(render_context.create_surface(
-            window.clone(),
-            size.width,
-            size.height,
-            PresentMode::AutoVsync,
-        ))
-        .expect("Failed to create surface");
-
-        Self {
-            window,
-            render_context,
-            surface,
-            scene: Scene::new(),
-        }
-    }
-
-    /// Get the scale factor for this window
-    pub fn scale_factor(&self) -> f64 {
-        self.window.scale_factor()
-    }
-
-    /// Get the window size in physical pixels
-    pub fn size(&self) -> (u32, u32) {
-        let size = self.window.inner_size();
-        (size.width, size.height)
-    }
-
-    /// Resize the render surface
-    pub fn resize(&mut self, width: u32, height: u32) {
-        self.render_context.resize_surface(&mut self.surface, width, height);
-    }
-
-    /// Request a redraw
-    pub fn request_redraw(&self) {
-        self.window.request_redraw();
-    }
-}
-
-/// User callback signature for application events
-/// Return true to continue, false to exit
-pub type EventCallback = dyn FnMut(&mut RenderSurfaceProvider, WindowEvent) -> bool;
-
-/// High-level application that manages the window and event loop
+/// High-level application that manages the window and event loop.
+///
+/// This type is intentionally renderer-agnostic. Pass any backend
+/// (vello, wgpu-instanced, tiny-skia, …) through the event callback.
 pub struct Application {
     config: AppConfig,
     event_callback: Box<EventCallback>,
 }
 
 impl Application {
-    /// Create a new application with the given configuration
+    /// Create a new application with the given configuration.
     pub fn new(config: AppConfig, event_callback: Box<EventCallback>) -> Self {
         Self {
             config,
@@ -128,12 +77,12 @@ impl Application {
         }
     }
 
-    /// Create a new application with default configuration
+    /// Create a new application with default configuration.
     pub fn with_default_config(event_callback: Box<EventCallback>) -> Self {
         Self::new(AppConfig::default(), event_callback)
     }
 
-    /// Run the application (consumes self)
+    /// Run the application (consumes self).
     pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
         let event_loop = WinitEventLoop::new()?;
         event_loop.set_control_flow(ControlFlow::Poll);
@@ -145,11 +94,14 @@ impl Application {
     }
 }
 
-/// Internal application handler for winit event loop
+// =============================================================================
+// Internal winit application handler
+// =============================================================================
+
 struct AppHandler {
     config: AppConfig,
     event_callback: Box<EventCallback>,
-    surface_provider: Option<RenderSurfaceProvider>,
+    window: Option<Arc<Window>>,
 }
 
 impl AppHandler {
@@ -157,7 +109,7 @@ impl AppHandler {
         Self {
             config,
             event_callback,
-            surface_provider: None,
+            window: None,
         }
     }
 
@@ -169,21 +121,16 @@ impl AppHandler {
                 self.config.height,
             ));
 
-        let window = match event_loop.create_window(window_attrs) {
-            Ok(w) => Arc::new(w),
-            Err(e) => {
-                eprintln!("Failed to create window: {}", e);
-                return;
-            }
-        };
-
-        self.surface_provider = Some(RenderSurfaceProvider::new(window));
+        match event_loop.create_window(window_attrs) {
+            Ok(w) => self.window = Some(Arc::new(w)),
+            Err(e) => eprintln!("Failed to create window: {}", e),
+        }
     }
 }
 
 impl ApplicationHandler for AppHandler {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.surface_provider.is_none() {
+        if self.window.is_none() {
             self.create_window(event_loop);
         }
     }
@@ -199,15 +146,8 @@ impl ApplicationHandler for AppHandler {
             return;
         }
 
-        if let WindowEvent::Resized(size) = event {
-            if let Some(provider) = self.surface_provider.as_mut() {
-                provider.resize(size.width, size.height);
-            }
-        }
-
-        // Call user event callback
-        if let Some(provider) = self.surface_provider.as_mut() {
-            let should_continue = (self.event_callback)(provider, event);
+        if let Some(window) = self.window.clone() {
+            let should_continue = (self.event_callback)(window, event);
             if !should_continue {
                 event_loop.exit();
             }
@@ -215,6 +155,6 @@ impl ApplicationHandler for AppHandler {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // Application can request redraws via RenderSurfaceProvider
+        // Callers trigger redraws by calling window.request_redraw() themselves.
     }
 }

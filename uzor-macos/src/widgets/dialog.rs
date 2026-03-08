@@ -1,6 +1,6 @@
 //! macOS dialog widget renderer
 
-use uzor_render::{RenderContext, TextAlign, TextBaseline};
+use uzor_core::render::{RenderContext, TextAlign, TextBaseline};
 use crate::themes::dialog::{DialogTheme, DialogSize};
 
 /// Render the dialog backdrop overlay (fullscreen semi-transparent)

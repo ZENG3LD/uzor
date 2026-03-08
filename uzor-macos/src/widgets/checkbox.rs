@@ -1,6 +1,6 @@
 //! macOS checkbox widget renderer
 
-use uzor_render::{RenderContext, TextAlign, TextBaseline, draw_svg_icon};
+use uzor_core::render::{RenderContext, TextAlign, TextBaseline, draw_svg_icon};
 use crate::colors::WidgetState;
 use crate::themes::checkbox::{CheckboxTheme, CheckboxState};
 use crate::icons::paths;

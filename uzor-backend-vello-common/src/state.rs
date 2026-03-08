@@ -9,7 +9,7 @@
 use vello::kurbo::{Affine, Cap, Join};
 use vello::peniko::color::palette;
 
-use uzor_render::{TextAlign, TextBaseline};
+use uzor_core::render::{TextAlign, TextBaseline};
 
 use crate::color::{parse_color, Color};
 use crate::font::{parse_css_font, FontInfo};

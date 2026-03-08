@@ -4,7 +4,7 @@
 //! decay to create a rubber-band effect. On release, it springs back.
 
 #[cfg(feature = "animation")]
-use uzor_animation::Spring;
+use uzor_core::animation::Spring;
 
 /// Elastic slider state
 ///

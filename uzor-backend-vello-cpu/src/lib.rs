@@ -1,7 +1,7 @@
 //! CPU-only rendering backend using `vello_cpu`.
 //!
 //! This crate provides [`VelloCpuRenderContext`], an implementation of the
-//! `uzor_render::RenderContext` trait that renders entirely on the CPU — no
+//! `uzor_core::render::RenderContext` trait that renders entirely on the CPU — no
 //! wgpu, no GPU device required.
 //!
 //! ## Frame lifecycle

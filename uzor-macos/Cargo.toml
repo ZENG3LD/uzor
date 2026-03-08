@@ -8,5 +8,4 @@ homepage.workspace = true
 description = "macOS-specific backend for uzor"
 
 [dependencies]
-uzor-render = { workspace = true }
-uzor-animation = { workspace = true }
+uzor-core = { workspace = true }

@@ -8,5 +8,5 @@ homepage.workspace = true
 description = "Panel API traits and types for uzor"
 
 [dependencies]
-uzor-render = { workspace = true }
+uzor-core = { workspace = true }
 serde = { workspace = true }

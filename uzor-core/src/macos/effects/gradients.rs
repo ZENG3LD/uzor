@@ -1,0 +1,1 @@
+//! macOS gradient effect definitions

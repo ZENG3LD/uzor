@@ -1,6 +1,6 @@
 //! macOS tabs widget renderer
 
-use uzor_render::{RenderContext, TextAlign, TextBaseline};
+use uzor_core::render::{RenderContext, TextAlign, TextBaseline};
 use crate::colors::WidgetState;
 use crate::themes::tabs::TabTheme;
 

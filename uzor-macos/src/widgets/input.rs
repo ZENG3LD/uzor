@@ -1,6 +1,6 @@
 //! macOS-style text input renderer
 
-use uzor_render::{RenderContext, TextAlign, TextBaseline};
+use uzor_core::render::{RenderContext, TextAlign, TextBaseline};
 use crate::colors::WidgetState;
 use crate::themes::input::InputTheme;
 use crate::typography::{TypographyLevel, font_string};

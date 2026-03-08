@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::types::WidgetId;
-use uzor_animation::{Decay, Easing, InterruptionStrategy, Spring};
+use super::{Decay, Easing, InterruptionStrategy, Spring};
 
 use super::types::{ActiveAnimation, AnimationKey};
 

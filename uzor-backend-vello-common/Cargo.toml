@@ -8,6 +8,6 @@ homepage.workspace = true
 description = "Shared utilities for vello-based backends"
 
 [dependencies]
-uzor-render = { workspace = true }
+uzor-core = { workspace = true }
 vello = "0.7"
 skrifa = "0.40"

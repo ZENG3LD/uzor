@@ -8,8 +8,8 @@ homepage.workspace = true
 description = "Number formatting and display for uzor"
 
 [dependencies]
-uzor-animation = { workspace = true, optional = true }
+uzor-core = { workspace = true }
 
 [features]
 default = ["animation"]
-animation = ["uzor-animation"]
+animation = []

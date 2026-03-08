@@ -1,7 +1,7 @@
 //! SVG icon paths for macOS UI elements
 //!
 //! All paths are designed to be rendered at their specified viewBox dimensions
-//! and can be scaled as needed. Use with `uzor_render::draw_svg_icon`.
+//! and can be scaled as needed. Use with `uzor_core::render::draw_svg_icon`.
 
 /// Checkmark icon for checkboxes and menu items
 /// viewBox: 0 0 100 100
