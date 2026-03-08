@@ -8,7 +8,7 @@
 //! # Example
 //!
 //! ```
-//! use uzor_core::animation::{Point, MotionPath};
+//! use uzor::animation::{Point, MotionPath};
 //!
 //! let path = MotionPath::new(Point::new(0.0, 0.0))
 //!     .line_to(Point::new(100.0, 0.0))

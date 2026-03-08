@@ -6,8 +6,8 @@
 //! # Examples
 //!
 //! ```
-//! use uzor_core::layout_helpers::helpers;
-//! use uzor_core::types::rect::Rect;
+//! use uzor::layout_helpers::helpers;
+//! use uzor::types::rect::Rect;
 //!
 //! let screen = Rect::new(0.0, 0.0, 1920.0, 1080.0);
 //! let button = helpers::center_rect(screen, 200.0, 50.0);

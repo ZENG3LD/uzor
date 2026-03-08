@@ -16,8 +16,8 @@ use super::timeline::Animatable;
 ///
 /// # Example
 /// ```
-/// use uzor_core::animation::scroll::ScrollTimeline;
-/// use uzor_core::animation::easing::Easing;
+/// use uzor::animation::scroll::ScrollTimeline;
+/// use uzor::animation::easing::Easing;
 ///
 /// // Animation starts at scroll position 100px, ends at 500px
 /// let timeline = ScrollTimeline::new(100.0, 500.0)
@@ -128,7 +128,7 @@ impl ScrollTimeline {
 ///
 /// # Example
 /// ```
-/// use uzor_core::animation::scroll::ViewTimeline;
+/// use uzor::animation::scroll::ViewTimeline;
 ///
 /// // Element from y=500 to y=800 (300px tall)
 /// // Viewport is 1000px tall
@@ -264,7 +264,7 @@ impl ViewTimeline {
 ///
 /// # Example
 /// ```
-/// use uzor_core::animation::scroll::{ScrollTween, ScrollTimeline};
+/// use uzor::animation::scroll::{ScrollTween, ScrollTimeline};
 ///
 /// // Fade opacity from 0.0 to 1.0 as user scrolls from 100px to 500px
 /// let timeline = ScrollTimeline::new(100.0, 500.0);
@@ -311,7 +311,7 @@ impl<T: Animatable> ScrollTween<T> {
 ///
 /// # Example
 /// ```
-/// use uzor_core::animation::scroll::ParallaxLayer;
+/// use uzor::animation::scroll::ParallaxLayer;
 ///
 /// let background = ParallaxLayer::new(0.0);    // Static
 /// let midground = ParallaxLayer::new(0.5);     // Half speed

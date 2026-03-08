@@ -15,7 +15,7 @@ use std::f64::consts::E;
 ///
 /// # Example
 /// ```
-/// use uzor_core::animation::Spring;
+/// use uzor::animation::Spring;
 ///
 /// let spring = Spring::new()
 ///     .stiffness(180.0)

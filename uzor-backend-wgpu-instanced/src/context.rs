@@ -12,7 +12,7 @@ use lyon_tessellation::{
 };
 use lyon_path::math::point;
 use skrifa::MetadataProvider;
-use uzor_core::render::{RenderContext, RenderContextExt, TextAlign, TextBaseline};
+use uzor::render::{RenderContext, RenderContextExt, TextAlign, TextBaseline};
 
 use crate::instances::{DrawCmd, QuadInstance, TriangleInstance};
 use crate::text::TextAreaData;

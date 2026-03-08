@@ -8,7 +8,7 @@ homepage.workspace = true
 description = "Hybrid CPU/GPU rendering backend using vello_hybrid"
 
 [dependencies]
-uzor-core = { workspace = true }
+uzor = { workspace = true }
 # vello_hybrid 0.0.6: CPU strip encoding + GPU fine rasterization.
 # Uses wgpu 27.0.1 which conflicts with vello 0.6's wgpu 0.20.
 # This crate must be compiled in isolation from uzor-backend-vello-gpu.

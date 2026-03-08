@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    # Core (consolidated — contains layout_helpers, panel_api, panels, macos, interactive, text_fx, cursor, numbers, scroll_fx)
-    "uzor-core",
+    # Core library (contains render, animation, panels, panel_api, macos, layout, interactive, text_fx, cursor, numbers, scroll_fx)
+    "uzor",
     # Platform
     "uzor-desktop",
     "uzor-web",
@@ -28,5 +28,5 @@ keywords = ["ui", "rendering", "framework", "headless", "gpu"]
 categories = ["gui", "rendering", "graphics"]
 
 [workspace.dependencies]
-uzor-core = { version = "1.0.3", path = "./uzor-core" }
+uzor = { version = "1.0.3", path = "./uzor" }
 serde = { version = "1.0", features = ["derive"] }

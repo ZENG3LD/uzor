@@ -7,7 +7,7 @@
 //! backend (vello, wgpu-instanced, tiny-skia, …) and receive a raw
 //! `Arc<winit::window::Window>` via the event callback.
 
-pub use uzor_core;
+pub use uzor;
 
 // Re-export windowing dependency to avoid version conflicts
 pub use winit;
@@ -20,9 +20,9 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop as WinitEventLoop};
 use winit::window::{Window, WindowId as WinitWindowId};
 
-use uzor_core::platform::backends::PlatformBackend;
-use uzor_core::platform::types::{PlatformError, WindowId, SystemIntegration, EventResult};
-use uzor_core::platform::{PlatformEvent, SystemTheme, WindowConfig};
+use uzor::platform::backends::PlatformBackend;
+use uzor::platform::types::{PlatformError, WindowId, SystemIntegration, EventResult};
+use uzor::platform::{PlatformEvent, SystemTheme, WindowConfig};
 
 mod event_mapper;
 pub mod application;

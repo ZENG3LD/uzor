@@ -2,7 +2,7 @@
 //!
 //! Usage:
 //! ```
-//! use uzor_core::render::icons::aviation;
+//! use uzor::render::icons::aviation;
 //! // Then use draw_svg_icon(ctx, aviation::JET, x, y, w, h, color);
 //! ```
 

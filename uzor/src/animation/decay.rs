@@ -15,7 +15,7 @@
 //! ## Usage
 //!
 //! ```rust
-//! use uzor_core::animation::Decay;
+//! use uzor::animation::Decay;
 //!
 //! // iOS-like flick scrolling
 //! let mut decay = Decay::new(500.0)  // Initial velocity: 500 units/sec
@@ -62,7 +62,7 @@ impl Decay {
     ///
     /// # Example
     /// ```rust
-    /// use uzor_core::animation::Decay;
+    /// use uzor::animation::Decay;
     /// let decay = Decay::new(500.0); // 500 units/sec initial velocity
     /// ```
     pub fn new(velocity: f64) -> Self {

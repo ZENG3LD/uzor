@@ -16,16 +16,16 @@ use web_sys::{
     WheelEvent, TouchEvent, CompositionEvent,
 };
 
-use uzor_core::input::events::KeyCode;
-use uzor_core::input::state::{ModifierKeys, MouseButton};
-use uzor_core::platform::{
+use uzor::input::events::KeyCode;
+use uzor::input::state::{ModifierKeys, MouseButton};
+use uzor::platform::{
     backends::PlatformBackend,
     types::{PlatformError, WindowId, SystemIntegration},
     ImeEvent, PlatformEvent, SystemTheme, WindowConfig,
 };
-use uzor_core::input::cursor::CursorIcon;
+use uzor::input::cursor::CursorIcon;
 
-pub use uzor_core;
+pub use uzor;
 
 // =============================================================================
 // WebPlatform - Main Platform Backend

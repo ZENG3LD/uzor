@@ -4,7 +4,7 @@
 //! a frame.  Text rendering via a glyph rasterizer will be added back later
 //! with a different approach (glyphon has been removed for now).
 
-use uzor_core::render::{TextAlign, TextBaseline};
+use uzor::render::{TextAlign, TextBaseline};
 
 /// Raw data for a text draw call collected during a frame.
 #[derive(Debug, Clone)]

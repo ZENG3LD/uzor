@@ -4,8 +4,8 @@ use crate::buffer::TerminalBuffer;
 use crate::cell::Cell;
 use crate::style::{Color, Style, Modifier};
 use crate::rect::Rect;
-use uzor_core::widgets::dropdown::types::DropdownType;
-use uzor_core::types::WidgetState;
+use uzor::widgets::dropdown::types::DropdownType;
+use uzor::types::WidgetState;
 use super::defaults::*;
 
 /// Render a dropdown to the terminal buffer

@@ -35,7 +35,7 @@
 //!
 //! ```ignore
 //! use uzor_mobile::MobilePlatform;
-//! use uzor_core::platform::{PlatformBackend, WindowConfig};
+//! use uzor::platform::{PlatformBackend, WindowConfig};
 //!
 //! fn main() {
 //!     let mut platform = MobilePlatform::new().unwrap();
@@ -64,12 +64,12 @@
 
 #![allow(dead_code)]
 
-pub use uzor_core;
+pub use uzor;
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use uzor_core::platform::{
+use uzor::platform::{
     backends::PlatformBackend,
     types::{PlatformError, WindowId, SystemIntegration},
     PlatformEvent, SystemTheme, WindowConfig,

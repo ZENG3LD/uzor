@@ -8,7 +8,7 @@ homepage.workspace = true
 description = "Desktop backend for uzor (winit integration)"
 
 [dependencies]
-uzor-core = { workspace = true, features = ["serde"] }
+uzor = { workspace = true, features = ["serde"] }
 
 # Windowing and events
 winit = "0.30"

@@ -96,7 +96,7 @@ impl TuiIcons {
 }
 
 /// Map IconId to Unicode character for TUI rendering
-pub fn icon_to_char(icon: &uzor_core::types::IconId) -> &'static str {
+pub fn icon_to_char(icon: &uzor::types::IconId) -> &'static str {
     match icon.name() {
         "close" | "x" => TuiIcons::CLOSE,
         "add" | "plus" => TuiIcons::ADD,

@@ -2,7 +2,7 @@
 //!
 //! This module provides iOS integration via Objective-C bindings.
 
-use uzor_core::platform::{PlatformEvent, SystemTheme};
+use uzor::platform::{PlatformEvent, SystemTheme};
 use crate::{HapticStyle, ScreenOrientation};
 
 #[cfg(feature = "ios")]

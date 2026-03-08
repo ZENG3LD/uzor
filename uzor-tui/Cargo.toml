@@ -13,4 +13,4 @@ bitflags = "2"
 vt100 = "0.16"
 unicode-width = "0.2"
 compact_str = "0.8"
-uzor-core = { workspace = true }
+uzor = { workspace = true }

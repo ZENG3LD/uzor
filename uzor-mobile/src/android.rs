@@ -2,7 +2,7 @@
 //!
 //! This module provides Android integration via NDK and JNI.
 
-use uzor_core::platform::{PlatformEvent, SystemTheme};
+use uzor::platform::{PlatformEvent, SystemTheme};
 use crate::{HapticStyle, ScreenOrientation};
 
 #[cfg(feature = "android")]

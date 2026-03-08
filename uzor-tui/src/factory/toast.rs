@@ -4,7 +4,7 @@ use crate::buffer::TerminalBuffer;
 use crate::cell::Cell;
 use crate::style::{Color, Style, Modifier};
 use crate::rect::Rect;
-use uzor_core::widgets::toast::types::ToastType;
+use uzor::widgets::toast::types::ToastType;
 use super::defaults::*;
 
 /// Render a toast notification to the terminal buffer

@@ -29,7 +29,7 @@ pub use toast::render_default as render_toast;
 // Re-export RenderContext from uzor-render
 // =============================================================================
 
-pub use uzor_core::render::{RenderContext, TextAlign, TextBaseline};
+pub use uzor::render::{RenderContext, TextAlign, TextBaseline};
 
 // =============================================================================
 // Helper Functions

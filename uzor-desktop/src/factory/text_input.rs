@@ -1,9 +1,9 @@
 //! Text input factory rendering for desktop
 
 use super::{RenderContext, TextAlign, TextBaseline, rgba_to_hex};
-use uzor_core::types::{Rect, WidgetState};
-use uzor_core::widgets::text_input::types::TextInputType;
-use uzor_core::widgets::text_input::theme::TextInputTheme;
+use uzor::types::{Rect, WidgetState};
+use uzor::widgets::text_input::types::TextInputType;
+use uzor::widgets::text_input::theme::TextInputTheme;
 
 /// Render text input with default settings
 pub fn render_default(

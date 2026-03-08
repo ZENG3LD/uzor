@@ -7,7 +7,7 @@
 //! # Example
 //!
 //! ```
-//! use uzor_core::animation::StrokeAnimation;
+//! use uzor::animation::StrokeAnimation;
 //!
 //! let path_length = 500.0;
 //! let anim = StrokeAnimation::draw_in(path_length);

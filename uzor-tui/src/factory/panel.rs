@@ -4,8 +4,8 @@ use crate::buffer::TerminalBuffer;
 use crate::cell::Cell;
 use crate::style::{Color, Style, Modifier};
 use crate::rect::Rect;
-use uzor_core::widgets::panel::types::*;
-use uzor_core::types::WidgetState;
+use uzor::widgets::panel::types::*;
+use uzor::types::WidgetState;
 use super::defaults::*;
 
 /// Render a panel to the terminal buffer

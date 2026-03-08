@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 use vello::kurbo::{self, Affine, BezPath, Cap, Join, Stroke, Shape};
 use vello::peniko::{Blob, Brush, Fill, FontData, color::palette};
 use vello::{Glyph, Scene};
-use uzor_core::render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlign, TextBaseline};
+use uzor::render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlign, TextBaseline};
 
 // Use skrifa for font metrics
 use skrifa::{MetadataProvider, raw::{FileRef, FontRef}};

@@ -1,9 +1,9 @@
 //! Toast factory rendering for desktop
 
 use super::{RenderContext, TextAlign, TextBaseline, rgba_to_hex};
-use uzor_core::types::{Rect, WidgetState};
-use uzor_core::widgets::toast::types::ToastType;
-use uzor_core::widgets::toast::theme::ToastTheme;
+use uzor::types::{Rect, WidgetState};
+use uzor::widgets::toast::types::ToastType;
+use uzor::widgets::toast::theme::ToastTheme;
 
 /// Render toast with default settings
 pub fn render_default(

@@ -4,7 +4,7 @@ use crate::buffer::TerminalBuffer;
 use crate::cell::Cell;
 use crate::style::{Color, Style, Modifier};
 use crate::rect::Rect;
-use uzor_core::widgets::overlay::types::OverlayType;
+use uzor::widgets::overlay::types::OverlayType;
 use super::defaults::*;
 
 /// Render an overlay to the terminal buffer

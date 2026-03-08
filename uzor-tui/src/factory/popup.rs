@@ -4,7 +4,7 @@ use crate::buffer::TerminalBuffer;
 use crate::cell::Cell;
 use crate::style::{Color, Style, Modifier};
 use crate::rect::Rect;
-use uzor_core::widgets::popup::types::PopupType;
+use uzor::widgets::popup::types::PopupType;
 use super::defaults::*;
 
 /// Render a popup to the terminal buffer

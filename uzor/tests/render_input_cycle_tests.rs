@@ -5,12 +5,12 @@
 //! 2. Input processing
 //! 3. State change verification
 
-use uzor_core::input::{
+use uzor::input::{
     handle_button_input, handle_checkbox_input,
     handle_slider_input, FocusState, WidgetId, WidgetInputState,
     WidgetInteraction,
 };
-use uzor_core::types::{ScrollState, WidgetRect};
+use uzor::types::{ScrollState, WidgetRect};
 
 // =============================================================================
 // Button Tests using WidgetInputState

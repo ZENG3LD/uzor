@@ -8,7 +8,7 @@
 //! # Example
 //!
 //! ```rust,ignore
-//! use uzor_core::panels::SnapBackAnimation;
+//! use uzor::panels::SnapBackAnimation;
 //!
 //! // Create animation for separator 0 with 50px violation offset
 //! let mut anim = SnapBackAnimation::new(0, 50.0);

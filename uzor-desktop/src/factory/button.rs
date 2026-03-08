@@ -3,14 +3,14 @@
 //! Adapted from terminal button factory to use RenderContext
 
 use super::{RenderContext, TextAlign, TextBaseline};
-use uzor_core::types::{Rect, WidgetState, IconId};
-use uzor_core::widgets::button::types::{
+use uzor::types::{Rect, WidgetState, IconId};
+use uzor::widgets::button::types::{
     ButtonType,
     ActionVariant, ToggleVariant, CheckboxVariant, TabVariant, ColorSwatchVariant, DropdownVariant,
     ButtonStyle,
 };
-use uzor_core::widgets::button::theme::ButtonTheme;
-use uzor_core::widgets::button::defaults::*;
+use uzor::widgets::button::theme::ButtonTheme;
+use uzor::widgets::button::defaults::*;
 
 /// Main entry point for rendering a button with default settings
 pub fn render_default<F>(

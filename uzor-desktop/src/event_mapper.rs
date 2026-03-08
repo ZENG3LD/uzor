@@ -6,9 +6,9 @@ use winit::event::{
 };
 use winit::keyboard::{KeyCode as WinitKeyCode, PhysicalKey};
 
-use uzor_core::input::events::KeyCode;
-use uzor_core::input::state::{ModifierKeys, MouseButton};
-use uzor_core::platform::{ImeEvent, PlatformEvent};
+use uzor::input::events::KeyCode;
+use uzor::input::state::{ModifierKeys, MouseButton};
+use uzor::platform::{ImeEvent, PlatformEvent};
 
 /// Maps winit events to platform events
 pub struct EventMapper;

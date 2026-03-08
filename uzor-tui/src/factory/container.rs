@@ -4,8 +4,8 @@ use crate::buffer::TerminalBuffer;
 use crate::cell::Cell;
 use crate::style::{Color, Style, Modifier};
 use crate::rect::Rect;
-use uzor_core::widgets::container::types::ContainerType;
-use uzor_core::types::WidgetState;
+use uzor::widgets::container::types::ContainerType;
+use uzor::types::WidgetState;
 use super::defaults::*;
 
 /// Render a container to the terminal buffer

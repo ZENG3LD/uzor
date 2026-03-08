@@ -1,9 +1,9 @@
 //! Container factory rendering for desktop
 
 use super::{RenderContext, rgba_to_hex};
-use uzor_core::types::{Rect, WidgetState};
-use uzor_core::widgets::container::types::ContainerType;
-use uzor_core::widgets::container::theme::ContainerTheme;
+use uzor::types::{Rect, WidgetState};
+use uzor::widgets::container::types::ContainerType;
+use uzor::widgets::container::theme::ContainerTheme;
 
 /// Render container with default settings
 pub fn render_default(

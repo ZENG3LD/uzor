@@ -1,9 +1,9 @@
 //! Dropdown factory rendering for desktop
 
 use super::{RenderContext, TextAlign, TextBaseline, rgba_to_hex};
-use uzor_core::types::{Rect, WidgetState};
-use uzor_core::widgets::dropdown::types::DropdownType;
-use uzor_core::widgets::dropdown::theme::DropdownTheme;
+use uzor::types::{Rect, WidgetState};
+use uzor::widgets::dropdown::types::DropdownType;
+use uzor::widgets::dropdown::theme::DropdownTheme;
 
 /// Render dropdown with default settings
 pub fn render_default(

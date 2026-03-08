@@ -1,9 +1,9 @@
 //! Panel factory rendering for desktop
 
 use super::{RenderContext, rgba_to_hex};
-use uzor_core::types::{Rect, WidgetState};
-use uzor_core::widgets::panel::types::PanelType;
-use uzor_core::widgets::panel::theme::PanelTheme;
+use uzor::types::{Rect, WidgetState};
+use uzor::widgets::panel::types::PanelType;
+use uzor::widgets::panel::theme::PanelTheme;
 
 /// Render panel with default settings
 pub fn render_default(

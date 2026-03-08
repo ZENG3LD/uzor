@@ -16,7 +16,7 @@
 //! ## Using Presets
 //!
 //! ```rust
-//! use uzor_core::animation::recipes::scroll::presets::*;
+//! use uzor::animation::recipes::scroll::presets::*;
 //!
 //! // Quick horizontal progress bar
 //! let progress = progress_bar_horizontal();
@@ -31,8 +31,8 @@
 //! ## Using Builders
 //!
 //! ```rust
-//! use uzor_core::animation::recipes::scroll::builders::*;
-//! use uzor_core::animation::easing::Easing;
+//! use uzor::animation::recipes::scroll::builders::*;
+//! use uzor::animation::easing::Easing;
 //! use std::time::Duration;
 //!
 //! // Custom progress bar

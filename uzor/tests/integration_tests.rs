@@ -4,9 +4,9 @@
 //! covering InputState query methods, scroll state, keyboard modifiers,
 //! and boundary conditions.
 
-use uzor_core::input::{InputState, MouseButton, ModifierKeys, PointerState};
-use uzor_core::input::state::DragState as InputDragState;
-use uzor_core::types::{
+use uzor::input::{InputState, MouseButton, ModifierKeys, PointerState};
+use uzor::input::state::DragState as InputDragState;
+use uzor::types::{
     ScrollState, WidgetId, WidgetInputState, WidgetInteraction, WidgetRect, WidgetState,
 };
 

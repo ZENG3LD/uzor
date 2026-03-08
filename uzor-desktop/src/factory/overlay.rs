@@ -1,9 +1,9 @@
 //! Overlay factory rendering for desktop
 
 use super::{RenderContext, TextAlign, TextBaseline};
-use uzor_core::types::{Rect, WidgetState};
-use uzor_core::widgets::overlay::types::OverlayType;
-use uzor_core::widgets::overlay::theme::OverlayTheme;
+use uzor::types::{Rect, WidgetState};
+use uzor::widgets::overlay::types::OverlayType;
+use uzor::widgets::overlay::theme::OverlayTheme;
 
 /// Render overlay with default settings
 pub fn render_default(

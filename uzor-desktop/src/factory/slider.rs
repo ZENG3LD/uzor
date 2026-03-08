@@ -1,9 +1,9 @@
 //! Slider factory rendering for desktop
 
 use super::{RenderContext, rgba_to_hex};
-use uzor_core::types::{Rect, WidgetState};
-use uzor_core::widgets::slider::types::SliderType;
-use uzor_core::widgets::slider::theme::SliderTheme;
+use uzor::types::{Rect, WidgetState};
+use uzor::widgets::slider::types::SliderType;
+use uzor::widgets::slider::theme::SliderTheme;
 
 /// Render slider with default settings
 pub fn render_default(

@@ -13,7 +13,7 @@ android = ["ndk", "jni"]
 ios = ["objc2", "block2"]
 
 [dependencies]
-uzor-core = { workspace = true, features = ["serde"] }
+uzor = { workspace = true, features = ["serde"] }
 
 # Android-specific dependencies
 [target.'cfg(target_os = "android")'.dependencies]

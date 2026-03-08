@@ -4,8 +4,8 @@ use crate::buffer::TerminalBuffer;
 use crate::cell::Cell;
 use crate::style::{Color, Style, Modifier};
 use crate::rect::Rect;
-use uzor_core::widgets::slider::types::SliderType;
-use uzor_core::types::WidgetState;
+use uzor::widgets::slider::types::SliderType;
+use uzor::types::WidgetState;
 use super::defaults::*;
 
 /// Render a slider to the terminal buffer

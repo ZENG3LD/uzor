@@ -1,12 +1,12 @@
 use js_sys::Array;
-use uzor_core::render::{RenderContext, RenderContextExt, TextAlign, TextBaseline};
+use uzor::render::{RenderContext, RenderContextExt, TextAlign, TextBaseline};
 use wasm_bindgen::JsValue;
 use web_sys::CanvasRenderingContext2d;
 
 /// Canvas 2D render context for WebAssembly targets.
 ///
 /// Wraps `web_sys::CanvasRenderingContext2d` and implements the
-/// `uzor_core::render::RenderContext` trait. This is the canonical backend for
+/// `uzor::render::RenderContext` trait. This is the canonical backend for
 /// browser-based rendering via the HTML Canvas API.
 pub struct Canvas2dRenderContext {
     ctx: CanvasRenderingContext2d,

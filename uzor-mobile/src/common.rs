@@ -5,7 +5,7 @@
 
 #![allow(dead_code)]
 
-use uzor_core::platform::PlatformEvent;
+use uzor::platform::PlatformEvent;
 
 // =============================================================================
 // Gesture Recognition
@@ -303,7 +303,7 @@ pub fn touch_to_pointer_event(event: &PlatformEvent) -> Option<PlatformEvent> {
         PlatformEvent::TouchStart { id, x, y } if *id == 0 => Some(PlatformEvent::PointerDown {
             x: *x,
             y: *y,
-            button: uzor_core::input::state::MouseButton::Left,
+            button: uzor::input::state::MouseButton::Left,
         }),
         PlatformEvent::TouchMove { id, x, y } if *id == 0 => Some(PlatformEvent::PointerMoved {
             x: *x,
@@ -312,7 +312,7 @@ pub fn touch_to_pointer_event(event: &PlatformEvent) -> Option<PlatformEvent> {
         PlatformEvent::TouchEnd { id, x, y } if *id == 0 => Some(PlatformEvent::PointerUp {
             x: *x,
             y: *y,
-            button: uzor_core::input::state::MouseButton::Left,
+            button: uzor::input::state::MouseButton::Left,
         }),
         _ => None,
     }

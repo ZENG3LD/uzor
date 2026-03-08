@@ -1,9 +1,9 @@
 //! Popup factory rendering for desktop
 
 use super::{RenderContext, rgba_to_hex};
-use uzor_core::types::{Rect, WidgetState};
-use uzor_core::widgets::popup::types::PopupType;
-use uzor_core::widgets::popup::theme::PopupTheme;
+use uzor::types::{Rect, WidgetState};
+use uzor::widgets::popup::types::PopupType;
+use uzor::widgets::popup::theme::PopupTheme;
 
 /// Render popup with default settings
 pub fn render_default(

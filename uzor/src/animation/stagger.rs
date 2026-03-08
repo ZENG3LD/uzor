@@ -52,7 +52,7 @@ pub enum DistanceMetric {
 /// # Example
 /// ```
 /// use std::time::Duration;
-/// use uzor_core::animation::stagger::{LinearStagger, StaggerOrigin};
+/// use uzor::animation::stagger::{LinearStagger, StaggerOrigin};
 ///
 /// let stagger = LinearStagger::new(Duration::from_millis(100))
 ///     .from(StaggerOrigin::Center);
@@ -176,7 +176,7 @@ impl Default for LinearStagger {
 /// # Example
 /// ```
 /// use std::time::Duration;
-/// use uzor_core::animation::stagger::{GridStagger, GridOrigin, DistanceMetric};
+/// use uzor::animation::stagger::{GridStagger, GridOrigin, DistanceMetric};
 ///
 /// let stagger = GridStagger::new(Duration::from_millis(50), 14, 5)
 ///     .from(GridOrigin::Center)
