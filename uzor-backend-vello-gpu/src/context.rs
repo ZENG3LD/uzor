@@ -458,6 +458,26 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
         }
     }
 
+    fn fill_linear_gradient(&mut self, stops: &[(f32, &str)], x1: f64, y1: f64, x2: f64, y2: f64) {
+        if let Some(path) = self.path_builder.take() {
+            use vello::peniko::{Gradient, ColorStop};
+
+            let start = kurbo::Point::new(x1, y1);
+            let end = kurbo::Point::new(x2, y2);
+
+            let color_stops: Vec<ColorStop> = stops
+                .iter()
+                .map(|(offset, hex)| {
+                    let color = parse_color(hex);
+                    ColorStop { offset: *offset, color: color.into() }
+                })
+                .collect();
+
+            let gradient = Gradient::new_linear(start, end).with_stops(color_stops.as_slice());
+            self.scene.fill(Fill::NonZero, self.transform, &gradient, None, &path);
+        }
+    }
+
     fn clip(&mut self) {
         // Take the current path and use it as a clip
         if let Some(path) = self.path_builder.take() {

@@ -119,6 +119,20 @@ pub trait RenderContext {
     /// Fill the current path
     fn fill(&mut self);
 
+    /// Fill the current path with a linear gradient.
+    ///
+    /// `stops` is a list of (offset, color_hex) pairs where offset is in 0.0..=1.0.
+    /// `x1,y1` is the gradient start point; `x2,y2` is the end point (absolute coordinates).
+    ///
+    /// Default fallback: uses the first stop color as a flat fill.
+    fn fill_linear_gradient(&mut self, stops: &[(f32, &str)], x1: f64, y1: f64, x2: f64, y2: f64) {
+        let _ = (x1, y1, x2, y2);
+        if let Some((_, color)) = stops.first() {
+            self.set_fill_color(color);
+            self.fill();
+        }
+    }
+
     /// Clip to the current path
     fn clip(&mut self);
 
