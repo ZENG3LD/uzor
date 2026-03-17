@@ -303,33 +303,6 @@ impl<'a> VelloGpuRenderContext<'a> {
         }
     }
 
-    /// Fill the current path with a true linear gradient.
-    ///
-    /// This is an inherent method (not part of the `UzorRenderContext` trait) so
-    /// that it can be called directly by chart-context wrappers without causing
-    /// trait-method ambiguity on `dyn` pointers.
-    ///
-    /// `stops` — list of (offset, color_hex) pairs, offset in `0.0..=1.0`.
-    /// `x1,y1` / `x2,y2` — gradient start and end points in absolute canvas coordinates.
-    pub fn fill_linear_gradient(&mut self, stops: &[(f32, &str)], x1: f64, y1: f64, x2: f64, y2: f64) {
-        if let Some(path) = self.path_builder.take() {
-            use vello::peniko::{Gradient, ColorStop};
-
-            let start = kurbo::Point::new(x1, y1);
-            let end = kurbo::Point::new(x2, y2);
-
-            let color_stops: Vec<ColorStop> = stops
-                .iter()
-                .map(|(offset, hex)| {
-                    let color = parse_color(hex);
-                    ColorStop { offset: *offset, color: color.into() }
-                })
-                .collect();
-
-            let gradient = Gradient::new_linear(start, end).with_stops(color_stops.as_slice());
-            self.scene.fill(Fill::NonZero, self.transform, &gradient, None, &path);
-        }
-    }
 }
 
 impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
@@ -483,6 +456,26 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
         if let Some(path) = self.path_builder.take() {
             let color = self.effective_fill_color();
             self.scene.fill(Fill::NonZero, self.transform, color, None, &path);
+        }
+    }
+
+    fn fill_linear_gradient(&mut self, stops: &[(f32, &str)], x1: f64, y1: f64, x2: f64, y2: f64) {
+        if let Some(path) = self.path_builder.take() {
+            use vello::peniko::{Gradient, ColorStop};
+
+            let start = kurbo::Point::new(x1, y1);
+            let end = kurbo::Point::new(x2, y2);
+
+            let color_stops: Vec<ColorStop> = stops
+                .iter()
+                .map(|(offset, hex)| {
+                    let color = parse_color(hex);
+                    ColorStop { offset: *offset, color: color.into() }
+                })
+                .collect();
+
+            let gradient = Gradient::new_linear(start, end).with_stops(color_stops.as_slice());
+            self.scene.fill(Fill::NonZero, self.transform, &gradient, None, &path);
         }
     }
 
