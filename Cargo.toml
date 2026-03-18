@@ -19,7 +19,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.0.6"
+version = "1.0.7"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zeng3ld/uzor"
@@ -28,5 +28,5 @@ keywords = ["ui", "rendering", "framework", "headless", "gpu"]
 categories = ["gui", "rendering", "graphics"]
 
 [workspace.dependencies]
-uzor = { version = "1.0.6", path = "./uzor" }
+uzor = { version = "1.0.7", path = "./uzor" }
 serde = { version = "1.0", features = ["derive"] }
