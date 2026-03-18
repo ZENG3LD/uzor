@@ -92,6 +92,30 @@ pub fn parse_color(color: &str) -> Color {
         }
     }
 
+    // Named CSS colors
+    match color.to_ascii_lowercase().as_str() {
+        "white"       => return Color::from_rgba8(255, 255, 255, 255),
+        "black"       => return Color::from_rgba8(0, 0, 0, 255),
+        "red"         => return Color::from_rgba8(255, 0, 0, 255),
+        "green"       => return Color::from_rgba8(0, 128, 0, 255),
+        "blue"        => return Color::from_rgba8(0, 0, 255, 255),
+        "yellow"      => return Color::from_rgba8(255, 255, 0, 255),
+        "cyan" | "aqua" => return Color::from_rgba8(0, 255, 255, 255),
+        "magenta" | "fuchsia" => return Color::from_rgba8(255, 0, 255, 255),
+        "orange"      => return Color::from_rgba8(255, 165, 0, 255),
+        "gray" | "grey" => return Color::from_rgba8(128, 128, 128, 255),
+        "silver"      => return Color::from_rgba8(192, 192, 192, 255),
+        "maroon"      => return Color::from_rgba8(128, 0, 0, 255),
+        "olive"       => return Color::from_rgba8(128, 128, 0, 255),
+        "lime"        => return Color::from_rgba8(0, 255, 0, 255),
+        "teal"        => return Color::from_rgba8(0, 128, 128, 255),
+        "navy"        => return Color::from_rgba8(0, 0, 128, 255),
+        "purple"      => return Color::from_rgba8(128, 0, 128, 255),
+        "transparent" => return Color::from_rgba8(0, 0, 0, 0),
+        "none"        => return Color::from_rgba8(0, 0, 0, 0),
+        _ => {}
+    }
+
     // Handle hex formats
     let hex = color.trim_start_matches('#');
     let len = hex.len();
