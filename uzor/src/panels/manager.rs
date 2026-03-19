@@ -251,6 +251,27 @@ impl<P: DockPanel> DockingManager<P> {
         self.detect_corners();
     }
 
+    /// Set a single leaf as occupying the entire area (used by expand).
+    pub fn set_single_panel_rect(&mut self, leaf_id: LeafId, area: PanelRect) {
+        self.layout_area = area;
+        self.panel_rects.clear();
+        self.panel_headers.clear();
+        self.separators.clear();
+        self.tab_bars.clear();
+        self.panel_rects.insert(leaf_id, area);
+        if let Some(leaf) = self.tree.leaf(leaf_id) {
+            if area.width >= 1.0 && area.height >= 1.0 && leaf.tab_count() <= 1 {
+                self.panel_headers.insert(leaf_id, PanelRect::new(
+                    area.x, area.y, area.width, self.header_height,
+                ));
+            }
+            if leaf.tab_count() > 1 && area.width >= 1.0 && area.height >= 1.0 {
+                let tab_bar = self.create_tab_bar(leaf_id, leaf, area);
+                self.tab_bars.push(tab_bar);
+            }
+        }
+    }
+
     /// Compute leaf rects from tree layout
     fn compute_leaf_rects(&self, area: PanelRect) -> HashMap<LeafId, PanelRect> {
         let mut rects = HashMap::new();
