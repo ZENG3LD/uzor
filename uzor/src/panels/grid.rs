@@ -86,7 +86,11 @@ impl<P: DockPanel> PanelNode<P> {
     pub fn is_hidden(&self) -> bool {
         match self {
             PanelNode::Leaf(l) => l.hidden,
-            PanelNode::Branch(_) => false,
+            // A branch is considered hidden when ALL its descendants are hidden.
+            // This ensures compute_child_rects correctly collapses fully-hidden
+            // sub-trees (e.g. one half of a 2x2 grid) so the visible branch
+            // receives the entire parent rect rather than just its proportional share.
+            PanelNode::Branch(b) => b.children.iter().all(|c| c.is_hidden()),
         }
     }
 }
