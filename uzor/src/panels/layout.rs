@@ -76,7 +76,8 @@ impl<P: DockPanel> DockingTree<P> {
         let has_hidden = branch.children.iter().any(|c| c.is_hidden());
 
         if has_hidden {
-            // Fallback: compute layout for visible children only
+            // Compute layout for visible children only, preserving relative proportions
+            // and orientation from the original branch layout.
             let visible_indices: Vec<usize> = branch.children.iter().enumerate()
                 .filter(|(_, c)| !c.is_hidden())
                 .map(|(i, _)| i)
@@ -85,18 +86,49 @@ impl<P: DockPanel> DockingTree<P> {
             if vis_n == 0 {
                 return vec![PanelRect::zero(); n];
             }
-            let vis_layout = Self::infer_layout(vis_n);
-            let vis_rects = vis_layout.calculate_rects(parent_rect.width, parent_rect.height, vis_n);
+
+            // Single visible child always fills the full parent rect.
+            if vis_n == 1 {
+                let mut result = vec![PanelRect::zero(); n];
+                result[visible_indices[0]] = parent_rect;
+                return result;
+            }
+
+            // Multiple visible children: preserve orientation and rescale proportions.
+            let gap = PANEL_GAP;
+            let is_vertical = matches!(
+                branch.layout,
+                WindowLayout::SplitVertical | WindowLayout::ThreeRows
+            );
+
+            // Gather the weight for each visible child from branch.proportions (if
+            // available) so that their relative sizes survive the hide operation.
+            // Fall back to equal weights when proportions are absent or mismatched.
+            let weights: Vec<f32> = if branch.proportions.len() == n {
+                visible_indices.iter().map(|&ci| branch.proportions[ci] as f32).collect()
+            } else {
+                vec![1.0_f32; vis_n]
+            };
+            let weight_sum = weights.iter().sum::<f32>().max(f32::EPSILON);
+
+            let total_gap = (vis_n - 1) as f32 * gap;
             let mut result = vec![PanelRect::zero(); n];
-            for (vi, &ci) in visible_indices.iter().enumerate() {
-                if vi < vis_rects.len() {
-                    let vr = vis_rects[vi];
-                    result[ci] = PanelRect::new(
-                        parent_rect.x + vr.x,
-                        parent_rect.y + vr.y,
-                        vr.width,
-                        vr.height,
-                    );
+
+            if is_vertical {
+                let available = (parent_rect.height - total_gap).max(0.0);
+                let mut y = parent_rect.y;
+                for (wi, &ci) in visible_indices.iter().enumerate() {
+                    let h = available * weights[wi] / weight_sum;
+                    result[ci] = PanelRect::new(parent_rect.x, y, parent_rect.width, h);
+                    y += h + gap;
+                }
+            } else {
+                let available = (parent_rect.width - total_gap).max(0.0);
+                let mut x = parent_rect.x;
+                for (wi, &ci) in visible_indices.iter().enumerate() {
+                    let w = available * weights[wi] / weight_sum;
+                    result[ci] = PanelRect::new(x, parent_rect.y, w, parent_rect.height);
+                    x += w + gap;
                 }
             }
             return result;
