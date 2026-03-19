@@ -847,9 +847,6 @@ impl<P: DockPanel> DockingTree<P> {
     // --- Visibility ---
 
     pub fn hide_leaf(&mut self, id: LeafId) -> bool {
-        if self.visible_leaf_count() <= 1 {
-            return false;
-        }
         if let Some(leaf) = self.find_leaf_mut(id) {
             leaf.hidden = true;
         }
