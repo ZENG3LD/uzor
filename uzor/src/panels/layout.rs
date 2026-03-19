@@ -75,17 +75,6 @@ impl<P: DockPanel> DockingTree<P> {
         // Check for hidden children
         let has_hidden = branch.children.iter().any(|c| c.is_hidden());
 
-        // DEBUG expand
-        if has_hidden {
-            let vis: Vec<(usize, bool, bool)> = branch.children.iter().enumerate()
-                .map(|(i, c)| (i, c.is_hidden(), matches!(c, super::PanelNode::Leaf(_))))
-                .collect();
-            eprintln!("[LAYOUT] branch={} layout={:?} n={} has_hidden={} vis={:?} parent_rect=({:.0},{:.0},{:.0},{:.0}) proportions={:?} custom_rects_len={}",
-                branch.id.0, branch.layout, n, has_hidden, vis,
-                parent_rect.x, parent_rect.y, parent_rect.width, parent_rect.height,
-                branch.proportions, branch.custom_rects.len());
-        }
-
         if has_hidden {
             // Compute layout for visible children only, preserving relative proportions
             // and orientation from the original branch layout.
