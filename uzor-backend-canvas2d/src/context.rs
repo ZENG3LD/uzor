@@ -1,7 +1,7 @@
 use js_sys::Array;
 use uzor::render::{RenderContext, RenderContextExt, TextAlign, TextBaseline};
 use wasm_bindgen::JsValue;
-use web_sys::CanvasRenderingContext2d;
+use web_sys::{CanvasGradient, CanvasRenderingContext2d};
 
 /// Canvas 2D render context for WebAssembly targets.
 ///
@@ -142,6 +142,25 @@ impl RenderContext for Canvas2dRenderContext {
     }
 
     fn fill(&mut self) {
+        self.ctx.fill();
+    }
+
+    fn fill_linear_gradient(
+        &mut self,
+        stops: &[(f32, &str)],
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+    ) {
+        let gradient: CanvasGradient = self.ctx.create_linear_gradient(x1, y1, x2, y2);
+        for &(offset, color) in stops {
+            // `add_color_stop` can only fail if `offset` is outside [0.0, 1.0] or
+            // if `color` is not a valid CSS color.  Both are caller contracts, so
+            // we silently drop any error rather than panicking in the renderer.
+            let _ = gradient.add_color_stop(offset, color);
+        }
+        self.ctx.set_fill_style_canvas_gradient(&gradient);
         self.ctx.fill();
     }
 

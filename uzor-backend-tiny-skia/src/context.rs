@@ -17,8 +17,8 @@ use std::f32::consts::PI;
 use std::sync::OnceLock;
 
 use tiny_skia::{
-    Color, FillRule, LineCap, LineJoin, Mask, Paint, Path, PathBuilder, Pixmap, Rect,
-    Shader, Stroke, StrokeDash, Transform,
+    Color, FillRule, GradientStop, LineCap, LinearGradient, LineJoin, Mask, Paint, Path,
+    PathBuilder, Pixmap, Point, Rect, Shader, SpreadMode, Stroke, StrokeDash, Transform,
 };
 
 use uzor::render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlign, TextBaseline};
@@ -640,6 +640,73 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
     fn fill(&mut self) {
         let Some(path) = self.take_path() else { return };
         let paint     = self.fill_paint();
+        let transform = self.transform;
+        let clip      = self.current_clip.clone();
+        self.pixmap.fill_path(&path, &paint, FillRule::Winding, transform, clip.as_ref());
+    }
+
+    fn fill_linear_gradient(
+        &mut self,
+        stops: &[(f32, &str)],
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+    ) {
+        let Some(path) = self.take_path() else { return };
+
+        // Need at least one stop to draw anything.
+        if stops.is_empty() {
+            return;
+        }
+
+        // Build tiny-skia GradientStop list from (offset, color_hex) pairs.
+        let gradient_stops: Vec<GradientStop> = stops
+            .iter()
+            .map(|&(pos, color_str)| {
+                let color = parse_css_color(color_str);
+                // Apply global alpha to each stop's color.
+                let color = if self.global_alpha < 1.0 {
+                    with_alpha(color, self.global_alpha)
+                } else {
+                    color
+                };
+                GradientStop::new(pos.clamp(0.0, 1.0), color)
+            })
+            .collect();
+
+        // tiny-skia requires the start and end points to differ; if they are
+        // identical the gradient is degenerate — fall back to a solid fill with
+        // the first stop color so rendering is always correct.
+        let start = Point::from_xy(x1 as f32, y1 as f32);
+        let end   = Point::from_xy(x2 as f32, y2 as f32);
+
+        // LinearGradient::new() already returns Option<Shader<'static>>.
+        // It returns Shader::SolidColor when start == end (degenerate) or
+        // when only one stop is given.
+        let shader = LinearGradient::new(
+            start,
+            end,
+            gradient_stops,
+            SpreadMode::Pad,
+            Transform::identity(),
+        )
+        .unwrap_or_else(|| {
+            // Fallback: solid fill with first stop color.
+            let color = parse_css_color(stops[0].1);
+            let color = if self.global_alpha < 1.0 {
+                with_alpha(color, self.global_alpha)
+            } else {
+                color
+            };
+            Shader::SolidColor(color)
+        });
+
+        let paint = Paint {
+            shader,
+            anti_alias: true,
+            ..Paint::default()
+        };
         let transform = self.transform;
         let clip      = self.current_clip.clone();
         self.pixmap.fill_path(&path, &paint, FillRule::Winding, transform, clip.as_ref());

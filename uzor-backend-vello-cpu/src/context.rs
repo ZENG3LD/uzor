@@ -13,7 +13,9 @@
 use std::sync::{Arc, OnceLock};
 
 use vello_cpu::kurbo::{self, Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
-use vello_cpu::peniko::{Blob, Fill, FontData};
+use vello_cpu::peniko::{
+    Blob, ColorStop, ColorStops, Extend, Fill, FontData, Gradient, LinearGradientPosition,
+};
 use vello_cpu::{Glyph, RenderContext as VelloCpuCtx, RenderMode, RenderSettings};
 
 use skrifa::{
@@ -637,6 +639,44 @@ impl UzorRenderContext for VelloCpuRenderContext {
         if let Some(ref mut ctx) = self.render_ctx {
             ctx.set_transform(transform);
             ctx.set_fill_rule(Fill::NonZero);
+            ctx.fill_path(&path);
+        }
+    }
+
+    fn fill_linear_gradient(
+        &mut self,
+        stops: &[(f32, &str)],
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+    ) {
+        let Some(path) = self.path.clone() else { return };
+        let transform = self.transform;
+
+        let color_stops: ColorStops = ColorStops::from(
+            stops
+                .iter()
+                .map(|(offset, hex)| ColorStop::from((*offset, parse_color(hex))))
+                .collect::<Vec<ColorStop>>()
+                .as_slice(),
+        );
+
+        let gradient = Gradient {
+            kind: LinearGradientPosition {
+                start: kurbo::Point::new(x1, y1),
+                end: kurbo::Point::new(x2, y2),
+            }
+            .into(),
+            stops: color_stops,
+            extend: Extend::Pad,
+            ..Default::default()
+        };
+
+        if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_transform(transform);
+            ctx.set_fill_rule(Fill::NonZero);
+            ctx.set_paint(gradient);
             ctx.fill_path(&path);
         }
     }

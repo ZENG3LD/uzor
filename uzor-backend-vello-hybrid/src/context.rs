@@ -689,6 +689,33 @@ impl UzorRenderContext for VelloHybridRenderContext {
         }
     }
 
+    fn fill_linear_gradient(&mut self, stops: &[(f32, &str)], x1: f64, y1: f64, x2: f64, y2: f64) {
+        let Some(path) = self.path.clone() else { return };
+        use vello_common::peniko::{ColorStop, Gradient};
+
+        let start = kurbo::Point::new(x1, y1);
+        let end   = kurbo::Point::new(x2, y2);
+
+        let color_stops: Vec<ColorStop> = stops
+            .iter()
+            .map(|(offset, hex)| {
+                let color = parse_color(hex);
+                ColorStop::from((*offset, color))
+            })
+            .collect();
+
+        let gradient = Gradient::new_linear(start, end)
+            .with_stops(color_stops.as_slice());
+
+        let transform = self.transform;
+        if let Some(ref mut s) = self.scene {
+            s.set_transform(transform);
+            s.set_fill_rule(Fill::NonZero);
+            s.set_paint(gradient);
+            s.fill_path(&path);
+        }
+    }
+
     fn stroke(&mut self) {
         let Some(path) = self.path.clone() else { return };
         let transform  = self.transform;

@@ -828,6 +828,34 @@ impl RenderContext for InstancedRenderContext {
     fn fill(&mut self) {
         self.tessellate_fill();
     }
+
+    fn fill_linear_gradient(
+        &mut self,
+        stops: &[(f32, &str)],
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+    ) {
+        if stops.is_empty() {
+            return;
+        }
+
+        // Parse stop colors once.
+        let parsed: Vec<(f32, [f32; 4])> = stops
+            .iter()
+            .map(|(t, color)| (*t, parse_color(color)))
+            .collect();
+
+        self.tessellate_fill_gradient(
+            &parsed,
+            x1 as f32,
+            y1 as f32,
+            x2 as f32,
+            y2 as f32,
+        );
+    }
+
     fn clip(&mut self) {
         let bb = self.path_bounding_box();
         let new_clip = self.intersect_clip(bb);
@@ -1016,3 +1044,406 @@ impl RenderContextExt for InstancedRenderContext {
     type BlurImage = ();
     // Blur is not supported in this backend — default no-ops are sufficient.
 }
+
+// ── Linear gradient helpers ────────────────────────────────────────────────
+
+/// Sample a linear gradient at position `t` (clamped to `[0, 1]`).
+///
+/// `stops` is a slice of `(t_value, rgba)` pairs sorted by t_value ascending.
+/// Returns the interpolated RGBA color.
+fn sample_gradient(stops: &[(f32, [f32; 4])], t: f32) -> [f32; 4] {
+    if stops.is_empty() {
+        return [0.0; 4];
+    }
+    if stops.len() == 1 {
+        return stops[0].1;
+    }
+
+    let t = t.clamp(0.0, 1.0);
+
+    // Before the first stop.
+    if t <= stops[0].0 {
+        return stops[0].1;
+    }
+    // After the last stop.
+    let last = stops.len() - 1;
+    if t >= stops[last].0 {
+        return stops[last].1;
+    }
+
+    // Find the bracketing stops.
+    for i in 0..last {
+        let (t0, c0) = stops[i];
+        let (t1, c1) = stops[i + 1];
+        if t >= t0 && t <= t1 {
+            let span = t1 - t0;
+            if span < 1e-6 {
+                return c1;
+            }
+            let f = (t - t0) / span;
+            return [
+                c0[0] + (c1[0] - c0[0]) * f,
+                c0[1] + (c1[1] - c0[1]) * f,
+                c0[2] + (c1[2] - c0[2]) * f,
+                c0[3] + (c1[3] - c0[3]) * f,
+            ];
+        }
+    }
+
+    stops[last].1
+}
+
+/// Project a screen-space point `(px, py)` onto the gradient line
+/// from `(x1, y1)` to `(x2, y2)` and return the scalar `t` in `[0, 1]`.
+///
+/// t=0 corresponds to `(x1,y1)` and t=1 to `(x2,y2)`.
+fn project_onto_gradient(px: f32, py: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq < 1e-10 {
+        return 0.0;
+    }
+    let t = ((px - x1) * dx + (py - y1) * dy) / len_sq;
+    t.clamp(0.0, 1.0)
+}
+
+impl InstancedRenderContext {
+    /// Tessellate the current path with per-triangle gradient colors and emit
+    /// `TriangleInstance` draw commands.
+    ///
+    /// The gradient line `(x1,y1)→(x2,y2)` is in canvas coordinates (before
+    /// the current transform).  Both endpoints are transformed to screen space
+    /// before projecting triangle centroids onto the gradient vector.
+    ///
+    /// For each tessellated triangle the centroid is projected onto the gradient
+    /// line to obtain a scalar `t ∈ [0,1]`, which is used to sample the stop
+    /// list via linear interpolation.  Since lyon produces many small triangles,
+    /// centroid sampling yields visually smooth gradients.
+    fn tessellate_fill_gradient(
+        &mut self,
+        stops: &[(f32, [f32; 4])],
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+    ) {
+        let path = std::mem::take(&mut self.path);
+        let clip = self.current_clip();
+        let global_alpha = self.global_alpha as f32;
+
+        // Transform gradient endpoints to screen space once.
+        let (sx1, sy1) = apply(&self.transform, x1, y1);
+        let (sx2, sy2) = apply(&self.transform, x2, y2);
+
+        // ── Fast path: single Rect command ──────────────────────────────────
+        if path.len() == 1 {
+            if let PathCmd::Rect(rx, ry, rw, rh) = path[0] {
+                self.tessellate_gradient_rect(
+                    rx, ry, rw, rh, stops, sx1, sy1, sx2, sy2, global_alpha, clip,
+                );
+                return;
+            }
+        }
+
+        // ── Fast path: MoveTo + 3×LineTo + Close → axis-aligned rect ────────
+        if path.len() == 5 {
+            let is_move  = matches!(path[0], PathCmd::MoveTo(..));
+            let is_close = matches!(path[4], PathCmd::Close);
+            let all_lines = matches!(path[1], PathCmd::LineTo(..))
+                && matches!(path[2], PathCmd::LineTo(..))
+                && matches!(path[3], PathCmd::LineTo(..));
+
+            if is_move && is_close && all_lines {
+                let (x0v, y0v) = if let PathCmd::MoveTo(a, b) = path[0] { (a, b) } else { unreachable!() };
+                let (x1v, y1v) = if let PathCmd::LineTo(a, b) = path[1] { (a, b) } else { unreachable!() };
+                let (x2v, y2v) = if let PathCmd::LineTo(a, b) = path[2] { (a, b) } else { unreachable!() };
+                let (x3v, y3v) = if let PathCmd::LineTo(a, b) = path[3] { (a, b) } else { unreachable!() };
+
+                let is_aabb = (approx_eq(x0v, x3v) && approx_eq(x1v, x2v) && approx_eq(y0v, y1v) && approx_eq(y2v, y3v))
+                           || (approx_eq(y0v, y1v) && approx_eq(y2v, y3v) && approx_eq(x0v, x3v) && approx_eq(x1v, x2v))
+                           || (approx_eq(x0v, x1v) && approx_eq(x2v, x3v) && approx_eq(y1v, y2v) && approx_eq(y0v, y3v))
+                           || (approx_eq(y0v, y3v) && approx_eq(y1v, y2v) && approx_eq(x0v, x1v) && approx_eq(x2v, x3v));
+
+                if is_aabb {
+                    let min_x = x0v.min(x1v).min(x2v).min(x3v);
+                    let min_y = y0v.min(y1v).min(y2v).min(y3v);
+                    let max_x = x0v.max(x1v).max(x2v).max(x3v);
+                    let max_y = y0v.max(y1v).max(y2v).max(y3v);
+                    let rw = max_x - min_x;
+                    let rh = max_y - min_y;
+                    self.tessellate_gradient_rect(
+                        min_x, min_y, rw, rh, stops, sx1, sy1, sx2, sy2, global_alpha, clip,
+                    );
+                    return;
+                }
+                // Non-axis-aligned: fall through to lyon tessellation.
+            }
+        }
+
+        // ── General path: lyon tessellation with per-triangle centroid sampling ──
+
+        let mut builder = lyon_path::Path::builder();
+        let transform = &self.transform;
+        let mut in_subpath = false;
+
+        for cmd in &path {
+            match *cmd {
+                PathCmd::MoveTo(x, y) => {
+                    if in_subpath { builder.end(false); }
+                    let (px, py) = apply(transform, x, y);
+                    builder.begin(point(px, py));
+                    in_subpath = true;
+                }
+                PathCmd::LineTo(x, y) => {
+                    if !in_subpath {
+                        let (px, py) = apply(transform, x, y);
+                        builder.begin(point(px, py));
+                        in_subpath = true;
+                    } else {
+                        let (px, py) = apply(transform, x, y);
+                        builder.line_to(point(px, py));
+                    }
+                }
+                PathCmd::Close => {
+                    if in_subpath { builder.close(); in_subpath = false; }
+                }
+                PathCmd::Rect(x, y, w, h) => {
+                    if in_subpath { builder.end(false); }
+                    let tl = apply(transform, x, y);
+                    let tr = apply(transform, x + w, y);
+                    let br = apply(transform, x + w, y + h);
+                    let bl = apply(transform, x, y + h);
+                    builder.begin(point(tl.0, tl.1));
+                    builder.line_to(point(tr.0, tr.1));
+                    builder.line_to(point(br.0, br.1));
+                    builder.line_to(point(bl.0, bl.1));
+                    builder.close();
+                    in_subpath = false;
+                }
+                PathCmd::Arc { cx, cy, r, start, end } => {
+                    let sweep = end - start;
+                    let scale = ((transform[0].abs() + transform[3].abs()) * 0.5).max(1.0);
+                    let screen_r = r * scale;
+                    if screen_r < 0.5 {
+                        let center = apply(transform, cx, cy);
+                        if in_subpath {
+                            builder.line_to(point(center.0, center.1));
+                        } else {
+                            builder.begin(point(center.0, center.1));
+                            in_subpath = true;
+                        }
+                        continue;
+                    }
+                    let steps = ((sweep.abs() * screen_r).max(sweep.abs() * 5.0)).max(8.0) as usize;
+                    let step_angle = sweep / steps as f32;
+                    let first_pt = apply(transform, cx + r * start.cos(), cy + r * start.sin());
+                    if in_subpath {
+                        builder.line_to(point(first_pt.0, first_pt.1));
+                    } else {
+                        builder.begin(point(first_pt.0, first_pt.1));
+                        in_subpath = true;
+                    }
+                    for i in 1..=steps {
+                        let angle = start + step_angle * i as f32;
+                        let p = apply(transform, cx + r * angle.cos(), cy + r * angle.sin());
+                        builder.line_to(point(p.0, p.1));
+                    }
+                }
+            }
+        }
+
+        if in_subpath { builder.close(); }
+
+        let lyon_path = builder.build();
+
+        let mut geometry: VertexBuffers<[f32; 2], u16> = VertexBuffers::new();
+        let mut tessellator = FillTessellator::new();
+        let result = tessellator.tessellate_path(
+            &lyon_path,
+            &FillOptions::tolerance(0.5),
+            &mut BuffersBuilder::new(&mut geometry, |vertex: FillVertex| {
+                vertex.position().to_array()
+            }),
+        );
+
+        if result.is_ok() && !geometry.indices.is_empty() {
+            for tri in geometry.indices.chunks(3) {
+                if tri.len() == 3 {
+                    let v0 = geometry.vertices[tri[0] as usize];
+                    let v1 = geometry.vertices[tri[1] as usize];
+                    let v2 = geometry.vertices[tri[2] as usize];
+
+                    // Sample gradient at centroid of triangle.
+                    let cx = (v0[0] + v1[0] + v2[0]) / 3.0;
+                    let cy = (v0[1] + v1[1] + v2[1]) / 3.0;
+                    let t = project_onto_gradient(cx, cy, sx1, sy1, sx2, sy2);
+                    let mut color = sample_gradient(stops, t);
+                    color[3] = (color[3] * global_alpha).clamp(0.0, 1.0);
+
+                    self.draw_commands.push(DrawCmd::Triangle(TriangleInstance {
+                        v0,
+                        v1,
+                        v2,
+                        _pad0: [0.0; 2],
+                        color,
+                        clip_rect: clip,
+                    }));
+                }
+            }
+        }
+    }
+
+    /// Emit gradient triangles for an axis-aligned rectangle by slicing it into
+    /// thin horizontal or vertical strips, one per stop interval.
+    ///
+    /// This gives visually perfect results for rect fills: each strip is
+    /// a uniform color band that exactly spans one stop interval.
+    /// The gradient direction is determined by which axis the gradient vector
+    /// is more aligned with.
+    fn tessellate_gradient_rect(
+        &mut self,
+        rx: f32,
+        ry: f32,
+        rw: f32,
+        rh: f32,
+        stops: &[(f32, [f32; 4])],
+        sx1: f32,
+        sy1: f32,
+        sx2: f32,
+        sy2: f32,
+        global_alpha: f32,
+        clip: [f32; 4],
+    ) {
+        if stops.is_empty() { return; }
+
+        // Transform rect corners to screen space.
+        let (px1, py1) = apply(&self.transform, rx, ry);
+        let (px2, py2) = apply(&self.transform, rx + rw, ry + rh);
+        let (left, right) = (px1.min(px2), px1.max(px2));
+        let (top, bottom) = (py1.min(py2), py1.max(py2));
+
+        if stops.len() == 1 {
+            // Single stop — emit flat-colored triangles.
+            let mut color = stops[0].1;
+            color[3] = (color[3] * global_alpha).clamp(0.0, 1.0);
+            self.emit_rect_triangles(left, top, right, bottom, color, clip);
+            return;
+        }
+
+        // Number of strips: one per adjacent stop pair, plus constant bands at each end.
+        // We divide the rect extent into sub-rects in the gradient's major axis direction.
+        //
+        // For each sub-rect we sample the gradient at its center to get the strip color.
+        // Using many thin strips yields a smooth gradient approximation without adding
+        // per-vertex color support to the GPU pipeline.
+
+        // Determine the gradient direction in screen space.
+        let gdx = sx2 - sx1;
+        let gdy = sy2 - sy1;
+        let len_sq = gdx * gdx + gdy * gdy;
+
+        if len_sq < 1e-6 {
+            // Degenerate gradient — flat fill with first stop.
+            let mut color = stops[0].1;
+            color[3] = (color[3] * global_alpha).clamp(0.0, 1.0);
+            self.emit_rect_triangles(left, top, right, bottom, color, clip);
+            return;
+        }
+
+        // Number of strips — more strips = smoother gradient.
+        // Use 64 strips for a smooth result with minimal triangle overhead.
+        const STRIPS: usize = 64;
+
+        for i in 0..STRIPS {
+            let t0 = i as f32 / STRIPS as f32;
+            let t1 = (i + 1) as f32 / STRIPS as f32;
+            let tc = (t0 + t1) * 0.5;
+
+            // Compute strip bounds by projecting t onto the rect extent.
+            // We clip the strip to the rect bounds.
+            let (strip_left, strip_top, strip_right, strip_bottom) =
+                strip_bounds_for_t(t0, t1, left, top, right, bottom, sx1, sy1, sx2, sy2);
+
+            if strip_right <= strip_left || strip_bottom <= strip_top {
+                continue;
+            }
+
+            let mut color = sample_gradient(stops, tc);
+            color[3] = (color[3] * global_alpha).clamp(0.0, 1.0);
+
+            self.emit_rect_triangles(strip_left, strip_top, strip_right, strip_bottom, color, clip);
+        }
+    }
+
+    /// Emit two triangles forming a rectangle as `TriangleInstance` draw commands.
+    fn emit_rect_triangles(
+        &mut self,
+        left: f32,
+        top: f32,
+        right: f32,
+        bottom: f32,
+        color: [f32; 4],
+        clip: [f32; 4],
+    ) {
+        let tl = [left,  top];
+        let tr = [right, top];
+        let br = [right, bottom];
+        let bl = [left,  bottom];
+
+        // Triangle 1: top-left, top-right, bottom-right
+        self.draw_commands.push(DrawCmd::Triangle(TriangleInstance {
+            v0: tl, v1: tr, v2: br,
+            _pad0: [0.0; 2],
+            color,
+            clip_rect: clip,
+        }));
+        // Triangle 2: top-left, bottom-right, bottom-left
+        self.draw_commands.push(DrawCmd::Triangle(TriangleInstance {
+            v0: tl, v1: br, v2: bl,
+            _pad0: [0.0; 2],
+            color,
+            clip_rect: clip,
+        }));
+    }
+}
+
+/// Compute the screen-space bounds of a gradient strip for parameter range [t0, t1].
+///
+/// The strip is the region of the rectangle where the gradient projection t
+/// falls in [t0, t1].  We simply lerp the gradient endpoints to find the
+/// strip's screen-space edges, then clip to the rect bounds.
+#[allow(clippy::too_many_arguments)]
+fn strip_bounds_for_t(
+    t0: f32,
+    t1: f32,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    sx1: f32,
+    sy1: f32,
+    sx2: f32,
+    sy2: f32,
+) -> (f32, f32, f32, f32) {
+    let gdx = sx2 - sx1;
+    let gdy = sy2 - sy1;
+
+    // Determine the major axis of the gradient.
+    if gdx.abs() >= gdy.abs() {
+        // Predominantly horizontal gradient — slice into vertical strips.
+        // x at gradient t = sx1 + t * gdx
+        let x_at_t0 = (sx1 + t0 * gdx).clamp(left, right);
+        let x_at_t1 = (sx1 + t1 * gdx).clamp(left, right);
+        let (sl, sr) = if x_at_t0 <= x_at_t1 { (x_at_t0, x_at_t1) } else { (x_at_t1, x_at_t0) };
+        (sl.max(left), top, sr.min(right), bottom)
+    } else {
+        // Predominantly vertical gradient — slice into horizontal strips.
+        // y at gradient t = sy1 + t * gdy
+        let y_at_t0 = (sy1 + t0 * gdy).clamp(top, bottom);
+        let y_at_t1 = (sy1 + t1 * gdy).clamp(top, bottom);
+        let (st, sb) = if y_at_t0 <= y_at_t1 { (y_at_t0, y_at_t1) } else { (y_at_t1, y_at_t0) };
+        (left, st.max(top), right, sb.min(bottom))
+    }
+}
+
