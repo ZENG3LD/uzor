@@ -20,16 +20,16 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
     let scale_y = height / vb_height;
     let scale = scale_x.min(scale_y); // Uniform scale to fit
 
-    let offset_x = x + (width - vb_width * scale) / 2.0;
-    let offset_y = y + (height - vb_height * scale) / 2.0;
+    let offset_x = (x + (width - vb_width * scale) / 2.0).floor();
+    let offset_y = (y + (height - vb_height * scale) / 2.0).floor();
 
     // Check if root SVG has fill="none" - if so, children default to stroke-only
     // This is the SVG inheritance model: fill="none" on root means no fill unless overridden
     let has_fill_none = svg_root_has_fill_none(svg);
     let default_filled = !has_fill_none;
 
-    // Fixed stroke width for crisp rendering (1.5px works well for 16-32px icons)
-    let stroke_width = 1.5 * scale;
+    // Fixed stroke width for crisp rendering — round to nearest 0.5 for pixel-aligned strokes
+    let stroke_width = (1.5 * scale * 2.0).round() / 2.0;
 
     // Set stroke style
     ctx.set_stroke_color(color);
@@ -1322,8 +1322,8 @@ pub fn draw_svg_icon_rotated(
     let scale_y = height / vb_height;
     let scale = scale_x.min(scale_y);
 
-    let offset_x = x + (width - vb_width * scale) / 2.0;
-    let offset_y = y + (height - vb_height * scale) / 2.0;
+    let offset_x = (x + (width - vb_width * scale) / 2.0).floor();
+    let offset_y = (y + (height - vb_height * scale) / 2.0).floor();
 
     // Center of the icon in screen space
     let cx = x + width / 2.0;
