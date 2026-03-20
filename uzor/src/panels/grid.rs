@@ -663,7 +663,18 @@ impl<P: DockPanel> DockingTree<P> {
     }
 
     pub fn reset_proportions(&mut self) {
-        self.root.proportions.clear();
+        Self::reset_branch_proportions(&mut self.root);
+    }
+
+    fn reset_branch_proportions(branch: &mut Branch<P>) {
+        branch.proportions.clear();
+        branch.custom_rects.clear();
+        branch.cross_ratio = None;
+        for child in &mut branch.children {
+            if let PanelNode::Branch(b) = child {
+                Self::reset_branch_proportions(b);
+            }
+        }
     }
 
     // --- Cross Ratio (Grid2x2) ---
