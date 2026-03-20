@@ -48,67 +48,10 @@ fn get_font_ref(bold: bool, italic: bool) -> Option<&'static skrifa::FontRef<'st
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /// Parse a CSS color string to `[f32; 4]` RGBA.
+/// Delegates to the canonical `uzor::render::parse_color` implementation.
 fn parse_color(color: &str) -> [f32; 4] {
-    let color = color.trim();
-
-    // rgba(r,g,b,a)
-    if let Some(inner) = color.strip_prefix("rgba(").and_then(|s| s.strip_suffix(')')) {
-        let p: Vec<&str> = inner.split(',').collect();
-        if p.len() == 4 {
-            let r = p[0].trim().parse::<f32>().unwrap_or(0.0) / 255.0;
-            let g = p[1].trim().parse::<f32>().unwrap_or(0.0) / 255.0;
-            let b = p[2].trim().parse::<f32>().unwrap_or(0.0) / 255.0;
-            let a = p[3].trim().parse::<f32>().unwrap_or(1.0);
-            return [r, g, b, a.min(1.0)];
-        }
-    }
-
-    // rgb(r,g,b)
-    if let Some(inner) = color.strip_prefix("rgb(").and_then(|s| s.strip_suffix(')')) {
-        let p: Vec<&str> = inner.split(',').collect();
-        if p.len() == 3 {
-            let r = p[0].trim().parse::<f32>().unwrap_or(0.0) / 255.0;
-            let g = p[1].trim().parse::<f32>().unwrap_or(0.0) / 255.0;
-            let b = p[2].trim().parse::<f32>().unwrap_or(0.0) / 255.0;
-            return [r, g, b, 1.0];
-        }
-    }
-
-    // Hex
-    let hex = color.trim_start_matches('#');
-    match hex.len() {
-        3 => {
-            let r = u8::from_str_radix(&hex[0..1], 16).unwrap_or(0) * 17;
-            let g = u8::from_str_radix(&hex[1..2], 16).unwrap_or(0) * 17;
-            let b = u8::from_str_radix(&hex[2..3], 16).unwrap_or(0) * 17;
-            [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
-        }
-        6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-            [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
-        }
-        8 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-            let a = u8::from_str_radix(&hex[6..8], 16).unwrap_or(255);
-            [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0]
-        }
-        _ => match color {
-            "transparent" => [0.0, 0.0, 0.0, 0.0],
-            "white"       => [1.0, 1.0, 1.0, 1.0],
-            "black"       => [0.0, 0.0, 0.0, 1.0],
-            "red"         => [1.0, 0.0, 0.0, 1.0],
-            "green"       => [0.0, 0.5, 0.0, 1.0],
-            "blue"        => [0.0, 0.0, 1.0, 1.0],
-            "yellow"      => [1.0, 1.0, 0.0, 1.0],
-            "orange"      => [1.0, 0.647, 0.0, 1.0],
-            "gray" | "grey" => [0.502, 0.502, 0.502, 1.0],
-            _             => [0.0, 0.0, 0.0, 1.0],
-        },
-    }
+    let (r, g, b, a) = uzor::render::parse_color(color);
+    [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0]
 }
 
 // ── 2D affine transform helpers ────────────────────────────────────────────

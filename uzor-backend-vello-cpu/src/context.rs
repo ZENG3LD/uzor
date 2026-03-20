@@ -72,65 +72,8 @@ fn to_font_ref(font: &FontData) -> Option<FontRef<'_>> {
 type Color = vello_cpu::color::AlphaColor<vello_cpu::color::Srgb>;
 
 fn parse_color(s: &str) -> Color {
-    let s = s.trim();
-
-    if let Some(inner) = s.strip_prefix("rgba(").and_then(|x| x.strip_suffix(')')) {
-        let p: Vec<&str> = inner.split(',').map(str::trim).collect();
-        if p.len() == 4 {
-            let r = p[0].parse::<u8>().unwrap_or(0);
-            let g = p[1].parse::<u8>().unwrap_or(0);
-            let b = p[2].parse::<u8>().unwrap_or(0);
-            let a = p[3].parse::<f64>().map(|v| {
-                if v <= 1.0 { (v * 255.0) as u8 } else { v as u8 }
-            }).unwrap_or(255);
-            return Color::from_rgba8(r, g, b, a);
-        }
-    }
-
-    if let Some(inner) = s.strip_prefix("rgb(").and_then(|x| x.strip_suffix(')')) {
-        let p: Vec<&str> = inner.split(',').map(str::trim).collect();
-        if p.len() == 3 {
-            let r = p[0].parse::<u8>().unwrap_or(0);
-            let g = p[1].parse::<u8>().unwrap_or(0);
-            let b = p[2].parse::<u8>().unwrap_or(0);
-            return Color::from_rgba8(r, g, b, 255);
-        }
-    }
-
-    let hex = s.trim_start_matches('#');
-    match hex.len() {
-        3 => {
-            let r = u8::from_str_radix(&hex[0..1], 16).unwrap_or(0) * 17;
-            let g = u8::from_str_radix(&hex[1..2], 16).unwrap_or(0) * 17;
-            let b = u8::from_str_radix(&hex[2..3], 16).unwrap_or(0) * 17;
-            Color::from_rgba8(r, g, b, 255)
-        }
-        6 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-            Color::from_rgba8(r, g, b, 255)
-        }
-        8 => {
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-            let a = u8::from_str_radix(&hex[6..8], 16).unwrap_or(255);
-            Color::from_rgba8(r, g, b, a)
-        }
-        _ => match s {
-            "transparent" => Color::from_rgba8(0,   0,   0,   0),
-            "white"       => Color::from_rgba8(255, 255, 255, 255),
-            "black"       => Color::from_rgba8(0,   0,   0,   255),
-            "red"         => Color::from_rgba8(255, 0,   0,   255),
-            "green"       => Color::from_rgba8(0,   128, 0,   255),
-            "blue"        => Color::from_rgba8(0,   0,   255, 255),
-            "yellow"      => Color::from_rgba8(255, 255, 0,   255),
-            "orange"      => Color::from_rgba8(255, 165, 0,   255),
-            "gray" | "grey" => Color::from_rgba8(128, 128, 128, 255),
-            _             => Color::from_rgba8(0,   0,   0,   255),
-        },
-    }
+    let (r, g, b, a) = uzor::render::parse_color(s);
+    Color::from_rgba8(r, g, b, a)
 }
 
 // ---------------------------------------------------------------------------

@@ -55,90 +55,11 @@ pub(crate) fn to_font_ref(font: &FontData) -> Option<FontRef<'_>> {
 /// Vello 0.6 color type alias
 pub type Color = vello::peniko::color::AlphaColor<vello::peniko::color::Srgb>;
 
-/// Parse CSS color string to vello Color
-/// Supports: #RGB, #RRGGBB, #RRGGBBAA, rgb(r,g,b), rgba(r,g,b,a)
+/// Parse CSS color string to vello Color.
+/// Delegates to the canonical `uzor::render::parse_color` implementation.
 pub fn parse_color(color: &str) -> Color {
-    let color = color.trim();
-
-    // Handle rgba(r, g, b, a) format
-    if let Some(inner) = color.strip_prefix("rgba(").and_then(|s| s.strip_suffix(')')) {
-        let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
-        if parts.len() == 4 {
-            let r = parts[0].parse::<u8>().unwrap_or(0);
-            let g = parts[1].parse::<u8>().unwrap_or(0);
-            let b = parts[2].parse::<u8>().unwrap_or(0);
-            // Alpha can be 0.0-1.0 or 0-255
-            let a = if let Ok(alpha_f) = parts[3].parse::<f64>() {
-                if alpha_f <= 1.0 {
-                    (alpha_f * 255.0) as u8
-                } else {
-                    alpha_f as u8
-                }
-            } else {
-                255
-            };
-            return Color::from_rgba8(r, g, b, a);
-        }
-    }
-
-    // Handle rgb(r, g, b) format
-    if let Some(inner) = color.strip_prefix("rgb(").and_then(|s| s.strip_suffix(')')) {
-        let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
-        if parts.len() == 3 {
-            let r = parts[0].parse::<u8>().unwrap_or(0);
-            let g = parts[1].parse::<u8>().unwrap_or(0);
-            let b = parts[2].parse::<u8>().unwrap_or(0);
-            return Color::from_rgba8(r, g, b, 255);
-        }
-    }
-
-    // Named CSS colors
-    match color.to_ascii_lowercase().as_str() {
-        "white"       => return Color::from_rgba8(255, 255, 255, 255),
-        "black"       => return Color::from_rgba8(0, 0, 0, 255),
-        "red"         => return Color::from_rgba8(255, 0, 0, 255),
-        "green"       => return Color::from_rgba8(0, 128, 0, 255),
-        "blue"        => return Color::from_rgba8(0, 0, 255, 255),
-        "yellow"      => return Color::from_rgba8(255, 255, 0, 255),
-        "cyan" | "aqua" => return Color::from_rgba8(0, 255, 255, 255),
-        "magenta" | "fuchsia" => return Color::from_rgba8(255, 0, 255, 255),
-        "orange"      => return Color::from_rgba8(255, 165, 0, 255),
-        "gray" | "grey" => return Color::from_rgba8(128, 128, 128, 255),
-        "silver"      => return Color::from_rgba8(192, 192, 192, 255),
-        "maroon"      => return Color::from_rgba8(128, 0, 0, 255),
-        "olive"       => return Color::from_rgba8(128, 128, 0, 255),
-        "lime"        => return Color::from_rgba8(0, 255, 0, 255),
-        "teal"        => return Color::from_rgba8(0, 128, 128, 255),
-        "navy"        => return Color::from_rgba8(0, 0, 128, 255),
-        "purple"      => return Color::from_rgba8(128, 0, 128, 255),
-        "transparent" => return Color::from_rgba8(0, 0, 0, 0),
-        "none"        => return Color::from_rgba8(0, 0, 0, 0),
-        _ => {}
-    }
-
-    // Handle hex formats
-    let hex = color.trim_start_matches('#');
-    let len = hex.len();
-
-    if len == 6 {
-        let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-        let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-        let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-        Color::from_rgba8(r, g, b, 255)
-    } else if len == 8 {
-        let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-        let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-        let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-        let a = u8::from_str_radix(&hex[6..8], 16).unwrap_or(255);
-        Color::from_rgba8(r, g, b, a)
-    } else if len == 3 {
-        let r = u8::from_str_radix(&hex[0..1], 16).unwrap_or(0) * 17;
-        let g = u8::from_str_radix(&hex[1..2], 16).unwrap_or(0) * 17;
-        let b = u8::from_str_radix(&hex[2..3], 16).unwrap_or(0) * 17;
-        Color::from_rgba8(r, g, b, 255)
-    } else {
-        palette::css::BLACK
-    }
+    let (r, g, b, a) = uzor::render::parse_color(color);
+    Color::from_rgba8(r, g, b, a)
 }
 
 /// Saved context state for save/restore
@@ -278,53 +199,11 @@ impl<'a> VelloGpuRenderContext<'a> {
         stroke
     }
 
-    /// Parse color string to RGBA [f32; 4] for shader use
+    /// Parse color string to RGBA [f32; 4] for shader use.
+    /// Delegates to the canonical `uzor::render::parse_color` implementation.
     fn parse_color_to_rgba(&self, color: &str) -> [f32; 4] {
-        let color = color.trim();
-
-        // Handle rgba(r,g,b,a) format
-        if color.starts_with("rgba(") && color.ends_with(')') {
-            let inner = &color[5..color.len()-1];
-            let parts: Vec<&str> = inner.split(',').collect();
-            if parts.len() == 4 {
-                let r = parts[0].trim().parse::<f32>().unwrap_or(0.0) / 255.0;
-                let g = parts[1].trim().parse::<f32>().unwrap_or(0.0) / 255.0;
-                let b = parts[2].trim().parse::<f32>().unwrap_or(0.0) / 255.0;
-                let a = parts[3].trim().parse::<f32>().unwrap_or(1.0);
-                return [r, g, b, a];
-            }
-        }
-
-        // Handle rgb(r,g,b) format
-        if color.starts_with("rgb(") && color.ends_with(')') {
-            let inner = &color[4..color.len()-1];
-            let parts: Vec<&str> = inner.split(',').collect();
-            if parts.len() == 3 {
-                let r = parts[0].trim().parse::<f32>().unwrap_or(0.0) / 255.0;
-                let g = parts[1].trim().parse::<f32>().unwrap_or(0.0) / 255.0;
-                let b = parts[2].trim().parse::<f32>().unwrap_or(0.0) / 255.0;
-                return [r, g, b, 1.0];
-            }
-        }
-
-        // Handle hex format (#RRGGBB or #RRGGBBAA)
-        let hex = color.trim_start_matches('#');
-        match hex.len() {
-            6 => {
-                let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f32 / 255.0;
-                let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f32 / 255.0;
-                let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0) as f32 / 255.0;
-                [r, g, b, 1.0]
-            }
-            8 => {
-                let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f32 / 255.0;
-                let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f32 / 255.0;
-                let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0) as f32 / 255.0;
-                let a = u8::from_str_radix(&hex[6..8], 16).unwrap_or(255) as f32 / 255.0;
-                [r, g, b, a]
-            }
-            _ => [1.0, 1.0, 1.0, 0.0], // Transparent white
-        }
+        let (r, g, b, a) = uzor::render::parse_color(color);
+        [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0]
     }
 
 }

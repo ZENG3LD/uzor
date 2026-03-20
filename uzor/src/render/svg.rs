@@ -159,6 +159,9 @@ struct PathInfo {
     filled: bool,
     stroked: bool,
     dash_array: Option<Vec<f64>>,
+    fill_color: Option<String>,    // Actual fill color from attribute (for multicolor SVGs)
+    stroke_color: Option<String>,  // Actual stroke color from attribute (for multicolor SVGs)
+    stroke_width: Option<f64>,     // Stroke width from attribute
 }
 
 /// Extract all path elements from SVG with fill/stroke info
@@ -187,29 +190,49 @@ fn parse_svg_paths(svg: &str, default_filled: bool) -> Vec<PathInfo> {
                 let d = tag_content[d_content_start..d_content_start + d_end].to_string();
 
                 // Check fill attribute
-                let filled = if let Some(fill_start) = tag_content.find("fill=\"") {
+                let (filled, fill_color) = if let Some(fill_start) = tag_content.find("fill=\"") {
                     let fill_content_start = fill_start + 6;
                     if let Some(fill_end) = tag_content[fill_content_start..].find('"') {
                         let fill_value = &tag_content[fill_content_start..fill_content_start + fill_end];
-                        fill_value != "none"
+                        if fill_value != "none" {
+                            (true, Some(fill_value.to_string()))
+                        } else {
+                            (false, None)
+                        }
                     } else {
-                        false
+                        (false, None)
                     }
                 } else {
-                    default_filled // Use inherited default from root SVG
+                    (default_filled, None) // Use inherited default from root SVG
                 };
 
                 // Check stroke attribute (default is stroked for icons)
-                let stroked = if let Some(stroke_start) = tag_content.find("stroke=\"") {
+                let (stroked, stroke_color) = if let Some(stroke_start) = tag_content.find("stroke=\"") {
                     let stroke_content_start = stroke_start + 8;
                     if let Some(stroke_end) = tag_content[stroke_content_start..].find('"') {
                         let stroke_value = &tag_content[stroke_content_start..stroke_content_start + stroke_end];
-                        stroke_value != "none"
+                        if stroke_value != "none" {
+                            (true, Some(stroke_value.to_string()))
+                        } else {
+                            (false, None)
+                        }
                     } else {
-                        true
+                        (true, None)
                     }
                 } else {
-                    !filled // If not filled, assume stroked
+                    (!filled, None) // If not filled, assume stroked
+                };
+
+                // Check stroke-width attribute
+                let stroke_width = if let Some(sw_start) = tag_content.find("stroke-width=\"") {
+                    let sw_content_start = sw_start + 14;
+                    if let Some(sw_end) = tag_content[sw_content_start..].find('"') {
+                        tag_content[sw_content_start..sw_content_start + sw_end].parse::<f64>().ok()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
                 };
 
                 // Check stroke-dasharray attribute (e.g., "4 2" for dashed lines)
@@ -234,7 +257,7 @@ fn parse_svg_paths(svg: &str, default_filled: bool) -> Vec<PathInfo> {
                     None
                 };
 
-                paths.push(PathInfo { d, filled, stroked, dash_array });
+                paths.push(PathInfo { d, filled, stroked, dash_array, fill_color, stroke_color, stroke_width });
             }
         }
 
@@ -1445,6 +1468,234 @@ pub fn draw_svg_icon_rotated(
                 ctx.close_path();
             }
             ctx.stroke();
+        }
+    }
+}
+
+// =============================================================================
+// Multicolor SVG Rendering
+// =============================================================================
+
+/// Parsed gradient info extracted from an SVG `<linearGradient>` element.
+struct GradientInfo {
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    /// (offset 0.0..=1.0, color hex/name)
+    stops: Vec<(f32, String)>,
+}
+
+/// Extract the value of a quoted attribute from a tag snippet.
+///
+/// `attr_prefix` should include the opening quote, e.g. `"x1=\""`.
+fn extract_attr(text: &str, attr_prefix: &str) -> Option<String> {
+    let start = text.find(attr_prefix)? + attr_prefix.len();
+    let end = text[start..].find('"')?;
+    Some(text[start..start + end].to_string())
+}
+
+/// Resolve a gradient URL reference to a fallback solid color by extracting
+/// the first stop-color from the gradient definition in the SVG.
+///
+/// `url_ref` is like `"url(#paint0_linear_1_13)"`.
+#[allow(dead_code)]
+fn resolve_gradient_color(svg: &str, url_ref: &str) -> Option<String> {
+    let id = url_ref.strip_prefix("url(#")?.strip_suffix(')')?;
+    let search = format!("id=\"{}\"", id);
+    let grad_pos = svg.find(&search)?;
+    let after_grad = &svg[grad_pos..];
+    let stop_pos = after_grad.find("stop-color=\"")?;
+    let color_start = stop_pos + 12; // len("stop-color=\"")
+    let color_end = after_grad[color_start..].find('"')?;
+    Some(after_grad[color_start..color_start + color_end].to_string())
+}
+
+/// Parse a `<linearGradient>` element from the SVG source by its `id` attribute.
+///
+/// Returns `None` if the gradient is not found or cannot be parsed.
+fn parse_gradient(svg: &str, gradient_id: &str) -> Option<GradientInfo> {
+    let search = format!("id=\"{}\"", gradient_id);
+    let grad_pos = svg.find(&search)?;
+    let after = &svg[grad_pos..];
+
+    let grad_end = after.find("</linearGradient>")?;
+    let grad_text = &after[..grad_end];
+
+    // Parse coordinate attributes; default to a top→bottom gradient when missing
+    let x1 = extract_attr(grad_text, "x1=\"")
+        .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let y1 = extract_attr(grad_text, "y1=\"")
+        .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let x2 = extract_attr(grad_text, "x2=\"")
+        .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
+        .unwrap_or(0.0);
+    let y2 = extract_attr(grad_text, "y2=\"")
+        .and_then(|s| s.trim_end_matches('%').parse::<f64>().ok())
+        .unwrap_or(1.0);
+
+    // Parse all <stop …/> elements within the gradient block
+    let mut stops: Vec<(f32, String)> = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(stop_rel) = grad_text[search_from..].find("<stop") {
+        let abs = search_from + stop_rel;
+        let remaining = &grad_text[abs..];
+        let stop_end = match remaining.find("/>") {
+            Some(e) => e,
+            None => break,
+        };
+        let stop_tag = &remaining[..stop_end + 2];
+
+        let offset = extract_attr(stop_tag, "offset=\"")
+            .and_then(|s| {
+                // offset may be a bare number ("0.5") or a percentage ("50%")
+                let s = s.trim_end_matches('%');
+                s.parse::<f32>().ok().map(|v| if v > 1.0 { v / 100.0 } else { v })
+            })
+            .unwrap_or(0.0);
+
+        // stop-color can appear as an attribute or inside a style="..." attribute
+        let color = extract_attr(stop_tag, "stop-color=\"")
+            .or_else(|| {
+                // Try style="stop-color:#xxx"
+                extract_attr(stop_tag, "style=\"").and_then(|style| {
+                    let sc_pos = style.find("stop-color:")?;
+                    let after_sc = style[sc_pos + 11..].trim_start();
+                    let end = after_sc.find(|c: char| c == ';' || c == '"').unwrap_or(after_sc.len());
+                    Some(after_sc[..end].trim().to_string())
+                })
+            })
+            .unwrap_or_else(|| "black".to_string());
+
+        stops.push((offset, color));
+        search_from = abs + stop_end + 2;
+    }
+
+    if stops.is_empty() {
+        return None;
+    }
+
+    Some(GradientInfo { x1, y1, x2, y2, stops })
+}
+
+/// Render a multi-color SVG, preserving each path element's original `fill` color
+/// attribute instead of overriding with a single color. Suitable for mascot/logo SVGs
+/// that use multiple fill colors across their paths.
+///
+/// # Arguments
+/// * `ctx` - Render context
+/// * `svg` - SVG string content
+/// * `x`, `y` - Top-left position
+/// * `width`, `height` - Target dimensions
+pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, width: f64, height: f64) {
+    let (vb_width, vb_height) = parse_viewbox(svg).unwrap_or((24.0, 24.0));
+    let scale_x = width / vb_width;
+    let scale_y = height / vb_height;
+    let scale = scale_x.min(scale_y);
+    let offset_x = (x + (width - vb_width * scale) / 2.0).floor();
+    let offset_y = (y + (height - vb_height * scale) / 2.0).floor();
+    let has_fill_none = svg_root_has_fill_none(svg);
+    let default_filled = !has_fill_none;
+
+    // Render path elements preserving each path's fill and stroke colors.
+    // NOTE: vello's fill()/stroke()/fill_linear_gradient() consume the path
+    // (path_builder.take()), so when a path needs BOTH fill AND stroke we must
+    // build the path geometry twice.
+    for path_info in parse_svg_paths(svg, default_filled) {
+        // ── Fill pass ───────────────────────────────────────────────────
+        if path_info.filled {
+            ctx.begin_path();
+            render_path_data(ctx, &path_info.d, offset_x, offset_y, scale);
+
+            if let Some(ref color) = path_info.fill_color {
+                if color.starts_with("url(#") {
+                    let grad_id = color.strip_prefix("url(#").and_then(|s| s.strip_suffix(')'));
+                    if let Some(id) = grad_id {
+                        if let Some(grad) = parse_gradient(svg, id) {
+                            let gx1 = offset_x + grad.x1 * scale;
+                            let gy1 = offset_y + grad.y1 * scale;
+                            let gx2 = offset_x + grad.x2 * scale;
+                            let gy2 = offset_y + grad.y2 * scale;
+                            let stops_refs: Vec<(f32, &str)> = grad
+                                .stops
+                                .iter()
+                                .map(|(o, c)| (*o, c.as_str()))
+                                .collect();
+                            ctx.fill_linear_gradient(&stops_refs, gx1, gy1, gx2, gy2);
+                        } else {
+                            ctx.set_fill_color("black");
+                            ctx.fill();
+                        }
+                    } else {
+                        ctx.set_fill_color("black");
+                        ctx.fill();
+                    }
+                } else {
+                    ctx.set_fill_color(color);
+                    ctx.fill();
+                }
+            } else {
+                ctx.set_fill_color("black");
+                ctx.fill();
+            }
+        }
+
+        // ── Stroke pass (rebuild path since fill consumed it) ───────────
+        if path_info.stroked {
+            ctx.begin_path();
+            render_path_data(ctx, &path_info.d, offset_x, offset_y, scale);
+
+            let sc = path_info.stroke_color.as_deref().unwrap_or("black");
+            let sw = path_info.stroke_width.unwrap_or(1.0) * scale;
+            ctx.set_stroke_color(sc);
+            ctx.set_stroke_width(sw);
+            ctx.set_line_cap("round");
+            ctx.set_line_join("round");
+            if let Some(ref dash) = path_info.dash_array {
+                let scaled_dash: Vec<f64> = dash.iter().map(|d| d * scale).collect();
+                ctx.set_line_dash(&scaled_dash);
+            } else {
+                ctx.set_line_dash(&[]);
+            }
+            ctx.stroke();
+            if path_info.dash_array.is_some() {
+                ctx.set_line_dash(&[]);
+            }
+        }
+    }
+
+    // Render rect elements (skip full-size background rects)
+    for (rx, ry, rw, rh, rounding, filled) in parse_svg_rects(svg, default_filled) {
+        if filled {
+            // Skip full-size background rects that cover the entire viewbox
+            if rw >= vb_width * 0.95 && rh >= vb_height * 0.95 {
+                continue;
+            }
+            let tx = offset_x + rx * scale;
+            let ty = offset_y + ry * scale;
+            let tw = rw * scale;
+            let th = rh * scale;
+            ctx.set_fill_color("black");
+            if rounding > 0.0 {
+                ctx.fill_rounded_rect(tx, ty, tw, th, rounding * scale);
+            } else {
+                ctx.fill_rect(tx, ty, tw, th);
+            }
+        }
+    }
+
+    // Render circle elements
+    for (cx_val, cy_val, r, filled) in parse_svg_circles(svg, default_filled) {
+        if filled {
+            let tx = offset_x + cx_val * scale;
+            let ty = offset_y + cy_val * scale;
+            let tr = r * scale;
+            ctx.begin_path();
+            ctx.arc(tx, ty, tr, 0.0, std::f64::consts::PI * 2.0);
+            ctx.set_fill_color("black");
+            ctx.fill();
         }
     }
 }
