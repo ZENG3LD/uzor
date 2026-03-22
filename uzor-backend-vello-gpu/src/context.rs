@@ -19,11 +19,18 @@ static ROBOTO_BOLD: &[u8] = include_bytes!("../fonts/Roboto-Bold.ttf");
 static ROBOTO_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-Italic.ttf");
 static ROBOTO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-BoldItalic.ttf");
 
+/// Embedded Unicode fallback fonts
+static NOTO_SYMBOLS2: &[u8] = include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
+static NOTO_EMOJI: &[u8] = include_bytes!("../fonts/NotoEmoji-Regular.ttf");
+
 /// Cached peniko FontData - created once, reused forever
 static CACHED_FONT_REGULAR: OnceLock<FontData> = OnceLock::new();
 static CACHED_FONT_BOLD: OnceLock<FontData> = OnceLock::new();
 static CACHED_FONT_ITALIC: OnceLock<FontData> = OnceLock::new();
 static CACHED_FONT_BOLD_ITALIC: OnceLock<FontData> = OnceLock::new();
+
+static CACHED_FALLBACK_SYMBOLS2: OnceLock<FontData> = OnceLock::new();
+static CACHED_FALLBACK_EMOJI: OnceLock<FontData> = OnceLock::new();
 
 /// Get cached font by style
 pub(crate) fn get_cached_font(bold: bool, italic: bool) -> &'static FontData {
@@ -43,6 +50,20 @@ pub(crate) fn get_cached_font(bold: bool, italic: bool) -> &'static FontData {
     }
 }
 
+/// Return the static fallback font list: [NotoSansSymbols2, NotoEmoji].
+pub(crate) fn get_fallback_fonts() -> &'static [FontData] {
+    static FALLBACK_LIST: OnceLock<Vec<FontData>> = OnceLock::new();
+    FALLBACK_LIST.get_or_init(|| {
+        let s2 = CACHED_FALLBACK_SYMBOLS2.get_or_init(|| {
+            FontData::new(Blob::new(Arc::new(NOTO_SYMBOLS2.to_vec())), 0)
+        });
+        let em = CACHED_FALLBACK_EMOJI.get_or_init(|| {
+            FontData::new(Blob::new(Arc::new(NOTO_EMOJI.to_vec())), 0)
+        });
+        vec![s2.clone(), em.clone()]
+    })
+}
+
 /// Convert FontData to skrifa FontRef for metrics
 pub(crate) fn to_font_ref(font: &FontData) -> Option<FontRef<'_>> {
     let file_ref = FileRef::new(font.data.as_ref()).ok()?;
@@ -50,6 +71,84 @@ pub(crate) fn to_font_ref(font: &FontData) -> Option<FontRef<'_>> {
         FileRef::Font(font) => Some(font),
         FileRef::Collection(collection) => collection.get(font.index).ok(),
     }
+}
+
+/// A resolved glyph: which FontData to use + the glyph id + pen position.
+struct ResolvedGlyph {
+    /// Index into get_fallback_fonts(), or None for primary font.
+    font_index: Option<usize>,
+    glyph_id: u32,
+    x: f32,
+    /// Vertical offset within the run (always 0.0 for horizontal text).
+    y: f32,
+    advance: f32,
+}
+
+/// Resolve all characters to (font, glyph_id, x, advance) with fallback.
+///
+/// Returns a vec of resolved glyphs.  Characters not found in any font
+/// are rendered with GlyphId(0) from the primary font (tofu box).
+fn resolve_glyphs_with_fallback(
+    text: &str,
+    primary_font_ref: &FontRef<'_>,
+    font_size: f32,
+) -> Vec<ResolvedGlyph> {
+    let size = skrifa::instance::Size::new(font_size);
+    let var_loc = skrifa::instance::LocationRef::default();
+    let primary_charmap = primary_font_ref.charmap();
+    let primary_metrics = primary_font_ref.glyph_metrics(size, var_loc);
+    let fallbacks = get_fallback_fonts();
+
+    let mut pen_x = 0.0f32;
+    let mut result = Vec::with_capacity(text.len());
+
+    for ch in text.chars() {
+        let primary_gid = primary_charmap.map(ch).unwrap_or_default();
+        if primary_gid != skrifa::GlyphId::new(0) {
+            let adv = primary_metrics.advance_width(primary_gid).unwrap_or_default();
+            result.push(ResolvedGlyph {
+                font_index: None,
+                glyph_id: primary_gid.to_u32(),
+                x: pen_x,
+                y: 0.0,
+                advance: adv,
+            });
+            pen_x += adv;
+        } else {
+            let mut found_index = None;
+            let mut found_gid = primary_gid;
+            let mut found_adv = primary_metrics.advance_width(primary_gid).unwrap_or_default();
+
+            for (idx, fb_font) in fallbacks.iter().enumerate() {
+                if let Some(fb_ref) = to_font_ref(fb_font) {
+                    let fb_gid = fb_ref.charmap().map(ch).unwrap_or_default();
+                    if fb_gid != skrifa::GlyphId::new(0) {
+                        let fb_metrics = fb_ref.glyph_metrics(size, var_loc);
+                        found_adv = fb_metrics.advance_width(fb_gid).unwrap_or_default();
+                        found_gid = fb_gid;
+                        found_index = Some(idx);
+                        break;
+                    }
+                }
+            }
+
+            result.push(ResolvedGlyph {
+                font_index: found_index,
+                glyph_id: found_gid.to_u32(),
+                x: pen_x,
+                y: 0.0,
+                advance: found_adv,
+            });
+            pen_x += found_adv;
+        }
+    }
+
+    result
+}
+
+/// Measure total advance width from resolved glyphs.
+fn resolved_glyphs_total_width(glyphs: &[ResolvedGlyph]) -> f32 {
+    glyphs.last().map_or(0.0, |g| g.x + g.advance)
 }
 
 /// Vello 0.6 color type alias
@@ -60,6 +159,65 @@ pub type Color = vello::peniko::color::AlphaColor<vello::peniko::color::Srgb>;
 pub fn parse_color(color: &str) -> Color {
     let (r, g, b, a) = uzor::render::parse_color(color);
     Color::from_rgba8(r, g, b, a)
+}
+
+/// Emit a sequence of `ResolvedGlyph`s to `scene`, issuing one `draw_glyphs`
+/// call per contiguous run that uses the same font.
+///
+/// Glyphs using the primary font use `primary_font`; glyphs using a fallback
+/// font use the corresponding entry in `fallbacks`.
+fn draw_resolved_glyphs(
+    scene: &mut Scene,
+    glyphs: &[ResolvedGlyph],
+    primary_font: &FontData,
+    fallbacks: &[FontData],
+    font_size: f32,
+    transform: Affine,
+    color: Color,
+) {
+    if glyphs.is_empty() {
+        return;
+    }
+
+    let brush = Brush::Solid(color);
+    let mut i = 0;
+
+    while i < glyphs.len() {
+        let run_font_index = glyphs[i].font_index;
+        let run_start = i;
+
+        // Find end of this contiguous run
+        while i < glyphs.len() && glyphs[i].font_index == run_font_index {
+            i += 1;
+        }
+
+        let run = &glyphs[run_start..i];
+        let font = match run_font_index {
+            None => primary_font,
+            Some(idx) => {
+                if idx < fallbacks.len() {
+                    &fallbacks[idx]
+                } else {
+                    primary_font
+                }
+            }
+        };
+
+        scene
+            .draw_glyphs(font)
+            .font_size(font_size)
+            .transform(transform)
+            .brush(&brush)
+            .hint(true)
+            .draw(
+                Fill::NonZero,
+                run.iter().map(|g| Glyph {
+                    id: g.glyph_id,
+                    x: g.x,
+                    y: g.y,
+                }),
+            );
+    }
 }
 
 /// Saved context state for save/restore
@@ -441,26 +599,21 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
         let fill_color = self.effective_fill_color();
 
         // Get cached font based on style
-        let font = get_cached_font(self.font_bold, self.font_italic);
-        let font_ref = match to_font_ref(font) {
+        let primary_font = get_cached_font(self.font_bold, self.font_italic);
+        let primary_font_ref = match to_font_ref(primary_font) {
             Some(f) => f,
             None => return,
         };
 
-        // Get font metrics
+        // Resolve all glyphs with fallback
+        let resolved = resolve_glyphs_with_fallback(text, &primary_font_ref, font_size);
+
+        // Get baseline metrics from primary font for vertical alignment
         let size = skrifa::instance::Size::new(font_size);
         let var_loc = skrifa::instance::LocationRef::default();
-        let metrics = font_ref.metrics(size, var_loc);
-        let charmap = font_ref.charmap();
-        let glyph_metrics = font_ref.glyph_metrics(size, var_loc);
+        let metrics = primary_font_ref.metrics(size, var_loc);
 
-        // Calculate text width for alignment
-        let text_width: f32 = text.chars()
-            .map(|ch| {
-                let gid = charmap.map(ch).unwrap_or_default();
-                glyph_metrics.advance_width(gid).unwrap_or_default()
-            })
-            .sum();
+        let text_width = resolved_glyphs_total_width(&resolved);
 
         // Adjust x for text alignment
         let adjusted_x = match self.text_align {
@@ -470,8 +623,6 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
         };
 
         // Adjust y for text baseline
-        // Note: In vello, glyphs are drawn with baseline at y=0
-        // ascent is positive (above baseline), descent is negative (below baseline)
         let adjusted_y = match self.text_baseline {
             TextBaseline::Top => y + metrics.ascent as f64,
             TextBaseline::Middle => y + (metrics.ascent + metrics.descent) as f64 / 2.0,
@@ -479,30 +630,19 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
             TextBaseline::Alphabetic => y,
         };
 
-        // Build glyphs
-        let mut pen_x = 0.0f32;
         let transform = self.transform.then_translate(kurbo::Vec2::new(adjusted_x, adjusted_y));
+        let fallbacks = get_fallback_fonts();
 
-        self.scene
-            .draw_glyphs(font)
-            .font_size(font_size)
-            .transform(transform)
-            .brush(&Brush::Solid(fill_color))
-            .hint(true)
-            .draw(
-                Fill::NonZero,
-                text.chars().map(|ch| {
-                    let gid = charmap.map(ch).unwrap_or_default();
-                    let advance = glyph_metrics.advance_width(gid).unwrap_or_default();
-                    let glyph_x = pen_x;
-                    pen_x += advance;
-                    Glyph {
-                        id: gid.to_u32(),
-                        x: glyph_x,
-                        y: 0.0,
-                    }
-                }),
-            );
+        // Draw glyphs grouped by font to allow fallback fonts
+        draw_resolved_glyphs(
+            &mut self.scene,
+            &resolved,
+            primary_font,
+            fallbacks,
+            font_size,
+            transform,
+            fill_color,
+        );
     }
 
     fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {
@@ -522,21 +662,8 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
             }
         };
 
-        // Get font metrics
-        let size = skrifa::instance::Size::new(font_size);
-        let var_loc = skrifa::instance::LocationRef::default();
-        let charmap = font_ref.charmap();
-        let glyph_metrics = font_ref.glyph_metrics(size, var_loc);
-
-        // Calculate total width
-        let width: f32 = text.chars()
-            .map(|ch| {
-                let gid = charmap.map(ch).unwrap_or_default();
-                glyph_metrics.advance_width(gid).unwrap_or_default()
-            })
-            .sum();
-
-        width as f64
+        let glyphs = resolve_glyphs_with_fallback(text, &font_ref, font_size);
+        resolved_glyphs_total_width(&glyphs) as f64
     }
 
     fn save(&mut self) {
@@ -627,26 +754,21 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
         let font_size = self.font_size as f32;
 
         // Get cached font based on style
-        let font = get_cached_font(self.font_bold, self.font_italic);
-        let font_ref = match to_font_ref(font) {
+        let primary_font = get_cached_font(self.font_bold, self.font_italic);
+        let primary_font_ref = match to_font_ref(primary_font) {
             Some(f) => f,
             None => return,
         };
 
-        // Get font metrics
+        // Resolve all glyphs with fallback
+        let resolved = resolve_glyphs_with_fallback(text, &primary_font_ref, font_size);
+
+        // Get baseline metrics from primary font for vertical alignment
         let size = skrifa::instance::Size::new(font_size);
         let var_loc = skrifa::instance::LocationRef::default();
-        let metrics = font_ref.metrics(size, var_loc);
-        let charmap = font_ref.charmap();
-        let glyph_metrics = font_ref.glyph_metrics(size, var_loc);
+        let metrics = primary_font_ref.metrics(size, var_loc);
 
-        // Calculate text width for alignment
-        let text_width: f32 = text.chars()
-            .map(|ch| {
-                let gid = charmap.map(ch).unwrap_or_default();
-                glyph_metrics.advance_width(gid).unwrap_or_default()
-            })
-            .sum();
+        let text_width = resolved_glyphs_total_width(&resolved);
 
         // Horizontal offset (applied in rotated space - this is correct)
         let h_offset = match self.text_align {
@@ -655,8 +777,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
             TextAlign::Right => -(text_width as f64),
         };
 
-        // Vertical baseline offset - this should NOT be applied in rotated space
-        // Instead, we apply it to the anchor point before rotation
+        // Vertical baseline offset — applied to anchor point BEFORE rotation
         let v_offset = match self.text_baseline {
             TextBaseline::Top => metrics.ascent as f64,
             TextBaseline::Middle => (metrics.ascent + metrics.descent) as f64 / 2.0,
@@ -668,37 +789,30 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
         // 1. Start with base transform (includes chart offset)
         // 2. Translate to text position
         // 3. Rotate around that position
-        //
-        // Glyphs will be drawn at (h_offset, 0) in rotated local space
         let text_pos = kurbo::Point::new(x, y + v_offset);
         let transform = self.transform
             * Affine::translate(kurbo::Vec2::new(text_pos.x, text_pos.y))
             * Affine::rotate(angle);
 
-        // Build glyphs with horizontal offset (for text alignment in rotated space)
-        let mut pen_x = h_offset as f32;
         let fill_color = self.effective_fill_color();
+        let fallbacks = get_fallback_fonts();
 
-        self.scene
-            .draw_glyphs(font)
-            .font_size(font_size)
-            .transform(transform)
-            .brush(&Brush::Solid(fill_color))
-            .hint(true)
-            .draw(
-                Fill::NonZero,
-                text.chars().map(|ch| {
-                    let gid = charmap.map(ch).unwrap_or_default();
-                    let advance = glyph_metrics.advance_width(gid).unwrap_or_default();
-                    let glyph_x = pen_x;
-                    pen_x += advance;
-                    Glyph {
-                        id: gid.to_u32(),
-                        x: glyph_x,
-                        y: 0.0,
-                    }
-                }),
-            );
+        // Shift all resolved glyph x positions by h_offset to account for alignment
+        let h_off_f32 = h_offset as f32;
+        let shifted: Vec<ResolvedGlyph> = resolved
+            .into_iter()
+            .map(|g| ResolvedGlyph { x: g.x + h_off_f32, ..g })
+            .collect();
+
+        draw_resolved_glyphs(
+            &mut self.scene,
+            &shifted,
+            primary_font,
+            fallbacks,
+            font_size,
+            transform,
+            fill_color,
+        );
     }
 
     // =========================================================================

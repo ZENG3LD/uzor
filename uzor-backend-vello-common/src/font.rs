@@ -1,8 +1,16 @@
 //! Font loading, CSS font string parsing, and text metrics for vello backends.
 //!
-//! Embeds all four Roboto variants (regular, bold, italic, bold-italic) and
-//! caches them as `peniko::FontData` objects so they are only heap-allocated
-//! once per process.
+//! Embeds all four Roboto variants (regular, bold, italic, bold-italic) plus
+//! two Unicode fallback fonts (NotoSansSymbols2, NotoEmoji), and caches them
+//! as `peniko::FontData` objects so they are only heap-allocated once per
+//! process.
+//!
+//! ## Fallback chain
+//!
+//! When a character maps to `GlyphId(0)` in the primary Roboto font (meaning
+//! Roboto has no glyph for it), `layout_glyphs` and `measure_text` try each
+//! fallback font in order: NotoSansSymbols2, then NotoEmoji.  The first font
+//! that returns a non-zero glyph ID is used for that character.
 
 use std::sync::{Arc, OnceLock};
 
@@ -18,6 +26,9 @@ static ROBOTO_BOLD: &[u8] = include_bytes!("../fonts/Roboto-Bold.ttf");
 static ROBOTO_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-Italic.ttf");
 static ROBOTO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-BoldItalic.ttf");
 
+static NOTO_SYMBOLS2: &[u8] = include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
+static NOTO_EMOJI: &[u8] = include_bytes!("../fonts/NotoEmoji-Regular.ttf");
+
 // ---------------------------------------------------------------------------
 // Cached FontData (created once, reused forever)
 // ---------------------------------------------------------------------------
@@ -26,6 +37,9 @@ static CACHED_FONT_REGULAR: OnceLock<FontData> = OnceLock::new();
 static CACHED_FONT_BOLD: OnceLock<FontData> = OnceLock::new();
 static CACHED_FONT_ITALIC: OnceLock<FontData> = OnceLock::new();
 static CACHED_FONT_BOLD_ITALIC: OnceLock<FontData> = OnceLock::new();
+
+static CACHED_FALLBACK_SYMBOLS2: OnceLock<FontData> = OnceLock::new();
+static CACHED_FALLBACK_EMOJI: OnceLock<FontData> = OnceLock::new();
 
 /// Return a `&'static FontData` for the Roboto variant matching `(bold, italic)`.
 ///
@@ -46,6 +60,27 @@ pub fn get_cached_font(bold: bool, italic: bool) -> &'static FontData {
             FontData::new(Blob::new(Arc::new(ROBOTO_REGULAR.to_vec())), 0)
         }),
     }
+}
+
+/// Return the list of fallback `FontData` in priority order.
+///
+/// Each entry is tried in sequence when the primary font returns `GlyphId(0)`.
+/// The slice is `&'static` — the `FontData` objects are heap-allocated once
+/// per process.
+pub fn get_cached_fallback_fonts() -> &'static [FontData] {
+    // We need both initialized before returning the slice.  We store them in a
+    // single OnceLock<Vec> so the slice lifetime is correct.
+    static FALLBACK_LIST: OnceLock<Vec<FontData>> = OnceLock::new();
+    FALLBACK_LIST.get_or_init(|| {
+        let symbols2 = CACHED_FALLBACK_SYMBOLS2.get_or_init(|| {
+            FontData::new(Blob::new(Arc::new(NOTO_SYMBOLS2.to_vec())), 0)
+        });
+        let emoji = CACHED_FALLBACK_EMOJI.get_or_init(|| {
+            FontData::new(Blob::new(Arc::new(NOTO_EMOJI.to_vec())), 0)
+        });
+        // Clone the FontData — peniko FontData is an Arc wrapper so this is cheap.
+        vec![symbols2.clone(), emoji.clone()]
+    })
 }
 
 /// Convert a `peniko::FontData` reference into a `skrifa::raw::FontRef` for
@@ -135,6 +170,7 @@ pub fn parse_css_font(font_str: &str) -> FontInfo {
 /// described by `font_info`.
 ///
 /// Returns an approximation (`len * size * 0.6`) if the font cannot be loaded.
+/// Uses the Unicode fallback chain for characters not found in Roboto.
 pub fn measure_text(text: &str, font_info: &FontInfo) -> f64 {
     let font = get_cached_font(font_info.bold, font_info.italic);
     let font_ref = match to_font_ref(font) {
@@ -144,14 +180,31 @@ pub fn measure_text(text: &str, font_info: &FontInfo) -> f64 {
 
     let font_size = skrifa::instance::Size::new(font_info.size as f32);
     let var_loc = skrifa::instance::LocationRef::default();
-    let charmap = font_ref.charmap();
-    let glyph_metrics = font_ref.glyph_metrics(font_size, var_loc);
+    let primary_charmap = font_ref.charmap();
+    let primary_glyph_metrics = font_ref.glyph_metrics(font_size, var_loc);
+
+    let fallbacks = get_cached_fallback_fonts();
 
     let width: f32 = text
         .chars()
         .map(|ch| {
-            let gid = charmap.map(ch).unwrap_or_default();
-            glyph_metrics.advance_width(gid).unwrap_or_default()
+            let primary_gid = primary_charmap.map(ch).unwrap_or_default();
+            if primary_gid != skrifa::GlyphId::new(0) {
+                primary_glyph_metrics.advance_width(primary_gid).unwrap_or_default()
+            } else {
+                // Try fallback fonts
+                for fb_font in fallbacks {
+                    if let Some(fb_ref) = to_font_ref(fb_font) {
+                        let fb_gid = fb_ref.charmap().map(ch).unwrap_or_default();
+                        if fb_gid != skrifa::GlyphId::new(0) {
+                            let fb_metrics = fb_ref.glyph_metrics(font_size, var_loc);
+                            return fb_metrics.advance_width(fb_gid).unwrap_or_default();
+                        }
+                    }
+                }
+                // Character not found anywhere — use primary's GlyphId(0) advance (usually 0 or tofu)
+                primary_glyph_metrics.advance_width(primary_gid).unwrap_or_default()
+            }
         })
         .sum();
 
@@ -172,10 +225,13 @@ pub struct GlyphLayout {
     pub x: f32,
     /// Vertical position; always `0.0` for horizontal text.
     pub y: f32,
+    /// Index into the fallback font list.  `None` means the primary font.
+    /// `Some(0)` = NotoSansSymbols2, `Some(1)` = NotoEmoji.
+    pub fallback_index: Option<usize>,
 }
 
 /// Lay out `text` into a sequence of [`GlyphLayout`] entries using the font
-/// described by `font_info`.
+/// described by `font_info`, with Unicode fallback for unmapped characters.
 ///
 /// Returns an empty `Vec` if the font cannot be loaded.
 pub fn layout_glyphs(text: &str, font_info: &FontInfo) -> Vec<GlyphLayout> {
@@ -187,21 +243,55 @@ pub fn layout_glyphs(text: &str, font_info: &FontInfo) -> Vec<GlyphLayout> {
 
     let font_size = skrifa::instance::Size::new(font_info.size as f32);
     let var_loc = skrifa::instance::LocationRef::default();
-    let charmap = font_ref.charmap();
-    let glyph_metrics = font_ref.glyph_metrics(font_size, var_loc);
+    let primary_charmap = font_ref.charmap();
+    let primary_glyph_metrics = font_ref.glyph_metrics(font_size, var_loc);
+
+    let fallbacks = get_cached_fallback_fonts();
 
     let mut pen_x = 0.0f32;
     text.chars()
         .map(|ch| {
-            let gid = charmap.map(ch).unwrap_or_default();
-            let advance = glyph_metrics.advance_width(gid).unwrap_or_default();
-            let g = GlyphLayout {
-                glyph_id: gid.to_u32(),
-                x: pen_x,
-                y: 0.0,
-            };
-            pen_x += advance;
-            g
+            let primary_gid = primary_charmap.map(ch).unwrap_or_default();
+            if primary_gid != skrifa::GlyphId::new(0) {
+                let advance = primary_glyph_metrics.advance_width(primary_gid).unwrap_or_default();
+                let g = GlyphLayout {
+                    glyph_id: primary_gid.to_u32(),
+                    x: pen_x,
+                    y: 0.0,
+                    fallback_index: None,
+                };
+                pen_x += advance;
+                g
+            } else {
+                // Try fallback fonts
+                let mut result_gid = primary_gid;
+                let mut result_advance = primary_glyph_metrics
+                    .advance_width(primary_gid)
+                    .unwrap_or_default();
+                let mut result_fb_index = None;
+
+                for (fb_idx, fb_font) in fallbacks.iter().enumerate() {
+                    if let Some(fb_ref) = to_font_ref(fb_font) {
+                        let fb_gid = fb_ref.charmap().map(ch).unwrap_or_default();
+                        if fb_gid != skrifa::GlyphId::new(0) {
+                            let fb_metrics = fb_ref.glyph_metrics(font_size, var_loc);
+                            result_advance = fb_metrics.advance_width(fb_gid).unwrap_or_default();
+                            result_gid = fb_gid;
+                            result_fb_index = Some(fb_idx);
+                            break;
+                        }
+                    }
+                }
+
+                let g = GlyphLayout {
+                    glyph_id: result_gid.to_u32(),
+                    x: pen_x,
+                    y: 0.0,
+                    fallback_index: result_fb_index,
+                };
+                pen_x += result_advance;
+                g
+            }
         })
         .collect()
 }

@@ -45,6 +45,11 @@ static ROBOTO_BOLD: &[u8]        = include_bytes!("../fonts/Roboto-Bold.ttf");
 static ROBOTO_ITALIC: &[u8]      = include_bytes!("../fonts/Roboto-Italic.ttf");
 static ROBOTO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-BoldItalic.ttf");
 
+// ── Unicode fallback fonts ─────────────────────────────────────────────────
+// cosmic_text uses these automatically when Roboto lacks a glyph.
+static SYMBOLS_FONT: &[u8] = include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
+static EMOJI_FONT: &[u8]   = include_bytes!("../fonts/NotoEmoji-Regular.ttf");
+
 /// Initial capacity (number of instances) for quad, line, and glyph buffers.
 const INITIAL_CAPACITY: usize = 1024;
 
@@ -468,12 +473,16 @@ impl InstancedRenderer {
         let glyph_buffer = make_instance_buffer(
             device, INITIAL_CAPACITY, std::mem::size_of::<GlyphInstance>());
 
-        // ── FontSystem with embedded Roboto fonts ─────────────────────────
+        // ── FontSystem with embedded fonts ────────────────────────────────
+        // Roboto covers Latin/Cyrillic/Greek; fallback fonts cover symbols and
+        // emoji via cosmic_text's built-in per-glyph font fallback mechanism.
         let font_system = FontSystem::new_with_fonts([
             cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(ROBOTO_REGULAR)),
             cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(ROBOTO_BOLD)),
             cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(ROBOTO_ITALIC)),
             cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(ROBOTO_BOLD_ITALIC)),
+            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(SYMBOLS_FONT)),
+            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(EMOJI_FONT)),
         ]);
         let swash_cache = SwashCache::new();
 

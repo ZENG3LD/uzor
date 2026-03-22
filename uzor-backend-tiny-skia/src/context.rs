@@ -31,6 +31,8 @@ static ROBOTO_REGULAR: &[u8] = include_bytes!("../fonts/Roboto-Regular.ttf");
 static ROBOTO_BOLD: &[u8] = include_bytes!("../fonts/Roboto-Bold.ttf");
 static ROBOTO_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-Italic.ttf");
 static ROBOTO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-BoldItalic.ttf");
+static SYMBOLS_FONT_DATA: &[u8] = include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
+static EMOJI_FONT_DATA: &[u8] = include_bytes!("../fonts/NotoEmoji-Regular.ttf");
 
 // ---------------------------------------------------------------------------
 // Cached fontdue fonts (one per process)
@@ -40,6 +42,8 @@ static FONT_REGULAR: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_BOLD: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_ITALIC: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_BOLD_ITALIC: OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_SYMBOLS: OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_EMOJI: OnceLock<fontdue::Font> = OnceLock::new();
 
 fn get_font(bold: bool, italic: bool) -> &'static fontdue::Font {
     fn make_font(bytes: &[u8]) -> fontdue::Font {
@@ -52,6 +56,20 @@ fn get_font(bold: bool, italic: bool) -> &'static fontdue::Font {
         (false, true)  => FONT_ITALIC.get_or_init(|| make_font(ROBOTO_ITALIC)),
         (false, false) => FONT_REGULAR.get_or_init(|| make_font(ROBOTO_REGULAR)),
     }
+}
+
+fn get_symbols_font() -> &'static fontdue::Font {
+    FONT_SYMBOLS.get_or_init(|| {
+        fontdue::Font::from_bytes(SYMBOLS_FONT_DATA, fontdue::FontSettings::default())
+            .expect("embedded NotoSansSymbols2 font is valid")
+    })
+}
+
+fn get_emoji_font() -> &'static fontdue::Font {
+    FONT_EMOJI.get_or_init(|| {
+        fontdue::Font::from_bytes(EMOJI_FONT_DATA, fontdue::FontSettings::default())
+            .expect("embedded NotoEmoji font is valid")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +131,18 @@ fn measure_text_width(text: &str, font_info: &FontInfo) -> f64 {
     let mut width = 0.0f32;
     for ch in text.chars() {
         let (metrics, _) = font.rasterize(ch, font_info.size);
-        width += metrics.advance_width;
+        let advance = if metrics.width == 0 && !ch.is_whitespace() {
+            let (fb_metrics, _) = get_symbols_font().rasterize(ch, font_info.size);
+            if fb_metrics.width > 0 {
+                fb_metrics.advance_width
+            } else {
+                let (em_metrics, _) = get_emoji_font().rasterize(ch, font_info.size);
+                em_metrics.advance_width
+            }
+        } else {
+            metrics.advance_width
+        };
+        width += advance;
     }
     width as f64
 }
@@ -765,7 +794,29 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
 
         for ch in text.chars() {
             let render_px = px * sx.max(sy).max(1.0);
-            let (metrics, bitmap) = font.rasterize(ch, render_px);
+            let (primary_metrics, primary_bitmap) = font.rasterize(ch, render_px);
+
+            // Select which font's rasterization result to use.  If the primary
+            // font returns a zero-width glyph for a non-whitespace character it
+            // means the codepoint is not covered — try the fallback fonts in order.
+            let (metrics, bitmap) = if primary_metrics.width == 0 && !ch.is_whitespace() {
+                let (sym_metrics, sym_bitmap) = get_symbols_font().rasterize(ch, render_px);
+                if sym_metrics.width > 0 {
+                    (sym_metrics, sym_bitmap)
+                } else {
+                    let (em_metrics, em_bitmap) = get_emoji_font().rasterize(ch, render_px);
+                    if em_metrics.width > 0 {
+                        (em_metrics, em_bitmap)
+                    } else {
+                        // No font covers this codepoint — use primary result
+                        // (advance_width may still be non-zero for spacing).
+                        (primary_metrics, primary_bitmap)
+                    }
+                }
+            } else {
+                (primary_metrics, primary_bitmap)
+            };
+
             let gw = metrics.width  as i32;
             let gh = metrics.height as i32;
 

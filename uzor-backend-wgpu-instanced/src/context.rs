@@ -23,26 +23,41 @@ static ROBOTO_BOLD: &[u8]        = include_bytes!("../fonts/Roboto-Bold.ttf");
 static ROBOTO_ITALIC: &[u8]      = include_bytes!("../fonts/Roboto-Italic.ttf");
 static ROBOTO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-BoldItalic.ttf");
 
+// ── Unicode fallback fonts (for measure_text on non-Roboto codepoints) ────
+static SYMBOLS_FONT: &[u8] = include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
+static EMOJI_FONT: &[u8]   = include_bytes!("../fonts/NotoEmoji-Regular.ttf");
+
 /// Lazily-loaded skrifa font data (regular, bold, italic, bold-italic).
 static FONT_REGULAR:     OnceLock<skrifa::FontRef<'static>> = OnceLock::new();
 static FONT_BOLD:        OnceLock<skrifa::FontRef<'static>> = OnceLock::new();
 static FONT_ITALIC:      OnceLock<skrifa::FontRef<'static>> = OnceLock::new();
 static FONT_BOLD_ITALIC: OnceLock<skrifa::FontRef<'static>> = OnceLock::new();
+static FONT_SYMBOLS:     OnceLock<skrifa::FontRef<'static>> = OnceLock::new();
+static FONT_EMOJI:       OnceLock<skrifa::FontRef<'static>> = OnceLock::new();
+
+fn make_font_ref(data: &'static [u8]) -> Option<skrifa::FontRef<'static>> {
+    use skrifa::raw::FileRef;
+    match FileRef::new(data).ok()? {
+        FileRef::Font(f) => Some(f),
+        FileRef::Collection(c) => c.get(0).ok(),
+    }
+}
 
 fn get_font_ref(bold: bool, italic: bool) -> Option<&'static skrifa::FontRef<'static>> {
-    use skrifa::raw::FileRef;
-    let make = |data: &'static [u8]| -> Option<skrifa::FontRef<'static>> {
-        match FileRef::new(data).ok()? {
-            FileRef::Font(f) => Some(f),
-            FileRef::Collection(c) => c.get(0).ok(),
-        }
-    };
     match (bold, italic) {
-        (true, true)   => FONT_BOLD_ITALIC.get_or_init(|| make(ROBOTO_BOLD_ITALIC).unwrap()).into(),
-        (true, false)  => FONT_BOLD.get_or_init(|| make(ROBOTO_BOLD).unwrap()).into(),
-        (false, true)  => FONT_ITALIC.get_or_init(|| make(ROBOTO_ITALIC).unwrap()).into(),
-        (false, false) => FONT_REGULAR.get_or_init(|| make(ROBOTO_REGULAR).unwrap()).into(),
+        (true, true)   => FONT_BOLD_ITALIC.get_or_init(|| make_font_ref(ROBOTO_BOLD_ITALIC).unwrap()).into(),
+        (true, false)  => FONT_BOLD.get_or_init(|| make_font_ref(ROBOTO_BOLD).unwrap()).into(),
+        (false, true)  => FONT_ITALIC.get_or_init(|| make_font_ref(ROBOTO_ITALIC).unwrap()).into(),
+        (false, false) => FONT_REGULAR.get_or_init(|| make_font_ref(ROBOTO_REGULAR).unwrap()).into(),
     }
+}
+
+/// Fallback font refs tried in order when the primary Roboto font returns GlyphId(0).
+fn get_fallback_font_refs() -> [Option<&'static skrifa::FontRef<'static>>; 2] {
+    [
+        FONT_SYMBOLS.get_or_init(|| make_font_ref(SYMBOLS_FONT).unwrap()).into(),
+        FONT_EMOJI.get_or_init(|| make_font_ref(EMOJI_FONT).unwrap()).into(),
+    ]
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -630,6 +645,12 @@ impl InstancedRenderContext {
     }
 
     /// Measure the pixel width of `text` using skrifa metrics.
+    ///
+    /// For each character, the primary Roboto font is tried first.  If Roboto
+    /// returns `GlyphId(0)` (the .notdef / missing-glyph marker) the fallback
+    /// fonts are tried in order: NotoSansSymbols2 then NotoEmoji.  This mirrors
+    /// the per-glyph fallback that cosmic_text applies during rasterisation so
+    /// that measured widths match rendered widths for symbol and emoji codepoints.
     fn measure_text_internal(&self, text: &str) -> f32 {
         let Some(font_ref) = get_font_ref(self.font_bold, self.font_italic) else {
             return text.len() as f32 * self.font_size * 0.6;
@@ -638,10 +659,28 @@ impl InstancedRenderContext {
         let var_loc = skrifa::instance::LocationRef::default();
         let charmap = font_ref.charmap();
         let glyph_metrics = font_ref.glyph_metrics(size, var_loc);
+        let fallbacks = get_fallback_font_refs();
 
         text.chars()
             .map(|ch| {
                 let gid = charmap.map(ch).unwrap_or_default();
+                if gid.to_u32() != 0 {
+                    // Glyph present in the primary font.
+                    return glyph_metrics.advance_width(gid).unwrap_or_default();
+                }
+                // Try each fallback font.
+                for fb in &fallbacks {
+                    if let Some(fb_ref) = fb {
+                        let fb_gid = fb_ref.charmap().map(ch).unwrap_or_default();
+                        if fb_gid.to_u32() != 0 {
+                            return fb_ref
+                                .glyph_metrics(size, var_loc)
+                                .advance_width(fb_gid)
+                                .unwrap_or_default();
+                        }
+                    }
+                }
+                // Character not found in any font — use .notdef advance width.
                 glyph_metrics.advance_width(gid).unwrap_or_default()
             })
             .sum()

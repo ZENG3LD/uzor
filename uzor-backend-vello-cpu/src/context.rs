@@ -34,6 +34,9 @@ static ROBOTO_BOLD: &[u8] = include_bytes!("../fonts/Roboto-Bold.ttf");
 static ROBOTO_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-Italic.ttf");
 static ROBOTO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-BoldItalic.ttf");
 
+static NOTO_SYMBOLS2: &[u8] = include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
+static NOTO_EMOJI: &[u8]    = include_bytes!("../fonts/NotoEmoji-Regular.ttf");
+
 // ---------------------------------------------------------------------------
 // Cached vello_cpu FontData (one per process)
 // ---------------------------------------------------------------------------
@@ -43,6 +46,9 @@ static FONT_BOLD:        OnceLock<FontData> = OnceLock::new();
 static FONT_ITALIC:      OnceLock<FontData> = OnceLock::new();
 static FONT_BOLD_ITALIC: OnceLock<FontData> = OnceLock::new();
 
+static FONT_FALLBACK_SYMBOLS2: OnceLock<FontData> = OnceLock::new();
+static FONT_FALLBACK_EMOJI:    OnceLock<FontData> = OnceLock::new();
+
 fn get_font(bold: bool, italic: bool) -> &'static FontData {
     match (bold, italic) {
         (true,  true)  => FONT_BOLD_ITALIC.get_or_init(|| make_font(ROBOTO_BOLD_ITALIC)),
@@ -50,6 +56,15 @@ fn get_font(bold: bool, italic: bool) -> &'static FontData {
         (false, true)  => FONT_ITALIC.get_or_init(|| make_font(ROBOTO_ITALIC)),
         (false, false) => FONT_REGULAR.get_or_init(|| make_font(ROBOTO_REGULAR)),
     }
+}
+
+fn get_fallback_fonts() -> &'static [FontData] {
+    static FALLBACK_LIST: OnceLock<Vec<FontData>> = OnceLock::new();
+    FALLBACK_LIST.get_or_init(|| {
+        let s2 = FONT_FALLBACK_SYMBOLS2.get_or_init(|| make_font(NOTO_SYMBOLS2));
+        let em = FONT_FALLBACK_EMOJI.get_or_init(|| make_font(NOTO_EMOJI));
+        vec![s2.clone(), em.clone()]
+    })
 }
 
 fn make_font(bytes: &'static [u8]) -> FontData {
@@ -62,6 +77,78 @@ fn to_font_ref(font: &FontData) -> Option<FontRef<'_>> {
         FileRef::Font(f)   => Some(f),
         FileRef::Collection(col) => col.get(font.index).ok(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Resolved glyph with fallback font tracking
+// ---------------------------------------------------------------------------
+
+struct ResolvedGlyph {
+    /// None = primary font; Some(i) = fallback index i.
+    font_index: Option<usize>,
+    glyph_id: u32,
+    x: f32,
+    advance: f32,
+}
+
+fn resolve_glyphs_with_fallback(
+    text: &str,
+    primary_ref: &FontRef<'_>,
+    font_size: f32,
+) -> Vec<ResolvedGlyph> {
+    let size = skrifa::instance::Size::new(font_size);
+    let var_loc = skrifa::instance::LocationRef::default();
+    let primary_charmap = primary_ref.charmap();
+    let primary_metrics = primary_ref.glyph_metrics(size, var_loc);
+    let fallbacks = get_fallback_fonts();
+
+    let mut pen_x = 0.0f32;
+    let mut result = Vec::with_capacity(text.len());
+
+    for ch in text.chars() {
+        let primary_gid = primary_charmap.map(ch).unwrap_or_default();
+        if primary_gid != skrifa::GlyphId::new(0) {
+            let adv = primary_metrics.advance_width(primary_gid).unwrap_or_default();
+            result.push(ResolvedGlyph {
+                font_index: None,
+                glyph_id: primary_gid.to_u32(),
+                x: pen_x,
+                advance: adv,
+            });
+            pen_x += adv;
+        } else {
+            let mut found_index = None;
+            let mut found_gid = primary_gid;
+            let mut found_adv = primary_metrics.advance_width(primary_gid).unwrap_or_default();
+
+            for (idx, fb_font) in fallbacks.iter().enumerate() {
+                if let Some(fb_ref) = to_font_ref(fb_font) {
+                    let fb_gid = fb_ref.charmap().map(ch).unwrap_or_default();
+                    if fb_gid != skrifa::GlyphId::new(0) {
+                        let fb_metrics = fb_ref.glyph_metrics(size, var_loc);
+                        found_adv = fb_metrics.advance_width(fb_gid).unwrap_or_default();
+                        found_gid = fb_gid;
+                        found_index = Some(idx);
+                        break;
+                    }
+                }
+            }
+
+            result.push(ResolvedGlyph {
+                font_index: found_index,
+                glyph_id: found_gid.to_u32(),
+                x: pen_x,
+                advance: found_adv,
+            });
+            pen_x += found_adv;
+        }
+    }
+
+    result
+}
+
+fn resolved_total_width(glyphs: &[ResolvedGlyph]) -> f32 {
+    glyphs.last().map_or(0.0, |g| g.x + g.advance)
 }
 
 // ---------------------------------------------------------------------------
@@ -119,15 +206,8 @@ fn measure_text_width(text: &str, font_info: &FontInfo) -> f64 {
     let Some(font_ref) = to_font_ref(font) else {
         return text.len() as f64 * font_info.size * 0.6;
     };
-    let font_size = skrifa::instance::Size::new(font_info.size as f32);
-    let var_loc   = skrifa::instance::LocationRef::default();
-    let charmap   = font_ref.charmap();
-    let metrics   = font_ref.glyph_metrics(font_size, var_loc);
-    let w: f32 = text.chars().map(|ch| {
-        let gid = charmap.map(ch).unwrap_or_default();
-        metrics.advance_width(gid).unwrap_or_default()
-    }).sum();
-    w as f64
+    let glyphs = resolve_glyphs_with_fallback(text, &font_ref, font_info.size as f32);
+    resolved_total_width(&glyphs) as f64
 }
 
 // ---------------------------------------------------------------------------
@@ -692,17 +772,16 @@ impl UzorRenderContext for VelloCpuRenderContext {
         if text.is_empty() { return; }
 
         let font_info = self.font_info.clone();
-        let font      = get_font(font_info.bold, font_info.italic);
-        let font_size = font_info.size as f32;
+        let primary_font = get_font(font_info.bold, font_info.italic);
+        let font_size    = font_info.size as f32;
 
-        // Alignment offsets
+        // Alignment / baseline offsets
         let text_width = measure_text_width(text, &font_info);
         let x_off = match self.text_align {
             TextAlign::Center => -text_width / 2.0,
             TextAlign::Right  => -text_width,
             _                 => 0.0,
         };
-        // Approximate ascent for baseline alignment
         let y_off = match self.text_baseline {
             TextBaseline::Top    => font_info.size * 0.8,
             TextBaseline::Middle => font_info.size * 0.35,
@@ -710,20 +789,10 @@ impl UzorRenderContext for VelloCpuRenderContext {
             _                    => font_info.size * 0.35,
         };
 
-        // Build glyph list via skrifa
-        let Some(font_ref) = to_font_ref(font) else { return };
-        let sz      = skrifa::instance::Size::new(font_size);
-        let var_loc = skrifa::instance::LocationRef::default();
-        let charmap = font_ref.charmap();
-        let metrics = font_ref.glyph_metrics(sz, var_loc);
-
-        let mut glyphs: Vec<Glyph> = Vec::with_capacity(text.len());
-        let mut pen_x = 0.0f32;
-        for ch in text.chars() {
-            let gid = charmap.map(ch).unwrap_or_default();
-            glyphs.push(Glyph { id: gid.to_u32(), x: pen_x, y: 0.0 });
-            pen_x += metrics.advance_width(gid).unwrap_or_default();
-        }
+        // Resolve glyphs with fallback
+        let Some(primary_ref) = to_font_ref(primary_font) else { return };
+        let resolved = resolve_glyphs_with_fallback(text, &primary_ref, font_size);
+        let fallbacks = get_fallback_fonts();
 
         // Compose final transform: context transform + text position offset
         let text_transform = Affine::translate((x + x_off, y + y_off));
@@ -732,15 +801,29 @@ impl UzorRenderContext for VelloCpuRenderContext {
         self.apply_fill_paint();
 
         if let Some(ref mut ctx) = self.render_ctx {
-            // Set the combined transform before starting the glyph run.
-            // vello_cpu's glyph_run picks up the current transform at call time.
             ctx.set_transform(combined);
 
-            ctx.glyph_run(font)
-                .font_size(font_size)
-                .hint(false)
-                .normalized_coords(&[])
-                .fill_glyphs(glyphs.into_iter());
+            // Emit one glyph_run per contiguous same-font run
+            let mut i = 0;
+            while i < resolved.len() {
+                let run_font_index = resolved[i].font_index;
+                let run_start = i;
+                while i < resolved.len() && resolved[i].font_index == run_font_index {
+                    i += 1;
+                }
+                let run = &resolved[run_start..i];
+                let font = match run_font_index {
+                    None => primary_font,
+                    Some(idx) if idx < fallbacks.len() => &fallbacks[idx],
+                    _ => primary_font,
+                };
+                let glyphs = run.iter().map(|g| Glyph { id: g.glyph_id, x: g.x, y: 0.0 });
+                ctx.glyph_run(font)
+                    .font_size(font_size)
+                    .hint(false)
+                    .normalized_coords(&[])
+                    .fill_glyphs(glyphs);
+            }
 
             // Restore the context transform (set_transform is absolute)
             ctx.set_transform(self.transform);
