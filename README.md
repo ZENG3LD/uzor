@@ -49,6 +49,13 @@ uzor-backend-vello-gpu = "1.0"  # pick a rendering backend
 uzor-desktop = "1.0"            # pick a platform handler
 ```
 
+### Feature Flags
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `serde` | off | Enables `Serialize`/`Deserialize` for core types |
+| `animation` | off | Enables smooth animated transitions (elastic sliders, number counters) — without this, transitions are instant |
+
 ## Architecture
 
 UZOR is organized into three layers:
