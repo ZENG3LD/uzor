@@ -40,7 +40,7 @@ pub fn render_default(
             ctx.set_font("12px sans-serif");
             ctx.set_text_align(TextAlign::Left);
             ctx.set_text_baseline(TextBaseline::Middle);
-            ctx.fill_text(text, rect.x + theme.tooltip_padding(), rect.center_y());
+            ctx.fill_text(text, rect.x + theme.padding(), rect.center_y());
         }
 
         OverlayType::InfoOverlay { text, .. } => {
