@@ -11,6 +11,7 @@
 pub mod animation;
 pub mod containers;
 pub mod context;
+pub mod i18n;
 pub mod input;
 pub mod layout;
 pub mod layout_helpers;
@@ -29,6 +30,7 @@ pub mod types;
 pub mod widgets;
 
 pub use context::{Context, ButtonResponse};
+pub use i18n::{Language, current_language, set_language, Translatable, TextKey, MonthKey, TooltipKey, month_names_short};
 
 // Re-export commonly used types
 pub use animation::AnimationCoordinator;
@@ -41,4 +43,11 @@ pub use widgets::{
     ButtonType, ContainerType, PopupType,
     PanelType, ToolbarVariant, SidebarVariant, ModalVariant,
     OverlayType, TextInputType, DropdownType, SliderType, ToastType,
+};
+
+// Re-export unified tooltip system
+pub use input::{
+    TooltipState, TooltipConfig, TooltipRequest,
+    TooltipTheme, DefaultTooltipTheme,
+    calculate_tooltip_position, estimate_tooltip_size,
 };
