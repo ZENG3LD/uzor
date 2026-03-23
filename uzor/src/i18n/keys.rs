@@ -358,6 +358,61 @@ pub enum TooltipKey {
     FullScreen,
     /// "Split View" / "Разделить вид"
     SplitView,
+
+    // Top/bottom toolbar items
+    /// "Compare Symbol" / "Сравнить символ"
+    Compare,
+    /// "Symbol Selector" / "Выбор символа"
+    SymbolSelector,
+    /// "Timeframe" / "Таймфрейм"
+    TimeframeSelector,
+    /// "Chart Type" / "Тип графика"
+    ChartType,
+    /// "Settings" / "Настройки"
+    Settings,
+    /// "Layout" / "Макет"
+    Layout,
+    /// "Presets" / "Пресеты"
+    Presets,
+    /// "Screenshot" / "Снимок экрана"
+    Screenshot,
+    /// "Expand Chart" / "Развернуть график"
+    Expand,
+
+    // Left toolbar tool groups
+    /// "Drawing Tools" / "Инструменты рисования"
+    DrawingTools,
+    /// "Line Tools" / "Инструменты линий"
+    LineTool,
+    /// "Fibonacci Tools" / "Инструменты Фибоначчи"
+    FibTool,
+    /// "Pattern Tools" / "Инструменты паттернов"
+    PatternTool,
+    /// "Brush & Shapes" / "Кисть и фигуры"
+    BrushTool,
+    /// "Annotations" / "Аннотации"
+    AnnotationTool,
+    /// "Icons & Images" / "Иконки и изображения"
+    IconTool,
+    /// "Positions & Projections" / "Позиции и проекции"
+    ProjectionTool,
+    /// "Lock Drawings" / "Заблокировать рисунки"
+    Lock,
+    /// "Show/Hide Drawings" / "Показать/скрыть рисунки"
+    Eye,
+    /// "Delete Tools" / "Инструменты удаления"
+    DeleteTool,
+
+    // Right toolbar
+    /// "Signals" / "Сигналы"
+    Signals,
+    /// "Connectors" / "Коннекторы"
+    Connectors,
+    /// "Performance" / "Производительность"
+    Performance,
+
+    /// "Main Menu" / "Главное меню"
+    MainMenu,
 }
 
 impl TooltipKey {
@@ -399,6 +454,30 @@ impl TooltipKey {
             Self::Search => "Search",
             Self::FullScreen => "Full Screen",
             Self::SplitView => "Split View",
+            Self::Compare => "Compare Symbol",
+            Self::SymbolSelector => "Symbol Selector",
+            Self::TimeframeSelector => "Timeframe",
+            Self::ChartType => "Chart Type",
+            Self::Settings => "Settings",
+            Self::Layout => "Layout",
+            Self::Presets => "Presets",
+            Self::Screenshot => "Screenshot",
+            Self::Expand => "Expand Chart",
+            Self::DrawingTools => "Drawing Tools",
+            Self::LineTool => "Line Tools",
+            Self::FibTool => "Fibonacci Tools",
+            Self::PatternTool => "Pattern Tools",
+            Self::BrushTool => "Brush & Shapes",
+            Self::AnnotationTool => "Annotations",
+            Self::IconTool => "Icons & Images",
+            Self::ProjectionTool => "Positions & Projections",
+            Self::Lock => "Lock Drawings",
+            Self::Eye => "Show/Hide Drawings",
+            Self::DeleteTool => "Delete Tools",
+            Self::Signals => "Signals",
+            Self::Connectors => "Connectors",
+            Self::Performance => "Performance",
+            Self::MainMenu => "Main Menu",
         }
     }
 
@@ -432,6 +511,30 @@ impl TooltipKey {
             Self::Search => "Поиск",
             Self::FullScreen => "Полный экран",
             Self::SplitView => "Разделить вид",
+            Self::Compare => "Сравнить символ",
+            Self::SymbolSelector => "Выбор символа",
+            Self::TimeframeSelector => "Таймфрейм",
+            Self::ChartType => "Тип графика",
+            Self::Settings => "Настройки",
+            Self::Layout => "Макет",
+            Self::Presets => "Пресеты",
+            Self::Screenshot => "Снимок экрана",
+            Self::Expand => "Развернуть график",
+            Self::DrawingTools => "Инструменты рисования",
+            Self::LineTool => "Инструменты линий",
+            Self::FibTool => "Инструменты Фибоначчи",
+            Self::PatternTool => "Инструменты паттернов",
+            Self::BrushTool => "Кисть и фигуры",
+            Self::AnnotationTool => "Аннотации",
+            Self::IconTool => "Иконки и изображения",
+            Self::ProjectionTool => "Позиции и проекции",
+            Self::Lock => "Заблокировать рисунки",
+            Self::Eye => "Показать/скрыть рисунки",
+            Self::DeleteTool => "Инструменты удаления",
+            Self::Signals => "Сигналы",
+            Self::Connectors => "Коннекторы",
+            Self::Performance => "Производительность",
+            Self::MainMenu => "Главное меню",
         }
     }
 }

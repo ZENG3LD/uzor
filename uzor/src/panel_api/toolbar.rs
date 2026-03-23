@@ -42,6 +42,8 @@ pub enum ToolbarItemDef {
         active: bool,
         disabled: bool,
         min_width: f64,
+        /// Optional tooltip text shown on hover
+        tooltip: Option<&'static str>,
     },
     /// Icon-only button
     IconButton {
@@ -49,6 +51,8 @@ pub enum ToolbarItemDef {
         icon: ToolbarIconId,
         active: bool,
         disabled: bool,
+        /// Optional tooltip text shown on hover
+        tooltip: Option<&'static str>,
     },
     /// Dropdown button (panel handles the popup rendering)
     Dropdown {
@@ -63,6 +67,8 @@ pub enum ToolbarItemDef {
         /// Grid layout columns for dropdown (None = vertical list)
         grid_columns: Option<u8>,
         min_width: f64,
+        /// Optional tooltip text shown on hover
+        tooltip: Option<&'static str>,
     },
     /// Visual separator
     Separator,
@@ -79,6 +85,7 @@ impl ToolbarItemDef {
             active: false,
             disabled: false,
             min_width: 0.0,
+            tooltip: None,
         }
     }
 
@@ -88,6 +95,7 @@ impl ToolbarItemDef {
             icon: icon.into(),
             active: false,
             disabled: false,
+            tooltip: None,
         }
     }
 
@@ -102,6 +110,7 @@ impl ToolbarItemDef {
             quick_select: false,
             grid_columns: None,
             min_width: 0.0,
+            tooltip: None,
         }
     }
 
@@ -116,6 +125,7 @@ impl ToolbarItemDef {
             quick_select: true,
             grid_columns: None,
             min_width: 0.0,
+            tooltip: None,
         }
     }
 
@@ -154,6 +164,27 @@ impl ToolbarItemDef {
             _ => {}
         }
         self
+    }
+
+    /// Set the tooltip text shown when hovering this item.
+    pub fn with_tooltip(mut self, text: &'static str) -> Self {
+        match &mut self {
+            Self::Button { tooltip: ref mut t, .. } => *t = Some(text),
+            Self::IconButton { tooltip: ref mut t, .. } => *t = Some(text),
+            Self::Dropdown { tooltip: ref mut t, .. } => *t = Some(text),
+            _ => {}
+        }
+        self
+    }
+
+    /// Get the tooltip text for this item, if any.
+    pub fn tooltip(&self) -> Option<&'static str> {
+        match self {
+            Self::Button { tooltip, .. } => *tooltip,
+            Self::IconButton { tooltip, .. } => *tooltip,
+            Self::Dropdown { tooltip, .. } => *tooltip,
+            _ => None,
+        }
     }
 
     pub fn id(&self) -> &str {

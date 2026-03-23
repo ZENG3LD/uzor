@@ -30,7 +30,7 @@ pub mod types;
 pub mod widgets;
 
 pub use context::{Context, ButtonResponse};
-pub use i18n::{Language, current_language, set_language, Translatable, TextKey, MonthKey, TooltipKey, month_names_short};
+pub use i18n::{Language, current_language, set_language, Translatable, TextKey, MonthKey, TooltipKey, month_names_short, t_tooltip};
 
 // Re-export commonly used types
 pub use animation::AnimationCoordinator;
