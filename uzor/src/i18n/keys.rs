@@ -310,6 +310,10 @@ pub enum TooltipKey {
     NewWindow,
     /// "Menu" / "Меню"
     Menu,
+    /// "New tab" / "Новая вкладка"
+    NewTab,
+    /// "Close tab" / "Закрыть вкладку"
+    CloseTab,
 }
 
 impl TooltipKey {
@@ -330,6 +334,8 @@ impl TooltipKey {
             Self::Restore => "Restore",
             Self::NewWindow => "New window",
             Self::Menu => "Menu",
+            Self::NewTab => "New tab",
+            Self::CloseTab => "Close tab",
         }
     }
 
@@ -342,6 +348,8 @@ impl TooltipKey {
             Self::Restore => "Восстановить",
             Self::NewWindow => "Новое окно",
             Self::Menu => "Меню",
+            Self::NewTab => "Новая вкладка",
+            Self::CloseTab => "Закрыть вкладку",
         }
     }
 }
