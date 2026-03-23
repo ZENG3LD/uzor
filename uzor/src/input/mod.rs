@@ -16,6 +16,7 @@ pub mod shortcuts;
 pub mod state;
 pub mod tooltip;
 pub mod touch;
+pub mod scroll_manager;
 pub mod widget_state;
 
 // Re-export all input types at the module level
@@ -34,4 +35,5 @@ pub use state::{InputState, MouseButton, ModifierKeys, PointerState};
 pub use state::DragState as PointerDragState;
 pub use tooltip::*;
 pub use touch::*;
+pub use scroll_manager::ScrollManager;
 pub use widget_state::*;

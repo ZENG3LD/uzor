@@ -370,12 +370,15 @@ impl InputCoordinator {
             }
         }
 
-        // 4. Handle scroll
-        if self.input.scroll_delta != (0.0, 0.0) {
+        // 4. Handle scroll — route wheel delta to scroll-sensitive widgets
+        let (scroll_dx, scroll_dy) = self.input.scroll_delta;
+        if scroll_dx != 0.0 || scroll_dy != 0.0 {
             if let Some(hovered) = &hovered_id {
                 if let Some(widget) = self.widgets.iter().find(|w| &w.id == hovered) {
-                    if widget.sense.drag {
-                        let response = WidgetResponse::new(widget.id.clone(), widget.rect, widget.sense);
+                    if widget.sense.scroll {
+                        let mut response = WidgetResponse::new(widget.id.clone(), widget.rect, widget.sense);
+                        response.scrolled = true;
+                        response.scroll_delta = (scroll_dx, scroll_dy);
                         responses.push((widget.id.clone(), response));
                     }
                 }

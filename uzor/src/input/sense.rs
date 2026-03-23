@@ -16,6 +16,8 @@ pub struct Sense {
     pub hover: bool,
     /// Widget can receive keyboard focus
     pub focus: bool,
+    /// Widget responds to scroll wheel / touchpad scroll
+    pub scroll: bool,
 }
 
 // Predefined constants
@@ -26,6 +28,7 @@ impl Sense {
         drag: false,
         hover: false,
         focus: false,
+        scroll: false,
     };
 
     /// Only hover detection
@@ -34,6 +37,7 @@ impl Sense {
         drag: false,
         hover: true,
         focus: false,
+        scroll: false,
     };
 
     /// Click and hover (for buttons, checkboxes)
@@ -42,6 +46,7 @@ impl Sense {
         drag: false,
         hover: true,
         focus: false,
+        scroll: false,
     };
 
     /// Drag and hover (for sliders, scrollbars)
@@ -50,6 +55,7 @@ impl Sense {
         drag: true,
         hover: true,
         focus: false,
+        scroll: false,
     };
 
     /// Both click and drag (introduces latency)
@@ -58,6 +64,7 @@ impl Sense {
         drag: true,
         hover: true,
         focus: false,
+        scroll: false,
     };
 
     /// Can receive keyboard focus but no mouse interaction
@@ -66,14 +73,25 @@ impl Sense {
         drag: false,
         hover: true,
         focus: true,
+        scroll: false,
     };
 
-    /// Full interaction - click, drag, hover, focus
+    /// Scroll-sensitive (for scrollable container viewports)
+    pub const SCROLL: Sense = Sense {
+        click: false,
+        drag: false,
+        hover: true,
+        focus: false,
+        scroll: true,
+    };
+
+    /// Full interaction - click, drag, hover, focus, scroll
     pub const ALL: Sense = Sense {
         click: true,
         drag: true,
         hover: true,
         focus: true,
+        scroll: true,
     };
 }
 
@@ -115,6 +133,12 @@ impl Sense {
         Self::FOCUSABLE
     }
 
+    /// Create scroll-sensitive sense (includes hover)
+    #[inline]
+    pub fn scroll() -> Self {
+        Self::SCROLL
+    }
+
     /// Create full interaction sense
     #[inline]
     pub fn all() -> Self {
@@ -132,6 +156,7 @@ impl Sense {
             drag: self.drag || other.drag,
             hover: self.hover || other.hover,
             focus: self.focus || other.focus,
+            scroll: self.scroll || other.scroll,
         }
     }
 
@@ -143,6 +168,7 @@ impl Sense {
             drag: self.drag && other.drag,
             hover: self.hover && other.hover,
             focus: self.focus && other.focus,
+            scroll: self.scroll && other.scroll,
         }
     }
 
@@ -168,14 +194,22 @@ impl Sense {
         self.focus = true;
         self
     }
+
+    /// Add scroll sensing (also adds hover)
+    #[inline]
+    pub fn with_scroll(mut self) -> Self {
+        self.scroll = true;
+        self.hover = true;
+        self
+    }
 }
 
 // Query methods
 impl Sense {
-    /// Check if any interaction is sensed (click, drag, or focus)
+    /// Check if any interaction is sensed (click, drag, focus, or scroll)
     #[inline]
     pub fn interactive(&self) -> bool {
-        self.click || self.drag || self.focus
+        self.click || self.drag || self.focus || self.scroll
     }
 
     /// Check if both click and drag are sensed (has latency)
@@ -187,7 +221,7 @@ impl Sense {
     /// Check if widget is purely visual (no interactions)
     #[inline]
     pub fn is_passive(&self) -> bool {
-        !self.click && !self.drag && !self.focus
+        !self.click && !self.drag && !self.focus && !self.scroll
     }
 }
 
@@ -219,30 +253,43 @@ mod tests {
         assert!(!Sense::NONE.drag);
         assert!(!Sense::NONE.hover);
         assert!(!Sense::NONE.focus);
+        assert!(!Sense::NONE.scroll);
 
         assert!(!Sense::HOVER.click);
         assert!(Sense::HOVER.hover);
+        assert!(!Sense::HOVER.scroll);
 
         assert!(Sense::CLICK.click);
         assert!(!Sense::CLICK.drag);
         assert!(Sense::CLICK.hover);
+        assert!(!Sense::CLICK.scroll);
 
         assert!(!Sense::DRAG.click);
         assert!(Sense::DRAG.drag);
         assert!(Sense::DRAG.hover);
+        assert!(!Sense::DRAG.scroll);
 
         assert!(Sense::CLICK_AND_DRAG.click);
         assert!(Sense::CLICK_AND_DRAG.drag);
         assert!(Sense::CLICK_AND_DRAG.hover);
+        assert!(!Sense::CLICK_AND_DRAG.scroll);
 
         assert!(!Sense::FOCUSABLE.click);
         assert!(Sense::FOCUSABLE.hover);
         assert!(Sense::FOCUSABLE.focus);
+        assert!(!Sense::FOCUSABLE.scroll);
+
+        assert!(!Sense::SCROLL.click);
+        assert!(!Sense::SCROLL.drag);
+        assert!(Sense::SCROLL.hover);
+        assert!(!Sense::SCROLL.focus);
+        assert!(Sense::SCROLL.scroll);
 
         assert!(Sense::ALL.click);
         assert!(Sense::ALL.drag);
         assert!(Sense::ALL.hover);
         assert!(Sense::ALL.focus);
+        assert!(Sense::ALL.scroll);
     }
 
     #[test]
@@ -253,6 +300,7 @@ mod tests {
         assert_eq!(Sense::drag(), Sense::DRAG);
         assert_eq!(Sense::click_and_drag(), Sense::CLICK_AND_DRAG);
         assert_eq!(Sense::focusable(), Sense::FOCUSABLE);
+        assert_eq!(Sense::scroll(), Sense::SCROLL);
         assert_eq!(Sense::all(), Sense::ALL);
     }
 
@@ -266,7 +314,13 @@ mod tests {
         assert!(combined.drag);
         assert!(combined.hover);
         assert!(!combined.focus);
+        assert!(!combined.scroll);
         assert_eq!(combined, Sense::CLICK_AND_DRAG);
+
+        let with_scroll = Sense::click().union(Sense::scroll());
+        assert!(with_scroll.click);
+        assert!(with_scroll.scroll);
+        assert!(with_scroll.hover);
     }
 
     #[test]
@@ -279,6 +333,14 @@ mod tests {
         assert!(!common.drag);
         assert!(common.hover);
         assert!(!common.focus);
+        assert!(!common.scroll);
+
+        let all_and_scroll = Sense::ALL.intersection(Sense::SCROLL);
+        assert!(!all_and_scroll.click);
+        assert!(!all_and_scroll.drag);
+        assert!(all_and_scroll.hover);
+        assert!(!all_and_scroll.focus);
+        assert!(all_and_scroll.scroll);
     }
 
     #[test]
@@ -298,7 +360,14 @@ mod tests {
         assert!(sense.focus);
         assert!(sense.hover);
 
-        let sense = Sense::none().with_click().with_drag().with_focus();
+        let sense = Sense::none().with_scroll();
+        assert!(sense.scroll);
+        assert!(sense.hover);
+        assert!(!sense.click);
+        assert!(!sense.drag);
+        assert!(!sense.focus);
+
+        let sense = Sense::none().with_click().with_drag().with_focus().with_scroll();
         assert_eq!(sense, Sense::ALL);
     }
 
@@ -307,6 +376,7 @@ mod tests {
         assert!(Sense::click().interactive());
         assert!(Sense::drag().interactive());
         assert!(Sense::focusable().interactive());
+        assert!(Sense::scroll().interactive());
         assert!(!Sense::hover().interactive());
         assert!(!Sense::none().interactive());
 
@@ -320,6 +390,7 @@ mod tests {
         assert!(!Sense::click().is_passive());
         assert!(!Sense::drag().is_passive());
         assert!(!Sense::focusable().is_passive());
+        assert!(!Sense::scroll().is_passive());
     }
 
     #[test]
@@ -336,6 +407,12 @@ mod tests {
         assert!(complex.drag);
         assert!(complex.focus);
         assert!(complex.hover);
+        assert!(!complex.scroll);
+
+        let with_scroll = Sense::click() | Sense::scroll();
+        assert!(with_scroll.click);
+        assert!(with_scroll.scroll);
+        assert!(with_scroll.hover);
     }
 
     #[test]
@@ -352,10 +429,12 @@ mod tests {
         set.insert(Sense::click());
         set.insert(Sense::click());
         set.insert(Sense::drag());
+        set.insert(Sense::scroll());
 
-        assert_eq!(set.len(), 2);
+        assert_eq!(set.len(), 3);
         assert!(set.contains(&Sense::click()));
         assert!(set.contains(&Sense::drag()));
+        assert!(set.contains(&Sense::scroll()));
     }
 
     #[test]

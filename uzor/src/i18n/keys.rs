@@ -314,6 +314,8 @@ pub enum TooltipKey {
     NewTab,
     /// "Close tab" / "Закрыть вкладку"
     CloseTab,
+    /// "Undo" / "Отменить"
+    Undo,
 }
 
 impl TooltipKey {
@@ -336,6 +338,7 @@ impl TooltipKey {
             Self::Menu => "Menu",
             Self::NewTab => "New tab",
             Self::CloseTab => "Close tab",
+            Self::Undo => "Undo",
         }
     }
 
@@ -350,6 +353,7 @@ impl TooltipKey {
             Self::Menu => "Меню",
             Self::NewTab => "Новая вкладка",
             Self::CloseTab => "Закрыть вкладку",
+            Self::Undo => "Отменить",
         }
     }
 }

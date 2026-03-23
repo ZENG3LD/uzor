@@ -53,6 +53,12 @@ pub struct WidgetResponse {
     /// Total drag delta since drag started
     pub drag_total: (f64, f64),
 
+    // Scroll state
+    /// Widget received scroll/wheel event this frame
+    pub scrolled: bool,
+    /// Scroll delta (x, y) — typically (0.0, vertical_delta)
+    pub scroll_delta: (f64, f64),
+
     // Focus state
     /// Widget has keyboard focus
     pub has_focus: bool,
@@ -89,6 +95,8 @@ impl Default for WidgetResponse {
             drag_stopped: false,
             drag_delta: (0.0, 0.0),
             drag_total: (0.0, 0.0),
+            scrolled: false,
+            scroll_delta: (0.0, 0.0),
             has_focus: false,
             gained_focus: false,
             lost_focus: false,
@@ -121,6 +129,13 @@ impl WidgetResponse {
         self
     }
 
+    /// Set scroll delta
+    pub fn with_scroll(mut self, delta: (f64, f64)) -> Self {
+        self.scrolled = true;
+        self.scroll_delta = delta;
+        self
+    }
+
     /// Set focus state
     pub fn with_focus(mut self, has_focus: bool) -> Self {
         self.has_focus = has_focus;
@@ -149,7 +164,7 @@ impl WidgetResponse {
 
     /// Check if widget was interacted with this frame (click, drag start, or gained focus)
     pub fn interacted(&self) -> bool {
-        self.any_click() || self.drag_started || self.gained_focus
+        self.any_click() || self.drag_started || self.gained_focus || self.scrolled
     }
 
     /// Check if widget is active (being dragged or has focus)
@@ -194,6 +209,8 @@ impl WidgetResponse {
             } else {
                 other.drag_total
             },
+            scrolled: self.scrolled || other.scrolled,
+            scroll_delta: if self.scrolled { self.scroll_delta } else { other.scroll_delta },
             has_focus: self.has_focus || other.has_focus,
             gained_focus: self.gained_focus || other.gained_focus,
             lost_focus: self.lost_focus || other.lost_focus,
@@ -260,6 +277,8 @@ pub fn create_response(
         drag_stopped,
         drag_delta,
         drag_total: (0.0, 0.0),
+        scrolled: false,
+        scroll_delta: (0.0, 0.0),
         has_focus: prev_focused,
         gained_focus: false,
         lost_focus: false,
