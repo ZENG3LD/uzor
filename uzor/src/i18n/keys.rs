@@ -290,10 +290,12 @@ pub fn month_names_short(lang: Language) -> [&'static str; 12] {
 // Tooltip Keys
 // =============================================================================
 
-/// UI tooltip keys for controls and toolbar items
+/// Window chrome tooltip keys — generic desktop UI controls.
+///
+/// App-specific tooltip keys (toolbar buttons, sidebar panels, etc.)
+/// should be defined in the application's own i18n module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TooltipKey {
-    // Window chrome
     /// "Close window" / "Закрыть окно"
     CloseWindow,
     /// "Quit application" / "Закрыть приложение"
@@ -308,111 +310,6 @@ pub enum TooltipKey {
     NewWindow,
     /// "Menu" / "Меню"
     Menu,
-
-    // Toolbar - drawing tools
-    /// "Crosshair" / "Перекрестие"
-    Crosshair,
-    /// "Trend Line" / "Трендовая линия"
-    TrendLine,
-    /// "Horizontal Line" / "Горизонтальная линия"
-    HorizontalLine,
-    /// "Vertical Line" / "Вертикальная линия"
-    VerticalLine,
-    /// "Fibonacci Retracement" / "Уровни Фибоначчи"
-    FibRetracement,
-    /// "Rectangle" / "Прямоугольник"
-    Rectangle,
-
-    // Toolbar - actions
-    /// "Undo" / "Отменить"
-    Undo,
-    /// "Redo" / "Повторить"
-    Redo,
-    /// "Magnet Mode" / "Режим магнита"
-    MagnetMode,
-    /// "Stay in Drawing Mode" / "Оставаться в режиме рисования"
-    StayInDrawingMode,
-    /// "Take Snapshot" / "Сделать снимок"
-    Snapshot,
-    /// "Bookmark" / "Закладка"
-    Bookmark,
-    /// "Measure" / "Измерить"
-    MeasureTool,
-
-    // Sidebar
-    /// "Indicators" / "Индикаторы"
-    Indicators,
-    /// "Watchlist" / "Список наблюдения"
-    Watchlist,
-    /// "Alerts" / "Оповещения"
-    Alerts,
-    /// "Object Tree" / "Дерево объектов"
-    ObjectTree,
-    /// "Templates" / "Шаблоны"
-    Templates,
-
-    // General
-    /// "Search" / "Поиск"
-    Search,
-    /// "Full Screen" / "Полный экран"
-    FullScreen,
-    /// "Split View" / "Разделить вид"
-    SplitView,
-
-    // Top/bottom toolbar items
-    /// "Compare Symbol" / "Сравнить символ"
-    Compare,
-    /// "Symbol Selector" / "Выбор символа"
-    SymbolSelector,
-    /// "Timeframe" / "Таймфрейм"
-    TimeframeSelector,
-    /// "Chart Type" / "Тип графика"
-    ChartType,
-    /// "Settings" / "Настройки"
-    Settings,
-    /// "Layout" / "Макет"
-    Layout,
-    /// "Presets" / "Пресеты"
-    Presets,
-    /// "Screenshot" / "Снимок экрана"
-    Screenshot,
-    /// "Expand Chart" / "Развернуть график"
-    Expand,
-
-    // Left toolbar tool groups
-    /// "Drawing Tools" / "Инструменты рисования"
-    DrawingTools,
-    /// "Line Tools" / "Инструменты линий"
-    LineTool,
-    /// "Fibonacci Tools" / "Инструменты Фибоначчи"
-    FibTool,
-    /// "Pattern Tools" / "Инструменты паттернов"
-    PatternTool,
-    /// "Brush & Shapes" / "Кисть и фигуры"
-    BrushTool,
-    /// "Annotations" / "Аннотации"
-    AnnotationTool,
-    /// "Icons & Images" / "Иконки и изображения"
-    IconTool,
-    /// "Positions & Projections" / "Позиции и проекции"
-    ProjectionTool,
-    /// "Lock Drawings" / "Заблокировать рисунки"
-    Lock,
-    /// "Show/Hide Drawings" / "Показать/скрыть рисунки"
-    Eye,
-    /// "Delete Tools" / "Инструменты удаления"
-    DeleteTool,
-
-    // Right toolbar
-    /// "Signals" / "Сигналы"
-    Signals,
-    /// "Connectors" / "Коннекторы"
-    Connectors,
-    /// "Performance" / "Производительность"
-    Performance,
-
-    /// "Main Menu" / "Главное меню"
-    MainMenu,
 }
 
 impl TooltipKey {
@@ -433,51 +330,6 @@ impl TooltipKey {
             Self::Restore => "Restore",
             Self::NewWindow => "New window",
             Self::Menu => "Menu",
-            Self::Crosshair => "Crosshair",
-            Self::TrendLine => "Trend Line",
-            Self::HorizontalLine => "Horizontal Line",
-            Self::VerticalLine => "Vertical Line",
-            Self::FibRetracement => "Fibonacci Retracement",
-            Self::Rectangle => "Rectangle",
-            Self::Undo => "Undo",
-            Self::Redo => "Redo",
-            Self::MagnetMode => "Magnet Mode",
-            Self::StayInDrawingMode => "Stay in Drawing Mode",
-            Self::Snapshot => "Take Snapshot",
-            Self::Bookmark => "Bookmark",
-            Self::MeasureTool => "Measure",
-            Self::Indicators => "Indicators",
-            Self::Watchlist => "Watchlist",
-            Self::Alerts => "Alerts",
-            Self::ObjectTree => "Object Tree",
-            Self::Templates => "Templates",
-            Self::Search => "Search",
-            Self::FullScreen => "Full Screen",
-            Self::SplitView => "Split View",
-            Self::Compare => "Compare Symbol",
-            Self::SymbolSelector => "Symbol Selector",
-            Self::TimeframeSelector => "Timeframe",
-            Self::ChartType => "Chart Type",
-            Self::Settings => "Settings",
-            Self::Layout => "Layout",
-            Self::Presets => "Presets",
-            Self::Screenshot => "Screenshot",
-            Self::Expand => "Expand Chart",
-            Self::DrawingTools => "Drawing Tools",
-            Self::LineTool => "Line Tools",
-            Self::FibTool => "Fibonacci Tools",
-            Self::PatternTool => "Pattern Tools",
-            Self::BrushTool => "Brush & Shapes",
-            Self::AnnotationTool => "Annotations",
-            Self::IconTool => "Icons & Images",
-            Self::ProjectionTool => "Positions & Projections",
-            Self::Lock => "Lock Drawings",
-            Self::Eye => "Show/Hide Drawings",
-            Self::DeleteTool => "Delete Tools",
-            Self::Signals => "Signals",
-            Self::Connectors => "Connectors",
-            Self::Performance => "Performance",
-            Self::MainMenu => "Main Menu",
         }
     }
 
@@ -490,51 +342,6 @@ impl TooltipKey {
             Self::Restore => "Восстановить",
             Self::NewWindow => "Новое окно",
             Self::Menu => "Меню",
-            Self::Crosshair => "Перекрестие",
-            Self::TrendLine => "Трендовая линия",
-            Self::HorizontalLine => "Горизонтальная линия",
-            Self::VerticalLine => "Вертикальная линия",
-            Self::FibRetracement => "Уровни Фибоначчи",
-            Self::Rectangle => "Прямоугольник",
-            Self::Undo => "Отменить",
-            Self::Redo => "Повторить",
-            Self::MagnetMode => "Режим магнита",
-            Self::StayInDrawingMode => "Оставаться в режиме рисования",
-            Self::Snapshot => "Сделать снимок",
-            Self::Bookmark => "Закладка",
-            Self::MeasureTool => "Измерить",
-            Self::Indicators => "Индикаторы",
-            Self::Watchlist => "Список наблюдения",
-            Self::Alerts => "Оповещения",
-            Self::ObjectTree => "Дерево объектов",
-            Self::Templates => "Шаблоны",
-            Self::Search => "Поиск",
-            Self::FullScreen => "Полный экран",
-            Self::SplitView => "Разделить вид",
-            Self::Compare => "Сравнить символ",
-            Self::SymbolSelector => "Выбор символа",
-            Self::TimeframeSelector => "Таймфрейм",
-            Self::ChartType => "Тип графика",
-            Self::Settings => "Настройки",
-            Self::Layout => "Макет",
-            Self::Presets => "Пресеты",
-            Self::Screenshot => "Снимок экрана",
-            Self::Expand => "Развернуть график",
-            Self::DrawingTools => "Инструменты рисования",
-            Self::LineTool => "Инструменты линий",
-            Self::FibTool => "Инструменты Фибоначчи",
-            Self::PatternTool => "Инструменты паттернов",
-            Self::BrushTool => "Кисть и фигуры",
-            Self::AnnotationTool => "Аннотации",
-            Self::IconTool => "Иконки и изображения",
-            Self::ProjectionTool => "Позиции и проекции",
-            Self::Lock => "Заблокировать рисунки",
-            Self::Eye => "Показать/скрыть рисунки",
-            Self::DeleteTool => "Инструменты удаления",
-            Self::Signals => "Сигналы",
-            Self::Connectors => "Коннекторы",
-            Self::Performance => "Производительность",
-            Self::MainMenu => "Главное меню",
         }
     }
 }
@@ -578,9 +385,7 @@ mod tests {
     fn test_tooltip_keys() {
         assert_eq!(TooltipKey::CloseWindow.get(Language::En), "Close window");
         assert_eq!(TooltipKey::CloseWindow.get(Language::Ru), "Закрыть окно");
-        assert_eq!(TooltipKey::FibRetracement.get(Language::En), "Fibonacci Retracement");
-        assert_eq!(TooltipKey::FibRetracement.get(Language::Ru), "Уровни Фибоначчи");
-        assert_eq!(TooltipKey::Indicators.get(Language::En), "Indicators");
-        assert_eq!(TooltipKey::Indicators.get(Language::Ru), "Индикаторы");
+        assert_eq!(TooltipKey::Menu.get(Language::En), "Menu");
+        assert_eq!(TooltipKey::Menu.get(Language::Ru), "Меню");
     }
 }
