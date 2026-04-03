@@ -24,15 +24,10 @@ use tiny_skia::{
 use uzor::render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlign, TextBaseline};
 
 // ---------------------------------------------------------------------------
-// Embedded fonts
+// Centralized font bytes (sourced from uzor::fonts)
 // ---------------------------------------------------------------------------
 
-static ROBOTO_REGULAR: &[u8] = include_bytes!("../fonts/Roboto-Regular.ttf");
-static ROBOTO_BOLD: &[u8] = include_bytes!("../fonts/Roboto-Bold.ttf");
-static ROBOTO_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-Italic.ttf");
-static ROBOTO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-BoldItalic.ttf");
-static SYMBOLS_FONT_DATA: &[u8] = include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
-static EMOJI_FONT_DATA: &[u8] = include_bytes!("../fonts/NotoEmoji-Regular.ttf");
+use uzor::fonts;
 
 // ---------------------------------------------------------------------------
 // Cached fontdue fonts (one per process)
@@ -42,34 +37,47 @@ static FONT_REGULAR: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_BOLD: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_ITALIC: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_BOLD_ITALIC: OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_PT_ROOT_UI: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_SYMBOLS: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_EMOJI: OnceLock<fontdue::Font> = OnceLock::new();
 
-fn get_font(bold: bool, italic: bool) -> &'static fontdue::Font {
-    fn make_font(bytes: &[u8]) -> fontdue::Font {
-        fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())
-            .expect("embedded font is valid")
-    }
-    match (bold, italic) {
-        (true, true)   => FONT_BOLD_ITALIC.get_or_init(|| make_font(ROBOTO_BOLD_ITALIC)),
-        (true, false)  => FONT_BOLD.get_or_init(|| make_font(ROBOTO_BOLD)),
-        (false, true)  => FONT_ITALIC.get_or_init(|| make_font(ROBOTO_ITALIC)),
-        (false, false) => FONT_REGULAR.get_or_init(|| make_font(ROBOTO_REGULAR)),
+/// Font family selection used internally by the renderer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum FontFamily {
+    #[default]
+    Roboto,
+    PtRootUi,
+}
+
+fn make_font(bytes: &[u8]) -> fontdue::Font {
+    fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())
+        .expect("embedded font bytes are valid")
+}
+
+/// Return the cached fontdue font for the requested family / style combination.
+///
+/// PT Root UI is a variable font so one instance covers all weights.
+/// Roboto uses separate files per style (regular / bold / italic / bold-italic).
+fn get_font(family: FontFamily, bold: bool, italic: bool) -> &'static fontdue::Font {
+    match family {
+        FontFamily::PtRootUi => {
+            FONT_PT_ROOT_UI.get_or_init(|| make_font(fonts::PT_ROOT_UI_VF))
+        }
+        FontFamily::Roboto => match (bold, italic) {
+            (true, true)   => FONT_BOLD_ITALIC.get_or_init(|| make_font(fonts::ROBOTO_BOLD_ITALIC)),
+            (true, false)  => FONT_BOLD.get_or_init(|| make_font(fonts::ROBOTO_BOLD)),
+            (false, true)  => FONT_ITALIC.get_or_init(|| make_font(fonts::ROBOTO_ITALIC)),
+            (false, false) => FONT_REGULAR.get_or_init(|| make_font(fonts::ROBOTO_REGULAR)),
+        },
     }
 }
 
 fn get_symbols_font() -> &'static fontdue::Font {
-    FONT_SYMBOLS.get_or_init(|| {
-        fontdue::Font::from_bytes(SYMBOLS_FONT_DATA, fontdue::FontSettings::default())
-            .expect("embedded NotoSansSymbols2 font is valid")
-    })
+    FONT_SYMBOLS.get_or_init(|| make_font(fonts::NOTO_SANS_SYMBOLS2))
 }
 
 fn get_emoji_font() -> &'static fontdue::Font {
-    FONT_EMOJI.get_or_init(|| {
-        fontdue::Font::from_bytes(EMOJI_FONT_DATA, fontdue::FontSettings::default())
-            .expect("embedded NotoEmoji font is valid")
-    })
+    FONT_EMOJI.get_or_init(|| make_font(fonts::NOTO_EMOJI))
 }
 
 // ---------------------------------------------------------------------------
@@ -97,17 +105,32 @@ struct FontInfo {
     size:   f32,
     bold:   bool,
     italic: bool,
+    family: FontFamily,
 }
 
 impl Default for FontInfo {
     fn default() -> Self {
-        Self { size: 12.0, bold: false, italic: false }
+        Self { size: 12.0, bold: false, italic: false, family: FontFamily::Roboto }
     }
 }
 
+/// Detect whether the CSS font string requests the PT Root UI family.
+///
+/// Accepted spellings (case-insensitive):
+/// - `"pt root ui"`, `"pt-root-ui"`, `"ptrootui"`
+fn is_pt_root_ui(font_str_lower: &str) -> bool {
+    font_str_lower.contains("pt root ui")
+        || font_str_lower.contains("pt-root-ui")
+        || font_str_lower.contains("ptrootui")
+}
+
 fn parse_css_font(font_str: &str) -> FontInfo {
-    let mut info = FontInfo::default();
-    for part in font_str.to_lowercase().split_whitespace() {
+    let lower = font_str.to_lowercase();
+    let mut info = FontInfo {
+        family: if is_pt_root_ui(&lower) { FontFamily::PtRootUi } else { FontFamily::Roboto },
+        ..FontInfo::default()
+    };
+    for part in lower.split_whitespace() {
         match part {
             "bold"   => info.bold = true,
             "italic" => info.italic = true,
@@ -127,7 +150,7 @@ fn parse_css_font(font_str: &str) -> FontInfo {
 // ---------------------------------------------------------------------------
 
 fn measure_text_width(text: &str, font_info: &FontInfo) -> f64 {
-    let font = get_font(font_info.bold, font_info.italic);
+    let font = get_font(font_info.family, font_info.bold, font_info.italic);
     let mut width = 0.0f32;
     for ch in text.chars() {
         let (metrics, _) = font.rasterize(ch, font_info.size);
@@ -755,7 +778,7 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
         if text.is_empty() { return; }
 
         let font_info = self.font_info.clone();
-        let font      = get_font(font_info.bold, font_info.italic);
+        let font      = get_font(font_info.family, font_info.bold, font_info.italic);
         let px        = font_info.size;
 
         // Measure total advance width for alignment offset

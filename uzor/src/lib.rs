@@ -11,6 +11,7 @@
 pub mod animation;
 pub mod containers;
 pub mod context;
+pub mod fonts;
 pub mod i18n;
 pub mod input;
 pub mod layout;
