@@ -1,0 +1,13 @@
+[package]
+name = "uzor-autodetect"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "GPU auto-detection for uzor applications"
+readme = "../README.md"
+
+[dependencies]
+wgpu = "27"
+serde = { version = "1", features = ["derive"] }
