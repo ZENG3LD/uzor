@@ -93,6 +93,143 @@ pub const RESTORE: &str = r#"<svg viewBox="0 0 100 100" fill="none"><path d="M 1
 /// Recommended size: 16x16 for inputs, 20x20 for buttons
 pub const SEARCH: &str = r#"<svg viewBox="0 0 100 100" fill="none"><circle cx="38" cy="38" r="25" stroke="currentColor" stroke-width="6" fill="none"/><path d="M 57 57 L 82 82" stroke="currentColor" stroke-width="6" stroke-linecap="round"/></svg>"#;
 
+/// Home / house icon
+/// viewBox: 0 0 100 100
+/// Recommended size: 22x22 for nav bars, 20x20 for toolbars
+pub const HOME: &str = r#"<svg viewBox="0 0 100 100" fill="none"><path d="M15 50L50 15L85 50M25 45V80C25 82 27 84 29 84H42V62H58V84H71C73 84 75 82 75 80V45" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
+
+/// Gear / settings icon
+/// viewBox: 0 0 100 100
+/// Recommended size: 22x22 for nav bars, 20x20 for toolbars
+pub const GEAR: &str = r#"<svg viewBox="0 0 100 100" fill="none"><path d="M50 35A15 15 0 1050 65A15 15 0 1050 35Z" stroke="currentColor" stroke-width="6"/><path d="M50 10V20M50 80V90M10 50H20M80 50H90M22 22L29 29M71 71L78 78M78 22L71 29M29 71L22 78" stroke="currentColor" stroke-width="6" stroke-linecap="round"/></svg>"#;
+
+/// Plus / add icon
+/// viewBox: 0 0 100 100
+/// Recommended size: 16x16 for buttons, 20x20 for toolbars
+pub const PLUS: &str = r#"<svg viewBox="0 0 100 100" fill="none"><path d="M50 20V80M20 50H80" stroke="currentColor" stroke-width="7" stroke-linecap="round"/></svg>"#;
+
+/// Document / logs / list icon
+/// viewBox: 0 0 100 100
+/// Recommended size: 22x22 for nav bars, 20x20 for toolbars
+pub const DOCUMENT: &str = r#"<svg viewBox="0 0 100 100" fill="none"><path d="M25 15H60L75 30V85H25V15Z" stroke="currentColor" stroke-width="6" stroke-linejoin="round"/><path d="M60 15V30H75" stroke="currentColor" stroke-width="6" stroke-linejoin="round"/><path d="M35 50H65M35 62H65M35 74H55" stroke="currentColor" stroke-width="5" stroke-linecap="round"/></svg>"#;
+
+/// Server / database icon
+/// viewBox: 0 0 100 100
+/// Recommended size: 22x22 for nav bars, 20x20 for toolbars
+pub const SERVER: &str = r#"<svg viewBox="0 0 100 100" fill="none"><ellipse cx="50" cy="25" rx="30" ry="10" stroke="currentColor" stroke-width="6"/><path d="M20 25V50C20 55.5 36 60 50 60C64 60 80 55.5 80 50V25" stroke="currentColor" stroke-width="6"/><path d="M20 50V75C20 80.5 36 85 50 85C64 85 80 80.5 80 75V50" stroke="currentColor" stroke-width="6"/></svg>"#;
+
+/// Globe / world icon
+/// viewBox: 0 0 100 100
+/// Recommended size: 20x20 for toolbars, 16x16 for inline
+pub const GLOBE: &str = r#"<svg viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="35" stroke="currentColor" stroke-width="6"/><ellipse cx="50" cy="50" rx="18" ry="35" stroke="currentColor" stroke-width="5"/><path d="M15 50H85M18 30H82M18 70H82" stroke="currentColor" stroke-width="4"/></svg>"#;
+
+/// Shield / security icon
+/// viewBox: 0 0 100 100
+/// Recommended size: 20x20 for toolbars, 22x22 for nav bars
+pub const SHIELD: &str = r#"<svg viewBox="0 0 100 100" fill="none"><path d="M50 10L15 28V50C15 72 30 88 50 95C70 88 85 72 85 50V28L50 10Z" stroke="currentColor" stroke-width="6" stroke-linejoin="round"/><path d="M35 52L46 63L65 40" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/></svg>"#;
+
+/// Menu / hamburger icon
+/// viewBox: 0 0 100 100
+/// Recommended size: 20x20 for toolbars, 22x22 for nav bars
+pub const MENU: &str = r#"<svg viewBox="0 0 100 100" fill="none"><path d="M20 30H80M20 50H80M20 70H80" stroke="currentColor" stroke-width="7" stroke-linecap="round"/></svg>"#;
+
+/// Info / about icon (circle with i)
+/// viewBox: 0 0 100 100
+/// Recommended size: 16x16 for inline, 20x20 for buttons
+pub const INFO: &str = r#"<svg viewBox="0 0 100 100" fill="none"><circle cx="50" cy="50" r="35" stroke="currentColor" stroke-width="6"/><path d="M50 45V70" stroke="currentColor" stroke-width="7" stroke-linecap="round"/><circle cx="50" cy="32" r="4" fill="currentColor"/></svg>"#;
+
+/// Bell / notification icon
+/// viewBox: 0 0 100 100
+/// Recommended size: 20x20 for toolbars, 22x22 for nav bars
+pub const BELL: &str = r#"<svg viewBox="0 0 100 100" fill="none"><path d="M40 80C40 86 44 90 50 90C56 90 60 86 60 80" stroke="currentColor" stroke-width="5"/><path d="M25 68H75L70 55C68 42 62 30 50 25C38 30 32 42 30 55L25 68Z" stroke="currentColor" stroke-width="6" stroke-linejoin="round"/></svg>"#;
+
+/// Link / chain icon
+/// viewBox: 0 0 100 100
+/// Recommended size: 16x16 for inline, 20x20 for buttons
+pub const LINK: &str = r#"<svg viewBox="0 0 100 100" fill="none"><path d="M42 58L58 42M35 65C25 55 25 39 35 29L40 24C50 14 66 14 76 24C86 34 86 50 76 60L71 65" stroke="currentColor" stroke-width="6" stroke-linecap="round"/><path d="M65 35C75 45 75 61 65 71L60 76C50 86 34 86 24 76C14 66 14 50 24 40L29 35" stroke="currentColor" stroke-width="6" stroke-linecap="round"/></svg>"#;
+
+/// Trash / delete icon
+/// viewBox: 0 0 24 24
+/// Recommended size: 16x16 for buttons, 20x20 for toolbars
+pub const DELETE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 6h18"/>
+  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/>
+  <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+</svg>"##;
+
+/// Lock (closed) icon
+/// viewBox: 0 0 24 24
+/// Recommended size: 16x16 for inline, 20x20 for buttons
+pub const LOCK: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="5" y="11" width="14" height="10" rx="2"/>
+  <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+</svg>"##;
+
+/// Lock open (unlocked) icon
+/// viewBox: 0 0 24 24
+/// Recommended size: 16x16 for inline, 20x20 for buttons
+pub const UNLOCK: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="5" y="11" width="14" height="10" rx="2"/>
+  <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+</svg>"##;
+
+/// Eye / visible icon
+/// viewBox: 0 0 24 24
+/// Recommended size: 16x16 for inline, 20x20 for buttons
+pub const EYE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/>
+  <circle cx="12" cy="12" r="3"/>
+  <path d="M7 7L5.5 4.5"/>
+  <path d="M12 5V2"/>
+  <path d="M17 7l1.5-2.5"/>
+</svg>"##;
+
+/// Eye off / hidden icon
+/// viewBox: 0 0 24 24
+/// Recommended size: 16x16 for inline, 20x20 for buttons
+pub const EYE_OFF: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/>
+  <path d="M7 17l-1.5 2.5"/>
+  <path d="M12 19v3"/>
+  <path d="M17 17l1.5 2.5"/>
+</svg>"##;
+
+/// Close (X) icon
+/// viewBox: 0 0 24 24
+/// Recommended size: 16x16 for buttons, 20x20 for toolbars
+pub const CLOSE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <line x1="18" y1="6" x2="6" y2="18"/>
+  <line x1="6" y1="6" x2="18" y2="18"/>
+</svg>"##;
+
+/// Shield with checkmark icon (security verified)
+/// viewBox: 0 0 24 24
+/// Recommended size: 20x20 for toolbars, 22x22 for nav bars
+pub const SHIELD_CHECK: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>"##;
+
+/// Key icon
+/// viewBox: 0 0 24 24
+/// Recommended size: 16x16 for inline, 20x20 for buttons
+pub const KEY: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>"##;
+
+/// Copy / clipboard icon
+/// viewBox: 0 0 24 24
+/// Recommended size: 16x16 for inline, 20x20 for buttons
+pub const COPY: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="9" y="9" width="13" height="13" rx="2"/>
+  <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+</svg>"##;
+
+/// Star (empty) icon
+/// viewBox: 0 0 24 24
+/// Recommended size: 16x16 for inline, 20x20 for buttons
+pub const STAR: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>"##;
+
+/// Star filled icon
+/// viewBox: 0 0 24 24
+/// Recommended size: 16x16 for inline, 20x20 for buttons
+pub const STAR_FILLED: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>"##;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +255,28 @@ mod tests {
             MAXIMIZE,
             RESTORE,
             SEARCH,
+            HOME,
+            GEAR,
+            PLUS,
+            DOCUMENT,
+            SERVER,
+            GLOBE,
+            SHIELD,
+            MENU,
+            INFO,
+            BELL,
+            LINK,
+            DELETE,
+            LOCK,
+            UNLOCK,
+            EYE,
+            EYE_OFF,
+            CLOSE,
+            SHIELD_CHECK,
+            KEY,
+            COPY,
+            STAR,
+            STAR_FILLED,
         ];
 
         for path in &paths {
@@ -152,6 +311,17 @@ mod tests {
             MAXIMIZE,
             RESTORE,
             SEARCH,
+            HOME,
+            GEAR,
+            PLUS,
+            DOCUMENT,
+            SERVER,
+            GLOBE,
+            SHIELD,
+            MENU,
+            INFO,
+            BELL,
+            LINK,
         ];
 
         for icon in &standard_icons {
