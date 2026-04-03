@@ -12,3 +12,4 @@ pub mod markers;
 pub mod weather;
 pub mod infrastructure;
 pub mod military;
+pub mod ui;

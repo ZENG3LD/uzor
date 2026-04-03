@@ -73,6 +73,10 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
         if filled {
             ctx.set_fill_color(color);
             ctx.fill();
+        } else if tr < 3.0 {
+            // Too small for stroke to be visible — fill it as a dot
+            ctx.set_fill_color(color);
+            ctx.fill();
         } else {
             ctx.stroke();
         }
