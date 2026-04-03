@@ -14,18 +14,10 @@ use lyon_path::math::point;
 use skrifa::MetadataProvider;
 use uzor::render::{RenderContext, RenderContextExt, TextAlign, TextBaseline};
 
+use uzor::fonts;
+
 use crate::instances::{DrawCmd, QuadInstance, TriangleInstance};
 use crate::text::TextAreaData;
-
-// ── Embedded Roboto fonts ──────────────────────────────────────────────────
-static ROBOTO_REGULAR: &[u8]     = include_bytes!("../fonts/Roboto-Regular.ttf");
-static ROBOTO_BOLD: &[u8]        = include_bytes!("../fonts/Roboto-Bold.ttf");
-static ROBOTO_ITALIC: &[u8]      = include_bytes!("../fonts/Roboto-Italic.ttf");
-static ROBOTO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-BoldItalic.ttf");
-
-// ── Unicode fallback fonts (for measure_text on non-Roboto codepoints) ────
-static SYMBOLS_FONT: &[u8] = include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
-static EMOJI_FONT: &[u8]   = include_bytes!("../fonts/NotoEmoji-Regular.ttf");
 
 /// Lazily-loaded skrifa font data (regular, bold, italic, bold-italic).
 static FONT_REGULAR:     OnceLock<skrifa::FontRef<'static>> = OnceLock::new();
@@ -45,18 +37,18 @@ fn make_font_ref(data: &'static [u8]) -> Option<skrifa::FontRef<'static>> {
 
 fn get_font_ref(bold: bool, italic: bool) -> Option<&'static skrifa::FontRef<'static>> {
     match (bold, italic) {
-        (true, true)   => FONT_BOLD_ITALIC.get_or_init(|| make_font_ref(ROBOTO_BOLD_ITALIC).unwrap()).into(),
-        (true, false)  => FONT_BOLD.get_or_init(|| make_font_ref(ROBOTO_BOLD).unwrap()).into(),
-        (false, true)  => FONT_ITALIC.get_or_init(|| make_font_ref(ROBOTO_ITALIC).unwrap()).into(),
-        (false, false) => FONT_REGULAR.get_or_init(|| make_font_ref(ROBOTO_REGULAR).unwrap()).into(),
+        (true, true)   => FONT_BOLD_ITALIC.get_or_init(|| make_font_ref(fonts::ROBOTO_BOLD_ITALIC).unwrap()).into(),
+        (true, false)  => FONT_BOLD.get_or_init(|| make_font_ref(fonts::ROBOTO_BOLD).unwrap()).into(),
+        (false, true)  => FONT_ITALIC.get_or_init(|| make_font_ref(fonts::ROBOTO_ITALIC).unwrap()).into(),
+        (false, false) => FONT_REGULAR.get_or_init(|| make_font_ref(fonts::ROBOTO_REGULAR).unwrap()).into(),
     }
 }
 
 /// Fallback font refs tried in order when the primary Roboto font returns GlyphId(0).
 fn get_fallback_font_refs() -> [Option<&'static skrifa::FontRef<'static>>; 2] {
     [
-        FONT_SYMBOLS.get_or_init(|| make_font_ref(SYMBOLS_FONT).unwrap()).into(),
-        FONT_EMOJI.get_or_init(|| make_font_ref(EMOJI_FONT).unwrap()).into(),
+        FONT_SYMBOLS.get_or_init(|| make_font_ref(fonts::NOTO_SANS_SYMBOLS2).unwrap()).into(),
+        FONT_EMOJI.get_or_init(|| make_font_ref(fonts::NOTO_EMOJI).unwrap()).into(),
     ]
 }
 

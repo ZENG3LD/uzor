@@ -23,19 +23,8 @@ use skrifa::{
     raw::{FileRef, FontRef},
 };
 
+use uzor::fonts;
 use uzor::render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlign, TextBaseline};
-
-// ---------------------------------------------------------------------------
-// Embedded fonts
-// ---------------------------------------------------------------------------
-
-static ROBOTO_REGULAR: &[u8] = include_bytes!("../fonts/Roboto-Regular.ttf");
-static ROBOTO_BOLD: &[u8] = include_bytes!("../fonts/Roboto-Bold.ttf");
-static ROBOTO_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-Italic.ttf");
-static ROBOTO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-BoldItalic.ttf");
-
-static NOTO_SYMBOLS2: &[u8] = include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
-static NOTO_EMOJI: &[u8]    = include_bytes!("../fonts/NotoEmoji-Regular.ttf");
 
 // ---------------------------------------------------------------------------
 // Cached vello_cpu FontData (one per process)
@@ -51,18 +40,18 @@ static FONT_FALLBACK_EMOJI:    OnceLock<FontData> = OnceLock::new();
 
 fn get_font(bold: bool, italic: bool) -> &'static FontData {
     match (bold, italic) {
-        (true,  true)  => FONT_BOLD_ITALIC.get_or_init(|| make_font(ROBOTO_BOLD_ITALIC)),
-        (true,  false) => FONT_BOLD.get_or_init(|| make_font(ROBOTO_BOLD)),
-        (false, true)  => FONT_ITALIC.get_or_init(|| make_font(ROBOTO_ITALIC)),
-        (false, false) => FONT_REGULAR.get_or_init(|| make_font(ROBOTO_REGULAR)),
+        (true,  true)  => FONT_BOLD_ITALIC.get_or_init(|| make_font(fonts::ROBOTO_BOLD_ITALIC)),
+        (true,  false) => FONT_BOLD.get_or_init(|| make_font(fonts::ROBOTO_BOLD)),
+        (false, true)  => FONT_ITALIC.get_or_init(|| make_font(fonts::ROBOTO_ITALIC)),
+        (false, false) => FONT_REGULAR.get_or_init(|| make_font(fonts::ROBOTO_REGULAR)),
     }
 }
 
 fn get_fallback_fonts() -> &'static [FontData] {
     static FALLBACK_LIST: OnceLock<Vec<FontData>> = OnceLock::new();
     FALLBACK_LIST.get_or_init(|| {
-        let s2 = FONT_FALLBACK_SYMBOLS2.get_or_init(|| make_font(NOTO_SYMBOLS2));
-        let em = FONT_FALLBACK_EMOJI.get_or_init(|| make_font(NOTO_EMOJI));
+        let s2 = FONT_FALLBACK_SYMBOLS2.get_or_init(|| make_font(fonts::NOTO_SANS_SYMBOLS2));
+        let em = FONT_FALLBACK_EMOJI.get_or_init(|| make_font(fonts::NOTO_EMOJI));
         vec![s2.clone(), em.clone()]
     })
 }

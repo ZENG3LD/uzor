@@ -22,15 +22,15 @@ use std::sync::OnceLock;
 /// Public color type alias (same as the one in context.rs).
 pub type Color = AlphaColor<Srgb>;
 
-// ── Private font bytes (re-declared here to avoid cross-module statics) ──────
-// We re-use the same bytes as context.rs — they will be deduplicated by the
-// linker because both are `include_bytes!` of the same path.
+use uzor::fonts;
 
-static ROBOTO_REGULAR_T: &[u8] = include_bytes!("../fonts/Roboto-Regular.ttf");
-static ROBOTO_BOLD_T: &[u8]    = include_bytes!("../fonts/Roboto-Bold.ttf");
+// ── Private font bytes (sourced from centralized uzor::fonts catalog) ─────────
 
-static NOTO_SYMBOLS2_T: &[u8] = include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
-static NOTO_EMOJI_T: &[u8]    = include_bytes!("../fonts/NotoEmoji-Regular.ttf");
+static ROBOTO_REGULAR_T: &[u8] = fonts::ROBOTO_REGULAR;
+static ROBOTO_BOLD_T: &[u8]    = fonts::ROBOTO_BOLD;
+
+static NOTO_SYMBOLS2_T: &[u8] = fonts::NOTO_SANS_SYMBOLS2;
+static NOTO_EMOJI_T: &[u8]    = fonts::NOTO_EMOJI;
 
 static CACHED_REGULAR: OnceLock<FontData> = OnceLock::new();
 static CACHED_BOLD: OnceLock<FontData>    = OnceLock::new();

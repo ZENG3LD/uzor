@@ -16,18 +16,7 @@ use std::sync::{Arc, OnceLock};
 
 use vello::peniko::{Blob, FontData};
 use skrifa::{MetadataProvider, raw::{FileRef, FontRef}};
-
-// ---------------------------------------------------------------------------
-// Embedded font bytes
-// ---------------------------------------------------------------------------
-
-static ROBOTO_REGULAR: &[u8] = include_bytes!("../fonts/Roboto-Regular.ttf");
-static ROBOTO_BOLD: &[u8] = include_bytes!("../fonts/Roboto-Bold.ttf");
-static ROBOTO_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-Italic.ttf");
-static ROBOTO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-BoldItalic.ttf");
-
-static NOTO_SYMBOLS2: &[u8] = include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
-static NOTO_EMOJI: &[u8] = include_bytes!("../fonts/NotoEmoji-Regular.ttf");
+use uzor::fonts;
 
 // ---------------------------------------------------------------------------
 // Cached FontData (created once, reused forever)
@@ -48,16 +37,16 @@ static CACHED_FALLBACK_EMOJI: OnceLock<FontData> = OnceLock::new();
 pub fn get_cached_font(bold: bool, italic: bool) -> &'static FontData {
     match (bold, italic) {
         (true, true) => CACHED_FONT_BOLD_ITALIC.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(ROBOTO_BOLD_ITALIC.to_vec())), 0)
+            FontData::new(Blob::new(Arc::new(fonts::ROBOTO_BOLD_ITALIC.to_vec())), 0)
         }),
         (true, false) => CACHED_FONT_BOLD.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(ROBOTO_BOLD.to_vec())), 0)
+            FontData::new(Blob::new(Arc::new(fonts::ROBOTO_BOLD.to_vec())), 0)
         }),
         (false, true) => CACHED_FONT_ITALIC.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(ROBOTO_ITALIC.to_vec())), 0)
+            FontData::new(Blob::new(Arc::new(fonts::ROBOTO_ITALIC.to_vec())), 0)
         }),
         (false, false) => CACHED_FONT_REGULAR.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(ROBOTO_REGULAR.to_vec())), 0)
+            FontData::new(Blob::new(Arc::new(fonts::ROBOTO_REGULAR.to_vec())), 0)
         }),
     }
 }
@@ -73,10 +62,10 @@ pub fn get_cached_fallback_fonts() -> &'static [FontData] {
     static FALLBACK_LIST: OnceLock<Vec<FontData>> = OnceLock::new();
     FALLBACK_LIST.get_or_init(|| {
         let symbols2 = CACHED_FALLBACK_SYMBOLS2.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(NOTO_SYMBOLS2.to_vec())), 0)
+            FontData::new(Blob::new(Arc::new(fonts::NOTO_SANS_SYMBOLS2.to_vec())), 0)
         });
         let emoji = CACHED_FALLBACK_EMOJI.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(NOTO_EMOJI.to_vec())), 0)
+            FontData::new(Blob::new(Arc::new(fonts::NOTO_EMOJI.to_vec())), 0)
         });
         // Clone the FontData — peniko FontData is an Arc wrapper so this is cheap.
         vec![symbols2.clone(), emoji.clone()]

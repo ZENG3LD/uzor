@@ -13,15 +13,17 @@ use uzor::render::{RenderContext as UzorRenderContext, RenderContextExt, TextAli
 // Use skrifa for font metrics
 use skrifa::{MetadataProvider, raw::{FileRef, FontRef}};
 
+use uzor::fonts;
+
 /// Embedded Roboto fonts for text rendering
-static ROBOTO_REGULAR: &[u8] = include_bytes!("../fonts/Roboto-Regular.ttf");
-static ROBOTO_BOLD: &[u8] = include_bytes!("../fonts/Roboto-Bold.ttf");
-static ROBOTO_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-Italic.ttf");
-static ROBOTO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-BoldItalic.ttf");
+static ROBOTO_REGULAR: &[u8] = fonts::ROBOTO_REGULAR;
+static ROBOTO_BOLD: &[u8] = fonts::ROBOTO_BOLD;
+static ROBOTO_ITALIC: &[u8] = fonts::ROBOTO_ITALIC;
+static ROBOTO_BOLD_ITALIC: &[u8] = fonts::ROBOTO_BOLD_ITALIC;
 
 /// Embedded Unicode fallback fonts
-static NOTO_SYMBOLS2: &[u8] = include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
-static NOTO_EMOJI: &[u8] = include_bytes!("../fonts/NotoEmoji-Regular.ttf");
+static NOTO_SYMBOLS2: &[u8] = fonts::NOTO_SANS_SYMBOLS2;
+static NOTO_EMOJI: &[u8] = fonts::NOTO_EMOJI;
 
 /// Cached peniko FontData - created once, reused forever
 static CACHED_FONT_REGULAR: OnceLock<FontData> = OnceLock::new();

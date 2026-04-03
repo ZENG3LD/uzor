@@ -17,6 +17,8 @@ use crate::glyph_instance::GlyphInstance;
 use crate::instances::{DrawCmd, LineInstance, QuadInstance, TriangleInstance};
 use crate::shaders::{GLYPH_SHADER, LINE_SHADER, QUAD_SHADER, TRIANGLE_SHADER};
 use crate::text::TextAreaData;
+use uzor::fonts;
+
 use crate::text_atlas::GlyphAtlas;
 
 // ── Batch type tag ────────────────────────────────────────────────────────────
@@ -38,17 +40,6 @@ struct Batch {
     /// Number of instances in this batch.
     count: u32,
 }
-
-// ── Embedded Roboto fonts (same bytes already included by context.rs) ──────
-static ROBOTO_REGULAR: &[u8]     = include_bytes!("../fonts/Roboto-Regular.ttf");
-static ROBOTO_BOLD: &[u8]        = include_bytes!("../fonts/Roboto-Bold.ttf");
-static ROBOTO_ITALIC: &[u8]      = include_bytes!("../fonts/Roboto-Italic.ttf");
-static ROBOTO_BOLD_ITALIC: &[u8] = include_bytes!("../fonts/Roboto-BoldItalic.ttf");
-
-// ── Unicode fallback fonts ─────────────────────────────────────────────────
-// cosmic_text uses these automatically when Roboto lacks a glyph.
-static SYMBOLS_FONT: &[u8] = include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
-static EMOJI_FONT: &[u8]   = include_bytes!("../fonts/NotoEmoji-Regular.ttf");
 
 /// Initial capacity (number of instances) for quad, line, and glyph buffers.
 const INITIAL_CAPACITY: usize = 1024;
@@ -477,12 +468,12 @@ impl InstancedRenderer {
         // Roboto covers Latin/Cyrillic/Greek; fallback fonts cover symbols and
         // emoji via cosmic_text's built-in per-glyph font fallback mechanism.
         let font_system = FontSystem::new_with_fonts([
-            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(ROBOTO_REGULAR)),
-            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(ROBOTO_BOLD)),
-            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(ROBOTO_ITALIC)),
-            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(ROBOTO_BOLD_ITALIC)),
-            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(SYMBOLS_FONT)),
-            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(EMOJI_FONT)),
+            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(fonts::ROBOTO_REGULAR)),
+            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(fonts::ROBOTO_BOLD)),
+            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(fonts::ROBOTO_ITALIC)),
+            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(fonts::ROBOTO_BOLD_ITALIC)),
+            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(fonts::NOTO_SANS_SYMBOLS2)),
+            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(fonts::NOTO_EMOJI)),
         ]);
         let swash_cache = SwashCache::new();
 
