@@ -493,6 +493,12 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
         self.fill_color = parse_css_color(color);
     }
 
+    fn set_fill_color_alpha(&mut self, color: &str, alpha: f64) {
+        let base = parse_css_color(color);
+        let a = (alpha as f32).clamp(0.0, 1.0);
+        self.fill_color = with_alpha(base, a);
+    }
+
     fn set_global_alpha(&mut self, alpha: f64) {
         self.global_alpha = (alpha as f32).clamp(0.0, 1.0);
     }
