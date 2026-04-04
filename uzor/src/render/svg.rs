@@ -64,8 +64,8 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
 
     // Parse and render all circle elements
     for (cx, cy, r, filled) in parse_svg_circles(svg, default_filled) {
-        let tx = offset_x + cx * scale;
-        let ty = offset_y + cy * scale;
+        let tx = snap_half(offset_x + cx * scale);
+        let ty = snap_half(offset_y + cy * scale);
         let tr = r * scale;
 
         ctx.begin_path();
@@ -84,8 +84,8 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
 
     // Parse and render all rect elements
     for (rx, ry, rw, rh, rounding, filled) in parse_svg_rects(svg, default_filled) {
-        let tx = offset_x + rx * scale;
-        let ty = offset_y + ry * scale;
+        let tx = snap_half(offset_x + rx * scale);
+        let ty = snap_half(offset_y + ry * scale);
         let tw = rw * scale;
         let th = rh * scale;
         let tr = rounding * scale;
@@ -394,6 +394,12 @@ fn arc_to_points(
     points
 }
 
+/// Snap a coordinate to the nearest half-pixel for crisp 1px strokes.
+#[inline]
+fn snap_half(v: f64) -> f64 {
+    (v * 2.0).round() / 2.0
+}
+
 /// Render SVG path data onto a RenderContext
 fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64, offset_y: f64, scale: f64) {
     let mut current_x = 0.0;
@@ -431,7 +437,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     current_y = y;
                     start_x = x;
                     start_y = y;
-                    ctx.move_to(offset_x + x * scale, offset_y + y * scale);
+                    ctx.move_to(snap_half(offset_x + x * scale), snap_half(offset_y + y * scale));
                     current_cmd = 'L'; // Subsequent coordinates are line-to
                     last_control = None;
                 }
@@ -443,7 +449,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     current_y += dy;
                     start_x = current_x;
                     start_y = current_y;
-                    ctx.move_to(offset_x + current_x * scale, offset_y + current_y * scale);
+                    ctx.move_to(snap_half(offset_x + current_x * scale), snap_half(offset_y + current_y * scale));
                     current_cmd = 'l'; // Subsequent coordinates are relative line-to
                     last_control = None;
                 }
@@ -453,7 +459,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 if let Some((x, y)) = parse_two_numbers(&mut chars) {
                     current_x = x;
                     current_y = y;
-                    ctx.line_to(offset_x + x * scale, offset_y + y * scale);
+                    ctx.line_to(snap_half(offset_x + x * scale), snap_half(offset_y + y * scale));
                     last_control = None;
                 }
             }
@@ -462,7 +468,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 if let Some((dx, dy)) = parse_two_numbers(&mut chars) {
                     current_x += dx;
                     current_y += dy;
-                    ctx.line_to(offset_x + current_x * scale, offset_y + current_y * scale);
+                    ctx.line_to(snap_half(offset_x + current_x * scale), snap_half(offset_y + current_y * scale));
                     last_control = None;
                 }
             }
@@ -470,7 +476,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 // Absolute horizontal line
                 if let Some(x) = parse_number(&mut chars) {
                     current_x = x;
-                    ctx.line_to(offset_x + x * scale, offset_y + current_y * scale);
+                    ctx.line_to(snap_half(offset_x + x * scale), offset_y + current_y * scale);
                     last_control = None;
                 }
             }
@@ -478,7 +484,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 // Relative horizontal line
                 if let Some(dx) = parse_number(&mut chars) {
                     current_x += dx;
-                    ctx.line_to(offset_x + current_x * scale, offset_y + current_y * scale);
+                    ctx.line_to(snap_half(offset_x + current_x * scale), offset_y + current_y * scale);
                     last_control = None;
                 }
             }
@@ -486,7 +492,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 // Absolute vertical line
                 if let Some(y) = parse_number(&mut chars) {
                     current_y = y;
-                    ctx.line_to(offset_x + current_x * scale, offset_y + y * scale);
+                    ctx.line_to(offset_x + current_x * scale, snap_half(offset_y + y * scale));
                     last_control = None;
                 }
             }
@@ -494,7 +500,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 // Relative vertical line
                 if let Some(dy) = parse_number(&mut chars) {
                     current_y += dy;
-                    ctx.line_to(offset_x + current_x * scale, offset_y + current_y * scale);
+                    ctx.line_to(offset_x + current_x * scale, snap_half(offset_y + current_y * scale));
                     last_control = None;
                 }
             }
@@ -506,8 +512,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                         offset_y + c1y * scale,
                         offset_x + c2x * scale,
                         offset_y + c2y * scale,
-                        offset_x + x * scale,
-                        offset_y + y * scale,
+                        snap_half(offset_x + x * scale),
+                        snap_half(offset_y + y * scale),
                     );
                     current_x = x;
                     current_y = y;
@@ -528,8 +534,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                         offset_y + c1y * scale,
                         offset_x + c2x * scale,
                         offset_y + c2y * scale,
-                        offset_x + x * scale,
-                        offset_y + y * scale,
+                        snap_half(offset_x + x * scale),
+                        snap_half(offset_y + y * scale),
                     );
                     current_x = x;
                     current_y = y;
@@ -549,8 +555,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                         offset_y + c1y * scale,
                         offset_x + c2x * scale,
                         offset_y + c2y * scale,
-                        offset_x + x * scale,
-                        offset_y + y * scale,
+                        snap_half(offset_x + x * scale),
+                        snap_half(offset_y + y * scale),
                     );
                     current_x = x;
                     current_y = y;
@@ -573,8 +579,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                         offset_y + c1y * scale,
                         offset_x + c2x * scale,
                         offset_y + c2y * scale,
-                        offset_x + x * scale,
-                        offset_y + y * scale,
+                        snap_half(offset_x + x * scale),
+                        snap_half(offset_y + y * scale),
                     );
                     current_x = x;
                     current_y = y;
@@ -587,8 +593,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     ctx.quadratic_curve_to(
                         offset_x + cx * scale,
                         offset_y + cy * scale,
-                        offset_x + x * scale,
-                        offset_y + y * scale,
+                        snap_half(offset_x + x * scale),
+                        snap_half(offset_y + y * scale),
                     );
                     current_x = x;
                     current_y = y;
@@ -605,8 +611,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     ctx.quadratic_curve_to(
                         offset_x + cx * scale,
                         offset_y + cy * scale,
-                        offset_x + x * scale,
-                        offset_y + y * scale,
+                        snap_half(offset_x + x * scale),
+                        snap_half(offset_y + y * scale),
                     );
                     current_x = x;
                     current_y = y;
@@ -623,8 +629,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     ctx.quadratic_curve_to(
                         offset_x + cx * scale,
                         offset_y + cy * scale,
-                        offset_x + x * scale,
-                        offset_y + y * scale,
+                        snap_half(offset_x + x * scale),
+                        snap_half(offset_y + y * scale),
                     );
                     current_x = x;
                     current_y = y;
@@ -643,8 +649,8 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     ctx.quadratic_curve_to(
                         offset_x + cx * scale,
                         offset_y + cy * scale,
-                        offset_x + x * scale,
-                        offset_y + y * scale,
+                        snap_half(offset_x + x * scale),
+                        snap_half(offset_y + y * scale),
                     );
                     current_x = x;
                     current_y = y;
@@ -672,7 +678,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     );
 
                     for (px, py) in arc_points {
-                        ctx.line_to(offset_x + px * scale, offset_y + py * scale);
+                        ctx.line_to(snap_half(offset_x + px * scale), snap_half(offset_y + py * scale));
                     }
 
                     current_x = end_x;
