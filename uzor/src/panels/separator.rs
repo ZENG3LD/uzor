@@ -126,7 +126,7 @@ impl Separator {
             position,
             start,
             length,
-            thickness: 2.0,
+            thickness: 1.0,
             hit_width: 8.0,
             state: SeparatorState::Idle,
             level,
@@ -175,13 +175,13 @@ impl Separator {
 
     /// Get visual thickness based on current state
     ///
-    /// - Idle: 2px
-    /// - Hover: 4px
-    /// - Dragging: 4px
+    /// - Idle: 1px
+    /// - Hover: 2px
+    /// - Dragging: 2px
     pub fn thickness_for_state(&self) -> f32 {
         match self.state {
-            SeparatorState::Idle => 2.0,
-            SeparatorState::Hover | SeparatorState::Dragging => 4.0,
+            SeparatorState::Idle => 1.0,
+            SeparatorState::Hover | SeparatorState::Dragging => 2.0,
         }
     }
 }
