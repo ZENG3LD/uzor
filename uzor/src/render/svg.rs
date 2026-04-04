@@ -69,7 +69,7 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
         let tr = r * scale;
 
         ctx.begin_path();
-        ctx.arc(tx, ty, tr, 0.0, std::f64::consts::PI * 2.0);
+        draw_circle_bezier(ctx, tx, ty, tr);
         if filled {
             ctx.set_fill_color(color);
             ctx.fill();
@@ -272,7 +272,7 @@ fn parse_svg_paths(svg: &str, default_filled: bool) -> Vec<PathInfo> {
 }
 
 /// Number of segments for arc approximation
-const ARC_SEGMENTS: usize = 16;
+const ARC_SEGMENTS: usize = 32;
 
 /// Convert SVG arc parameters to a series of points
 /// Based on the SVG arc to bezier algorithm
@@ -398,6 +398,25 @@ fn arc_to_points(
 #[inline]
 fn snap_half(v: f64) -> f64 {
     (v * 2.0).round() / 2.0
+}
+
+/// Draw a circle using 4 cubic Bézier curves (backend-agnostic).
+/// Uses the standard kappa constant for near-perfect circular approximation.
+fn draw_circle_bezier(ctx: &mut dyn RenderContext, cx: f64, cy: f64, r: f64) {
+    const K: f64 = 0.5522847498; // 4/3 * (sqrt(2) - 1)
+    let kr = K * r;
+
+    // Start at rightmost point
+    ctx.move_to(cx + r, cy);
+    // Top-right quadrant
+    ctx.bezier_curve_to(cx + r, cy - kr, cx + kr, cy - r, cx, cy - r);
+    // Top-left quadrant
+    ctx.bezier_curve_to(cx - kr, cy - r, cx - r, cy - kr, cx - r, cy);
+    // Bottom-left quadrant
+    ctx.bezier_curve_to(cx - r, cy + kr, cx - kr, cy + r, cx, cy + r);
+    // Bottom-right quadrant
+    ctx.bezier_curve_to(cx + kr, cy + r, cx + r, cy + kr, cx + r, cy);
+    ctx.close_path();
 }
 
 /// Render SVG path data onto a RenderContext
@@ -1403,7 +1422,7 @@ pub fn draw_svg_icon_rotated(
         let (rtx, rty) = rotate_pt(tx, ty, cx, cy, sin_a, cos_a);
         let tr = r * scale;
         ctx.begin_path();
-        ctx.arc(rtx, rty, tr, 0.0, std::f64::consts::PI * 2.0);
+        draw_circle_bezier(ctx, rtx, rty, tr);
         if filled {
             ctx.set_fill_color(color);
             ctx.fill();
@@ -1703,7 +1722,7 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
             let ty = offset_y + cy_val * scale;
             let tr = r * scale;
             ctx.begin_path();
-            ctx.arc(tx, ty, tr, 0.0, std::f64::consts::PI * 2.0);
+            draw_circle_bezier(ctx, tx, ty, tr);
             ctx.set_fill_color("black");
             ctx.fill();
         }

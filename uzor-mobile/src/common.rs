@@ -364,7 +364,7 @@ mod tests {
         recognizer.touch_start(1, 200.0, 200.0);
 
         // Move touches apart (zoom in)
-        let result = recognizer.touch_move(0, 50.0, 200.0);
+        let _result = recognizer.touch_move(0, 50.0, 200.0);
         // First move may not trigger (need both to move)
 
         let result = recognizer.touch_move(1, 250.0, 200.0);

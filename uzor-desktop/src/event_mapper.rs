@@ -305,7 +305,6 @@ mod tests {
 
     #[test]
     fn test_modifiers_mapping() {
-        use winit::keyboard::ModifiersState;
         let modifiers = Modifiers::default();
         let mapped = map_modifiers(&modifiers);
         assert!(!mapped.shift);
