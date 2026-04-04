@@ -5,7 +5,7 @@
 use super::PanelRect;
 
 /// Default gap between panels in multi-panel layouts
-pub const PANEL_GAP: f32 = 4.0;
+pub const PANEL_GAP: f32 = 0.0;
 
 /// How to split a container into sub-slots
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
