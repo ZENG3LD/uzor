@@ -20,12 +20,12 @@ use crate::instances::{DrawCmd, QuadInstance, TriangleInstance};
 use crate::text::TextAreaData;
 
 /// Lazily-loaded skrifa font data (regular, bold, italic, bold-italic).
-static FONT_REGULAR:     OnceLock<skrifa::FontRef<'static>> = OnceLock::new();
-static FONT_BOLD:        OnceLock<skrifa::FontRef<'static>> = OnceLock::new();
-static FONT_ITALIC:      OnceLock<skrifa::FontRef<'static>> = OnceLock::new();
-static FONT_BOLD_ITALIC: OnceLock<skrifa::FontRef<'static>> = OnceLock::new();
-static FONT_SYMBOLS:     OnceLock<skrifa::FontRef<'static>> = OnceLock::new();
-static FONT_EMOJI:       OnceLock<skrifa::FontRef<'static>> = OnceLock::new();
+static FONT_REGULAR:     OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+static FONT_BOLD:        OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+static FONT_ITALIC:      OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+static FONT_BOLD_ITALIC: OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+static FONT_SYMBOLS:     OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+static FONT_EMOJI:       OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
 
 fn make_font_ref(data: &'static [u8]) -> Option<skrifa::FontRef<'static>> {
     use skrifa::raw::FileRef;
@@ -37,18 +37,18 @@ fn make_font_ref(data: &'static [u8]) -> Option<skrifa::FontRef<'static>> {
 
 fn get_font_ref(bold: bool, italic: bool) -> Option<&'static skrifa::FontRef<'static>> {
     match (bold, italic) {
-        (true, true)   => FONT_BOLD_ITALIC.get_or_init(|| make_font_ref(fonts::ROBOTO_BOLD_ITALIC).unwrap()).into(),
-        (true, false)  => FONT_BOLD.get_or_init(|| make_font_ref(fonts::ROBOTO_BOLD).unwrap()).into(),
-        (false, true)  => FONT_ITALIC.get_or_init(|| make_font_ref(fonts::ROBOTO_ITALIC).unwrap()).into(),
-        (false, false) => FONT_REGULAR.get_or_init(|| make_font_ref(fonts::ROBOTO_REGULAR).unwrap()).into(),
+        (true, true)   => FONT_BOLD_ITALIC.get_or_init(|| make_font_ref(fonts::ROBOTO_BOLD_ITALIC)).as_ref(),
+        (true, false)  => FONT_BOLD.get_or_init(|| make_font_ref(fonts::ROBOTO_BOLD)).as_ref(),
+        (false, true)  => FONT_ITALIC.get_or_init(|| make_font_ref(fonts::ROBOTO_ITALIC)).as_ref(),
+        (false, false) => FONT_REGULAR.get_or_init(|| make_font_ref(fonts::ROBOTO_REGULAR)).as_ref(),
     }
 }
 
 /// Fallback font refs tried in order when the primary Roboto font returns GlyphId(0).
 fn get_fallback_font_refs() -> [Option<&'static skrifa::FontRef<'static>>; 2] {
     [
-        FONT_SYMBOLS.get_or_init(|| make_font_ref(fonts::NOTO_SANS_SYMBOLS2).unwrap()).into(),
-        FONT_EMOJI.get_or_init(|| make_font_ref(fonts::NOTO_EMOJI).unwrap()).into(),
+        FONT_SYMBOLS.get_or_init(|| make_font_ref(fonts::NOTO_SANS_SYMBOLS2)).as_ref(),
+        FONT_EMOJI.get_or_init(|| make_font_ref(fonts::NOTO_EMOJI)).as_ref(),
     ]
 }
 
