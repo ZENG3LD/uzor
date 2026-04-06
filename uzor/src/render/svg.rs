@@ -38,10 +38,16 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
     ctx.set_line_join("round");
     ctx.set_line_dash(&[]);
 
+    let gt = parse_g_transform(svg);
+    let eff_offset_x = offset_x + gt.tx * scale;
+    let eff_offset_y = offset_y + gt.ty * scale;
+    let eff_scale_x = gt.sx * scale;
+    let eff_scale_y = gt.sy * scale;
+
     // Parse and render all path elements
     for path_info in parse_svg_paths(svg, default_filled) {
         ctx.begin_path();
-        render_path_data(ctx, &path_info.d, offset_x, offset_y, scale);
+        render_path_data(ctx, &path_info.d, eff_offset_x, eff_offset_y, eff_scale_x, eff_scale_y);
 
         // Fill first, then stroke (so stroke is on top)
         if path_info.filled {
@@ -64,8 +70,8 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
 
     // Parse and render all circle elements
     for (cx, cy, r, filled) in parse_svg_circles(svg, default_filled) {
-        let tx = snap_half(offset_x + cx * scale);
-        let ty = snap_half(offset_y + cy * scale);
+        let tx = snap_half(eff_offset_x + cx * eff_scale_x);
+        let ty = snap_half(eff_offset_y + cy * eff_scale_y);
         let tr = r * scale;
 
         ctx.begin_path();
@@ -84,10 +90,10 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
 
     // Parse and render all rect elements
     for (rx, ry, rw, rh, rounding, filled) in parse_svg_rects(svg, default_filled) {
-        let tx = snap_half(offset_x + rx * scale);
-        let ty = snap_half(offset_y + ry * scale);
-        let tw = rw * scale;
-        let th = rh * scale;
+        let tx = snap_half(eff_offset_x + rx * eff_scale_x);
+        let ty = snap_half(eff_offset_y + ry * eff_scale_y);
+        let tw = rw * eff_scale_x;
+        let th = rh * eff_scale_y;
         let tr = rounding * scale;
 
         if filled {
@@ -106,10 +112,10 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
 
     // Parse and render all line elements
     for (x1, y1, x2, y2) in parse_svg_lines(svg) {
-        let tx1 = offset_x + x1 * scale;
-        let ty1 = offset_y + y1 * scale;
-        let tx2 = offset_x + x2 * scale;
-        let ty2 = offset_y + y2 * scale;
+        let tx1 = eff_offset_x + x1 * eff_scale_x;
+        let ty1 = eff_offset_y + y1 * eff_scale_y;
+        let tx2 = eff_offset_x + x2 * eff_scale_x;
+        let ty2 = eff_offset_y + y2 * eff_scale_y;
 
         ctx.begin_path();
         ctx.move_to(tx1, ty1);
@@ -122,9 +128,9 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
         if points.len() >= 2 {
             ctx.begin_path();
             let (px, py) = points[0];
-            ctx.move_to(offset_x + px * scale, offset_y + py * scale);
+            ctx.move_to(eff_offset_x + px * eff_scale_x, eff_offset_y + py * eff_scale_y);
             for &(px, py) in &points[1..] {
-                ctx.line_to(offset_x + px * scale, offset_y + py * scale);
+                ctx.line_to(eff_offset_x + px * eff_scale_x, eff_offset_y + py * eff_scale_y);
             }
             if closed {
                 ctx.close_path();
@@ -420,7 +426,7 @@ fn draw_circle_bezier(ctx: &mut dyn RenderContext, cx: f64, cy: f64, r: f64) {
 }
 
 /// Render SVG path data onto a RenderContext
-fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64, offset_y: f64, scale: f64) {
+fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64, offset_y: f64, scale_x: f64, scale_y: f64) {
     let mut current_x = 0.0;
     let mut current_y = 0.0;
     let mut start_x = 0.0;
@@ -456,7 +462,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     current_y = y;
                     start_x = x;
                     start_y = y;
-                    ctx.move_to(snap_half(offset_x + x * scale), snap_half(offset_y + y * scale));
+                    ctx.move_to(snap_half(offset_x + x * scale_x), snap_half(offset_y + y * scale_y));
                     current_cmd = 'L'; // Subsequent coordinates are line-to
                     last_control = None;
                 }
@@ -468,7 +474,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     current_y += dy;
                     start_x = current_x;
                     start_y = current_y;
-                    ctx.move_to(snap_half(offset_x + current_x * scale), snap_half(offset_y + current_y * scale));
+                    ctx.move_to(snap_half(offset_x + current_x * scale_x), snap_half(offset_y + current_y * scale_y));
                     current_cmd = 'l'; // Subsequent coordinates are relative line-to
                     last_control = None;
                 }
@@ -478,7 +484,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 if let Some((x, y)) = parse_two_numbers(&mut chars) {
                     current_x = x;
                     current_y = y;
-                    ctx.line_to(snap_half(offset_x + x * scale), snap_half(offset_y + y * scale));
+                    ctx.line_to(snap_half(offset_x + x * scale_x), snap_half(offset_y + y * scale_y));
                     last_control = None;
                 }
             }
@@ -487,7 +493,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 if let Some((dx, dy)) = parse_two_numbers(&mut chars) {
                     current_x += dx;
                     current_y += dy;
-                    ctx.line_to(snap_half(offset_x + current_x * scale), snap_half(offset_y + current_y * scale));
+                    ctx.line_to(snap_half(offset_x + current_x * scale_x), snap_half(offset_y + current_y * scale_y));
                     last_control = None;
                 }
             }
@@ -495,7 +501,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 // Absolute horizontal line
                 if let Some(x) = parse_number(&mut chars) {
                     current_x = x;
-                    ctx.line_to(snap_half(offset_x + x * scale), offset_y + current_y * scale);
+                    ctx.line_to(snap_half(offset_x + x * scale_x), offset_y + current_y * scale_y);
                     last_control = None;
                 }
             }
@@ -503,7 +509,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 // Relative horizontal line
                 if let Some(dx) = parse_number(&mut chars) {
                     current_x += dx;
-                    ctx.line_to(snap_half(offset_x + current_x * scale), offset_y + current_y * scale);
+                    ctx.line_to(snap_half(offset_x + current_x * scale_x), offset_y + current_y * scale_y);
                     last_control = None;
                 }
             }
@@ -511,7 +517,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 // Absolute vertical line
                 if let Some(y) = parse_number(&mut chars) {
                     current_y = y;
-                    ctx.line_to(offset_x + current_x * scale, snap_half(offset_y + y * scale));
+                    ctx.line_to(offset_x + current_x * scale_x, snap_half(offset_y + y * scale_y));
                     last_control = None;
                 }
             }
@@ -519,7 +525,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 // Relative vertical line
                 if let Some(dy) = parse_number(&mut chars) {
                     current_y += dy;
-                    ctx.line_to(offset_x + current_x * scale, snap_half(offset_y + current_y * scale));
+                    ctx.line_to(offset_x + current_x * scale_x, snap_half(offset_y + current_y * scale_y));
                     last_control = None;
                 }
             }
@@ -527,12 +533,12 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 // Absolute cubic bezier
                 if let Some((c1x, c1y, c2x, c2y, x, y)) = parse_six_numbers(&mut chars) {
                     ctx.bezier_curve_to(
-                        offset_x + c1x * scale,
-                        offset_y + c1y * scale,
-                        offset_x + c2x * scale,
-                        offset_y + c2y * scale,
-                        snap_half(offset_x + x * scale),
-                        snap_half(offset_y + y * scale),
+                        offset_x + c1x * scale_x,
+                        offset_y + c1y * scale_y,
+                        offset_x + c2x * scale_x,
+                        offset_y + c2y * scale_y,
+                        snap_half(offset_x + x * scale_x),
+                        snap_half(offset_y + y * scale_y),
                     );
                     current_x = x;
                     current_y = y;
@@ -549,12 +555,12 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     let x = current_x + dx;
                     let y = current_y + dy;
                     ctx.bezier_curve_to(
-                        offset_x + c1x * scale,
-                        offset_y + c1y * scale,
-                        offset_x + c2x * scale,
-                        offset_y + c2y * scale,
-                        snap_half(offset_x + x * scale),
-                        snap_half(offset_y + y * scale),
+                        offset_x + c1x * scale_x,
+                        offset_y + c1y * scale_y,
+                        offset_x + c2x * scale_x,
+                        offset_y + c2y * scale_y,
+                        snap_half(offset_x + x * scale_x),
+                        snap_half(offset_y + y * scale_y),
                     );
                     current_x = x;
                     current_y = y;
@@ -570,12 +576,12 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                         None => (current_x, current_y),
                     };
                     ctx.bezier_curve_to(
-                        offset_x + c1x * scale,
-                        offset_y + c1y * scale,
-                        offset_x + c2x * scale,
-                        offset_y + c2y * scale,
-                        snap_half(offset_x + x * scale),
-                        snap_half(offset_y + y * scale),
+                        offset_x + c1x * scale_x,
+                        offset_y + c1y * scale_y,
+                        offset_x + c2x * scale_x,
+                        offset_y + c2y * scale_y,
+                        snap_half(offset_x + x * scale_x),
+                        snap_half(offset_y + y * scale_y),
                     );
                     current_x = x;
                     current_y = y;
@@ -594,12 +600,12 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     let x = current_x + dx;
                     let y = current_y + dy;
                     ctx.bezier_curve_to(
-                        offset_x + c1x * scale,
-                        offset_y + c1y * scale,
-                        offset_x + c2x * scale,
-                        offset_y + c2y * scale,
-                        snap_half(offset_x + x * scale),
-                        snap_half(offset_y + y * scale),
+                        offset_x + c1x * scale_x,
+                        offset_y + c1y * scale_y,
+                        offset_x + c2x * scale_x,
+                        offset_y + c2y * scale_y,
+                        snap_half(offset_x + x * scale_x),
+                        snap_half(offset_y + y * scale_y),
                     );
                     current_x = x;
                     current_y = y;
@@ -610,10 +616,10 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                 // Absolute quadratic bezier
                 if let Some((cx, cy, x, y)) = parse_four_numbers(&mut chars) {
                     ctx.quadratic_curve_to(
-                        offset_x + cx * scale,
-                        offset_y + cy * scale,
-                        snap_half(offset_x + x * scale),
-                        snap_half(offset_y + y * scale),
+                        offset_x + cx * scale_x,
+                        offset_y + cy * scale_y,
+                        snap_half(offset_x + x * scale_x),
+                        snap_half(offset_y + y * scale_y),
                     );
                     current_x = x;
                     current_y = y;
@@ -628,10 +634,10 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     let x = current_x + dx;
                     let y = current_y + dy;
                     ctx.quadratic_curve_to(
-                        offset_x + cx * scale,
-                        offset_y + cy * scale,
-                        snap_half(offset_x + x * scale),
-                        snap_half(offset_y + y * scale),
+                        offset_x + cx * scale_x,
+                        offset_y + cy * scale_y,
+                        snap_half(offset_x + x * scale_x),
+                        snap_half(offset_y + y * scale_y),
                     );
                     current_x = x;
                     current_y = y;
@@ -646,10 +652,10 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                         None => (current_x, current_y),
                     };
                     ctx.quadratic_curve_to(
-                        offset_x + cx * scale,
-                        offset_y + cy * scale,
-                        snap_half(offset_x + x * scale),
-                        snap_half(offset_y + y * scale),
+                        offset_x + cx * scale_x,
+                        offset_y + cy * scale_y,
+                        snap_half(offset_x + x * scale_x),
+                        snap_half(offset_y + y * scale_y),
                     );
                     current_x = x;
                     current_y = y;
@@ -666,10 +672,10 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     let x = current_x + dx;
                     let y = current_y + dy;
                     ctx.quadratic_curve_to(
-                        offset_x + cx * scale,
-                        offset_y + cy * scale,
-                        snap_half(offset_x + x * scale),
-                        snap_half(offset_y + y * scale),
+                        offset_x + cx * scale_x,
+                        offset_y + cy * scale_y,
+                        snap_half(offset_x + x * scale_x),
+                        snap_half(offset_y + y * scale_y),
                     );
                     current_x = x;
                     current_y = y;
@@ -697,7 +703,7 @@ fn render_path_data(ctx: &mut dyn RenderContext, path_data: &str, offset_x: f64,
                     );
 
                     for (px, py) in arc_points {
-                        ctx.line_to(snap_half(offset_x + px * scale), snap_half(offset_y + py * scale));
+                        ctx.line_to(snap_half(offset_x + px * scale_x), snap_half(offset_y + py * scale_y));
                     }
 
                     current_x = end_x;
@@ -1609,6 +1615,85 @@ fn parse_gradient(svg: &str, gradient_id: &str) -> Option<GradientInfo> {
     Some(GradientInfo { x1, y1, x2, y2, stops })
 }
 
+/// Parsed group transform from a `<g transform="...">` element.
+/// Supports `translate(tx,ty)` and `scale(sx,sy)` — the most common SVG group transforms.
+#[derive(Clone, Copy)]
+struct GTransform {
+    tx: f64,
+    ty: f64,
+    sx: f64,
+    sy: f64,
+}
+
+impl GTransform {
+    fn identity() -> Self {
+        Self { tx: 0.0, ty: 0.0, sx: 1.0, sy: 1.0 }
+    }
+
+    /// Apply the group transform to an SVG-space point, returning the transformed point.
+    fn apply(&self, x: f64, y: f64) -> (f64, f64) {
+        (self.tx + x * self.sx, self.ty + y * self.sy)
+    }
+}
+
+/// Parse the first `<g transform="...">` in the SVG.
+/// Supports `translate(tx,ty)` and `scale(sx,sy)` (or `scale(s)`).
+/// Returns an identity transform if no `<g transform>` is found.
+fn parse_g_transform(svg: &str) -> GTransform {
+    let Some(g_start) = svg.find("<g ") else { return GTransform::identity() };
+    let g_slice = &svg[g_start..];
+    let Some(tag_end) = g_slice.find('>') else { return GTransform::identity() };
+    let tag = &g_slice[..tag_end];
+
+    let Some(tf_start) = tag.find("transform=\"") else { return GTransform::identity() };
+    let tf_content_start = tf_start + 11;
+    let Some(tf_end) = tag[tf_content_start..].find('"') else { return GTransform::identity() };
+    let tf = &tag[tf_content_start..tf_content_start + tf_end];
+
+    let mut result = GTransform::identity();
+
+    // Parse translate(tx,ty) or translate(tx ty)
+    if let Some(t_start) = tf.find("translate(") {
+        let inner_start = t_start + 10;
+        if let Some(inner_end) = tf[inner_start..].find(')') {
+            let inner = &tf[inner_start..inner_start + inner_end];
+            let nums: Vec<f64> = inner
+                .split([',', ' '])
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            if nums.len() >= 2 {
+                result.tx = nums[0];
+                result.ty = nums[1];
+            } else if nums.len() == 1 {
+                result.tx = nums[0];
+            }
+        }
+    }
+
+    // Parse scale(sx,sy) or scale(s)
+    if let Some(s_start) = tf.find("scale(") {
+        let inner_start = s_start + 6;
+        if let Some(inner_end) = tf[inner_start..].find(')') {
+            let inner = &tf[inner_start..inner_start + inner_end];
+            let nums: Vec<f64> = inner
+                .split([',', ' '])
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| s.trim().parse().ok())
+                .collect();
+            if nums.len() >= 2 {
+                result.sx = nums[0];
+                result.sy = nums[1];
+            } else if nums.len() == 1 {
+                result.sx = nums[0];
+                result.sy = nums[0];
+            }
+        }
+    }
+
+    result
+}
+
 /// Render a multi-color SVG, preserving each path element's original `fill` color
 /// attribute instead of overriding with a single color. Suitable for mascot/logo SVGs
 /// that use multiple fill colors across their paths.
@@ -1628,6 +1713,12 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
     let has_fill_none = svg_root_has_fill_none(svg);
     let default_filled = !has_fill_none;
 
+    let gt = parse_g_transform(svg);
+    let eff_offset_x = offset_x + gt.tx * scale;
+    let eff_offset_y = offset_y + gt.ty * scale;
+    let eff_scale_x = gt.sx * scale;
+    let eff_scale_y = gt.sy * scale;
+
     // Render path elements preserving each path's fill and stroke colors.
     // NOTE: vello's fill()/stroke()/fill_linear_gradient() consume the path
     // (path_builder.take()), so when a path needs BOTH fill AND stroke we must
@@ -1636,17 +1727,19 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
         // ── Fill pass ───────────────────────────────────────────────────
         if path_info.filled {
             ctx.begin_path();
-            render_path_data(ctx, &path_info.d, offset_x, offset_y, scale);
+            render_path_data(ctx, &path_info.d, eff_offset_x, eff_offset_y, eff_scale_x, eff_scale_y);
 
             if let Some(ref color) = path_info.fill_color {
                 if color.starts_with("url(#") {
                     let grad_id = color.strip_prefix("url(#").and_then(|s| s.strip_suffix(')'));
                     if let Some(id) = grad_id {
                         if let Some(grad) = parse_gradient(svg, id) {
-                            let gx1 = offset_x + grad.x1 * scale;
-                            let gy1 = offset_y + grad.y1 * scale;
-                            let gx2 = offset_x + grad.x2 * scale;
-                            let gy2 = offset_y + grad.y2 * scale;
+                            // Gradient coords are in root SVG space (defs are outside <g>),
+                            // so apply the group transform to map them into screen space.
+                            let gx1 = offset_x + gt.apply(grad.x1, grad.y1).0 * scale;
+                            let gy1 = offset_y + gt.apply(grad.x1, grad.y1).1 * scale;
+                            let gx2 = offset_x + gt.apply(grad.x2, grad.y2).0 * scale;
+                            let gy2 = offset_y + gt.apply(grad.x2, grad.y2).1 * scale;
                             let stops_refs: Vec<(f32, &str)> = grad
                                 .stops
                                 .iter()
@@ -1674,7 +1767,7 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
         // ── Stroke pass (rebuild path since fill consumed it) ───────────
         if path_info.stroked {
             ctx.begin_path();
-            render_path_data(ctx, &path_info.d, offset_x, offset_y, scale);
+            render_path_data(ctx, &path_info.d, eff_offset_x, eff_offset_y, eff_scale_x, eff_scale_y);
 
             let sc = path_info.stroke_color.as_deref().unwrap_or("black");
             let sw = path_info.stroke_width.unwrap_or(1.0) * scale;
@@ -1702,10 +1795,10 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
             if rw >= vb_width * 0.95 && rh >= vb_height * 0.95 {
                 continue;
             }
-            let tx = offset_x + rx * scale;
-            let ty = offset_y + ry * scale;
-            let tw = rw * scale;
-            let th = rh * scale;
+            let tx = eff_offset_x + rx * eff_scale_x;
+            let ty = eff_offset_y + ry * eff_scale_y;
+            let tw = rw * eff_scale_x;
+            let th = rh * eff_scale_y;
             ctx.set_fill_color("black");
             if rounding > 0.0 {
                 ctx.fill_rounded_rect(tx, ty, tw, th, rounding * scale);
@@ -1718,8 +1811,8 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
     // Render circle elements
     for (cx_val, cy_val, r, filled) in parse_svg_circles(svg, default_filled) {
         if filled {
-            let tx = offset_x + cx_val * scale;
-            let ty = offset_y + cy_val * scale;
+            let tx = eff_offset_x + cx_val * eff_scale_x;
+            let ty = eff_offset_y + cy_val * eff_scale_y;
             let tr = r * scale;
             ctx.begin_path();
             draw_circle_bezier(ctx, tx, ty, tr);
