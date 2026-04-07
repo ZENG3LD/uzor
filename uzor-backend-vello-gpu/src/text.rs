@@ -107,6 +107,12 @@ fn total_width(glyphs: &[ResolvedGlyph]) -> f32 {
     glyphs.last().map_or(0.0, |g| g.x + g.advance)
 }
 
+/// Fallback index of NotoColorEmoji in the fallback chain.
+///
+/// [0]=SymbolsNerdFontMono, [1]=NotoSansSymbols2, [2]=NotoColorEmoji, [3]=NotoEmoji.
+/// COLR fonts require a WHITE brush so vello uses the font's embedded palette directly.
+const COLOR_EMOJI_FALLBACK_IDX: usize = 2;
+
 /// Emit resolved glyphs to scene, one draw call per contiguous same-font run.
 fn draw_resolved(
     scene: &mut Scene,
@@ -120,7 +126,8 @@ fn draw_resolved(
     if glyphs.is_empty() {
         return;
     }
-    let brush = Brush::Solid(color);
+    let foreground_brush = Brush::Solid(color);
+    let emoji_brush = Brush::Solid(vello::peniko::color::palette::css::WHITE);
     let mut i = 0;
 
     while i < glyphs.len() {
@@ -132,18 +139,24 @@ fn draw_resolved(
         }
 
         let run = &glyphs[run_start..i];
+        let is_color_emoji = run_font_index == Some(COLOR_EMOJI_FALLBACK_IDX);
         let font = match run_font_index {
             None => primary_font,
             Some(idx) if idx < fallbacks.len() => &fallbacks[idx],
             _ => primary_font,
         };
 
+        // Use WHITE brush for NotoColorEmoji (COLR font): vello uses the brush as the
+        // "application foreground" for palette index 0xFFFF.  A non-white brush tints
+        // the embedded palette colors and produces washed-out / invisible glyphs.
+        let brush = if is_color_emoji { &emoji_brush } else { &foreground_brush };
+
         scene
             .draw_glyphs(font)
             .font_size(font_size)
             .transform(transform)
-            .brush(&brush)
-            .hint(true)
+            .brush(brush)
+            .hint(!is_color_emoji)
             .draw(
                 Fill::NonZero,
                 run.iter().map(|g| Glyph {

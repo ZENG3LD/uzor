@@ -181,6 +181,13 @@ pub fn parse_color(color: &str) -> Color {
 ///
 /// Glyphs using the primary font use `primary_font`; glyphs using a fallback
 /// font use the corresponding entry in `fallbacks`.
+/// Fallback index of NotoColorEmoji in the fallback chain.
+///
+/// [0]=SymbolsNerdFontMono, [1]=NotoSansSymbols2, [2]=NotoColorEmoji, [3]=NotoEmoji.
+/// For COLR fonts vello requires the brush to be WHITE so it uses the font's embedded
+/// palette directly; a non-white brush tints/masks the palette colors and causes tofu.
+const COLOR_EMOJI_FALLBACK_IDX: usize = 2;
+
 fn draw_resolved_glyphs(
     scene: &mut Scene,
     glyphs: &[ResolvedGlyph],
@@ -194,7 +201,8 @@ fn draw_resolved_glyphs(
         return;
     }
 
-    let brush = Brush::Solid(color);
+    let foreground_brush = Brush::Solid(color);
+    let emoji_brush = Brush::Solid(vello::peniko::color::palette::css::WHITE);
     let mut i = 0;
 
     while i < glyphs.len() {
@@ -207,6 +215,7 @@ fn draw_resolved_glyphs(
         }
 
         let run = &glyphs[run_start..i];
+        let is_color_emoji = run_font_index == Some(COLOR_EMOJI_FALLBACK_IDX);
         let font = match run_font_index {
             None => primary_font,
             Some(idx) => {
@@ -218,12 +227,17 @@ fn draw_resolved_glyphs(
             }
         };
 
+        // Use WHITE brush for NotoColorEmoji (COLR font): vello uses the brush as the
+        // "application foreground" for palette index 0xFFFF.  A non-white brush tints
+        // the embedded palette colors and produces washed-out / invisible glyphs.
+        let brush = if is_color_emoji { &emoji_brush } else { &foreground_brush };
+
         scene
             .draw_glyphs(font)
             .font_size(font_size)
             .transform(transform)
-            .brush(&brush)
-            .hint(true)
+            .brush(brush)
+            .hint(!is_color_emoji)
             .draw(
                 Fill::NonZero,
                 run.iter().map(|g| Glyph {

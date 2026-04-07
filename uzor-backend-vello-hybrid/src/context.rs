@@ -842,7 +842,12 @@ impl UzorRenderContext for VelloHybridRenderContext {
         let text_transform = Affine::translate((x + x_off, y + y_off));
         let combined       = self.transform * text_transform;
 
-        self.apply_fill_paint();
+        // Fallback index 2 = NotoColorEmoji (COLR font).  vello_hybrid requires the
+        // paint to be WHITE for COLR runs so the embedded palette is used directly;
+        // a non-white paint tints / masks the palette colors.
+        const COLOR_EMOJI_FALLBACK_IDX: usize = 2;
+        let fill_color = self.effective_fill_color();
+        let white = Color::from_rgba8(255, 255, 255, 255);
 
         if let Some(ref mut s) = self.scene {
             s.set_transform(combined);
@@ -856,11 +861,14 @@ impl UzorRenderContext for VelloHybridRenderContext {
                     i += 1;
                 }
                 let run = &resolved[run_start..i];
+                let is_color_emoji = run_font_index == Some(COLOR_EMOJI_FALLBACK_IDX);
                 let font = match run_font_index {
                     None => primary_font,
                     Some(idx) if idx < fallbacks.len() => &fallbacks[idx],
                     _ => primary_font,
                 };
+                // Set paint per-run: WHITE for COLR emoji font, foreground otherwise.
+                s.set_paint(if is_color_emoji { white } else { fill_color });
                 let glyphs = run.iter().map(|g| Glyph { id: g.glyph_id, x: g.x, y: 0.0 });
                 s.glyph_run(font)
                     .font_size(font_size)
