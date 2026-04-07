@@ -15,31 +15,31 @@ fn main() {
     const URL: &str =
         "https://github.com/ZENG3LD/uzor/releases/download/fonts-v1/NotoColorEmoji.ttf";
 
-    let response = ureq::get(URL).call().unwrap_or_else(|e| {
-        panic!(
-            "build.rs: failed to download NotoColorEmoji.ttf from {URL}\n\
-             Error: {e}\n\
-             Check your internet connection or create the GitHub release at the URL above."
-        )
-    });
+    // Use curl -L to follow GitHub's 302 redirect to release-assets.githubusercontent.com.
+    let status = std::process::Command::new("curl")
+        .arg("-sSL")   // silent, show errors, follow redirects
+        .arg("--fail") // treat HTTP 4xx/5xx as errors
+        .arg("-o")
+        .arg(&dest)
+        .arg(URL)
+        .status()
+        .expect("build.rs: failed to spawn curl — ensure curl is installed and on PATH");
 
-    let mut bytes: Vec<u8> = Vec::new();
-    std::io::Read::read_to_end(&mut response.into_reader(), &mut bytes).unwrap_or_else(|e| {
-        panic!("build.rs: failed to read response body for NotoColorEmoji.ttf: {e}")
-    });
-
-    if bytes.len() < 1_048_576 {
+    if !status.success() {
         panic!(
-            "build.rs: downloaded NotoColorEmoji.ttf is suspiciously small ({} bytes). \
-             The GitHub release at {URL} may be missing or broken.",
-            bytes.len()
+            "build.rs: curl failed to download NotoColorEmoji.ttf from {URL} (exit: {status:?})"
         );
     }
 
-    std::fs::write(&dest, &bytes).unwrap_or_else(|e| {
+    // Sanity-check: NotoColorEmoji is ~10 MB; reject tiny error pages.
+    let downloaded_size = std::fs::metadata(&dest)
+        .expect("build.rs: downloaded file missing after curl succeeded")
+        .len();
+
+    if downloaded_size < 1_000_000 {
         panic!(
-            "build.rs: failed to write NotoColorEmoji.ttf to {}: {e}",
-            dest.display()
-        )
-    });
+            "build.rs: downloaded NotoColorEmoji.ttf is suspiciously small ({downloaded_size} bytes) \
+             — likely an error page from {URL}"
+        );
+    }
 }
