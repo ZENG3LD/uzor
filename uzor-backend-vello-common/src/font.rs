@@ -10,7 +10,7 @@
 //! and `measure_text` try each fallback font in order:
 //! 1. `SymbolsNerdFontMono` — Powerline + Nerd Font PUA + dev icons
 //! 2. `NotoSansSymbols2`   — math / arrows / wide symbol coverage
-//! 3. `Noto-COLRv1`        — color emoji (COLRv1/v0); vello-gpu renders color
+//! 3. `NotoColorEmoji`     — color emoji (COLRv1/v0 + CBDT bitmaps); vello-gpu renders color
 //! 4. `NotoEmoji`          — legacy monochrome emoji (works on all backends)
 //!
 //! The first font that returns a non-zero glyph ID is used for that character.
@@ -37,7 +37,7 @@ static CACHED_FONT_PT_ROOT_UI: OnceLock<FontData> = OnceLock::new();
 
 static CACHED_FALLBACK_NERD_FONT: OnceLock<FontData> = OnceLock::new();
 static CACHED_FALLBACK_SYMBOLS2: OnceLock<FontData> = OnceLock::new();
-static CACHED_FALLBACK_COLRV1: OnceLock<FontData> = OnceLock::new();
+static CACHED_FALLBACK_COLOR_EMOJI: OnceLock<FontData> = OnceLock::new();
 static CACHED_FALLBACK_EMOJI: OnceLock<FontData> = OnceLock::new();
 
 /// Re-export of the backend-agnostic family enum from core uzor.
@@ -123,8 +123,8 @@ pub fn get_cached_fallback_fonts() -> &'static [FontData] {
         let symbols2 = CACHED_FALLBACK_SYMBOLS2.get_or_init(|| {
             FontData::new(Blob::new(Arc::new(fonts::NOTO_SANS_SYMBOLS2.to_vec())), 0)
         });
-        let colrv1 = CACHED_FALLBACK_COLRV1.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(fonts::NOTO_COLRV1.to_vec())), 0)
+        let colrv1 = CACHED_FALLBACK_COLOR_EMOJI.get_or_init(|| {
+            FontData::new(Blob::new(Arc::new(fonts::NOTO_COLOR_EMOJI.to_vec())), 0)
         });
         let emoji = CACHED_FALLBACK_EMOJI.get_or_init(|| {
             FontData::new(Blob::new(Arc::new(fonts::NOTO_EMOJI.to_vec())), 0)
@@ -279,7 +279,7 @@ pub struct GlyphLayout {
     pub y: f32,
     /// Index into the fallback font list.  `None` means the primary font.
     /// `Some(0)` = SymbolsNerdFontMono, `Some(1)` = NotoSansSymbols2,
-    /// `Some(2)` = Noto-COLRv1, `Some(3)` = NotoEmoji.
+    /// `Some(2)` = NotoColorEmoji, `Some(3)` = NotoEmoji.
     pub fallback_index: Option<usize>,
 }
 

@@ -9,7 +9,7 @@
 //! - **PT Root UI** — variable-weight sans-serif from Paratype (single VF file)
 //! - **Symbols Nerd Font Mono** — Powerline (U+E0B0–U+E0B3), Nerd Font PUA, dev icons
 //! - **Noto Sans Symbols2** — wide symbol / mathematical coverage
-//! - **Noto COLRv1** — color emoji (COLRv1/v0) for vello-gpu and modern renderers
+//! - **Noto Color Emoji** — color emoji (COLRv1/v0 + CBDT bitmaps) for vello-gpu and modern renderers
 //! - **Noto Emoji** — color-neutral emoji fallback (legacy bitmap-compatible)
 
 // ── Roboto ────────────────────────────────────────────────────────────────────
@@ -60,10 +60,10 @@ pub static SYMBOLS_NERD_FONT_MONO: &[u8] =
 pub static NOTO_SANS_SYMBOLS2: &[u8] =
     include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
 
-/// Noto COLRv1 — color emoji font using the COLRv1/v0 format.
+/// Noto Color Emoji — color emoji font containing both COLRv1/v0 vectors and CBDT bitmaps.
 /// Supported natively by vello-gpu (skrifa 0.40+); other backends fall through
 /// to the monochrome outline or skip to the next fallback.
-pub static NOTO_COLRV1: &[u8] = include_bytes!("../fonts/Noto-COLRv1.ttf");
+pub static NOTO_COLOR_EMOJI: &[u8] = include_bytes!("../fonts/NotoColorEmoji.ttf");
 
 /// Noto Emoji — color-neutral emoji coverage (legacy, works on all backends).
 pub static NOTO_EMOJI: &[u8] = include_bytes!("../fonts/NotoEmoji-Regular.ttf");

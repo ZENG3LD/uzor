@@ -27,7 +27,7 @@ static CACHED_FONT_JB_MONO_BOLD: OnceLock<FontData> = OnceLock::new();
 
 static CACHED_FALLBACK_NERD_FONT: OnceLock<FontData> = OnceLock::new();
 static CACHED_FALLBACK_SYMBOLS2: OnceLock<FontData> = OnceLock::new();
-static CACHED_FALLBACK_COLRV1: OnceLock<FontData> = OnceLock::new();
+static CACHED_FALLBACK_COLOR_EMOJI: OnceLock<FontData> = OnceLock::new();
 static CACHED_FALLBACK_EMOJI: OnceLock<FontData> = OnceLock::new();
 
 fn make_font(bytes: &'static [u8]) -> FontData {
@@ -63,7 +63,7 @@ pub(crate) fn get_cached_font(family: FontFamily, bold: bool, italic: bool) -> &
 }
 
 /// Return the static fallback font list in priority order:
-/// [SymbolsNerdFontMono, NotoSansSymbols2, Noto-COLRv1, NotoEmoji].
+/// [SymbolsNerdFontMono, NotoSansSymbols2, NotoColorEmoji, NotoEmoji].
 pub(crate) fn get_fallback_fonts() -> &'static [FontData] {
     static FALLBACK_LIST: OnceLock<Vec<FontData>> = OnceLock::new();
     FALLBACK_LIST.get_or_init(|| {
@@ -71,8 +71,8 @@ pub(crate) fn get_fallback_fonts() -> &'static [FontData] {
             .get_or_init(|| make_font(fonts::SYMBOLS_NERD_FONT_MONO));
         let s2 = CACHED_FALLBACK_SYMBOLS2
             .get_or_init(|| make_font(fonts::NOTO_SANS_SYMBOLS2));
-        let cv = CACHED_FALLBACK_COLRV1
-            .get_or_init(|| make_font(fonts::NOTO_COLRV1));
+        let cv = CACHED_FALLBACK_COLOR_EMOJI
+            .get_or_init(|| make_font(fonts::NOTO_COLOR_EMOJI));
         let em = CACHED_FALLBACK_EMOJI
             .get_or_init(|| make_font(fonts::NOTO_EMOJI));
         vec![nf.clone(), s2.clone(), cv.clone(), em.clone()]

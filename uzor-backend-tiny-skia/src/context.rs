@@ -42,7 +42,7 @@ static FONT_JB_MONO_REGULAR: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_JB_MONO_BOLD: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_NERD_FONT: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_SYMBOLS: OnceLock<fontdue::Font> = OnceLock::new();
-static FONT_COLRV1: OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_COLOR_EMOJI: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_EMOJI: OnceLock<fontdue::Font> = OnceLock::new();
 
 /// Re-export of the backend-agnostic family enum from core uzor. All family
@@ -95,10 +95,10 @@ fn get_symbols_font() -> &'static fontdue::Font {
     FONT_SYMBOLS.get_or_init(|| make_font(fonts::NOTO_SANS_SYMBOLS2))
 }
 
-fn get_colrv1_font() -> &'static fontdue::Font {
+fn get_color_emoji_font() -> &'static fontdue::Font {
     // fontdue renders the monochrome outline from COLRv1; color layers are
     // silently ignored, but the glyph shape is still useful as a last resort.
-    FONT_COLRV1.get_or_init(|| make_font(fonts::NOTO_COLRV1))
+    FONT_COLOR_EMOJI.get_or_init(|| make_font(fonts::NOTO_COLOR_EMOJI))
 }
 
 fn get_emoji_font() -> &'static fontdue::Font {
@@ -153,7 +153,7 @@ fn measure_text_width(text: &str, font_info: &FontInfo) -> f64 {
                 if fb_metrics.width > 0 {
                     fb_metrics.advance_width
                 } else {
-                    let (cv_metrics, _) = get_colrv1_font().rasterize(ch, font_info.size);
+                    let (cv_metrics, _) = get_color_emoji_font().rasterize(ch, font_info.size);
                     if cv_metrics.width > 0 {
                         cv_metrics.advance_width
                     } else {
@@ -837,7 +837,7 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
                     if sym_metrics.width > 0 {
                         (sym_metrics, sym_bitmap)
                     } else {
-                        let (cv_metrics, cv_bitmap) = get_colrv1_font().rasterize(ch, render_px);
+                        let (cv_metrics, cv_bitmap) = get_color_emoji_font().rasterize(ch, render_px);
                         if cv_metrics.width > 0 {
                             (cv_metrics, cv_bitmap)
                         } else {
