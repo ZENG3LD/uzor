@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    # Font assets (published separately — large binary, rarely changes)
+    "uzor-fonts",
     # Core library (contains render, animation, panels, panel_api, macos, layout, interactive, text_fx, cursor, numbers, scroll_fx)
     "uzor",
     # Platform
@@ -21,7 +23,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.0.34"
+version = "1.0.35"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zeng3ld/uzor"
@@ -30,5 +32,6 @@ keywords = ["ui", "rendering", "framework", "headless", "gpu"]
 categories = ["gui", "rendering", "graphics"]
 
 [workspace.dependencies]
-uzor = { version = "1.0.34", path = "./uzor" }
+uzor = { version = "1.0.35", path = "./uzor" }
+uzor-fonts = { version = "1.0.0", path = "./uzor-fonts" }
 serde = { version = "1.0", features = ["derive"] }

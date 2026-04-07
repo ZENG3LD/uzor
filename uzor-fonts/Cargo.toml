@@ -1,0 +1,15 @@
+[package]
+name = "uzor-fonts"
+version = "1.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Bundled font assets for uzor (Roboto, JetBrainsMono, NotoEmoji, NotoColorEmoji, etc.)"
+repository = "https://github.com/zeng3ld/uzor"
+homepage = "https://github.com/zeng3ld/uzor"
+keywords = ["fonts", "ui", "rendering", "embedded", "assets"]
+categories = ["embedded", "rendering"]
+links = "uzor_fonts_assets"
+exclude = ["fonts/NotoColorEmoji.ttf"]
+
+[build-dependencies]
+ureq = { version = "2", default-features = false, features = ["tls"] }
