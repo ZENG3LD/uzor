@@ -88,8 +88,10 @@ static FONT_PT_ROOT_UI:      OnceLock<FontData> = OnceLock::new();
 static FONT_JB_MONO_REGULAR: OnceLock<FontData> = OnceLock::new();
 static FONT_JB_MONO_BOLD:    OnceLock<FontData> = OnceLock::new();
 
-static FONT_FALLBACK_SYMBOLS2: OnceLock<FontData> = OnceLock::new();
-static FONT_FALLBACK_EMOJI:    OnceLock<FontData> = OnceLock::new();
+static FONT_FALLBACK_NERD_FONT: OnceLock<FontData> = OnceLock::new();
+static FONT_FALLBACK_SYMBOLS2:  OnceLock<FontData> = OnceLock::new();
+static FONT_FALLBACK_COLRV1:    OnceLock<FontData> = OnceLock::new();
+static FONT_FALLBACK_EMOJI:     OnceLock<FontData> = OnceLock::new();
 
 fn get_font(family: FontFamily, bold: bool, italic: bool) -> &'static FontData {
     match family {
@@ -121,9 +123,11 @@ fn get_font(family: FontFamily, bold: bool, italic: bool) -> &'static FontData {
 fn get_fallback_fonts() -> &'static [FontData] {
     static FALLBACK_LIST: OnceLock<Vec<FontData>> = OnceLock::new();
     FALLBACK_LIST.get_or_init(|| {
+        let nf = FONT_FALLBACK_NERD_FONT.get_or_init(|| make_font(fonts::SYMBOLS_NERD_FONT_MONO));
         let s2 = FONT_FALLBACK_SYMBOLS2.get_or_init(|| make_font(fonts::NOTO_SANS_SYMBOLS2));
+        let cv = FONT_FALLBACK_COLRV1.get_or_init(|| make_font(fonts::NOTO_COLRV1));
         let em = FONT_FALLBACK_EMOJI.get_or_init(|| make_font(fonts::NOTO_EMOJI));
-        vec![s2.clone(), em.clone()]
+        vec![nf.clone(), s2.clone(), cv.clone(), em.clone()]
     })
 }
 

@@ -40,7 +40,9 @@ static FONT_BOLD_ITALIC: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_PT_ROOT_UI: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_JB_MONO_REGULAR: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_JB_MONO_BOLD: OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_NERD_FONT: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_SYMBOLS: OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_COLRV1: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_EMOJI: OnceLock<fontdue::Font> = OnceLock::new();
 
 /// Re-export of the backend-agnostic family enum from core uzor. All family
@@ -85,8 +87,18 @@ fn get_font(family: FontFamily, bold: bool, italic: bool) -> &'static fontdue::F
     }
 }
 
+fn get_nerd_font() -> &'static fontdue::Font {
+    FONT_NERD_FONT.get_or_init(|| make_font(fonts::SYMBOLS_NERD_FONT_MONO))
+}
+
 fn get_symbols_font() -> &'static fontdue::Font {
     FONT_SYMBOLS.get_or_init(|| make_font(fonts::NOTO_SANS_SYMBOLS2))
+}
+
+fn get_colrv1_font() -> &'static fontdue::Font {
+    // fontdue renders the monochrome outline from COLRv1; color layers are
+    // silently ignored, but the glyph shape is still useful as a last resort.
+    FONT_COLRV1.get_or_init(|| make_font(fonts::NOTO_COLRV1))
 }
 
 fn get_emoji_font() -> &'static fontdue::Font {
@@ -133,12 +145,22 @@ fn measure_text_width(text: &str, font_info: &FontInfo) -> f64 {
     for ch in text.chars() {
         let (metrics, _) = font.rasterize(ch, font_info.size);
         let advance = if metrics.width == 0 && !ch.is_whitespace() {
-            let (fb_metrics, _) = get_symbols_font().rasterize(ch, font_info.size);
-            if fb_metrics.width > 0 {
-                fb_metrics.advance_width
+            let (nf_metrics, _) = get_nerd_font().rasterize(ch, font_info.size);
+            if nf_metrics.width > 0 {
+                nf_metrics.advance_width
             } else {
-                let (em_metrics, _) = get_emoji_font().rasterize(ch, font_info.size);
-                em_metrics.advance_width
+                let (fb_metrics, _) = get_symbols_font().rasterize(ch, font_info.size);
+                if fb_metrics.width > 0 {
+                    fb_metrics.advance_width
+                } else {
+                    let (cv_metrics, _) = get_colrv1_font().rasterize(ch, font_info.size);
+                    if cv_metrics.width > 0 {
+                        cv_metrics.advance_width
+                    } else {
+                        let (em_metrics, _) = get_emoji_font().rasterize(ch, font_info.size);
+                        em_metrics.advance_width
+                    }
+                }
             }
         } else {
             metrics.advance_width
@@ -807,17 +829,27 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
             // font returns a zero-width glyph for a non-whitespace character it
             // means the codepoint is not covered — try the fallback fonts in order.
             let (metrics, bitmap) = if primary_metrics.width == 0 && !ch.is_whitespace() {
-                let (sym_metrics, sym_bitmap) = get_symbols_font().rasterize(ch, render_px);
-                if sym_metrics.width > 0 {
-                    (sym_metrics, sym_bitmap)
+                let (nf_metrics, nf_bitmap) = get_nerd_font().rasterize(ch, render_px);
+                if nf_metrics.width > 0 {
+                    (nf_metrics, nf_bitmap)
                 } else {
-                    let (em_metrics, em_bitmap) = get_emoji_font().rasterize(ch, render_px);
-                    if em_metrics.width > 0 {
-                        (em_metrics, em_bitmap)
+                    let (sym_metrics, sym_bitmap) = get_symbols_font().rasterize(ch, render_px);
+                    if sym_metrics.width > 0 {
+                        (sym_metrics, sym_bitmap)
                     } else {
-                        // No font covers this codepoint — use primary result
-                        // (advance_width may still be non-zero for spacing).
-                        (primary_metrics, primary_bitmap)
+                        let (cv_metrics, cv_bitmap) = get_colrv1_font().rasterize(ch, render_px);
+                        if cv_metrics.width > 0 {
+                            (cv_metrics, cv_bitmap)
+                        } else {
+                            let (em_metrics, em_bitmap) = get_emoji_font().rasterize(ch, render_px);
+                            if em_metrics.width > 0 {
+                                (em_metrics, em_bitmap)
+                            } else {
+                                // No font covers this codepoint — use primary result
+                                // (advance_width may still be non-zero for spacing).
+                                (primary_metrics, primary_bitmap)
+                            }
+                        }
                     }
                 }
             } else {

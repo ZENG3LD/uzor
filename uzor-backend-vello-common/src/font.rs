@@ -1,16 +1,19 @@
 //! Font loading, CSS font string parsing, and text metrics for vello backends.
 //!
 //! Embeds all four Roboto variants (regular, bold, italic, bold-italic) plus
-//! two Unicode fallback fonts (NotoSansSymbols2, NotoEmoji), and caches them
-//! as `peniko::FontData` objects so they are only heap-allocated once per
-//! process.
+//! four Unicode fallback fonts, and caches them as `peniko::FontData` objects
+//! so they are only heap-allocated once per process.
 //!
 //! ## Fallback chain
 //!
-//! When a character maps to `GlyphId(0)` in the primary Roboto font (meaning
-//! Roboto has no glyph for it), `layout_glyphs` and `measure_text` try each
-//! fallback font in order: NotoSansSymbols2, then NotoEmoji.  The first font
-//! that returns a non-zero glyph ID is used for that character.
+//! When a character maps to `GlyphId(0)` in the primary font, `layout_glyphs`
+//! and `measure_text` try each fallback font in order:
+//! 1. `SymbolsNerdFontMono` — Powerline + Nerd Font PUA + dev icons
+//! 2. `NotoSansSymbols2`   — math / arrows / wide symbol coverage
+//! 3. `Noto-COLRv1`        — color emoji (COLRv1/v0); vello-gpu renders color
+//! 4. `NotoEmoji`          — legacy monochrome emoji (works on all backends)
+//!
+//! The first font that returns a non-zero glyph ID is used for that character.
 
 use std::sync::{Arc, OnceLock};
 
@@ -32,7 +35,9 @@ static CACHED_FONT_JB_MONO_BOLD: OnceLock<FontData> = OnceLock::new();
 
 static CACHED_FONT_PT_ROOT_UI: OnceLock<FontData> = OnceLock::new();
 
+static CACHED_FALLBACK_NERD_FONT: OnceLock<FontData> = OnceLock::new();
 static CACHED_FALLBACK_SYMBOLS2: OnceLock<FontData> = OnceLock::new();
+static CACHED_FALLBACK_COLRV1: OnceLock<FontData> = OnceLock::new();
 static CACHED_FALLBACK_EMOJI: OnceLock<FontData> = OnceLock::new();
 
 /// Re-export of the backend-agnostic family enum from core uzor.
@@ -108,18 +113,24 @@ pub fn get_cached_font(bold: bool, italic: bool) -> &'static FontData {
 /// The slice is `&'static` — the `FontData` objects are heap-allocated once
 /// per process.
 pub fn get_cached_fallback_fonts() -> &'static [FontData] {
-    // We need both initialized before returning the slice.  We store them in a
-    // single OnceLock<Vec> so the slice lifetime is correct.
+    // All four entries must be initialised before we return the slice.  We
+    // store them in a single OnceLock<Vec> so the slice lifetime is correct.
     static FALLBACK_LIST: OnceLock<Vec<FontData>> = OnceLock::new();
     FALLBACK_LIST.get_or_init(|| {
+        let nerd = CACHED_FALLBACK_NERD_FONT.get_or_init(|| {
+            FontData::new(Blob::new(Arc::new(fonts::SYMBOLS_NERD_FONT_MONO.to_vec())), 0)
+        });
         let symbols2 = CACHED_FALLBACK_SYMBOLS2.get_or_init(|| {
             FontData::new(Blob::new(Arc::new(fonts::NOTO_SANS_SYMBOLS2.to_vec())), 0)
+        });
+        let colrv1 = CACHED_FALLBACK_COLRV1.get_or_init(|| {
+            FontData::new(Blob::new(Arc::new(fonts::NOTO_COLRV1.to_vec())), 0)
         });
         let emoji = CACHED_FALLBACK_EMOJI.get_or_init(|| {
             FontData::new(Blob::new(Arc::new(fonts::NOTO_EMOJI.to_vec())), 0)
         });
         // Clone the FontData — peniko FontData is an Arc wrapper so this is cheap.
-        vec![symbols2.clone(), emoji.clone()]
+        vec![nerd.clone(), symbols2.clone(), colrv1.clone(), emoji.clone()]
     })
 }
 
@@ -267,7 +278,8 @@ pub struct GlyphLayout {
     /// Vertical position; always `0.0` for horizontal text.
     pub y: f32,
     /// Index into the fallback font list.  `None` means the primary font.
-    /// `Some(0)` = NotoSansSymbols2, `Some(1)` = NotoEmoji.
+    /// `Some(0)` = SymbolsNerdFontMono, `Some(1)` = NotoSansSymbols2,
+    /// `Some(2)` = Noto-COLRv1, `Some(3)` = NotoEmoji.
     pub fallback_index: Option<usize>,
 }
 

@@ -27,7 +27,9 @@ static FONT_BOLD_ITALIC: OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::
 static FONT_PT_ROOT_UI:      OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
 static FONT_JB_MONO_REGULAR: OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
 static FONT_JB_MONO_BOLD:    OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+static FONT_NERD_FONT:   OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
 static FONT_SYMBOLS:     OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+static FONT_COLRV1:      OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
 static FONT_EMOJI:       OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
 
 fn make_font_ref(data: &'static [u8]) -> Option<skrifa::FontRef<'static>> {
@@ -65,10 +67,13 @@ fn get_font_ref(family: FontFamily, bold: bool, italic: bool) -> Option<&'static
     }
 }
 
-/// Fallback font refs tried in order when the primary Roboto font returns GlyphId(0).
-fn get_fallback_font_refs() -> [Option<&'static skrifa::FontRef<'static>>; 2] {
+/// Fallback font refs tried in order when the primary font returns GlyphId(0).
+/// Chain: SymbolsNerdFontMono → NotoSansSymbols2 → Noto-COLRv1 → NotoEmoji.
+fn get_fallback_font_refs() -> [Option<&'static skrifa::FontRef<'static>>; 4] {
     [
+        FONT_NERD_FONT.get_or_init(|| make_font_ref(fonts::SYMBOLS_NERD_FONT_MONO)).as_ref(),
         FONT_SYMBOLS.get_or_init(|| make_font_ref(fonts::NOTO_SANS_SYMBOLS2)).as_ref(),
+        FONT_COLRV1.get_or_init(|| make_font_ref(fonts::NOTO_COLRV1)).as_ref(),
         FONT_EMOJI.get_or_init(|| make_font_ref(fonts::NOTO_EMOJI)).as_ref(),
     ]
 }
