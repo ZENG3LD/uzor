@@ -4,6 +4,7 @@
 //! a frame.  Text rendering via a glyph rasterizer will be added back later
 //! with a different approach (glyphon has been removed for now).
 
+use uzor::fonts::FontFamily;
 use uzor::render::{TextAlign, TextBaseline};
 
 /// Raw data for a text draw call collected during a frame.
@@ -19,6 +20,8 @@ pub struct TextAreaData {
     pub font_size: f32,
     /// Text color RGBA.
     pub color: [f32; 4],
+    /// Font family (Roboto / PtRootUi / JetBrainsMono).
+    pub family: FontFamily,
     /// Whether the font is bold.
     pub bold: bool,
     /// Whether the font is italic.

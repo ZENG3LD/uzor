@@ -14,7 +14,7 @@ use lyon_path::math::point;
 use skrifa::MetadataProvider;
 use uzor::render::{RenderContext, RenderContextExt, TextAlign, TextBaseline};
 
-use uzor::fonts;
+use uzor::fonts::{self, FontFamily};
 
 use crate::instances::{DrawCmd, QuadInstance, TriangleInstance};
 use crate::text::TextAreaData;
@@ -24,6 +24,9 @@ static FONT_REGULAR:     OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::
 static FONT_BOLD:        OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
 static FONT_ITALIC:      OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
 static FONT_BOLD_ITALIC: OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+static FONT_PT_ROOT_UI:      OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+static FONT_JB_MONO_REGULAR: OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+static FONT_JB_MONO_BOLD:    OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
 static FONT_SYMBOLS:     OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
 static FONT_EMOJI:       OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
 
@@ -35,12 +38,30 @@ fn make_font_ref(data: &'static [u8]) -> Option<skrifa::FontRef<'static>> {
     }
 }
 
-fn get_font_ref(bold: bool, italic: bool) -> Option<&'static skrifa::FontRef<'static>> {
-    match (bold, italic) {
-        (true, true)   => FONT_BOLD_ITALIC.get_or_init(|| make_font_ref(fonts::ROBOTO_BOLD_ITALIC)).as_ref(),
-        (true, false)  => FONT_BOLD.get_or_init(|| make_font_ref(fonts::ROBOTO_BOLD)).as_ref(),
-        (false, true)  => FONT_ITALIC.get_or_init(|| make_font_ref(fonts::ROBOTO_ITALIC)).as_ref(),
-        (false, false) => FONT_REGULAR.get_or_init(|| make_font_ref(fonts::ROBOTO_REGULAR)).as_ref(),
+fn get_font_ref(family: FontFamily, bold: bool, italic: bool) -> Option<&'static skrifa::FontRef<'static>> {
+    match family {
+        FontFamily::PtRootUi => FONT_PT_ROOT_UI
+            .get_or_init(|| make_font_ref(fonts::font_bytes(family, bold, italic))).as_ref(),
+        FontFamily::JetBrainsMono => {
+            let _ = italic;
+            if bold {
+                FONT_JB_MONO_BOLD
+                    .get_or_init(|| make_font_ref(fonts::font_bytes(family, true, false))).as_ref()
+            } else {
+                FONT_JB_MONO_REGULAR
+                    .get_or_init(|| make_font_ref(fonts::font_bytes(family, false, false))).as_ref()
+            }
+        }
+        FontFamily::Roboto => match (bold, italic) {
+            (true, true)   => FONT_BOLD_ITALIC
+                .get_or_init(|| make_font_ref(fonts::font_bytes(family, true, true))).as_ref(),
+            (true, false)  => FONT_BOLD
+                .get_or_init(|| make_font_ref(fonts::font_bytes(family, true, false))).as_ref(),
+            (false, true)  => FONT_ITALIC
+                .get_or_init(|| make_font_ref(fonts::font_bytes(family, false, true))).as_ref(),
+            (false, false) => FONT_REGULAR
+                .get_or_init(|| make_font_ref(fonts::font_bytes(family, false, false))).as_ref(),
+        },
     }
 }
 
@@ -128,6 +149,7 @@ struct SavedState {
     font_size: f32,
     font_bold: bool,
     font_italic: bool,
+    font_family: FontFamily,
     text_align: TextAlign,
     text_baseline: TextBaseline,
     clip_depth: usize,
@@ -157,6 +179,7 @@ pub struct InstancedRenderContext {
     font_size: f32,
     font_bold: bool,
     font_italic: bool,
+    font_family: FontFamily,
     text_align: TextAlign,
     text_baseline: TextBaseline,
     line_cap: String,
@@ -194,6 +217,7 @@ impl InstancedRenderContext {
             font_size: 12.0,
             font_bold: false,
             font_italic: false,
+            font_family: FontFamily::Roboto,
             text_align: TextAlign::Left,
             text_baseline: TextBaseline::Middle,
             line_cap: String::new(),
@@ -644,7 +668,7 @@ impl InstancedRenderContext {
     /// the per-glyph fallback that cosmic_text applies during rasterisation so
     /// that measured widths match rendered widths for symbol and emoji codepoints.
     fn measure_text_internal(&self, text: &str) -> f32 {
-        let Some(font_ref) = get_font_ref(self.font_bold, self.font_italic) else {
+        let Some(font_ref) = get_font_ref(self.font_family, self.font_bold, self.font_italic) else {
             return text.len() as f32 * self.font_size * 0.6;
         };
         let size = skrifa::instance::Size::new(self.font_size);
@@ -864,19 +888,11 @@ impl RenderContext for InstancedRenderContext {
 
     // ── Text ─────────────────────────────────────────────────────────────
     fn set_font(&mut self, font: &str) {
-        self.font_bold   = false;
-        self.font_italic = false;
-        for part in font.to_lowercase().split_whitespace() {
-            if part.ends_with("px") {
-                if let Ok(sz) = part.trim_end_matches("px").parse::<f32>() {
-                    self.font_size = sz;
-                }
-            } else if part == "bold" {
-                self.font_bold = true;
-            } else if part == "italic" {
-                self.font_italic = true;
-            }
-        }
+        let parsed = fonts::parse_css_font(font);
+        self.font_size = parsed.size;
+        self.font_bold = parsed.bold;
+        self.font_italic = parsed.italic;
+        self.font_family = parsed.family;
     }
     fn set_text_align(&mut self, align: TextAlign) {
         self.text_align = align;
@@ -899,6 +915,7 @@ impl RenderContext for InstancedRenderContext {
             y: py,
             font_size: self.font_size,
             color,
+            family: self.font_family,
             bold: self.font_bold,
             italic: self.font_italic,
             align: self.text_align,
@@ -928,6 +945,7 @@ impl RenderContext for InstancedRenderContext {
             font_size: self.font_size,
             font_bold: self.font_bold,
             font_italic: self.font_italic,
+            font_family: self.font_family,
             text_align: self.text_align,
             text_baseline: self.text_baseline,
             clip_depth: self.clip_stack.len(),
@@ -947,6 +965,7 @@ impl RenderContext for InstancedRenderContext {
             self.font_size     = state.font_size;
             self.font_bold     = state.font_bold;
             self.font_italic   = state.font_italic;
+            self.font_family   = state.font_family;
             self.text_align    = state.text_align;
             self.text_baseline = state.text_baseline;
             self.line_cap      = state.line_cap;

@@ -472,6 +472,9 @@ impl InstancedRenderer {
             cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(fonts::ROBOTO_BOLD)),
             cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(fonts::ROBOTO_ITALIC)),
             cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(fonts::ROBOTO_BOLD_ITALIC)),
+            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(fonts::PT_ROOT_UI_VF)),
+            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(fonts::JETBRAINS_MONO_REGULAR)),
+            cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(fonts::JETBRAINS_MONO_BOLD)),
             cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(fonts::NOTO_SANS_SYMBOLS2)),
             cosmic_text::fontdb::Source::Binary(std::sync::Arc::new(fonts::NOTO_EMOJI)),
         ]);
@@ -543,12 +546,19 @@ impl InstancedRenderer {
                 continue;
             }
 
-            // Choose font family based on bold/italic flags.
-            let family_name = match (ta.bold, ta.italic) {
-                (true, true)   => "Roboto BoldItalic",
-                (true, false)  => "Roboto Bold",
-                (false, true)  => "Roboto Italic",
-                (false, false) => "Roboto",
+            // Choose font family name based on family + bold/italic flags.
+            use uzor::fonts::FontFamily;
+            let family_name = match ta.family {
+                FontFamily::JetBrainsMono => {
+                    if ta.bold { "JetBrains Mono Bold" } else { "JetBrains Mono" }
+                }
+                FontFamily::PtRootUi => "PT Root UI VF",
+                FontFamily::Roboto => match (ta.bold, ta.italic) {
+                    (true, true)   => "Roboto BoldItalic",
+                    (true, false)  => "Roboto Bold",
+                    (false, true)  => "Roboto Italic",
+                    (false, false) => "Roboto",
+                },
             };
 
             let line_height = ta.font_size * 1.2;

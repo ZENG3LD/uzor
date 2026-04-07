@@ -35,15 +35,39 @@ static FONT_BOLD:        OnceLock<FontData> = OnceLock::new();
 static FONT_ITALIC:      OnceLock<FontData> = OnceLock::new();
 static FONT_BOLD_ITALIC: OnceLock<FontData> = OnceLock::new();
 
+static FONT_PT_ROOT_UI:       OnceLock<FontData> = OnceLock::new();
+static FONT_JB_MONO_REGULAR:  OnceLock<FontData> = OnceLock::new();
+static FONT_JB_MONO_BOLD:     OnceLock<FontData> = OnceLock::new();
+
 static FONT_FALLBACK_SYMBOLS2: OnceLock<FontData> = OnceLock::new();
 static FONT_FALLBACK_EMOJI:    OnceLock<FontData> = OnceLock::new();
 
-fn get_font(bold: bool, italic: bool) -> &'static FontData {
-    match (bold, italic) {
-        (true,  true)  => FONT_BOLD_ITALIC.get_or_init(|| make_font(fonts::ROBOTO_BOLD_ITALIC)),
-        (true,  false) => FONT_BOLD.get_or_init(|| make_font(fonts::ROBOTO_BOLD)),
-        (false, true)  => FONT_ITALIC.get_or_init(|| make_font(fonts::ROBOTO_ITALIC)),
-        (false, false) => FONT_REGULAR.get_or_init(|| make_font(fonts::ROBOTO_REGULAR)),
+use uzor::fonts::FontFamily;
+
+fn get_font(family: FontFamily, bold: bool, italic: bool) -> &'static FontData {
+    match family {
+        FontFamily::PtRootUi => FONT_PT_ROOT_UI
+            .get_or_init(|| make_font(fonts::font_bytes(family, bold, italic))),
+        FontFamily::JetBrainsMono => {
+            let _ = italic; // no italic variant bundled
+            if bold {
+                FONT_JB_MONO_BOLD
+                    .get_or_init(|| make_font(fonts::font_bytes(family, true, false)))
+            } else {
+                FONT_JB_MONO_REGULAR
+                    .get_or_init(|| make_font(fonts::font_bytes(family, false, false)))
+            }
+        }
+        FontFamily::Roboto => match (bold, italic) {
+            (true,  true ) => FONT_BOLD_ITALIC
+                .get_or_init(|| make_font(fonts::font_bytes(family, true, true))),
+            (true,  false) => FONT_BOLD
+                .get_or_init(|| make_font(fonts::font_bytes(family, true, false))),
+            (false, true ) => FONT_ITALIC
+                .get_or_init(|| make_font(fonts::font_bytes(family, false, true))),
+            (false, false) => FONT_REGULAR
+                .get_or_init(|| make_font(fonts::font_bytes(family, false, false))),
+        },
     }
 }
 
@@ -161,29 +185,23 @@ struct FontInfo {
     size:   f64,
     bold:   bool,
     italic: bool,
+    family: FontFamily,
 }
 
 impl Default for FontInfo {
     fn default() -> Self {
-        Self { size: 12.0, bold: false, italic: false }
+        Self { size: 12.0, bold: false, italic: false, family: FontFamily::Roboto }
     }
 }
 
 fn parse_css_font(font_str: &str) -> FontInfo {
-    let mut info = FontInfo::default();
-    for part in font_str.to_lowercase().split_whitespace() {
-        match part {
-            "bold"   => info.bold = true,
-            "italic" => info.italic = true,
-            s if s.ends_with("px") => {
-                if let Ok(sz) = s.trim_end_matches("px").parse::<f64>() {
-                    info.size = sz;
-                }
-            }
-            _ => {}
-        }
+    let parsed = fonts::parse_css_font(font_str);
+    FontInfo {
+        size:   parsed.size as f64,
+        bold:   parsed.bold,
+        italic: parsed.italic,
+        family: parsed.family,
     }
-    info
 }
 
 // ---------------------------------------------------------------------------
@@ -191,7 +209,7 @@ fn parse_css_font(font_str: &str) -> FontInfo {
 // ---------------------------------------------------------------------------
 
 fn measure_text_width(text: &str, font_info: &FontInfo) -> f64 {
-    let font = get_font(font_info.bold, font_info.italic);
+    let font = get_font(font_info.family, font_info.bold, font_info.italic);
     let Some(font_ref) = to_font_ref(font) else {
         return text.len() as f64 * font_info.size * 0.6;
     };
@@ -761,7 +779,7 @@ impl UzorRenderContext for VelloCpuRenderContext {
         if text.is_empty() { return; }
 
         let font_info = self.font_info.clone();
-        let primary_font = get_font(font_info.bold, font_info.italic);
+        let primary_font = get_font(font_info.family, font_info.bold, font_info.italic);
         let font_size    = font_info.size as f32;
 
         // Alignment / baseline offsets

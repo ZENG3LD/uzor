@@ -27,8 +27,59 @@ static CACHED_FONT_BOLD: OnceLock<FontData> = OnceLock::new();
 static CACHED_FONT_ITALIC: OnceLock<FontData> = OnceLock::new();
 static CACHED_FONT_BOLD_ITALIC: OnceLock<FontData> = OnceLock::new();
 
+static CACHED_FONT_JB_MONO_REGULAR: OnceLock<FontData> = OnceLock::new();
+static CACHED_FONT_JB_MONO_BOLD: OnceLock<FontData> = OnceLock::new();
+
+static CACHED_FONT_PT_ROOT_UI: OnceLock<FontData> = OnceLock::new();
+
 static CACHED_FALLBACK_SYMBOLS2: OnceLock<FontData> = OnceLock::new();
 static CACHED_FALLBACK_EMOJI: OnceLock<FontData> = OnceLock::new();
+
+/// Re-export of the backend-agnostic family enum from core uzor.
+pub use uzor::fonts::FontFamily;
+
+/// Return a `&'static FontData` for the given family + style combination.
+///
+/// Delegates family → bytes resolution to `uzor::fonts::font_bytes` and
+/// caches the decoded `peniko::FontData` locally so each slot is constructed
+/// at most once per process.
+pub fn get_cached_font_family(
+    family: FontFamily,
+    bold: bool,
+    italic: bool,
+) -> &'static FontData {
+    match family {
+        FontFamily::PtRootUi => CACHED_FONT_PT_ROOT_UI.get_or_init(|| {
+            FontData::new(
+                Blob::new(Arc::new(fonts::font_bytes(family, bold, italic).to_vec())),
+                0,
+            )
+        }),
+        FontFamily::JetBrainsMono => {
+            let _ = italic; // no italic variant bundled
+            if bold {
+                CACHED_FONT_JB_MONO_BOLD.get_or_init(|| {
+                    FontData::new(
+                        Blob::new(Arc::new(
+                            fonts::font_bytes(family, true, false).to_vec(),
+                        )),
+                        0,
+                    )
+                })
+            } else {
+                CACHED_FONT_JB_MONO_REGULAR.get_or_init(|| {
+                    FontData::new(
+                        Blob::new(Arc::new(
+                            fonts::font_bytes(family, false, false).to_vec(),
+                        )),
+                        0,
+                    )
+                })
+            }
+        }
+        FontFamily::Roboto => get_cached_font(bold, italic),
+    }
+}
 
 /// Return a `&'static FontData` for the Roboto variant matching `(bold, italic)`.
 ///
@@ -161,7 +212,8 @@ pub fn parse_css_font(font_str: &str) -> FontInfo {
 /// Returns an approximation (`len * size * 0.6`) if the font cannot be loaded.
 /// Uses the Unicode fallback chain for characters not found in Roboto.
 pub fn measure_text(text: &str, font_info: &FontInfo) -> f64 {
-    let font = get_cached_font(font_info.bold, font_info.italic);
+    let family = fonts::resolve_family(&font_info.family);
+    let font = get_cached_font_family(family, font_info.bold, font_info.italic);
     let font_ref = match to_font_ref(font) {
         Some(f) => f,
         None => return text.len() as f64 * font_info.size * 0.6,
@@ -224,7 +276,8 @@ pub struct GlyphLayout {
 ///
 /// Returns an empty `Vec` if the font cannot be loaded.
 pub fn layout_glyphs(text: &str, font_info: &FontInfo) -> Vec<GlyphLayout> {
-    let font = get_cached_font(font_info.bold, font_info.italic);
+    let family = fonts::resolve_family(&font_info.family);
+    let font = get_cached_font_family(family, font_info.bold, font_info.italic);
     let font_ref = match to_font_ref(font) {
         Some(f) => f,
         None => return Vec::new(),

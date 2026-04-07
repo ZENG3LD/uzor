@@ -7,62 +7,23 @@
 //! Unicode fallback to NotoSansSymbols2 and NotoEmoji for characters that
 //! Roboto does not cover.
 
-use std::sync::Arc;
-
 use vello::kurbo::Affine;
-use vello::peniko::{Blob, Brush, Fill, FontData};
+use vello::peniko::{Brush, Fill, FontData};
 use vello::{Glyph, Scene};
 use skrifa::{MetadataProvider, raw::{FileRef, FontRef}};
 
 use vello::peniko::color::AlphaColor;
 use vello::peniko::color::Srgb;
 
-use std::sync::OnceLock;
-
 /// Public color type alias (same as the one in context.rs).
 pub type Color = AlphaColor<Srgb>;
 
-use uzor::fonts;
+use uzor::fonts::FontFamily;
+use crate::context::{get_cached_font, get_fallback_fonts};
 
-// ── Private font bytes (sourced from centralized uzor::fonts catalog) ─────────
-
-static ROBOTO_REGULAR_T: &[u8] = fonts::ROBOTO_REGULAR;
-static ROBOTO_BOLD_T: &[u8]    = fonts::ROBOTO_BOLD;
-
-static NOTO_SYMBOLS2_T: &[u8] = fonts::NOTO_SANS_SYMBOLS2;
-static NOTO_EMOJI_T: &[u8]    = fonts::NOTO_EMOJI;
-
-static CACHED_REGULAR: OnceLock<FontData> = OnceLock::new();
-static CACHED_BOLD: OnceLock<FontData>    = OnceLock::new();
-
-static CACHED_FALLBACK_SYMBOLS2: OnceLock<FontData> = OnceLock::new();
-static CACHED_FALLBACK_EMOJI: OnceLock<FontData>    = OnceLock::new();
-
-/// Return the cached [`FontData`] for the requested weight.
+/// Return the cached [`FontData`] for the requested weight (Roboto family).
 pub(crate) fn get_text_font(bold: bool) -> &'static FontData {
-    if bold {
-        CACHED_BOLD.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(ROBOTO_BOLD_T.to_vec())), 0)
-        })
-    } else {
-        CACHED_REGULAR.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(ROBOTO_REGULAR_T.to_vec())), 0)
-        })
-    }
-}
-
-/// Return fallback fonts in priority order: [NotoSansSymbols2, NotoEmoji].
-fn get_fallback_fonts() -> &'static [FontData] {
-    static FALLBACK_LIST: OnceLock<Vec<FontData>> = OnceLock::new();
-    FALLBACK_LIST.get_or_init(|| {
-        let s2 = CACHED_FALLBACK_SYMBOLS2.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(NOTO_SYMBOLS2_T.to_vec())), 0)
-        });
-        let em = CACHED_FALLBACK_EMOJI.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(NOTO_EMOJI_T.to_vec())), 0)
-        });
-        vec![s2.clone(), em.clone()]
-    })
+    get_cached_font(FontFamily::Roboto, bold, false)
 }
 
 /// Convert a [`FontData`] reference to a skrifa [`FontRef`] for metric queries.

@@ -13,17 +13,7 @@ use uzor::render::{RenderContext as UzorRenderContext, RenderContextExt, TextAli
 // Use skrifa for font metrics
 use skrifa::{MetadataProvider, raw::{FileRef, FontRef}};
 
-use uzor::fonts;
-
-/// Embedded Roboto fonts for text rendering
-static ROBOTO_REGULAR: &[u8] = fonts::ROBOTO_REGULAR;
-static ROBOTO_BOLD: &[u8] = fonts::ROBOTO_BOLD;
-static ROBOTO_ITALIC: &[u8] = fonts::ROBOTO_ITALIC;
-static ROBOTO_BOLD_ITALIC: &[u8] = fonts::ROBOTO_BOLD_ITALIC;
-
-/// Embedded Unicode fallback fonts
-static NOTO_SYMBOLS2: &[u8] = fonts::NOTO_SANS_SYMBOLS2;
-static NOTO_EMOJI: &[u8] = fonts::NOTO_EMOJI;
+use uzor::fonts::{self, FontFamily};
 
 /// Cached peniko FontData - created once, reused forever
 static CACHED_FONT_REGULAR: OnceLock<FontData> = OnceLock::new();
@@ -31,24 +21,42 @@ static CACHED_FONT_BOLD: OnceLock<FontData> = OnceLock::new();
 static CACHED_FONT_ITALIC: OnceLock<FontData> = OnceLock::new();
 static CACHED_FONT_BOLD_ITALIC: OnceLock<FontData> = OnceLock::new();
 
+static CACHED_FONT_PT_ROOT_UI: OnceLock<FontData> = OnceLock::new();
+static CACHED_FONT_JB_MONO_REGULAR: OnceLock<FontData> = OnceLock::new();
+static CACHED_FONT_JB_MONO_BOLD: OnceLock<FontData> = OnceLock::new();
+
 static CACHED_FALLBACK_SYMBOLS2: OnceLock<FontData> = OnceLock::new();
 static CACHED_FALLBACK_EMOJI: OnceLock<FontData> = OnceLock::new();
 
-/// Get cached font by style
-pub(crate) fn get_cached_font(bold: bool, italic: bool) -> &'static FontData {
-    match (bold, italic) {
-        (true, true) => CACHED_FONT_BOLD_ITALIC.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(ROBOTO_BOLD_ITALIC.to_vec())), 0)
-        }),
-        (true, false) => CACHED_FONT_BOLD.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(ROBOTO_BOLD.to_vec())), 0)
-        }),
-        (false, true) => CACHED_FONT_ITALIC.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(ROBOTO_ITALIC.to_vec())), 0)
-        }),
-        (false, false) => CACHED_FONT_REGULAR.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(ROBOTO_REGULAR.to_vec())), 0)
-        }),
+fn make_font(bytes: &'static [u8]) -> FontData {
+    FontData::new(Blob::new(Arc::new(bytes.to_vec())), 0)
+}
+
+/// Get cached font by family + style
+pub(crate) fn get_cached_font(family: FontFamily, bold: bool, italic: bool) -> &'static FontData {
+    match family {
+        FontFamily::PtRootUi => CACHED_FONT_PT_ROOT_UI
+            .get_or_init(|| make_font(fonts::font_bytes(family, bold, italic))),
+        FontFamily::JetBrainsMono => {
+            let _ = italic;
+            if bold {
+                CACHED_FONT_JB_MONO_BOLD
+                    .get_or_init(|| make_font(fonts::font_bytes(family, true, false)))
+            } else {
+                CACHED_FONT_JB_MONO_REGULAR
+                    .get_or_init(|| make_font(fonts::font_bytes(family, false, false)))
+            }
+        }
+        FontFamily::Roboto => match (bold, italic) {
+            (true, true) => CACHED_FONT_BOLD_ITALIC
+                .get_or_init(|| make_font(fonts::font_bytes(family, true, true))),
+            (true, false) => CACHED_FONT_BOLD
+                .get_or_init(|| make_font(fonts::font_bytes(family, true, false))),
+            (false, true) => CACHED_FONT_ITALIC
+                .get_or_init(|| make_font(fonts::font_bytes(family, false, true))),
+            (false, false) => CACHED_FONT_REGULAR
+                .get_or_init(|| make_font(fonts::font_bytes(family, false, false))),
+        },
     }
 }
 
@@ -56,12 +64,10 @@ pub(crate) fn get_cached_font(bold: bool, italic: bool) -> &'static FontData {
 pub(crate) fn get_fallback_fonts() -> &'static [FontData] {
     static FALLBACK_LIST: OnceLock<Vec<FontData>> = OnceLock::new();
     FALLBACK_LIST.get_or_init(|| {
-        let s2 = CACHED_FALLBACK_SYMBOLS2.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(NOTO_SYMBOLS2.to_vec())), 0)
-        });
-        let em = CACHED_FALLBACK_EMOJI.get_or_init(|| {
-            FontData::new(Blob::new(Arc::new(NOTO_EMOJI.to_vec())), 0)
-        });
+        let s2 = CACHED_FALLBACK_SYMBOLS2
+            .get_or_init(|| make_font(fonts::NOTO_SANS_SYMBOLS2));
+        let em = CACHED_FALLBACK_EMOJI
+            .get_or_init(|| make_font(fonts::NOTO_EMOJI));
         vec![s2.clone(), em.clone()]
     })
 }
@@ -236,6 +242,7 @@ struct SavedState {
     font_size: f64,
     font_bold: bool,
     font_italic: bool,
+    font_family: FontFamily,
     text_align: TextAlign,
     text_baseline: TextBaseline,
     has_clip: bool,
@@ -265,6 +272,7 @@ pub struct VelloGpuRenderContext<'a> {
     font_size: f64,
     font_bold: bool,
     font_italic: bool,
+    font_family: FontFamily,
     text_align: TextAlign,
     text_baseline: TextBaseline,
 
@@ -305,6 +313,7 @@ impl<'a> VelloGpuRenderContext<'a> {
             font_size: 12.0,
             font_bold: false,
             font_italic: false,
+            font_family: FontFamily::Roboto,
             text_align: TextAlign::Left,
             text_baseline: TextBaseline::Middle,
             state_stack: Vec::new(),
@@ -570,22 +579,11 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
     }
 
     fn set_font(&mut self, font: &str) {
-        // Reset style flags before parsing
-        self.font_bold = false;
-        self.font_italic = false;
-
-        let font_lower = font.to_lowercase();
-        for part in font_lower.split_whitespace() {
-            if part.ends_with("px") {
-                if let Ok(size) = part.trim_end_matches("px").parse::<f64>() {
-                    self.font_size = size;
-                }
-            } else if part == "bold" {
-                self.font_bold = true;
-            } else if part == "italic" {
-                self.font_italic = true;
-            }
-        }
+        let parsed = fonts::parse_css_font(font);
+        self.font_size = parsed.size as f64;
+        self.font_bold = parsed.bold;
+        self.font_italic = parsed.italic;
+        self.font_family = parsed.family;
     }
 
     fn set_text_align(&mut self, align: TextAlign) {
@@ -601,7 +599,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
         let fill_color = self.effective_fill_color();
 
         // Get cached font based on style
-        let primary_font = get_cached_font(self.font_bold, self.font_italic);
+        let primary_font = get_cached_font(self.font_family, self.font_bold, self.font_italic);
         let primary_font_ref = match to_font_ref(primary_font) {
             Some(f) => f,
             None => return,
@@ -655,7 +653,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
         let font_size = self.font_size as f32;
 
         // Get cached font based on style
-        let font = get_cached_font(self.font_bold, self.font_italic);
+        let font = get_cached_font(self.font_family, self.font_bold, self.font_italic);
         let font_ref = match to_font_ref(font) {
             Some(f) => f,
             None => {
@@ -682,6 +680,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
             font_size: self.font_size,
             font_bold: self.font_bold,
             font_italic: self.font_italic,
+            font_family: self.font_family,
             text_align: self.text_align,
             text_baseline: self.text_baseline,
             has_clip: self.pending_clip.is_some(),
@@ -711,6 +710,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
             self.font_size = state.font_size;
             self.font_bold = state.font_bold;
             self.font_italic = state.font_italic;
+            self.font_family = state.font_family;
             self.text_align = state.text_align;
             self.text_baseline = state.text_baseline;
 
@@ -756,7 +756,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
         let font_size = self.font_size as f32;
 
         // Get cached font based on style
-        let primary_font = get_cached_font(self.font_bold, self.font_italic);
+        let primary_font = get_cached_font(self.font_family, self.font_bold, self.font_italic);
         let primary_font_ref = match to_font_ref(primary_font) {
             Some(f) => f,
             None => return,

@@ -38,16 +38,15 @@ static FONT_BOLD: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_ITALIC: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_BOLD_ITALIC: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_PT_ROOT_UI: OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_JB_MONO_REGULAR: OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_JB_MONO_BOLD: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_SYMBOLS: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_EMOJI: OnceLock<fontdue::Font> = OnceLock::new();
 
-/// Font family selection used internally by the renderer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-enum FontFamily {
-    #[default]
-    Roboto,
-    PtRootUi,
-}
+/// Re-export of the backend-agnostic family enum from core uzor. All family
+/// detection lives in `uzor::fonts` — this backend only caches the loaded
+/// `fontdue::Font` per (family, style) slot.
+use uzor::fonts::FontFamily;
 
 fn make_font(bytes: &[u8]) -> fontdue::Font {
     fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default())
@@ -56,18 +55,32 @@ fn make_font(bytes: &[u8]) -> fontdue::Font {
 
 /// Return the cached fontdue font for the requested family / style combination.
 ///
-/// PT Root UI is a variable font so one instance covers all weights.
-/// Roboto uses separate files per style (regular / bold / italic / bold-italic).
+/// Delegates family → bytes resolution to `uzor::fonts::font_bytes` and caches
+/// the decoded `fontdue::Font` locally so each slot is constructed at most
+/// once per process.
 fn get_font(family: FontFamily, bold: bool, italic: bool) -> &'static fontdue::Font {
     match family {
-        FontFamily::PtRootUi => {
-            FONT_PT_ROOT_UI.get_or_init(|| make_font(fonts::PT_ROOT_UI_VF))
+        FontFamily::PtRootUi => FONT_PT_ROOT_UI
+            .get_or_init(|| make_font(fonts::font_bytes(family, bold, italic))),
+        FontFamily::JetBrainsMono => {
+            let _ = italic; // no italic variant bundled
+            if bold {
+                FONT_JB_MONO_BOLD
+                    .get_or_init(|| make_font(fonts::font_bytes(family, true, false)))
+            } else {
+                FONT_JB_MONO_REGULAR
+                    .get_or_init(|| make_font(fonts::font_bytes(family, false, false)))
+            }
         }
         FontFamily::Roboto => match (bold, italic) {
-            (true, true)   => FONT_BOLD_ITALIC.get_or_init(|| make_font(fonts::ROBOTO_BOLD_ITALIC)),
-            (true, false)  => FONT_BOLD.get_or_init(|| make_font(fonts::ROBOTO_BOLD)),
-            (false, true)  => FONT_ITALIC.get_or_init(|| make_font(fonts::ROBOTO_ITALIC)),
-            (false, false) => FONT_REGULAR.get_or_init(|| make_font(fonts::ROBOTO_REGULAR)),
+            (true,  true ) => FONT_BOLD_ITALIC
+                .get_or_init(|| make_font(fonts::font_bytes(family, true, true))),
+            (true,  false) => FONT_BOLD
+                .get_or_init(|| make_font(fonts::font_bytes(family, true, false))),
+            (false, true ) => FONT_ITALIC
+                .get_or_init(|| make_font(fonts::font_bytes(family, false, true))),
+            (false, false) => FONT_REGULAR
+                .get_or_init(|| make_font(fonts::font_bytes(family, false, false))),
         },
     }
 }
@@ -100,49 +113,14 @@ fn with_alpha(color: Color, alpha: f32) -> Color {
 // CSS font parsing
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
-struct FontInfo {
-    size:   f32,
-    bold:   bool,
-    italic: bool,
-    family: FontFamily,
-}
-
-impl Default for FontInfo {
-    fn default() -> Self {
-        Self { size: 12.0, bold: false, italic: false, family: FontFamily::Roboto }
-    }
-}
-
-/// Detect whether the CSS font string requests the PT Root UI family.
+/// Backend-local alias for the parsed CSS font info.
 ///
-/// Accepted spellings (case-insensitive):
-/// - `"pt root ui"`, `"pt-root-ui"`, `"ptrootui"`
-fn is_pt_root_ui(font_str_lower: &str) -> bool {
-    font_str_lower.contains("pt root ui")
-        || font_str_lower.contains("pt-root-ui")
-        || font_str_lower.contains("ptrootui")
-}
+/// Delegates entirely to `uzor::fonts::FontInfo`; kept as a type alias so
+/// existing call sites stay unchanged.
+type FontInfo = uzor::fonts::FontInfo;
 
 fn parse_css_font(font_str: &str) -> FontInfo {
-    let lower = font_str.to_lowercase();
-    let mut info = FontInfo {
-        family: if is_pt_root_ui(&lower) { FontFamily::PtRootUi } else { FontFamily::Roboto },
-        ..FontInfo::default()
-    };
-    for part in lower.split_whitespace() {
-        match part {
-            "bold"   => info.bold = true,
-            "italic" => info.italic = true,
-            s if s.ends_with("px") => {
-                if let Ok(sz) = s.trim_end_matches("px").parse::<f32>() {
-                    info.size = sz;
-                }
-            }
-            _ => {}
-        }
-    }
-    info
+    fonts::parse_css_font(font_str)
 }
 
 // ---------------------------------------------------------------------------
