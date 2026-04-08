@@ -142,11 +142,41 @@ impl LayoutSnapshot {
             .map_err(|e| format!("Failed to deserialize layout: {}", e))
     }
 
-    /// Restore tree structure (consumer provides panel factory)
+    /// Restore tree structure (consumer provides panel factory).
+    ///
+    /// The factory closure receives `type_id` (the value returned by
+    /// [`DockPanel::type_id`] during serialization) and must return the
+    /// reconstructed panel, or `None` to signal a failure.
     pub fn restore_tree<P, F>(&self, mut create_panel: F) -> Result<DockingTree<P>, String>
     where
         P: DockPanel,
         F: FnMut(&str) -> Option<P>,
+    {
+        // Wrap into the id-aware variant; ignore leaf_id.
+        self.restore_tree_with_id(|_leaf_id, type_id| create_panel(type_id))
+    }
+
+    /// Restore tree structure with leaf-id aware panel factory.
+    ///
+    /// Like [`restore_tree`] but the factory closure also receives the
+    /// `leaf_id` of the leaf node being reconstructed.  This allows callers
+    /// to look up per-leaf persisted data (e.g. panel state) without encoding
+    /// any runtime identity into [`DockPanel::type_id`], which must remain a
+    /// zero-allocation `&'static str`.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let by_leaf: HashMap<u64, &PersistedLeaf> = …;
+    /// snap.restore_tree_with_id::<MyPanel, _>(|leaf_id, _type_id| {
+    ///     let leaf = by_leaf.get(&leaf_id)?;
+    ///     Some(MyPanel::from_persisted(leaf))
+    /// })
+    /// ```
+    pub fn restore_tree_with_id<P, F>(&self, mut create_panel: F) -> Result<DockingTree<P>, String>
+    where
+        P: DockPanel,
+        F: FnMut(u64, &str) -> Option<P>,
     {
         // Build node lookup map
         let node_map: HashMap<u64, &SerializedNode> = self.nodes.iter()
@@ -158,7 +188,7 @@ impl LayoutSnapshot {
             .ok_or_else(|| format!("Root node {} not found", self.root_id))?;
 
         // Restore root branch
-        let root_branch = Self::restore_branch(root_node, &node_map, &mut create_panel)?;
+        let root_branch = Self::restore_branch_with_id(root_node, &node_map, &mut create_panel)?;
 
         // Create tree with restored structure
         let tree = DockingTree::from_restored_structure(
@@ -170,14 +200,14 @@ impl LayoutSnapshot {
         Ok(tree)
     }
 
-    fn restore_branch<P, F>(
+    fn restore_branch_with_id<P, F>(
         node: &SerializedNode,
         node_map: &HashMap<u64, &SerializedNode>,
         create_panel: &mut F,
     ) -> Result<Branch<P>, String>
     where
         P: DockPanel,
-        F: FnMut(&str) -> Option<P>,
+        F: FnMut(u64, &str) -> Option<P>,
     {
         match &node.node_type {
             SerializedNodeType::Branch { children, layout, proportions, cross_ratio } => {
@@ -191,10 +221,10 @@ impl LayoutSnapshot {
 
                     let panel_node = match &child_node.node_type {
                         SerializedNodeType::Leaf { .. } => {
-                            PanelNode::Leaf(Self::restore_leaf(child_node, create_panel)?)
+                            PanelNode::Leaf(Self::restore_leaf_with_id(child_node, create_panel)?)
                         }
                         SerializedNodeType::Branch { .. } => {
-                            PanelNode::Branch(Self::restore_branch(child_node, node_map, create_panel)?)
+                            PanelNode::Branch(Self::restore_branch_with_id(child_node, node_map, create_panel)?)
                         }
                     };
                     child_nodes.push(panel_node);
@@ -213,20 +243,22 @@ impl LayoutSnapshot {
         }
     }
 
-    fn restore_leaf<P, F>(
+    fn restore_leaf_with_id<P, F>(
         node: &SerializedNode,
         create_panel: &mut F,
     ) -> Result<Leaf<P>, String>
     where
         P: DockPanel,
-        F: FnMut(&str) -> Option<P>,
+        F: FnMut(u64, &str) -> Option<P>,
     {
         match &node.node_type {
             SerializedNodeType::Leaf { panel_type_ids, active_tab, hidden, color_tag } => {
-                // Create panels using factory
+                // Create panels using factory; pass the leaf node id so callers
+                // can match against persisted-leaf descriptors without encoding
+                // panel identity into type_id.
                 let mut panels = Vec::new();
                 for type_id in panel_type_ids {
-                    if let Some(panel) = create_panel(type_id) {
+                    if let Some(panel) = create_panel(node.id, type_id) {
                         panels.push(panel);
                     } else {
                         return Err(format!("Failed to create panel with type_id: {}", type_id));
