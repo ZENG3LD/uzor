@@ -498,8 +498,91 @@ impl<P: DockPanel> DockingManager<P> {
     }
 
     // =============================================================================
-    // Separator Hover
+    // Separator Hover + Resize
     // =============================================================================
+
+    /// Move a separator by a pixel delta along its axis.
+    ///
+    /// Finds the parent branch owning the separator, then adjusts the proportions
+    /// of the two children on either side (`child_a` gets +delta, `child_b` gets
+    /// -delta).  The proportions are normalised so they always sum to 1.0.
+    ///
+    /// A minimum size of 20 px per panel is enforced to prevent degenerate layouts.
+    ///
+    /// # Arguments
+    /// - `sep_idx`: Index into the `separators()` slice.
+    /// - `delta`: Pixel movement along the separator's axis (positive = right/down).
+    /// - `total_size`: Total available size along the axis (used to convert px → proportion).
+    ///
+    /// # Returns
+    /// `true` if the proportions were updated, `false` if the move was rejected
+    /// (constraints violated, separator not found, etc.).
+    pub fn drag_separator(&mut self, sep_idx: usize, delta: f32, total_size: f32) -> bool {
+        use super::SeparatorLevel;
+
+        if total_size <= 0.0 {
+            return false;
+        }
+
+        let sep = match self.separators.get(sep_idx) {
+            Some(s) => s,
+            None => return false,
+        };
+
+        let (parent_id, child_a_raw, child_b_raw) = match &sep.level {
+            SeparatorLevel::Node { parent_id, child_a, child_b } => {
+                (*parent_id, *child_a, *child_b)
+            }
+        };
+
+        // Find the branch and locate child_a / child_b by raw id.
+        let branch = match self.tree.find_branch_mut(parent_id) {
+            Some(b) => b,
+            None => return false,
+        };
+
+        let n = branch.children.len();
+        if n < 2 {
+            return false;
+        }
+
+        // Current proportions (equal split if none recorded yet).
+        let mut props: Vec<f64> = if branch.proportions.len() == n {
+            branch.proportions.clone()
+        } else {
+            vec![1.0 / n as f64; n]
+        };
+
+        // Find indices of the two adjacent children.
+        let idx_a = branch.children.iter().position(|c| c.raw_id() == child_a_raw);
+        let idx_b = branch.children.iter().position(|c| c.raw_id() == child_b_raw);
+        let (ia, ib) = match (idx_a, idx_b) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return false,
+        };
+
+        // Convert pixel delta to proportion delta.
+        let total_prop: f64 = props.iter().sum();
+        let delta_prop = (delta as f64 / total_size as f64) * total_prop;
+
+        props[ia] += delta_prop;
+        props[ib] -= delta_prop;
+
+        // Enforce a 20 px minimum per panel.
+        let min_prop = (20.0 / total_size as f64) * total_prop;
+        if props[ia] < min_prop || props[ib] < min_prop {
+            return false;
+        }
+
+        // Normalise so all proportions sum to 1.0.
+        let sum: f64 = props.iter().sum::<f64>().max(f64::EPSILON);
+        for p in &mut props {
+            *p /= sum;
+        }
+
+        self.tree.set_branch_proportions(parent_id, props);
+        true
+    }
 
     /// Update separator hover state based on mouse position
     /// Returns true if any separator is hovered (for cursor change)
