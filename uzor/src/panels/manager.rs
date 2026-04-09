@@ -42,11 +42,12 @@
 //! ```
 
 use super::{
-    DockPanel, DockingTree, Leaf, Branch, PanelNode, LeafId, PanelRect,
+    DockPanel, DockingTree, Leaf, Branch, PanelNode, LeafId, BranchId, PanelRect,
     Separator, SeparatorOrientation, SeparatorState, SeparatorLevel,
     SnapBackAnimation, TabBarInfo, TabItem, TabReorderState,
     FloatingWindow, FloatingWindowId, FloatingDragState,
     HitResult, CornerHandle, DropZone, PanelDragState,
+    WindowLayout,
 };
 use std::collections::HashMap;
 
@@ -100,6 +101,9 @@ pub struct DockingManager<P: DockPanel> {
     active_leaf: Option<LeafId>,
     /// Panel header height (default 24px)
     header_height: f32,
+    /// Per-leaf minimum size overrides in pixels (width, height).
+    /// Falls back to `panel.min_size()` when not set.
+    leaf_min_sizes: HashMap<LeafId, (f32, f32)>,
 }
 
 impl<P: DockPanel> DockingManager<P> {
@@ -123,6 +127,7 @@ impl<P: DockPanel> DockingManager<P> {
             hovered_header: None,
             active_leaf: None,
             header_height: 24.0,
+            leaf_min_sizes: HashMap::new(),
         }
     }
 
@@ -159,6 +164,7 @@ impl<P: DockPanel> DockingManager<P> {
             hovered_header: None,
             active_leaf,
             header_height: 24.0,
+            leaf_min_sizes: HashMap::new(),
         }
     }
 
@@ -184,6 +190,7 @@ impl<P: DockPanel> DockingManager<P> {
             hovered_header: None,
             active_leaf,
             header_height: 24.0,
+            leaf_min_sizes: HashMap::new(),
         }
     }
 
@@ -211,6 +218,10 @@ impl<P: DockPanel> DockingManager<P> {
     /// Results are stored in `panel_rects`, `panel_headers`, `separators`, and `tab_bars`.
     pub fn layout(&mut self, area: PanelRect) {
         self.layout_area = area;
+
+        // Water-fill normalization: enforce per-child min sizes before computing rects.
+        // Idempotent — only mutates proportions when they violate minimums.
+        self.normalize_proportions(area.width, area.height);
 
         self.panel_rects.clear();
         self.panel_headers.clear();
@@ -503,85 +514,409 @@ impl<P: DockPanel> DockingManager<P> {
 
     /// Move a separator by a pixel delta along its axis.
     ///
-    /// Finds the parent branch owning the separator, then adjusts the proportions
-    /// of the two children on either side (`child_a` gets +delta, `child_b` gets
-    /// -delta).  The proportions are normalised so they always sum to 1.0.
+    /// Uses cascading resize: when dragging, the delta is taken from siblings
+    /// on one side in order, never going below each child's minimum size.
+    /// This allows multi-panel resize without rejecting moves.
     ///
-    /// A minimum size of 20 px per panel is enforced to prevent degenerate layouts.
+    /// Per-leaf minimum sizes are read from [`set_leaf_min_size`] overrides,
+    /// falling back to `panel.min_size()`. Branch minimums are derived
+    /// recursively via [`min_for_node`].
     ///
     /// # Arguments
     /// - `sep_idx`: Index into the `separators()` slice.
     /// - `delta`: Pixel movement along the separator's axis (positive = right/down).
-    /// - `total_size`: Total available size along the axis (used to convert px → proportion).
+    /// - `content_width`: Full content area width (for `rect_for_branch`).
+    /// - `content_height`: Full content area height (for `rect_for_branch`).
     ///
     /// # Returns
-    /// `true` if the proportions were updated, `false` if the move was rejected
-    /// (constraints violated, separator not found, etc.).
-    pub fn drag_separator(&mut self, sep_idx: usize, delta: f32, total_size: f32) -> bool {
-        use super::SeparatorLevel;
+    /// `true` if the proportions were updated, `false` if the separator was not
+    /// found or the branch has fewer than 2 children.
+    pub fn drag_separator(
+        &mut self,
+        sep_idx: usize,
+        delta: f32,
+        content_width: f32,
+        content_height: f32,
+    ) -> bool {
+        // Snapshot separator info to avoid borrow conflicts.
+        let (parent_id, child_a_raw, child_b_raw, orientation) = {
+            let sep = match self.separators.get(sep_idx) {
+                Some(s) => s,
+                None => return false,
+            };
+            let (parent_id, child_a, child_b) = match &sep.level {
+                SeparatorLevel::Node { parent_id, child_a, child_b } => {
+                    (*parent_id, *child_a, *child_b)
+                }
+            };
+            (parent_id, child_a, child_b, sep.orientation)
+        };
 
-        if total_size <= 0.0 {
+        // Use the actual pixel size of the parent branch (not the full content area).
+        // This ensures nested branches are correctly constrained.
+        let branch_rect = self.tree.rect_for_branch(parent_id, content_width, content_height);
+        let branch_size = match branch_rect {
+            Some(r) => match orientation {
+                SeparatorOrientation::Horizontal => r.height,
+                SeparatorOrientation::Vertical => r.width,
+            },
+            None => match orientation {
+                SeparatorOrientation::Horizontal => content_height,
+                SeparatorOrientation::Vertical => content_width,
+            },
+        };
+
+        if branch_size <= 0.0 {
             return false;
         }
 
-        let sep = match self.separators.get(sep_idx) {
-            Some(s) => s,
-            None => return false,
-        };
+        // Retrieve proportions, child positions, and per-child minimums.
+        let (n, raw_props, children_min_px, pos_a, pos_b) = {
+            let branch = match self.tree.find_branch(parent_id) {
+                Some(b) => b,
+                None => return false,
+            };
 
-        let (parent_id, child_a_raw, child_b_raw) = match &sep.level {
-            SeparatorLevel::Node { parent_id, child_a, child_b } => {
-                (*parent_id, *child_a, *child_b)
+            let n = branch.children.len();
+            if n < 2 {
+                return false;
             }
+
+            let raw_props: Vec<f64> = if branch.proportions.len() == n {
+                branch.proportions.clone()
+            } else {
+                vec![1.0_f64 / n as f64; n]
+            };
+
+            // Per-child minimum in pixels along the drag axis.
+            let children_min_px: Vec<f32> = if orientation == SeparatorOrientation::Vertical {
+                branch.children.iter()
+                    .map(|c| self.min_width_for_node(c))
+                    .collect()
+            } else {
+                branch.children.iter()
+                    .map(|c| self.min_height_for_node(c))
+                    .collect()
+            };
+
+            let pos_a = branch.children.iter().position(|c| c.raw_id() == child_a_raw);
+            let pos_b = branch.children.iter().position(|c| c.raw_id() == child_b_raw);
+            let (pos_a, pos_b) = match (pos_a, pos_b) {
+                (Some(a), Some(b)) => (a, b),
+                _ => return false,
+            };
+
+            (n, raw_props, children_min_px, pos_a, pos_b)
         };
 
-        // Find the branch and locate child_a / child_b by raw id.
-        let branch = match self.tree.find_branch_mut(parent_id) {
-            Some(b) => b,
-            None => return false,
-        };
+        // Convert pixel delta to share-space delta relative to total share sum.
+        let total_share: f64 = raw_props.iter().sum();
+        let delta_share = (delta as f64 / branch_size as f64) * total_share;
 
-        let n = branch.children.len();
-        if n < 2 {
-            return false;
-        }
+        // Per-child minimum in share space.
+        let min_shares: Vec<f64> = children_min_px.iter()
+            .map(|&px| (px as f64 / branch_size as f64) * total_share)
+            .collect();
 
-        // Current proportions (equal split if none recorded yet).
-        let mut props: Vec<f64> = if branch.proportions.len() == n {
-            branch.proportions.clone()
+        // --- Cascading resize in share space ---
+        //
+        // When delta >= 0 (pos_a grows, pos_b shrinks):
+        //   Walk from pos_b rightward, take (share - min) from each sibling.
+        //   Give the accumulated shrinkage to pos_a.
+        //
+        // When delta < 0 (pos_a shrinks, pos_b grows):
+        //   Walk from pos_a leftward, take (share - min) from each sibling.
+        //   Give the accumulated shrinkage to pos_b.
+
+        let mut new_props = raw_props.clone();
+
+        if delta_share >= 0.0 {
+            let mut remaining = delta_share;
+            for i in pos_b..n {
+                if new_props[i] <= 0.0 { continue; }
+                let available = (new_props[i] - min_shares[i]).max(0.0);
+                let take = remaining.min(available);
+                new_props[i] -= take;
+                remaining -= take;
+                if remaining <= 0.0 { break; }
+            }
+            new_props[pos_a] += delta_share - remaining;
         } else {
-            vec![1.0 / n as f64; n]
-        };
-
-        // Find indices of the two adjacent children.
-        let idx_a = branch.children.iter().position(|c| c.raw_id() == child_a_raw);
-        let idx_b = branch.children.iter().position(|c| c.raw_id() == child_b_raw);
-        let (ia, ib) = match (idx_a, idx_b) {
-            (Some(a), Some(b)) => (a, b),
-            _ => return false,
-        };
-
-        // Convert pixel delta to proportion delta.
-        let total_prop: f64 = props.iter().sum();
-        let delta_prop = (delta as f64 / total_size as f64) * total_prop;
-
-        props[ia] += delta_prop;
-        props[ib] -= delta_prop;
-
-        // Enforce a 20 px minimum per panel.
-        let min_prop = (20.0 / total_size as f64) * total_prop;
-        if props[ia] < min_prop || props[ib] < min_prop {
-            return false;
+            let mut remaining = (-delta_share).abs();
+            for i in (0..=pos_a).rev() {
+                if new_props[i] <= 0.0 { continue; }
+                let available = (new_props[i] - min_shares[i]).max(0.0);
+                let take = remaining.min(available);
+                new_props[i] -= take;
+                remaining -= take;
+                if remaining <= 0.0 { break; }
+            }
+            new_props[pos_b] += (-delta_share) - remaining;
         }
 
-        // Normalise so all proportions sum to 1.0.
-        let sum: f64 = props.iter().sum::<f64>().max(f64::EPSILON);
-        for p in &mut props {
-            *p /= sum;
-        }
-
-        self.tree.set_branch_proportions(parent_id, props);
+        // Commit new proportions.
+        self.tree.set_branch_proportions(parent_id, new_props);
         true
+    }
+
+    // =============================================================================
+    // Minimum-size helpers
+    // =============================================================================
+
+    /// Recursively compute the minimum width for a node.
+    ///
+    /// - Leaf: returns the per-leaf override from `leaf_min_sizes`, or the panel's
+    ///   `min_size().0`, whichever is larger.
+    /// - Branch with horizontal split (children side-by-side): **sum** of children minimums.
+    /// - Branch with vertical split (children stacked): **max** of children minimums.
+    fn min_width_for_node(&self, node: &PanelNode<P>) -> f32 {
+        match node {
+            PanelNode::Leaf(leaf) => {
+                let panel_min = leaf.active_panel()
+                    .map(|p| p.min_size().0)
+                    .unwrap_or(200.0);
+                let override_min = self.leaf_min_sizes
+                    .get(&leaf.id)
+                    .map(|&(w, _)| w)
+                    .unwrap_or(0.0);
+                panel_min.max(override_min)
+            }
+            PanelNode::Branch(branch) => {
+                let children_mins = branch.children.iter().map(|c| self.min_width_for_node(c));
+                if Self::layout_is_horizontal(branch.layout) {
+                    children_mins.sum()
+                } else {
+                    children_mins.fold(0.0_f32, f32::max)
+                }
+            }
+        }
+    }
+
+    /// Recursively compute the minimum height for a node.
+    ///
+    /// - Leaf: returns the per-leaf override from `leaf_min_sizes`, or the panel's
+    ///   `min_size().1`, whichever is larger.
+    /// - Branch with vertical split (children stacked): **sum** of children minimums.
+    /// - Branch with horizontal split (children side-by-side): **max** of children minimums.
+    fn min_height_for_node(&self, node: &PanelNode<P>) -> f32 {
+        match node {
+            PanelNode::Leaf(leaf) => {
+                let panel_min = leaf.active_panel()
+                    .map(|p| p.min_size().1)
+                    .unwrap_or(200.0);
+                let override_min = self.leaf_min_sizes
+                    .get(&leaf.id)
+                    .map(|&(_, h)| h)
+                    .unwrap_or(0.0);
+                panel_min.max(override_min)
+            }
+            PanelNode::Branch(branch) => {
+                let children_mins = branch.children.iter().map(|c| self.min_height_for_node(c));
+                if Self::layout_is_vertical(branch.layout) {
+                    children_mins.sum()
+                } else {
+                    children_mins.fold(0.0_f32, f32::max)
+                }
+            }
+        }
+    }
+
+    /// Returns `true` when the layout places children side-by-side horizontally.
+    fn layout_is_horizontal(layout: WindowLayout) -> bool {
+        matches!(
+            layout,
+            WindowLayout::SplitHorizontal
+                | WindowLayout::ThreeColumns
+                | WindowLayout::OneLeftTwoRight
+                | WindowLayout::TwoLeftOneRight
+        )
+    }
+
+    /// Returns `true` when the layout stacks children vertically.
+    fn layout_is_vertical(layout: WindowLayout) -> bool {
+        matches!(layout, WindowLayout::SplitVertical | WindowLayout::ThreeRows)
+    }
+
+    // =============================================================================
+    // Per-leaf minimum size overrides
+    // =============================================================================
+
+    /// Override the minimum size for a specific leaf.
+    ///
+    /// The docking engine takes `max(panel.min_size(), override)` per axis,
+    /// so this can only tighten the constraint, never loosen it below the
+    /// panel's own declared minimum.
+    pub fn set_leaf_min_size(&mut self, leaf_id: LeafId, min_w: f32, min_h: f32) {
+        self.leaf_min_sizes.insert(leaf_id, (min_w, min_h));
+    }
+
+    /// Return the effective minimum size for a leaf.
+    ///
+    /// Combines the override (if any) with the panel's declared `min_size()`.
+    pub fn leaf_min_size(&self, leaf_id: LeafId) -> (f32, f32) {
+        let panel_min = self.tree.leaf(leaf_id)
+            .and_then(|l| l.active_panel())
+            .map(|p| p.min_size())
+            .unwrap_or((200.0, 200.0));
+        let override_min = self.leaf_min_sizes.get(&leaf_id).copied().unwrap_or((0.0, 0.0));
+        (panel_min.0.max(override_min.0), panel_min.1.max(override_min.1))
+    }
+
+    // =============================================================================
+    // Water-fill proportion normalization
+    // =============================================================================
+
+    /// Enforce per-child minimum sizes across the whole tree by water-filling.
+    ///
+    /// For each branch in the tree, if any child proportion would place it below
+    /// its minimum pixel size, the child is frozen at its minimum and the remaining
+    /// share is redistributed proportionally among the free children. This repeats
+    /// until stable (classic water-filling). Idempotent: returns without mutation
+    /// when all children already satisfy their minimums, so drag is not fought.
+    fn normalize_proportions(&mut self, content_width: f32, content_height: f32) {
+        struct Pending {
+            id: BranchId,
+            props: Vec<f64>,
+        }
+
+        /// Fixed-point water-fill for one branch.
+        /// Returns `Some(new_props)` only when current proportions violate minimums.
+        fn water_fill(available: f32, weights: &[f64], mins: &[f32]) -> Option<Vec<f64>> {
+            let n = weights.len();
+            if n == 0 || available <= 0.0 {
+                return None;
+            }
+
+            let w_sum: f64 = weights.iter().sum::<f64>().max(f64::EPSILON);
+            let norm: Vec<f64> = weights.iter().map(|w| w / w_sum).collect();
+
+            let avail_f = available as f64;
+            let all_ok = norm.iter().zip(mins.iter())
+                .all(|(p, m)| p * avail_f + 1e-6 >= *m as f64);
+            if all_ok {
+                return None;
+            }
+
+            let total_min: f32 = mins.iter().sum();
+            if total_min >= available {
+                let sum_min = total_min.max(f32::EPSILON) as f64;
+                return Some(mins.iter().map(|&m| m as f64 / sum_min).collect());
+            }
+
+            let mut frozen = vec![false; n];
+            let mut out = norm.clone();
+
+            loop {
+                let frozen_min: f64 = (0..n)
+                    .filter(|&i| frozen[i])
+                    .map(|i| mins[i] as f64 / avail_f)
+                    .sum();
+
+                let free_indices: Vec<usize> = (0..n).filter(|&i| !frozen[i]).collect();
+                if free_indices.is_empty() { break; }
+
+                let free_pool = (1.0 - frozen_min).max(0.0);
+                let free_w_sum: f64 = free_indices.iter()
+                    .map(|&i| norm[i])
+                    .sum::<f64>()
+                    .max(f64::EPSILON);
+
+                let mut newly_frozen = false;
+                for &i in &free_indices {
+                    let share = free_pool * norm[i] / free_w_sum;
+                    let min_share = mins[i] as f64 / avail_f;
+                    if share + 1e-9 < min_share {
+                        frozen[i] = true;
+                        out[i] = min_share;
+                        newly_frozen = true;
+                    } else {
+                        out[i] = share;
+                    }
+                }
+                for i in 0..n {
+                    if frozen[i] && out[i] == 0.0 {
+                        out[i] = mins[i] as f64 / avail_f;
+                    }
+                }
+                if !newly_frozen { break; }
+            }
+
+            let s: f64 = out.iter().sum();
+            if s > f64::EPSILON {
+                for v in &mut out { *v /= s; }
+            }
+            Some(out)
+        }
+
+        // Collect updates without mutating during traversal.
+        let mut pending: Vec<Pending> = Vec::new();
+
+        // Clone root to avoid borrow conflict during recursive walk.
+        let root = self.tree.root().clone();
+
+        fn walk<P: DockPanel>(
+            node: &PanelNode<P>,
+            rect_w: f32,
+            rect_h: f32,
+            pending: &mut Vec<Pending>,
+            mgr: &DockingManager<P>,
+        ) {
+            let branch = match node {
+                PanelNode::Branch(b) => b,
+                _ => return,
+            };
+            let n = branch.children.len();
+            if n < 2 {
+                for c in &branch.children { walk(c, rect_w, rect_h, pending, mgr); }
+                return;
+            }
+
+            let horizontal = DockingManager::<P>::layout_is_horizontal(branch.layout);
+            let vertical = DockingManager::<P>::layout_is_vertical(branch.layout);
+
+            if horizontal || vertical {
+                let available = if horizontal { rect_w } else { rect_h };
+                let mins: Vec<f32> = if horizontal {
+                    branch.children.iter().map(|c| mgr.min_width_for_node(c)).collect()
+                } else {
+                    branch.children.iter().map(|c| mgr.min_height_for_node(c)).collect()
+                };
+                let weights: Vec<f64> = if branch.proportions.len() == n {
+                    branch.proportions.clone()
+                } else {
+                    vec![1.0; n]
+                };
+
+                let effective_props: Vec<f64> = match water_fill(available, &weights, &mins) {
+                    Some(new_props) => {
+                        pending.push(Pending { id: branch.id, props: new_props.clone() });
+                        new_props
+                    }
+                    None => {
+                        let s: f64 = weights.iter().sum::<f64>().max(f64::EPSILON);
+                        weights.iter().map(|w| w / s).collect()
+                    }
+                };
+
+                for (i, child) in branch.children.iter().enumerate() {
+                    let frac = effective_props[i] as f32;
+                    let (cw, ch) = if horizontal {
+                        (rect_w * frac, rect_h)
+                    } else {
+                        (rect_w, rect_h * frac)
+                    };
+                    walk(child, cw, ch, pending, mgr);
+                }
+            } else {
+                for c in &branch.children { walk(c, rect_w, rect_h, pending, mgr); }
+            }
+        }
+
+        walk(&PanelNode::Branch(root), content_width, content_height, &mut pending, self);
+
+        for upd in pending {
+            self.tree.set_branch_proportions(upd.id, upd.props);
+        }
     }
 
     /// Update separator hover state based on mouse position
