@@ -674,7 +674,7 @@ impl<P: DockPanel> DockingManager<P> {
             PanelNode::Leaf(leaf) => {
                 let panel_min = leaf.active_panel()
                     .map(|p| p.min_size().0)
-                    .unwrap_or(200.0);
+                    .unwrap_or(0.0);
                 let override_min = self.leaf_min_sizes
                     .get(&leaf.id)
                     .map(|&(w, _)| w)
@@ -703,7 +703,7 @@ impl<P: DockPanel> DockingManager<P> {
             PanelNode::Leaf(leaf) => {
                 let panel_min = leaf.active_panel()
                     .map(|p| p.min_size().1)
-                    .unwrap_or(200.0);
+                    .unwrap_or(0.0);
                 let override_min = self.leaf_min_sizes
                     .get(&leaf.id)
                     .map(|&(_, h)| h)
@@ -757,7 +757,7 @@ impl<P: DockPanel> DockingManager<P> {
         let panel_min = self.tree.leaf(leaf_id)
             .and_then(|l| l.active_panel())
             .map(|p| p.min_size())
-            .unwrap_or((200.0, 200.0));
+            .unwrap_or((0.0, 0.0));
         let override_min = self.leaf_min_sizes.get(&leaf_id).copied().unwrap_or((0.0, 0.0));
         (panel_min.0.max(override_min.0), panel_min.1.max(override_min.1))
     }
