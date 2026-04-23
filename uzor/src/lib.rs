@@ -14,6 +14,7 @@ pub mod context;
 pub mod fonts;
 pub mod i18n;
 pub mod input;
+pub mod input_coordinator;
 pub mod layout;
 pub mod layout_helpers;
 pub mod panel_api;
@@ -37,6 +38,7 @@ pub use i18n::{Language, current_language, set_language, Translatable, TextKey, 
 pub use animation::AnimationCoordinator;
 pub use types::{IconId, Rect, WidgetId, WidgetState};
 pub use input::{InputState, InputCoordinator, LayerId, ScopedRegion};
+pub use input_coordinator::InputCoordinator as InputCoordinator2;
 pub use widgets::{IconButtonConfig, IconButtonResponse};
 
 // Re-export all 9 widget type enums at top level
