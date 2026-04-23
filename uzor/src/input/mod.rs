@@ -36,11 +36,10 @@ pub use crate::ui::animation::{AnimatedValue, EasingFn};
 // Re-export handlers (moved from _ongoing)
 pub use handlers::*;
 
-// Compat shims — tooltip and cursor moved to ui/, expose via input:: paths
-pub use crate::ui::tooltip;
-pub use crate::ui::cursor;
-pub use crate::ui::tooltip::*;
-pub use crate::ui::cursor::*;
+// Compat shim — CursorIcon moved to ui/assets/cursors
+pub mod cursor {
+    pub use crate::ui::assets::cursors::CursorIcon;
+}
 
 // Flat module aliases (used by core/platform and ui/widgets via crate::input::X)
 pub use keyboard::events;

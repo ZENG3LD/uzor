@@ -47,10 +47,4 @@ pub use widgets::{
     OverlayType, TextInputType, DropdownType, SliderType, ToastType,
 };
 
-pub use ui::tooltip::{
-    TooltipState, TooltipConfig, TooltipRequest,
-    TooltipTheme, DefaultTooltipTheme,
-    calculate_tooltip_position, estimate_tooltip_size,
-};
-
-pub use ui::cursor::{CursorIcon, CursorState};
+pub use ui::assets::cursors::CursorIcon;
