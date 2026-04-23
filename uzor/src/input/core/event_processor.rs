@@ -15,7 +15,57 @@
 use crate::input::pointer::state::{InputState, MouseButton, ModifierKeys};
 use crate::input::pointer::touch::TouchState;
 use super::widget_state::WidgetInputState;
-use crate::platform::PlatformEvent;
+use crate::input::keyboard::events::KeyCode;
+
+// =============================================================================
+// Platform Events (moved from core/platform/)
+// =============================================================================
+
+#[derive(Clone, Debug)]
+pub enum PlatformEvent {
+    WindowCreated,
+    WindowResized { width: u32, height: u32 },
+    WindowMoved { x: i32, y: i32 },
+    WindowFocused(bool),
+    WindowCloseRequested,
+    WindowDestroyed,
+    RedrawRequested,
+    PointerEntered,
+    PointerLeft,
+    PointerMoved { x: f64, y: f64 },
+    PointerDown { x: f64, y: f64, button: MouseButton },
+    PointerUp { x: f64, y: f64, button: MouseButton },
+    TouchStart { id: u64, x: f64, y: f64 },
+    TouchMove { id: u64, x: f64, y: f64 },
+    TouchEnd { id: u64, x: f64, y: f64 },
+    TouchCancel { id: u64 },
+    Scroll { dx: f64, dy: f64 },
+    KeyDown { key: KeyCode, modifiers: ModifierKeys },
+    KeyUp { key: KeyCode, modifiers: ModifierKeys },
+    TextInput { text: String },
+    ModifiersChanged { modifiers: ModifierKeys },
+    ClipboardPaste { text: String },
+    FileDropped { path: std::path::PathBuf },
+    FileHovered { path: std::path::PathBuf },
+    FileCancelled,
+    Ime(ImeEvent),
+    ThemeChanged { dark_mode: bool },
+    ScaleFactorChanged { scale: f64 },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ImeEvent {
+    Enabled,
+    Preedit(String, Option<(usize, usize)>),
+    Commit(String),
+    Disabled,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemTheme {
+    Light,
+    Dark,
+}
 
 // =============================================================================
 // EventProcessor

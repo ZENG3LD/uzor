@@ -9,7 +9,7 @@ pub mod keyboard;
 pub mod pointer;
 pub mod handlers;
 
-pub use crate::platform::PlatformEvent;
+pub use self::core::{PlatformEvent, ImeEvent, SystemTheme};
 
 pub use self::core::{InputCoordinator, LayerId, ScopedRegion};
 pub use self::core::response::*;

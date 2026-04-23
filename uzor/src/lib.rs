@@ -5,13 +5,13 @@ pub mod docking;
 pub mod input;
 pub use input as input_coordinator;
 pub mod ui;
+pub mod app_context;
 
 // Compat shims — core internals at crate root
-pub use self::core::animation;
-pub use self::core::app_context;
-pub use self::core::platform;
+pub use ui::animation;
 pub use self::core::render;
 pub use self::core::types;
+pub use self::core::window;
 
 // Compat shims — old names
 pub use app_context as context;

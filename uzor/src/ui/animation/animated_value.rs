@@ -1,6 +1,6 @@
 //! Animated value helper for smooth single-value transitions.
 
-use crate::core::animation::easing::Easing;
+use super::math::easing::Easing;
 
 /// Type alias for easing function
 pub type EasingFn = fn(f64) -> f64;
