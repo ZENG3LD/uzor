@@ -3,6 +3,7 @@
 pub mod core;
 pub mod docking;
 pub mod input;
+pub mod platform;
 pub use input as input_coordinator;
 pub mod ui;
 pub mod app_context;
