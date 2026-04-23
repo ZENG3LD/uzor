@@ -74,6 +74,10 @@ pub struct WidgetResponse {
     // Widget state
     /// Widget is enabled (not disabled/grayed)
     pub enabled: bool,
+
+    // Text field action (for text input widgets)
+    /// Action produced by text field processing this frame
+    pub text_action: Option<crate::input::text_field::TextAction>,
 }
 
 impl Default for WidgetResponse {
@@ -102,6 +106,7 @@ impl Default for WidgetResponse {
             lost_focus: false,
             changed: false,
             enabled: true,
+            text_action: None,
         }
     }
 }
@@ -216,6 +221,7 @@ impl WidgetResponse {
             lost_focus: self.lost_focus || other.lost_focus,
             changed: self.changed || other.changed,
             enabled: self.enabled && other.enabled,
+            text_action: self.text_action.or(other.text_action),
         }
     }
 }
@@ -284,6 +290,7 @@ pub fn create_response(
         lost_focus: false,
         changed: false,
         enabled: true,
+        text_action: None,
     }
 }
 

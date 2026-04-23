@@ -18,6 +18,8 @@ pub struct Sense {
     pub focus: bool,
     /// Widget responds to scroll wheel / touchpad scroll
     pub scroll: bool,
+    /// Widget accepts text input (text field)
+    pub text: bool,
 }
 
 // Predefined constants
@@ -29,6 +31,7 @@ impl Sense {
         hover: false,
         focus: false,
         scroll: false,
+        text: false,
     };
 
     /// Only hover detection
@@ -38,6 +41,7 @@ impl Sense {
         hover: true,
         focus: false,
         scroll: false,
+        text: false,
     };
 
     /// Click and hover (for buttons, checkboxes)
@@ -47,6 +51,7 @@ impl Sense {
         hover: true,
         focus: false,
         scroll: false,
+        text: false,
     };
 
     /// Drag and hover (for sliders, scrollbars)
@@ -56,6 +61,7 @@ impl Sense {
         hover: true,
         focus: false,
         scroll: false,
+        text: false,
     };
 
     /// Both click and drag (introduces latency)
@@ -65,6 +71,7 @@ impl Sense {
         hover: true,
         focus: false,
         scroll: false,
+        text: false,
     };
 
     /// Can receive keyboard focus but no mouse interaction
@@ -74,6 +81,7 @@ impl Sense {
         hover: true,
         focus: true,
         scroll: false,
+        text: false,
     };
 
     /// Scroll-sensitive (for scrollable container viewports)
@@ -83,6 +91,7 @@ impl Sense {
         hover: true,
         focus: false,
         scroll: true,
+        text: false,
     };
 
     /// Full interaction - click, drag, hover, focus, scroll
@@ -92,6 +101,17 @@ impl Sense {
         hover: true,
         focus: true,
         scroll: true,
+        text: false,
+    };
+
+    /// Text input — click, drag, hover, focus, and text
+    pub const TEXT_INPUT: Sense = Sense {
+        click: true,
+        drag: true,
+        hover: true,
+        focus: true,
+        scroll: false,
+        text: true,
     };
 }
 
@@ -144,6 +164,12 @@ impl Sense {
     pub fn all() -> Self {
         Self::ALL
     }
+
+    /// Create text input sense (click, drag, hover, focus, text)
+    #[inline]
+    pub fn text_input() -> Self {
+        Self::TEXT_INPUT
+    }
 }
 
 // Combination methods
@@ -157,6 +183,7 @@ impl Sense {
             hover: self.hover || other.hover,
             focus: self.focus || other.focus,
             scroll: self.scroll || other.scroll,
+            text: self.text || other.text,
         }
     }
 
@@ -169,6 +196,7 @@ impl Sense {
             hover: self.hover && other.hover,
             focus: self.focus && other.focus,
             scroll: self.scroll && other.scroll,
+            text: self.text && other.text,
         }
     }
 
@@ -202,14 +230,23 @@ impl Sense {
         self.hover = true;
         self
     }
+
+    /// Add text input capability (also adds focus and hover)
+    #[inline]
+    pub fn with_text(mut self) -> Self {
+        self.text = true;
+        self.focus = true;
+        self.hover = true;
+        self
+    }
 }
 
 // Query methods
 impl Sense {
-    /// Check if any interaction is sensed (click, drag, focus, or scroll)
+    /// Check if any interaction is sensed (click, drag, focus, scroll, or text)
     #[inline]
     pub fn interactive(&self) -> bool {
-        self.click || self.drag || self.focus || self.scroll
+        self.click || self.drag || self.focus || self.scroll || self.text
     }
 
     /// Check if both click and drag are sensed (has latency)
@@ -221,7 +258,7 @@ impl Sense {
     /// Check if widget is purely visual (no interactions)
     #[inline]
     pub fn is_passive(&self) -> bool {
-        !self.click && !self.drag && !self.focus && !self.scroll
+        !self.click && !self.drag && !self.focus && !self.scroll && !self.text
     }
 }
 
@@ -254,42 +291,63 @@ mod tests {
         assert!(!Sense::NONE.hover);
         assert!(!Sense::NONE.focus);
         assert!(!Sense::NONE.scroll);
+        assert!(!Sense::NONE.text);
 
         assert!(!Sense::HOVER.click);
         assert!(Sense::HOVER.hover);
         assert!(!Sense::HOVER.scroll);
+        assert!(!Sense::HOVER.text);
 
         assert!(Sense::CLICK.click);
         assert!(!Sense::CLICK.drag);
         assert!(Sense::CLICK.hover);
         assert!(!Sense::CLICK.scroll);
+        assert!(!Sense::CLICK.text);
 
         assert!(!Sense::DRAG.click);
         assert!(Sense::DRAG.drag);
         assert!(Sense::DRAG.hover);
         assert!(!Sense::DRAG.scroll);
+        assert!(!Sense::DRAG.text);
 
         assert!(Sense::CLICK_AND_DRAG.click);
         assert!(Sense::CLICK_AND_DRAG.drag);
         assert!(Sense::CLICK_AND_DRAG.hover);
         assert!(!Sense::CLICK_AND_DRAG.scroll);
+        assert!(!Sense::CLICK_AND_DRAG.text);
 
         assert!(!Sense::FOCUSABLE.click);
         assert!(Sense::FOCUSABLE.hover);
         assert!(Sense::FOCUSABLE.focus);
         assert!(!Sense::FOCUSABLE.scroll);
+        assert!(!Sense::FOCUSABLE.text);
 
         assert!(!Sense::SCROLL.click);
         assert!(!Sense::SCROLL.drag);
         assert!(Sense::SCROLL.hover);
         assert!(!Sense::SCROLL.focus);
         assert!(Sense::SCROLL.scroll);
+        assert!(!Sense::SCROLL.text);
 
         assert!(Sense::ALL.click);
         assert!(Sense::ALL.drag);
         assert!(Sense::ALL.hover);
         assert!(Sense::ALL.focus);
         assert!(Sense::ALL.scroll);
+        assert!(!Sense::ALL.text);
+    }
+
+    #[test]
+    fn test_text_input_constant() {
+        assert!(Sense::TEXT_INPUT.click);
+        assert!(Sense::TEXT_INPUT.drag);
+        assert!(Sense::TEXT_INPUT.hover);
+        assert!(Sense::TEXT_INPUT.focus);
+        assert!(!Sense::TEXT_INPUT.scroll);
+        assert!(Sense::TEXT_INPUT.text);
+        assert_eq!(Sense::text_input(), Sense::TEXT_INPUT);
+        assert!(Sense::TEXT_INPUT.interactive());
+        assert!(!Sense::TEXT_INPUT.is_passive());
     }
 
     #[test]

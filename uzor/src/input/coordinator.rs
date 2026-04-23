@@ -12,6 +12,7 @@ use crate::input::sense::Sense;
 use crate::input::response::WidgetResponse;
 use crate::input::state::InputState;
 use crate::input::widget_state::WidgetInputState;
+use super::text_field::{TextFieldStore, TextFieldConfig, TextAction};
 
 /// Layer ID for z-order management
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -134,6 +135,8 @@ pub struct InputCoordinator {
     frame: u64,
     /// Nested scoped regions (e.g. chart panel toolbars)
     scoped_regions: Vec<ScopedRegion>,
+    /// Text field store — owns text/cursor/selection state for all text fields
+    text_fields: TextFieldStore,
 }
 
 impl InputCoordinator {
@@ -150,6 +153,7 @@ impl InputCoordinator {
             input: InputState::new(),
             frame: 0,
             scoped_regions: Vec::new(),
+            text_fields: TextFieldStore::new(),
         }
     }
 
@@ -169,6 +173,7 @@ impl InputCoordinator {
         });
         self.input = input.clone();
         self.frame += 1;
+        self.text_fields.begin_frame();
 
         // Propagate to scoped regions with coordinate conversion.
         for region in &mut self.scoped_regions {
@@ -325,6 +330,9 @@ impl InputCoordinator {
                     // Check click
                     if is_hovered && clicked.is_some() && widget.sense.click {
                         response.clicked = true;
+                        if widget.sense.text {
+                            self.text_fields.focus(widget.id.clone());
+                        }
                     }
 
                     // Check drag start
@@ -511,14 +519,67 @@ impl InputCoordinator {
         self.widgets.iter().find(|w| &w.id == id).map(|w| w.rect)
     }
 
-    /// Set focus to a specific widget
+    /// Set focus to a specific widget.
+    ///
+    /// If the target is not a registered text field, any focused text field is blurred.
     pub fn set_focus(&mut self, id: impl Into<WidgetId>) {
-        self.widget_state.focus.set_focus(id.into());
+        let id = id.into();
+        if !self.text_fields.has_field(&id) {
+            self.text_fields.blur();
+        }
+        self.widget_state.focus.set_focus(id);
     }
 
     /// Clear focus from all widgets
     pub fn clear_focus(&mut self) {
         self.widget_state.focus.clear_focus();
+        self.text_fields.blur();
+    }
+
+    /// Register a widget as a text field on the main layer.
+    ///
+    /// Registers with `Sense::TEXT_INPUT` and stores the text field config.
+    pub fn register_text_field(&mut self, id: impl Into<WidgetId>, rect: Rect, config: TextFieldConfig) {
+        let id = id.into();
+        self.register_on_layer(id.clone(), rect, Sense::TEXT_INPUT, &LayerId::main());
+        self.text_fields.register(id, config);
+    }
+
+    /// Unregister a widget's text field state (if any).
+    pub fn unregister(&mut self, id: &WidgetId) {
+        self.text_fields.unregister(id);
+    }
+
+    /// Focus a text field and sync widget focus.
+    ///
+    /// Returns `true` if the field exists and focus was applied.
+    pub fn focus_text_field(&mut self, id: &WidgetId) -> bool {
+        if self.text_fields.focus(id.clone()) {
+            self.widget_state.focus.set_focus(id.clone());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Forward a printable character to the focused text field.
+    pub fn on_char(&mut self, ch: char) -> TextAction {
+        self.text_fields.on_char(ch)
+    }
+
+    /// Forward a named key press to the focused text field.
+    pub fn on_key(&mut self, key: super::keyboard::KeyPress) -> TextAction {
+        self.text_fields.on_key(key)
+    }
+
+    /// Read-only access to the text field store.
+    pub fn text_fields(&self) -> &TextFieldStore {
+        &self.text_fields
+    }
+
+    /// Mutable access to the text field store.
+    pub fn text_fields_mut(&mut self) -> &mut TextFieldStore {
+        &mut self.text_fields
     }
 
     /// Focus next widget (Tab)
@@ -902,5 +963,58 @@ mod tests {
         assert_eq!(coord.process_click(325.0, 325.0), Some(WidgetId::new("modal_btn")));
         // Point in modal layer but not on widget
         assert!(coord.is_point_in_modal_layer(150.0, 150.0));
+    }
+
+    #[test]
+    fn test_text_field_integration() {
+        let mut coord = make_coordinator();
+        let input = make_click_at(50.0, 30.0);
+        coord.begin_frame(input);
+
+        let id = WidgetId::new("search_field");
+        coord.register_text_field(id.clone(), Rect::new(10.0, 10.0, 100.0, 40.0), TextFieldConfig::text());
+
+        let responses = coord.end_frame();
+        assert!(responses.iter().any(|(wid, r)| wid == &id && r.clicked));
+
+        // Text field should be focused after click
+        assert!(coord.text_fields().is_focused(&id));
+    }
+
+    #[test]
+    fn test_unified_focus() {
+        let mut coord = make_coordinator();
+        let input = make_input_at(0.0, 0.0);
+        coord.begin_frame(input);
+
+        let text_id = WidgetId::new("text1");
+        coord.register_text_field(text_id.clone(), Rect::new(0.0, 0.0, 100.0, 30.0), TextFieldConfig::text());
+
+        // Focus text field via unified method
+        coord.focus_text_field(&text_id);
+        assert!(coord.text_fields().is_focused(&text_id));
+        assert!(coord.is_focused(&text_id));
+
+        // Focus a non-text widget — text should blur
+        let btn_id = WidgetId::new("button1");
+        coord.register(btn_id.clone(), Rect::new(0.0, 40.0, 100.0, 30.0), Sense::CLICK);
+        coord.set_focus(btn_id.clone());
+        assert!(!coord.text_fields().is_focused(&text_id));
+        assert!(coord.is_focused(&btn_id));
+    }
+
+    #[test]
+    fn test_on_char_through_coordinator() {
+        let mut coord = make_coordinator();
+        let input = make_input_at(0.0, 0.0);
+        coord.begin_frame(input);
+
+        let id = WidgetId::new("field1");
+        coord.register_text_field(id.clone(), Rect::new(0.0, 0.0, 100.0, 30.0), TextFieldConfig::text());
+        coord.focus_text_field(&id);
+
+        let action = coord.on_char('h');
+        assert!(matches!(action, TextAction::TextChanged(_)));
+        assert_eq!(coord.text_fields().text(&id), "h");
     }
 }

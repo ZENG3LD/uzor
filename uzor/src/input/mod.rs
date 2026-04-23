@@ -6,6 +6,8 @@
 
 pub mod animation;
 pub mod coordinator;
+pub mod keyboard;
+pub mod text_field;
 pub mod cursor;
 pub mod event_processor;
 pub mod events;
@@ -37,3 +39,5 @@ pub use tooltip::*;
 pub use touch::*;
 pub use scroll_manager::ScrollManager;
 pub use widget_state::*;
+pub use keyboard::KeyPress;
+pub use text_field::{InputCapability, TextAction, TextFieldConfig, TextFieldState, TextFieldStore};
