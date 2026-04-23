@@ -1,55 +1,56 @@
 //! uzor - Platform-agnostic headless UI engine
-//!
-//! This crate provides a headless UI framework for:
-//! - Geometry calculation and layout
-//! - Input handling and interaction detection
-//! - Widget state management
-//! - Platform abstraction
-//!
-//! Rendering is delegated to platform-specific implementations.
 
-pub mod animation;
-pub mod containers;
-pub mod context;
-pub mod fonts;
-pub mod i18n;
+pub mod core;
+pub mod docking;
 pub mod input;
-pub mod layout;
-pub mod layout_helpers;
-pub mod panel_api;
-pub mod panels;
-pub mod macos;
-pub mod interactive;
-pub mod text_fx;
-pub mod cursor;
-pub mod numbers;
-pub mod scroll_fx;
-pub mod platform;
-pub mod render;
-pub mod state;
-pub mod types;
-pub mod widgets;
+pub use input as input_coordinator;
+pub mod ui;
 
-pub use context::{Context, ButtonResponse};
+// Compat shims — core internals at crate root
+pub use self::core::animation;
+pub use self::core::app_context;
+pub use self::core::platform;
+pub use self::core::render;
+pub use self::core::types;
+
+// Compat shims — old names
+pub use app_context as context;
+pub use docking::panels;
+pub use docking::panel_api;
+pub use app_context::layout;
+pub use app_context::state;
+
+// Compat shims — ui internals at crate root
+pub use ui::widgets;
+pub use ui::themes;
+pub use ui::assets;
+pub use ui::i18n;
+pub use themes::macos as macos;
+pub use assets::fonts as fonts;
+pub use assets::icons as icons;
+
+// Compat shim — old `engine` path
+pub use self::core as engine;
+
+// Re-export key types
+pub use app_context::{Context, ButtonResponse};
 pub use i18n::{Language, current_language, set_language, Translatable, TextKey, MonthKey, TooltipKey, month_names_short, t_tooltip};
-
-// Re-export commonly used types
-pub use animation::AnimationCoordinator;
+pub use ui::animation::AnimationCoordinator;
 pub use types::{IconId, Rect, WidgetId, WidgetState};
 pub use input::{InputState, InputCoordinator, LayerId, ScopedRegion};
 pub use input::{TextFieldStore, TextFieldConfig, TextAction, InputCapability, KeyPress};
 pub use widgets::{IconButtonConfig, IconButtonResponse};
 
-// Re-export all 9 widget type enums at top level
 pub use widgets::{
     ButtonType, ContainerType, PopupType,
     PanelType, ToolbarVariant, SidebarVariant, ModalVariant,
     OverlayType, TextInputType, DropdownType, SliderType, ToastType,
 };
 
-// Re-export unified tooltip system
-pub use input::{
+pub use ui::tooltip::{
     TooltipState, TooltipConfig, TooltipRequest,
     TooltipTheme, DefaultTooltipTheme,
     calculate_tooltip_position, estimate_tooltip_size,
 };
+
+pub use ui::cursor::{CursorIcon, CursorState};

@@ -1,43 +1,49 @@
-//! Input handling for uzor
+//! Input coordinator — centralized input handling for uzor
 //!
-//! This module provides platform-agnostic input state types that capture
-//! user interactions (mouse, keyboard, touch) and can be passed to widgets
-//! and rendering code for interaction detection.
+//! Consolidates all input routing: clicks, scrolls, keyboard, text editing,
+//! drag, touch, tooltips, and widget focus management.
 
-pub mod animation;
-pub mod coordinator;
+pub mod core;
+pub mod text;
 pub mod keyboard;
-pub mod text_field;
-pub mod cursor;
-pub mod event_processor;
-pub mod events;
+pub mod pointer;
 pub mod handlers;
-pub mod response;
-pub mod sense;
-pub mod shortcuts;
-pub mod state;
-pub mod tooltip;
-pub mod touch;
-pub mod scroll_manager;
-pub mod widget_state;
 
-// Re-export all input types at the module level
-pub use animation::*;
-pub use coordinator::{InputCoordinator, LayerId, ScopedRegion};
-pub use cursor::*;
-pub use event_processor::EventProcessor;
 pub use crate::platform::PlatformEvent;
-pub use events::*;
-pub use handlers::*;
-pub use response::*;
-pub use sense::*;
-pub use shortcuts::*;
-// Explicitly re-export to avoid conflict with widget_state
-pub use state::{InputState, MouseButton, ModifierKeys, PointerState};
-pub use state::DragState as PointerDragState;
-pub use tooltip::*;
-pub use touch::*;
-pub use scroll_manager::ScrollManager;
-pub use widget_state::*;
+
+pub use self::core::{InputCoordinator, LayerId, ScopedRegion};
+pub use self::core::response::*;
+pub use self::core::sense::*;
+pub use self::core::widget_state::*;
+
+// Re-export text
+pub use text::{InputCapability, TextAction, TextFieldConfig, TextFieldState, TextFieldStore};
+
+// Re-export keyboard
+pub use keyboard::events::*;
 pub use keyboard::KeyPress;
-pub use text_field::{InputCapability, TextAction, TextFieldConfig, TextFieldState, TextFieldStore};
+pub use keyboard::shortcuts::*;
+
+// Re-export pointer
+pub use self::core::EventProcessor;
+pub use pointer::ScrollManager;
+pub use pointer::{InputState, MouseButton, ModifierKeys, PointerState, PointerDragState};
+pub use pointer::touch::*;
+
+// Compat shim — AnimatedValue moved to ui/animation/
+pub use crate::ui::animation::{AnimatedValue, EasingFn};
+
+// Re-export handlers (moved from _ongoing)
+pub use handlers::*;
+
+// Compat shims — tooltip and cursor moved to ui/, expose via input:: paths
+pub use crate::ui::tooltip;
+pub use crate::ui::cursor;
+pub use crate::ui::tooltip::*;
+pub use crate::ui::cursor::*;
+
+// Flat module aliases (used by core/platform and ui/widgets via crate::input::X)
+pub use keyboard::events;
+pub use pointer::state;
+pub use keyboard::shortcuts;
+pub use core::widget_state;

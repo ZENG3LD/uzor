@@ -2,7 +2,7 @@
 //!
 //! Platform-agnostic input handling functions for various widgets.
 
-use super::widget_state::{WidgetId, WidgetInputState, WidgetInteraction};
+use crate::input::core::widget_state::{WidgetId, WidgetInputState, WidgetInteraction};
 use crate::types::WidgetRect;
 
 /// Widget hit test result
