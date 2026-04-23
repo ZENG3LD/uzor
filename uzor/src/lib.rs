@@ -39,7 +39,7 @@ pub use ui::animation::AnimationCoordinator;
 pub use types::{IconId, Rect, WidgetId, WidgetState};
 pub use input::{InputState, InputCoordinator, LayerId, ScopedRegion};
 pub use input::{TextFieldStore, TextFieldConfig, TextAction, InputCapability, KeyPress};
-pub use widgets::{IconButtonConfig, IconButtonResponse};
+pub use app_context::{CheckboxResponse, IconButtonResponse};
 
 pub use widgets::{
     ButtonType, ContainerType, PopupType,

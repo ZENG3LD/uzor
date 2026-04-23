@@ -11,22 +11,31 @@ use crate::input::InputState;
 use super::layout::tree::LayoutTree;
 use super::state::StateRegistry;
 use crate::types::{Rect, WidgetId, WidgetState, ScrollState};
-use crate::widgets;
 use serde::{Deserialize, Serialize};
 
-/// Button interaction response (used by Context::button)
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ButtonResponse {
-    /// Whether button was clicked this frame
     pub clicked: bool,
-    /// Whether button is currently hovered
     pub hovered: bool,
-    /// Whether button is currently pressed
     pub pressed: bool,
-    /// Current widget state
     pub state: WidgetState,
-    /// Button rectangle (for platform rendering)
     pub rect: Rect,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CheckboxResponse {
+    pub toggled: bool,
+    pub new_checked: bool,
+    pub hovered: bool,
+    pub state: WidgetState,
+    pub rect: Rect,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct IconButtonResponse {
+    pub clicked: bool,
+    pub hovered: bool,
+    pub state: WidgetState,
 }
 
 /// The central brain of the UZOR engine
@@ -109,7 +118,7 @@ impl Context {
     }
 
     /// Calculate checkbox interaction state
-    pub fn checkbox(&mut self, id: impl Into<WidgetId>, checked: bool) -> widgets::checkbox::CheckboxResponse {
+    pub fn checkbox(&mut self, id: impl Into<WidgetId>, checked: bool) -> CheckboxResponse {
         let id = id.into();
         let rect = self.widget_rect(&id);
         let is_hovered = self.input.is_hovered(&rect);
@@ -126,7 +135,7 @@ impl Context {
         let toggled = clicked;
         let new_checked = if toggled { !checked } else { checked };
 
-        widgets::checkbox::CheckboxResponse {
+        CheckboxResponse {
             toggled,
             new_checked,
             hovered: is_hovered,
@@ -174,7 +183,7 @@ impl Context {
     pub fn icon_button(
         &mut self,
         id: impl Into<WidgetId>,
-    ) -> widgets::icon_button::IconButtonResponse {
+    ) -> IconButtonResponse {
         let id = id.into();
         let rect = self.widget_rect(&id);
         let is_hovered = self.input.is_hovered(&rect);
@@ -196,7 +205,7 @@ impl Context {
             println!("[UZOR Core] Button '{:?}' HOVERED at rect {:?}", id, rect);
         }
 
-        widgets::icon_button::IconButtonResponse {
+        IconButtonResponse {
             clicked,
             hovered: is_hovered,
             state,
