@@ -3,7 +3,9 @@
 //! This module defines the complete button taxonomy for the trading terminal UI.
 //! Coverage: 141 buttons across 6 types and 19 variants.
 
+use crate::input::Sense;
 use crate::types::IconId;
+use crate::ui::widgets::WidgetCapabilities;
 
 /// Main button enum - catalog of all button types in the application
 #[derive(Debug, Clone)]
@@ -61,6 +63,12 @@ pub enum ButtonType {
         width: f64,
         height: f64,
     },
+}
+
+impl WidgetCapabilities for ButtonType {
+    fn sense(&self) -> Sense {
+        Sense::CLICK.with_focus()
+    }
 }
 
 impl ButtonType {

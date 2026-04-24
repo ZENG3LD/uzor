@@ -1,5 +1,8 @@
 //! Overlay type definitions - elements rendered outside UI layout
 
+use crate::input::Sense;
+use crate::ui::widgets::WidgetCapabilities;
+
 /// Main overlay type enum covering all overlay variants
 #[derive(Debug, Clone, PartialEq)]
 pub enum OverlayType {
@@ -18,6 +21,12 @@ pub enum OverlayType {
         width: f64,
         height: f64,
     },
+}
+
+impl WidgetCapabilities for OverlayType {
+    fn sense(&self) -> Sense {
+        Sense::HOVER
+    }
 }
 
 impl OverlayType {

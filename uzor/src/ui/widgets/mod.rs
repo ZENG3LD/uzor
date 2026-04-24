@@ -26,3 +26,13 @@ pub use toast::ToastType;
 
 pub use crate::types::ScrollState;
 
+use crate::input::Sense;
+
+/// Declares what interactions a widget type supports.
+///
+/// Every widget *Type enum implements this trait so InputCoordinator
+/// and widget_state know what Sense flags to apply.
+pub trait WidgetCapabilities {
+    fn sense(&self) -> Sense;
+}
+

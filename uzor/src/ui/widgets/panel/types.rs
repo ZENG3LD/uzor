@@ -3,6 +3,9 @@
 //! This module defines the panel taxonomy through enum types.
 //! NO colors, NO rendering logic - only semantic classification.
 
+use crate::input::Sense;
+use crate::ui::widgets::WidgetCapabilities;
+
 /// Main panel type enum covering all panel variants in the terminal
 ///
 /// Panels are large container widgets that organize UI into sections.
@@ -87,6 +90,15 @@ pub enum ModalVariant {
     Simple,
     /// Primitive properties modal (drawing tools)
     Primitive,
+}
+
+impl WidgetCapabilities for PanelType {
+    fn sense(&self) -> Sense {
+        match self {
+            PanelType::Hideable { .. } => Sense::CLICK.with_drag(),
+            _ => Sense::CLICK,
+        }
+    }
 }
 
 impl PanelType {

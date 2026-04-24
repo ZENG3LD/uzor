@@ -1,5 +1,8 @@
 //! Slider type definitions - semantic slider variants
 
+use crate::input::Sense;
+use crate::ui::widgets::WidgetCapabilities;
+
 /// Main slider type enum covering all slider variants
 #[derive(Debug, Clone, PartialEq)]
 pub enum SliderType {
@@ -23,6 +26,12 @@ pub enum SliderType {
         width: f64,
         height: f64,
     },
+}
+
+impl WidgetCapabilities for SliderType {
+    fn sense(&self) -> Sense {
+        Sense::DRAG
+    }
 }
 
 impl SliderType {

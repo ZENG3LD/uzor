@@ -3,6 +3,9 @@
 //! This module defines the popup taxonomy through enum types.
 //! NO colors, NO rendering logic - only semantic classification.
 
+use crate::input::Sense;
+use crate::ui::widgets::WidgetCapabilities;
+
 /// Main popup type enum covering all popup variants in the terminal
 ///
 /// Popups are click-driven overlays that appear on top of other UI elements.
@@ -60,6 +63,12 @@ pub enum PopupType {
         /// Height of popup
         height: f64,
     },
+}
+
+impl WidgetCapabilities for PopupType {
+    fn sense(&self) -> Sense {
+        Sense::CLICK
+    }
 }
 
 impl PopupType {

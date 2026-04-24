@@ -1,5 +1,8 @@
 //! Text input type definitions - semantic input variants
 
+use crate::input::Sense;
+use crate::ui::widgets::WidgetCapabilities;
+
 /// Main text input type enum covering all input variants
 #[derive(Debug, Clone, PartialEq)]
 pub enum TextInputType {
@@ -44,6 +47,12 @@ pub enum TextInputType {
         width: f64,
         height: f64,
     },
+}
+
+impl WidgetCapabilities for TextInputType {
+    fn sense(&self) -> Sense {
+        Sense::TEXT_INPUT
+    }
 }
 
 impl TextInputType {

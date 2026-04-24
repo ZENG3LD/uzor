@@ -1,5 +1,8 @@
 //! Toast type definitions - semantic toast notification variants
 
+use crate::input::Sense;
+use crate::ui::widgets::WidgetCapabilities;
+
 /// Main toast type enum covering all toast notification variants
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToastType {
@@ -38,6 +41,12 @@ pub enum ToastType {
         width: f64,
         height: f64,
     },
+}
+
+impl WidgetCapabilities for ToastType {
+    fn sense(&self) -> Sense {
+        Sense::HOVER
+    }
 }
 
 impl ToastType {

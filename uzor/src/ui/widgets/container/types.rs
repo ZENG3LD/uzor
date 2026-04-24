@@ -3,6 +3,9 @@
 //! This module defines the container taxonomy through enum types.
 //! NO colors, NO rendering logic - only semantic classification.
 
+use crate::input::Sense;
+use crate::ui::widgets::WidgetCapabilities;
+
 /// Main container type enum covering all container variants in the terminal
 ///
 /// Containers are wrapper widgets that hold and display content.
@@ -68,6 +71,15 @@ pub enum ContainerType {
         /// Height of container
         height: f64,
     },
+}
+
+impl WidgetCapabilities for ContainerType {
+    fn sense(&self) -> Sense {
+        match self {
+            ContainerType::Scrollable { .. } => Sense::SCROLL,
+            ContainerType::Plain { .. } => Sense::NONE,
+        }
+    }
 }
 
 impl ContainerType {

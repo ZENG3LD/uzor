@@ -1,5 +1,8 @@
 //! Dropdown type definitions - semantic dropdown variants
 
+use crate::input::Sense;
+use crate::ui::widgets::WidgetCapabilities;
+
 /// Main dropdown type enum covering all dropdown variants
 #[derive(Debug, Clone, PartialEq)]
 pub enum DropdownType {
@@ -28,6 +31,12 @@ pub enum DropdownType {
         width: f64,
         height: f64,
     },
+}
+
+impl WidgetCapabilities for DropdownType {
+    fn sense(&self) -> Sense {
+        Sense::CLICK.with_focus()
+    }
 }
 
 impl DropdownType {
