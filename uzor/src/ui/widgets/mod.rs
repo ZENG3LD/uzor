@@ -13,6 +13,9 @@ pub mod text_input;
 pub mod dropdown;
 pub mod slider;
 pub mod toast;
+pub mod scrollbar;
+pub mod radio;
+pub mod separator;
 
 pub use button::ButtonType;
 pub use container::ContainerType;
@@ -23,6 +26,9 @@ pub use text_input::TextInputType;
 pub use dropdown::DropdownType;
 pub use slider::SliderType;
 pub use toast::ToastType;
+pub use scrollbar::{ScrollbarType, ScrollbarOrientation};
+pub use radio::RadioType;
+pub use separator::{SeparatorType, SeparatorOrientation};
 
 pub use crate::types::ScrollState;
 
