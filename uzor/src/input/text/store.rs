@@ -37,6 +37,9 @@ pub struct TextFieldConfig {
     pub char_filter: Option<fn(char) -> bool>,
     /// Maximum number of characters allowed (None = unlimited).
     pub max_len: Option<usize>,
+    /// Whether to mask input display (password field).
+    /// The store still holds the real text — masking is a renderer concern.
+    pub masked: bool,
 }
 
 impl TextFieldConfig {
@@ -47,6 +50,7 @@ impl TextFieldConfig {
             read_only: false,
             char_filter: None,
             max_len: None,
+            masked: false,
         }
     }
 
@@ -57,6 +61,7 @@ impl TextFieldConfig {
             read_only: false,
             char_filter: None,
             max_len: None,
+            masked: true,
         }
     }
 
@@ -72,6 +77,7 @@ impl TextFieldConfig {
             read_only: true,
             char_filter: None,
             max_len: None,
+            masked: false,
         }
     }
 
@@ -82,6 +88,7 @@ impl TextFieldConfig {
             read_only: false,
             char_filter: None,
             max_len: None,
+            masked: false,
         }
     }
 
@@ -92,6 +99,7 @@ impl TextFieldConfig {
             read_only: false,
             char_filter: None,
             max_len: None,
+            masked: false,
         }
     }
 
@@ -104,6 +112,12 @@ impl TextFieldConfig {
     /// Builder: set a maximum character length.
     pub fn with_max_len(mut self, max: usize) -> Self {
         self.max_len = Some(max);
+        self
+    }
+
+    /// Builder: set masked mode (for password display).
+    pub fn with_masked(mut self, masked: bool) -> Self {
+        self.masked = masked;
         self
     }
 }
@@ -179,9 +193,12 @@ impl TextFieldState {
     }
 
     /// Delete the current selection and position the cursor at `lo`.
-    /// Panics if there is no selection.
+    /// No-op if there is no selection.
     pub fn delete_selection(&mut self) {
-        let (lo, hi) = self.selection_range().expect("delete_selection called with no selection");
+        let (lo, hi) = match self.selection_range() {
+            Some(range) => range,
+            None => return,
+        };
         let byte_lo = self.char_to_byte(lo);
         let byte_hi = self.char_to_byte(hi);
         self.text.drain(byte_lo..byte_hi);
@@ -505,11 +522,17 @@ impl TextFieldStore {
             }
         }
 
+        let text_before = state.text.clone();
         let consumed = apply_key(state, key);
         if consumed {
             self.reset_blink();
         }
-        TextAction::None
+        let text_after = &self.fields[&id].text;
+        if text_after != &text_before {
+            TextAction::TextChanged(text_after.clone())
+        } else {
+            TextAction::None
+        }
     }
 
     /// Begin a mouse drag on the field whose rect contains `(x, y)`.
