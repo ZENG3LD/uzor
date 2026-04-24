@@ -95,7 +95,7 @@ pub enum ModalVariant {
 impl WidgetCapabilities for PanelType {
     fn sense(&self) -> Sense {
         match self {
-            PanelType::Hideable { .. } => Sense::CLICK.with_drag(),
+            PanelType::Hideable { .. } => Sense::CLICK,
             _ => Sense::CLICK,
         }
     }

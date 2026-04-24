@@ -35,7 +35,7 @@ pub enum DropdownType {
 
 impl WidgetCapabilities for DropdownType {
     fn sense(&self) -> Sense {
-        Sense::CLICK.with_focus()
+        Sense::CLICK
     }
 }
 

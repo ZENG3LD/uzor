@@ -30,7 +30,7 @@ pub enum SliderType {
 
 impl WidgetCapabilities for SliderType {
     fn sense(&self) -> Sense {
-        Sense::DRAG
+        Sense::CLICK_AND_DRAG
     }
 }
 

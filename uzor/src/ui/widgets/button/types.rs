@@ -67,7 +67,7 @@ pub enum ButtonType {
 
 impl WidgetCapabilities for ButtonType {
     fn sense(&self) -> Sense {
-        Sense::CLICK.with_focus()
+        Sense::CLICK
     }
 }
 

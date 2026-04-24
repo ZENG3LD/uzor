@@ -51,7 +51,7 @@ pub enum TextInputType {
 
 impl WidgetCapabilities for TextInputType {
     fn sense(&self) -> Sense {
-        Sense::TEXT_INPUT
+        Sense::CLICK.with_focus().with_text()
     }
 }
 
