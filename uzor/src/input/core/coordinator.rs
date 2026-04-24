@@ -631,6 +631,36 @@ impl InputCoordinator {
             .set_focus(focusable[prev_idx].id.clone());
     }
 
+    /// Internal: hit-test at `(x, y)` with scoped-region + modal logic, filtered by sense.
+    ///
+    /// Scoped regions are checked in reverse registration order (last = top) before
+    /// falling through to the global coordinator.  A global modal layer skips all
+    /// scoped regions.  The `filter` closure is applied to the widget's `Sense` —
+    /// only widgets where `filter(&sense)` returns `true` are returned.
+    fn hit_test_with_sense(
+        &self,
+        x: f64,
+        y: f64,
+        filter: &dyn Fn(&Sense) -> bool,
+    ) -> Option<WidgetId> {
+        let has_modal = self.layers.iter().any(|l| l.modal);
+
+        if !has_modal {
+            for region in self.scoped_regions.iter().rev() {
+                if region.contains(x, y) {
+                    let (lx, ly) = region.to_local(x, y);
+                    if let Some(local_id) = region.coordinator.hit_test_with_sense(lx, ly, filter) {
+                        return Some(region.prefix_id(&local_id));
+                    }
+                }
+            }
+        }
+
+        self.hit_test_at(x, y)
+            .filter(|w| filter(&w.sense))
+            .map(|w| w.id.clone())
+    }
+
     /// Process a click at `(x, y)` against registered widgets.
     ///
     /// Returns the top-most widget ID that contains the point (Z-order + modal
@@ -645,25 +675,98 @@ impl InputCoordinator {
     /// If a global modal layer is active, scoped regions are **skipped** (the
     /// modal blocks everything below it).
     pub fn process_click(&self, x: f64, y: f64) -> Option<WidgetId> {
-        // If a modal is active in the global coordinator, skip scoped regions.
+        self.hit_test_with_sense(x, y, &|s| s.click)
+    }
+
+    /// Process a right-click at `(x, y)`.
+    ///
+    /// Returns the top-most widget ID with `sense.right_click` set, applying the
+    /// same scoped-region and modal logic as `process_click`.
+    pub fn process_right_click(&self, x: f64, y: f64) -> Option<WidgetId> {
+        self.hit_test_with_sense(x, y, &|s| s.right_click)
+    }
+
+    /// Process a double-click at `(x, y)`.
+    ///
+    /// Returns the top-most widget ID with `sense.double_click` set, applying the
+    /// same scoped-region and modal logic as `process_click`.
+    pub fn process_double_click(&self, x: f64, y: f64) -> Option<WidgetId> {
+        self.hit_test_with_sense(x, y, &|s| s.double_click)
+    }
+
+    /// Process a scroll query at `(x, y)`.
+    ///
+    /// Returns the top-most widget ID with `sense.scroll` set.  Use this to
+    /// route a scroll-wheel event to the correct widget when your platform
+    /// delivers scroll events separately from the frame loop.
+    pub fn process_scroll(&self, x: f64, y: f64) -> Option<WidgetId> {
+        self.hit_test_with_sense(x, y, &|s| s.scroll)
+    }
+
+    /// Query the hovered widget at `(x, y)` for explicit hover delivery.
+    ///
+    /// Returns the top-most widget ID with `sense.hover` set.  The implicit
+    /// hover tracking in `end_frame` still works independently.
+    pub fn process_hover(&self, x: f64, y: f64) -> Option<WidgetId> {
+        self.hit_test_with_sense(x, y, &|s| s.hover)
+    }
+
+    /// Begin a drag at `(x, y)`.
+    ///
+    /// Hit-tests for a `sense.drag` widget at the given position.  If found,
+    /// calls `widget_state.start_drag` to initiate drag tracking and returns
+    /// the widget ID.  Returns `None` when no draggable widget is at that point.
+    pub fn process_drag_start(&mut self, x: f64, y: f64) -> Option<WidgetId> {
+        // Build the scoped-region + modal + sense logic inline (needs &mut self).
         let has_modal = self.layers.iter().any(|l| l.modal);
 
-        if !has_modal {
-            // Check scoped regions in reverse order (last registered = top).
-            for region in self.scoped_regions.iter().rev() {
+        let widget_id = if !has_modal {
+            let mut scoped_result: Option<WidgetId> = None;
+            for region in self.scoped_regions.iter_mut().rev() {
                 if region.contains(x, y) {
                     let (lx, ly) = region.to_local(x, y);
-                    if let Some(local_id) = region.coordinator.process_click(lx, ly) {
-                        // Found a widget inside the region — return prefixed id.
-                        return Some(region.prefix_id(&local_id));
+                    if let Some(local_id) = region.coordinator.process_drag_start(lx, ly) {
+                        scoped_result = Some(region.prefix_id(&local_id));
+                        break;
                     }
-                    // Point inside region but no widget hit → fall through.
                 }
             }
+            scoped_result
+        } else {
+            None
+        };
+
+        if widget_id.is_some() {
+            return widget_id;
         }
 
         // Fall back to global hit test.
-        self.hit_test_at(x, y).map(|w| w.id.clone())
+        let id = self.hit_test_at(x, y)
+            .filter(|w| w.sense.drag)
+            .map(|w| w.id.clone())?;
+        self.widget_state.start_drag(id.clone(), x, y);
+        Some(id)
+    }
+
+    /// Update an in-progress drag to `(x, y)`.
+    ///
+    /// Returns `(widget_id, dx, dy)` where `dx`/`dy` are the delta from the
+    /// drag-start position.  Returns `None` when no drag is active.
+    pub fn process_drag_move(&mut self, x: f64, y: f64) -> Option<(WidgetId, f64, f64)> {
+        let id = self.widget_state.drag.dragging.clone()?;
+        self.widget_state.drag.update(x, y);
+        let (dx, dy) = self.widget_state.drag.delta();
+        Some((id, dx, dy))
+    }
+
+    /// End an in-progress drag.
+    ///
+    /// Clears drag state and returns the widget ID that was being dragged.
+    /// Returns `None` when no drag is active.
+    pub fn process_drag_end(&mut self) -> Option<WidgetId> {
+        let id = self.widget_state.drag.dragging.clone()?;
+        self.widget_state.drag.end();
+        Some(id)
     }
 
     /// Check if a point is inside any modal layer's registered area.
@@ -943,6 +1046,149 @@ mod tests {
 
         assert_eq!(coord.process_click(50.0, 30.0), Some(WidgetId::new("btn")));
         assert_eq!(coord.process_click(5.0, 5.0), None);
+    }
+
+    #[test]
+    fn test_process_right_click() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(50.0, 30.0));
+        coord.register("menu_target", Rect::new(10.0, 10.0, 100.0, 40.0), Sense::RIGHT_CLICK);
+        coord.register("plain_btn", Rect::new(10.0, 60.0, 100.0, 40.0), Sense::CLICK);
+
+        // Hit widget with right_click sense.
+        assert_eq!(coord.process_right_click(50.0, 30.0), Some(WidgetId::new("menu_target")));
+        // Miss (outside).
+        assert_eq!(coord.process_right_click(5.0, 5.0), None);
+        // Widget at point lacks right_click sense — returns None.
+        assert_eq!(coord.process_right_click(50.0, 80.0), None);
+    }
+
+    #[test]
+    fn test_process_double_click() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(50.0, 30.0));
+        coord.register("dbl", Rect::new(10.0, 10.0, 100.0, 40.0), Sense::DOUBLE_CLICK);
+        coord.register("plain", Rect::new(10.0, 60.0, 100.0, 40.0), Sense::CLICK);
+
+        assert_eq!(coord.process_double_click(50.0, 30.0), Some(WidgetId::new("dbl")));
+        assert_eq!(coord.process_double_click(5.0, 5.0), None);
+        // Widget exists but has no double_click sense.
+        assert_eq!(coord.process_double_click(50.0, 80.0), None);
+    }
+
+    #[test]
+    fn test_process_scroll() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(50.0, 30.0));
+        coord.register("viewport", Rect::new(0.0, 0.0, 200.0, 200.0), Sense::SCROLL);
+        coord.register("btn", Rect::new(10.0, 10.0, 80.0, 30.0), Sense::CLICK);
+
+        // Viewport is scroll-sensitive.
+        assert_eq!(coord.process_scroll(150.0, 150.0), Some(WidgetId::new("viewport")));
+        // Outside all widgets.
+        assert_eq!(coord.process_scroll(500.0, 500.0), None);
+        // Button overlaps viewport but has no scroll sense — viewport is registered first
+        // so button is on top; button lacks scroll → None via sense filter.
+        assert_eq!(coord.process_scroll(50.0, 25.0), None);
+    }
+
+    #[test]
+    fn test_process_hover() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(50.0, 30.0));
+        coord.register("hoverable", Rect::new(10.0, 10.0, 100.0, 40.0), Sense::HOVER);
+        coord.register("invisible", Rect::new(200.0, 200.0, 50.0, 50.0), Sense::NONE);
+
+        assert_eq!(coord.process_hover(50.0, 30.0), Some(WidgetId::new("hoverable")));
+        assert_eq!(coord.process_hover(5.0, 5.0), None);
+        // Widget with no sense.hover.
+        assert_eq!(coord.process_hover(225.0, 225.0), None);
+    }
+
+    #[test]
+    fn test_process_drag_start() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(50.0, 20.0));
+        coord.register("slider", Rect::new(0.0, 0.0, 200.0, 40.0), Sense::DRAG);
+        coord.register("btn", Rect::new(0.0, 50.0, 100.0, 30.0), Sense::CLICK);
+
+        // Draggable widget.
+        assert_eq!(coord.process_drag_start(50.0, 20.0), Some(WidgetId::new("slider")));
+        // Drag state was started.
+        assert!(coord.is_dragging(&WidgetId::new("slider")));
+
+        // Reset drag state then test non-draggable widget.
+        coord.widget_state.drag.end();
+        assert_eq!(coord.process_drag_start(50.0, 65.0), None);
+
+        // Miss entirely.
+        assert_eq!(coord.process_drag_start(500.0, 500.0), None);
+    }
+
+    #[test]
+    fn test_process_drag_move() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(50.0, 20.0));
+        coord.register("slider", Rect::new(0.0, 0.0, 200.0, 40.0), Sense::DRAG);
+
+        // No drag active yet.
+        assert!(coord.process_drag_move(60.0, 20.0).is_none());
+
+        // Start drag.
+        coord.process_drag_start(50.0, 20.0);
+
+        // Move 10px right.
+        let result = coord.process_drag_move(60.0, 20.0);
+        assert!(result.is_some());
+        let (id, dx, dy) = result.unwrap();
+        assert_eq!(id, WidgetId::new("slider"));
+        assert!((dx - 10.0).abs() < f64::EPSILON);
+        assert!((dy).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_process_drag_end() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(50.0, 20.0));
+        coord.register("slider", Rect::new(0.0, 0.0, 200.0, 40.0), Sense::DRAG);
+
+        // No drag active.
+        assert!(coord.process_drag_end().is_none());
+
+        // Start then end.
+        coord.process_drag_start(50.0, 20.0);
+        let ended = coord.process_drag_end();
+        assert_eq!(ended, Some(WidgetId::new("slider")));
+        // Drag state cleared.
+        assert!(!coord.is_dragging(&WidgetId::new("slider")));
+    }
+
+    #[test]
+    fn test_process_click_sense_filter() {
+        // A widget with only DRAG sense must NOT be returned by process_click.
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(50.0, 20.0));
+        coord.register("drag_only", Rect::new(0.0, 0.0, 100.0, 40.0), Sense::DRAG);
+
+        assert_eq!(coord.process_click(50.0, 20.0), None);
+    }
+
+    #[test]
+    fn test_hit_test_with_sense_scoped_region() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(150.0, 50.0));
+
+        // Register a scoped region at (100, 0) size 200×100.
+        let child = coord.push_scoped_region("toolbar", Rect::new(100.0, 0.0, 200.0, 100.0));
+        // Register a right-click widget inside the region (local coords).
+        child.register("rc_btn", Rect::new(10.0, 10.0, 80.0, 40.0), Sense::RIGHT_CLICK);
+
+        // Screen coord (150, 50) → local (50, 50) → inside rc_btn (10..90, 10..50)
+        let hit = coord.process_right_click(150.0, 50.0);
+        assert_eq!(hit, Some(WidgetId::new("toolbar:rc_btn")));
+
+        // Outside region entirely.
+        assert_eq!(coord.process_right_click(50.0, 50.0), None);
     }
 
     #[test]

@@ -20,6 +20,12 @@ pub struct Sense {
     pub scroll: bool,
     /// Widget accepts text input (text field)
     pub text: bool,
+    /// Widget responds to right-clicks (context menus)
+    pub right_click: bool,
+    /// Widget responds to double-clicks
+    pub double_click: bool,
+    /// Widget receives non-text keyboard events (arrows, escape, shortcuts) when focused
+    pub keyboard: bool,
 }
 
 // Predefined constants
@@ -32,6 +38,9 @@ impl Sense {
         focus: false,
         scroll: false,
         text: false,
+        right_click: false,
+        double_click: false,
+        keyboard: false,
     };
 
     /// Only hover detection
@@ -42,6 +51,9 @@ impl Sense {
         focus: false,
         scroll: false,
         text: false,
+        right_click: false,
+        double_click: false,
+        keyboard: false,
     };
 
     /// Click and hover (for buttons, checkboxes)
@@ -52,6 +64,9 @@ impl Sense {
         focus: false,
         scroll: false,
         text: false,
+        right_click: false,
+        double_click: false,
+        keyboard: false,
     };
 
     /// Drag and hover (for sliders, scrollbars)
@@ -62,6 +77,9 @@ impl Sense {
         focus: false,
         scroll: false,
         text: false,
+        right_click: false,
+        double_click: false,
+        keyboard: false,
     };
 
     /// Both click and drag (introduces latency)
@@ -72,6 +90,9 @@ impl Sense {
         focus: false,
         scroll: false,
         text: false,
+        right_click: false,
+        double_click: false,
+        keyboard: false,
     };
 
     /// Can receive keyboard focus but no mouse interaction
@@ -82,6 +103,9 @@ impl Sense {
         focus: true,
         scroll: false,
         text: false,
+        right_click: false,
+        double_click: false,
+        keyboard: false,
     };
 
     /// Scroll-sensitive (for scrollable container viewports)
@@ -92,9 +116,12 @@ impl Sense {
         focus: false,
         scroll: true,
         text: false,
+        right_click: false,
+        double_click: false,
+        keyboard: false,
     };
 
-    /// Full interaction - click, drag, hover, focus, scroll
+    /// Full interaction - click, drag, hover, focus, scroll, right_click, double_click, keyboard
     pub const ALL: Sense = Sense {
         click: true,
         drag: true,
@@ -102,6 +129,9 @@ impl Sense {
         focus: true,
         scroll: true,
         text: false,
+        right_click: true,
+        double_click: true,
+        keyboard: true,
     };
 
     /// Text input — click, drag, hover, focus, and text
@@ -112,6 +142,48 @@ impl Sense {
         focus: true,
         scroll: false,
         text: true,
+        right_click: false,
+        double_click: false,
+        keyboard: false,
+    };
+
+    /// Right-click and hover (for context menus)
+    pub const RIGHT_CLICK: Sense = Sense {
+        click: false,
+        drag: false,
+        hover: true,
+        focus: false,
+        scroll: false,
+        text: false,
+        right_click: true,
+        double_click: false,
+        keyboard: false,
+    };
+
+    /// Double-click and hover
+    pub const DOUBLE_CLICK: Sense = Sense {
+        click: false,
+        drag: false,
+        hover: true,
+        focus: false,
+        scroll: false,
+        text: false,
+        right_click: false,
+        double_click: true,
+        keyboard: false,
+    };
+
+    /// Keyboard events when focused (arrows, escape, shortcuts), includes hover and focus
+    pub const KEYBOARD: Sense = Sense {
+        click: false,
+        drag: false,
+        hover: true,
+        focus: true,
+        scroll: false,
+        text: false,
+        right_click: false,
+        double_click: false,
+        keyboard: true,
     };
 }
 
@@ -184,6 +256,9 @@ impl Sense {
             focus: self.focus || other.focus,
             scroll: self.scroll || other.scroll,
             text: self.text || other.text,
+            right_click: self.right_click || other.right_click,
+            double_click: self.double_click || other.double_click,
+            keyboard: self.keyboard || other.keyboard,
         }
     }
 
@@ -197,6 +272,9 @@ impl Sense {
             focus: self.focus && other.focus,
             scroll: self.scroll && other.scroll,
             text: self.text && other.text,
+            right_click: self.right_click && other.right_click,
+            double_click: self.double_click && other.double_click,
+            keyboard: self.keyboard && other.keyboard,
         }
     }
 
@@ -239,14 +317,46 @@ impl Sense {
         self.hover = true;
         self
     }
+
+    /// Add right-click sensing (also adds hover)
+    #[inline]
+    pub fn with_right_click(mut self) -> Self {
+        self.right_click = true;
+        self.hover = true;
+        self
+    }
+
+    /// Add double-click sensing (also adds hover)
+    #[inline]
+    pub fn with_double_click(mut self) -> Self {
+        self.double_click = true;
+        self.hover = true;
+        self
+    }
+
+    /// Add keyboard event sensing (also adds focus and hover)
+    #[inline]
+    pub fn with_keyboard(mut self) -> Self {
+        self.keyboard = true;
+        self.focus = true;
+        self.hover = true;
+        self
+    }
 }
 
 // Query methods
 impl Sense {
-    /// Check if any interaction is sensed (click, drag, focus, scroll, or text)
+    /// Check if any interaction is sensed (click, drag, focus, scroll, text, right_click, double_click, or keyboard)
     #[inline]
     pub fn interactive(&self) -> bool {
-        self.click || self.drag || self.focus || self.scroll || self.text
+        self.click
+            || self.drag
+            || self.focus
+            || self.scroll
+            || self.text
+            || self.right_click
+            || self.double_click
+            || self.keyboard
     }
 
     /// Check if both click and drag are sensed (has latency)
@@ -258,7 +368,14 @@ impl Sense {
     /// Check if widget is purely visual (no interactions)
     #[inline]
     pub fn is_passive(&self) -> bool {
-        !self.click && !self.drag && !self.focus && !self.scroll && !self.text
+        !self.click
+            && !self.drag
+            && !self.focus
+            && !self.scroll
+            && !self.text
+            && !self.right_click
+            && !self.double_click
+            && !self.keyboard
     }
 }
 
@@ -292,35 +409,53 @@ mod tests {
         assert!(!Sense::NONE.focus);
         assert!(!Sense::NONE.scroll);
         assert!(!Sense::NONE.text);
+        assert!(!Sense::NONE.right_click);
+        assert!(!Sense::NONE.double_click);
+        assert!(!Sense::NONE.keyboard);
 
         assert!(!Sense::HOVER.click);
         assert!(Sense::HOVER.hover);
         assert!(!Sense::HOVER.scroll);
         assert!(!Sense::HOVER.text);
+        assert!(!Sense::HOVER.right_click);
+        assert!(!Sense::HOVER.double_click);
+        assert!(!Sense::HOVER.keyboard);
 
         assert!(Sense::CLICK.click);
         assert!(!Sense::CLICK.drag);
         assert!(Sense::CLICK.hover);
         assert!(!Sense::CLICK.scroll);
         assert!(!Sense::CLICK.text);
+        assert!(!Sense::CLICK.right_click);
+        assert!(!Sense::CLICK.double_click);
+        assert!(!Sense::CLICK.keyboard);
 
         assert!(!Sense::DRAG.click);
         assert!(Sense::DRAG.drag);
         assert!(Sense::DRAG.hover);
         assert!(!Sense::DRAG.scroll);
         assert!(!Sense::DRAG.text);
+        assert!(!Sense::DRAG.right_click);
+        assert!(!Sense::DRAG.double_click);
+        assert!(!Sense::DRAG.keyboard);
 
         assert!(Sense::CLICK_AND_DRAG.click);
         assert!(Sense::CLICK_AND_DRAG.drag);
         assert!(Sense::CLICK_AND_DRAG.hover);
         assert!(!Sense::CLICK_AND_DRAG.scroll);
         assert!(!Sense::CLICK_AND_DRAG.text);
+        assert!(!Sense::CLICK_AND_DRAG.right_click);
+        assert!(!Sense::CLICK_AND_DRAG.double_click);
+        assert!(!Sense::CLICK_AND_DRAG.keyboard);
 
         assert!(!Sense::FOCUSABLE.click);
         assert!(Sense::FOCUSABLE.hover);
         assert!(Sense::FOCUSABLE.focus);
         assert!(!Sense::FOCUSABLE.scroll);
         assert!(!Sense::FOCUSABLE.text);
+        assert!(!Sense::FOCUSABLE.right_click);
+        assert!(!Sense::FOCUSABLE.double_click);
+        assert!(!Sense::FOCUSABLE.keyboard);
 
         assert!(!Sense::SCROLL.click);
         assert!(!Sense::SCROLL.drag);
@@ -328,6 +463,9 @@ mod tests {
         assert!(!Sense::SCROLL.focus);
         assert!(Sense::SCROLL.scroll);
         assert!(!Sense::SCROLL.text);
+        assert!(!Sense::SCROLL.right_click);
+        assert!(!Sense::SCROLL.double_click);
+        assert!(!Sense::SCROLL.keyboard);
 
         assert!(Sense::ALL.click);
         assert!(Sense::ALL.drag);
@@ -335,6 +473,51 @@ mod tests {
         assert!(Sense::ALL.focus);
         assert!(Sense::ALL.scroll);
         assert!(!Sense::ALL.text);
+        assert!(Sense::ALL.right_click);
+        assert!(Sense::ALL.double_click);
+        assert!(Sense::ALL.keyboard);
+    }
+
+    #[test]
+    fn test_new_constants() {
+        // RIGHT_CLICK
+        assert!(!Sense::RIGHT_CLICK.click);
+        assert!(!Sense::RIGHT_CLICK.drag);
+        assert!(Sense::RIGHT_CLICK.hover);
+        assert!(!Sense::RIGHT_CLICK.focus);
+        assert!(!Sense::RIGHT_CLICK.scroll);
+        assert!(!Sense::RIGHT_CLICK.text);
+        assert!(Sense::RIGHT_CLICK.right_click);
+        assert!(!Sense::RIGHT_CLICK.double_click);
+        assert!(!Sense::RIGHT_CLICK.keyboard);
+        assert!(Sense::RIGHT_CLICK.interactive());
+        assert!(!Sense::RIGHT_CLICK.is_passive());
+
+        // DOUBLE_CLICK
+        assert!(!Sense::DOUBLE_CLICK.click);
+        assert!(!Sense::DOUBLE_CLICK.drag);
+        assert!(Sense::DOUBLE_CLICK.hover);
+        assert!(!Sense::DOUBLE_CLICK.focus);
+        assert!(!Sense::DOUBLE_CLICK.scroll);
+        assert!(!Sense::DOUBLE_CLICK.text);
+        assert!(!Sense::DOUBLE_CLICK.right_click);
+        assert!(Sense::DOUBLE_CLICK.double_click);
+        assert!(!Sense::DOUBLE_CLICK.keyboard);
+        assert!(Sense::DOUBLE_CLICK.interactive());
+        assert!(!Sense::DOUBLE_CLICK.is_passive());
+
+        // KEYBOARD
+        assert!(!Sense::KEYBOARD.click);
+        assert!(!Sense::KEYBOARD.drag);
+        assert!(Sense::KEYBOARD.hover);
+        assert!(Sense::KEYBOARD.focus);
+        assert!(!Sense::KEYBOARD.scroll);
+        assert!(!Sense::KEYBOARD.text);
+        assert!(!Sense::KEYBOARD.right_click);
+        assert!(!Sense::KEYBOARD.double_click);
+        assert!(Sense::KEYBOARD.keyboard);
+        assert!(Sense::KEYBOARD.interactive());
+        assert!(!Sense::KEYBOARD.is_passive());
     }
 
     #[test]
@@ -345,6 +528,9 @@ mod tests {
         assert!(Sense::TEXT_INPUT.focus);
         assert!(!Sense::TEXT_INPUT.scroll);
         assert!(Sense::TEXT_INPUT.text);
+        assert!(!Sense::TEXT_INPUT.right_click);
+        assert!(!Sense::TEXT_INPUT.double_click);
+        assert!(!Sense::TEXT_INPUT.keyboard);
         assert_eq!(Sense::text_input(), Sense::TEXT_INPUT);
         assert!(Sense::TEXT_INPUT.interactive());
         assert!(!Sense::TEXT_INPUT.is_passive());
@@ -373,12 +559,20 @@ mod tests {
         assert!(combined.hover);
         assert!(!combined.focus);
         assert!(!combined.scroll);
+        assert!(!combined.right_click);
+        assert!(!combined.double_click);
+        assert!(!combined.keyboard);
         assert_eq!(combined, Sense::CLICK_AND_DRAG);
 
         let with_scroll = Sense::click().union(Sense::scroll());
         assert!(with_scroll.click);
         assert!(with_scroll.scroll);
         assert!(with_scroll.hover);
+
+        let with_rc = Sense::click().union(Sense::RIGHT_CLICK);
+        assert!(with_rc.click);
+        assert!(with_rc.right_click);
+        assert!(with_rc.hover);
     }
 
     #[test]
@@ -392,6 +586,9 @@ mod tests {
         assert!(common.hover);
         assert!(!common.focus);
         assert!(!common.scroll);
+        assert!(!common.right_click);
+        assert!(!common.double_click);
+        assert!(!common.keyboard);
 
         let all_and_scroll = Sense::ALL.intersection(Sense::SCROLL);
         assert!(!all_and_scroll.click);
@@ -399,6 +596,9 @@ mod tests {
         assert!(all_and_scroll.hover);
         assert!(!all_and_scroll.focus);
         assert!(all_and_scroll.scroll);
+        assert!(!all_and_scroll.right_click);
+        assert!(!all_and_scroll.double_click);
+        assert!(!all_and_scroll.keyboard);
     }
 
     #[test]
@@ -426,7 +626,59 @@ mod tests {
         assert!(!sense.focus);
 
         let sense = Sense::none().with_click().with_drag().with_focus().with_scroll();
-        assert_eq!(sense, Sense::ALL);
+        assert!(sense.click);
+        assert!(sense.drag);
+        assert!(sense.hover);
+        assert!(sense.focus);
+        assert!(sense.scroll);
+        assert!(!sense.text);
+        assert!(!sense.right_click);
+        assert!(!sense.double_click);
+        assert!(!sense.keyboard);
+    }
+
+    #[test]
+    fn test_new_with_methods() {
+        let sense = Sense::none().with_right_click();
+        assert!(sense.right_click);
+        assert!(sense.hover);
+        assert!(!sense.click);
+        assert!(!sense.drag);
+        assert!(!sense.focus);
+        assert!(!sense.double_click);
+        assert!(!sense.keyboard);
+        assert_eq!(sense, Sense::RIGHT_CLICK);
+
+        let sense = Sense::none().with_double_click();
+        assert!(sense.double_click);
+        assert!(sense.hover);
+        assert!(!sense.click);
+        assert!(!sense.drag);
+        assert!(!sense.focus);
+        assert!(!sense.right_click);
+        assert!(!sense.keyboard);
+        assert_eq!(sense, Sense::DOUBLE_CLICK);
+
+        let sense = Sense::none().with_keyboard();
+        assert!(sense.keyboard);
+        assert!(sense.focus);
+        assert!(sense.hover);
+        assert!(!sense.click);
+        assert!(!sense.drag);
+        assert!(!sense.right_click);
+        assert!(!sense.double_click);
+        assert_eq!(sense, Sense::KEYBOARD);
+
+        // chaining
+        let sense = Sense::none().with_click().with_right_click().with_double_click().with_keyboard();
+        assert!(sense.click);
+        assert!(sense.right_click);
+        assert!(sense.double_click);
+        assert!(sense.keyboard);
+        assert!(sense.focus);
+        assert!(sense.hover);
+        assert!(sense.interactive());
+        assert!(!sense.is_passive());
     }
 
     #[test]
@@ -435,6 +687,9 @@ mod tests {
         assert!(Sense::drag().interactive());
         assert!(Sense::focusable().interactive());
         assert!(Sense::scroll().interactive());
+        assert!(Sense::RIGHT_CLICK.interactive());
+        assert!(Sense::DOUBLE_CLICK.interactive());
+        assert!(Sense::KEYBOARD.interactive());
         assert!(!Sense::hover().interactive());
         assert!(!Sense::none().interactive());
 
@@ -449,6 +704,9 @@ mod tests {
         assert!(!Sense::drag().is_passive());
         assert!(!Sense::focusable().is_passive());
         assert!(!Sense::scroll().is_passive());
+        assert!(!Sense::RIGHT_CLICK.is_passive());
+        assert!(!Sense::DOUBLE_CLICK.is_passive());
+        assert!(!Sense::KEYBOARD.is_passive());
     }
 
     #[test]
@@ -471,6 +729,13 @@ mod tests {
         assert!(with_scroll.click);
         assert!(with_scroll.scroll);
         assert!(with_scroll.hover);
+
+        let with_new = Sense::RIGHT_CLICK | Sense::DOUBLE_CLICK | Sense::KEYBOARD;
+        assert!(with_new.right_click);
+        assert!(with_new.double_click);
+        assert!(with_new.keyboard);
+        assert!(with_new.hover);
+        assert!(with_new.focus);
     }
 
     #[test]
@@ -488,11 +753,17 @@ mod tests {
         set.insert(Sense::click());
         set.insert(Sense::drag());
         set.insert(Sense::scroll());
+        set.insert(Sense::RIGHT_CLICK);
+        set.insert(Sense::DOUBLE_CLICK);
+        set.insert(Sense::KEYBOARD);
 
-        assert_eq!(set.len(), 3);
+        assert_eq!(set.len(), 6);
         assert!(set.contains(&Sense::click()));
         assert!(set.contains(&Sense::drag()));
         assert!(set.contains(&Sense::scroll()));
+        assert!(set.contains(&Sense::RIGHT_CLICK));
+        assert!(set.contains(&Sense::DOUBLE_CLICK));
+        assert!(set.contains(&Sense::KEYBOARD));
     }
 
     #[test]
