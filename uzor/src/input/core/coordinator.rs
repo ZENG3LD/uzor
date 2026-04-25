@@ -10,6 +10,7 @@
 use crate::types::{Rect, WidgetId};
 use crate::input::core::sense::Sense;
 use crate::input::core::response::WidgetResponse;
+use crate::input::core::widget_kind::WidgetKind;
 use crate::input::pointer::state::InputState;
 use crate::input::core::widget_state::WidgetInputState;
 use crate::input::text::store::{TextFieldStore, TextFieldConfig, TextAction};
@@ -63,6 +64,10 @@ struct RegisteredWidget {
     rect: Rect,
     sense: Sense,
     layer: LayerId,
+    /// Widget kind — controls hierarchy semantics and hit-test behaviour.
+    kind: WidgetKind,
+    /// Parent widget id for child widgets registered via `register_child`.
+    parent: Option<WidgetId>,
 }
 
 /// A layer in the z-order stack
@@ -213,7 +218,133 @@ impl InputCoordinator {
             rect,
             sense,
             layer: layer.clone(),
+            kind: WidgetKind::Custom,
+            parent: None,
         });
+    }
+
+    /// Register a composite (parent) widget and return its id for use in `register_child`.
+    ///
+    /// `sense` for composites is typically `Sense::NONE` — children handle events.
+    /// For `BlackboxPanel`, supply whatever sense flags cover the whole panel area.
+    ///
+    /// # Panics
+    /// Panics if `kind` is not a composite kind.
+    pub fn register_composite(
+        &mut self,
+        id: impl Into<WidgetId>,
+        kind: WidgetKind,
+        rect: Rect,
+        sense: Sense,
+        layer: &LayerId,
+    ) -> WidgetId {
+        assert!(
+            kind.is_composite(),
+            "register_composite requires composite WidgetKind, got {:?}",
+            kind
+        );
+        let id = id.into();
+        self.widgets.push(RegisteredWidget {
+            id: id.clone(),
+            rect,
+            sense,
+            layer: layer.clone(),
+            kind,
+            parent: None,
+        });
+        id
+    }
+
+    /// Register an atomic child widget under a composite parent.
+    ///
+    /// The child inherits the layer of its parent. Children must be registered
+    /// **after** their parent so that the last-registered-wins hit-test rule
+    /// makes children win within their own rects.
+    ///
+    /// # Panics
+    /// - `kind` must be atomic.
+    /// - `parent_id` must already be registered this frame.
+    /// - Parent must not be a `BlackboxPanel` (blackbox panels reject children).
+    pub fn register_child(
+        &mut self,
+        parent_id: &WidgetId,
+        child_id: impl Into<WidgetId>,
+        kind: WidgetKind,
+        rect: Rect,
+        sense: Sense,
+    ) {
+        assert!(
+            kind.is_atomic(),
+            "register_child requires atomic WidgetKind, got {:?}",
+            kind
+        );
+        let parent_layer = {
+            let parent = self
+                .widgets
+                .iter()
+                .rev()
+                .find(|w| w.id == *parent_id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "register_child: parent {:?} not registered this frame",
+                        parent_id
+                    )
+                });
+            assert!(
+                parent.kind.allows_children(),
+                "register_child: parent {:?} kind {:?} does not allow children",
+                parent_id,
+                parent.kind
+            );
+            parent.layer.clone()
+        };
+        self.widgets.push(RegisteredWidget {
+            id: child_id.into(),
+            rect,
+            sense,
+            layer: parent_layer,
+            kind,
+            parent: Some(parent_id.clone()),
+        });
+    }
+
+    /// Register a top-level atomic widget without a parent.
+    ///
+    /// Equivalent to `register_on_layer` with an explicit `WidgetKind`.
+    ///
+    /// # Panics
+    /// Panics if `kind` is not atomic.
+    pub fn register_atomic(
+        &mut self,
+        id: impl Into<WidgetId>,
+        kind: WidgetKind,
+        rect: Rect,
+        sense: Sense,
+        layer: &LayerId,
+    ) {
+        assert!(
+            kind.is_atomic(),
+            "register_atomic requires atomic WidgetKind, got {:?}",
+            kind
+        );
+        self.widgets.push(RegisteredWidget {
+            id: id.into(),
+            rect,
+            sense,
+            layer: layer.clone(),
+            kind,
+            parent: None,
+        });
+    }
+
+    /// Returns the `WidgetKind` of a registered widget (current frame only).
+    pub fn widget_kind(&self, id: &WidgetId) -> Option<WidgetKind> {
+        self.widgets.iter().rev().find(|w| w.id == *id).map(|w| w.kind)
+    }
+
+    /// Returns the parent `WidgetId` of a child widget, if any.
+    pub fn widget_parent(&self, id: &WidgetId) -> Option<WidgetId> {
+        self.widgets.iter().rev().find(|w| w.id == *id).and_then(|w| w.parent.clone())
     }
 
     /// Push a new layer (for modals/popups)
@@ -500,13 +631,24 @@ impl InputCoordinator {
     /// is over any UI element (button, panel, modal, etc.).  This provides a
     /// single, authoritative check instead of many hardcoded widget-id tests.
     ///
-    /// Backdrop widgets (IDs ending with `:bg`) are intentionally excluded.
-    /// Returns true when the pointer is over any registered UI widget.
-    ///
-    /// Since the chart canvas is NOT registered as a widget (only UI elements
-    /// are), this effectively means "cursor is on UI, not on chart".
+    /// `BlackboxPanel` widgets are treated as canvas-like areas: the coordinator
+    /// does not recurse into them, and hovering one returns `false` so that the
+    /// blackbox's own internal input system can handle events without conflict.
     pub fn is_over_ui(&self) -> bool {
-        self.hovered_widget().is_some()
+        match self.hovered_widget() {
+            Some(id) => {
+                let kind = self.widgets.iter().rev()
+                    .find(|w| w.id == *id)
+                    .map(|w| w.kind);
+                match kind {
+                    Some(k) => !k.is_blackbox(),
+                    // Widget not found in current-frame list (came from a scoped
+                    // region's persistent state) — safe to treat as UI.
+                    None => true,
+                }
+            }
+            None => false,
+        }
     }
 
     /// Get focused widget
@@ -1263,5 +1405,205 @@ mod tests {
         let action = coord.on_char('h');
         assert!(matches!(action, TextAction::TextChanged(_)));
         assert_eq!(coord.text_fields().text(&id), "h");
+    }
+
+    // -------------------------------------------------------------------------
+    // WidgetKind hierarchy tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_widget_kind_const_fns() {
+        use WidgetKind::*;
+        // Composites
+        assert!(Modal.is_composite());
+        assert!(BlackboxPanel.is_composite());
+        assert!(!Modal.is_atomic());
+        // Atomics
+        assert!(Button.is_atomic());
+        assert!(Custom.is_atomic());
+        assert!(!Button.is_composite());
+        // Blackbox
+        assert!(BlackboxPanel.is_blackbox());
+        assert!(!Panel.is_blackbox());
+        // allows_children
+        assert!(Panel.allows_children());
+        assert!(Modal.allows_children());
+        assert!(!BlackboxPanel.allows_children());
+        assert!(!Button.allows_children());
+        // blocks_lower_layers
+        assert!(Modal.blocks_lower_layers());
+        assert!(ContextMenu.blocks_lower_layers());
+        assert!(!Panel.blocks_lower_layers());
+        assert!(!Button.blocks_lower_layers());
+    }
+
+    #[test]
+    fn test_register_composite_and_child_widget_kind() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(0.0, 0.0));
+
+        let layer = LayerId::main();
+        let panel_id = coord.register_composite(
+            "panel",
+            WidgetKind::Panel,
+            Rect::new(0.0, 0.0, 200.0, 200.0),
+            Sense::NONE,
+            &layer,
+        );
+
+        coord.register_child(
+            &panel_id,
+            "btn",
+            WidgetKind::Button,
+            Rect::new(10.0, 10.0, 80.0, 30.0),
+            Sense::CLICK,
+        );
+
+        assert_eq!(coord.widget_kind(&WidgetId::new("panel")), Some(WidgetKind::Panel));
+        assert_eq!(coord.widget_kind(&WidgetId::new("btn")), Some(WidgetKind::Button));
+        assert_eq!(coord.widget_parent(&WidgetId::new("btn")), Some(WidgetId::new("panel")));
+        assert_eq!(coord.widget_parent(&WidgetId::new("panel")), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "not registered this frame")]
+    fn test_register_child_nonexistent_parent_panics() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(0.0, 0.0));
+
+        coord.register_child(
+            &WidgetId::new("ghost"),
+            "btn",
+            WidgetKind::Button,
+            Rect::new(0.0, 0.0, 50.0, 30.0),
+            Sense::CLICK,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "does not allow children")]
+    fn test_register_child_blackbox_parent_panics() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(0.0, 0.0));
+
+        let layer = LayerId::main();
+        let bb_id = coord.register_composite(
+            "chart",
+            WidgetKind::BlackboxPanel,
+            Rect::new(0.0, 0.0, 500.0, 400.0),
+            Sense::NONE,
+            &layer,
+        );
+
+        coord.register_child(
+            &bb_id,
+            "inner_btn",
+            WidgetKind::Button,
+            Rect::new(10.0, 10.0, 60.0, 30.0),
+            Sense::CLICK,
+        );
+    }
+
+    #[test]
+    fn test_register_atomic_hit_test() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(50.0, 20.0));
+
+        coord.register_atomic(
+            "sep",
+            WidgetKind::Separator,
+            Rect::new(0.0, 0.0, 200.0, 40.0),
+            Sense::HOVER,
+            &LayerId::main(),
+        );
+
+        assert_eq!(coord.widget_kind(&WidgetId::new("sep")), Some(WidgetKind::Separator));
+        let hit = coord.hit_test_at(50.0, 20.0);
+        assert!(hit.is_some());
+        assert_eq!(hit.unwrap().id, WidgetId::new("sep"));
+    }
+
+    #[test]
+    fn test_is_over_ui_false_for_blackbox() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(100.0, 100.0));
+
+        coord.register_composite(
+            "canvas",
+            WidgetKind::BlackboxPanel,
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            Sense::NONE,
+            &LayerId::main(),
+        );
+
+        // Trigger hover state update
+        coord.end_frame();
+
+        // Next frame — same position
+        coord.begin_frame(make_input_at(100.0, 100.0));
+        coord.register_composite(
+            "canvas",
+            WidgetKind::BlackboxPanel,
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            Sense::NONE,
+            &LayerId::main(),
+        );
+
+        // BlackboxPanel at point — is_over_ui must return false
+        assert!(!coord.is_over_ui());
+    }
+
+    #[test]
+    fn test_is_over_ui_true_for_child_of_panel() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(20.0, 20.0));
+
+        let layer = LayerId::main();
+        let panel_id = coord.register_composite(
+            "sidebar",
+            WidgetKind::Sidebar,
+            Rect::new(0.0, 0.0, 100.0, 200.0),
+            Sense::NONE,
+            &layer,
+        );
+        coord.register_child(
+            &panel_id,
+            "item",
+            WidgetKind::Item,
+            Rect::new(5.0, 10.0, 90.0, 30.0),
+            Sense::CLICK,
+        );
+
+        coord.end_frame();
+
+        coord.begin_frame(make_input_at(20.0, 20.0));
+        let panel_id2 = coord.register_composite(
+            "sidebar",
+            WidgetKind::Sidebar,
+            Rect::new(0.0, 0.0, 100.0, 200.0),
+            Sense::NONE,
+            &layer,
+        );
+        coord.register_child(
+            &panel_id2,
+            "item",
+            WidgetKind::Item,
+            Rect::new(5.0, 10.0, 90.0, 30.0),
+            Sense::CLICK,
+        );
+
+        // Cursor at (20, 20) is inside the Item child — is_over_ui must be true
+        assert!(coord.is_over_ui());
+    }
+
+    #[test]
+    fn test_backward_compat_register_uses_custom_kind() {
+        let mut coord = make_coordinator();
+        coord.begin_frame(make_input_at(50.0, 20.0));
+
+        coord.register("btn", Rect::new(0.0, 0.0, 100.0, 40.0), Sense::CLICK);
+
+        assert_eq!(coord.widget_kind(&WidgetId::new("btn")), Some(WidgetKind::Custom));
+        assert_eq!(coord.widget_parent(&WidgetId::new("btn")), None);
     }
 }

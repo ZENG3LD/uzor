@@ -11,7 +11,7 @@ pub mod handlers;
 
 pub use self::core::{PlatformEvent, ImeEvent, SystemTheme};
 
-pub use self::core::{InputCoordinator, LayerId, ScopedRegion};
+pub use self::core::{InputCoordinator, LayerId, ScopedRegion, WidgetKind};
 pub use self::core::response::*;
 pub use self::core::sense::*;
 pub use self::core::widget_state::*;
