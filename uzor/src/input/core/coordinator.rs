@@ -532,24 +532,45 @@ impl InputCoordinator {
 
     /// Hit test at point (Z-order aware)
     fn hit_test_at(&self, x: f64, y: f64) -> Option<&RegisteredWidget> {
+        // Topmost widget at point, regardless of sense.
+        self.hit_test_at_filtered(x, y, &|_| true)
+    }
+
+    /// Hit-test at `(x, y)` returning the TOPMOST widget that satisfies
+    /// `filter` (instead of returning the topmost widget unconditionally
+    /// then post-filtering, which would miss valid widgets sitting *below*
+    /// a non-matching topmost one within the same layer).
+    fn hit_test_at_filtered(
+        &self,
+        x: f64,
+        y: f64,
+        filter: &dyn Fn(&Sense) -> bool,
+    ) -> Option<&RegisteredWidget> {
         // Sort layers by z-order (highest first)
         let mut sorted_layers = self.layers.clone();
         sorted_layers.sort_by(|a, b| b.z_order.cmp(&a.z_order));
 
         for layer in &sorted_layers {
-            // Find widgets in this layer that contain the point
-            let hits: Vec<_> = self
+            // Walk widgets in this layer in REVERSE registration order
+            // (last-registered = on top) and return the first one that
+            // contains the point AND satisfies the sense filter.
+            let matched = self
                 .widgets
                 .iter()
-                .filter(|w| w.layer == layer.id && w.rect.contains(x, y))
-                .collect();
-
-            if let Some(widget) = hits.last() {
-                // last registered = on top within layer
-                return Some(widget);
+                .rev()
+                .find(|w| {
+                    w.layer == layer.id
+                        && w.rect.contains(x, y)
+                        && filter(&w.sense)
+                });
+            if matched.is_some() {
+                return matched;
             }
 
-            // If this layer is modal, don't check lower layers
+            // If this layer is modal, it blocks all lower layers
+            // regardless of whether anything was hit on it. Modals create
+            // a global barrier — events on/around the modal must not
+            // bleed through to lower layers.
             if layer.modal {
                 return None;
             }
@@ -798,8 +819,9 @@ impl InputCoordinator {
             }
         }
 
-        self.hit_test_at(x, y)
-            .filter(|w| filter(&w.sense))
+        // Use sense-aware hit-test so widgets stacked above a non-matching
+        // widget on the same layer don't accidentally swallow the event.
+        self.hit_test_at_filtered(x, y, filter)
             .map(|w| w.id.clone())
     }
 
@@ -882,9 +904,11 @@ impl InputCoordinator {
             return widget_id;
         }
 
-        // Fall back to global hit test.
-        let id = self.hit_test_at(x, y)
-            .filter(|w| w.sense.drag)
+        // Fall back to global hit test — find topmost widget WITH drag sense
+        // (sense-aware so a non-draggable widget on top doesn't shadow a
+        // draggable widget below it on the same layer).
+        let id = self
+            .hit_test_at_filtered(x, y, &|s| s.drag)
             .map(|w| w.id.clone())?;
         self.widget_state.start_drag(id.clone(), x, y);
         Some(id)
@@ -1229,9 +1253,11 @@ mod tests {
         assert_eq!(coord.process_scroll(150.0, 150.0), Some(WidgetId::new("viewport")));
         // Outside all widgets.
         assert_eq!(coord.process_scroll(500.0, 500.0), None);
-        // Button overlaps viewport but has no scroll sense — viewport is registered first
-        // so button is on top; button lacks scroll → None via sense filter.
-        assert_eq!(coord.process_scroll(50.0, 25.0), None);
+        // Button overlaps viewport but has no scroll sense.
+        // hit_test_with_sense walks widgets top-to-bottom looking for one
+        // that satisfies the sense filter — button (no scroll) is skipped,
+        // viewport (with scroll) is found below it.
+        assert_eq!(coord.process_scroll(50.0, 25.0), Some(WidgetId::new("viewport")));
     }
 
     #[test]
