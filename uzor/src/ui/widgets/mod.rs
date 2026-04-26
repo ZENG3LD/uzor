@@ -16,6 +16,9 @@ pub mod toast;
 pub mod scrollbar;
 pub mod radio;
 pub mod separator;
+pub mod tooltip;
+pub mod tab;
+pub mod chrome;
 
 pub use button::ButtonType;
 pub use container::ContainerType;

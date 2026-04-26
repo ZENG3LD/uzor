@@ -27,6 +27,10 @@ pub enum WidgetKind {
     /// The coordinator does NOT recurse into its children.
     /// `is_over_ui()` returns `false` when the cursor is over a BlackboxPanel.
     BlackboxPanel,
+    /// Window decoration container: titlebar with tabs + min/max/close buttons.
+    Chrome,
+    /// Single tab in a tab strip (composite — can have a close-button child).
+    Tab,
 
     // --- Atomic (leaf — no children): ---
     /// Clickable button.
@@ -43,6 +47,9 @@ pub enum WidgetKind {
     Item,
     /// Escape hatch — any widget that doesn't fit the above categories.
     Custom,
+    /// Text-with-background popup overlay. No internal interaction; hover tracked
+    /// by the coordinator for fade-out logic.
+    Tooltip,
 }
 
 impl WidgetKind {
@@ -52,7 +59,7 @@ impl WidgetKind {
         matches!(
             self,
             Modal | Menu | Popup | Dropdown | Toolbar | Sidebar
-                | ContextMenu | Panel | BlackboxPanel
+                | ContextMenu | Panel | BlackboxPanel | Chrome | Tab
         )
     }
 
