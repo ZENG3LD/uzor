@@ -1,43 +1,39 @@
-//! Text input theme trait - Contract/Connector for text input colors and dimensions
+//! Text input colour palette.
+//!
+//! Geometry lives in `style.rs`; this trait is colour-only.
 
-/// Theme trait for text input colors and dimensions
+/// Colour trait — overridable by callers via custom `impl`.
 pub trait TextInputTheme {
-    fn input_height(&self) -> f64;
-    fn padding(&self) -> f64;
-    fn cursor_width(&self) -> f64;
-    fn background_color(&self) -> [u8; 4];
-    fn border_color(&self) -> [u8; 4];
-    fn focused_border_color(&self) -> [u8; 4];
-    fn text_color(&self) -> [u8; 4];
-    fn placeholder_color(&self) -> [u8; 4];
-    fn selection_color(&self) -> [u8; 4];
-    fn disabled_opacity(&self) -> f64;
+    fn bg_normal(&self)        -> [u8; 4];
+    fn bg_disabled(&self)      -> [u8; 4];
+    fn border_normal(&self)    -> [u8; 4];
+    fn border_hover(&self)     -> [u8; 4];
+    fn border_focused(&self)   -> [u8; 4];
+    fn text_normal(&self)      -> [u8; 4];
+    fn text_disabled(&self)    -> [u8; 4];
+    fn placeholder(&self)      -> [u8; 4];
+    fn selection(&self)        -> [u8; 4];
+    fn cursor(&self)           -> [u8; 4];
 }
 
-/// Default text input theme
+/// Dark default theme — values copied from mlc.
 pub struct DefaultTextInputTheme;
 
-impl DefaultTextInputTheme {
-    pub fn new() -> Self {
+impl Default for DefaultTextInputTheme {
+    fn default() -> Self {
         Self
     }
 }
 
-impl Default for DefaultTextInputTheme {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl TextInputTheme for DefaultTextInputTheme {
-    fn input_height(&self) -> f64 { 30.0 }
-    fn padding(&self) -> f64 { 8.0 }
-    fn cursor_width(&self) -> f64 { 1.0 }
-    fn background_color(&self) -> [u8; 4] { [45, 45, 45, 255] }
-    fn border_color(&self) -> [u8; 4] { [80, 80, 80, 255] }
-    fn focused_border_color(&self) -> [u8; 4] { [0, 120, 215, 255] }
-    fn text_color(&self) -> [u8; 4] { [255, 255, 255, 255] }
-    fn placeholder_color(&self) -> [u8; 4] { [128, 128, 128, 255] }
-    fn selection_color(&self) -> [u8; 4] { [0, 120, 215, 128] }
-    fn disabled_opacity(&self) -> f64 { 0.5 }
+    fn bg_normal(&self)      -> [u8; 4] { [45, 45, 45, 255] }
+    fn bg_disabled(&self)    -> [u8; 4] { [35, 35, 35, 255] }
+    fn border_normal(&self)  -> [u8; 4] { [80, 80, 80, 255] }
+    fn border_hover(&self)   -> [u8; 4] { [110, 110, 110, 255] }
+    fn border_focused(&self) -> [u8; 4] { [0, 120, 215, 255] }
+    fn text_normal(&self)    -> [u8; 4] { [255, 255, 255, 255] }
+    fn text_disabled(&self)  -> [u8; 4] { [128, 128, 128, 255] }
+    fn placeholder(&self)    -> [u8; 4] { [128, 128, 128, 255] }
+    fn selection(&self)      -> [u8; 4] { [0, 120, 215, 128] }
+    fn cursor(&self)         -> [u8; 4] { [255, 255, 255, 255] }
 }
