@@ -25,7 +25,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.0.43"
+version = "1.1.4"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zeng3ld/uzor"
@@ -34,7 +34,7 @@ keywords = ["ui", "rendering", "framework", "headless", "gpu"]
 categories = ["gui", "rendering", "graphics"]
 
 [workspace.dependencies]
-uzor = { version = "1.0.40", path = "./uzor" }
+uzor = { version = "1.1.4", path = "./uzor" }
 uzor-fonts = { version = "1.0.1", path = "./uzor-fonts" }
 uzor-autodetect = { path = "./uzor-autodetect" }
 uzor-render-hub = { path = "./uzor-render-hub" }
