@@ -263,7 +263,7 @@ impl InstancedRenderer {
         let base_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label:                Some("instanced_pipeline_layout"),
             bind_group_layouts:   &[&uniform_bgl],
-            push_constant_ranges: &[],
+            immediate_size: 0,
         });
 
         // ── Alpha blend state ─────────────────────────────────────────────
@@ -299,7 +299,7 @@ impl InstancedRenderer {
             },
             depth_stencil: None,
             multisample:   wgpu::MultisampleState::default(),
-            multiview:     None,
+            multiview_mask: None,
             cache:         None,
         });
 
@@ -333,7 +333,7 @@ impl InstancedRenderer {
             },
             depth_stencil: None,
             multisample:   wgpu::MultisampleState::default(),
-            multiview:     None,
+            multiview_mask: None,
             cache:         None,
         });
 
@@ -367,7 +367,7 @@ impl InstancedRenderer {
             },
             depth_stencil: None,
             multisample:   wgpu::MultisampleState::default(),
-            multiview:     None,
+            multiview_mask: None,
             cache:         None,
         });
 
@@ -418,7 +418,7 @@ impl InstancedRenderer {
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label:                Some("glyph_pipeline_layout"),
                 bind_group_layouts:   &[&uniform_bgl, &atlas_bind_group_layout],
-                push_constant_ranges: &[],
+                immediate_size: 0,
             });
 
         let glyph_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -450,7 +450,7 @@ impl InstancedRenderer {
             },
             depth_stencil: None,
             multisample:   wgpu::MultisampleState::default(),
-            multiview:     None,
+            multiview_mask: None,
             cache:         None,
         });
 
@@ -804,6 +804,7 @@ impl InstancedRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes:         None,
                 occlusion_query_set:      None,
+                multiview_mask:           None,
             });
 
             pass.set_bind_group(0, &self.uniform_bind_group, &[]);

@@ -14,5 +14,5 @@ uzor = { workspace = true }
 # These differ from vello 0.6's kurbo/peniko, so we do NOT depend on
 # uzor-backend-vello-common (which ties to vello 0.6 types).
 # State management is implemented inline in this crate.
-vello_cpu = { version = "0.0.6", features = ["std", "text"] }
+vello_cpu = { version = "0.0.7", features = ["std", "text"] }
 skrifa = "0.40"

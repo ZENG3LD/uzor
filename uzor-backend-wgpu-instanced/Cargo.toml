@@ -10,7 +10,7 @@ readme = "../README.md"
 
 [dependencies]
 uzor = { workspace = true }
-wgpu = "27"
+wgpu = "28"
 bytemuck = { version = "1", features = ["derive"] }
 cosmic-text = "0.12"
 skrifa = "0.40"

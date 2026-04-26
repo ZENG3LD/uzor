@@ -10,5 +10,5 @@ readme = "../README.md"
 
 [dependencies]
 uzor = { workspace = true }
-vello = "0.7"
+vello = "0.8"
 skrifa = "0.40"
