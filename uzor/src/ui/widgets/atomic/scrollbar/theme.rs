@@ -1,12 +1,18 @@
-//! Scrollbar theme contract
+//! Scrollbar colour palette.
 
 pub trait ScrollbarTheme {
-    fn thumb_color(&self) -> u32;
-    fn thumb_hover_color(&self) -> u32;
-    fn thumb_drag_color(&self) -> u32;
-    fn track_color(&self) -> u32;
-    fn track_hover_color(&self) -> u32;
-    fn width(&self) -> f64;
-    fn min_thumb_height(&self) -> f64;
-    fn border_radius(&self) -> f64;
+    fn track(&self)         -> &str;
+    fn thumb_normal(&self)  -> &str;
+    fn thumb_hover(&self)   -> &str;
+    fn thumb_active(&self)  -> &str;
+}
+
+#[derive(Default)]
+pub struct DefaultScrollbarTheme;
+
+impl ScrollbarTheme for DefaultScrollbarTheme {
+    fn track(&self)        -> &str { "#1e1e1e" }
+    fn thumb_normal(&self) -> &str { "#5a5a5a" }
+    fn thumb_hover(&self)  -> &str { "#787b86" }
+    fn thumb_active(&self) -> &str { "#9aa0a6" }
 }
