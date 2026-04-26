@@ -35,4 +35,5 @@ categories = ["gui", "rendering", "graphics"]
 [workspace.dependencies]
 uzor = { version = "1.0.40", path = "./uzor" }
 uzor-fonts = { version = "1.0.1", path = "./uzor-fonts" }
+uzor-autodetect = { path = "./uzor-autodetect" }
 serde = { version = "1.0", features = ["derive"] }

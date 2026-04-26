@@ -12,3 +12,8 @@ pub mod single_instance;
 pub mod screenshot;
 
 pub use single_instance::{single_instance, SingleInstanceGuard};
+
+/// Backend autodetect (re-export from uzor-autodetect).
+pub mod backend {
+    pub use uzor_autodetect::{detect_backend, default_perf, PerfDefaults, RenderBackend};
+}

@@ -4,6 +4,59 @@
 
 use serde::{Deserialize, Serialize};
 
+// =============================================================================
+// Full RenderBackend enum (matches mlc sidebar-content::state::RenderBackend)
+// =============================================================================
+
+/// Full set of rendering backends available in uzor applications.
+///
+/// Copied verbatim from `sidebar_content::state::RenderBackend` in mylittlechart.
+/// mlc keeps its own definition until the cutover step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderBackend {
+    VelloGpu,
+    InstancedWgpu,
+    VelloCpu,
+    VelloHybrid,
+    TinySkia,
+}
+
+/// Per-backend performance defaults.
+pub struct PerfDefaults {
+    /// Target frames per second.
+    pub fps_limit: u32,
+    /// MSAA sample count (1 = disabled, 4/8/16 = enabled).
+    pub msaa_samples: u8,
+}
+
+/// Detect the recommended [`RenderBackend`] from a wgpu adapter.
+///
+/// Match arms copied verbatim from mlc `chart-app-vello/src/main.rs`.
+pub fn detect_backend(adapter_info: &wgpu::AdapterInfo) -> RenderBackend {
+    match adapter_info.device_type {
+        wgpu::DeviceType::DiscreteGpu => RenderBackend::VelloGpu,
+        wgpu::DeviceType::IntegratedGpu => RenderBackend::VelloGpu,
+        wgpu::DeviceType::VirtualGpu => RenderBackend::VelloCpu,
+        wgpu::DeviceType::Cpu => RenderBackend::TinySkia,
+        _ => RenderBackend::VelloGpu,
+    }
+}
+
+/// Return per-backend performance defaults.
+///
+/// Values copied verbatim from mlc `chart-app-vello/src/main.rs`.
+pub fn default_perf(backend: RenderBackend) -> PerfDefaults {
+    let (fps_limit, msaa_samples) = match backend {
+        RenderBackend::VelloGpu => (120u32, 8u8),
+        RenderBackend::VelloCpu => (30, 0),
+        RenderBackend::TinySkia => (90, 8),
+        RenderBackend::InstancedWgpu => (90, 8),
+        RenderBackend::VelloHybrid => (90, 8),
+    };
+    PerfDefaults { fps_limit, msaa_samples }
+}
+
 /// Recommended rendering backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
