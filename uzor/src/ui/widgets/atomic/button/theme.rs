@@ -129,6 +129,419 @@ pub trait ButtonTheme {
     /// Warning color for warning actions
     /// Typical: "#f59e0b"
     fn button_warning(&self) -> &str;
+
+    // =========================================================================
+    // Toolbar-specific slots
+    // =========================================================================
+
+    /// Toolbar item background on hover.
+    /// Typical: "#2a2e39"
+    fn toolbar_item_bg_hover(&self) -> &str;
+
+    /// Toolbar item background when active/selected.
+    /// Typical: "#2196F3"
+    fn toolbar_item_bg_active(&self) -> &str;
+
+    /// Default toolbar item icon/text colour.
+    /// Typical: "#d1d4dc"
+    fn toolbar_item_text(&self) -> &str;
+
+    /// Toolbar item icon/text colour on hover.
+    /// Typical: "#ffffff"
+    fn toolbar_item_text_hover(&self) -> &str;
+
+    /// Toolbar item icon/text colour when active.
+    /// Typical: "#ffffff"
+    fn toolbar_item_text_active(&self) -> &str;
+
+    /// Toolbar separator line colour.
+    /// Typical: "#2a2e39"
+    fn toolbar_separator(&self) -> &str;
+
+    /// Toolbar background fill colour.
+    /// Typical: "#1e222d"
+    fn toolbar_background(&self) -> &str;
+
+    /// Toolbar accent colour — used for 3px sidebar active bar.
+    /// Typical: "#2962ff"
+    fn toolbar_accent(&self) -> &str;
+
+    /// Non-interactive label text colour in the toolbar.
+    /// Falls back to `toolbar_item_text` if not overridden.
+    fn toolbar_label_text(&self) -> &str {
+        self.toolbar_item_text()
+    }
+
+    /// Clock text colour.
+    /// Falls back to `toolbar_item_text` if not overridden.
+    fn clock_text(&self) -> &str {
+        self.toolbar_item_text()
+    }
+
+    // =========================================================================
+    // Modal action button slots (sections 12-18)
+    // =========================================================================
+
+    /// Primary action button idle background (#2962ff in mlc).
+    fn button_primary_bg(&self) -> &str;
+
+    /// Primary action button hover background (#4080ff in mlc).
+    fn button_primary_bg_hover(&self) -> &str;
+
+    /// Danger button idle fill — semi-transparent red.
+    /// mlc profile_manager: "rgba(255,80,80,0.15)"
+    fn button_danger_bg(&self) -> &str;
+
+    /// Danger button hover fill — semi-transparent red, more opaque.
+    /// mlc profile_manager: "rgba(255,80,80,0.35)"
+    fn button_danger_bg_hover(&self) -> &str;
+
+    /// Danger button border idle.
+    /// mlc user_settings: "rgba(239,83,80,0.5)"
+    fn button_danger_border(&self) -> &str;
+
+    /// Danger button border hover.
+    /// mlc user_settings: "rgba(239,83,80,0.75)"
+    fn button_danger_border_hover(&self) -> &str;
+
+    /// Danger button text/icon colour.
+    /// mlc: "#ef5350" (toolbar_theme.danger)
+    fn button_danger_text(&self) -> &str;
+
+    /// Secondary-neutral button hover fill.
+    /// mlc user_settings: "rgba(255,255,255,0.12)"
+    fn button_secondary_hover_bg(&self) -> &str;
+
+    /// Muted text used in secondary/neutral buttons idle state.
+    /// Falls back to toolbar_item_text_muted if not overridden.
+    /// mlc: "rgba(254,255,238,0.7)"
+    fn button_secondary_text_muted(&self) -> &str;
+
+    /// Normal text used in secondary/neutral buttons hover state.
+    /// mlc: "rgba(254,255,238,0.95)"
+    fn button_secondary_text(&self) -> &str;
+
+    /// Dropdown/modal background for ghost-outline Cancel idle fill.
+    /// mlc: toolbar_theme.dropdown_bg
+    fn button_ghost_idle_bg(&self) -> &str;
+
+    /// Utility / SignIn button idle background.
+    /// mlc: toolbar_theme.button_bg
+    fn button_utility_bg(&self) -> &str;
+
+    /// Utility / SignIn button hover background.
+    /// mlc: toolbar_theme.button_bg_hover
+    fn button_utility_bg_hover(&self) -> &str;
+
+    // =========================================================================
+    // Checkbox slots (sections 21-24)
+    // =========================================================================
+
+    /// Checkbox fill when checked (active state).
+    /// mlc: toolbar_theme.item_bg_active
+    fn checkbox_bg_checked(&self) -> &str {
+        self.toolbar_item_bg_active()
+    }
+
+    /// Checkbox fill when unchecked.
+    /// mlc chart_settings variant: theme.background
+    /// mlc indicator/primitive variant: frame_theme.toolbar_bg
+    /// Default uses toolbar background (matches indicator/primitive/notification contexts).
+    fn checkbox_bg_unchecked(&self) -> &str {
+        self.toolbar_background()
+    }
+
+    /// Checkbox border color.
+    /// mlc: toolbar_theme.separator
+    fn checkbox_border(&self) -> &str {
+        self.toolbar_separator()
+    }
+
+    /// Checkmark stroke color (the ✓ path).
+    /// mlc: "#ffffff"
+    fn checkbox_checkmark(&self) -> &str {
+        "#ffffff"
+    }
+
+    /// Notification-checkbox inner fill color when enabled.
+    /// mlc alert_settings draw_toggle: toolbar_theme.item_text_active
+    fn checkbox_notification_inner(&self) -> &str {
+        self.toolbar_item_text_active()
+    }
+
+    // =========================================================================
+    // Toggle switch slots (sections 25-26)
+    // =========================================================================
+
+    /// Toggle track fill when OFF.
+    /// mlc indicator_settings / signals: toolbar_theme.item_bg_hover
+    fn toggle_track_off(&self) -> &str {
+        self.toolbar_item_bg_hover()
+    }
+
+    /// Toggle track fill when ON.
+    /// mlc: toolbar_theme.accent
+    fn toggle_track_on(&self) -> &str {
+        self.toolbar_accent()
+    }
+
+    /// Toggle thumb fill when OFF (white in mlc).
+    fn toggle_thumb_off(&self) -> &str {
+        "#ffffff"
+    }
+
+    /// Toggle thumb fill when ON (white in mlc).
+    fn toggle_thumb_on(&self) -> &str {
+        "#ffffff"
+    }
+
+    /// Overlay applied over the whole toggle when disabled.
+    /// Semi-transparent dark wash.
+    fn toggle_disabled_overlay(&self) -> &str {
+        "rgba(0,0,0,0.35)"
+    }
+
+    // =========================================================================
+    // Color swatch slots (sections 27-30)
+    // =========================================================================
+
+    /// Idle border drawn around a color swatch square.
+    /// mlc: toolbar_theme.separator
+    fn color_swatch_border(&self) -> &str {
+        self.toolbar_separator()
+    }
+
+    /// Outline drawn around the swatch when hovered or picker is open.
+    /// mlc indicator_settings: toolbar_theme.item_bg_hover (expand rect)
+    /// Used as the hover-expand fill color.
+    fn color_swatch_hover_outline(&self) -> &str {
+        self.toolbar_item_bg_hover()
+    }
+
+    /// Accent border color when the color picker is open (selected).
+    /// mlc indicator_settings: toolbar_theme.accent
+    fn color_swatch_selected_border(&self) -> &str {
+        self.toolbar_accent()
+    }
+
+    /// Light tile color for the transparency checkerboard background.
+    /// mlc appearance tab: "#ffffff"
+    fn transparency_checker_a(&self) -> &str {
+        "#ffffff"
+    }
+
+    /// Dark tile color for the transparency checkerboard background.
+    /// mlc appearance tab: "#cccccc"
+    fn transparency_checker_b(&self) -> &str {
+        "#cccccc"
+    }
+
+    // =========================================================================
+    // Fill toggle slots (section 31)
+    // =========================================================================
+
+    /// Border color for the fill-toggle when fill is enabled (active state).
+    /// mlc primitive_settings: toolbar_theme.item_bg_active
+    fn fill_toggle_active_border(&self) -> &str {
+        self.toolbar_item_bg_active()
+    }
+
+    /// Diagonal strikethrough color for the fill-toggle when fill is disabled.
+    /// mlc primitive_settings: toolbar_theme.separator
+    fn fill_toggle_off_pattern_color(&self) -> &str {
+        self.toolbar_separator()
+    }
+
+    // =========================================================================
+    // Dropdown slots (sections 32-33, 38)
+    // =========================================================================
+
+    /// Background fill for a `DropdownField` trigger in idle state.
+    /// mlc alert_settings: toolbar_theme.dropdown_bg
+    fn dropdown_field_bg(&self) -> &str {
+        self.toolbar_background()
+    }
+
+    /// Background fill for a `DropdownField` trigger on hover.
+    /// mlc alert_settings: toolbar_theme.item_bg_hover
+    fn dropdown_field_bg_hover(&self) -> &str {
+        self.toolbar_item_bg_hover()
+    }
+
+    /// Border color for a `DropdownField` trigger.
+    /// mlc: toolbar_theme.separator
+    fn dropdown_field_border(&self) -> &str {
+        self.toolbar_separator()
+    }
+
+    /// Text color inside a `DropdownField` trigger.
+    /// Falls back to `toolbar_item_text`.
+    fn dropdown_field_text(&self) -> &str {
+        self.toolbar_item_text()
+    }
+
+    /// Normal (idle) background for a `DropdownMenuRow`.
+    /// Transparent by default — menu panel provides its own bg.
+    fn dropdown_menu_row_bg_normal(&self) -> &str {
+        "transparent"
+    }
+
+    /// Hovered background for a `DropdownMenuRow`.
+    /// mlc: toolbar_theme.item_bg_hover
+    fn dropdown_menu_row_bg_hover(&self) -> &str {
+        self.toolbar_item_bg_hover()
+    }
+
+    /// Selected background for a `DropdownMenuRow`.
+    /// mlc: toolbar_theme.item_bg_active
+    fn dropdown_menu_row_bg_selected(&self) -> &str {
+        self.toolbar_item_bg_active()
+    }
+
+    /// Text color for a non-selected `DropdownMenuRow`.
+    /// Falls back to `toolbar_item_text`.
+    fn dropdown_menu_row_text(&self) -> &str {
+        self.toolbar_item_text()
+    }
+
+    /// Text color for a selected `DropdownMenuRow`.
+    /// mlc: toolbar_theme.item_text_active
+    fn dropdown_menu_row_text_selected(&self) -> &str {
+        self.toolbar_item_text_active()
+    }
+
+    /// Separator line color drawn below a `DropdownMenuRow` when
+    /// `separator_after = true`.
+    /// mlc: toolbar_theme.separator
+    fn dropdown_menu_separator(&self) -> &str {
+        self.toolbar_separator()
+    }
+
+    /// Chevron icon color used in `SplitDropdown` and `DropdownField`.
+    /// Falls back to muted text.  mlc: toolbar_theme.item_text (or item_text_muted).
+    fn dropdown_chevron_color(&self) -> &str {
+        self.toolbar_item_text()
+    }
+
+    // =========================================================================
+    // Selector button slots (sections 34, 39, 40)
+    // =========================================================================
+
+    /// Border for a selector button in idle (not selected, not hovered) state.
+    /// mlc indicator_settings shape selector: toolbar_theme.separator
+    fn selector_idle_border(&self) -> &str {
+        self.toolbar_separator()
+    }
+
+    /// Border drawn around the selected selector button.
+    /// mlc shape selector active: toolbar_theme.accent
+    fn selector_selected_border(&self) -> &str {
+        self.toolbar_accent()
+    }
+
+    /// Border drawn when the pointer is over an unselected selector button.
+    /// mlc shape selector hover: toolbar_theme.item_bg_hover (used as bg, no extra outline)
+    fn selector_hover_border(&self) -> &str {
+        self.toolbar_item_bg_hover()
+    }
+
+    /// Label text color below / beside the selector button.
+    /// Falls back to `toolbar_item_text`.
+    fn selector_label_text(&self) -> &str {
+        self.toolbar_item_text()
+    }
+
+    // =========================================================================
+    // Radio button slots (sections 35-37)
+    // =========================================================================
+
+    /// Stroke color for the outer ring of an unselected radio button.
+    /// mlc radio_group: `theme.border_normal` (toolbar_separator proxy).
+    fn radio_outer_border(&self) -> &str {
+        self.toolbar_separator()
+    }
+
+    /// Stroke color for the outer ring of a selected radio button.
+    /// mlc radio_group: `theme.accent`.
+    fn radio_outer_border_selected(&self) -> &str {
+        self.toolbar_accent()
+    }
+
+    /// Fill color for the inner dot of a selected radio button.
+    /// mlc radio_group: `theme.accent`.
+    fn radio_inner_dot(&self) -> &str {
+        self.toolbar_accent()
+    }
+
+    /// Overlay applied over the whole radio when disabled.
+    /// Semi-transparent dark wash — mirrors toggle disabled overlay.
+    fn radio_disabled_overlay(&self) -> &str {
+        "rgba(0,0,0,0.35)"
+    }
+
+    /// Hover-row background for `draw_radio_group`.
+    /// mlc: `theme.bg_hover` (toolbar_item_bg_hover proxy).
+    fn radio_row_bg_hover(&self) -> &str {
+        self.toolbar_item_bg_hover()
+    }
+
+    /// Normal label text color for radio group rows.
+    /// Falls back to `toolbar_item_text`.
+    fn radio_label_text(&self) -> &str {
+        self.toolbar_item_text()
+    }
+
+    /// Label text color when the row is selected.
+    /// mlc: `theme.text_hover` (toolbar_item_text_hover proxy).
+    fn radio_label_text_selected(&self) -> &str {
+        self.toolbar_item_text_hover()
+    }
+
+    /// Muted description text color in radio group rows.
+    /// mlc: `theme.text_disabled`.
+    fn radio_description_text(&self) -> &str {
+        self.button_text_disabled()
+    }
+
+    // =========================================================================
+    // Close button slots (section 41)
+    // =========================================================================
+
+    /// Color of the X glyph drawn inside a close button.
+    /// mlc watchlist hover: `toolbar_theme.item_text`; idle: `item_text_muted`.
+    /// Default: normal text color.
+    fn close_button_x_color(&self) -> &str {
+        self.toolbar_item_text()
+    }
+
+    /// Color of the X when the close button is hovered.
+    /// mlc watchlist: `toolbar_theme.item_text` (full brightness).
+    fn close_button_x_color_hover(&self) -> &str {
+        self.toolbar_item_text_hover()
+    }
+
+    // =========================================================================
+    // ScrollChevron slots (section 42)
+    // =========================================================================
+
+    /// Color of the chevron glyph in a scroll-chevron button.
+    /// mlc toolbar_core: uses same color pipeline as toolbar icons.
+    /// Default: normal toolbar text.
+    fn scroll_chevron_color(&self) -> &str {
+        self.toolbar_item_text()
+    }
+
+    /// Color of the chevron when hovered.
+    /// Default: hover toolbar text.
+    fn scroll_chevron_color_hover(&self) -> &str {
+        self.toolbar_item_text_hover()
+    }
+
+    /// Color of the chevron when disabled (no items to scroll to).
+    /// Default: disabled text.
+    fn scroll_chevron_color_disabled(&self) -> &str {
+        self.button_text_disabled()
+    }
 }
 
 // =============================================================================
@@ -180,4 +593,29 @@ impl ButtonTheme for DefaultButtonTheme {
     fn button_danger(&self) -> &str { "#ef5350" }
     fn button_success(&self) -> &str { "#10b981" }
     fn button_warning(&self) -> &str { "#f59e0b" }
+
+    // Toolbar-specific slots
+    fn toolbar_item_bg_hover(&self) -> &str   { "#2a2e39" }
+    fn toolbar_item_bg_active(&self) -> &str  { "#2196F3" }
+    fn toolbar_item_text(&self) -> &str       { "#d1d4dc" }
+    fn toolbar_item_text_hover(&self) -> &str { "#ffffff" }
+    fn toolbar_item_text_active(&self) -> &str{ "#ffffff" }
+    fn toolbar_separator(&self) -> &str       { "#2a2e39" }
+    fn toolbar_background(&self) -> &str      { "#1e222d" }
+    fn toolbar_accent(&self) -> &str          { "#2962ff" }
+
+    // Modal action button slots
+    fn button_primary_bg(&self) -> &str              { "#2962ff" }
+    fn button_primary_bg_hover(&self) -> &str        { "#4080ff" }
+    fn button_danger_bg(&self) -> &str               { "rgba(255,80,80,0.15)" }
+    fn button_danger_bg_hover(&self) -> &str         { "rgba(255,80,80,0.35)" }
+    fn button_danger_border(&self) -> &str           { "rgba(239,83,80,0.5)" }
+    fn button_danger_border_hover(&self) -> &str     { "rgba(239,83,80,0.75)" }
+    fn button_danger_text(&self) -> &str             { "#ef5350" }
+    fn button_secondary_hover_bg(&self) -> &str      { "rgba(255,255,255,0.12)" }
+    fn button_secondary_text_muted(&self) -> &str    { "rgba(254,255,238,0.7)" }
+    fn button_secondary_text(&self) -> &str          { "rgba(254,255,238,0.95)" }
+    fn button_ghost_idle_bg(&self) -> &str           { "#1e222d" }
+    fn button_utility_bg(&self) -> &str              { "#2a2e39" }
+    fn button_utility_bg_hover(&self) -> &str        { "#363a45" }
 }
