@@ -9,7 +9,7 @@ members = [
     "uzor-framework",
     "uzor-web",
     "uzor-mobile",
-    "uzor-tui",
+    "uzor-tui-framework",
     # Backends
     "uzor-backend-vello-gpu",
     "uzor-backend-vello-cpu",
