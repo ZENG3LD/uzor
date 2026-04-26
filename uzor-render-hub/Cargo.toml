@@ -1,0 +1,22 @@
+[package]
+name = "uzor-render-hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "uzor-render-hub: unified rendering backend hub — auto-detects GPU, instantiates the right backend (vello-gpu / vello-hybrid / wgpu-instanced / vello-cpu / tiny-skia), submits frames, collects metrics."
+
+[dependencies]
+uzor = { workspace = true }
+uzor-backend-vello-gpu = { path = "../uzor-backend-vello-gpu" }
+uzor-backend-vello-hybrid = { path = "../uzor-backend-vello-hybrid" }
+uzor-backend-wgpu-instanced = { path = "../uzor-backend-wgpu-instanced" }
+uzor-backend-vello-cpu = { path = "../uzor-backend-vello-cpu" }
+uzor-backend-tiny-skia = { path = "../uzor-backend-tiny-skia" }
+vello = "0.8"
+vello_hybrid = { version = "0.0.7", features = ["wgpu"] }
+wgpu = "28"
+serde = { version = "1", features = ["derive"] }
