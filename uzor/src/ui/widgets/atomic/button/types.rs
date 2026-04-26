@@ -7,105 +7,30 @@ use crate::input::Sense;
 use crate::types::IconId;
 use crate::ui::widgets::WidgetCapabilities;
 
-/// Main button enum - catalog of all button types in the application
+/// Main button enum — catalog of all button variants used by the app.
+///
+/// Layout (position + size) is **not** part of the variant — that lives
+/// in the layout layer. The renderer takes a `Rect` parameter and reads
+/// visual params from `ButtonSettings`.
 #[derive(Debug, Clone)]
 pub enum ButtonType {
-    /// Simple action button (click → action)
-    /// Coverage: 55 buttons
-    Action {
-        variant: ActionVariant,
-        position: (f64, f64),
-        width: f64,
-        height: f64,
-    },
-
-    /// Toggle button (click → flip ON/OFF)
-    /// Coverage: 8 buttons
-    Toggle {
-        variant: ToggleVariant,
-        position: (f64, f64),
-        width: f64,
-        height: f64,
-    },
-
-    /// Checkbox (boolean toggle with visual indicator)
-    /// Coverage: 25 buttons
-    Checkbox {
-        variant: CheckboxVariant,
-        position: (f64, f64),
-        width: f64,
-        height: f64,
-    },
-
-    /// Tab button (switches active view)
-    /// Coverage: 23 buttons
-    Tab {
-        variant: TabVariant,
-        position: (f64, f64),
-        width: f64,
-        height: f64,
-    },
-
-    /// Color swatch button (opens color picker)
-    /// Coverage: 17 buttons
-    ColorSwatch {
-        variant: ColorSwatchVariant,
-        position: (f64, f64),
-        width: f64,
-        height: f64,
-    },
-
-    /// Dropdown button (shows current value + opens menu)
-    /// Coverage: 13 buttons
-    Dropdown {
-        variant: DropdownVariant,
-        position: (f64, f64),
-        width: f64,
-        height: f64,
-    },
+    /// Simple action button (click → action). Coverage: 55 buttons.
+    Action(ActionVariant),
+    /// Toggle button (click → flip ON/OFF). Coverage: 8 buttons.
+    Toggle(ToggleVariant),
+    /// Checkbox (boolean toggle with visual indicator). Coverage: 25 buttons.
+    Checkbox(CheckboxVariant),
+    /// Tab button (switches active view). Coverage: 23 buttons.
+    Tab(TabVariant),
+    /// Color swatch button (opens color picker). Coverage: 17 buttons.
+    ColorSwatch(ColorSwatchVariant),
+    /// Dropdown button (shows current value + opens menu). Coverage: 13 buttons.
+    Dropdown(DropdownVariant),
 }
 
 impl WidgetCapabilities for ButtonType {
     fn sense(&self) -> Sense {
         Sense::CLICK
-    }
-}
-
-impl ButtonType {
-    /// Get the position of the button
-    pub fn position(&self) -> (f64, f64) {
-        match self {
-            ButtonType::Action { position, .. } => *position,
-            ButtonType::Toggle { position, .. } => *position,
-            ButtonType::Checkbox { position, .. } => *position,
-            ButtonType::Tab { position, .. } => *position,
-            ButtonType::ColorSwatch { position, .. } => *position,
-            ButtonType::Dropdown { position, .. } => *position,
-        }
-    }
-
-    /// Get the width of the button
-    pub fn width(&self) -> f64 {
-        match self {
-            ButtonType::Action { width, .. } => *width,
-            ButtonType::Toggle { width, .. } => *width,
-            ButtonType::Checkbox { width, .. } => *width,
-            ButtonType::Tab { width, .. } => *width,
-            ButtonType::ColorSwatch { width, .. } => *width,
-            ButtonType::Dropdown { width, .. } => *width,
-        }
-    }
-
-    /// Get the height of the button
-    pub fn height(&self) -> f64 {
-        match self {
-            ButtonType::Action { height, .. } => *height,
-            ButtonType::Toggle { height, .. } => *height,
-            ButtonType::Checkbox { height, .. } => *height,
-            ButtonType::Tab { height, .. } => *height,
-            ButtonType::ColorSwatch { height, .. } => *height,
-            ButtonType::Dropdown { height, .. } => *height,
-        }
     }
 }
 
