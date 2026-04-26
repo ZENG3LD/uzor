@@ -1,0 +1,22 @@
+[package]
+name = "uzor-window-hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "uzor-window-hub: unified window provider hub. Selects desktop / web / mobile platform crate via feature flags. Mirrors uzor-render-hub pattern."
+
+[dependencies]
+uzor = { workspace = true }
+uzor-desktop = { workspace = true, optional = true }
+uzor-web     = { workspace = true, optional = true }
+uzor-mobile  = { workspace = true, optional = true }
+
+[features]
+default = ["desktop"]
+desktop = ["uzor-desktop"]
+web     = ["uzor-web"]
+mobile  = ["uzor-mobile"]

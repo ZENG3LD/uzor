@@ -9,6 +9,10 @@ pub use backends::PlatformBackend;
 // Re-export event types from their canonical location in input/
 pub use crate::input::core::{PlatformEvent, ImeEvent, SystemTheme};
 
+/// Cross-platform window event. Alias for [`PlatformEvent`] under the
+/// explicit name used by `uzor-window-hub` and platform window providers.
+pub type PlatformWindowEvent = PlatformEvent;
+
 #[derive(Clone, Debug)]
 pub struct WindowConfig {
     pub title: String,

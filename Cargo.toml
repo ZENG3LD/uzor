@@ -19,6 +19,7 @@ members = [
     "uzor-backend-wgpu-instanced",
     # Utils
     "uzor-render-hub",
+    "uzor-window-hub",
 ]
 resolver = "2"
 
@@ -40,5 +41,9 @@ uzor-backend-vello-hybrid = { version = "1.1.5", path = "./uzor-backend-vello-hy
 uzor-backend-vello-cpu = { version = "1.1.5", path = "./uzor-backend-vello-cpu" }
 uzor-backend-tiny-skia = { version = "1.1.5", path = "./uzor-backend-tiny-skia" }
 uzor-backend-wgpu-instanced = { version = "1.1.5", path = "./uzor-backend-wgpu-instanced" }
+uzor-window-hub = { version = "1.1.5", path = "./uzor-window-hub" }
+uzor-desktop = { version = "1.1.5", path = "./uzor-desktop" }
+uzor-web = { version = "1.1.5", path = "./uzor-web" }
+uzor-mobile = { version = "1.1.5", path = "./uzor-mobile" }
 serde = { version = "1.0", features = ["derive"] }
 
