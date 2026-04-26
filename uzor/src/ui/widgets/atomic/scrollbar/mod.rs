@@ -8,10 +8,34 @@ pub mod settings;
 pub mod render;
 pub mod input;
 
+// ── Types ─────────────────────────────────────────────────────────────────────
 pub use types::{ScrollbarOrientation, ScrollbarType};
-pub use state::ScrollbarDragState;
-pub use theme::{DefaultScrollbarTheme, ScrollbarTheme};
-pub use style::{DefaultScrollbarStyle, ScrollbarStyle};
+
+// ── State ─────────────────────────────────────────────────────────────────────
+pub use state::ScrollState;
+
+// ── Theme ─────────────────────────────────────────────────────────────────────
+pub use theme::{DefaultScrollbarTheme, LightScrollbarTheme, ScrollbarTheme};
+
+// ── Style ─────────────────────────────────────────────────────────────────────
+pub use style::{
+    CompactScrollbarStyle, DefaultScrollbarStyle, ScrollbarStyle, SignalScrollbarStyle,
+    StandardScrollbarStyle,
+};
+
+// ── Settings ──────────────────────────────────────────────────────────────────
 pub use settings::ScrollbarSettings;
-pub use render::{draw_scrollbar, ScrollbarResult, ScrollbarView};
-pub use input::{register_thumb, register_track};
+
+// ── Render ────────────────────────────────────────────────────────────────────
+pub use render::{
+    draw_scrollbar, draw_scrollbar_compact, draw_scrollbar_signal, draw_scrollbar_standard,
+    ScrollbarResult, ScrollbarView, ScrollbarVisualState,
+};
+
+// ── Input ─────────────────────────────────────────────────────────────────────
+pub use input::{
+    end_thumb_drag, handle_scroll_wheel, handle_track_click, register_thumb, register_track,
+    start_thumb_drag, try_end_scrollbar_drag, try_handle_scrollbar_drag,
+    try_handle_track_click, try_handle_wheel, try_start_scrollbar_drag, update_thumb_drag,
+    ScrollableInfo,
+};
