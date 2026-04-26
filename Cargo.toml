@@ -35,6 +35,11 @@ categories = ["gui", "rendering", "graphics"]
 [workspace.dependencies]
 uzor = { version = "1.1.4", path = "./uzor" }
 uzor-fonts = { version = "1.0.1", path = "./uzor-fonts" }
-uzor-render-hub = { path = "./uzor-render-hub" }
+uzor-render-hub = { version = "1.1.4", path = "./uzor-render-hub" }
+uzor-backend-vello-gpu = { version = "1.1.4", path = "./uzor-backend-vello-gpu" }
+uzor-backend-vello-hybrid = { version = "1.1.4", path = "./uzor-backend-vello-hybrid" }
+uzor-backend-vello-cpu = { version = "1.1.4", path = "./uzor-backend-vello-cpu" }
+uzor-backend-tiny-skia = { version = "1.1.4", path = "./uzor-backend-tiny-skia" }
+uzor-backend-wgpu-instanced = { version = "1.1.4", path = "./uzor-backend-wgpu-instanced" }
 serde = { version = "1.0", features = ["derive"] }
 
