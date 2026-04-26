@@ -23,7 +23,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.1.4"
+version = "1.1.5"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zeng3ld/uzor"
@@ -32,13 +32,13 @@ keywords = ["ui", "rendering", "framework", "headless", "gpu"]
 categories = ["gui", "rendering", "graphics"]
 
 [workspace.dependencies]
-uzor = { version = "1.1.4", path = "./uzor" }
-uzor-fonts = { version = "1.1.4", path = "./uzor-fonts" }
-uzor-render-hub = { version = "1.1.4", path = "./uzor-render-hub" }
-uzor-backend-vello-gpu = { version = "1.1.4", path = "./uzor-backend-vello-gpu" }
-uzor-backend-vello-hybrid = { version = "1.1.4", path = "./uzor-backend-vello-hybrid" }
-uzor-backend-vello-cpu = { version = "1.1.4", path = "./uzor-backend-vello-cpu" }
-uzor-backend-tiny-skia = { version = "1.1.4", path = "./uzor-backend-tiny-skia" }
-uzor-backend-wgpu-instanced = { version = "1.1.4", path = "./uzor-backend-wgpu-instanced" }
+uzor = { version = "1.1.5", path = "./uzor" }
+uzor-fonts = { version = "1.1.5", path = "./uzor-fonts" }
+uzor-render-hub = { version = "1.1.5", path = "./uzor-render-hub" }
+uzor-backend-vello-gpu = { version = "1.1.5", path = "./uzor-backend-vello-gpu" }
+uzor-backend-vello-hybrid = { version = "1.1.5", path = "./uzor-backend-vello-hybrid" }
+uzor-backend-vello-cpu = { version = "1.1.5", path = "./uzor-backend-vello-cpu" }
+uzor-backend-tiny-skia = { version = "1.1.5", path = "./uzor-backend-tiny-skia" }
+uzor-backend-wgpu-instanced = { version = "1.1.5", path = "./uzor-backend-wgpu-instanced" }
 serde = { version = "1.0", features = ["derive"] }
 
