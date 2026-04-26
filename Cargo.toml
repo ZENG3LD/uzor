@@ -11,12 +11,12 @@ members = [
     "uzor-window-mobile",
     "uzor-tui-framework",
     # Backends
-    "uzor-backend-vello-gpu",
-    "uzor-backend-vello-cpu",
-    "uzor-backend-vello-hybrid",
-    "uzor-backend-tiny-skia",
-    "uzor-backend-canvas2d",
-    "uzor-backend-wgpu-instanced",
+    "uzor-render-vello-gpu",
+    "uzor-render-vello-cpu",
+    "uzor-render-vello-hybrid",
+    "uzor-render-tiny-skia",
+    "uzor-render-canvas2d",
+    "uzor-render-wgpu-instanced",
     # Utils
     "uzor-render-hub",
     "uzor-window-hub",
@@ -36,11 +36,11 @@ categories = ["gui", "rendering", "graphics"]
 uzor = { version = "1.1.5", path = "./uzor" }
 uzor-fonts = { version = "1.1.5", path = "./uzor-fonts" }
 uzor-render-hub = { version = "1.1.5", path = "./uzor-render-hub" }
-uzor-backend-vello-gpu = { version = "1.1.5", path = "./uzor-backend-vello-gpu" }
-uzor-backend-vello-hybrid = { version = "1.1.5", path = "./uzor-backend-vello-hybrid" }
-uzor-backend-vello-cpu = { version = "1.1.5", path = "./uzor-backend-vello-cpu" }
-uzor-backend-tiny-skia = { version = "1.1.5", path = "./uzor-backend-tiny-skia" }
-uzor-backend-wgpu-instanced = { version = "1.1.5", path = "./uzor-backend-wgpu-instanced" }
+uzor-render-vello-gpu = { version = "1.1.5", path = "./uzor-render-vello-gpu" }
+uzor-render-vello-hybrid = { version = "1.1.5", path = "./uzor-render-vello-hybrid" }
+uzor-render-vello-cpu = { version = "1.1.5", path = "./uzor-render-vello-cpu" }
+uzor-render-tiny-skia = { version = "1.1.5", path = "./uzor-render-tiny-skia" }
+uzor-render-wgpu-instanced = { version = "1.1.5", path = "./uzor-render-wgpu-instanced" }
 uzor-window-hub = { version = "1.1.5", path = "./uzor-window-hub" }
 uzor-window-desktop = { version = "1.1.5", path = "./uzor-window-desktop" }
 uzor-window-web = { version = "1.1.5", path = "./uzor-window-web" }

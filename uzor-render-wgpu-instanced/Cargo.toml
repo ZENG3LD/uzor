@@ -1,5 +1,5 @@
 [package]
-name = "uzor-backend-wgpu-instanced"
+name = "uzor-render-wgpu-instanced"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

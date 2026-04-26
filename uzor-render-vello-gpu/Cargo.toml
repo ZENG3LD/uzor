@@ -1,14 +1,14 @@
 [package]
-name = "uzor-backend-tiny-skia"
+name = "uzor-render-vello-gpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "CPU rendering backend using tiny-skia"
+description = "GPU rendering backend using vello + wgpu"
 readme = "../README.md"
 
 [dependencies]
 uzor = { workspace = true }
-tiny-skia = "0.11"
-fontdue = "0.9"
+vello = "0.8"
+skrifa = "0.40"

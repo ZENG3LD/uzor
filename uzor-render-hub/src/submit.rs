@@ -144,7 +144,7 @@ pub fn submit_frame(state: &mut WindowRenderState, params: SubmitParams<'_>) -> 
             // Lazy renderer creation, then direct render to swapchain.
             if state.instanced_renderer.is_none() {
                 state.instanced_renderer = Some(
-                    uzor_backend_wgpu_instanced::InstancedRenderer::new(
+                    uzor_render_wgpu_instanced::InstancedRenderer::new(
                         device,
                         queue,
                         surface_texture.texture.format(),

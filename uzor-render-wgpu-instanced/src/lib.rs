@@ -11,7 +11,7 @@
 //!
 //! ```no_run
 //! # async fn example() {
-//! use uzor_backend_wgpu_instanced::{InstancedRenderer, InstancedRenderContext};
+//! use uzor_render_wgpu_instanced::{InstancedRenderer, InstancedRenderContext};
 //!
 //! // Create the renderer once (owns GPU pipelines, atlas, etc.)
 //! // let renderer = InstancedRenderer::new(&device, &queue, surface_format);

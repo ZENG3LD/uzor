@@ -1,5 +1,5 @@
 [package]
-name = "uzor-backend-canvas2d"
+name = "uzor-render-canvas2d"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

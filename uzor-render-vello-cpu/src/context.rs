@@ -6,7 +6,7 @@
 //!
 //! `vello_cpu` 0.0.6 re-exports `kurbo` (0.13), `peniko` (0.6), and `color`
 //! (0.3) from `vello_common 0.0.6`.  These differ from the `vello 0.6` versions
-//! used by the GPU backend (`uzor-backend-vello-gpu`), so this crate does NOT
+//! used by the GPU backend (`uzor-render-vello-gpu`), so this crate does NOT
 //! depend on `uzor-backend-vello-common` and implements all state management
 //! inline to avoid cross-version type conflicts.
 

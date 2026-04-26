@@ -11,11 +11,11 @@ description = "uzor-render-hub: unified rendering backend hub — auto-detects G
 
 [dependencies]
 uzor = { workspace = true }
-uzor-backend-vello-gpu = { workspace = true }
-uzor-backend-vello-hybrid = { workspace = true }
-uzor-backend-wgpu-instanced = { workspace = true }
-uzor-backend-vello-cpu = { workspace = true }
-uzor-backend-tiny-skia = { workspace = true }
+uzor-render-vello-gpu = { workspace = true }
+uzor-render-vello-hybrid = { workspace = true }
+uzor-render-wgpu-instanced = { workspace = true }
+uzor-render-vello-cpu = { workspace = true }
+uzor-render-tiny-skia = { workspace = true }
 vello = "0.8"
 vello_hybrid = { version = "0.0.7", features = ["wgpu"] }
 wgpu = "28"

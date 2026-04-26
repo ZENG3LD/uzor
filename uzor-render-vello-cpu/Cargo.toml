@@ -1,5 +1,5 @@
 [package]
-name = "uzor-backend-vello-cpu"
+name = "uzor-render-vello-cpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -302,7 +302,7 @@ struct SavedState {
 /// ## wgpu version
 ///
 /// This crate requires `wgpu 27.x` (via `vello_hybrid 0.0.6`).  It CANNOT
-/// coexist in the same binary with `uzor-backend-vello-gpu` which pulls in
+/// coexist in the same binary with `uzor-render-vello-gpu` which pulls in
 /// `wgpu 0.20` through `vello 0.6`.
 ///
 /// ## Frame lifecycle

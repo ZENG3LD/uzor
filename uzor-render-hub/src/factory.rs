@@ -9,11 +9,11 @@
 //! Hub owns the persistent half (`WindowRenderState`); the caller owns the
 //! per-frame half and feeds it into `submit_frame`.
 
-use uzor_backend_tiny_skia::TinySkiaCpuRenderContext;
-use uzor_backend_vello_cpu::VelloCpuRenderContext;
-use uzor_backend_vello_gpu::VelloGpuRenderContext;
-use uzor_backend_vello_hybrid::VelloHybridRenderContext;
-use uzor_backend_wgpu_instanced::{DrawCmd, InstancedRenderContext, InstancedRenderer};
+use uzor_render_tiny_skia::TinySkiaCpuRenderContext;
+use uzor_render_vello_cpu::VelloCpuRenderContext;
+use uzor_render_vello_gpu::VelloGpuRenderContext;
+use uzor_render_vello_hybrid::VelloHybridRenderContext;
+use uzor_render_wgpu_instanced::{DrawCmd, InstancedRenderContext, InstancedRenderer};
 use vello::{Renderer as VelloRenderer, Scene};
 
 use crate::backend::RenderBackend;

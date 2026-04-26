@@ -8,7 +8,7 @@
 //! ## Dependency conflict warning
 //!
 //! `vello_hybrid 0.0.6` depends on `wgpu 27.0.1`.  The main GPU backend
-//! (`uzor-backend-vello-gpu`) depends on `vello 0.6` which uses `wgpu 0.20`.
+//! (`uzor-render-vello-gpu`) depends on `vello 0.6` which uses `wgpu 0.20`.
 //! These two versions of wgpu **cannot coexist** in the same binary.  This
 //! crate is therefore compiled separately and must not be a transitive
 //! dependency of any crate that already pulls in `vello` or `wgpu 0.20`.
@@ -16,7 +16,7 @@
 //! ## Usage
 //!
 //! ```rust,ignore
-//! use uzor_backend_vello_hybrid::VelloHybridRenderContext;
+//! use uzor_render_vello_hybrid::VelloHybridRenderContext;
 //!
 //! // Create context (wgpu setup is handled externally)
 //! let mut ctx = VelloHybridRenderContext::new(1.0);
