@@ -11,8 +11,8 @@ description = "uzor-framework: end-to-end app runner — owns winit, windows, ch
 
 [dependencies]
 vello = "0.7"
+wgpu = "27"
+winit = "0.30"
+pollster = "0.4"
 png = "0.17"
 uzor-autodetect = { workspace = true }
-
-[target.'cfg(target_os = "windows")'.dependencies]
-winit = "0.30"
