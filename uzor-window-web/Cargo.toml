@@ -1,5 +1,5 @@
 [package]
-name = "uzor-web"
+name = "uzor-window-web"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
