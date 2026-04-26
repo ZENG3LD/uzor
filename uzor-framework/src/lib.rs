@@ -9,5 +9,6 @@
 
 pub mod platform;
 pub mod single_instance;
+pub mod screenshot;
 
 pub use single_instance::{single_instance, SingleInstanceGuard};
