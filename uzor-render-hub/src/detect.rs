@@ -40,7 +40,7 @@ pub fn default_perf(backend: RenderBackend) -> PerfDefaults {
     PerfDefaults { fps_limit, msaa_samples }
 }
 
-/// Coarse-grained recommendation kept for back-compat with `uzor-autodetect`.
+/// Coarse-grained recommendation: GPU vs CPU vs fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RecommendedBackend {

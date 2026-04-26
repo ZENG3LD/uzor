@@ -15,4 +15,4 @@ wgpu = "28"
 winit = "0.30"
 pollster = "0.4"
 png = "0.17"
-uzor-autodetect = { workspace = true }
+uzor-render-hub = { workspace = true }

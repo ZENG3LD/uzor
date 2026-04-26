@@ -21,7 +21,7 @@ pub struct WindowState<A> {
     /// Vello renderer instance for this window's device.
     pub renderer: Renderer,
     /// The active rendering backend for this window.
-    pub backend: uzor_autodetect::RenderBackend,
+    pub backend: uzor_render_hub::RenderBackend,
 
     // ---- Scene double-buffer ------------------------------------------------
     /// Scene being built on the main thread for the *next* GPU frame.

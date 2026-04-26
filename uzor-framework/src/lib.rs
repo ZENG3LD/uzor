@@ -14,7 +14,5 @@ pub mod window;
 
 pub use single_instance::{single_instance, SingleInstanceGuard};
 
-/// Backend autodetect (re-export from uzor-autodetect).
-pub mod backend {
-    pub use uzor_autodetect::{detect_backend, default_perf, PerfDefaults, RenderBackend};
-}
+/// Render backend hub (re-export from uzor-render-hub).
+pub use uzor_render_hub as render_hub;

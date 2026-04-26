@@ -36,7 +36,7 @@ pub struct WindowConfig {
     pub start_visible: bool,
     /// Override automatic backend detection.  `None` = auto-detect from wgpu
     /// adapter capabilities.
-    pub backend_hint: Option<uzor_autodetect::RenderBackend>,
+    pub backend_hint: Option<uzor_render_hub::RenderBackend>,
 }
 
 impl Default for WindowConfig {

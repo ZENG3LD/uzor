@@ -124,7 +124,7 @@ where
     let adapter_info = render_cx.devices[dev_id].adapter().get_info();
     let backend = config
         .backend_hint
-        .unwrap_or_else(|| uzor_autodetect::detect_backend(&adapter_info));
+        .unwrap_or_else(|| uzor_render_hub::detect_backend(&adapter_info));
 
     // ---- Patch COPY_SRC on target texture (needed for screenshot readback) --
     let device = &render_cx.devices[dev_id].device;
