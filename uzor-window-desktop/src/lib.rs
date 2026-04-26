@@ -26,7 +26,6 @@ use uzor::platform::{PlatformEvent, SystemTheme, WindowConfig};
 
 mod event_mapper;
 pub mod application;
-pub mod factory;
 
 use event_mapper::EventMapper;
 

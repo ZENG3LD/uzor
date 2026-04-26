@@ -10,22 +10,6 @@
 pub mod atomic;
 pub mod composite;
 
-// Backward-compat module aliases — to be removed once consumers migrate to
-// `widgets::atomic::*` / `widgets::composite::*` paths directly.
-pub use atomic::button;
-pub use atomic::container;
-pub use atomic::scrollbar;
-pub use atomic::separator;
-pub use atomic::slider;
-pub use atomic::tab;
-pub use atomic::text_input;
-pub use atomic::toast;
-pub use atomic::tooltip;
-pub use composite::chrome;
-pub use composite::dropdown;
-pub use composite::panel;
-pub use composite::popup;
-
 // ─── Atomic re-exports ──────────────────────────────────────────────────────
 pub use atomic::button::ButtonType;
 pub use atomic::container::ContainerType;

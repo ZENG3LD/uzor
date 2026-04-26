@@ -15,7 +15,6 @@ pub mod layout;
 pub mod text;
 pub mod border;
 pub mod widget;
-pub mod factory;
 
 pub use style::{Color, Modifier, Style};
 pub use cell::Cell;
