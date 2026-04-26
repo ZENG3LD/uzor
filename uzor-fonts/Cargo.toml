@@ -1,11 +1,11 @@
 [package]
 name = "uzor-fonts"
-version = "1.0.1"
-edition = "2021"
-license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Bundled font assets for uzor (Roboto, JetBrainsMono, NotoEmoji, NotoColorEmoji, etc.)"
-repository = "https://github.com/zeng3ld/uzor"
-homepage = "https://github.com/zeng3ld/uzor"
+repository.workspace = true
+homepage.workspace = true
 keywords = ["fonts", "ui", "rendering", "embedded", "assets"]
 categories = ["embedded", "rendering"]
 links = "uzor_fonts_assets"

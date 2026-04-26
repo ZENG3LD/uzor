@@ -11,7 +11,6 @@ members = [
     "uzor-mobile",
     "uzor-tui",
     # Backends
-    "uzor-backend-vello-common",
     "uzor-backend-vello-gpu",
     "uzor-backend-vello-cpu",
     "uzor-backend-vello-hybrid",
@@ -34,7 +33,7 @@ categories = ["gui", "rendering", "graphics"]
 
 [workspace.dependencies]
 uzor = { version = "1.1.4", path = "./uzor" }
-uzor-fonts = { version = "1.0.1", path = "./uzor-fonts" }
+uzor-fonts = { version = "1.1.4", path = "./uzor-fonts" }
 uzor-render-hub = { version = "1.1.4", path = "./uzor-render-hub" }
 uzor-backend-vello-gpu = { version = "1.1.4", path = "./uzor-backend-vello-gpu" }
 uzor-backend-vello-hybrid = { version = "1.1.4", path = "./uzor-backend-vello-hybrid" }
