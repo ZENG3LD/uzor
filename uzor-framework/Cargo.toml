@@ -1,0 +1,13 @@
+[package]
+name = "uzor-framework"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "uzor-framework: end-to-end app runner — owns winit, windows, chrome, GPU pipeline, screenshot, backend autodetect. Apps register widgets and business logic; framework handles everything else."
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winit = "0.30"

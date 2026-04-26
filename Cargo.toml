@@ -6,6 +6,7 @@ members = [
     "uzor",
     # Platform
     "uzor-desktop",
+    "uzor-framework",
     "uzor-web",
     "uzor-mobile",
     "uzor-tui",
@@ -23,7 +24,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.1.3"
+version = "1.0.43"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zeng3ld/uzor"
@@ -32,6 +33,6 @@ keywords = ["ui", "rendering", "framework", "headless", "gpu"]
 categories = ["gui", "rendering", "graphics"]
 
 [workspace.dependencies]
-uzor = { version = "1.1.3", path = "./uzor" }
+uzor = { version = "1.0.40", path = "./uzor" }
 uzor-fonts = { version = "1.0.1", path = "./uzor-fonts" }
 serde = { version = "1.0", features = ["derive"] }
