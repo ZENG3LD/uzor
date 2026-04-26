@@ -1,7 +1,7 @@
 //! Chrome persistent state.
 
 use super::types::ChromeButton;
-use super::super::tooltip::TooltipState;
+use crate::ui::widgets::atomic::tooltip::TooltipState;
 
 /// Transient interaction state for the Chrome titlebar.
 #[derive(Debug, Clone, Default)]

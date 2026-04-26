@@ -7,6 +7,7 @@
 
 pub mod tree;
 pub mod types;
+pub mod helpers;
 
 pub use tree::*;
 pub use types::*;

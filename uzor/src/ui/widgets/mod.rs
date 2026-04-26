@@ -1,37 +1,44 @@
-//! Widget type catalog
+//! Widget catalog — atomic + composite split.
 //!
-//! Platform-agnostic widget definitions (types, themes, state, input contracts).
-//! Backends implement rendering; uzor defines the contract.
+//! Layout mirrors `WidgetKind`:
+//! - `atomic/`    — leaf widgets (Button, Slider, Tooltip, …).
+//! - `composite/` — parents that own children (Modal, Dropdown, Chrome, …).
+//!
+//! Each widget folder owns `types`, `state`, `theme`, `style`, `render`, `input`.
+//! Some files are placeholders for now and will be filled in subsequent passes.
 
-pub mod button;
-pub mod container;
-pub mod containers;
-pub mod popup;
-pub mod panel;
-pub mod overlay;
-pub mod text_input;
-pub mod dropdown;
-pub mod slider;
-pub mod toast;
-pub mod scrollbar;
-pub mod radio;
-pub mod separator;
-pub mod tooltip;
-pub mod tab;
-pub mod chrome;
+pub mod atomic;
+pub mod composite;
 
-pub use button::ButtonType;
-pub use container::ContainerType;
-pub use popup::PopupType;
-pub use panel::{PanelType, ToolbarVariant, SidebarVariant, ModalVariant};
-pub use overlay::OverlayType;
-pub use text_input::TextInputType;
-pub use dropdown::DropdownType;
-pub use slider::SliderType;
-pub use toast::ToastType;
-pub use scrollbar::{ScrollbarType, ScrollbarOrientation};
-pub use radio::RadioType;
-pub use separator::{SeparatorType, SeparatorOrientation};
+// Backward-compat module aliases — to be removed once consumers migrate to
+// `widgets::atomic::*` / `widgets::composite::*` paths directly.
+pub use atomic::button;
+pub use atomic::container;
+pub use atomic::scrollbar;
+pub use atomic::separator;
+pub use atomic::slider;
+pub use atomic::tab;
+pub use atomic::text_input;
+pub use atomic::toast;
+pub use atomic::tooltip;
+pub use composite::chrome;
+pub use composite::dropdown;
+pub use composite::panel;
+pub use composite::popup;
+
+// ─── Atomic re-exports ──────────────────────────────────────────────────────
+pub use atomic::button::ButtonType;
+pub use atomic::container::ContainerType;
+pub use atomic::scrollbar::{ScrollbarType, ScrollbarOrientation};
+pub use atomic::separator::{SeparatorType, SeparatorOrientation};
+pub use atomic::slider::SliderType;
+pub use atomic::text_input::TextInputType;
+pub use atomic::toast::ToastType;
+
+// ─── Composite re-exports ───────────────────────────────────────────────────
+pub use composite::dropdown::DropdownType;
+pub use composite::panel::{PanelType, ToolbarVariant, SidebarVariant, ModalVariant};
+pub use composite::popup::PopupType;
 
 pub use crate::types::ScrollState;
 
@@ -44,4 +51,3 @@ use crate::input::Sense;
 pub trait WidgetCapabilities {
     fn sense(&self) -> Sense;
 }
-

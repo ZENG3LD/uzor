@@ -1,7 +1,7 @@
 //! Chrome type definitions.
 
 use crate::types::Rect;
-use super::super::tab::TabConfig;
+use crate::ui::widgets::atomic::tab::TabConfig;
 
 /// Which titlebar button was interacted with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

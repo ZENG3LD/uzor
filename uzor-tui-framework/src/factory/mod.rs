@@ -7,7 +7,6 @@ pub mod toast;
 pub mod container;
 pub mod popup;
 pub mod panel;
-pub mod overlay;
 pub mod text_input;
 pub mod dropdown;
 
@@ -21,6 +20,5 @@ pub use toast::render_default as render_toast;
 pub use container::render_default as render_container;
 pub use popup::render_default as render_popup;
 pub use panel::render_default as render_panel;
-pub use overlay::render_default as render_overlay;
 pub use text_input::render_default as render_text_input;
 pub use dropdown::render_default as render_dropdown;

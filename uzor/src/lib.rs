@@ -45,7 +45,7 @@ pub use app_context::{CheckboxResponse, IconButtonResponse};
 pub use widgets::{
     ButtonType, ContainerType, PopupType,
     PanelType, ToolbarVariant, SidebarVariant, ModalVariant,
-    OverlayType, TextInputType, DropdownType, SliderType, ToastType,
+    TextInputType, DropdownType, SliderType, ToastType,
 };
 
 pub use ui::assets::cursors::CursorIcon;
