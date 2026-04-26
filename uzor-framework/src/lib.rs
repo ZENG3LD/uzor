@@ -8,3 +8,6 @@
 //! lifted from mylittlechart's production code.
 
 pub mod platform;
+pub mod single_instance;
+
+pub use single_instance::{single_instance, SingleInstanceGuard};
