@@ -35,21 +35,39 @@ pub enum WidgetKind {
     // --- Atomic (leaf — no children): ---
     /// Clickable button.
     Button,
-    /// Non-interactive visual divider.
-    Separator,
+    /// Boolean checkbox (checked / unchecked).
+    Checkbox,
+    /// Toolbar time display with hover-only behavior.
+    Clock,
+    /// X-glyph dismiss button for modals and panels.
+    CloseButton,
+    /// Color swatch square that opens a color picker (atomic leaf).
+    ColorSwatch,
+    /// Trigger button for a dropdown menu (atomic leaf — trigger only, not the menu).
+    DropdownTrigger,
+    /// Selectable item inside a menu or list (non-interactive).
+    Item,
+    /// Single radio option (part of a group).
+    Radio,
     /// Draggable thumb of a scrollbar.
     ScrollbarHandle,
     /// Non-draggable track of a scrollbar (click-to-jump area).
     ScrollbarTrack,
+    /// Directional chevron for toolbar overflow navigation.
+    ScrollChevron,
+    /// Non-interactive visual divider.
+    Separator,
+    /// Selector button for shape/theme/UI-style choices (atomic leaf).
+    ShapeSelector,
     /// Draggable slider thumb.
     Slider,
-    /// Selectable item inside a menu or list.
-    Item,
-    /// Escape hatch — any widget that doesn't fit the above categories.
-    Custom,
+    /// iOS-style on/off toggle switch.
+    Toggle,
     /// Text-with-background popup overlay. No internal interaction; hover tracked
     /// by the coordinator for fade-out logic.
     Tooltip,
+    /// Escape hatch — any widget that doesn't fit the above categories.
+    Custom,
 }
 
 impl WidgetKind {

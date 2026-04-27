@@ -233,75 +233,6 @@ pub trait ButtonTheme {
     /// mlc: toolbar_theme.button_bg_hover
     fn button_utility_bg_hover(&self) -> &str;
 
-    // =========================================================================
-    // Checkbox slots (sections 21-24)
-    // =========================================================================
-
-    /// Checkbox fill when checked (active state).
-    /// mlc: toolbar_theme.item_bg_active
-    fn checkbox_bg_checked(&self) -> &str {
-        self.toolbar_item_bg_active()
-    }
-
-    /// Checkbox fill when unchecked.
-    /// mlc chart_settings variant: theme.background
-    /// mlc indicator/primitive variant: frame_theme.toolbar_bg
-    /// Default uses toolbar background (matches indicator/primitive/notification contexts).
-    fn checkbox_bg_unchecked(&self) -> &str {
-        self.toolbar_background()
-    }
-
-    /// Checkbox border color.
-    /// mlc: toolbar_theme.separator
-    fn checkbox_border(&self) -> &str {
-        self.toolbar_separator()
-    }
-
-    /// Checkmark stroke color (the ✓ path).
-    /// mlc: "#ffffff"
-    fn checkbox_checkmark(&self) -> &str {
-        "#ffffff"
-    }
-
-    /// Notification-checkbox inner fill color when enabled.
-    /// mlc alert_settings draw_toggle: toolbar_theme.item_text_active
-    fn checkbox_notification_inner(&self) -> &str {
-        self.toolbar_item_text_active()
-    }
-
-    // =========================================================================
-    // Toggle switch slots (sections 25-26)
-    // =========================================================================
-
-    /// Toggle track fill when OFF.
-    /// mlc indicator_settings / signals: toolbar_theme.item_bg_hover
-    fn toggle_track_off(&self) -> &str {
-        self.toolbar_item_bg_hover()
-    }
-
-    /// Toggle track fill when ON.
-    /// mlc: toolbar_theme.accent
-    fn toggle_track_on(&self) -> &str {
-        self.toolbar_accent()
-    }
-
-    /// Toggle thumb fill when OFF (white in mlc).
-    fn toggle_thumb_off(&self) -> &str {
-        "#ffffff"
-    }
-
-    /// Toggle thumb fill when ON (white in mlc).
-    fn toggle_thumb_on(&self) -> &str {
-        "#ffffff"
-    }
-
-    /// Overlay applied over the whole toggle when disabled.
-    /// Semi-transparent dark wash.
-    fn toggle_disabled_overlay(&self) -> &str {
-        "rgba(0,0,0,0.35)"
-    }
-
-    // =========================================================================
     // Color swatch slots (sections 27-30)
     // =========================================================================
 
@@ -449,58 +380,6 @@ pub trait ButtonTheme {
     /// Falls back to `toolbar_item_text`.
     fn selector_label_text(&self) -> &str {
         self.toolbar_item_text()
-    }
-
-    // =========================================================================
-    // Radio button slots (sections 35-37)
-    // =========================================================================
-
-    /// Stroke color for the outer ring of an unselected radio button.
-    /// mlc radio_group: `theme.border_normal` (toolbar_separator proxy).
-    fn radio_outer_border(&self) -> &str {
-        self.toolbar_separator()
-    }
-
-    /// Stroke color for the outer ring of a selected radio button.
-    /// mlc radio_group: `theme.accent`.
-    fn radio_outer_border_selected(&self) -> &str {
-        self.toolbar_accent()
-    }
-
-    /// Fill color for the inner dot of a selected radio button.
-    /// mlc radio_group: `theme.accent`.
-    fn radio_inner_dot(&self) -> &str {
-        self.toolbar_accent()
-    }
-
-    /// Overlay applied over the whole radio when disabled.
-    /// Semi-transparent dark wash — mirrors toggle disabled overlay.
-    fn radio_disabled_overlay(&self) -> &str {
-        "rgba(0,0,0,0.35)"
-    }
-
-    /// Hover-row background for `draw_radio_group`.
-    /// mlc: `theme.bg_hover` (toolbar_item_bg_hover proxy).
-    fn radio_row_bg_hover(&self) -> &str {
-        self.toolbar_item_bg_hover()
-    }
-
-    /// Normal label text color for radio group rows.
-    /// Falls back to `toolbar_item_text`.
-    fn radio_label_text(&self) -> &str {
-        self.toolbar_item_text()
-    }
-
-    /// Label text color when the row is selected.
-    /// mlc: `theme.text_hover` (toolbar_item_text_hover proxy).
-    fn radio_label_text_selected(&self) -> &str {
-        self.toolbar_item_text_hover()
-    }
-
-    /// Muted description text color in radio group rows.
-    /// mlc: `theme.text_disabled`.
-    fn radio_description_text(&self) -> &str {
-        self.button_text_disabled()
     }
 
     // =========================================================================
