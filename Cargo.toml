@@ -24,7 +24,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.1.5"
+version = "1.1.6"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zeng3ld/uzor"
@@ -33,17 +33,17 @@ keywords = ["ui", "rendering", "framework", "headless", "gpu"]
 categories = ["gui", "rendering", "graphics"]
 
 [workspace.dependencies]
-uzor = { version = "1.1.5", path = "./uzor" }
-uzor-fonts = { version = "1.1.5", path = "./uzor-fonts" }
-uzor-render-hub = { version = "1.1.5", path = "./uzor-render-hub" }
-uzor-render-vello-gpu = { version = "1.1.5", path = "./uzor-render-vello-gpu" }
-uzor-render-vello-hybrid = { version = "1.1.5", path = "./uzor-render-vello-hybrid" }
-uzor-render-vello-cpu = { version = "1.1.5", path = "./uzor-render-vello-cpu" }
-uzor-render-tiny-skia = { version = "1.1.5", path = "./uzor-render-tiny-skia" }
-uzor-render-wgpu-instanced = { version = "1.1.5", path = "./uzor-render-wgpu-instanced" }
-uzor-window-hub = { version = "1.1.5", path = "./uzor-window-hub" }
-uzor-window-desktop = { version = "1.1.5", path = "./uzor-window-desktop" }
-uzor-window-web = { version = "1.1.5", path = "./uzor-window-web" }
-uzor-window-mobile = { version = "1.1.5", path = "./uzor-window-mobile" }
+uzor = { version = "1.1.6", path = "./uzor" }
+uzor-fonts = { version = "1.1.6", path = "./uzor-fonts" }
+uzor-render-hub = { version = "1.1.6", path = "./uzor-render-hub" }
+uzor-render-vello-gpu = { version = "1.1.6", path = "./uzor-render-vello-gpu" }
+uzor-render-vello-hybrid = { version = "1.1.6", path = "./uzor-render-vello-hybrid" }
+uzor-render-vello-cpu = { version = "1.1.6", path = "./uzor-render-vello-cpu" }
+uzor-render-tiny-skia = { version = "1.1.6", path = "./uzor-render-tiny-skia" }
+uzor-render-wgpu-instanced = { version = "1.1.6", path = "./uzor-render-wgpu-instanced" }
+uzor-window-hub = { version = "1.1.6", path = "./uzor-window-hub" }
+uzor-window-desktop = { version = "1.1.6", path = "./uzor-window-desktop" }
+uzor-window-web = { version = "1.1.6", path = "./uzor-window-web" }
+uzor-window-mobile = { version = "1.1.6", path = "./uzor-window-mobile" }
 serde = { version = "1.0", features = ["derive"] }
 
