@@ -22,7 +22,7 @@ pub fn register_tab(
     sense: Sense,
     close_btn_rect: Option<Rect>,
 ) -> WidgetId {
-    let id = coord.register_composite(tab_id, WidgetKind::Tab, rect, sense, &LayerId::main());
+    let id = coord.register_composite(tab_id, WidgetKind::ChromeTab, rect, sense, &LayerId::main());
     if let Some(close_rect) = close_btn_rect {
         let close_id = format!("{}:close", id.0);
         coord.register_child(&id, close_id, WidgetKind::Button, close_rect, Sense::CLICK);
@@ -42,7 +42,7 @@ pub fn register_tab_on_layer(
     close_btn_rect: Option<Rect>,
     layer: &LayerId,
 ) -> WidgetId {
-    let id = coord.register_composite(tab_id, WidgetKind::Tab, rect, sense, layer);
+    let id = coord.register_composite(tab_id, WidgetKind::ChromeTab, rect, sense, layer);
     if let Some(close_rect) = close_btn_rect {
         let close_id = format!("{}:close", id.0);
         coord.register_child(&id, close_id, WidgetKind::Button, close_rect, Sense::CLICK);

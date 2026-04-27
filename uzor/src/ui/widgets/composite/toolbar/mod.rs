@@ -1,4 +1,4 @@
-//! Dropdown widget — inline dropdown list attached to a trigger widget.
+//! Toolbar widget — horizontal or vertical bar of grouped controls.
 
 pub mod input;
 pub mod render;

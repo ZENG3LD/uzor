@@ -1,4 +1,4 @@
-//! Dropdown widget — inline dropdown list attached to a trigger widget.
+//! ContextMenu widget — right-click or long-press context menu.
 
 pub mod input;
 pub mod render;

@@ -1,5 +1,23 @@
 //! Dropdown type definitions - semantic dropdown variants
 
+use super::settings::DropdownSettings;
+use crate::render::RenderContext;
+use crate::types::Rect;
+
+// TODO: populate after deep mlc audit
+//   - dropdown_type: &'a DropdownType
+//   - open: bool
+//   - items: &'a [str]
+pub struct DropdownView<'a> {
+    pub _marker: std::marker::PhantomData<&'a ()>,
+}
+
+/// Render strategy for Dropdown.
+pub enum DropdownRenderKind {
+    Default,
+    Custom(Box<dyn Fn(&mut dyn RenderContext, Rect, &DropdownView<'_>, &DropdownSettings)>),
+}
+
 use crate::input::Sense;
 use crate::ui::widgets::WidgetCapabilities;
 

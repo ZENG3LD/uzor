@@ -1,4 +1,4 @@
-//! Dropdown widget — inline dropdown list attached to a trigger widget.
+//! Sidebar widget — collapsible side panel.
 
 pub mod input;
 pub mod render;

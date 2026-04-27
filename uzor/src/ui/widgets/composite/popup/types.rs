@@ -1,7 +1,24 @@
-//! Popup type definitions - semantic popup variants
-//!
-//! This module defines the popup taxonomy through enum types.
-//! NO colors, NO rendering logic - only semantic classification.
+//! Popup type definitions - semantic popup variants.
+
+use super::settings::PopupSettings;
+use crate::render::RenderContext;
+use crate::types::Rect;
+
+// TODO: populate after deep mlc audit
+//   - popup_type: &'a PopupType
+//   - position: (f64, f64)
+pub struct PopupView<'a> {
+    pub _marker: std::marker::PhantomData<&'a ()>,
+}
+
+/// Render strategy for Popup.
+pub enum PopupRenderKind {
+    Default,
+    Custom(Box<dyn Fn(&mut dyn RenderContext, Rect, &PopupView<'_>, &PopupSettings)>),
+}
+
+// This module defines the popup taxonomy through enum types.
+// NO colors, NO rendering logic - only semantic classification.
 
 use crate::input::Sense;
 use crate::ui::widgets::WidgetCapabilities;

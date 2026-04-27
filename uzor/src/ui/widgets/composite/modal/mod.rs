@@ -1,4 +1,4 @@
-//! Dropdown widget — inline dropdown list attached to a trigger widget.
+//! Modal widget — full-screen overlay that blocks interaction behind it.
 
 pub mod input;
 pub mod render;

@@ -1,6 +1,22 @@
 //! Chrome type definitions.
 
+use super::settings::ChromeSettings;
+use crate::render::RenderContext;
 use crate::types::Rect;
+
+// TODO: populate after deep mlc audit
+//   - config: &'a ChromeConfig
+//   - active_tab: Option<&'a str>
+pub struct ChromeView<'a> {
+    pub _marker: std::marker::PhantomData<&'a ()>,
+}
+
+/// Render strategy for Chrome.
+pub enum ChromeRenderKind {
+    Default,
+    Custom(Box<dyn Fn(&mut dyn RenderContext, Rect, &ChromeView<'_>, &ChromeSettings)>),
+}
+
 use crate::ui::widgets::atomic::tab::TabConfig;
 
 /// Which titlebar button was interacted with.

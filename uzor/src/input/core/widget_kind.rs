@@ -9,18 +9,16 @@ pub enum WidgetKind {
     // --- Composite (parent — has children): ---
     /// Full-screen or large overlay that blocks interaction with content behind it.
     Modal,
-    /// Dropdown or context menu (list of items).
-    Menu,
     /// Small transient floating panel.
     Popup,
     /// Inline dropdown list attached to a trigger widget.
     Dropdown,
+    /// Right-click or long-press context menu.
+    ContextMenu,
     /// Horizontal or vertical bar of grouped controls.
     Toolbar,
     /// Collapsible side panel.
     Sidebar,
-    /// Right-click or long-press context menu.
-    ContextMenu,
     /// Generic container / card.
     Panel,
     /// Canvas-like panel whose internal input dispatch is managed externally.
@@ -29,8 +27,8 @@ pub enum WidgetKind {
     BlackboxPanel,
     /// Window decoration container: titlebar with tabs + min/max/close buttons.
     Chrome,
-    /// Single tab in a tab strip (composite — can have a close-button child).
-    Tab,
+    /// Single tab in a chrome tab strip (composite — can have a close-button child).
+    ChromeTab,
 
     // --- Atomic (leaf — no children): ---
     /// Clickable button.
@@ -76,8 +74,8 @@ impl WidgetKind {
         use WidgetKind::*;
         matches!(
             self,
-            Modal | Menu | Popup | Dropdown | Toolbar | Sidebar
-                | ContextMenu | Panel | BlackboxPanel | Chrome | Tab
+            Modal | Popup | Dropdown | ContextMenu | Toolbar | Sidebar
+                | Panel | BlackboxPanel | Chrome | ChromeTab
         )
     }
 
@@ -98,9 +96,9 @@ impl WidgetKind {
     }
 
     /// Whether widgets of this kind block events from reaching lower z layers
-    /// when they are hit (modal / menu / context-menu behaviour).
+    /// when they are hit (modal / context-menu behaviour).
     pub const fn blocks_lower_layers(self) -> bool {
         use WidgetKind::*;
-        matches!(self, Modal | Menu | ContextMenu | Popup)
+        matches!(self, Modal | ContextMenu | Popup)
     }
 }

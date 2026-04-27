@@ -1,4 +1,4 @@
-//! Dropdown widget — inline dropdown list attached to a trigger widget.
+//! ChromeTab widget — single tab in a chrome tab strip with close-button child.
 
 pub mod input;
 pub mod render;

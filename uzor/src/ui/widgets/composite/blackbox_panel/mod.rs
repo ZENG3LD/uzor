@@ -1,4 +1,4 @@
-//! Dropdown widget — inline dropdown list attached to a trigger widget.
+//! BlackboxPanel widget — canvas-like panel with externally managed input dispatch.
 
 pub mod input;
 pub mod render;

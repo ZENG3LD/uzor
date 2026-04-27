@@ -1,7 +1,24 @@
-//! Panel type definitions - semantic panel variants
-//!
-//! This module defines the panel taxonomy through enum types.
-//! NO colors, NO rendering logic - only semantic classification.
+//! Panel type definitions - semantic panel variants.
+
+use super::settings::PanelSettings;
+use crate::render::RenderContext;
+use crate::types::Rect;
+
+// TODO: populate after deep mlc audit
+//   - panel_type: &'a PanelType
+//   - title: Option<&'a str>
+pub struct PanelView<'a> {
+    pub _marker: std::marker::PhantomData<&'a ()>,
+}
+
+/// Render strategy for Panel.
+pub enum PanelRenderKind {
+    Default,
+    Custom(Box<dyn Fn(&mut dyn RenderContext, Rect, &PanelView<'_>, &PanelSettings)>),
+}
+
+// This module defines the panel taxonomy through enum types.
+// NO colors, NO rendering logic - only semantic classification.
 
 use crate::input::Sense;
 use crate::ui::widgets::WidgetCapabilities;
