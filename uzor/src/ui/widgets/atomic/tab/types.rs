@@ -1,5 +1,30 @@
 //! Tab type definitions.
 
+/// Selects which visual variant to render.
+///
+/// Callers that want a single-dispatch entry point pass a `TabKind` alongside
+/// `TabConfig` to `draw_tab`, which delegates to the appropriate dedicated
+/// `draw_*_tab` function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TabKind {
+    /// Browser-style tab strip with a close × and a 2px bottom accent line.
+    /// Geometry: CHROME_HEIGHT=32, TAB_PADDING_H=12, TAB_CLOSE_SIZE=16.
+    #[default]
+    Chrome,
+
+    /// Icon-only vertical sidebar tab (modal settings, search overlay category
+    /// filter). Geometry: width=48, button_height=44/40, 3px left accent bar.
+    ModalSidebar,
+
+    /// Text-label horizontal tab row with a full filled-bg active state and no
+    /// accent bar. Geometry: height=32, padding_h=12, gap=2.
+    ModalHorizontal,
+
+    /// Text-only pill with a rounded-rect background. Geometry: width=80,
+    /// item_height=40, pill_radius=4.
+    TagsTabsSidebar,
+}
+
 /// Configuration for a single tab in a tab strip.
 #[derive(Debug, Clone)]
 pub struct TabConfig {
@@ -13,6 +38,9 @@ pub struct TabConfig {
     pub closable: bool,
     /// Optional icon name / path (rendered by the backend).
     pub icon: Option<String>,
+    /// When `true` the caller should compute width from the label text rather
+    /// than relying on a fixed rect width (used by Chrome and ModalHorizontal).
+    pub intrinsic_width: bool,
 }
 
 impl TabConfig {
@@ -23,6 +51,7 @@ impl TabConfig {
             active: false,
             closable: false,
             icon: None,
+            intrinsic_width: false,
         }
     }
 
@@ -38,6 +67,11 @@ impl TabConfig {
 
     pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = Some(icon.into());
+        self
+    }
+
+    pub fn intrinsic(mut self) -> Self {
+        self.intrinsic_width = true;
         self
     }
 }

@@ -1,63 +1,154 @@
-//! Toast rendering — flat fill, alpha-fade in last 20% of lifetime.
+//! Toast rendering — mlc-parity flat-rect path.
 //!
-//! Lifecycle math is mlc-style: fade-in over `fade_duration_ms`, hold,
-//! then linear fade-out over the last 20% of `duration_ms`. Caller passes
-//! current `now_ms` and the toast's `created_at_ms`.
+//! Render math mirrors mlc `render_toasts` exactly:
+//! - No fade-in.
+//! - Linear fade-out over the **last 20 %** of lifetime.
+//! - Shadow offset 2 px, dark-navy bg, blue accent border (four fill_rect sides),
+//!   bold-12px title in accent blue, 11px message in muted white.
+//! - Stack: top-right anchor, downward, break on overflow.
+//!
+//! Per-severity accent colour is the only extension beyond mlc (uzor choice B).
 
 use crate::render::{RenderContext, TextAlign, TextBaseline};
-use crate::types::Rect;
 
-use super::settings::ToastSettings;
+use super::state::ToastEntry;
+use super::style::ToastGeometry as G;
+use super::theme::{accent_rgb, rgba, MLC_BG, MLC_BG_ALPHA, MLC_BORDER_ALPHA, MLC_SHADOW, MLC_SHADOW_ALPHA, MLC_TEXT, MLC_TEXT_ALPHA, MLC_TITLE_ALPHA};
 use super::types::ToastType;
 
-pub struct ToastView<'a> {
-    pub toast: &'a ToastType,
-    pub created_at_ms: u64,
-    pub now_ms: u64,
-}
+// ─── Alpha ────────────────────────────────────────────────────────────────────
 
-/// Compute current alpha based on lifecycle.
-fn alpha_for(toast: &ToastType, created_at_ms: u64, now_ms: u64, fade_ms: u32) -> f64 {
-    let elapsed = now_ms.saturating_sub(created_at_ms) as i64;
-    let total   = toast.duration_ms as i64;
-    let fade    = fade_ms as i64;
-
-    if elapsed < fade {
-        // Fade in
-        (elapsed as f64 / fade as f64).clamp(0.0, 1.0)
-    } else if elapsed > total - fade {
-        // Fade out
-        let remaining = (total - elapsed).max(0) as f64;
-        (remaining / fade as f64).clamp(0.0, 1.0)
+/// Compute fade alpha, matching mlc `render_toasts` exactly.
+///
+/// - `remaining >= 0.2` → `1.0`
+/// - `remaining < 0.2`  → `remaining / 0.2` (linear 1→0)
+/// - `remaining <= 0.0` → `0.0` (caller skips)
+///
+/// This differs from the old uzor path which also had a fade-in phase.
+pub fn alpha_for(toast: &ToastType, now_ms: u64) -> f64 {
+    let remaining = toast.remaining_fraction(now_ms);
+    if remaining < G::FADE_THRESHOLD {
+        (remaining / G::FADE_THRESHOLD).clamp(0.0, 1.0)
     } else {
         1.0
     }
 }
 
-pub fn draw_toast(
-    ctx: &mut dyn RenderContext,
-    rect: Rect,
-    view: &ToastView<'_>,
-    settings: &ToastSettings,
-) {
-    let style = settings.style.as_ref();
-    let theme = settings.theme.as_ref();
+// ─── Single toast ─────────────────────────────────────────────────────────────
 
-    let alpha = alpha_for(view.toast, view.created_at_ms, view.now_ms, style.fade_duration_ms());
+/// Draw one toast at absolute position `(x, y)`.
+///
+/// Matches mlc's per-iteration body in `render_toasts`:
+/// shadow → bg → border (4 sides) → title → message.
+pub fn draw_toast_at(
+    ctx: &mut dyn RenderContext,
+    x: f64,
+    y: f64,
+    entry: &ToastEntry,
+    now_ms: u64,
+) {
+    let toast = &entry.toast;
+    let alpha = alpha_for(toast, now_ms);
     if alpha <= 0.0 {
         return;
     }
 
-    // Background
-    ctx.set_fill_color_alpha(theme.bg_for(view.toast.severity), alpha);
-    ctx.fill_rounded_rect(rect.x, rect.y, rect.width, rect.height, style.radius());
+    let w = G::TOAST_WIDTH;
+    let h = G::TOAST_HEIGHT;
+    let bt = G::BORDER_THICKNESS;
+    let pad = G::PADDING;
+    let so = G::SHADOW_OFFSET;
+    let accent = accent_rgb(toast.severity);
 
-    // Message text — left-aligned after the icon area.
-    let pad = style.padding();
-    let text_x = rect.x + pad + style.icon_size() + pad;
-    ctx.set_font(&format!("{}px sans-serif", style.font_size()));
-    ctx.set_fill_color_alpha(theme.text(), alpha);
+    // Shadow
+    ctx.set_fill_color(&rgba(MLC_SHADOW, alpha * MLC_SHADOW_ALPHA));
+    ctx.fill_rect(x + so, y + so, w, h);
+
+    // Background
+    ctx.set_fill_color(&rgba(MLC_BG, alpha * MLC_BG_ALPHA));
+    ctx.fill_rect(x, y, w, h);
+
+    // Border — four filled rects (mlc uses no border-radius)
+    let border_color = rgba(accent, alpha * MLC_BORDER_ALPHA);
+    ctx.set_fill_color(&border_color);
+    ctx.fill_rect(x, y, w, bt);                              // top
+    ctx.fill_rect(x, y + h - bt, w, bt);                    // bottom
+    ctx.fill_rect(x, y + bt, bt, h - bt * 2.0);             // left
+    ctx.fill_rect(x + w - bt, y + bt, bt, h - bt * 2.0);   // right
+
     ctx.set_text_align(TextAlign::Left);
     ctx.set_text_baseline(TextBaseline::Middle);
-    ctx.fill_text(&view.toast.message, text_x, rect.y + rect.height / 2.0);
+
+    // Title (if present) — bold 12px, accent colour
+    let title_str: Option<&str> = toast.title.as_deref();
+    if let Some(title) = title_str {
+        ctx.set_font("bold 12px sans-serif");
+        ctx.set_fill_color(&rgba(accent, alpha * MLC_TITLE_ALPHA));
+        ctx.fill_text(title, x + pad, y + G::TITLE_Y_OFFSET);
+    }
+
+    // Message — 11px, muted white
+    ctx.set_font("11px sans-serif");
+    ctx.set_fill_color(&rgba(MLC_TEXT, alpha * MLC_TEXT_ALPHA));
+
+    // If no title, vertically centre the message in the card.
+    let msg_y = if title_str.is_some() {
+        y + G::MESSAGE_Y_OFFSET
+    } else {
+        y + h / 2.0
+    };
+    ctx.fill_text(&toast.message, x + pad, msg_y);
+}
+
+// ─── Stack renderer ───────────────────────────────────────────────────────────
+
+/// Draw the full toast stack top-right anchored, matching mlc layout.
+///
+/// - `window_width` / `window_height` — canvas dimensions.
+/// - `entries` — live slice from `ToastStackState::tick()`.
+/// - `now_ms` — current Unix epoch ms.
+///
+/// Skips toasts with alpha ≤ 0 and breaks when the next card would fall below
+/// `window_height` (mlc: `if y + toast_height > window_height { break }`).
+pub fn draw_toast_stack(
+    ctx: &mut dyn RenderContext,
+    entries: &[ToastEntry],
+    window_width: f64,
+    window_height: f64,
+    now_ms: u64,
+) {
+    let start_x = window_width - G::TOAST_WIDTH - G::MARGIN;
+    let start_y = G::TOP_ANCHOR;
+
+    for (i, entry) in entries.iter().enumerate() {
+        let y = start_y + (i as f64) * G::STACK_PITCH;
+        if y + G::TOAST_HEIGHT > window_height {
+            break; // mlc parity: don't render off-screen
+        }
+
+        let alpha = alpha_for(&entry.toast, now_ms);
+        if alpha <= 0.0 {
+            continue;
+        }
+
+        draw_toast_at(ctx, start_x, y, entry, now_ms);
+    }
+}
+
+// ─── Legacy single-rect draw (kept for callers that already use it) ───────────
+
+use crate::types::Rect;
+use super::settings::ToastSettings;
+
+/// Draw a single toast inside an externally-provided `rect`.
+///
+/// Kept for backward compatibility. New callers should use `draw_toast_stack`.
+pub fn draw_toast(
+    ctx: &mut dyn RenderContext,
+    rect: Rect,
+    entry: &ToastEntry,
+    _settings: &ToastSettings,
+    now_ms: u64,
+) {
+    draw_toast_at(ctx, rect.x, rect.y, entry, now_ms);
 }
