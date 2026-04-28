@@ -64,6 +64,9 @@ pub enum WidgetKind {
     /// Text-with-background popup overlay. No internal interaction; hover tracked
     /// by the coordinator for fade-out logic.
     Tooltip,
+    /// Draggable handle / grip — composite widgets register one of these for their
+    /// header drag zones.
+    DragHandle,
     /// Escape hatch — any widget that doesn't fit the above categories.
     Custom,
 }

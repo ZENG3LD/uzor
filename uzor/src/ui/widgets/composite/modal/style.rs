@@ -6,6 +6,42 @@
 //! concrete modal implementations in
 //! `mylittlechart/crates/chart/src/layout/modals/`.
 
+// ---------------------------------------------------------------------------
+// BackgroundFill
+// ---------------------------------------------------------------------------
+
+/// Selects how the modal frame background is filled.
+///
+/// The default is `Solid` (flat colour from `theme.bg()`).
+/// Override `ModalStyle::background_fill` to opt into glass or texture fills.
+#[derive(Debug, Clone)]
+pub enum BackgroundFill {
+    /// Solid colour — uses `theme.bg()`.
+    Solid,
+
+    /// Glass / blur effect — renders a GPU blur of what's behind the modal
+    /// plus `theme.bg()` at reduced alpha.
+    ///
+    /// Falls back to `Solid` on backends without blur support.
+    Glass {
+        /// Blur kernel radius in pixels.
+        blur_radius: f64,
+    },
+
+    /// Tiled texture fill.  The texture is looked up through the asset system
+    /// by `asset_id`.
+    ///
+    /// Falls back to `Solid` until the asset system is wired.
+    Texture {
+        /// Asset identifier used to resolve the texture.
+        asset_id: &'static str,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// ModalStyle
+// ---------------------------------------------------------------------------
+
 /// Geometry parameters for the modal composite.
 ///
 /// Implement this trait to customise sizes without touching colours.
@@ -58,6 +94,14 @@ pub trait ModalStyle {
     /// Wizard bottom-nav zone height (page dots + Back/Next buttons).
     /// Default: `52.0`.
     fn wizard_nav_height(&self) -> f64;
+
+    /// Background fill strategy for the modal frame.
+    ///
+    /// Default: `BackgroundFill::Solid` (flat `theme.bg()` colour).
+    /// Override to opt into `Glass` or `Texture` fills.
+    fn background_fill(&self) -> BackgroundFill {
+        BackgroundFill::Solid
+    }
 }
 
 // ---------------------------------------------------------------------------
