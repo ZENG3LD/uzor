@@ -1,18 +1,25 @@
-//! BlackboxPanel settings bundle.
+//! BlackboxPanel settings bundle — theme + style in one box.
 
-use super::theme::{BlackboxPanelTheme, DefaultBlackboxPanelTheme};
-use super::style::{BlackboxPanelStyle, DefaultBlackboxPanelStyle};
+use super::style::{BlackboxStyle, DefaultBlackboxStyle};
+use super::theme::{BlackboxTheme, DefaultBlackboxTheme};
 
+// ---------------------------------------------------------------------------
+// BlackboxPanelSettings
+// ---------------------------------------------------------------------------
+
+/// Combined visual configuration for the blackbox panel composite.
 pub struct BlackboxPanelSettings {
-    pub theme: Box<dyn BlackboxPanelTheme>,
-    pub style: Box<dyn BlackboxPanelStyle>,
+    /// Colour tokens (varies with app theme).
+    pub theme: Box<dyn BlackboxTheme>,
+    /// Geometry parameters.
+    pub style: Box<dyn BlackboxStyle>,
 }
 
 impl Default for BlackboxPanelSettings {
     fn default() -> Self {
         Self {
-            theme: Box::<DefaultBlackboxPanelTheme>::default(),
-            style: Box::new(DefaultBlackboxPanelStyle),
+            theme: Box::<DefaultBlackboxTheme>::default(),
+            style: Box::<DefaultBlackboxStyle>::default(),
         }
     }
 }
