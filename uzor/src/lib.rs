@@ -44,7 +44,7 @@ pub use input::{TextFieldStore, TextFieldConfig, TextAction, InputCapability, Ke
 pub use widgets::{
     ButtonType, ContainerType, PopupRenderKind,
     PanelType, ToolbarVariant, SidebarVariant, ModalVariant,
-    TextInputType, DropdownType, SliderType, ToastType,
+    TextInputType, DropdownKind, SliderType, ToastType,
 };
 
 pub use ui::assets::cursors::CursorIcon;
