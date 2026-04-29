@@ -1,92 +1,114 @@
-//! Panel theme trait - Contract/Connector for panel colors and dimensions
+//! Panel colour palette trait and default dark-theme implementation.
+//!
+//! Token values ported from mlc `panel_theme.rs` audit (`panel-deep.md` §6).
 
-/// Theme trait for panel colors and dimensions
+// ---------------------------------------------------------------------------
+// PanelTheme trait
+// ---------------------------------------------------------------------------
+
+/// Colour tokens for the panel composite.
+///
+/// Implement on your app theme struct to plug in custom colours.
 pub trait PanelTheme {
-    // Toolbar dimensions
-    fn toolbar_height(&self) -> f64;
-    fn toolbar_width(&self) -> f64;
-    fn toolbar_blur(&self) -> bool;
+    // --- Frame ---
 
-    // Sidebar dimensions
-    fn sidebar_width(&self) -> f64;
-    fn sidebar_header_height(&self) -> f64;
-    fn sidebar_item_height(&self) -> f64;
-    fn sidebar_section_height(&self) -> f64;
-    fn sidebar_logo_size(&self) -> f64;
+    /// Panel body background fill.  Default: `#0d1117`.
+    fn bg(&self) -> &str;
 
-    // Modal dimensions
-    fn modal_max_width(&self) -> f64;
-    fn modal_padding(&self) -> f64;
-    fn modal_backdrop_color(&self) -> [u8; 4];
-    fn modal_header_height(&self) -> f64;
-    fn modal_tab_height(&self) -> f64;
-    fn modal_content_row_height(&self) -> f64;
-    fn modal_content_padding(&self) -> f64;
+    /// Border / outline colour.  Default: `#30363d`.
+    fn border(&self) -> &str;
 
-    // Hideable dimensions
-    fn hideable_chevron_size(&self) -> f64;
-    fn hideable_button_height(&self) -> f64;
-    fn hideable_row_height(&self) -> f64;
-    fn hideable_row_gap(&self) -> f64;
-    fn hideable_icon_size(&self) -> f64;
-    fn hideable_border_width(&self) -> f64;
-    fn hideable_border_opacity(&self) -> f64;
-    fn hideable_button_padding(&self) -> f64;
+    // --- Header strip ---
 
-    // Common colors
-    fn background_color(&self) -> [u8; 4];
-    fn border_color(&self) -> [u8; 4];
-    fn text_color(&self) -> [u8; 4];
-    fn text_secondary_color(&self) -> [u8; 4];
-    fn hover_color(&self) -> [u8; 4];
+    /// Header zone background.  Default: `#161b22`.
+    fn header_bg(&self) -> &str;
+
+    /// Header title text.  Default: `#8091a5`.
+    fn header_text(&self) -> &str;
+
+    // --- Column-header row ---
+
+    /// Column-header zone background.  Default: `#161b22`.
+    fn column_header_bg(&self) -> &str;
+
+    /// Column-header label text.  Default: `#8b949e`.
+    fn column_header_text(&self) -> &str;
+
+    // --- Body rows ---
+
+    /// Normal row background (even rows or ungrouped).  Default: `#0d1117`.
+    fn row_bg_normal(&self) -> &str;
+
+    /// Row background on hover.  Default: `#2a2f40`.
+    fn row_bg_hover(&self) -> &str;
+
+    /// Row background when selected.  Default: `#1e2538`.
+    fn row_bg_selected(&self) -> &str;
+
+    // --- Footer ---
+
+    /// Footer zone background.  Default: `#161b22`.
+    fn footer_bg(&self) -> &str;
+
+    /// Footer text colour.  Default: `#8b949e`.
+    fn footer_text(&self) -> &str;
+
+    // --- Dividers ---
+
+    /// 1 px separator line between zones.  Default: `#30363d`.
+    fn divider(&self) -> &str;
+
+    // --- Action buttons ---
+
+    /// Icon colour for header action buttons in idle state.  Default: `#8b949e`.
+    fn action_icon_normal(&self) -> &str;
+
+    /// Icon colour for header action buttons on hover.  Default: `#e0e0e0`.
+    fn action_icon_hover(&self) -> &str;
+
+    // --- Sort arrow ---
+
+    /// Sort arrow / indicator colour.  Default: `#58a6ff`.
+    fn sort_arrow_color(&self) -> &str;
 }
 
-/// Default panel theme using values from inline specs
+// ---------------------------------------------------------------------------
+// Default dark theme
+// ---------------------------------------------------------------------------
+
+/// Default dark-theme implementation matching mlc panel colours.
+#[derive(Default)]
 pub struct DefaultPanelTheme;
 
-impl DefaultPanelTheme {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for DefaultPanelTheme {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl PanelTheme for DefaultPanelTheme {
-    fn toolbar_height(&self) -> f64 { 40.0 }
-    fn toolbar_width(&self) -> f64 { 40.0 }
-    fn toolbar_blur(&self) -> bool { true }
+    // Frame
+    fn bg(&self)     -> &str { "#0d1117" }
+    fn border(&self) -> &str { "#30363d" }
 
-    fn sidebar_width(&self) -> f64 { 250.0 }
-    fn sidebar_header_height(&self) -> f64 { 56.0 }
-    fn sidebar_item_height(&self) -> f64 { 40.0 }
-    fn sidebar_section_height(&self) -> f64 { 32.0 }
-    fn sidebar_logo_size(&self) -> f64 { 40.0 }
+    // Header strip
+    fn header_bg(&self)   -> &str { "#161b22" }
+    fn header_text(&self) -> &str { "#8091a5" }
 
-    fn modal_max_width(&self) -> f64 { 600.0 }
-    fn modal_padding(&self) -> f64 { 24.0 }
-    fn modal_backdrop_color(&self) -> [u8; 4] { [0, 0, 0, 128] }
-    fn modal_header_height(&self) -> f64 { 36.0 }
-    fn modal_tab_height(&self) -> f64 { 32.0 }
-    fn modal_content_row_height(&self) -> f64 { 28.0 }
-    fn modal_content_padding(&self) -> f64 { 12.0 }
+    // Column-header row
+    fn column_header_bg(&self)   -> &str { "#161b22" }
+    fn column_header_text(&self) -> &str { "#8b949e" }
 
-    fn hideable_chevron_size(&self) -> f64 { 12.0 }
-    fn hideable_button_height(&self) -> f64 { 18.0 }
-    fn hideable_row_height(&self) -> f64 { 20.0 }
-    fn hideable_row_gap(&self) -> f64 { 2.0 }
-    fn hideable_icon_size(&self) -> f64 { 14.0 }
-    fn hideable_border_width(&self) -> f64 { 0.5 }
-    fn hideable_border_opacity(&self) -> f64 { 0.8 }
-    fn hideable_button_padding(&self) -> f64 { 6.0 }
+    // Body rows
+    fn row_bg_normal(&self)   -> &str { "#0d1117" }
+    fn row_bg_hover(&self)    -> &str { "#2a2f40" }
+    fn row_bg_selected(&self) -> &str { "#1e2538" }
 
-    fn background_color(&self) -> [u8; 4] { [30, 30, 30, 255] }
-    fn border_color(&self) -> [u8; 4] { [80, 80, 80, 255] }
-    fn text_color(&self) -> [u8; 4] { [255, 255, 255, 255] }
-    fn text_secondary_color(&self) -> [u8; 4] { [128, 128, 128, 255] }
-    fn hover_color(&self) -> [u8; 4] { [50, 50, 50, 255] }
+    // Footer
+    fn footer_bg(&self)   -> &str { "#161b22" }
+    fn footer_text(&self) -> &str { "#8b949e" }
+
+    // Dividers
+    fn divider(&self) -> &str { "#30363d" }
+
+    // Action buttons
+    fn action_icon_normal(&self) -> &str { "#8b949e" }
+    fn action_icon_hover(&self)  -> &str { "#e0e0e0" }
+
+    // Sort arrow
+    fn sort_arrow_color(&self) -> &str { "#58a6ff" }
 }
