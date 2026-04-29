@@ -15,7 +15,7 @@ use super::{
     config::WindowConfig,
     state::WindowState,
 };
-use crate::screenshot::add_copy_src_to_target_texture;
+use crate::utils::screenshot::add_copy_src_to_target_texture;
 
 /// Error variants for window creation.
 #[derive(Debug)]

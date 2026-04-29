@@ -1,18 +1,42 @@
-//! uzor-framework — end-to-end app runner crate.
+//! `uzor-framework` — application runtime + builder for uzor apps.
 //!
-//! Builds on top of `uzor` (headless input/widgets) by providing a
-//! complete window/event/render runtime so consumer apps only need to
-//! implement business logic.
+//! Provides the full lifecycle glue between [`uzor-window-hub`], the uzor core
+//! engine, and [`uzor-render-hub`]:
 //!
-//! Status: under construction. Currently provides only platform helpers
-//! lifted from mylittlechart's production code.
+//! - [`App`] — lifecycle trait (init → ui → shutdown).
+//! - [`AppConfig`] — window / rendering / single-instance configuration.
+//! - [`AppBuilder`] — fluent builder that produces a [`Runtime`].
+//! - [`Runtime`] — drives the event loop until all windows close.
+//! - [`utils`] — GPU screenshot capture, single-instance guard, timestamp helpers.
+//! - [`platform`] — Win32 cursor polling and DWM border colour helpers.
+//! - [`window`] — winit window creation, per-window GPU state, multi-window manager.
 
-pub mod platform;
-pub mod single_instance;
-pub mod screenshot;
+pub mod app;
+pub mod builder;
+pub mod runtime;
 pub mod window;
+pub mod platform;
+pub mod utils;
 
-pub use single_instance::{single_instance, SingleInstanceGuard};
+// ── Primary re-exports ────────────────────────────────────────────────────────
 
-/// Render backend hub (re-export from uzor-render-hub).
+pub use app::{App, AppConfig, ClosureApp, NoPanel};
+pub use builder::{AppBuilder, BuildError, run_closure};
+pub use runtime::{Runtime, RuntimeError};
+
+// ── Utility re-exports ────────────────────────────────────────────────────────
+
+pub use utils::single_instance::{single_instance, SingleInstanceGuard};
+pub use utils::screenshot::{
+    add_copy_src_to_target_texture, capture_screenshot, encode_png, screenshot_save_dir,
+};
+
+// ── Hub re-exports ────────────────────────────────────────────────────────────
+
+/// Re-export of `uzor-render-hub` for consumers that only depend on
+/// `uzor-framework` and do not want a separate direct dependency.
 pub use uzor_render_hub as render_hub;
+
+/// Re-export of `uzor-window-hub` for consumers that only depend on
+/// `uzor-framework` and do not want a separate direct dependency.
+pub use uzor_window_hub as window_hub;

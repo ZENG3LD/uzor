@@ -1,4 +1,6 @@
-//! Window-side metrics (size, dpr, focus duration, event throughput).
+//! Frame metrics — placeholder for future implementation.
 //!
-//! Empty scaffold. Mirrors `uzor-render-hub::metrics` — collected by
-//! the hub, rendered by consumers.
+//! Intended to collect per-window frame-timing data (FPS, GPU/CPU split,
+//! event throughput) mirroring `uzor-render-hub::RenderMetrics` on the
+//! window side. Populated as patterns emerge during the `uzor-framework`
+//! runtime integration.

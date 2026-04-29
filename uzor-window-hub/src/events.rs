@@ -1,5 +1,5 @@
-//! Cross-platform event normalization.
-//!
-//! Empty scaffold — fills up as common helpers across desktop / web /
-//! mobile event streams emerge. Today every platform crate emits
-//! `uzor::platform::PlatformWindowEvent` directly.
+//! Common event surface for all window providers.
+//! Re-exports uzor's `PlatformEvent` as the canonical type used by
+//! `WindowProvider::poll_events` and the `uzor-framework` runtime.
+
+pub use uzor::input::PlatformEvent;
