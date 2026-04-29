@@ -1,4 +1,15 @@
-//! ContextMenu widget — right-click or long-press context menu.
+//! ContextMenu widget — right-click / long-press context menu.
+//!
+//! Positioned at raw cursor coordinates with smart screen-edge clamping.
+//! Z-layer 5 — above modals, below colour picker.
+//!
+//! # Render kinds
+//!
+//! | Kind    | Icons | Blur | Item height | Min width |
+//! |---------|-------|------|-------------|-----------|
+//! | Default | yes   | yes  | 32 px       | 180 px    |
+//! | Minimal | no    | no   | 28 px       | 160 px    |
+//! | Custom  | —     | —    | caller-owns | —         |
 
 pub mod input;
 pub mod render;
