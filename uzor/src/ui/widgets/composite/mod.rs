@@ -20,7 +20,6 @@
 
 pub mod blackbox_panel;
 pub mod chrome;
-pub mod chrome_tab;
 pub mod context_menu;
 pub mod dropdown;
 pub mod modal;
