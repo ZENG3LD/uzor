@@ -3,14 +3,19 @@
 //!
 //! # Design
 //!
-//! Chrome is a composite widget. Its titlebar buttons are registered as
-//! atomic `Button` children via [`register_chrome_button`]. Tabs are
-//! registered as independent `ChromeTab` composites (top-level) whose rects
-//! fall inside the chrome rect — the coordinator's last-registered-wins rule
-//! ensures tabs receive events ahead of the chrome background.
+//! Chrome is a composite widget. Its titlebar buttons are registered as atomic
+//! `Button` children via the coordinator. Tabs are registered as `Button`
+//! children as well; the coordinator's last-registered-wins rule ensures tabs
+//! receive events ahead of the chrome background.
 //!
-//! This avoids the need for composite-in-composite nesting in the coordinator
-//! while still keeping the visual hierarchy correct.
+//! # Render kinds
+//!
+//! | Kind                | tabs | drag | menu | win-controls |
+//! |---------------------|------|------|------|--------------|
+//! | `Default`           | ✓    | ✓    | ✓    | ✓            |
+//! | `Minimal`           | ✓    | ✓    | ✓    | ✗            |
+//! | `WindowControlsOnly`| ✗    | ✓    | ✗    | ✓            |
+//! | `Custom`            | caller manages everything            |
 
 pub mod input;
 pub mod render;
