@@ -22,7 +22,7 @@ pub use atomic::toast::ToastType;
 // ─── Composite re-exports ───────────────────────────────────────────────────
 pub use composite::dropdown::DropdownType;
 pub use composite::panel::{PanelType, ToolbarVariant, SidebarVariant, ModalVariant};
-pub use composite::popup::PopupType;
+pub use composite::popup::PopupRenderKind;
 
 pub use crate::types::ScrollState;
 

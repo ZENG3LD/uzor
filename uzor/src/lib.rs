@@ -42,7 +42,7 @@ pub use input::{InputState, InputCoordinator, LayerId, ScopedRegion};
 pub use input::{TextFieldStore, TextFieldConfig, TextAction, InputCapability, KeyPress};
 
 pub use widgets::{
-    ButtonType, ContainerType, PopupType,
+    ButtonType, ContainerType, PopupRenderKind,
     PanelType, ToolbarVariant, SidebarVariant, ModalVariant,
     TextInputType, DropdownType, SliderType, ToastType,
 };
