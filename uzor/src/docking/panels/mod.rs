@@ -36,7 +36,7 @@ pub use hit_test::{HitResult, CornerHandle};
 pub use presets::{WindowLayout, SplitKind, PANEL_GAP};
 pub use grid::{DockingTree, Leaf, Branch, PanelNode};
 pub use serialize::{LayoutSnapshot, SerializedNode, SerializedNodeType};
-pub use manager::DockingManager;
+pub use manager::PanelDockingManager;
 
 /// Trait for panel types stored in the docking tree.
 ///

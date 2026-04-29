@@ -3,6 +3,7 @@
 pub mod core;
 pub mod docking;
 pub mod input;
+pub mod layout;
 pub mod platform;
 pub use input as input_coordinator;
 pub mod ui;
@@ -18,7 +19,8 @@ pub use self::core::window;
 pub use app_context as context;
 pub use docking::panels;
 pub use docking::panel_api;
-pub use app_context::layout;
+/// CSS-flex micro-layout engine (widget subtrees). Macro layout lives in `crate::layout`.
+pub use app_context::layout as app_layout;
 pub use app_context::state;
 
 // Compat shims — ui internals at crate root

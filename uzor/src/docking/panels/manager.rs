@@ -1,4 +1,4 @@
-//! DockingManager — Generic panel orchestration layer
+//! PanelDockingManager — Generic panel orchestration layer
 //!
 //! This module provides the orchestration layer for the docking panel system.
 //! It bridges the panel tree data structures with layout computation, separator
@@ -6,7 +6,7 @@
 //!
 //! # Architecture
 //!
-//! DockingManager wraps:
+//! PanelDockingManager wraps:
 //! - **DockingTree<P>**: Generic N-ary panel tree
 //! - **Separators**: Generated from tree branches
 //! - **Floating Windows**: Panels extracted from tree
@@ -19,7 +19,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! use uzor_panels::{DockingManager, DockPanel, LeafId, PanelRect};
+//! use uzor_panels::{PanelDockingManager, DockPanel, LeafId, PanelRect};
 //!
 //! #[derive(Clone)]
 //! struct MyPanel { title: String }
@@ -29,7 +29,7 @@
 //!     fn type_id(&self) -> &'static str { "my_panel" }
 //! }
 //!
-//! let mut manager = DockingManager::<MyPanel>::new();
+//! let mut manager = PanelDockingManager::<MyPanel>::new();
 //! manager.add_leaf(MyPanel { title: "Chart".to_string() });
 //! manager.layout(PanelRect::new(0.0, 0.0, 1920.0, 1080.0));
 //!
@@ -52,7 +52,7 @@ use super::{
 use std::collections::HashMap;
 
 // =============================================================================
-// DockingManager
+// PanelDockingManager
 // =============================================================================
 
 /// Generic panel manager for docking system
@@ -65,7 +65,7 @@ use std::collections::HashMap;
 /// - Tab management
 ///
 /// Type parameter `P` is the panel type (must implement `DockPanel` trait).
-pub struct DockingManager<P: DockPanel> {
+pub struct PanelDockingManager<P: DockPanel> {
     /// Docking tree (N-ary panel tree with tabs, splits, grids)
     tree: DockingTree<P>,
     /// Computed separators (after layout)
@@ -106,7 +106,7 @@ pub struct DockingManager<P: DockPanel> {
     leaf_min_sizes: HashMap<LeafId, (f32, f32)>,
 }
 
-impl<P: DockPanel> DockingManager<P> {
+impl<P: DockPanel> PanelDockingManager<P> {
     /// Create new docking manager with empty tree
     pub fn new() -> Self {
         Self {
@@ -859,7 +859,7 @@ impl<P: DockPanel> DockingManager<P> {
             rect_w: f32,
             rect_h: f32,
             pending: &mut Vec<Pending>,
-            mgr: &DockingManager<P>,
+            mgr: &PanelDockingManager<P>,
         ) {
             let branch = match node {
                 PanelNode::Branch(b) => b,
@@ -871,8 +871,8 @@ impl<P: DockPanel> DockingManager<P> {
                 return;
             }
 
-            let horizontal = DockingManager::<P>::layout_is_horizontal(branch.layout);
-            let vertical = DockingManager::<P>::layout_is_vertical(branch.layout);
+            let horizontal = PanelDockingManager::<P>::layout_is_horizontal(branch.layout);
+            let vertical = PanelDockingManager::<P>::layout_is_vertical(branch.layout);
 
             if horizontal || vertical {
                 let available = if horizontal { rect_w } else { rect_h };
@@ -1503,7 +1503,7 @@ impl<P: DockPanel> DockingManager<P> {
     }
 }
 
-impl<P: DockPanel> Default for DockingManager<P> {
+impl<P: DockPanel> Default for PanelDockingManager<P> {
     fn default() -> Self {
         Self::new()
     }
