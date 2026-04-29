@@ -5,7 +5,38 @@
 
 pub use super::render::register_input_coordinator_sidebar;
 
+use super::render::register_context_manager_sidebar;
+
+use super::settings::SidebarSettings;
 use super::state::{SidebarState, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
+use super::types::{SidebarRenderKind, SidebarView};
+use crate::docking::panels::DockPanel;
+use crate::input::LayerId;
+use crate::layout::LayoutManager;
+use crate::render::RenderContext;
+use crate::types::WidgetId;
+
+/// Register + draw a sidebar in one call using a [`LayoutManager`].
+///
+/// Resolves the rect from the edge slot identified by `slot_id`, then
+/// forwards to [`register_context_manager_sidebar`].  Returns `None` if the
+/// slot is not present in the edge panels.
+pub fn register_layout_manager_sidebar<P: DockPanel>(
+    layout:   &mut LayoutManager<P>,
+    render:   &mut dyn RenderContext,
+    slot_id:  &str,
+    id:       impl Into<WidgetId>,
+    state:    &mut SidebarState,
+    view:     &mut SidebarView<'_>,
+    settings: &SidebarSettings,
+    kind:     &SidebarRenderKind,
+    layer:    &LayerId,
+) -> Option<WidgetId> {
+    let rect = layout.rect_for_edge_slot(slot_id)?;
+    Some(register_context_manager_sidebar(
+        layout.ctx_mut(), render, id, rect, state, view, settings, kind, layer,
+    ))
+}
 
 // ---------------------------------------------------------------------------
 // Resize

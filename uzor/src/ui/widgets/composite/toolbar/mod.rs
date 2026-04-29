@@ -37,7 +37,7 @@ pub mod types;
 
 pub use input::{
     handle_toolbar_keyboard, handle_toolbar_overflow_scroll,
-    register_input_coordinator_toolbar,
+    register_input_coordinator_toolbar, register_layout_manager_toolbar,
 };
 pub use render::register_context_manager_toolbar;
 pub use settings::ToolbarSettings;

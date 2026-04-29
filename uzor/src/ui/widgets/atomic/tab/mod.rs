@@ -32,4 +32,6 @@ pub use render::{
 pub use input::{
     register_chrome_tab, register_horizontal_tab, register_sidebar_tab, register_tab,
     register_tab_on_layer,
+    register_input_coordinator_tab,
+    register_context_manager_tab,
 };

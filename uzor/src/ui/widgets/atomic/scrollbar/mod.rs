@@ -38,4 +38,6 @@ pub use input::{
     start_thumb_drag, try_end_scrollbar_drag, try_handle_scrollbar_drag,
     try_handle_track_click, try_handle_wheel, try_start_scrollbar_drag, update_thumb_drag,
     ScrollableInfo,
+    register_input_coordinator_scrollbar,
+    register_context_manager_scrollbar,
 };

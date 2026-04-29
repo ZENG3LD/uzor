@@ -32,4 +32,7 @@ pub use input::{
     handle_slider_scroll, handle_slider_click,
     handle_slider_text_input,
     handle_slider_arrow_key, ArrowDirection,
+    // Level 1 / Level 2
+    register_input_coordinator_slider,
+    register_context_manager_slider,
 };

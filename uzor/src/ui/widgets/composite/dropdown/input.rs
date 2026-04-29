@@ -5,8 +5,38 @@
 
 pub use super::render::register_input_coordinator_dropdown;
 
+use super::render::register_context_manager_dropdown;
+
+use super::settings::DropdownSettings;
 use super::state::DropdownState;
-use crate::types::Rect;
+use super::types::{DropdownRenderKind, DropdownView};
+use crate::docking::panels::DockPanel;
+use crate::input::LayerId;
+use crate::layout::LayoutManager;
+use crate::render::RenderContext;
+use crate::types::{Rect, WidgetId};
+
+/// Register + draw a dropdown in one call using a [`LayoutManager`].
+///
+/// Resolves the rect from the overlay slot identified by `slot_id`, then
+/// forwards to [`register_context_manager_dropdown`].  Returns `None` if the
+/// slot is not present in the overlay stack.
+pub fn register_layout_manager_dropdown<P: DockPanel>(
+    layout:   &mut LayoutManager<P>,
+    render:   &mut dyn RenderContext,
+    slot_id:  &str,
+    id:       impl Into<WidgetId>,
+    state:    &mut DropdownState,
+    view:     &mut DropdownView<'_>,
+    settings: &DropdownSettings,
+    kind:     DropdownRenderKind,
+    layer:    &LayerId,
+) -> Option<WidgetId> {
+    let rect = layout.rect_for_overlay(slot_id)?;
+    Some(register_context_manager_dropdown(
+        layout.ctx_mut(), render, id, rect, state, view, settings, kind, layer,
+    ))
+}
 
 /// Returns `true` if a click at `click_pos` is outside both the main panel and
 /// the open submenu panel, meaning the dropdown should be dismissed.

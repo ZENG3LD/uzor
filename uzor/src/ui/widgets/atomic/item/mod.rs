@@ -30,4 +30,8 @@ pub use theme::{DefaultItemTheme, ItemTheme, ToolbarItemTheme};
 pub use style::{DefaultItemStyle, ItemStyle, ToolbarItemStyle};
 pub use settings::ItemSettings;
 pub use render::{ItemView, draw_item};
-pub use input::register;
+pub use input::{
+    register,
+    register_input_coordinator_item,
+    register_context_manager_item,
+};

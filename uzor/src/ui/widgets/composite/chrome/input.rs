@@ -6,10 +6,38 @@
 
 pub use super::render::register_input_coordinator_chrome;
 
+use super::render::register_context_manager_chrome;
+
 use super::settings::ChromeSettings;
 use super::state::ChromeState;
 use super::types::{ChromeAction, ChromeHit, ChromeRenderKind, ChromeView, ResizeCorner};
-use crate::types::Rect;
+use crate::core::types::Rect;
+use crate::docking::panels::DockPanel;
+use crate::input::LayerId;
+use crate::layout::LayoutManager;
+use crate::render::RenderContext;
+use crate::types::WidgetId;
+
+/// Level-3 registration: register and draw the chrome composite using rects
+/// resolved from `LayoutManager`.
+///
+/// Returns `None` if chrome has not been solved yet (e.g. `solve()` not called
+/// or chrome slot is hidden).
+pub fn register_layout_manager_chrome<P: DockPanel>(
+    layout:   &mut LayoutManager<P>,
+    render:   &mut dyn RenderContext,
+    id:       impl Into<WidgetId>,
+    state:    &mut ChromeState,
+    view:     &ChromeView<'_>,
+    settings: &ChromeSettings,
+    kind:     &ChromeRenderKind,
+    layer:    &LayerId,
+) -> Option<WidgetId> {
+    let rect = layout.rect_for_chrome()?;
+    Some(register_context_manager_chrome(
+        layout.ctx_mut(), render, id, rect, state, view, settings, kind, layer,
+    ))
+}
 
 // ---------------------------------------------------------------------------
 // Tab width (duplicated locally to avoid coupling to render internals)

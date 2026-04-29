@@ -1,9 +1,12 @@
 //! Tab input-coordinator registration helpers.
 
+use crate::app_context::ContextManager;
 use crate::input::core::coordinator::{InputCoordinator, LayerId};
 use crate::input::core::sense::Sense;
 use crate::input::core::widget_kind::WidgetKind;
 use crate::types::{Rect, WidgetId};
+
+use super::state::TabState;
 
 // ---------------------------------------------------------------------------
 // Core registration helpers (existing — kept)
@@ -95,4 +98,46 @@ pub fn register_horizontal_tab(
     layer: &LayerId,
 ) -> WidgetId {
     register_tab_on_layer(coord, tab_id, rect, Sense::CLICK | Sense::HOVER, close_btn_rect, layer)
+}
+
+// ── Level 1 / Level 2 entry points ───────────────────────────────────────────
+
+/// Level 1 — register a tab with an explicit `InputCoordinator`.
+///
+/// Wraps `register_tab_on_layer`. `sense` defaults to `CLICK | HOVER`; pass an
+/// explicit value for non-standard tabs (e.g. hover-only preview tabs).
+pub fn register_input_coordinator_tab(
+    coord: &mut InputCoordinator,
+    tab_id: impl Into<WidgetId>,
+    rect: Rect,
+    sense: Sense,
+    close_btn_rect: Option<Rect>,
+    layer: &LayerId,
+    state: &mut TabState,
+) -> WidgetId {
+    let _ = state; // transient per-frame state; managed by caller each frame
+    register_tab_on_layer(coord, tab_id, rect, sense, close_btn_rect, layer)
+}
+
+/// Level 2 — register a tab via `ContextManager`, pulling `TabState` from the registry.
+///
+/// Uses `CLICK | HOVER` sense. For custom sense use `register_input_coordinator_tab`.
+pub fn register_context_manager_tab(
+    ctx: &mut ContextManager,
+    tab_id: impl Into<WidgetId>,
+    rect: Rect,
+    close_btn_rect: Option<Rect>,
+    layer: &LayerId,
+) -> WidgetId {
+    let tab_id: WidgetId = tab_id.into();
+    let state = ctx.registry.get_or_insert_with(tab_id.clone(), TabState::default);
+    register_input_coordinator_tab(
+        &mut ctx.input,
+        tab_id,
+        rect,
+        Sense::CLICK | Sense::HOVER,
+        close_btn_rect,
+        layer,
+        state,
+    )
 }

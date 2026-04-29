@@ -33,4 +33,8 @@ pub use render::{
     draw_shape_selector, draw_shape_selector_button,
     draw_theme_preset_button, draw_ui_style_button,
 };
-pub use input::register_shape_selector;
+pub use input::{
+    register_shape_selector,
+    register_input_coordinator_shape_selector,
+    register_context_manager_shape_selector,
+};

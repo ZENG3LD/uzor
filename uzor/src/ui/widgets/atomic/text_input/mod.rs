@@ -34,4 +34,8 @@ pub use settings::TextInputSettings;
 pub use render::{
     cursor_from_char_positions, draw_input, draw_input_cursor, InputResult, InputView,
 };
-pub use input::register;
+pub use input::{
+    register,
+    register_input_coordinator_text_input,
+    register_context_manager_text_input,
+};

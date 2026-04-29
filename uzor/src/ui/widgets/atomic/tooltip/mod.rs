@@ -29,4 +29,8 @@ pub use render::{
     draw_chrome_tooltip, draw_crosshair_tooltip, draw_tooltip, tooltip_multiline_rect,
     tooltip_rect_from_anchor,
 };
-pub use input::register_tooltip;
+pub use input::{
+    register_tooltip,
+    register_input_coordinator_tooltip,
+    register_context_manager_tooltip,
+};

@@ -32,4 +32,8 @@ pub use style::{
 };
 pub use settings::DropdownTriggerSettings;
 pub use render::{draw_dropdown_field, draw_dropdown_trigger, draw_split_dropdown};
-pub use input::register_dropdown_trigger;
+pub use input::{
+    register_dropdown_trigger,
+    register_input_coordinator_dropdown_trigger,
+    register_context_manager_dropdown_trigger,
+};

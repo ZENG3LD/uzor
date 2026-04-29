@@ -27,4 +27,8 @@ pub use theme::{DefaultRadioTheme, RadioTheme};
 pub use style::{DefaultRadioPairStyle, DefaultRadioStyle, RadioPairStyle, RadioStyle};
 pub use settings::RadioSettings;
 pub use render::draw_radio;
-pub use input::register_radio;
+pub use input::{
+    register_radio,
+    register_input_coordinator_radio,
+    register_context_manager_radio,
+};

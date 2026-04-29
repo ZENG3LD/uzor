@@ -40,4 +40,6 @@ pub use render::{
 pub use input::{
     end_separator_drag, register, register_separator, start_separator_drag,
     update_separator_drag, SeparatorKind,
+    register_input_coordinator_separator,
+    register_context_manager_separator,
 };

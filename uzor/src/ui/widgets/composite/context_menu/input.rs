@@ -5,8 +5,39 @@
 
 pub use super::render::register_input_coordinator_context_menu;
 
+use super::render::register_context_manager_context_menu;
+
+use super::settings::ContextMenuSettings;
 use super::state::ContextMenuState;
-use crate::types::Rect;
+use super::types::{ContextMenuRenderKind, ContextMenuView};
+use crate::docking::panels::DockPanel;
+use crate::input::LayerId;
+use crate::layout::LayoutManager;
+use crate::render::RenderContext;
+use crate::types::{Rect, WidgetId};
+
+/// Register + draw a context menu in one call using a [`LayoutManager`].
+///
+/// Confirms the overlay slot identified by `slot_id` is registered, then
+/// forwards to [`register_context_manager_context_menu`].  The menu positions
+/// itself from `state.x`/`state.y`; the overlay rect is used only to verify
+/// the slot exists.  Returns `None` if the slot is not present.
+pub fn register_layout_manager_context_menu<P: DockPanel>(
+    layout:   &mut LayoutManager<P>,
+    render:   &mut dyn RenderContext,
+    slot_id:  &str,
+    id:       impl Into<WidgetId>,
+    state:    &mut ContextMenuState,
+    view:     &mut ContextMenuView<'_>,
+    settings: &ContextMenuSettings,
+    kind:     &ContextMenuRenderKind<'_>,
+    layer:    &LayerId,
+) -> Option<WidgetId> {
+    let _rect: Rect = layout.rect_for_overlay(slot_id)?;
+    Some(register_context_manager_context_menu(
+        layout.ctx_mut(), render, id, state, view, settings, kind, layer,
+    ))
+}
 
 // ---------------------------------------------------------------------------
 // Click-outside dismiss

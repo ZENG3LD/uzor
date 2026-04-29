@@ -1,5 +1,6 @@
 use crate::docking::panels::{PanelDockingManager, PanelRect, DockPanel};
 use crate::core::types::Rect;
+use crate::app_context::{ContextManager, layout::types::LayoutNode};
 use super::chrome_slot::ChromeSlot;
 use super::edge_panels::EdgePanels;
 use super::overlay_stack::{OverlayStack, OverlayEntry};
@@ -11,6 +12,11 @@ use super::solve::solve_layout;
 /// Convert a `Rect` (f64) to a `PanelRect` (f32) for the dock layout pass.
 fn panel_rect_from_rect(r: Rect) -> PanelRect {
     PanelRect::new(r.x as f32, r.y as f32, r.width as f32, r.height as f32)
+}
+
+/// Convert a `PanelRect` (f32) to a `Rect` (f64) for rect-query results.
+fn panel_rect_to_rect(pr: PanelRect) -> Rect {
+    Rect::new(pr.x as f64, pr.y as f64, pr.width as f64, pr.height as f64)
 }
 
 /// Top-level macro layout owner for uzor.
@@ -46,6 +52,9 @@ pub struct LayoutManager<P: DockPanel> {
     tree: LayoutTree,
     last_solved: Option<LayoutSolved>,
     last_window: Option<Rect>,
+    /// Retained-mode context manager — owned here so Level-3 composite
+    /// helpers can access it directly via `layout.ctx_mut()`.
+    ctx: ContextManager,
 }
 
 impl<P: DockPanel> LayoutManager<P> {
@@ -61,6 +70,7 @@ impl<P: DockPanel> LayoutManager<P> {
             tree: LayoutTree::new(),
             last_solved: None,
             last_window: None,
+            ctx: ContextManager::new(LayoutNode::new("__layout_root__")),
         }
     }
 
@@ -106,6 +116,20 @@ impl<P: DockPanel> LayoutManager<P> {
     /// Mutable access to the z-layer table.
     pub fn z_layers_mut(&mut self) -> &mut ZLayerTable {
         &mut self.z_layers
+    }
+
+    /// Read-only access to the embedded `ContextManager`.
+    pub fn ctx(&self) -> &ContextManager {
+        &self.ctx
+    }
+
+    /// Mutable access to the embedded `ContextManager`.
+    ///
+    /// Level-3 registration helpers call this internally to forward to
+    /// `register_context_manager_*` without requiring the caller to hold a
+    /// separate `ContextManager` reference.
+    pub fn ctx_mut(&mut self) -> &mut ContextManager {
+        &mut self.ctx
     }
 
     /// Read-only access to the macro layout tree (solved node rects).
@@ -184,6 +208,53 @@ impl<P: DockPanel> LayoutManager<P> {
     /// Rect for a named overlay entry, or `None` if not present.
     pub fn rect_for_overlay(&self, id: &str) -> Option<Rect> {
         self.overlays.get(id).map(|e| e.rect)
+    }
+
+    /// Rect for a named edge slot, or `None` if not present or not yet solved.
+    ///
+    /// Looks up the slot in `edges` (matching by `id`), determines its position
+    /// within the solved edge rects array, and returns the corresponding `Rect`.
+    pub fn rect_for_edge_slot(&self, id: &str) -> Option<Rect> {
+        let solved = self.last_solved.as_ref()?;
+        let slot = self.edges.get(id)?;
+
+        // Find the index of this slot among visible slots on the same side
+        // (order matches the per-side Vec in `solved.edges`).
+        use super::types::EdgeSide;
+        let visible: Vec<_> = self.edges.slots_for(slot.side).collect();
+        let idx = visible.iter().position(|s| s.id == id)?;
+
+        let rects = match slot.side {
+            EdgeSide::Top    => &solved.edges.top,
+            EdgeSide::Bottom => &solved.edges.bottom,
+            EdgeSide::Left   => &solved.edges.left,
+            EdgeSide::Right  => &solved.edges.right,
+        };
+        rects.get(idx).copied()
+    }
+
+    /// Resolve a slot id to a rect by checking each layer in order:
+    ///
+    /// 1. `"chrome"` → chrome strip rect.
+    /// 2. Edge slot id → edge slot rect via `rect_for_edge_slot`.
+    /// 3. Overlay id → overlay rect via `rect_for_overlay`.
+    /// 4. Dock leaf id (string form of `LeafId` display, e.g. `"Leaf(42)"`) →
+    ///    dock panel rect via `panels.rect_for_leaf_str`.
+    /// 5. Otherwise `None`.
+    pub fn rect_for(&self, slot_id: &str) -> Option<Rect> {
+        if slot_id == "chrome" {
+            return self.rect_for_chrome();
+        }
+        if let Some(r) = self.rect_for_edge_slot(slot_id) {
+            return Some(r);
+        }
+        if let Some(r) = self.rect_for_overlay(slot_id) {
+            return Some(r);
+        }
+        if let Some(pr) = self.panels.rect_for_leaf_str(slot_id) {
+            return Some(panel_rect_to_rect(pr));
+        }
+        None
     }
 
     // ------------------------------------------------------------------

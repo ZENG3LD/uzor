@@ -27,4 +27,8 @@ pub use style::{
 };
 pub use settings::ToggleSettings;
 pub use render::draw_toggle;
-pub use input::register_toggle;
+pub use input::{
+    register_toggle,
+    register_input_coordinator_toggle,
+    register_context_manager_toggle,
+};

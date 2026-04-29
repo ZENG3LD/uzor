@@ -98,7 +98,11 @@ pub use render::{
     DropdownMenuRowView,
     draw_dropdown_menu_row,
 };
-pub use input::register;
+pub use input::{
+    register,
+    register_input_coordinator_button,
+    register_context_manager_button,
+};
 
 // Re-exports from extracted atomic modules (backward-compat surface).
 // New code should import directly from atomic::color_swatch, etc.

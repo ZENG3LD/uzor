@@ -20,7 +20,11 @@ pub mod style;
 pub mod theme;
 pub mod types;
 
-pub use input::register_drag_handle;
+pub use input::{
+    register_drag_handle,
+    register_input_coordinator_drag_handle,
+    register_context_manager_drag_handle,
+};
 pub use render::draw_drag_handle;
 pub use settings::DragHandleSettings;
 pub use state::DragHandleState;

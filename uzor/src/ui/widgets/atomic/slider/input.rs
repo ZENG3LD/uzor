@@ -18,6 +18,7 @@
 //! `drag.floating_value.unwrap_or(committed_value)` as the `value` param so
 //! the handle follows the pointer in real time.
 
+use crate::app_context::ContextManager;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::types::{Rect, WidgetId};
@@ -287,4 +288,35 @@ pub fn handle_slider_arrow_key(
         ArrowDirection::Right => step,
     };
     Some(clamp_step(current_value + delta, min, max, step))
+}
+
+// ── Level 1 / Level 2 entry points ───────────────────────────────────────────
+
+/// Level 1 — register a slider with an explicit `InputCoordinator`.
+///
+/// Drag, scroll, and click events are handled by the separate helper functions
+/// (`start_slider_drag`, `update_slider_drag_float`, etc.). This call only
+/// registers the widget's hit zone for each frame.
+pub fn register_input_coordinator_slider(
+    coord: &mut InputCoordinator,
+    id: impl Into<WidgetId>,
+    rect: Rect,
+    layer: &LayerId,
+    state: &mut SliderDragState,
+) {
+    let _ = state; // drag state is managed by the drag helper fns
+    register(coord, id, rect, layer);
+}
+
+/// Level 2 — register a slider via `ContextManager`, pulling `SliderDragState`
+/// from the registry.
+pub fn register_context_manager_slider(
+    ctx: &mut ContextManager,
+    id: impl Into<WidgetId>,
+    rect: Rect,
+    layer: &LayerId,
+) {
+    let id: WidgetId = id.into();
+    let state = ctx.registry.get_or_insert_with(id.clone(), SliderDragState::default);
+    register_input_coordinator_slider(&mut ctx.input, id, rect, layer, state);
 }

@@ -9,6 +9,7 @@
 //! Double-click reset is NOT implemented: mlc has no double-click reset for
 //! any separator variant (§3, §6 — no modifier / special gesture handlers found).
 
+use crate::app_context::ContextManager;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::types::{Rect, WidgetId};
@@ -155,4 +156,36 @@ pub fn end_separator_drag(
     let value = update_separator_drag(state, cursor_pos).unwrap_or(state.start_value);
     state.clear();
     Some((id, value))
+}
+
+// ── Level 1 / Level 2 entry points ───────────────────────────────────────────
+
+/// Level 1 — register a separator with an explicit `InputCoordinator`.
+///
+/// `kind` determines whether it is a visual divider (`Sense::NONE`) or a
+/// draggable resize handle (`Sense::DRAG`).
+pub fn register_input_coordinator_separator(
+    coord: &mut InputCoordinator,
+    id: impl Into<WidgetId>,
+    rect: Rect,
+    kind: SeparatorKind,
+    layer: &LayerId,
+    state: &mut SeparatorDragState,
+) {
+    let _ = state; // drag state is managed by start/update/end helpers
+    register_separator(coord, id, rect, kind, layer);
+}
+
+/// Level 2 — register a separator via `ContextManager`, pulling `SeparatorDragState`
+/// from the registry.
+pub fn register_context_manager_separator(
+    ctx: &mut ContextManager,
+    id: impl Into<WidgetId>,
+    rect: Rect,
+    kind: SeparatorKind,
+    layer: &LayerId,
+) {
+    let id: WidgetId = id.into();
+    let state = ctx.registry.get_or_insert_with(id.clone(), SeparatorDragState::default);
+    register_input_coordinator_separator(&mut ctx.input, id, rect, kind, layer, state);
 }

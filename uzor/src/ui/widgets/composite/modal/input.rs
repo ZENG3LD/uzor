@@ -6,7 +6,38 @@
 
 pub use super::render::register_input_coordinator_modal;
 
+use super::render::register_context_manager_modal;
+
+use super::settings::ModalSettings;
 use super::state::ModalState;
+use super::types::{ModalRenderKind, ModalView};
+use crate::docking::panels::DockPanel;
+use crate::input::LayerId;
+use crate::layout::LayoutManager;
+use crate::render::RenderContext;
+use crate::types::WidgetId;
+
+/// Register + draw a modal in one call using a [`LayoutManager`].
+///
+/// Resolves the rect from the overlay slot identified by `slot_id`, then
+/// forwards to [`register_context_manager_modal`].  Returns `None` if the slot
+/// is not present in the overlay stack.
+pub fn register_layout_manager_modal<P: DockPanel>(
+    layout:   &mut LayoutManager<P>,
+    render:   &mut dyn RenderContext,
+    slot_id:  &str,
+    id:       impl Into<WidgetId>,
+    state:    &mut ModalState,
+    view:     &mut ModalView<'_>,
+    settings: &ModalSettings,
+    kind:     &ModalRenderKind,
+    layer:    &LayerId,
+) -> Option<()> {
+    let rect = layout.rect_for_overlay(slot_id)?;
+    Some(register_context_manager_modal(
+        layout.ctx_mut(), render, id, rect, state, view, settings, kind, layer,
+    ))
+}
 
 /// Apply a drag delta to modal state.
 ///

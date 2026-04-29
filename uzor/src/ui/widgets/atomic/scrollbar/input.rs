@@ -4,6 +4,7 @@
 //! All free functions operate on a mutable `ScrollState` reference; no
 //! keyboard PgUp/PgDn handling (mlc routes those to PTY only).
 
+use crate::app_context::ContextManager;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::types::{Rect, WidgetId};
@@ -231,4 +232,54 @@ pub fn try_handle_track_click(
         }
     }
     false
+}
+
+// ── Level 1 / Level 2 entry points ───────────────────────────────────────────
+
+/// Level 1 — register a scrollbar (track + thumb) with an explicit `InputCoordinator`.
+///
+/// `track_id` and `thumb_id` are the stable IDs for the track and thumb rects
+/// respectively. `inflation_x` is the horizontal hit-zone inflation for the thumb
+/// (use `5.0` for standard, `10.0` for compact variants).
+pub fn register_input_coordinator_scrollbar(
+    coord: &mut InputCoordinator,
+    track_id: impl Into<WidgetId>,
+    thumb_id: impl Into<WidgetId>,
+    track_rect: Rect,
+    thumb_rect: Rect,
+    inflation_x: f64,
+    layer: &LayerId,
+    state: &mut ScrollState,
+) {
+    let _ = state; // state is read/written by the drag helpers, not registration
+    register_track(coord, track_id, track_rect, layer);
+    register_thumb(coord, thumb_id, thumb_rect, inflation_x, layer);
+}
+
+/// Level 2 — register a scrollbar via `ContextManager`, pulling `ScrollState` from the registry.
+///
+/// Uses `track_id` as the registry key. `inflation_x` is the horizontal hit-zone
+/// inflation for the thumb.
+pub fn register_context_manager_scrollbar(
+    ctx: &mut ContextManager,
+    track_id: impl Into<WidgetId>,
+    thumb_id: impl Into<WidgetId>,
+    track_rect: Rect,
+    thumb_rect: Rect,
+    inflation_x: f64,
+    layer: &LayerId,
+) {
+    let track_id: WidgetId = track_id.into();
+    let thumb_id: WidgetId = thumb_id.into();
+    let state = ctx.registry.get_or_insert_with(track_id.clone(), ScrollState::default);
+    register_input_coordinator_scrollbar(
+        &mut ctx.input,
+        track_id,
+        thumb_id,
+        track_rect,
+        thumb_rect,
+        inflation_x,
+        layer,
+        state,
+    );
 }

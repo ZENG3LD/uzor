@@ -10,9 +10,12 @@
 //! for the rare case where a container acts as a clickable backdrop (e.g. a
 //! dismissal surface behind a popup).
 
+use crate::app_context::ContextManager;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::types::{Rect, WidgetId};
+
+use super::state::ContainerState;
 
 /// Register a non-interactive container in the input coordinator.
 ///
@@ -40,4 +43,27 @@ pub fn register_clickable(
     layer: &LayerId,
 ) {
     coord.register_atomic(id, WidgetKind::Custom, rect, Sense::CLICK, layer);
+}
+
+/// Level 1 — register a non-interactive container with an explicit `InputCoordinator`.
+pub fn register_input_coordinator_container(
+    coord: &mut InputCoordinator,
+    id: impl Into<WidgetId>,
+    rect: Rect,
+    layer: &LayerId,
+    _state: &mut ContainerState,
+) {
+    coord.register_atomic(id, WidgetKind::Custom, rect, Sense::NONE, layer);
+}
+
+/// Level 2 — register a container via `ContextManager`, pulling state from the registry.
+pub fn register_context_manager_container(
+    ctx: &mut ContextManager,
+    id: impl Into<WidgetId>,
+    rect: Rect,
+    layer: &LayerId,
+) {
+    let id: WidgetId = id.into();
+    let state = ctx.registry.get_or_insert_with(id.clone(), ContainerState::default);
+    register_input_coordinator_container(&mut ctx.input, id, rect, layer, state);
 }

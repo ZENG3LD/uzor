@@ -41,7 +41,7 @@ pub mod types;
 
 // --- Re-exports ---------------------------------------------------------------
 
-pub use input::{handle_popup_dismiss, register_input_coordinator_popup};
+pub use input::{handle_popup_dismiss, register_input_coordinator_popup, register_layout_manager_popup};
 pub use render::register_context_manager_popup;
 pub use settings::PopupSettings;
 pub use state::PopupState;

@@ -1449,6 +1449,18 @@ impl<P: DockPanel> PanelDockingManager<P> {
         &self.panel_rects
     }
 
+    /// Look up a panel rect by the string representation of its `LeafId`.
+    ///
+    /// The canonical string form is `"Leaf(<n>)"` (matches `LeafId`'s `Display`
+    /// impl), e.g. `"Leaf(42)"`.  Returns `None` if the string cannot be parsed
+    /// or the leaf is not in the current layout.
+    pub fn rect_for_leaf_str(&self, s: &str) -> Option<PanelRect> {
+        // Parse "Leaf(<n>)" → u64.
+        let inner = s.strip_prefix("Leaf(")?.strip_suffix(')')?;
+        let n: u64 = inner.parse().ok()?;
+        self.panel_rects.get(&LeafId(n)).copied()
+    }
+
     pub fn panel_headers(&self) -> &HashMap<LeafId, PanelRect> {
         &self.panel_headers
     }

@@ -14,4 +14,8 @@ pub use theme::{DefaultToastTheme, ToastTheme};
 pub use style::{DefaultToastStyle, ToastGeometry, ToastStyle};
 pub use settings::ToastSettings;
 pub use render::{alpha_for, draw_toast, draw_toast_at, draw_toast_stack};
-pub use input::register;
+pub use input::{
+    register,
+    register_input_coordinator_toast,
+    register_context_manager_toast,
+};

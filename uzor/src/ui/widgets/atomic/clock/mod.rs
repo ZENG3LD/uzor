@@ -30,4 +30,8 @@ pub use theme::{ClockTheme, DefaultClockTheme};
 pub use style::{ClockStyle, DefaultClockStyle};
 pub use settings::ClockSettings;
 pub use render::{ClockView, draw_clock};
-pub use input::register;
+pub use input::{
+    register,
+    register_input_coordinator_clock,
+    register_context_manager_clock,
+};
