@@ -2,17 +2,17 @@
 //!
 //! ## API convention
 //!
-//! All composite widgets expose three functions:
-//!
-//! - `register_modal`  — registers the composite + child hit-rects.  No drawing.
-//! - `draw_modal`      — pure rendering.  No registration.
-//! - `modal`           — convenience wrapper that does both.
+//! - `register_input_coordinator_modal` — registers the composite + child
+//!   hit-rects with an `InputCoordinator`.  No drawing.  Use when you need
+//!   explicit z-order control (register multiple composites, draw in order).
+//! - `register_context_manager_modal`   — convenience wrapper that takes a
+//!   `ContextManager`, registers, and draws in one call.
 //!
 //! ## Usage
 //!
 //! ```ignore
 //! use uzor::ui::widgets::composite::modal::{
-//!     modal, draw_modal, register_modal,
+//!     register_input_coordinator_modal, register_context_manager_modal,
 //!     ModalView, ModalState, ModalSettings, ModalRenderKind,
 //!     BackdropKind, FooterBtn, FooterBtnStyle, WizardPageInfo,
 //!     DefaultModalTheme, DefaultModalStyle, BackgroundFill,
@@ -29,8 +29,8 @@ pub mod types;
 
 // --- Re-exports ---------------------------------------------------------------
 
-pub use input::handle_modal_drag;
-pub use render::{draw_modal, modal, register_modal};
+pub use input::{handle_modal_drag, register_input_coordinator_modal};
+pub use render::register_context_manager_modal;
 pub use settings::ModalSettings;
 pub use state::ModalState;
 pub use style::{BackgroundFill, DefaultModalStyle, ModalStyle};

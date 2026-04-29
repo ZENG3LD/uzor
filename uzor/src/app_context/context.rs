@@ -1,65 +1,43 @@
-//! UZOR central context and Immediate Mode API
+//! UZOR central context — retained-mode coordinator wrapper.
 //!
-//! The Context is the primary entry point for the UZOR API. It manages
-//! input processing, layout computation, and persistent widget state.
+//! `ContextManager` is the primary entry point for the UZOR API. It wraps an
+//! `InputCoordinator` (retained-mode input routing) together with layout, state,
+//! and animation subsystems.
 //!
-//! This is a HEADLESS architecture - Context only handles geometry and interaction,
-//! not rendering. Platforms are responsible for visual output.
+//! This is a HEADLESS architecture — ContextManager only handles geometry and
+//! interaction, not rendering. Platforms are responsible for visual output.
 
 use crate::ui::animation::AnimationCoordinator;
-use crate::input::InputState;
+use crate::input::{InputState, InputCoordinator, WidgetResponse};
 use super::layout::tree::LayoutTree;
 use super::state::StateRegistry;
-use crate::types::{Rect, WidgetId, WidgetState, ScrollState};
-use serde::{Deserialize, Serialize};
+use crate::types::{Rect, WidgetId};
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct ButtonResponse {
-    pub clicked: bool,
-    pub hovered: bool,
-    pub pressed: bool,
-    pub state: WidgetState,
-    pub rect: Rect,
-}
+/// The central brain of the UZOR engine.
+///
+/// Wraps `InputCoordinator` for retained-mode input routing plus layout,
+/// persistent state, and animation.
+pub struct ContextManager {
+    /// Retained-mode input coordinator (hit-testing, z-order, event routing).
+    pub input: InputCoordinator,
 
-#[derive(Clone, Debug, Default)]
-pub struct CheckboxResponse {
-    pub toggled: bool,
-    pub new_checked: bool,
-    pub hovered: bool,
-    pub state: WidgetState,
-    pub rect: Rect,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct IconButtonResponse {
-    pub clicked: bool,
-    pub hovered: bool,
-    pub state: WidgetState,
-}
-
-/// The central brain of the UZOR engine
-pub struct Context {
-    /// Transient input state for the current frame
-    pub input: InputState,
-
-    /// Calculated layout rectangles for all widgets
+    /// Calculated layout rectangles for all widgets.
     pub layout: LayoutTree,
 
-    /// Persistent behavioral state (scroll, focus, etc.)
+    /// Persistent behavioral state (scroll, focus, etc.).
     pub registry: StateRegistry,
 
-    /// Animation coordinator for managing widget animations
+    /// Animation coordinator for managing widget animations.
     pub animations: AnimationCoordinator,
 
-    /// Time since startup in seconds (for animations)
+    /// Time since startup in seconds (for animations).
     pub time: f64,
 }
 
-impl Context {
+impl ContextManager {
     pub fn new(root_node: super::layout::types::LayoutNode) -> Self {
         Self {
-            input: InputState::default(),
+            input: InputCoordinator::new(),
             layout: LayoutTree::new(root_node),
             registry: StateRegistry::new(),
             animations: AnimationCoordinator::new(),
@@ -67,148 +45,35 @@ impl Context {
         }
     }
 
-    /// Begin a new frame with updated input
+    /// Begin a new frame with updated input state and viewport.
+    ///
+    /// Delegates to `InputCoordinator::begin_frame`, then recomputes layout
+    /// and advances animations.
     pub fn begin_frame(&mut self, input: InputState, viewport: Rect) {
-        self.input = input;
-        self.time = self.input.time;
+        self.time = input.time;
+        self.input.begin_frame(input);
 
-        // Update animations for this frame
+        // Advance animations for this frame.
         self.animations.update(self.time);
 
-        // Re-compute layout based on current viewport
+        // Re-compute layout based on current viewport.
         self.layout.compute(viewport);
     }
 
-    /// Access persistent state for a widget
+    /// End the current frame and collect widget responses.
+    ///
+    /// Delegates to `InputCoordinator::end_frame`.
+    pub fn end_frame(&mut self) -> Vec<(WidgetId, WidgetResponse)> {
+        self.input.end_frame()
+    }
+
+    /// Access persistent state for a widget.
     pub fn state<T: 'static + Send + Sync + Default>(&mut self, id: impl Into<WidgetId>) -> &mut T {
         self.registry.get_or_insert_with(id.into(), T::default)
     }
 
-    /// Helper to get widget rectangle from computed layout
+    /// Get the computed layout rectangle for a widget.
     pub fn widget_rect(&self, id: &WidgetId) -> Rect {
         self.layout.get_rect(id).unwrap_or_default()
-    }
-
-    // =========================================================================
-    // Immediate Mode API (Headless - Interaction Detection Only)
-    // =========================================================================
-
-    /// Calculate button interaction state
-    pub fn button(&mut self, id: impl Into<WidgetId>) -> ButtonResponse {
-        let id = id.into();
-        let rect = self.widget_rect(&id);
-        let is_hovered = self.input.is_hovered(&rect);
-        let clicked = is_hovered && self.input.is_clicked();
-
-        let state = if clicked {
-            WidgetState::Pressed
-        } else if is_hovered {
-            WidgetState::Hovered
-        } else {
-            WidgetState::Normal
-        };
-
-        ButtonResponse {
-            clicked,
-            hovered: is_hovered,
-            pressed: clicked,
-            state,
-            rect,
-        }
-    }
-
-    /// Calculate checkbox interaction state
-    pub fn checkbox(&mut self, id: impl Into<WidgetId>, checked: bool) -> CheckboxResponse {
-        let id = id.into();
-        let rect = self.widget_rect(&id);
-        let is_hovered = self.input.is_hovered(&rect);
-        let clicked = is_hovered && self.input.is_clicked();
-
-        let state = if clicked {
-            WidgetState::Pressed
-        } else if is_hovered {
-            WidgetState::Hovered
-        } else {
-            WidgetState::Normal
-        };
-
-        let toggled = clicked;
-        let new_checked = if toggled { !checked } else { checked };
-
-        CheckboxResponse {
-            toggled,
-            new_checked,
-            hovered: is_hovered,
-            state,
-            rect,
-        }
-    }
-
-    /// Calculate scroll area geometry and physics
-    pub fn scroll_area(&mut self, id: impl Into<WidgetId>, content_height: f64) -> (Rect, ScrollState) {
-        let id = id.into();
-        let viewport = self.widget_rect(&id);
-        let is_hovered = self.input.is_hovered(&viewport);
-
-        let dt = self.input.dt;
-        let scroll_delta_y = if is_hovered { self.input.scroll_delta.1 } else { 0.0 };
-
-        let state = self.state::<ScrollState>(id);
-        state.content_size = content_height;
-
-        if scroll_delta_y != 0.0 {
-            state.velocity -= scroll_delta_y * 1500.0;
-        }
-
-        state.offset += state.velocity * dt;
-        state.velocity *= 0.90;
-
-        if state.velocity.abs() < 0.1 {
-            state.velocity = 0.0;
-        }
-
-        let max_scroll = (content_height - viewport.height).max(0.0);
-        if state.offset < 0.0 {
-            state.offset = 0.0;
-            state.velocity = 0.0;
-        } else if state.offset > max_scroll {
-            state.offset = max_scroll;
-            state.velocity = 0.0;
-        }
-
-        (viewport, state.clone())
-    }
-
-    /// Calculate interaction state for an icon button
-    pub fn icon_button(
-        &mut self,
-        id: impl Into<WidgetId>,
-    ) -> IconButtonResponse {
-        let id = id.into();
-        let rect = self.widget_rect(&id);
-        let is_hovered = self.input.is_hovered(&rect);
-        let clicked = is_hovered && self.input.is_clicked();
-
-        let state = if is_hovered {
-            if self.input.is_mouse_down() {
-                WidgetState::Pressed
-            } else {
-                WidgetState::Hovered
-            }
-        } else {
-            WidgetState::Normal
-        };
-
-        if clicked {
-            println!("[UZOR Core] Button '{:?}' CLICKED at rect {:?}", id, rect);
-        } else if is_hovered {
-            println!("[UZOR Core] Button '{:?}' HOVERED at rect {:?}", id, rect);
-        }
-
-        IconButtonResponse {
-            clicked,
-            hovered: is_hovered,
-            state,
-        }
     }
 }

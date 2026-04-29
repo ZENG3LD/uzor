@@ -2,13 +2,12 @@
 //!
 //! # API convention
 //!
-//! All composite widgets expose three functions:
-//!
-//! - `register_modal`  — registers the composite + all child hit-rects with the
-//!   `InputCoordinator`.  **No drawing.**
-//! - `draw_modal`      — pure rendering.  **No registration.**  The caller must
-//!   have already called `register_modal` (or done equivalent registration).
-//! - `modal`           — convenience wrapper that calls both in order.
+//! - `register_input_coordinator_modal` — registers the composite + all child
+//!   hit-rects with an `InputCoordinator`.  **No drawing.**  Use when you need
+//!   to separate registration from rendering (explicit z-order control).
+//! - `register_context_manager_modal`   — convenience wrapper: takes a
+//!   `ContextManager`, registers, and draws in one call (passes `coord` to the
+//!   body closure so inner widgets can self-register).
 //!
 //! # Draw order for every non-Custom kind
 //!
@@ -81,12 +80,11 @@ struct ModalLayout {
 
 /// Register the modal composite and all its child hit-rects with the coordinator.
 ///
-/// **No drawing happens here.**  Call this before `draw_modal` so the compositor
-/// can correctly dispatch input events to child widgets (close button, drag zone,
-/// tabs, footer buttons, etc.).
+/// **No drawing happens here.**  Use this when you need explicit z-order control
+/// (register multiple composites, then draw them in order).
 ///
 /// Returns the `WidgetId` assigned to the modal composite.
-pub fn register_modal(
+pub fn register_input_coordinator_modal(
     coord:    &mut InputCoordinator,
     id:       impl Into<WidgetId>,
     rect:     Rect,
@@ -237,212 +235,18 @@ pub fn register_modal(
 }
 
 // ---------------------------------------------------------------------------
-// Public API — draw
+// Public API — convenience wrapper (ContextManager)
 // ---------------------------------------------------------------------------
 
-/// Draw a modal composite.
-///
-/// **Pure rendering — no `InputCoordinator` registration.**
-/// The caller must have called `register_modal` (or equivalent) beforehand.
-///
-/// # Arguments
-/// - `ctx`      — render context.
-/// - `rect`     — bounding rect (ignored for draggable kinds when `state.position`
-///                is non-zero — draggable modals use their stored position).
-/// - `state`    — mutable modal state (hover flags are read this frame).
-/// - `view`     — per-frame data (title, tabs, footer buttons, body closure, …).
-/// - `settings` — theme + style configuration.
-/// - `kind`     — selects the layout pipeline.
-pub fn draw_modal(
-    ctx:      &mut dyn RenderContext,
-    rect:     Rect,
-    state:    &ModalState,
-    view:     &mut ModalView<'_>,
-    settings: &ModalSettings,
-    kind:     &ModalRenderKind,
-) {
-    match kind {
-        ModalRenderKind::Custom(f) => {
-            f(ctx, rect, view, settings);
-            return;
-        }
-        _ => {}
-    }
-
-    let theme = settings.theme.as_ref();
-    let style = settings.style.as_ref();
-
-    let frame  = resolve_frame(rect, state, kind);
-    let layout = compute_layout(frame, state, view, settings, kind);
-
-    // --- 1. Backdrop ----------------------------------------------------------
-    match view.backdrop {
-        BackdropKind::None => {}
-        BackdropKind::Dim => {
-            ctx.set_fill_color(theme.backdrop_dim());
-            ctx.fill_rect(0.0, 0.0, 99_999.0, 99_999.0);
-        }
-        BackdropKind::FullBlock => {
-            ctx.set_fill_color(theme.backdrop_full());
-            ctx.fill_rect(0.0, 0.0, 99_999.0, 99_999.0);
-        }
-    }
-
-    // --- 2. Shadow rect -------------------------------------------------------
-    let offset = style.shadow_offset();
-    ctx.set_fill_color(theme.shadow());
-    ctx.fill_rounded_rect(
-        frame.x + offset,
-        frame.y + offset,
-        frame.width,
-        frame.height,
-        style.radius(),
-    );
-
-    // --- 3. Frame background + border (BackgroundFill dispatch) ---------------
-    match style.background_fill() {
-        BackgroundFill::Solid => {
-            ctx.set_fill_color(theme.bg());
-            ctx.fill_rounded_rect(frame.x, frame.y, frame.width, frame.height, style.radius());
-        }
-        BackgroundFill::Glass { blur_radius: _ } => {
-            // Blur backdrop first (no-op on backends without blur support).
-            ctx.draw_blur_background(frame.x, frame.y, frame.width, frame.height);
-            // Semi-transparent overlay.
-            ctx.set_fill_color(theme.bg());
-            ctx.fill_rounded_rect(frame.x, frame.y, frame.width, frame.height, style.radius());
-        }
-        BackgroundFill::Texture { asset_id } => {
-            // Asset system not yet wired — fall back to solid fill.
-            let _ = asset_id;
-            ctx.set_fill_color(theme.bg());
-            ctx.fill_rounded_rect(frame.x, frame.y, frame.width, frame.height, style.radius());
-        }
-    }
-
-    ctx.set_stroke_color(theme.border());
-    ctx.set_stroke_width(style.border_width());
-    ctx.set_line_dash(&[]);
-    ctx.stroke_rounded_rect(frame.x, frame.y, frame.width, frame.height, style.radius());
-
-    // --- 4. Header ------------------------------------------------------------
-    let has_header = layout.header.height > 0.0;
-    if has_header {
-        ctx.set_fill_color(theme.header_bg());
-        ctx.fill_rect(
-            layout.header.x,
-            layout.header.y,
-            layout.header.width,
-            layout.header.height,
-        );
-
-        // Title text.
-        let title = view.title.unwrap_or("");
-        ctx.set_fill_color(theme.header_text());
-        ctx.set_font("14px sans-serif");
-        ctx.set_text_align(TextAlign::Left);
-        ctx.set_text_baseline(TextBaseline::Middle);
-        ctx.fill_text(
-            title,
-            layout.header.x + style.padding(),
-            layout.header.y + layout.header.height / 2.0,
-        );
-
-        // Header bottom divider.
-        ctx.set_fill_color(theme.divider());
-        ctx.fill_rect(
-            layout.header.x,
-            layout.header.y + layout.header.height - 1.0,
-            layout.header.width,
-            1.0,
-        );
-
-        // Drag handle — invisible hit zone (pure registration, no visual).
-        let dh_view     = DragHandleView { rect: layout.drag_handle };
-        let dh_settings = DragHandleSettings::default();
-        draw_drag_handle(ctx, layout.drag_handle, &dh_view, &dh_settings, &DragHandleRenderKind::Invisible);
-
-        // Close-X button.
-        let close_view = CloseButtonView {
-            hovered: state.hovered_close,
-        };
-        let close_settings = CloseButtonSettings {
-            theme: Box::new(DefaultCloseButtonTheme),
-            style: Box::new(DefaultCloseButtonStyle),
-        };
-        draw_close_button(
-            ctx,
-            layout.close_btn,
-            if state.hovered_close { WidgetState::Hovered } else { WidgetState::Normal },
-            &close_view,
-            &close_settings,
-            &CloseButtonRenderKind::Default,
-        );
-    }
-
-    // --- 5. Tab strip ---------------------------------------------------------
-    if !view.tabs.is_empty() {
-        match kind {
-            ModalRenderKind::TopTabs => {
-                draw_top_tabs(ctx, &layout, view, state, settings);
-            }
-            ModalRenderKind::SideTabs => {
-                draw_side_tabs(ctx, &layout, view, state, settings);
-            }
-            _ => {}
-        }
-    }
-
-    // --- 6. Footer divider ----------------------------------------------------
-    if layout.footer.height > 0.0 {
-        ctx.set_fill_color(theme.footer_border());
-        ctx.fill_rect(
-            layout.footer.x,
-            layout.footer.y,
-            layout.footer.width,
-            1.0,
-        );
-        ctx.set_fill_color(theme.footer_bg());
-        ctx.fill_rect(
-            layout.footer.x,
-            layout.footer.y + 1.0,
-            layout.footer.width,
-            layout.footer.height - 1.0,
-        );
-    }
-
-    // --- 7. Body closure ------------------------------------------------------
-    // The coordinator is not passed here — body registration is the caller's
-    // responsibility (or handled via the `modal` convenience wrapper).
-    // Pass a no-op coordinator stub by using the version with coord below.
-    // NOTE: body still needs coord for its own child widgets — use the `modal`
-    // convenience wrapper or call draw_modal_with_coord instead.
-    (view.body)(ctx, layout.body, &mut crate::input::InputCoordinator::default());
-
-    // --- 8. Footer buttons ----------------------------------------------------
-    if layout.footer.height > 0.0 && !view.footer_buttons.is_empty() {
-        draw_footer_buttons(ctx, &layout, view, state);
-    }
-
-    // --- 9. Wizard nav --------------------------------------------------------
-    if matches!(kind, ModalRenderKind::Wizard) {
-        draw_wizard_nav(ctx, &layout, view, state, settings);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Public API — convenience wrapper
-// ---------------------------------------------------------------------------
-
-/// Register + draw a modal in one call.
+/// Register + draw a modal in one call using a `ContextManager`.
 ///
 /// This is the recommended entry point for typical use.  Under the hood it
-/// calls `register_modal` then `draw_modal_inner` (which passes `coord` to
-/// the body closure so inner widgets can register themselves).
+/// calls `register_input_coordinator_modal` then the full draw pipeline,
+/// passing `coord` to the body closure so inner widgets can self-register.
 ///
 /// # Arguments
-/// - `coord`    — input coordinator.
-/// - `ctx`      — render context.
+/// - `ctx_mgr`  — context manager (coord extracted as `&mut ctx_mgr.input`).
+/// - `render`   — render context.
 /// - `id`       — stable widget id.
 /// - `rect`     — bounding rect.
 /// - `state`    — mutable modal state.
@@ -450,9 +254,9 @@ pub fn draw_modal(
 /// - `settings` — theme + style configuration.
 /// - `kind`     — selects the layout pipeline.
 /// - `layer`    — coordinator layer.
-pub fn modal(
-    coord:    &mut InputCoordinator,
-    ctx:      &mut dyn RenderContext,
+pub fn register_context_manager_modal(
+    ctx_mgr:  &mut crate::app_context::ContextManager,
+    render:   &mut dyn RenderContext,
     id:       impl Into<WidgetId>,
     rect:     Rect,
     state:    &mut ModalState,
@@ -461,8 +265,9 @@ pub fn modal(
     kind:     &ModalRenderKind,
     layer:    &LayerId,
 ) {
-    let modal_id = register_modal(coord, id, rect, state, view, settings, kind, layer);
-    draw_modal_with_coord(ctx, rect, coord, &modal_id, state, view, settings, kind);
+    let coord = &mut ctx_mgr.input;
+    let modal_id = register_input_coordinator_modal(coord, id, rect, state, view, settings, kind, layer);
+    draw_modal_with_coord(render, rect, coord, &modal_id, state, view, settings, kind);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,10 +1,10 @@
 //! Modal input-coordinator helpers.
 //!
-//! `register_modal` is defined in `render.rs` (alongside `draw_modal` and the
-//! `modal` convenience wrapper) because all three share the layout computation.
+//! `register_input_coordinator_modal` is defined in `render.rs` (alongside
+//! `register_context_manager_modal`) because both share the layout computation.
 //! This module re-exports it and adds the drag helper.
 
-pub use super::render::register_modal;
+pub use super::render::register_input_coordinator_modal;
 
 use super::state::ModalState;
 

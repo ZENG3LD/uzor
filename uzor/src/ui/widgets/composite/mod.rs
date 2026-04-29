@@ -6,17 +6,17 @@
 //!
 //! ## Register / Draw convention
 //!
-//! Every composite widget exposes three entry points:
+//! Every composite widget exposes two entry points:
 //!
-//! - `register_<widget>` — registers the composite + all child hit-rects with
-//!   the `InputCoordinator`.  **No drawing.**
-//! - `draw_<widget>`     — pure rendering.  **No registration.**  The caller
-//!   must have called `register_<widget>` beforehand.
-//! - `<widget>`          — convenience wrapper that calls both in order.
+//! - `register_input_coordinator_<widget>` — registers the composite + all
+//!   child hit-rects with an `InputCoordinator`.  **No drawing.**  Use when
+//!   you need explicit z-order control (register multiple composites, then
+//!   draw them in order).
+//! - `register_context_manager_<widget>`   — convenience wrapper that takes a
+//!   `ContextManager`, registers, and draws in one call (passes `coord` to
+//!   the body closure so inner widgets can self-register).
 //!
-//! Callers who need to interleave registration and rendering across multiple
-//! composites (e.g. for explicit z-order control) should use the split forms.
-//! For the common case use the convenience wrapper.
+//! For the common case use the `register_context_manager_*` form.
 
 pub mod blackbox_panel;
 pub mod chrome;
