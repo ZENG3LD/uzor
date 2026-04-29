@@ -27,6 +27,9 @@ pub mod style;
 pub mod theme;
 pub mod types;
 
+#[cfg(test)]
+mod tests;
+
 // --- Re-exports ---------------------------------------------------------------
 
 pub use input::{handle_modal_drag, register_input_coordinator_modal, register_layout_manager_modal};
