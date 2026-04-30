@@ -11,6 +11,7 @@ use super::settings::ContextMenuSettings;
 use super::state::ContextMenuState;
 use super::types::{ContextMenuRenderKind, ContextMenuView};
 use crate::docking::panels::DockPanel;
+use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
 use crate::layout::{ContextMenuNode, LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
@@ -18,7 +19,8 @@ use crate::types::{Rect, WidgetId};
 
 /// Register + draw a context menu in one call using a [`LayoutManager`].
 ///
-/// Confirms the overlay slot identified by `slot_id` is registered, then
+/// Confirms the overlay slot identified by `slot_id` is registered, pushes
+/// the context-menu layer onto the coordinator (blocking lower layers), then
 /// forwards to [`register_context_manager_context_menu`].  The menu positions
 /// itself from `state.x`/`state.y`; the overlay rect is used only to verify
 /// the slot exists.  Returns `None` if the slot is not present.
@@ -35,7 +37,10 @@ pub fn register_layout_manager_context_menu<P: DockPanel>(
 ) -> Option<ContextMenuNode> {
     let id: WidgetId = id.into();
     let _rect: Rect = layout.rect_for_overlay(slot_id)?;
-    let layer = layout.compute_layer_for(parent);
+    let layer = LayerId::new("context_menu");
+    let z_order = layout.z_layers().context_menu as u32;
+    // Context menu blocks lower layers — push the layer into the coordinator.
+    layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
     // Context menu positions itself from state.x/state.y; use a zero rect for tree metadata.
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::ContextMenu, rect: Rect::new(state.x, state.y, 0.0, 0.0), sense: Sense::CLICK });
     register_context_manager_context_menu(

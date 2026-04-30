@@ -12,6 +12,7 @@ use super::settings::ModalSettings;
 use super::state::ModalState;
 use super::types::{ModalRenderKind, ModalView};
 use crate::docking::panels::DockPanel;
+use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
 use crate::layout::{LayoutManager, LayoutNodeId, ModalNode, WidgetNode};
 use crate::render::RenderContext;
@@ -20,8 +21,9 @@ use crate::types::WidgetId;
 /// Register + draw a modal in one call using a [`LayoutManager`].
 ///
 /// Resolves the rect from the overlay slot identified by `slot_id`, then
-/// forwards to [`register_context_manager_modal`].  Returns `None` if the slot
-/// is not present in the overlay stack.
+/// pushes the modal layer onto the coordinator (so it blocks lower layers)
+/// and forwards to [`register_context_manager_modal`].
+/// Returns `None` if the slot is not present in the overlay stack.
 pub fn register_layout_manager_modal<P: DockPanel>(
     layout:   &mut LayoutManager<P>,
     render:   &mut dyn RenderContext,
@@ -35,7 +37,10 @@ pub fn register_layout_manager_modal<P: DockPanel>(
 ) -> Option<ModalNode> {
     let id: WidgetId = id.into();
     let rect = layout.rect_for_overlay(slot_id)?;
-    let layer = layout.compute_layer_for(parent);
+    let layer = LayerId::modal();
+    let z_order = layout.z_layers().modal as u32;
+    // Push the modal layer so that the coordinator's hit-test blocks lower layers.
+    layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Modal, rect, sense: Sense::CLICK });
     register_context_manager_modal(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,

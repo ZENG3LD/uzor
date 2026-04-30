@@ -11,6 +11,7 @@ use super::settings::DropdownSettings;
 use super::state::DropdownState;
 use super::types::{DropdownRenderKind, DropdownView};
 use crate::docking::panels::DockPanel;
+use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
 use crate::layout::{DropdownNode, LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
@@ -18,9 +19,10 @@ use crate::types::{Rect, WidgetId};
 
 /// Register + draw a dropdown in one call using a [`LayoutManager`].
 ///
-/// Resolves the rect from the overlay slot identified by `slot_id`, then
-/// forwards to [`register_context_manager_dropdown`].  Returns `None` if the
-/// slot is not present in the overlay stack.
+/// Resolves the rect from the overlay slot identified by `slot_id`, pushes the
+/// dropdown layer onto the coordinator, then forwards to
+/// [`register_context_manager_dropdown`].  Returns `None` if the slot is not
+/// present in the overlay stack.
 pub fn register_layout_manager_dropdown<P: DockPanel>(
     layout:   &mut LayoutManager<P>,
     render:   &mut dyn RenderContext,
@@ -34,7 +36,10 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
 ) -> Option<DropdownNode> {
     let id: WidgetId = id.into();
     let rect = layout.rect_for_overlay(slot_id)?;
-    let layer = layout.compute_layer_for(parent);
+    let layer = LayerId::new("dropdown");
+    let z_order = layout.z_layers().dropdown as u32;
+    // Dropdown blocks lower layers — push the layer into the coordinator.
+    layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Dropdown, rect, sense: Sense::CLICK });
     register_context_manager_dropdown(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,

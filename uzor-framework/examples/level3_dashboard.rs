@@ -32,7 +32,6 @@ use vello::wgpu;
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene};
 
 // ── uzor core ─────────────────────────────────────────────────────────────────
-use uzor::app_context::{layout::types::LayoutNode, ContextManager};
 use uzor::docking::panels::{DockPanel, SplitKind};
 use uzor::input::core::coordinator::LayerId;
 use uzor::input::pointer::state::{InputState, PointerState};
@@ -542,6 +541,11 @@ impl AppState {
             order: 1,
         });
 
+        // Clear overlays at the START of frame (before push_overlay calls).
+        // If we cleared at the end, rect_for_overlay would return None for
+        // outside-click handlers running between frames.
+        self.layout.clear_overlays();
+
         self.layout.solve(win_rect);
 
         // ── 3. Build InputState ───────────────────────────────────────────────
@@ -704,9 +708,26 @@ impl AppState {
                 for (label, kind, color) in btns {
                     let is_open = modal_open && modal_kind == *kind;
                     let btn_color = if is_open { "#ef5350" } else { *color };
-                    render.set_fill_color(btn_color);
                     let bx = body_rect.x + 8.0;
                     let bw = body_rect.width - 16.0;
+                    let btn_rect = Rect::new(bx, y, bw, 30.0);
+                    let btn_id = match kind {
+                        ModalKind::L2       => "sidebar-modal-l2",
+                        ModalKind::L1       => "sidebar-modal-l1",
+                        ModalKind::Settings => "sidebar-modal-settings",
+                    };
+                    {
+                        use uzor::input::core::sense::Sense;
+                        use uzor::input::core::widget_kind::WidgetKind;
+                        self.layout.ctx_mut().input.register_atomic(
+                            WidgetId::new(btn_id),
+                            WidgetKind::Button,
+                            btn_rect,
+                            Sense::CLICK | Sense::HOVER,
+                            &LayerId::main(),
+                        );
+                    }
+                    render.set_fill_color(btn_color);
                     render.fill_rounded_rect(bx, y, bw, 30.0, 4.0);
                     render.set_fill_color("#ffffff");
                     render.fill_text(if is_open { "Close Modal" } else { *label }, bx + bw / 2.0, y + 15.0);
@@ -892,12 +913,11 @@ impl AppState {
                             ("Show tooltips",    true),
                             ("Auto-save",        false),
                         ];
-                        let mut ctx_local = ContextManager::new(LayoutNode::new("settings-modal"));
                         for (i, (label, checked)) in items.iter().enumerate() {
                             let r = Rect::new(body_rect.x + 16.0, body_rect.y + 48.0 + i as f64 * 36.0, body_rect.width - 32.0, 28.0);
                             let cb_id = format!("settings-cb-{i}");
                             register_context_manager_checkbox(
-                                &mut ctx_local, &mut render,
+                                self.layout.ctx_mut(), &mut render,
                                 cb_id.as_str(), r, &layer,
                                 WidgetState::Normal,
                                 &CheckboxView { checked: *checked, label: Some(label) },
@@ -926,7 +946,8 @@ impl AppState {
                         render.fill_rounded_rect(ox + LEFT_PANEL_X, oy + 12.0, left_panel_w, L2_WIN_H - 24.0, 8.0);
                         render.fill_rounded_rect(ox + l2_right_panel_x, oy + 12.0, L2_WIN_W - l2_right_panel_x - 12.0, L2_WIN_H - 24.0, 8.0);
 
-                        let mut ctx_l2 = ContextManager::new(LayoutNode::new("l2-modal"));
+                        // ctx_l2 removed — use self.layout.ctx_mut() directly so widgets
+                        // register into the real coordinator and clicks are dispatched.
 
                         // ── Left panel (clipped) ──────────────────────────
                         render.save();
@@ -935,7 +956,7 @@ impl AppState {
                         // 1. Button
                         let btn_state = if l2_hovered.as_deref() == Some("l2-btn-connect") { WidgetState::Hovered } else if l2_connected { WidgetState::Active } else { WidgetState::Normal };
                         register_context_manager_button(
-                            &mut ctx_l2, &mut render,
+                            self.layout.ctx_mut(), &mut render,
                             "l2-btn-connect", Rect::new(BTN_RECT.x + ox, BTN_RECT.y + oy, BTN_RECT.width, BTN_RECT.height), &layer,
                             btn_state,
                             &ButtonView { text: Some(if l2_connected { "Disconnect" } else { "Connect" }), icon: None, active: l2_connected, disabled: false, active_border: None },
@@ -943,7 +964,7 @@ impl AppState {
                         );
                         // 2. Checkbox
                         register_context_manager_checkbox(
-                            &mut ctx_l2, &mut render,
+                            self.layout.ctx_mut(), &mut render,
                             "l2-cb", Rect::new(CB_RECT.x + ox, CB_RECT.y + oy, CB_RECT.width, CB_RECT.height), &layer,
                             if l2_hovered.as_deref() == Some("l2-cb") { WidgetState::Hovered } else { WidgetState::Normal },
                             &CheckboxView { checked: l2_checked, label: Some("Setting A") },
@@ -952,7 +973,7 @@ impl AppState {
                         );
                         // 3. Toggle
                         register_context_manager_toggle(
-                            &mut ctx_l2, &mut render,
+                            self.layout.ctx_mut(), &mut render,
                             "l2-tog", Rect::new(TOG_RECT.x + ox, TOG_RECT.y + oy, TOG_RECT.width, TOG_RECT.height), &layer,
                             if l2_hovered.as_deref() == Some("l2-tog") { WidgetState::Hovered } else { WidgetState::Normal },
                             &ToggleView { toggled: l2_toggled, label: Some("ON"), disabled: false },
@@ -962,7 +983,7 @@ impl AppState {
                         for (i, cx_off) in [28.0_f64, 68.0, 108.0].iter().enumerate() {
                             let rid = format!("l2-radio-{i}");
                             register_context_manager_radio(
-                                &mut ctx_l2, &mut render,
+                                self.layout.ctx_mut(), &mut render,
                                 rid.as_str(), Rect::new(cx_off + ox, 175.0 + oy, 28.0, 28.0), &layer,
                                 if l2_hovered.as_deref() == Some(rid.as_str()) { WidgetState::Hovered } else { WidgetState::Normal },
                                 &RadioSettings::default(),
@@ -971,7 +992,7 @@ impl AppState {
                         }
                         // 5. Slider
                         register_context_manager_slider(
-                            &mut ctx_l2, &mut render,
+                            self.layout.ctx_mut(), &mut render,
                             "l2-slider", Rect::new(SLID_RECT.x + ox, SLID_RECT.y + oy, SLID_RECT.width, SLID_RECT.height), &layer,
                             if l2_hovered.as_deref() == Some("l2-slider") { WidgetState::Hovered } else { WidgetState::Normal },
                             &SliderView { kind: SliderType::Single { value: l2_slider_val, min: 0.0, max: 100.0, step: 1.0 }, hovered: false, disabled: false, dragging_handle: None },
@@ -979,7 +1000,7 @@ impl AppState {
                         );
                         // 6. Range slider
                         register_context_manager_slider(
-                            &mut ctx_l2, &mut render,
+                            self.layout.ctx_mut(), &mut render,
                             "l2-range", Rect::new(RANGE_RECT.x + ox, RANGE_RECT.y + oy, RANGE_RECT.width, RANGE_RECT.height), &layer,
                             if l2_hovered.as_deref() == Some("l2-range") { WidgetState::Hovered } else { WidgetState::Normal },
                             &SliderView { kind: SliderType::Dual { min_value: l2_range_min, max_value: l2_range_max, min: 0.0, max: 100.0, step: 1.0 }, hovered: false, disabled: false, dragging_handle: l2_range_drag_handle },
@@ -987,7 +1008,7 @@ impl AppState {
                         );
                         // 7. Separator
                         register_context_manager_separator(
-                            &mut ctx_l2, &mut render,
+                            self.layout.ctx_mut(), &mut render,
                             "l2-sep", Rect::new(28.0 + ox, 260.0 + oy, 260.0, 2.0), SeparatorKind::Divider, &layer,
                             &SeparatorView { kind: SeparatorType::Divider { orientation: SeparatorOrientation::Horizontal }, hovered: false, dragging: false },
                             &SeparatorSettings::default(),
@@ -1006,7 +1027,7 @@ impl AppState {
                         for (i, color) in swatch_colors.iter().enumerate() {
                             let sid = format!("l2-swatch-{i}");
                             register_context_manager_color_swatch(
-                                &mut ctx_l2, &mut render,
+                                self.layout.ctx_mut(), &mut render,
                                 sid.as_str(), Rect::new(28.0 + i as f64 * 34.0 + ox, 344.0 + oy, 26.0, 26.0), &layer,
                                 if l2_hovered.as_deref() == Some(sid.as_str()) { WidgetState::Hovered } else { WidgetState::Normal },
                                 &ColorSwatchView { color: *color, hovered: false, selected: l2_swatch_sel == i, show_transparency: false, border_color_override: None },
@@ -1028,7 +1049,7 @@ impl AppState {
                             let tab_id = format!("l2-tab-{i}");
                             let tab_cfg = TabConfig::new(tab_id.as_str(), *lbl).active_if(l2_active_tab == i);
                             register_context_manager_tab(
-                                &mut ctx_l2, &mut render,
+                                self.layout.ctx_mut(), &mut render,
                                 tab_id.as_str(), tab_rect, None, &layer,
                                 &TabView { tab: &tab_cfg, hovered: l2_hovered.as_deref() == Some(tab_id.as_str()), pressed: l2_pressed.as_deref() == Some(tab_id.as_str()), close_btn_hovered: false },
                                 &TabSettings::default(),
@@ -1043,7 +1064,7 @@ impl AppState {
                             let scroll_range = sb_track.height - thumb_h;
                             let thumb_y = sb_track.y + (l2_scroll_off / (CONTENT_H - viewport_h).max(1.0)) * scroll_range;
                             let sb_thumb = Rect::new(sb_x, thumb_y, SB_W, thumb_h);
-                            register_context_manager_scrollbar(&mut ctx_l2, &mut render, "l2-sb-track", "l2-sb-thumb", sb_track, sb_thumb, 5.0, &layer, CONTENT_H, viewport_h, l2_scroll_off, &ScrollbarSettings::default());
+                            register_context_manager_scrollbar(self.layout.ctx_mut(), &mut render, "l2-sb-track", "l2-sb-thumb", sb_track, sb_thumb, 5.0, &layer, CONTENT_H, viewport_h, l2_scroll_off, &ScrollbarSettings::default());
 
                             let row_labels = ["★ Roboto regular","Sans-serif clean","→ arrow + ✓ check","Quick brown fox","✨ ★ ☀ ☂ ❤","fn main() { ... }","let x: u32 = 42;","if let Some(v) = opt","// monospace code","0xCAFE_BABE","PT Root UI light","вариативный шрифт","12345 67890","Кириллица OK","ƒ unicode glyphs","Bold Roboto bold","❗ Heads up ❗","✓ Done · 14 items","🌍 globe · 🌟 star","═══ end of list ═══"];
                             let content_x = l2_right_panel_x + 8.0 + ox;
@@ -1054,7 +1075,7 @@ impl AppState {
                                 let row_rect = Rect::new(content_x, row_y, content_w, ROW_H - 2.0);
                                 let row_id = format!("l2-row-{row}");
                                 let row_settings = match row { 0..=4 => ItemSettings::default().with_style(Box::new(RowStyleRoboto)), 5..=9 => ItemSettings::default().with_style(Box::new(RowStyleJetBrains)), 10..=14 => ItemSettings::default().with_style(Box::new(RowStylePtRoot)), _ => ItemSettings::default().with_style(Box::new(RowStyleRobotoBold)) };
-                                register_context_manager_item(&mut ctx_l2, &mut render, row_id.as_str(), row_rect, &layer, WidgetState::Normal, &ItemView { label: Some(row_labels[row]), icon: None, svg: None }, &row_settings, &ItemRenderKind::Label);
+                                register_context_manager_item(self.layout.ctx_mut(), &mut render, row_id.as_str(), row_rect, &layer, WidgetState::Normal, &ItemView { label: Some(row_labels[row]), icon: None, svg: None }, &row_settings, &ItemRenderKind::Label);
                             }
                         }
                         if l2_active_tab == 2 {
@@ -1062,7 +1083,7 @@ impl AppState {
                                 let sub_rect = Rect::new(l2_right_panel_x + 8.0 + ox, CONTENT_START_Y + 8.0 + i as f64 * 36.0 + oy, 90.0, 30.0);
                                 let sub_id = format!("l2-sub-tab-{i}");
                                 let sub_cfg = TabConfig::new(sub_id.as_str(), *lbl).active_if(l2_active_sub_tab == i);
-                                register_context_manager_tab(&mut ctx_l2, &mut render, sub_id.as_str(), sub_rect, None, &layer, &TabView { tab: &sub_cfg, hovered: l2_hovered.as_deref() == Some(sub_id.as_str()), pressed: false, close_btn_hovered: false }, &TabSettings::default());
+                                register_context_manager_tab(self.layout.ctx_mut(), &mut render, sub_id.as_str(), sub_rect, None, &layer, &TabView { tab: &sub_cfg, hovered: l2_hovered.as_deref() == Some(sub_id.as_str()), pressed: false, close_btn_hovered: false }, &TabSettings::default());
                             }
                         }
                         if l2_active_tab == 1 {
@@ -1084,7 +1105,7 @@ impl AppState {
                         // Splitter drag handle (no clip needed)
                         let dh_rect = Rect::new(l2_right_panel_x - SPLITTER_W / 2.0 + ox, 12.0 + oy, SPLITTER_W, L2_WIN_H - 24.0);
                         register_context_manager_drag_handle(
-                            &mut ctx_l2, &mut render,
+                            self.layout.ctx_mut(), &mut render,
                             "l2-splitter", dh_rect, &layer,
                             &DragHandleView { rect: dh_rect }, &DragHandleSettings::default(), &DragHandleRenderKind::GripDots,
                         );
@@ -1265,6 +1286,20 @@ impl AppState {
         // ── end_frame ─────────────────────────────────────────────────────────
         let responses = self.layout.ctx_mut().input.end_frame();
 
+        // Debug: only print non-hover responses (hover spams every frame)
+        if !responses.is_empty() {
+            let interesting: Vec<_> = responses.iter()
+                .filter(|(_, r)| r.clicked || r.scrolled || r.dragged)
+                .collect();
+            if !interesting.is_empty() {
+                eprintln!("[END_FRAME] {} responses ({} interesting)", responses.len(), interesting.len());
+                for (id, resp) in &interesting {
+                    eprintln!("  - {} clicked={} hovered={} scrolled={} dragged={}",
+                        id.0, resp.clicked, resp.hovered, resp.scrolled, resp.dragged);
+                }
+            }
+        }
+
         // Process coordinator responses
         for (id, resp) in &responses {
             let ids = id.0.as_str();
@@ -1302,8 +1337,8 @@ impl AppState {
         dev.queue.submit([encoder.finish()]);
         surface_texture.present();
 
-        // Clear overlays — pushed fresh each frame
-        self.layout.clear_overlays();
+        // (overlays cleared at start of next frame, not here, so they remain
+        // queryable via rect_for_overlay between frames for outside-click)
 
         if self.exit_requested {
             event_loop.exit();
@@ -1319,6 +1354,15 @@ impl AppState {
         clicked_id: Option<WidgetId>,
         event_loop: &ActiveEventLoop,
     ) {
+        eprintln!("[LEFT_UP] pos=({:.1},{:.1}) clicked_id={:?} modal_open={} dropdown_open=(file:{} view:{} help:{}) ctx_menu_open={}",
+            x, y, clicked_id.as_ref().map(|id| id.0.as_str()),
+            self.modal_open,
+            self.dropdown_file_state.open,
+            self.dropdown_view_state.open,
+            self.dropdown_help_state.open,
+            self.ctx_menu_state.is_open,
+        );
+
         // ── Priority 1: coord-resolved widget id ──────────────────────────────
         // If InputCoordinator identified the click as landing on a registered
         // widget, dispatch by id BEFORE the manual geometry fallback.  This
@@ -1326,31 +1370,295 @@ impl AppState {
         // testing in the example.
         if let Some(id) = clicked_id.as_ref() {
             let id_str = id.0.as_str();
-            // Modal close affordances (X / Apply / Cancel inside any modal)
+
+            // Bug 4: Modal close affordances registered as "modal-widget:close" /
+            // "modal-widget:footer:0" / "modal-widget:footer:1"
+            if id_str == "modal-widget:close"
+                || id_str == "modal-widget:footer:0"
+                || id_str == "modal-widget:footer:1"
+            {
+                eprintln!("[DISPATCH] modal close via {id_str}");
+                self.modal_open = false;
+                println!("[L3] modal closed via {id_str}");
+                return;
+            }
+            // Legacy pattern fallback (other modals that use "-close" suffix)
             if id_str.starts_with("modal-") && (
                 id_str.ends_with("-close") ||
                 id_str.ends_with("-apply") ||
                 id_str.ends_with("-cancel")
             ) {
+                eprintln!("[DISPATCH] modal close (legacy) via {id_str}");
                 self.modal_open = false;
                 println!("[L3] modal closed via {id_str}");
                 return;
             }
-            // Dropdown items
-            if let Some(rest) = id_str.strip_prefix("dropdown-") {
-                println!("[L3] dropdown item → {rest}");
+
+            // Bug 2: Sidebar modal-trigger buttons
+            match id_str {
+                "sidebar-modal-l2" => {
+                    eprintln!("[DISPATCH] sidebar-modal-l2");
+                    if self.modal_open && self.modal_kind == ModalKind::L2 {
+                        self.modal_open = false;
+                    } else {
+                        self.modal_open = true;
+                        self.modal_kind = ModalKind::L2;
+                    }
+                    println!("[L3] sidebar modal → {:?}", self.modal_kind);
+                    return;
+                }
+                "sidebar-modal-l1" => {
+                    eprintln!("[DISPATCH] sidebar-modal-l1");
+                    if self.modal_open && self.modal_kind == ModalKind::L1 {
+                        self.modal_open = false;
+                    } else {
+                        self.modal_open = true;
+                        self.modal_kind = ModalKind::L1;
+                    }
+                    println!("[L3] sidebar modal → {:?}", self.modal_kind);
+                    return;
+                }
+                "sidebar-modal-settings" => {
+                    eprintln!("[DISPATCH] sidebar-modal-settings");
+                    if self.modal_open && self.modal_kind == ModalKind::Settings {
+                        self.modal_open = false;
+                    } else {
+                        self.modal_open = true;
+                        self.modal_kind = ModalKind::Settings;
+                    }
+                    println!("[L3] sidebar modal → {:?}", self.modal_kind);
+                    return;
+                }
+                // Bug 3: Toolbar dropdown triggers
+                "tb-file" => {
+                    eprintln!("[DISPATCH] tb-file toolbar button");
+                    if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                        let was_open = self.dropdown_file_state.open;
+                        self.dropdown_view_state.close();
+                        self.dropdown_help_state.close();
+                        if was_open {
+                            self.dropdown_file_state.close();
+                        } else {
+                            let file_x = toolbar_rect.x + 4.0;
+                            self.dropdown_file_state.open_at(file_x, toolbar_rect.y + toolbar_rect.height);
+                        }
+                    }
+                    return;
+                }
+                "tb-view" => {
+                    eprintln!("[DISPATCH] tb-view toolbar button");
+                    if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                        let was_open = self.dropdown_view_state.open;
+                        self.dropdown_file_state.close();
+                        self.dropdown_help_state.close();
+                        if was_open {
+                            self.dropdown_view_state.close();
+                        } else {
+                            let view_x = toolbar_rect.x + 4.0 + 44.0;
+                            self.dropdown_view_state.open_at(view_x, toolbar_rect.y + toolbar_rect.height);
+                        }
+                    }
+                    return;
+                }
+                "tb-help" => {
+                    eprintln!("[DISPATCH] tb-help toolbar button");
+                    if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                        let was_open = self.dropdown_help_state.open;
+                        self.dropdown_file_state.close();
+                        self.dropdown_view_state.close();
+                        if was_open {
+                            self.dropdown_help_state.close();
+                        } else {
+                            let help_x = toolbar_rect.x + 4.0 + 88.0;
+                            self.dropdown_help_state.open_at(help_x, toolbar_rect.y + toolbar_rect.height);
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
+
+            // Dropdown items — registered as "{dropdown_widget_id}:item:{item_id}"
+            if let Some(item_id) = id_str.strip_prefix("dd-file-widget:item:") {
+                eprintln!("[DISPATCH] dropdown file item → {item_id}");
+                match item_id {
+                    "file-quit" => { event_loop.exit(); return; }
+                    "file-new"  => println!("[L3] File → New"),
+                    "file-open" => println!("[L3] File → Open"),
+                    "file-save" => println!("[L3] File → Save"),
+                    _ => {}
+                }
                 self.dropdown_file_state.close();
+                return;
+            }
+            if let Some(item_id) = id_str.strip_prefix("dd-view-widget:item:") {
+                eprintln!("[DISPATCH] dropdown view item → {item_id}");
+                match item_id {
+                    "view-sidebar" => { self.sidebar_open = !self.sidebar_open; }
+                    other          => println!("[L3] View → {other}"),
+                }
                 self.dropdown_view_state.close();
+                return;
+            }
+            if let Some(item_id) = id_str.strip_prefix("dd-help-widget:item:") {
+                eprintln!("[DISPATCH] dropdown help item → {item_id}");
+                println!("[L3] Help → {item_id}");
                 self.dropdown_help_state.close();
                 return;
             }
-            // Context menu items
-            if let Some(rest) = id_str.strip_prefix("ctxmenu-") {
-                println!("[L3] context menu → {rest}");
-                self.ctx_menu_state.close();
+            // Context menu items — registered as "{menu_widget_id}:item:{IDX}"
+            if let Some(idx_str) = id_str.strip_prefix("ctx-menu-widget:item:") {
+                if let Ok(idx) = idx_str.parse::<usize>() {
+                    let action = match idx {
+                        0 => "Copy",
+                        1 => "Paste",
+                        2 => "Delete",
+                        3 => "Properties",
+                        _ => "?",
+                    };
+                    eprintln!("[DISPATCH] ctxmenu item idx={idx} → {action}");
+                    println!("[L3] context menu → {action}");
+                    self.ctx_menu_state.close();
+                    return;
+                }
+            }
+            // Chrome tabs — registered as "tab-N" (composite chrome registers tabs)
+            if let Some(n_str) = id_str.strip_prefix("tab-") {
+                if let Ok(n) = n_str.parse::<usize>() {
+                    eprintln!("[DISPATCH] chrome tab → {n}");
+                    self.active_view = n;
+                    println!("[L3] tab → {n}");
+                    return;
+                }
+            }
+            // ── L2-modal widgets (clicked inside L2 modal body) ──────────────
+            match id_str {
+                "l2-btn-connect" => {
+                    eprintln!("[DISPATCH] l2-btn-connect");
+                    self.l2_connected = !self.l2_connected;
+                    return;
+                }
+                "l2-btn-close" => {
+                    eprintln!("[DISPATCH] l2-btn-close");
+                    self.modal_open = false;
+                    return;
+                }
+                "l2-cb" => {
+                    eprintln!("[DISPATCH] l2-cb");
+                    self.l2_checked = !self.l2_checked;
+                    return;
+                }
+                "l2-tog" => {
+                    eprintln!("[DISPATCH] l2-tog");
+                    self.l2_toggled = !self.l2_toggled;
+                    return;
+                }
+                _ => {}
+            }
+            if let Some(n_str) = id_str.strip_prefix("l2-radio-") {
+                if let Ok(n) = n_str.parse::<usize>() {
+                    eprintln!("[DISPATCH] l2-radio → {n}");
+                    self.l2_radio_sel = n;
+                    return;
+                }
+            }
+            if let Some(n_str) = id_str.strip_prefix("l2-swatch-") {
+                if let Ok(n) = n_str.parse::<usize>() {
+                    eprintln!("[DISPATCH] l2-swatch → {n}");
+                    self.l2_swatch_sel = n;
+                    return;
+                }
+            }
+            if let Some(n_str) = id_str.strip_prefix("l2-sub-tab-") {
+                if let Ok(n) = n_str.parse::<usize>() {
+                    eprintln!("[DISPATCH] l2-sub-tab → {n}");
+                    self.l2_active_sub_tab = n;
+                    return;
+                }
+            }
+            if let Some(n_str) = id_str.strip_prefix("l2-tab-") {
+                if let Ok(n) = n_str.parse::<usize>() {
+                    eprintln!("[DISPATCH] l2-tab → {n}");
+                    self.l2_active_tab = n;
+                    self.l2_scroll_off = 0.0;
+                    return;
+                }
+            }
+            // L1-modal custom button
+            if id_str == "l1-mybtn" {
+                eprintln!("[DISPATCH] l1-mybtn");
+                println!("[L3] L1 custom button clicked");
+                return;
+            }
+            // Left vertical toolbar items — registered as "left-vtoolbar-widget:<id>"
+            if let Some(item) = id_str.strip_prefix("left-vtoolbar-widget:") {
+                eprintln!("[DISPATCH] left toolbar → {item}");
+                match item {
+                    "lt-toggle-sidebar" => {
+                        self.sidebar_open = !self.sidebar_open;
+                        println!("[L3] sidebar → {}", self.sidebar_open);
+                    }
+                    "lt-zoom-in"  => println!("[L3] zoom in"),
+                    "lt-zoom-out" => println!("[L3] zoom out"),
+                    "lt-draw"     => println!("[L3] draw mode"),
+                    _ => {}
+                }
+                return;
+            }
+            // Top toolbar items registered as "top-toolbar-widget:<id>"
+            if let Some(item) = id_str.strip_prefix("top-toolbar-widget:") {
+                eprintln!("[DISPATCH] top toolbar → {item}");
+                if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                    let dd_y = toolbar_rect.y + toolbar_rect.height;
+                    match item {
+                        "tb-file" => {
+                            let was = self.dropdown_file_state.open;
+                            self.dropdown_view_state.close();
+                            self.dropdown_help_state.close();
+                            if was { self.dropdown_file_state.close(); }
+                            else   { self.dropdown_file_state.open_at(toolbar_rect.x + 4.0, dd_y); }
+                        }
+                        "tb-view" => {
+                            let was = self.dropdown_view_state.open;
+                            self.dropdown_file_state.close();
+                            self.dropdown_help_state.close();
+                            if was { self.dropdown_view_state.close(); }
+                            else   { self.dropdown_view_state.open_at(toolbar_rect.x + 48.0, dd_y); }
+                        }
+                        "tb-help" => {
+                            let was = self.dropdown_help_state.open;
+                            self.dropdown_file_state.close();
+                            self.dropdown_view_state.close();
+                            if was { self.dropdown_help_state.close(); }
+                            else   { self.dropdown_help_state.open_at(toolbar_rect.x + 92.0, dd_y); }
+                        }
+                        "tb-new" => println!("[L3] new"),
+                        _ => {}
+                    }
+                }
+                return;
+            }
+            // Panel composite frame — clicked on empty panel area, no-op
+            if id_str == "panel-a-widget" || id_str == "panel-b-widget" {
+                eprintln!("[DISPATCH] panel frame click — no-op");
+                return;
+            }
+            // Sidebar/chrome composite frames — no-op
+            if id_str == "chrome" || id_str == "sidebar-widget"
+                || id_str == "top-toolbar-widget" || id_str == "left-vtoolbar-widget"
+            {
+                eprintln!("[DISPATCH] composite frame click — no-op");
+                return;
+            }
+            // Modal frame click WITHOUT hitting any child — modal stays open
+            if id_str == "modal-widget" {
+                eprintln!("[DISPATCH] modal frame click (kept open)");
                 return;
             }
             // Else fall through to manual dispatch
+            eprintln!("[DISPATCH] id={id_str} unmatched — falling through to manual geometry");
+        } else {
+            eprintln!("[FALLBACK] no priority match (clicked_id=None), trying manual geometry");
         }
         let _ = clicked_id; // silence unused warning if no fall-through uses it
 
@@ -1538,6 +1846,7 @@ impl AppState {
     }
 
     fn on_right_up(&mut self, x: f64, y: f64) {
+        eprintln!("[RIGHT_UP] pos=({:.1},{:.1})", x, y);
         let (w, h) = { let s = &self.surface; (s.config.width as f64, s.config.height as f64) };
         self.ctx_menu_state.open_smart(x, y, w, h, 170.0, 130.0, None);
         self.dropdown_file_state.close();
@@ -1767,7 +2076,29 @@ impl ApplicationHandler for Handler {
 
         // Bridge handles text-field key routing + clipboard
         let focused = app.layout.ctx_mut().input.focused_widget().cloned();
+
+        // Debug: print MouseInput / MouseWheel before bridge
+        match &event {
+            WindowEvent::MouseInput { state, button, .. } => {
+                eprintln!("[WINIT] MouseInput state={:?} button={:?} pos={:?}", state, button, app.bridge.last_mouse_pos);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                eprintln!("[WINIT] MouseWheel delta={:?} pos={:?}", delta, app.bridge.last_mouse_pos);
+            }
+            _ => {}
+        }
+
         let out = app.bridge.handle_event(&mut app.layout.ctx_mut().input, focused.as_ref(), &event);
+
+        // Debug: print bridge output on mouse events
+        if out.left_down.is_some() || out.left_up.is_some() || out.right_up.is_some() || out.wheel.is_some() {
+            eprintln!("[BRIDGE] ldown={:?} lup={:?} rup={:?} wheel={:?}",
+                out.left_down,
+                out.left_up.as_ref().map(|((x, y), id)| (x, y, id.as_ref().map(|i| i.0.as_str().to_owned()))),
+                out.right_up,
+                out.wheel,
+            );
+        }
 
         if out.cursor_moved.is_some() || out.text_changed || out.focus_cleared {
             app.window.request_redraw();
@@ -1838,7 +2169,31 @@ impl ApplicationHandler for Handler {
 // main
 // =============================================================================
 
+// On Windows, allocate a console window so eprintln debug output is visible
+// when running the example via `cargo run` from a non-console context (or
+// when launched as a GUI app).  No-op on non-Windows.
+#[cfg(target_os = "windows")]
+fn ensure_debug_console() {
+    use std::os::raw::c_int;
+    extern "system" {
+        fn AllocConsole() -> c_int;
+        fn AttachConsole(process_id: u32) -> c_int;
+    }
+    const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
+    unsafe {
+        // Try to attach to parent's console first; if none, allocate a new one.
+        if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+            AllocConsole();
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn ensure_debug_console() {}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ensure_debug_console();
+    eprintln!("[L3] debug console attached — all clicks/events will print here");
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut handler = Handler { state: None };
