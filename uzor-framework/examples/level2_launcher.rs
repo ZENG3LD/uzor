@@ -1,7 +1,7 @@
 //! # Level 2 — uzor multi-widget demo
 //!
-//! Demonstrates 12 different atomic widgets rendered through the L2 API
-//! (`register_context_manager_<X>`).  All 12 widgets are fully interactive:
+//! Demonstrates 13 different atomic widgets rendered through the L2 API
+//! (`register_context_manager_<X>`).  All 13 widgets are fully interactive:
 //! clicks, hovers, drag (slider + scrollbar + drag-handle), scroll (scrollbar),
 //! and keyboard (text input via InputCoordinator text field store).
 //!
@@ -28,7 +28,7 @@ use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, NamedKey, PhysicalKey};
 use winit::window::{Window, WindowId};
 
 // ── vello ──────────────────────────────────────────────────────────────────────
@@ -67,7 +67,7 @@ use uzor::ui::widgets::atomic::radio::types::{
 use uzor::ui::widgets::atomic::slider::input::register_context_manager_slider;
 use uzor::ui::widgets::atomic::slider::render::SliderView;
 use uzor::ui::widgets::atomic::slider::settings::SliderSettings;
-use uzor::ui::widgets::atomic::slider::types::SliderType;
+use uzor::ui::widgets::atomic::slider::types::{DualSliderHandle, SliderType};
 
 use uzor::ui::widgets::atomic::scrollbar::input::register_context_manager_scrollbar;
 use uzor::ui::widgets::atomic::scrollbar::settings::ScrollbarSettings;
@@ -79,8 +79,9 @@ use uzor::ui::widgets::atomic::separator::render::SeparatorView;
 use uzor::ui::widgets::atomic::separator::settings::SeparatorSettings;
 use uzor::ui::widgets::atomic::separator::types::{SeparatorOrientation, SeparatorType};
 
-use uzor::ui::widgets::atomic::text_input::input::register_context_manager_text_input;
-use uzor::ui::widgets::atomic::text_input::render::InputView;
+use uzor::ui::widgets::atomic::text_input::render::{
+    draw_input, draw_input_cursor, InputView,
+};
 use uzor::ui::widgets::atomic::text_input::settings::TextInputSettings;
 use uzor::ui::widgets::atomic::text_input::types::InputType;
 
@@ -100,6 +101,8 @@ use uzor::ui::widgets::atomic::close_button::types::CloseButtonRenderKind;
 use uzor::ui::widgets::atomic::drag_handle::input::register_context_manager_drag_handle;
 use uzor::ui::widgets::atomic::drag_handle::settings::DragHandleSettings;
 use uzor::ui::widgets::atomic::drag_handle::types::{DragHandleRenderKind, DragHandleView};
+
+use uzor::ui::widgets::atomic::text_input::render::InputResult;
 
 // ── GPU render context ────────────────────────────────────────────────────────
 use uzor_render_vello_gpu::VelloGpuRenderContext;
@@ -123,8 +126,9 @@ const BTN_RECT:   Rect = Rect { x: 28.0,  y: 28.0,  width: 130.0, height: 36.0 }
 const CLOSE_RECT: Rect = Rect { x: 278.0, y: 28.0,  width: 24.0,  height: 24.0 };
 const CB_RECT:    Rect = Rect { x: 28.0,  y: 88.0,  width: 160.0, height: 22.0 };
 const TOG_RECT:   Rect = Rect { x: 28.0,  y: 130.0, width: 80.0,  height: 24.0 };
-const SLID_RECT:  Rect = Rect { x: 28.0,  y: 228.0, width: 260.0, height: 24.0 };
-const TI_RECT:    Rect = Rect { x: 28.0,  y: 292.0, width: 200.0, height: 28.0 };
+const SLID_RECT:  Rect = Rect { x: 28.0,  y: 200.0, width: 260.0, height: 24.0 };
+const RANGE_RECT: Rect = Rect { x: 28.0,  y: 228.0, width: 260.0, height: 24.0 };
+const TI_RECT:    Rect = Rect { x: 28.0,  y: 278.0, width: 200.0, height: 28.0 };
 const DH_RECT:    Rect = Rect { x: 350.0, y: 28.0,  width: 60.0,  height: 24.0 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -191,8 +195,10 @@ fn rect_contains(r: Rect, x: f64, y: f64) -> bool {
 
 /// Drag origin + which widget is being dragged and its starting value.
 enum DragTarget {
-    Slider(f64),   // start value (0-100)
-    Scroll(f64),   // start scroll_off
+    Slider(f64),                              // start value (0-100)
+    RangeMin(f64),                            // start range_min (0-100)
+    RangeMax(f64),                            // start range_max (0-100)
+    Scroll(f64),                              // start scroll_off
 }
 
 struct AppState {
@@ -217,6 +223,9 @@ struct AppState {
     toggled:             bool,
     radio_sel:           usize,
     slider_val:          f64,
+    range_min:           f64,
+    range_max:           f64,
+    range_drag_handle:   Option<DualSliderHandle>,
     scroll_off:          f64,
     swatch_sel:          usize,
     shape_sel:           usize,
@@ -225,6 +234,16 @@ struct AppState {
     // mlc-style hover/press tracking — app owns the state machine
     hovered_widget_id: Option<String>,
     pressed_widget_id: Option<String>,
+
+    // keyboard modifier state — updated on ModifiersChanged
+    modifiers_shift: bool,
+    modifiers_ctrl:  bool,
+
+    // text drag selection — true while LMB is held inside the text field
+    text_dragging: bool,
+
+    // last rendered text-input geometry; used for click→cursor and blink
+    last_input_result: InputResult,
 }
 
 // Scrollbar geometry constants — needed in both render and response handling.
@@ -251,6 +270,7 @@ impl AppState {
         if rect_contains(CB_RECT,    mx, my) { return Some("cb-setting-a".into()); }
         if rect_contains(TOG_RECT,   mx, my) { return Some("tog-enable".into()); }
         if rect_contains(SLID_RECT,  mx, my) { return Some("slider-main".into()); }
+        if rect_contains(RANGE_RECT, mx, my) { return Some("range-slider".into()); }
         if rect_contains(TI_RECT,    mx, my) { return Some("text-search".into()); }
         if rect_contains(DH_RECT,    mx, my) { return Some("drag-handle".into()); }
         // Radio buttons
@@ -314,7 +334,7 @@ impl AppState {
         // knows about this widget during hit-testing.
         self.ctx.input.register_text_field(
             TEXT_FIELD_ID,
-            Rect::new(28.0, 292.0, 200.0, 28.0),
+            TI_RECT,
             TextFieldConfig::text(),
         );
 
@@ -336,13 +356,20 @@ impl AppState {
         }
 
         // ── Snapshot text field state before the render borrow ───────────────
+        let text_id = WidgetId::new(TEXT_FIELD_ID);
         let text_str = self.ctx.input.text_fields()
-            .text(&WidgetId::new(TEXT_FIELD_ID))
+            .text(&text_id)
             .to_owned();
         let text_cursor_pos = self.ctx.input.text_fields()
-            .cursor(&WidgetId::new(TEXT_FIELD_ID));
+            .cursor(&text_id);
+        let text_selection = self.ctx.input.text_fields()
+            .selection_range(&text_id);
         let text_is_focused = self.ctx.input.text_fields()
-            .is_focused(&WidgetId::new(TEXT_FIELD_ID));
+            .is_focused(&text_id);
+        let now_ms = self.start_time.elapsed().as_millis() as u64;
+        let cursor_visible = text_is_focused
+            && self.ctx.input.text_fields().cursor_visible(now_ms);
+
 
         // ── Snapshot hover/press before the render borrow (borrow checker) ────
         let hovered = self.hovered_widget_id.clone();
@@ -356,7 +383,8 @@ impl AppState {
         };
 
         // ── widgets ───────────────────────────────────────────────────────────
-        {
+        // The block returns (char_positions, input_result) for post-frame use.
+        let (captured_char_positions, captured_input_result): (Vec<f64>, InputResult) = {
             let mut render = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
             let layer = LayerId::main();
 
@@ -450,8 +478,26 @@ impl AppState {
                 &SliderSettings::default(),
             );
 
+            // ── 6b. Range slider (dual-handle) ────────────────────────────────
+            register_context_manager_slider(
+                &mut self.ctx, &mut render,
+                "range-slider", RANGE_RECT, &layer,
+                ws("range-slider"),
+                &SliderView {
+                    kind: SliderType::Dual {
+                        min_value: self.range_min,
+                        max_value: self.range_max,
+                        min: 0.0, max: 100.0, step: 1.0,
+                    },
+                    hovered: hovered.as_deref() == Some("range-slider"),
+                    disabled: false,
+                    dragging_handle: self.range_drag_handle,
+                },
+                &SliderSettings::default(),
+            );
+
             // ── 7. Separator (horizontal divider) ─────────────────────────────
-            let sep_rect = Rect::new(28.0, 272.0, 260.0, 2.0);
+            let sep_rect = Rect::new(28.0, 260.0, 260.0, 2.0);
             register_context_manager_separator(
                 &mut self.ctx, &mut render,
                 "sep-h", sep_rect, SeparatorKind::Divider, &layer,
@@ -463,29 +509,43 @@ impl AppState {
                 &SeparatorSettings::default(),
             );
 
-            // ── 8. Text input — visual draw ────────────────────────────────────
+            // ── 8. Text input ─────────────────────────────────────────────────
+            // Use draw_input directly (single draw pass) to capture InputResult
+            // for click→cursor positioning and cursor blink rendering.
             let ti_state = if text_is_focused {
                 WidgetState::Active
             } else {
                 ws(TEXT_FIELD_ID)
             };
-            register_context_manager_text_input(
-                &mut self.ctx, &mut render,
-                TEXT_FIELD_ID, TI_RECT, &layer,
-                ti_state,
-                &InputView {
-                    text: text_str.as_str(),
-                    placeholder: "Search...",
-                    cursor: text_cursor_pos,
-                    selection: None,
-                    focused: text_is_focused,
-                    disabled: false,
-                    input_type: InputType::Search,
-                },
-                &TextInputSettings::with_config(
-                    uzor::ui::widgets::atomic::text_input::state::TextFieldConfig::text(),
-                ),
+            let ti_settings = TextInputSettings::with_config(
+                uzor::ui::widgets::atomic::text_input::state::TextFieldConfig::text(),
             );
+            let ti_view = InputView {
+                text: text_str.as_str(),
+                placeholder: "Search...",
+                cursor: text_cursor_pos,
+                selection: text_selection,
+                focused: text_is_focused,
+                disabled: false,
+                input_type: InputType::Search,
+            };
+            // Draw the field (bg, border, selection highlight, text).
+            let input_result = draw_input(&mut render, TI_RECT, ti_state, &ti_view, &ti_settings);
+            // Blinking cursor — only when focused and in visible phase.
+            if cursor_visible {
+                draw_input_cursor(
+                    &mut render,
+                    input_result.cursor_x,
+                    input_result.cursor_y,
+                    input_result.cursor_height,
+                    1.5,
+                    [220, 220, 220, 255],
+                );
+            }
+            // The block's return value carries char positions and InputResult
+            // out of the render borrow scope for use after the block closes.
+            let char_positions = input_result.char_x_positions.clone();
+            let ir = input_result;
 
             // ── 9. Color swatches (4 squares) ─────────────────────────────────
             let swatch_colors: [[u8; 4]; 4] = [
@@ -556,7 +616,19 @@ impl AppState {
                 &DragHandleSettings::default(),
                 &DragHandleRenderKind::GripDots,
             );
-        }
+
+            (char_positions, ir)
+        };
+
+        // ── Update text field geometry for click-to-position / drag-select ────
+        // Must happen after the render block (borrow checker) but before any
+        // mouse event processing that relies on char positions.
+        self.ctx.input.text_fields_mut().update_field(
+            &WidgetId::new(TEXT_FIELD_ID),
+            (TI_RECT.x, TI_RECT.y, TI_RECT.width, TI_RECT.height),
+            captured_char_positions,
+        );
+        self.last_input_result = captured_input_result;
 
         // ── shape label overlays (after render borrow released) ───────────────
         let shape_labels = ["Rect", "Circle", "Line"];
@@ -589,7 +661,7 @@ impl AppState {
         );
 
         // widget-count badge
-        for (i, label) in ["12 widgets", "L2 demo"].iter().enumerate() {
+        for (i, label) in ["13 widgets", "L2 demo"].iter().enumerate() {
             let lw = label.len() as f64 * 6.5;
             let bx = 340.0 + i as f64 * 100.0;
             let by = height as f64 - 32.0;
@@ -758,12 +830,19 @@ impl ApplicationHandler for Handler {
             toggled:             true,
             radio_sel:           1,
             slider_val:          40.0,
+            range_min:           20.0,
+            range_max:           80.0,
+            range_drag_handle:   None,
             scroll_off:          0.0,
             swatch_sel:          0,
             shape_sel:           0,
             drag_handle_hovered: false,
             hovered_widget_id:   None,
             pressed_widget_id:   None,
+            modifiers_shift:     false,
+            modifiers_ctrl:      false,
+            text_dragging:       false,
+            last_input_result:   InputResult::default(),
         });
     }
 
@@ -787,6 +866,11 @@ impl ApplicationHandler for Handler {
                 app.last_mouse_pos = (x, y);
                 app.hovered_widget_id = AppState::compute_hovered((x, y));
 
+                // Text drag — extend selection as mouse moves.
+                if app.text_dragging {
+                    app.ctx.input.text_fields_mut().on_drag_move(x);
+                }
+
                 // Drag in progress — update slider or scrollbar value.
                 if let (Some((ox, oy)), Some(target)) =
                     (app.drag_origin, app.drag_target.as_ref())
@@ -797,6 +881,16 @@ impl ApplicationHandler for Handler {
                         DragTarget::Slider(v0) => {
                             let frac_delta = dx / SLID_RECT.width;
                             app.slider_val = (v0 + frac_delta * 100.0).clamp(0.0, 100.0);
+                        }
+                        DragTarget::RangeMin(v0) => {
+                            let frac_delta = dx / RANGE_RECT.width;
+                            app.range_min = (v0 + frac_delta * 100.0)
+                                .clamp(0.0, app.range_max);
+                        }
+                        DragTarget::RangeMax(v0) => {
+                            let frac_delta = dx / RANGE_RECT.width;
+                            app.range_max = (v0 + frac_delta * 100.0)
+                                .clamp(app.range_min, 100.0);
                         }
                         DragTarget::Scroll(v0) => {
                             let scroll_range = SB_H - AppState::thumb_h();
@@ -823,14 +917,32 @@ impl ApplicationHandler for Handler {
 
                 // Focus text field if hovered, else clear focus.
                 if app.hovered_widget_id.as_deref() == Some(TEXT_FIELD_ID) {
-                    app.ctx.input.focus_text_field(&WidgetId::new(TEXT_FIELD_ID));
-                } else if app.text_focused() {
-                    app.ctx.input.clear_focus();
+                    // on_drag_start focuses the field AND positions the cursor
+                    // at the click x coordinate using last-frame char positions.
+                    app.ctx.input.text_fields_mut().on_drag_start(x, y);
+                    app.text_dragging = true;
+                } else {
+                    if app.text_focused() {
+                        app.ctx.input.clear_focus();
+                    }
+                    app.text_dragging = false;
                 }
 
                 // Record drag origin; classify drag target by hovered widget.
                 let target = match app.hovered_widget_id.as_deref() {
                     Some("slider-main") => Some(DragTarget::Slider(app.slider_val)),
+                    Some("range-slider") => {
+                        // Pick the closer handle.
+                        let x_min = RANGE_RECT.x + (app.range_min / 100.0) * RANGE_RECT.width;
+                        let x_max = RANGE_RECT.x + (app.range_max / 100.0) * RANGE_RECT.width;
+                        if (x - x_min).abs() <= (x - x_max).abs() {
+                            app.range_drag_handle = Some(DualSliderHandle::Min);
+                            Some(DragTarget::RangeMin(app.range_min))
+                        } else {
+                            app.range_drag_handle = Some(DualSliderHandle::Max);
+                            Some(DragTarget::RangeMax(app.range_max))
+                        }
+                    }
                     Some("sb-thumb") | Some("sb-track") => Some(DragTarget::Scroll(app.scroll_off)),
                     _ => None,
                 };
@@ -892,26 +1004,57 @@ impl ApplicationHandler for Handler {
                     }
                 }
 
+                // End text drag selection.
+                if app.text_dragging {
+                    app.ctx.input.text_fields_mut().on_drag_end();
+                    app.text_dragging = false;
+                }
+
                 app.pressed_widget_id = None;
                 app.drag_origin = None;
                 app.drag_target = None;
+                app.range_drag_handle = None;
                 app.window.request_redraw();
+            }
+
+            // ── Modifier keys ─────────────────────────────────────────────────
+            WindowEvent::ModifiersChanged(mods) => {
+                let state = mods.state();
+                app.modifiers_shift = state.shift_key();
+                app.modifiers_ctrl  = state.control_key();
             }
 
             // ── Scroll wheel ──────────────────────────────────────────────────
             WindowEvent::MouseWheel { delta, .. } => {
-                let (_dx_lines, dy_lines) = match delta {
+                // Positive dy = scroll up (mlc pattern: LineDelta up = +1.0).
+                let (dx_lines, dy_lines) = match delta {
                     MouseScrollDelta::LineDelta(dx, dy) => (dx as f64, dy as f64),
                     MouseScrollDelta::PixelDelta(p) => (p.x / 20.0, p.y / 20.0),
                 };
-                // Only scroll when hovering the scrollbar track or thumb.
-                match app.hovered_widget_id.as_deref() {
-                    Some("sb-track") | Some("sb-thumb") => {
-                        app.scroll_off = (app.scroll_off - dy_lines * 20.0)
-                            .clamp(0.0, CONTENT_H - SB_H);
-                        println!("[L2] scroll_off → {:.1}", app.scroll_off);
-                    }
-                    _ => {}
+                let (mx, _my) = app.last_mouse_pos;
+
+                // Horizontal slider: wheel adjusts value (dy primary, dx fallback).
+                // Scroll up (dy > 0) increases value; scroll down decreases.
+                if app.hovered_widget_id.as_deref() == Some("slider-main") {
+                    let advance = if dx_lines.abs() > dy_lines.abs() { dx_lines } else { dy_lines };
+                    app.slider_val = (app.slider_val + advance * 2.0).clamp(0.0, 100.0);
+                    println!("[L2] slider_val → {:.1}", app.slider_val);
+                }
+                // Range slider: wheel shifts both handles together (preserve span).
+                else if app.hovered_widget_id.as_deref() == Some("range-slider") {
+                    let advance = if dx_lines.abs() > dy_lines.abs() { dx_lines } else { dy_lines };
+                    let span = app.range_max - app.range_min;
+                    let new_min = (app.range_min + advance * 2.0).clamp(0.0, 100.0 - span);
+                    app.range_min = new_min;
+                    app.range_max = (new_min + span).clamp(app.range_min, 100.0);
+                    println!("[L2] range → [{:.1}, {:.1}]", app.range_min, app.range_max);
+                }
+                // Right column: scroll the scrollbar.
+                else if mx >= 336.0 {
+                    // dy_lines positive = wheel up = scroll content up = decrease offset
+                    app.scroll_off = (app.scroll_off - dy_lines * 20.0)
+                        .clamp(0.0, CONTENT_H - SB_H);
+                    println!("[L2] scroll_off → {:.1}", app.scroll_off);
                 }
                 app.window.request_redraw();
             }
@@ -922,6 +1065,52 @@ impl ApplicationHandler for Handler {
             {
                 let text_id = WidgetId::new(TEXT_FIELD_ID);
                 if app.ctx.input.text_fields().is_focused(&text_id) {
+                    let shift = app.modifiers_shift;
+                    let ctrl  = app.modifiers_ctrl;
+
+                    // Ctrl shortcuts — use physical key for layout independence.
+                    if ctrl {
+                        match ke.physical_key {
+                            PhysicalKey::Code(winit::keyboard::KeyCode::KeyA) => {
+                                app.ctx.input.on_key(KeyPress::SelectAll);
+                                app.window.request_redraw();
+                                return;
+                            }
+                            PhysicalKey::Code(winit::keyboard::KeyCode::KeyC) => {
+                                if let Some(selected) = app.ctx.input.text_fields().copy_selection() {
+                                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                                        let _ = cb.set_text(&selected);
+                                    }
+                                    println!("[L2] copy: {:?}", selected);
+                                }
+                                app.window.request_redraw();
+                                return;
+                            }
+                            PhysicalKey::Code(winit::keyboard::KeyCode::KeyX) => {
+                                if let Some(selected) = app.ctx.input.text_fields().copy_selection() {
+                                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                                        let _ = cb.set_text(&selected);
+                                    }
+                                    println!("[L2] cut: {:?}", selected);
+                                    app.ctx.input.on_key(KeyPress::Delete);
+                                }
+                                app.window.request_redraw();
+                                return;
+                            }
+                            PhysicalKey::Code(winit::keyboard::KeyCode::KeyV) => {
+                                if let Ok(mut cb) = arboard::Clipboard::new() {
+                                    if let Ok(text) = cb.get_text() {
+                                        app.ctx.input.on_key(KeyPress::Paste(text.clone()));
+                                        println!("[L2] paste: {:?}", text);
+                                    }
+                                }
+                                app.window.request_redraw();
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+
                     match &ke.logical_key {
                         Key::Named(NamedKey::Backspace) => {
                             app.ctx.input.on_char('\x08');
@@ -937,21 +1126,37 @@ impl ApplicationHandler for Handler {
                             app.ctx.input.clear_focus();
                         }
                         Key::Named(NamedKey::ArrowLeft) => {
-                            app.ctx.input.on_key(KeyPress::ArrowLeft);
+                            if shift {
+                                app.ctx.input.on_key(KeyPress::ShiftLeft);
+                            } else {
+                                app.ctx.input.on_key(KeyPress::ArrowLeft);
+                            }
                         }
                         Key::Named(NamedKey::ArrowRight) => {
-                            app.ctx.input.on_key(KeyPress::ArrowRight);
+                            if shift {
+                                app.ctx.input.on_key(KeyPress::ShiftRight);
+                            } else {
+                                app.ctx.input.on_key(KeyPress::ArrowRight);
+                            }
                         }
                         Key::Named(NamedKey::Home) => {
-                            app.ctx.input.on_key(KeyPress::Home);
+                            if shift {
+                                app.ctx.input.on_key(KeyPress::ShiftHome);
+                            } else {
+                                app.ctx.input.on_key(KeyPress::Home);
+                            }
                         }
                         Key::Named(NamedKey::End) => {
-                            app.ctx.input.on_key(KeyPress::End);
+                            if shift {
+                                app.ctx.input.on_key(KeyPress::ShiftEnd);
+                            } else {
+                                app.ctx.input.on_key(KeyPress::End);
+                            }
                         }
                         Key::Named(NamedKey::Delete) => {
                             app.ctx.input.on_key(KeyPress::Delete);
                         }
-                        Key::Character(s) => {
+                        Key::Character(s) if !ctrl => {
                             for ch in s.chars() {
                                 if !ch.is_control() {
                                     app.ctx.input.on_char(ch);

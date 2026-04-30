@@ -37,6 +37,7 @@ uzor-window-web = { workspace = true }
 uzor-window-hub = { workspace = true }
 uzor-render-vello-gpu = { workspace = true }
 uzor-window-desktop = { workspace = true }
+arboard = "3"
 
 [[example]]
 name = "hello"
