@@ -74,6 +74,11 @@ pub fn submit_frame(state: &mut WindowRenderState, params: SubmitParams) -> Subm
         RenderBackend::InstancedWgpu => submit_instanced(state, &params, &mut metrics),
         RenderBackend::VelloCpu      => submit_cpu_vello(state, &mut metrics),
         RenderBackend::TinySkia      => submit_cpu_tinyskia(state, &mut metrics),
+        RenderBackend::Canvas2d      => {
+            // DOM canvas auto-presents — all draw calls were issued synchronously
+            // by the app's ui() callback via canvas2d_ctx_mut(). Nothing to flush.
+            false
+        }
     };
 
     metrics.submit_us = total_t0.elapsed().as_micros() as u64;
@@ -317,6 +322,10 @@ fn submit_cpu_vello(state: &mut WindowRenderState, metrics: &mut RenderMetrics) 
             }
             false
         }
+
+        // Canvas2d surface does not use CPU render paths.
+        #[cfg(target_arch = "wasm32")]
+        SurfaceMode::Canvas2d { .. } => false,
     }
 }
 
@@ -382,6 +391,10 @@ fn submit_cpu_tinyskia(state: &mut WindowRenderState, metrics: &mut RenderMetric
             }
             false
         }
+
+        // Canvas2d surface does not use CPU render paths.
+        #[cfg(target_arch = "wasm32")]
+        SurfaceMode::Canvas2d { .. } => false,
     }
 }
 

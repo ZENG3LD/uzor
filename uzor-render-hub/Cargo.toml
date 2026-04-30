@@ -24,3 +24,17 @@ uzor-window-hub = { workspace = true }
 thiserror = "1"
 pollster = "0.4"
 winit = "0.30"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+uzor-window-desktop = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uzor-render-canvas2d = { workspace = true }
+uzor-window-web = { workspace = true }
+web-sys = { version = "0.3", features = [
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "Window",
+] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"

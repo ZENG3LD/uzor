@@ -1,15 +1,22 @@
 //! Fluent builder for constructing and launching an uzor app runtime.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
 use winit::application::ApplicationHandler;
+#[cfg(not(target_arch = "wasm32"))]
 use winit::event::WindowEvent;
+#[cfg(not(target_arch = "wasm32"))]
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+#[cfg(not(target_arch = "wasm32"))]
 use winit::window::{Window, WindowId};
 
 use uzor::docking::panels::DockPanel;
 use uzor_render_hub::{RenderBackend, RenderHub, RenderSurfaceFactory};
-use uzor_window_hub::{WinitWindowProvider, WindowProvider};
+#[cfg(not(target_arch = "wasm32"))]
+use uzor_window_desktop::WinitWindowProvider;
+use uzor_window_hub::WindowProvider;
 
 use uzor_window_hub::RgbaIcon;
 
@@ -335,11 +342,15 @@ where
         Ok(runtime)
     }
 
-    /// Consume the builder, create the winit event loop, and run until the
-    /// window is closed.
+    /// Consume the builder and run the application.
     ///
-    /// Blocks until all windows close.  Window creation is handled internally;
-    /// no `.window(...)` call is needed.
+    /// On **native** targets this creates a winit event loop and blocks until
+    /// the window is closed.
+    ///
+    /// On **wasm32** targets this installs a `requestAnimationFrame` callback
+    /// and returns `Ok(())` immediately — control returns to the browser's JS
+    /// runtime.  The app ticks once per animation frame until `should_close()`
+    /// returns `true`.
     ///
     /// # Errors
     ///
@@ -347,45 +358,127 @@ where
     /// [`RuntimeError::Window`] variant if window or event-loop creation fails,
     /// or [`RuntimeError::Backend`] on GPU initialisation failure.
     pub fn run(self) -> Result<(), RuntimeError> {
-        let config = self.config.clone();
-        let runtime = self.build()?;
+        #[cfg(target_arch = "wasm32")]
+        {
+            return self.run_wasm();
+        }
 
-        // ── Single-instance guard ─────────────────────────────────────────────
-        let _single_instance_guard = runtime
-            .config
-            .single_instance
-            .as_deref()
-            .map(crate::utils::single_instance::single_instance);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let config = self.config.clone();
+            let runtime = self.build()?;
 
-        let event_loop = EventLoop::new()
-            .map_err(|e| RuntimeError::Window(e.to_string()))?;
-        event_loop.set_control_flow(ControlFlow::Poll);
+            // ── Single-instance guard ─────────────────────────────────────────
+            let _single_instance_guard = runtime
+                .config
+                .single_instance
+                .as_deref()
+                .map(crate::utils::single_instance::single_instance);
 
-        let mut handler = UzorHandler {
-            runtime,
-            config,
-            provider: None,
+            let event_loop = EventLoop::new()
+                .map_err(|e| RuntimeError::Window(e.to_string()))?;
+            event_loop.set_control_flow(ControlFlow::Poll);
+
+            let mut handler = UzorHandler {
+                runtime,
+                config,
+                provider: None,
+            };
+
+            event_loop
+                .run_app(&mut handler)
+                .map_err(|e| RuntimeError::Window(e.to_string()))?;
+
+            Ok(())
+        }
+    }
+
+    /// wasm32 entry-point: install a RAF loop and return immediately.
+    #[cfg(target_arch = "wasm32")]
+    fn run_wasm(self) -> Result<(), RuntimeError> {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use wasm_bindgen::closure::Closure;
+        use wasm_bindgen::JsCast as _;
+
+        let mut runtime = self.build()?;
+
+        // Obtain the WebWindowProvider from the canvas (the caller must have
+        // configured a Canvas2d backend; we look up the canvas by the config
+        // title used as the element ID, or fall back to "canvas").
+        let canvas_id = if runtime.config.title.is_empty() {
+            "canvas".to_string()
+        } else {
+            runtime.config.title.clone()
         };
 
-        event_loop
-            .run_app(&mut handler)
-            .map_err(|e| RuntimeError::Window(e.to_string()))?;
+        let mut provider = uzor_window_web::WebWindowProvider::from_id(&canvas_id)
+            .map_err(|e| RuntimeError::Window(e))?;
+
+        // Initialise the render state (Canvas2d factory creates it from the handle).
+        runtime.init_render_state(&provider)
+            .map_err(|e| RuntimeError::Backend(e.to_string()))?;
+
+        // Wrap everything in Rc<RefCell<>> for the RAF closure.
+        let state: Rc<RefCell<(Runtime<A, P>, uzor_window_web::WebWindowProvider)>> =
+            Rc::new(RefCell::new((runtime, provider)));
+
+        // The RAF callback is self-referential: it captures an Rc clone of itself.
+        // We use a two-step trick: store the closure in an Rc<RefCell<Option<...>>>
+        // so the closure can schedule the next frame.
+        let raf_handle: Rc<RefCell<Option<Closure<dyn FnMut()>>>> =
+            Rc::new(RefCell::new(None));
+        let raf_handle_clone = raf_handle.clone();
+
+        let state_clone = state.clone();
+        *raf_handle.borrow_mut() = Some(Closure::wrap(Box::new(move || {
+            let mut borrow = state_clone.borrow_mut();
+            let (ref mut rt, ref mut prov) = *borrow;
+
+            if prov.should_close() {
+                rt.shutdown();
+                return;
+            }
+
+            // One frame tick (no FPS cap guard on web — RAF handles vsync).
+            rt.tick_web(prov);
+
+            // Schedule the next frame.
+            if let Some(win) = web_sys::window() {
+                if let Some(ref cb) = *raf_handle_clone.borrow() {
+                    let _ = win.request_animation_frame(cb.as_ref().unchecked_ref());
+                }
+            }
+        }) as Box<dyn FnMut()>));
+
+        // Kick off the first frame.
+        if let Some(win) = web_sys::window() {
+            if let Some(ref cb) = *raf_handle.borrow() {
+                let _ = win.request_animation_frame(cb.as_ref().unchecked_ref());
+            }
+        }
+
+        // Leak the RAF closure so it stays alive for the lifetime of the page.
+        // This is intentional: the loop runs until the page is closed.
+        std::mem::forget(raf_handle);
 
         Ok(())
     }
 }
 
-// ── Internal ApplicationHandler ───────────────────────────────────────────────
+// ── Internal ApplicationHandler (desktop only) ────────────────────────────────
 
 /// Winit `ApplicationHandler` that drives the uzor runtime.
 ///
 /// Created inside [`AppBuilder::run`] and not part of the public API.
+#[cfg(not(target_arch = "wasm32"))]
 struct UzorHandler<A: App<P>, P: DockPanel + Default + 'static> {
     runtime: Runtime<A, P>,
     config: AppConfig,
     provider: Option<WinitWindowProvider>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<A, P> ApplicationHandler for UzorHandler<A, P>
 where
     A: App<P>,
@@ -476,7 +569,7 @@ where
     }
 }
 
-// ── Convenience: run_closure ──────────────────────────────────────────────────
+// ── Convenience: run_closure (desktop only) ───────────────────────────────────
 
 /// Quick prototype helper — build and run an app from a closure.
 ///
@@ -493,6 +586,7 @@ where
 ///     Box::new(VelloGpuSurfaceFactory::new()),
 /// ).expect("runtime error");
 /// ```
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_closure<P, F>(
     ui: F,
     config: AppConfig,

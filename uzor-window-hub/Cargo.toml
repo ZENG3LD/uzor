@@ -11,14 +11,3 @@ description = "uzor-window-hub: unified window provider hub. Selects desktop / w
 
 [dependencies]
 uzor = { workspace = true }
-uzor-window-desktop = { workspace = true, optional = true }
-uzor-window-web     = { workspace = true, optional = true }
-uzor-window-mobile  = { workspace = true, optional = true }
-winit       = { version = "0.30", optional = true }
-softbuffer  = { version = "0.4",  optional = true }
-
-[features]
-default = ["desktop"]
-desktop = ["uzor-window-desktop", "winit", "softbuffer"]
-web     = ["uzor-window-web"]
-mobile  = ["uzor-window-mobile"]

@@ -1,7 +1,5 @@
-//! [`WinitWindowProvider`] — implements [`crate::lifecycle::WindowProvider`]
+//! [`WinitWindowProvider`] — implements [`uzor_window_hub::lifecycle::WindowProvider`]
 //! over an [`Arc<winit::window::Window>`].
-//!
-//! Available only when the `desktop` feature is active (default).
 //!
 //! # Ownership model
 //!
@@ -22,13 +20,13 @@
 use std::sync::Arc;
 
 use winit::event::WindowEvent;
-use winit::raw_window_handle::{RawWindowHandle, RawDisplayHandle};
+use winit::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 use winit::window::Window;
 
 use uzor::core::types::Rect;
 use uzor::platform::PlatformEvent;
 
-use crate::lifecycle::{RawHandle, RgbaIcon, SoftwarePresenter, WindowProvider};
+use uzor_window_hub::lifecycle::{RawHandle, RgbaIcon, SoftwarePresenter, WindowProvider};
 
 // ─── SendSyncHandlePair ───────────────────────────────────────────────────────
 
@@ -81,7 +79,7 @@ impl WinitWindowProvider {
     /// Call this from your `ApplicationHandler::window_event` implementation
     /// before delegating to the framework runtime.
     pub fn push_winit_event(&mut self, event: &WindowEvent) {
-        use uzor_window_desktop::event_mapper::EventMapper;
+        use crate::event_mapper::EventMapper;
         if let Some(ev) = EventMapper::map_window_event(event) {
             self.pending_events.push(ev);
         }
@@ -196,7 +194,7 @@ impl WindowProvider for WinitWindowProvider {
         match WinitSoftbufferPresenter::new(self.window.clone()) {
             Ok(p) => Some(Box::new(p)),
             Err(e) => {
-                eprintln!("[uzor-window-hub] softbuffer presenter init failed: {e}");
+                eprintln!("[uzor-window-desktop] softbuffer presenter init failed: {e}");
                 None
             }
         }
@@ -252,7 +250,7 @@ impl SoftwarePresenter for WinitSoftbufferPresenter {
         };
 
         if let Err(e) = self.surface.resize(w, h) {
-            eprintln!("[uzor-window-hub] softbuffer resize error: {e:?}");
+            eprintln!("[uzor-window-desktop] softbuffer resize error: {e:?}");
             return;
         }
 
@@ -266,7 +264,7 @@ impl SoftwarePresenter for WinitSoftbufferPresenter {
 
         for i in 0..count {
             let src = i * 4;
-            let r = pixels[src]     as u32;
+            let r = pixels[src] as u32;
             let g = pixels[src + 1] as u32;
             let b = pixels[src + 2] as u32;
             buf[i] = (r << 16) | (g << 8) | b;

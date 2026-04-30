@@ -21,8 +21,17 @@ png = "0.17"
 image = { version = "0.25", default-features = false, features = ["png"] }
 tray-icon = ">=0.19,<0.21"
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+uzor-window-desktop = { workspace = true }
+
 [target.'cfg(windows)'.dependencies]
 winresource = "0.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["Window"] }
+js-sys = "0.3"
+uzor-window-web = { workspace = true }
 
 [dev-dependencies]
 uzor-window-hub = { workspace = true }

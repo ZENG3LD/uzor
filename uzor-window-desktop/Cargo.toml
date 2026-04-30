@@ -10,9 +10,13 @@ readme = "../README.md"
 
 [dependencies]
 uzor = { workspace = true, features = ["serde"] }
+uzor-window-hub = { workspace = true }
 
 # Windowing and events
 winit = "0.30"
+
+# Software rendering
+softbuffer = "0.4"
 
 # Platform integration
 arboard = "3"

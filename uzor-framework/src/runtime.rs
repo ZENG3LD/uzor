@@ -35,6 +35,7 @@
 //! }
 //! ```
 
+#[cfg(not(target_arch = "wasm32"))]
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 
 use uzor::docking::panels::DockPanel;
@@ -246,6 +247,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
     ///
     /// Returns [`RuntimeError::Backend`] if GPU submission signals a lost
     /// surface.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn tick(
         &mut self,
         window: &mut dyn WindowProvider,
@@ -267,6 +269,26 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             }
         }
 
+        self.tick_inner(window)
+    }
+
+    /// Process one frame driven by `requestAnimationFrame` (wasm32 only).
+    ///
+    /// Unlike [`tick`](Self::tick) this method does not perform an FPS cap
+    /// guard — the browser's RAF callback already runs at the display refresh
+    /// rate (typically 60 Hz).
+    ///
+    /// Does nothing if the render state has not yet been initialised.
+    #[cfg(target_arch = "wasm32")]
+    pub fn tick_web(&mut self, window: &mut dyn WindowProvider) {
+        let _ = self.tick_inner(window);
+    }
+
+    /// Shared per-frame work called by both `tick` and `tick_web`.
+    fn tick_inner(
+        &mut self,
+        window: &mut dyn WindowProvider,
+    ) -> Result<(), RuntimeError> {
         if self.render_state.is_none() {
             return Ok(());
         }
@@ -328,7 +350,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
         self.input.pointer.double_clicked = None;
         self.input.scroll_delta = (0.0, 0.0);
 
-        // 11. Request next redraw.
+        // 11. Request next redraw (no-op on wasm32 — RAF handles this).
         window.request_redraw();
 
         Ok(())

@@ -26,11 +26,14 @@ use uzor::platform::{PlatformEvent, SystemTheme, WindowConfig};
 
 pub mod event_mapper;
 pub mod application;
+pub mod winit_provider;
 
 use event_mapper::EventMapper;
 
 // Re-export high-level API for convenience
 pub use application::{Application, AppConfig};
+
+pub use winit_provider::{SendSyncHandlePair, WinitSoftbufferPresenter, WinitWindowProvider};
 
 /// Map a winit [`winit::event::WindowEvent`] to a [`uzor::platform::PlatformEvent`].
 ///

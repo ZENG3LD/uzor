@@ -14,23 +14,30 @@
 //! | [`VelloCpuSurfaceFactory`] | `VelloCpu` | Functional — pure CPU, no wgpu |
 //! | [`VelloHybridSurfaceFactory`] | `VelloHybrid` | Functional — GPU init deferred to first submit |
 //! | [`WgpuInstancedSurfaceFactory`] | `InstancedWgpu` | Functional — GPU init deferred to first submit |
-//! | [`Canvas2dSurfaceFactory`] | web canvas | Non-wasm stub (returns `UnsupportedBackend`) |
+//! | [`Canvas2dSurfaceFactory`] | web canvas | wasm32 full impl, native stub |
 
-use std::sync::Mutex;
-
-use vello::{AaSupport, Renderer, RendererOptions};
-
-use crate::factory::GpuDevicePool;
-use vello::wgpu::PresentMode;
-use winit::raw_window_handle::{RawWindowHandle, RawDisplayHandle};
-
-use uzor_window_hub::lifecycle::{RawHandle, SoftwarePresenter};
-use uzor_window_hub::winit_provider::SendSyncHandlePair;
+use uzor_window_hub::lifecycle::RawHandle;
 
 use crate::{RenderBackend, RenderSurfaceFactory, SurfaceError, SurfaceSize, WindowRenderState};
 
-// ─── Internal surface target helper ──────────────────────────────────────────
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Mutex;
+#[cfg(not(target_arch = "wasm32"))]
+use vello::{AaSupport, Renderer, RendererOptions};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::factory::GpuDevicePool;
+#[cfg(not(target_arch = "wasm32"))]
+use vello::wgpu::PresentMode;
+#[cfg(not(target_arch = "wasm32"))]
+use winit::raw_window_handle::{RawWindowHandle, RawDisplayHandle};
+#[cfg(not(target_arch = "wasm32"))]
+use uzor_window_hub::lifecycle::SoftwarePresenter;
+#[cfg(not(target_arch = "wasm32"))]
+use uzor_window_desktop::SendSyncHandlePair;
 
+// ─── Internal surface target helper (desktop only) ───────────────────────────
+
+#[cfg(not(target_arch = "wasm32"))]
 /// Minimal `HasWindowHandle + HasDisplayHandle` wrapper around raw handles.
 ///
 /// Allows calling `GpuDevicePool::create_surface` from a copied
@@ -51,9 +58,12 @@ struct WinitSurfaceTarget {
 // `Arc<Window>` in `WinitWindowProvider` keeps them alive for the entire
 // runtime duration).  No thread-local state is accessed during wgpu surface
 // creation on desktop platforms (Win32, X11, Wayland).
+#[cfg(not(target_arch = "wasm32"))]
 unsafe impl Send for WinitSurfaceTarget {}
+#[cfg(not(target_arch = "wasm32"))]
 unsafe impl Sync for WinitSurfaceTarget {}
 
+#[cfg(not(target_arch = "wasm32"))]
 impl winit::raw_window_handle::HasWindowHandle for WinitSurfaceTarget {
     fn window_handle(
         &self,
@@ -64,6 +74,7 @@ impl winit::raw_window_handle::HasWindowHandle for WinitSurfaceTarget {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl winit::raw_window_handle::HasDisplayHandle for WinitSurfaceTarget {
     fn display_handle(
         &self,
@@ -74,11 +85,12 @@ impl winit::raw_window_handle::HasDisplayHandle for WinitSurfaceTarget {
     }
 }
 
-// ─── Shared GPU init helper ───────────────────────────────────────────────────
+// ─── Shared GPU init helper (desktop only) ───────────────────────────────────
 
 /// Create a `GpuDevicePool` + `RenderSurface` from a `SendSyncHandlePair`.
 ///
 /// Shared by all GPU-backed factories (VelloGpu, VelloHybrid, WgpuInstanced).
+#[cfg(not(target_arch = "wasm32"))]
 fn init_gpu_surface(
     pair: &SendSyncHandlePair,
     size: SurfaceSize,
@@ -113,6 +125,7 @@ fn init_gpu_surface(
 }
 
 /// Extract a `SendSyncHandlePair` from a `RawHandle::RawWindowHandle`.
+#[cfg(not(target_arch = "wasm32"))]
 fn extract_handle_pair<'a>(
     handle: &'a RawHandle,
     backend: RenderBackend,
@@ -130,6 +143,11 @@ fn extract_handle_pair<'a>(
     })
 }
 
+// ─── Desktop-only factories ───────────────────────────────────────────────────
+// VelloGpuSurfaceFactory, TinySkiaSurfaceFactory, VelloCpuSurfaceFactory,
+// VelloHybridSurfaceFactory, and WgpuInstancedSurfaceFactory all require a
+// native OS window and wgpu / softbuffer. They are compiled out on wasm32.
+
 // ─── VelloGpuSurfaceFactory ───────────────────────────────────────────────────
 
 /// Surface factory for the [`RenderBackend::VelloGpu`] path.
@@ -140,8 +158,10 @@ fn extract_handle_pair<'a>(
 /// 2. Creates a `RenderSurface` bound to the OS window handle.
 /// 3. Creates a vello `Renderer`.
 /// 4. Moves **all three** into [`WindowRenderState::Gpu`].
+#[cfg(not(target_arch = "wasm32"))]
 pub struct VelloGpuSurfaceFactory;
 
+#[cfg(not(target_arch = "wasm32"))]
 impl VelloGpuSurfaceFactory {
     /// Create a new factory.
     pub fn new() -> Self {
@@ -149,12 +169,14 @@ impl VelloGpuSurfaceFactory {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for VelloGpuSurfaceFactory {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl RenderSurfaceFactory for VelloGpuSurfaceFactory {
     fn create_render_state(
         &self,
@@ -201,10 +223,12 @@ impl RenderSurfaceFactory for VelloGpuSurfaceFactory {
 /// Build via [`TinySkiaSurfaceFactory::with_presenter`] when a software surface
 /// is needed, or [`TinySkiaSurfaceFactory::new`] when the presenter will be
 /// supplied separately.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct TinySkiaSurfaceFactory {
     presenter: Mutex<Option<Box<dyn SoftwarePresenter>>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl TinySkiaSurfaceFactory {
     /// Create the factory without a presenter.
     ///
@@ -227,12 +251,14 @@ impl TinySkiaSurfaceFactory {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for TinySkiaSurfaceFactory {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl RenderSurfaceFactory for TinySkiaSurfaceFactory {
     fn create_render_state(
         &self,
@@ -268,12 +294,14 @@ impl RenderSurfaceFactory for TinySkiaSurfaceFactory {
 ///
 /// Build via [`VelloCpuSurfaceFactory::with_presenter`] when a software surface
 /// is needed.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct VelloCpuSurfaceFactory {
     /// Device pixel ratio.  Defaults to `1.0`.
     pub dpr: f64,
     presenter: Mutex<Option<Box<dyn SoftwarePresenter>>>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl VelloCpuSurfaceFactory {
     /// Create the factory with the given device pixel ratio but no presenter.
     ///
@@ -292,12 +320,14 @@ impl VelloCpuSurfaceFactory {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for VelloCpuSurfaceFactory {
     fn default() -> Self {
         Self::new(1.0)
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl RenderSurfaceFactory for VelloCpuSurfaceFactory {
     fn create_render_state(
         &self,
@@ -332,11 +362,13 @@ impl RenderSurfaceFactory for VelloCpuSurfaceFactory {
 /// pool are initialised eagerly; the `vello_hybrid::Renderer` itself is
 /// deferred to the first frame (requires the swapchain texture format, which
 /// only becomes available when the first `get_current_texture` call is made).
+#[cfg(not(target_arch = "wasm32"))]
 pub struct VelloHybridSurfaceFactory {
     /// Device pixel ratio passed to the `VelloHybridRenderContext`.
     pub dpr: f64,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl VelloHybridSurfaceFactory {
     /// Create the factory.
     pub fn new(dpr: f64) -> Self {
@@ -344,12 +376,14 @@ impl VelloHybridSurfaceFactory {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for VelloHybridSurfaceFactory {
     fn default() -> Self {
         Self::new(1.0)
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl RenderSurfaceFactory for VelloHybridSurfaceFactory {
     fn create_render_state(
         &self,
@@ -380,8 +414,10 @@ impl RenderSurfaceFactory for VelloHybridSurfaceFactory {
 /// Constructs a [`WindowRenderState::WgpuInstanced`].  GPU surface and device
 /// pool are initialised eagerly; the `InstancedRenderer` itself is deferred
 /// to the first frame (requires the swapchain texture format).
+#[cfg(not(target_arch = "wasm32"))]
 pub struct WgpuInstancedSurfaceFactory;
 
+#[cfg(not(target_arch = "wasm32"))]
 impl WgpuInstancedSurfaceFactory {
     /// Create the factory.
     pub fn new() -> Self {
@@ -389,12 +425,14 @@ impl WgpuInstancedSurfaceFactory {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for WgpuInstancedSurfaceFactory {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl RenderSurfaceFactory for WgpuInstancedSurfaceFactory {
     fn create_render_state(
         &self,
@@ -420,18 +458,13 @@ impl RenderSurfaceFactory for WgpuInstancedSurfaceFactory {
 
 // ─── Canvas2dSurfaceFactory ───────────────────────────────────────────────────
 
-/// Surface factory for the HTML Canvas 2D backend (WASM only).
+/// Surface factory for the HTML Canvas 2D backend (wasm32 only).
 ///
-/// On native targets this always returns
-/// [`SurfaceError::UnsupportedBackend`].  On `wasm32` targets it downcasts
-/// the `RawHandle::Canvas` to a `web_sys::HtmlCanvasElement` and returns a
-/// `WindowRenderState` appropriate for DOM canvas rendering.
-///
-/// # Note
-///
-/// `RenderBackend` does not currently have a `Canvas2d` variant — the backend
-/// enum is desktop-focused.  This factory is provided for forward-compatibility
-/// and always returns `UnsupportedBackend` on all current backends on native.
+/// On native targets this always returns [`SurfaceError::UnsupportedBackend`].
+/// On `wasm32` targets it downcasts the [`RawHandle::Canvas`] payload to a
+/// `web_sys::HtmlCanvasElement`, calls `getContext("2d")`, reads the device
+/// pixel ratio from `window.devicePixelRatio`, and returns a fully initialized
+/// [`WindowRenderState`] for DOM canvas rendering.
 pub struct Canvas2dSurfaceFactory;
 
 impl Canvas2dSurfaceFactory {
@@ -447,6 +480,64 @@ impl Default for Canvas2dSurfaceFactory {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+impl RenderSurfaceFactory for Canvas2dSurfaceFactory {
+    fn create_render_state(
+        &self,
+        handle: &RawHandle,
+        backend: RenderBackend,
+        _size: SurfaceSize,
+    ) -> Result<WindowRenderState, SurfaceError> {
+        if !matches!(backend, RenderBackend::Canvas2d) {
+            return Err(SurfaceError::UnsupportedBackend(backend));
+        }
+
+        let RawHandle::Canvas(any) = handle else {
+            return Err(SurfaceError::HandleMismatch(backend));
+        };
+
+        // The RawHandle::Canvas payload is a SendSyncCanvas (from uzor-window-web).
+        let canvas = any
+            .downcast_ref::<uzor_window_web::SendSyncCanvas>()
+            .ok_or_else(|| {
+                SurfaceError::InitFailed(
+                    "expected SendSyncCanvas in RawHandle::Canvas — use WebWindowProvider".into(),
+                )
+            })?
+            .0
+            .clone();
+
+        let raw_ctx = canvas
+            .get_context("2d")
+            .map_err(|e| {
+                SurfaceError::InitFailed(format!("canvas.getContext(\"2d\") failed: {e:?}"))
+            })?
+            .ok_or_else(|| SurfaceError::InitFailed("canvas.getContext(\"2d\") returned null".into()))?;
+
+        use wasm_bindgen::JsCast as _;
+        let ctx2d = raw_ctx
+            .dyn_into::<web_sys::CanvasRenderingContext2d>()
+            .map_err(|_| {
+                SurfaceError::InitFailed(
+                    "getContext(\"2d\") object is not CanvasRenderingContext2d".into(),
+                )
+            })?;
+
+        let dpr = web_sys::window()
+            .map(|w| w.device_pixel_ratio())
+            .unwrap_or(1.0);
+
+        let render_ctx = uzor_render_canvas2d::Canvas2dRenderContext::new(ctx2d, dpr);
+
+        Ok(WindowRenderState::new_canvas2d(canvas, render_ctx))
+    }
+
+    fn supports(&self, handle: &RawHandle, backend: RenderBackend) -> bool {
+        matches!(backend, RenderBackend::Canvas2d) && matches!(handle, RawHandle::Canvas(_))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 impl RenderSurfaceFactory for Canvas2dSurfaceFactory {
     fn create_render_state(
         &self,
@@ -454,9 +545,6 @@ impl RenderSurfaceFactory for Canvas2dSurfaceFactory {
         backend: RenderBackend,
         _size: SurfaceSize,
     ) -> Result<WindowRenderState, SurfaceError> {
-        // Canvas2d has no matching RenderBackend variant on native targets.
-        // On wasm32 this would downcast the Canvas handle and return the
-        // appropriate state; that path is not implemented yet.
         Err(SurfaceError::UnsupportedBackend(backend))
     }
 
@@ -468,6 +556,7 @@ impl RenderSurfaceFactory for Canvas2dSurfaceFactory {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
 

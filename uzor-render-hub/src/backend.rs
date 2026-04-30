@@ -19,6 +19,12 @@ pub enum RenderBackend {
     VelloHybrid,
     /// Pure CPU tiny-skia fallback.
     TinySkia,
+    /// HTML Canvas 2D backend (wasm32 only).
+    ///
+    /// Draws directly to a `web_sys::HtmlCanvasElement` via the Canvas2D API.
+    /// No GPU swapchain is involved — DOM canvas auto-presents after each draw
+    /// call batch.  Unavailable on native targets.
+    Canvas2d,
 }
 
 impl RenderBackend {
@@ -32,6 +38,11 @@ impl RenderBackend {
         matches!(self, Self::VelloGpu | Self::InstancedWgpu | Self::VelloHybrid)
     }
 
+    /// True if the backend renders into a DOM canvas (wasm32 only).
+    pub fn is_canvas(self) -> bool {
+        matches!(self, Self::Canvas2d)
+    }
+
     /// Stable identifier suitable for config files / UI.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -40,6 +51,7 @@ impl RenderBackend {
             Self::VelloCpu      => "vello_cpu",
             Self::VelloHybrid   => "vello_hybrid",
             Self::TinySkia      => "tiny_skia",
+            Self::Canvas2d      => "canvas2d",
         }
     }
 
@@ -51,6 +63,7 @@ impl RenderBackend {
             Self::VelloCpu      => "Vello CPU",
             Self::VelloHybrid   => "Vello Hybrid",
             Self::TinySkia      => "Tiny-Skia CPU",
+            Self::Canvas2d      => "Canvas 2D (Web)",
         }
     }
 }

@@ -36,6 +36,7 @@ pub fn default_perf(backend: RenderBackend) -> PerfDefaults {
         RenderBackend::TinySkia      => (90,     8),
         RenderBackend::InstancedWgpu => (90,     8),
         RenderBackend::VelloHybrid   => (90,     8),
+        RenderBackend::Canvas2d      => (60,     0),
     };
     PerfDefaults { fps_limit, msaa_samples }
 }

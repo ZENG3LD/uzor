@@ -31,11 +31,15 @@ use uzor_render_vello_cpu::VelloCpuRenderContext;
 use uzor_render_vello_gpu::VelloGpuRenderContext;
 use uzor_render_vello_hybrid::VelloHybridRenderContext;
 use uzor_render_wgpu_instanced::{InstancedRenderContext, InstancedRenderer};
+#[cfg(not(target_arch = "wasm32"))]
 use uzor_window_hub::lifecycle::SoftwarePresenter;
 use vello::util::{RenderContext as VelloRenderContext, RenderSurface};
 use vello::{Renderer as VelloRenderer, Scene};
 
 use crate::backend::RenderBackend;
+
+#[cfg(target_arch = "wasm32")]
+use uzor_render_canvas2d::Canvas2dRenderContext;
 
 /// Local alias for vello's GPU device pool.
 ///
@@ -54,6 +58,8 @@ pub type GpuDevicePool = VelloRenderContext;
 /// On machines with no GPU the `Software` variant is used instead: only
 /// `TinySkia` and `VelloCpu` can run in this mode.  The `Software` variant is
 /// not available on `wasm32` (softbuffer is desktop-only).
+///
+/// On `wasm32` the `Canvas2d` variant is used for DOM canvas rendering.
 pub enum SurfaceMode {
     /// wgpu swapchain — used by all backends when a GPU adapter is available.
     ///
@@ -83,6 +89,16 @@ pub enum SurfaceMode {
         width: u32,
         /// Physical height of the software buffer in pixels.
         height: u32,
+    },
+    /// DOM canvas surface (wasm32 only).
+    ///
+    /// The [`Canvas2dRenderContext`] draws directly into the HTML canvas element.
+    /// No GPU swapchain or software buffer is needed — the browser presents the
+    /// canvas automatically after each RAF callback.
+    #[cfg(target_arch = "wasm32")]
+    Canvas2d {
+        /// The HTML canvas element being rendered into.
+        canvas: web_sys::HtmlCanvasElement,
     },
 }
 
@@ -164,6 +180,12 @@ pub struct WindowRenderState {
     /// tiny-skia CPU render context.
     pub(crate) tiny_skia_ctx: Option<TinySkiaCpuRenderContext>,
 
+    // ── Canvas 2D context (wasm32 only) ───────────────────────────────────────
+    /// HTML Canvas 2D render context.  Only populated when `active` is
+    /// [`RenderBackend::Canvas2d`].
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) canvas2d_ctx: Option<Canvas2dRenderContext>,
+
     // ── Shared vello scene ────────────────────────────────────────────────────
     /// Per-frame vello scene, reset each frame.  Shared by GPU and Hybrid.
     pub(crate) scene: Scene,
@@ -194,6 +216,8 @@ impl WindowRenderState {
             instanced_renderer: None,
             vello_cpu_ctx: None,
             tiny_skia_ctx: None,
+            #[cfg(target_arch = "wasm32")]
+            canvas2d_ctx: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
             active: RenderBackend::VelloGpu,
@@ -218,6 +242,8 @@ impl WindowRenderState {
             instanced_renderer: None,
             vello_cpu_ctx: None,
             tiny_skia_ctx: None,
+            #[cfg(target_arch = "wasm32")]
+            canvas2d_ctx: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
             active,
@@ -229,21 +255,12 @@ impl WindowRenderState {
     /// `presenter` is the [`SoftwarePresenter`] obtained from
     /// [`WindowProvider::create_software_presenter`](uzor_window_hub::lifecycle::WindowProvider::create_software_presenter).
     /// It is called once per frame to blit the CPU-rasterized pixels to the OS window.
+    ///
+    /// Available on native targets only — use the Canvas 2D path on wasm32.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new_cpu(width: u32, height: u32, presenter: Box<dyn SoftwarePresenter>) -> Self {
         Self {
-            #[cfg(not(target_arch = "wasm32"))]
             surface: SurfaceMode::Software { presenter, width, height },
-            #[cfg(target_arch = "wasm32")]
-            // On wasm32 the Software variant is disabled; CPU rendering would
-            // go through a canvas path that is not implemented yet.  The GPU
-            // path is preferred on wasm anyway.
-            surface: {
-                // This constructor should not be reached on wasm32 in practice.
-                compile_error!(
-                    "WindowRenderState::new_cpu is not supported on wasm32 — \
-                     use a GPU or canvas path instead"
-                );
-            },
             vello_gpu_renderer: None,
             vello_hybrid_renderer: None,
             instanced_renderer: None,
@@ -260,16 +277,12 @@ impl WindowRenderState {
     /// `presenter` is the [`SoftwarePresenter`] obtained from
     /// [`WindowProvider::create_software_presenter`](uzor_window_hub::lifecycle::WindowProvider::create_software_presenter).
     /// It is called once per frame to blit the CPU-rasterized pixels to the OS window.
+    ///
+    /// Available on native targets only — use the Canvas 2D path on wasm32.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new_vello_cpu(dpr: f64, presenter: Box<dyn SoftwarePresenter>) -> Self {
         Self {
-            #[cfg(not(target_arch = "wasm32"))]
             surface: SurfaceMode::Software { presenter, width: 0, height: 0 },
-            #[cfg(target_arch = "wasm32")]
-            surface: {
-                compile_error!(
-                    "WindowRenderState::new_vello_cpu is not supported on wasm32"
-                );
-            },
             vello_gpu_renderer: None,
             vello_hybrid_renderer: None,
             instanced_renderer: None,
@@ -298,6 +311,30 @@ impl WindowRenderState {
         dev_id: usize,
     ) -> Self {
         Self::new_gpu_no_vello(gpu_pool, surface, dev_id, RenderBackend::InstancedWgpu, 1.0)
+    }
+
+    /// Build a Canvas 2D state for DOM canvas rendering (wasm32 only).
+    ///
+    /// The `canvas` element is the HTML canvas being rendered into.
+    /// The `ctx` is a [`Canvas2dRenderContext`] wrapping the
+    /// `CanvasRenderingContext2d` obtained from `canvas.getContext("2d")`.
+    #[cfg(target_arch = "wasm32")]
+    pub fn new_canvas2d(
+        canvas: web_sys::HtmlCanvasElement,
+        ctx: Canvas2dRenderContext,
+    ) -> Self {
+        Self {
+            surface: SurfaceMode::Canvas2d { canvas },
+            vello_gpu_renderer: None,
+            vello_hybrid_renderer: None,
+            instanced_renderer: None,
+            vello_cpu_ctx: None,
+            tiny_skia_ctx: None,
+            canvas2d_ctx: Some(ctx),
+            scene: Scene::new(),
+            vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
+            active: RenderBackend::Canvas2d,
+        }
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
@@ -360,6 +397,29 @@ impl WindowRenderState {
         }
     }
 
+    /// Mutable reference to the Canvas 2D render context (wasm32 only).
+    ///
+    /// Returns `Some` only when `active` is [`RenderBackend::Canvas2d`] and
+    /// the context has been initialized.
+    #[cfg(target_arch = "wasm32")]
+    pub fn canvas2d_ctx_mut(&mut self) -> Option<&mut Canvas2dRenderContext> {
+        if matches!(self.active, RenderBackend::Canvas2d) {
+            self.canvas2d_ctx.as_mut()
+        } else {
+            None
+        }
+    }
+
+    /// Shared reference to the Canvas 2D render context (wasm32 only).
+    #[cfg(target_arch = "wasm32")]
+    pub fn canvas2d_ctx(&self) -> Option<&Canvas2dRenderContext> {
+        if matches!(self.active, RenderBackend::Canvas2d) {
+            self.canvas2d_ctx.as_ref()
+        } else {
+            None
+        }
+    }
+
     // ── Frame lifecycle ───────────────────────────────────────────────────────
 
     /// Reset per-frame artifacts.  Call at the top of each frame.
@@ -373,6 +433,10 @@ impl WindowRenderState {
             | RenderBackend::TinySkia
             | RenderBackend::InstancedWgpu => {
                 // CPU pixel buffers and instanced commands are rebuilt by caller.
+            }
+            RenderBackend::Canvas2d => {
+                // Canvas 2D draw calls are issued directly via canvas2d_ctx_mut().
+                // No per-frame reset needed — the browser auto-clears as needed.
             }
         }
     }

@@ -13,12 +13,17 @@
 
 pub mod app;
 pub mod builder;
-pub mod chrome;
 pub mod runtime;
-pub mod tray;
-pub mod window;
-pub mod platform;
 pub mod utils;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod chrome;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tray;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod window;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod platform;
 
 // ── Primary re-exports ────────────────────────────────────────────────────────
 
@@ -26,15 +31,18 @@ pub use app::{App, AppConfig, ClosureApp, NoPanel};
 pub use builder::{AppBuilder, BuildError, run_closure};
 pub use runtime::{Runtime, RuntimeError};
 
-// ── Utility re-exports ────────────────────────────────────────────────────────
+// ── Utility re-exports (desktop only) ────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use utils::single_instance::{single_instance, SingleInstanceGuard};
+#[cfg(not(target_arch = "wasm32"))]
 pub use utils::screenshot::{
     add_copy_src_to_target_texture, capture_screenshot, encode_png, screenshot_save_dir,
 };
 
-// ── Tray re-exports ───────────────────────────────────────────────────────────
+// ── Tray re-exports (desktop only) ───────────────────────────────────────────
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use tray::{TrayBuilder, TrayError, TrayEvent, TrayHandle};
 
 // ── Hub re-exports ────────────────────────────────────────────────────────────

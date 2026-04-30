@@ -2,8 +2,19 @@
 //!
 //! This crate provides the web platform implementation for uzor,
 //! supporting browsers via WebAssembly (WASM).
+//!
+//! # Primary API
+//!
+//! Use [`WebWindowProvider`] (implements
+//! `uzor_window_hub::lifecycle::WindowProvider`) for new code.  The legacy
+//! [`WebPlatform`] (implements the old `PlatformBackend` trait) is retained for
+//! backward compatibility.
 
-#![allow(dead_code)]
+#[cfg(target_arch = "wasm32")]
+pub mod web_provider;
+
+#[cfg(target_arch = "wasm32")]
+pub use web_provider::{SendSyncCanvas, WebWindowProvider};
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -23,8 +34,6 @@ use uzor::platform::{
     types::{PlatformError, WindowId, SystemIntegration},
     ImeEvent, PlatformEvent, SystemTheme, WindowConfig,
 };
-use uzor::input::cursor::CursorIcon;
-
 pub use uzor;
 
 // =============================================================================
@@ -48,10 +57,6 @@ struct WebPlatformState {
     config: WindowConfig,
     event_queue: VecDeque<PlatformEvent>,
     scale_factor: f64,
-    cursor_icon: CursorIcon,
-    cursor_visible: bool,
-    ime_position: (f64, f64),
-    ime_allowed: bool,
     // Event listener closures (kept alive)
     _listeners: Vec<EventListener>,
 }
@@ -107,10 +112,6 @@ impl WebPlatform {
             config,
             event_queue: VecDeque::new(),
             scale_factor,
-            cursor_icon: CursorIcon::Default,
-            cursor_visible: true,
-            ime_position: (0.0, 0.0),
-            ime_allowed: false,
             _listeners: Vec::new(),
         }));
 
@@ -523,9 +524,6 @@ impl WebPlatform {
         }
     }
 
-    fn cursor_icon_to_css(icon: CursorIcon) -> &'static str {
-        icon.css_name()
-    }
 }
 
 // =============================================================================
@@ -624,14 +622,5 @@ mod tests {
         assert_eq!(WebPlatform::map_mouse_button(0), MouseButton::Left);
         assert_eq!(WebPlatform::map_mouse_button(1), MouseButton::Middle);
         assert_eq!(WebPlatform::map_mouse_button(2), MouseButton::Right);
-    }
-
-    #[test]
-    fn test_cursor_icon_css() {
-        assert_eq!(WebPlatform::cursor_icon_to_css(CursorIcon::Default), "default");
-        assert_eq!(WebPlatform::cursor_icon_to_css(CursorIcon::PointingHand), "pointer");
-        assert_eq!(WebPlatform::cursor_icon_to_css(CursorIcon::Text), "text");
-        assert_eq!(WebPlatform::cursor_icon_to_css(CursorIcon::Grab), "grab");
-        assert_eq!(WebPlatform::cursor_icon_to_css(CursorIcon::ResizeVertical), "ns-resize");
     }
 }

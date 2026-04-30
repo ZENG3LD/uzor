@@ -43,6 +43,7 @@ uzor-render-vello-hybrid = { version = "1.1.8", path = "./uzor-render-vello-hybr
 uzor-render-vello-cpu = { version = "1.1.8", path = "./uzor-render-vello-cpu" }
 uzor-render-tiny-skia = { version = "1.1.8", path = "./uzor-render-tiny-skia" }
 uzor-render-wgpu-instanced = { version = "1.1.8", path = "./uzor-render-wgpu-instanced" }
+uzor-render-canvas2d = { version = "1.1.8", path = "./uzor-render-canvas2d" }
 uzor-window-hub = { version = "1.1.8", path = "./uzor-window-hub" }
 uzor-window-desktop = { version = "1.1.8", path = "./uzor-window-desktop" }
 uzor-icon = { version = "1.1.8", path = "./uzor-icon" }

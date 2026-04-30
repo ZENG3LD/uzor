@@ -14,26 +14,11 @@ pub mod input;
 pub mod lifecycle;
 pub mod metrics;
 
-#[cfg(feature = "desktop")]
-pub mod winit_provider;
-
-#[cfg(feature = "desktop")]
-pub use uzor_window_desktop as platform;
-
-#[cfg(all(feature = "web", not(feature = "desktop")))]
-pub use uzor_window_web as platform;
-
-#[cfg(all(feature = "mobile", not(any(feature = "desktop", feature = "web"))))]
-pub use uzor_window_mobile as platform;
-
 /// Cross-platform window event (type alias kept for back-compat).
 pub use uzor::platform::PlatformWindowEvent;
 
-// ── New public surface ────────────────────────────────────────────────────────
+// ── Public surface ────────────────────────────────────────────────────────────
 
 pub use lifecycle::{RawHandle, RgbaIcon, SoftwarePresenter, WindowProvider};
 pub use events::PlatformEvent;
 pub use input::{EventProcessor, InputState};
-
-#[cfg(feature = "desktop")]
-pub use winit_provider::WinitWindowProvider;

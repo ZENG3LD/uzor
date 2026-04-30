@@ -27,7 +27,9 @@
 use std::collections::HashSet;
 
 use crate::backend::RenderBackend;
-use crate::detect::{default_perf, detect_backend};
+use crate::detect::default_perf;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::detect::detect_backend;
 use crate::metrics::RenderMetrics;
 
 // ── HubError ──────────────────────────────────────────────────────────────────
@@ -60,7 +62,8 @@ pub struct BackendPool {
 }
 
 impl BackendPool {
-    /// Build a pool from a detected adapter.
+    /// Build a pool from a detected adapter (native only).
+    #[cfg(not(target_arch = "wasm32"))]
     fn from_gpu(recommended: RenderBackend) -> Self {
         let mut initialized = HashSet::new();
         // GPU adapter present — all backends are potentially usable.
@@ -72,7 +75,8 @@ impl BackendPool {
         Self { has_gpu: true, initialized, recommended }
     }
 
-    /// Build a pool when no GPU is available (software-only).
+    /// Build a pool when no GPU is available — software-only (native only).
+    #[cfg(not(target_arch = "wasm32"))]
     fn software_only() -> Self {
         let mut initialized = HashSet::new();
         initialized.insert(RenderBackend::VelloCpu);
@@ -162,30 +166,41 @@ impl RenderHub {
     /// The probe is synchronous (via `pollster`) and takes a few milliseconds.
     /// If no adapter is found the hub falls back to software-only backends
     /// (`TinySkia` / `VelloCpu`).
+    ///
+    /// On `wasm32` targets the probe is skipped and [`RenderBackend::Canvas2d`]
+    /// is selected immediately — it is the only available backend in a browser.
     pub fn autodetect() -> Self {
-        let (pool, recommended) = match probe_adapter() {
-            Some(info) => {
-                let rec = detect_backend(&info);
-                (BackendPool::from_gpu(rec), rec)
-            }
-            None => {
-                let rec = RenderBackend::TinySkia;
-                (BackendPool::software_only(), rec)
-            }
-        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            return Self::fixed(RenderBackend::Canvas2d);
+        }
 
-        let perf = default_perf(recommended);
-        let settings = PerfSettings {
-            fps_limit: perf.fps_limit,
-            msaa_samples: perf.msaa_samples,
-            ..PerfSettings::default()
-        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (pool, recommended) = match probe_adapter() {
+                Some(info) => {
+                    let rec = detect_backend(&info);
+                    (BackendPool::from_gpu(rec), rec)
+                }
+                None => {
+                    let rec = RenderBackend::TinySkia;
+                    (BackendPool::software_only(), rec)
+                }
+            };
 
-        Self {
-            active: pool.recommended,
-            pool,
-            settings,
-            metrics: RenderMetrics::default(),
+            let perf = default_perf(recommended);
+            let settings = PerfSettings {
+                fps_limit: perf.fps_limit,
+                msaa_samples: perf.msaa_samples,
+                ..PerfSettings::default()
+            };
+
+            Self {
+                active: pool.recommended,
+                pool,
+                settings,
+                metrics: RenderMetrics::default(),
+            }
         }
     }
 
@@ -280,11 +295,13 @@ impl RenderHub {
     }
 }
 
-// ── Adapter probe ─────────────────────────────────────────────────────────────
+// ── Adapter probe (desktop only) ──────────────────────────────────────────────
 
 /// Synchronously request a wgpu adapter and return its info.
 ///
 /// Returns `None` if no suitable adapter exists (pure software / headless).
+/// Not available on `wasm32` — use [`RenderHub::fixed`]`(RenderBackend::Canvas2d)` instead.
+#[cfg(not(target_arch = "wasm32"))]
 fn probe_adapter() -> Option<wgpu::AdapterInfo> {
     let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -298,6 +315,7 @@ fn probe_adapter() -> Option<wgpu::AdapterInfo> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
 mod tests {
     use super::*;
 
@@ -325,7 +343,7 @@ mod tests {
     #[test]
     fn set_active_accepts_pooled() {
         let mut hub = RenderHub::autodetect();
-        // autodetect always includes TinySkia.
+        // autodetect always includes TinySkia on desktop.
         assert!(hub.set_active(RenderBackend::TinySkia).is_ok());
         assert_eq!(hub.active(), RenderBackend::TinySkia);
     }
