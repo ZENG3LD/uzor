@@ -37,6 +37,7 @@ pub fn register_input_coordinator_dropdown_trigger(
 /// Level 2 — register a dropdown trigger via `ContextManager`, pulling state from the registry,
 /// and draw it using the provided render context.
 ///
+/// `widget_state` is supplied by the caller — the app owns the hover/press state machine.
 /// `settings` supplies visual style. `kind` selects the render variant.
 pub fn register_context_manager_dropdown_trigger(
     ctx: &mut ContextManager,
@@ -44,13 +45,14 @@ pub fn register_context_manager_dropdown_trigger(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     settings: &DropdownTriggerSettings,
     kind: &DropdownTriggerRenderKind<'_>,
 ) {
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), DropdownTriggerState::default);
     register_input_coordinator_dropdown_trigger(&mut ctx.input, id, rect, layer, state);
-    draw_dropdown_trigger(render, rect, WidgetState::Normal, settings, kind);
+    draw_dropdown_trigger(render, rect, widget_state, settings, kind);
 }
 
 /// Level 3 — register a dropdown trigger via `LayoutManager`, forwarding to L2.
@@ -60,10 +62,11 @@ pub fn register_layout_manager_dropdown_trigger<P: DockPanel>(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     settings: &DropdownTriggerSettings,
     kind: &DropdownTriggerRenderKind<'_>,
 ) {
     register_context_manager_dropdown_trigger(
-        layout.ctx_mut(), render, id, rect, layer, settings, kind,
+        layout.ctx_mut(), render, id, rect, layer, widget_state, settings, kind,
     );
 }

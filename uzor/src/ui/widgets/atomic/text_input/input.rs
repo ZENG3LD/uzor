@@ -57,6 +57,7 @@ pub fn register_input_coordinator_text_input(
 /// Level 2 — register a text input via `ContextManager`, pulling `TextFieldStore`
 /// from the registry, and draw it using the provided render context.
 ///
+/// `widget_state` is supplied by the caller — the app owns the focus/hover state machine.
 /// `view` supplies per-frame text, cursor, selection, and focus state.
 /// `settings` supplies visual style and theme.
 pub fn register_context_manager_text_input(
@@ -65,13 +66,14 @@ pub fn register_context_manager_text_input(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &InputView<'_>,
     settings: &TextInputSettings,
 ) {
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), TextFieldStore::default);
     register_input_coordinator_text_input(&mut ctx.input, id, rect, layer, settings, state);
-    draw_input(render, rect, WidgetState::Normal, view, settings);
+    draw_input(render, rect, widget_state, view, settings);
 }
 
 /// Level 3 — register a text input via `LayoutManager`, forwarding to L2.
@@ -81,10 +83,11 @@ pub fn register_layout_manager_text_input<P: DockPanel>(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &InputView<'_>,
     settings: &TextInputSettings,
 ) {
     register_context_manager_text_input(
-        layout.ctx_mut(), render, id, rect, layer, view, settings,
+        layout.ctx_mut(), render, id, rect, layer, widget_state, view, settings,
     );
 }

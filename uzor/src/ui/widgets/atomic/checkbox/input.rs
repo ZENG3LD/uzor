@@ -37,6 +37,7 @@ pub fn register_input_coordinator_checkbox(
 /// Level 2 — register a checkbox via `ContextManager`, pulling state from the registry,
 /// and draw it using the provided render context.
 ///
+/// `widget_state` is supplied by the caller — the app owns the hover/press state machine.
 /// `view` supplies per-frame data (checked, label). `settings` supplies visual style.
 /// `kind` selects the visual variant. `font` is the label font string.
 pub fn register_context_manager_checkbox(
@@ -45,6 +46,7 @@ pub fn register_context_manager_checkbox(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &CheckboxView<'_>,
     settings: &CheckboxSettings,
     kind: &CheckboxRenderKind<'_>,
@@ -53,7 +55,7 @@ pub fn register_context_manager_checkbox(
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), CheckboxState::default);
     register_input_coordinator_checkbox(&mut ctx.input, id, rect, layer, state);
-    draw_checkbox(render, rect, WidgetState::Normal, view, settings, kind, font);
+    draw_checkbox(render, rect, widget_state, view, settings, kind, font);
 }
 
 /// Level 3 — register a checkbox via `LayoutManager`, forwarding to L2.
@@ -63,12 +65,13 @@ pub fn register_layout_manager_checkbox<P: DockPanel>(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &CheckboxView<'_>,
     settings: &CheckboxSettings,
     kind: &CheckboxRenderKind<'_>,
     font: &str,
 ) {
     register_context_manager_checkbox(
-        layout.ctx_mut(), render, id, rect, layer, view, settings, kind, font,
+        layout.ctx_mut(), render, id, rect, layer, widget_state, view, settings, kind, font,
     );
 }

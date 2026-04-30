@@ -1,10 +1,18 @@
 //! # Level 2 — uzor multi-widget demo
 //!
-//! Demonstrates 11 different atomic widgets rendered through the L2 API
-//! (`register_context_manager_<X>`).  Every widget is visible in its normal
-//! (non-hover) state — achieved by a custom `VisibleButtonTheme` for the
-//! button and by the default themes of the other widgets which all draw solid
-//! backgrounds.
+//! Demonstrates 12 different atomic widgets rendered through the L2 API
+//! (`register_context_manager_<X>`).  All 12 widgets are fully interactive:
+//! clicks, hovers, drag (slider + scrollbar + drag-handle), scroll (scrollbar),
+//! and keyboard (text input via InputCoordinator text field store).
+//!
+//! Event pipeline (mlc direct-coord pattern — NO EventProcessor / PlatformEvent / InputState):
+//!   winit WindowEvent
+//!     → app parses x/y/button/key directly
+//!     → calls coord methods: process_click, text_fields_mut().on_char, etc.
+//!     → render: ctx.begin_frame(input, viewport)  (minimal InputState built inline)
+//!     → register widgets
+//!     → ctx.end_frame() → Vec<(WidgetId, WidgetResponse)>
+//!     → apply responses to app state
 //!
 //! Layout is hardcoded (no flex/yoga).  Window is 680 × 440.
 //!
@@ -15,10 +23,12 @@
 //! ```
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseButton as WinitMouseButton, WindowEvent};
+use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowId};
 
 // ── vello ──────────────────────────────────────────────────────────────────────
@@ -28,12 +38,13 @@ use vello::peniko::{Color, Fill};
 use vello::kurbo::{Affine, RoundedRect};
 use vello::wgpu;
 
-// ── uzor L2 ───────────────────────────────────────────────────────────────────
+// ── uzor core ─────────────────────────────────────────────────────────────────
 use uzor::app_context::{ContextManager, layout::types::LayoutNode};
 use uzor::input::core::coordinator::LayerId;
-use uzor::input::pointer::state::{InputState, MouseButton};
-use uzor::layout::LayoutManager;
-use uzor::types::Rect;
+use uzor::input::keyboard::keyboard::KeyPress;
+use uzor::input::pointer::state::{InputState, PointerState};
+use uzor::input::text::store::TextFieldConfig;
+use uzor::types::{Rect, WidgetId, WidgetState};
 
 // ── widgets ──────────────────────────────────────────────────────────────────
 use uzor::ui::widgets::atomic::button::input::register_context_manager_button;
@@ -93,9 +104,6 @@ use uzor::ui::widgets::atomic::drag_handle::types::{DragHandleRenderKind, DragHa
 // ── GPU render context ────────────────────────────────────────────────────────
 use uzor_render_vello_gpu::VelloGpuRenderContext;
 
-// ── framework helper ──────────────────────────────────────────────────────────
-use uzor_framework::app::NoPanel;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Geometry + colours
 // ─────────────────────────────────────────────────────────────────────────────
@@ -106,6 +114,18 @@ const WIN_H: u32 = 440;
 const BG: Color = Color::from_rgb8(0x16, 0x16, 0x1e);
 const PANEL_BG: Color = Color::from_rgb8(0x1e, 0x22, 0x2d);
 const LABEL_BG: Color = Color::from_rgba8(255, 255, 255, 18);
+
+// Text field widget ID — used to register with coordinator and query state.
+const TEXT_FIELD_ID: &str = "text-search";
+
+// Widget rects (constants for hover hit-test).
+const BTN_RECT:   Rect = Rect { x: 28.0,  y: 28.0,  width: 130.0, height: 36.0 };
+const CLOSE_RECT: Rect = Rect { x: 278.0, y: 28.0,  width: 24.0,  height: 24.0 };
+const CB_RECT:    Rect = Rect { x: 28.0,  y: 88.0,  width: 160.0, height: 22.0 };
+const TOG_RECT:   Rect = Rect { x: 28.0,  y: 130.0, width: 80.0,  height: 24.0 };
+const SLID_RECT:  Rect = Rect { x: 28.0,  y: 228.0, width: 260.0, height: 24.0 };
+const TI_RECT:    Rect = Rect { x: 28.0,  y: 292.0, width: 200.0, height: 28.0 };
+const DH_RECT:    Rect = Rect { x: 350.0, y: 28.0,  width: 60.0,  height: 24.0 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Custom visible button theme (default has bg_normal=transparent)
@@ -158,8 +178,22 @@ impl ButtonTheme for VisibleButtonTheme {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Hit-test helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn rect_contains(r: Rect, x: f64, y: f64) -> bool {
+    x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // App state
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Drag origin + which widget is being dragged and its starting value.
+enum DragTarget {
+    Slider(f64),   // start value (0-100)
+    Scroll(f64),   // start scroll_off
+}
 
 struct AppState {
     window:    Arc<Window>,
@@ -168,25 +202,90 @@ struct AppState {
     renderer:  Renderer,
     scene:     Scene,
 
-    ctx:    ContextManager,
-    layout: LayoutManager<NoPanel>,
+    ctx:        ContextManager,
+    start_time: Instant,
 
-    mouse_pos:   Option<(f64, f64)>,
-    clicked:     Option<MouseButton>,
-    button_down: bool,
+    // mlc-style: app owns raw pointer position
+    last_mouse_pos: (f64, f64),
+    // drag state: origin + target widget + start value
+    drag_origin:    Option<(f64, f64)>,
+    drag_target:    Option<DragTarget>,
 
-    // per-widget state mirrored here for demo logic
-    connected:    bool,
-    checked:      bool,
-    toggled:      bool,
-    radio_sel:    usize,
-    slider_val:   f64,
-    scroll_off:   f64,
-    swatch_sel:   usize,
-    shape_sel:    usize,
+    // per-widget state
+    connected:           bool,
+    checked:             bool,
+    toggled:             bool,
+    radio_sel:           usize,
+    slider_val:          f64,
+    scroll_off:          f64,
+    swatch_sel:          usize,
+    shape_sel:           usize,
+    drag_handle_hovered: bool,
+
+    // mlc-style hover/press tracking — app owns the state machine
+    hovered_widget_id: Option<String>,
+    pressed_widget_id: Option<String>,
 }
 
+// Scrollbar geometry constants — needed in both render and response handling.
+const SB_X: f64 = 624.0;
+const SB_Y: f64 = 28.0;
+const SB_W: f64 = 10.0;
+const SB_H: f64 = 380.0;
+const CONTENT_H: f64 = 1000.0;
+
 impl AppState {
+    fn current_time(&self) -> f64 {
+        self.start_time.elapsed().as_secs_f64()
+    }
+
+    fn text_focused(&self) -> bool {
+        self.ctx.input.text_fields().is_focused(&WidgetId::new(TEXT_FIELD_ID))
+    }
+
+    /// Compute which widget is under the pointer, given current mouse position.
+    fn compute_hovered(mouse: (f64, f64)) -> Option<String> {
+        let (mx, my) = mouse;
+        if rect_contains(BTN_RECT,   mx, my) { return Some("btn-connect".into()); }
+        if rect_contains(CLOSE_RECT, mx, my) { return Some("btn-close".into()); }
+        if rect_contains(CB_RECT,    mx, my) { return Some("cb-setting-a".into()); }
+        if rect_contains(TOG_RECT,   mx, my) { return Some("tog-enable".into()); }
+        if rect_contains(SLID_RECT,  mx, my) { return Some("slider-main".into()); }
+        if rect_contains(TI_RECT,    mx, my) { return Some("text-search".into()); }
+        if rect_contains(DH_RECT,    mx, my) { return Some("drag-handle".into()); }
+        // Radio buttons
+        for i in 0..3_usize {
+            let cx = 28.0 + i as f64 * 40.0;
+            if rect_contains(Rect::new(cx, 175.0, 28.0, 28.0), mx, my) {
+                return Some(format!("radio-opt-{i}"));
+            }
+        }
+        // Color swatches
+        for i in 0..4_usize {
+            let sx = 28.0 + i as f64 * 34.0;
+            if rect_contains(Rect::new(sx, 344.0, 26.0, 26.0), mx, my) {
+                return Some(format!("swatch-{i}"));
+            }
+        }
+        // Shape selector buttons
+        for i in 0..3_usize {
+            let shx = 28.0 + i as f64 * 80.0;
+            if rect_contains(Rect::new(shx, 392.0, 72.0, 28.0), mx, my) {
+                return Some(format!("shape-{i}"));
+            }
+        }
+        // Scrollbar
+        let sb_track = Rect::new(SB_X, SB_Y, SB_W, SB_H);
+        if rect_contains(sb_track, mx, my) { return Some("sb-track".into()); }
+        None
+    }
+
+    /// Thumb height calculation (same formula used in render).
+    fn thumb_h() -> f64 {
+        let thumb_ratio = (SB_H / CONTENT_H).clamp(0.0, 1.0);
+        (thumb_ratio * SB_H).max(30.0)
+    }
+
     fn render(&mut self) {
         let (width, height) = {
             let s = &self.surface;
@@ -194,19 +293,30 @@ impl AppState {
         };
         let viewport = Rect::new(0.0, 0.0, width as f64, height as f64);
 
-        self.layout.chrome_mut().visible = false;
-        let _solved = self.layout.solve(viewport);
-
+        // Build a minimal InputState from app-owned pointer position.
+        // No EventProcessor needed — we just tell the coordinator where the
+        // cursor is so begin_frame can update hover state internally.
         let input = {
+            let (mx, my) = self.last_mouse_pos;
             let mut s = InputState::default();
-            s.pointer.pos     = self.mouse_pos;
-            s.pointer.clicked = self.clicked.take();
-            if self.button_down {
-                s.pointer.button_down = Some(MouseButton::Left);
-            }
+            s.pointer = PointerState {
+                pos: Some((mx, my)),
+                ..PointerState::default()
+            };
+            s.time = self.current_time();
             s
         };
+
         self.ctx.begin_frame(input, viewport);
+
+        // ── Register text field with coordinator ─────────────────────────────
+        // Must be done AFTER begin_frame and BEFORE end_frame so the coordinator
+        // knows about this widget during hit-testing.
+        self.ctx.input.register_text_field(
+            TEXT_FIELD_ID,
+            Rect::new(28.0, 292.0, 200.0, 28.0),
+            TextFieldConfig::text(),
+        );
 
         // ── scene ─────────────────────────────────────────────────────────────
         self.scene.reset();
@@ -225,13 +335,40 @@ impl AppState {
             );
         }
 
+        // ── Snapshot text field state before the render borrow ───────────────
+        let text_str = self.ctx.input.text_fields()
+            .text(&WidgetId::new(TEXT_FIELD_ID))
+            .to_owned();
+        let text_cursor_pos = self.ctx.input.text_fields()
+            .cursor(&WidgetId::new(TEXT_FIELD_ID));
+        let text_is_focused = self.ctx.input.text_fields()
+            .is_focused(&WidgetId::new(TEXT_FIELD_ID));
+
+        // ── Snapshot hover/press before the render borrow (borrow checker) ────
+        let hovered = self.hovered_widget_id.clone();
+        let pressed = self.pressed_widget_id.clone();
+        let ws = |id: &str| -> WidgetState {
+            match (hovered.as_deref() == Some(id), pressed.as_deref() == Some(id)) {
+                (_, true)     => WidgetState::Pressed,
+                (true, false) => WidgetState::Hovered,
+                _             => WidgetState::Normal,
+            }
+        };
+
         // ── widgets ───────────────────────────────────────────────────────────
         {
             let mut render = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
             let layer = LayerId::main();
 
             // ── 1. Button ─────────────────────────────────────────────────────
-            let btn_rect = Rect::new(28.0, 28.0, 130.0, 36.0);
+            let btn_state = {
+                let base = ws("btn-connect");
+                if base == WidgetState::Normal && self.connected {
+                    WidgetState::Active
+                } else {
+                    base
+                }
+            };
             let btn_view = ButtonView {
                 text:          Some(if self.connected { "Disconnect" } else { "Connect" }),
                 icon:          None,
@@ -241,26 +378,27 @@ impl AppState {
             };
             register_context_manager_button(
                 &mut self.ctx, &mut render,
-                "btn-connect", btn_rect, &layer,
+                "btn-connect", BTN_RECT, &layer,
+                btn_state,
                 &btn_view,
                 &ButtonSettings::default().with_theme(Box::new(VisibleButtonTheme)),
             );
 
             // ── 2. Close button ───────────────────────────────────────────────
-            let close_rect = Rect::new(278.0, 28.0, 24.0, 24.0);
             register_context_manager_close_button(
                 &mut self.ctx, &mut render,
-                "btn-close", close_rect, &layer,
+                "btn-close", CLOSE_RECT, &layer,
+                ws("btn-close"),
                 &CloseButtonView { hovered: false },
                 &CloseButtonSettings::default(),
                 &CloseButtonRenderKind::Default,
             );
 
             // ── 3. Checkbox ───────────────────────────────────────────────────
-            let cb_rect = Rect::new(28.0, 88.0, 160.0, 22.0);
             register_context_manager_checkbox(
                 &mut self.ctx, &mut render,
-                "cb-setting-a", cb_rect, &layer,
+                "cb-setting-a", CB_RECT, &layer,
+                ws("cb-setting-a"),
                 &CheckboxView { checked: self.checked, label: Some("Setting A") },
                 &CheckboxSettings::default(),
                 &CheckboxRenderKind::Standard,
@@ -268,22 +406,23 @@ impl AppState {
             );
 
             // ── 4. Toggle ─────────────────────────────────────────────────────
-            let tog_rect = Rect::new(28.0, 130.0, 80.0, 24.0);
             register_context_manager_toggle(
                 &mut self.ctx, &mut render,
-                "tog-enable", tog_rect, &layer,
+                "tog-enable", TOG_RECT, &layer,
+                ws("tog-enable"),
                 &ToggleView { toggled: self.toggled, label: Some("ON"), disabled: false },
                 &ToggleSettings::default(),
                 &ToggleRenderKind::Switch,
             );
 
             // ── 5. Radio group (3 dots inline) ────────────────────────────────
-            // Three separate Dot registrations sharing a logical group
             for (i, cx) in [28.0_f64, 68.0, 108.0].iter().enumerate() {
                 let dot_rect = Rect::new(*cx, 175.0, 28.0, 28.0);
+                let radio_id = format!("radio-opt-{i}");
                 register_context_manager_radio(
                     &mut self.ctx, &mut render,
-                    format!("radio-opt-{i}"), dot_rect, &layer,
+                    radio_id.as_str(), dot_rect, &layer,
+                    ws(&radio_id),
                     &RadioSettings::default(),
                     &RadioRenderKind::Dot {
                         shape: DotShape::Circle,
@@ -295,10 +434,10 @@ impl AppState {
             }
 
             // ── 6. Slider (horizontal) ────────────────────────────────────────
-            let slid_rect = Rect::new(28.0, 228.0, 260.0, 24.0);
             register_context_manager_slider(
                 &mut self.ctx, &mut render,
-                "slider-main", slid_rect, &layer,
+                "slider-main", SLID_RECT, &layer,
+                ws("slider-main"),
                 &SliderView {
                     kind: SliderType::Single {
                         value: self.slider_val,
@@ -324,17 +463,22 @@ impl AppState {
                 &SeparatorSettings::default(),
             );
 
-            // ── 8. Text input ─────────────────────────────────────────────────
-            let ti_rect = Rect::new(28.0, 292.0, 200.0, 28.0);
+            // ── 8. Text input — visual draw ────────────────────────────────────
+            let ti_state = if text_is_focused {
+                WidgetState::Active
+            } else {
+                ws(TEXT_FIELD_ID)
+            };
             register_context_manager_text_input(
                 &mut self.ctx, &mut render,
-                "text-search", ti_rect, &layer,
+                TEXT_FIELD_ID, TI_RECT, &layer,
+                ti_state,
                 &InputView {
-                    text: "",
+                    text: text_str.as_str(),
                     placeholder: "Search...",
-                    cursor: 0,
+                    cursor: text_cursor_pos,
                     selection: None,
-                    focused: false,
+                    focused: text_is_focused,
                     disabled: false,
                     input_type: InputType::Search,
                 },
@@ -353,9 +497,11 @@ impl AppState {
             for (i, color) in swatch_colors.iter().enumerate() {
                 let sx = 28.0 + i as f64 * 34.0;
                 let sw_rect = Rect::new(sx, 344.0, 26.0, 26.0);
+                let sw_id = format!("swatch-{i}");
                 register_context_manager_color_swatch(
                     &mut self.ctx, &mut render,
-                    format!("swatch-{i}"), sw_rect, &layer,
+                    sw_id.as_str(), sw_rect, &layer,
+                    ws(&sw_id),
                     &ColorSwatchView {
                         color: *color,
                         hovered: false,
@@ -373,40 +519,40 @@ impl AppState {
             for (i, _lbl) in shape_labels.iter().enumerate() {
                 let shx = 28.0 + i as f64 * 80.0;
                 let sh_rect = Rect::new(shx, 392.0, 72.0, 28.0);
+                let sh_id = format!("shape-{i}");
                 register_context_manager_shape_selector(
                     &mut self.ctx, &mut render,
-                    format!("shape-{i}"), sh_rect, &layer,
+                    sh_id.as_str(), sh_rect, &layer,
+                    ws(&sh_id),
                     &ShapeSelectorSettings::default(),
                     &ShapeSelectorRenderKind::UIStyle,
                 );
             }
 
             // ── 11. Scrollbar (vertical, right column) ────────────────────────
-            let sb_track = Rect::new(624.0, 28.0, 10.0, 380.0);
-            let content_h = 1000.0_f64;
-            let viewport_h = 380.0_f64;
-            let thumb_ratio = (viewport_h / content_h).clamp(0.0, 1.0);
+            let sb_track = Rect::new(SB_X, SB_Y, SB_W, SB_H);
+            let viewport_h = SB_H;
+            let thumb_ratio = (viewport_h / CONTENT_H).clamp(0.0, 1.0);
             let thumb_h = (thumb_ratio * sb_track.height).max(30.0);
             let scroll_range = sb_track.height - thumb_h;
             let thumb_y = sb_track.y
-                + (self.scroll_off / (content_h - viewport_h).max(1.0)) * scroll_range;
-            let sb_thumb = Rect::new(624.0, thumb_y, 10.0, thumb_h);
+                + (self.scroll_off / (CONTENT_H - viewport_h).max(1.0)) * scroll_range;
+            let sb_thumb = Rect::new(SB_X, thumb_y, SB_W, thumb_h);
 
             register_context_manager_scrollbar(
                 &mut self.ctx, &mut render,
                 "sb-track", "sb-thumb",
                 sb_track, sb_thumb,
                 5.0, &layer,
-                content_h, viewport_h, self.scroll_off,
+                CONTENT_H, viewport_h, self.scroll_off,
                 &ScrollbarSettings::default(),
             );
 
             // ── 12. Drag handle ───────────────────────────────────────────────
-            let dh_rect = Rect::new(350.0, 28.0, 60.0, 24.0);
             register_context_manager_drag_handle(
                 &mut self.ctx, &mut render,
-                "drag-handle", dh_rect, &layer,
-                &DragHandleView { rect: dh_rect },
+                "drag-handle", DH_RECT, &layer,
+                &DragHandleView { rect: DH_RECT },
                 &DragHandleSettings::default(),
                 &DragHandleRenderKind::GripDots,
             );
@@ -453,37 +599,55 @@ impl AppState {
             );
         }
 
+        // drag-handle hover indicator (visual: blue tint when hovered)
+        if self.drag_handle_hovered {
+            self.scene.fill(
+                Fill::NonZero, Affine::IDENTITY,
+                Color::from_rgba8(41, 98, 255, 40), None,
+                &vello::kurbo::Rect::new(350.0, 28.0, 410.0, 52.0),
+            );
+        }
+
         // ── end_frame / responses ─────────────────────────────────────────────
         let responses = self.ctx.end_frame();
+
+        // Scrollbar track geometry — needed for scroll + drag offset calculation
+        let viewport_h = SB_H;
+        let thumb_h = Self::thumb_h();
+        let scroll_range = SB_H - thumb_h;
+
         for (id, resp) in &responses {
-            if !resp.clicked { continue; }
             let id_str = id.0.as_str();
 
-            if id_str == "btn-connect" {
-                self.connected = !self.connected;
-                println!("[L2] connected → {}", self.connected);
-            } else if id_str == "btn-close" {
-                println!("[L2] close clicked");
-            } else if id_str == "cb-setting-a" {
-                self.checked = !self.checked;
-                println!("[L2] checked → {}", self.checked);
-            } else if id_str == "tog-enable" {
-                self.toggled = !self.toggled;
-                println!("[L2] toggled → {}", self.toggled);
-            } else if let Some(i) = id_str.strip_prefix("radio-opt-") {
-                if let Ok(n) = i.parse::<usize>() {
-                    self.radio_sel = n;
-                    println!("[L2] radio → {n}");
-                }
-            } else if let Some(i) = id_str.strip_prefix("swatch-") {
-                if let Ok(n) = i.parse::<usize>() {
-                    self.swatch_sel = n;
-                    println!("[L2] swatch → {n}");
-                }
-            } else if let Some(i) = id_str.strip_prefix("shape-") {
-                if let Ok(n) = i.parse::<usize>() {
-                    self.shape_sel = n;
-                    println!("[L2] shape → {n}");
+            // ── hover tracking for drag-handle visual ─────────────────────────
+            if id_str == "drag-handle" {
+                self.drag_handle_hovered = resp.hovered;
+            }
+
+            // ── scroll handlers from WidgetResponse (coordinator-routed) ──────
+            if resp.scrolled && (id_str == "sb-track" || id_str == "sb-thumb") {
+                let dy = resp.scroll_delta.1;
+                self.scroll_off = (self.scroll_off + dy * 20.0)
+                    .clamp(0.0, CONTENT_H - viewport_h);
+            }
+
+            // ── drag handlers from WidgetResponse ─────────────────────────────
+            if resp.dragged {
+                match id_str {
+                    "slider-main" => {
+                        let frac_delta = resp.drag_delta.0 / SLID_RECT.width;
+                        self.slider_val = (self.slider_val + frac_delta * 100.0)
+                            .clamp(0.0, 100.0);
+                    }
+                    "sb-thumb" | "sb-track" => {
+                        if scroll_range > 0.0 {
+                            let off_delta =
+                                resp.drag_delta.1 / scroll_range * (CONTENT_H - viewport_h);
+                            self.scroll_off =
+                                (self.scroll_off + off_delta).clamp(0.0, CONTENT_H - viewport_h);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -585,18 +749,21 @@ impl ApplicationHandler for Handler {
             renderer,
             scene: Scene::new(),
             ctx,
-            layout: LayoutManager::new(),
-            mouse_pos: None,
-            clicked: None,
-            button_down: false,
-            connected: false,
-            checked: true,
-            toggled: true,
-            radio_sel: 1,
-            slider_val: 40.0,
-            scroll_off: 0.0,
-            swatch_sel: 0,
-            shape_sel: 0,
+            start_time: Instant::now(),
+            last_mouse_pos:      (0.0, 0.0),
+            drag_origin:         None,
+            drag_target:         None,
+            connected:           false,
+            checked:             true,
+            toggled:             true,
+            radio_sel:           1,
+            slider_val:          40.0,
+            scroll_off:          0.0,
+            swatch_sel:          0,
+            shape_sel:           0,
+            drag_handle_hovered: false,
+            hovered_widget_id:   None,
+            pressed_widget_id:   None,
         });
     }
 
@@ -611,36 +778,191 @@ impl ApplicationHandler for Handler {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
 
+            WindowEvent::RedrawRequested => app.render(),
+
+            // ── Mouse move ────────────────────────────────────────────────────
             WindowEvent::CursorMoved { position, .. } => {
-                app.mouse_pos = Some((position.x, position.y));
+                let x = position.x;
+                let y = position.y;
+                app.last_mouse_pos = (x, y);
+                app.hovered_widget_id = AppState::compute_hovered((x, y));
+
+                // Drag in progress — update slider or scrollbar value.
+                if let (Some((ox, oy)), Some(target)) =
+                    (app.drag_origin, app.drag_target.as_ref())
+                {
+                    let dx = x - ox;
+                    let dy = y - oy;
+                    match target {
+                        DragTarget::Slider(v0) => {
+                            let frac_delta = dx / SLID_RECT.width;
+                            app.slider_val = (v0 + frac_delta * 100.0).clamp(0.0, 100.0);
+                        }
+                        DragTarget::Scroll(v0) => {
+                            let scroll_range = SB_H - AppState::thumb_h();
+                            if scroll_range > 0.0 {
+                                let off_delta = dy / scroll_range * (CONTENT_H - SB_H);
+                                app.scroll_off =
+                                    (v0 + off_delta).clamp(0.0, CONTENT_H - SB_H);
+                            }
+                        }
+                    }
+                }
+
                 app.window.request_redraw();
             }
 
-            WindowEvent::CursorLeft { .. } => {
-                app.mouse_pos = None;
-                app.window.request_redraw();
-            }
-
+            // ── Left mouse down ───────────────────────────────────────────────
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
-                button: WinitMouseButton::Left,
+                button: winit::event::MouseButton::Left,
                 ..
             } => {
-                app.button_down = true;
+                let (x, y) = app.last_mouse_pos;
+                app.pressed_widget_id = app.hovered_widget_id.clone();
+
+                // Focus text field if hovered, else clear focus.
+                if app.hovered_widget_id.as_deref() == Some(TEXT_FIELD_ID) {
+                    app.ctx.input.focus_text_field(&WidgetId::new(TEXT_FIELD_ID));
+                } else if app.text_focused() {
+                    app.ctx.input.clear_focus();
+                }
+
+                // Record drag origin; classify drag target by hovered widget.
+                let target = match app.hovered_widget_id.as_deref() {
+                    Some("slider-main") => Some(DragTarget::Slider(app.slider_val)),
+                    Some("sb-thumb") | Some("sb-track") => Some(DragTarget::Scroll(app.scroll_off)),
+                    _ => None,
+                };
+                app.drag_origin = Some((x, y));
+                app.drag_target = target;
+
                 app.window.request_redraw();
             }
 
+            // ── Left mouse up ─────────────────────────────────────────────────
             WindowEvent::MouseInput {
                 state: ElementState::Released,
-                button: WinitMouseButton::Left,
+                button: winit::event::MouseButton::Left,
                 ..
             } => {
-                app.button_down = false;
-                app.clicked = Some(MouseButton::Left);
+                let (x, y) = app.last_mouse_pos;
+
+                // process_click uses the coordinator's registered widget list
+                // (built during the last render frame) to find what was clicked.
+                if let Some(id) = app.ctx.input.process_click(x, y) {
+                    match id.0.as_str() {
+                        "btn-connect" => {
+                            app.connected = !app.connected;
+                            println!("[L2] connected → {}", app.connected);
+                        }
+                        "btn-close" => {
+                            println!("[L2] close clicked");
+                        }
+                        "cb-setting-a" => {
+                            app.checked = !app.checked;
+                            println!("[L2] checked → {}", app.checked);
+                        }
+                        "tog-enable" => {
+                            app.toggled = !app.toggled;
+                            println!("[L2] toggled → {}", app.toggled);
+                        }
+                        TEXT_FIELD_ID => {
+                            println!("[L2] text input focused");
+                        }
+                        s if s.starts_with("radio-opt-") => {
+                            if let Ok(n) = s["radio-opt-".len()..].parse::<usize>() {
+                                app.radio_sel = n;
+                                println!("[L2] radio → {n}");
+                            }
+                        }
+                        s if s.starts_with("swatch-") => {
+                            if let Ok(n) = s["swatch-".len()..].parse::<usize>() {
+                                app.swatch_sel = n;
+                                println!("[L2] swatch → {n}");
+                            }
+                        }
+                        s if s.starts_with("shape-") => {
+                            if let Ok(n) = s["shape-".len()..].parse::<usize>() {
+                                app.shape_sel = n;
+                                println!("[L2] shape → {n}");
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                app.pressed_widget_id = None;
+                app.drag_origin = None;
+                app.drag_target = None;
                 app.window.request_redraw();
             }
 
-            WindowEvent::RedrawRequested => app.render(),
+            // ── Scroll wheel ──────────────────────────────────────────────────
+            WindowEvent::MouseWheel { delta, .. } => {
+                let (_dx_lines, dy_lines) = match delta {
+                    MouseScrollDelta::LineDelta(dx, dy) => (dx as f64, dy as f64),
+                    MouseScrollDelta::PixelDelta(p) => (p.x / 20.0, p.y / 20.0),
+                };
+                // Only scroll when hovering the scrollbar track or thumb.
+                match app.hovered_widget_id.as_deref() {
+                    Some("sb-track") | Some("sb-thumb") => {
+                        app.scroll_off = (app.scroll_off - dy_lines * 20.0)
+                            .clamp(0.0, CONTENT_H - SB_H);
+                        println!("[L2] scroll_off → {:.1}", app.scroll_off);
+                    }
+                    _ => {}
+                }
+                app.window.request_redraw();
+            }
+
+            // ── Keyboard ──────────────────────────────────────────────────────
+            WindowEvent::KeyboardInput { event: ke, .. }
+                if ke.state == ElementState::Pressed =>
+            {
+                let text_id = WidgetId::new(TEXT_FIELD_ID);
+                if app.ctx.input.text_fields().is_focused(&text_id) {
+                    match &ke.logical_key {
+                        Key::Named(NamedKey::Backspace) => {
+                            app.ctx.input.on_char('\x08');
+                        }
+                        Key::Named(NamedKey::Enter) => {
+                            let committed = app.ctx.input.text_fields()
+                                .text(&text_id)
+                                .to_owned();
+                            app.ctx.input.clear_focus();
+                            println!("[L2] text committed: {:?}", committed);
+                        }
+                        Key::Named(NamedKey::Escape) => {
+                            app.ctx.input.clear_focus();
+                        }
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            app.ctx.input.on_key(KeyPress::ArrowLeft);
+                        }
+                        Key::Named(NamedKey::ArrowRight) => {
+                            app.ctx.input.on_key(KeyPress::ArrowRight);
+                        }
+                        Key::Named(NamedKey::Home) => {
+                            app.ctx.input.on_key(KeyPress::Home);
+                        }
+                        Key::Named(NamedKey::End) => {
+                            app.ctx.input.on_key(KeyPress::End);
+                        }
+                        Key::Named(NamedKey::Delete) => {
+                            app.ctx.input.on_key(KeyPress::Delete);
+                        }
+                        Key::Character(s) => {
+                            for ch in s.chars() {
+                                if !ch.is_control() {
+                                    app.ctx.input.on_char(ch);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    app.window.request_redraw();
+                }
+            }
 
             _ => {}
         }

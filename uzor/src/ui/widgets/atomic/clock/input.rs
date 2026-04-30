@@ -40,6 +40,7 @@ pub fn register_input_coordinator_clock(
 /// Level 2 — register a clock via `ContextManager`, pulling state from the registry,
 /// and draw it using the provided render context.
 ///
+/// `widget_state` is supplied by the caller — the app owns the hover state machine.
 /// `view` supplies the pre-formatted time string. `settings` supplies visual style.
 /// `kind` selects the render variant.
 pub fn register_context_manager_clock(
@@ -48,6 +49,7 @@ pub fn register_context_manager_clock(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &ClockView<'_>,
     settings: &ClockSettings,
     kind: &ClockRenderKind,
@@ -55,7 +57,7 @@ pub fn register_context_manager_clock(
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), ClockState::default);
     register_input_coordinator_clock(&mut ctx.input, id, rect, layer, state);
-    draw_clock(render, rect, WidgetState::Normal, view, settings, kind);
+    draw_clock(render, rect, widget_state, view, settings, kind);
 }
 
 /// Level 3 — register a clock via `LayoutManager`, forwarding to L2.
@@ -65,11 +67,12 @@ pub fn register_layout_manager_clock<P: DockPanel>(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &ClockView<'_>,
     settings: &ClockSettings,
     kind: &ClockRenderKind,
 ) {
     register_context_manager_clock(
-        layout.ctx_mut(), render, id, rect, layer, view, settings, kind,
+        layout.ctx_mut(), render, id, rect, layer, widget_state, view, settings, kind,
     );
 }

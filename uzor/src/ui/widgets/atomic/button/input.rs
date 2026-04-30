@@ -36,21 +36,24 @@ pub fn register_input_coordinator_button(
 /// Level 2 — register a button via `ContextManager`, pulling state from the registry,
 /// and draw it using the provided render context.
 ///
+/// `widget_state` is supplied by the caller — the app owns the hover/press/focus
+/// state machine and passes the appropriate `WidgetState` each frame.
 /// `view` supplies per-frame data (label, icon, active/disabled flags).
-/// `settings` supplies the visual style and theme. If `None`, defaults are used.
+/// `settings` supplies the visual style and theme.
 pub fn register_context_manager_button(
     ctx: &mut ContextManager,
     render: &mut dyn RenderContext,
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &ButtonView<'_>,
     settings: &ButtonSettings,
 ) {
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), ButtonState::default);
     register_input_coordinator_button(&mut ctx.input, id, rect, layer, state);
-    draw_button(render, rect, WidgetState::Normal, view, settings, |_, _, _, _| {});
+    draw_button(render, rect, widget_state, view, settings, |_, _, _, _| {});
 }
 
 /// Level 3 — register a button via `LayoutManager`, forwarding to L2.
@@ -62,8 +65,9 @@ pub fn register_layout_manager_button<P: DockPanel>(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &ButtonView<'_>,
     settings: &ButtonSettings,
 ) {
-    register_context_manager_button(layout.ctx_mut(), render, id, rect, layer, view, settings);
+    register_context_manager_button(layout.ctx_mut(), render, id, rect, layer, widget_state, view, settings);
 }

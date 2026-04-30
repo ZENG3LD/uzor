@@ -37,7 +37,8 @@ pub fn register_input_coordinator_color_swatch(
 /// Level 2 — register a color swatch via `ContextManager`, pulling state from the registry,
 /// and draw it using the provided render context.
 ///
-/// `view` supplies per-frame color and hover state. `settings` supplies visual style.
+/// `widget_state` is supplied by the caller — the app owns the hover/press state machine.
+/// `view` supplies per-frame color data. `settings` supplies visual style.
 /// `kind` selects the render variant.
 pub fn register_context_manager_color_swatch(
     ctx: &mut ContextManager,
@@ -45,6 +46,7 @@ pub fn register_context_manager_color_swatch(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &ColorSwatchView<'_>,
     settings: &ColorSwatchSettings,
     kind: &ColorSwatchRenderKind<'_>,
@@ -52,7 +54,7 @@ pub fn register_context_manager_color_swatch(
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), ColorSwatchState::default);
     register_input_coordinator_color_swatch(&mut ctx.input, id, rect, layer, state);
-    draw_color_swatch(render, rect, WidgetState::Normal, view, settings, kind);
+    draw_color_swatch(render, rect, widget_state, view, settings, kind);
 }
 
 /// Level 3 — register a color swatch via `LayoutManager`, forwarding to L2.
@@ -62,11 +64,12 @@ pub fn register_layout_manager_color_swatch<P: DockPanel>(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &ColorSwatchView<'_>,
     settings: &ColorSwatchSettings,
     kind: &ColorSwatchRenderKind<'_>,
 ) {
     register_context_manager_color_swatch(
-        layout.ctx_mut(), render, id, rect, layer, view, settings, kind,
+        layout.ctx_mut(), render, id, rect, layer, widget_state, view, settings, kind,
     );
 }

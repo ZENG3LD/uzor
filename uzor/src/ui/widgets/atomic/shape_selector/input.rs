@@ -37,6 +37,7 @@ pub fn register_input_coordinator_shape_selector(
 /// Level 2 — register a shape selector via `ContextManager`, pulling state from the registry,
 /// and draw it using the provided render context.
 ///
+/// `widget_state` is supplied by the caller — the app owns the hover/press state machine.
 /// `settings` supplies visual style. `kind` selects the render variant.
 /// For `Shape`, `ThemePreset`, and `UIStyle` kinds, use the dedicated
 /// `draw_shape_selector_button`, `draw_theme_preset_button`, and `draw_ui_style_button`
@@ -47,13 +48,14 @@ pub fn register_context_manager_shape_selector(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     settings: &ShapeSelectorSettings,
     kind: &ShapeSelectorRenderKind<'_>,
 ) {
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), ShapeSelectorState::default);
     register_input_coordinator_shape_selector(&mut ctx.input, id, rect, layer, state);
-    draw_shape_selector(render, rect, WidgetState::Normal, settings, kind);
+    draw_shape_selector(render, rect, widget_state, settings, kind);
 }
 
 /// Level 3 — register a shape selector via `LayoutManager`, forwarding to L2.
@@ -63,10 +65,11 @@ pub fn register_layout_manager_shape_selector<P: DockPanel>(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     settings: &ShapeSelectorSettings,
     kind: &ShapeSelectorRenderKind<'_>,
 ) {
     register_context_manager_shape_selector(
-        layout.ctx_mut(), render, id, rect, layer, settings, kind,
+        layout.ctx_mut(), render, id, rect, layer, widget_state, settings, kind,
     );
 }

@@ -37,6 +37,7 @@ pub fn register_input_coordinator_radio(
 /// Level 2 — register a radio widget via `ContextManager`, pulling state from the registry,
 /// and draw it using the provided render context.
 ///
+/// `widget_state` is supplied by the caller — the app owns the hover/press state machine.
 /// `settings` supplies visual style. `kind` selects the render variant
 /// (Group, Pair, or Custom).
 pub fn register_context_manager_radio(
@@ -45,13 +46,14 @@ pub fn register_context_manager_radio(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     settings: &RadioSettings,
     kind: &RadioRenderKind<'_>,
 ) {
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), RadioState::default);
     register_input_coordinator_radio(&mut ctx.input, id, rect, layer, state);
-    draw_radio(render, rect, WidgetState::Normal, settings, kind);
+    draw_radio(render, rect, widget_state, settings, kind);
 }
 
 /// Level 3 — register a radio widget via `LayoutManager`, forwarding to L2.
@@ -61,10 +63,11 @@ pub fn register_layout_manager_radio<P: DockPanel>(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     settings: &RadioSettings,
     kind: &RadioRenderKind<'_>,
 ) {
     register_context_manager_radio(
-        layout.ctx_mut(), render, id, rect, layer, settings, kind,
+        layout.ctx_mut(), render, id, rect, layer, widget_state, settings, kind,
     );
 }

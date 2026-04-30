@@ -316,6 +316,7 @@ pub fn register_input_coordinator_slider(
 /// Level 2 — register a slider via `ContextManager`, pulling `SliderDragState`
 /// from the registry, and draw the track + handle using the provided render context.
 ///
+/// `widget_state` is supplied by the caller — the app owns the hover/drag state machine.
 /// `view` supplies per-frame value, kind, hover, and drag state.
 /// `settings` supplies visual style.
 pub fn register_context_manager_slider(
@@ -324,13 +325,14 @@ pub fn register_context_manager_slider(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &SliderView,
     settings: &SliderSettings,
 ) {
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), SliderDragState::default);
     register_input_coordinator_slider(&mut ctx.input, id, rect, layer, state);
-    draw_slider(render, rect, WidgetState::Normal, view, settings);
+    draw_slider(render, rect, widget_state, view, settings);
 }
 
 /// Level 3 — register a slider via `LayoutManager`, forwarding to L2.
@@ -340,10 +342,11 @@ pub fn register_layout_manager_slider<P: DockPanel>(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &SliderView,
     settings: &SliderSettings,
 ) {
     register_context_manager_slider(
-        layout.ctx_mut(), render, id, rect, layer, view, settings,
+        layout.ctx_mut(), render, id, rect, layer, widget_state, view, settings,
     );
 }

@@ -17,7 +17,7 @@
 use uzor::layout::LayoutManager;
 use uzor_framework::app::{App, NoPanel};
 use uzor_framework::builder::AppBuilder;
-use uzor_render_hub::{RenderHub, WindowRenderState};
+use uzor_render_hub::{RenderBackend, VelloGpuSurfaceFactory, WindowRenderState};
 
 // ─── Hello app ────────────────────────────────────────────────────────────────
 
@@ -42,7 +42,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .size(800, 600)
         .decorations(false)
         .background(0xFF181820) // dark navy — visible sign the GPU path works
-        .render_hub(RenderHub::autodetect())
+        .backend(RenderBackend::VelloGpu)
+        .surface_factory(Box::new(VelloGpuSurfaceFactory::new()))
         .run()?;
 
     Ok(())

@@ -41,6 +41,7 @@ pub fn register_input_coordinator_item(
 /// Level 2 — register an item via `ContextManager`, pulling state from the registry,
 /// and draw it using the provided render context.
 ///
+/// `widget_state` is supplied by the caller — the app owns the state machine.
 /// `view` supplies per-frame label/icon/svg data. `settings` supplies visual style.
 /// `kind` selects the render variant. Icon and SVG rendering use no-op closures by default.
 pub fn register_context_manager_item<'a>(
@@ -49,6 +50,7 @@ pub fn register_context_manager_item<'a>(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &ItemView<'a>,
     settings: &ItemSettings,
     kind: &ItemRenderKind<'a>,
@@ -59,7 +61,7 @@ pub fn register_context_manager_item<'a>(
     draw_item(
         render,
         rect,
-        WidgetState::Normal,
+        widget_state,
         view,
         settings,
         kind,
@@ -75,11 +77,12 @@ pub fn register_layout_manager_item<'a, P: DockPanel>(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &ItemView<'a>,
     settings: &ItemSettings,
     kind: &ItemRenderKind<'a>,
 ) {
     register_context_manager_item(
-        layout.ctx_mut(), render, id, rect, layer, view, settings, kind,
+        layout.ctx_mut(), render, id, rect, layer, widget_state, view, settings, kind,
     );
 }

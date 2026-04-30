@@ -37,7 +37,8 @@ pub fn register_input_coordinator_scroll_chevron(
 /// Level 2 — register a scroll chevron via `ContextManager`, pulling state from the registry,
 /// and draw it using the provided render context.
 ///
-/// `view` supplies per-frame direction, hover, and disabled state.
+/// `widget_state` is supplied by the caller — the app owns the hover/press state machine.
+/// `view` supplies per-frame direction and disabled state.
 /// `settings` supplies visual style. `kind` selects the render variant.
 pub fn register_context_manager_scroll_chevron(
     ctx: &mut ContextManager,
@@ -45,6 +46,7 @@ pub fn register_context_manager_scroll_chevron(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &ScrollChevronView,
     settings: &ScrollChevronSettings,
     kind: &ScrollChevronRenderKind,
@@ -52,7 +54,7 @@ pub fn register_context_manager_scroll_chevron(
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), ScrollChevronState::default);
     register_input_coordinator_scroll_chevron(&mut ctx.input, id, rect, layer, state);
-    draw_scroll_chevron(render, rect, WidgetState::Normal, view, settings, kind);
+    draw_scroll_chevron(render, rect, widget_state, view, settings, kind);
 }
 
 /// Level 3 — register a scroll chevron via `LayoutManager`, forwarding to L2.
@@ -62,11 +64,12 @@ pub fn register_layout_manager_scroll_chevron<P: DockPanel>(
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    widget_state: WidgetState,
     view: &ScrollChevronView,
     settings: &ScrollChevronSettings,
     kind: &ScrollChevronRenderKind,
 ) {
     register_context_manager_scroll_chevron(
-        layout.ctx_mut(), render, id, rect, layer, view, settings, kind,
+        layout.ctx_mut(), render, id, rect, layer, widget_state, view, settings, kind,
     );
 }
