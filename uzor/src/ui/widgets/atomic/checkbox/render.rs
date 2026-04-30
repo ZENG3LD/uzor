@@ -51,6 +51,11 @@ fn draw_standard(
     let theme = settings.theme.as_ref();
     let r = style.radius();
 
+    // Fixed-size box (16×16) at left of rect, vertically centred.
+    let box_size = style.size();
+    let box_x = rect.x;
+    let box_y = rect.y + (rect.height - box_size) / 2.0;
+
     // Background fill
     let bg = if view.checked {
         theme.checkbox_bg_checked()
@@ -58,13 +63,13 @@ fn draw_standard(
         theme.checkbox_bg_unchecked()
     };
     ctx.set_fill_color(bg);
-    ctx.fill_rounded_rect(rect.x, rect.y, rect.width, rect.height, r);
+    ctx.fill_rounded_rect(box_x, box_y, box_size, box_size, r);
 
     // Border stroke
     ctx.set_stroke_color(theme.checkbox_border());
     ctx.set_stroke_width(style.border_width());
     ctx.set_line_dash(&[]);
-    ctx.stroke_rounded_rect(rect.x, rect.y, rect.width, rect.height, r);
+    ctx.stroke_rounded_rect(box_x, box_y, box_size, box_size, r);
 
     // Checkmark path
     if view.checked {
@@ -73,13 +78,15 @@ fn draw_standard(
         ctx.set_stroke_width(style.checkmark_width());
         ctx.set_line_dash(&[]);
         ctx.begin_path();
-        ctx.move_to(rect.x + 3.0, rect.y + rect.height / 2.0);
-        ctx.line_to(rect.x + 6.0, rect.y + rect.height - inset);
-        ctx.line_to(rect.x + rect.width - 3.0, rect.y + inset);
+        ctx.move_to(box_x + 3.0, box_y + box_size / 2.0);
+        ctx.line_to(box_x + 6.0, box_y + box_size - inset);
+        ctx.line_to(box_x + box_size - 3.0, box_y + inset);
         ctx.stroke();
     }
 
-    draw_label(ctx, rect, view, settings, font);
+    // Label to the right of the box
+    let box_rect = Rect::new(box_x, box_y, box_size, box_size);
+    draw_label(ctx, box_rect, view, settings, font);
 }
 
 // =============================================================================
@@ -97,26 +104,31 @@ fn draw_notification(
     let theme = settings.theme.as_ref();
     let r = style.radius();
 
+    let box_size = style.size();
+    let box_x = rect.x;
+    let box_y = rect.y + (rect.height - box_size) / 2.0;
+
     // Outer square — stroke only
     ctx.set_stroke_color(theme.checkbox_border());
     ctx.set_stroke_width(style.border_width());
     ctx.set_line_dash(&[]);
-    ctx.stroke_rounded_rect(rect.x, rect.y, rect.width, rect.height, r);
+    ctx.stroke_rounded_rect(box_x, box_y, box_size, box_size, r);
 
     // Inner filled rect when enabled
     if view.checked {
         let inset = 3.0_f64;
         ctx.set_fill_color(theme.checkbox_notification_inner());
         ctx.fill_rounded_rect(
-            rect.x + inset,
-            rect.y + inset,
-            rect.width  - inset * 2.0,
-            rect.height - inset * 2.0,
+            box_x + inset,
+            box_y + inset,
+            box_size - inset * 2.0,
+            box_size - inset * 2.0,
             1.0,
         );
     }
 
-    draw_label(ctx, rect, view, settings, font);
+    let box_rect = Rect::new(box_x, box_y, box_size, box_size);
+    draw_label(ctx, box_rect, view, settings, font);
 }
 
 // =============================================================================
@@ -134,25 +146,29 @@ fn draw_cross(
     let theme = settings.theme.as_ref();
     let r = style.radius();
 
+    let box_size = style.size();
+    let box_x = rect.x;
+    let box_y = rect.y + (rect.height - box_size) / 2.0;
+
     let bg = if view.checked {
         theme.checkbox_bg_checked()
     } else {
         theme.checkbox_bg_unchecked()
     };
     ctx.set_fill_color(bg);
-    ctx.fill_rounded_rect(rect.x, rect.y, rect.width, rect.height, r);
+    ctx.fill_rounded_rect(box_x, box_y, box_size, box_size, r);
 
     ctx.set_stroke_color(theme.checkbox_border());
     ctx.set_stroke_width(style.border_width());
     ctx.set_line_dash(&[]);
-    ctx.stroke_rounded_rect(rect.x, rect.y, rect.width, rect.height, r);
+    ctx.stroke_rounded_rect(box_x, box_y, box_size, box_size, r);
 
     if view.checked {
         let inset = 4.0_f64;
-        let x1 = rect.x + inset;
-        let y1 = rect.y + inset;
-        let x2 = rect.x + rect.width  - inset;
-        let y2 = rect.y + rect.height - inset;
+        let x1 = box_x + inset;
+        let y1 = box_y + inset;
+        let x2 = box_x + box_size - inset;
+        let y2 = box_y + box_size - inset;
         ctx.set_stroke_color(theme.checkbox_checkmark());
         ctx.set_stroke_width(style.checkmark_width());
         ctx.set_line_dash(&[]);
@@ -166,7 +182,8 @@ fn draw_cross(
         ctx.stroke();
     }
 
-    draw_label(ctx, rect, view, settings, font);
+    let box_rect = Rect::new(box_x, box_y, box_size, box_size);
+    draw_label(ctx, box_rect, view, settings, font);
 }
 
 // =============================================================================
@@ -185,9 +202,13 @@ fn draw_circle_check(
     let style = settings.style.as_ref();
     let theme = settings.theme.as_ref();
 
-    let r = rect.width.min(rect.height) / 2.0;
-    let cx = rect.center_x();
-    let cy = rect.center_y();
+    let box_size = style.size();
+    let box_x = rect.x;
+    let box_y = rect.y + (rect.height - box_size) / 2.0;
+    let box_rect_inner = Rect::new(box_x, box_y, box_size, box_size);
+    let r = box_size / 2.0;
+    let cx = box_rect_inner.center_x();
+    let cy = box_rect_inner.center_y();
 
     let bg = if view.checked {
         theme.checkbox_bg_checked()
@@ -215,7 +236,7 @@ fn draw_circle_check(
         ctx.fill();
     }
 
-    draw_label(ctx, rect, view, settings, font);
+    draw_label(ctx, box_rect_inner, view, settings, font);
 }
 
 // =============================================================================

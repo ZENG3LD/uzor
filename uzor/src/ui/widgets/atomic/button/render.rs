@@ -121,8 +121,6 @@ where
         rect.height - padding * 2.0,
     );
 
-    let mut text_x = content_rect.x;
-
     if let Some(icon) = view.icon {
         let icon_size = style.icon_size();
         let icon_rect = Rect::new(
@@ -132,15 +130,25 @@ where
             icon_size,
         );
         draw_icon(ctx, icon, icon_rect, text_color);
-        text_x = icon_rect.x + icon_rect.width + style.gap();
-    }
 
-    if let Some(text) = view.text {
+        if let Some(text) = view.text {
+            // icon on left — label centered in the remaining space to the right
+            let text_area_x = icon_rect.x + icon_rect.width + style.gap();
+            let text_area_right = content_rect.x + content_rect.width;
+            let text_center_x = (text_area_x + text_area_right) / 2.0;
+            ctx.set_font(&format!("{}px sans-serif", style.font_size()));
+            ctx.set_fill_color(text_color);
+            ctx.set_text_align(TextAlign::Center);
+            ctx.set_text_baseline(TextBaseline::Middle);
+            ctx.fill_text(text, text_center_x, rect.y + rect.height / 2.0);
+        }
+    } else if let Some(text) = view.text {
+        // text-only — center in the full rect
         ctx.set_font(&format!("{}px sans-serif", style.font_size()));
         ctx.set_fill_color(text_color);
-        ctx.set_text_align(TextAlign::Left);
+        ctx.set_text_align(TextAlign::Center);
         ctx.set_text_baseline(TextBaseline::Middle);
-        ctx.fill_text(text, text_x, rect.y + rect.height / 2.0);
+        ctx.fill_text(text, rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
     }
 
     ButtonResult {

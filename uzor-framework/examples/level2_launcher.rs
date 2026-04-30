@@ -52,6 +52,7 @@ use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonTheme, ButtonView}
 
 use uzor::ui::widgets::atomic::checkbox::input::register_context_manager_checkbox;
 use uzor::ui::widgets::atomic::checkbox::settings::CheckboxSettings;
+use uzor::ui::widgets::atomic::checkbox::theme::CheckboxTheme;
 use uzor::ui::widgets::atomic::checkbox::types::{CheckboxRenderKind, CheckboxView};
 
 use uzor::ui::widgets::atomic::toggle::input::register_context_manager_toggle;
@@ -89,23 +90,67 @@ use uzor::ui::widgets::atomic::color_swatch::input::register_context_manager_col
 use uzor::ui::widgets::atomic::color_swatch::settings::ColorSwatchSettings;
 use uzor::ui::widgets::atomic::color_swatch::types::{ColorSwatchRenderKind, ColorSwatchView};
 
-use uzor::ui::widgets::atomic::shape_selector::input::register_context_manager_shape_selector;
-use uzor::ui::widgets::atomic::shape_selector::settings::ShapeSelectorSettings;
-use uzor::ui::widgets::atomic::shape_selector::types::ShapeSelectorRenderKind;
-
 use uzor::ui::widgets::atomic::close_button::input::register_context_manager_close_button;
 use uzor::ui::widgets::atomic::close_button::render::CloseButtonView;
 use uzor::ui::widgets::atomic::close_button::settings::CloseButtonSettings;
+use uzor::ui::widgets::atomic::close_button::theme::CloseButtonTheme;
 use uzor::ui::widgets::atomic::close_button::types::CloseButtonRenderKind;
 
 use uzor::ui::widgets::atomic::drag_handle::input::register_context_manager_drag_handle;
 use uzor::ui::widgets::atomic::drag_handle::settings::DragHandleSettings;
 use uzor::ui::widgets::atomic::drag_handle::types::{DragHandleRenderKind, DragHandleView};
 
+use uzor::ui::widgets::atomic::tab::input::register_context_manager_tab;
+use uzor::ui::widgets::atomic::tab::render::TabView;
+use uzor::ui::widgets::atomic::tab::settings::TabSettings;
+use uzor::ui::widgets::atomic::tab::types::TabConfig;
+
+use uzor::ui::widgets::atomic::item::input::register_context_manager_item;
+use uzor::ui::widgets::atomic::item::render::ItemView;
+use uzor::ui::widgets::atomic::item::settings::ItemSettings;
+use uzor::ui::widgets::atomic::item::style::ItemStyle;
+use uzor::ui::widgets::atomic::item::types::ItemRenderKind;
+
 use uzor::ui::widgets::atomic::text_input::render::InputResult;
+
+// ── SVG icon drawing ──────────────────────────────────────────────────────────
+use uzor::render::draw_svg_icon;
 
 // ── GPU render context ────────────────────────────────────────────────────────
 use uzor_render_vello_gpu::VelloGpuRenderContext;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 6: Inline SVG strings for icon grid (Tab 1) and sub-tab icons (Tab 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SVG_CIRCLE: &str = r#"<svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke-width="2"/></svg>"#;
+const SVG_SQUARE: &str = r#"<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="2" stroke-width="2"/></svg>"#;
+const SVG_TRIANGLE: &str = r#"<svg viewBox="0 0 24 24" fill="none"><polyline points="12,3 22,21 2,21 12,3" stroke-width="2"/></svg>"#;
+const SVG_DIAMOND: &str = r#"<svg viewBox="0 0 24 24" fill="none"><polyline points="12,2 22,12 12,22 2,12 12,2" stroke-width="2"/></svg>"#;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fix 5: Per-group row font styles
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct RowStyle13Sans;
+impl ItemStyle for RowStyle13Sans {
+    fn font(&self) -> &str { "13px sans-serif" }
+}
+
+struct RowStyle14Mono;
+impl ItemStyle for RowStyle14Mono {
+    fn font(&self) -> &str { "14px monospace" }
+}
+
+struct RowStyle12SansItalic;
+impl ItemStyle for RowStyle12SansItalic {
+    fn font(&self) -> &str { "italic 12px sans-serif" }
+}
+
+struct RowStyle15SansBold;
+impl ItemStyle for RowStyle15SansBold {
+    fn font(&self) -> &str { "bold 15px sans-serif" }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Geometry + colours
@@ -121,7 +166,12 @@ const LABEL_BG: Color = Color::from_rgba8(255, 255, 255, 18);
 // Text field widget ID — used to register with coordinator and query state.
 const TEXT_FIELD_ID: &str = "text-search";
 
-// Widget rects (constants for hover hit-test).
+// Left panel width (fixed). Right panel = WIN_W - left panel width - margins.
+// The resize handle sits at x = LEFT_PANEL_X + left_panel_w.
+const LEFT_PANEL_X: f64 = 12.0;
+const SPLITTER_W: f64 = 6.0; // visual width of the drag handle strip
+
+// Widget rects in the left panel (constants — do NOT depend on right panel width).
 const BTN_RECT:   Rect = Rect { x: 28.0,  y: 28.0,  width: 130.0, height: 36.0 };
 const CLOSE_RECT: Rect = Rect { x: 278.0, y: 28.0,  width: 24.0,  height: 24.0 };
 const CB_RECT:    Rect = Rect { x: 28.0,  y: 88.0,  width: 160.0, height: 22.0 };
@@ -129,12 +179,27 @@ const TOG_RECT:   Rect = Rect { x: 28.0,  y: 130.0, width: 80.0,  height: 24.0 }
 const SLID_RECT:  Rect = Rect { x: 28.0,  y: 200.0, width: 260.0, height: 24.0 };
 const RANGE_RECT: Rect = Rect { x: 28.0,  y: 228.0, width: 260.0, height: 24.0 };
 const TI_RECT:    Rect = Rect { x: 28.0,  y: 278.0, width: 200.0, height: 28.0 };
-const DH_RECT:    Rect = Rect { x: 350.0, y: 28.0,  width: 60.0,  height: 24.0 };
+
+// ── Scrollbar geometry (right panel) ──────────────────────────────────────────
+// X position depends on right_panel_width; computed per-frame.
+// Tabs are rendered at top of right panel (y=12..40); content starts at y=52.
+const TAB_STRIP_Y: f64 = 12.0;
+const TAB_STRIP_H: f64 = 28.0;
+const CONTENT_START_Y: f64 = 52.0;
+const SB_Y: f64   =  CONTENT_START_Y;
+const SB_W: f64   =  10.0;
+// WIN_H=440: 440 - 52 - 12 = 376
+const SB_H: f64   = 376.0;
+// Content scroll extent
+const CONTENT_ROWS: usize = 20;
+const ROW_H: f64 = 28.0;
+const CONTENT_H: f64 = CONTENT_ROWS as f64 * ROW_H; // 560 px
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Custom visible button theme (default has bg_normal=transparent)
+// Custom themes
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Button ────────────────────────────────────────────────────────────────────
 struct VisibleButtonTheme;
 
 impl ButtonTheme for VisibleButtonTheme {
@@ -181,6 +246,27 @@ impl ButtonTheme for VisibleButtonTheme {
     fn button_utility_bg_hover(&self) -> &str { "#363a45" }
 }
 
+// ── Fix 1: Checkbox — visible box with border ─────────────────────────────────
+struct VisibleCheckboxTheme;
+
+impl CheckboxTheme for VisibleCheckboxTheme {
+    fn checkbox_bg_checked(&self) -> &str         { "#2962ff" }
+    fn checkbox_bg_unchecked(&self) -> &str       { "#1a1a1f" }
+    fn checkbox_border(&self) -> &str             { "#3a3a45" }
+    fn checkbox_checkmark(&self) -> &str          { "#ffffff" }
+    fn checkbox_notification_inner(&self) -> &str { "#ffffff" }
+    fn checkbox_label_text(&self) -> &str         { "#d1d4dc" }
+}
+
+// ── Fix 2: Close button — red-ish hover (Win11 style) ─────────────────────────
+struct VisibleCloseButtonTheme;
+
+impl CloseButtonTheme for VisibleCloseButtonTheme {
+    fn close_button_x_color(&self) -> &str       { "#a0a0a8" }
+    fn close_button_x_color_hover(&self) -> &str { "#ffffff" }
+    fn close_button_bg_hover(&self) -> &str       { "#c42b1c" }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Hit-test helper
 // ─────────────────────────────────────────────────────────────────────────────
@@ -195,10 +281,11 @@ fn rect_contains(r: Rect, x: f64, y: f64) -> bool {
 
 /// Drag origin + which widget is being dragged and its starting value.
 enum DragTarget {
-    Slider(f64),                              // start value (0-100)
-    RangeMin(f64),                            // start range_min (0-100)
-    RangeMax(f64),                            // start range_max (0-100)
-    Scroll(f64),                              // start scroll_off
+    Slider(f64),        // start value (0-100)
+    RangeMin(f64),      // start range_min (0-100)
+    RangeMax(f64),      // start range_max (0-100)
+    Scroll(f64),        // start scroll_off
+    Splitter(f64),      // start right_panel_width
 }
 
 struct AppState {
@@ -228,8 +315,16 @@ struct AppState {
     range_drag_handle:   Option<DualSliderHandle>,
     scroll_off:          f64,
     swatch_sel:          usize,
-    shape_sel:           usize,
-    drag_handle_hovered: bool,
+
+    // Fix 3: active tab index (0=List, 1=Empty, 2=Sub-tabs)
+    active_tab:          usize,
+    // Fix 3b: active sub-tab index (within Tab 2 sub-tabs)
+    active_sub_tab:      usize,
+
+    // Fix 4: right panel width (resizable by splitter drag)
+    right_panel_width:   f64,
+    // Fix 4: splitter drag direction — positive dx = dragging right (left panel grows)
+    splitter_drag_dx:    f64,
 
     // mlc-style hover/press tracking — app owns the state machine
     hovered_widget_id: Option<String>,
@@ -246,13 +341,6 @@ struct AppState {
     last_input_result: InputResult,
 }
 
-// Scrollbar geometry constants — needed in both render and response handling.
-const SB_X: f64 = 624.0;
-const SB_Y: f64 = 28.0;
-const SB_W: f64 = 10.0;
-const SB_H: f64 = 380.0;
-const CONTENT_H: f64 = 1000.0;
-
 impl AppState {
     fn current_time(&self) -> f64 {
         self.start_time.elapsed().as_secs_f64()
@@ -262,8 +350,24 @@ impl AppState {
         self.ctx.input.text_fields().is_focused(&WidgetId::new(TEXT_FIELD_ID))
     }
 
+    /// Scrollbar X (right edge of right panel minus scrollbar width and margin).
+    fn sb_x(&self) -> f64 {
+        WIN_W as f64 - SB_W - 8.0
+    }
+
+    /// Right panel content area X (left edge).
+    fn right_panel_x(&self) -> f64 {
+        WIN_W as f64 - self.right_panel_width
+    }
+
+    /// Splitter rect — vertical strip on the boundary.
+    fn splitter_rect(&self) -> Rect {
+        let rx = self.right_panel_x();
+        Rect::new(rx - SPLITTER_W / 2.0, 12.0, SPLITTER_W, WIN_H as f64 - 24.0)
+    }
+
     /// Compute which widget is under the pointer, given current mouse position.
-    fn compute_hovered(mouse: (f64, f64)) -> Option<String> {
+    fn compute_hovered(&self, mouse: (f64, f64)) -> Option<String> {
         let (mx, my) = mouse;
         if rect_contains(BTN_RECT,   mx, my) { return Some("btn-connect".into()); }
         if rect_contains(CLOSE_RECT, mx, my) { return Some("btn-close".into()); }
@@ -272,7 +376,12 @@ impl AppState {
         if rect_contains(SLID_RECT,  mx, my) { return Some("slider-main".into()); }
         if rect_contains(RANGE_RECT, mx, my) { return Some("range-slider".into()); }
         if rect_contains(TI_RECT,    mx, my) { return Some("text-search".into()); }
-        if rect_contains(DH_RECT,    mx, my) { return Some("drag-handle".into()); }
+
+        // Fix 4: splitter hit-test (slightly wider than visual strip for ergonomics)
+        let splitter = self.splitter_rect();
+        let splitter_hit = Rect::new(splitter.x - 4.0, splitter.y, splitter.width + 8.0, splitter.height);
+        if rect_contains(splitter_hit, mx, my) { return Some("splitter".into()); }
+
         // Radio buttons
         for i in 0..3_usize {
             let cx = 28.0 + i as f64 * 40.0;
@@ -287,17 +396,46 @@ impl AppState {
                 return Some(format!("swatch-{i}"));
             }
         }
-        // Shape selector buttons
+        // Fix 3: Tab strip (3 tabs at top of right panel)
         for i in 0..3_usize {
-            let shx = 28.0 + i as f64 * 80.0;
-            if rect_contains(Rect::new(shx, 392.0, 72.0, 28.0), mx, my) {
-                return Some(format!("shape-{i}"));
+            let tab_rect = self.tab_rect(i);
+            if rect_contains(tab_rect, mx, my) {
+                return Some(format!("tab-{i}"));
             }
         }
-        // Scrollbar
-        let sb_track = Rect::new(SB_X, SB_Y, SB_W, SB_H);
-        if rect_contains(sb_track, mx, my) { return Some("sb-track".into()); }
+        // Fix 3b: Sub-tabs (only visible when active_tab == 2)
+        if self.active_tab == 2 {
+            for i in 0..3_usize {
+                let sub_rect = self.sub_tab_rect(i);
+                if rect_contains(sub_rect, mx, my) {
+                    return Some(format!("sub-tab-{i}"));
+                }
+            }
+        }
+        // Scrollbar (only for tab 0)
+        if self.active_tab == 0 {
+            let sb_x = self.sb_x();
+            let sb_track = Rect::new(sb_x, SB_Y, SB_W, SB_H);
+            if rect_contains(sb_track, mx, my) { return Some("sb-track".into()); }
+        }
         None
+    }
+
+    /// Tab strip rect — 3 tabs distributed evenly across the top of the right panel.
+    fn tab_rect(&self, i: usize) -> Rect {
+        let rx = self.right_panel_x();
+        let rw = self.right_panel_width;
+        let tab_w = ((rw - 16.0) / 3.0).floor();
+        let tab_h = TAB_STRIP_H;
+        let tab_x = rx + 8.0 + i as f64 * (tab_w + 4.0);
+        Rect::new(tab_x, TAB_STRIP_Y, tab_w, tab_h)
+    }
+
+    /// Sub-tab rects (3 stacked in right panel when active_tab == 2).
+    fn sub_tab_rect(&self, i: usize) -> Rect {
+        let rx = self.right_panel_x() + 8.0;
+        // content area starts at CONTENT_START_Y; micro-panel is inset by 8px
+        Rect::new(rx, CONTENT_START_Y + 8.0 + i as f64 * 36.0, 90.0, 30.0)
     }
 
     /// Thumb height calculation (same formula used in render).
@@ -313,9 +451,6 @@ impl AppState {
         };
         let viewport = Rect::new(0.0, 0.0, width as f64, height as f64);
 
-        // Build a minimal InputState from app-owned pointer position.
-        // No EventProcessor needed — we just tell the coordinator where the
-        // cursor is so begin_frame can update hover state internally.
         let input = {
             let (mx, my) = self.last_mouse_pos;
             let mut s = InputState::default();
@@ -330,8 +465,6 @@ impl AppState {
         self.ctx.begin_frame(input, viewport);
 
         // ── Register text field with coordinator ─────────────────────────────
-        // Must be done AFTER begin_frame and BEFORE end_frame so the coordinator
-        // knows about this widget during hit-testing.
         self.ctx.input.register_text_field(
             TEXT_FIELD_ID,
             TI_RECT,
@@ -347,15 +480,68 @@ impl AppState {
             &vello::kurbo::Rect::new(0.0, 0.0, width as f64, height as f64),
         );
 
-        // column panels (visual grouping)
-        for (px, pw) in [(12.0_f64, 310.0_f64), (336.0_f64, 330.0_f64)] {
+        // Snapshot splitter drag direction for z-order decisions (needed before cache section)
+        let splitter_drag_dx = self.splitter_drag_dx;
+
+        // Left panel rect
+        let left_panel_w = self.right_panel_x() - LEFT_PANEL_X - SPLITTER_W / 2.0;
+        let left_panel_rrect = RoundedRect::new(
+            LEFT_PANEL_X, 12.0,
+            LEFT_PANEL_X + left_panel_w, height as f64 - 12.0,
+            8.0,
+        );
+
+        // Right panel rect
+        let rx = self.right_panel_x();
+        let right_panel_rrect = RoundedRect::new(
+            rx, 12.0,
+            width as f64 - 12.0, height as f64 - 12.0,
+            8.0,
+        );
+
+        // Fix 4: z-order — during splitter drag, push the growing panel on top.
+        // splitter_drag_dx > 0 means dragging right (left panel grows → left on top).
+        // splitter_drag_dx < 0 means dragging left  (right panel grows → right on top).
+        if splitter_drag_dx > 0.0 {
+            // Left panel on top
+            self.scene.fill(Fill::NonZero, Affine::IDENTITY, PANEL_BG, None, &right_panel_rrect);
+            self.scene.fill(Fill::NonZero, Affine::IDENTITY, PANEL_BG, None, &left_panel_rrect);
+        } else {
+            // Right panel on top (default and when dragging left)
+            self.scene.fill(Fill::NonZero, Affine::IDENTITY, PANEL_BG, None, &left_panel_rrect);
+            self.scene.fill(Fill::NonZero, Affine::IDENTITY, PANEL_BG, None, &right_panel_rrect);
+        }
+
+        // Splitter visual strip
+        {
+            let sp = self.splitter_rect();
             self.scene.fill(
-                Fill::NonZero, Affine::IDENTITY, PANEL_BG, None,
-                &RoundedRect::new(px, 12.0, px + pw, height as f64 - 12.0, 8.0),
+                Fill::NonZero, Affine::IDENTITY,
+                Color::from_rgba8(255, 255, 255, 20), None,
+                &vello::kurbo::Rect::new(sp.x, sp.y, sp.x + sp.width, sp.y + sp.height),
             );
         }
 
-        // ── Snapshot text field state before the render borrow ───────────────
+        // ── Fix 6b: Tab 2 micro-panel border (drawn before widgets = underneath) ──
+        if self.active_tab == 2 {
+            let rx2 = self.right_panel_x();
+            let rw2 = self.right_panel_width;
+            let mp_x = rx2 + 8.0;
+            let mp_y = CONTENT_START_Y + 4.0;
+            let mp_w = rw2 - 16.0;
+            let mp_h = 3.0 * 36.0 + 8.0 + 64.0 + 24.0;
+            let border_color = Color::from_rgba8(80, 90, 110, 200);
+            self.scene.fill(
+                Fill::NonZero, Affine::IDENTITY, border_color, None,
+                &RoundedRect::new(mp_x - 1.0, mp_y - 1.0, mp_x + mp_w + 1.0, mp_y + mp_h + 1.0, 6.0),
+            );
+            self.scene.fill(
+                Fill::NonZero, Affine::IDENTITY, PANEL_BG, None,
+                &RoundedRect::new(mp_x, mp_y, mp_x + mp_w, mp_y + mp_h, 5.0),
+            );
+        }
+
+        // ── Snapshot text field state ────────────────────────────────────────
         let text_id = WidgetId::new(TEXT_FIELD_ID);
         let text_str = self.ctx.input.text_fields()
             .text(&text_id)
@@ -370,42 +556,74 @@ impl AppState {
         let cursor_visible = text_is_focused
             && self.ctx.input.text_fields().cursor_visible(now_ms);
 
-
-        // ── Snapshot hover/press before the render borrow (borrow checker) ────
+        // ── Snapshot hover/press ──────────────────────────────────────────────
         let hovered = self.hovered_widget_id.clone();
         let pressed = self.pressed_widget_id.clone();
-        let ws = |id: &str| -> WidgetState {
-            match (hovered.as_deref() == Some(id), pressed.as_deref() == Some(id)) {
-                (_, true)     => WidgetState::Pressed,
-                (true, false) => WidgetState::Hovered,
-                _             => WidgetState::Normal,
-            }
-        };
 
-        // ── widgets ───────────────────────────────────────────────────────────
-        // The block returns (char_positions, input_result) for post-frame use.
-        let (captured_char_positions, captured_input_result): (Vec<f64>, InputResult) = {
-            let mut render = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
+        // ── Cache per-frame computed values ──────────────────────────────────
+        let active_tab = self.active_tab;
+        let active_sub_tab = self.active_sub_tab;
+        let right_panel_x = self.right_panel_x();
+        let right_panel_width = self.right_panel_width;
+        let sb_x = self.sb_x();
+        let scroll_off = self.scroll_off;
+        let dh_rect = self.splitter_rect();
+        let connected = self.connected;
+        let checked = self.checked;
+        let toggled = self.toggled;
+        let radio_sel = self.radio_sel;
+        let slider_val = self.slider_val;
+        let range_min = self.range_min;
+        let range_max = self.range_max;
+        let range_drag_handle = self.range_drag_handle;
+        let swatch_sel = self.swatch_sel;
+
+        // Snapshot pressed_id for use in closures
+        let pressed_id_ref = pressed.clone();
+
+        // ── Compute panel clip rects ──────────────────────────────────────────
+        let left_clip = vello::kurbo::Rect::new(
+            LEFT_PANEL_X, 12.0,
+            LEFT_PANEL_X + left_panel_w, height as f64 - 12.0,
+        );
+        let right_clip = vello::kurbo::Rect::new(
+            rx, 12.0,
+            width as f64 - 12.0, height as f64 - 12.0,
+        );
+
+        // ── Closure: draw left-panel widgets (clipped) ───────────────────────
+        // Returns (char_positions, input_result) from the text field.
+        let draw_left = |scene: &mut Scene,
+                         ctx: &mut ContextManager,
+                         hovered: &Option<String>,
+                         _pressed: &Option<String>|
+         -> (Vec<f64>, InputResult) {
+            scene.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &left_clip);
+            let mut render = VelloGpuRenderContext::new(scene, 0.0, 0.0);
             let layer = LayerId::main();
 
             // ── 1. Button ─────────────────────────────────────────────────────
             let btn_state = {
-                let base = ws("btn-connect");
-                if base == WidgetState::Normal && self.connected {
+                let base = match (hovered.as_deref() == Some("btn-connect"), false) {
+                    (_, true) => WidgetState::Pressed,
+                    (true, _) => WidgetState::Hovered,
+                    _ => WidgetState::Normal,
+                };
+                if base == WidgetState::Normal && connected {
                     WidgetState::Active
                 } else {
                     base
                 }
             };
             let btn_view = ButtonView {
-                text:          Some(if self.connected { "Disconnect" } else { "Connect" }),
+                text:          Some(if connected { "Disconnect" } else { "Connect" }),
                 icon:          None,
-                active:        self.connected,
+                active:        connected,
                 disabled:      false,
                 active_border: None,
             };
             register_context_manager_button(
-                &mut self.ctx, &mut render,
+                ctx, &mut render,
                 "btn-connect", BTN_RECT, &layer,
                 btn_state,
                 &btn_view,
@@ -414,61 +632,83 @@ impl AppState {
 
             // ── 2. Close button ───────────────────────────────────────────────
             register_context_manager_close_button(
-                &mut self.ctx, &mut render,
+                ctx, &mut render,
                 "btn-close", CLOSE_RECT, &layer,
-                ws("btn-close"),
-                &CloseButtonView { hovered: false },
-                &CloseButtonSettings::default(),
+                match (hovered.as_deref() == Some("btn-close"), pressed_id_ref.as_deref() == Some("btn-close")) {
+                    (_, true) => WidgetState::Pressed,
+                    (true, _) => WidgetState::Hovered,
+                    _ => WidgetState::Normal,
+                },
+                &CloseButtonView { hovered: hovered.as_deref() == Some("btn-close") },
+                &CloseButtonSettings::default()
+                    .with_theme(Box::new(VisibleCloseButtonTheme)),
                 &CloseButtonRenderKind::Default,
             );
 
             // ── 3. Checkbox ───────────────────────────────────────────────────
             register_context_manager_checkbox(
-                &mut self.ctx, &mut render,
+                ctx, &mut render,
                 "cb-setting-a", CB_RECT, &layer,
-                ws("cb-setting-a"),
-                &CheckboxView { checked: self.checked, label: Some("Setting A") },
-                &CheckboxSettings::default(),
+                match (hovered.as_deref() == Some("cb-setting-a"), pressed_id_ref.as_deref() == Some("cb-setting-a")) {
+                    (_, true) => WidgetState::Pressed,
+                    (true, _) => WidgetState::Hovered,
+                    _ => WidgetState::Normal,
+                },
+                &CheckboxView { checked, label: Some("Setting A") },
+                &CheckboxSettings::default()
+                    .with_theme(Box::new(VisibleCheckboxTheme)),
                 &CheckboxRenderKind::Standard,
                 "13px sans-serif",
             );
 
             // ── 4. Toggle ─────────────────────────────────────────────────────
             register_context_manager_toggle(
-                &mut self.ctx, &mut render,
+                ctx, &mut render,
                 "tog-enable", TOG_RECT, &layer,
-                ws("tog-enable"),
-                &ToggleView { toggled: self.toggled, label: Some("ON"), disabled: false },
+                match (hovered.as_deref() == Some("tog-enable"), pressed_id_ref.as_deref() == Some("tog-enable")) {
+                    (_, true) => WidgetState::Pressed,
+                    (true, _) => WidgetState::Hovered,
+                    _ => WidgetState::Normal,
+                },
+                &ToggleView { toggled, label: Some("ON"), disabled: false },
                 &ToggleSettings::default(),
                 &ToggleRenderKind::Switch,
             );
 
-            // ── 5. Radio group (3 dots inline) ────────────────────────────────
+            // ── 5. Radio group ────────────────────────────────────────────────
             for (i, cx) in [28.0_f64, 68.0, 108.0].iter().enumerate() {
                 let dot_rect = Rect::new(*cx, 175.0, 28.0, 28.0);
                 let radio_id = format!("radio-opt-{i}");
                 register_context_manager_radio(
-                    &mut self.ctx, &mut render,
+                    ctx, &mut render,
                     radio_id.as_str(), dot_rect, &layer,
-                    ws(&radio_id),
+                    match (hovered.as_deref() == Some(radio_id.as_str()), pressed_id_ref.as_deref() == Some(radio_id.as_str())) {
+                        (_, true) => WidgetState::Pressed,
+                        (true, _) => WidgetState::Hovered,
+                        _ => WidgetState::Normal,
+                    },
                     &RadioSettings::default(),
                     &RadioRenderKind::Dot {
                         shape: DotShape::Circle,
                         cx: cx + 14.0,
                         cy: 175.0 + 14.0,
-                        view: RadioDotView { selected: self.radio_sel == i },
+                        view: RadioDotView { selected: radio_sel == i },
                     },
                 );
             }
 
-            // ── 6. Slider (horizontal) ────────────────────────────────────────
+            // ── 6. Slider ─────────────────────────────────────────────────────
             register_context_manager_slider(
-                &mut self.ctx, &mut render,
+                ctx, &mut render,
                 "slider-main", SLID_RECT, &layer,
-                ws("slider-main"),
+                match (hovered.as_deref() == Some("slider-main"), pressed_id_ref.as_deref() == Some("slider-main")) {
+                    (_, true) => WidgetState::Pressed,
+                    (true, _) => WidgetState::Hovered,
+                    _ => WidgetState::Normal,
+                },
                 &SliderView {
                     kind: SliderType::Single {
-                        value: self.slider_val,
+                        value: slider_val,
                         min: 0.0, max: 100.0, step: 1.0,
                     },
                     hovered: false,
@@ -478,28 +718,32 @@ impl AppState {
                 &SliderSettings::default(),
             );
 
-            // ── 6b. Range slider (dual-handle) ────────────────────────────────
+            // ── 6b. Range slider ──────────────────────────────────────────────
             register_context_manager_slider(
-                &mut self.ctx, &mut render,
+                ctx, &mut render,
                 "range-slider", RANGE_RECT, &layer,
-                ws("range-slider"),
+                match (hovered.as_deref() == Some("range-slider"), pressed_id_ref.as_deref() == Some("range-slider")) {
+                    (_, true) => WidgetState::Pressed,
+                    (true, _) => WidgetState::Hovered,
+                    _ => WidgetState::Normal,
+                },
                 &SliderView {
                     kind: SliderType::Dual {
-                        min_value: self.range_min,
-                        max_value: self.range_max,
+                        min_value: range_min,
+                        max_value: range_max,
                         min: 0.0, max: 100.0, step: 1.0,
                     },
                     hovered: hovered.as_deref() == Some("range-slider"),
                     disabled: false,
-                    dragging_handle: self.range_drag_handle,
+                    dragging_handle: range_drag_handle,
                 },
                 &SliderSettings::default(),
             );
 
-            // ── 7. Separator (horizontal divider) ─────────────────────────────
+            // ── 7. Separator ──────────────────────────────────────────────────
             let sep_rect = Rect::new(28.0, 260.0, 260.0, 2.0);
             register_context_manager_separator(
-                &mut self.ctx, &mut render,
+                ctx, &mut render,
                 "sep-h", sep_rect, SeparatorKind::Divider, &layer,
                 &SeparatorView {
                     kind: SeparatorType::Divider { orientation: SeparatorOrientation::Horizontal },
@@ -510,12 +754,14 @@ impl AppState {
             );
 
             // ── 8. Text input ─────────────────────────────────────────────────
-            // Use draw_input directly (single draw pass) to capture InputResult
-            // for click→cursor positioning and cursor blink rendering.
             let ti_state = if text_is_focused {
                 WidgetState::Active
             } else {
-                ws(TEXT_FIELD_ID)
+                match (hovered.as_deref() == Some(TEXT_FIELD_ID), pressed_id_ref.as_deref() == Some(TEXT_FIELD_ID)) {
+                    (_, true) => WidgetState::Pressed,
+                    (true, _) => WidgetState::Hovered,
+                    _ => WidgetState::Normal,
+                }
             };
             let ti_settings = TextInputSettings::with_config(
                 uzor::ui::widgets::atomic::text_input::state::TextFieldConfig::text(),
@@ -529,9 +775,7 @@ impl AppState {
                 disabled: false,
                 input_type: InputType::Search,
             };
-            // Draw the field (bg, border, selection highlight, text).
             let input_result = draw_input(&mut render, TI_RECT, ti_state, &ti_view, &ti_settings);
-            // Blinking cursor — only when focused and in visible phase.
             if cursor_visible {
                 draw_input_cursor(
                     &mut render,
@@ -542,12 +786,10 @@ impl AppState {
                     [220, 220, 220, 255],
                 );
             }
-            // The block's return value carries char positions and InputResult
-            // out of the render borrow scope for use after the block closes.
             let char_positions = input_result.char_x_positions.clone();
             let ir = input_result;
 
-            // ── 9. Color swatches (4 squares) ─────────────────────────────────
+            // ── 9. Color swatches ─────────────────────────────────────────────
             let swatch_colors: [[u8; 4]; 4] = [
                 [41, 98, 255, 255],
                 [16, 185, 129, 255],
@@ -559,13 +801,17 @@ impl AppState {
                 let sw_rect = Rect::new(sx, 344.0, 26.0, 26.0);
                 let sw_id = format!("swatch-{i}");
                 register_context_manager_color_swatch(
-                    &mut self.ctx, &mut render,
+                    ctx, &mut render,
                     sw_id.as_str(), sw_rect, &layer,
-                    ws(&sw_id),
+                    match (hovered.as_deref() == Some(sw_id.as_str()), pressed_id_ref.as_deref() == Some(sw_id.as_str())) {
+                        (_, true) => WidgetState::Pressed,
+                        (true, _) => WidgetState::Hovered,
+                        _ => WidgetState::Normal,
+                    },
                     &ColorSwatchView {
                         color: *color,
                         hovered: false,
-                        selected: self.swatch_sel == i,
+                        selected: swatch_sel == i,
                         show_transparency: false,
                         border_color_override: None,
                     },
@@ -574,80 +820,209 @@ impl AppState {
                 );
             }
 
-            // ── 10. Shape selector (3 buttons) ────────────────────────────────
-            let shape_labels = ["Rect", "Circle", "Line"];
-            for (i, _lbl) in shape_labels.iter().enumerate() {
-                let shx = 28.0 + i as f64 * 80.0;
-                let sh_rect = Rect::new(shx, 392.0, 72.0, 28.0);
-                let sh_id = format!("shape-{i}");
-                register_context_manager_shape_selector(
-                    &mut self.ctx, &mut render,
-                    sh_id.as_str(), sh_rect, &layer,
-                    ws(&sh_id),
-                    &ShapeSelectorSettings::default(),
-                    &ShapeSelectorRenderKind::UIStyle,
-                );
-            }
-
-            // ── 11. Scrollbar (vertical, right column) ────────────────────────
-            let sb_track = Rect::new(SB_X, SB_Y, SB_W, SB_H);
-            let viewport_h = SB_H;
-            let thumb_ratio = (viewport_h / CONTENT_H).clamp(0.0, 1.0);
-            let thumb_h = (thumb_ratio * sb_track.height).max(30.0);
-            let scroll_range = sb_track.height - thumb_h;
-            let thumb_y = sb_track.y
-                + (self.scroll_off / (CONTENT_H - viewport_h).max(1.0)) * scroll_range;
-            let sb_thumb = Rect::new(SB_X, thumb_y, SB_W, thumb_h);
-
-            register_context_manager_scrollbar(
-                &mut self.ctx, &mut render,
-                "sb-track", "sb-thumb",
-                sb_track, sb_thumb,
-                5.0, &layer,
-                CONTENT_H, viewport_h, self.scroll_off,
-                &ScrollbarSettings::default(),
-            );
-
-            // ── 12. Drag handle ───────────────────────────────────────────────
-            register_context_manager_drag_handle(
-                &mut self.ctx, &mut render,
-                "drag-handle", DH_RECT, &layer,
-                &DragHandleView { rect: DH_RECT },
-                &DragHandleSettings::default(),
-                &DragHandleRenderKind::GripDots,
-            );
-
+            drop(render);
+            scene.pop_layer();
             (char_positions, ir)
         };
 
-        // ── Update text field geometry for click-to-position / drag-select ────
-        // Must happen after the render block (borrow checker) but before any
-        // mouse event processing that relies on char positions.
+        // ── Closure: draw right-panel widgets (clipped) ──────────────────────
+        let draw_right = |scene: &mut Scene, ctx: &mut ContextManager, hovered: &Option<String>| {
+            scene.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &right_clip);
+            let mut render = VelloGpuRenderContext::new(scene, 0.0, 0.0);
+            let layer = LayerId::main();
+
+            // ── 10. Tab strip ─────────────────────────────────────────────────
+            let tab_labels = ["List", "Empty", "Sub-tabs"];
+            for (i, lbl) in tab_labels.iter().enumerate() {
+                let tab_rect = {
+                    let tab_w = ((right_panel_width - 16.0) / 3.0).floor();
+                    let tab_x = right_panel_x + 8.0 + i as f64 * (tab_w + 4.0);
+                    Rect::new(tab_x, TAB_STRIP_Y, tab_w, TAB_STRIP_H)
+                };
+                let tab_id   = format!("tab-{i}");
+                let tab_cfg  = TabConfig::new(tab_id.as_str(), *lbl)
+                    .active_if(active_tab == i);
+                let tab_view = TabView {
+                    tab: &tab_cfg,
+                    hovered: hovered.as_deref() == Some(tab_id.as_str()),
+                    pressed: pressed_id_ref.as_deref() == Some(tab_id.as_str()),
+                    close_btn_hovered: false,
+                };
+                register_context_manager_tab(
+                    ctx, &mut render,
+                    tab_id.as_str(), tab_rect, None,
+                    &layer,
+                    &tab_view,
+                    &TabSettings::default(),
+                );
+            }
+
+            // ── 11. Scrollbar + rows (Tab 0 only) ─────────────────────────────
+            if active_tab == 0 {
+                let sb_track  = Rect::new(sb_x, SB_Y, SB_W, SB_H);
+                let viewport_h = SB_H;
+                let thumb_ratio = (viewport_h / CONTENT_H).clamp(0.0, 1.0);
+                let thumb_h = (thumb_ratio * sb_track.height).max(30.0);
+                let scroll_range = sb_track.height - thumb_h;
+                let thumb_y = sb_track.y
+                    + (scroll_off / (CONTENT_H - viewport_h).max(1.0)) * scroll_range;
+                let sb_thumb = Rect::new(sb_x, thumb_y, SB_W, thumb_h);
+
+                register_context_manager_scrollbar(
+                    ctx, &mut render,
+                    "sb-track", "sb-thumb",
+                    sb_track, sb_thumb,
+                    5.0, &layer,
+                    CONTENT_H, viewport_h, scroll_off,
+                    &ScrollbarSettings::default(),
+                );
+
+                let content_x = right_panel_x + 8.0;
+                let content_w = right_panel_width - SB_W - 20.0;
+                let clip_top    = SB_Y;
+                let clip_bottom = SB_Y + SB_H;
+
+                for row in 0..CONTENT_ROWS {
+                    let row_y = SB_Y + row as f64 * ROW_H - scroll_off;
+                    if row_y + ROW_H < clip_top || row_y > clip_bottom {
+                        continue;
+                    }
+                    let row_rect = Rect::new(content_x, row_y, content_w, ROW_H - 2.0);
+                    let row_id   = format!("row-{row}");
+                    let row_label = format!("Row {}", row + 1);
+                    let row_settings = match row {
+                        0..=4  => ItemSettings::default().with_style(Box::new(RowStyle13Sans)),
+                        5..=9  => ItemSettings::default().with_style(Box::new(RowStyle14Mono)),
+                        10..=14 => ItemSettings::default().with_style(Box::new(RowStyle12SansItalic)),
+                        _      => ItemSettings::default().with_style(Box::new(RowStyle15SansBold)),
+                    };
+                    register_context_manager_item(
+                        ctx, &mut render,
+                        row_id.as_str(), row_rect, &layer,
+                        WidgetState::Normal,
+                        &ItemView {
+                            label: Some(row_label.as_str()),
+                            icon: None,
+                            svg: None,
+                        },
+                        &row_settings,
+                        &ItemRenderKind::Label,
+                    );
+                }
+            }
+
+            // ── Sub-tabs (Tab 2 only) ─────────────────────────────────────────
+            if active_tab == 2 {
+                let sub_labels = ["Alpha", "Beta", "Gamma"];
+                for (i, lbl) in sub_labels.iter().enumerate() {
+                    let sub_rect = Rect::new(
+                        right_panel_x + 8.0,
+                        CONTENT_START_Y + 8.0 + i as f64 * 36.0,
+                        90.0, 30.0,
+                    );
+                    let sub_id  = format!("sub-tab-{i}");
+                    let sub_cfg = TabConfig::new(sub_id.as_str(), *lbl)
+                        .active_if(active_sub_tab == i);
+                    let sub_view = TabView {
+                        tab: &sub_cfg,
+                        hovered: hovered.as_deref() == Some(sub_id.as_str()),
+                        pressed: pressed_id_ref.as_deref() == Some(sub_id.as_str()),
+                        close_btn_hovered: false,
+                    };
+                    register_context_manager_tab(
+                        ctx, &mut render,
+                        sub_id.as_str(), sub_rect, None,
+                        &layer,
+                        &sub_view,
+                        &TabSettings::default(),
+                    );
+                }
+            }
+
+            // ── Tab 1: SVG icon grid ──────────────────────────────────────────
+            if active_tab == 1 {
+                let icon_size = 64.0_f64;
+                let gap = 16.0_f64;
+                let total_w = icon_size * 2.0 + gap;
+                let total_h = icon_size * 2.0 + gap;
+                let content_cx = right_panel_x + right_panel_width / 2.0;
+                let content_cy = CONTENT_START_Y + (WIN_H as f64 - CONTENT_START_Y - 12.0) / 2.0;
+                let grid_x0 = content_cx - total_w / 2.0;
+                let grid_y0 = content_cy - total_h / 2.0;
+
+                let icons_and_colors: [(&str, &str); 4] = [
+                    (SVG_CIRCLE,   "#2962ff"),
+                    (SVG_SQUARE,   "#10b981"),
+                    (SVG_TRIANGLE, "#f59e0b"),
+                    (SVG_DIAMOND,  "#ef5350"),
+                ];
+                for (idx, (svg, color)) in icons_and_colors.iter().enumerate() {
+                    let col = idx % 2;
+                    let row = idx / 2;
+                    let ix = grid_x0 + col as f64 * (icon_size + gap);
+                    let iy = grid_y0 + row as f64 * (icon_size + gap);
+                    draw_svg_icon(&mut render, svg, ix, iy, icon_size, icon_size, color);
+                }
+            }
+
+            // ── Tab 2: sub-content icon ───────────────────────────────────────
+            if active_tab == 2 {
+                let sub_content_y = CONTENT_START_Y + 8.0 + 3.0 * 36.0 + 8.0;
+                let sub_cx = right_panel_x + right_panel_width / 2.0;
+                let icon_size = 64.0_f64;
+                let ix = sub_cx - icon_size / 2.0;
+                let iy = sub_content_y + 8.0;
+
+                let sub_icon = match active_sub_tab {
+                    0 => SVG_CIRCLE,
+                    1 => SVG_TRIANGLE,
+                    _ => SVG_DIAMOND,
+                };
+                let sub_color = match active_sub_tab {
+                    0 => "#2962ff",
+                    1 => "#f59e0b",
+                    _ => "#ef5350",
+                };
+                draw_svg_icon(&mut render, sub_icon, ix, iy, icon_size, icon_size, sub_color);
+            }
+
+            drop(render);
+            scene.pop_layer();
+        };
+
+        // ── widgets — z-order: growing panel drawn last (on top) ─────────────
+        let (captured_char_positions, captured_input_result): (Vec<f64>, InputResult) =
+            if splitter_drag_dx > 0.0 {
+                // Left panel growing → draw right first, left on top
+                draw_right(&mut self.scene, &mut self.ctx, &hovered);
+                draw_left(&mut self.scene, &mut self.ctx, &hovered, &pressed)
+            } else {
+                // Right panel growing (or default) → draw left first, right on top
+                let result = draw_left(&mut self.scene, &mut self.ctx, &hovered, &pressed);
+                draw_right(&mut self.scene, &mut self.ctx, &hovered);
+                result
+            };
+
+        // ── Drag handle (splitter) — on top of both panels, no clip ──────────
+        {
+            let mut render = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
+            let layer = LayerId::main();
+            register_context_manager_drag_handle(
+                &mut self.ctx, &mut render,
+                "drag-handle", dh_rect, &layer,
+                &DragHandleView { rect: dh_rect },
+                &DragHandleSettings::default(),
+                &DragHandleRenderKind::GripDots,
+            );
+        }
+
+        // ── Update text field geometry ────────────────────────────────────────
         self.ctx.input.text_fields_mut().update_field(
             &WidgetId::new(TEXT_FIELD_ID),
             (TI_RECT.x, TI_RECT.y, TI_RECT.width, TI_RECT.height),
             captured_char_positions,
         );
         self.last_input_result = captured_input_result;
-
-        // ── shape label overlays (after render borrow released) ───────────────
-        let shape_labels = ["Rect", "Circle", "Line"];
-        for (i, lbl) in shape_labels.iter().enumerate() {
-            let shx = 28.0 + i as f64 * 80.0;
-            let lbl_w = lbl.len() as f64 * 6.0;
-            let lbl_rect = vello::kurbo::Rect::new(
-                shx + (72.0 - lbl_w) / 2.0,
-                392.0 + 8.0,
-                shx + (72.0 + lbl_w) / 2.0,
-                392.0 + 20.0,
-            );
-            let lbl_alpha = if self.shape_sel == i { 180_u8 } else { 80_u8 };
-            self.scene.fill(
-                Fill::NonZero, Affine::IDENTITY,
-                Color::from_rgba8(255, 255, 255, lbl_alpha),
-                None, &lbl_rect,
-            );
-        }
 
         // ── status strip ──────────────────────────────────────────────────────
         let strip_color = if self.connected {
@@ -671,19 +1046,9 @@ impl AppState {
             );
         }
 
-        // drag-handle hover indicator (visual: blue tint when hovered)
-        if self.drag_handle_hovered {
-            self.scene.fill(
-                Fill::NonZero, Affine::IDENTITY,
-                Color::from_rgba8(41, 98, 255, 40), None,
-                &vello::kurbo::Rect::new(350.0, 28.0, 410.0, 52.0),
-            );
-        }
-
         // ── end_frame / responses ─────────────────────────────────────────────
         let responses = self.ctx.end_frame();
 
-        // Scrollbar track geometry — needed for scroll + drag offset calculation
         let viewport_h = SB_H;
         let thumb_h = Self::thumb_h();
         let scroll_range = SB_H - thumb_h;
@@ -691,19 +1056,12 @@ impl AppState {
         for (id, resp) in &responses {
             let id_str = id.0.as_str();
 
-            // ── hover tracking for drag-handle visual ─────────────────────────
-            if id_str == "drag-handle" {
-                self.drag_handle_hovered = resp.hovered;
-            }
-
-            // ── scroll handlers from WidgetResponse (coordinator-routed) ──────
             if resp.scrolled && (id_str == "sb-track" || id_str == "sb-thumb") {
                 let dy = resp.scroll_delta.1;
                 self.scroll_off = (self.scroll_off + dy * 20.0)
-                    .clamp(0.0, CONTENT_H - viewport_h);
+                    .clamp(0.0, (CONTENT_H - viewport_h).max(0.0));
             }
 
-            // ── drag handlers from WidgetResponse ─────────────────────────────
             if resp.dragged {
                 match id_str {
                     "slider-main" => {
@@ -715,8 +1073,8 @@ impl AppState {
                         if scroll_range > 0.0 {
                             let off_delta =
                                 resp.drag_delta.1 / scroll_range * (CONTENT_H - viewport_h);
-                            self.scroll_off =
-                                (self.scroll_off + off_delta).clamp(0.0, CONTENT_H - viewport_h);
+                            self.scroll_off = (self.scroll_off + off_delta)
+                                .clamp(0.0, (CONTENT_H - viewport_h).max(0.0));
                         }
                     }
                     _ => {}
@@ -757,6 +1115,21 @@ impl AppState {
         dev.queue.submit([encoder.finish()]);
         surface_texture.present();
         self.window.request_redraw();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TabConfig helper — active_if builder method not in upstream; use a local fn
+// ─────────────────────────────────────────────────────────────────────────────
+
+trait TabConfigExt {
+    fn active_if(self, cond: bool) -> Self;
+}
+
+impl TabConfigExt for TabConfig {
+    fn active_if(mut self, cond: bool) -> Self {
+        self.active = cond;
+        self
     }
 }
 
@@ -814,6 +1187,9 @@ impl ApplicationHandler for Handler {
 
         let ctx = ContextManager::new(LayoutNode::new("l2-root"));
 
+        // Default right panel width: everything from x=336 to right edge
+        let right_panel_width = WIN_W as f64 - 336.0 - 12.0;
+
         self.state = Some(AppState {
             window,
             render_cx,
@@ -835,8 +1211,10 @@ impl ApplicationHandler for Handler {
             range_drag_handle:   None,
             scroll_off:          0.0,
             swatch_sel:          0,
-            shape_sel:           0,
-            drag_handle_hovered: false,
+            active_tab:          0,
+            active_sub_tab:      0,
+            right_panel_width,
+            splitter_drag_dx:    0.0,
             hovered_widget_id:   None,
             pressed_widget_id:   None,
             modifiers_shift:     false,
@@ -864,14 +1242,14 @@ impl ApplicationHandler for Handler {
                 let x = position.x;
                 let y = position.y;
                 app.last_mouse_pos = (x, y);
-                app.hovered_widget_id = AppState::compute_hovered((x, y));
+                app.hovered_widget_id = app.compute_hovered((x, y));
 
                 // Text drag — extend selection as mouse moves.
                 if app.text_dragging {
                     app.ctx.input.text_fields_mut().on_drag_move(x);
                 }
 
-                // Drag in progress — update slider or scrollbar value.
+                // Drag in progress
                 if let (Some((ox, oy)), Some(target)) =
                     (app.drag_origin, app.drag_target.as_ref())
                 {
@@ -896,9 +1274,15 @@ impl ApplicationHandler for Handler {
                             let scroll_range = SB_H - AppState::thumb_h();
                             if scroll_range > 0.0 {
                                 let off_delta = dy / scroll_range * (CONTENT_H - SB_H);
-                                app.scroll_off =
-                                    (v0 + off_delta).clamp(0.0, CONTENT_H - SB_H);
+                                app.scroll_off = (v0 + off_delta)
+                                    .clamp(0.0, (CONTENT_H - SB_H).max(0.0));
                             }
+                        }
+                        // Fix 4: splitter drag resizes right panel
+                        DragTarget::Splitter(w0) => {
+                            // Dragging right = splitter moves right = left panel grows
+                            app.right_panel_width = (w0 - dx).clamp(200.0, 600.0);
+                            app.splitter_drag_dx = dx;
                         }
                     }
                 }
@@ -915,10 +1299,7 @@ impl ApplicationHandler for Handler {
                 let (x, y) = app.last_mouse_pos;
                 app.pressed_widget_id = app.hovered_widget_id.clone();
 
-                // Focus text field if hovered, else clear focus.
                 if app.hovered_widget_id.as_deref() == Some(TEXT_FIELD_ID) {
-                    // on_drag_start focuses the field AND positions the cursor
-                    // at the click x coordinate using last-frame char positions.
                     app.ctx.input.text_fields_mut().on_drag_start(x, y);
                     app.text_dragging = true;
                 } else {
@@ -928,11 +1309,9 @@ impl ApplicationHandler for Handler {
                     app.text_dragging = false;
                 }
 
-                // Record drag origin; classify drag target by hovered widget.
                 let target = match app.hovered_widget_id.as_deref() {
                     Some("slider-main") => Some(DragTarget::Slider(app.slider_val)),
                     Some("range-slider") => {
-                        // Pick the closer handle.
                         let x_min = RANGE_RECT.x + (app.range_min / 100.0) * RANGE_RECT.width;
                         let x_max = RANGE_RECT.x + (app.range_max / 100.0) * RANGE_RECT.width;
                         if (x - x_min).abs() <= (x - x_max).abs() {
@@ -944,6 +1323,10 @@ impl ApplicationHandler for Handler {
                         }
                     }
                     Some("sb-thumb") | Some("sb-track") => Some(DragTarget::Scroll(app.scroll_off)),
+                    // Fix 4: start splitter drag
+                    Some("splitter") | Some("drag-handle") => {
+                        Some(DragTarget::Splitter(app.right_panel_width))
+                    }
                     _ => None,
                 };
                 app.drag_origin = Some((x, y));
@@ -960,8 +1343,6 @@ impl ApplicationHandler for Handler {
             } => {
                 let (x, y) = app.last_mouse_pos;
 
-                // process_click uses the coordinator's registered widget list
-                // (built during the last render frame) to find what was clicked.
                 if let Some(id) = app.ctx.input.process_click(x, y) {
                     match id.0.as_str() {
                         "btn-connect" => {
@@ -994,17 +1375,25 @@ impl ApplicationHandler for Handler {
                                 println!("[L2] swatch → {n}");
                             }
                         }
-                        s if s.starts_with("shape-") => {
-                            if let Ok(n) = s["shape-".len()..].parse::<usize>() {
-                                app.shape_sel = n;
-                                println!("[L2] shape → {n}");
+                        // Fix 3: tab click switches active_tab
+                        s if s.starts_with("tab-") => {
+                            if let Ok(n) = s["tab-".len()..].parse::<usize>() {
+                                app.active_tab = n;
+                                app.scroll_off = 0.0;
+                                println!("[L2] tab → {n}");
+                            }
+                        }
+                        // Fix 3b: sub-tab click
+                        s if s.starts_with("sub-tab-") => {
+                            if let Ok(n) = s["sub-tab-".len()..].parse::<usize>() {
+                                app.active_sub_tab = n;
+                                println!("[L2] sub-tab → {n}");
                             }
                         }
                         _ => {}
                     }
                 }
 
-                // End text drag selection.
                 if app.text_dragging {
                     app.ctx.input.text_fields_mut().on_drag_end();
                     app.text_dragging = false;
@@ -1014,6 +1403,7 @@ impl ApplicationHandler for Handler {
                 app.drag_origin = None;
                 app.drag_target = None;
                 app.range_drag_handle = None;
+                app.splitter_drag_dx = 0.0;
                 app.window.request_redraw();
             }
 
@@ -1026,23 +1416,17 @@ impl ApplicationHandler for Handler {
 
             // ── Scroll wheel ──────────────────────────────────────────────────
             WindowEvent::MouseWheel { delta, .. } => {
-                // Positive dy = scroll up (mlc pattern: LineDelta up = +1.0).
                 let (dx_lines, dy_lines) = match delta {
                     MouseScrollDelta::LineDelta(dx, dy) => (dx as f64, dy as f64),
                     MouseScrollDelta::PixelDelta(p) => (p.x / 20.0, p.y / 20.0),
                 };
                 let (mx, _my) = app.last_mouse_pos;
 
-                // Horizontal slider: wheel adjusts value (dy primary, dx fallback).
-                // Scroll up (dy > 0) increases value; scroll down decreases.
                 if app.hovered_widget_id.as_deref() == Some("slider-main") {
                     let advance = if dx_lines.abs() > dy_lines.abs() { dx_lines } else { dy_lines };
                     app.slider_val = (app.slider_val + advance * 2.0).clamp(0.0, 100.0);
                     println!("[L2] slider_val → {:.1}", app.slider_val);
-                }
-                // Range slider: wheel adjusts ONLY the handle closest to cursor.
-                // Each handle moves independently — like mlc's two-point scroller.
-                else if app.hovered_widget_id.as_deref() == Some("range-slider") {
+                } else if app.hovered_widget_id.as_deref() == Some("range-slider") {
                     let advance = if dx_lines.abs() > dy_lines.abs() { dx_lines } else { dy_lines };
                     let x_min = RANGE_RECT.x + (app.range_min / 100.0) * RANGE_RECT.width;
                     let x_max = RANGE_RECT.x + (app.range_max / 100.0) * RANGE_RECT.width;
@@ -1054,12 +1438,10 @@ impl ApplicationHandler for Handler {
                             .clamp(app.range_min, 100.0);
                     }
                     println!("[L2] range → [{:.1}, {:.1}]", app.range_min, app.range_max);
-                }
-                // Right column: scroll the scrollbar.
-                else if mx >= 336.0 {
-                    // dy_lines positive = wheel up = scroll content up = decrease offset
+                } else if mx >= app.right_panel_x() && app.active_tab == 0 {
+                    // Scroll right panel (tab 0)
                     app.scroll_off = (app.scroll_off - dy_lines * 20.0)
-                        .clamp(0.0, CONTENT_H - SB_H);
+                        .clamp(0.0, (CONTENT_H - SB_H).max(0.0));
                     println!("[L2] scroll_off → {:.1}", app.scroll_off);
                 }
                 app.window.request_redraw();
@@ -1074,7 +1456,6 @@ impl ApplicationHandler for Handler {
                     let shift = app.modifiers_shift;
                     let ctrl  = app.modifiers_ctrl;
 
-                    // Ctrl shortcuts — use physical key for layout independence.
                     if ctrl {
                         match ke.physical_key {
                             PhysicalKey::Code(winit::keyboard::KeyCode::KeyA) => {
