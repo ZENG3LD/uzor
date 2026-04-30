@@ -37,4 +37,5 @@ pub use input::{
     register_shape_selector,
     register_input_coordinator_shape_selector,
     register_context_manager_shape_selector,
+    register_layout_manager_shape_selector,
 };

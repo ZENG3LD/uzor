@@ -35,4 +35,5 @@ pub use input::{
     register_color_swatch,
     register_input_coordinator_color_swatch,
     register_context_manager_color_swatch,
+    register_layout_manager_color_swatch,
 };

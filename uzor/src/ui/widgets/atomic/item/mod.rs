@@ -34,4 +34,5 @@ pub use input::{
     register,
     register_input_coordinator_item,
     register_context_manager_item,
+    register_layout_manager_item,
 };

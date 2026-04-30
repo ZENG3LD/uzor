@@ -420,6 +420,51 @@ impl WindowRenderState {
         }
     }
 
+    // ── Unified render-context accessor ──────────────────────────────────────
+
+    /// Call `f` with a `&mut dyn RenderContext` wired to the active backend.
+    ///
+    /// This is the ergonomic entry point for user code inside `App::ui`.
+    /// Widget L3 helpers (e.g. `register_layout_manager_button`) accept
+    /// `&mut dyn RenderContext`; pass the argument you receive here directly
+    /// to those helpers:
+    ///
+    /// ```rust,ignore
+    /// fn ui(&mut self, layout: &mut LayoutManager<NoPanel>, state: &mut WindowRenderState) {
+    ///     state.with_render_context(|render| {
+    ///         register_layout_manager_button(layout, render, "btn", rect, &layer, &view, &settings);
+    ///     });
+    /// }
+    /// ```
+    ///
+    /// Returns `None` only when the active backend is `InstancedWgpu` (which
+    /// does not expose a `RenderContext`-compatible draw API) or when the
+    /// corresponding context slot is uninitialised.
+    pub fn with_render_context<R>(
+        &mut self,
+        f: impl FnOnce(&mut dyn uzor::render::RenderContext) -> R,
+    ) -> Option<R> {
+        match self.active {
+            RenderBackend::VelloGpu | RenderBackend::VelloHybrid => {
+                let mut ctx = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
+                Some(f(&mut ctx))
+            }
+            RenderBackend::VelloCpu => {
+                self.vello_cpu_ctx.as_mut().map(|c| f(c))
+            }
+            RenderBackend::TinySkia => {
+                self.tiny_skia_ctx.as_mut().map(|c| f(c))
+            }
+            RenderBackend::InstancedWgpu => None,
+            #[cfg(target_arch = "wasm32")]
+            RenderBackend::Canvas2d => {
+                self.canvas2d_ctx.as_mut().map(|c| f(c))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            RenderBackend::Canvas2d => None,
+        }
+    }
+
     // ── Frame lifecycle ───────────────────────────────────────────────────────
 
     /// Reset per-frame artifacts.  Call at the top of each frame.

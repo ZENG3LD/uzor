@@ -5,10 +5,15 @@
 //! keyboard PgUp/PgDn handling (mlc routes those to PTY only).
 
 use crate::app_context::ContextManager;
+use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
+use crate::layout::LayoutManager;
+use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
+use super::render::{draw_scrollbar, ScrollbarView, ScrollbarVisualState};
+use super::settings::ScrollbarSettings;
 use super::state::ScrollState;
 
 // ── Hit-zone registration ─────────────────────────────────────────────────────
@@ -256,18 +261,26 @@ pub fn register_input_coordinator_scrollbar(
     register_thumb(coord, thumb_id, thumb_rect, inflation_x, layer);
 }
 
-/// Level 2 — register a scrollbar via `ContextManager`, pulling `ScrollState` from the registry.
+/// Level 2 — register a scrollbar via `ContextManager`, pulling `ScrollState` from the registry,
+/// and draw it using the provided render context.
 ///
 /// Uses `track_id` as the registry key. `inflation_x` is the horizontal hit-zone
-/// inflation for the thumb.
+/// inflation for the thumb. `content_height`, `viewport_height`, and `scroll_offset`
+/// supply the scrollable content geometry. `settings` supplies style and theme.
+#[allow(clippy::too_many_arguments)]
 pub fn register_context_manager_scrollbar(
     ctx: &mut ContextManager,
+    render: &mut dyn RenderContext,
     track_id: impl Into<WidgetId>,
     thumb_id: impl Into<WidgetId>,
     track_rect: Rect,
     thumb_rect: Rect,
     inflation_x: f64,
     layer: &LayerId,
+    content_height: f64,
+    viewport_height: f64,
+    scroll_offset: f64,
+    settings: &ScrollbarSettings,
 ) {
     let track_id: WidgetId = track_id.into();
     let thumb_id: WidgetId = thumb_id.into();
@@ -281,5 +294,47 @@ pub fn register_context_manager_scrollbar(
         inflation_x,
         layer,
         state,
+    );
+    let view = ScrollbarView {
+        content_height,
+        viewport_height,
+        scroll_offset,
+        state: ScrollbarVisualState::Active,
+        drag_pos_y: None,
+        style: settings.style.as_ref(),
+        theme: settings.theme.as_ref(),
+    };
+    draw_scrollbar(render, track_rect, &view);
+}
+
+/// Level 3 — register a scrollbar via `LayoutManager`, forwarding to L2.
+#[allow(clippy::too_many_arguments)]
+pub fn register_layout_manager_scrollbar<P: DockPanel>(
+    layout: &mut LayoutManager<P>,
+    render: &mut dyn RenderContext,
+    track_id: impl Into<WidgetId>,
+    thumb_id: impl Into<WidgetId>,
+    track_rect: Rect,
+    thumb_rect: Rect,
+    inflation_x: f64,
+    layer: &LayerId,
+    content_height: f64,
+    viewport_height: f64,
+    scroll_offset: f64,
+    settings: &ScrollbarSettings,
+) {
+    register_context_manager_scrollbar(
+        layout.ctx_mut(),
+        render,
+        track_id,
+        thumb_id,
+        track_rect,
+        thumb_rect,
+        inflation_x,
+        layer,
+        content_height,
+        viewport_height,
+        scroll_offset,
+        settings,
     );
 }

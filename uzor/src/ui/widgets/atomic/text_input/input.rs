@@ -1,4 +1,4 @@
-//! InputCoordinator registration helper for text input widgets.
+//! InputCoordinator registration helpers for text input widgets.
 //!
 //! `register` is the one-call entry point a widget owner uses every frame
 //! to:
@@ -8,10 +8,14 @@
 //!   events get routed correctly while the field is focused.
 
 use crate::app_context::ContextManager;
+use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense};
-use crate::types::{Rect, WidgetId};
+use crate::layout::LayoutManager;
+use crate::render::RenderContext;
+use crate::types::{Rect, WidgetId, WidgetState};
 
+use super::render::{draw_input, InputView};
 use super::settings::TextInputSettings;
 use super::state::TextFieldStore;
 
@@ -51,15 +55,36 @@ pub fn register_input_coordinator_text_input(
 }
 
 /// Level 2 — register a text input via `ContextManager`, pulling `TextFieldStore`
-/// from the registry.
+/// from the registry, and draw it using the provided render context.
+///
+/// `view` supplies per-frame text, cursor, selection, and focus state.
+/// `settings` supplies visual style and theme.
 pub fn register_context_manager_text_input(
     ctx: &mut ContextManager,
+    render: &mut dyn RenderContext,
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    view: &InputView<'_>,
     settings: &TextInputSettings,
 ) {
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), TextFieldStore::default);
     register_input_coordinator_text_input(&mut ctx.input, id, rect, layer, settings, state);
+    draw_input(render, rect, WidgetState::Normal, view, settings);
+}
+
+/// Level 3 — register a text input via `LayoutManager`, forwarding to L2.
+pub fn register_layout_manager_text_input<P: DockPanel>(
+    layout: &mut LayoutManager<P>,
+    render: &mut dyn RenderContext,
+    id: impl Into<WidgetId>,
+    rect: Rect,
+    layer: &LayerId,
+    view: &InputView<'_>,
+    settings: &TextInputSettings,
+) {
+    register_context_manager_text_input(
+        layout.ctx_mut(), render, id, rect, layer, view, settings,
+    );
 }

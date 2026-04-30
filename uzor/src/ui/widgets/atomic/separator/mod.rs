@@ -42,4 +42,5 @@ pub use input::{
     update_separator_drag, SeparatorKind,
     register_input_coordinator_separator,
     register_context_manager_separator,
+    register_layout_manager_separator,
 };

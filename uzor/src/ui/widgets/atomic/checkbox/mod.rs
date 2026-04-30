@@ -31,4 +31,5 @@ pub use input::{
     register_checkbox,
     register_input_coordinator_checkbox,
     register_context_manager_checkbox,
+    register_layout_manager_checkbox,
 };

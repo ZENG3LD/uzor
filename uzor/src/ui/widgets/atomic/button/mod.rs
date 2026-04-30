@@ -102,6 +102,7 @@ pub use input::{
     register,
     register_input_coordinator_button,
     register_context_manager_button,
+    register_layout_manager_button,
 };
 
 // Re-exports from extracted atomic modules (backward-compat surface).

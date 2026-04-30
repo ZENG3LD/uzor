@@ -31,4 +31,5 @@ pub use input::{
     register_toggle,
     register_input_coordinator_toggle,
     register_context_manager_toggle,
+    register_layout_manager_toggle,
 };

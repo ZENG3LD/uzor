@@ -40,4 +40,5 @@ pub use input::{
     ScrollableInfo,
     register_input_coordinator_scrollbar,
     register_context_manager_scrollbar,
+    register_layout_manager_scrollbar,
 };

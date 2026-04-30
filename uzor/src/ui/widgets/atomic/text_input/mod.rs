@@ -38,4 +38,5 @@ pub use input::{
     register,
     register_input_coordinator_text_input,
     register_context_manager_text_input,
+    register_layout_manager_text_input,
 };

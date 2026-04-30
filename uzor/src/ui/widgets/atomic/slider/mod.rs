@@ -35,4 +35,5 @@ pub use input::{
     // Level 1 / Level 2
     register_input_coordinator_slider,
     register_context_manager_slider,
+    register_layout_manager_slider,
 };

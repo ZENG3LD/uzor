@@ -11,10 +11,15 @@
 //! dismissal surface behind a popup).
 
 use crate::app_context::ContextManager;
+use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
+use crate::layout::LayoutManager;
+use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
+use super::render::{draw_container, ContainerView};
+use super::settings::ContainerSettings;
 use super::state::ContainerState;
 
 /// Register a non-interactive container in the input coordinator.
@@ -34,8 +39,6 @@ pub fn register(
 ///
 /// Use when the container surface itself should absorb pointer events
 /// (e.g. a backdrop that dismisses a floating panel on click).
-/// In mlc this pattern appears via `InputCoordinator::register_on_layer`
-/// called in modal code, not inside container primitives themselves.
 pub fn register_clickable(
     coord: &mut InputCoordinator,
     id: impl Into<WidgetId>,
@@ -56,14 +59,36 @@ pub fn register_input_coordinator_container(
     coord.register_atomic(id, WidgetKind::Custom, rect, Sense::NONE, layer);
 }
 
-/// Level 2 — register a container via `ContextManager`, pulling state from the registry.
+/// Level 2 — register a container via `ContextManager`, pulling state from the registry,
+/// and draw it using the provided render context.
+///
+/// `view` selects the container variant and border flag. `settings` supplies theme and style.
 pub fn register_context_manager_container(
     ctx: &mut ContextManager,
+    render: &mut dyn RenderContext,
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    view: &ContainerView,
+    settings: &ContainerSettings,
 ) {
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), ContainerState::default);
     register_input_coordinator_container(&mut ctx.input, id, rect, layer, state);
+    draw_container(render, rect, view, settings.theme.as_ref(), settings.style.as_ref());
+}
+
+/// Level 3 — register a container via `LayoutManager`, forwarding to L2.
+pub fn register_layout_manager_container<P: DockPanel>(
+    layout: &mut LayoutManager<P>,
+    render: &mut dyn RenderContext,
+    id: impl Into<WidgetId>,
+    rect: Rect,
+    layer: &LayerId,
+    view: &ContainerView,
+    settings: &ContainerSettings,
+) {
+    register_context_manager_container(
+        layout.ctx_mut(), render, id, rect, layer, view, settings,
+    );
 }

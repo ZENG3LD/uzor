@@ -18,4 +18,5 @@ pub use input::{
     register,
     register_input_coordinator_toast,
     register_context_manager_toast,
+    register_layout_manager_toast,
 };

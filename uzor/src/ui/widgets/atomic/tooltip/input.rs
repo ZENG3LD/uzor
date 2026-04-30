@@ -1,12 +1,18 @@
-//! Tooltip input-coordinator registration helper.
+//! Tooltip input-coordinator registration helpers.
 
 use crate::app_context::ContextManager;
+use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::{InputCoordinator, LayerId};
 use crate::input::core::sense::Sense;
 use crate::input::core::widget_kind::WidgetKind;
+use crate::layout::LayoutManager;
+use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
+use super::render::draw_tooltip;
+use super::settings::TooltipSettings;
 use super::state::TooltipState;
+use super::types::TooltipConfig;
 
 /// Register the tooltip overlay rect with the input coordinator.
 ///
@@ -39,14 +45,39 @@ pub fn register_input_coordinator_tooltip(
 }
 
 /// Level 2 — register a tooltip via `ContextManager`, pulling `TooltipState`
-/// from the registry.
+/// from the registry, and draw it using the provided render context.
+///
+/// `config` supplies text, anchor, and position. `alpha` is the current
+/// opacity (0.0–1.0, managed by the caller based on hover timing).
+/// `settings` supplies visual style.
 pub fn register_context_manager_tooltip(
     ctx: &mut ContextManager,
+    render: &mut dyn RenderContext,
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    config: &TooltipConfig,
+    alpha: f64,
+    settings: &TooltipSettings,
 ) {
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), TooltipState::default);
     register_input_coordinator_tooltip(&mut ctx.input, id, rect, layer, state);
+    draw_tooltip(render, rect, config, alpha, settings);
+}
+
+/// Level 3 — register a tooltip via `LayoutManager`, forwarding to L2.
+pub fn register_layout_manager_tooltip<P: DockPanel>(
+    layout: &mut LayoutManager<P>,
+    render: &mut dyn RenderContext,
+    id: impl Into<WidgetId>,
+    rect: Rect,
+    layer: &LayerId,
+    config: &TooltipConfig,
+    alpha: f64,
+    settings: &TooltipSettings,
+) {
+    register_context_manager_tooltip(
+        layout.ctx_mut(), render, id, rect, layer, config, alpha, settings,
+    );
 }

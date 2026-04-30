@@ -12,6 +12,7 @@ pub use input::{
     register, register_clickable,
     register_input_coordinator_container,
     register_context_manager_container,
+    register_layout_manager_container,
 };
 pub use render::{
     begin_clipping_container, draw_bordered_container, draw_card_container, draw_container,

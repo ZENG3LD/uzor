@@ -34,4 +34,5 @@ pub use input::{
     register_tab_on_layer,
     register_input_coordinator_tab,
     register_context_manager_tab,
+    register_layout_manager_tab,
 };

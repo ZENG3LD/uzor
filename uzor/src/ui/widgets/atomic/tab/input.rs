@@ -1,11 +1,16 @@
 //! Tab input-coordinator registration helpers.
 
 use crate::app_context::ContextManager;
+use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::{InputCoordinator, LayerId};
 use crate::input::core::sense::Sense;
 use crate::input::core::widget_kind::WidgetKind;
+use crate::layout::LayoutManager;
+use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
+use super::render::{draw_tab, TabView};
+use super::settings::TabSettings;
 use super::state::TabState;
 
 // ---------------------------------------------------------------------------
@@ -119,19 +124,25 @@ pub fn register_input_coordinator_tab(
     register_tab_on_layer(coord, tab_id, rect, sense, close_btn_rect, layer)
 }
 
-/// Level 2 — register a tab via `ContextManager`, pulling `TabState` from the registry.
+/// Level 2 — register a tab via `ContextManager`, pulling `TabState` from the registry,
+/// and draw it using the provided render context.
 ///
-/// Uses `CLICK | HOVER` sense. For custom sense use `register_input_coordinator_tab`.
+/// Uses `CLICK | HOVER` sense. `view` supplies per-frame tab config, hover, and press
+/// state. `settings` supplies visual style. For custom sense use
+/// `register_input_coordinator_tab`.
 pub fn register_context_manager_tab(
     ctx: &mut ContextManager,
+    render: &mut dyn RenderContext,
     tab_id: impl Into<WidgetId>,
     rect: Rect,
     close_btn_rect: Option<Rect>,
     layer: &LayerId,
+    view: &TabView<'_>,
+    settings: &TabSettings,
 ) -> WidgetId {
     let tab_id: WidgetId = tab_id.into();
     let state = ctx.registry.get_or_insert_with(tab_id.clone(), TabState::default);
-    register_input_coordinator_tab(
+    let id = register_input_coordinator_tab(
         &mut ctx.input,
         tab_id,
         rect,
@@ -139,5 +150,23 @@ pub fn register_context_manager_tab(
         close_btn_rect,
         layer,
         state,
+    );
+    draw_tab(render, rect, view, settings);
+    id
+}
+
+/// Level 3 — register a tab via `LayoutManager`, forwarding to L2.
+pub fn register_layout_manager_tab<P: DockPanel>(
+    layout: &mut LayoutManager<P>,
+    render: &mut dyn RenderContext,
+    tab_id: impl Into<WidgetId>,
+    rect: Rect,
+    close_btn_rect: Option<Rect>,
+    layer: &LayerId,
+    view: &TabView<'_>,
+    settings: &TabSettings,
+) -> WidgetId {
+    register_context_manager_tab(
+        layout.ctx_mut(), render, tab_id, rect, close_btn_rect, layer, view, settings,
     )
 }

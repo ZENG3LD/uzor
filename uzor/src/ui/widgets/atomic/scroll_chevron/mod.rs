@@ -34,4 +34,5 @@ pub use input::{
     register,
     register_input_coordinator_scroll_chevron,
     register_context_manager_scroll_chevron,
+    register_layout_manager_scroll_chevron,
 };

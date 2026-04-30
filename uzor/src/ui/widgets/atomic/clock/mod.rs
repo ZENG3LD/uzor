@@ -34,4 +34,5 @@ pub use input::{
     register,
     register_input_coordinator_clock,
     register_context_manager_clock,
+    register_layout_manager_clock,
 };

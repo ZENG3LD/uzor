@@ -10,10 +10,15 @@
 //! any separator variant (§3, §6 — no modifier / special gesture handlers found).
 
 use crate::app_context::ContextManager;
+use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
+use crate::layout::LayoutManager;
+use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
+use super::render::{draw_separator, SeparatorView};
+use super::settings::SeparatorSettings;
 use super::state::SeparatorDragState;
 use super::types::SeparatorType;
 
@@ -177,15 +182,37 @@ pub fn register_input_coordinator_separator(
 }
 
 /// Level 2 — register a separator via `ContextManager`, pulling `SeparatorDragState`
-/// from the registry.
+/// from the registry, and draw it using the provided render context.
+///
+/// `view` supplies per-frame hovered/dragging state. `settings` supplies visual style.
 pub fn register_context_manager_separator(
     ctx: &mut ContextManager,
+    render: &mut dyn RenderContext,
     id: impl Into<WidgetId>,
     rect: Rect,
     kind: SeparatorKind,
     layer: &LayerId,
+    view: &SeparatorView,
+    settings: &SeparatorSettings,
 ) {
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), SeparatorDragState::default);
     register_input_coordinator_separator(&mut ctx.input, id, rect, kind, layer, state);
+    draw_separator(render, rect, view, settings);
+}
+
+/// Level 3 — register a separator via `LayoutManager`, forwarding to L2.
+pub fn register_layout_manager_separator<P: DockPanel>(
+    layout: &mut LayoutManager<P>,
+    render: &mut dyn RenderContext,
+    id: impl Into<WidgetId>,
+    rect: Rect,
+    kind: SeparatorKind,
+    layer: &LayerId,
+    view: &SeparatorView,
+    settings: &SeparatorSettings,
+) {
+    register_context_manager_separator(
+        layout.ctx_mut(), render, id, rect, kind, layer, view, settings,
+    );
 }

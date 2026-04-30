@@ -1,11 +1,17 @@
-//! InputCoordinator registration helper for the checkbox widget.
+//! InputCoordinator registration helpers for the checkbox widget.
 
 use crate::app_context::ContextManager;
+use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::types::{Rect, WidgetId};
+use crate::layout::LayoutManager;
+use crate::render::RenderContext;
+use crate::types::{Rect, WidgetId, WidgetState};
 
+use super::render::draw_checkbox;
+use super::settings::CheckboxSettings;
 use super::state::CheckboxState;
+use super::types::{CheckboxRenderKind, CheckboxView};
 
 /// Register a checkbox widget with the coordinator for this frame.
 pub fn register_checkbox(
@@ -28,14 +34,41 @@ pub fn register_input_coordinator_checkbox(
     coord.register_atomic(id, WidgetKind::Checkbox, rect, Sense::CLICK, layer);
 }
 
-/// Level 2 — register a checkbox via `ContextManager`, pulling state from the registry.
+/// Level 2 — register a checkbox via `ContextManager`, pulling state from the registry,
+/// and draw it using the provided render context.
+///
+/// `view` supplies per-frame data (checked, label). `settings` supplies visual style.
+/// `kind` selects the visual variant. `font` is the label font string.
 pub fn register_context_manager_checkbox(
     ctx: &mut ContextManager,
+    render: &mut dyn RenderContext,
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    view: &CheckboxView<'_>,
+    settings: &CheckboxSettings,
+    kind: &CheckboxRenderKind<'_>,
+    font: &str,
 ) {
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), CheckboxState::default);
     register_input_coordinator_checkbox(&mut ctx.input, id, rect, layer, state);
+    draw_checkbox(render, rect, WidgetState::Normal, view, settings, kind, font);
+}
+
+/// Level 3 — register a checkbox via `LayoutManager`, forwarding to L2.
+pub fn register_layout_manager_checkbox<P: DockPanel>(
+    layout: &mut LayoutManager<P>,
+    render: &mut dyn RenderContext,
+    id: impl Into<WidgetId>,
+    rect: Rect,
+    layer: &LayerId,
+    view: &CheckboxView<'_>,
+    settings: &CheckboxSettings,
+    kind: &CheckboxRenderKind<'_>,
+    font: &str,
+) {
+    register_context_manager_checkbox(
+        layout.ctx_mut(), render, id, rect, layer, view, settings, kind, font,
+    );
 }

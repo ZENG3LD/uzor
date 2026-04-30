@@ -33,4 +33,5 @@ pub use input::{
     register_tooltip,
     register_input_coordinator_tooltip,
     register_context_manager_tooltip,
+    register_layout_manager_tooltip,
 };

@@ -31,4 +31,5 @@ pub use input::{
     register_radio,
     register_input_coordinator_radio,
     register_context_manager_radio,
+    register_layout_manager_radio,
 };

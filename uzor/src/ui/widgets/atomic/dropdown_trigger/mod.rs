@@ -36,4 +36,5 @@ pub use input::{
     register_dropdown_trigger,
     register_input_coordinator_dropdown_trigger,
     register_context_manager_dropdown_trigger,
+    register_layout_manager_dropdown_trigger,
 };

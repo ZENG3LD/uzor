@@ -19,10 +19,15 @@
 //! the handle follows the pointer in real time.
 
 use crate::app_context::ContextManager;
+use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::types::{Rect, WidgetId};
+use crate::layout::LayoutManager;
+use crate::render::RenderContext;
+use crate::types::{Rect, WidgetId, WidgetState};
 
+use super::render::{draw_slider, SliderView};
+use super::settings::SliderSettings;
 use super::state::SliderDragState;
 use super::types::{DualSliderHandle, SliderConfig, SliderTrackInfo};
 
@@ -309,14 +314,36 @@ pub fn register_input_coordinator_slider(
 }
 
 /// Level 2 — register a slider via `ContextManager`, pulling `SliderDragState`
-/// from the registry.
+/// from the registry, and draw the track + handle using the provided render context.
+///
+/// `view` supplies per-frame value, kind, hover, and drag state.
+/// `settings` supplies visual style.
 pub fn register_context_manager_slider(
     ctx: &mut ContextManager,
+    render: &mut dyn RenderContext,
     id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
+    view: &SliderView,
+    settings: &SliderSettings,
 ) {
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), SliderDragState::default);
     register_input_coordinator_slider(&mut ctx.input, id, rect, layer, state);
+    draw_slider(render, rect, WidgetState::Normal, view, settings);
+}
+
+/// Level 3 — register a slider via `LayoutManager`, forwarding to L2.
+pub fn register_layout_manager_slider<P: DockPanel>(
+    layout: &mut LayoutManager<P>,
+    render: &mut dyn RenderContext,
+    id: impl Into<WidgetId>,
+    rect: Rect,
+    layer: &LayerId,
+    view: &SliderView,
+    settings: &SliderSettings,
+) {
+    register_context_manager_slider(
+        layout.ctx_mut(), render, id, rect, layer, view, settings,
+    );
 }
