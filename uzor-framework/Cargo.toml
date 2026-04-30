@@ -35,6 +35,8 @@ uzor-window-web = { workspace = true }
 
 [dev-dependencies]
 uzor-window-hub = { workspace = true }
+uzor-render-vello-gpu = { workspace = true }
+uzor-window-desktop = { workspace = true }
 
 [[example]]
 name = "hello"
