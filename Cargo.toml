@@ -20,6 +20,8 @@ members = [
     # Utils
     "uzor-render-hub",
     "uzor-window-hub",
+    # Icon utilities
+    "uzor-icon",
 ]
 resolver = "2"
 
@@ -43,6 +45,7 @@ uzor-render-tiny-skia = { version = "1.1.8", path = "./uzor-render-tiny-skia" }
 uzor-render-wgpu-instanced = { version = "1.1.8", path = "./uzor-render-wgpu-instanced" }
 uzor-window-hub = { version = "1.1.8", path = "./uzor-window-hub" }
 uzor-window-desktop = { version = "1.1.8", path = "./uzor-window-desktop" }
+uzor-icon = { version = "1.1.8", path = "./uzor-icon" }
 uzor-window-web = { version = "1.1.8", path = "./uzor-window-web" }
 uzor-window-mobile = { version = "1.1.8", path = "./uzor-window-mobile" }
 serde = { version = "1.0", features = ["derive"] }

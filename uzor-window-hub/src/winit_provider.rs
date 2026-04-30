@@ -28,7 +28,7 @@ use winit::window::Window;
 use uzor::core::types::Rect;
 use uzor::platform::PlatformEvent;
 
-use crate::lifecycle::{RawHandle, WindowProvider};
+use crate::lifecycle::{RawHandle, RgbaIcon, WindowProvider};
 
 // ─── SendSyncHandlePair ───────────────────────────────────────────────────────
 
@@ -134,6 +134,35 @@ impl WindowProvider for WinitWindowProvider {
     /// `true` once [`mark_close`](Self::mark_close) has been called.
     fn should_close(&self) -> bool {
         self.should_close
+    }
+
+    /// Begin an OS-level window drag so the user can reposition the window.
+    ///
+    /// Forwards to [`winit::window::Window::drag_window`]. Errors (e.g. called
+    /// outside a mouse-button-down event) are silently ignored.
+    fn drag_window(&mut self) {
+        let _ = self.window.drag_window();
+    }
+
+    /// Set or clear the OS window icon (taskbar / window caption).
+    ///
+    /// Converts `RgbaIcon` to a `winit::window::Icon` and delegates to
+    /// `Window::set_window_icon`. Conversion failures are silently ignored.
+    fn set_window_icon(&mut self, rgba: Option<RgbaIcon>) {
+        let icon = rgba.and_then(|i| {
+            winit::window::Icon::from_rgba(i.pixels, i.width, i.height).ok()
+        });
+        self.window.set_window_icon(icon);
+    }
+
+    /// Update the OS window title.
+    fn set_title(&mut self, title: &str) {
+        self.window.set_title(title);
+    }
+
+    /// Show or hide the window.
+    fn set_visible(&mut self, visible: bool) {
+        self.window.set_visible(visible);
     }
 
     /// Return a [`RawHandle::RawWindowHandle`] wrapping winit's raw window and

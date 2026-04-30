@@ -3,6 +3,7 @@
 use uzor::docking::panels::DockPanel;
 use uzor::layout::LayoutManager;
 use uzor::input::core::event_processor::PlatformEvent;
+use uzor_window_hub::RgbaIcon;
 
 // ── NoPanel ───────────────────────────────────────────────────────────────────
 
@@ -146,6 +147,13 @@ pub struct AppConfig {
     /// Start the window invisible and reveal it only after the first GPU frame
     /// is presented. Eliminates the white-flash on startup.
     pub start_visible: bool,
+
+    /// Optional window icon (taskbar, Alt-Tab, caption).
+    ///
+    /// When `Some`, the icon is applied immediately after window creation.
+    /// Construct via [`uzor_window_hub::RgbaIcon::from_rgba`] or load from
+    /// PNG/SVG using [`uzor_framework::AppBuilder::icon_from_png`].
+    pub icon: Option<RgbaIcon>,
 }
 
 impl Default for AppConfig {
@@ -163,6 +171,7 @@ impl Default for AppConfig {
             single_instance: None,
             dwm_border_color: None,
             start_visible: false,
+            icon: None,
         }
     }
 }

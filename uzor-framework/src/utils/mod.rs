@@ -1,5 +1,7 @@
-//! Utility modules: screenshot capture and single-instance guard.
+//! Utility modules: screenshot capture, single-instance guard, and Windows
+//! resource embedding helpers.
 
+pub mod resource;
 pub mod screenshot;
 pub mod single_instance;
 
@@ -8,3 +10,4 @@ pub use screenshot::{
     is_leap_year, now_ms, screenshot_save_dir, timestamp_for_filename,
 };
 pub use single_instance::{single_instance, SingleInstanceGuard};
+pub use resource::embed_icon_and_manifest;

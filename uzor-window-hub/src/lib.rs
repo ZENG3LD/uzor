@@ -31,7 +31,7 @@ pub use uzor::platform::PlatformWindowEvent;
 
 // ── New public surface ────────────────────────────────────────────────────────
 
-pub use lifecycle::{RawHandle, WindowProvider};
+pub use lifecycle::{RawHandle, RgbaIcon, WindowProvider};
 pub use events::PlatformEvent;
 pub use input::{EventProcessor, InputState};
 

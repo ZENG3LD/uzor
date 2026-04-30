@@ -25,6 +25,37 @@ pub enum RawHandle {
     CALayer(Box<dyn std::any::Any + Send + Sync>),
 }
 
+// ── RgbaIcon ──────────────────────────────────────────────────────────────────
+
+/// RGBA image used to set the OS window or system-tray icon.
+///
+/// `pixels` must be exactly `width * height * 4` bytes in row-major RGBA order.
+#[derive(Debug, Clone)]
+pub struct RgbaIcon {
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+    /// Raw RGBA pixel data: `width * height * 4` bytes.
+    pub pixels: Vec<u8>,
+}
+
+impl RgbaIcon {
+    /// Construct from an RGBA pixel buffer.
+    ///
+    /// # Panics (debug only)
+    ///
+    /// Asserts that `pixels.len() == width * height * 4` in debug builds.
+    pub fn from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        debug_assert_eq!(
+            pixels.len(),
+            (width * height * 4) as usize,
+            "RgbaIcon: pixel buffer length must equal width*height*4"
+        );
+        Self { width, height, pixels }
+    }
+}
+
 // ── WindowProvider trait ──────────────────────────────────────────────────────
 
 /// Abstraction over any OS window source.
@@ -83,4 +114,27 @@ pub trait WindowProvider {
     /// backends such as `uzor-window-desktop` return the appropriate
     /// [`RawHandle`] variant so the GPU surface factory can downcast it.
     fn raw_window_handle(&self) -> Option<RawHandle>;
+
+    /// Begin an OS-level window drag operation.
+    ///
+    /// Call this on mouse-down within the custom title-bar drag zone.
+    /// The platform will move the window as the user drags.
+    /// Default: no-op for providers that don't support OS-level drag.
+    fn drag_window(&mut self) {}
+
+    /// Set or clear the OS window icon (taskbar / window caption).
+    ///
+    /// Pass `Some(icon)` to set a new icon, `None` to revert to the default.
+    /// Default: no-op.
+    fn set_window_icon(&mut self, _rgba: Option<RgbaIcon>) {}
+
+    /// Set the window title at runtime.
+    ///
+    /// Default: no-op.
+    fn set_title(&mut self, _title: &str) {}
+
+    /// Show or hide the window.
+    ///
+    /// Default: no-op.
+    fn set_visible(&mut self, _visible: bool) {}
 }

@@ -11,16 +11,20 @@ use uzor::docking::panels::DockPanel;
 use uzor_render_hub::{RenderBackend, RenderSurfaceFactory};
 use uzor_window_hub::{WinitWindowProvider, WindowProvider};
 
+use uzor_window_hub::RgbaIcon;
+
 use crate::app::{App, AppConfig, ClosureApp, NoPanel};
 use crate::runtime::{Runtime, RuntimeError};
 
 // ── BuildError ────────────────────────────────────────────────────────────────
 
-/// Errors that can occur when calling [`AppBuilder::build`].
+/// Errors that can occur when calling [`AppBuilder::build`] or icon helpers.
 #[derive(Debug)]
 pub enum BuildError {
     /// No render backend was supplied via [`AppBuilder::backend`].
     MissingBackend,
+    /// PNG icon bytes could not be decoded or converted to RGBA8.
+    IconDecode(String),
 }
 
 impl std::fmt::Display for BuildError {
@@ -28,6 +32,9 @@ impl std::fmt::Display for BuildError {
         match self {
             BuildError::MissingBackend => {
                 f.write_str("no render backend supplied — call .backend(...)")
+            }
+            BuildError::IconDecode(msg) => {
+                write!(f, "icon PNG decode failed: {msg}")
             }
         }
     }
@@ -173,6 +180,56 @@ where
         self
     }
 
+    /// Set the window icon from a pre-built [`RgbaIcon`].
+    ///
+    /// The icon is applied to the OS window at creation time (taskbar,
+    /// Alt-Tab, window caption).
+    pub fn icon(mut self, icon: RgbaIcon) -> Self {
+        self.config.icon = Some(icon);
+        self
+    }
+
+    /// Set the window icon by decoding a PNG byte slice.
+    ///
+    /// Decodes the PNG, converts to RGBA, and stores as an [`RgbaIcon`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(BuildError::IconDecode)` if the bytes are not valid PNG or
+    /// if the decoded image cannot be converted to RGBA8.
+    pub fn icon_from_png(mut self, png_bytes: &[u8]) -> Result<Self, BuildError> {
+        use image::ImageDecoder;
+        use std::io::Cursor;
+
+        let decoder = image::codecs::png::PngDecoder::new(Cursor::new(png_bytes))
+            .map_err(|e| BuildError::IconDecode(e.to_string()))?;
+
+        let (width, height) = decoder.dimensions();
+        let total_bytes = decoder.total_bytes() as usize;
+
+        // Decode the raw bytes and convert to RGBA8.
+        let mut raw = vec![0u8; total_bytes];
+        decoder
+            .read_image(&mut raw)
+            .map_err(|e| BuildError::IconDecode(e.to_string()))?;
+
+        // Ensure we have RGBA8; if the PNG is RGB or palette, convert.
+        let rgba: Vec<u8> = if total_bytes == (width * height * 4) as usize {
+            raw
+        } else {
+            // Re-decode via DynamicImage for format conversion.
+            let img = image::load_from_memory_with_format(
+                png_bytes,
+                image::ImageFormat::Png,
+            )
+            .map_err(|e| BuildError::IconDecode(e.to_string()))?;
+            img.into_rgba8().into_raw()
+        };
+
+        self.config.icon = Some(RgbaIcon::from_rgba(width, height, rgba));
+        Ok(self)
+    }
+
     // ── Infrastructure setters ────────────────────────────────────────────────
 
     /// Select the rendering backend.
@@ -275,6 +332,17 @@ where
             .with_inner_size(winit::dpi::LogicalSize::new(w, h))
             .with_decorations(self.config.decorations)
             .with_visible(false); // revealed after first GPU frame
+
+        // Apply window icon at creation time when one is configured.
+        if let Some(ref rgba) = self.config.icon {
+            if let Ok(ic) = winit::window::Icon::from_rgba(
+                rgba.pixels.clone(),
+                rgba.width,
+                rgba.height,
+            ) {
+                attrs = attrs.with_window_icon(Some(ic));
+            }
+        }
 
         if let Some((mw, mh)) = self.config.min_size {
             attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(mw, mh));

@@ -5,22 +5,25 @@
 //! - [`VelloGpuSurfaceFactory`] — creates GPU surface from the window handle
 //! - [`App`] trait — user-supplied frame callback
 //!
+//! # New in this revision
+//!
+//! - `AppBuilder::decorated(false)` — chromeless window (draws own titlebar).
+//! - `AppBuilder::icon_from_png(...)` — load window icon from embedded PNG bytes.
+//!   Uncomment the `.icon_from_png` line and provide a real PNG to exercise it.
+//! - `uzor_icon::svg_bytes_to_rgba(...)` — SVG → RGBA at build/runtime for icons.
+//!   Uncomment the `.icon` line and provide a real SVG to exercise it.
+//! - `TrayBuilder` — system tray icon + menu.
+//!   The tray portion is also in a commented block; it requires a tray-capable
+//!   platform (Windows / macOS / Linux with system tray support).
+//!
 //! # Run
 //!
 //! ```sh
 //! cargo run --example hello -p uzor-framework
 //! ```
 //!
-//! Opens an 800 × 600 window and renders a solid dark-blue background frame
-//! in a continuous loop.  Close the window to exit.
-//!
-//! # What this example exercises
-//!
-//! 1. `AppBuilder::run()` creates a winit `EventLoop` and `Window` internally.
-//! 2. `VelloGpuSurfaceFactory::create_render_state` is called once on `Resumed`
-//!    and now keeps the `RenderSurface` alive inside `WindowRenderState::Gpu`.
-//! 3. `Runtime::tick()` is called each `RedrawRequested` and drives:
-//!    `begin_frame → app.ui → submit_frame → request_redraw`.
+//! Opens an 800 × 600 chromeless window and renders a solid dark-blue
+//! background frame in a continuous loop. Close the window to exit.
 
 use uzor::layout::LayoutManager;
 use uzor_framework::app::{App, NoPanel};
@@ -39,18 +42,52 @@ impl App<NoPanel> for Hello {
     ) {
         // No widgets yet — the clear colour from AppConfig is enough to verify
         // that the frame loop runs and the GPU surface is alive.
-        // Future: draw a rectangle or text once the widget API is wired through
-        // render_state.scene_mut().
     }
 }
 
 // ─── main ─────────────────────────────────────────────────────────────────────
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // ── Icon from SVG (uzor-icon) ─────────────────────────────────────────────
+    //
+    // Uncomment when you have a `logo.svg` next to this example file:
+    //
+    //   let icon_rgba = uzor_icon::svg_bytes_to_rgba(
+    //       include_bytes!("logo.svg"),
+    //       32,
+    //   )?;
+    //   let icon = uzor_window_hub::RgbaIcon::from_rgba(32, 32, icon_rgba);
+    //
+    // Then pass `.icon(icon)` to AppBuilder below.
+
+    // ── Icon from PNG ─────────────────────────────────────────────────────────
+    //
+    // Uncomment when you have an `icon.png` next to this example file:
+    //
+    //   .icon_from_png(include_bytes!("icon.png"))?
+
+    // ── System tray (TrayBuilder) ─────────────────────────────────────────────
+    //
+    // Uncomment for a tray icon with a Quit menu item:
+    //
+    //   use uzor_framework::{TrayBuilder, TrayEvent};
+    //   let mut tray = TrayBuilder::new()
+    //       .tooltip("uzor hello")
+    //       .menu_item("quit", "Quit")
+    //       .build()?;
+    //
+    // Then in a loop alongside the event loop:
+    //   if let Some(TrayEvent::MenuClick(id)) = tray.next_event() {
+    //       if id == "quit" { std::process::exit(0); }
+    //   }
+
     AppBuilder::new(Hello)
         .title("uzor hello")
         .size(800, 600)
-        .decorations(true)
+        // Pass `decorations(false)` for a chromeless window.
+        // The app is responsible for drawing its own titlebar via
+        // `uzor_framework::chrome::register_chrome_default`.
+        .decorations(false)
         .background(0xFF181820) // dark navy — visible sign the GPU path works
         .backend(RenderBackend::VelloGpu)
         .surface_factory(Box::new(VelloGpuSurfaceFactory::new()))
@@ -58,4 +95,3 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
-
