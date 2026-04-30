@@ -28,8 +28,10 @@ pub use submit::{submit_frame, SubmitOutcome, SubmitParams};
 pub use runtime::RuntimeBackend;
 pub use surface::{RenderSurfaceFactory, SurfaceError, SurfaceSize};
 pub use factories::{
-    VelloGpuSurfaceFactory,
+    Canvas2dSurfaceFactory,
     TinySkiaSurfaceFactory,
     VelloCpuSurfaceFactory,
+    VelloGpuSurfaceFactory,
     VelloHybridSurfaceFactory,
+    WgpuInstancedSurfaceFactory,
 };

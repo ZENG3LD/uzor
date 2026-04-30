@@ -7,28 +7,26 @@
 //!   [`GpuDevicePool`] (wgpu instance + device pool — vello's own
 //!   `RenderContext` type, aliased here to avoid a name clash with
 //!   `uzor::render::RenderContext`), the `RenderSurface` (wgpu swapchain),
-//!   the `Renderer`, and the per-frame `Scene`.  The surface is never dropped
-//!   after init — this is the primary goal of the refactor.
+//!   the `Renderer`, and the per-frame `Scene`.
 //!
 //! - [`WindowRenderState::Cpu`] — pure-CPU rasterizer.  Owns a
 //!   `TinySkiaCpuRenderContext` (which itself wraps a `tiny_skia::Pixmap`).
 //!   No wgpu dependency; no GPU initialisation cost.
 //!
-//! # Breaking change
+//! - [`WindowRenderState::VelloCpu`] — vello CPU renderer.  Owns a
+//!   `VelloCpuRenderContext`.  No wgpu dependency.
 //!
-//! Prior to this refactor `WindowRenderState` was a flat struct with public
-//! fields (`backend`, `vello_renderer`, `scene`, `cpu_pixels`, etc.).  Those
-//! fields are gone.  Callers should use the variant-specific accessors:
-//! [`WindowRenderState::scene_mut`], [`WindowRenderState::cpu_ctx_mut`], etc.
+//! - [`WindowRenderState::VelloHybrid`] — vello hybrid CPU+GPU renderer.
+//!   Owns `GpuDevicePool`, `RenderSurface`, and a `vello_hybrid::Renderer`.
 //!
-//! The [`BackendContext`] enum (per-frame context built by callers) is
-//! unchanged.
+//! - [`WindowRenderState::WgpuInstanced`] — custom wgpu instanced renderer.
+//!   Owns `GpuDevicePool`, `RenderSurface`, and an `InstancedRenderer`.
 
 use uzor_render_tiny_skia::TinySkiaCpuRenderContext;
 use uzor_render_vello_cpu::VelloCpuRenderContext;
 use uzor_render_vello_gpu::VelloGpuRenderContext;
 use uzor_render_vello_hybrid::VelloHybridRenderContext;
-use uzor_render_wgpu_instanced::InstancedRenderContext;
+use uzor_render_wgpu_instanced::{InstancedRenderContext, InstancedRenderer};
 use vello::util::{RenderContext as VelloRenderContext, RenderSurface};
 use vello::{Renderer as VelloRenderer, Scene};
 
@@ -86,39 +84,24 @@ impl<'a> BackendContext<'a> {
 /// without any external lifetime dependencies.  Constructed once per window
 /// by a [`crate::RenderSurfaceFactory`] implementation; driven frame-by-frame
 /// by the framework runtime.
-///
-/// # Breaking change (v2)
-///
-/// The previously flat struct is now an enum.  Old code that accessed public
-/// fields like `state.vello_renderer`, `state.scene`, `state.cpu_pixels`, etc.
-/// must be updated to use the methods below or to match on the enum variant.
 pub enum WindowRenderState {
     /// GPU-backed vello rendering pipeline.
     ///
     /// Owns the [`GpuDevicePool`] (wgpu instance + device pool), the
     /// `RenderSurface` (swapchain tied to the OS window), the vello
     /// `Renderer`, and the per-frame `Scene`.
-    ///
-    /// The `RenderSurface` has a `'static` lifetime bound because both the
-    /// surface and the device pool that owns the device are stored together
-    /// in this variant — the surface cannot outlive its device, and both are
-    /// dropped together when the variant is dropped.
     Gpu {
-        /// wgpu instance + device pool.  Kept alongside the surface so the
-        /// surface lifetime constraint (`device must outlive surface`) is
-        /// satisfied by construction.
+        /// wgpu instance + device pool.
         gpu_pool: GpuDevicePool,
         /// wgpu swapchain bound to the OS window.  `'static` because the
-        /// window (`Arc<winit::window::Window>`) that the handle points to is
-        /// kept alive by the `WinitWindowProvider` for the entire runtime
-        /// duration — the surface will be dropped before the window.
+        /// window is kept alive by the `WinitWindowProvider` for the entire
+        /// runtime duration.
         surface: RenderSurface<'static>,
         /// vello GPU renderer.
         renderer: VelloRenderer,
         /// Per-frame vello scene (reset at `begin_frame`).
         scene: Scene,
-        /// Device index into `gpu_pool.devices` (set at init, stable across
-        /// frames since we never add/remove devices after startup).
+        /// Device index into `gpu_pool.devices`.
         dev_id: usize,
     },
     /// Pure-CPU rasterizer (tiny-skia).  No wgpu, no GPU init cost.
@@ -126,15 +109,46 @@ pub enum WindowRenderState {
         /// tiny-skia CPU render context — owns the pixel buffer.
         ctx: TinySkiaCpuRenderContext,
     },
+    /// vello CPU renderer — rasterizes on CPU, no wgpu dependency.
+    ///
+    /// Pixel output is available via `VelloCpuRenderContext::render_to_softbuffer`.
+    VelloCpu {
+        /// The vello-cpu render context — owns all CPU-side rasterization state.
+        ctx: VelloCpuRenderContext,
+    },
+    /// vello hybrid — CPU strip encoding + GPU fine rasterization.
+    ///
+    /// Needs a wgpu surface (swapchain) for the GPU compositing phase,
+    /// plus a `vello_hybrid::Renderer` for the GPU pass.
+    VelloHybrid {
+        /// wgpu instance + device pool.
+        gpu_pool: GpuDevicePool,
+        /// wgpu swapchain bound to the OS window.
+        surface: RenderSurface<'static>,
+        /// vello-hybrid GPU renderer (lazy-init on first submit).
+        renderer: Option<vello_hybrid::Renderer>,
+        /// Per-frame vello-hybrid context (reset at `begin_frame`).
+        ctx: VelloHybridRenderContext,
+        /// Device index into `gpu_pool.devices`.
+        dev_id: usize,
+    },
+    /// Custom wgpu instanced renderer — no vello scene, no compute pipeline.
+    ///
+    /// Renders directly to the swapchain via `InstancedRenderer::render()`.
+    WgpuInstanced {
+        /// wgpu instance + device pool.
+        gpu_pool: GpuDevicePool,
+        /// wgpu swapchain bound to the OS window.
+        surface: RenderSurface<'static>,
+        /// Instanced renderer (lazy-init on first submit).
+        renderer: Option<InstancedRenderer>,
+        /// Device index into `gpu_pool.devices`.
+        dev_id: usize,
+    },
 }
 
 impl WindowRenderState {
-    /// Construct a GPU-backed render state.
-    ///
-    /// All GPU resources are moved in; ownership is transferred to this
-    /// variant.  The `RenderSurface<'static>` must have been created from a
-    /// window whose `Arc<Window>` outlives the runtime (which is always true
-    /// when `WinitWindowProvider` is used).
+    /// Construct a GPU-backed render state (vello GPU).
     pub fn new_gpu(
         gpu_pool: GpuDevicePool,
         surface: RenderSurface<'static>,
@@ -157,11 +171,56 @@ impl WindowRenderState {
         }
     }
 
+    /// Construct a vello-cpu render state.
+    pub fn new_vello_cpu(dpr: f64) -> Self {
+        Self::VelloCpu {
+            ctx: VelloCpuRenderContext::new(dpr),
+        }
+    }
+
+    /// Construct a vello-hybrid render state.
+    ///
+    /// The `vello_hybrid::Renderer` is created lazily on the first frame
+    /// submission (requires the swapchain texture format, available only then).
+    pub fn new_vello_hybrid(
+        gpu_pool: GpuDevicePool,
+        surface: RenderSurface<'static>,
+        dev_id: usize,
+        dpr: f64,
+    ) -> Self {
+        Self::VelloHybrid {
+            gpu_pool,
+            surface,
+            renderer: None,
+            ctx: VelloHybridRenderContext::new(dpr),
+            dev_id,
+        }
+    }
+
+    /// Construct a wgpu-instanced render state.
+    ///
+    /// The `InstancedRenderer` is created lazily on the first frame submission.
+    pub fn new_wgpu_instanced(
+        gpu_pool: GpuDevicePool,
+        surface: RenderSurface<'static>,
+        dev_id: usize,
+    ) -> Self {
+        Self::WgpuInstanced {
+            gpu_pool,
+            surface,
+            renderer: None,
+            dev_id,
+        }
+    }
+
     /// Returns the active [`RenderBackend`] for this state.
     pub fn backend(&self) -> RenderBackend {
         match self {
-            Self::Gpu { .. } => RenderBackend::VelloGpu,
-            Self::Cpu { .. } => RenderBackend::TinySkia,
+            Self::Gpu { .. }          => RenderBackend::VelloGpu,
+            Self::Cpu { .. }          => RenderBackend::TinySkia,
+            Self::VelloCpu { .. }     => RenderBackend::VelloCpu,
+            Self::VelloHybrid { .. }  => RenderBackend::VelloHybrid,
+            Self::WgpuInstanced { .. } => RenderBackend::InstancedWgpu,
         }
     }
 
@@ -172,48 +231,67 @@ impl WindowRenderState {
     pub fn begin_frame(&mut self) {
         match self {
             Self::Gpu { scene, .. } => scene.reset(),
-            Self::Cpu { .. } => {
-                // CPU pixel buffer is rebuilt by the caller during the draw
-                // phase; no reset needed here.
+            Self::VelloHybrid { ctx, .. } => {
+                // ctx is reset lazily via begin_frame inside VelloHybridRenderContext
+                let _ = ctx; // reset is done by the caller filling a fresh context
+            }
+            Self::Cpu { .. } | Self::VelloCpu { .. } | Self::WgpuInstanced { .. } => {
+                // CPU pixel buffer / instanced commands are rebuilt by the caller.
             }
         }
     }
 
     // ── Accessors ─────────────────────────────────────────────────────────────
 
-    /// Mutable reference to the vello `Scene` (GPU variant only).
+    /// Mutable reference to the vello `Scene` (Gpu variant only).
     ///
-    /// Returns `None` for CPU backends.
+    /// Returns `None` for all other backends.
     pub fn scene_mut(&mut self) -> Option<&mut Scene> {
         match self {
             Self::Gpu { scene, .. } => Some(scene),
-            Self::Cpu { .. } => None,
+            _ => None,
         }
     }
 
-    /// Shared reference to the vello `Scene` (GPU variant only).
+    /// Shared reference to the vello `Scene` (Gpu variant only).
     pub fn scene(&self) -> Option<&Scene> {
         match self {
             Self::Gpu { scene, .. } => Some(scene),
-            Self::Cpu { .. } => None,
+            _ => None,
         }
     }
 
-    /// Mutable reference to the CPU render context (CPU variant only).
+    /// Mutable reference to the tiny-skia CPU render context (Cpu variant only).
     ///
-    /// Returns `None` for GPU backends.
+    /// Returns `None` for all other backends.
     pub fn cpu_ctx_mut(&mut self) -> Option<&mut TinySkiaCpuRenderContext> {
         match self {
             Self::Cpu { ctx } => Some(ctx),
-            Self::Gpu { .. } => None,
+            _ => None,
         }
     }
 
-    /// Shared reference to the CPU render context (CPU variant only).
+    /// Shared reference to the tiny-skia CPU render context (Cpu variant only).
     pub fn cpu_ctx(&self) -> Option<&TinySkiaCpuRenderContext> {
         match self {
             Self::Cpu { ctx } => Some(ctx),
-            Self::Gpu { .. } => None,
+            _ => None,
+        }
+    }
+
+    /// Mutable reference to the vello-cpu render context (VelloCpu variant only).
+    pub fn vello_cpu_ctx_mut(&mut self) -> Option<&mut VelloCpuRenderContext> {
+        match self {
+            Self::VelloCpu { ctx } => Some(ctx),
+            _ => None,
+        }
+    }
+
+    /// Mutable reference to the vello-hybrid render context (VelloHybrid variant only).
+    pub fn vello_hybrid_ctx_mut(&mut self) -> Option<&mut VelloHybridRenderContext> {
+        match self {
+            Self::VelloHybrid { ctx, .. } => Some(ctx),
+            _ => None,
         }
     }
 }
