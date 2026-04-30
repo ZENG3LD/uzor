@@ -192,7 +192,7 @@ pub fn register_input_coordinator_chrome(
 
     if show_window_controls {
         // New-window button
-        if !matches!(kind, ChromeRenderKind::WindowControlsOnly) {
+        if !matches!(kind, ChromeRenderKind::WindowControlsOnly) && view.show_new_window_btn {
             coord.register_child(
                 &chrome_id,
                 format!("{}:new_win", chrome_id.0),
@@ -200,7 +200,9 @@ pub fn register_input_coordinator_chrome(
                 Rect::new(rect.x + bp.new_window_left, rect.y, NEW_WINDOW_BTN_WIDTH, h),
                 Sense::CLICK | Sense::HOVER,
             );
+        }
 
+        if !matches!(kind, ChromeRenderKind::WindowControlsOnly) {
             // Menu button
             if view.show_menu_btn {
                 coord.register_child(
@@ -213,13 +215,15 @@ pub fn register_input_coordinator_chrome(
             }
 
             // Close-window button
-            coord.register_child(
-                &chrome_id,
-                format!("{}:close_win", chrome_id.0),
-                WidgetKind::Button,
-                Rect::new(rect.x + bp.close_window_left, rect.y, CLOSE_WINDOW_BTN_WIDTH, h),
-                Sense::CLICK | Sense::HOVER,
-            );
+            if view.show_close_window_btn {
+                coord.register_child(
+                    &chrome_id,
+                    format!("{}:close_win", chrome_id.0),
+                    WidgetKind::Button,
+                    Rect::new(rect.x + bp.close_window_left, rect.y, CLOSE_WINDOW_BTN_WIDTH, h),
+                    Sense::CLICK | Sense::HOVER,
+                );
+            }
         }
 
         // Minimize
@@ -403,7 +407,7 @@ fn draw_chrome_internal(
         let icon_sz = style.action_icon_size();
 
         // --- 5. New-window icon ---
-        if show_tabs {
+        if show_tabs && view.show_new_window_btn {
             let nw_cx = rect.x + bp.new_window_left + NEW_WINDOW_BTN_WIDTH / 2.0;
             let nw_cy = rect.y + h / 2.0;
             ctx.set_fill_color(theme.icon_normal());
@@ -433,7 +437,7 @@ fn draw_chrome_internal(
         ctx.fill_rect(rect.x + bp.minimize_x - 1.0, rect.y + 6.0, 1.0, h - 12.0);
 
         // --- 8. Close-window icon ---
-        if show_tabs {
+        if show_tabs && view.show_close_window_btn {
             let cw_cx = rect.x + bp.close_window_left + CLOSE_WINDOW_BTN_WIDTH / 2.0;
             let cw_cy = rect.y + h / 2.0;
             let arm = 3.5_f64;
@@ -441,7 +445,7 @@ fn draw_chrome_internal(
         }
 
         // --- 9. Divider between close-window and minimize group ---
-        if show_tabs {
+        if show_tabs && view.show_close_window_btn {
             ctx.set_fill_color(theme.separator());
             ctx.fill_rect(
                 rect.x + bp.close_window_left - 1.0,
@@ -453,6 +457,11 @@ fn draw_chrome_internal(
 
         // --- 10. Minimize icon (10×1 filled rect) ---
         {
+            let btn_rect = Rect::new(rect.x + bp.minimize_x, rect.y, BUTTON_WIDTH, h);
+            if state.hovered == super::types::ChromeHit::MinBtn {
+                ctx.set_fill_color(theme.button_hover());
+                ctx.fill_rect(btn_rect.x, btn_rect.y, btn_rect.width, btn_rect.height);
+            }
             let mid_x = rect.x + bp.minimize_x + BUTTON_WIDTH / 2.0;
             let mid_y = rect.y + h / 2.0;
             ctx.set_fill_color(theme.icon_normal());
@@ -461,6 +470,11 @@ fn draw_chrome_internal(
 
         // --- 11. Maximize / restore icon ---
         {
+            let btn_rect = Rect::new(rect.x + bp.maximize_x, rect.y, BUTTON_WIDTH, h);
+            if state.hovered == super::types::ChromeHit::MaxBtn {
+                ctx.set_fill_color(theme.button_hover());
+                ctx.fill_rect(btn_rect.x, btn_rect.y, btn_rect.width, btn_rect.height);
+            }
             let mid_x = rect.x + bp.maximize_x + BUTTON_WIDTH / 2.0;
             let mid_y = rect.y + h / 2.0;
             ctx.set_stroke_color(theme.icon_normal());
@@ -545,9 +559,11 @@ fn draw_cross(
     ctx.set_stroke_color(color);
     ctx.set_stroke_width(stroke_w);
     ctx.set_line_dash(&[]);
+    ctx.begin_path();
     ctx.move_to(x, y);
     ctx.line_to(x + size, y + size);
     ctx.stroke();
+    ctx.begin_path();
     ctx.move_to(x + size, y);
     ctx.line_to(x, y + size);
     ctx.stroke();

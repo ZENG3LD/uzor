@@ -63,6 +63,11 @@ pub trait SidebarStyle {
     fn background_fill(&self) -> BackgroundFill {
         BackgroundFill::Solid
     }
+
+    /// Whether to render a 1 px divider line under the header.  Default: `true`.
+    fn show_header_divider(&self) -> bool {
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------

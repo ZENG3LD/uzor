@@ -46,7 +46,7 @@ use uzor::ui::widgets::composite::chrome::input::{
 use uzor::ui::widgets::composite::chrome::settings::ChromeSettings;
 use uzor::ui::widgets::composite::chrome::state::ChromeState;
 use uzor::ui::widgets::composite::chrome::types::{
-    ChromeAction, ChromeRenderKind, ChromeTabConfig, ChromeView,
+    ChromeAction, ChromeHit, ChromeRenderKind, ChromeTabConfig, ChromeView,
 };
 
 use uzor::ui::widgets::composite::context_menu::input::register_layout_manager_context_menu;
@@ -63,7 +63,7 @@ use uzor::ui::widgets::composite::dropdown::types::{
     DropdownItem, DropdownItemRight, DropdownRenderKind, DropdownView, DropdownViewKind,
 };
 
-use uzor::ui::widgets::composite::modal::input::register_layout_manager_modal;
+use uzor::ui::widgets::composite::modal::input::{handle_modal_drag, register_layout_manager_modal};
 use uzor::ui::widgets::composite::modal::settings::ModalSettings;
 use uzor::ui::widgets::composite::modal::state::ModalState;
 use uzor::ui::widgets::composite::modal::types::{
@@ -85,6 +85,7 @@ use uzor::ui::widgets::composite::popup::types::{
 use uzor::ui::widgets::composite::sidebar::input::register_layout_manager_sidebar;
 use uzor::ui::widgets::composite::sidebar::settings::SidebarSettings;
 use uzor::ui::widgets::composite::sidebar::state::SidebarState;
+use uzor::ui::widgets::composite::sidebar::style::{DefaultSidebarStyle, SidebarStyle};
 use uzor::ui::widgets::composite::sidebar::types::{
     HeaderAction, SidebarHeader, SidebarRenderKind, SidebarView,
 };
@@ -254,6 +255,21 @@ impl ButtonTheme for VisibleButtonTheme {
     fn button_utility_bg_hover(&self) -> &str { "#363a45" }
 }
 
+// Sidebar style: same as default but without the header divider line.
+struct NoDividerSidebarStyle(DefaultSidebarStyle);
+impl SidebarStyle for NoDividerSidebarStyle {
+    fn header_height(&self) -> f64       { self.0.header_height() }
+    fn tab_strip_height(&self) -> f64    { self.0.tab_strip_height() }
+    fn padding(&self) -> f64             { self.0.padding() }
+    fn resize_zone_width(&self) -> f64   { self.0.resize_zone_width() }
+    fn border_width(&self) -> f64        { self.0.border_width() }
+    fn min_width(&self) -> f64           { self.0.min_width() }
+    fn max_width(&self) -> f64           { self.0.max_width() }
+    fn default_width(&self) -> f64       { self.0.default_width() }
+    fn scrollbar_width(&self) -> f64     { self.0.scrollbar_width() }
+    fn show_header_divider(&self) -> bool { false }
+}
+
 struct VisibleCheckboxTheme;
 impl CheckboxTheme for VisibleCheckboxTheme {
     fn checkbox_bg_checked(&self) -> &str { "#2962ff" }
@@ -332,6 +348,10 @@ enum DragTarget {
     L2RangeMax(f64),
     L2Scroll(f64),
     L2Splitter(f64),
+    /// Modal header drag — stores cursor-relative-to-modal offset so modal moves smoothly.
+    ModalDrag,
+    /// Dock separator drag — stores separator index and start mouse position.
+    SeparatorDrag { sep_idx: usize, start_x: f64, start_y: f64 },
 }
 
 // =============================================================================
@@ -560,11 +580,30 @@ impl AppState {
         };
         self.layout.ctx_mut().input.begin_frame(input);
 
-        // Register L2 text field
+        // Fix 4: register L2 text field at its actual screen-space rect.
+        // Compute modal rect using the same formula as the rendering pass below
+        // so the text field hit-zone matches the drawn widget.
         if self.modal_open && self.modal_kind == ModalKind::L2 {
+            let modal_w = L2_WIN_W + 24.0;
+            let modal_h = L2_WIN_H + 80.0;
+            let modal_x = (width as f64 / 2.0 - modal_w / 2.0).max(0.0);
+            let modal_y = (height as f64 / 2.0 - modal_h / 2.0).max(0.0);
+            // If the modal has been dragged, its render position differs.
+            let (frame_x, frame_y) = if self.modal_state.position != (0.0, 0.0) {
+                self.modal_state.position
+            } else {
+                (modal_x, modal_y)
+            };
+            // ox/oy as used in the render pass: ox = frame_x, oy = frame_y + 44.0 (header)
+            let ti_screen_rect = Rect::new(
+                frame_x + TI_RECT.x,
+                frame_y + 44.0 + TI_RECT.y,
+                TI_RECT.width,
+                TI_RECT.height,
+            );
             self.layout.ctx_mut().input.register_text_field(
                 "l2-text",
-                TI_RECT,
+                ti_screen_rect,
                 TextFieldConfig::text(),
             );
         }
@@ -583,16 +622,18 @@ impl AppState {
         // ── Chrome ────────────────────────────────────────────────────────────
         let tab_ids = ["tab-0", "tab-1", "tab-2"];
         let chrome_tabs = [
-            ChromeTabConfig { id: "tab-0", label: "Dashboard", icon: None, color_tag: None, closable: false, active: self.active_view == 0 },
-            ChromeTabConfig { id: "tab-1", label: "Charts",    icon: None, color_tag: None, closable: false, active: self.active_view == 1 },
-            ChromeTabConfig { id: "tab-2", label: "Settings",  icon: None, color_tag: None, closable: false, active: self.active_view == 2 },
+            ChromeTabConfig { id: "tab-0", label: "Dashboard",  icon: None, color_tag: None, closable: false, active: self.active_view == 0 },
+            ChromeTabConfig { id: "tab-1", label: "Panels",     icon: None, color_tag: None, closable: false, active: self.active_view == 1 },
+            ChromeTabConfig { id: "tab-2", label: "Monitoring", icon: None, color_tag: None, closable: false, active: self.active_view == 2 },
         ];
         let chrome_view = ChromeView {
             tabs: &chrome_tabs,
             active_tab_id: Some(tab_ids[self.active_view]),
             show_new_tab_btn: false,
             show_menu_btn: false,
-            is_maximized: false,
+            show_new_window_btn: false,
+            show_close_window_btn: false,
+            is_maximized: self.window.is_maximized(),
             cursor_x: mx,
             cursor_y: my,
             time_ms,
@@ -614,12 +655,18 @@ impl AppState {
         let file_btn_active = self.dropdown_file_state.open;
         let view_btn_active = self.dropdown_view_state.open;
         let help_btn_active = self.dropdown_help_state.open;
+        // Fix #8/9: L2 and L1 modal triggers live in top toolbar
+        let l2_active_tb = self.modal_open && self.modal_kind == ModalKind::L2;
+        let l1_active_tb = self.modal_open && self.modal_kind == ModalKind::L1;
         let top_toolbar_items = [
             ToolbarItem::TextButton { id: "tb-file", text: "File", active: file_btn_active, tooltip: Some("File menu") },
             ToolbarItem::TextButton { id: "tb-view", text: "View", active: view_btn_active, tooltip: Some("View menu") },
             ToolbarItem::TextButton { id: "tb-help", text: "Help", active: help_btn_active, tooltip: Some("Help menu") },
             ToolbarItem::Separator,
             ToolbarItem::TextButton { id: "tb-new", text: "New", active: false, tooltip: Some("New chart") },
+            ToolbarItem::Separator,
+            ToolbarItem::TextButton { id: "tb-l2", text: "L2", active: l2_active_tb, tooltip: Some("Open L2 modal") },
+            ToolbarItem::TextButton { id: "tb-l1", text: "L1", active: l1_active_tb, tooltip: Some("Open L1 modal") },
         ];
         let clock_items = [
             ToolbarItem::Clock { id: "top-clock", time_text: clock.as_str() },
@@ -643,14 +690,11 @@ impl AppState {
         );
 
         // ── Left vertical toolbar ─────────────────────────────────────────────
+        // Fix #5: use TextButton with SVG symbols — IconButton requires a
+        // populated icon registry which may be empty in examples.
         let sidebar_open = self.sidebar_open;
         let left_items = [
-            ToolbarItem::IconButton { id: "lt-toggle-sidebar", icon: &uzor::types::IconId::new("sidebar"), active: sidebar_open, tooltip: Some("Toggle sidebar") },
-            ToolbarItem::Separator,
-            ToolbarItem::IconButton { id: "lt-zoom-in",  icon: &uzor::types::IconId::new("zoom-in"),  active: false, tooltip: Some("Zoom in") },
-            ToolbarItem::IconButton { id: "lt-zoom-out", icon: &uzor::types::IconId::new("zoom-out"), active: false, tooltip: Some("Zoom out") },
-            ToolbarItem::Separator,
-            ToolbarItem::IconButton { id: "lt-draw",     icon: &uzor::types::IconId::new("pencil"),   active: false, tooltip: Some("Draw mode") },
+            ToolbarItem::TextButton { id: "lt-toggle-sidebar", text: "☰", active: sidebar_open, tooltip: Some("Toggle sidebar") },
         ];
         let left_toolbar_view = ToolbarView {
             start: ToolbarSection { items: &left_items },
@@ -671,9 +715,10 @@ impl AppState {
         );
 
         // ── Sidebar ───────────────────────────────────────────────────────────
+        // Fix #8/9: MODALS section removed — L2/L1 moved to top toolbar.
+        // Settings lives only in the context menu (fix #12).
+        // Sidebar now shows only the PANELS section.
         if self.sidebar_open {
-            let modal_open = self.modal_open;
-            let modal_kind = self.modal_kind;
             let sidebar_actions: &[HeaderAction<'_>] = &[];
             let sidebar_header = SidebarHeader { icon: None, title: "Navigation", actions: sidebar_actions };
             let mut sidebar_view = SidebarView {
@@ -681,7 +726,7 @@ impl AppState {
                 tabs: &[],
                 active_tab: None,
                 show_scrollbar: false,
-                content_height: 400.0,
+                content_height: 200.0,
             };
             let _sidebar_node = register_layout_manager_sidebar(
                 &mut self.layout,
@@ -691,118 +736,231 @@ impl AppState {
                 "sidebar-widget",
                 &mut self.sidebar_state,
                 &mut sidebar_view,
-                &SidebarSettings::default(),
+                &{
+                    let mut s = SidebarSettings::default();
+                    s.style = Box::new(NoDividerSidebarStyle(DefaultSidebarStyle));
+                    s
+                },
                 &SidebarRenderKind::Left,
             );
-            // Draw sidebar body content inline
+            // Sidebar body — 3 navigation buttons matching chrome tabs.
             if let Some(body_rect) = self.layout.rect_for_edge_slot("sidebar") {
                 let mut y = body_rect.y + 8.0;
-                render.set_fill_color("rgba(255,255,255,0.25)");
-                render.fill_text("MODALS", body_rect.x + 12.0, y + 11.0);
-                y += 28.0;
-                let btns: &[(&str, ModalKind, &str)] = &[
-                    ("Open L2 Modal", ModalKind::L2, "#2962ff"),
-                    ("Open L1 Modal", ModalKind::L1, "#10b981"),
-                    ("Settings Modal", ModalKind::Settings, "#7c3aed"),
-                ];
-                for (label, kind, color) in btns {
-                    let is_open = modal_open && modal_kind == *kind;
-                    let btn_color = if is_open { "#ef5350" } else { *color };
+                let nav_labels = ["Dashboard", "Panels", "Monitoring"];
+                for (i, lbl) in nav_labels.iter().enumerate() {
+                    let active = self.active_view == i;
                     let bx = body_rect.x + 8.0;
                     let bw = body_rect.width - 16.0;
-                    let btn_rect = Rect::new(bx, y, bw, 30.0);
-                    let btn_id = match kind {
-                        ModalKind::L2       => "sidebar-modal-l2",
-                        ModalKind::L1       => "sidebar-modal-l1",
-                        ModalKind::Settings => "sidebar-modal-settings",
-                    };
-                    {
-                        use uzor::input::core::sense::Sense;
-                        use uzor::input::core::widget_kind::WidgetKind;
-                        self.layout.ctx_mut().input.register_atomic(
-                            WidgetId::new(btn_id),
-                            WidgetKind::Button,
-                            btn_rect,
-                            Sense::CLICK | Sense::HOVER,
-                            &LayerId::main(),
-                        );
-                    }
-                    render.set_fill_color(btn_color);
+                    let bg = if active { "#2962ff" } else { "rgba(255,255,255,0.07)" };
+                    render.set_fill_color(bg);
                     render.fill_rounded_rect(bx, y, bw, 30.0, 4.0);
-                    render.set_fill_color("#ffffff");
-                    render.fill_text(if is_open { "Close Modal" } else { *label }, bx + bw / 2.0, y + 15.0);
+                    render.set_fill_color(if active { "#ffffff" } else { "#d1d4dc" });
+                    render.fill_text(*lbl, bx + 12.0, y + 15.0);
+                    let nav_id = format!("sidebar-nav-{}", i);
+                    use uzor::input::core::sense::Sense;
+                    use uzor::input::core::widget_kind::WidgetKind;
+                    self.layout.ctx_mut().input.register_atomic(
+                        WidgetId::new(nav_id),
+                        WidgetKind::Button,
+                        Rect::new(bx, y, bw, 30.0),
+                        Sense::CLICK | Sense::HOVER,
+                        &LayerId::main(),
+                    );
                     y += 38.0;
-                }
-                y += 12.0;
-                render.set_fill_color("rgba(255,255,255,0.25)");
-                render.fill_text("PANELS", body_rect.x + 12.0, y + 11.0);
-                y += 28.0;
-                let panel_labels = ["Dashboard", "Charts", "Settings"];
-                for lbl in &panel_labels {
-                    render.set_fill_color("rgba(255,255,255,0.07)");
-                    render.fill_rounded_rect(body_rect.x + 8.0, y, body_rect.width - 16.0, 26.0, 3.0);
-                    render.set_fill_color("#d1d4dc");
-                    render.fill_text(*lbl, body_rect.x + 16.0, y + 13.0);
-                    y += 32.0;
                 }
                 let _ = y;
             }
         }
 
-        // ── Main content (dock panels) ────────────────────────────────────────
-        {
-            let view = self.active_view;
-            let view_labels = ["Dashboard — market overview", "Charts — price data", "Settings — preferences"];
-            let view_label = view_labels[view];
-            let mut panel_a_view = PanelView {
-                header: Some(PanelHeader { title: view_label, actions: &[] }),
-                columns: &[],
-                show_scrollbar: false,
-                content_height: 600.0,
-            };
-            if let Some(ref id) = self.leaf_a_id.clone() {
-                let _panel_a_node = register_layout_manager_panel(
-                    &mut self.layout, &mut render,
-                    LayoutNodeId::ROOT, id, "panel-a-widget",
-                    &mut self.panel_a_state,
-                    &mut panel_a_view,
-                    &PanelSettings::default(),
-                    &PanelRenderKind::WithHeader,
-                );
-                // Draw panel A body inline
-                if let Some(body_rect) = self.layout.rect_for(id.as_str()) {
-                    render.set_fill_color("rgba(255,255,255,0.04)");
-                    render.fill_rounded_rect(body_rect.x + 12.0, body_rect.y + 12.0, body_rect.width - 24.0, 60.0, 4.0);
-                    render.set_fill_color("rgba(255,255,255,0.55)");
-                    render.fill_text("Right-click for context menu", body_rect.x + body_rect.width / 2.0, body_rect.y + 44.0);
-                    render.set_fill_color("rgba(100,180,255,0.5)");
-                    render.fill_text("Use toolbar buttons to open dropdowns", body_rect.x + body_rect.width / 2.0, body_rect.y + 80.0);
+        // ── Main content (dock panels, content varies by active chrome tab) ─────
+        match self.active_view {
+            0 => {
+                // Tab 0: Dashboard — 2 dock panels (Market Overview + Trade History)
+                {
+                    let mut panel_a_view = PanelView {
+                        header: Some(PanelHeader { title: "Market Overview", actions: &[] }),
+                        columns: &[],
+                        show_scrollbar: false,
+                        content_height: 600.0,
+                    };
+                    if let Some(ref id) = self.leaf_a_id.clone() {
+                        let _panel_a_node = register_layout_manager_panel(
+                            &mut self.layout, &mut render,
+                            LayoutNodeId::ROOT, id, "panel-a-widget",
+                            &mut self.panel_a_state,
+                            &mut panel_a_view,
+                            &PanelSettings::default(),
+                            &PanelRenderKind::WithHeader,
+                        );
+                    }
+                }
+                {
+                    let mut panel_b_view = PanelView {
+                        header: Some(PanelHeader { title: "Trade History", actions: &[] }),
+                        columns: &[],
+                        show_scrollbar: false,
+                        content_height: 400.0,
+                    };
+                    if let Some(ref id) = self.leaf_b_id.clone() {
+                        let _panel_b_node = register_layout_manager_panel(
+                            &mut self.layout, &mut render,
+                            LayoutNodeId::ROOT, id, "panel-b-widget",
+                            &mut self.panel_b_state,
+                            &mut panel_b_view,
+                            &PanelSettings::default(),
+                            &PanelRenderKind::WithHeader,
+                        );
+                    }
+                }
+            }
+            1 => {
+                // Tab 1: Panels — vertical column of placeholder panel widgets
+                if let Some(ref id) = self.leaf_a_id.clone() {
+                    let mut panel_a_view = PanelView {
+                        header: Some(PanelHeader { title: "Panels", actions: &[] }),
+                        columns: &[],
+                        show_scrollbar: false,
+                        content_height: 600.0,
+                    };
+                    let _panel_a_node = register_layout_manager_panel(
+                        &mut self.layout, &mut render,
+                        LayoutNodeId::ROOT, id, "panel-a-widget",
+                        &mut self.panel_a_state,
+                        &mut panel_a_view,
+                        &PanelSettings::default(),
+                        &PanelRenderKind::WithHeader,
+                    );
+                    if let Some(body_rect) = self.layout.rect_for(id.as_str()) {
+                        let panel_labels = ["Panel A", "Panel B", "Panel C", "Panel D"];
+                        for (i, lbl) in panel_labels.iter().enumerate() {
+                            let py = body_rect.y + 12.0 + i as f64 * 56.0;
+                            render.set_fill_color("rgba(255,255,255,0.06)");
+                            render.fill_rounded_rect(body_rect.x + 12.0, py, body_rect.width - 24.0, 48.0, 4.0);
+                            render.set_fill_color("#d1d4dc");
+                            render.fill_text(*lbl, body_rect.x + body_rect.width / 2.0, py + 24.0);
+                        }
+                    }
+                }
+                if let Some(ref id) = self.leaf_b_id.clone() {
+                    let mut panel_b_view = PanelView {
+                        header: Some(PanelHeader { title: "Panel Info", actions: &[] }),
+                        columns: &[],
+                        show_scrollbar: false,
+                        content_height: 200.0,
+                    };
+                    let _panel_b_node = register_layout_manager_panel(
+                        &mut self.layout, &mut render,
+                        LayoutNodeId::ROOT, id, "panel-b-widget",
+                        &mut self.panel_b_state,
+                        &mut panel_b_view,
+                        &PanelSettings::default(),
+                        &PanelRenderKind::WithHeader,
+                    );
+                    if let Some(body_rect) = self.layout.rect_for(id.as_str()) {
+                        render.set_fill_color("rgba(255,255,255,0.4)");
+                        render.fill_text("Select a panel above", body_rect.x + body_rect.width / 2.0, body_rect.y + 24.0);
+                    }
+                }
+            }
+            _ => {
+                // Tab 2: Monitoring — placeholder chart rect with metrics rows
+                if let Some(ref id) = self.leaf_a_id.clone() {
+                    let mut panel_a_view = PanelView {
+                        header: Some(PanelHeader { title: "Monitoring", actions: &[] }),
+                        columns: &[],
+                        show_scrollbar: false,
+                        content_height: 600.0,
+                    };
+                    let _panel_a_node = register_layout_manager_panel(
+                        &mut self.layout, &mut render,
+                        LayoutNodeId::ROOT, id, "panel-a-widget",
+                        &mut self.panel_a_state,
+                        &mut panel_a_view,
+                        &PanelSettings::default(),
+                        &PanelRenderKind::WithHeader,
+                    );
+                    if let Some(body_rect) = self.layout.rect_for(id.as_str()) {
+                        // Chart placeholder rect
+                        let chart_h = 120.0_f64;
+                        render.set_fill_color("rgba(41,98,255,0.08)");
+                        render.fill_rounded_rect(body_rect.x + 12.0, body_rect.y + 12.0, body_rect.width - 24.0, chart_h, 4.0);
+                        render.set_fill_color("rgba(41,98,255,0.4)");
+                        render.fill_text("[ CPU chart ]", body_rect.x + body_rect.width / 2.0, body_rect.y + 12.0 + chart_h / 2.0);
+                        // Metric rows
+                        let metrics = [
+                            ("CPU", "42%"),
+                            ("RAM", "8.2 GB"),
+                            ("GPU", "31%"),
+                            ("Net ↑", "1.2 MB/s"),
+                            ("Net ↓", "4.7 MB/s"),
+                        ];
+                        let row_y0 = body_rect.y + 12.0 + chart_h + 16.0;
+                        for (i, (label, value)) in metrics.iter().enumerate() {
+                            let ry = row_y0 + i as f64 * 28.0;
+                            render.set_fill_color("rgba(255,255,255,0.05)");
+                            render.fill_rounded_rect(body_rect.x + 12.0, ry, body_rect.width - 24.0, 24.0, 3.0);
+                            render.set_fill_color("#a6adc8");
+                            render.fill_text(*label, body_rect.x + 28.0, ry + 12.0);
+                            render.set_fill_color("#cdd6f4");
+                            render.fill_text(*value, body_rect.x + body_rect.width - 28.0, ry + 12.0);
+                        }
+                    }
+                }
+                if let Some(ref id) = self.leaf_b_id.clone() {
+                    let mut panel_b_view = PanelView {
+                        header: Some(PanelHeader { title: "System Log", actions: &[] }),
+                        columns: &[],
+                        show_scrollbar: false,
+                        content_height: 200.0,
+                    };
+                    let _panel_b_node = register_layout_manager_panel(
+                        &mut self.layout, &mut render,
+                        LayoutNodeId::ROOT, id, "panel-b-widget",
+                        &mut self.panel_b_state,
+                        &mut panel_b_view,
+                        &PanelSettings::default(),
+                        &PanelRenderKind::WithHeader,
+                    );
+                    if let Some(body_rect) = self.layout.rect_for(id.as_str()) {
+                        render.set_fill_color("rgba(16,185,129,0.5)");
+                        render.fill_text("[OK] All systems nominal", body_rect.x + body_rect.width / 2.0, body_rect.y + 24.0);
+                    }
                 }
             }
         }
+
+        // ── Dock separators (fix 5/6) ─────────────────────────────────────────
         {
-            let mut panel_b_view = PanelView {
-                header: Some(PanelHeader { title: "Trade History", actions: &[] }),
-                columns: &[],
-                show_scrollbar: false,
-                content_height: 400.0,
+            use uzor::docking::panels::SeparatorOrientation as DockSepOrient;
+            let separators: Vec<_> = self.layout.panels().separators().iter().enumerate().map(|(i, s)| {
+                let thickness = s.thickness_for_state() as f64;
+                let (sx, sy, sw, sh) = match s.orientation {
+                    DockSepOrient::Vertical => {
+                        // position = x, start = y, length = height
+                        (s.position as f64 - thickness / 2.0, s.start as f64, thickness, s.length as f64)
+                    }
+                    DockSepOrient::Horizontal => {
+                        // position = y, start = x, length = width
+                        (s.start as f64, s.position as f64 - thickness / 2.0, s.length as f64, thickness)
+                    }
+                };
+                (i, sx, sy, sw, sh, s.orientation)
+            }).collect();
+
+            let dragging_sep = if let Some(DragTarget::SeparatorDrag { sep_idx, .. }) = self.drag_target {
+                Some(sep_idx)
+            } else {
+                None
             };
-            if let Some(ref id) = self.leaf_b_id.clone() {
-                let _panel_b_node = register_layout_manager_panel(
-                    &mut self.layout, &mut render,
-                    LayoutNodeId::ROOT, id, "panel-b-widget",
-                    &mut self.panel_b_state,
-                    &mut panel_b_view,
-                    &PanelSettings::default(),
-                    &PanelRenderKind::WithHeader,
-                );
-                // Draw panel B body inline
-                if let Some(body_rect) = self.layout.rect_for(id.as_str()) {
-                    render.set_fill_color("rgba(255,255,255,0.04)");
-                    render.fill_rounded_rect(body_rect.x + 12.0, body_rect.y + 12.0, body_rect.width - 24.0, 40.0, 4.0);
-                    render.set_fill_color("rgba(255,255,255,0.5)");
-                    render.fill_text("Panel B — Trade History", body_rect.x + body_rect.width / 2.0, body_rect.y + 32.0);
-                }
+
+            for (i, sx, sy, sw, sh, _orient) in &separators {
+                let color = if dragging_sep == Some(*i) {
+                    "rgba(100,160,255,0.7)"
+                } else {
+                    "rgba(80,80,100,0.5)"
+                };
+                render.set_fill_color(color);
+                render.fill_rect(*sx, *sy, *sw, *sh);
             }
         }
 
@@ -818,12 +976,15 @@ impl AppState {
                 ModalKind::L1 => 200.0,
                 ModalKind::Settings => 300.0,
             };
-            let modal_rect = Rect::new(
-                (width as f64 / 2.0 - modal_w / 2.0).max(0.0),
-                (height as f64 / 2.0 - modal_h / 2.0).max(0.0),
-                modal_w,
-                modal_h,
-            );
+            // Fix #10/#11: use modal_state.position (dragged) instead of always centering.
+            let default_x = (width as f64 / 2.0 - modal_w / 2.0).max(0.0);
+            let default_y = (height as f64 / 2.0 - modal_h / 2.0).max(0.0);
+            let (frame_x, frame_y) = if self.modal_state.position != (0.0, 0.0) {
+                self.modal_state.position
+            } else {
+                (default_x, default_y)
+            };
+            let modal_rect = Rect::new(frame_x, frame_y, modal_w, modal_h);
             self.layout.push_overlay(OverlayEntry {
                 id: "modal-overlay".to_string(),
                 kind: OverlayKind::Modal,
@@ -928,10 +1089,16 @@ impl AppState {
                         }
                     }
                     ModalKind::L2 => {
-                        // Full L2 widget set rendered inside modal body
+                        // Full L2 widget set rendered inside modal body.
+                        // body_rect from rect_for_overlay is the full modal rect;
+                        // actual content starts after the 44px header.
+                        // WithHeaderFooter: header=44, footer=52 → body height = total - 96
+                        const MODAL_HEADER_H: f64 = 44.0;
+                        const MODAL_FOOTER_H: f64 = 52.0;
                         let left_panel_w = l2_right_panel_x - LEFT_PANEL_X - SPLITTER_W / 2.0;
                         let ox = body_rect.x;
-                        let oy = body_rect.y;
+                        let oy = body_rect.y + MODAL_HEADER_H; // skip modal header (Fix 2)
+                        let body_h = body_rect.height - MODAL_HEADER_H - MODAL_FOOTER_H;
 
                         let text_id = WidgetId::new("l2-text");
                         let text_str = self.layout.ctx_mut().input.text_fields().text(&text_id).to_owned();
@@ -941,17 +1108,18 @@ impl AppState {
                         let now_ms = start_time.elapsed().as_millis() as u64;
                         let cursor_vis = text_focused && self.layout.ctx_mut().input.text_fields().cursor_visible(now_ms);
 
-                        // Draw panel BGs via RenderContext
+                        // Draw panel BGs via RenderContext (Fix 2: use body_h, not L2_WIN_H)
+                        let panel_inner_h = body_h - 24.0;
                         render.set_fill_color("#1e222d");
-                        render.fill_rounded_rect(ox + LEFT_PANEL_X, oy + 12.0, left_panel_w, L2_WIN_H - 24.0, 8.0);
-                        render.fill_rounded_rect(ox + l2_right_panel_x, oy + 12.0, L2_WIN_W - l2_right_panel_x - 12.0, L2_WIN_H - 24.0, 8.0);
+                        render.fill_rounded_rect(ox + LEFT_PANEL_X, oy + 12.0, left_panel_w, panel_inner_h, 8.0);
+                        render.fill_rounded_rect(ox + l2_right_panel_x, oy + 12.0, L2_WIN_W - l2_right_panel_x - 12.0, panel_inner_h, 8.0);
 
                         // ctx_l2 removed — use self.layout.ctx_mut() directly so widgets
                         // register into the real coordinator and clicks are dispatched.
 
                         // ── Left panel (clipped) ──────────────────────────
                         render.save();
-                        render.clip_rect(ox + LEFT_PANEL_X, oy + 12.0, left_panel_w, L2_WIN_H - 24.0);
+                        render.clip_rect(ox + LEFT_PANEL_X, oy + 12.0, left_panel_w, panel_inner_h);
 
                         // 1. Button
                         let btn_state = if l2_hovered.as_deref() == Some("l2-btn-connect") { WidgetState::Hovered } else if l2_connected { WidgetState::Active } else { WidgetState::Normal };
@@ -1039,7 +1207,7 @@ impl AppState {
 
                         // ── Right panel (clipped) ─────────────────────────
                         render.save();
-                        render.clip_rect(ox + l2_right_panel_x, oy + 12.0, L2_WIN_W - l2_right_panel_x - 12.0, L2_WIN_H - 24.0);
+                        render.clip_rect(ox + l2_right_panel_x, oy + 12.0, L2_WIN_W - l2_right_panel_x - 12.0, panel_inner_h);
 
                         let tab_labels = ["List", "Empty", "Sub-tabs"];
                         for (i, lbl) in tab_labels.iter().enumerate() {
@@ -1085,6 +1253,18 @@ impl AppState {
                                 let sub_cfg = TabConfig::new(sub_id.as_str(), *lbl).active_if(l2_active_sub_tab == i);
                                 register_context_manager_tab(self.layout.ctx_mut(), &mut render, sub_id.as_str(), sub_rect, None, &layer, &TabView { tab: &sub_cfg, hovered: l2_hovered.as_deref() == Some(sub_id.as_str()), pressed: false, close_btn_hovered: false }, &TabSettings::default());
                             }
+                            // Fix 6: SVG icon below the sub-tab buttons, changes with active sub-tab
+                            let sub_content_y = CONTENT_START_Y + 8.0 + 3.0 * 36.0 + 8.0;
+                            let sub_cx = l2_right_panel_x + l2_right_panel_w / 2.0 + ox;
+                            let icon_size = 64.0_f64;
+                            let ix = sub_cx - icon_size / 2.0;
+                            let iy = sub_content_y + oy + 8.0;
+                            let (sub_svg, sub_color) = match l2_active_sub_tab {
+                                0 => (SVG_CIRCLE,   "#2962ff"),
+                                1 => (SVG_TRIANGLE, "#f59e0b"),
+                                _ => (SVG_DIAMOND,  "#ef5350"),
+                            };
+                            draw_svg_icon(&mut render, sub_svg, ix, iy, icon_size, icon_size, sub_color);
                         }
                         if l2_active_tab == 1 {
                             let icon_size = 64.0_f64;
@@ -1102,8 +1282,8 @@ impl AppState {
 
                         render.restore();
 
-                        // Splitter drag handle (no clip needed)
-                        let dh_rect = Rect::new(l2_right_panel_x - SPLITTER_W / 2.0 + ox, 12.0 + oy, SPLITTER_W, L2_WIN_H - 24.0);
+                        // Splitter drag handle (no clip needed) — height matches body panels
+                        let dh_rect = Rect::new(l2_right_panel_x - SPLITTER_W / 2.0 + ox, 12.0 + oy, SPLITTER_W, panel_inner_h);
                         register_context_manager_drag_handle(
                             self.layout.ctx_mut(), &mut render,
                             "l2-splitter", dh_rect, &layer,
@@ -1117,10 +1297,11 @@ impl AppState {
         // ── Context menu ──────────────────────────────────────────────────────
         if self.ctx_menu_state.is_open {
             let items = [
-                ContextMenuItem { action: "ctx-copy",   label: "Copy",       icon: None, danger: false, separator_after: false, enabled: true },
-                ContextMenuItem { action: "ctx-paste",  label: "Paste",      icon: None, danger: false, separator_after: false, enabled: true },
-                ContextMenuItem { action: "ctx-delete", label: "Delete",     icon: None, danger: true,  separator_after: true,  enabled: true },
-                ContextMenuItem { action: "ctx-props",  label: "Properties", icon: None, danger: false, separator_after: false, enabled: true },
+                ContextMenuItem { action: "ctx-copy",     label: "Copy",       icon: None, danger: false, separator_after: false, enabled: true },
+                ContextMenuItem { action: "ctx-paste",    label: "Paste",      icon: None, danger: false, separator_after: false, enabled: true },
+                ContextMenuItem { action: "ctx-delete",   label: "Delete",     icon: None, danger: true,  separator_after: true,  enabled: true },
+                ContextMenuItem { action: "ctx-props",    label: "Properties", icon: None, danger: false, separator_after: false, enabled: true },
+                ContextMenuItem { action: "ctx-settings", label: "Settings",   icon: None, danger: false, separator_after: false, enabled: true },
             ];
             let menu_h = items.len() as f64 * 28.0 + 16.0;
             self.layout.push_overlay(OverlayEntry {
@@ -1283,6 +1464,23 @@ impl AppState {
             }
         }
 
+        // ── Edge borders between chrome / toolbars / sidebar / dock ──────────
+        // 1px lines on the inside edge of each composite slot for visual separation.
+        let border_color = "#3a3a45";
+        render.set_fill_color(border_color);
+        if let Some(r) = self.layout.rect_for_chrome() {
+            render.fill_rect(r.x, r.y + r.height - 1.0, r.width, 1.0);
+        }
+        if let Some(r) = self.layout.rect_for_edge_slot("top-toolbar") {
+            render.fill_rect(r.x, r.y + r.height - 1.0, r.width, 1.0);
+        }
+        if let Some(r) = self.layout.rect_for_edge_slot("left-vtoolbar") {
+            render.fill_rect(r.x + r.width - 1.0, r.y, 1.0, r.height);
+        }
+        if let Some(r) = self.layout.rect_for_edge_slot("sidebar") {
+            render.fill_rect(r.x + r.width - 1.0, r.y, 1.0, r.height);
+        }
+
         // ── end_frame ─────────────────────────────────────────────────────────
         let responses = self.layout.ctx_mut().input.end_frame();
 
@@ -1394,42 +1592,8 @@ impl AppState {
                 return;
             }
 
-            // Bug 2: Sidebar modal-trigger buttons
+            // Toolbar dropdown triggers
             match id_str {
-                "sidebar-modal-l2" => {
-                    eprintln!("[DISPATCH] sidebar-modal-l2");
-                    if self.modal_open && self.modal_kind == ModalKind::L2 {
-                        self.modal_open = false;
-                    } else {
-                        self.modal_open = true;
-                        self.modal_kind = ModalKind::L2;
-                    }
-                    println!("[L3] sidebar modal → {:?}", self.modal_kind);
-                    return;
-                }
-                "sidebar-modal-l1" => {
-                    eprintln!("[DISPATCH] sidebar-modal-l1");
-                    if self.modal_open && self.modal_kind == ModalKind::L1 {
-                        self.modal_open = false;
-                    } else {
-                        self.modal_open = true;
-                        self.modal_kind = ModalKind::L1;
-                    }
-                    println!("[L3] sidebar modal → {:?}", self.modal_kind);
-                    return;
-                }
-                "sidebar-modal-settings" => {
-                    eprintln!("[DISPATCH] sidebar-modal-settings");
-                    if self.modal_open && self.modal_kind == ModalKind::Settings {
-                        self.modal_open = false;
-                    } else {
-                        self.modal_open = true;
-                        self.modal_kind = ModalKind::Settings;
-                    }
-                    println!("[L3] sidebar modal → {:?}", self.modal_kind);
-                    return;
-                }
-                // Bug 3: Toolbar dropdown triggers
                 "tb-file" => {
                     eprintln!("[DISPATCH] tb-file toolbar button");
                     if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
@@ -1509,15 +1673,24 @@ impl AppState {
             // Context menu items — registered as "{menu_widget_id}:item:{IDX}"
             if let Some(idx_str) = id_str.strip_prefix("ctx-menu-widget:item:") {
                 if let Ok(idx) = idx_str.parse::<usize>() {
-                    let action = match idx {
-                        0 => "Copy",
-                        1 => "Paste",
-                        2 => "Delete",
-                        3 => "Properties",
-                        _ => "?",
-                    };
-                    eprintln!("[DISPATCH] ctxmenu item idx={idx} → {action}");
-                    println!("[L3] context menu → {action}");
+                    eprintln!("[DISPATCH] ctxmenu item idx={idx}");
+                    match idx {
+                        0 => println!("[L3] ctx → Copy"),
+                        1 => println!("[L3] ctx → Paste"),
+                        2 => println!("[L3] ctx → Delete"),
+                        3 => println!("[L3] ctx → Properties"),
+                        4 => {
+                            // Fix #12: Settings via context menu
+                            if self.modal_open && self.modal_kind == ModalKind::Settings {
+                                self.modal_open = false;
+                            } else {
+                                self.modal_open = true;
+                                self.modal_kind = ModalKind::Settings;
+                                self.modal_state.position = (0.0, 0.0);
+                            }
+                        }
+                        _ => {}
+                    }
                     self.ctx_menu_state.close();
                     return;
                 }
@@ -1584,6 +1757,14 @@ impl AppState {
                     return;
                 }
             }
+            // Sidebar nav buttons — switch active chrome tab
+            if let Some(idx_str) = id_str.strip_prefix("sidebar-nav-") {
+                if let Ok(n) = idx_str.parse::<usize>() {
+                    eprintln!("[DISPATCH] sidebar-nav-{n}");
+                    self.active_view = n;
+                    return;
+                }
+            }
             // L1-modal custom button
             if id_str == "l1-mybtn" {
                 eprintln!("[DISPATCH] l1-mybtn");
@@ -1598,9 +1779,6 @@ impl AppState {
                         self.sidebar_open = !self.sidebar_open;
                         println!("[L3] sidebar → {}", self.sidebar_open);
                     }
-                    "lt-zoom-in"  => println!("[L3] zoom in"),
-                    "lt-zoom-out" => println!("[L3] zoom out"),
-                    "lt-draw"     => println!("[L3] draw mode"),
                     _ => {}
                 }
                 return;
@@ -1633,6 +1811,26 @@ impl AppState {
                             else   { self.dropdown_help_state.open_at(toolbar_rect.x + 92.0, dd_y); }
                         }
                         "tb-new" => println!("[L3] new"),
+                        "tb-l2" => {
+                            if self.modal_open && self.modal_kind == ModalKind::L2 {
+                                self.modal_open = false;
+                            } else {
+                                self.modal_open = true;
+                                self.modal_kind = ModalKind::L2;
+                                self.modal_state.position = (0.0, 0.0);
+                            }
+                            return;
+                        }
+                        "tb-l1" => {
+                            if self.modal_open && self.modal_kind == ModalKind::L1 {
+                                self.modal_open = false;
+                            } else {
+                                self.modal_open = true;
+                                self.modal_kind = ModalKind::L1;
+                                self.modal_state.position = (0.0, 0.0);
+                            }
+                            return;
+                        }
                         _ => {}
                     }
                 }
@@ -1665,11 +1863,11 @@ impl AppState {
         // ── Chrome hit ────────────────────────────────────────────────────────
         let tab_ids = ["tab-0", "tab-1", "tab-2"];
         let chrome_tabs = [
-            ChromeTabConfig { id: "tab-0", label: "Dashboard", icon: None, color_tag: None, closable: false, active: self.active_view == 0 },
-            ChromeTabConfig { id: "tab-1", label: "Charts",    icon: None, color_tag: None, closable: false, active: self.active_view == 1 },
-            ChromeTabConfig { id: "tab-2", label: "Settings",  icon: None, color_tag: None, closable: false, active: self.active_view == 2 },
+            ChromeTabConfig { id: "tab-0", label: "Dashboard",  icon: None, color_tag: None, closable: false, active: self.active_view == 0 },
+            ChromeTabConfig { id: "tab-1", label: "Panels",     icon: None, color_tag: None, closable: false, active: self.active_view == 1 },
+            ChromeTabConfig { id: "tab-2", label: "Monitoring", icon: None, color_tag: None, closable: false, active: self.active_view == 2 },
         ];
-        let chrome_view = ChromeView { tabs: &chrome_tabs, active_tab_id: Some(tab_ids[self.active_view]), show_new_tab_btn: false, show_menu_btn: false, is_maximized: false, cursor_x: x, cursor_y: y, time_ms: self.time_ms() };
+        let chrome_view = ChromeView { tabs: &chrome_tabs, active_tab_id: Some(tab_ids[self.active_view]), show_new_tab_btn: false, show_menu_btn: false, show_new_window_btn: false, show_close_window_btn: false, is_maximized: self.window.is_maximized(), cursor_x: x, cursor_y: y, time_ms: self.time_ms() };
         if let Some(chrome_rect) = self.layout.rect_for_chrome() {
             let hit = chrome_hit_test(&self.chrome_state, &chrome_view, &ChromeSettings::default(), &ChromeRenderKind::Default, chrome_rect, (x, y));
             match handle_chrome_action(hit) {
@@ -1730,30 +1928,6 @@ impl AppState {
             }
         }
 
-        // ── Sidebar modal buttons ─────────────────────────────────────────────
-        if self.sidebar_open {
-            if let Some(sb_rect) = self.layout.rect_for_edge_slot("sidebar") {
-                let body_y = sb_rect.y + 40.0; // approx header
-                let mut by = body_y + 8.0 + 28.0; // skip section header
-                let modal_kinds = [ModalKind::L2, ModalKind::L1, ModalKind::Settings];
-                for kind in &modal_kinds {
-                    let bx = sb_rect.x + 8.0;
-                    let bw = sb_rect.width - 16.0;
-                    if x >= bx && x <= bx + bw && y >= by && y <= by + 30.0 {
-                        if self.modal_open && self.modal_kind == *kind {
-                            self.modal_open = false;
-                        } else {
-                            self.modal_open = true;
-                            self.modal_kind = *kind;
-                        }
-                        println!("[L3] modal → {:?}", self.modal_kind);
-                        return;
-                    }
-                    by += 38.0;
-                }
-            }
-        }
-
         // ── Dropdown item clicks ──────────────────────────────────────────────
         let any_dd_open = self.dropdown_file_state.open || self.dropdown_view_state.open || self.dropdown_help_state.open;
         if any_dd_open {
@@ -1807,7 +1981,7 @@ impl AppState {
                 if !menu_rect.contains(x, y) {
                     self.ctx_menu_state.close();
                 } else {
-                    println!("[L3] ctx menu click inside");
+                    // Item dispatch is handled via the coordinator dispatch above
                     self.ctx_menu_state.close();
                 }
             }
@@ -1817,7 +1991,7 @@ impl AppState {
         if self.modal_open && self.modal_kind == ModalKind::L2 {
             if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
                 // body starts after header (~40px) + inside padding
-                let body_y = modal_rect.y + 40.0;
+                let body_y = modal_rect.y + 44.0; // modal header height = 44px (Fix 2)
                 let rel_x = x - modal_rect.x;
                 let rel_y = y - body_y;
                 match self.l2_hovered_at(rel_x, rel_y) {
@@ -1848,7 +2022,7 @@ impl AppState {
     fn on_right_up(&mut self, x: f64, y: f64) {
         eprintln!("[RIGHT_UP] pos=({:.1},{:.1})", x, y);
         let (w, h) = { let s = &self.surface; (s.config.width as f64, s.config.height as f64) };
-        self.ctx_menu_state.open_smart(x, y, w, h, 170.0, 130.0, None);
+        self.ctx_menu_state.open_smart(x, y, w, h, 170.0, 156.0, None);
         self.dropdown_file_state.close();
         self.dropdown_view_state.close();
         self.dropdown_help_state.close();
@@ -1859,10 +2033,45 @@ impl AppState {
         self.mouse_down = true;
         self.drag_origin = Some((x, y));
 
+        // Fix 3: modal header drag — start drag when clicking in modal header zone.
+        // Header zone: modal top .. modal top + 44px, minus close-button right 34px.
+        if self.modal_open {
+            if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
+                let header_rect = Rect::new(
+                    modal_rect.x,
+                    modal_rect.y,
+                    modal_rect.width - 34.0, // leave close-button area (24px + 10px padding)
+                    44.0,
+                );
+                if header_rect.contains(x, y) {
+                    // resolve current modal origin (may have been dragged before)
+                    let origin = if self.modal_state.position != (0.0, 0.0) {
+                        self.modal_state.position
+                    } else {
+                        (modal_rect.x, modal_rect.y)
+                    };
+                    self.modal_state.start_drag((x, y), origin);
+                    self.drag_target = Some(DragTarget::ModalDrag);
+                    return;
+                }
+            }
+        }
+
+        // Dock separator drag (fix 6)
+        if !self.modal_open {
+            let sep_hit: Option<usize> = self.layout.panels().separators().iter().enumerate()
+                .find(|(_, s)| s.hit_test(x as f32, y as f32))
+                .map(|(i, _)| i);
+            if let Some(sep_idx) = sep_hit {
+                self.drag_target = Some(DragTarget::SeparatorDrag { sep_idx, start_x: x, start_y: y });
+                return;
+            }
+        }
+
         // L2 drag targets
         if self.modal_open && self.modal_kind == ModalKind::L2 {
             if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
-                let body_y = modal_rect.y + 40.0;
+                let body_y = modal_rect.y + 44.0; // modal header height = 44px (Fix 2)
                 let rel_x = x - modal_rect.x;
                 let rel_y = y - body_y;
                 self.l2_pressed = self.l2_hovered_at(rel_x, rel_y);
@@ -1892,10 +2101,95 @@ impl AppState {
     fn on_mouse_move(&mut self, x: f64, y: f64) {
         self.last_mouse = (x, y);
 
+        // Fix #2/#13: update chrome hover state so buttons visually highlight
+        {
+            let tab_ids = ["tab-0", "tab-1", "tab-2"];
+            let chrome_tabs_mv = [
+                ChromeTabConfig { id: "tab-0", label: "Dashboard",  icon: None, color_tag: None, closable: false, active: self.active_view == 0 },
+                ChromeTabConfig { id: "tab-1", label: "Panels",     icon: None, color_tag: None, closable: false, active: self.active_view == 1 },
+                ChromeTabConfig { id: "tab-2", label: "Monitoring", icon: None, color_tag: None, closable: false, active: self.active_view == 2 },
+            ];
+            let chrome_view_mv = ChromeView {
+                tabs: &chrome_tabs_mv,
+                active_tab_id: Some(tab_ids[self.active_view]),
+                show_new_tab_btn: false,
+                show_menu_btn: false,
+                show_new_window_btn: false,
+                show_close_window_btn: false,
+                is_maximized: self.window.is_maximized(),
+                cursor_x: x,
+                cursor_y: y,
+                time_ms: self.time_ms(),
+            };
+            if let Some(chrome_rect) = self.layout.rect_for_chrome() {
+                let hit = chrome_hit_test(
+                    &self.chrome_state,
+                    &chrome_view_mv,
+                    &ChromeSettings::default(),
+                    &ChromeRenderKind::Default,
+                    chrome_rect,
+                    (x, y),
+                );
+                // Update per-tab hover state before storing hit
+                let tab_hovered = if let ChromeHit::Tab(j) = hit { Some(j) } else { None };
+                let tab_close_hovered = if let ChromeHit::CloseTab(j) = hit { Some(j) } else { None };
+                for (i, ts) in self.chrome_state.tabs_state.iter_mut().enumerate() {
+                    ts.hovered = tab_hovered == Some(i);
+                    ts.close_hovered = tab_close_hovered == Some(i);
+                }
+                self.chrome_state.hovered = hit;
+            }
+        }
+
+        // Fix #13: update toolbar hover state (strip parent prefix so render matches plain item id)
+        {
+            let hovered_id = self.layout.ctx_mut().input.hovered_widget().map(|id| id.0.clone());
+            self.top_toolbar_state.hovered_item_id = hovered_id
+                .as_ref()
+                .and_then(|id| id.strip_prefix("top-toolbar-widget:"))
+                .map(|s| s.to_string());
+            self.left_vtoolbar_state.hovered_item_id = hovered_id
+                .as_ref()
+                .and_then(|id| id.strip_prefix("left-vtoolbar-widget:"))
+                .map(|s| s.to_string());
+            let hovered_id = hovered_id;
+            if self.dropdown_file_state.open || self.dropdown_view_state.open || self.dropdown_help_state.open {
+                self.dropdown_file_state.hovered_id = hovered_id.clone()
+                    .filter(|id| id.starts_with("dd-file-widget:item:"))
+                    .map(|id| id["dd-file-widget:item:".len()..].to_owned());
+                self.dropdown_view_state.hovered_id = hovered_id.clone()
+                    .filter(|id| id.starts_with("dd-view-widget:item:"))
+                    .map(|id| id["dd-view-widget:item:".len()..].to_owned());
+                self.dropdown_help_state.hovered_id = hovered_id.clone()
+                    .filter(|id| id.starts_with("dd-help-widget:item:"))
+                    .map(|id| id["dd-help-widget:item:".len()..].to_owned());
+            }
+            if self.ctx_menu_state.is_open {
+                if let Some(ref id) = hovered_id {
+                    if let Some(idx_str) = id.strip_prefix("ctx-menu-widget:item:") {
+                        self.ctx_menu_state.hovered_index = idx_str.parse().ok();
+                    } else {
+                        self.ctx_menu_state.hovered_index = None;
+                    }
+                } else {
+                    self.ctx_menu_state.hovered_index = None;
+                }
+            }
+        }
+
+        // Fix 3: modal drag — update position while dragging modal header
+        if matches!(self.drag_target, Some(DragTarget::ModalDrag)) {
+            let (sw, sh) = { let s = &self.surface; (s.config.width as f64, s.config.height as f64) };
+            if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
+                handle_modal_drag(&mut self.modal_state, (x, y), (sw, sh), (modal_rect.width, modal_rect.height));
+            }
+            return;
+        }
+
         // L2 hover tracking
         if self.modal_open && self.modal_kind == ModalKind::L2 {
             if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
-                let body_y = modal_rect.y + 40.0;
+                let body_y = modal_rect.y + 44.0; // modal header height = 44px (Fix 2)
                 let rel_x = x - modal_rect.x;
                 let rel_y = y - body_y;
                 self.l2_hovered = self.l2_hovered_at(rel_x, rel_y);
@@ -1903,10 +2197,32 @@ impl AppState {
         }
 
         // Drag
+        // Separator drag (fix 6) — handle before the shared drag block to avoid borrow conflicts
+        if let Some(DragTarget::SeparatorDrag { sep_idx, start_x: ref mut sx, start_y: ref mut sy }) = self.drag_target {
+            let delta_x = (x - *sx) as f32;
+            let delta_y = (y - *sy) as f32;
+            *sx = x;
+            *sy = y;
+            if let Some(dock_area) = self.layout.rect_for_dock_area() {
+                let cw = dock_area.width as f32;
+                let ch = dock_area.height as f32;
+                use uzor::docking::panels::SeparatorOrientation as DockSepOrient;
+                let orient = self.layout.panels().separators().get(sep_idx).map(|s| s.orientation);
+                let delta = match orient {
+                    Some(DockSepOrient::Vertical)   => delta_x,
+                    Some(DockSepOrient::Horizontal) => delta_y,
+                    None => 0.0,
+                };
+                self.layout.panels_mut().drag_separator(sep_idx, delta, cw, ch);
+            }
+        }
+
         if let (Some((ox, oy)), Some(ref target)) = (self.drag_origin, self.drag_target.as_ref()) {
             let dx = x - ox;
             let dy = y - oy;
             match target {
+                DragTarget::ModalDrag => {} // handled above
+                DragTarget::SeparatorDrag { .. } => {} // handled above
                 DragTarget::L2Slider(v0) => {
                     let frac = dx / SLID_RECT.width;
                     self.l2_slider_val = (v0 + frac * 100.0).clamp(0.0, 100.0);
@@ -1935,6 +2251,8 @@ impl AppState {
     fn on_mouse_up(&mut self) {
         self.mouse_down = false;
         self.drag_origin = None;
+        // Fix 3: end modal drag
+        self.modal_state.end_drag();
         self.drag_target = None;
         self.l2_range_drag_handle = None;
         self.l2_pressed = None;
@@ -1946,10 +2264,16 @@ impl AppState {
 // =============================================================================
 
 fn setup_dock(layout: &mut LayoutManager<DemoPanel>) -> (String, String) {
-    let leaf_a = layout.panels_mut().tree_mut().add_leaf(DemoPanel { title: "Content".into() });
+    let leaf_a = layout.panels_mut().tree_mut().add_leaf(DemoPanel { title: "Market Overview".into() });
     let ids = layout.panels_mut().tree_mut().split_leaf(leaf_a, SplitKind::Horizontal, 0.0, 0.0);
     let leaf_a2 = ids[0];
     let leaf_b = ids[1];
+    // ids[0] inherits the original leaf's panels; set a sensible title
+    if let Some(leaf) = layout.panels_mut().tree_mut().leaf_mut(leaf_a2) {
+        if let Some(panel) = leaf.panels.first_mut() {
+            panel.title = "Market Overview".into();
+        }
+    }
     if let Some(leaf) = layout.panels_mut().tree_mut().leaf_mut(leaf_b) {
         if let Some(panel) = leaf.panels.first_mut() {
             panel.title = "Trade History".into();
@@ -1973,7 +2297,8 @@ impl ApplicationHandler for Handler {
         let attrs = Window::default_attributes()
             .with_title("uzor L3 — Dashboard")
             .with_inner_size(winit::dpi::LogicalSize::new(WIN_W, WIN_H))
-            .with_resizable(true);
+            .with_resizable(true)
+            .with_decorations(false); // uzor chrome draws its own titlebar
         let window = Arc::new(event_loop.create_window(attrs).expect("window creation should succeed"));
 
         let mut render_cx = VelloRenderCx::new();
@@ -2074,6 +2399,43 @@ impl ApplicationHandler for Handler {
             _ => {}
         }
 
+        // Fix 1: chromeless chrome — handle drag/min/max/close on LMB press
+        // Must run BEFORE the bridge so drag_window() is called while the button
+        // is still held (winit requires it to be called within the press handler).
+        if let WindowEvent::MouseInput { state: ElementState::Pressed, button: winit::event::MouseButton::Left, .. } = &event {
+            let (mx, my) = app.bridge.last_mouse_pos;
+            let tab_ids = ["tab-0", "tab-1", "tab-2"];
+            let chrome_tabs_tmp = [
+                ChromeTabConfig { id: "tab-0", label: "Dashboard",  icon: None, color_tag: None, closable: false, active: app.active_view == 0 },
+                ChromeTabConfig { id: "tab-1", label: "Panels",     icon: None, color_tag: None, closable: false, active: app.active_view == 1 },
+                ChromeTabConfig { id: "tab-2", label: "Monitoring", icon: None, color_tag: None, closable: false, active: app.active_view == 2 },
+            ];
+            let chrome_view_tmp = ChromeView { tabs: &chrome_tabs_tmp, active_tab_id: Some(tab_ids[app.active_view]), show_new_tab_btn: false, show_menu_btn: false, show_new_window_btn: false, show_close_window_btn: false, is_maximized: app.window.is_maximized(), cursor_x: mx, cursor_y: my, time_ms: app.time_ms() };
+            if let Some(chrome_rect) = app.layout.rect_for_chrome() {
+                let hit = chrome_hit_test(&app.chrome_state, &chrome_view_tmp, &ChromeSettings::default(), &ChromeRenderKind::Default, chrome_rect, (mx, my));
+                match handle_chrome_action(hit) {
+                    ChromeAction::WindowDragStart => {
+                        let _ = app.window.drag_window();
+                        return;
+                    }
+                    ChromeAction::Minimize => {
+                        app.window.set_minimized(true);
+                        return;
+                    }
+                    ChromeAction::MaximizeRestore => {
+                        app.window.set_maximized(!app.window.is_maximized());
+                        return;
+                    }
+                    ChromeAction::CloseApp => {
+                        app.exit_requested = true;
+                        app.window.request_redraw();
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // Bridge handles text-field key routing + clipboard
         let focused = app.layout.ctx_mut().input.focused_widget().cloned();
 
@@ -2129,11 +2491,28 @@ impl ApplicationHandler for Handler {
             app.window.request_redraw();
         }
 
-        // Scroll wheel
-        if let Some(((_cx, _cy), (_, dy))) = out.wheel {
-            if app.modal_open && app.modal_kind == ModalKind::L2 {
-                app.l2_scroll_off = (app.l2_scroll_off - dy * 20.0)
-                    .clamp(0.0, (CONTENT_H - SB_H).max(0.0));
+        // Fix 5: Wheel routing per sub-panel — only scroll right panel if cursor
+        // is over the right panel. Left panel wheel is ignored.
+        if let Some(((cx, cy), (_, dy))) = out.wheel {
+            if app.modal_open && app.modal_kind == ModalKind::L2 && app.l2_active_tab == 0 {
+                if let Some(modal_rect) = app.layout.rect_for_overlay("modal-overlay") {
+                    let frame_x = if app.modal_state.position != (0.0, 0.0) { app.modal_state.position.0 } else { modal_rect.x };
+                    let frame_y = if app.modal_state.position != (0.0, 0.0) { app.modal_state.position.1 } else { modal_rect.y };
+                    let body_y  = frame_y + 44.0; // header height
+                    let body_h  = modal_rect.height - 44.0 - 52.0;
+                    // right panel starts at frame_x + (L2_WIN_W - l2_right_panel_w)
+                    let rp_screen_x = frame_x + L2_WIN_W - app.l2_right_panel_w;
+                    let right_panel_rect = Rect::new(
+                        rp_screen_x,
+                        body_y + 12.0,
+                        app.l2_right_panel_w - 12.0,
+                        body_h - 24.0,
+                    );
+                    if right_panel_rect.contains(cx, cy) {
+                        app.l2_scroll_off = (app.l2_scroll_off - dy * 20.0)
+                            .clamp(0.0, (CONTENT_H - SB_H).max(0.0));
+                    }
+                }
             }
             app.window.request_redraw();
         }

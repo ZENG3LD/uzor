@@ -98,6 +98,10 @@ pub struct ChromeView<'a> {
     pub show_new_tab_btn: bool,
     /// Whether to render the gear / menu button on the right.
     pub show_menu_btn: bool,
+    /// Whether to render the new-window icon button (left of menu).
+    pub show_new_window_btn: bool,
+    /// Whether to render the close-window icon button (left of min/max/close).
+    pub show_close_window_btn: bool,
     /// Whether the window is currently maximized (changes max icon to restore).
     pub is_maximized: bool,
     /// Current cursor X (logical px, window-relative) — for tooltip update.
@@ -116,6 +120,8 @@ impl<'a> ChromeView<'a> {
             active_tab_id: None,
             show_new_tab_btn: true,
             show_menu_btn: true,
+            show_new_window_btn: true,
+            show_close_window_btn: true,
             is_maximized: false,
             cursor_x: 0.0,
             cursor_y: 0.0,

@@ -139,13 +139,13 @@ pub fn chrome_hit_test(
             return ChromeHit::MinBtn;
         }
         if show_tabs {
-            if px >= bp_cw_left {
+            if view.show_close_window_btn && px >= bp_cw_left {
                 return ChromeHit::CloseWindowBtn;
             }
             if view.show_menu_btn && px >= bp_menu_left {
                 return ChromeHit::Menu;
             }
-            if px >= bp_nw_left {
+            if view.show_new_window_btn && px >= bp_nw_left {
                 return ChromeHit::NewWindowBtn;
             }
         }

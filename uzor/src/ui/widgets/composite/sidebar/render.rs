@@ -356,13 +356,15 @@ fn draw_sidebar_with_coord(
     }
 
     // --- 4. Header bottom divider --------------------------------------------
-    ctx.set_fill_color(theme.divider());
-    ctx.fill_rect(
-        layout.header.x,
-        layout.header.y + layout.header.height - 1.0,
-        layout.header.width,
-        1.0,
-    );
+    if style.show_header_divider() {
+        ctx.set_fill_color(theme.divider());
+        ctx.fill_rect(
+            layout.header.x,
+            layout.header.y + layout.header.height - 1.0,
+            layout.header.width,
+            1.0,
+        );
+    }
 
     // --- 5. Tab strip (WithTypeSelector) -------------------------------------
     if let SidebarRenderKind::WithTypeSelector = kind {
