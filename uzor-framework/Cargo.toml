@@ -39,3 +39,30 @@ uzor-window-hub = { workspace = true }
 [[example]]
 name = "hello"
 path = "examples/hello.rs"
+
+# ── Level 1: bare InputCoordinator ────────────────────────────────────────────
+[[example]]
+name = "level1_minimal"
+path = "examples/level1_minimal.rs"
+
+# ── Level 2: ContextManager + LayoutManager + widgets (user owns winit+vello) ─
+[[example]]
+name = "level2_launcher"
+path = "examples/level2_launcher.rs"
+
+# ── Level 4: uzor-framework (App trait) ───────────────────────────────────────
+[[example]]
+name = "level4_launcher"
+path = "examples/level4_launcher.rs"
+
+[[example]]
+name = "level4_yoga_tg"
+path = "examples/level4_yoga_tg.rs"
+
+[[example]]
+name = "level4_kkt_tray"
+path = "examples/level4_kkt_tray.rs"
+
+[[example]]
+name = "level4_dashboard"
+path = "examples/level4_dashboard.rs"
