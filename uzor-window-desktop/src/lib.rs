@@ -27,6 +27,9 @@ use uzor::platform::{PlatformEvent, SystemTheme, WindowConfig};
 pub mod event_mapper;
 pub mod application;
 pub mod winit_provider;
+pub mod input_bridge;
+
+pub use input_bridge::{WinitInputBridge, BridgeOutput, ModifierState};
 
 use event_mapper::EventMapper;
 

@@ -69,3 +69,8 @@ path = "examples/level4_kkt_tray.rs"
 [[example]]
 name = "level4_dashboard"
 path = "examples/level4_dashboard.rs"
+
+# ── Level 3: LayoutManager + composite widgets + WinitInputBridge ────────────
+[[example]]
+name = "level3_dashboard"
+path = "examples/level3_dashboard.rs"
