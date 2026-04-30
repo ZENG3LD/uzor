@@ -1040,13 +1040,19 @@ impl ApplicationHandler for Handler {
                     app.slider_val = (app.slider_val + advance * 2.0).clamp(0.0, 100.0);
                     println!("[L2] slider_val → {:.1}", app.slider_val);
                 }
-                // Range slider: wheel shifts both handles together (preserve span).
+                // Range slider: wheel adjusts ONLY the handle closest to cursor.
+                // Each handle moves independently — like mlc's two-point scroller.
                 else if app.hovered_widget_id.as_deref() == Some("range-slider") {
                     let advance = if dx_lines.abs() > dy_lines.abs() { dx_lines } else { dy_lines };
-                    let span = app.range_max - app.range_min;
-                    let new_min = (app.range_min + advance * 2.0).clamp(0.0, 100.0 - span);
-                    app.range_min = new_min;
-                    app.range_max = (new_min + span).clamp(app.range_min, 100.0);
+                    let x_min = RANGE_RECT.x + (app.range_min / 100.0) * RANGE_RECT.width;
+                    let x_max = RANGE_RECT.x + (app.range_max / 100.0) * RANGE_RECT.width;
+                    if (mx - x_min).abs() <= (mx - x_max).abs() {
+                        app.range_min = (app.range_min + advance * 2.0)
+                            .clamp(0.0, app.range_max);
+                    } else {
+                        app.range_max = (app.range_max + advance * 2.0)
+                            .clamp(app.range_min, 100.0);
+                    }
                     println!("[L2] range → [{:.1}, {:.1}]", app.range_min, app.range_max);
                 }
                 // Right column: scroll the scrollbar.
