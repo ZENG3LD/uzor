@@ -99,12 +99,13 @@ pub fn register_input_coordinator_panel(
         }
     }
 
-    // --- Column-header cells (sortable) ---
+    // --- Column-header cells (sortable) + draggable separators between cols ---
     if layout.col_header.height > 0.0 && !view.columns.is_empty() {
         let available_w = layout.col_header.width;
         let mut cursor_x = layout.col_header.x;
+        let n = view.columns.len();
 
-        for col in view.columns {
+        for (i, col) in view.columns.iter().enumerate() {
             let col_w = available_w * col.width;
             let col_rect = Rect::new(cursor_x, layout.col_header.y, col_w, layout.col_header.height);
             if col.sortable {
@@ -117,6 +118,24 @@ pub fn register_input_coordinator_panel(
                 );
             }
             cursor_x += col_w;
+
+            // Draggable separator on the right edge of this column (except last)
+            if i + 1 < n {
+                let sep_w = 6.0;
+                let sep_rect = Rect::new(
+                    cursor_x - sep_w / 2.0,
+                    layout.col_header.y,
+                    sep_w,
+                    layout.body.y + layout.body.height - layout.col_header.y,
+                );
+                coord.register_child(
+                    &panel_id,
+                    format!("{}:colsep:{}", panel_id.0, i),
+                    WidgetKind::Separator,
+                    sep_rect,
+                    Sense::DRAG | Sense::HOVER,
+                );
+            }
         }
     }
 
@@ -340,6 +359,17 @@ fn draw_panel_with_coord(
             }
 
             cursor_x += col_w;
+        }
+
+        // Vertical separator lines between columns (drawn over body too)
+        let mut sep_x = layout.col_header.x;
+        let body_bottom = layout.body.y + layout.body.height;
+        for (i, col) in view.columns.iter().enumerate() {
+            sep_x += available_w * col.width;
+            if i + 1 < view.columns.len() {
+                ctx.set_fill_color(theme.divider());
+                ctx.fill_rect(sep_x - 0.5, layout.col_header.y, 1.0, body_bottom - layout.col_header.y);
+            }
         }
 
         // Column-header bottom divider

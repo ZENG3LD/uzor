@@ -352,6 +352,8 @@ enum DragTarget {
     ModalDrag,
     /// Dock separator drag — stores separator index and start mouse position.
     SeparatorDrag { sep_idx: usize, start_x: f64, start_y: f64 },
+    /// Panel column separator drag (non-blackbox panels on tabs 1+2).
+    ColumnDrag { panel_id: String, sep_idx: usize, start_x: f64, start_widths: [f64; 4] },
 }
 
 // =============================================================================
@@ -424,6 +426,13 @@ struct AppState {
 
     // Need-exit flag set by close button
     exit_requested: bool,
+
+    // Fix 2: L1 custom button hover/press state
+    l1_btn_hovered: bool,
+    l1_btn_pressed: bool,
+
+    // Fix 3: Watchlist blackbox state
+    watchlist: watchlist_blackbox::WatchlistState,
 }
 
 impl AppState {
@@ -715,12 +724,10 @@ impl AppState {
         );
 
         // ── Sidebar ───────────────────────────────────────────────────────────
-        // Fix #8/9: MODALS section removed — L2/L1 moved to top toolbar.
-        // Settings lives only in the context menu (fix #12).
-        // Sidebar now shows only the PANELS section.
+        // Sidebar shows dock panel list with close buttons + "Add Panel" button.
         if self.sidebar_open {
             let sidebar_actions: &[HeaderAction<'_>] = &[];
-            let sidebar_header = SidebarHeader { icon: None, title: "Navigation", actions: sidebar_actions };
+            let sidebar_header = SidebarHeader { icon: None, title: "Dock Panels", actions: sidebar_actions };
             let mut sidebar_view = SidebarView {
                 header: sidebar_header,
                 tabs: &[],
@@ -743,54 +750,123 @@ impl AppState {
                 },
                 &SidebarRenderKind::Left,
             );
-            // Sidebar body — 3 navigation buttons matching chrome tabs.
+            // Sidebar body — dock panel list + Add Panel button.
             if let Some(body_rect) = self.layout.rect_for_edge_slot("sidebar") {
-                let mut y = body_rect.y + 8.0;
-                let nav_labels = ["Dashboard", "Panels", "Monitoring"];
-                for (i, lbl) in nav_labels.iter().enumerate() {
-                    let active = self.active_view == i;
+                use uzor::input::core::sense::Sense;
+                use uzor::input::core::widget_kind::WidgetKind;
+
+                // Sidebar header (rendered by composite) takes top 40px;
+                // body content must start below that.
+                const SIDEBAR_HEADER_H: f64 = 40.0;
+                let mut y = body_rect.y + SIDEBAR_HEADER_H + 8.0;
+
+                // Section header label
+                render.set_fill_color("rgba(255,255,255,0.4)");
+                render.fill_text("DOCK PANELS", body_rect.x + 12.0, y + 11.0);
+                y += 24.0;
+
+                // Collect leaf ids + titles in stable order
+                let leaf_entries: Vec<(String, String)> = {
+                    let mut entries: Vec<(uzor::docking::panels::LeafId, String)> = self
+                        .layout
+                        .panels()
+                        .panel_rects()
+                        .keys()
+                        .map(|&id| {
+                            let title = self
+                                .layout
+                                .panels()
+                                .tree()
+                                .leaf(id)
+                                .and_then(|l| l.panels.first())
+                                .map(|p| p.title().to_string())
+                                .unwrap_or_else(|| format!("Panel {}", id.0));
+                            (id, title)
+                        })
+                        .collect();
+                    entries.sort_by_key(|(id, _)| id.0);
+                    entries.into_iter().map(|(id, title)| (id.to_string(), title)).collect()
+                };
+
+                for (idx, (_leaf_id_str, title)) in leaf_entries.iter().enumerate() {
                     let bx = body_rect.x + 8.0;
                     let bw = body_rect.width - 16.0;
-                    let bg = if active { "#2962ff" } else { "rgba(255,255,255,0.07)" };
-                    render.set_fill_color(bg);
-                    render.fill_rounded_rect(bx, y, bw, 30.0, 4.0);
-                    render.set_fill_color(if active { "#ffffff" } else { "#d1d4dc" });
-                    render.fill_text(*lbl, bx + 12.0, y + 15.0);
-                    let nav_id = format!("sidebar-nav-{}", i);
-                    use uzor::input::core::sense::Sense;
-                    use uzor::input::core::widget_kind::WidgetKind;
+                    render.set_fill_color("rgba(255,255,255,0.05)");
+                    render.fill_rounded_rect(bx, y, bw, 26.0, 3.0);
+                    render.set_fill_color("#d1d4dc");
+                    render.fill_text(title.as_str(), bx + 10.0, y + 13.0);
+
+                    // × close button
+                    let close_x = bx + bw - 22.0;
+                    let close_id = format!("dock-leaf-close-{idx}");
                     self.layout.ctx_mut().input.register_atomic(
-                        WidgetId::new(nav_id),
+                        WidgetId::new(close_id),
                         WidgetKind::Button,
-                        Rect::new(bx, y, bw, 30.0),
+                        Rect::new(close_x, y + 5.0, 16.0, 16.0),
                         Sense::CLICK | Sense::HOVER,
                         &LayerId::main(),
                     );
-                    y += 38.0;
+                    render.set_fill_color("rgba(255,80,80,0.5)");
+                    render.fill_text("×", close_x + 8.0, y + 13.0);
+
+                    y += 30.0;
                 }
-                let _ = y;
+
+                y += 8.0;
+
+                // + Add Panel button
+                let add_bx = body_rect.x + 8.0;
+                let add_bw = body_rect.width - 16.0;
+                render.set_fill_color("#2962ff");
+                render.fill_rounded_rect(add_bx, y, add_bw, 32.0, 4.0);
+                render.set_fill_color("#ffffff");
+                render.fill_text("+ Add Panel", add_bx + add_bw / 2.0, y + 16.0);
+                self.layout.ctx_mut().input.register_atomic(
+                    WidgetId::new("dock-add-panel"),
+                    WidgetKind::Button,
+                    Rect::new(add_bx, y, add_bw, 32.0),
+                    Sense::CLICK | Sense::HOVER,
+                    &LayerId::main(),
+                );
             }
         }
 
         // ── Main content (dock panels, content varies by active chrome tab) ─────
         match self.active_view {
             0 => {
-                // Tab 0: Dashboard — 2 dock panels (Market Overview + Trade History)
+                // Tab 0: Dashboard — 2 dock panels.
+                // Panel A: Watchlist — registered as BlackboxPanel (Fix 3).
+                // uzor sees it as a single opaque rect; all hit-testing is internal.
                 {
-                    let mut panel_a_view = PanelView {
-                        header: Some(PanelHeader { title: "Market Overview", actions: &[] }),
-                        columns: &[],
-                        show_scrollbar: false,
-                        content_height: 600.0,
-                    };
+                    use uzor::ui::widgets::composite::blackbox_panel::input::register_layout_manager_blackbox_panel;
+                    use uzor::ui::widgets::composite::blackbox_panel::settings::BlackboxPanelSettings;
+                    use uzor::ui::widgets::composite::blackbox_panel::state::BlackboxState;
+                    use uzor::ui::widgets::composite::blackbox_panel::types::{BlackboxRenderKind, BlackboxView};
+                    use uzor::input::Sense;
+
                     if let Some(ref id) = self.leaf_a_id.clone() {
-                        let _panel_a_node = register_layout_manager_panel(
-                            &mut self.layout, &mut render,
-                            LayoutNodeId::ROOT, id, "panel-a-widget",
-                            &mut self.panel_a_state,
-                            &mut panel_a_view,
-                            &PanelSettings::default(),
-                            &PanelRenderKind::WithHeader,
+                        let wl_state = &self.watchlist;
+                        let mut bb_state = BlackboxState::default();
+                        let mut bb_view = BlackboxView {
+                            title: None,
+                            sense: Sense::CLICK | Sense::HOVER | Sense::DRAG | Sense::SCROLL,
+                            body: Box::new(|render: &mut dyn uzor::render::RenderContext, rect: Rect| {
+                                watchlist_blackbox::render(wl_state, render, rect);
+                            }),
+                            handle_event: Box::new(|_event| {
+                                uzor::ui::widgets::composite::blackbox_panel::types::BlackboxEventResult::NotConsumed
+                            }),
+                        };
+                        let _bb_node = register_layout_manager_blackbox_panel(
+                            &mut self.layout,
+                            &mut render,
+                            LayoutNodeId::ROOT,
+                            id,
+                            "watchlist-bb",
+                            &mut bb_state,
+                            &mut bb_view,
+                            &BlackboxPanelSettings::default(),
+                            &BlackboxRenderKind::Default,
                         );
                     }
                 }
@@ -815,6 +891,8 @@ impl AppState {
             }
             1 => {
                 // Tab 1: Panels — vertical column of placeholder panel widgets
+                // HEADER_H = 22.0 (PanelStyle::header_height default)
+                const PANEL_HEADER_H: f64 = 22.0;
                 if let Some(ref id) = self.leaf_a_id.clone() {
                     let mut panel_a_view = PanelView {
                         header: Some(PanelHeader { title: "Panels", actions: &[] }),
@@ -831,9 +909,11 @@ impl AppState {
                         &PanelRenderKind::WithHeader,
                     );
                     if let Some(body_rect) = self.layout.rect_for(id.as_str()) {
+                        // Start content BELOW header strip
+                        let content_y = body_rect.y + PANEL_HEADER_H;
                         let panel_labels = ["Panel A", "Panel B", "Panel C", "Panel D"];
                         for (i, lbl) in panel_labels.iter().enumerate() {
-                            let py = body_rect.y + 12.0 + i as f64 * 56.0;
+                            let py = content_y + 12.0 + i as f64 * 56.0;
                             render.set_fill_color("rgba(255,255,255,0.06)");
                             render.fill_rounded_rect(body_rect.x + 12.0, py, body_rect.width - 24.0, 48.0, 4.0);
                             render.set_fill_color("#d1d4dc");
@@ -857,13 +937,16 @@ impl AppState {
                         &PanelRenderKind::WithHeader,
                     );
                     if let Some(body_rect) = self.layout.rect_for(id.as_str()) {
+                        let content_y = body_rect.y + PANEL_HEADER_H;
                         render.set_fill_color("rgba(255,255,255,0.4)");
-                        render.fill_text("Select a panel above", body_rect.x + body_rect.width / 2.0, body_rect.y + 24.0);
+                        render.fill_text("Select a panel above", body_rect.x + body_rect.width / 2.0, content_y + 12.0);
                     }
                 }
             }
             _ => {
                 // Tab 2: Monitoring — placeholder chart rect with metrics rows
+                // HEADER_H = 22.0 (PanelStyle::header_height default)
+                const PANEL_HEADER_H: f64 = 22.0;
                 if let Some(ref id) = self.leaf_a_id.clone() {
                     let mut panel_a_view = PanelView {
                         header: Some(PanelHeader { title: "Monitoring", actions: &[] }),
@@ -880,12 +963,13 @@ impl AppState {
                         &PanelRenderKind::WithHeader,
                     );
                     if let Some(body_rect) = self.layout.rect_for(id.as_str()) {
-                        // Chart placeholder rect
+                        // Start content BELOW header strip
+                        let content_y = body_rect.y + PANEL_HEADER_H;
                         let chart_h = 120.0_f64;
                         render.set_fill_color("rgba(41,98,255,0.08)");
-                        render.fill_rounded_rect(body_rect.x + 12.0, body_rect.y + 12.0, body_rect.width - 24.0, chart_h, 4.0);
+                        render.fill_rounded_rect(body_rect.x + 12.0, content_y + 12.0, body_rect.width - 24.0, chart_h, 4.0);
                         render.set_fill_color("rgba(41,98,255,0.4)");
-                        render.fill_text("[ CPU chart ]", body_rect.x + body_rect.width / 2.0, body_rect.y + 12.0 + chart_h / 2.0);
+                        render.fill_text("[ CPU chart ]", body_rect.x + body_rect.width / 2.0, content_y + 12.0 + chart_h / 2.0);
                         // Metric rows
                         let metrics = [
                             ("CPU", "42%"),
@@ -894,7 +978,7 @@ impl AppState {
                             ("Net ↑", "1.2 MB/s"),
                             ("Net ↓", "4.7 MB/s"),
                         ];
-                        let row_y0 = body_rect.y + 12.0 + chart_h + 16.0;
+                        let row_y0 = content_y + 12.0 + chart_h + 16.0;
                         for (i, (label, value)) in metrics.iter().enumerate() {
                             let ry = row_y0 + i as f64 * 28.0;
                             render.set_fill_color("rgba(255,255,255,0.05)");
@@ -922,8 +1006,9 @@ impl AppState {
                         &PanelRenderKind::WithHeader,
                     );
                     if let Some(body_rect) = self.layout.rect_for(id.as_str()) {
+                        let content_y = body_rect.y + PANEL_HEADER_H;
                         render.set_fill_color("rgba(16,185,129,0.5)");
-                        render.fill_text("[OK] All systems nominal", body_rect.x + body_rect.width / 2.0, body_rect.y + 24.0);
+                        render.fill_text("[OK] All systems nominal", body_rect.x + body_rect.width / 2.0, content_y + 12.0);
                     }
                 }
             }
@@ -1045,9 +1130,12 @@ impl AppState {
                 let layer = LayerId::modal();
                 match modal_kind {
                     ModalKind::L1 => {
-                        render.set_fill_color("rgba(255,255,255,0.55)");
-                        render.fill_text("Hand-rolled MyButton (no uzor button widget)", body_rect.x + body_rect.width / 2.0, body_rect.y + 20.0);
-                        let btn_r = Rect::new(body_rect.x + 60.0, body_rect.y + 40.0, 200.0, 60.0);
+                        // Fix 2 + Fix 5-6: custom button with hover/press colour animation.
+                        let btn_w = 200.0_f64;
+                        let btn_h = 60.0_f64;
+                        let cx = body_rect.x + body_rect.width / 2.0;
+                        let cy = body_rect.y + body_rect.height / 2.0;
+                        let btn_r = Rect::new(cx - btn_w / 2.0, cy - btn_h / 2.0, btn_w, btn_h);
                         use uzor::input::core::sense::Sense;
                         use uzor::input::core::widget_kind::WidgetKind;
                         self.layout.ctx_mut().input.register_atomic(
@@ -1057,12 +1145,16 @@ impl AppState {
                             Sense::CLICK | Sense::HOVER,
                             &layer,
                         );
-                        render.set_fill_color("#3366bb");
-                        render.fill_rounded_rect(btn_r.x - 1.0, btn_r.y - 1.0, btn_r.width + 2.0, btn_r.height + 2.0, 7.0);
-                        render.set_fill_color("#3769af");
+                        // Fix 2: three-state colour: pressed > hovered > normal
+                        let btn_color = if self.l1_btn_pressed {
+                            "#1a40c8"   // pressed — darker blue
+                        } else if self.l1_btn_hovered {
+                            "#4080ff"   // hovered — lighter blue
+                        } else {
+                            "#3769af"   // normal
+                        };
+                        render.set_fill_color(btn_color);
                         render.fill_rounded_rect(btn_r.x, btn_r.y, btn_r.width, btn_r.height, 6.0);
-                        render.set_fill_color("#c8e6ff");
-                        render.fill_rounded_rect(btn_r.x + btn_r.width / 2.0 - 6.0, btn_r.y + btn_r.height / 2.0 - 6.0, 12.0, 12.0, 6.0);
                         render.set_fill_color("#ffffff");
                         render.fill_text("Click me (L1 custom)", btn_r.x + btn_r.width / 2.0, btn_r.y + btn_r.height / 2.0);
                     }
@@ -1757,18 +1849,84 @@ impl AppState {
                     return;
                 }
             }
-            // Sidebar nav buttons — switch active chrome tab
-            if let Some(idx_str) = id_str.strip_prefix("sidebar-nav-") {
-                if let Ok(n) = idx_str.parse::<usize>() {
-                    eprintln!("[DISPATCH] sidebar-nav-{n}");
-                    self.active_view = n;
-                    return;
+            // Sidebar: + Add Panel button
+            if id_str == "dock-add-panel" {
+                eprintln!("[DISPATCH] dock-add-panel");
+                let leaves: Vec<uzor::docking::panels::LeafId> = self
+                    .layout
+                    .panels()
+                    .panel_rects()
+                    .keys()
+                    .copied()
+                    .collect();
+                if let Some(&first) = leaves.first() {
+                    let new_ids = self.layout.panels_mut().tree_mut().split_leaf(
+                        first,
+                        SplitKind::Horizontal,
+                        0.0,
+                        0.0,
+                    );
+                    if let Some(&new_id) = new_ids.last() {
+                        if let Some(leaf) = self.layout.panels_mut().tree_mut().leaf_mut(new_id) {
+                            if let Some(panel) = leaf.panels.first_mut() {
+                                panel.title = format!("Panel {}", new_id.0);
+                            }
+                        }
+                    }
                 }
+                return;
+            }
+            // Sidebar: × close leaf button
+            if let Some(idx_str) = id_str.strip_prefix("dock-leaf-close-") {
+                if let Ok(idx) = idx_str.parse::<usize>() {
+                    eprintln!("[DISPATCH] dock-leaf-close-{idx}");
+                    let mut leaves: Vec<uzor::docking::panels::LeafId> = self
+                        .layout
+                        .panels()
+                        .panel_rects()
+                        .keys()
+                        .copied()
+                        .collect();
+                    leaves.sort_by_key(|id| id.0);
+                    // Only remove if more than 1 leaf remains
+                    if leaves.len() > 1 {
+                        if let Some(&leaf_id) = leaves.get(idx) {
+                            self.layout.panels_mut().tree_mut().remove_leaf(leaf_id);
+                            // Reset stored leaf ids if they were removed
+                            let leaf_id_str = leaf_id.to_string();
+                            if self.leaf_a_id.as_deref() == Some(leaf_id_str.as_str()) {
+                                self.leaf_a_id = leaves
+                                    .iter()
+                                    .find(|&&id| id != leaf_id)
+                                    .map(|id| id.to_string());
+                            }
+                            if self.leaf_b_id.as_deref() == Some(leaf_id_str.as_str()) {
+                                self.leaf_b_id = None;
+                            }
+                        }
+                    }
+                }
+                return;
             }
             // L1-modal custom button
             if id_str == "l1-mybtn" {
                 eprintln!("[DISPATCH] l1-mybtn");
                 println!("[L3] L1 custom button clicked");
+                return;
+            }
+            // Fix 3: watchlist blackbox — row clicks dispatched manually below
+            if id_str == "watchlist-bb" {
+                // Click landed inside blackbox; delegate to internal hit-test
+                if let Some(ref id) = self.leaf_a_id.clone() {
+                    if let Some(rect) = self.layout.rect_for(id.as_str()) {
+                        let symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "ADA/USDT"];
+                        if let watchlist_blackbox::Hit::Row(row) = watchlist_blackbox::hit_test(&self.watchlist, rect, x, y) {
+                            if let Some(sym) = symbols.get(row) {
+                                println!("[L3] watchlist row clicked: {sym}");
+                            }
+                        }
+                    }
+                }
                 return;
             }
             // Left vertical toolbar items — registered as "left-vtoolbar-widget:<id>"
@@ -2068,6 +2226,51 @@ impl AppState {
             }
         }
 
+        // Fix 2: track L1 button pressed state
+        if self.modal_open && self.modal_kind == ModalKind::L1 {
+            let hovered_id = self.layout.ctx_mut().input.hovered_widget().map(|id| id.0.clone());
+            self.l1_btn_pressed = hovered_id.as_deref() == Some("l1-mybtn");
+        }
+
+        // Fix 3: route mouse-down to watchlist blackbox (tab 0 only)
+        if self.active_view == 0 && !self.modal_open {
+            if let Some(ref id) = self.leaf_a_id.clone() {
+                if let Some(rect) = self.layout.rect_for(id.as_str()) {
+                    watchlist_blackbox::on_mouse_down(&mut self.watchlist, rect, x, y);
+                    if self.watchlist.drag_sep.is_some() {
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Fix 1: column separator drag for non-blackbox panels (tabs 1+2)
+        if !self.modal_open && self.active_view != 0 {
+            if let Some(ref id) = self.leaf_a_id.clone() {
+                let panel_id_str = format!("panel-a-widget");
+                // Check if cursor hit a colsep child widget via coordinator
+                let hovered_id = self.layout.ctx_mut().input.hovered_widget().map(|id| id.0.clone());
+                if let Some(ref hid) = hovered_id {
+                    if let Some(rest) = hid.strip_prefix(&format!("{}:colsep:", panel_id_str)) {
+                        if let Ok(sep_idx) = rest.parse::<usize>() {
+                            if let Some(rect) = self.layout.rect_for(id.as_str()) {
+                                // read current col widths from the static array used in tab renders
+                                let start_widths = [0.25_f64, 0.30, 0.20, 0.25];
+                                self.drag_target = Some(DragTarget::ColumnDrag {
+                                    panel_id: id.clone(),
+                                    sep_idx,
+                                    start_x: x,
+                                    start_widths,
+                                });
+                                let _ = rect;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // L2 drag targets
         if self.modal_open && self.modal_kind == ModalKind::L2 {
             if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
@@ -2138,6 +2341,21 @@ impl AppState {
                     ts.close_hovered = tab_close_hovered == Some(i);
                 }
                 self.chrome_state.hovered = hit;
+            }
+        }
+
+        // Fix 2: update L1 button hover state from coordinator hovered widget
+        {
+            let hovered_id = self.layout.ctx_mut().input.hovered_widget().map(|id| id.0.clone());
+            self.l1_btn_hovered = hovered_id.as_deref() == Some("l1-mybtn");
+        }
+
+        // Route mouse-move into watchlist blackbox (tab 0 only)
+        if self.active_view == 0 && !self.modal_open {
+            if let Some(ref id) = self.leaf_a_id.clone() {
+                if let Some(rect) = self.layout.rect_for(id.as_str()) {
+                    watchlist_blackbox::on_mouse_move(&mut self.watchlist, rect, x, y);
+                }
             }
         }
 
@@ -2244,6 +2462,24 @@ impl AppState {
                 DragTarget::L2Splitter(w0) => {
                     self.l2_right_panel_w = (w0 - dx).clamp(200.0, L2_WIN_W - 100.0);
                 }
+                // Fix 1: ColumnDrag is handled separately below (needs panel rect)
+                DragTarget::ColumnDrag { .. } => {}
+            }
+        }
+
+        // Fix 1: ColumnDrag — redistribute column widths between sep and sep+1.
+        // Uses a separate mutable borrow path to avoid conflict with drag_origin above.
+        if let Some(DragTarget::ColumnDrag { ref panel_id, sep_idx, start_x, start_widths }) = self.drag_target {
+            if let Some(rect) = self.layout.rect_for(panel_id.as_str()) {
+                let dx_frac = (x - start_x) / rect.width;
+                // These col_widths are only visual — for demo we just log the new values
+                let new_left  = (start_widths[sep_idx]     + dx_frac).clamp(0.05, 0.90);
+                let new_right = (start_widths[sep_idx + 1] - dx_frac).clamp(0.05, 0.90);
+                // Normalise: only apply if both still valid
+                let total_before = start_widths[sep_idx] + start_widths[sep_idx + 1];
+                if (new_left + new_right - total_before).abs() < 1e-9 {
+                    eprintln!("[L3] colsep drag sep={sep_idx} left={new_left:.3} right={new_right:.3}");
+                }
             }
         }
     }
@@ -2256,6 +2492,10 @@ impl AppState {
         self.drag_target = None;
         self.l2_range_drag_handle = None;
         self.l2_pressed = None;
+        // Fix 2: clear L1 press state
+        self.l1_btn_pressed = false;
+        // Fix 3: clear watchlist drag
+        watchlist_blackbox::on_mouse_up(&mut self.watchlist);
     }
 }
 
@@ -2374,6 +2614,9 @@ impl ApplicationHandler for Handler {
             leaf_a_id: Some(leaf_a_id),
             leaf_b_id: Some(leaf_b_id),
             exit_requested: false,
+            l1_btn_hovered: false,
+            l1_btn_pressed: false,
+            watchlist: watchlist_blackbox::WatchlistState::default(),
         });
     }
 
@@ -2491,6 +2734,20 @@ impl ApplicationHandler for Handler {
             app.window.request_redraw();
         }
 
+        // Fix 3: Watchlist blackbox scroll
+        if let Some(((cx, cy), (_, dy))) = out.wheel {
+            if app.active_view == 0 && !app.modal_open {
+                if let Some(ref id) = app.leaf_a_id.clone() {
+                    if let Some(rect) = app.layout.rect_for(id.as_str()) {
+                        if rect.contains(cx, cy) {
+                            watchlist_blackbox::on_wheel(&mut app.watchlist, rect, dy);
+                            app.window.request_redraw();
+                        }
+                    }
+                }
+            }
+        }
+
         // Fix 5: Wheel routing per sub-panel — only scroll right panel if cursor
         // is over the right panel. Left panel wheel is ignored.
         if let Some(((cx, cy), (_, dy))) = out.wheel {
@@ -2569,6 +2826,205 @@ fn ensure_debug_console() {
 
 #[cfg(not(target_os = "windows"))]
 fn ensure_debug_console() {}
+
+// =============================================================================
+// === BLACKBOX PANEL DEMO === Watchlist
+// === Everything about this panel is self-contained: state, rendering,
+// === hit-testing, dispatch. uzor sees it only as a single Blackbox rect.
+// =============================================================================
+
+mod watchlist_blackbox {
+    use uzor::render::RenderContext;
+    use uzor::types::Rect;
+
+    pub struct WatchlistState {
+        pub col_widths:  [f64; 4],
+        pub scroll_off:  f64,
+        pub hovered_row: Option<usize>,
+        pub hovered_sep: Option<usize>,
+        /// (sep_idx, start_x, widths_at_drag_start)
+        pub drag_sep: Option<(usize, f64, [f64; 4])>,
+    }
+
+    impl Default for WatchlistState {
+        fn default() -> Self {
+            Self {
+                col_widths:  [0.25, 0.30, 0.20, 0.25],
+                scroll_off:  0.0,
+                hovered_row: None,
+                hovered_sep: None,
+                drag_sep:    None,
+            }
+        }
+    }
+
+    // ── Render ─────────────────────────────────────────────────────────────────
+
+    pub fn render(state: &WatchlistState, render: &mut dyn RenderContext, rect: Rect) {
+        const HEADER_H: f64 = 28.0;
+        const ROW_H:    f64 = 24.0;
+
+        // Background
+        render.set_fill_color("#1a1a22");
+        render.fill_rect(rect.x, rect.y, rect.width, rect.height);
+
+        // Column header strip
+        render.set_fill_color("#252530");
+        render.fill_rect(rect.x, rect.y, rect.width, HEADER_H);
+
+        let titles = ["SYMBOL", "PRICE", "Δ", "VOL"];
+        // Compute column boundary x positions
+        let mut col_xs = [rect.x; 5];
+        let mut cx = rect.x;
+        for i in 0..4 {
+            col_xs[i] = cx;
+            cx += rect.width * state.col_widths[i];
+        }
+        col_xs[4] = cx;
+
+        for (i, title) in titles.iter().enumerate() {
+            render.set_fill_color("#a0a0a8");
+            render.fill_text(title, col_xs[i] + 8.0, rect.y + HEADER_H / 2.0);
+        }
+
+        // Vertical separator lines (highlight on hover / drag)
+        for i in 0..3 {
+            let sep_x = col_xs[i + 1];
+            let dragging = state.drag_sep.map(|(idx, _, _)| idx == i).unwrap_or(false);
+            let color = if dragging || state.hovered_sep == Some(i) {
+                "#4080ff"
+            } else {
+                "rgba(255,255,255,0.12)"
+            };
+            render.set_fill_color(color);
+            render.fill_rect(sep_x - 0.5, rect.y, 1.0, rect.height);
+        }
+
+        // Column-header bottom divider
+        render.set_fill_color("rgba(255,255,255,0.08)");
+        render.fill_rect(rect.x, rect.y + HEADER_H - 1.0, rect.width, 1.0);
+
+        // Rows
+        let symbols: &[(&str, &str, &str, &str)] = &[
+            ("BTC/USDT", "67,234.5", "+1.2%", "12.4M"),
+            ("ETH/USDT",  "3,421.8", "-0.8%",  "8.2M"),
+            ("SOL/USDT",   "182.3",  "+3.4%",  "5.1M"),
+            ("BNB/USDT",   "612.7",  "+0.5%",  "2.8M"),
+            ("ADA/USDT",     "0.45", "-1.1%",  "1.5M"),
+        ];
+        for (row, (sym, price, delta, vol)) in symbols.iter().enumerate() {
+            let y = rect.y + HEADER_H + row as f64 * ROW_H - state.scroll_off;
+            if y + ROW_H < rect.y + HEADER_H || y > rect.y + rect.height {
+                continue;
+            }
+            // Hover highlight
+            if state.hovered_row == Some(row) {
+                render.set_fill_color("rgba(64,128,255,0.10)");
+                render.fill_rect(rect.x, y, rect.width, ROW_H);
+            }
+            let cells: [&str; 4] = [sym, price, delta, vol];
+            for (i, cell) in cells.iter().enumerate() {
+                let color = if i == 2 {
+                    if delta.starts_with('+') { "#10b981" } else { "#ef5350" }
+                } else {
+                    "#d1d4dc"
+                };
+                render.set_fill_color(color);
+                render.fill_text(cell, col_xs[i] + 8.0, y + ROW_H / 2.0);
+            }
+        }
+    }
+
+    // ── Hit-test ───────────────────────────────────────────────────────────────
+
+    pub enum Hit {
+        Separator(usize),
+        Row(usize),
+        None,
+    }
+
+    pub fn hit_test(state: &WatchlistState, rect: Rect, x: f64, y: f64) -> Hit {
+        if !rect.contains(x, y) {
+            return Hit::None;
+        }
+        const HEADER_H: f64 = 28.0;
+        const ROW_H:    f64 = 24.0;
+        const SEP_HALF: f64 = 4.0;  // ±4 px sensitivity
+
+        // Compute column boundary xs
+        let mut cx = rect.x;
+        let mut boundaries = [0.0_f64; 3];
+        for i in 0..3 {
+            cx += rect.width * state.col_widths[i];
+            boundaries[i] = cx;
+        }
+
+        // Separator wins if within ±SEP_HALF of a boundary
+        for (i, &bx) in boundaries.iter().enumerate() {
+            if (x - bx).abs() <= SEP_HALF {
+                return Hit::Separator(i);
+            }
+        }
+
+        // Row (below header)
+        if y >= rect.y + HEADER_H {
+            let row_f = (y - rect.y - HEADER_H + state.scroll_off) / ROW_H;
+            if row_f >= 0.0 {
+                return Hit::Row(row_f as usize);
+            }
+        }
+
+        Hit::None
+    }
+
+    // ── Input handlers ─────────────────────────────────────────────────────────
+
+    pub fn on_mouse_move(state: &mut WatchlistState, rect: Rect, x: f64, y: f64) {
+        // Continue column drag if active
+        if let Some((idx, start_x, start_widths)) = state.drag_sep {
+            let dx_frac = (x - start_x) / rect.width;
+            let new_left  = (start_widths[idx]     + dx_frac).clamp(0.05, 0.90);
+            let new_right = (start_widths[idx + 1] - dx_frac).clamp(0.05, 0.90);
+            let total_before = start_widths[idx] + start_widths[idx + 1];
+            let total_after  = new_left + new_right;
+            // Only apply when widths still sum correctly (both clamped independently)
+            if (total_after - total_before).abs() < 1e-9 {
+                state.col_widths[idx]     = new_left;
+                state.col_widths[idx + 1] = new_right;
+            }
+            return;
+        }
+
+        match hit_test(state, rect, x, y) {
+            Hit::Separator(i) => {
+                state.hovered_sep = Some(i);
+                state.hovered_row = Option::None;
+            }
+            Hit::Row(r) => {
+                state.hovered_row = Some(r);
+                state.hovered_sep = Option::None;
+            }
+            Hit::None => {
+                state.hovered_row = Option::None;
+                state.hovered_sep = Option::None;
+            }
+        }
+    }
+
+    pub fn on_mouse_down(state: &mut WatchlistState, rect: Rect, x: f64, y: f64) {
+        if let Hit::Separator(i) = hit_test(state, rect, x, y) {
+            state.drag_sep = Some((i, x, state.col_widths));
+        }
+    }
+
+    pub fn on_mouse_up(state: &mut WatchlistState) {
+        state.drag_sep = Option::None;
+    }
+
+    pub fn on_wheel(state: &mut WatchlistState, _rect: Rect, dy: f64) {
+        state.scroll_off = (state.scroll_off - dy * 20.0).max(0.0);
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     ensure_debug_console();
