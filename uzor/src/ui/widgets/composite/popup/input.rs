@@ -8,8 +8,8 @@ use super::settings::PopupSettings;
 use super::state::PopupState;
 use super::types::{PopupRenderKind, PopupView};
 use crate::docking::panels::DockPanel;
-use crate::input::LayerId;
-use crate::layout::LayoutManager;
+use crate::input::{Sense, WidgetKind};
+use crate::layout::{LayoutManager, LayoutNodeId, PopupNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -21,18 +21,22 @@ use crate::types::{Rect, WidgetId};
 pub fn register_layout_manager_popup<P: DockPanel>(
     layout:   &mut LayoutManager<P>,
     render:   &mut dyn RenderContext,
+    parent:   LayoutNodeId,
     slot_id:  &str,
     id:       impl Into<WidgetId>,
     state:    &mut PopupState,
     view:     &mut PopupView<'_>,
     settings: &PopupSettings,
     kind:     PopupRenderKind,
-    layer:    &LayerId,
-) -> Option<WidgetId> {
+) -> Option<PopupNode> {
+    let id: WidgetId = id.into();
     let rect = layout.rect_for_overlay(slot_id)?;
-    Some(register_context_manager_popup(
-        layout.ctx_mut(), render, id, rect, state, view, settings, kind, layer,
-    ))
+    let layer = layout.compute_layer_for(parent);
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Popup, rect, sense: Sense::CLICK });
+    register_context_manager_popup(
+        layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
+    );
+    Some(PopupNode(node_id))
 }
 
 /// Returns `true` if `click_pos` is outside the popup rect and the popup

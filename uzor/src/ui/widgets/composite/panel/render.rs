@@ -202,7 +202,7 @@ pub fn register_context_manager_panel(
 fn draw_panel_with_coord(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
-    coord:    &mut InputCoordinator,
+    _coord:    &mut InputCoordinator,
     state:    &mut PanelState,
     view:     &mut PanelView<'_>,
     settings: &PanelSettings,
@@ -352,8 +352,7 @@ fn draw_panel_with_coord(
         );
     }
 
-    // --- 4. Body closure -----------------------------------------------------
-    (view.body)(ctx, layout.body, coord);
+    // --- 4. (body drawn by caller after composite call) ----------------------
 
     // --- 5. Footer -----------------------------------------------------------
     let has_footer = matches!(
@@ -362,27 +361,24 @@ fn draw_panel_with_coord(
     );
 
     if has_footer && layout.footer.height > 0.0 {
-        if let Some(footer_fn) = &mut view.footer {
-            // Footer top divider
-            ctx.set_fill_color(theme.divider());
-            ctx.fill_rect(
-                layout.footer.x,
-                layout.footer.y,
-                layout.footer.width,
-                1.0,
-            );
+        // Footer top divider
+        ctx.set_fill_color(theme.divider());
+        ctx.fill_rect(
+            layout.footer.x,
+            layout.footer.y,
+            layout.footer.width,
+            1.0,
+        );
 
-            // Footer background
-            ctx.set_fill_color(theme.footer_bg());
-            ctx.fill_rect(
-                layout.footer.x,
-                layout.footer.y + 1.0,
-                layout.footer.width,
-                layout.footer.height - 1.0,
-            );
-
-            footer_fn(ctx, layout.footer, coord);
-        }
+        // Footer background
+        ctx.set_fill_color(theme.footer_bg());
+        ctx.fill_rect(
+            layout.footer.x,
+            layout.footer.y + 1.0,
+            layout.footer.width,
+            layout.footer.height - 1.0,
+        );
+        // (footer drawn by caller after composite call)
     }
 
     // --- 6. Scrollbar --------------------------------------------------------
@@ -454,7 +450,7 @@ fn compute_layout(
 
     let header_h     = if has_header     { style.header_height()        } else { 0.0 };
     let col_header_h = if has_col_header { style.column_header_height() } else { 0.0 };
-    let footer_h     = if has_footer && view.footer.is_some() { style.footer_height() } else { 0.0 };
+    let footer_h     = if has_footer { style.footer_height() } else { 0.0 };
     let scrollbar_w  = if view.show_scrollbar { style.scrollbar_width() } else { 0.0 };
 
     let frame = rect;

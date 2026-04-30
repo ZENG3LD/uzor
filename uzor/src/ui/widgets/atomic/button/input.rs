@@ -3,7 +3,7 @@
 use crate::app_context::ContextManager;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::layout::LayoutManager;
+use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId, WidgetState};
 use crate::docking::panels::DockPanel;
@@ -56,18 +56,27 @@ pub fn register_context_manager_button(
     draw_button(render, rect, widget_state, view, settings, |_, _, _, _| {});
 }
 
-/// Level 3 — register a button via `LayoutManager`, forwarding to L2.
+/// Level 3 — register a button via `LayoutManager`.
 ///
-/// `LayoutManager` owns the `ContextManager`; this is a thin wrapper that extracts it.
+/// Inserts a widget node into the `LayoutTree` under `parent`, then forwards
+/// to L2. The coordinator layer is derived from the parent chain.
 pub fn register_layout_manager_button<P: DockPanel>(
     layout: &mut LayoutManager<P>,
     render: &mut dyn RenderContext,
+    parent: LayoutNodeId,
     id: impl Into<WidgetId>,
     rect: Rect,
-    layer: &LayerId,
     widget_state: WidgetState,
     view: &ButtonView<'_>,
     settings: &ButtonSettings,
 ) {
-    register_context_manager_button(layout.ctx_mut(), render, id, rect, layer, widget_state, view, settings);
+    let id: WidgetId = id.into();
+    let layer = layout.compute_layer_for(parent);
+    layout.tree_mut().add_widget(parent, WidgetNode {
+        id: id.clone(),
+        kind: WidgetKind::Button,
+        rect,
+        sense: Sense::CLICK,
+    });
+    register_context_manager_button(layout.ctx_mut(), render, id, rect, &layer, widget_state, view, settings);
 }

@@ -1,6 +1,5 @@
 //! Modal type definitions.
 
-use crate::input::InputCoordinator;
 use crate::render::RenderContext;
 use crate::types::Rect;
 
@@ -91,14 +90,6 @@ pub struct ModalView<'a> {
 
     /// Backdrop fill strategy.
     pub backdrop: BackdropKind,
-
-    /// Body closure — called by the composite with the computed body rect after
-    /// the frame, header, and tabs are drawn.
-    ///
-    /// The caller registers and draws whatever it wants inside the body area.
-    ///
-    /// Per-frame `Box` allocation is acceptable here (single per-frame alloc).
-    pub body: Box<dyn FnMut(&mut dyn RenderContext, Rect, &mut InputCoordinator) + 'a>,
 }
 
 // ---------------------------------------------------------------------------

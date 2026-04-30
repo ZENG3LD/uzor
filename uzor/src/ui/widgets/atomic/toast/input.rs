@@ -4,7 +4,7 @@ use crate::app_context::ContextManager;
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::layout::LayoutManager;
+use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -59,18 +59,21 @@ pub fn register_context_manager_toast(
     draw_toast(render, rect, entry, settings, now_ms);
 }
 
-/// Level 3 — register a toast widget via `LayoutManager`, forwarding to L2.
+/// Level 3 — register a toast widget via `LayoutManager`.
 pub fn register_layout_manager_toast<P: DockPanel>(
     layout: &mut LayoutManager<P>,
     render: &mut dyn RenderContext,
+    parent: LayoutNodeId,
     id: impl Into<WidgetId>,
     rect: Rect,
-    layer: &LayerId,
     entry: &ToastEntry,
     settings: &ToastSettings,
     now_ms: u64,
 ) {
+    let id: WidgetId = id.into();
+    let layer = layout.compute_layer_for(parent);
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Tooltip, rect, sense: Sense::HOVER });
     register_context_manager_toast(
-        layout.ctx_mut(), render, id, rect, layer, entry, settings, now_ms,
+        layout.ctx_mut(), render, id, rect, &layer, entry, settings, now_ms,
     );
 }

@@ -12,8 +12,8 @@ use super::settings::BlackboxPanelSettings;
 use super::state::BlackboxState;
 use super::types::{BlackboxEvent, BlackboxEventResult, BlackboxRenderKind, BlackboxView};
 use crate::docking::panels::DockPanel;
-use crate::input::LayerId;
-use crate::layout::LayoutManager;
+use crate::input::WidgetKind;
+use crate::layout::{BlackboxPanelNode, LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -25,18 +25,23 @@ use crate::types::{Rect, WidgetId};
 pub fn register_layout_manager_blackbox_panel<P: DockPanel>(
     layout:   &mut LayoutManager<P>,
     render:   &mut dyn RenderContext,
+    parent:   LayoutNodeId,
     slot_id:  &str,
     id:       impl Into<WidgetId>,
     state:    &mut BlackboxState,
     view:     &mut BlackboxView<'_>,
     settings: &BlackboxPanelSettings,
     kind:     &BlackboxRenderKind,
-    layer:    &LayerId,
-) -> Option<WidgetId> {
+) -> Option<BlackboxPanelNode> {
+    let id: WidgetId = id.into();
     let rect = layout.rect_for(slot_id)?;
-    Some(register_context_manager_blackbox_panel(
-        layout.ctx_mut(), render, id, rect, state, view, settings, kind, layer,
-    ))
+    let layer = layout.compute_layer_for(parent);
+    let sense = view.sense;
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::BlackboxPanel, rect, sense });
+    register_context_manager_blackbox_panel(
+        layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
+    );
+    Some(BlackboxPanelNode(node_id))
 }
 
 // ---------------------------------------------------------------------------

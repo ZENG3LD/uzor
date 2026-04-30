@@ -5,7 +5,6 @@
 
 use super::settings::PopupSettings;
 use super::state::PopupState;
-use crate::input::InputCoordinator;
 use crate::render::RenderContext;
 use crate::types::Rect;
 
@@ -139,11 +138,8 @@ pub struct PopupView<'a> {
 
 /// Template-specific per-frame data.
 pub enum PopupViewKind<'a> {
-    /// Frame only — caller fills all content inside the body closure.
-    Plain {
-        /// Body closure called with the content rect after the frame is drawn.
-        body: Box<dyn FnMut(&mut dyn RenderContext, Rect, &mut InputCoordinator) + 'a>,
-    },
+    /// Frame only — caller draws content after the composite call returns.
+    Plain,
 
     /// Swatch grid (10×10) + custom row + opacity row.
     /// Transitions to `ColorPickerHsv` via "+" button.

@@ -6,8 +6,8 @@
 //!   hit-rects with an `InputCoordinator`.  **No drawing.**  Use when you need
 //!   to separate registration from rendering (explicit z-order control).
 //! - `register_context_manager_modal`   — convenience wrapper: takes a
-//!   `ContextManager`, registers, and draws in one call (passes `coord` to the
-//!   body closure so inner widgets can self-register).
+//!   `ContextManager`, registers, and draws the chrome in one call.
+//!   Body content is drawn by the caller after this call returns.
 //!
 //! # Draw order for every non-Custom kind
 //!
@@ -17,7 +17,7 @@
 //! 4. Header strip + title + close-X + drag-zone (DragHandle)  (if kind has header)
 //! 5. Tab strip — horizontal (`TopTabs`) or vertical sidebar (`SideTabs`)
 //! 6. Dividers (header bottom, footer top, sidebar right)
-//! 7. `(view.body)(ctx, body_rect, coord)`
+//! 7. (body drawn by caller after composite call)
 //! 8. Footer buttons                                             (if kind has footer)
 //! 9. Wizard nav (page dots + Back / Next)                       (Wizard only)
 
@@ -66,8 +66,6 @@ struct ModalLayout {
     tab_strip: Rect,
     /// Vertical sidebar (zero width = no sidebar).
     sidebar: Rect,
-    /// Area available to the body closure.
-    body: Rect,
     /// Footer strip (zero height = no footer).
     footer: Rect,
     /// Wizard nav area (zero = no wizard nav).
@@ -280,7 +278,7 @@ pub fn register_context_manager_modal(
 fn draw_modal_with_coord(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
-    coord:    &mut InputCoordinator,
+    _coord:    &mut InputCoordinator,
     _modal_id: &WidgetId,
     state:    &ModalState,
     view:     &mut ModalView<'_>,
@@ -425,8 +423,7 @@ fn draw_modal_with_coord(
         );
     }
 
-    // --- 7. Body closure (with coord) -----------------------------------------
-    (view.body)(ctx, layout.body, coord);
+    // --- 7. (body drawn by caller after composite call) -----------------------
 
     // --- 8. Footer buttons ----------------------------------------------------
     if layout.footer.height > 0.0 && !view.footer_buttons.is_empty() {
@@ -556,19 +553,12 @@ fn compute_layout(
         Rect::default()
     };
 
-    let body_x = frame.x + sidebar_w;
-    let body_y = frame.y + header_h + tab_h;
-    let body_w = frame.width - sidebar_w;
-    let body_h = frame.height - header_h - tab_h - footer_h - wizard_nav_h;
-    let body   = Rect::new(body_x, body_y, body_w, body_h.max(0.0));
-
     ModalLayout {
         header,
         close_btn,
         drag_handle,
         tab_strip,
         sidebar,
-        body,
         footer,
         wizard_nav,
     }

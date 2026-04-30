@@ -10,8 +10,8 @@
 use crate::app_context::ContextManager;
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
-use crate::input::{InputCoordinator, Sense};
-use crate::layout::LayoutManager;
+use crate::input::{InputCoordinator, Sense, WidgetKind};
+use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId, WidgetState};
 
@@ -80,14 +80,18 @@ pub fn register_context_manager_text_input(
 pub fn register_layout_manager_text_input<P: DockPanel>(
     layout: &mut LayoutManager<P>,
     render: &mut dyn RenderContext,
+    parent: LayoutNodeId,
     id: impl Into<WidgetId>,
     rect: Rect,
-    layer: &LayerId,
     widget_state: WidgetState,
     view: &InputView<'_>,
     settings: &TextInputSettings,
 ) {
+    let id: WidgetId = id.into();
+    let layer = layout.compute_layer_for(parent);
+    let sense = Sense::CLICK.with_focus().with_text();
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Custom, rect, sense });
     register_context_manager_text_input(
-        layout.ctx_mut(), render, id, rect, layer, widget_state, view, settings,
+        layout.ctx_mut(), render, id, rect, &layer, widget_state, view, settings,
     );
 }

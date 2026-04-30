@@ -5,7 +5,7 @@ use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::{InputCoordinator, LayerId};
 use crate::input::core::sense::Sense;
 use crate::input::core::widget_kind::WidgetKind;
-use crate::layout::LayoutManager;
+use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -155,18 +155,21 @@ pub fn register_context_manager_tab(
     id
 }
 
-/// Level 3 — register a tab via `LayoutManager`, forwarding to L2.
+/// Level 3 — register a tab via `LayoutManager`.
 pub fn register_layout_manager_tab<P: DockPanel>(
     layout: &mut LayoutManager<P>,
     render: &mut dyn RenderContext,
+    parent: LayoutNodeId,
     tab_id: impl Into<WidgetId>,
     rect: Rect,
     close_btn_rect: Option<Rect>,
-    layer: &LayerId,
     view: &TabView<'_>,
     settings: &TabSettings,
 ) -> WidgetId {
+    let tab_id: WidgetId = tab_id.into();
+    let layer = layout.compute_layer_for(parent);
+    layout.tree_mut().add_widget(parent, WidgetNode { id: tab_id.clone(), kind: WidgetKind::ChromeTab, rect, sense: Sense::CLICK | Sense::HOVER });
     register_context_manager_tab(
-        layout.ctx_mut(), render, tab_id, rect, close_btn_rect, layer, view, settings,
+        layout.ctx_mut(), render, tab_id, rect, close_btn_rect, &layer, view, settings,
     )
 }

@@ -3,7 +3,6 @@
 //! Ported from the mlc deep audit in `sidebar-deep.md`.
 //! Five structurally-distinct templates cover all sidebar variants.
 
-use crate::input::InputCoordinator;
 use crate::render::RenderContext;
 use crate::types::{IconId, Rect};
 
@@ -67,12 +66,6 @@ pub struct SidebarView<'a> {
 
     /// Currently active tab id for `WithTypeSelector`.  `None` = no tab active.
     pub active_tab: Option<&'a str>,
-
-    /// Body closure — called by the composite with the computed body rect after
-    /// the frame, header, and tabs are drawn.
-    ///
-    /// Per-frame `Box` allocation is acceptable (single per-frame alloc).
-    pub body: Box<dyn FnMut(&mut dyn RenderContext, Rect, &mut InputCoordinator) + 'a>,
 
     /// Whether to render a scrollbar on the body edge.
     pub show_scrollbar: bool,

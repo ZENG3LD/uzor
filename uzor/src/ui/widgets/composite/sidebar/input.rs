@@ -11,8 +11,8 @@ use super::settings::SidebarSettings;
 use super::state::{SidebarState, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
 use super::types::{SidebarRenderKind, SidebarView};
 use crate::docking::panels::DockPanel;
-use crate::input::LayerId;
-use crate::layout::LayoutManager;
+use crate::input::{Sense, WidgetKind};
+use crate::layout::{LayoutManager, LayoutNodeId, SidebarNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::WidgetId;
 
@@ -24,18 +24,22 @@ use crate::types::WidgetId;
 pub fn register_layout_manager_sidebar<P: DockPanel>(
     layout:   &mut LayoutManager<P>,
     render:   &mut dyn RenderContext,
+    parent:   LayoutNodeId,
     slot_id:  &str,
     id:       impl Into<WidgetId>,
     state:    &mut SidebarState,
     view:     &mut SidebarView<'_>,
     settings: &SidebarSettings,
     kind:     &SidebarRenderKind,
-    layer:    &LayerId,
-) -> Option<WidgetId> {
+) -> Option<SidebarNode> {
+    let id: WidgetId = id.into();
     let rect = layout.rect_for_edge_slot(slot_id)?;
-    Some(register_context_manager_sidebar(
-        layout.ctx_mut(), render, id, rect, state, view, settings, kind, layer,
-    ))
+    let layer = layout.compute_layer_for(parent);
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Sidebar, rect, sense: Sense::CLICK });
+    register_context_manager_sidebar(
+        layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
+    );
+    Some(SidebarNode(node_id))
 }
 
 // ---------------------------------------------------------------------------

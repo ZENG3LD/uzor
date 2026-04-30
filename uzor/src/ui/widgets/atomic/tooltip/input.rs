@@ -5,7 +5,7 @@ use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::{InputCoordinator, LayerId};
 use crate::input::core::sense::Sense;
 use crate::input::core::widget_kind::WidgetKind;
-use crate::layout::LayoutManager;
+use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -66,18 +66,21 @@ pub fn register_context_manager_tooltip(
     draw_tooltip(render, rect, config, alpha, settings);
 }
 
-/// Level 3 — register a tooltip via `LayoutManager`, forwarding to L2.
+/// Level 3 — register a tooltip via `LayoutManager`.
 pub fn register_layout_manager_tooltip<P: DockPanel>(
     layout: &mut LayoutManager<P>,
     render: &mut dyn RenderContext,
+    parent: LayoutNodeId,
     id: impl Into<WidgetId>,
     rect: Rect,
-    layer: &LayerId,
     config: &TooltipConfig,
     alpha: f64,
     settings: &TooltipSettings,
 ) {
+    let id: WidgetId = id.into();
+    let layer = layout.compute_layer_for(parent);
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Tooltip, rect, sense: Sense::HOVER });
     register_context_manager_tooltip(
-        layout.ctx_mut(), render, id, rect, layer, config, alpha, settings,
+        layout.ctx_mut(), render, id, rect, &layer, config, alpha, settings,
     );
 }

@@ -11,8 +11,8 @@ use super::settings::ContextMenuSettings;
 use super::state::ContextMenuState;
 use super::types::{ContextMenuRenderKind, ContextMenuView};
 use crate::docking::panels::DockPanel;
-use crate::input::LayerId;
-use crate::layout::LayoutManager;
+use crate::input::{Sense, WidgetKind};
+use crate::layout::{ContextMenuNode, LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -25,18 +25,23 @@ use crate::types::{Rect, WidgetId};
 pub fn register_layout_manager_context_menu<P: DockPanel>(
     layout:   &mut LayoutManager<P>,
     render:   &mut dyn RenderContext,
+    parent:   LayoutNodeId,
     slot_id:  &str,
     id:       impl Into<WidgetId>,
     state:    &mut ContextMenuState,
     view:     &mut ContextMenuView<'_>,
     settings: &ContextMenuSettings,
     kind:     &ContextMenuRenderKind<'_>,
-    layer:    &LayerId,
-) -> Option<WidgetId> {
+) -> Option<ContextMenuNode> {
+    let id: WidgetId = id.into();
     let _rect: Rect = layout.rect_for_overlay(slot_id)?;
-    Some(register_context_manager_context_menu(
-        layout.ctx_mut(), render, id, state, view, settings, kind, layer,
-    ))
+    let layer = layout.compute_layer_for(parent);
+    // Context menu positions itself from state.x/state.y; use a zero rect for tree metadata.
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::ContextMenu, rect: Rect::new(state.x, state.y, 0.0, 0.0), sense: Sense::CLICK });
+    register_context_manager_context_menu(
+        layout.ctx_mut(), render, id, state, view, settings, kind, &layer,
+    );
+    Some(ContextMenuNode(node_id))
 }
 
 // ---------------------------------------------------------------------------

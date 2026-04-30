@@ -13,7 +13,7 @@
 //! 2. Header strip (icon + title + action buttons)
 //! 3. Header bottom divider
 //! 4. Tab strip (WithTypeSelector only)
-//! 5. Body closure `(view.body)(ctx, body_rect, coord)`
+//! 5. (body drawn by caller after composite call)
 //! 6. Scrollbar (if `view.show_scrollbar`)
 //! 7. Resize edge handle (Right/Left/WithTypeSelector — sidebar variant stroke)
 
@@ -230,7 +230,7 @@ pub fn register_context_manager_sidebar(
 fn draw_sidebar_with_coord(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
-    coord:    &mut InputCoordinator,
+    _coord:    &mut InputCoordinator,
     state:    &mut SidebarState,
     view:     &mut SidebarView<'_>,
     settings: &SidebarSettings,
@@ -369,8 +369,7 @@ fn draw_sidebar_with_coord(
         draw_tab_strip(ctx, &layout, view, state, settings);
     }
 
-    // --- 6. Body closure -----------------------------------------------------
-    (view.body)(ctx, layout.body, coord);
+    // --- 6. (body drawn by caller after composite call) ----------------------
 
     // --- 7. Scrollbar --------------------------------------------------------
     if view.show_scrollbar && layout.scrollbar.width > 0.0 {

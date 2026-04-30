@@ -14,6 +14,7 @@
 
 mod chrome_slot;
 mod edge_panels;
+mod handles;
 mod manager;
 mod overlay_stack;
 mod solve;
@@ -26,6 +27,10 @@ pub use edge_panels::{EdgePanels, EdgeSlot};
 pub use manager::LayoutManager;
 pub use overlay_stack::{OverlayEntry, OverlayStack};
 pub use solve::solve_layout;
-pub use tree::{LayoutNode, LayoutNodeId, LayoutTree, LayoutTreeEntry};
+pub use handles::{
+    BlackboxPanelNode, ChromeNode, ContextMenuNode, DropdownNode, ModalNode,
+    PanelNode, PopupNode, SidebarNode, ToolbarNode,
+};
+pub use tree::{LayoutNode, LayoutNodeId, LayoutTree, LayoutTreeEntry, SystemNodeKind, WidgetNode};
 pub use types::{EdgeRects, EdgeSide, LayoutSolved, OverlayKind, OverlayRect, SlotId};
 pub use z_layers::ZLayerTable;

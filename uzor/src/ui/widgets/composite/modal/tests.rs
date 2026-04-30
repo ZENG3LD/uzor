@@ -6,7 +6,7 @@
 use crate::docking::panels::DockPanel;
 use crate::input::{InputCoordinator, WidgetKind};
 use crate::input::core::coordinator::LayerId;
-use crate::layout::{LayoutManager, OverlayEntry, OverlayKind};
+use crate::layout::{LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
 use crate::types::{Rect, WidgetId};
 
@@ -79,7 +79,7 @@ impl DockPanel for DummyPanel {
     fn type_id(&self) -> &'static str { "dummy" }
 }
 
-/// Build a minimal `ModalView` whose body closure does nothing.
+/// Build a minimal `ModalView` for tests.
 fn plain_view() -> ModalView<'static> {
     ModalView {
         title: None,
@@ -87,7 +87,6 @@ fn plain_view() -> ModalView<'static> {
         footer_buttons: &[],
         wizard_pages: &[],
         backdrop: BackdropKind::None,
-        body: Box::new(|_render, _rect, _coord| {}),
     }
 }
 
@@ -205,8 +204,6 @@ fn modal_l3_resolves_rect_from_layout_manager() {
     let mut state  = ModalState::default();
     let     settings = ModalSettings::default();
     let     kind   = ModalRenderKind::Plain;
-    let     layer  = LayerId::modal();
-
     // Solve first so the layout is initialised (not strictly required for
     // overlay lookup, but mirrors realistic usage).
     layout.solve(rect(0.0, 0.0, 1920.0, 1080.0));
@@ -233,13 +230,13 @@ fn modal_l3_resolves_rect_from_layout_manager() {
         register_layout_manager_modal(
             &mut layout,
             &mut render,
+            LayoutNodeId::ROOT,
             "test-modal-l3",
             "modal-widget-l3",
             &mut state,
             &mut view,
             &settings,
             &kind,
-            &layer,
         )
     };
     assert!(
@@ -261,13 +258,13 @@ fn modal_l3_resolves_rect_from_layout_manager() {
         register_layout_manager_modal(
             &mut layout,
             &mut render,
+            LayoutNodeId::ROOT,
             "this-slot-does-not-exist",
             "modal-widget-missing",
             &mut state,
             &mut view,
             &settings,
             &kind,
-            &layer,
         )
     };
     assert!(

@@ -8,7 +8,7 @@ use crate::app_context::ContextManager;
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::layout::LayoutManager;
+use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -307,22 +307,27 @@ pub fn register_context_manager_scrollbar(
     draw_scrollbar(render, track_rect, &view);
 }
 
-/// Level 3 — register a scrollbar via `LayoutManager`, forwarding to L2.
+/// Level 3 — register a scrollbar via `LayoutManager`.
 #[allow(clippy::too_many_arguments)]
 pub fn register_layout_manager_scrollbar<P: DockPanel>(
     layout: &mut LayoutManager<P>,
     render: &mut dyn RenderContext,
+    parent: LayoutNodeId,
     track_id: impl Into<WidgetId>,
     thumb_id: impl Into<WidgetId>,
     track_rect: Rect,
     thumb_rect: Rect,
     inflation_x: f64,
-    layer: &LayerId,
     content_height: f64,
     viewport_height: f64,
     scroll_offset: f64,
     settings: &ScrollbarSettings,
 ) {
+    let track_id: WidgetId = track_id.into();
+    let thumb_id: WidgetId = thumb_id.into();
+    let layer = layout.compute_layer_for(parent);
+    layout.tree_mut().add_widget(parent, WidgetNode { id: track_id.clone(), kind: WidgetKind::ScrollbarTrack, rect: track_rect, sense: Sense::CLICK });
+    layout.tree_mut().add_widget(parent, WidgetNode { id: thumb_id.clone(), kind: WidgetKind::ScrollbarHandle, rect: thumb_rect, sense: Sense::DRAG });
     register_context_manager_scrollbar(
         layout.ctx_mut(),
         render,
@@ -331,7 +336,7 @@ pub fn register_layout_manager_scrollbar<P: DockPanel>(
         track_rect,
         thumb_rect,
         inflation_x,
-        layer,
+        &layer,
         content_height,
         viewport_height,
         scroll_offset,

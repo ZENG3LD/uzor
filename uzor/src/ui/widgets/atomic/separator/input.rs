@@ -13,7 +13,7 @@ use crate::app_context::ContextManager;
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::layout::LayoutManager;
+use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -201,18 +201,22 @@ pub fn register_context_manager_separator(
     draw_separator(render, rect, view, settings);
 }
 
-/// Level 3 — register a separator via `LayoutManager`, forwarding to L2.
+/// Level 3 — register a separator via `LayoutManager`.
 pub fn register_layout_manager_separator<P: DockPanel>(
     layout: &mut LayoutManager<P>,
     render: &mut dyn RenderContext,
+    parent: LayoutNodeId,
     id: impl Into<WidgetId>,
     rect: Rect,
     kind: SeparatorKind,
-    layer: &LayerId,
     view: &SeparatorView,
     settings: &SeparatorSettings,
 ) {
+    let id: WidgetId = id.into();
+    let sense = match kind { SeparatorKind::Divider => Sense::NONE, SeparatorKind::ResizeHandle => Sense::DRAG };
+    let layer = layout.compute_layer_for(parent);
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Separator, rect, sense });
     register_context_manager_separator(
-        layout.ctx_mut(), render, id, rect, kind, layer, view, settings,
+        layout.ctx_mut(), render, id, rect, kind, &layer, view, settings,
     );
 }

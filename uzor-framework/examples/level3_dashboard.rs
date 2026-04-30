@@ -34,10 +34,10 @@ use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene};
 // ── uzor core ─────────────────────────────────────────────────────────────────
 use uzor::app_context::{layout::types::LayoutNode, ContextManager};
 use uzor::docking::panels::{DockPanel, SplitKind};
-use uzor::input::core::coordinator::{InputCoordinator, LayerId};
+use uzor::input::core::coordinator::LayerId;
 use uzor::input::pointer::state::{InputState, PointerState};
 use uzor::input::text::store::TextFieldConfig;
-use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager, OverlayEntry, OverlayKind};
+use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind};
 use uzor::types::{Rect, WidgetId, WidgetState};
 
 // ── composite widgets ─────────────────────────────────────────────────────────
@@ -152,7 +152,7 @@ use uzor::ui::widgets::atomic::toggle::input::register_context_manager_toggle;
 use uzor::ui::widgets::atomic::toggle::settings::ToggleSettings;
 use uzor::ui::widgets::atomic::toggle::types::{ToggleRenderKind, ToggleView};
 
-use uzor::render::draw_svg_icon;
+use uzor::render::{draw_svg_icon, RenderContext};
 
 // ── GPU render context ────────────────────────────────────────────────────────
 use uzor_render_vello_gpu::VelloGpuRenderContext;
@@ -348,7 +348,6 @@ struct AppState {
 
     // Layout + input
     layout: LayoutManager<DemoPanel>,
-    coord: InputCoordinator,
     bridge: WinitInputBridge,
     start: Instant,
     last_clock_tick: Instant,
@@ -555,11 +554,11 @@ impl AppState {
             time: self.time_secs(),
             ..InputState::default()
         };
-        self.coord.begin_frame(input);
+        self.layout.ctx_mut().input.begin_frame(input);
 
         // Register L2 text field
         if self.modal_open && self.modal_kind == ModalKind::L2 {
-            self.coord.register_text_field(
+            self.layout.ctx_mut().input.register_text_field(
                 "l2-text",
                 TI_RECT,
                 TextFieldConfig::text(),
@@ -577,8 +576,6 @@ impl AppState {
         let clock = self.clock_str.clone();
 
         let mut render = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
-        let main_layer = LayerId::main();
-
         // ── Chrome ────────────────────────────────────────────────────────────
         let tab_ids = ["tab-0", "tab-1", "tab-2"];
         let chrome_tabs = [
@@ -601,12 +598,12 @@ impl AppState {
         register_layout_manager_chrome(
             &mut self.layout,
             &mut render,
+            LayoutNodeId::ROOT,
             "chrome",
             &mut self.chrome_state,
             &chrome_view,
             &chrome_settings,
             &chrome_kind,
-            &main_layer,
         );
 
         // ── Top toolbar ───────────────────────────────────────────────────────
@@ -632,13 +629,13 @@ impl AppState {
         register_layout_manager_toolbar(
             &mut self.layout,
             &mut render,
+            LayoutNodeId::ROOT,
             "top-toolbar",
             "top-toolbar-widget",
             &mut self.top_toolbar_state,
             &top_toolbar_view,
             &ToolbarSettings::default(),
             &ToolbarRenderKind::Horizontal,
-            &main_layer,
         );
 
         // ── Left vertical toolbar ─────────────────────────────────────────────
@@ -660,13 +657,13 @@ impl AppState {
         register_layout_manager_toolbar(
             &mut self.layout,
             &mut render,
+            LayoutNodeId::ROOT,
             "left-vtoolbar",
             "left-vtoolbar-widget",
             &mut self.left_vtoolbar_state,
             &left_toolbar_view,
             &ToolbarSettings::default(),
             &ToolbarRenderKind::Vertical,
-            &main_layer,
         );
 
         // ── Sidebar ───────────────────────────────────────────────────────────
@@ -679,59 +676,56 @@ impl AppState {
                 header: sidebar_header,
                 tabs: &[],
                 active_tab: None,
-                body: Box::new(move |render: &mut dyn uzor::render::RenderContext, body_rect: Rect, _coord: &mut InputCoordinator| {
-                    let mut y = body_rect.y + 8.0;
-
-                    // Section header
-                    render.set_fill_color("rgba(255,255,255,0.25)");
-                    render.fill_text("MODALS", body_rect.x + 12.0, y + 11.0);
-                    y += 28.0;
-
-                    let btns: &[(&str, ModalKind, &str)] = &[
-                        ("Open L2 Modal", ModalKind::L2, "#2962ff"),
-                        ("Open L1 Modal", ModalKind::L1, "#10b981"),
-                        ("Settings Modal", ModalKind::Settings, "#7c3aed"),
-                    ];
-                    for (label, kind, color) in btns {
-                        let is_open = modal_open && modal_kind == *kind;
-                        let btn_color = if is_open { "#ef5350" } else { *color };
-                        render.set_fill_color(btn_color);
-                        let bx = body_rect.x + 8.0;
-                        let bw = body_rect.width - 16.0;
-                        render.fill_rounded_rect(bx, y, bw, 30.0, 4.0);
-                        render.set_fill_color("#ffffff");
-                        render.fill_text(if is_open { "Close Modal" } else { *label }, bx + bw / 2.0, y + 15.0);
-                        y += 38.0;
-                    }
-
-                    y += 12.0;
-                    render.set_fill_color("rgba(255,255,255,0.25)");
-                    render.fill_text("PANELS", body_rect.x + 12.0, y + 11.0);
-                    y += 28.0;
-
-                    let panel_labels = ["Dashboard", "Charts", "Settings"];
-                    for lbl in &panel_labels {
-                        render.set_fill_color("rgba(255,255,255,0.07)");
-                        render.fill_rounded_rect(body_rect.x + 8.0, y, body_rect.width - 16.0, 26.0, 3.0);
-                        render.set_fill_color("#d1d4dc");
-                        render.fill_text(*lbl, body_rect.x + 16.0, y + 13.0);
-                        y += 32.0;
-                    }
-                }),
                 show_scrollbar: false,
                 content_height: 400.0,
             };
-            register_layout_manager_sidebar(
+            let _sidebar_node = register_layout_manager_sidebar(
                 &mut self.layout,
                 &mut render,
+                LayoutNodeId::ROOT,
                 "sidebar",
                 "sidebar-widget",
                 &mut self.sidebar_state,
                 &mut sidebar_view,
                 &SidebarSettings::default(),
                 &SidebarRenderKind::Left,
-                &main_layer,
             );
+            // Draw sidebar body content inline
+            if let Some(body_rect) = self.layout.rect_for_edge_slot("sidebar") {
+                let mut y = body_rect.y + 8.0;
+                render.set_fill_color("rgba(255,255,255,0.25)");
+                render.fill_text("MODALS", body_rect.x + 12.0, y + 11.0);
+                y += 28.0;
+                let btns: &[(&str, ModalKind, &str)] = &[
+                    ("Open L2 Modal", ModalKind::L2, "#2962ff"),
+                    ("Open L1 Modal", ModalKind::L1, "#10b981"),
+                    ("Settings Modal", ModalKind::Settings, "#7c3aed"),
+                ];
+                for (label, kind, color) in btns {
+                    let is_open = modal_open && modal_kind == *kind;
+                    let btn_color = if is_open { "#ef5350" } else { *color };
+                    render.set_fill_color(btn_color);
+                    let bx = body_rect.x + 8.0;
+                    let bw = body_rect.width - 16.0;
+                    render.fill_rounded_rect(bx, y, bw, 30.0, 4.0);
+                    render.set_fill_color("#ffffff");
+                    render.fill_text(if is_open { "Close Modal" } else { *label }, bx + bw / 2.0, y + 15.0);
+                    y += 38.0;
+                }
+                y += 12.0;
+                render.set_fill_color("rgba(255,255,255,0.25)");
+                render.fill_text("PANELS", body_rect.x + 12.0, y + 11.0);
+                y += 28.0;
+                let panel_labels = ["Dashboard", "Charts", "Settings"];
+                for lbl in &panel_labels {
+                    render.set_fill_color("rgba(255,255,255,0.07)");
+                    render.fill_rounded_rect(body_rect.x + 8.0, y, body_rect.width - 16.0, 26.0, 3.0);
+                    render.set_fill_color("#d1d4dc");
+                    render.fill_text(*lbl, body_rect.x + 16.0, y + 13.0);
+                    y += 32.0;
+                }
+                let _ = y;
+            }
         }
 
         // ── Main content (dock panels) ────────────────────────────────────────
@@ -742,54 +736,52 @@ impl AppState {
             let mut panel_a_view = PanelView {
                 header: Some(PanelHeader { title: view_label, actions: &[] }),
                 columns: &[],
-                body: Box::new(move |render: &mut dyn uzor::render::RenderContext, body_rect: Rect, _coord: &mut InputCoordinator| {
+                show_scrollbar: false,
+                content_height: 600.0,
+            };
+            if let Some(ref id) = self.leaf_a_id.clone() {
+                let _panel_a_node = register_layout_manager_panel(
+                    &mut self.layout, &mut render,
+                    LayoutNodeId::ROOT, id, "panel-a-widget",
+                    &mut self.panel_a_state,
+                    &mut panel_a_view,
+                    &PanelSettings::default(),
+                    &PanelRenderKind::WithHeader,
+                );
+                // Draw panel A body inline
+                if let Some(body_rect) = self.layout.rect_for(id.as_str()) {
                     render.set_fill_color("rgba(255,255,255,0.04)");
                     render.fill_rounded_rect(body_rect.x + 12.0, body_rect.y + 12.0, body_rect.width - 24.0, 60.0, 4.0);
                     render.set_fill_color("rgba(255,255,255,0.55)");
                     render.fill_text("Right-click for context menu", body_rect.x + body_rect.width / 2.0, body_rect.y + 44.0);
                     render.set_fill_color("rgba(100,180,255,0.5)");
                     render.fill_text("Use toolbar buttons to open dropdowns", body_rect.x + body_rect.width / 2.0, body_rect.y + 80.0);
-                }),
-                footer: None,
-                show_scrollbar: false,
-                content_height: 600.0,
-            };
-            if let Some(ref id) = self.leaf_a_id.clone() {
-                register_layout_manager_panel(
-                    &mut self.layout, &mut render,
-                    id, "panel-a-widget",
-                    &mut self.panel_a_state,
-                    &mut panel_a_view,
-                    &PanelSettings::default(),
-                    &PanelRenderKind::WithHeader,
-                    &main_layer,
-                );
+                }
             }
         }
         {
             let mut panel_b_view = PanelView {
                 header: Some(PanelHeader { title: "Trade History", actions: &[] }),
                 columns: &[],
-                body: Box::new(|render: &mut dyn uzor::render::RenderContext, body_rect: Rect, _coord: &mut InputCoordinator| {
-                    render.set_fill_color("rgba(255,255,255,0.04)");
-                    render.fill_rounded_rect(body_rect.x + 12.0, body_rect.y + 12.0, body_rect.width - 24.0, 40.0, 4.0);
-                    render.set_fill_color("rgba(255,255,255,0.5)");
-                    render.fill_text("Panel B — Trade History", body_rect.x + body_rect.width / 2.0, body_rect.y + 32.0);
-                }),
-                footer: None,
                 show_scrollbar: false,
                 content_height: 400.0,
             };
             if let Some(ref id) = self.leaf_b_id.clone() {
-                register_layout_manager_panel(
+                let _panel_b_node = register_layout_manager_panel(
                     &mut self.layout, &mut render,
-                    id, "panel-b-widget",
+                    LayoutNodeId::ROOT, id, "panel-b-widget",
                     &mut self.panel_b_state,
                     &mut panel_b_view,
                     &PanelSettings::default(),
                     &PanelRenderKind::WithHeader,
-                    &main_layer,
                 );
+                // Draw panel B body inline
+                if let Some(body_rect) = self.layout.rect_for(id.as_str()) {
+                    render.set_fill_color("rgba(255,255,255,0.04)");
+                    render.fill_rounded_rect(body_rect.x + 12.0, body_rect.y + 12.0, body_rect.width - 24.0, 40.0, 4.0);
+                    render.set_fill_color("rgba(255,255,255,0.5)");
+                    render.fill_text("Panel B — Trade History", body_rect.x + body_rect.width / 2.0, body_rect.y + 32.0);
+                }
             }
         }
 
@@ -817,7 +809,7 @@ impl AppState {
                 rect: modal_rect,
                 anchor: None,
             });
-            self.coord.push_layer(LayerId::modal(), 10, true);
+            self.layout.ctx_mut().input.push_layer(LayerId::modal(), 10, true);
 
             let modal_kind = self.modal_kind;
             let l2_connected = self.l2_connected;
@@ -854,252 +846,251 @@ impl AppState {
                 footer_buttons: &footer_btns,
                 wizard_pages: &[],
                 backdrop: BackdropKind::Dim,
-                body: Box::new(move |render: &mut dyn uzor::render::RenderContext, body_rect: Rect, modal_coord: &mut InputCoordinator| {
-                    let layer = LayerId::modal();
-
-                    match modal_kind {
-                        ModalKind::L1 => {
-                            render.set_fill_color("rgba(255,255,255,0.55)");
-                            render.fill_text("Hand-rolled MyButton (no uzor button widget)", body_rect.x + body_rect.width / 2.0, body_rect.y + 20.0);
-                            let btn_r = Rect::new(body_rect.x + 60.0, body_rect.y + 40.0, 200.0, 60.0);
-                            use uzor::input::core::sense::Sense;
-                            use uzor::input::core::widget_kind::WidgetKind;
-                            modal_coord.register_atomic(
-                                WidgetId::new("l1-mybtn"),
-                                WidgetKind::Custom,
-                                btn_r,
-                                Sense::CLICK | Sense::HOVER,
-                                &layer,
-                            );
-                            // Draw with RenderContext primitives (no raw vello access needed)
-                            render.set_fill_color("#3366bb");
-                            render.fill_rounded_rect(btn_r.x - 1.0, btn_r.y - 1.0, btn_r.width + 2.0, btn_r.height + 2.0, 7.0);
-                            render.set_fill_color("#3769af");
-                            render.fill_rounded_rect(btn_r.x, btn_r.y, btn_r.width, btn_r.height, 6.0);
-                            render.set_fill_color("#c8e6ff");
-                            render.fill_rounded_rect(btn_r.x + btn_r.width / 2.0 - 6.0, btn_r.y + btn_r.height / 2.0 - 6.0, 12.0, 12.0, 6.0);
-                            render.set_fill_color("#ffffff");
-                            render.fill_text("Click me (L1 custom)", btn_r.x + btn_r.width / 2.0, btn_r.y + btn_r.height / 2.0);
-                        }
-                        ModalKind::Settings => {
-                            render.set_fill_color("rgba(255,255,255,0.55)");
-                            render.fill_text("Settings content", body_rect.x + body_rect.width / 2.0, body_rect.y + 20.0);
-                            let items = [
-                                ("Enable dark mode", true),
-                                ("Show tooltips",    true),
-                                ("Auto-save",        false),
-                            ];
-                            let mut ctx_local = ContextManager::new(LayoutNode::new("settings-modal"));
-                            for (i, (label, checked)) in items.iter().enumerate() {
-                                let r = Rect::new(body_rect.x + 16.0, body_rect.y + 48.0 + i as f64 * 36.0, body_rect.width - 32.0, 28.0);
-                                let cb_id = format!("settings-cb-{i}");
-                                register_context_manager_checkbox(
-                                    &mut ctx_local, render,
-                                    cb_id.as_str(), r, &layer,
-                                    WidgetState::Normal,
-                                    &CheckboxView { checked: *checked, label: Some(label) },
-                                    &CheckboxSettings::default().with_theme(Box::new(VisibleCheckboxTheme)),
-                                    &CheckboxRenderKind::Standard,
-                                    "13px sans-serif",
-                                );
-                            }
-                        }
-                        ModalKind::L2 => {
-                            // Full L2 widget set rendered inside modal body
-                            let left_panel_w = l2_right_panel_x - LEFT_PANEL_X - SPLITTER_W / 2.0;
-                            let ox = body_rect.x;
-                            let oy = body_rect.y;
-
-                            let text_id = WidgetId::new("l2-text");
-                            let text_str = modal_coord.text_fields().text(&text_id).to_owned();
-                            let text_cursor = modal_coord.text_fields().cursor(&text_id);
-                            let text_sel = modal_coord.text_fields().selection_range(&text_id);
-                            let text_focused = modal_coord.text_fields().is_focused(&text_id);
-                            let now_ms = start_time.elapsed().as_millis() as u64;
-                            let cursor_vis = text_focused && modal_coord.text_fields().cursor_visible(now_ms);
-
-                            // Draw panel BGs via RenderContext
-                            render.set_fill_color("#1e222d");
-                            render.fill_rounded_rect(ox + LEFT_PANEL_X, oy + 12.0, left_panel_w, L2_WIN_H - 24.0, 8.0);
-                            render.fill_rounded_rect(ox + l2_right_panel_x, oy + 12.0, L2_WIN_W - l2_right_panel_x - 12.0, L2_WIN_H - 24.0, 8.0);
-
-                            let mut ctx_l2 = ContextManager::new(LayoutNode::new("l2-modal"));
-
-                            // ── Left panel (clipped) ──────────────────────────
-                            render.save();
-                            render.clip_rect(ox + LEFT_PANEL_X, oy + 12.0, left_panel_w, L2_WIN_H - 24.0);
-
-                            // 1. Button
-                            let btn_state = if l2_hovered.as_deref() == Some("l2-btn-connect") { WidgetState::Hovered } else if l2_connected { WidgetState::Active } else { WidgetState::Normal };
-                            register_context_manager_button(
-                                &mut ctx_l2, render,
-                                "l2-btn-connect", Rect::new(BTN_RECT.x + ox, BTN_RECT.y + oy, BTN_RECT.width, BTN_RECT.height), &layer,
-                                btn_state,
-                                &ButtonView { text: Some(if l2_connected { "Disconnect" } else { "Connect" }), icon: None, active: l2_connected, disabled: false, active_border: None },
-                                &ButtonSettings::default().with_theme(Box::new(VisibleButtonTheme)),
-                            );
-                            // 2. Checkbox
-                            register_context_manager_checkbox(
-                                &mut ctx_l2, render,
-                                "l2-cb", Rect::new(CB_RECT.x + ox, CB_RECT.y + oy, CB_RECT.width, CB_RECT.height), &layer,
-                                if l2_hovered.as_deref() == Some("l2-cb") { WidgetState::Hovered } else { WidgetState::Normal },
-                                &CheckboxView { checked: l2_checked, label: Some("Setting A") },
-                                &CheckboxSettings::default().with_theme(Box::new(VisibleCheckboxTheme)),
-                                &CheckboxRenderKind::Standard, "13px sans-serif",
-                            );
-                            // 3. Toggle
-                            register_context_manager_toggle(
-                                &mut ctx_l2, render,
-                                "l2-tog", Rect::new(TOG_RECT.x + ox, TOG_RECT.y + oy, TOG_RECT.width, TOG_RECT.height), &layer,
-                                if l2_hovered.as_deref() == Some("l2-tog") { WidgetState::Hovered } else { WidgetState::Normal },
-                                &ToggleView { toggled: l2_toggled, label: Some("ON"), disabled: false },
-                                &ToggleSettings::default(), &ToggleRenderKind::Switch,
-                            );
-                            // 4. Radio
-                            for (i, cx_off) in [28.0_f64, 68.0, 108.0].iter().enumerate() {
-                                let rid = format!("l2-radio-{i}");
-                                register_context_manager_radio(
-                                    &mut ctx_l2, render,
-                                    rid.as_str(), Rect::new(cx_off + ox, 175.0 + oy, 28.0, 28.0), &layer,
-                                    if l2_hovered.as_deref() == Some(rid.as_str()) { WidgetState::Hovered } else { WidgetState::Normal },
-                                    &RadioSettings::default(),
-                                    &RadioRenderKind::Dot { shape: DotShape::Circle, cx: cx_off + 14.0 + ox, cy: 175.0 + 14.0 + oy, view: RadioDotView { selected: l2_radio_sel == i } },
-                                );
-                            }
-                            // 5. Slider
-                            register_context_manager_slider(
-                                &mut ctx_l2, render,
-                                "l2-slider", Rect::new(SLID_RECT.x + ox, SLID_RECT.y + oy, SLID_RECT.width, SLID_RECT.height), &layer,
-                                if l2_hovered.as_deref() == Some("l2-slider") { WidgetState::Hovered } else { WidgetState::Normal },
-                                &SliderView { kind: SliderType::Single { value: l2_slider_val, min: 0.0, max: 100.0, step: 1.0 }, hovered: false, disabled: false, dragging_handle: None },
-                                &SliderSettings::default(),
-                            );
-                            // 6. Range slider
-                            register_context_manager_slider(
-                                &mut ctx_l2, render,
-                                "l2-range", Rect::new(RANGE_RECT.x + ox, RANGE_RECT.y + oy, RANGE_RECT.width, RANGE_RECT.height), &layer,
-                                if l2_hovered.as_deref() == Some("l2-range") { WidgetState::Hovered } else { WidgetState::Normal },
-                                &SliderView { kind: SliderType::Dual { min_value: l2_range_min, max_value: l2_range_max, min: 0.0, max: 100.0, step: 1.0 }, hovered: false, disabled: false, dragging_handle: l2_range_drag_handle },
-                                &SliderSettings::default(),
-                            );
-                            // 7. Separator
-                            register_context_manager_separator(
-                                &mut ctx_l2, render,
-                                "l2-sep", Rect::new(28.0 + ox, 260.0 + oy, 260.0, 2.0), SeparatorKind::Divider, &layer,
-                                &SeparatorView { kind: SeparatorType::Divider { orientation: SeparatorOrientation::Horizontal }, hovered: false, dragging: false },
-                                &SeparatorSettings::default(),
-                            );
-                            // 8. Text input
-                            let ti_state = if text_focused { WidgetState::Active } else if l2_hovered.as_deref() == Some("l2-text") { WidgetState::Hovered } else { WidgetState::Normal };
-                            let ti_settings = TextInputSettings::with_config(uzor::ui::widgets::atomic::text_input::state::TextFieldConfig::text());
-                            let ti_view = InputView { text: text_str.as_str(), placeholder: "Search...", cursor: text_cursor, selection: text_sel, focused: text_focused, disabled: false, input_type: InputType::Search };
-                            let ti_rect = Rect::new(TI_RECT.x + ox, TI_RECT.y + oy, TI_RECT.width, TI_RECT.height);
-                            let ir = draw_input(render, ti_rect, ti_state, &ti_view, &ti_settings);
-                            if cursor_vis {
-                                draw_input_cursor(render, ir.cursor_x, ir.cursor_y, ir.cursor_height, 1.5, [220, 220, 220, 255]);
-                            }
-                            // 9. Color swatches
-                            let swatch_colors: [[u8; 4]; 4] = [[41,98,255,255],[16,185,129,255],[245,158,11,255],[239,83,80,255]];
-                            for (i, color) in swatch_colors.iter().enumerate() {
-                                let sid = format!("l2-swatch-{i}");
-                                register_context_manager_color_swatch(
-                                    &mut ctx_l2, render,
-                                    sid.as_str(), Rect::new(28.0 + i as f64 * 34.0 + ox, 344.0 + oy, 26.0, 26.0), &layer,
-                                    if l2_hovered.as_deref() == Some(sid.as_str()) { WidgetState::Hovered } else { WidgetState::Normal },
-                                    &ColorSwatchView { color: *color, hovered: false, selected: l2_swatch_sel == i, show_transparency: false, border_color_override: None },
-                                    &ColorSwatchSettings::default(), &ColorSwatchRenderKind::Simple,
-                                );
-                            }
-
-                            render.restore();
-
-                            // ── Right panel (clipped) ─────────────────────────
-                            render.save();
-                            render.clip_rect(ox + l2_right_panel_x, oy + 12.0, L2_WIN_W - l2_right_panel_x - 12.0, L2_WIN_H - 24.0);
-
-                            let tab_labels = ["List", "Empty", "Sub-tabs"];
-                            for (i, lbl) in tab_labels.iter().enumerate() {
-                                let tab_w = ((l2_right_panel_w - 16.0) / 3.0).floor();
-                                let tab_x = l2_right_panel_x + 8.0 + i as f64 * (tab_w + 4.0);
-                                let tab_rect = Rect::new(tab_x + ox, TAB_STRIP_Y + oy, tab_w, TAB_STRIP_H);
-                                let tab_id = format!("l2-tab-{i}");
-                                let tab_cfg = TabConfig::new(tab_id.as_str(), *lbl).active_if(l2_active_tab == i);
-                                register_context_manager_tab(
-                                    &mut ctx_l2, render,
-                                    tab_id.as_str(), tab_rect, None, &layer,
-                                    &TabView { tab: &tab_cfg, hovered: l2_hovered.as_deref() == Some(tab_id.as_str()), pressed: l2_pressed.as_deref() == Some(tab_id.as_str()), close_btn_hovered: false },
-                                    &TabSettings::default(),
-                                );
-                            }
-                            if l2_active_tab == 0 {
-                                let sb_x = l2_sb_x + ox;
-                                let sb_track = Rect::new(sb_x, 52.0 + oy, SB_W, SB_H);
-                                let viewport_h = SB_H;
-                                let thumb_ratio = (viewport_h / CONTENT_H).clamp(0.0, 1.0);
-                                let thumb_h = (thumb_ratio * sb_track.height).max(30.0);
-                                let scroll_range = sb_track.height - thumb_h;
-                                let thumb_y = sb_track.y + (l2_scroll_off / (CONTENT_H - viewport_h).max(1.0)) * scroll_range;
-                                let sb_thumb = Rect::new(sb_x, thumb_y, SB_W, thumb_h);
-                                register_context_manager_scrollbar(&mut ctx_l2, render, "l2-sb-track", "l2-sb-thumb", sb_track, sb_thumb, 5.0, &layer, CONTENT_H, viewport_h, l2_scroll_off, &ScrollbarSettings::default());
-
-                                let row_labels = ["★ Roboto regular","Sans-serif clean","→ arrow + ✓ check","Quick brown fox","✨ ★ ☀ ☂ ❤","fn main() { ... }","let x: u32 = 42;","if let Some(v) = opt","// monospace code","0xCAFE_BABE","PT Root UI light","вариативный шрифт","12345 67890","Кириллица OK","ƒ unicode glyphs","Bold Roboto bold","❗ Heads up ❗","✓ Done · 14 items","🌍 globe · 🌟 star","═══ end of list ═══"];
-                                let content_x = l2_right_panel_x + 8.0 + ox;
-                                let content_w = l2_right_panel_w - SB_W - 20.0;
-                                for row in 0..CONTENT_ROWS {
-                                    let row_y = 52.0 + oy + row as f64 * ROW_H - l2_scroll_off;
-                                    if row_y + ROW_H < 52.0 + oy || row_y > 52.0 + oy + SB_H { continue; }
-                                    let row_rect = Rect::new(content_x, row_y, content_w, ROW_H - 2.0);
-                                    let row_id = format!("l2-row-{row}");
-                                    let row_settings = match row { 0..=4 => ItemSettings::default().with_style(Box::new(RowStyleRoboto)), 5..=9 => ItemSettings::default().with_style(Box::new(RowStyleJetBrains)), 10..=14 => ItemSettings::default().with_style(Box::new(RowStylePtRoot)), _ => ItemSettings::default().with_style(Box::new(RowStyleRobotoBold)) };
-                                    register_context_manager_item(&mut ctx_l2, render, row_id.as_str(), row_rect, &layer, WidgetState::Normal, &ItemView { label: Some(row_labels[row]), icon: None, svg: None }, &row_settings, &ItemRenderKind::Label);
-                                }
-                            }
-                            if l2_active_tab == 2 {
-                                for (i, lbl) in ["Alpha","Beta","Gamma"].iter().enumerate() {
-                                    let sub_rect = Rect::new(l2_right_panel_x + 8.0 + ox, CONTENT_START_Y + 8.0 + i as f64 * 36.0 + oy, 90.0, 30.0);
-                                    let sub_id = format!("l2-sub-tab-{i}");
-                                    let sub_cfg = TabConfig::new(sub_id.as_str(), *lbl).active_if(l2_active_sub_tab == i);
-                                    register_context_manager_tab(&mut ctx_l2, render, sub_id.as_str(), sub_rect, None, &layer, &TabView { tab: &sub_cfg, hovered: l2_hovered.as_deref() == Some(sub_id.as_str()), pressed: false, close_btn_hovered: false }, &TabSettings::default());
-                                }
-                            }
-                            if l2_active_tab == 1 {
-                                let icon_size = 64.0_f64;
-                                let gap = 16.0_f64;
-                                let content_cx = l2_right_panel_x + l2_right_panel_w / 2.0 + ox;
-                                let content_cy = CONTENT_START_Y + (L2_WIN_H - CONTENT_START_Y - 12.0) / 2.0 + oy;
-                                let grid_x0 = content_cx - (icon_size * 2.0 + gap) / 2.0;
-                                let grid_y0 = content_cy - (icon_size * 2.0 + gap) / 2.0;
-                                for (idx, (svg, color)) in [(SVG_CIRCLE,"#2962ff"),(SVG_SQUARE,"#10b981"),(SVG_TRIANGLE,"#f59e0b"),(SVG_DIAMOND,"#ef5350")].iter().enumerate() {
-                                    let col = idx % 2;
-                                    let row = idx / 2;
-                                    draw_svg_icon(render, svg, grid_x0 + col as f64 * (icon_size + gap), grid_y0 + row as f64 * (icon_size + gap), icon_size, icon_size, color);
-                                }
-                            }
-
-                            render.restore();
-
-                            // Splitter drag handle (no clip needed)
-                            let dh_rect = Rect::new(l2_right_panel_x - SPLITTER_W / 2.0 + ox, 12.0 + oy, SPLITTER_W, L2_WIN_H - 24.0);
-                            register_context_manager_drag_handle(
-                                &mut ctx_l2, render,
-                                "l2-splitter", dh_rect, &layer,
-                                &DragHandleView { rect: dh_rect }, &DragHandleSettings::default(), &DragHandleRenderKind::GripDots,
-                            );
-                        }
-                    }
-                }),
             };
-            register_layout_manager_modal(
+            let _modal_node = register_layout_manager_modal(
                 &mut self.layout,
                 &mut render,
+                LayoutNodeId::ROOT,
                 "modal-overlay",
                 "modal-widget",
                 &mut self.modal_state,
                 &mut modal_view,
                 &ModalSettings::default(),
                 &ModalRenderKind::WithHeaderFooter,
-                &LayerId::modal(),
             );
+            // Draw modal body content inline
+            if let Some(body_rect) = self.layout.rect_for_overlay("modal-overlay") {
+                let layer = LayerId::modal();
+                match modal_kind {
+                    ModalKind::L1 => {
+                        render.set_fill_color("rgba(255,255,255,0.55)");
+                        render.fill_text("Hand-rolled MyButton (no uzor button widget)", body_rect.x + body_rect.width / 2.0, body_rect.y + 20.0);
+                        let btn_r = Rect::new(body_rect.x + 60.0, body_rect.y + 40.0, 200.0, 60.0);
+                        use uzor::input::core::sense::Sense;
+                        use uzor::input::core::widget_kind::WidgetKind;
+                        self.layout.ctx_mut().input.register_atomic(
+                            WidgetId::new("l1-mybtn"),
+                            WidgetKind::Custom,
+                            btn_r,
+                            Sense::CLICK | Sense::HOVER,
+                            &layer,
+                        );
+                        render.set_fill_color("#3366bb");
+                        render.fill_rounded_rect(btn_r.x - 1.0, btn_r.y - 1.0, btn_r.width + 2.0, btn_r.height + 2.0, 7.0);
+                        render.set_fill_color("#3769af");
+                        render.fill_rounded_rect(btn_r.x, btn_r.y, btn_r.width, btn_r.height, 6.0);
+                        render.set_fill_color("#c8e6ff");
+                        render.fill_rounded_rect(btn_r.x + btn_r.width / 2.0 - 6.0, btn_r.y + btn_r.height / 2.0 - 6.0, 12.0, 12.0, 6.0);
+                        render.set_fill_color("#ffffff");
+                        render.fill_text("Click me (L1 custom)", btn_r.x + btn_r.width / 2.0, btn_r.y + btn_r.height / 2.0);
+                    }
+                    ModalKind::Settings => {
+                        render.set_fill_color("rgba(255,255,255,0.55)");
+                        render.fill_text("Settings content", body_rect.x + body_rect.width / 2.0, body_rect.y + 20.0);
+                        let items = [
+                            ("Enable dark mode", true),
+                            ("Show tooltips",    true),
+                            ("Auto-save",        false),
+                        ];
+                        let mut ctx_local = ContextManager::new(LayoutNode::new("settings-modal"));
+                        for (i, (label, checked)) in items.iter().enumerate() {
+                            let r = Rect::new(body_rect.x + 16.0, body_rect.y + 48.0 + i as f64 * 36.0, body_rect.width - 32.0, 28.0);
+                            let cb_id = format!("settings-cb-{i}");
+                            register_context_manager_checkbox(
+                                &mut ctx_local, &mut render,
+                                cb_id.as_str(), r, &layer,
+                                WidgetState::Normal,
+                                &CheckboxView { checked: *checked, label: Some(label) },
+                                &CheckboxSettings::default().with_theme(Box::new(VisibleCheckboxTheme)),
+                                &CheckboxRenderKind::Standard,
+                                "13px sans-serif",
+                            );
+                        }
+                    }
+                    ModalKind::L2 => {
+                        // Full L2 widget set rendered inside modal body
+                        let left_panel_w = l2_right_panel_x - LEFT_PANEL_X - SPLITTER_W / 2.0;
+                        let ox = body_rect.x;
+                        let oy = body_rect.y;
+
+                        let text_id = WidgetId::new("l2-text");
+                        let text_str = self.layout.ctx_mut().input.text_fields().text(&text_id).to_owned();
+                        let text_cursor = self.layout.ctx_mut().input.text_fields().cursor(&text_id);
+                        let text_sel = self.layout.ctx_mut().input.text_fields().selection_range(&text_id);
+                        let text_focused = self.layout.ctx_mut().input.text_fields().is_focused(&text_id);
+                        let now_ms = start_time.elapsed().as_millis() as u64;
+                        let cursor_vis = text_focused && self.layout.ctx_mut().input.text_fields().cursor_visible(now_ms);
+
+                        // Draw panel BGs via RenderContext
+                        render.set_fill_color("#1e222d");
+                        render.fill_rounded_rect(ox + LEFT_PANEL_X, oy + 12.0, left_panel_w, L2_WIN_H - 24.0, 8.0);
+                        render.fill_rounded_rect(ox + l2_right_panel_x, oy + 12.0, L2_WIN_W - l2_right_panel_x - 12.0, L2_WIN_H - 24.0, 8.0);
+
+                        let mut ctx_l2 = ContextManager::new(LayoutNode::new("l2-modal"));
+
+                        // ── Left panel (clipped) ──────────────────────────
+                        render.save();
+                        render.clip_rect(ox + LEFT_PANEL_X, oy + 12.0, left_panel_w, L2_WIN_H - 24.0);
+
+                        // 1. Button
+                        let btn_state = if l2_hovered.as_deref() == Some("l2-btn-connect") { WidgetState::Hovered } else if l2_connected { WidgetState::Active } else { WidgetState::Normal };
+                        register_context_manager_button(
+                            &mut ctx_l2, &mut render,
+                            "l2-btn-connect", Rect::new(BTN_RECT.x + ox, BTN_RECT.y + oy, BTN_RECT.width, BTN_RECT.height), &layer,
+                            btn_state,
+                            &ButtonView { text: Some(if l2_connected { "Disconnect" } else { "Connect" }), icon: None, active: l2_connected, disabled: false, active_border: None },
+                            &ButtonSettings::default().with_theme(Box::new(VisibleButtonTheme)),
+                        );
+                        // 2. Checkbox
+                        register_context_manager_checkbox(
+                            &mut ctx_l2, &mut render,
+                            "l2-cb", Rect::new(CB_RECT.x + ox, CB_RECT.y + oy, CB_RECT.width, CB_RECT.height), &layer,
+                            if l2_hovered.as_deref() == Some("l2-cb") { WidgetState::Hovered } else { WidgetState::Normal },
+                            &CheckboxView { checked: l2_checked, label: Some("Setting A") },
+                            &CheckboxSettings::default().with_theme(Box::new(VisibleCheckboxTheme)),
+                            &CheckboxRenderKind::Standard, "13px sans-serif",
+                        );
+                        // 3. Toggle
+                        register_context_manager_toggle(
+                            &mut ctx_l2, &mut render,
+                            "l2-tog", Rect::new(TOG_RECT.x + ox, TOG_RECT.y + oy, TOG_RECT.width, TOG_RECT.height), &layer,
+                            if l2_hovered.as_deref() == Some("l2-tog") { WidgetState::Hovered } else { WidgetState::Normal },
+                            &ToggleView { toggled: l2_toggled, label: Some("ON"), disabled: false },
+                            &ToggleSettings::default(), &ToggleRenderKind::Switch,
+                        );
+                        // 4. Radio
+                        for (i, cx_off) in [28.0_f64, 68.0, 108.0].iter().enumerate() {
+                            let rid = format!("l2-radio-{i}");
+                            register_context_manager_radio(
+                                &mut ctx_l2, &mut render,
+                                rid.as_str(), Rect::new(cx_off + ox, 175.0 + oy, 28.0, 28.0), &layer,
+                                if l2_hovered.as_deref() == Some(rid.as_str()) { WidgetState::Hovered } else { WidgetState::Normal },
+                                &RadioSettings::default(),
+                                &RadioRenderKind::Dot { shape: DotShape::Circle, cx: cx_off + 14.0 + ox, cy: 175.0 + 14.0 + oy, view: RadioDotView { selected: l2_radio_sel == i } },
+                            );
+                        }
+                        // 5. Slider
+                        register_context_manager_slider(
+                            &mut ctx_l2, &mut render,
+                            "l2-slider", Rect::new(SLID_RECT.x + ox, SLID_RECT.y + oy, SLID_RECT.width, SLID_RECT.height), &layer,
+                            if l2_hovered.as_deref() == Some("l2-slider") { WidgetState::Hovered } else { WidgetState::Normal },
+                            &SliderView { kind: SliderType::Single { value: l2_slider_val, min: 0.0, max: 100.0, step: 1.0 }, hovered: false, disabled: false, dragging_handle: None },
+                            &SliderSettings::default(),
+                        );
+                        // 6. Range slider
+                        register_context_manager_slider(
+                            &mut ctx_l2, &mut render,
+                            "l2-range", Rect::new(RANGE_RECT.x + ox, RANGE_RECT.y + oy, RANGE_RECT.width, RANGE_RECT.height), &layer,
+                            if l2_hovered.as_deref() == Some("l2-range") { WidgetState::Hovered } else { WidgetState::Normal },
+                            &SliderView { kind: SliderType::Dual { min_value: l2_range_min, max_value: l2_range_max, min: 0.0, max: 100.0, step: 1.0 }, hovered: false, disabled: false, dragging_handle: l2_range_drag_handle },
+                            &SliderSettings::default(),
+                        );
+                        // 7. Separator
+                        register_context_manager_separator(
+                            &mut ctx_l2, &mut render,
+                            "l2-sep", Rect::new(28.0 + ox, 260.0 + oy, 260.0, 2.0), SeparatorKind::Divider, &layer,
+                            &SeparatorView { kind: SeparatorType::Divider { orientation: SeparatorOrientation::Horizontal }, hovered: false, dragging: false },
+                            &SeparatorSettings::default(),
+                        );
+                        // 8. Text input
+                        let ti_state = if text_focused { WidgetState::Active } else if l2_hovered.as_deref() == Some("l2-text") { WidgetState::Hovered } else { WidgetState::Normal };
+                        let ti_settings = TextInputSettings::with_config(uzor::ui::widgets::atomic::text_input::state::TextFieldConfig::text());
+                        let ti_view = InputView { text: text_str.as_str(), placeholder: "Search...", cursor: text_cursor, selection: text_sel, focused: text_focused, disabled: false, input_type: InputType::Search };
+                        let ti_rect = Rect::new(TI_RECT.x + ox, TI_RECT.y + oy, TI_RECT.width, TI_RECT.height);
+                        let ir = draw_input(&mut render, ti_rect, ti_state, &ti_view, &ti_settings);
+                        if cursor_vis {
+                            draw_input_cursor(&mut render, ir.cursor_x, ir.cursor_y, ir.cursor_height, 1.5, [220, 220, 220, 255]);
+                        }
+                        // 9. Color swatches
+                        let swatch_colors: [[u8; 4]; 4] = [[41,98,255,255],[16,185,129,255],[245,158,11,255],[239,83,80,255]];
+                        for (i, color) in swatch_colors.iter().enumerate() {
+                            let sid = format!("l2-swatch-{i}");
+                            register_context_manager_color_swatch(
+                                &mut ctx_l2, &mut render,
+                                sid.as_str(), Rect::new(28.0 + i as f64 * 34.0 + ox, 344.0 + oy, 26.0, 26.0), &layer,
+                                if l2_hovered.as_deref() == Some(sid.as_str()) { WidgetState::Hovered } else { WidgetState::Normal },
+                                &ColorSwatchView { color: *color, hovered: false, selected: l2_swatch_sel == i, show_transparency: false, border_color_override: None },
+                                &ColorSwatchSettings::default(), &ColorSwatchRenderKind::Simple,
+                            );
+                        }
+
+                        render.restore();
+
+                        // ── Right panel (clipped) ─────────────────────────
+                        render.save();
+                        render.clip_rect(ox + l2_right_panel_x, oy + 12.0, L2_WIN_W - l2_right_panel_x - 12.0, L2_WIN_H - 24.0);
+
+                        let tab_labels = ["List", "Empty", "Sub-tabs"];
+                        for (i, lbl) in tab_labels.iter().enumerate() {
+                            let tab_w = ((l2_right_panel_w - 16.0) / 3.0).floor();
+                            let tab_x = l2_right_panel_x + 8.0 + i as f64 * (tab_w + 4.0);
+                            let tab_rect = Rect::new(tab_x + ox, TAB_STRIP_Y + oy, tab_w, TAB_STRIP_H);
+                            let tab_id = format!("l2-tab-{i}");
+                            let tab_cfg = TabConfig::new(tab_id.as_str(), *lbl).active_if(l2_active_tab == i);
+                            register_context_manager_tab(
+                                &mut ctx_l2, &mut render,
+                                tab_id.as_str(), tab_rect, None, &layer,
+                                &TabView { tab: &tab_cfg, hovered: l2_hovered.as_deref() == Some(tab_id.as_str()), pressed: l2_pressed.as_deref() == Some(tab_id.as_str()), close_btn_hovered: false },
+                                &TabSettings::default(),
+                            );
+                        }
+                        if l2_active_tab == 0 {
+                            let sb_x = l2_sb_x + ox;
+                            let sb_track = Rect::new(sb_x, 52.0 + oy, SB_W, SB_H);
+                            let viewport_h = SB_H;
+                            let thumb_ratio = (viewport_h / CONTENT_H).clamp(0.0, 1.0);
+                            let thumb_h = (thumb_ratio * sb_track.height).max(30.0);
+                            let scroll_range = sb_track.height - thumb_h;
+                            let thumb_y = sb_track.y + (l2_scroll_off / (CONTENT_H - viewport_h).max(1.0)) * scroll_range;
+                            let sb_thumb = Rect::new(sb_x, thumb_y, SB_W, thumb_h);
+                            register_context_manager_scrollbar(&mut ctx_l2, &mut render, "l2-sb-track", "l2-sb-thumb", sb_track, sb_thumb, 5.0, &layer, CONTENT_H, viewport_h, l2_scroll_off, &ScrollbarSettings::default());
+
+                            let row_labels = ["★ Roboto regular","Sans-serif clean","→ arrow + ✓ check","Quick brown fox","✨ ★ ☀ ☂ ❤","fn main() { ... }","let x: u32 = 42;","if let Some(v) = opt","// monospace code","0xCAFE_BABE","PT Root UI light","вариативный шрифт","12345 67890","Кириллица OK","ƒ unicode glyphs","Bold Roboto bold","❗ Heads up ❗","✓ Done · 14 items","🌍 globe · 🌟 star","═══ end of list ═══"];
+                            let content_x = l2_right_panel_x + 8.0 + ox;
+                            let content_w = l2_right_panel_w - SB_W - 20.0;
+                            for row in 0..CONTENT_ROWS {
+                                let row_y = 52.0 + oy + row as f64 * ROW_H - l2_scroll_off;
+                                if row_y + ROW_H < 52.0 + oy || row_y > 52.0 + oy + SB_H { continue; }
+                                let row_rect = Rect::new(content_x, row_y, content_w, ROW_H - 2.0);
+                                let row_id = format!("l2-row-{row}");
+                                let row_settings = match row { 0..=4 => ItemSettings::default().with_style(Box::new(RowStyleRoboto)), 5..=9 => ItemSettings::default().with_style(Box::new(RowStyleJetBrains)), 10..=14 => ItemSettings::default().with_style(Box::new(RowStylePtRoot)), _ => ItemSettings::default().with_style(Box::new(RowStyleRobotoBold)) };
+                                register_context_manager_item(&mut ctx_l2, &mut render, row_id.as_str(), row_rect, &layer, WidgetState::Normal, &ItemView { label: Some(row_labels[row]), icon: None, svg: None }, &row_settings, &ItemRenderKind::Label);
+                            }
+                        }
+                        if l2_active_tab == 2 {
+                            for (i, lbl) in ["Alpha","Beta","Gamma"].iter().enumerate() {
+                                let sub_rect = Rect::new(l2_right_panel_x + 8.0 + ox, CONTENT_START_Y + 8.0 + i as f64 * 36.0 + oy, 90.0, 30.0);
+                                let sub_id = format!("l2-sub-tab-{i}");
+                                let sub_cfg = TabConfig::new(sub_id.as_str(), *lbl).active_if(l2_active_sub_tab == i);
+                                register_context_manager_tab(&mut ctx_l2, &mut render, sub_id.as_str(), sub_rect, None, &layer, &TabView { tab: &sub_cfg, hovered: l2_hovered.as_deref() == Some(sub_id.as_str()), pressed: false, close_btn_hovered: false }, &TabSettings::default());
+                            }
+                        }
+                        if l2_active_tab == 1 {
+                            let icon_size = 64.0_f64;
+                            let gap = 16.0_f64;
+                            let content_cx = l2_right_panel_x + l2_right_panel_w / 2.0 + ox;
+                            let content_cy = CONTENT_START_Y + (L2_WIN_H - CONTENT_START_Y - 12.0) / 2.0 + oy;
+                            let grid_x0 = content_cx - (icon_size * 2.0 + gap) / 2.0;
+                            let grid_y0 = content_cy - (icon_size * 2.0 + gap) / 2.0;
+                            for (idx, (svg, color)) in [(SVG_CIRCLE,"#2962ff"),(SVG_SQUARE,"#10b981"),(SVG_TRIANGLE,"#f59e0b"),(SVG_DIAMOND,"#ef5350")].iter().enumerate() {
+                                let col = idx % 2;
+                                let row = idx / 2;
+                                draw_svg_icon(&mut render, svg, grid_x0 + col as f64 * (icon_size + gap), grid_y0 + row as f64 * (icon_size + gap), icon_size, icon_size, color);
+                            }
+                        }
+
+                        render.restore();
+
+                        // Splitter drag handle (no clip needed)
+                        let dh_rect = Rect::new(l2_right_panel_x - SPLITTER_W / 2.0 + ox, 12.0 + oy, SPLITTER_W, L2_WIN_H - 24.0);
+                        register_context_manager_drag_handle(
+                            &mut ctx_l2, &mut render,
+                            "l2-splitter", dh_rect, &layer,
+                            &DragHandleView { rect: dh_rect }, &DragHandleSettings::default(), &DragHandleRenderKind::GripDots,
+                        );
+                    }
+                }
+            }
         }
 
         // ── Context menu ──────────────────────────────────────────────────────
@@ -1117,18 +1108,18 @@ impl AppState {
                 rect: Rect::new(self.ctx_menu_state.x, self.ctx_menu_state.y, 170.0, menu_h),
                 anchor: None,
             });
-            self.coord.push_layer(LayerId::popup(), 20, false);
+            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 20, false);
             let mut ctx_menu_view = ContextMenuView { items: &items, target_id: None, title: None };
             register_layout_manager_context_menu(
                 &mut self.layout,
                 &mut render,
+                LayoutNodeId::ROOT,
                 "ctx-menu-overlay",
                 "ctx-menu-widget",
                 &mut self.ctx_menu_state,
                 &mut ctx_menu_view,
                 &ContextMenuSettings::default(),
                 &ContextMenuRenderKind::Minimal,
-                &LayerId::popup(),
             );
         }
 
@@ -1149,7 +1140,7 @@ impl AppState {
                 rect: Rect::new(origin.0, origin.1, 200.0, 160.0),
                 anchor: None,
             });
-            self.coord.push_layer(LayerId::popup(), 25, false);
+            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
             let mut dd_file_view = DropdownView {
                 anchor: self.dropdown_file_state.anchor_rect,
                 position_override: self.dropdown_file_state.open_position_override,
@@ -1158,12 +1149,11 @@ impl AppState {
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
-                "dd-file-overlay", "dd-file-widget",
+                LayoutNodeId::ROOT, "dd-file-overlay", "dd-file-widget",
                 &mut self.dropdown_file_state,
                 &mut dd_file_view,
                 &DropdownSettings::default(),
                 DropdownRenderKind::Flat,
-                &LayerId::popup(),
             );
         }
 
@@ -1183,7 +1173,7 @@ impl AppState {
                 rect: Rect::new(origin.0, origin.1, 200.0, 180.0),
                 anchor: None,
             });
-            self.coord.push_layer(LayerId::popup(), 25, false);
+            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
             let mut dd_view_view = DropdownView {
                 anchor: self.dropdown_view_state.anchor_rect,
                 position_override: self.dropdown_view_state.open_position_override,
@@ -1192,12 +1182,11 @@ impl AppState {
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
-                "dd-view-overlay", "dd-view-widget",
+                LayoutNodeId::ROOT, "dd-view-overlay", "dd-view-widget",
                 &mut self.dropdown_view_state,
                 &mut dd_view_view,
                 &DropdownSettings::default(),
                 DropdownRenderKind::Flat,
-                &LayerId::popup(),
             );
         }
 
@@ -1215,7 +1204,7 @@ impl AppState {
                 rect: Rect::new(origin.0, origin.1, 180.0, 110.0),
                 anchor: None,
             });
-            self.coord.push_layer(LayerId::popup(), 25, false);
+            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
             let mut dd_help_view = DropdownView {
                 anchor: self.dropdown_help_state.anchor_rect,
                 position_override: self.dropdown_help_state.open_position_override,
@@ -1224,12 +1213,11 @@ impl AppState {
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
-                "dd-help-overlay", "dd-help-widget",
+                LayoutNodeId::ROOT, "dd-help-overlay", "dd-help-widget",
                 &mut self.dropdown_help_state,
                 &mut dd_help_view,
                 &DropdownSettings::default(),
                 DropdownRenderKind::Flat,
-                &LayerId::popup(),
             );
         }
 
@@ -1249,34 +1237,33 @@ impl AppState {
                 rect: Rect::new(popup_origin.0, popup_origin.1, 220.0, 32.0),
                 anchor: None,
             });
-            self.coord.push_layer(LayerId::popup(), 15, false);
+            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 15, false);
             let text_for_popup = popup_text;
             let mut popup_view = PopupView {
                 origin: popup_origin,
                 anchor: None,
                 backdrop: PopupBackdrop::None,
-                kind: PopupViewKind::Plain {
-                    body: Box::new(move |render: &mut dyn uzor::render::RenderContext, body_rect: Rect, _coord: &mut InputCoordinator| {
-                        render.set_fill_color("#1e222d");
-                        render.fill_rounded_rect(body_rect.x, body_rect.y, body_rect.width, body_rect.height, 4.0);
-                        render.set_fill_color("#d1d4dc");
-                        render.fill_text(text_for_popup, body_rect.x + body_rect.width / 2.0, body_rect.y + 16.0);
-                    }),
-                },
+                kind: PopupViewKind::Plain,
             };
-            register_layout_manager_popup(
+            let _popup_node = register_layout_manager_popup(
                 &mut self.layout, &mut render,
-                "popup-overlay", "popup-widget",
+                LayoutNodeId::ROOT, "popup-overlay", "popup-widget",
                 &mut self.popup_state,
                 &mut popup_view,
                 &PopupSettings::default(),
                 PopupRenderKind::Plain,
-                &LayerId::popup(),
             );
+            // Draw popup body inline
+            if let Some(body_rect) = self.layout.rect_for_overlay("popup-overlay") {
+                render.set_fill_color("#1e222d");
+                render.fill_rounded_rect(body_rect.x, body_rect.y, body_rect.width, body_rect.height, 4.0);
+                render.set_fill_color("#d1d4dc");
+                render.fill_text(text_for_popup, body_rect.x + body_rect.width / 2.0, body_rect.y + 16.0);
+            }
         }
 
         // ── end_frame ─────────────────────────────────────────────────────────
-        let responses = self.coord.end_frame();
+        let responses = self.layout.ctx_mut().input.end_frame();
 
         // Process coordinator responses
         for (id, resp) in &responses {
@@ -1289,7 +1276,7 @@ impl AppState {
         }
 
         // Update popup based on hovered widget
-        let hovered_id = self.coord.hovered_widget().map(|id| id.0.clone());
+        let hovered_id = self.layout.ctx_mut().input.hovered_widget().map(|id| id.0.clone());
         let toolbar_items_with_popup = ["tb-file", "tb-view", "tb-help", "tb-new"];
         self.popup_item = hovered_id.as_deref()
             .and_then(|id| if toolbar_items_with_popup.contains(&id) { Some(id.to_string()) } else { None });
@@ -1325,7 +1312,48 @@ impl AppState {
         self.window.request_redraw();
     }
 
-    fn on_left_up(&mut self, x: f64, y: f64, event_loop: &ActiveEventLoop) {
+    fn on_left_up(
+        &mut self,
+        x: f64,
+        y: f64,
+        clicked_id: Option<WidgetId>,
+        event_loop: &ActiveEventLoop,
+    ) {
+        // ── Priority 1: coord-resolved widget id ──────────────────────────────
+        // If InputCoordinator identified the click as landing on a registered
+        // widget, dispatch by id BEFORE the manual geometry fallback.  This
+        // makes every register_*-ed widget click-able without per-button hit
+        // testing in the example.
+        if let Some(id) = clicked_id.as_ref() {
+            let id_str = id.0.as_str();
+            // Modal close affordances (X / Apply / Cancel inside any modal)
+            if id_str.starts_with("modal-") && (
+                id_str.ends_with("-close") ||
+                id_str.ends_with("-apply") ||
+                id_str.ends_with("-cancel")
+            ) {
+                self.modal_open = false;
+                println!("[L3] modal closed via {id_str}");
+                return;
+            }
+            // Dropdown items
+            if let Some(rest) = id_str.strip_prefix("dropdown-") {
+                println!("[L3] dropdown item → {rest}");
+                self.dropdown_file_state.close();
+                self.dropdown_view_state.close();
+                self.dropdown_help_state.close();
+                return;
+            }
+            // Context menu items
+            if let Some(rest) = id_str.strip_prefix("ctxmenu-") {
+                println!("[L3] context menu → {rest}");
+                self.ctx_menu_state.close();
+                return;
+            }
+            // Else fall through to manual dispatch
+        }
+        let _ = clicked_id; // silence unused warning if no fall-through uses it
+
         // ── Chrome hit ────────────────────────────────────────────────────────
         let tab_ids = ["tab-0", "tab-1", "tab-2"];
         let chrome_tabs = [
@@ -1669,7 +1697,6 @@ impl ApplicationHandler for Handler {
             renderer,
             scene: Scene::new(),
             layout,
-            coord: InputCoordinator::new(),
             bridge: WinitInputBridge::new(),
             start: Instant::now(),
             last_clock_tick: Instant::now(),
@@ -1739,8 +1766,8 @@ impl ApplicationHandler for Handler {
         }
 
         // Bridge handles text-field key routing + clipboard
-        let focused = app.coord.focused_widget().cloned();
-        let out = app.bridge.handle_event(&mut app.coord, focused.as_ref(), &event);
+        let focused = app.layout.ctx_mut().input.focused_widget().cloned();
+        let out = app.bridge.handle_event(&mut app.layout.ctx_mut().input, focused.as_ref(), &event);
 
         if out.cursor_moved.is_some() || out.text_changed || out.focus_cleared {
             app.window.request_redraw();
@@ -1753,9 +1780,9 @@ impl ApplicationHandler for Handler {
         }
 
         // Left mouse up
-        if let Some(((x, y), _)) = out.left_up {
+        if let Some(((x, y), clicked_id)) = out.left_up {
             app.on_mouse_up();
-            app.on_left_up(x, y, event_loop);
+            app.on_left_up(x, y, clicked_id, event_loop);
             app.window.request_redraw();
         }
 

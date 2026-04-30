@@ -133,7 +133,7 @@ pub fn register_context_manager_popup(
 fn draw_popup_with_coord(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
-    coord:    &mut InputCoordinator,
+    _coord:    &mut InputCoordinator,
     state:    &mut PopupState,
     view:     &mut PopupView<'_>,
     settings: &PopupSettings,
@@ -183,9 +183,7 @@ fn draw_popup_with_coord(
     // --- 4. Per-kind content ---
     match kind {
         PopupRenderKind::Plain => {
-            if let PopupViewKind::Plain { ref mut body } = view.kind {
-                body(ctx, layout.content, coord);
-            }
+            // body drawn by caller after composite call returns
         }
         PopupRenderKind::ColorPickerGrid => {
             if let PopupViewKind::ColorPickerGrid {

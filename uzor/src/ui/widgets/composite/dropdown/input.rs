@@ -11,8 +11,8 @@ use super::settings::DropdownSettings;
 use super::state::DropdownState;
 use super::types::{DropdownRenderKind, DropdownView};
 use crate::docking::panels::DockPanel;
-use crate::input::LayerId;
-use crate::layout::LayoutManager;
+use crate::input::{Sense, WidgetKind};
+use crate::layout::{DropdownNode, LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -24,18 +24,22 @@ use crate::types::{Rect, WidgetId};
 pub fn register_layout_manager_dropdown<P: DockPanel>(
     layout:   &mut LayoutManager<P>,
     render:   &mut dyn RenderContext,
+    parent:   LayoutNodeId,
     slot_id:  &str,
     id:       impl Into<WidgetId>,
     state:    &mut DropdownState,
     view:     &mut DropdownView<'_>,
     settings: &DropdownSettings,
     kind:     DropdownRenderKind,
-    layer:    &LayerId,
-) -> Option<WidgetId> {
+) -> Option<DropdownNode> {
+    let id: WidgetId = id.into();
     let rect = layout.rect_for_overlay(slot_id)?;
-    Some(register_context_manager_dropdown(
-        layout.ctx_mut(), render, id, rect, state, view, settings, kind, layer,
-    ))
+    let layer = layout.compute_layer_for(parent);
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Dropdown, rect, sense: Sense::CLICK });
+    register_context_manager_dropdown(
+        layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
+    );
+    Some(DropdownNode(node_id))
 }
 
 /// Returns `true` if a click at `click_pos` is outside both the main panel and

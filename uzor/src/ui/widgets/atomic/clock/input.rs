@@ -6,7 +6,7 @@ use crate::app_context::ContextManager;
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::layout::LayoutManager;
+use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId, WidgetState};
 
@@ -64,15 +64,18 @@ pub fn register_context_manager_clock(
 pub fn register_layout_manager_clock<P: DockPanel>(
     layout: &mut LayoutManager<P>,
     render: &mut dyn RenderContext,
+    parent: LayoutNodeId,
     id: impl Into<WidgetId>,
     rect: Rect,
-    layer: &LayerId,
     widget_state: WidgetState,
     view: &ClockView<'_>,
     settings: &ClockSettings,
     kind: &ClockRenderKind,
 ) {
+    let id: WidgetId = id.into();
+    let layer = layout.compute_layer_for(parent);
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Clock, rect, sense: Sense::HOVER });
     register_context_manager_clock(
-        layout.ctx_mut(), render, id, rect, layer, widget_state, view, settings, kind,
+        layout.ctx_mut(), render, id, rect, &layer, widget_state, view, settings, kind,
     );
 }

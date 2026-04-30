@@ -13,8 +13,8 @@ use super::state::ChromeState;
 use super::types::{ChromeAction, ChromeHit, ChromeRenderKind, ChromeView, ResizeCorner};
 use crate::core::types::Rect;
 use crate::docking::panels::DockPanel;
-use crate::input::LayerId;
-use crate::layout::LayoutManager;
+use crate::input::{Sense, WidgetKind};
+use crate::layout::{ChromeNode, LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::WidgetId;
 
@@ -26,17 +26,21 @@ use crate::types::WidgetId;
 pub fn register_layout_manager_chrome<P: DockPanel>(
     layout:   &mut LayoutManager<P>,
     render:   &mut dyn RenderContext,
+    parent:   LayoutNodeId,
     id:       impl Into<WidgetId>,
     state:    &mut ChromeState,
     view:     &ChromeView<'_>,
     settings: &ChromeSettings,
     kind:     &ChromeRenderKind,
-    layer:    &LayerId,
-) -> Option<WidgetId> {
+) -> Option<ChromeNode> {
+    let id: WidgetId = id.into();
     let rect = layout.rect_for_chrome()?;
-    Some(register_context_manager_chrome(
-        layout.ctx_mut(), render, id, rect, state, view, settings, kind, layer,
-    ))
+    let layer = layout.compute_layer_for(parent);
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Chrome, rect, sense: Sense::NONE });
+    register_context_manager_chrome(
+        layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
+    );
+    Some(ChromeNode(node_id))
 }
 
 // ---------------------------------------------------------------------------

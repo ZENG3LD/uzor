@@ -4,7 +4,7 @@ use crate::app_context::ContextManager;
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::layout::LayoutManager;
+use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId, WidgetState};
 
@@ -58,20 +58,23 @@ pub fn register_context_manager_checkbox(
     draw_checkbox(render, rect, widget_state, view, settings, kind, font);
 }
 
-/// Level 3 — register a checkbox via `LayoutManager`, forwarding to L2.
+/// Level 3 — register a checkbox via `LayoutManager`.
 pub fn register_layout_manager_checkbox<P: DockPanel>(
     layout: &mut LayoutManager<P>,
     render: &mut dyn RenderContext,
+    parent: LayoutNodeId,
     id: impl Into<WidgetId>,
     rect: Rect,
-    layer: &LayerId,
     widget_state: WidgetState,
     view: &CheckboxView<'_>,
     settings: &CheckboxSettings,
     kind: &CheckboxRenderKind<'_>,
     font: &str,
 ) {
+    let id: WidgetId = id.into();
+    let layer = layout.compute_layer_for(parent);
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Checkbox, rect, sense: Sense::CLICK });
     register_context_manager_checkbox(
-        layout.ctx_mut(), render, id, rect, layer, widget_state, view, settings, kind, font,
+        layout.ctx_mut(), render, id, rect, &layer, widget_state, view, settings, kind, font,
     );
 }

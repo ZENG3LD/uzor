@@ -1,13 +1,28 @@
 use crate::docking::panels::{PanelDockingManager, PanelRect, DockPanel};
 use crate::core::types::Rect;
 use crate::app_context::{ContextManager, layout::types::LayoutNode};
+use crate::input::core::coordinator::LayerId;
+use crate::input::WidgetKind;
 use super::chrome_slot::ChromeSlot;
 use super::edge_panels::EdgePanels;
 use super::overlay_stack::{OverlayStack, OverlayEntry};
-use super::tree::LayoutTree;
+use super::tree::{LayoutNode as TreeLayoutNode, LayoutNodeId, LayoutTree};
 use super::z_layers::ZLayerTable;
 use super::types::{OverlayKind, LayoutSolved};
 use super::solve::solve_layout;
+
+/// Map a composite `WidgetKind` to its coordinator `LayerId`, or `None` for atomics.
+fn layer_for_widget_kind(kind: WidgetKind) -> Option<LayerId> {
+    match kind {
+        WidgetKind::Modal        => Some(LayerId::modal()),
+        WidgetKind::ContextMenu  => Some(LayerId::new("context_menu")),
+        WidgetKind::Popup        => Some(LayerId::popup()),
+        WidgetKind::Dropdown     => Some(LayerId::new("dropdown")),
+        WidgetKind::Tooltip      => Some(LayerId::tooltip()),
+        WidgetKind::Chrome       => Some(LayerId::new("chrome")),
+        _                        => None,
+    }
+}
 
 /// Convert a `Rect` (f64) to a `PanelRect` (f32) for the dock layout pass.
 fn panel_rect_from_rect(r: Rect) -> PanelRect {
@@ -135,6 +150,51 @@ impl<P: DockPanel> LayoutManager<P> {
     /// Read-only access to the macro layout tree (solved node rects).
     pub fn tree(&self) -> &LayoutTree {
         &self.tree
+    }
+
+    /// Mutable access to the macro layout tree.
+    ///
+    /// L3 registration helpers call this to insert widget nodes each frame.
+    pub fn tree_mut(&mut self) -> &mut LayoutTree {
+        &mut self.tree
+    }
+
+    /// Clear all per-frame widget nodes from the tree.
+    ///
+    /// Call at the start of each frame, before any L3 widget registration.
+    /// System nodes (chrome, edges, dock, overlay) are preserved.
+    pub fn begin_frame_widgets(&mut self) {
+        self.tree.clear_widgets();
+    }
+
+    /// Compute the effective `LayerId` for a node based on its parent chain.
+    ///
+    /// Walks ancestors from root down. The deepest ancestor with a
+    /// layer-determining kind wins. Falls back to `LayerId::main()`.
+    pub fn compute_layer_for(&self, node_id: LayoutNodeId) -> LayerId {
+        let chain = self.tree.parent_chain(node_id);
+        let mut effective = LayerId::main();
+        for ancestor_id in &chain {
+            if let Some(entry) = self.tree.entry(*ancestor_id) {
+                match &entry.node {
+                    TreeLayoutNode::Widget(ref w) => {
+                        if let Some(layer) = layer_for_widget_kind(w.kind) {
+                            effective = layer;
+                        }
+                    }
+                    TreeLayoutNode::System(ref s) => {
+                        use super::tree::SystemNodeKind;
+                        match s {
+                            SystemNodeKind::OverlayStack => {}
+                            SystemNodeKind::Chrome => { effective = LayerId::new("chrome"); }
+                            SystemNodeKind::DockRoot | SystemNodeKind::EdgeSide { .. } => { effective = LayerId::main(); }
+                            SystemNodeKind::FloatingLayer => { effective = LayerId::new("floating"); }
+                        }
+                    }
+                }
+            }
+        }
+        effective
     }
 
     // ------------------------------------------------------------------

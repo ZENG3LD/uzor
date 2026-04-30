@@ -4,7 +4,7 @@ use crate::app_context::ContextManager;
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::layout::LayoutManager;
+use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId, WidgetState};
 
@@ -56,18 +56,21 @@ pub fn register_context_manager_radio(
     draw_radio(render, rect, widget_state, settings, kind);
 }
 
-/// Level 3 — register a radio widget via `LayoutManager`, forwarding to L2.
+/// Level 3 — register a radio widget via `LayoutManager`.
 pub fn register_layout_manager_radio<P: DockPanel>(
     layout: &mut LayoutManager<P>,
     render: &mut dyn RenderContext,
+    parent: LayoutNodeId,
     id: impl Into<WidgetId>,
     rect: Rect,
-    layer: &LayerId,
     widget_state: WidgetState,
     settings: &RadioSettings,
     kind: &RadioRenderKind<'_>,
 ) {
+    let id: WidgetId = id.into();
+    let layer = layout.compute_layer_for(parent);
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Radio, rect, sense: Sense::CLICK });
     register_context_manager_radio(
-        layout.ctx_mut(), render, id, rect, layer, widget_state, settings, kind,
+        layout.ctx_mut(), render, id, rect, &layer, widget_state, settings, kind,
     );
 }

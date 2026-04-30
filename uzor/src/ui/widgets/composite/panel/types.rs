@@ -6,7 +6,7 @@
 //! Legacy taxonomy enums (`PanelType`, `ToolbarVariant`, `SidebarVariant`,
 //! `ModalVariant`) are retained for backwards compatibility with existing callers.
 
-use crate::input::{InputCoordinator, Sense};
+use crate::input::Sense;
 use crate::render::RenderContext;
 use crate::types::Rect;
 use crate::ui::widgets::WidgetCapabilities;
@@ -198,17 +198,6 @@ pub struct PanelView<'a> {
     ///
     /// Empty slice for kinds without a column-header zone.
     pub columns: &'a [ColumnDef<'a>],
-
-    /// Body closure — called with the computed body rect after all fixed zones
-    /// (header, column-header) have been drawn.
-    ///
-    /// Per-frame `Box` allocation is acceptable (single alloc per frame).
-    pub body: Box<dyn FnMut(&mut dyn RenderContext, Rect, &mut InputCoordinator) + 'a>,
-
-    /// Footer closure — called with the computed footer rect.
-    ///
-    /// `None` for kinds without a footer zone.
-    pub footer: Option<Box<dyn FnMut(&mut dyn RenderContext, Rect, &mut InputCoordinator) + 'a>>,
 
     /// Whether to render a scrollbar on the body right edge.
     pub show_scrollbar: bool,

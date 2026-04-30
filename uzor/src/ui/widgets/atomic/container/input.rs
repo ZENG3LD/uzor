@@ -14,7 +14,7 @@ use crate::app_context::ContextManager;
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::layout::LayoutManager;
+use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -82,13 +82,16 @@ pub fn register_context_manager_container(
 pub fn register_layout_manager_container<P: DockPanel>(
     layout: &mut LayoutManager<P>,
     render: &mut dyn RenderContext,
+    parent: LayoutNodeId,
     id: impl Into<WidgetId>,
     rect: Rect,
-    layer: &LayerId,
     view: &ContainerView,
     settings: &ContainerSettings,
 ) {
+    let id: WidgetId = id.into();
+    let layer = layout.compute_layer_for(parent);
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Custom, rect, sense: Sense::NONE });
     register_context_manager_container(
-        layout.ctx_mut(), render, id, rect, layer, view, settings,
+        layout.ctx_mut(), render, id, rect, &layer, view, settings,
     );
 }

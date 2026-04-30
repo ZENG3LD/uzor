@@ -22,7 +22,7 @@ use crate::app_context::ContextManager;
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
-use crate::layout::LayoutManager;
+use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId, WidgetState};
 
@@ -335,18 +335,21 @@ pub fn register_context_manager_slider(
     draw_slider(render, rect, widget_state, view, settings);
 }
 
-/// Level 3 — register a slider via `LayoutManager`, forwarding to L2.
+/// Level 3 — register a slider via `LayoutManager`.
 pub fn register_layout_manager_slider<P: DockPanel>(
     layout: &mut LayoutManager<P>,
     render: &mut dyn RenderContext,
+    parent: LayoutNodeId,
     id: impl Into<WidgetId>,
     rect: Rect,
-    layer: &LayerId,
     widget_state: WidgetState,
     view: &SliderView,
     settings: &SliderSettings,
 ) {
+    let id: WidgetId = id.into();
+    let layer = layout.compute_layer_for(parent);
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Slider, rect, sense: Sense::CLICK_AND_DRAG });
     register_context_manager_slider(
-        layout.ctx_mut(), render, id, rect, layer, widget_state, view, settings,
+        layout.ctx_mut(), render, id, rect, &layer, widget_state, view, settings,
     );
 }

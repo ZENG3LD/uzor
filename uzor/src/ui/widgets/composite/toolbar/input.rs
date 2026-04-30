@@ -9,8 +9,8 @@ use super::settings::ToolbarSettings;
 use super::state::ToolbarState;
 use super::types::{ToolbarRenderKind, ToolbarView};
 use crate::docking::panels::DockPanel;
-use crate::input::LayerId;
-use crate::layout::LayoutManager;
+use crate::input::{Sense, WidgetKind};
+use crate::layout::{LayoutManager, LayoutNodeId, ToolbarNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::WidgetId;
 
@@ -22,18 +22,22 @@ use crate::types::WidgetId;
 pub fn register_layout_manager_toolbar<P: DockPanel>(
     layout:   &mut LayoutManager<P>,
     render:   &mut dyn RenderContext,
+    parent:   LayoutNodeId,
     slot_id:  &str,
     id:       impl Into<WidgetId>,
     state:    &mut ToolbarState,
     view:     &ToolbarView<'_>,
     settings: &ToolbarSettings,
     kind:     &ToolbarRenderKind,
-    layer:    &LayerId,
-) -> Option<WidgetId> {
+) -> Option<ToolbarNode> {
+    let id: WidgetId = id.into();
     let rect = layout.rect_for_edge_slot(slot_id)?;
-    Some(register_context_manager_toolbar(
-        layout.ctx_mut(), render, id, rect, state, view, settings, kind, layer,
-    ))
+    let layer = layout.compute_layer_for(parent);
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Toolbar, rect, sense: Sense::CLICK });
+    register_context_manager_toolbar(
+        layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
+    );
+    Some(ToolbarNode(node_id))
 }
 
 // ---------------------------------------------------------------------------

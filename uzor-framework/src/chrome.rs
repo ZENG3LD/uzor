@@ -26,13 +26,11 @@
 //! ```
 
 use uzor::docking::panels::DockPanel;
-use uzor::input::LayerId;
-use uzor::layout::LayoutManager;
+use uzor::layout::{ChromeNode, LayoutManager, LayoutNodeId};
 use uzor::render::RenderContext;
 use uzor::ui::widgets::composite::chrome::{
     register_layout_manager_chrome, ChromeRenderKind, ChromeSettings, ChromeState, ChromeView,
 };
-use uzor::types::WidgetId;
 
 /// Register and draw the default chrome titlebar in one call.
 ///
@@ -65,7 +63,7 @@ pub fn register_chrome_default<P: DockPanel>(
     render: &mut dyn RenderContext,
     state: &mut ChromeState,
     view: &ChromeView<'_>,
-) -> Option<WidgetId> {
+) -> Option<ChromeNode> {
     register_chrome_with_settings(
         layout,
         render,
@@ -91,7 +89,6 @@ pub fn register_chrome_with_settings<P: DockPanel>(
     view: &ChromeView<'_>,
     settings: &ChromeSettings,
     kind: &ChromeRenderKind,
-) -> Option<WidgetId> {
-    let layer = LayerId::main();
-    register_layout_manager_chrome(layout, render, "chrome", state, view, settings, kind, &layer)
+) -> Option<ChromeNode> {
+    register_layout_manager_chrome(layout, render, LayoutNodeId::ROOT, "chrome", state, view, settings, kind)
 }

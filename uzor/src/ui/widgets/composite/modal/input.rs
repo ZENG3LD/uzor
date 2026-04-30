@@ -12,8 +12,8 @@ use super::settings::ModalSettings;
 use super::state::ModalState;
 use super::types::{ModalRenderKind, ModalView};
 use crate::docking::panels::DockPanel;
-use crate::input::LayerId;
-use crate::layout::LayoutManager;
+use crate::input::{Sense, WidgetKind};
+use crate::layout::{LayoutManager, LayoutNodeId, ModalNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::WidgetId;
 
@@ -25,18 +25,22 @@ use crate::types::WidgetId;
 pub fn register_layout_manager_modal<P: DockPanel>(
     layout:   &mut LayoutManager<P>,
     render:   &mut dyn RenderContext,
+    parent:   LayoutNodeId,
     slot_id:  &str,
     id:       impl Into<WidgetId>,
     state:    &mut ModalState,
     view:     &mut ModalView<'_>,
     settings: &ModalSettings,
     kind:     &ModalRenderKind,
-    layer:    &LayerId,
-) -> Option<()> {
+) -> Option<ModalNode> {
+    let id: WidgetId = id.into();
     let rect = layout.rect_for_overlay(slot_id)?;
-    Some(register_context_manager_modal(
-        layout.ctx_mut(), render, id, rect, state, view, settings, kind, layer,
-    ))
+    let layer = layout.compute_layer_for(parent);
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Modal, rect, sense: Sense::CLICK });
+    register_context_manager_modal(
+        layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
+    );
+    Some(ModalNode(node_id))
 }
 
 /// Apply a drag delta to modal state.
