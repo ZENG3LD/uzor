@@ -132,24 +132,25 @@ const SVG_DIAMOND: &str = r#"<svg viewBox="0 0 24 24" fill="none"><polyline poin
 // Fix 5: Per-group row font styles
 // ─────────────────────────────────────────────────────────────────────────────
 
-struct RowStyle13Sans;
-impl ItemStyle for RowStyle13Sans {
-    fn font(&self) -> &str { "13px sans-serif" }
+// Different uzor-bundled font families per group of rows.
+struct RowStyleRoboto;
+impl ItemStyle for RowStyleRoboto {
+    fn font(&self) -> &str { "13px Roboto" }
 }
 
-struct RowStyle14Mono;
-impl ItemStyle for RowStyle14Mono {
-    fn font(&self) -> &str { "14px monospace" }
+struct RowStyleJetBrains;
+impl ItemStyle for RowStyleJetBrains {
+    fn font(&self) -> &str { "13px JetBrainsMono" }
 }
 
-struct RowStyle12SansItalic;
-impl ItemStyle for RowStyle12SansItalic {
-    fn font(&self) -> &str { "italic 12px sans-serif" }
+struct RowStylePtRoot;
+impl ItemStyle for RowStylePtRoot {
+    fn font(&self) -> &str { "13px PT-Root-UI" }
 }
 
-struct RowStyle15SansBold;
-impl ItemStyle for RowStyle15SansBold {
-    fn font(&self) -> &str { "bold 15px sans-serif" }
+struct RowStyleRobotoBold;
+impl ItemStyle for RowStyleRobotoBold {
+    fn font(&self) -> &str { "bold 14px Roboto" }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -161,7 +162,6 @@ const WIN_H: u32 = 440;
 
 const BG: Color = Color::from_rgb8(0x16, 0x16, 0x1e);
 const PANEL_BG: Color = Color::from_rgb8(0x1e, 0x22, 0x2d);
-const LABEL_BG: Color = Color::from_rgba8(255, 255, 255, 18);
 
 // Text field widget ID — used to register with coordinator and query state.
 const TEXT_FIELD_ID: &str = "text-search";
@@ -882,6 +882,31 @@ impl AppState {
                 let clip_top    = SB_Y;
                 let clip_bottom = SB_Y + SB_H;
 
+                // 20 rows, mixing uzor's bundled fonts + emoji + symbols.
+                // Group by font family; emoji come from Noto Color Emoji,
+                // box-drawing/symbols from Symbols Nerd Font / Noto Symbols 2.
+                let row_labels = [
+                    "★ Roboto regular",
+                    "Sans-serif clean",
+                    "→ arrow + ✓ check",
+                    "Quick brown fox",
+                    "✨ ★ ☀ ☂ ❤",
+                    "fn main() { ... }",
+                    "let x: u32 = 42;",
+                    "if let Some(v) = opt",
+                    "// monospace code",
+                    "0xCAFE_BABE",
+                    "PT Root UI light",
+                    "вариативный шрифт",
+                    "12345 67890",
+                    "Кириллица OK",
+                    "ƒ unicode glyphs",
+                    "Bold Roboto bold",
+                    "❗ Heads up ❗",
+                    "✓ Done · 14 items",
+                    "🌍 globe · 🌟 star",
+                    "═══ end of list ═══",
+                ];
                 for row in 0..CONTENT_ROWS {
                     let row_y = SB_Y + row as f64 * ROW_H - scroll_off;
                     if row_y + ROW_H < clip_top || row_y > clip_bottom {
@@ -889,12 +914,12 @@ impl AppState {
                     }
                     let row_rect = Rect::new(content_x, row_y, content_w, ROW_H - 2.0);
                     let row_id   = format!("row-{row}");
-                    let row_label = format!("Row {}", row + 1);
+                    let row_label = row_labels[row].to_string();
                     let row_settings = match row {
-                        0..=4  => ItemSettings::default().with_style(Box::new(RowStyle13Sans)),
-                        5..=9  => ItemSettings::default().with_style(Box::new(RowStyle14Mono)),
-                        10..=14 => ItemSettings::default().with_style(Box::new(RowStyle12SansItalic)),
-                        _      => ItemSettings::default().with_style(Box::new(RowStyle15SansBold)),
+                        0..=4   => ItemSettings::default().with_style(Box::new(RowStyleRoboto)),
+                        5..=9   => ItemSettings::default().with_style(Box::new(RowStyleJetBrains)),
+                        10..=14 => ItemSettings::default().with_style(Box::new(RowStylePtRoot)),
+                        _       => ItemSettings::default().with_style(Box::new(RowStyleRobotoBold)),
                     };
                     register_context_manager_item(
                         ctx, &mut render,
@@ -1034,17 +1059,6 @@ impl AppState {
             Fill::NonZero, Affine::IDENTITY, strip_color, None,
             &vello::kurbo::Rect::new(0.0, height as f64 - 0.0, width as f64, height as f64),
         );
-
-        // widget-count badge
-        for (i, label) in ["13 widgets", "L2 demo"].iter().enumerate() {
-            let lw = label.len() as f64 * 6.5;
-            let bx = 340.0 + i as f64 * 100.0;
-            let by = height as f64 - 32.0;
-            self.scene.fill(
-                Fill::NonZero, Affine::IDENTITY, LABEL_BG, None,
-                &RoundedRect::new(bx, by, bx + lw + 12.0, by + 20.0, 4.0),
-            );
-        }
 
         // ── end_frame / responses ─────────────────────────────────────────────
         let responses = self.ctx.end_frame();
