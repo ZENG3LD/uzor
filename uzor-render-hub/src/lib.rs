@@ -17,6 +17,7 @@ pub mod metrics;
 pub mod factory;
 pub mod submit;
 pub mod runtime;
+pub mod surface;
 
 pub use backend::RenderBackend;
 pub use detect::{detect_backend, default_perf, detect, GpuInfo, PerfDefaults, RecommendedBackend};
@@ -24,3 +25,4 @@ pub use metrics::RenderMetrics;
 pub use factory::{BackendContext, WindowRenderState};
 pub use submit::{submit_frame, SubmitOutcome, SubmitParams};
 pub use runtime::RuntimeBackend;
+pub use surface::{RenderSurfaceFactory, SurfaceError, SurfaceSize};

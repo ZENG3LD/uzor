@@ -1,7 +1,7 @@
 //! Fluent builder for constructing and launching an uzor app runtime.
 
 use uzor::docking::panels::DockPanel;
-use uzor_render_hub::RenderBackend;
+use uzor_render_hub::{RenderBackend, RenderSurfaceFactory};
 use uzor_window_hub::lifecycle::WindowProvider;
 
 use crate::app::{App, AppConfig, ClosureApp, NoPanel};
@@ -71,6 +71,7 @@ where
     config: AppConfig,
     window: Option<Box<dyn WindowProvider>>,
     backend: Option<RenderBackend>,
+    factory: Option<Box<dyn RenderSurfaceFactory>>,
     _phantom: std::marker::PhantomData<P>,
 }
 
@@ -89,6 +90,7 @@ where
             config: AppConfig::default(),
             window: None,
             backend: None,
+            factory: None,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -183,6 +185,17 @@ where
         self
     }
 
+    /// Supply a [`RenderSurfaceFactory`] that converts the window's
+    /// [`uzor_window_hub::RawHandle`] into a
+    /// [`uzor_render_hub::WindowRenderState`] at startup.
+    ///
+    /// Without a factory, [`Runtime::run`] returns
+    /// [`RuntimeError::SurfaceWiringRequired`].
+    pub fn surface_factory(mut self, factory: Box<dyn RenderSurfaceFactory>) -> Self {
+        self.factory = Some(factory);
+        self
+    }
+
     // ── Terminal methods ──────────────────────────────────────────────────────
 
     /// Consume the builder and produce a [`Runtime`] ready to run.
@@ -194,7 +207,11 @@ where
     pub fn build(self) -> Result<Runtime<A, P>, BuildError> {
         let window = self.window.ok_or(BuildError::MissingWindow)?;
         let backend = self.backend.ok_or(BuildError::MissingBackend)?;
-        Ok(Runtime::new(self.app, self.config, window, backend))
+        let mut runtime = Runtime::new(self.app, self.config, window, backend);
+        if let Some(factory) = self.factory {
+            runtime.set_surface_factory(factory);
+        }
+        Ok(runtime)
     }
 
     /// Consume the builder, construct the runtime, and run the event loop.

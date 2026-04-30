@@ -35,7 +35,7 @@ use uzor::docking::panels::DockPanel;
 use uzor::input::core::event_processor::EventProcessor;
 use uzor::input::InputState;
 use uzor::layout::LayoutManager;
-use uzor_render_hub::RenderBackend;
+use uzor_render_hub::{RenderBackend, RenderSurfaceFactory, SurfaceSize};
 use uzor_window_hub::lifecycle::WindowProvider;
 
 use crate::app::{App, AppConfig};
@@ -90,9 +90,15 @@ pub struct Runtime<A: App<P>, P: DockPanel> {
     app: A,
     config: AppConfig,
     window: Box<dyn WindowProvider>,
-    /// Backend selection. Used when `uzor-window-desktop` factory wires the
-    /// concrete [`uzor_render_hub::WindowRenderState`] at startup.
+    /// Backend selection. Used when the surface factory wires the concrete
+    /// [`uzor_render_hub::WindowRenderState`] at startup.
     backend: RenderBackend,
+    /// Optional factory that converts a [`uzor_window_hub::RawHandle`] +
+    /// [`RenderBackend`] into a [`uzor_render_hub::WindowRenderState`].
+    ///
+    /// When `None`, [`Runtime::run`] returns
+    /// [`RuntimeError::SurfaceWiringRequired`] (no factory supplied).
+    factory: Option<Box<dyn RenderSurfaceFactory>>,
     layout: LayoutManager<P>,
     events: EventProcessor,
     /// Accumulated per-frame input snapshot.
@@ -105,6 +111,9 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
     /// Construct the runtime.
     ///
     /// Prefer [`crate::builder::AppBuilder::build`] over calling this directly.
+    /// To wire GPU surface creation, call
+    /// [`set_surface_factory`](Self::set_surface_factory) after construction or
+    /// supply a factory via [`crate::builder::AppBuilder::surface_factory`].
     pub fn new(
         app: A,
         config: AppConfig,
@@ -116,11 +125,21 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             config,
             window,
             backend,
+            factory: None,
             layout: LayoutManager::new(),
             events: EventProcessor::new(),
             input: InputState::new(),
             start: std::time::Instant::now(),
         }
+    }
+
+    /// Attach a [`RenderSurfaceFactory`] that will wire the GPU surface on
+    /// [`run`](Self::run).
+    ///
+    /// Without a factory, `run()` returns
+    /// [`RuntimeError::SurfaceWiringRequired`].
+    pub fn set_surface_factory(&mut self, factory: Box<dyn RenderSurfaceFactory>) {
+        self.factory = Some(factory);
     }
 
     /// Returns the selected [`RenderBackend`].
@@ -160,22 +179,29 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
         self.app.init(&mut self.layout);
 
         // ── Surface wiring ────────────────────────────────────────────────────
-        // TODO(surface-wiring): Obtain a RenderContext + RenderSurface from the
-        // window provider here. The WindowProvider trait currently exposes
-        // `raw_window_handle() -> Option<RawHandle>` but there is no factory
-        // that takes a RawHandle and produces (WindowRenderState, RenderSurface).
-        //
-        // Planned call site once the factory exists:
-        //
-        //   let handle = self.window.raw_window_handle()
-        //       .ok_or_else(|| RuntimeError::Window("no raw handle".into()))?;
-        //   let (mut render_state, surface) =
-        //       uzor_window_desktop::build_render_state(&handle, self.backend)
-        //           .map_err(|e| RuntimeError::Backend(e.to_string()))?;
-        //
-        // For now, return the stub error so callers know the path is not yet
-        // functional end-to-end.
-        return Err(RuntimeError::SurfaceWiringRequired);
+        // Require a RenderSurfaceFactory (supplied via AppBuilder::surface_factory
+        // or Runtime::set_surface_factory). Without one, the surface cannot be
+        // initialized and we return an honest error.
+        let factory = match self.factory.as_ref() {
+            Some(f) => f,
+            None => return Err(RuntimeError::SurfaceWiringRequired),
+        };
+
+        let raw_handle = self
+            .window
+            .raw_window_handle()
+            .ok_or_else(|| RuntimeError::Window("no raw handle".into()))?;
+
+        let rect = self.window.window_rect();
+        let dpr = self.window.scale_factor();
+        let size = SurfaceSize {
+            width:  (rect.width  * dpr) as u32,
+            height: (rect.height * dpr) as u32,
+        };
+
+        let _render_state = factory
+            .create_render_state(&raw_handle, self.backend, size)
+            .map_err(|e| RuntimeError::Backend(e.to_string()))?;
 
         // ── Main loop (structurally complete, unreachable until wiring done) ──
         #[allow(unreachable_code)]

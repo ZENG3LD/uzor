@@ -20,3 +20,5 @@ vello = "0.8"
 vello_hybrid = { version = "0.0.7", features = ["wgpu"] }
 wgpu = "28"
 serde = { version = "1", features = ["derive"] }
+uzor-window-hub = { workspace = true }
+thiserror = "1"
