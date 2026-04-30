@@ -8,21 +8,41 @@
 //! # Frame lifecycle
 //!
 //! ```text
-//! resumed → create_window → VelloGpuSurfaceFactory::create_render_state
+//! resumed → create_window → factory::create_render_state (or hub)
 //!         → loop {
 //!               window_event(RedrawRequested) → Runtime::tick()
+//!                   → FPS cap guard (WaitUntil)
 //!                   → poll_events → solve layout → begin_frame
 //!                   → app.ui       → submit_frame → request_redraw
 //!           }
 //!         → CloseRequested → exit
 //! ```
+//!
+//! # FPS cap (mlc pattern)
+//!
+//! When `hub.settings().fps_limit > 0` (or `config.fps_limit > 0` in Mode A),
+//! `tick` exits early before any GPU work if the target frame interval has not
+//! elapsed and schedules a `WaitUntil` wake-up.  This replicates the pattern
+//! from `mylittlechart` `chart-app-vello/src/main.rs` lines 2171–2184:
+//!
+//! ```text
+//! if fps_limit > 0 {
+//!     let target_dt = Duration::from_secs_f64(1.0 / fps_limit as f64);
+//!     if last_frame.elapsed() < target_dt {
+//!         event_loop.set_control_flow(ControlFlow::WaitUntil(last_frame + target_dt));
+//!         return;
+//!     }
+//! }
+//! ```
+
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 
 use uzor::docking::panels::DockPanel;
 use uzor::input::core::event_processor::EventProcessor;
 use uzor::input::InputState;
 use uzor::layout::LayoutManager;
 use uzor_render_hub::{
-    RenderBackend, RenderSurfaceFactory, SurfaceSize, WindowRenderState,
+    RenderBackend, RenderHub, RenderSurfaceFactory, SurfaceSize, WindowRenderState,
     submit_frame, SubmitParams,
 };
 use uzor_window_hub::lifecycle::WindowProvider;
@@ -77,6 +97,8 @@ pub struct Runtime<A: App<P>, P: DockPanel> {
     pub(crate) config: AppConfig,
     /// Backend selection.
     pub(crate) backend: RenderBackend,
+    /// Optional render hub (Mode B).  `None` in Mode A (fixed backend).
+    pub(crate) hub: Option<RenderHub>,
     /// Surface factory (held until `init_render_state` is called).
     pub(crate) factory: Option<Box<dyn RenderSurfaceFactory>>,
     /// Layout manager.
@@ -91,17 +113,25 @@ pub struct Runtime<A: App<P>, P: DockPanel> {
     pub(crate) initialised: bool,
     /// Ready render state (set once the window + surface are available).
     pub(crate) render_state: Option<WindowRenderState>,
+    /// Instant of the last completed frame (for FPS cap).
+    pub(crate) last_frame: std::time::Instant,
 }
 
 impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
     /// Construct the runtime.
     ///
     /// Prefer [`crate::builder::AppBuilder::build`] over calling this directly.
-    pub fn new(app: A, config: AppConfig, backend: RenderBackend) -> Self {
+    pub fn new(
+        app: A,
+        config: AppConfig,
+        backend: RenderBackend,
+        hub: Option<RenderHub>,
+    ) -> Self {
         Self {
             app,
             config,
             backend,
+            hub,
             factory: None,
             layout: LayoutManager::new(),
             events: EventProcessor::new(),
@@ -109,6 +139,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             start: std::time::Instant::now(),
             initialised: false,
             render_state: None,
+            last_frame: std::time::Instant::now(),
         }
     }
 
@@ -126,6 +157,16 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
     /// Returns a reference to the [`AppConfig`] this runtime was built with.
     pub fn app_config(&self) -> &AppConfig {
         &self.config
+    }
+
+    /// Returns a reference to the [`RenderHub`] if one was supplied (Mode B).
+    pub fn hub(&self) -> Option<&RenderHub> {
+        self.hub.as_ref()
+    }
+
+    /// Returns a mutable reference to the [`RenderHub`] if one was supplied.
+    pub fn hub_mut(&mut self) -> Option<&mut RenderHub> {
+        self.hub.as_mut()
     }
 
     /// Initialise the render state from a live window provider.
@@ -178,20 +219,57 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
         Ok(())
     }
 
-    /// Process one frame: poll events, solve layout, begin/ui/submit.
+    /// Effective FPS limit: hub's value (Mode B) or config value (Mode A).
+    fn fps_limit(&self) -> u32 {
+        self.hub
+            .as_ref()
+            .map(|h| h.settings().fps_limit)
+            .unwrap_or(self.config.fps_limit)
+    }
+
+    /// Effective MSAA samples: hub's value (Mode B) or config value (Mode A).
+    fn msaa_samples(&self) -> u8 {
+        self.hub
+            .as_ref()
+            .map(|h| h.settings().msaa_samples)
+            .unwrap_or(self.config.msaa_samples)
+    }
+
+    /// Process one frame: FPS cap guard → poll events → layout → begin/ui/submit.
     ///
     /// Called from the winit `ApplicationHandler::window_event(RedrawRequested)`
     /// path.  Does nothing if the render state has not yet been initialised.
+    ///
+    /// The `event_loop` parameter is needed only for the `WaitUntil` FPS cap.
     ///
     /// # Errors
     ///
     /// Returns [`RuntimeError::Backend`] if GPU submission signals a lost
     /// surface.
-    pub fn tick(&mut self, window: &mut dyn WindowProvider) -> Result<(), RuntimeError> {
-        let render_state = match self.render_state.as_mut() {
-            Some(s) => s,
-            None => return Ok(()),
-        };
+    pub fn tick(
+        &mut self,
+        window: &mut dyn WindowProvider,
+        event_loop: &ActiveEventLoop,
+    ) -> Result<(), RuntimeError> {
+        // ── FPS cap guard (mlc pattern, main.rs:2171-2184) ────────────────────
+        // winit wakes the event loop on every mouse event (CursorMoved at
+        // 125-500 Hz), which preempts the WaitUntil timer.  We exit early so
+        // no scene work or GPU submission happens until the target interval has
+        // actually elapsed.
+        let fps_limit = self.fps_limit();
+        if fps_limit > 0 {
+            let target_dt = std::time::Duration::from_secs_f64(1.0 / fps_limit as f64);
+            if self.last_frame.elapsed() < target_dt {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    self.last_frame + target_dt,
+                ));
+                return Ok(());
+            }
+        }
+
+        if self.render_state.is_none() {
+            return Ok(());
+        }
 
         // 1. Drain OS events → feed into EventProcessor → accumulate InputState.
         let now_secs = self.start.elapsed().as_secs_f64();
@@ -211,34 +289,46 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
         let viewport = self.layout.rect_for_dock_area().unwrap_or(rect);
         self.layout.ctx_mut().begin_frame(self.input.clone(), viewport);
 
-        // 4. begin_frame on render state (resets scene / cpu buffer).
-        render_state.begin_frame();
-
-        // 5. User UI callback.
-        self.app.ui(&mut self.layout, render_state);
-
-        // 6. Collect widget responses.
-        let _responses = self.layout.ctx_mut().end_frame();
-
-        // 7. GPU / CPU submit.
+        // Read all immutable values before the render_state mutable borrow.
         let base_color = argb_to_alpha_color(self.config.background);
-        let outcome = submit_frame(
-            render_state,
-            SubmitParams {
-                base_color,
-                msaa_samples: self.config.msaa_samples,
-            },
-        );
+        let msaa = self.msaa_samples();
+
+        // 4-7. begin_frame, ui, end_frame, submit — render_state mutable borrow scope.
+        let outcome = {
+            let render_state = self.render_state.as_mut()
+                .expect("render_state checked above — cannot be None here");
+
+            // 4. begin_frame on render state (resets scene / cpu buffer).
+            render_state.begin_frame();
+
+            // 5. User UI callback.
+            self.app.ui(&mut self.layout, render_state);
+
+            // 6. Collect widget responses.
+            let _responses = self.layout.ctx_mut().end_frame();
+
+            // 7. GPU / CPU submit.
+            submit_frame(render_state, SubmitParams { base_color, msaa_samples: msaa })
+        };
+
         if outcome.surface_lost {
             return Err(RuntimeError::Backend("wgpu surface lost (out of memory)".into()));
         }
 
-        // 8. Reset per-frame fields.
+        // 8. Update hub metrics.
+        if let Some(ref mut h) = self.hub {
+            h.update_metrics(outcome.metrics);
+        }
+
+        // 9. Record frame completion for FPS cap.
+        self.last_frame = std::time::Instant::now();
+
+        // 10. Reset per-frame fields.
         self.input.pointer.clicked = None;
         self.input.pointer.double_clicked = None;
         self.input.scroll_delta = (0.0, 0.0);
 
-        // 9. Request next redraw.
+        // 11. Request next redraw.
         window.request_redraw();
 
         Ok(())

@@ -8,7 +8,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 use uzor::docking::panels::DockPanel;
-use uzor_render_hub::{RenderBackend, RenderSurfaceFactory};
+use uzor_render_hub::{RenderBackend, RenderHub, RenderSurfaceFactory};
 use uzor_window_hub::{WinitWindowProvider, WindowProvider};
 
 use uzor_window_hub::RgbaIcon;
@@ -21,7 +21,8 @@ use crate::runtime::{Runtime, RuntimeError};
 /// Errors that can occur when calling [`AppBuilder::build`] or icon helpers.
 #[derive(Debug)]
 pub enum BuildError {
-    /// No render backend was supplied via [`AppBuilder::backend`].
+    /// No render backend was supplied via [`AppBuilder::backend`] or
+    /// [`AppBuilder::render_hub`].
     MissingBackend,
     /// PNG icon bytes could not be decoded or converted to RGBA8.
     IconDecode(String),
@@ -31,7 +32,7 @@ impl std::fmt::Display for BuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             BuildError::MissingBackend => {
-                f.write_str("no render backend supplied — call .backend(...)")
+                f.write_str("no render backend supplied — call .backend(...) or .render_hub(...)")
             }
             BuildError::IconDecode(msg) => {
                 write!(f, "icon PNG decode failed: {msg}")
@@ -52,7 +53,21 @@ impl From<BuildError> for RuntimeError {
 
 /// Fluent builder for configuring and launching an uzor app.
 ///
-/// # Typical usage
+/// # Backend selection
+///
+/// Two modes:
+///
+/// - **Mode A — fixed backend**: call [`.backend(RenderBackend::VelloGpu)`](Self::backend)
+///   and [`.surface_factory(...)`](Self::surface_factory).  Simple, zero adapter probe
+///   cost, no live switching.
+///
+/// - **Mode B — hub autodetect**: call [`.render_hub(RenderHub::autodetect())`](Self::render_hub).
+///   Full pool + live switching + metrics.  Pays a brief adapter probe at construction.
+///
+/// If both `.backend()` and `.render_hub()` are called, `.render_hub()` wins (last
+/// call wins).
+///
+/// # Typical usage — Mode A
 ///
 /// ```rust,ignore
 /// use uzor_framework::{AppBuilder, AppConfig};
@@ -67,12 +82,19 @@ impl From<BuildError> for RuntimeError {
 ///     .expect("runtime error");
 /// ```
 ///
-/// # Window creation
+/// # Typical usage — Mode B
 ///
-/// `AppBuilder::run()` creates the winit `EventLoop` and `Window` internally.
-/// No `.window(...)` call is required.  If you need full control over the event
-/// loop (e.g. for custom drag regions or tray icon integration), construct the
-/// event loop yourself and call `Runtime::tick()` manually.
+/// ```rust,ignore
+/// use uzor_framework::AppBuilder;
+/// use uzor_render_hub::RenderHub;
+///
+/// AppBuilder::new(MyApp::new())
+///     .title("my app")
+///     .size(1280, 720)
+///     .render_hub(RenderHub::autodetect())
+///     .run()
+///     .expect("runtime error");
+/// ```
 ///
 /// # Generic parameters
 ///
@@ -88,6 +110,7 @@ where
     config: AppConfig,
     backend: Option<RenderBackend>,
     factory: Option<Box<dyn RenderSurfaceFactory>>,
+    hub: Option<RenderHub>,
     _phantom: std::marker::PhantomData<P>,
 }
 
@@ -106,6 +129,7 @@ where
             config: AppConfig::default(),
             backend: None,
             factory: None,
+            hub: None,
             _phantom: std::marker::PhantomData,
         }
     }
@@ -149,20 +173,45 @@ where
     }
 
     /// Set the FPS limit (`0` = unlimited).
+    ///
+    /// Convenience pass-through — also available via
+    /// [`render_hub`](Self::render_hub) + [`RenderHub::set_fps_limit`].
     pub fn fps_limit(mut self, fps: u32) -> Self {
         self.config.fps_limit = fps;
+        // Propagate to hub if one is already attached.
+        if let Some(ref mut h) = self.hub {
+            h.set_fps_limit(fps);
+        }
+        self
+    }
+
+    /// Set the MSAA sample count.
+    ///
+    /// Convenience pass-through — also available via
+    /// [`render_hub`](Self::render_hub) + [`RenderHub::set_msaa`].
+    pub fn msaa(mut self, samples: u8) -> Self {
+        self.config.msaa_samples = samples;
+        if let Some(ref mut h) = self.hub {
+            h.set_msaa(samples);
+        }
+        self
+    }
+
+    /// Enable or disable VSync.
+    ///
+    /// Convenience pass-through — also available via
+    /// [`render_hub`](Self::render_hub) + [`RenderHub::set_vsync`].
+    pub fn vsync(mut self, on: bool) -> Self {
+        self.config.vsync = on;
+        if let Some(ref mut h) = self.hub {
+            h.set_vsync(on);
+        }
         self
     }
 
     /// Set the clear colour as `0xAARRGGBB`.
     pub fn background(mut self, argb: u32) -> Self {
         self.config.background = argb;
-        self
-    }
-
-    /// Enable VSync (default: true).
-    pub fn vsync(mut self, on: bool) -> Self {
-        self.config.vsync = on;
         self
     }
 
@@ -232,12 +281,18 @@ where
 
     // ── Infrastructure setters ────────────────────────────────────────────────
 
-    /// Select the rendering backend.
+    /// Select the rendering backend (Mode A — fixed, no live switching).
     ///
-    /// Required — [`build`](Self::build) returns [`BuildError::MissingBackend`]
-    /// if this is not called.
+    /// Required when not using [`render_hub`](Self::render_hub).
+    /// [`build`](Self::build) returns [`BuildError::MissingBackend`] if
+    /// neither `.backend()` nor `.render_hub()` is called.
+    ///
+    /// If `.render_hub()` was already called, this replaces the hub with a
+    /// single-backend stub.  Use `.render_hub()` for the full hub experience.
     pub fn backend(mut self, backend: RenderBackend) -> Self {
         self.backend = Some(backend);
+        // Clear hub so the explicit fixed backend takes precedence.
+        self.hub = None;
         self
     }
 
@@ -245,6 +300,22 @@ where
     /// [`uzor_render_hub::WindowRenderState`] at startup.
     pub fn surface_factory(mut self, factory: Box<dyn RenderSurfaceFactory>) -> Self {
         self.factory = Some(factory);
+        self
+    }
+
+    /// Attach a [`RenderHub`] (Mode B — autodetect + live switching + metrics).
+    ///
+    /// The hub's active backend, fps_limit, and msaa settings are propagated
+    /// to the runtime config.  Any previously set `.backend()` is discarded
+    /// (render_hub wins when both are called).
+    pub fn render_hub(mut self, hub: RenderHub) -> Self {
+        // Sync hub settings into config.
+        self.config.fps_limit = hub.settings().fps_limit;
+        self.config.msaa_samples = hub.settings().msaa_samples;
+        self.config.vsync = hub.settings().vsync;
+        // Store active backend for factory selection.
+        self.backend = Some(hub.active());
+        self.hub = Some(hub);
         self
     }
 
@@ -257,7 +328,7 @@ where
     /// Returns [`BuildError::MissingBackend`] if no backend was supplied.
     pub fn build(self) -> Result<Runtime<A, P>, BuildError> {
         let backend = self.backend.ok_or(BuildError::MissingBackend)?;
-        let mut runtime = Runtime::new(self.app, self.config, backend);
+        let mut runtime = Runtime::new(self.app, self.config, backend, self.hub);
         if let Some(factory) = self.factory {
             runtime.set_surface_factory(factory);
         }
@@ -392,7 +463,7 @@ where
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                if let Err(e) = self.runtime.tick(provider) {
+                if let Err(e) = self.runtime.tick(provider, event_loop) {
                     eprintln!("[uzor-framework] tick error: {e}");
                     self.runtime.shutdown();
                     event_loop.exit();

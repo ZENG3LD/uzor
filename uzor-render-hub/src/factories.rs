@@ -16,13 +16,15 @@
 //! | [`WgpuInstancedSurfaceFactory`] | `InstancedWgpu` | Functional — GPU init deferred to first submit |
 //! | [`Canvas2dSurfaceFactory`] | web canvas | Non-wasm stub (returns `UnsupportedBackend`) |
 
+use std::sync::Mutex;
+
 use vello::{AaSupport, Renderer, RendererOptions};
 
 use crate::factory::GpuDevicePool;
 use vello::wgpu::PresentMode;
 use winit::raw_window_handle::{RawWindowHandle, RawDisplayHandle};
 
-use uzor_window_hub::lifecycle::RawHandle;
+use uzor_window_hub::lifecycle::{RawHandle, SoftwarePresenter};
 use uzor_window_hub::winit_provider::SendSyncHandlePair;
 
 use crate::{RenderBackend, RenderSurfaceFactory, SurfaceError, SurfaceSize, WindowRenderState};
@@ -193,14 +195,35 @@ impl RenderSurfaceFactory for VelloGpuSurfaceFactory {
 
 /// Surface factory for the [`RenderBackend::TinySkia`] CPU software path.
 ///
-/// Constructs a [`WindowRenderState::Cpu`] backed by a
-/// `TinySkiaCpuRenderContext`.  No wgpu dependency — zero GPU initialisation cost.
-pub struct TinySkiaSurfaceFactory;
+/// Constructs a [`WindowRenderState`] backed by a `TinySkiaCpuRenderContext`
+/// plus a [`SoftwarePresenter`] for OS-window presentation without a GPU.
+///
+/// Build via [`TinySkiaSurfaceFactory::with_presenter`] when a software surface
+/// is needed, or [`TinySkiaSurfaceFactory::new`] when the presenter will be
+/// supplied separately.
+pub struct TinySkiaSurfaceFactory {
+    presenter: Mutex<Option<Box<dyn SoftwarePresenter>>>,
+}
 
 impl TinySkiaSurfaceFactory {
-    /// Create the factory.
+    /// Create the factory without a presenter.
+    ///
+    /// Callers that need a software surface must call
+    /// [`with_presenter`](Self::with_presenter) instead; using this constructor
+    /// and then calling `create_render_state` will return a
+    /// [`SurfaceError::HandleUnavailable`] error.
     pub fn new() -> Self {
-        Self
+        Self { presenter: Mutex::new(None) }
+    }
+
+    /// Create the factory with a pre-built software presenter.
+    ///
+    /// Obtain the presenter from
+    /// [`WindowProvider::create_software_presenter`](uzor_window_hub::lifecycle::WindowProvider::create_software_presenter).
+    /// The presenter is moved into the factory and transferred to the
+    /// [`WindowRenderState`] on the first call to [`create_render_state`].
+    pub fn with_presenter(presenter: Box<dyn SoftwarePresenter>) -> Self {
+        Self { presenter: Mutex::new(Some(presenter)) }
     }
 }
 
@@ -221,7 +244,14 @@ impl RenderSurfaceFactory for TinySkiaSurfaceFactory {
             return Err(SurfaceError::UnsupportedBackend(backend));
         }
 
-        Ok(WindowRenderState::new_cpu(size.width, size.height))
+        let presenter = self
+            .presenter
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+            .ok_or(SurfaceError::HandleUnavailable)?;
+
+        Ok(WindowRenderState::new_cpu(size.width, size.height, presenter))
     }
 
     fn supports(&self, _handle: &RawHandle, backend: RenderBackend) -> bool {
@@ -233,19 +263,32 @@ impl RenderSurfaceFactory for TinySkiaSurfaceFactory {
 
 /// Surface factory for the [`RenderBackend::VelloCpu`] path.
 ///
-/// Constructs a [`WindowRenderState::VelloCpu`] backed by a
-/// `VelloCpuRenderContext`.  No wgpu dependency — zero GPU initialisation cost.
-/// The context renders frames via CPU rasterization; pixels are made available
-/// via [`VelloCpuRenderContext::render_to_softbuffer`] for OS presentation.
+/// Constructs a [`WindowRenderState`] backed by a `VelloCpuRenderContext`
+/// plus a [`SoftwarePresenter`] for OS-window presentation without a GPU.
+///
+/// Build via [`VelloCpuSurfaceFactory::with_presenter`] when a software surface
+/// is needed.
 pub struct VelloCpuSurfaceFactory {
     /// Device pixel ratio.  Defaults to `1.0`.
     pub dpr: f64,
+    presenter: Mutex<Option<Box<dyn SoftwarePresenter>>>,
 }
 
 impl VelloCpuSurfaceFactory {
-    /// Create the factory with the given device pixel ratio.
+    /// Create the factory with the given device pixel ratio but no presenter.
+    ///
+    /// Callers that need a software surface must call
+    /// [`with_presenter`](Self::with_presenter) instead.
     pub fn new(dpr: f64) -> Self {
-        Self { dpr }
+        Self { dpr, presenter: Mutex::new(None) }
+    }
+
+    /// Create the factory with a device pixel ratio and a software presenter.
+    ///
+    /// Obtain the presenter from
+    /// [`WindowProvider::create_software_presenter`](uzor_window_hub::lifecycle::WindowProvider::create_software_presenter).
+    pub fn with_presenter(dpr: f64, presenter: Box<dyn SoftwarePresenter>) -> Self {
+        Self { dpr, presenter: Mutex::new(Some(presenter)) }
     }
 }
 
@@ -266,7 +309,14 @@ impl RenderSurfaceFactory for VelloCpuSurfaceFactory {
             return Err(SurfaceError::UnsupportedBackend(backend));
         }
 
-        Ok(WindowRenderState::new_vello_cpu(self.dpr))
+        let presenter = self
+            .presenter
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+            .ok_or(SurfaceError::HandleUnavailable)?;
+
+        Ok(WindowRenderState::new_vello_cpu(self.dpr, presenter))
     }
 
     fn supports(&self, _handle: &RawHandle, backend: RenderBackend) -> bool {

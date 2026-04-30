@@ -8,6 +8,36 @@
 use uzor::core::types::Rect;
 use uzor::input::PlatformEvent;
 
+// ── SoftwarePresenter ─────────────────────────────────────────────────────────
+
+/// Push CPU-rasterized pixels to an OS window without a GPU.
+///
+/// Implemented by window providers that can wrap their native window in a
+/// software back-buffer (e.g. softbuffer on desktop, `putImageData` on web).
+///
+/// The implementor must convert the RGBA8 input into whatever pixel format the
+/// underlying OS surface requires (e.g. softbuffer expects `0x00RRGGBB` u32).
+///
+/// # Thread safety
+///
+/// `SoftwarePresenter` requires `Send` so it can be moved to whichever thread
+/// drives the render loop.  It does **not** require `Sync` — softbuffer's
+/// `Surface` is `Send` but not `Sync` on Windows; callers always hold an
+/// exclusive `&mut` reference during presentation.
+pub trait SoftwarePresenter: Send {
+    /// Push a full-frame RGBA8 buffer to the OS window and present it.
+    ///
+    /// `pixels` must have exactly `width * height * 4` bytes in row-major
+    /// `[R, G, B, A]` order.
+    fn present(&mut self, pixels: &[u8], width: u32, height: u32);
+
+    /// Notify the back-buffer of a window resize.
+    ///
+    /// Call this whenever the physical window size changes so the presenter
+    /// can reallocate its internal buffer before the next [`present`](Self::present).
+    fn resize(&mut self, width: u32, height: u32);
+}
+
 // ── Opaque window-handle wrapper ─────────────────────────────────────────────
 
 /// Platform-specific window handle, erased to avoid forcing low-level
@@ -137,4 +167,17 @@ pub trait WindowProvider {
     ///
     /// Default: no-op.
     fn set_visible(&mut self, _visible: bool) {}
+
+    /// Create a software-presentation surface bound to this window.
+    ///
+    /// Returns a [`SoftwarePresenter`] that can receive CPU-rasterized RGBA8
+    /// pixel buffers and push them to the OS window without GPU involvement.
+    ///
+    /// Returns `None` on platforms that do not support software surfaces
+    /// (e.g. web canvas path not yet implemented).
+    ///
+    /// The default implementation returns `None`.
+    fn create_software_presenter(&self) -> Option<Box<dyn SoftwarePresenter>> {
+        None
+    }
 }

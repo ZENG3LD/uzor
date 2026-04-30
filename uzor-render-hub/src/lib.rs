@@ -10,9 +10,11 @@
 //! - **Create**: instantiate the right `WindowRenderState` via a factory.
 //! - **Submit**: dispatch frame submission across backends.
 //! - **Metrics**: collect frame_time / gpu_submit / draw_calls.
+//! - **Hub**: unified `RenderHub` owning pool + settings + metrics.
 
 pub mod backend;
 pub mod detect;
+pub mod hub;
 pub mod metrics;
 pub mod factory;
 pub mod submit;
@@ -22,9 +24,11 @@ pub mod factories;
 
 pub use backend::RenderBackend;
 pub use detect::{detect_backend, default_perf, detect, GpuInfo, PerfDefaults, RecommendedBackend};
+pub use hub::{BackendPool, HubError, PerfSettings, RenderHub};
 pub use metrics::RenderMetrics;
 pub use factory::{BackendContext, GpuDevicePool, WindowRenderState};
 pub use submit::{submit_frame, SubmitOutcome, SubmitParams};
+pub use uzor_window_hub::lifecycle::SoftwarePresenter;
 pub use runtime::RuntimeBackend;
 pub use surface::{RenderSurfaceFactory, SurfaceError, SurfaceSize};
 pub use factories::{

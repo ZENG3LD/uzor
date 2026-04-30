@@ -28,7 +28,7 @@ use winit::window::Window;
 use uzor::core::types::Rect;
 use uzor::platform::PlatformEvent;
 
-use crate::lifecycle::{RawHandle, RgbaIcon, WindowProvider};
+use crate::lifecycle::{RawHandle, RgbaIcon, SoftwarePresenter, WindowProvider};
 
 // ─── SendSyncHandlePair ───────────────────────────────────────────────────────
 
@@ -186,5 +186,92 @@ impl WindowProvider for WinitWindowProvider {
             Box::new(SendSyncHandlePair(window_handle, display_handle));
 
         Some(RawHandle::RawWindowHandle(pair))
+    }
+
+    /// Create a softbuffer-backed [`SoftwarePresenter`] for this window.
+    ///
+    /// Returns `None` only when softbuffer context or surface creation fails,
+    /// which should not happen on any supported desktop platform.
+    fn create_software_presenter(&self) -> Option<Box<dyn SoftwarePresenter>> {
+        match WinitSoftbufferPresenter::new(self.window.clone()) {
+            Ok(p) => Some(Box::new(p)),
+            Err(e) => {
+                eprintln!("[uzor-window-hub] softbuffer presenter init failed: {e}");
+                None
+            }
+        }
+    }
+}
+
+// ── WinitSoftbufferPresenter ──────────────────────────────────────────────────
+
+/// Softbuffer-backed [`SoftwarePresenter`] for winit windows.
+///
+/// Wraps a `softbuffer::Surface` bound to the winit window. Each call to
+/// [`present`](SoftwarePresenter::present) converts the caller-supplied RGBA8
+/// buffer into softbuffer's native `0x00RRGGBB` u32 format and blits it to
+/// the OS window.
+///
+/// Constructed via [`WinitWindowProvider::create_software_presenter`].
+pub struct WinitSoftbufferPresenter {
+    surface: softbuffer::Surface<Arc<Window>, Arc<Window>>,
+}
+
+impl WinitSoftbufferPresenter {
+    fn new(window: Arc<Window>) -> Result<Self, Box<dyn std::error::Error>> {
+        let ctx = softbuffer::Context::new(window.clone())
+            .map_err(|e| format!("softbuffer context: {e:?}"))?;
+        let surface = softbuffer::Surface::new(&ctx, window)
+            .map_err(|e| format!("softbuffer surface: {e:?}"))?;
+        Ok(Self { surface })
+    }
+}
+
+impl SoftwarePresenter for WinitSoftbufferPresenter {
+    /// Resize the softbuffer back-buffer.
+    ///
+    /// Forwards to `softbuffer::Surface::resize`. A no-op for zero dimensions.
+    fn resize(&mut self, width: u32, height: u32) {
+        if let (Some(w), Some(h)) = (
+            std::num::NonZeroU32::new(width),
+            std::num::NonZeroU32::new(height),
+        ) {
+            let _ = self.surface.resize(w, h);
+        }
+    }
+
+    /// Convert `pixels` (RGBA8) to `0x00RRGGBB` u32 and present.
+    ///
+    /// Silently skips the frame for zero dimensions or on surface errors.
+    fn present(&mut self, pixels: &[u8], width: u32, height: u32) {
+        let (Some(w), Some(h)) = (
+            std::num::NonZeroU32::new(width),
+            std::num::NonZeroU32::new(height),
+        ) else {
+            return;
+        };
+
+        if let Err(e) = self.surface.resize(w, h) {
+            eprintln!("[uzor-window-hub] softbuffer resize error: {e:?}");
+            return;
+        }
+
+        let Ok(mut buf) = self.surface.buffer_mut() else {
+            return;
+        };
+
+        let n = (width as usize).saturating_mul(height as usize);
+        let available = pixels.len() / 4;
+        let count = n.min(available).min(buf.len());
+
+        for i in 0..count {
+            let src = i * 4;
+            let r = pixels[src]     as u32;
+            let g = pixels[src + 1] as u32;
+            let b = pixels[src + 2] as u32;
+            buf[i] = (r << 16) | (g << 8) | b;
+        }
+
+        let _ = buf.present();
     }
 }
