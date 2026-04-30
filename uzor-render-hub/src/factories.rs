@@ -1,29 +1,22 @@
 //! Concrete [`RenderSurfaceFactory`] implementations for each backend.
 //!
-//! These factories live here (in the hub) rather than in the individual backend
-//! crates to avoid circular dependencies: each backend crate is a dependency of
-//! `uzor-render-hub`, so the backends cannot also depend on `uzor-render-hub`.
+//! These factories live here (in the hub) rather than in the individual
+//! backend crates to avoid circular dependencies: each backend crate is a
+//! dependency of `uzor-render-hub`, so the backends cannot also depend on
+//! `uzor-render-hub`.
 //!
 //! # Available factories
 //!
 //! | Factory | Backend | Status |
 //! |---------|---------|--------|
-//! | [`VelloGpuSurfaceFactory`] | `VelloGpu` | Functional — creates Renderer; RenderSurface dropped (see note) |
-//! | [`TinySkiaSurfaceFactory`] | `TinySkia` | Functional — CPU path, creates GPU Renderer for blit pipeline |
+//! | [`VelloGpuSurfaceFactory`] | `VelloGpu` | Functional — `RenderSurface` now kept alive inside `WindowRenderState::Gpu` |
+//! | [`TinySkiaSurfaceFactory`] | `TinySkia` | Functional — pure CPU, zero GPU init |
 //! | [`VelloCpuSurfaceFactory`] | `VelloCpu` | Stubbed — returns `UnsupportedBackend` |
 //! | [`VelloHybridSurfaceFactory`] | `VelloHybrid` | Stubbed — returns `UnsupportedBackend` |
-//!
-//! # RenderSurface gap
-//!
-//! [`uzor_render_hub::WindowRenderState`] stores a `vello::Renderer` but not a
-//! `vello::util::RenderSurface` (the wgpu swapchain handle). The GPU factories
-//! here create the surface during init to obtain a device, then drop it. Full
-//! GPU frame submission requires the `Runtime` to carry the `RenderSurface`
-//! alongside `WindowRenderState`.
 
-use std::sync::Mutex;
+use vello::{AaSupport, Renderer, RendererOptions};
 
-use vello::{util::RenderContext, AaSupport, Renderer, RendererOptions};
+use crate::factory::GpuDevicePool;
 use vello::wgpu::PresentMode;
 use winit::raw_window_handle::{RawWindowHandle, RawDisplayHandle};
 
@@ -36,7 +29,7 @@ use crate::{RenderBackend, RenderSurfaceFactory, SurfaceError, SurfaceSize, Wind
 
 /// Minimal `HasWindowHandle + HasDisplayHandle` wrapper around raw handles.
 ///
-/// Allows calling `vello::util::RenderContext::create_surface` from a copied
+/// Allows calling `GpuDevicePool::create_surface` from a copied
 /// `(RawWindowHandle, RawDisplayHandle)` pair without holding a live
 /// `Arc<Window>`.
 ///
@@ -49,10 +42,11 @@ struct WinitSurfaceTarget {
     display: RawDisplayHandle,
 }
 
-// SAFETY: raw handles are plain integer/pointer values. The underlying OS
-// window and display are guaranteed to outlive the factory call (the Arc<Window>
-// in WinitWindowProvider keeps them alive). No thread-local state is accessed
-// during wgpu surface creation on desktop platforms (Win32, X11, Wayland).
+// SAFETY: raw handles are plain integer/pointer values.  The underlying OS
+// window and display are guaranteed to outlive the factory call (the
+// `Arc<Window>` in `WinitWindowProvider` keeps them alive for the entire
+// runtime duration).  No thread-local state is accessed during wgpu surface
+// creation on desktop platforms (Win32, X11, Wayland).
 unsafe impl Send for WinitSurfaceTarget {}
 unsafe impl Sync for WinitSurfaceTarget {}
 
@@ -80,28 +74,21 @@ impl winit::raw_window_handle::HasDisplayHandle for WinitSurfaceTarget {
 
 /// Surface factory for the [`RenderBackend::VelloGpu`] path.
 ///
-/// Owns a `vello::util::RenderContext` (wgpu instance + device state).
-/// On `create_render_state` it initialises a wgpu surface, picks an adapter,
-/// creates a `vello::Renderer`, and returns a ready [`WindowRenderState`].
+/// On [`create_render_state`](RenderSurfaceFactory::create_render_state) it:
 ///
-/// The `RenderSurface` produced during init is dropped after `Renderer` creation.
-/// Full GPU frame submission requires the calling `Runtime` to hold the
-/// `RenderSurface` alongside the `WindowRenderState` — see module-level docs.
+/// 1. Creates a `GpuDevicePool` (wgpu device + queue).
+/// 2. Creates a `RenderSurface` bound to the OS window handle.
+/// 3. Creates a vello `Renderer`.
+/// 4. Moves **all three** into [`WindowRenderState::Gpu`] — the surface is
+///    no longer dropped after init (this was the previous architecture gap).
 ///
-/// # Thread safety
-///
-/// Interior mutability via `Mutex<RenderContext>` satisfies the `&self` constraint
-/// of [`RenderSurfaceFactory`] while still mutating the device list on first use.
-pub struct VelloGpuSurfaceFactory {
-    render_cx: Mutex<RenderContext>,
-}
+/// The `GpuDevicePool` is consumed per call (not shared across windows).
+pub struct VelloGpuSurfaceFactory;
 
 impl VelloGpuSurfaceFactory {
-    /// Create a factory with a freshly initialised wgpu `RenderContext`.
+    /// Create a new factory.
     pub fn new() -> Self {
-        Self {
-            render_cx: Mutex::new(RenderContext::new()),
-        }
+        Self
     }
 }
 
@@ -110,10 +97,6 @@ impl Default for VelloGpuSurfaceFactory {
         Self::new()
     }
 }
-
-// SAFETY: RenderContext is Send. Mutex provides exclusive access.
-unsafe impl Send for VelloGpuSurfaceFactory {}
-unsafe impl Sync for VelloGpuSurfaceFactory {}
 
 impl RenderSurfaceFactory for VelloGpuSurfaceFactory {
     fn create_render_state(
@@ -145,16 +128,15 @@ impl RenderSurfaceFactory for VelloGpuSurfaceFactory {
             display: pair.1,
         };
 
-        let mut cx = self
-            .render_cx
-            .lock()
-            .map_err(|_| SurfaceError::InitFailed("RenderContext mutex poisoned".into()))?;
+        let mut gpu_pool = GpuDevicePool::new();
 
-        // Create a wgpu surface to select the adapter and device.
-        // SAFETY: the window referenced by `target` is owned by the Arc<Window>
-        // inside WinitWindowProvider and outlives this surface for the duration
-        // the Runtime runs.
-        let surface = pollster::block_on(cx.create_surface(
+        // SAFETY: `target` wraps the raw handles of an `Arc<Window>` that the
+        // `WinitWindowProvider` keeps alive for the entire runtime lifetime.
+        // Transmuting the surface to `'static` is sound because the device pool
+        // (which owns the device the surface depends on) and the surface itself are
+        // both moved into the `WindowRenderState::Gpu` variant together — neither
+        // can be dropped independently.
+        let surface_with_lifetime = pollster::block_on(gpu_pool.create_surface(
             target,
             size.width,
             size.height,
@@ -162,8 +144,17 @@ impl RenderSurfaceFactory for VelloGpuSurfaceFactory {
         ))
         .map_err(|e| SurfaceError::InitFailed(e.to_string()))?;
 
-        let dev_id = surface.dev_id;
-        let device = &cx.devices[dev_id].device;
+        let dev_id = surface_with_lifetime.dev_id;
+
+        // SAFETY: The surface's implicit lifetime is tied to the window handle
+        // passed to `create_surface`.  That window is an `Arc<Window>` owned by
+        // `WinitWindowProvider`, which lives alongside (and outlives) this
+        // `WindowRenderState` inside the runtime.  Erasing the lifetime to
+        // `'static` is safe in this specific ownership topology.
+        let surface: vello::util::RenderSurface<'static> =
+            unsafe { std::mem::transmute(surface_with_lifetime) };
+
+        let device = &gpu_pool.devices[dev_id].device;
 
         let renderer = Renderer::new(
             device,
@@ -176,11 +167,7 @@ impl RenderSurfaceFactory for VelloGpuSurfaceFactory {
         )
         .map_err(|e| SurfaceError::InitFailed(e.to_string()))?;
 
-        // Drop the surface here. Runtime must be refactored to carry
-        // RenderSurface alongside WindowRenderState for GPU presentation.
-        drop(surface);
-
-        Ok(WindowRenderState::new(backend, renderer))
+        Ok(WindowRenderState::new_gpu(gpu_pool, surface, renderer, dev_id))
     }
 
     fn supports(&self, handle: &RawHandle, backend: RenderBackend) -> bool {
@@ -193,21 +180,15 @@ impl RenderSurfaceFactory for VelloGpuSurfaceFactory {
 
 /// Surface factory for the [`RenderBackend::TinySkia`] CPU software path.
 ///
-/// Creates a vello `Renderer` with `use_cpu = true` so the GPU blit pipeline
-/// is available for presenting the CPU pixel buffer to the swapchain.
-///
-/// Once `uzor-render-hub` gains a CPU-only `WindowRenderState` constructor
-/// (backed by `softbuffer` or similar), this factory can drop the GPU dependency.
-pub struct TinySkiaSurfaceFactory {
-    render_cx: Mutex<RenderContext>,
-}
+/// Constructs a [`WindowRenderState::Cpu`] backed by a
+/// `TinySkiaCpuRenderContext`.  No wgpu dependency — zero GPU initialisation
+/// cost.
+pub struct TinySkiaSurfaceFactory;
 
 impl TinySkiaSurfaceFactory {
-    /// Create a factory with a freshly initialised wgpu `RenderContext`.
+    /// Create the factory.
     pub fn new() -> Self {
-        Self {
-            render_cx: Mutex::new(RenderContext::new()),
-        }
+        Self
     }
 }
 
@@ -217,14 +198,10 @@ impl Default for TinySkiaSurfaceFactory {
     }
 }
 
-// SAFETY: RenderContext is Send. Mutex provides exclusive access.
-unsafe impl Send for TinySkiaSurfaceFactory {}
-unsafe impl Sync for TinySkiaSurfaceFactory {}
-
 impl RenderSurfaceFactory for TinySkiaSurfaceFactory {
     fn create_render_state(
         &self,
-        handle: &RawHandle,
+        _handle: &RawHandle,
         backend: RenderBackend,
         size: SurfaceSize,
     ) -> Result<WindowRenderState, SurfaceError> {
@@ -232,62 +209,11 @@ impl RenderSurfaceFactory for TinySkiaSurfaceFactory {
             return Err(SurfaceError::UnsupportedBackend(backend));
         }
 
-        let RawHandle::RawWindowHandle(any) = handle else {
-            return Err(SurfaceError::HandleMismatch(backend));
-        };
-
-        let pair = any
-            .downcast_ref::<SendSyncHandlePair>()
-            .ok_or_else(|| {
-                SurfaceError::InitFailed(
-                    "expected SendSyncHandlePair inside RawHandle — \
-                     use WinitWindowProvider to obtain the handle"
-                        .into(),
-                )
-            })?;
-
-        let target = WinitSurfaceTarget {
-            window: pair.0,
-            display: pair.1,
-        };
-
-        let mut cx = self
-            .render_cx
-            .lock()
-            .map_err(|_| SurfaceError::InitFailed("RenderContext mutex poisoned".into()))?;
-
-        // Create surface to select adapter; it will be dropped after renderer init.
-        let surface = pollster::block_on(cx.create_surface(
-            target,
-            size.width,
-            size.height,
-            PresentMode::AutoNoVsync,
-        ))
-        .map_err(|e| SurfaceError::InitFailed(e.to_string()))?;
-
-        let dev_id = surface.dev_id;
-        let device = &cx.devices[dev_id].device;
-
-        // use_cpu = true so the blit pipeline uses the software path.
-        let renderer = Renderer::new(
-            device,
-            RendererOptions {
-                use_cpu: true,
-                antialiasing_support: AaSupport::area_only(),
-                num_init_threads: std::num::NonZeroUsize::new(1),
-                pipeline_cache: None,
-            },
-        )
-        .map_err(|e| SurfaceError::InitFailed(e.to_string()))?;
-
-        drop(surface);
-
-        Ok(WindowRenderState::new(backend, renderer))
+        Ok(WindowRenderState::new_cpu(size.width, size.height))
     }
 
-    fn supports(&self, handle: &RawHandle, backend: RenderBackend) -> bool {
+    fn supports(&self, _handle: &RawHandle, backend: RenderBackend) -> bool {
         matches!(backend, RenderBackend::TinySkia)
-            && matches!(handle, RawHandle::RawWindowHandle(_))
     }
 }
 
@@ -297,9 +223,9 @@ impl RenderSurfaceFactory for TinySkiaSurfaceFactory {
 ///
 /// # Status: stubbed
 ///
-/// `vello_cpu` renders entirely on the CPU without wgpu, but
-/// `WindowRenderState::new` requires a `vello::Renderer` (GPU object).
-/// Add `WindowRenderState::new_cpu_only()` in `uzor-render-hub` to unblock.
+/// `vello_cpu` renders entirely on the CPU but requires its own renderer
+/// setup that does not yet integrate with [`WindowRenderState::Cpu`].
+/// Returns [`SurfaceError::UnsupportedBackend`] until that path is added.
 pub struct VelloCpuSurfaceFactory;
 
 impl VelloCpuSurfaceFactory {
@@ -336,8 +262,8 @@ impl RenderSurfaceFactory for VelloCpuSurfaceFactory {
 ///
 /// # Status: stubbed
 ///
-/// Integrating the `vello_hybrid::Renderer` with `WindowRenderState` requires
-/// a dedicated submit path in `uzor-render-hub`. Returns `UnsupportedBackend`
+/// Integrating the `vello_hybrid::Renderer` with [`WindowRenderState`]
+/// requires a dedicated submit path.  Returns [`SurfaceError::UnsupportedBackend`]
 /// until that path is added.
 pub struct VelloHybridSurfaceFactory;
 

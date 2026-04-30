@@ -1,8 +1,15 @@
 //! Fluent builder for constructing and launching an uzor app runtime.
 
+use std::sync::Arc;
+
+use winit::application::ApplicationHandler;
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::window::{Window, WindowId};
+
 use uzor::docking::panels::DockPanel;
 use uzor_render_hub::{RenderBackend, RenderSurfaceFactory};
-use uzor_window_hub::lifecycle::WindowProvider;
+use uzor_window_hub::{WinitWindowProvider, WindowProvider};
 
 use crate::app::{App, AppConfig, ClosureApp, NoPanel};
 use crate::runtime::{Runtime, RuntimeError};
@@ -12,8 +19,6 @@ use crate::runtime::{Runtime, RuntimeError};
 /// Errors that can occur when calling [`AppBuilder::build`].
 #[derive(Debug)]
 pub enum BuildError {
-    /// No window provider was supplied via [`AppBuilder::window`].
-    MissingWindow,
     /// No render backend was supplied via [`AppBuilder::backend`].
     MissingBackend,
 }
@@ -21,9 +26,6 @@ pub enum BuildError {
 impl std::fmt::Display for BuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BuildError::MissingWindow => {
-                f.write_str("no window provider supplied — call .window(...)")
-            }
             BuildError::MissingBackend => {
                 f.write_str("no render backend supplied — call .backend(...)")
             }
@@ -47,20 +49,28 @@ impl From<BuildError> for RuntimeError {
 ///
 /// ```rust,ignore
 /// use uzor_framework::{AppBuilder, AppConfig};
+/// use uzor_render_hub::{RenderBackend, VelloGpuSurfaceFactory};
 ///
 /// AppBuilder::new(MyApp::new())
 ///     .title("my app")
 ///     .size(1280, 720)
 ///     .backend(RenderBackend::VelloGpu)
-///     .window(my_window_provider)
+///     .surface_factory(Box::new(VelloGpuSurfaceFactory::new()))
 ///     .run()
 ///     .expect("runtime error");
 /// ```
 ///
+/// # Window creation
+///
+/// `AppBuilder::run()` creates the winit `EventLoop` and `Window` internally.
+/// No `.window(...)` call is required.  If you need full control over the event
+/// loop (e.g. for custom drag regions or tray icon integration), construct the
+/// event loop yourself and call `Runtime::tick()` manually.
+///
 /// # Generic parameters
 ///
 /// - `A` — the app struct that implements [`App<P>`].
-/// - `P` — the dock-panel type. Defaults to [`NoPanel`] for apps without
+/// - `P` — the dock-panel type.  Defaults to [`NoPanel`] for apps without
 ///   dockable panels.
 pub struct AppBuilder<A, P = NoPanel>
 where
@@ -69,7 +79,6 @@ where
 {
     app: A,
     config: AppConfig,
-    window: Option<Box<dyn WindowProvider>>,
     backend: Option<RenderBackend>,
     factory: Option<Box<dyn RenderSurfaceFactory>>,
     _phantom: std::marker::PhantomData<P>,
@@ -88,7 +97,6 @@ where
         Self {
             app,
             config: AppConfig::default(),
-            window: None,
             backend: None,
             factory: None,
             _phantom: std::marker::PhantomData,
@@ -115,7 +123,7 @@ where
         self
     }
 
-    /// Set the minimum logical window size. Pass `None` to remove the minimum.
+    /// Set the minimum logical window size.  Pass `None` to remove the minimum.
     pub fn min_size(mut self, min: Option<(u32, u32)>) -> Self {
         self.config.min_size = min;
         self
@@ -167,15 +175,6 @@ where
 
     // ── Infrastructure setters ────────────────────────────────────────────────
 
-    /// Supply the window provider (e.g. from `uzor-window-desktop`).
-    ///
-    /// Required — [`build`](Self::build) returns [`BuildError::MissingWindow`]
-    /// if this is not called.
-    pub fn window(mut self, provider: Box<dyn WindowProvider>) -> Self {
-        self.window = Some(provider);
-        self
-    }
-
     /// Select the rendering backend.
     ///
     /// Required — [`build`](Self::build) returns [`BuildError::MissingBackend`]
@@ -185,12 +184,8 @@ where
         self
     }
 
-    /// Supply a [`RenderSurfaceFactory`] that converts the window's
-    /// [`uzor_window_hub::RawHandle`] into a
+    /// Supply a [`RenderSurfaceFactory`] that converts the window handle into a
     /// [`uzor_render_hub::WindowRenderState`] at startup.
-    ///
-    /// Without a factory, [`Runtime::run`] returns
-    /// [`RuntimeError::SurfaceWiringRequired`].
     pub fn surface_factory(mut self, factory: Box<dyn RenderSurfaceFactory>) -> Self {
         self.factory = Some(factory);
         self
@@ -202,29 +197,143 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`BuildError::MissingWindow`] or [`BuildError::MissingBackend`]
-    /// if the required infrastructure was not supplied.
+    /// Returns [`BuildError::MissingBackend`] if no backend was supplied.
     pub fn build(self) -> Result<Runtime<A, P>, BuildError> {
-        let window = self.window.ok_or(BuildError::MissingWindow)?;
         let backend = self.backend.ok_or(BuildError::MissingBackend)?;
-        let mut runtime = Runtime::new(self.app, self.config, window, backend);
+        let mut runtime = Runtime::new(self.app, self.config, backend);
         if let Some(factory) = self.factory {
             runtime.set_surface_factory(factory);
         }
         Ok(runtime)
     }
 
-    /// Consume the builder, construct the runtime, and run the event loop.
+    /// Consume the builder, create the winit event loop, and run until the
+    /// window is closed.
     ///
-    /// Blocks until all windows are closed.
+    /// Blocks until all windows close.  Window creation is handled internally;
+    /// no `.window(...)` call is needed.
     ///
     /// # Errors
     ///
-    /// Returns [`RuntimeError::Build`] if a required parameter is missing, or
-    /// a [`RuntimeError::Window`] / [`RuntimeError::Backend`] variant on
-    /// runtime failures.
+    /// Returns [`RuntimeError::Build`] if a required parameter is missing, a
+    /// [`RuntimeError::Window`] variant if window or event-loop creation fails,
+    /// or [`RuntimeError::Backend`] on GPU initialisation failure.
     pub fn run(self) -> Result<(), RuntimeError> {
-        self.build()?.run()
+        let config = self.config.clone();
+        let runtime = self.build()?;
+
+        // ── Single-instance guard ─────────────────────────────────────────────
+        let _single_instance_guard = runtime
+            .config
+            .single_instance
+            .as_deref()
+            .map(crate::utils::single_instance::single_instance);
+
+        let event_loop = EventLoop::new()
+            .map_err(|e| RuntimeError::Window(e.to_string()))?;
+        event_loop.set_control_flow(ControlFlow::Poll);
+
+        let mut handler = UzorHandler {
+            runtime,
+            config,
+            provider: None,
+        };
+
+        event_loop
+            .run_app(&mut handler)
+            .map_err(|e| RuntimeError::Window(e.to_string()))?;
+
+        Ok(())
+    }
+}
+
+// ── Internal ApplicationHandler ───────────────────────────────────────────────
+
+/// Winit `ApplicationHandler` that drives the uzor runtime.
+///
+/// Created inside [`AppBuilder::run`] and not part of the public API.
+struct UzorHandler<A: App<P>, P: DockPanel + Default + 'static> {
+    runtime: Runtime<A, P>,
+    config: AppConfig,
+    provider: Option<WinitWindowProvider>,
+}
+
+impl<A, P> ApplicationHandler for UzorHandler<A, P>
+where
+    A: App<P>,
+    P: DockPanel + Default + 'static,
+{
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.provider.is_some() {
+            // Already have a window; nothing to do on subsequent resumes.
+            return;
+        }
+
+        let (w, h) = self.config.initial_size;
+        let mut attrs = Window::default_attributes()
+            .with_title(&self.config.title)
+            .with_inner_size(winit::dpi::LogicalSize::new(w, h))
+            .with_decorations(self.config.decorations)
+            .with_visible(false); // revealed after first GPU frame
+
+        if let Some((mw, mh)) = self.config.min_size {
+            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(mw, mh));
+        }
+
+        let window = match event_loop.create_window(attrs) {
+            Ok(w) => Arc::new(w),
+            Err(e) => {
+                eprintln!("[uzor-framework] window creation failed: {e}");
+                event_loop.exit();
+                return;
+            }
+        };
+
+        let mut provider = WinitWindowProvider::new(Arc::clone(&window));
+
+        // Initialise GPU surface immediately while we have the handle.
+        if let Err(e) = self.runtime.init_render_state(&provider) {
+            eprintln!("[uzor-framework] render state init failed: {e}");
+            event_loop.exit();
+            return;
+        }
+
+        // Show the window after the first render state is ready.
+        window.set_visible(true);
+
+        // Schedule the first redraw.
+        provider.request_redraw();
+
+        self.provider = Some(provider);
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _id: WindowId,
+        event: WindowEvent,
+    ) {
+        let Some(ref mut provider) = self.provider else {
+            return;
+        };
+
+        match event {
+            WindowEvent::CloseRequested => {
+                provider.mark_close();
+                self.runtime.shutdown();
+                event_loop.exit();
+            }
+            WindowEvent::RedrawRequested => {
+                if let Err(e) = self.runtime.tick(provider) {
+                    eprintln!("[uzor-framework] tick error: {e}");
+                    self.runtime.shutdown();
+                    event_loop.exit();
+                }
+            }
+            ref ev => {
+                provider.push_winit_event(ev);
+            }
+        }
     }
 }
 
@@ -241,15 +350,15 @@ where
 /// uzor_framework::run_closure(
 ///     |layout, render| { /* draw something */ },
 ///     AppConfig::default(),
-///     window_provider,
 ///     RenderBackend::VelloGpu,
+///     Box::new(VelloGpuSurfaceFactory::new()),
 /// ).expect("runtime error");
 /// ```
 pub fn run_closure<P, F>(
     ui: F,
     config: AppConfig,
-    window: Box<dyn WindowProvider>,
     backend: RenderBackend,
+    factory: Box<dyn RenderSurfaceFactory>,
 ) -> Result<(), RuntimeError>
 where
     P: DockPanel + Default + Clone + Send + Sync + 'static,
@@ -258,7 +367,7 @@ where
 {
     AppBuilder::new(ClosureApp::<P, F>::new(ui))
         .config(config)
-        .window(window)
         .backend(backend)
+        .surface_factory(factory)
         .run()
 }
