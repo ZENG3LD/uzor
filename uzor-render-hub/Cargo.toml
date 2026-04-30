@@ -22,3 +22,5 @@ wgpu = "28"
 serde = { version = "1", features = ["derive"] }
 uzor-window-hub = { workspace = true }
 thiserror = "1"
+pollster = "0.4"
+winit = "0.30"

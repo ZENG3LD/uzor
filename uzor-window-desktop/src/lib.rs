@@ -24,13 +24,24 @@ use uzor::platform::backends::PlatformBackend;
 use uzor::platform::types::{PlatformError, WindowId, SystemIntegration, EventResult};
 use uzor::platform::{PlatformEvent, SystemTheme, WindowConfig};
 
-mod event_mapper;
+pub mod event_mapper;
 pub mod application;
 
 use event_mapper::EventMapper;
 
 // Re-export high-level API for convenience
 pub use application::{Application, AppConfig};
+
+/// Map a winit [`winit::event::WindowEvent`] to a [`uzor::platform::PlatformEvent`].
+///
+/// Convenience free function wrapping [`event_mapper::EventMapper::map_window_event`].
+/// Returns `None` for events that do not have a direct uzor equivalent.
+pub fn map_winit_event(
+    event: &winit::event::WindowEvent,
+    _scale: f64,
+) -> Option<uzor::platform::PlatformEvent> {
+    EventMapper::map_window_event(event)
+}
 
 // =============================================================================
 // Desktop Platform

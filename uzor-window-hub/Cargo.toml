@@ -14,9 +14,10 @@ uzor = { workspace = true }
 uzor-window-desktop = { workspace = true, optional = true }
 uzor-window-web     = { workspace = true, optional = true }
 uzor-window-mobile  = { workspace = true, optional = true }
+winit = { version = "0.30", optional = true }
 
 [features]
 default = ["desktop"]
-desktop = ["uzor-window-desktop"]
+desktop = ["uzor-window-desktop", "winit"]
 web     = ["uzor-window-web"]
 mobile  = ["uzor-window-mobile"]

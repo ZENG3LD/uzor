@@ -15,6 +15,9 @@ pub mod lifecycle;
 pub mod metrics;
 
 #[cfg(feature = "desktop")]
+pub mod winit_provider;
+
+#[cfg(feature = "desktop")]
 pub use uzor_window_desktop as platform;
 
 #[cfg(all(feature = "web", not(feature = "desktop")))]
@@ -31,3 +34,6 @@ pub use uzor::platform::PlatformWindowEvent;
 pub use lifecycle::{RawHandle, WindowProvider};
 pub use events::PlatformEvent;
 pub use input::{EventProcessor, InputState};
+
+#[cfg(feature = "desktop")]
+pub use winit_provider::WinitWindowProvider;

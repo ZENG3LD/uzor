@@ -18,3 +18,10 @@ wgpu = "28"
 winit = "0.30"
 pollster = "0.4"
 png = "0.17"
+
+[dev-dependencies]
+uzor-window-hub = { workspace = true }
+
+[[example]]
+name = "hello"
+path = "examples/hello.rs"
