@@ -58,6 +58,7 @@ use uzor::ui::widgets::composite::context_menu::types::{
 };
 
 use uzor::ui::widgets::composite::dropdown::input::register_layout_manager_dropdown;
+use uzor::ui::widgets::composite::dropdown::render::measure_flat;
 use uzor::ui::widgets::composite::dropdown::settings::DropdownSettings;
 use uzor::ui::widgets::composite::dropdown::state::DropdownState;
 use uzor::ui::widgets::composite::dropdown::types::{
@@ -726,6 +727,7 @@ struct AppState {
     // App interaction state
     active_view: usize, // 0=Dashboard,1=Charts,2=Settings
     sidebar_open: bool,
+    left_toolbar_visible: bool,
     modal_open: bool,
     modal_kind: ModalKind,
 
@@ -899,12 +901,12 @@ impl AppState {
             order: 0,
         });
 
-        // Left vertical toolbar (always visible)
+        // Left vertical toolbar (toggled via View → Show Toolbar)
         self.layout.edges_mut().add(EdgeSlot {
             id: "left-vtoolbar".to_string(),
             side: EdgeSide::Left,
             thickness: LEFT_VTOOLBAR_W as f32,
-            visible: true,
+            visible: self.left_toolbar_visible,
             order: 0,
         });
 
@@ -1013,21 +1015,13 @@ impl AppState {
         // ── Top toolbar ───────────────────────────────────────────────────────
         let file_btn_active = self.dropdown_file_state.open;
         let view_btn_active = self.dropdown_view_state.open;
-        let help_btn_active = self.dropdown_help_state.open;
-        // Fix #8/9: L2 and L1 modal triggers live in top toolbar
-        let l2_active_tb    = self.modal_open && self.modal_kind == ModalKind::L2;
-        let l1_active_tb    = self.modal_open && self.modal_kind == ModalKind::L1;
-        let tags_active_tb  = self.modal_open && self.modal_kind == ModalKind::Tags;
+        let modals_btn_active = self.dropdown_help_state.open;
+        // Suppress unused warnings — file dropdown removed; keep state field
+        // for now to avoid larger refactor.
+        let _ = file_btn_active;
         let top_toolbar_items = [
-            ToolbarItem::TextButton { id: "tb-file", text: "File",  active: file_btn_active, tooltip: Some("File menu") },
-            ToolbarItem::TextButton { id: "tb-view", text: "View",  active: view_btn_active, tooltip: Some("View menu") },
-            ToolbarItem::TextButton { id: "tb-help", text: "Help",  active: help_btn_active, tooltip: Some("Help menu") },
-            ToolbarItem::Separator,
-            ToolbarItem::TextButton { id: "tb-new",  text: "New",   active: false,           tooltip: Some("New chart") },
-            ToolbarItem::Separator,
-            ToolbarItem::TextButton { id: "tb-l2",   text: "L2",    active: l2_active_tb,    tooltip: Some("Open L2 modal") },
-            ToolbarItem::TextButton { id: "tb-l1",   text: "L1",    active: l1_active_tb,    tooltip: Some("Open L1 modal") },
-            ToolbarItem::TextButton { id: "tb-tags", text: "Panels",  active: tags_active_tb,  tooltip: Some("List dock panels of current tab") },
+            ToolbarItem::TextButton { id: "tb-view", text: "View",   active: view_btn_active,   tooltip: Some("View menu") },
+            ToolbarItem::TextButton { id: "tb-help", text: "Modals", active: modals_btn_active, tooltip: Some("Modals menu") },
         ];
         let clock_items = [
             ToolbarItem::Clock { id: "top-clock", time_text: clock.as_str() },
@@ -1060,26 +1054,28 @@ impl AppState {
         let left_items = [
             ToolbarItem::TextButton { id: "lt-toggle-sidebar", text: "☰", active: sidebar_open, tooltip: Some("Toggle sidebar") },
         ];
-        let left_toolbar_view = ToolbarView {
-            start: ToolbarSection { items: &left_items },
-            center: ToolbarSection::empty(),
-            end: ToolbarSection::empty(),
-            chrome: None,
-        };
-        register_layout_manager_toolbar(
-            &mut self.layout,
-            &mut render,
-            LayoutNodeId::ROOT,
-            "left-vtoolbar",
-            "left-vtoolbar-widget",
-            &mut self.left_vtoolbar_state,
-            &left_toolbar_view,
-            &ToolbarSettings::new(
-                Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
-                Box::new(VertToolbarWithBorder),
-            ),
-            &ToolbarRenderKind::Vertical,
-        );
+        if self.left_toolbar_visible {
+            let left_toolbar_view = ToolbarView {
+                start: ToolbarSection { items: &left_items },
+                center: ToolbarSection::empty(),
+                end: ToolbarSection::empty(),
+                chrome: None,
+            };
+            register_layout_manager_toolbar(
+                &mut self.layout,
+                &mut render,
+                LayoutNodeId::ROOT,
+                "left-vtoolbar",
+                "left-vtoolbar-widget",
+                &mut self.left_vtoolbar_state,
+                &left_toolbar_view,
+                &ToolbarSettings::new(
+                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+                    Box::new(VertToolbarWithBorder),
+                ),
+                &ToolbarRenderKind::Vertical,
+            );
+        }
 
         // ── Sidebar ───────────────────────────────────────────────────────────
         // Sidebar shows dock panel list with close buttons + "Add Panel" button.
@@ -1805,19 +1801,17 @@ impl AppState {
         }
 
         let view_items = [
-            DropdownItem::Item { id: "view-sidebar", label: "Toggle Sidebar", icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "view-toolbar", label: "Show Toolbar",   icon: None, right: DropdownItemRight::Toggle(true), disabled: false, danger: false, accent_color: None },
-            DropdownItem::Separator,
-            DropdownItem::Item { id: "view-zoom-in",  label: "Zoom In",  icon: None, right: DropdownItemRight::Shortcut("+"), disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "view-zoom-out", label: "Zoom Out", icon: None, right: DropdownItemRight::Shortcut("-"), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "view-sidebar", label: "Toggle Sidebar", icon: None, right: DropdownItemRight::Toggle(self.sidebar_open),         disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "view-toolbar", label: "Show Toolbar",   icon: None, right: DropdownItemRight::Toggle(self.left_toolbar_visible), disabled: false, danger: false, accent_color: None },
         ];
         if self.dropdown_view_state.open {
             let hovered_id = self.dropdown_view_state.hovered_id.clone();
             let origin = self.dropdown_view_state.effective_origin();
+            let (vw, vh) = measure_flat(&view_items, &DropdownSettings::default());
             self.layout.push_overlay(OverlayEntry {
                 id: "dd-view-overlay".to_string(),
                 kind: OverlayKind::Dropdown,
-                rect: Rect::new(origin.0, origin.1, 200.0, 180.0),
+                rect: Rect::new(origin.0, origin.1, vw, vh),
                 anchor: None,
             });
             self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
@@ -1838,17 +1832,18 @@ impl AppState {
         }
 
         let help_items = [
-            DropdownItem::Item { id: "help-about", label: "About",    icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "help-docs",  label: "Docs",     icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "help-keys",  label: "Shortcuts",icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-l2",     label: "L2 Modal",     icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-l1",     label: "L1 Modal",     icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-panels", label: "Panels Modal", icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
         ];
         if self.dropdown_help_state.open {
             let hovered_id = self.dropdown_help_state.hovered_id.clone();
             let origin = self.dropdown_help_state.effective_origin();
+            let (hw, hh) = measure_flat(&help_items, &DropdownSettings::default());
             self.layout.push_overlay(OverlayEntry {
                 id: "dd-help-overlay".to_string(),
                 kind: OverlayKind::Dropdown,
-                rect: Rect::new(origin.0, origin.1, 180.0, 110.0),
+                rect: Rect::new(origin.0, origin.1, hw, hh),
                 anchor: None,
             });
             self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
@@ -2118,16 +2113,30 @@ impl AppState {
             }
             if let Some(item_id) = id_str.strip_prefix("dd-view-widget:item:") {
                 eprintln!("[DISPATCH] dropdown view item → {item_id}");
+                // Toggle items: keep dropdown OPEN so user sees the new state.
                 match item_id {
                     "view-sidebar" => { self.sidebar_open = !self.sidebar_open; }
-                    other          => println!("[L3] View → {other}"),
+                    "view-toolbar" => { self.left_toolbar_visible = !self.left_toolbar_visible; }
+                    other          => {
+                        println!("[L3] View → {other}");
+                        self.dropdown_view_state.close();
+                    }
                 }
-                self.dropdown_view_state.close();
                 return;
             }
             if let Some(item_id) = id_str.strip_prefix("dd-help-widget:item:") {
-                eprintln!("[DISPATCH] dropdown help item → {item_id}");
-                println!("[L3] Help → {item_id}");
+                eprintln!("[DISPATCH] dropdown modals item → {item_id}");
+                let open_modal = |kind: ModalKind, this: &mut AppState| {
+                    this.modal_open = true;
+                    this.modal_kind = kind;
+                    this.modal_state.position = (0.0, 0.0);
+                };
+                match item_id {
+                    "modals-l2"     => open_modal(ModalKind::L2,   self),
+                    "modals-l1"     => open_modal(ModalKind::L1,   self),
+                    "modals-panels" => open_modal(ModalKind::Tags, self),
+                    other           => println!("[L3] Modals → {other}"),
+                }
                 self.dropdown_help_state.close();
                 return;
             }
@@ -2514,14 +2523,28 @@ impl AppState {
                     self.dropdown_file_state.close();
                 }
                 if let Some(ref hid) = self.dropdown_view_state.hovered_id.clone() {
+                    // Toggle items — keep dropdown OPEN.
                     match hid.as_str() {
                         "view-sidebar" => { self.sidebar_open = !self.sidebar_open; }
-                        _ => println!("[L3] view item: {hid}"),
+                        "view-toolbar" => { self.left_toolbar_visible = !self.left_toolbar_visible; }
+                        _ => {
+                            println!("[L3] view item: {hid}");
+                            self.dropdown_view_state.close();
+                        }
                     }
-                    self.dropdown_view_state.close();
                 }
                 if let Some(ref hid) = self.dropdown_help_state.hovered_id.clone() {
-                    println!("[L3] help: {hid}");
+                    let open_modal = |kind: ModalKind, this: &mut AppState| {
+                        this.modal_open = true;
+                        this.modal_kind = kind;
+                        this.modal_state.position = (0.0, 0.0);
+                    };
+                    match hid.as_str() {
+                        "modals-l2"     => open_modal(ModalKind::L2,   self),
+                        "modals-l1"     => open_modal(ModalKind::L1,   self),
+                        "modals-panels" => open_modal(ModalKind::Tags, self),
+                        _               => println!("[L3] modals item: {hid}"),
+                    }
                     self.dropdown_help_state.close();
                 }
             }
@@ -2980,6 +3003,7 @@ impl ApplicationHandler for Handler {
             dropdown_addpanel_state: DropdownState::default(),
             active_view: 0,
             sidebar_open: true,
+            left_toolbar_visible: true,
             modal_open: false,
             modal_kind: ModalKind::L2,
             popup_item: None,
@@ -3233,7 +3257,7 @@ fn ensure_debug_console() {}
 // =============================================================================
 
 mod watchlist_blackbox {
-    use uzor::render::RenderContext;
+    use uzor::render::{RenderContext, TextAlign, TextBaseline};
     use uzor::types::Rect;
 
     pub struct WatchlistState {
@@ -3259,6 +3283,34 @@ mod watchlist_blackbox {
 
     // ── Render ─────────────────────────────────────────────────────────────────
 
+    /// One sub-container inside the blackbox panel.
+    /// Owns its own rect. Text rendered inside is positioned relative to THIS rect,
+    /// never relative to the parent blackbox rect.
+    struct Cell {
+        rect:  Rect,
+        text:  &'static str,
+        color: &'static str,
+    }
+
+    impl Cell {
+        fn draw(&self, render: &mut dyn RenderContext) {
+            const PAD_X: f64 = 8.0;
+            render.save();
+            render.clip_rect(self.rect.x, self.rect.y, self.rect.width, self.rect.height);
+            render.set_fill_color(self.color);
+            render.set_text_align(TextAlign::Left);
+            render.set_text_baseline(TextBaseline::Middle);
+            // Text anchored to THIS cell's rect — pad from cell's own left edge,
+            // baseline at cell's own vertical center.
+            render.fill_text(
+                self.text,
+                self.rect.x + PAD_X,
+                self.rect.y + self.rect.height / 2.0,
+            );
+            render.restore();
+        }
+    }
+
     pub fn render(state: &WatchlistState, render: &mut dyn RenderContext, rect: Rect) {
         const HEADER_H: f64 = 28.0;
         const ROW_H:    f64 = 24.0;
@@ -3271,7 +3323,7 @@ mod watchlist_blackbox {
         render.set_fill_color("#252530");
         render.fill_rect(rect.x, rect.y, rect.width, HEADER_H);
 
-        let titles = ["SYMBOL", "PRICE", "Δ", "VOL"];
+        let titles: [&str; 4] = ["SYMBOL", "PRICE", "Δ", "VOL"];
         // Compute column boundary x positions
         let mut col_xs = [rect.x; 5];
         let mut cx = rect.x;
@@ -3281,13 +3333,20 @@ mod watchlist_blackbox {
         }
         col_xs[4] = cx;
 
+        // Build header sub-containers (one per column between separators).
+        // Each Cell owns its own rect — text positions itself by THIS rect.
         for (i, title) in titles.iter().enumerate() {
-            let cell_w = col_xs[i + 1] - col_xs[i];
-            render.save();
-            render.clip_rect(col_xs[i], rect.y, cell_w, HEADER_H);
-            render.set_fill_color("#a0a0a8");
-            render.fill_text(title, col_xs[i] + 8.0, rect.y + HEADER_H / 2.0);
-            render.restore();
+            let cell = Cell {
+                rect: Rect::new(
+                    col_xs[i],
+                    rect.y,
+                    col_xs[i + 1] - col_xs[i],
+                    HEADER_H,
+                ),
+                text:  title,
+                color: "#a0a0a8",
+            };
+            cell.draw(render);
         }
 
         // Vertical separator lines (highlight on hover / drag)
@@ -3326,18 +3385,23 @@ mod watchlist_blackbox {
                 render.fill_rect(rect.x, y, rect.width, ROW_H);
             }
             let cells: [&str; 4] = [sym, price, delta, vol];
-            for (i, cell) in cells.iter().enumerate() {
+            for (i, text) in cells.iter().enumerate() {
                 let color = if i == 2 {
                     if delta.starts_with('+') { "#10b981" } else { "#ef5350" }
                 } else {
                     "#d1d4dc"
                 };
-                let cell_w = col_xs[i + 1] - col_xs[i];
-                render.save();
-                render.clip_rect(col_xs[i], y, cell_w, ROW_H);
-                render.set_fill_color(color);
-                render.fill_text(cell, col_xs[i] + 8.0, y + ROW_H / 2.0);
-                render.restore();
+                let cell = Cell {
+                    rect: Rect::new(
+                        col_xs[i],
+                        y,
+                        col_xs[i + 1] - col_xs[i],
+                        ROW_H,
+                    ),
+                    text:  text,
+                    color,
+                };
+                cell.draw(render);
             }
         }
     }

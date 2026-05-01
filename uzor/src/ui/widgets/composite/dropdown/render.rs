@@ -29,6 +29,53 @@ use super::types::{
 };
 
 // ---------------------------------------------------------------------------
+// Public API — measurement
+// ---------------------------------------------------------------------------
+
+/// Measure the natural size of a Flat-kind dropdown panel for the given items.
+///
+/// Width is `style.min_width()`; height is the sum of per-item heights
+/// (Item / Submenu / Header / Separator) plus padding on top + bottom.
+/// If `style.max_visible_items() > 0`, the visible item count is clamped to it.
+///
+/// Caller passes the resulting `(w, h)` as the overlay rect size, instead of
+/// hardcoding magic numbers.
+pub fn measure_flat(
+    items:    &[DropdownItem<'_>],
+    settings: &DropdownSettings,
+) -> (f64, f64) {
+    let style    = settings.style.as_ref();
+    let pad      = style.padding();
+    let item_h   = style.item_height();
+    let header_h = style.header_height();
+    let sep_h    = style.separator_height();
+    let max_vis  = style.max_visible_items();
+
+    // If max_visible_items > 0, clip to first N item-rows (Header/Separator
+    // still always render — they're not "items" for paging).
+    let mut item_count = 0usize;
+    let mut content_h  = 0.0_f64;
+    for it in items {
+        match it {
+            DropdownItem::Item    { .. }
+            | DropdownItem::Submenu { .. } => {
+                if max_vis > 0 && item_count >= max_vis {
+                    continue;
+                }
+                item_count += 1;
+                content_h += item_h;
+            }
+            DropdownItem::Header    { .. } => content_h += header_h,
+            DropdownItem::Separator        => content_h += sep_h,
+        }
+    }
+
+    let w = style.min_width();
+    let h = content_h + pad * 2.0;
+    (w, h)
+}
+
+// ---------------------------------------------------------------------------
 // Public API — registration only
 // ---------------------------------------------------------------------------
 
