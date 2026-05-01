@@ -19,6 +19,7 @@ pub mod separator;
 pub mod shape_selector;
 pub mod slider;
 pub mod tab;
+pub mod text;
 pub mod text_input;
 pub mod toast;
 pub mod toggle;

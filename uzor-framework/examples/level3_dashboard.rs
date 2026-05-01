@@ -154,6 +154,9 @@ use uzor::ui::widgets::atomic::toggle::settings::ToggleSettings;
 use uzor::ui::widgets::atomic::toggle::types::{ToggleRenderKind, ToggleView};
 
 use uzor::render::{draw_svg_icon, RenderContext};
+use uzor::ui::widgets::atomic::text::{draw_text, TextSettings};
+use uzor::ui::widgets::atomic::text::types::{TextOverflow, TextView};
+use uzor::render::{TextAlign, TextBaseline};
 
 // ── GPU render context ────────────────────────────────────────────────────────
 use uzor_render_vello_gpu::VelloGpuRenderContext;
@@ -206,6 +209,31 @@ const ROW_H: f64 = 28.0;
 const CONTENT_H: f64 = CONTENT_ROWS as f64 * ROW_H;
 const SPLITTER_W: f64 = 6.0;
 const LEFT_PANEL_X: f64 = 12.0;
+
+// =============================================================================
+// Text label helper — thin wrapper around draw_text for static labels.
+// =============================================================================
+
+/// Draw a static text label clipped to `rect`.
+/// `align` controls horizontal position; baseline is always `Middle`.
+fn label(
+    render:  &mut dyn RenderContext,
+    rect:    Rect,
+    text:    &str,
+    align:   TextAlign,
+    color:   &str,
+) {
+    draw_text(render, rect, &TextView {
+        text,
+        align,
+        baseline: TextBaseline::Middle,
+        color:    Some(color),
+        font:     None,
+        overflow: TextOverflow::Clip,
+        hovered:  false,
+    }, &TextSettings::default());
+}
+
 
 // =============================================================================
 // Themes (copied from level2_launcher)
@@ -408,8 +436,8 @@ impl PanelKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum SpawnSplit {
-    Horizontal,
-    Vertical,
+    SplitRight,
+    SplitBottom,
     Grid2x2,
 }
 
@@ -436,8 +464,7 @@ fn render_panel_body(
 fn render_header_strip(render: &mut dyn uzor::render::RenderContext, rect: uzor::types::Rect, title: &str, accent: &str) {
     render.set_fill_color(accent);
     render.fill_rect(rect.x, rect.y, rect.width, 28.0);
-    render.set_fill_color("#ffffff");
-    render.fill_text(title, rect.x + rect.width / 2.0, rect.y + 14.0);
+    label(render, Rect::new(rect.x, rect.y, rect.width, 28.0), title, TextAlign::Center, "#ffffff");
 }
 
 fn render_spreadsheet_stub(render: &mut dyn uzor::render::RenderContext, rect: uzor::types::Rect) {
@@ -458,8 +485,7 @@ fn render_spreadsheet_stub(render: &mut dyn uzor::render::RenderContext, rect: u
         let cx = table_x + 32.0 + c as f64 * cell_w;
         render.set_fill_color("#252535");
         render.fill_rect(cx, table_y, cell_w - 1.0, cell_h - 1.0);
-        render.set_fill_color("#a0a0b8");
-        render.fill_text(lbl, cx + cell_w / 2.0, table_y + 11.0);
+        label(render, Rect::new(cx, table_y, cell_w - 1.0, cell_h - 1.0), lbl, TextAlign::Center, "#a0a0b8");
     }
 
     // Row number + data cells
@@ -478,14 +504,15 @@ fn render_spreadsheet_stub(render: &mut dyn uzor::render::RenderContext, rect: u
         if ry + cell_h > rect.y + rect.height { break; }
         render.set_fill_color("#242432");
         render.fill_rect(table_x, ry, 30.0, cell_h - 1.0);
-        render.set_fill_color("#606078");
-        render.fill_text(&format!("{}", r + 1), table_x + 15.0, ry + 11.0);
+        {
+            let row_num = format!("{}", r + 1);
+            label(render, Rect::new(table_x, ry, 30.0, cell_h - 1.0), &row_num, TextAlign::Center, "#606078");
+        }
         for c in 0..cols {
             let cx = table_x + 32.0 + c as f64 * cell_w;
             render.set_fill_color(if (r + c) % 2 == 0 { "#1d2236" } else { "#1a1f2e" });
             render.fill_rect(cx, ry, cell_w - 1.0, cell_h - 1.0);
-            render.set_fill_color("#c8c8dc");
-            render.fill_text(values[r][c], cx + 4.0, ry + 11.0);
+            label(render, Rect::new(cx, ry, cell_w - 1.0, cell_h - 1.0), values[r][c], TextAlign::Left, "#c8c8dc");
         }
     }
 }
@@ -512,8 +539,7 @@ fn render_notes_stub(render: &mut dyn uzor::render::RenderContext, rect: uzor::t
     for line in &lines {
         if ly + 16.0 > rect.y + rect.height { break; }
         if line.is_empty() { ly += 8.0; continue; }
-        render.set_fill_color("#b0b8d0");
-        render.fill_text(line, rect.x + 12.0, ly + 8.0);
+        label(render, Rect::new(rect.x + 12.0, ly, rect.width - 12.0, 18.0), line, TextAlign::Left, "#b0b8d0");
         ly += 18.0;
     }
 }
@@ -537,12 +563,9 @@ fn render_inbox_stub(render: &mut dyn uzor::render::RenderContext, rect: uzor::t
         if ry + row_h > rect.y + rect.height { break; }
         render.set_fill_color("rgba(255,255,255,0.04)");
         render.fill_rect(rect.x + 4.0, ry, rect.width - 8.0, row_h - 2.0);
-        render.set_fill_color("#d1d4dc");
-        render.fill_text(sender, rect.x + 12.0, ry + 12.0);
-        render.set_fill_color("#8890a8");
-        render.fill_text(subject, rect.x + 12.0, ry + 28.0);
-        render.set_fill_color("#606880");
-        render.fill_text(time, rect.x + rect.width - 12.0, ry + 12.0);
+        label(render, Rect::new(rect.x + 12.0, ry, rect.width - 60.0, 18.0), sender,  TextAlign::Left,  "#d1d4dc");
+        label(render, Rect::new(rect.x + 12.0, ry + 18.0, rect.width - 60.0, 18.0), subject, TextAlign::Left,  "#8890a8");
+        label(render, Rect::new(rect.x + 4.0, ry, rect.width - 8.0, 18.0),  time,    TextAlign::Right, "#606880");
         ry += row_h;
     }
 }
@@ -569,16 +592,13 @@ fn render_tasks_stub(render: &mut dyn uzor::render::RenderContext, rect: uzor::t
         if *done {
             render.set_fill_color("#10b981");
             render.fill_rounded_rect(rect.x + 10.0, ry + 8.0, 14.0, 14.0, 3.0);
-            render.set_fill_color("#ffffff");
-            render.fill_text("✓", rect.x + 17.0, ry + 15.0);
+            label(render, Rect::new(rect.x + 10.0, ry + 8.0, 14.0, 14.0), "✓", TextAlign::Center, "#ffffff");
         } else {
             render.set_fill_color("rgba(255,255,255,0.15)");
             render.fill_rounded_rect(rect.x + 10.0, ry + 8.0, 14.0, 14.0, 3.0);
         }
-        render.set_fill_color(if *done { "#606878" } else { "#d1d4dc" });
-        render.fill_text(task, rect.x + 32.0, ry + 15.0);
-        render.set_fill_color("#606880");
-        render.fill_text(due, rect.x + rect.width - 12.0, ry + 15.0);
+        label(render, Rect::new(rect.x + 32.0, ry, rect.width - 80.0, row_h - 2.0), task, TextAlign::Left,  if *done { "#606878" } else { "#d1d4dc" });
+        label(render, Rect::new(rect.x + 4.0, ry, rect.width - 8.0, row_h - 2.0),   due,  TextAlign::Right, "#606880");
         ry += row_h;
     }
 }
@@ -596,9 +616,8 @@ fn render_calendar_stub(render: &mut dyn uzor::render::RenderContext, rect: uzor
 
     // Day headers
     for (i, h) in day_headers.iter().enumerate() {
-        let cx = grid_x + i as f64 * cell_w + cell_w / 2.0;
-        render.set_fill_color("#7070a0");
-        render.fill_text(h, cx, grid_y + 10.0);
+        let cx = grid_x + i as f64 * cell_w;
+        label(render, Rect::new(cx, grid_y, cell_w, 20.0), h, TextAlign::Center, "#7070a0");
     }
 
     // Day cells — May 2026 starts on Friday (col 4)
@@ -612,18 +631,21 @@ fn render_calendar_stub(render: &mut dyn uzor::render::RenderContext, rect: uzor
         let cx = grid_x + col as f64 * cell_w;
         let cy = grid_y + 20.0 + row as f64 * cell_h;
         if cy + cell_h > rect.y + rect.height { break; }
-        if d == today {
+        let day_color = if d == today {
             render.set_fill_color("#2962ff");
             render.fill_rounded_rect(cx + 2.0, cy + 2.0, cell_w - 4.0, cell_h - 4.0, 4.0);
-            render.set_fill_color("#ffffff");
+            "#ffffff"
         } else if col >= 5 {
             render.set_fill_color("#6a3050");
             render.fill_rect(cx + 2.0, cy + 2.0, cell_w - 4.0, cell_h - 4.0);
-            render.set_fill_color("#d8a0c0");
+            "#d8a0c0"
         } else {
-            render.set_fill_color("#d1d4dc");
+            "#d1d4dc"
+        };
+        {
+            let day_str = format!("{d}");
+            label(render, Rect::new(cx, cy, cell_w, cell_h), &day_str, TextAlign::Center, day_color);
         }
-        render.fill_text(&format!("{d}"), cx + cell_w / 2.0, cy + cell_h / 2.0);
     }
 }
 
@@ -1097,13 +1119,11 @@ impl AppState {
                 let bw = body_rect.width - 16.0;
 
                 // ── NEW PANEL section header
-                render.set_fill_color("rgba(255,255,255,0.4)");
-                render.fill_text("NEW PANEL", bx, y + 11.0);
+                label(&mut render, Rect::new(bx, y, bw, 22.0), "NEW PANEL", TextAlign::Left, "rgba(255,255,255,0.4)");
                 y += 22.0;
 
                 // ── Type label
-                render.set_fill_color("rgba(255,255,255,0.55)");
-                render.fill_text("Type:", bx, y + 11.0);
+                label(&mut render, Rect::new(bx, y, bw, 20.0), "Type:", TextAlign::Left, "rgba(255,255,255,0.55)");
                 y += 20.0;
 
                 // Radio buttons for panel kind
@@ -1120,8 +1140,7 @@ impl AppState {
                         render.set_fill_color("rgba(255,255,255,0.18)");
                         render.fill_rounded_rect(rx, ry + 3.0, 10.0, 10.0, 5.0);
                     }
-                    render.set_fill_color(if selected { "#ffffff" } else { "#a0a0b0" });
-                    render.fill_text(kind.title(), rx + 16.0, ry + 11.0);
+                    label(&mut render, Rect::new(rx + 16.0, ry, bw - 22.0, 20.0), kind.title(), TextAlign::Left, if selected { "#ffffff" } else { "#a0a0b0" });
                     self.layout.ctx_mut().input.register_atomic(
                         WidgetId::new(radio_id),
                         WidgetKind::Button,
@@ -1134,19 +1153,18 @@ impl AppState {
 
                 y += 6.0;
                 // ── Split label
-                render.set_fill_color("rgba(255,255,255,0.55)");
-                render.fill_text("Split:", bx, y + 11.0);
+                label(&mut render, Rect::new(bx, y, bw, 20.0), "Split:", TextAlign::Left, "rgba(255,255,255,0.55)");
                 y += 20.0;
 
                 let splits = [
-                    ("Horizontal",  "spawn-split-horiz"),
-                    ("Vertical",    "spawn-split-vert"),
-                    ("Grid 2×2",    "spawn-split-grid"),
+                    ("Split right",  "spawn-split-horiz"),
+                    ("Split bottom", "spawn-split-vert"),
+                    ("Grid 2×2",     "spawn-split-grid"),
                 ];
-                for (label, id) in &splits {
+                for (split_lbl, id) in &splits {
                     let selected = match *id {
-                        "spawn-split-horiz" => self.spawn_split == SpawnSplit::Horizontal,
-                        "spawn-split-vert"  => self.spawn_split == SpawnSplit::Vertical,
+                        "spawn-split-horiz" => self.spawn_split == SpawnSplit::SplitRight,
+                        "spawn-split-vert"  => self.spawn_split == SpawnSplit::SplitBottom,
                         _                   => self.spawn_split == SpawnSplit::Grid2x2,
                     };
                     let rx = bx + 6.0;
@@ -1157,8 +1175,7 @@ impl AppState {
                         render.set_fill_color("rgba(255,255,255,0.18)");
                         render.fill_rounded_rect(rx, y + 3.0, 10.0, 10.0, 5.0);
                     }
-                    render.set_fill_color(if selected { "#ffffff" } else { "#a0a0b0" });
-                    render.fill_text(label, rx + 16.0, y + 11.0);
+                    label(&mut render, Rect::new(rx + 16.0, y, bw - 22.0, 20.0), split_lbl, TextAlign::Left, if selected { "#ffffff" } else { "#a0a0b0" });
                     self.layout.ctx_mut().input.register_atomic(
                         WidgetId::new(*id),
                         WidgetKind::Button,
@@ -1174,8 +1191,7 @@ impl AppState {
                 // ── Spawn button
                 render.set_fill_color("#2962ff");
                 render.fill_rounded_rect(bx, y, bw, 28.0, 4.0);
-                render.set_fill_color("#ffffff");
-                render.fill_text("Spawn", bx + bw / 2.0, y + 14.0);
+                label(&mut render, Rect::new(bx, y, bw, 28.0), "Spawn", TextAlign::Center, "#ffffff");
                 self.layout.ctx_mut().input.register_atomic(
                     WidgetId::new("sidebar-spawn"),
                     WidgetKind::Button,
@@ -1191,8 +1207,7 @@ impl AppState {
                 y += 10.0;
 
                 // ── PANELS section header
-                render.set_fill_color("rgba(255,255,255,0.4)");
-                render.fill_text("PANELS", bx, y + 11.0);
+                label(&mut render, Rect::new(bx, y, bw, 22.0), "PANELS", TextAlign::Left, "rgba(255,255,255,0.4)");
                 y += 22.0;
 
                 // Collect current tab's leaves
@@ -1222,8 +1237,7 @@ impl AppState {
                     let is_active = self.layout.panels().active_leaf() == Some(*leaf_id);
                     render.set_fill_color(if is_active { "rgba(41,98,255,0.18)" } else { "rgba(255,255,255,0.05)" });
                     render.fill_rounded_rect(bx, y, bw, 26.0, 3.0);
-                    render.set_fill_color(if is_active { "#4d90fe" } else { "#d1d4dc" });
-                    render.fill_text(title.as_str(), bx + 10.0, y + 13.0);
+                    label(&mut render, Rect::new(bx + 10.0, y, bw - 36.0, 26.0), title.as_str(), TextAlign::Left, if is_active { "#4d90fe" } else { "#d1d4dc" });
 
                     let close_x = bx + bw - 22.0;
                     let close_id = format!("dock-leaf-close-{idx}");
@@ -1234,8 +1248,7 @@ impl AppState {
                         Sense::CLICK | Sense::HOVER,
                         &LayerId::main(),
                     );
-                    render.set_fill_color("rgba(255,80,80,0.5)");
-                    render.fill_text("×", close_x + 8.0, y + 13.0);
+                    label(&mut render, Rect::new(close_x, y + 5.0, 16.0, 16.0), "×", TextAlign::Center, "rgba(255,80,80,0.5)");
 
                     y += 30.0;
                 }
@@ -1440,12 +1453,10 @@ impl AppState {
                         };
                         render.set_fill_color(btn_color);
                         render.fill_rounded_rect(btn_r.x, btn_r.y, btn_r.width, btn_r.height, 6.0);
-                        render.set_fill_color("#ffffff");
-                        render.fill_text("Click me (L1 custom)", btn_r.x + btn_r.width / 2.0, btn_r.y + btn_r.height / 2.0);
+                        label(&mut render, btn_r, "Click me (L1 custom)", TextAlign::Center, "#ffffff");
                     }
                     ModalKind::Settings => {
-                        render.set_fill_color("rgba(255,255,255,0.55)");
-                        render.fill_text("Settings content", body_rect.x + body_rect.width / 2.0, body_rect.y + 20.0);
+                        label(&mut render, Rect::new(body_rect.x, body_rect.y, body_rect.width, 40.0), "Settings content", TextAlign::Center, "rgba(255,255,255,0.55)");
                         let items = [
                             ("Enable dark mode", true),
                             ("Show tooltips",    true),
@@ -1480,12 +1491,10 @@ impl AppState {
                         render.clip_rect(body_inner.x, body_inner.y, body_inner.width, body_inner.height);
 
                         // Section header
-                        render.set_fill_color("rgba(255,255,255,0.5)");
-                        render.fill_text(
-                            &format!("PANELS — Tab: {}",
-                                ["Dashboard", "Panels", "Monitoring"][self.active_view]),
-                            body_inner.x, body_inner.y + 10.0,
-                        );
+                        {
+                            let hdr = format!("PANELS — Tab: {}", ["Dashboard", "Panels", "Monitoring"][self.active_view]);
+                            label(&mut render, Rect::new(body_inner.x, body_inner.y, body_inner.width, 20.0), &hdr, TextAlign::Left, "rgba(255,255,255,0.5)");
+                        }
 
                         // Real leaves of currently active dock
                         let leaves: Vec<(String, uzor::docking::panels::LeafId)> = {
@@ -1508,21 +1517,18 @@ impl AppState {
                             if row_y + 32.0 > body_inner.y + body_inner.height { break; }
                             render.set_fill_color("rgba(255,255,255,0.05)");
                             render.fill_rounded_rect(body_inner.x, row_y, body_inner.width, 30.0, 4.0);
-                            render.set_fill_color("#a6adc8");
-                            render.fill_text(&format!("#{}", idx + 1), body_inner.x + 8.0, row_y + 15.0);
-                            render.set_fill_color("#d1d4dc");
-                            render.fill_text(title.as_str(), body_inner.x + 40.0, row_y + 15.0);
-                            render.set_fill_color("rgba(255,255,255,0.35)");
-                            render.fill_text(&format!("leaf {}", leaf_id.0),
-                                body_inner.x + body_inner.width - 8.0, row_y + 15.0);
+                            {
+                                let idx_str  = format!("#{}", idx + 1);
+                                let leaf_str = format!("leaf {}", leaf_id.0);
+                                label(&mut render, Rect::new(body_inner.x + 8.0, row_y, 32.0, 30.0),               &idx_str,        TextAlign::Left,  "#a6adc8");
+                                label(&mut render, Rect::new(body_inner.x + 40.0, row_y, body_inner.width - 120.0, 30.0), title.as_str(),   TextAlign::Left,  "#d1d4dc");
+                                label(&mut render, Rect::new(body_inner.x, row_y, body_inner.width - 8.0, 30.0),   &leaf_str,       TextAlign::Right, "rgba(255,255,255,0.35)");
+                            }
                             row_y += 36.0;
                         }
 
                         if leaves.is_empty() {
-                            render.set_fill_color("rgba(255,255,255,0.4)");
-                            render.fill_text("(no panels in this tab)",
-                                body_inner.x + body_inner.width / 2.0,
-                                body_inner.y + body_inner.height / 2.0);
+                            label(&mut render, body_inner, "(no panels in this tab)", TextAlign::Center, "rgba(255,255,255,0.4)");
                         }
 
                         render.restore();
@@ -1932,8 +1938,7 @@ impl AppState {
             if let Some(body_rect) = self.layout.rect_for_overlay("popup-overlay") {
                 render.set_fill_color("#1e222d");
                 render.fill_rounded_rect(body_rect.x, body_rect.y, body_rect.width, body_rect.height, 4.0);
-                render.set_fill_color("#d1d4dc");
-                render.fill_text(text_for_popup, body_rect.x + body_rect.width / 2.0, body_rect.y + 16.0);
+                label(&mut render, body_rect, text_for_popup, TextAlign::Center, "#d1d4dc");
             }
         }
 
@@ -2229,18 +2234,18 @@ impl AppState {
             }
             // Sidebar: spawn split radio buttons
             match id_str {
-                "spawn-split-horiz" => { self.spawn_split = SpawnSplit::Horizontal; return; }
-                "spawn-split-vert"  => { self.spawn_split = SpawnSplit::Vertical;   return; }
-                "spawn-split-grid"  => { self.spawn_split = SpawnSplit::Grid2x2;    return; }
+                "spawn-split-horiz" => { self.spawn_split = SpawnSplit::SplitRight;  return; }
+                "spawn-split-vert"  => { self.spawn_split = SpawnSplit::SplitBottom; return; }
+                "spawn-split-grid"  => { self.spawn_split = SpawnSplit::Grid2x2;     return; }
                 _ => {}
             }
             // Sidebar: Spawn button
             if id_str == "sidebar-spawn" {
                 eprintln!("[DISPATCH] sidebar-spawn kind={:?} split={:?}", self.spawn_kind, self.spawn_split);
                 let split_kind = match self.spawn_split {
-                    SpawnSplit::Horizontal => SplitKind::Horizontal,
-                    SpawnSplit::Vertical   => SplitKind::Vertical,
-                    SpawnSplit::Grid2x2    => SplitKind::Grid2x2,
+                    SpawnSplit::SplitRight  => SplitKind::SplitRight,
+                    SpawnSplit::SplitBottom => SplitKind::SplitBottom,
+                    SpawnSplit::Grid2x2     => SplitKind::Grid2x2,
                 };
                 let new_panel = DemoPanel {
                     title: self.spawn_kind.title().to_string(),
@@ -2883,7 +2888,7 @@ fn build_initial_trees() -> [uzor::docking::panels::DockingTree<DemoPanel>; 3] {
     // Tab 0: Watchlist | Notes side-by-side
     let mut tree0: DockingTree<DemoPanel> = DockingTree::new();
     let leaf_a = tree0.add_leaf(DemoPanel { title: "Watchlist".into(), kind: PanelKind::Watchlist });
-    let ids = tree0.split_leaf(leaf_a, SplitKind::Horizontal, 0.0, 0.0);
+    let ids = tree0.split_leaf(leaf_a, SplitKind::SplitRight, 0.0, 0.0);
     if let Some(&new_id) = ids.last() {
         if let Some(leaf) = tree0.leaf_mut(new_id) {
             leaf.panels.clear();
@@ -2999,7 +3004,7 @@ impl ApplicationHandler for Handler {
             drag_target: None,
             tab_trees,
             spawn_kind: PanelKind::Notes,
-            spawn_split: SpawnSplit::Horizontal,
+            spawn_split: SpawnSplit::SplitRight,
             exit_requested: false,
             l1_btn_hovered: false,
             l1_btn_pressed: false,

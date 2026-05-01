@@ -377,7 +377,7 @@ impl<P: DockPanel> DockingTree<P> {
 
         // 2. Determine sub-rect count
         let sub_rect_count = match split {
-            SplitKind::Horizontal | SplitKind::Vertical => 2,
+            SplitKind::SplitRight | SplitKind::SplitBottom => 2,
             SplitKind::Grid2x2 | SplitKind::OneBig3Small => 4,
             SplitKind::OneLeftTwoRight | SplitKind::TwoLeftOneRight
             | SplitKind::OneTopTwoBottom | SplitKind::TwoTopOneBottom
@@ -632,8 +632,8 @@ impl<P: DockPanel> DockingTree<P> {
 
     fn split_kind_to_layout(split: SplitKind) -> WindowLayout {
         match split {
-            SplitKind::Horizontal => WindowLayout::SplitHorizontal,
-            SplitKind::Vertical => WindowLayout::SplitVertical,
+            SplitKind::SplitRight  => WindowLayout::SplitHorizontal,
+            SplitKind::SplitBottom => WindowLayout::SplitVertical,
             SplitKind::Grid2x2 => WindowLayout::Grid2x2,
             SplitKind::OneLeftTwoRight => WindowLayout::OneLeftTwoRight,
             SplitKind::TwoLeftOneRight => WindowLayout::TwoLeftOneRight,

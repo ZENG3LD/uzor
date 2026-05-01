@@ -7,29 +7,45 @@ use super::PanelRect;
 /// Default gap between panels in multi-panel layouts
 pub const PANEL_GAP: f32 = 0.0;
 
-/// How to split a container into sub-slots
+/// How to split a container into sub-slots.
+///
+/// Naming reflects WHERE the new sibling appears:
+/// `SplitRight` puts the new panel on the right of the original;
+/// `SplitBottom` puts it below.  Old `Horizontal`/`Vertical` names are
+/// kept as deprecated aliases for backwards compatibility.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SplitKind {
-    /// Left | Right (2 slots)
-    Horizontal,
-    /// Top / Bottom (2 slots)
-    Vertical,
-    /// 2x2 grid (4 slots)
+    /// New panel appears on the RIGHT of the original (Left | Right, 2 slots).
+    SplitRight,
+    /// New panel appears BELOW the original (Top / Bottom, 2 slots).
+    SplitBottom,
+    /// 2×2 grid (4 slots).
     Grid2x2,
-    /// 1 left + 2 stacked right (3 slots)
+    /// 1 left + 2 stacked right (3 slots).
     OneLeftTwoRight,
-    /// 2 stacked left + 1 right (3 slots)
+    /// 2 stacked left + 1 right (3 slots).
     TwoLeftOneRight,
-    /// 1 top + 2 side-by-side bottom (3 slots)
+    /// 1 top + 2 side-by-side bottom (3 slots).
     OneTopTwoBottom,
-    /// 2 side-by-side top + 1 bottom (3 slots)
+    /// 2 side-by-side top + 1 bottom (3 slots).
     TwoTopOneBottom,
-    /// 3 vertical columns (3 slots)
+    /// 3 vertical columns (3 slots).
     ThreeColumns,
-    /// 3 horizontal rows (3 slots)
+    /// 3 horizontal rows (3 slots).
     ThreeRows,
-    /// 1 big + 3 small (4 slots)
+    /// 1 big + 3 small (4 slots).
     OneBig3Small,
+}
+
+impl SplitKind {
+    /// Deprecated alias for [`SplitKind::SplitRight`].
+    #[deprecated(note = "use SplitKind::SplitRight — clearer about new panel placement")]
+    #[allow(non_upper_case_globals)]
+    pub const Horizontal: SplitKind = SplitKind::SplitRight;
+    /// Deprecated alias for [`SplitKind::SplitBottom`].
+    #[deprecated(note = "use SplitKind::SplitBottom — clearer about new panel placement")]
+    #[allow(non_upper_case_globals)]
+    pub const Vertical: SplitKind = SplitKind::SplitBottom;
 }
 
 /// Preset layout patterns for panel arrangements
