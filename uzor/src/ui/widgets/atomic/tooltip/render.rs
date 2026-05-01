@@ -15,6 +15,17 @@ use super::types::{TooltipConfig, TooltipPosition};
 
 // ─── rect helpers ────────────────────────────────────────────────────────────
 
+/// Measure the natural size of a single-line tooltip from text length.
+///
+/// `w = text.len()*7.0 + padding_x*2`, `h = font_size + padding_y*2`.
+/// Pure function — no `RenderContext` needed. Use as input to
+/// `tooltip_rect_from_anchor` for callers that don't have a render context yet.
+pub fn measure_tooltip(text: &str, style: &dyn TooltipStyle) -> (f64, f64) {
+    let w = text.len() as f64 * 7.0 + style.padding_x() * 2.0;
+    let h = style.font_size() + style.padding_y() * 2.0;
+    (w, h)
+}
+
 /// Compute the tooltip's rect from the anchor + position + measured text width.
 ///
 /// For single-line tooltips. Height = `font_size + padding_y * 2`.

@@ -9,6 +9,38 @@ use crate::types::{IconId, Rect, WidgetState};
 use super::settings::ItemSettings;
 use super::types::ItemRenderKind;
 
+/// Measure the natural width of an item, dispatched on render kind.
+///
+/// - `Label`    : `padding_x*2 + label.len()*7.0`
+/// - `Icon`     : `icon_size`
+/// - `TextIcon` : `padding_x + icon_size + icon_text_gap + label.len()*7.0 + padding_x`
+/// - `Svg`      : `icon_size`
+/// - `Custom`   : `0.0` (caller owns layout)
+///
+/// Height is row-driven by the parent (item is non-interactive and fills
+/// caller-supplied rect). Returns `(width, intrinsic_h)` where `intrinsic_h`
+/// = `icon_size` for icon-bearing kinds, else `0.0`.
+pub fn measure_item(
+    view:     &ItemView<'_>,
+    settings: &ItemSettings,
+    kind:     &ItemRenderKind<'_>,
+) -> (f64, f64) {
+    let style = settings.style.as_ref();
+    let pad_x = style.padding_x();
+    let icon  = style.icon_size();
+    let gap   = style.icon_text_gap();
+
+    let label_w = view.label.map(|t| t.len() as f64 * 7.0).unwrap_or(0.0);
+
+    match kind {
+        ItemRenderKind::Label    => (pad_x * 2.0 + label_w, 0.0),
+        ItemRenderKind::Icon     => (icon, icon),
+        ItemRenderKind::TextIcon => (pad_x * 2.0 + icon + gap + label_w, icon),
+        ItemRenderKind::Svg      => (icon, icon),
+        ItemRenderKind::Custom(_) => (0.0, 0.0),
+    }
+}
+
 /// Per-instance data for `draw_item`.
 pub struct ItemView<'a> {
     /// Optional text label.

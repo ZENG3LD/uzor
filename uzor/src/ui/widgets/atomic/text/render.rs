@@ -6,6 +6,17 @@ use crate::types::Rect;
 use super::settings::TextSettings;
 use super::types::{TextOverflow, TextView};
 
+/// Measure the natural width of a text view.
+///
+/// `w = padding_left + text.len() * 7.0 + padding_right` (mlc convention,
+/// matches `chrome::tab_width` fallback). Height is caller-supplied — text
+/// fills whatever rect it's given. For row-height defaults, use the parent
+/// composite's `item_height` / equivalent.
+pub fn measure_text_width(view: &TextView<'_>, settings: &TextSettings) -> f64 {
+    let style = settings.style.as_ref();
+    style.padding_left() + view.text.len() as f64 * 7.0 + style.padding_right()
+}
+
 /// Draw the text inside `rect` using `view` + `settings`.
 ///
 /// Saves and restores the `RenderContext` text state (font, align, baseline,

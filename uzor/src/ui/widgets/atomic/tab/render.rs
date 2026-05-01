@@ -30,6 +30,39 @@ pub struct TabResult {
 }
 
 // ---------------------------------------------------------------------------
+// Public measurement
+// ---------------------------------------------------------------------------
+
+/// Intrinsic width of a chrome (browser-style) tab from its label.
+///
+/// `w = padding_h + label.len()*7.0 + close_size + padding_h`
+/// `h = style.height` (fixed strip height).
+pub fn measure_chrome_tab(label: &str, style: &ChromeTabStyle) -> (f64, f64) {
+    let text_w = label.len() as f64 * 7.0;
+    let w = style.padding_h + text_w + style.close_size + style.padding_h;
+    (w, style.height)
+}
+
+/// Intrinsic width of a horizontal modal tab (text-only).
+///
+/// `w = label.len()*7.0 + padding_h*2`, `h = style.height`.
+pub fn measure_modal_horizontal_tab(label: &str, style: &ModalHorizontalTabStyle) -> (f64, f64) {
+    let text_w = label.len() as f64 * 7.0;
+    let w = text_w + style.padding_h * 2.0;
+    (w, style.height)
+}
+
+/// Fixed-size icon-only modal sidebar tab. Independent of label.
+pub fn measure_modal_sidebar_tab(style: &ModalSidebarTabStyle) -> (f64, f64) {
+    (style.width, style.button_height)
+}
+
+/// Fixed-size pill sidebar tab (Tabs / Tags / Map). Independent of label.
+pub fn measure_tags_tabs_sidebar_tab(style: &TagsTabsSidebarTabStyle) -> (f64, f64) {
+    (style.width, style.item_height)
+}
+
+// ---------------------------------------------------------------------------
 // 1. Chrome tab
 // ---------------------------------------------------------------------------
 

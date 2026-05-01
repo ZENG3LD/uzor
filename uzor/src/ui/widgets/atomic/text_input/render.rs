@@ -32,6 +32,23 @@ fn safe_char_slice(s: &str, char_start: usize, char_end: usize) -> &str {
     &s[a..b]
 }
 
+// ─── Public measurement ─────────────────────────────────────────────────────
+
+/// Measure the natural size of a text input.
+///
+/// `h = style.height()` (fixed). `w = padding*2 + max(text, placeholder).len()*7.0`.
+/// Use this when laying out a form field in free space; for forms with fixed
+/// column widths the caller usually overrides width to its column.
+pub fn measure_input(view: &InputView<'_>, settings: &TextInputSettings) -> (f64, f64) {
+    let style = settings.style.as_ref();
+    let pad   = style.padding();
+
+    let text_len = view.text.len().max(view.placeholder.len()) as f64;
+    let w = pad * 2.0 + text_len * 7.0;
+    let h = style.height();
+    (w, h)
+}
+
 // ─── Per-frame rendering inputs ─────────────────────────────────────────────
 
 /// What the caller hands to `draw_input` each frame. Pulled from

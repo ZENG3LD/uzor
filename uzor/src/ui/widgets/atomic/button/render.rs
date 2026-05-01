@@ -50,6 +50,36 @@ pub struct ButtonResult {
     pub pressed: bool,
 }
 
+// ─── Public measurement ─────────────────────────────────────────────────────
+
+/// Measure the natural size of a button from its text + icon presence.
+///
+/// `w = padding_x*2 + icon_w + text_w` where:
+/// - `icon_w = icon_size + gap` if `view.icon.is_some()`, else `0`
+/// - `text_w = text.len() * 7.0` (mlc convention) if `view.text.is_some()`, else `0`
+///
+/// `h = padding_y*2 + max(font_size, icon_size if icon present)`.
+///
+/// Use this when laying out a button in free space (no parent rect supplied).
+pub fn measure_button(view: &ButtonView<'_>, settings: &ButtonSettings) -> (f64, f64) {
+    let style    = settings.style.as_ref();
+    let pad_x    = style.padding_x();
+    let pad_y    = style.padding_y();
+    let icon_sz  = style.icon_size();
+    let font_sz  = style.font_size();
+    let gap      = style.gap();
+
+    let icon_w = if view.icon.is_some() { icon_sz + gap } else { 0.0 };
+    let text_w = view.text.map(|t| t.len() as f64 * 7.0).unwrap_or(0.0);
+    let content_w = icon_w + text_w;
+
+    let content_h = if view.icon.is_some() { icon_sz.max(font_sz) } else { font_sz };
+
+    let w = pad_x * 2.0 + content_w;
+    let h = pad_y * 2.0 + content_h;
+    (w, h)
+}
+
 // ─── Public render entry point ──────────────────────────────────────────────
 
 /// Render the button (background, optional active border, optional icon,
