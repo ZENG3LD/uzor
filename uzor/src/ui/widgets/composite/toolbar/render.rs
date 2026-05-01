@@ -120,6 +120,20 @@ fn draw_toolbar_internal(
     } else {
         draw_sections_horizontal(ctx, rect, view, settings, state);
     }
+
+    // 5. Edge border (opt-in via style)
+    let style = settings.style.as_ref();
+    let theme = settings.theme.as_ref();
+    if style.show_edge_border() {
+        ctx.set_fill_color(theme.separator());
+        if is_vertical {
+            // Vertical toolbar on the left side → right edge
+            ctx.fill_rect(rect.x + rect.width - 1.0, rect.y, 1.0, rect.height);
+        } else {
+            // Horizontal toolbar → bottom edge
+            ctx.fill_rect(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

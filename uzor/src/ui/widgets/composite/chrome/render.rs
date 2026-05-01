@@ -530,9 +530,11 @@ fn draw_chrome_internal(
         }
     }
 
-    // --- 14. Bottom separator line ---
-    ctx.set_fill_color(theme.separator());
-    ctx.fill_rect(rect.x, rect.y + h - 1.0, w, 1.0);
+    // --- 14. Bottom separator line (controlled by style.show_bottom_border) ---
+    if style.show_bottom_border() {
+        ctx.set_fill_color(theme.separator());
+        ctx.fill_rect(rect.x, rect.y + h - 1.0, w, 1.0);
+    }
 
     // --- 15. Context menu (if open) ---
     // Context menu rendering is delegated to the composite::context_menu widget.

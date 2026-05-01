@@ -112,6 +112,12 @@ pub trait ToolbarStyle {
     fn background_fill(&self) -> BackgroundFill {
         BackgroundFill::Solid
     }
+
+    /// When `true`, toolbar render draws a 1 px border on its outward edge:
+    /// - Horizontal: bottom edge
+    /// - Vertical (Left): right edge
+    /// Uses `theme.separator()` colour.  Default: `false`.
+    fn show_edge_border(&self) -> bool { false }
 }
 
 // ---------------------------------------------------------------------------

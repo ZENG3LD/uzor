@@ -90,6 +90,10 @@ pub trait ChromeStyle {
 
     /// Background fill strategy for the chrome strip.
     fn background_fill(&self) -> BackgroundFill { BackgroundFill::Solid }
+
+    /// When `true`, chrome render draws a 1 px separator line at the bottom
+    /// edge of the strip using `theme.separator()`.  Default: `true`.
+    fn show_bottom_border(&self) -> bool { true }
 }
 
 // ---------------------------------------------------------------------------
