@@ -2232,7 +2232,7 @@ impl AppState {
         if let Some(id) = clicked_id.as_ref() {
             let id_str = id.0.as_str();
 
-            // Bug 4: Modal close affordances registered as "modal-widget:close" /
+            // Modal close affordances registered as "modal-widget:close" /
             // "modal-widget:footer:0" / "modal-widget:footer:1"
             if id_str == "modal-widget:close"
                 || id_str == "modal-widget:footer:0"
@@ -2241,6 +2241,33 @@ impl AppState {
                 eprintln!("[DISPATCH] modal close via {id_str}");
                 self.modal_open = false;
                 println!("[L3] modal closed via {id_str}");
+                return;
+            }
+            // Modal TopTabs / SideTabs — composite registers as "modal-widget:tab:N"
+            if let Some(idx_str) = id_str.strip_prefix("modal-widget:tab:") {
+                if let Ok(idx) = idx_str.parse::<usize>() {
+                    eprintln!("[DISPATCH] modal tab → {idx}");
+                    self.modal_state.active_tab = idx;
+                    return;
+                }
+            }
+            // Modal Wizard — back / next nav buttons
+            if id_str == "modal-widget:wizard:back" {
+                eprintln!("[DISPATCH] modal wizard back");
+                if self.modal_state.current_page > 0 {
+                    self.modal_state.current_page -= 1;
+                }
+                return;
+            }
+            if id_str == "modal-widget:wizard:next" {
+                eprintln!("[DISPATCH] modal wizard next");
+                let last = 2; // wizard_pages_data.len() - 1 in render(); 3 pages → last=2
+                if self.modal_state.current_page < last {
+                    self.modal_state.current_page += 1;
+                } else {
+                    // On final page, "Finish" → close modal.
+                    self.modal_open = false;
+                }
                 return;
             }
             // Legacy pattern fallback (other modals that use "-close" suffix)

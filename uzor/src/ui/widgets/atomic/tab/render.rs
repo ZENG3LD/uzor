@@ -7,6 +7,9 @@ use crate::types::Rect;
 use super::settings::TabSettings;
 use super::style::{ChromeTabStyle, ModalHorizontalTabStyle, ModalSidebarTabStyle, TagsTabsSidebarTabStyle};
 use super::types::{TabConfig, TabKind};
+use crate::ui::widgets::atomic::text::render::draw_text;
+use crate::ui::widgets::atomic::text::settings::TextSettings;
+use crate::ui::widgets::atomic::text::types::{TextOverflow, TextView};
 
 // ---------------------------------------------------------------------------
 // Shared view struct
@@ -95,16 +98,25 @@ pub fn draw_chrome_tab(
         ctx.fill_rect(rect.x, line_y, rect.width, style.accent_bar_thickness);
     }
 
-    // Label — left-aligned, vertically centered.
-    ctx.set_font(&format!("{}px sans-serif", style.font_size));
-    ctx.set_fill_color(theme.text_normal()); // mlc: active text = same icon_normal color
-    ctx.set_text_align(TextAlign::Left);
-    ctx.set_text_baseline(TextBaseline::Middle);
-    ctx.fill_text(
-        &view.tab.label,
+    // Label — left-aligned, vertically centered, ellipsised + clipped to the
+    // tab cell so long labels don't bleed past the close-X column.
+    let close_zone = if view.tab.closable { style.close_size } else { 0.0 };
+    let label_rect = Rect::new(
         rect.x + style.padding_h,
-        rect.y + rect.height / 2.0,
+        rect.y,
+        (rect.width - style.padding_h * 2.0 - close_zone).max(0.0),
+        rect.height,
     );
+    let label_view = TextView {
+        text: &view.tab.label,
+        align: TextAlign::Left,
+        baseline: TextBaseline::Middle,
+        color: Some(theme.text_normal()),
+        font: Some(&format!("{}px sans-serif", style.font_size)),
+        overflow: TextOverflow::Ellipsis,
+        hovered: false,
+    };
+    draw_text(ctx, label_rect, &label_view, &TextSettings::default());
 
     // Close × (right-aligned in hit zone).
     let mut close_rect = Rect::default();
@@ -179,14 +191,30 @@ pub fn draw_modal_sidebar_tab(
         // Caller renders the icon via its own icon system; we reserve the space
         // and provide a fallback single-char label so the region is visible.
         let _ = icon_name;
-        ctx.set_font(&format!("{}px sans-serif", style.icon_size * 0.6));
-        ctx.set_fill_color(icon_color);
-        ctx.fill_text_centered(&view.tab.label, icon_x + style.icon_size / 2.0, icon_y + style.icon_size / 2.0);
+        let icon_rect = Rect::new(icon_x, icon_y, style.icon_size, style.icon_size);
+        let label_view = TextView {
+            text: &view.tab.label,
+            align: TextAlign::Center,
+            baseline: TextBaseline::Middle,
+            color: Some(icon_color),
+            font: Some(&format!("{}px sans-serif", style.icon_size * 0.6)),
+            overflow: TextOverflow::Ellipsis,
+            hovered: false,
+        };
+        draw_text(ctx, icon_rect, &label_view, &TextSettings::default());
     } else {
-        // No icon — draw label as fallback, centered.
-        ctx.set_font(&format!("bold {}px sans-serif", style.font_size));
-        ctx.set_fill_color(icon_color);
-        ctx.fill_text_centered(&view.tab.label, rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+        // No icon — render label centered AND clipped to the cell so long
+        // labels (>"width") get ellipsised instead of bleeding out.
+        let label_view = TextView {
+            text: &view.tab.label,
+            align: TextAlign::Center,
+            baseline: TextBaseline::Middle,
+            color: Some(icon_color),
+            font: Some(&format!("bold {}px sans-serif", style.font_size)),
+            overflow: TextOverflow::Ellipsis,
+            hovered: false,
+        };
+        draw_text(ctx, rect, &label_view, &TextSettings::default());
     }
 
     TabResult::default()
@@ -209,21 +237,29 @@ pub fn draw_modal_horizontal_tab(
     style: &ModalHorizontalTabStyle,
     theme: &dyn super::theme::TabTheme,
 ) -> TabResult {
-    if view.tab.active {
+    let text_color = if view.tab.active {
         ctx.draw_active_rect(rect.x, rect.y, rect.width, rect.height, theme.bg_active());
-        ctx.set_fill_color("#ffffff"); // mlc: hardcoded white for active text
+        "#ffffff" // mlc: hardcoded white for active text
     } else {
-        ctx.set_fill_color(theme.text_normal());
-    }
+        theme.text_normal()
+    };
 
-    ctx.set_font(&format!("{}px sans-serif", style.font_size));
-    ctx.set_text_align(TextAlign::Left);
-    ctx.set_text_baseline(TextBaseline::Middle);
-    ctx.fill_text(
-        &view.tab.label,
+    let label_rect = Rect::new(
         rect.x + style.padding_h,
-        rect.y + rect.height / 2.0,
+        rect.y,
+        (rect.width - style.padding_h * 2.0).max(0.0),
+        rect.height,
     );
+    let label_view = TextView {
+        text: &view.tab.label,
+        align: TextAlign::Left,
+        baseline: TextBaseline::Middle,
+        color: Some(text_color),
+        font: Some(&format!("{}px sans-serif", style.font_size)),
+        overflow: TextOverflow::Ellipsis,
+        hovered: false,
+    };
+    draw_text(ctx, label_rect, &label_view, &TextSettings::default());
 
     TabResult::default()
 }
