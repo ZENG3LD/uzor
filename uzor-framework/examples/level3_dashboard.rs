@@ -693,8 +693,6 @@ enum ModalKind {
     SideTabsDemo,
     /// Wizard modal — multi-step page indicator + Back/Next nav.
     WizardDemo,
-    /// Atomics catalog — grid of every atomic widget at a glance.
-    AtomicsCatalog,
 }
 
 // =============================================================================
@@ -790,14 +788,6 @@ struct AppState {
     // Fix 2: L1 custom button hover/press state
     l1_btn_hovered: bool,
     l1_btn_pressed: bool,
-
-    // Atomics catalog state (independent from L2 modal state).
-    cat_checked:    bool,
-    cat_toggled:    bool,
-    cat_radio_sel:  usize,
-    cat_slider_val: f64,
-    cat_swatch_sel: usize,
-    cat_tab_sel:    usize,
 
     // Fix 3: Watchlist blackbox state
     watchlist: watchlist_blackbox::WatchlistState,
@@ -1406,7 +1396,6 @@ impl AppState {
                 ModalKind::TopTabsDemo    => (520.0,    320.0),
                 ModalKind::SideTabsDemo   => (560.0,    320.0),
                 ModalKind::WizardDemo     => (520.0,    320.0),
-                ModalKind::AtomicsCatalog => (640.0,    480.0),
             };
             // Resolve render kind early so we can probe chrome overhead correctly.
             let probe_kind = match self.modal_kind {
@@ -1433,7 +1422,7 @@ impl AppState {
                 &ModalSettings::default(),
                 &probe_kind,
             );
-            let modal_w = body_w + extra_w + 24.0; // 24 = body padding
+            let modal_w = body_w + extra_w;
             let modal_h = body_h + extra_h;
             // Fix #10/#11: use modal_state.position (dragged) instead of always centering.
             let default_x = (width as f64 / 2.0 - modal_w / 2.0).max(0.0);
@@ -1482,7 +1471,6 @@ impl AppState {
                 ModalKind::TopTabsDemo    => "TopTabs",
                 ModalKind::SideTabsDemo   => "SideTabs",
                 ModalKind::WizardDemo     => "Wizard",
-                ModalKind::AtomicsCatalog => "Atomics Catalog",
             };
             let footer_btns = [
                 FooterBtn { label: "Close", style: FooterBtnStyle::Ghost },
@@ -1531,8 +1519,16 @@ impl AppState {
                 &ModalSettings::default(),
                 &render_kind,
             );
-            // Draw modal body content inline
-            if let Some(body_rect) = self.layout.rect_for_overlay("modal-overlay") {
+            // Draw modal body content inline.
+            // `frame_rect` = full overlay rect (includes chrome).
+            // `body_rect` = content area carved out by the composite (header/footer/tabs/sidebar excluded).
+            if let Some(frame_rect) = self.layout.rect_for_overlay("modal-overlay") {
+                let body_rect = uzor::ui::widgets::composite::modal::render::body_rect(
+                    frame_rect,
+                    &modal_view,
+                    &ModalSettings::default(),
+                    &render_kind,
+                );
                 let layer = LayerId::modal();
                 match modal_kind {
                     ModalKind::L1 => {
@@ -1587,12 +1583,11 @@ impl AppState {
                     ModalKind::Tags => {
                         // "Panels" modal — lists real dock leaves of the active tab,
                         // clipped to body_rect so nothing overflows.
-                        const MODAL_HEADER_H: f64 = 44.0;
                         let body_inner = Rect::new(
                             body_rect.x + 16.0,
-                            body_rect.y + MODAL_HEADER_H + 8.0,
+                            body_rect.y + 8.0,
                             body_rect.width - 32.0,
-                            body_rect.height - MODAL_HEADER_H - 16.0,
+                            body_rect.height - 16.0,
                         );
 
                         render.save();
@@ -1643,15 +1638,11 @@ impl AppState {
                     }
                     ModalKind::L2 => {
                         // Full L2 widget set rendered inside modal body.
-                        // body_rect from rect_for_overlay is the full modal rect;
-                        // actual content starts after the 44px header.
-                        // WithHeaderFooter: header=44, footer=52 → body height = total - 96
-                        const MODAL_HEADER_H: f64 = 44.0;
-                        const MODAL_FOOTER_H: f64 = 52.0;
+                        // body_rect already accounts for header/footer via composite::modal::body_rect().
                         let left_panel_w = l2_right_panel_x - LEFT_PANEL_X - SPLITTER_W / 2.0;
                         let ox = body_rect.x;
-                        let oy = body_rect.y + MODAL_HEADER_H; // skip modal header (Fix 2)
-                        let body_h = body_rect.height - MODAL_HEADER_H - MODAL_FOOTER_H;
+                        let oy = body_rect.y;
+                        let body_h = body_rect.height;
 
                         let text_id = WidgetId::new("l2-text");
                         let text_str = self.layout.ctx_mut().input.text_fields().text(&text_id).to_owned();
@@ -1936,166 +1927,6 @@ impl AppState {
                             body_rect.y + 40.0,
                         );
                     }
-                    ModalKind::AtomicsCatalog => {
-                        let cat_checked    = self.cat_checked;
-                        let cat_toggled    = self.cat_toggled;
-                        let cat_radio_sel  = self.cat_radio_sel;
-                        let cat_slider_val = self.cat_slider_val;
-                        let cat_swatch_sel = self.cat_swatch_sel;
-                        let cat_tab_sel    = self.cat_tab_sel;
-
-                        let bx = body_rect.x;
-                        let by = body_rect.y;
-                        let pad = 16.0_f64;
-                        let lbl_x = bx + pad;
-                        let widget_x = bx + pad + 110.0;
-
-                        // Section header
-                        render.set_fill_color("#d1d4dc");
-                        render.set_font("13px sans-serif");
-                        render.set_text_align(TextAlign::Left);
-                        render.set_text_baseline(TextBaseline::Top);
-                        render.fill_text("Atomic widgets — every primitive at a glance.", bx + pad, by + pad);
-
-                        let mut row_y = by + pad + 28.0;
-                        let row_h = 38.0;
-
-                        // Helper inline label printer.
-                        let put_label = |r: &mut dyn uzor::render::RenderContext, y: f64, text: &str| {
-                            r.set_fill_color("#7080a0");
-                            r.set_font("12px sans-serif");
-                            r.set_text_align(TextAlign::Left);
-                            r.set_text_baseline(TextBaseline::Middle);
-                            r.fill_text(text, lbl_x, y + 12.0);
-                        };
-
-                        // Row 1 — Button
-                        put_label(&mut render, row_y, "Button");
-                        register_context_manager_button(
-                            self.layout.ctx_mut(), &mut render,
-                            "cat-btn", Rect::new(widget_x, row_y, 130.0, 28.0), &layer,
-                            WidgetState::Normal,
-                            &ButtonView { text: Some("Action"), icon: None, active: false, disabled: false, active_border: None },
-                            &ButtonSettings::default().with_theme(Box::new(VisibleButtonTheme)),
-                        );
-                        row_y += row_h;
-
-                        // Row 2 — Checkbox
-                        put_label(&mut render, row_y, "Checkbox");
-                        register_context_manager_checkbox(
-                            self.layout.ctx_mut(), &mut render,
-                            "cat-cb", Rect::new(widget_x, row_y, 160.0, 22.0), &layer,
-                            WidgetState::Normal,
-                            &CheckboxView { checked: cat_checked, label: Some("Enabled") },
-                            &CheckboxSettings::default().with_theme(Box::new(VisibleCheckboxTheme)),
-                            &CheckboxRenderKind::Standard, "13px sans-serif",
-                        );
-                        row_y += row_h;
-
-                        // Row 3 — Toggle
-                        put_label(&mut render, row_y, "Toggle");
-                        register_context_manager_toggle(
-                            self.layout.ctx_mut(), &mut render,
-                            "cat-tog", Rect::new(widget_x, row_y, 80.0, 24.0), &layer,
-                            WidgetState::Normal,
-                            &ToggleView { toggled: cat_toggled, label: Some(if cat_toggled { "ON" } else { "OFF" }), disabled: false },
-                            &ToggleSettings::default(), &ToggleRenderKind::Switch,
-                        );
-                        row_y += row_h;
-
-                        // Row 4 — Radio (3 dots)
-                        put_label(&mut render, row_y, "Radio");
-                        for (i, off) in [0.0_f64, 40.0, 80.0].iter().enumerate() {
-                            let rid = format!("cat-radio-{i}");
-                            let cx = widget_x + off + 14.0;
-                            let cy = row_y + 14.0;
-                            register_context_manager_radio(
-                                self.layout.ctx_mut(), &mut render,
-                                rid.as_str(),
-                                Rect::new(widget_x + off, row_y, 28.0, 28.0),
-                                &layer,
-                                WidgetState::Normal,
-                                &RadioSettings::default(),
-                                &RadioRenderKind::Dot { shape: DotShape::Circle, cx, cy, view: RadioDotView { selected: cat_radio_sel == i } },
-                            );
-                        }
-                        row_y += row_h;
-
-                        // Row 5 — Slider
-                        put_label(&mut render, row_y, "Slider");
-                        register_context_manager_slider(
-                            self.layout.ctx_mut(), &mut render,
-                            "cat-slider", Rect::new(widget_x, row_y + 4.0, 260.0, 20.0), &layer,
-                            WidgetState::Normal,
-                            &SliderView { kind: SliderType::Single { value: cat_slider_val, min: 0.0, max: 100.0, step: 1.0 }, hovered: false, disabled: false, dragging_handle: None },
-                            &SliderSettings::default(),
-                        );
-                        row_y += row_h;
-
-                        // Row 6 — Color swatches
-                        put_label(&mut render, row_y, "ColorSwatch");
-                        let sw_colors: [[u8; 4]; 4] = [[41,98,255,255],[16,185,129,255],[245,158,11,255],[239,83,80,255]];
-                        for (i, color) in sw_colors.iter().enumerate() {
-                            let sid = format!("cat-sw-{i}");
-                            register_context_manager_color_swatch(
-                                self.layout.ctx_mut(), &mut render,
-                                sid.as_str(),
-                                Rect::new(widget_x + i as f64 * 30.0, row_y + 2.0, 24.0, 24.0),
-                                &layer,
-                                WidgetState::Normal,
-                                &ColorSwatchView { color: *color, hovered: false, selected: cat_swatch_sel == i, show_transparency: false, border_color_override: None },
-                                &ColorSwatchSettings::default(), &ColorSwatchRenderKind::Simple,
-                            );
-                        }
-                        row_y += row_h;
-
-                        // Row 7 — Tabs
-                        put_label(&mut render, row_y, "Tab");
-                        let cat_tab_labels = ["Alpha", "Beta", "Gamma"];
-                        for (i, lbl) in cat_tab_labels.iter().enumerate() {
-                            let tab_id = format!("cat-tab-{i}");
-                            let tab_w = 70.0_f64;
-                            let tab_rect = Rect::new(widget_x + i as f64 * (tab_w + 4.0), row_y, tab_w, 28.0);
-                            let tab_cfg = TabConfig::new(tab_id.as_str(), *lbl).active_if(cat_tab_sel == i);
-                            register_context_manager_tab(
-                                self.layout.ctx_mut(), &mut render,
-                                tab_id.as_str(), tab_rect, None, &layer,
-                                &TabView { tab: &tab_cfg, hovered: false, pressed: false, close_btn_hovered: false },
-                                &TabSettings::default(),
-                            );
-                        }
-                        row_y += row_h;
-
-                        // Row 8 — Separator
-                        put_label(&mut render, row_y, "Separator");
-                        register_context_manager_separator(
-                            self.layout.ctx_mut(), &mut render,
-                            "cat-sep", Rect::new(widget_x, row_y + 12.0, 280.0, 2.0), SeparatorKind::Divider, &layer,
-                            &SeparatorView { kind: SeparatorType::Divider { orientation: SeparatorOrientation::Horizontal }, hovered: false, dragging: false },
-                            &SeparatorSettings::default(),
-                        );
-                        row_y += row_h;
-
-                        // Row 9 — DragHandle
-                        put_label(&mut render, row_y, "DragHandle");
-                        register_context_manager_drag_handle(
-                            self.layout.ctx_mut(), &mut render,
-                            "cat-drag", Rect::new(widget_x, row_y, 28.0, 28.0), &layer,
-                            &DragHandleView { rect: Rect::new(widget_x, row_y, 28.0, 28.0) },
-                            &DragHandleSettings::default(), &DragHandleRenderKind::GripDots,
-                        );
-                        row_y += row_h;
-
-                        // Row 10 — Item (label-only)
-                        put_label(&mut render, row_y, "Item");
-                        register_context_manager_item(
-                            self.layout.ctx_mut(), &mut render,
-                            "cat-item", Rect::new(widget_x, row_y, 200.0, 26.0), &layer,
-                            WidgetState::Normal,
-                            &ItemView { label: Some("Non-interactive label"), icon: None, svg: None },
-                            &ItemSettings::default(), &ItemRenderKind::Label,
-                        );
-                    }
                 }
             }
         }
@@ -2210,8 +2041,6 @@ impl AppState {
             DropdownItem::Item { id: "modals-toptabs",  label: "TopTabs",        icon: None, right: DropdownItemRight::Shortcut("tabs across"),   disabled: false, danger: false, accent_color: None },
             DropdownItem::Item { id: "modals-sidetabs", label: "SideTabs",       icon: None, right: DropdownItemRight::Shortcut("icon sidebar"),  disabled: false, danger: false, accent_color: None },
             DropdownItem::Item { id: "modals-wizard",   label: "Wizard",         icon: None, right: DropdownItemRight::Shortcut("multi-step"),    disabled: false, danger: false, accent_color: None },
-            DropdownItem::Separator,
-            DropdownItem::Item { id: "modals-atomics",  label: "Atomics catalog", icon: None, right: DropdownItemRight::Shortcut("everything"),  disabled: false, danger: false, accent_color: None },
         ];
         if self.dropdown_help_state.open {
             let hovered_id = self.dropdown_help_state.hovered_id.clone();
@@ -2519,7 +2348,6 @@ impl AppState {
                     "modals-toptabs"  => open_modal(ModalKind::TopTabsDemo,    self),
                     "modals-sidetabs" => open_modal(ModalKind::SideTabsDemo,   self),
                     "modals-wizard"   => open_modal(ModalKind::WizardDemo,     self),
-                    "modals-atomics"  => open_modal(ModalKind::AtomicsCatalog, self),
                     other             => println!("[L3] Modals → {other}"),
                 }
                 self.dropdown_help_state.close();
@@ -2581,23 +2409,7 @@ impl AppState {
                     self.l2_toggled = !self.l2_toggled;
                     return;
                 }
-                // Atomics catalog widgets
-                "cat-btn"  => { eprintln!("[DISPATCH] cat-btn");  return; }
-                "cat-cb"   => { self.cat_checked = !self.cat_checked; return; }
-                "cat-tog"  => { self.cat_toggled = !self.cat_toggled; return; }
-                "cat-drag" => { eprintln!("[DISPATCH] cat-drag"); return; }
-                "cat-item" => { eprintln!("[DISPATCH] cat-item"); return; }
-                "cat-sep"  => { eprintln!("[DISPATCH] cat-sep");  return; }
                 _ => {}
-            }
-            if let Some(n_str) = id_str.strip_prefix("cat-radio-") {
-                if let Ok(n) = n_str.parse::<usize>() { self.cat_radio_sel = n; return; }
-            }
-            if let Some(n_str) = id_str.strip_prefix("cat-sw-") {
-                if let Ok(n) = n_str.parse::<usize>() { self.cat_swatch_sel = n; return; }
-            }
-            if let Some(n_str) = id_str.strip_prefix("cat-tab-") {
-                if let Ok(n) = n_str.parse::<usize>() { self.cat_tab_sel = n; return; }
             }
             if let Some(n_str) = id_str.strip_prefix("l2-radio-") {
                 if let Ok(n) = n_str.parse::<usize>() {
@@ -2965,7 +2777,6 @@ impl AppState {
                         "modals-toptabs"  => open_modal(ModalKind::TopTabsDemo,    self),
                         "modals-sidetabs" => open_modal(ModalKind::SideTabsDemo,   self),
                         "modals-wizard"   => open_modal(ModalKind::WizardDemo,     self),
-                        "modals-atomics"  => open_modal(ModalKind::AtomicsCatalog, self),
                         _                 => println!("[L3] modals item: {hid}"),
                     }
                     self.dropdown_help_state.close();
@@ -3459,12 +3270,6 @@ impl ApplicationHandler for Handler {
             exit_requested: false,
             l1_btn_hovered: false,
             l1_btn_pressed: false,
-            cat_checked:    true,
-            cat_toggled:    false,
-            cat_radio_sel:  1,
-            cat_slider_val: 35.0,
-            cat_swatch_sel: 0,
-            cat_tab_sel:    0,
             watchlist: watchlist_blackbox::WatchlistState::default(),
         });
     }

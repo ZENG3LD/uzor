@@ -44,6 +44,9 @@ use crate::ui::widgets::atomic::tab::render::{
 use crate::ui::widgets::atomic::tab::style::{ModalHorizontalTabStyle, ModalSidebarTabStyle};
 use crate::ui::widgets::atomic::tab::theme::DefaultTabTheme;
 use crate::ui::widgets::atomic::tab::types::TabConfig;
+use crate::ui::widgets::atomic::text::render::draw_text;
+use crate::ui::widgets::atomic::text::settings::TextSettings;
+use crate::ui::widgets::atomic::text::types::{TextOverflow, TextView};
 
 use super::settings::ModalSettings;
 use super::state::ModalState;
@@ -357,16 +360,26 @@ fn draw_modal_with_coord(
             layout.header.height,
         );
 
+        // Title — drawn via atomic Text widget so font / overflow / state-stack
+        // hygiene is handled by the widget, not by composite-level fill_text calls.
         let title = view.title.unwrap_or("");
-        ctx.set_fill_color(theme.header_text());
-        ctx.set_font("14px sans-serif");
-        ctx.set_text_align(TextAlign::Left);
-        ctx.set_text_baseline(TextBaseline::Middle);
-        ctx.fill_text(
-            title,
+        let title_rect = Rect::new(
             layout.header.x + style.padding(),
-            layout.header.y + layout.header.height / 2.0,
+            layout.header.y,
+            (layout.header.width - layout.close_btn.width - style.padding() * 2.0).max(0.0),
+            layout.header.height,
         );
+        let title_color = theme.header_text();
+        let title_view = TextView {
+            text: title,
+            align: TextAlign::Left,
+            baseline: TextBaseline::Middle,
+            color: Some(title_color),
+            font: Some("14px sans-serif"),
+            overflow: TextOverflow::Ellipsis,
+            hovered: false,
+        };
+        draw_text(ctx, title_rect, &title_view, &TextSettings::default());
 
         ctx.set_fill_color(theme.divider());
         ctx.fill_rect(
@@ -454,6 +467,59 @@ fn resolve_frame(rect: Rect, state: &ModalState, kind: &ModalRenderKind) -> Rect
     } else {
         rect
     }
+}
+
+/// Compute the body rect (the area available for caller-drawn content) of a
+/// modal whose total frame is `frame_rect`.
+///
+/// This is the inverse of `measure_chrome`: the modal composite eats
+/// `header + (tabs|sidebar) + footer + wizard_nav` from the frame, and the
+/// remaining inner rectangle is the body.
+///
+/// Use this in your render loop instead of subtracting header/footer
+/// constants by hand:
+/// ```ignore
+/// let body = body_rect(modal_overlay_rect, &view, &settings, &kind);
+/// // draw your content into `body`
+/// ```
+pub fn body_rect(
+    frame_rect: Rect,
+    view:       &ModalView<'_>,
+    settings:   &ModalSettings,
+    kind:       &ModalRenderKind,
+) -> Rect {
+    // Resolve dragged frame from raw rect (same as register_input_coordinator_modal).
+    // We don't have ModalState here — caller already passes the post-drag rect
+    // via overlay registration, so frame_rect IS the resolved frame.
+    let style = settings.style.as_ref();
+
+    let has_header   = matches!(
+        kind,
+        ModalRenderKind::WithHeader
+            | ModalRenderKind::WithHeaderFooter
+            | ModalRenderKind::TopTabs
+            | ModalRenderKind::SideTabs
+    );
+    let has_top_tabs = matches!(kind, ModalRenderKind::TopTabs);
+    let has_sidebar  = matches!(kind, ModalRenderKind::SideTabs);
+    let has_footer   = matches!(
+        kind,
+        ModalRenderKind::WithHeaderFooter | ModalRenderKind::SideTabs
+    ) || (matches!(kind, ModalRenderKind::TopTabs) && !view.footer_buttons.is_empty());
+    let has_wizard   = matches!(kind, ModalRenderKind::Wizard);
+
+    let header_h     = if has_header   { style.header_height()      } else { 0.0 };
+    let tab_h        = if has_top_tabs { style.tab_height()         } else { 0.0 };
+    let footer_h     = if has_footer   { style.footer_height()      } else { 0.0 };
+    let wizard_nav_h = if has_wizard   { style.wizard_nav_height()  } else { 0.0 };
+    let sidebar_w    = if has_sidebar  { style.sidebar_width()      } else { 0.0 };
+
+    Rect::new(
+        frame_rect.x + sidebar_w,
+        frame_rect.y + header_h + tab_h,
+        (frame_rect.width  - sidebar_w).max(0.0),
+        (frame_rect.height - header_h - tab_h - footer_h - wizard_nav_h).max(0.0),
+    )
 }
 
 /// Measure the chrome overhead (header / tabs / footer / wizard nav / sidebar)

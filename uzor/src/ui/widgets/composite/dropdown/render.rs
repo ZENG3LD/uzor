@@ -34,45 +34,95 @@ use super::types::{
 
 /// Measure the natural size of a Flat-kind dropdown panel for the given items.
 ///
-/// Width is `style.min_width()`; height is the sum of per-item heights
-/// (Item / Submenu / Header / Separator) plus padding on top + bottom.
-/// If `style.max_visible_items() > 0`, the visible item count is clamped to it.
+/// Width — widest item from the set, computed as
+/// `item_padding_x + (icon? + gap) + label + middle_gap + right? + item_padding_x`,
+/// clamped to at least `style.min_width()`. Right content (Shortcut / Subtitle /
+/// Toggle / Checkmark / Chevron / Submenu marker) is included so dropdowns
+/// auto-grow to fit secondary text.
 ///
-/// Caller passes the resulting `(w, h)` as the overlay rect size, instead of
-/// hardcoding magic numbers.
+/// Height — sum of per-row heights (Item / Submenu / Header / Separator) plus
+/// 2× padding. If `style.max_visible_items() > 0`, the visible item count is
+/// clamped to it.
 pub fn measure_flat(
     items:    &[DropdownItem<'_>],
     settings: &DropdownSettings,
 ) -> (f64, f64) {
     let style    = settings.style.as_ref();
     let pad      = style.padding();
+    let item_pad = style.item_padding_x();
     let item_h   = style.item_height();
     let header_h = style.header_height();
     let sep_h    = style.separator_height();
+    let icon_sz  = style.icon_size();
+    let icon_gap = style.icon_text_gap();
+    let toggle_w = style.toggle_track_w();
     let max_vis  = style.max_visible_items();
 
-    // If max_visible_items > 0, clip to first N item-rows (Header/Separator
-    // still always render — they're not "items" for paging).
-    let mut item_count = 0usize;
-    let mut content_h  = 0.0_f64;
+    // Conservative monospace-ish text-width estimate (mlc convention).
+    // Matches the same fallback used in chrome::tab_width / measure_button etc.
+    const CHAR_PX: f64 = 7.0;
+    // Minimum visual gap between left content (label) and right content
+    // (shortcut / subtitle / toggle / chevron) so they don't touch.
+    const MID_GAP: f64 = 24.0;
+
+    let mut max_content_w = 0.0_f64;
+    let mut item_count    = 0usize;
+    let mut content_h     = 0.0_f64;
+
     for it in items {
         match it {
-            DropdownItem::Item    { .. }
-            | DropdownItem::Submenu { .. } => {
+            DropdownItem::Item { label, icon, right, .. } => {
                 if max_vis > 0 && item_count >= max_vis {
                     continue;
                 }
                 item_count += 1;
                 content_h += item_h;
+
+                let icon_part = if icon.is_some() { icon_sz + icon_gap } else { 0.0 };
+                let label_w   = label.len() as f64 * CHAR_PX;
+                let right_w   = right_content_width(right, toggle_w);
+                let row_w = item_pad
+                    + icon_part
+                    + label_w
+                    + if right_w > 0.0 { MID_GAP + right_w } else { 0.0 }
+                    + item_pad;
+                max_content_w = max_content_w.max(row_w);
             }
-            DropdownItem::Header    { .. } => content_h += header_h,
-            DropdownItem::Separator        => content_h += sep_h,
+            DropdownItem::Submenu { label, .. } => {
+                if max_vis > 0 && item_count >= max_vis {
+                    continue;
+                }
+                item_count += 1;
+                content_h += item_h;
+                let label_w = label.len() as f64 * CHAR_PX;
+                // Submenu row reserves space for the right-arrow chevron.
+                let chevron_w = icon_sz; // arrow drawn at icon-size scale
+                let row_w = item_pad + label_w + MID_GAP + chevron_w + item_pad;
+                max_content_w = max_content_w.max(row_w);
+            }
+            DropdownItem::Header { label } => {
+                content_h += header_h;
+                let label_w = label.len() as f64 * CHAR_PX;
+                max_content_w = max_content_w.max(item_pad + label_w + item_pad);
+            }
+            DropdownItem::Separator => content_h += sep_h,
         }
     }
 
-    let w = style.min_width();
+    let w = max_content_w.max(style.min_width());
     let h = content_h + pad * 2.0;
     (w, h)
+}
+
+/// Width of the trailing right-side widget for an item row.
+fn right_content_width(right: &DropdownItemRight<'_>, toggle_w: f64) -> f64 {
+    const CHAR_PX: f64 = 7.0;
+    match right {
+        DropdownItemRight::None         => 0.0,
+        DropdownItemRight::Shortcut(s)  => s.len() as f64 * CHAR_PX,
+        DropdownItemRight::Subtitle(s)  => s.len() as f64 * CHAR_PX,
+        DropdownItemRight::Toggle(_)    => toggle_w,
+    }
 }
 
 // ---------------------------------------------------------------------------
