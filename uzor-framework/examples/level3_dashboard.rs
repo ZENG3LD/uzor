@@ -70,7 +70,7 @@ use uzor::ui::widgets::composite::modal::render::measure_chrome as measure_modal
 use uzor::ui::widgets::composite::modal::settings::ModalSettings;
 use uzor::ui::widgets::composite::modal::state::ModalState;
 use uzor::ui::widgets::composite::modal::types::{
-    BackdropKind, FooterBtn, FooterBtnStyle, ModalRenderKind, ModalView,
+    BackdropKind, FooterBtn, FooterBtnStyle, ModalRenderKind, ModalView, WizardPageInfo,
 };
 
 
@@ -675,10 +675,26 @@ impl DockPanel for DemoPanel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModalKind {
+    /// Existing — full L2 widget catalog (radio/slider/range/swatch/scroll/...)
     L2,
+    /// Existing — bespoke big animated button
     L1,
+    /// Existing — settings preview panel
     Settings,
+    /// Existing — dock panel list (chrome tabs)
     Tags,
+    /// Plain frame — no header, no footer. Demonstrates ModalRenderKind::Plain.
+    PlainDemo,
+    /// Header-only modal (no footer). Demonstrates ModalRenderKind::WithHeader.
+    HeaderDemo,
+    /// Top-tabs modal — three sample tabs across the top.
+    TopTabsDemo,
+    /// Side-tabs modal — vertical icon sidebar inside the modal.
+    SideTabsDemo,
+    /// Wizard modal — multi-step page indicator + Back/Next nav.
+    WizardDemo,
+    /// Atomics catalog — grid of every atomic widget at a glance.
+    AtomicsCatalog,
 }
 
 // =============================================================================
@@ -774,6 +790,14 @@ struct AppState {
     // Fix 2: L1 custom button hover/press state
     l1_btn_hovered: bool,
     l1_btn_pressed: bool,
+
+    // Atomics catalog state (independent from L2 modal state).
+    cat_checked:    bool,
+    cat_toggled:    bool,
+    cat_radio_sel:  usize,
+    cat_slider_val: f64,
+    cat_swatch_sel: usize,
+    cat_tab_sel:    usize,
 
     // Fix 3: Watchlist blackbox state
     watchlist: watchlist_blackbox::WatchlistState,
@@ -1373,12 +1397,26 @@ impl AppState {
         if self.modal_open {
             // Body size per kind. Frame (modal_w, modal_h) = body + measure_chrome().
             let (body_w, body_h) = match self.modal_kind {
-                ModalKind::L2       => (L2_WIN_W,  L2_WIN_H),
-                ModalKind::L1       => (320.0,     150.0),
-                ModalKind::Settings => (400.0,     250.0),
-                ModalKind::Tags     => (480.0,     310.0),
+                ModalKind::L2             => (L2_WIN_W, L2_WIN_H),
+                ModalKind::L1             => (320.0,    150.0),
+                ModalKind::Settings       => (400.0,    250.0),
+                ModalKind::Tags           => (480.0,    310.0),
+                ModalKind::PlainDemo      => (380.0,    180.0),
+                ModalKind::HeaderDemo     => (380.0,    180.0),
+                ModalKind::TopTabsDemo    => (520.0,    320.0),
+                ModalKind::SideTabsDemo   => (560.0,    320.0),
+                ModalKind::WizardDemo     => (520.0,    320.0),
+                ModalKind::AtomicsCatalog => (640.0,    480.0),
             };
-            // Probe chrome overhead via the same view we'll register with.
+            // Resolve render kind early so we can probe chrome overhead correctly.
+            let probe_kind = match self.modal_kind {
+                ModalKind::PlainDemo      => ModalRenderKind::Plain,
+                ModalKind::HeaderDemo     => ModalRenderKind::WithHeader,
+                ModalKind::TopTabsDemo    => ModalRenderKind::TopTabs,
+                ModalKind::SideTabsDemo   => ModalRenderKind::SideTabs,
+                ModalKind::WizardDemo     => ModalRenderKind::Wizard,
+                _                         => ModalRenderKind::WithHeaderFooter,
+            };
             let probe_btns = [
                 FooterBtn { label: "Close", style: FooterBtnStyle::Ghost },
                 FooterBtn { label: "Apply", style: FooterBtnStyle::Primary },
@@ -1393,7 +1431,7 @@ impl AppState {
             let (extra_w, extra_h) = measure_modal_chrome(
                 &probe_view,
                 &ModalSettings::default(),
-                &ModalRenderKind::WithHeaderFooter,
+                &probe_kind,
             );
             let modal_w = body_w + extra_w + 24.0; // 24 = body padding
             let modal_h = body_h + extra_h;
@@ -1435,20 +1473,51 @@ impl AppState {
             let l2_right_panel_x = L2_WIN_W - l2_right_panel_w;
 
             let title = match modal_kind {
-                ModalKind::L2       => "L2 Widget Set",
-                ModalKind::L1       => "L1 Custom Button",
-                ModalKind::Settings => "Settings",
-                ModalKind::Tags     => "Dock Panels",
+                ModalKind::L2             => "L2 Widget Set",
+                ModalKind::L1             => "L1 Custom Button",
+                ModalKind::Settings       => "Settings",
+                ModalKind::Tags           => "Dock Panels",
+                ModalKind::PlainDemo      => "Plain (frame only)",
+                ModalKind::HeaderDemo     => "WithHeader (no footer)",
+                ModalKind::TopTabsDemo    => "TopTabs",
+                ModalKind::SideTabsDemo   => "SideTabs",
+                ModalKind::WizardDemo     => "Wizard",
+                ModalKind::AtomicsCatalog => "Atomics Catalog",
             };
             let footer_btns = [
                 FooterBtn { label: "Close", style: FooterBtnStyle::Ghost },
                 FooterBtn { label: "Apply", style: FooterBtnStyle::Primary },
             ];
+            // Per-kind tabs (for TopTabs / SideTabs).
+            let toptabs_tabs   = ["General", "Network", "Storage", "Advanced"];
+            let sidetabs_tabs  = ["Profile", "Account", "Privacy", "Notifications"];
+            let wizard_pages_data: [WizardPageInfo; 3] = [
+                WizardPageInfo { label: Some("Welcome") },
+                WizardPageInfo { label: Some("Configure") },
+                WizardPageInfo { label: Some("Review") },
+            ];
+            let render_kind = match modal_kind {
+                ModalKind::PlainDemo      => ModalRenderKind::Plain,
+                ModalKind::HeaderDemo     => ModalRenderKind::WithHeader,
+                ModalKind::TopTabsDemo    => ModalRenderKind::TopTabs,
+                ModalKind::SideTabsDemo   => ModalRenderKind::SideTabs,
+                ModalKind::WizardDemo     => ModalRenderKind::Wizard,
+                _                         => ModalRenderKind::WithHeaderFooter,
+            };
+            let tabs: &[&str] = match modal_kind {
+                ModalKind::TopTabsDemo  => &toptabs_tabs,
+                ModalKind::SideTabsDemo => &sidetabs_tabs,
+                _                       => &[],
+            };
+            let wizard_pages_ref: &[WizardPageInfo] = match modal_kind {
+                ModalKind::WizardDemo => &wizard_pages_data,
+                _                     => &[],
+            };
             let mut modal_view = ModalView {
                 title: Some(title),
-                tabs: &[],
+                tabs,
                 footer_buttons: &footer_btns,
-                wizard_pages: &[],
+                wizard_pages: wizard_pages_ref,
                 backdrop: BackdropKind::Dim,
             };
             let _modal_node = register_layout_manager_modal(
@@ -1460,7 +1529,7 @@ impl AppState {
                 &mut self.modal_state,
                 &mut modal_view,
                 &ModalSettings::default(),
-                &ModalRenderKind::WithHeaderFooter,
+                &render_kind,
             );
             // Draw modal body content inline
             if let Some(body_rect) = self.layout.rect_for_overlay("modal-overlay") {
@@ -1774,6 +1843,259 @@ impl AppState {
                             &DragHandleView { rect: dh_rect }, &DragHandleSettings::default(), &DragHandleRenderKind::GripDots,
                         );
                     }
+                    ModalKind::PlainDemo => {
+                        // No header/footer — caller draws everything inside the body.
+                        render.set_fill_color("#1a1a22");
+                        render.fill_rect(body_rect.x, body_rect.y, body_rect.width, body_rect.height);
+                        render.set_fill_color("#d1d4dc");
+                        render.set_font("14px sans-serif");
+                        render.set_text_align(TextAlign::Center);
+                        render.set_text_baseline(TextBaseline::Middle);
+                        render.fill_text(
+                            "ModalRenderKind::Plain — frame only",
+                            body_rect.x + body_rect.width / 2.0,
+                            body_rect.y + body_rect.height / 2.0 - 12.0,
+                        );
+                        render.set_fill_color("#7080a0");
+                        render.set_font("12px sans-serif");
+                        render.fill_text(
+                            "Click outside to dismiss.",
+                            body_rect.x + body_rect.width / 2.0,
+                            body_rect.y + body_rect.height / 2.0 + 12.0,
+                        );
+                    }
+                    ModalKind::HeaderDemo => {
+                        render.set_fill_color("#d1d4dc");
+                        render.set_font("13px sans-serif");
+                        render.set_text_align(TextAlign::Left);
+                        render.set_text_baseline(TextBaseline::Top);
+                        render.fill_text(
+                            "Header-only modal — no footer buttons.",
+                            body_rect.x + 16.0,
+                            body_rect.y + 16.0,
+                        );
+                        render.set_fill_color("#7080a0");
+                        render.set_font("12px sans-serif");
+                        render.fill_text(
+                            "Drag the title bar to move me. Click X or outside to close.",
+                            body_rect.x + 16.0,
+                            body_rect.y + 40.0,
+                        );
+                    }
+                    ModalKind::TopTabsDemo => {
+                        render.set_fill_color("#d1d4dc");
+                        render.set_font("13px sans-serif");
+                        render.set_text_align(TextAlign::Left);
+                        render.set_text_baseline(TextBaseline::Top);
+                        render.fill_text(
+                            "TopTabs — horizontal tab strip below the header.",
+                            body_rect.x + 16.0,
+                            body_rect.y + 16.0,
+                        );
+                        render.set_fill_color("#7080a0");
+                        render.set_font("12px sans-serif");
+                        render.fill_text(
+                            "Tabs (decorative): General / Network / Storage / Advanced.",
+                            body_rect.x + 16.0,
+                            body_rect.y + 40.0,
+                        );
+                    }
+                    ModalKind::SideTabsDemo => {
+                        render.set_fill_color("#d1d4dc");
+                        render.set_font("13px sans-serif");
+                        render.set_text_align(TextAlign::Left);
+                        render.set_text_baseline(TextBaseline::Top);
+                        render.fill_text(
+                            "SideTabs — vertical icon sidebar inside the modal.",
+                            body_rect.x + 16.0,
+                            body_rect.y + 16.0,
+                        );
+                        render.set_fill_color("#7080a0");
+                        render.set_font("12px sans-serif");
+                        render.fill_text(
+                            "Sidebar tabs (decorative): Profile / Account / Privacy / Notifications.",
+                            body_rect.x + 16.0,
+                            body_rect.y + 40.0,
+                        );
+                    }
+                    ModalKind::WizardDemo => {
+                        render.set_fill_color("#d1d4dc");
+                        render.set_font("13px sans-serif");
+                        render.set_text_align(TextAlign::Left);
+                        render.set_text_baseline(TextBaseline::Top);
+                        render.fill_text(
+                            "Wizard — multi-step page flow with Back/Next nav.",
+                            body_rect.x + 16.0,
+                            body_rect.y + 16.0,
+                        );
+                        render.set_fill_color("#7080a0");
+                        render.set_font("12px sans-serif");
+                        render.fill_text(
+                            "Pages: Welcome → Configure → Review.",
+                            body_rect.x + 16.0,
+                            body_rect.y + 40.0,
+                        );
+                    }
+                    ModalKind::AtomicsCatalog => {
+                        let cat_checked    = self.cat_checked;
+                        let cat_toggled    = self.cat_toggled;
+                        let cat_radio_sel  = self.cat_radio_sel;
+                        let cat_slider_val = self.cat_slider_val;
+                        let cat_swatch_sel = self.cat_swatch_sel;
+                        let cat_tab_sel    = self.cat_tab_sel;
+
+                        let bx = body_rect.x;
+                        let by = body_rect.y;
+                        let pad = 16.0_f64;
+                        let lbl_x = bx + pad;
+                        let widget_x = bx + pad + 110.0;
+
+                        // Section header
+                        render.set_fill_color("#d1d4dc");
+                        render.set_font("13px sans-serif");
+                        render.set_text_align(TextAlign::Left);
+                        render.set_text_baseline(TextBaseline::Top);
+                        render.fill_text("Atomic widgets — every primitive at a glance.", bx + pad, by + pad);
+
+                        let mut row_y = by + pad + 28.0;
+                        let row_h = 38.0;
+
+                        // Helper inline label printer.
+                        let put_label = |r: &mut dyn uzor::render::RenderContext, y: f64, text: &str| {
+                            r.set_fill_color("#7080a0");
+                            r.set_font("12px sans-serif");
+                            r.set_text_align(TextAlign::Left);
+                            r.set_text_baseline(TextBaseline::Middle);
+                            r.fill_text(text, lbl_x, y + 12.0);
+                        };
+
+                        // Row 1 — Button
+                        put_label(&mut render, row_y, "Button");
+                        register_context_manager_button(
+                            self.layout.ctx_mut(), &mut render,
+                            "cat-btn", Rect::new(widget_x, row_y, 130.0, 28.0), &layer,
+                            WidgetState::Normal,
+                            &ButtonView { text: Some("Action"), icon: None, active: false, disabled: false, active_border: None },
+                            &ButtonSettings::default().with_theme(Box::new(VisibleButtonTheme)),
+                        );
+                        row_y += row_h;
+
+                        // Row 2 — Checkbox
+                        put_label(&mut render, row_y, "Checkbox");
+                        register_context_manager_checkbox(
+                            self.layout.ctx_mut(), &mut render,
+                            "cat-cb", Rect::new(widget_x, row_y, 160.0, 22.0), &layer,
+                            WidgetState::Normal,
+                            &CheckboxView { checked: cat_checked, label: Some("Enabled") },
+                            &CheckboxSettings::default().with_theme(Box::new(VisibleCheckboxTheme)),
+                            &CheckboxRenderKind::Standard, "13px sans-serif",
+                        );
+                        row_y += row_h;
+
+                        // Row 3 — Toggle
+                        put_label(&mut render, row_y, "Toggle");
+                        register_context_manager_toggle(
+                            self.layout.ctx_mut(), &mut render,
+                            "cat-tog", Rect::new(widget_x, row_y, 80.0, 24.0), &layer,
+                            WidgetState::Normal,
+                            &ToggleView { toggled: cat_toggled, label: Some(if cat_toggled { "ON" } else { "OFF" }), disabled: false },
+                            &ToggleSettings::default(), &ToggleRenderKind::Switch,
+                        );
+                        row_y += row_h;
+
+                        // Row 4 — Radio (3 dots)
+                        put_label(&mut render, row_y, "Radio");
+                        for (i, off) in [0.0_f64, 40.0, 80.0].iter().enumerate() {
+                            let rid = format!("cat-radio-{i}");
+                            let cx = widget_x + off + 14.0;
+                            let cy = row_y + 14.0;
+                            register_context_manager_radio(
+                                self.layout.ctx_mut(), &mut render,
+                                rid.as_str(),
+                                Rect::new(widget_x + off, row_y, 28.0, 28.0),
+                                &layer,
+                                WidgetState::Normal,
+                                &RadioSettings::default(),
+                                &RadioRenderKind::Dot { shape: DotShape::Circle, cx, cy, view: RadioDotView { selected: cat_radio_sel == i } },
+                            );
+                        }
+                        row_y += row_h;
+
+                        // Row 5 — Slider
+                        put_label(&mut render, row_y, "Slider");
+                        register_context_manager_slider(
+                            self.layout.ctx_mut(), &mut render,
+                            "cat-slider", Rect::new(widget_x, row_y + 4.0, 260.0, 20.0), &layer,
+                            WidgetState::Normal,
+                            &SliderView { kind: SliderType::Single { value: cat_slider_val, min: 0.0, max: 100.0, step: 1.0 }, hovered: false, disabled: false, dragging_handle: None },
+                            &SliderSettings::default(),
+                        );
+                        row_y += row_h;
+
+                        // Row 6 — Color swatches
+                        put_label(&mut render, row_y, "ColorSwatch");
+                        let sw_colors: [[u8; 4]; 4] = [[41,98,255,255],[16,185,129,255],[245,158,11,255],[239,83,80,255]];
+                        for (i, color) in sw_colors.iter().enumerate() {
+                            let sid = format!("cat-sw-{i}");
+                            register_context_manager_color_swatch(
+                                self.layout.ctx_mut(), &mut render,
+                                sid.as_str(),
+                                Rect::new(widget_x + i as f64 * 30.0, row_y + 2.0, 24.0, 24.0),
+                                &layer,
+                                WidgetState::Normal,
+                                &ColorSwatchView { color: *color, hovered: false, selected: cat_swatch_sel == i, show_transparency: false, border_color_override: None },
+                                &ColorSwatchSettings::default(), &ColorSwatchRenderKind::Simple,
+                            );
+                        }
+                        row_y += row_h;
+
+                        // Row 7 — Tabs
+                        put_label(&mut render, row_y, "Tab");
+                        let cat_tab_labels = ["Alpha", "Beta", "Gamma"];
+                        for (i, lbl) in cat_tab_labels.iter().enumerate() {
+                            let tab_id = format!("cat-tab-{i}");
+                            let tab_w = 70.0_f64;
+                            let tab_rect = Rect::new(widget_x + i as f64 * (tab_w + 4.0), row_y, tab_w, 28.0);
+                            let tab_cfg = TabConfig::new(tab_id.as_str(), *lbl).active_if(cat_tab_sel == i);
+                            register_context_manager_tab(
+                                self.layout.ctx_mut(), &mut render,
+                                tab_id.as_str(), tab_rect, None, &layer,
+                                &TabView { tab: &tab_cfg, hovered: false, pressed: false, close_btn_hovered: false },
+                                &TabSettings::default(),
+                            );
+                        }
+                        row_y += row_h;
+
+                        // Row 8 — Separator
+                        put_label(&mut render, row_y, "Separator");
+                        register_context_manager_separator(
+                            self.layout.ctx_mut(), &mut render,
+                            "cat-sep", Rect::new(widget_x, row_y + 12.0, 280.0, 2.0), SeparatorKind::Divider, &layer,
+                            &SeparatorView { kind: SeparatorType::Divider { orientation: SeparatorOrientation::Horizontal }, hovered: false, dragging: false },
+                            &SeparatorSettings::default(),
+                        );
+                        row_y += row_h;
+
+                        // Row 9 — DragHandle
+                        put_label(&mut render, row_y, "DragHandle");
+                        register_context_manager_drag_handle(
+                            self.layout.ctx_mut(), &mut render,
+                            "cat-drag", Rect::new(widget_x, row_y, 28.0, 28.0), &layer,
+                            &DragHandleView { rect: Rect::new(widget_x, row_y, 28.0, 28.0) },
+                            &DragHandleSettings::default(), &DragHandleRenderKind::GripDots,
+                        );
+                        row_y += row_h;
+
+                        // Row 10 — Item (label-only)
+                        put_label(&mut render, row_y, "Item");
+                        register_context_manager_item(
+                            self.layout.ctx_mut(), &mut render,
+                            "cat-item", Rect::new(widget_x, row_y, 200.0, 26.0), &layer,
+                            WidgetState::Normal,
+                            &ItemView { label: Some("Non-interactive label"), icon: None, svg: None },
+                            &ItemSettings::default(), &ItemRenderKind::Label,
+                        );
+                    }
                 }
             }
         }
@@ -1876,9 +2198,20 @@ impl AppState {
         }
 
         let help_items = [
-            DropdownItem::Item { id: "modals-l2",     label: "L2 Modal",     icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "modals-l1",     label: "L1 Modal",     icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "modals-panels", label: "Panels Modal", icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
+            DropdownItem::Header { label: "Existing demos" },
+            DropdownItem::Item { id: "modals-l2",       label: "L2 Widget Set",  icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-l1",       label: "L1 Big Button",  icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-panels",   label: "Dock Panels",    icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-settings", label: "Settings",       icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
+            DropdownItem::Separator,
+            DropdownItem::Header { label: "ModalRenderKind catalog" },
+            DropdownItem::Item { id: "modals-plain",    label: "Plain",          icon: None, right: DropdownItemRight::Shortcut("frame only"),    disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-header",   label: "WithHeader",     icon: None, right: DropdownItemRight::Shortcut("title + drag"),  disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-toptabs",  label: "TopTabs",        icon: None, right: DropdownItemRight::Shortcut("tabs across"),   disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-sidetabs", label: "SideTabs",       icon: None, right: DropdownItemRight::Shortcut("icon sidebar"),  disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-wizard",   label: "Wizard",         icon: None, right: DropdownItemRight::Shortcut("multi-step"),    disabled: false, danger: false, accent_color: None },
+            DropdownItem::Separator,
+            DropdownItem::Item { id: "modals-atomics",  label: "Atomics catalog", icon: None, right: DropdownItemRight::Shortcut("everything"),  disabled: false, danger: false, accent_color: None },
         ];
         if self.dropdown_help_state.open {
             let hovered_id = self.dropdown_help_state.hovered_id.clone();
@@ -2177,10 +2510,17 @@ impl AppState {
                     this.modal_state.position = (0.0, 0.0);
                 };
                 match item_id {
-                    "modals-l2"     => open_modal(ModalKind::L2,   self),
-                    "modals-l1"     => open_modal(ModalKind::L1,   self),
-                    "modals-panels" => open_modal(ModalKind::Tags, self),
-                    other           => println!("[L3] Modals → {other}"),
+                    "modals-l2"       => open_modal(ModalKind::L2,             self),
+                    "modals-l1"       => open_modal(ModalKind::L1,             self),
+                    "modals-panels"   => open_modal(ModalKind::Tags,           self),
+                    "modals-settings" => open_modal(ModalKind::Settings,       self),
+                    "modals-plain"    => open_modal(ModalKind::PlainDemo,      self),
+                    "modals-header"   => open_modal(ModalKind::HeaderDemo,     self),
+                    "modals-toptabs"  => open_modal(ModalKind::TopTabsDemo,    self),
+                    "modals-sidetabs" => open_modal(ModalKind::SideTabsDemo,   self),
+                    "modals-wizard"   => open_modal(ModalKind::WizardDemo,     self),
+                    "modals-atomics"  => open_modal(ModalKind::AtomicsCatalog, self),
+                    other             => println!("[L3] Modals → {other}"),
                 }
                 self.dropdown_help_state.close();
                 return;
@@ -2241,7 +2581,23 @@ impl AppState {
                     self.l2_toggled = !self.l2_toggled;
                     return;
                 }
+                // Atomics catalog widgets
+                "cat-btn"  => { eprintln!("[DISPATCH] cat-btn");  return; }
+                "cat-cb"   => { self.cat_checked = !self.cat_checked; return; }
+                "cat-tog"  => { self.cat_toggled = !self.cat_toggled; return; }
+                "cat-drag" => { eprintln!("[DISPATCH] cat-drag"); return; }
+                "cat-item" => { eprintln!("[DISPATCH] cat-item"); return; }
+                "cat-sep"  => { eprintln!("[DISPATCH] cat-sep");  return; }
                 _ => {}
+            }
+            if let Some(n_str) = id_str.strip_prefix("cat-radio-") {
+                if let Ok(n) = n_str.parse::<usize>() { self.cat_radio_sel = n; return; }
+            }
+            if let Some(n_str) = id_str.strip_prefix("cat-sw-") {
+                if let Ok(n) = n_str.parse::<usize>() { self.cat_swatch_sel = n; return; }
+            }
+            if let Some(n_str) = id_str.strip_prefix("cat-tab-") {
+                if let Ok(n) = n_str.parse::<usize>() { self.cat_tab_sel = n; return; }
             }
             if let Some(n_str) = id_str.strip_prefix("l2-radio-") {
                 if let Ok(n) = n_str.parse::<usize>() {
@@ -2600,10 +2956,17 @@ impl AppState {
                         this.modal_state.position = (0.0, 0.0);
                     };
                     match hid.as_str() {
-                        "modals-l2"     => open_modal(ModalKind::L2,   self),
-                        "modals-l1"     => open_modal(ModalKind::L1,   self),
-                        "modals-panels" => open_modal(ModalKind::Tags, self),
-                        _               => println!("[L3] modals item: {hid}"),
+                        "modals-l2"       => open_modal(ModalKind::L2,             self),
+                        "modals-l1"       => open_modal(ModalKind::L1,             self),
+                        "modals-panels"   => open_modal(ModalKind::Tags,           self),
+                        "modals-settings" => open_modal(ModalKind::Settings,       self),
+                        "modals-plain"    => open_modal(ModalKind::PlainDemo,      self),
+                        "modals-header"   => open_modal(ModalKind::HeaderDemo,     self),
+                        "modals-toptabs"  => open_modal(ModalKind::TopTabsDemo,    self),
+                        "modals-sidetabs" => open_modal(ModalKind::SideTabsDemo,   self),
+                        "modals-wizard"   => open_modal(ModalKind::WizardDemo,     self),
+                        "modals-atomics"  => open_modal(ModalKind::AtomicsCatalog, self),
+                        _                 => println!("[L3] modals item: {hid}"),
                     }
                     self.dropdown_help_state.close();
                 }
@@ -3096,6 +3459,12 @@ impl ApplicationHandler for Handler {
             exit_requested: false,
             l1_btn_hovered: false,
             l1_btn_pressed: false,
+            cat_checked:    true,
+            cat_toggled:    false,
+            cat_radio_sel:  1,
+            cat_slider_val: 35.0,
+            cat_swatch_sel: 0,
+            cat_tab_sel:    0,
             watchlist: watchlist_blackbox::WatchlistState::default(),
         });
     }
