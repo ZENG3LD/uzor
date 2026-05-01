@@ -40,11 +40,13 @@ pub trait ChromeStyle {
     /// Width of the close-X zone inside each tab.  Default: `16.0`.
     fn tab_close_size(&self) -> f64 { 16.0 }
 
-    /// Gap between adjacent tabs in pixels.  Default: `1.0`.
-    fn tab_gap(&self) -> f64 { 1.0 }
+    /// Gap between adjacent tabs in pixels.  Default: `0.0` (chrome-style
+    /// flush-adjacent tabs — no visible empty strip between hover regions).
+    fn tab_gap(&self) -> f64 { 0.0 }
 
-    /// Left margin before the first tab.  Default: `4.0`.
-    fn tab_left_margin(&self) -> f64 { 4.0 }
+    /// Left margin before the first tab.  Default: `0.0` (tabs flush against
+    /// the chrome left edge — no empty strip when hovering the first tab).
+    fn tab_left_margin(&self) -> f64 { 0.0 }
 
     /// Height of the active / hover bottom accent line on a tab.  Default: `2.0`.
     fn tab_accent_height(&self) -> f64 { 2.0 }

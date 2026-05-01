@@ -40,7 +40,7 @@ use super::types::{ChromeRenderKind, ChromeTabConfig, ChromeView};
 // Layout constants (mirrors chrome-deep.md §2)
 // ---------------------------------------------------------------------------
 
-const TAB_LEFT_MARGIN: f64 = 4.0;
+const TAB_LEFT_MARGIN: f64 = 0.0;
 const NEW_TAB_BTN_WIDTH: f64 = 28.0;
 const BUTTON_WIDTH: f64 = 46.0;
 const CLOSE_WINDOW_BTN_WIDTH: f64 = 36.0;
@@ -117,9 +117,11 @@ pub fn register_input_coordinator_chrome(
     // --- Tabs ---
     let show_tabs = !matches!(kind, ChromeRenderKind::WindowControlsOnly);
     if show_tabs {
+        let uniform_w = uniform_tab_width(view.tabs, style.tab_padding_h(), style.tab_close_size());
         let mut x = rect.x + TAB_LEFT_MARGIN;
         for (i, tab) in view.tabs.iter().enumerate() {
-            let tab_w = tab_width(tab, state, i, style.tab_padding_h(), style.tab_close_size());
+            let cached = tab_width(tab, state, i, style.tab_padding_h(), style.tab_close_size());
+            let tab_w = if cached > 0.0 { cached } else { uniform_w };
             let tab_rect = Rect::new(x, rect.y, tab_w, h);
 
             // Tab body
@@ -317,9 +319,11 @@ fn draw_chrome_internal(
 
     // --- 2–3. Tab bodies + close-X icons ---
     if show_tabs {
+        let uniform_w = uniform_tab_width(view.tabs, style.tab_padding_h(), style.tab_close_size());
         let mut x = rect.x + TAB_LEFT_MARGIN;
         for (i, tab) in view.tabs.iter().enumerate() {
-            let tw = tab_width(tab, state, i, style.tab_padding_h(), style.tab_close_size());
+            let cached = tab_width(tab, state, i, style.tab_padding_h(), style.tab_close_size());
+            let tw = if cached > 0.0 { cached } else { uniform_w };
             let tab_rect = Rect::new(x, rect.y, tw, h);
 
             let ts = state.tabs_state.get(i);
@@ -506,9 +510,11 @@ fn draw_chrome_internal(
 
     // --- 13. Active tab bottom accent indicator ---
     if show_tabs {
+        let uniform_w = uniform_tab_width(view.tabs, style.tab_padding_h(), style.tab_close_size());
         let mut x = rect.x + TAB_LEFT_MARGIN;
         for (i, tab) in view.tabs.iter().enumerate() {
-            let tw = tab_width(tab, state, i, style.tab_padding_h(), style.tab_close_size());
+            let cached = tab_width(tab, state, i, style.tab_padding_h(), style.tab_close_size());
+            let tw = if cached > 0.0 { cached } else { uniform_w };
             let active = view.active_tab_id.map(|id| id == tab.id).unwrap_or(false);
             let ts = state.tabs_state.get(i);
             let hovered = ts.map(|s| s.hovered).unwrap_or(false);
@@ -620,22 +626,41 @@ pub fn measure(
 }
 
 /// Pixel width for tab `i`, using cached `tab_widths` if available.
+///
+/// All tabs share a uniform width = max(label) across the tab set, so the
+/// strip looks consistent (chrome-style). The cache in `ChromeState.tab_widths`
+/// is honoured if populated by the caller (advanced layout overrides).
 fn tab_width(
-    tab:          &ChromeTabConfig<'_>,
-    state:        &ChromeState,
-    i:            usize,
-    padding_h:    f64,
-    close_size:   f64,
+    _tab:        &ChromeTabConfig<'_>,
+    state:       &ChromeState,
+    i:           usize,
+    _padding_h:  f64,
+    _close_size: f64,
 ) -> f64 {
+    // Cache override (caller-supplied per-tab widths).
     if let Some(&w) = state.tab_widths.get(i) {
         return w;
     }
-    // Fallback: estimate from label length (12 px per char).
-    let text_w = tab.label.len() as f64 * 7.0;
+    // Without cached widths the renderer can't know the full tab set here,
+    // so fall back to a fixed sentinel — `tab_total_width` recomputes the
+    // uniform width from the full slice and overrides this.
+    0.0
+}
+
+/// Uniform width applied to every tab in the set: the longest label drives
+/// the width so all tabs render identically.
+fn uniform_tab_width(
+    tabs:       &[ChromeTabConfig<'_>],
+    padding_h:  f64,
+    close_size: f64,
+) -> f64 {
+    let max_label = tabs.iter().map(|t| t.label.len()).max().unwrap_or(0) as f64;
+    let text_w = max_label * 7.0;
     padding_h + text_w + close_size + padding_h
 }
 
-/// Total pixel width consumed by all tabs + gaps.
+/// Total pixel width consumed by all tabs + gaps. Uses cached state widths
+/// if every entry is populated, otherwise falls back to uniform width.
 fn tab_total_width(
     tabs:       &[ChromeTabConfig<'_>],
     state:      &ChromeState,
@@ -643,12 +668,18 @@ fn tab_total_width(
     close_size: f64,
     gap:        f64,
 ) -> f64 {
-    let mut total = 0.0_f64;
-    for (i, tab) in tabs.iter().enumerate() {
-        total += tab_width(tab, state, i, padding_h, close_size);
-        if i + 1 < tabs.len() {
-            total += gap;
+    if !tabs.is_empty() && state.tab_widths.len() == tabs.len() {
+        // All cached — sum cached widths + gaps.
+        let mut total = 0.0_f64;
+        for (i, _) in tabs.iter().enumerate() {
+            total += state.tab_widths[i];
+            if i + 1 < tabs.len() {
+                total += gap;
+            }
         }
+        return total;
     }
-    total
+    let uw = uniform_tab_width(tabs, padding_h, close_size);
+    let n = tabs.len() as f64;
+    if n == 0.0 { 0.0 } else { uw * n + gap * (n - 1.0) }
 }

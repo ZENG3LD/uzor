@@ -2474,6 +2474,21 @@ impl AppState {
         }
         let _ = clicked_id; // silence unused warning if no fall-through uses it
 
+        // ── Modal guard ───────────────────────────────────────────────────────
+        // When a modal is open, the geometric fallbacks below (chrome / toolbar /
+        // sidebar / dropdowns) MUST NOT fire. Coord-level modal layer already
+        // blocks coord dispatch, but the manual geometry path below bypasses
+        // that — so we early-return here. Outside-click dismiss is handled at
+        // the bottom of this function.
+        if self.modal_open {
+            if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
+                if !modal_rect.contains(x, y) {
+                    self.modal_open = false;
+                }
+            }
+            return;
+        }
+
         // ── Chrome hit ────────────────────────────────────────────────────────
         let tab_ids = ["tab-0", "tab-1", "tab-2"];
         let chrome_tabs = [
