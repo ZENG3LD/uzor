@@ -469,6 +469,30 @@ fn resolve_frame(rect: Rect, state: &ModalState, kind: &ModalRenderKind) -> Rect
     }
 }
 
+/// Effective sidebar width for a SideTabs modal — grows beyond
+/// `style.sidebar_width()` if labels don't fit. For non-SideTabs kinds returns 0.
+///
+/// Heuristic: `max(style.sidebar_width(), longest_label.len() * 7.0 + padding * 2)`,
+/// where 7.0 is the mlc per-character estimate also used by chrome / dropdown
+/// measure helpers.
+fn effective_sidebar_width(
+    view: &ModalView<'_>,
+    style: &dyn super::style::ModalStyle,
+    kind: &ModalRenderKind,
+) -> f64 {
+    if !matches!(kind, ModalRenderKind::SideTabs) {
+        return 0.0;
+    }
+    let base = style.sidebar_width();
+    let pad  = 12.0_f64;
+    let max_label_len = view.tabs.iter()
+        .map(|t| t.len())
+        .max()
+        .unwrap_or(0) as f64;
+    let label_w = max_label_len * 7.0 + pad * 2.0;
+    base.max(label_w)
+}
+
 /// Compute the body rect (the area available for caller-drawn content) of a
 /// modal whose total frame is `frame_rect`.
 ///
@@ -512,7 +536,7 @@ pub fn body_rect(
     let tab_h        = if has_top_tabs { style.tab_height()         } else { 0.0 };
     let footer_h     = if has_footer   { style.footer_height()      } else { 0.0 };
     let wizard_nav_h = if has_wizard   { style.wizard_nav_height()  } else { 0.0 };
-    let sidebar_w    = if has_sidebar  { style.sidebar_width()      } else { 0.0 };
+    let sidebar_w    = if has_sidebar  { effective_sidebar_width(view, style, kind) } else { 0.0 };
 
     Rect::new(
         frame_rect.x + sidebar_w,
@@ -554,7 +578,7 @@ pub fn measure_chrome(
     let tab_h        = if has_top_tabs { style.tab_height()         } else { 0.0 };
     let footer_h     = if has_footer   { style.footer_height()      } else { 0.0 };
     let wizard_nav_h = if has_wizard   { style.wizard_nav_height()  } else { 0.0 };
-    let sidebar_w    = if has_sidebar  { style.sidebar_width()      } else { 0.0 };
+    let sidebar_w    = if has_sidebar  { effective_sidebar_width(view, style, kind) } else { 0.0 };
 
     let extra_w = sidebar_w;
     let extra_h = header_h + tab_h + footer_h + wizard_nav_h;
@@ -588,7 +612,7 @@ fn compute_layout(
 
     let header_h     = if has_header { style.header_height() } else { 0.0 };
     let tab_h        = if has_top_tabs { style.tab_height() } else { 0.0 };
-    let sidebar_w    = if has_sidebar { style.sidebar_width() } else { 0.0 };
+    let sidebar_w    = if has_sidebar { effective_sidebar_width(view, style, kind) } else { 0.0 };
     let footer_h     = if has_footer { style.footer_height() } else { 0.0 };
     let wizard_nav_h = if has_wizard { style.wizard_nav_height() } else { 0.0 };
     let btn_size     = style.close_btn_size();
