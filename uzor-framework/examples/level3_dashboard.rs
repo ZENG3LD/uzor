@@ -597,7 +597,7 @@ fn render_tasks_stub(render: &mut dyn uzor::render::RenderContext, rect: uzor::t
         if *done {
             render.set_fill_color("#10b981");
             render.fill_rounded_rect(rect.x + 10.0, ry + 8.0, 14.0, 14.0, 3.0);
-            label(render, Rect::new(rect.x + 10.0, ry + 8.0, 14.0, 14.0), "v", TextAlign::Center, "#ffffff");
+            label(render, Rect::new(rect.x + 10.0, ry + 8.0, 14.0, 14.0), "✓", TextAlign::Center, "#ffffff");
         } else {
             render.set_fill_color("rgba(255,255,255,0.15)");
             render.fill_rounded_rect(rect.x + 10.0, ry + 8.0, 14.0, 14.0, 3.0);
@@ -1778,7 +1778,7 @@ impl AppState {
                             let sb_thumb = Rect::new(sb_x, thumb_y, SB_W, thumb_h);
                             register_context_manager_scrollbar(self.layout.ctx_mut(), &mut render, "l2-sb-track", "l2-sb-thumb", sb_track, sb_thumb, 5.0, &layer, CONTENT_H, viewport_h, l2_scroll_off, &ScrollbarSettings::default());
 
-                            let row_labels = ["Roboto regular","Sans-serif clean","arrow + check","Quick brown fox","star sun cloud heart","fn main() { ... }","let x: u32 = 42;","if let Some(v) = opt","// monospace code","0xCAFE_BABE","PT Root UI light","вариативный шрифт","12345 67890","Кириллица OK","unicode glyphs","Bold Roboto bold","Heads up","Done - 14 items","globe - star","=== end of list ==="];
+                            let row_labels = ["★ Roboto regular","Sans-serif clean","→ arrow + ✓ check","Quick brown fox","✨ ★ ☀ ☂ ❤","fn main() { ... }","let x: u32 = 42;","if let Some(v) = opt","// monospace code","0xCAFE_BABE","PT Root UI light","вариативный шрифт","12345 67890","Кириллица OK","ƒ unicode glyphs","Bold Roboto bold","❗ Heads up ❗","✓ Done · 14 items","🌍 globe · 🌟 star","═══ end of list ═══"];
                             let content_x = l2_right_panel_x + 8.0 + ox;
                             let content_w = l2_right_panel_w - SB_W - 20.0;
                             for row in 0..CONTENT_ROWS {
@@ -1922,7 +1922,7 @@ impl AppState {
                         render.set_fill_color("#7080a0");
                         render.set_font("12px sans-serif");
                         render.fill_text(
-                            "Pages: Welcome -> Configure -> Review.",
+                            "Pages: Welcome → Configure → Review.",
                             body_rect.x + 16.0,
                             body_rect.y + 40.0,
                         );
