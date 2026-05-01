@@ -66,6 +66,7 @@ use uzor::ui::widgets::composite::dropdown::types::{
 };
 
 use uzor::ui::widgets::composite::modal::input::{handle_modal_drag, register_layout_manager_modal};
+use uzor::ui::widgets::composite::modal::render::measure_chrome as measure_modal_chrome;
 use uzor::ui::widgets::composite::modal::settings::ModalSettings;
 use uzor::ui::widgets::composite::modal::state::ModalState;
 use uzor::ui::widgets::composite::modal::types::{
@@ -81,6 +82,7 @@ use uzor::ui::widgets::composite::popup::types::{
 };
 
 use uzor::ui::widgets::composite::sidebar::input::register_layout_manager_sidebar;
+use uzor::ui::widgets::composite::sidebar::render::measure as measure_sidebar;
 use uzor::ui::widgets::composite::sidebar::settings::SidebarSettings;
 use uzor::ui::widgets::composite::sidebar::state::SidebarState;
 use uzor::ui::widgets::composite::sidebar::style::{DefaultSidebarStyle, SidebarStyle};
@@ -89,6 +91,7 @@ use uzor::ui::widgets::composite::sidebar::types::{
 };
 
 use uzor::ui::widgets::composite::toolbar::input::register_layout_manager_toolbar;
+use uzor::ui::widgets::composite::toolbar::render::{measure_horizontal as measure_toolbar_h, measure_vertical as measure_toolbar_v};
 use uzor::ui::widgets::composite::toolbar::settings::ToolbarSettings;
 use uzor::ui::widgets::composite::toolbar::state::ToolbarState;
 use uzor::ui::widgets::composite::toolbar::style::{
@@ -173,9 +176,10 @@ const WIN_W: u32 = 1200;
 const WIN_H: u32 = 800;
 
 const BG: Color = Color::from_rgb8(0x16, 0x16, 0x1e);
-const SIDEBAR_OPEN_W: f64 = 220.0;
-const LEFT_VTOOLBAR_W: f64 = 44.0;
-const TOP_TOOLBAR_H: f64 = 36.0;
+// Layout-edge thicknesses are now derived from per-composite measure_*
+// helpers (see render() — measure_toolbar_h / measure_toolbar_v / measure_sidebar).
+// Only chrome height stays explicit since the chrome composite is wired
+// differently (LayoutManager::chrome_mut().height).
 const CHROME_H: f64 = 30.0;
 
 // SVG icons for toolbars
@@ -892,29 +896,54 @@ impl AppState {
         self.layout.chrome_mut().visible = true;
         self.layout.chrome_mut().height = CHROME_H as f32;
 
-        // Top toolbar
+        // Top toolbar — thickness from toolbar style via measure_horizontal.
+        // Empty view returns (pad*2, style.height()) — we just need the height.
+        let probe_view_h = ToolbarView {
+            start: ToolbarSection::empty(), center: ToolbarSection::empty(),
+            end: ToolbarSection::empty(), chrome: None,
+        };
+        let probe_settings = ToolbarSettings::new(
+            Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+            Box::new(HorizToolbarWithBorder),
+        );
+        let (_, top_h) = measure_toolbar_h(&probe_view_h, &probe_settings);
         self.layout.edges_mut().add(EdgeSlot {
             id: "top-toolbar".to_string(),
             side: EdgeSide::Top,
-            thickness: TOP_TOOLBAR_H as f32,
+            thickness: top_h as f32,
             visible: true,
             order: 0,
         });
 
-        // Left vertical toolbar (toggled via View → Show Toolbar)
+        // Left vertical toolbar (toggled via View → Show Toolbar) —
+        // thickness from style via measure_vertical.
+        let probe_view_v = ToolbarView {
+            start: ToolbarSection::empty(), center: ToolbarSection::empty(),
+            end: ToolbarSection::empty(), chrome: None,
+        };
+        let probe_settings_v = ToolbarSettings::new(
+            Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+            Box::new(VertToolbarWithBorder),
+        );
+        let (left_w, _) = measure_toolbar_v(&probe_view_v, &probe_settings_v);
         self.layout.edges_mut().add(EdgeSlot {
             id: "left-vtoolbar".to_string(),
             side: EdgeSide::Left,
-            thickness: LEFT_VTOOLBAR_W as f32,
+            thickness: left_w as f32,
             visible: self.left_toolbar_visible,
             order: 0,
         });
 
-        // Sidebar (slide-out, toggled): always registered, visible toggled
+        // Sidebar (slide-out, toggled): always registered, visible toggled.
+        // Width from sidebar style via measure().
+        let (sidebar_w, _chrome_h) = measure_sidebar(
+            &SidebarSettings::default(),
+            &SidebarRenderKind::Left,
+        );
         self.layout.edges_mut().add(EdgeSlot {
             id: "sidebar".to_string(),
             side: EdgeSide::Left,
-            thickness: SIDEBAR_OPEN_W as f32,
+            thickness: sidebar_w as f32,
             visible: self.sidebar_open,
             order: 1,
         });
@@ -1342,18 +1371,32 @@ impl AppState {
 
         // ── Modal ─────────────────────────────────────────────────────────────
         if self.modal_open {
-            let modal_w = match self.modal_kind {
-                ModalKind::L2       => L2_WIN_W + 24.0,
-                ModalKind::L1       => 320.0,
-                ModalKind::Settings => 400.0,
-                ModalKind::Tags     => 480.0,
+            // Body size per kind. Frame (modal_w, modal_h) = body + measure_chrome().
+            let (body_w, body_h) = match self.modal_kind {
+                ModalKind::L2       => (L2_WIN_W,  L2_WIN_H),
+                ModalKind::L1       => (320.0,     150.0),
+                ModalKind::Settings => (400.0,     250.0),
+                ModalKind::Tags     => (480.0,     310.0),
             };
-            let modal_h = match self.modal_kind {
-                ModalKind::L2       => L2_WIN_H + 80.0,
-                ModalKind::L1       => 200.0,
-                ModalKind::Settings => 300.0,
-                ModalKind::Tags     => 360.0,
+            // Probe chrome overhead via the same view we'll register with.
+            let probe_btns = [
+                FooterBtn { label: "Close", style: FooterBtnStyle::Ghost },
+                FooterBtn { label: "Apply", style: FooterBtnStyle::Primary },
+            ];
+            let probe_view = ModalView {
+                title: Some(""),
+                tabs: &[],
+                footer_buttons: &probe_btns,
+                wizard_pages: &[],
+                backdrop: BackdropKind::Dim,
             };
+            let (extra_w, extra_h) = measure_modal_chrome(
+                &probe_view,
+                &ModalSettings::default(),
+                &ModalRenderKind::WithHeaderFooter,
+            );
+            let modal_w = body_w + extra_w + 24.0; // 24 = body padding
+            let modal_h = body_h + extra_h;
             // Fix #10/#11: use modal_state.position (dragged) instead of always centering.
             let default_x = (width as f64 / 2.0 - modal_w / 2.0).max(0.0);
             let default_y = (height as f64 / 2.0 - modal_h / 2.0).max(0.0);
@@ -1777,10 +1820,11 @@ impl AppState {
         if self.dropdown_file_state.open {
             let hovered_id = self.dropdown_file_state.hovered_id.clone();
             let origin = self.dropdown_file_state.effective_origin();
+            let (fw, fh) = measure_flat(&file_items, &DropdownSettings::default());
             self.layout.push_overlay(OverlayEntry {
                 id: "dd-file-overlay".to_string(),
                 kind: OverlayKind::Dropdown,
-                rect: Rect::new(origin.0, origin.1, 200.0, 160.0),
+                rect: Rect::new(origin.0, origin.1, fw, fh),
                 anchor: None,
             });
             self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
@@ -1874,10 +1918,11 @@ impl AppState {
         if self.dropdown_addpanel_state.open {
             let hovered_id = self.dropdown_addpanel_state.hovered_id.clone();
             let origin = self.dropdown_addpanel_state.effective_origin();
+            let (aw, ah) = measure_flat(&addpanel_items, &DropdownSettings::default());
             self.layout.push_overlay(OverlayEntry {
                 id: "dd-addpanel-overlay".to_string(),
                 kind: OverlayKind::Dropdown,
-                rect: Rect::new(origin.0, origin.1, 200.0, 160.0),
+                rect: Rect::new(origin.0, origin.1, aw, ah),
                 anchor: None,
             });
             self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
@@ -2975,7 +3020,11 @@ impl ApplicationHandler for Handler {
         chrome_state.active_tab_id = Some("tab-0".into());
 
         let mut sidebar_state = SidebarState::default();
-        sidebar_state.width = SIDEBAR_OPEN_W;
+        let (sidebar_w_init, _) = measure_sidebar(
+            &SidebarSettings::default(),
+            &SidebarRenderKind::Left,
+        );
+        sidebar_state.width = sidebar_w_init;
 
         window.request_redraw();
 
