@@ -19,11 +19,11 @@
 
 // Re-export all font byte constants from the dedicated assets crate.
 pub use uzor_fonts::{
+    DEJAVU_SANS,
     JETBRAINS_MONO_BOLD,
     JETBRAINS_MONO_REGULAR,
     NOTO_COLOR_EMOJI,
     NOTO_EMOJI,
-    NOTO_SANS,
     NOTO_SANS_SYMBOLS2,
     PT_ROOT_UI_VF,
     ROBOTO_BOLD,

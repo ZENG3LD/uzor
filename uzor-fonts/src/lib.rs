@@ -63,12 +63,15 @@ pub static NOTO_SANS_SYMBOLS2: &[u8] =
 /// to the monochrome outline or skip to the next fallback.
 pub static NOTO_COLOR_EMOJI: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/NotoColorEmoji.ttf"));
 
-/// Noto Sans Regular — broad BMP coverage including Arrows (U+2190–21FF),
-/// General Punctuation, Math Operators, Geometric Shapes, Letterlike Symbols.
-/// Fills the gap between subsetted Roboto (no arrows) and NotoSansSymbols2
-/// (mostly U+1xxxx symbols, missing General Punctuation arrows / dingbats).
-/// Downloaded from upstream Noto release at build time.
-pub static NOTO_SANS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/NotoSans-Regular.ttf"));
+/// DejaVu Sans Regular — broad BMP coverage. Fills the gap left by subsetted
+/// Roboto (no arrows / dingbats / geometric shapes) and NotoSansSymbols2
+/// (mostly supplementary U+1xxxx symbols).
+///
+/// Covers: Arrows (U+2190–21FF), General Punctuation, Math Operators,
+/// Geometric Shapes (U+25A0–25FF), Box Drawing, Dingbats (U+2700–27BF, partial),
+/// Letterlike Symbols. Bundled directly (~757 KB) — small enough not to need a
+/// separate download.
+pub static DEJAVU_SANS: &[u8] = include_bytes!("../fonts/DejaVuSans.ttf");
 
 /// Noto Emoji — color-neutral emoji coverage (legacy, works on all backends).
 pub static NOTO_EMOJI: &[u8] = include_bytes!("../fonts/NotoEmoji-Regular.ttf");

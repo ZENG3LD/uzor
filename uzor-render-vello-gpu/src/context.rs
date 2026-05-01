@@ -29,7 +29,7 @@ static CACHED_FALLBACK_NERD_FONT: OnceLock<FontData> = OnceLock::new();
 static CACHED_FALLBACK_SYMBOLS2: OnceLock<FontData> = OnceLock::new();
 static CACHED_FALLBACK_COLOR_EMOJI: OnceLock<FontData> = OnceLock::new();
 static CACHED_FALLBACK_EMOJI: OnceLock<FontData> = OnceLock::new();
-static CACHED_FALLBACK_NOTO_SANS: OnceLock<FontData> = OnceLock::new();
+static CACHED_FALLBACK_DEJAVU: OnceLock<FontData> = OnceLock::new();
 
 fn make_font(bytes: &'static [u8]) -> FontData {
     FontData::new(Blob::new(Arc::new(bytes.to_vec())), 0)
@@ -64,22 +64,23 @@ pub(crate) fn get_cached_font(family: FontFamily, bold: bool, italic: bool) -> &
 }
 
 /// Return the static fallback font list in priority order:
-/// [NotoSans, NotoSansSymbols2, NotoEmoji, NotoColorEmoji, SymbolsNerdFontMono].
+/// [DejaVuSans, NotoSansSymbols2, NotoEmoji, NotoColorEmoji, SymbolsNerdFontMono].
 ///
 /// Order rationale:
-/// - NotoSans first — broad BMP coverage (Arrows U+2190–21FF, General
-///   Punctuation, Math, Geometric Shapes, Letterlike). Catches the common
-///   gaps that subsetted Roboto leaves (e.g. U+2192 →).
+/// - DejaVuSans first — broad BMP coverage with REAL glyph data (Arrows
+///   U+2190–21FF, General Punctuation, Math, Geometric Shapes, Box Drawing,
+///   Letterlike, Dingbats partial). Catches the common gaps that subsetted
+///   Roboto leaves (U+2192 →, U+2605 ★, U+2713 ✓, U+2630 ☰, ...).
 /// - NotoSansSymbols2 — supplementary symbols (U+1xxxx and edge BMP blocks).
-/// - NotoEmoji / NotoColorEmoji — emoji ranges.
+/// - NotoEmoji / NotoColorEmoji — emoji ranges (U+1F000+, sparkles ✨, etc.).
 /// - NerdFontMono last — it's a patcher that advertises many code points but
 ///   ships empty / invisible glyphs for non-PUA symbols. Putting it last
 ///   avoids the trap where it wins charmap.map() and then renders nothing.
 pub(crate) fn get_fallback_fonts() -> &'static [FontData] {
     static FALLBACK_LIST: OnceLock<Vec<FontData>> = OnceLock::new();
     FALLBACK_LIST.get_or_init(|| {
-        let ns = CACHED_FALLBACK_NOTO_SANS
-            .get_or_init(|| make_font(fonts::NOTO_SANS));
+        let dv = CACHED_FALLBACK_DEJAVU
+            .get_or_init(|| make_font(fonts::DEJAVU_SANS));
         let s2 = CACHED_FALLBACK_SYMBOLS2
             .get_or_init(|| make_font(fonts::NOTO_SANS_SYMBOLS2));
         let em = CACHED_FALLBACK_EMOJI
@@ -88,7 +89,7 @@ pub(crate) fn get_fallback_fonts() -> &'static [FontData] {
             .get_or_init(|| make_font(fonts::NOTO_COLOR_EMOJI));
         let nf = CACHED_FALLBACK_NERD_FONT
             .get_or_init(|| make_font(fonts::SYMBOLS_NERD_FONT_MONO));
-        vec![ns.clone(), s2.clone(), em.clone(), cv.clone(), nf.clone()]
+        vec![dv.clone(), s2.clone(), em.clone(), cv.clone(), nf.clone()]
     })
 }
 

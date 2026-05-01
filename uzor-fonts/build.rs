@@ -12,15 +12,6 @@ fn main() {
             "https://github.com/ZENG3LD/uzor/releases/download/fonts-v1/NotoColorEmoji.ttf",
             1_000_000,
         ),
-        (
-            "NotoSans-Regular.ttf",
-            // Google Fonts canonical Noto Sans Regular (covers Arrows U+2190–21FF,
-            // General Punctuation, Math Operators, Geometric Shapes, etc.) — fills
-            // the gap between Roboto subset and NotoSansSymbols2 / NerdFont which
-            // both miss U+2192 and friends.
-            "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSans/full/ttf/NotoSans-Regular.ttf",
-            300_000,
-        ),
     ];
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by cargo");
@@ -28,7 +19,6 @@ fn main() {
     for (name, url, min_size) in downloads {
         let dest = std::path::Path::new(&out_dir).join(name);
 
-        // Skip download if already cached at the expected minimum size.
         if dest.exists() {
             let size = dest.metadata().map(|m| m.len()).unwrap_or(0);
             if size >= *min_size {
@@ -37,8 +27,8 @@ fn main() {
         }
 
         let status = std::process::Command::new("curl")
-            .arg("-sSL")   // silent, show errors, follow redirects
-            .arg("--fail") // treat HTTP 4xx/5xx as errors
+            .arg("-sSL")
+            .arg("--fail")
             .arg("-o")
             .arg(&dest)
             .arg(url)
