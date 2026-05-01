@@ -360,6 +360,133 @@ fn l1_grid_height(rows: usize, settings: &PopupSettings) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
+// Public API — measurement
+// ---------------------------------------------------------------------------
+
+/// Measure natural size of a `ColorPickerGrid` popup (L1 picker).
+///
+/// `w = pad*2 + grid_columns*(swatch+gap) - gap`
+/// `h = pad*2 + grid_h + gap + opacity_row_h`
+pub fn measure_color_picker_grid(
+    swatches: &[&str],
+    settings: &PopupSettings,
+) -> (f64, f64) {
+    let style = settings.style.as_ref();
+    let pad   = style.padding();
+    let cols  = style.grid_columns().max(1);
+    let sz    = style.swatch_size();
+    let gap   = style.grid_gap();
+    let opa_h = style.opacity_row_height();
+
+    let rows   = l1_grid_rows(swatches.len(), cols);
+    let grid_h = l1_grid_height(rows, settings);
+    let grid_w = (cols as f64 * (sz + gap) - gap).max(0.0);
+
+    let w = pad * 2.0 + grid_w;
+    let h = pad * 2.0 + grid_h + gap + opa_h;
+    (w, h)
+}
+
+/// Measure natural size of a `ColorPickerHsv` popup (L2 picker).
+///
+/// Width: pad*2 + hsv_square + inner_gap + hue_bar
+/// Height: pad*2 + hsv_square + inner_gap + hex_row + inner_gap + action_btn
+pub fn measure_color_picker_hsv(settings: &PopupSettings) -> (f64, f64) {
+    let style = settings.style.as_ref();
+    let pad   = style.padding();
+    let sq    = style.hsv_square_size();
+    let hue   = style.hue_bar_width();
+    let gap   = style.hsv_inner_gap();
+    let hex_h = style.hex_row_height();
+    let act_h = style.action_button_height();
+
+    let w = pad * 2.0 + sq + gap + hue;
+    let h = pad * 2.0 + sq + gap + hex_h + gap + act_h;
+    (w, h)
+}
+
+/// Measure natural size of a `SwatchGrid` popup (compact preset + custom + Remove).
+pub fn measure_swatch_grid(
+    preset_swatches: &[[f32; 4]],
+    custom_swatches: &[[f32; 4]],
+    settings: &PopupSettings,
+) -> (f64, f64) {
+    let style = settings.style.as_ref();
+    let pad   = style.padding();
+    let cols  = style.swatch_grid_columns().max(1);
+    let sz    = style.swatch_grid_size();
+    let gap   = style.swatch_grid_gap();
+    let rem_h = style.remove_row_height();
+
+    let preset_rows = l1_grid_rows(preset_swatches.len(), cols);
+    let custom_rows = l1_grid_rows(custom_swatches.len(), cols);
+
+    let row_height = sz + gap;
+    let preset_h = (preset_rows as f64 * row_height - gap).max(0.0);
+    let custom_h = if custom_swatches.is_empty() {
+        0.0
+    } else {
+        (custom_rows as f64 * row_height - gap).max(0.0) + gap
+    };
+
+    let w = pad * 2.0 + (cols as f64 * (sz + gap) - gap).max(0.0);
+    let h = pad * 2.0 + preset_h + custom_h + gap + rem_h;
+    (w, h)
+}
+
+/// Measure natural size of an `ItemList` popup — sums per-row heights.
+///
+/// Mirrors `dropdown::measure_flat` but uses `PopupStyle` getters.
+pub fn measure_item_list(
+    items:    &[DropdownItem<'_>],
+    settings: &PopupSettings,
+) -> (f64, f64) {
+    let style    = settings.style.as_ref();
+    let pad      = style.padding();
+    let item_h   = style.item_height();
+    let header_h = style.header_height();
+    let sep_h    = style.separator_height();
+
+    let mut content_h = 0.0_f64;
+    for it in items {
+        match it {
+            DropdownItem::Item    { .. }
+            | DropdownItem::Submenu { .. } => content_h += item_h,
+            DropdownItem::Header  { .. }   => content_h += header_h,
+            DropdownItem::Separator        => content_h += sep_h,
+        }
+    }
+
+    let w = style.min_width();
+    let h = pad * 2.0 + content_h;
+    (w, h)
+}
+
+/// Measure natural size of an `IndicatorStrip` popup.
+///
+/// `h = pad*2 + n*row_h + (n-1)*row_gap`. Width comes from caller (variable
+/// label widths require a `RenderContext` for `measure_text`).
+pub fn measure_indicator_strip(
+    n_indicators: usize,
+    settings:     &PopupSettings,
+) -> (f64, f64) {
+    let style = settings.style.as_ref();
+    let pad   = style.padding();
+    let row_h = style.strip_row_height();
+    let gap   = style.strip_row_gap();
+
+    let rows_h = if n_indicators == 0 {
+        0.0
+    } else {
+        n_indicators as f64 * row_h + (n_indicators as f64 - 1.0) * gap
+    };
+
+    let w = style.min_width();
+    let h = pad * 2.0 + rows_h;
+    (w, h)
+}
+
+// ---------------------------------------------------------------------------
 // Template: ColorPickerGrid (L1)
 // ---------------------------------------------------------------------------
 

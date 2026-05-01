@@ -227,6 +227,50 @@ fn layout_section_horizontal(
     rects
 }
 
+/// Measure the natural size of a horizontal toolbar.
+///
+/// Width = pad*2 + start + end widths + center width (if non-empty).
+/// Height = `style.height()`.
+pub fn measure_horizontal(view: &ToolbarView<'_>, settings: &ToolbarSettings) -> (f64, f64) {
+    let style    = settings.style.as_ref();
+    let padding  = style.padding();
+    let sec_gap  = style.section_gap();
+
+    let start_w  = section_width_horizontal(&view.start, settings);
+    let center_w = section_width_horizontal(&view.center, settings);
+    let end_w    = section_width_horizontal(&view.end, settings);
+
+    let mut content_w = start_w;
+    if !view.center.is_empty() { content_w += sec_gap + center_w; }
+    if !view.end.is_empty()    { content_w += sec_gap + end_w;    }
+
+    let w = padding * 2.0 + content_w;
+    let h = style.height();
+    (w, h)
+}
+
+/// Measure the natural size of a vertical toolbar.
+///
+/// Width = `style.width()`.
+/// Height = pad*2 + section heights (start + center + end).
+pub fn measure_vertical(view: &ToolbarView<'_>, settings: &ToolbarSettings) -> (f64, f64) {
+    let style    = settings.style.as_ref();
+    let padding  = style.padding();
+    let sec_gap  = style.section_gap();
+
+    let start_h  = section_height_vertical(&view.start, settings);
+    let center_h = section_height_vertical(&view.center, settings);
+    let end_h    = section_height_vertical(&view.end, settings);
+
+    let mut content_h = start_h;
+    if !view.center.is_empty() { content_h += sec_gap + center_h; }
+    if !view.end.is_empty()    { content_h += sec_gap + end_h;    }
+
+    let w = style.width();
+    let h = padding * 2.0 + content_h;
+    (w, h)
+}
+
 /// Total width consumed by a section (including inter-item spacing).
 fn section_width_horizontal(section: &ToolbarSection<'_>, settings: &ToolbarSettings) -> f64 {
     let rects = layout_section_horizontal(section, 0.0, 0.0, 0.0, settings);

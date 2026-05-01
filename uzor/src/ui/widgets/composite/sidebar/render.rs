@@ -494,6 +494,26 @@ fn draw_tab_strip(
 // Layout computation
 // ---------------------------------------------------------------------------
 
+/// Measure the natural width of a sidebar (`style.default_width()`) and the
+/// chrome overhead height (header + optional tab strip).
+///
+/// Sidebar body height is layout-driven, not content-driven — caller adds the
+/// available body height to `chrome_h` to get total height.
+///
+/// Returns `(default_w, chrome_h)`.
+pub fn measure(
+    settings: &SidebarSettings,
+    kind:     &SidebarRenderKind,
+) -> (f64, f64) {
+    let style = settings.style.as_ref();
+    let header_h    = style.header_height();
+    let tab_strip_h = match kind {
+        SidebarRenderKind::WithTypeSelector => style.tab_strip_height(),
+        _ => 0.0,
+    };
+    (style.default_width(), header_h + tab_strip_h)
+}
+
 fn compute_layout(
     rect:     Rect,
     _state:   &SidebarState,

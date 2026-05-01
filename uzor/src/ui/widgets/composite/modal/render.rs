@@ -456,6 +456,45 @@ fn resolve_frame(rect: Rect, state: &ModalState, kind: &ModalRenderKind) -> Rect
     }
 }
 
+/// Measure the chrome overhead (header / tabs / footer / wizard nav / sidebar)
+/// that a modal kind adds around its body.
+///
+/// Returns `(extra_w, extra_h)` — caller passes desired body `(bw, bh)` and uses
+/// `(bw + extra_w, bh + extra_h)` as the overlay rect, instead of hardcoding
+/// magic frame sizes.
+pub fn measure_chrome(
+    view:     &ModalView<'_>,
+    settings: &ModalSettings,
+    kind:     &ModalRenderKind,
+) -> (f64, f64) {
+    let style = settings.style.as_ref();
+
+    let has_header   = matches!(
+        kind,
+        ModalRenderKind::WithHeader
+            | ModalRenderKind::WithHeaderFooter
+            | ModalRenderKind::TopTabs
+            | ModalRenderKind::SideTabs
+    );
+    let has_top_tabs = matches!(kind, ModalRenderKind::TopTabs);
+    let has_sidebar  = matches!(kind, ModalRenderKind::SideTabs);
+    let has_footer   = matches!(
+        kind,
+        ModalRenderKind::WithHeaderFooter | ModalRenderKind::SideTabs
+    ) || (matches!(kind, ModalRenderKind::TopTabs) && !view.footer_buttons.is_empty());
+    let has_wizard   = matches!(kind, ModalRenderKind::Wizard);
+
+    let header_h     = if has_header   { style.header_height()      } else { 0.0 };
+    let tab_h        = if has_top_tabs { style.tab_height()         } else { 0.0 };
+    let footer_h     = if has_footer   { style.footer_height()      } else { 0.0 };
+    let wizard_nav_h = if has_wizard   { style.wizard_nav_height()  } else { 0.0 };
+    let sidebar_w    = if has_sidebar  { style.sidebar_width()      } else { 0.0 };
+
+    let extra_w = sidebar_w;
+    let extra_h = header_h + tab_h + footer_h + wizard_nav_h;
+    (extra_w, extra_h)
+}
+
 fn compute_layout(
     frame:    Rect,
     _state:   &ModalState,

@@ -330,6 +330,20 @@ fn content_rect(frame: Rect, settings: &ContextMenuSettings) -> Rect {
     )
 }
 
+/// Measure the natural panel size of a context menu — width is `style.min_width()`,
+/// height is title row + sum of item rows + optional separator rows + 2× padding.
+///
+/// Use this to size the overlay rect instead of hardcoding magic numbers.
+pub fn measure(
+    view:     &ContextMenuView<'_>,
+    settings: &ContextMenuSettings,
+    kind:     &ContextMenuRenderKind<'_>,
+) -> (f64, f64) {
+    let w = settings.style.min_width();
+    let h = compute_menu_height(view, settings, kind);
+    (w, h)
+}
+
 /// Compute the total menu panel height from items + optional title.
 fn compute_menu_height(
     view:     &ContextMenuView<'_>,

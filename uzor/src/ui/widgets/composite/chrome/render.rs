@@ -575,6 +575,50 @@ fn draw_cross(
 // Tab width helpers
 // ---------------------------------------------------------------------------
 
+/// Measure natural width of the chrome bar for the given tabs and render kind.
+///
+/// Width = `tab_left_margin + tab_total_width + (new_tab_btn if enabled)
+///         + drag_zone_min_width + window-controls width(kind, view)`.
+/// Height is always `style.chrome_height()`.
+///
+/// Use this when you need a content-driven chrome rect instead of stretching to
+/// the full viewport width.
+pub fn measure(
+    view:     &ChromeView<'_>,
+    state:    &ChromeState,
+    settings: &ChromeSettings,
+    kind:     &ChromeRenderKind,
+) -> (f64, f64) {
+    let style = settings.style.as_ref();
+
+    let pad_h     = style.tab_padding_h();
+    let close_sz  = style.tab_close_size();
+    let gap       = style.tab_gap();
+    let left_mrg  = style.tab_left_margin();
+
+    let tabs_w   = tab_total_width(view.tabs, state, pad_h, close_sz, gap);
+    let new_tab  = if view.show_new_tab_btn { style.new_tab_btn_width() } else { 0.0 };
+    let drag_w   = style.drag_zone_min_width();
+
+    // Window-controls column varies per kind.
+    let controls_w: f64 = match kind {
+        ChromeRenderKind::Minimal => 0.0,
+        ChromeRenderKind::WindowControlsOnly | ChromeRenderKind::Default | ChromeRenderKind::Custom(_) => {
+            let mut w = 0.0;
+            if view.show_menu_btn         { w += style.button_size_max();   }
+            if view.show_new_window_btn   { w += style.button_size_max();   }
+            // min/max/close-app: a standard window controls trio (3 × button_size_min).
+            w += style.button_size_min() * 3.0;
+            if view.show_close_window_btn { w += style.button_size_close(); }
+            w
+        }
+    };
+
+    let total_w = left_mrg + tabs_w + new_tab + drag_w + controls_w;
+    let total_h = style.chrome_height();
+    (total_w, total_h)
+}
+
 /// Pixel width for tab `i`, using cached `tab_widths` if available.
 fn tab_width(
     tab:          &ChromeTabConfig<'_>,
