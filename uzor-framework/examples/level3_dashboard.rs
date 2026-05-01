@@ -711,6 +711,26 @@ enum DragTarget {
     SeparatorDrag { sep_idx: usize, start_x: f64, start_y: f64 },
 }
 
+/// Resolve a `sidebar_kind` index back to a fresh `SidebarRenderKind`.
+/// We store the index because the enum has a closure variant and isn't Clone.
+fn sidebar_kind_from_index(idx: u8) -> SidebarRenderKind {
+    match idx {
+        1 => SidebarRenderKind::Right,
+        2 => SidebarRenderKind::WithTypeSelector,
+        3 => SidebarRenderKind::Embedded,
+        _ => SidebarRenderKind::Left,
+    }
+}
+
+fn sidebar_kind_label(idx: u8) -> &'static str {
+    match idx {
+        1 => "Right",
+        2 => "WithTypeSelector",
+        3 => "Embedded",
+        _ => "Left",
+    }
+}
+
 // =============================================================================
 // App state
 // =============================================================================
@@ -741,10 +761,25 @@ struct AppState {
     dropdown_view_state: DropdownState,
     dropdown_help_state: DropdownState,
     dropdown_addpanel_state: DropdownState,
+    dropdown_sidebar_state: DropdownState,
+    dropdown_toolbar_state: DropdownState,
+    dropdown_popup_state: DropdownState,
+    dropdown_theme_state: DropdownState,
 
     // App interaction state
     active_view: usize, // 0=Dashboard,1=Charts,2=Settings
     sidebar_open: bool,
+    /// 0=Left, 1=Right, 2=WithTypeSelector, 3=Embedded.
+    /// Stored as index because SidebarRenderKind isn't Clone (has a closure variant).
+    sidebar_kind: u8,
+    /// 0=Dark, 1=Light. Just two presets for now — runtime theme swap demo.
+    theme_idx: u8,
+    /// Which popup template is currently open: None / Some(PopupKindIdx).
+    /// 0=ColorPickerGrid, 1=ColorPickerHsv, 2=SwatchGrid, 3=ItemList, 4=IndicatorStrip.
+    popup_kind: Option<u8>,
+    /// Toolbar render variant index (0=Horizontal, 1=Vertical, 2=ChromeStrip, 3=Inline).
+    /// Affects only the demo toolbar — main top toolbar stays Horizontal.
+    toolbar_kind: u8,
     left_toolbar_visible: bool,
     modal_open: bool,
     modal_kind: ModalKind,
@@ -800,6 +835,19 @@ impl AppState {
 
     fn time_ms(&self) -> f64 {
         self.start.elapsed().as_millis() as f64
+    }
+
+    /// Close every top-level dropdown except the one named in `keep`.
+    /// Used for one-click switching between adjacent toolbar dropdown buttons —
+    /// otherwise opening B while A is open would require an explicit close-A click.
+    fn close_all_dropdowns_except(&mut self, keep: &str) {
+        if keep != "file"    { self.dropdown_file_state.close(); }
+        if keep != "view"    { self.dropdown_view_state.close(); }
+        if keep != "help"    { self.dropdown_help_state.close(); }
+        if keep != "sidebar" { self.dropdown_sidebar_state.close(); }
+        if keep != "toolbar" { self.dropdown_toolbar_state.close(); }
+        if keep != "popup"   { self.dropdown_popup_state.close(); }
+        if keep != "theme"   { self.dropdown_theme_state.close(); }
     }
 
     fn switch_tab(&mut self, new_tab: usize) {
@@ -949,14 +997,19 @@ impl AppState {
         });
 
         // Sidebar (slide-out, toggled): always registered, visible toggled.
-        // Width from sidebar style via measure().
+        // Width from sidebar style via measure(); side / kind chosen by sidebar_kind.
+        let kind_value = sidebar_kind_from_index(self.sidebar_kind);
+        let edge_side = match self.sidebar_kind {
+            1 => EdgeSide::Right,           // Right
+            _ => EdgeSide::Left,            // Left, WithTypeSelector, Embedded → left
+        };
         let (sidebar_w, _chrome_h) = measure_sidebar(
             &SidebarSettings::default(),
-            &SidebarRenderKind::Left,
+            &kind_value,
         );
         self.layout.edges_mut().add(EdgeSlot {
             id: "sidebar".to_string(),
-            side: EdgeSide::Left,
+            side: edge_side,
             thickness: sidebar_w as f32,
             visible: self.sidebar_open,
             order: 1,
@@ -1062,9 +1115,18 @@ impl AppState {
         // Suppress unused warnings — file dropdown removed; keep state field
         // for now to avoid larger refactor.
         let _ = file_btn_active;
+        let sidebar_btn_active = self.dropdown_sidebar_state.open;
+        let toolbar_btn_active = self.dropdown_toolbar_state.open;
+        let popup_btn_active   = self.dropdown_popup_state.open;
+        let theme_btn_active   = self.dropdown_theme_state.open;
         let top_toolbar_items = [
-            ToolbarItem::TextButton { id: "tb-view", text: "View",   active: view_btn_active,   tooltip: Some("View menu") },
-            ToolbarItem::TextButton { id: "tb-help", text: "Modals", active: modals_btn_active, tooltip: Some("Modals menu") },
+            ToolbarItem::TextButton { id: "tb-view",    text: "View",    active: view_btn_active,    tooltip: Some("View menu") },
+            ToolbarItem::TextButton { id: "tb-help",    text: "Modals",  active: modals_btn_active,  tooltip: Some("Modals menu") },
+            ToolbarItem::Separator,
+            ToolbarItem::TextButton { id: "tb-sidebar", text: "Sidebar", active: sidebar_btn_active, tooltip: Some("Sidebar variants") },
+            ToolbarItem::TextButton { id: "tb-toolbar", text: "Toolbar", active: toolbar_btn_active, tooltip: Some("Toolbar variants") },
+            ToolbarItem::TextButton { id: "tb-popup",   text: "Popup",   active: popup_btn_active,   tooltip: Some("Popup templates") },
+            ToolbarItem::TextButton { id: "tb-theme",   text: "Theme",   active: theme_btn_active,   tooltip: Some("Theme switcher") },
         ];
         let clock_items = [
             ToolbarItem::Clock { id: "top-clock", time_text: clock.as_str() },
@@ -1132,6 +1194,7 @@ impl AppState {
                 show_scrollbar: false,
                 content_height: 200.0,
             };
+            let sidebar_kind_value = sidebar_kind_from_index(self.sidebar_kind);
             let _sidebar_node = register_layout_manager_sidebar(
                 &mut self.layout,
                 &mut render,
@@ -1145,7 +1208,7 @@ impl AppState {
                     s.style = Box::new(NoDividerSidebarStyle(DefaultSidebarStyle));
                     s
                 },
-                &SidebarRenderKind::Left,
+                &sidebar_kind_value,
             );
             // Sidebar body — spawn UI + panel list.
             if let Some(body_rect) = self.layout.rect_for_edge_slot("sidebar") {
@@ -2069,6 +2132,147 @@ impl AppState {
             );
         }
 
+        // ── Sidebar variants dropdown ─────────────────────────────────────────
+        let sk = self.sidebar_kind;
+        let sidebar_items = [
+            DropdownItem::Header { label: "SidebarRenderKind" },
+            DropdownItem::Item { id: "sidebar-left",    label: "Left",             icon: None, right: DropdownItemRight::Toggle(sk == 0), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "sidebar-right",   label: "Right",            icon: None, right: DropdownItemRight::Toggle(sk == 1), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "sidebar-typesel", label: "WithTypeSelector", icon: None, right: DropdownItemRight::Toggle(sk == 2), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "sidebar-embed",   label: "Embedded",         icon: None, right: DropdownItemRight::Toggle(sk == 3), disabled: false, danger: false, accent_color: None },
+        ];
+        if self.dropdown_sidebar_state.open {
+            let hovered_id = self.dropdown_sidebar_state.hovered_id.clone();
+            let origin = self.dropdown_sidebar_state.effective_origin();
+            let (sw, sh) = measure_flat(&sidebar_items, &DropdownSettings::default());
+            self.layout.push_overlay(OverlayEntry {
+                id: "dd-sidebar-overlay".to_string(),
+                kind: OverlayKind::Dropdown,
+                rect: Rect::new(origin.0, origin.1, sw, sh),
+                anchor: None,
+            });
+            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
+            let mut dd_view = DropdownView {
+                anchor: self.dropdown_sidebar_state.anchor_rect,
+                position_override: self.dropdown_sidebar_state.open_position_override,
+                open: true,
+                kind: DropdownViewKind::Flat { items: &sidebar_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
+            };
+            register_layout_manager_dropdown(
+                &mut self.layout, &mut render,
+                LayoutNodeId::ROOT, "dd-sidebar-overlay", "dd-sidebar-widget",
+                &mut self.dropdown_sidebar_state,
+                &mut dd_view,
+                &DropdownSettings::default(),
+                DropdownRenderKind::Flat,
+            );
+        }
+
+        // ── Toolbar variants dropdown ─────────────────────────────────────────
+        let toolbar_items_dd = [
+            DropdownItem::Header { label: "ToolbarRenderKind" },
+            DropdownItem::Item { id: "toolbar-horiz",   label: "Horizontal",  icon: None, right: DropdownItemRight::Shortcut("default"),    disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "toolbar-vert",    label: "Vertical",    icon: None, right: DropdownItemRight::Shortcut("left bar"),   disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "toolbar-chrome",  label: "ChromeStrip", icon: None, right: DropdownItemRight::Shortcut("tabs"),       disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "toolbar-inline",  label: "Inline",      icon: None, right: DropdownItemRight::Shortcut("compact"),    disabled: false, danger: false, accent_color: None },
+        ];
+        if self.dropdown_toolbar_state.open {
+            let hovered_id = self.dropdown_toolbar_state.hovered_id.clone();
+            let origin = self.dropdown_toolbar_state.effective_origin();
+            let (tw, th) = measure_flat(&toolbar_items_dd, &DropdownSettings::default());
+            self.layout.push_overlay(OverlayEntry {
+                id: "dd-toolbar-overlay".to_string(),
+                kind: OverlayKind::Dropdown,
+                rect: Rect::new(origin.0, origin.1, tw, th),
+                anchor: None,
+            });
+            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
+            let mut dd_view = DropdownView {
+                anchor: self.dropdown_toolbar_state.anchor_rect,
+                position_override: self.dropdown_toolbar_state.open_position_override,
+                open: true,
+                kind: DropdownViewKind::Flat { items: &toolbar_items_dd, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
+            };
+            register_layout_manager_dropdown(
+                &mut self.layout, &mut render,
+                LayoutNodeId::ROOT, "dd-toolbar-overlay", "dd-toolbar-widget",
+                &mut self.dropdown_toolbar_state,
+                &mut dd_view,
+                &DropdownSettings::default(),
+                DropdownRenderKind::Flat,
+            );
+        }
+
+        // ── Popup templates dropdown ──────────────────────────────────────────
+        let popup_items_dd = [
+            DropdownItem::Header { label: "PopupViewKind" },
+            DropdownItem::Item { id: "popup-cpgrid",    label: "ColorPickerGrid", icon: None, right: DropdownItemRight::Shortcut("L1 picker"),   disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "popup-cphsv",     label: "ColorPickerHsv",  icon: None, right: DropdownItemRight::Shortcut("L2 picker"),   disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "popup-swatch",    label: "SwatchGrid",      icon: None, right: DropdownItemRight::Shortcut("compact"),     disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "popup-itemlist",  label: "ItemList",        icon: None, right: DropdownItemRight::Shortcut("vertical"),    disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "popup-strip",     label: "IndicatorStrip",  icon: None, right: DropdownItemRight::Shortcut("horizontal"),  disabled: false, danger: false, accent_color: None },
+        ];
+        if self.dropdown_popup_state.open {
+            let hovered_id = self.dropdown_popup_state.hovered_id.clone();
+            let origin = self.dropdown_popup_state.effective_origin();
+            let (pw, ph) = measure_flat(&popup_items_dd, &DropdownSettings::default());
+            self.layout.push_overlay(OverlayEntry {
+                id: "dd-popup-overlay".to_string(),
+                kind: OverlayKind::Dropdown,
+                rect: Rect::new(origin.0, origin.1, pw, ph),
+                anchor: None,
+            });
+            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
+            let mut dd_view = DropdownView {
+                anchor: self.dropdown_popup_state.anchor_rect,
+                position_override: self.dropdown_popup_state.open_position_override,
+                open: true,
+                kind: DropdownViewKind::Flat { items: &popup_items_dd, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
+            };
+            register_layout_manager_dropdown(
+                &mut self.layout, &mut render,
+                LayoutNodeId::ROOT, "dd-popup-overlay", "dd-popup-widget",
+                &mut self.dropdown_popup_state,
+                &mut dd_view,
+                &DropdownSettings::default(),
+                DropdownRenderKind::Flat,
+            );
+        }
+
+        // ── Theme switcher dropdown ───────────────────────────────────────────
+        let theme_idx = self.theme_idx;
+        let theme_items_dd = [
+            DropdownItem::Header { label: "Theme" },
+            DropdownItem::Item { id: "theme-dark",  label: "Dark",   icon: None, right: DropdownItemRight::Toggle(theme_idx == 0), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "theme-light", label: "Light",  icon: None, right: DropdownItemRight::Toggle(theme_idx == 1), disabled: false, danger: false, accent_color: None },
+        ];
+        if self.dropdown_theme_state.open {
+            let hovered_id = self.dropdown_theme_state.hovered_id.clone();
+            let origin = self.dropdown_theme_state.effective_origin();
+            let (tw, th) = measure_flat(&theme_items_dd, &DropdownSettings::default());
+            self.layout.push_overlay(OverlayEntry {
+                id: "dd-theme-overlay".to_string(),
+                kind: OverlayKind::Dropdown,
+                rect: Rect::new(origin.0, origin.1, tw, th),
+                anchor: None,
+            });
+            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
+            let mut dd_view = DropdownView {
+                anchor: self.dropdown_theme_state.anchor_rect,
+                position_override: self.dropdown_theme_state.open_position_override,
+                open: true,
+                kind: DropdownViewKind::Flat { items: &theme_items_dd, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
+            };
+            register_layout_manager_dropdown(
+                &mut self.layout, &mut render,
+                LayoutNodeId::ROOT, "dd-theme-overlay", "dd-theme-widget",
+                &mut self.dropdown_theme_state,
+                &mut dd_view,
+                &DropdownSettings::default(),
+                DropdownRenderKind::Flat,
+            );
+        }
+
         // ── Add Panel split-kind dropdown ─────────────────────────────────────
         let addpanel_items = [
             DropdownItem::Item { id: "split-horiz",       label: "Split Horizontal",  icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
@@ -2318,13 +2522,64 @@ impl AppState {
                     eprintln!("[DISPATCH] tb-help toolbar button");
                     if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
                         let was_open = self.dropdown_help_state.open;
-                        self.dropdown_file_state.close();
-                        self.dropdown_view_state.close();
+                        self.close_all_dropdowns_except("help");
                         if was_open {
                             self.dropdown_help_state.close();
                         } else {
                             let help_x = toolbar_rect.x + 4.0 + 88.0;
                             self.dropdown_help_state.open_at(help_x, toolbar_rect.y + toolbar_rect.height);
+                        }
+                    }
+                    return;
+                }
+                "tb-sidebar" => {
+                    if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                        let was_open = self.dropdown_sidebar_state.open;
+                        self.close_all_dropdowns_except("sidebar");
+                        if !was_open {
+                            self.dropdown_sidebar_state.open_at(
+                                toolbar_rect.x + 4.0 + 140.0,
+                                toolbar_rect.y + toolbar_rect.height,
+                            );
+                        }
+                    }
+                    return;
+                }
+                "tb-toolbar" => {
+                    if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                        let was_open = self.dropdown_toolbar_state.open;
+                        self.close_all_dropdowns_except("toolbar");
+                        if !was_open {
+                            self.dropdown_toolbar_state.open_at(
+                                toolbar_rect.x + 4.0 + 200.0,
+                                toolbar_rect.y + toolbar_rect.height,
+                            );
+                        }
+                    }
+                    return;
+                }
+                "tb-popup" => {
+                    if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                        let was_open = self.dropdown_popup_state.open;
+                        self.close_all_dropdowns_except("popup");
+                        if !was_open {
+                            self.dropdown_popup_state.open_at(
+                                toolbar_rect.x + 4.0 + 260.0,
+                                toolbar_rect.y + toolbar_rect.height,
+                            );
+                        }
+                    }
+                    return;
+                }
+                "tb-theme" => {
+                    if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                        let was_open = self.dropdown_theme_state.open;
+                        self.close_all_dropdowns_except("theme");
+                        if !was_open {
+                            self.dropdown_theme_state.open_at(
+                                toolbar_rect.x + 4.0 + 320.0,
+                                toolbar_rect.y + toolbar_rect.height,
+                            );
                         }
                     }
                     return;
@@ -2378,6 +2633,54 @@ impl AppState {
                     other             => println!("[L3] Modals → {other}"),
                 }
                 self.dropdown_help_state.close();
+                return;
+            }
+            if let Some(item_id) = id_str.strip_prefix("dd-sidebar-widget:item:") {
+                eprintln!("[DISPATCH] dropdown sidebar item → {item_id}");
+                match item_id {
+                    "sidebar-left"    => self.sidebar_kind = 0,
+                    "sidebar-right"   => self.sidebar_kind = 1,
+                    "sidebar-typesel" => self.sidebar_kind = 2,
+                    "sidebar-embed"   => self.sidebar_kind = 3,
+                    _ => {}
+                }
+                self.dropdown_sidebar_state.close();
+                println!("[L3] sidebar kind → {}", sidebar_kind_label(self.sidebar_kind));
+                return;
+            }
+            if let Some(item_id) = id_str.strip_prefix("dd-toolbar-widget:item:") {
+                eprintln!("[DISPATCH] dropdown toolbar item → {item_id}");
+                match item_id {
+                    "toolbar-horiz"  => self.toolbar_kind = 0,
+                    "toolbar-vert"   => self.toolbar_kind = 1,
+                    "toolbar-chrome" => self.toolbar_kind = 2,
+                    "toolbar-inline" => self.toolbar_kind = 3,
+                    _ => {}
+                }
+                self.dropdown_toolbar_state.close();
+                return;
+            }
+            if let Some(item_id) = id_str.strip_prefix("dd-popup-widget:item:") {
+                eprintln!("[DISPATCH] dropdown popup item → {item_id}");
+                self.popup_kind = match item_id {
+                    "popup-cpgrid"   => Some(0),
+                    "popup-cphsv"    => Some(1),
+                    "popup-swatch"   => Some(2),
+                    "popup-itemlist" => Some(3),
+                    "popup-strip"    => Some(4),
+                    _                => self.popup_kind,
+                };
+                self.dropdown_popup_state.close();
+                return;
+            }
+            if let Some(item_id) = id_str.strip_prefix("dd-theme-widget:item:") {
+                eprintln!("[DISPATCH] dropdown theme item → {item_id}");
+                match item_id {
+                    "theme-dark"  => self.theme_idx = 0,
+                    "theme-light" => self.theme_idx = 1,
+                    _ => {}
+                }
+                self.dropdown_theme_state.close();
                 return;
             }
             // Context menu items — registered as "{menu_widget_id}:item:{IDX}"
@@ -3266,8 +3569,16 @@ impl ApplicationHandler for Handler {
             dropdown_view_state: DropdownState::default(),
             dropdown_help_state: DropdownState::default(),
             dropdown_addpanel_state: DropdownState::default(),
+            dropdown_sidebar_state: DropdownState::default(),
+            dropdown_toolbar_state: DropdownState::default(),
+            dropdown_popup_state: DropdownState::default(),
+            dropdown_theme_state: DropdownState::default(),
             active_view: 0,
             sidebar_open: true,
+            sidebar_kind: 0, // Left
+            theme_idx: 0,    // Dark
+            popup_kind: None,
+            toolbar_kind: 0, // Horizontal
             left_toolbar_visible: true,
             modal_open: false,
             modal_kind: ModalKind::L2,
