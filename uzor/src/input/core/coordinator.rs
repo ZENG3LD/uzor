@@ -867,6 +867,17 @@ impl InputCoordinator {
         self.hit_test_with_sense(x, y, &|s| s.scroll)
     }
 
+    /// Process a drag-press at `(x, y)`.
+    ///
+    /// Returns the top-most widget ID with `sense.drag` set, applying the
+    /// same scoped-region and modal logic as `process_click`. Call this from
+    /// a `mouse-down` handler when you want to start a drag interaction
+    /// (scrollbar thumb, modal header, splitter, etc.) — `process_click`
+    /// filters by `sense.click` only and so misses drag-only widgets.
+    pub fn process_drag_press(&self, x: f64, y: f64) -> Option<WidgetId> {
+        self.hit_test_with_sense(x, y, &|s| s.drag)
+    }
+
     /// Query the hovered widget at `(x, y)` for explicit hover delivery.
     ///
     /// Returns the top-most widget ID with `sense.hover` set.  The implicit

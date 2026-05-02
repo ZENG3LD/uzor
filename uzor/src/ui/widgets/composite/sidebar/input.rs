@@ -45,6 +45,22 @@ pub fn register_layout_manager_sidebar<P: DockPanel>(
     }
 
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Sidebar, rect, sense: Sense::CLICK });
+
+    // Register dispatcher patterns so the inner scrollbar (when shown) gets
+    // semantic events. Sidebar composite registers child rects as
+    // "{id}:scrollbar_handle" (DRAG) and "{id}:scrollbar_track" (CLICK).
+    if view.effective_show_scrollbar() {
+        use crate::layout::EventBuilder;
+        layout.dispatcher_mut().on_exact(
+            format!("{}:scrollbar_track", id.0),
+            EventBuilder::ScrollbarTrack { track_id: WidgetId::new(format!("{}:scrollbar_track", id.0)) },
+        );
+        layout.dispatcher_mut().on_exact(
+            format!("{}:scrollbar_handle", id.0),
+            EventBuilder::ScrollbarThumb { thumb_id: WidgetId::new(format!("{}:scrollbar_handle", id.0)) },
+        );
+    }
+
     register_context_manager_sidebar(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
     );

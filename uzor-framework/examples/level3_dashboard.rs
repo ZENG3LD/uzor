@@ -705,6 +705,10 @@ enum DragTarget {
     L2RangeMax(f64),
     L2Scroll(f64),
     L2Splitter(f64),
+    /// Sidebar scrollbar thumb drag.
+    /// `track_rect` is captured at drag start; the scrollbar atomic API
+    /// converts cursor Y into scroll offset using track height + content_h.
+    SidebarScrollbar { track_rect: Rect, content_h: f64, viewport_h: f64 },
     /// Sidebar resize drag.
     /// - `which` — string key identifying which sidebar's state to update
     ///   ("main" / "right" / "top" / "bottom").
@@ -3130,6 +3134,51 @@ impl AppState {
                     self.switch_tab(tab_index);
                     return;
                 }
+                DispatchEvent::ScrollbarTrackClicked { track_id } => {
+                    eprintln!("[DISPATCHER] ScrollbarTrackClicked id={}", track_id.0);
+                    // Sidebar scrollbar lives on track-id "sidebar-widget:scrollbar_track".
+                    if track_id.0 == "sidebar-widget:scrollbar_track" {
+                        if let Some(sb_rect) = self.layout.rect_for_edge_slot("sidebar") {
+                            let est_panels = self.layout.panels().tree().leaves().len() as f64;
+                            let viewport_h = sb_rect.height - 40.0;
+                            let content_h  = 480.0 + est_panels * 30.0;
+                            // Track rect ≈ scrollbar column on the inner edge of the sidebar.
+                            // Use composite's scrollbar layout heuristic (8 px col on right edge).
+                            let track_rect = Rect::new(
+                                sb_rect.x + sb_rect.width - 8.0,
+                                sb_rect.y + 40.0,
+                                8.0,
+                                viewport_h,
+                            );
+                            let scroll = self.sidebar_state.get_or_insert_scroll("default");
+                            scroll.handle_track_click(y, track_rect.y, track_rect.height, content_h, viewport_h);
+                        }
+                    }
+                    return;
+                }
+                DispatchEvent::ScrollbarThumbDragStarted { thumb_id } => {
+                    eprintln!("[DISPATCHER] ScrollbarThumbDragStarted id={}", thumb_id.0);
+                    if thumb_id.0 == "sidebar-widget:scrollbar_handle" {
+                        let scroll = self.sidebar_state.get_or_insert_scroll("default");
+                        scroll.start_drag(y);
+                        // Capture geometry for ongoing drag updates in on_mouse_move.
+                        if let Some(sb_rect) = self.layout.rect_for_edge_slot("sidebar") {
+                            let est_panels = self.layout.panels().tree().leaves().len() as f64;
+                            let viewport_h = sb_rect.height - 40.0;
+                            let content_h  = 480.0 + est_panels * 30.0;
+                            let track_rect = Rect::new(
+                                sb_rect.x + sb_rect.width - 8.0,
+                                sb_rect.y + 40.0,
+                                8.0,
+                                viewport_h,
+                            );
+                            self.drag_target = Some(DragTarget::SidebarScrollbar {
+                                track_rect, content_h, viewport_h,
+                            });
+                        }
+                    }
+                    return;
+                }
                 DispatchEvent::Unhandled(_) => {
                     // No semantic match — fall through to legacy id-string parsers.
                 }
@@ -3802,6 +3851,12 @@ impl AppState {
                 DragTarget::L2Splitter(w0) => {
                     self.l2_right_panel_w = (w0 - dx).clamp(200.0, L2_WIN_W - 100.0);
                 }
+                DragTarget::SidebarScrollbar { track_rect, content_h, viewport_h } => {
+                    // Atomic scrollbar API converts current cursor Y → scroll offset
+                    // using the track height + content/viewport ratios.
+                    let scroll = self.sidebar_state.get_or_insert_scroll("default");
+                    scroll.handle_drag(y, track_rect.height, *content_h, *viewport_h);
+                }
                 DragTarget::SidebarResize { which, axis, sign, start_size, start_pos } => {
                     let cur_pos = if *axis == 'h' { x } else { y };
                     let delta = (cur_pos - *start_pos) * *sign;
@@ -3835,6 +3890,10 @@ impl AppState {
         self.demo_sidebar_right_state.resize_dragging   = false;
         self.demo_sidebar_top_state.resize_dragging     = false;
         self.demo_sidebar_bottom_state.resize_dragging  = false;
+        // End any active scrollbar thumb drag.
+        if let Some(scroll) = self.sidebar_state.scroll_per_panel.get_mut("default") {
+            scroll.end_drag();
+        }
         self.drag_target = None;
         self.l2_range_drag_handle = None;
         self.l2_pressed = None;
@@ -4094,8 +4153,47 @@ impl ApplicationHandler for Handler {
         }
 
         // Left mouse down
-        if let Some((x, y)) = out.left_down {
-            app.on_mouse_down(x, y);
+        if let Some(((x, y), drag_id)) = out.left_down {
+            // If the bridge resolved a DRAG-sense widget under the cursor,
+            // dispatch through LayoutManager so registered drag patterns
+            // (scrollbar thumb, etc.) fire ScrollbarThumbDragStarted /
+            // similar events. Otherwise fall through to legacy on_mouse_down.
+            let mut handled = false;
+            if let Some(ref id) = drag_id {
+                use uzor::layout::DispatchEvent;
+                match app.layout.dispatch_widget(id) {
+                    DispatchEvent::ScrollbarThumbDragStarted { thumb_id } => {
+                        eprintln!("[BRIDGE] drag-press → ScrollbarThumbDragStarted {}", thumb_id.0);
+                        if thumb_id.0 == "sidebar-widget:scrollbar_handle" {
+                            let scroll = app.sidebar_state.get_or_insert_scroll("default");
+                            scroll.start_drag(y);
+                            if let Some(sb_rect) = app.layout.rect_for_edge_slot("sidebar") {
+                                let est_panels = app.layout.panels().tree().leaves().len() as f64;
+                                let viewport_h = sb_rect.height - 40.0;
+                                let content_h  = 480.0 + est_panels * 30.0;
+                                let track_rect = Rect::new(
+                                    sb_rect.x + sb_rect.width - 8.0,
+                                    sb_rect.y + 40.0,
+                                    8.0,
+                                    viewport_h,
+                                );
+                                app.drag_target = Some(DragTarget::SidebarScrollbar {
+                                    track_rect, content_h, viewport_h,
+                                });
+                                // Mark drag as active so on_mouse_move's
+                                // drag-target dispatcher fires.
+                                app.drag_origin = Some((x, y));
+                                app.mouse_down = true;
+                            }
+                            handled = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !handled {
+                app.on_mouse_down(x, y);
+            }
             app.window.request_redraw();
         }
 

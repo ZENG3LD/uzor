@@ -30,8 +30,11 @@ pub struct ModifierState {
 pub struct BridgeOutput {
     /// Cursor moved to this position (logical pixels, window-relative).
     pub cursor_moved: Option<(f64, f64)>,
-    /// Left mouse pressed at this position.
-    pub left_down: Option<(f64, f64)>,
+    /// Left mouse pressed at this position. `dragged_id` is the top-most
+    /// widget with `sense.drag` at that point (from `process_drag_press`),
+    /// so the app can immediately route drag-start events through the
+    /// dispatcher.
+    pub left_down: Option<((f64, f64), Option<WidgetId>)>,
     /// Left mouse released at this position.  `clicked_id` is the top-most
     /// widget with `sense.click` at that point (from `process_click`).
     pub left_up: Option<((f64, f64), Option<WidgetId>)>,
@@ -120,7 +123,8 @@ impl WinitInputBridge {
                 ..
             } => {
                 let (x, y) = self.last_mouse_pos;
-                out.left_down = Some((x, y));
+                let drag_target = coord.process_drag_press(x, y);
+                out.left_down = Some(((x, y), drag_target));
 
                 // Start text-field drag selection.  TextFieldStore::on_drag_start
                 // does its own hit-test using stored rects and only activates if

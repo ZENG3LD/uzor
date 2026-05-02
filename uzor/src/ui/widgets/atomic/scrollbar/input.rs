@@ -328,6 +328,18 @@ pub fn register_layout_manager_scrollbar<P: DockPanel>(
     let layer = layout.compute_layer_for(parent);
     layout.tree_mut().add_widget(parent, WidgetNode { id: track_id.clone(), kind: WidgetKind::ScrollbarTrack, rect: track_rect, sense: Sense::CLICK });
     layout.tree_mut().add_widget(parent, WidgetNode { id: thumb_id.clone(), kind: WidgetKind::ScrollbarHandle, rect: thumb_rect, sense: Sense::DRAG });
+
+    // Register dispatcher patterns so app gets semantic events for both
+    // track-jump (click) and thumb-drag (mouse-down on the inflated thumb).
+    layout.dispatcher_mut().on_exact(
+        track_id.0.clone(),
+        crate::layout::EventBuilder::ScrollbarTrack { track_id: track_id.clone() },
+    );
+    layout.dispatcher_mut().on_exact(
+        thumb_id.0.clone(),
+        crate::layout::EventBuilder::ScrollbarThumb { thumb_id: thumb_id.clone() },
+    );
+
     register_context_manager_scrollbar(
         layout.ctx_mut(),
         render,

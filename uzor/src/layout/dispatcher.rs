@@ -73,6 +73,16 @@ pub enum DispatchEvent {
     /// User clicked an item in a context menu (semantic shortcut for the
     /// common shape of ctx-menu hits).
     ContextMenuItemClicked { menu_id: WidgetId, item_index: usize },
+
+    /// User clicked the scrollbar **track** (jump to that position).
+    /// `track_id` lets the app distinguish between multiple scrollbars.
+    ScrollbarTrackClicked { track_id: WidgetId },
+
+    /// User started dragging the scrollbar **thumb** (mouse-down on it).
+    /// The app should call atomic-scrollbar `start_thumb_drag` on its state
+    /// and follow up with `update_thumb_drag` on every mouse-move while the
+    /// drag is live.
+    ScrollbarThumbDragStarted { thumb_id: WidgetId },
 }
 
 /// How to construct a [`DispatchEvent`] when a pattern matches.
@@ -106,6 +116,14 @@ pub enum EventBuilder {
 
     /// Fires `ContextMenuItemClicked { menu_id, item_index = parsed suffix }`.
     ContextMenuItem { menu_id: WidgetId },
+
+    /// Fires `ScrollbarTrackClicked { track_id }` when the user clicks the
+    /// track of a scrollbar (i.e. jump-to-position).
+    ScrollbarTrack { track_id: WidgetId },
+
+    /// Fires `ScrollbarThumbDragStarted { thumb_id }` when the user
+    /// mouse-downs on a scrollbar thumb.
+    ScrollbarThumb { thumb_id: WidgetId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -242,6 +260,12 @@ fn build(builder: &EventBuilder, id: &str, pattern: &str) -> DispatchEvent {
                 },
                 Err(_) => DispatchEvent::Unhandled(WidgetId::new(id)),
             }
+        }
+        EventBuilder::ScrollbarTrack { track_id } => {
+            DispatchEvent::ScrollbarTrackClicked { track_id: track_id.clone() }
+        }
+        EventBuilder::ScrollbarThumb { thumb_id } => {
+            DispatchEvent::ScrollbarThumbDragStarted { thumb_id: thumb_id.clone() }
         }
     }
 }
