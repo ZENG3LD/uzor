@@ -110,6 +110,12 @@ pub enum DispatchEvent {
         dropdown_id: WidgetId,
         trigger_id:  String,
     },
+
+    /// User clicked a sticky chevron attached to a host widget. The host
+    /// is identified by `host_id` (the chevron's parent in the coord tree).
+    /// App decides what to open (dropdown / popup / submenu) based on the
+    /// host id. The chevron's own widget id is `{host_id}:chev` if needed.
+    StickyChevronClicked { host_id: WidgetId },
 }
 
 /// Edges and corners a resize handle can be attached to. Used by
@@ -197,6 +203,11 @@ pub enum EventBuilder {
     /// Fires `DropdownSubmenuToggle { dropdown_id, trigger_id = suffix }`
     /// when a `:submenu-chevron:{trigger_id}` row is clicked.
     DropdownSubmenuToggleFromSuffix { dropdown_id: WidgetId },
+
+    /// Fires `StickyChevronClicked { host_id }` when a `:chev` child is
+    /// clicked. Composite host registers the pattern when it places a
+    /// sticky chevron on a child widget.
+    StickyChevron { host_id: WidgetId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -357,6 +368,9 @@ fn build(builder: &EventBuilder, id: &str, pattern: &str) -> DispatchEvent {
                 dropdown_id: dropdown_id.clone(),
                 trigger_id:  suffix(),
             }
+        }
+        EventBuilder::StickyChevron { host_id } => {
+            DispatchEvent::StickyChevronClicked { host_id: host_id.clone() }
         }
     }
 }
