@@ -967,73 +967,62 @@ impl AppState {
         }
     }
 
+    /// Resolve the screen rect of a toolbar item from the InputCoordinator's
+    /// last-frame widget table. Toolbar composite registers each item as
+    /// "{toolbar_id}:{item_id}" — `widget_rect` looks it up directly.
+    fn toolbar_item_rect(&self, toolbar_id: &str, item_id: &str) -> Option<Rect> {
+        let full = WidgetId::new(format!("{toolbar_id}:{item_id}"));
+        self.layout.ctx().input.widget_rect(&full)
+    }
+
+    /// Open a dropdown anchored to the bottom-left of a toolbar item's rect.
+    /// Toggles closed if it was already open under that key.
+    fn toggle_dropdown_at(&mut self, key: &'static str, item_rect: Rect) {
+        let dd_rect = (item_rect.x, item_rect.y + item_rect.height);
+        let target = match key {
+            "file"    => &mut self.dropdown_file_state,
+            "view"    => &mut self.dropdown_view_state,
+            "help"    => &mut self.dropdown_help_state,
+            "sidebar" => &mut self.dropdown_sidebar_state,
+            "toolbar" => &mut self.dropdown_toolbar_state,
+            "popup"   => &mut self.dropdown_popup_state,
+            "theme"   => &mut self.dropdown_theme_state,
+            _ => return,
+        };
+        let was = target.open;
+        // Close every dropdown, then re-open the requested one if it was closed.
+        // (Borrowing rules — close_all_dropdowns_except does the rest.)
+        let want_open = !was;
+        self.close_all_dropdowns_except("none");
+        if want_open {
+            let target = match key {
+                "file"    => &mut self.dropdown_file_state,
+                "view"    => &mut self.dropdown_view_state,
+                "help"    => &mut self.dropdown_help_state,
+                "sidebar" => &mut self.dropdown_sidebar_state,
+                "toolbar" => &mut self.dropdown_toolbar_state,
+                "popup"   => &mut self.dropdown_popup_state,
+                "theme"   => &mut self.dropdown_theme_state,
+                _ => return,
+            };
+            target.open_at(dd_rect.0, dd_rect.1);
+        }
+    }
+
     /// Handle a toolbar item click coming from the dispatcher.
     /// Replaces the prefix-match strip_prefix("top-toolbar-widget:") cascade.
     fn handle_toolbar_item(&mut self, toolbar_id: &str, item_id: &str) {
+        // Resolve the clicked button's rect from the coord — anchors the
+        // dropdown to its bottom-left edge regardless of toolbar layout.
+        let item_rect = self.toolbar_item_rect(toolbar_id, item_id);
         match (toolbar_id, item_id) {
-            ("top-toolbar-widget", "tb-file") => {
-                if let Some(rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                    let was = self.dropdown_file_state.open;
-                    self.close_all_dropdowns_except("file");
-                    if !was {
-                        self.dropdown_file_state.open_at(rect.x + 4.0, rect.y + rect.height);
-                    }
-                }
-            }
-            ("top-toolbar-widget", "tb-view") => {
-                if let Some(rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                    let was = self.dropdown_view_state.open;
-                    self.close_all_dropdowns_except("view");
-                    if !was {
-                        self.dropdown_view_state.open_at(rect.x + 4.0, rect.y + rect.height);
-                    }
-                }
-            }
-            ("top-toolbar-widget", "tb-help") => {
-                if let Some(rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                    let was = self.dropdown_help_state.open;
-                    self.close_all_dropdowns_except("help");
-                    if !was {
-                        self.dropdown_help_state.open_at(rect.x + 48.0, rect.y + rect.height);
-                    }
-                }
-            }
-            ("top-toolbar-widget", "tb-sidebar") => {
-                if let Some(rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                    let was = self.dropdown_sidebar_state.open;
-                    self.close_all_dropdowns_except("sidebar");
-                    if !was {
-                        self.dropdown_sidebar_state.open_at(rect.x + 144.0, rect.y + rect.height);
-                    }
-                }
-            }
-            ("top-toolbar-widget", "tb-toolbar") => {
-                if let Some(rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                    let was = self.dropdown_toolbar_state.open;
-                    self.close_all_dropdowns_except("toolbar");
-                    if !was {
-                        self.dropdown_toolbar_state.open_at(rect.x + 204.0, rect.y + rect.height);
-                    }
-                }
-            }
-            ("top-toolbar-widget", "tb-popup") => {
-                if let Some(rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                    let was = self.dropdown_popup_state.open;
-                    self.close_all_dropdowns_except("popup");
-                    if !was {
-                        self.dropdown_popup_state.open_at(rect.x + 264.0, rect.y + rect.height);
-                    }
-                }
-            }
-            ("top-toolbar-widget", "tb-theme") => {
-                if let Some(rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                    let was = self.dropdown_theme_state.open;
-                    self.close_all_dropdowns_except("theme");
-                    if !was {
-                        self.dropdown_theme_state.open_at(rect.x + 324.0, rect.y + rect.height);
-                    }
-                }
-            }
+            ("top-toolbar-widget", "tb-file")    => if let Some(r) = item_rect { self.toggle_dropdown_at("file",    r); },
+            ("top-toolbar-widget", "tb-view")    => if let Some(r) = item_rect { self.toggle_dropdown_at("view",    r); },
+            ("top-toolbar-widget", "tb-help")    => if let Some(r) = item_rect { self.toggle_dropdown_at("help",    r); },
+            ("top-toolbar-widget", "tb-sidebar") => if let Some(r) = item_rect { self.toggle_dropdown_at("sidebar", r); },
+            ("top-toolbar-widget", "tb-toolbar") => if let Some(r) = item_rect { self.toggle_dropdown_at("toolbar", r); },
+            ("top-toolbar-widget", "tb-popup")   => if let Some(r) = item_rect { self.toggle_dropdown_at("popup",   r); },
+            ("top-toolbar-widget", "tb-theme")   => if let Some(r) = item_rect { self.toggle_dropdown_at("theme",   r); },
             ("left-vtoolbar-widget", "lt-toggle-sidebar") => {
                 self.sidebar_open = !self.sidebar_open;
                 println!("[L3] sidebar → {}", self.sidebar_open);
@@ -1185,6 +1174,10 @@ impl AppState {
             Box::new(HorizToolbarWithBorder),
         );
         let (_, top_h) = measure_toolbar_h(&probe_view_h, &probe_settings);
+        // Wipe last frame's edge slots — the dropdowns spawn extra slots
+        // conditionally on every frame and any slot we don't re-add now
+        // should disappear (its space returns to the dock area).
+        self.layout.edges_mut().clear();
         self.layout.edges_mut().add(EdgeSlot {
             id: "top-toolbar".to_string(),
             side: EdgeSide::Top,
@@ -2660,14 +2653,14 @@ impl AppState {
         }
 
         // ── Demo popup (selected from Popup dropdown) ─────────────────────────
-        // Renders one of the PopupViewKind templates — placeholder body for now.
+        // Renders one of the PopupViewKind templates as a centred overlay.
         if let Some(kind_idx) = self.popup_kind {
             let (label_text, popup_w, popup_h) = match kind_idx {
-                0 => ("ColorPickerGrid (L1 picker)", 220.0, 240.0),
-                1 => ("ColorPickerHsv (L2 picker)",  280.0, 320.0),
-                2 => ("SwatchGrid",                  180.0, 160.0),
-                3 => ("ItemList",                    200.0, 200.0),
-                _ => ("IndicatorStrip",              260.0,  80.0),
+                0 => ("ColorPickerGrid (L1 picker)", 240.0, 260.0),
+                1 => ("ColorPickerHsv (L2 picker)",  300.0, 340.0),
+                2 => ("SwatchGrid",                  220.0, 180.0),
+                3 => ("ItemList",                    240.0, 220.0),
+                _ => ("IndicatorStrip",              320.0, 100.0),
             };
             let px = (width as f64 - popup_w) / 2.0;
             let py = (height as f64 - popup_h) / 2.0;
@@ -2679,6 +2672,10 @@ impl AppState {
             });
             self.layout.ctx_mut().input.push_layer(LayerId::popup(), 30, true);
             if let Some(r) = self.layout.rect_for_overlay("demo-popup-overlay") {
+                use uzor::ui::widgets::atomic::text::render::draw_text;
+                use uzor::ui::widgets::atomic::text::settings::TextSettings;
+                use uzor::ui::widgets::atomic::text::types::{TextOverflow, TextView};
+
                 // Frame
                 render.set_fill_color("#1a1a22");
                 render.fill_rounded_rect(r.x, r.y, r.width, r.height, 6.0);
@@ -2687,16 +2684,113 @@ impl AppState {
                 render.fill_rect(r.x, r.y + r.height - 1.0, r.width, 1.0);
                 render.fill_rect(r.x, r.y, 1.0, r.height);
                 render.fill_rect(r.x + r.width - 1.0, r.y, 1.0, r.height);
-                // Title
-                render.set_fill_color("#d1d4dc");
-                render.set_font("13px sans-serif");
-                render.set_text_align(TextAlign::Center);
-                render.set_text_baseline(TextBaseline::Top);
-                render.fill_text(label_text, r.x + r.width / 2.0, r.y + 12.0);
-                render.set_fill_color("#7080a0");
-                render.set_font("11px sans-serif");
-                render.fill_text("(placeholder body — click outside to close)",
-                    r.x + r.width / 2.0, r.y + 36.0);
+
+                // Title (atomic Text → ellipsis on overflow, no bleed)
+                let title_view = TextView {
+                    text: label_text,
+                    align: TextAlign::Center,
+                    baseline: TextBaseline::Middle,
+                    color: Some("#d1d4dc"),
+                    font: Some("13px sans-serif"),
+                    overflow: TextOverflow::Ellipsis,
+                    hovered: false,
+                };
+                let title_rect = Rect::new(r.x + 12.0, r.y + 8.0, r.width - 24.0, 22.0);
+                draw_text(&mut render, title_rect, &title_view, &TextSettings::default());
+
+                // Hint
+                let hint_view = TextView {
+                    text: "click outside to close",
+                    align: TextAlign::Center,
+                    baseline: TextBaseline::Middle,
+                    color: Some("#7080a0"),
+                    font: Some("11px sans-serif"),
+                    overflow: TextOverflow::Ellipsis,
+                    hovered: false,
+                };
+                let hint_rect = Rect::new(r.x + 12.0, r.y + r.height - 22.0, r.width - 24.0, 16.0);
+                draw_text(&mut render, hint_rect, &hint_view, &TextSettings::default());
+
+                // Body — small per-kind preview so popups aren't empty.
+                let body = Rect::new(r.x + 16.0, r.y + 38.0, r.width - 32.0, r.height - 64.0);
+                match kind_idx {
+                    0 | 2 => {
+                        // ColorPickerGrid / SwatchGrid: a small grid of sample swatches.
+                        let cols = 8_usize;
+                        let cell = ((body.width - (cols as f64 - 1.0) * 4.0) / cols as f64).max(8.0);
+                        let palette: [&str; 16] = [
+                            "#ef5350","#f59e0b","#fbbf24","#10b981","#22d3ee","#2962ff","#7c3aed","#ec4899",
+                            "#94a3b8","#fde68a","#86efac","#67e8f9","#93c5fd","#c4b5fd","#fbcfe8","#1f2937",
+                        ];
+                        for (i, color) in palette.iter().enumerate() {
+                            let cx = body.x + (i % cols) as f64 * (cell + 4.0);
+                            let cy = body.y + (i / cols) as f64 * (cell + 4.0);
+                            render.set_fill_color(color);
+                            render.fill_rounded_rect(cx, cy, cell, cell, 3.0);
+                        }
+                    }
+                    1 => {
+                        // ColorPickerHsv: SV square + hue bar placeholder.
+                        let sq = body.height.min(body.width - 32.0);
+                        // SV square fill (saturation+value gradient stub — solid for now)
+                        render.set_fill_color("#3769af");
+                        render.fill_rounded_rect(body.x, body.y, sq, sq, 4.0);
+                        // Hue bar
+                        let hue_x = body.x + sq + 8.0;
+                        let hue_w = (body.width - sq - 8.0).max(16.0);
+                        let stripes = ["#ff0000","#ffff00","#00ff00","#00ffff","#0000ff","#ff00ff","#ff0000"];
+                        let stripe_h = sq / stripes.len() as f64;
+                        for (i, c) in stripes.iter().enumerate() {
+                            render.set_fill_color(c);
+                            render.fill_rect(hue_x, body.y + i as f64 * stripe_h, hue_w, stripe_h + 1.0);
+                        }
+                    }
+                    3 => {
+                        // ItemList: 5 sample rows.
+                        let rows = ["Item A","Item B","Item C","Item D","Item E"];
+                        let row_h = (body.height / rows.len() as f64).min(28.0);
+                        for (i, label) in rows.iter().enumerate() {
+                            let ry = body.y + i as f64 * row_h;
+                            if i % 2 == 0 {
+                                render.set_fill_color("#1e222d");
+                                render.fill_rect(body.x, ry, body.width, row_h);
+                            }
+                            let row_view = TextView {
+                                text: label,
+                                align: TextAlign::Left,
+                                baseline: TextBaseline::Middle,
+                                color: Some("#d1d4dc"),
+                                font: Some("12px sans-serif"),
+                                overflow: TextOverflow::Ellipsis,
+                                hovered: false,
+                            };
+                            let row_rect = Rect::new(body.x + 8.0, ry, body.width - 16.0, row_h);
+                            draw_text(&mut render, row_rect, &row_view, &TextSettings::default());
+                        }
+                    }
+                    _ => {
+                        // IndicatorStrip: 4 short labels in a row.
+                        let labels = ["RSI","MACD","BBands","ATR"];
+                        let chip_w = body.width / labels.len() as f64;
+                        for (i, label) in labels.iter().enumerate() {
+                            let cx = body.x + i as f64 * chip_w;
+                            render.set_fill_color("#252a36");
+                            render.fill_rounded_rect(cx + 4.0, body.y + 8.0, chip_w - 8.0, body.height - 16.0, 4.0);
+                            let chip_view = TextView {
+                                text: label,
+                                align: TextAlign::Center,
+                                baseline: TextBaseline::Middle,
+                                color: Some("#d1d4dc"),
+                                font: Some("12px sans-serif"),
+                                overflow: TextOverflow::Ellipsis,
+                                hovered: false,
+                            };
+                            draw_text(&mut render,
+                                Rect::new(cx + 4.0, body.y + 8.0, chip_w - 8.0, body.height - 16.0),
+                                &chip_view, &TextSettings::default());
+                        }
+                    }
+                }
             }
         }
 

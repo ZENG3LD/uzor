@@ -45,6 +45,13 @@ impl EdgePanels {
         self.slots.retain(|s| s.id != id);
     }
 
+    /// Forget every slot. The app re-adds whatever is needed each frame —
+    /// slots that aren't re-added simply disappear and the layout solver
+    /// gives the freed space back to the dock area.
+    pub fn clear(&mut self) {
+        self.slots.clear();
+    }
+
     /// Look up a slot by id.
     pub fn get(&self, id: &str) -> Option<&EdgeSlot> {
         self.slots.iter().find(|s| s.id == id)
