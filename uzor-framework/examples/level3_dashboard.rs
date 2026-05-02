@@ -290,6 +290,8 @@ impl ButtonTheme for VisibleButtonTheme {
 }
 
 // Sidebar style: same as default but without the header divider line.
+/// Custom L3 sidebar style: shows a faded centred 80%-wide header divider
+/// at 60% opacity. Borders fall through to the default per-kind inner-edge.
 struct NoDividerSidebarStyle(DefaultSidebarStyle);
 impl SidebarStyle for NoDividerSidebarStyle {
     fn header_height(&self) -> f64       { self.0.header_height() }
@@ -301,7 +303,16 @@ impl SidebarStyle for NoDividerSidebarStyle {
     fn max_width(&self) -> f64           { self.0.max_width() }
     fn default_width(&self) -> f64       { self.0.default_width() }
     fn scrollbar_width(&self) -> f64     { self.0.scrollbar_width() }
-    fn show_header_divider(&self) -> bool { false }
+    // Legacy kill-switch off so the new DividerConfig has effect.
+    fn show_header_divider(&self) -> bool { true }
+    fn header_divider(&self) -> uzor::ui::widgets::composite::sidebar::style::DividerConfig {
+        uzor::ui::widgets::composite::sidebar::style::DividerConfig {
+            visible: true,
+            width:   1.0,
+            opacity: 0.60,
+            length_frac: 0.80,
+        }
+    }
 }
 
 // Chrome style with bottom border enabled (default: true, but explicit for clarity).
