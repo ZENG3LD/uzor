@@ -197,13 +197,19 @@ impl ModalState {
                 let max = (self.body_content_h - self.body_viewport_h).max(0.0);
                 let step = self.body_viewport_h.max(40.0);
                 let signed = if matches!(direction, D::Up) { -step } else { step };
+                let before = self.scroll.offset;
                 self.scroll.offset = (self.scroll.offset + signed).clamp(0.0, max);
+                eprintln!("[body_chevron_step] V dir={:?} ch={:.1} vh={:.1} max={:.1} step={:.1} {:.1}->{:.1}",
+                    direction, self.body_content_h, self.body_viewport_h, max, step, before, self.scroll.offset);
             }
             D::Left | D::Right => {
                 let max = (self.body_content_w - self.body_viewport_w).max(0.0);
                 let step = self.body_viewport_w.max(40.0);
                 let signed = if matches!(direction, D::Left) { -step } else { step };
+                let before = self.body_scroll_x;
                 self.body_scroll_x = (self.body_scroll_x + signed).clamp(0.0, max);
+                eprintln!("[body_chevron_step] H dir={:?} cw={:.1} vw={:.1} max={:.1} step={:.1} {:.1}->{:.1}",
+                    direction, self.body_content_w, self.body_viewport_w, max, step, before, self.body_scroll_x);
             }
         }
     }

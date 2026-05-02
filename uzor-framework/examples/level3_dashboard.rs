@@ -3343,19 +3343,27 @@ impl AppState {
                         uzor::layout::ChevronStepDirection::Up | uzor::layout::ChevronStepDirection::Left
                     );
                     // Sidebar chevrons live on ids "<sidebar-id>:chevron_up|chevron_down".
+                    // Guard the suffix-match by sidebar widget id so it doesn't
+                    // eat modal/popup chevrons which share the up/down suffix.
                     if let Some(sb_id) = chevron_id.0.strip_suffix(":chevron_up").or_else(|| chevron_id.0.strip_suffix(":chevron_down")) {
-                        let slot_id = if sb_id == "sidebar-widget" { "sidebar" } else { sb_id };
-                        if let Some(sb_rect) = self.layout.rect_for_edge_slot(slot_id) {
-                            let est_panels = self.layout.panels().tree().leaves().len() as f64;
-                            let viewport_h = (sb_rect.height - 40.0).max(0.0);
-                            let content_h  = 480.0 + est_panels * 30.0;
-                            let max_scroll = (content_h - viewport_h).max(0.0);
-                            let step = viewport_h.max(40.0);
-                            let scroll = self.sidebar_state.get_or_insert_scroll("default");
-                            let signed = if signed_sign { -step } else { step };
-                            scroll.offset = (scroll.offset + signed).clamp(0.0, max_scroll);
+                        let slot_id = match sb_id {
+                            "sidebar-widget" => Some("sidebar"),
+                            id if id.starts_with("demo-sidebar-") => Some(id),
+                            _ => None,
+                        };
+                        if let Some(slot_id) = slot_id {
+                            if let Some(sb_rect) = self.layout.rect_for_edge_slot(slot_id) {
+                                let est_panels = self.layout.panels().tree().leaves().len() as f64;
+                                let viewport_h = (sb_rect.height - 40.0).max(0.0);
+                                let content_h  = 480.0 + est_panels * 30.0;
+                                let max_scroll = (content_h - viewport_h).max(0.0);
+                                let step = viewport_h.max(40.0);
+                                let scroll = self.sidebar_state.get_or_insert_scroll("default");
+                                let signed = if signed_sign { -step } else { step };
+                                scroll.offset = (scroll.offset + signed).clamp(0.0, max_scroll);
+                            }
+                            return;
                         }
-                        return;
                     }
                     // Toolbar overflow chevrons live on "<toolbar-id>:chevron_back|chevron_fwd".
                     if let Some(tb_id) = chevron_id.0.strip_suffix(":chevron_back").or_else(|| chevron_id.0.strip_suffix(":chevron_fwd")) {

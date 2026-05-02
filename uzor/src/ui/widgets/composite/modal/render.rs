@@ -1070,19 +1070,27 @@ pub fn register_body_overflow(
         }
         crate::types::OverflowMode::Chevrons => {
             let strip = 26.0_f64;
-            // Vertical strips
-            if state.body_content_h > body.height + 0.5 {
-                let up = Rect::new(body.x, body.y, body.width, strip);
-                let dn = Rect::new(body.x, body.y + body.height - strip, body.width, strip);
+            let v_overflow = state.body_content_h > body.height + 0.5;
+            let h_overflow = state.body_content_w > body.width  + 0.5;
+            // Carve corners off the vertical strips when horizontal
+            // strips are also present, so the four hit-zones don't
+            // overlap (last-registered wins would otherwise eat the
+            // corners of the vertical strips).
+            let inset_x = if h_overflow { strip } else { 0.0 };
+            let inset_y = if v_overflow { strip } else { 0.0 };
+            if v_overflow {
+                let up_w = (body.width - inset_x * 2.0).max(0.0);
+                let up = Rect::new(body.x + inset_x, body.y, up_w, strip);
+                let dn = Rect::new(body.x + inset_x, body.y + body.height - strip, up_w, strip);
                 coord.register_child(modal_id, format!("{}:chevron_up", modal_id.0),
                     WidgetKind::Button, up, Sense::CLICK | Sense::HOVER);
                 coord.register_child(modal_id, format!("{}:chevron_down", modal_id.0),
                     WidgetKind::Button, dn, Sense::CLICK | Sense::HOVER);
             }
-            // Horizontal strips
-            if state.body_content_w > body.width + 0.5 {
-                let lf = Rect::new(body.x, body.y, strip, body.height);
-                let rt = Rect::new(body.x + body.width - strip, body.y, strip, body.height);
+            if h_overflow {
+                let lf_h = (body.height - inset_y * 2.0).max(0.0);
+                let lf = Rect::new(body.x, body.y + inset_y, strip, lf_h);
+                let rt = Rect::new(body.x + body.width - strip, body.y + inset_y, strip, lf_h);
                 coord.register_child(modal_id, format!("{}:chevron_left", modal_id.0),
                     WidgetKind::Button, lf, Sense::CLICK | Sense::HOVER);
                 coord.register_child(modal_id, format!("{}:chevron_right", modal_id.0),
