@@ -5,6 +5,7 @@
 
 pub mod button;
 pub mod checkbox;
+pub mod chevron;
 pub mod clock;
 pub mod close_button;
 pub mod drag_handle;
