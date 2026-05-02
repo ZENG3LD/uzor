@@ -739,6 +739,17 @@ enum DragTarget {
     ModalDrag,
     /// Dock separator drag — stores separator index and start mouse position.
     SeparatorDrag { sep_idx: usize, start_x: f64, start_y: f64 },
+    /// Toolbar inner-edge resize drag. `axis` = 'h' (vertical bar, drag right edge → width)
+    /// or 'v' (horizontal bar, drag bottom edge → height). `start_size` / `start_pos`
+    /// captured at mouse-down; `cap` is the maximum allowed thickness (e.g. 10% viewport).
+    ToolbarResize {
+        which:      &'static str,
+        axis:       char,
+        start_size: f64,
+        start_pos:  f64,
+        min:        f64,
+        cap:        f64,
+    },
 }
 
 /// Resolve a `sidebar_kind` index back to a fresh `SidebarRenderKind`.
@@ -783,6 +794,8 @@ struct AppState {
     chrome_state: ChromeState,
     top_toolbar_state: ToolbarState,
     left_vtoolbar_state: ToolbarState,
+    /// User-resized override for top toolbar height (px). 0.0 = use measured.
+    top_toolbar_height_override: f64,
     sidebar_state: SidebarState,
     modal_state: ModalState,
     popup_state: PopupState,
@@ -1213,7 +1226,12 @@ impl AppState {
             Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
             Box::new(HorizToolbarWithBorder),
         );
-        let (_, top_h) = measure_toolbar_h(&probe_view_h, &probe_settings);
+        let (_, top_h_measured) = measure_toolbar_h(&probe_view_h, &probe_settings);
+        let top_h = if self.top_toolbar_height_override > 0.0 {
+            self.top_toolbar_height_override
+        } else {
+            top_h_measured
+        };
         // Wipe last frame's edge slots — the dropdowns spawn extra slots
         // conditionally on every frame and any slot we don't re-add now
         // should disappear (its space returns to the dock area).
@@ -3255,6 +3273,10 @@ impl AppState {
                     }
                     return;
                 }
+                DispatchEvent::ResizeHandleDragStarted { .. } => {
+                    // Resize start is handled by the drag-press bridge arm.
+                    return;
+                }
                 DispatchEvent::Unhandled(_) => {
                     // No semantic match — fall through to legacy id-string parsers.
                 }
@@ -3952,6 +3974,15 @@ impl AppState {
                         handle_sidebar_resize_clamped(state, new_size, min, max);
                     }
                 }
+                DragTarget::ToolbarResize { which, axis, start_size, start_pos, min, cap } => {
+                    // Top toolbar — drag the bottom edge → cursor.y > start_pos grows.
+                    let cur_pos = if *axis == 'h' { x } else { y };
+                    let delta = cur_pos - *start_pos;
+                    let new_size = (*start_size + delta).clamp(*min, *cap);
+                    if *which == "top" {
+                        self.top_toolbar_height_override = new_size;
+                    }
+                }
             }
         }
     }
@@ -4078,6 +4109,7 @@ impl ApplicationHandler for Handler {
             chrome_state,
             top_toolbar_state: ToolbarState::default(),
             left_vtoolbar_state: ToolbarState::default(),
+            top_toolbar_height_override: 0.0,
             sidebar_state,
             modal_state: ModalState::default(),
             popup_state: PopupState::default(),
@@ -4261,6 +4293,30 @@ impl ApplicationHandler for Handler {
                                 app.drag_origin = Some((x, y));
                                 app.mouse_down = true;
                             }
+                            handled = true;
+                        }
+                    }
+                    DispatchEvent::ResizeHandleDragStarted { host_id, edge } => {
+                        eprintln!("[BRIDGE] drag-press → ResizeHandleDragStarted host={} edge={:?}", host_id.0, edge);
+                        // Top toolbar: vertical drag (edge S → height grows downward).
+                        if host_id.0 == "top-toolbar-widget" {
+                            let viewport_h = app.layout.last_window().map(|w| w.height).unwrap_or(800.0);
+                            let cap = (viewport_h * 0.10).max(60.0);
+                            let start_size = app
+                                .layout
+                                .rect_for_edge_slot("top-toolbar")
+                                .map(|r| r.height)
+                                .unwrap_or(36.0);
+                            app.drag_target = Some(DragTarget::ToolbarResize {
+                                which: "top",
+                                axis: 'v',
+                                start_size,
+                                start_pos: y,
+                                min: 24.0,
+                                cap,
+                            });
+                            app.drag_origin = Some((x, y));
+                            app.mouse_down = true;
                             handled = true;
                         }
                     }

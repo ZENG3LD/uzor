@@ -92,6 +92,39 @@ pub enum DispatchEvent {
         chevron_id: WidgetId,
         direction:  super::ChevronStepDirection,
     },
+
+    /// User started dragging a resize handle on a composite (toolbar /
+    /// modal / popup / sidebar). The app should capture initial geometry
+    /// and consume subsequent mouse-move events to drive the resize.
+    ResizeHandleDragStarted {
+        /// The composite that owns the handle (e.g. modal / toolbar id).
+        host_id: WidgetId,
+        /// Which edge / corner is being grabbed.
+        edge:    ResizeEdge,
+    },
+}
+
+/// Edges and corners a resize handle can be attached to. Used by
+/// `DispatchEvent::ResizeHandleDragStarted` so the app knows which
+/// dimension(s) to scale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResizeEdge {
+    /// Top edge — vertical drag, grows / shrinks from the top.
+    N,
+    /// Bottom edge — vertical drag, grows / shrinks from the bottom.
+    S,
+    /// Left edge — horizontal drag, grows / shrinks from the left.
+    W,
+    /// Right edge — horizontal drag, grows / shrinks from the right.
+    E,
+    /// Top-left corner — both axes.
+    NW,
+    /// Top-right corner — both axes.
+    NE,
+    /// Bottom-left corner — both axes.
+    SW,
+    /// Bottom-right corner — both axes.
+    SE,
 }
 
 /// Direction passed inside `DispatchEvent::ChevronStepRequested`. Mirrors
@@ -148,6 +181,10 @@ pub enum EventBuilder {
     /// Fires `ChevronStepRequested { chevron_id, direction }` — used by
     /// overflow-mode `Chevrons` paging strips.
     ChevronStep { chevron_id: WidgetId, direction: super::ChevronStepDirection },
+
+    /// Fires `ResizeHandleDragStarted { host_id, edge }` when a resize
+    /// handle is grabbed on the composite identified by `host_id`.
+    ResizeHandle { host_id: WidgetId, edge: super::ResizeEdge },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -295,6 +332,12 @@ fn build(builder: &EventBuilder, id: &str, pattern: &str) -> DispatchEvent {
             DispatchEvent::ChevronStepRequested {
                 chevron_id: chevron_id.clone(),
                 direction: *direction,
+            }
+        }
+        EventBuilder::ResizeHandle { host_id, edge } => {
+            DispatchEvent::ResizeHandleDragStarted {
+                host_id: host_id.clone(),
+                edge: *edge,
             }
         }
     }

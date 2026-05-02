@@ -24,7 +24,7 @@ mod types;
 mod z_layers;
 
 pub use chrome_slot::ChromeSlot;
-pub use dispatcher::{ChevronStepDirection, ClickDispatcher, DispatchEvent, EventBuilder};
+pub use dispatcher::{ChevronStepDirection, ClickDispatcher, DispatchEvent, EventBuilder, ResizeEdge};
 pub use edge_panels::{EdgePanels, EdgePlacement, EdgeSlot};
 pub use manager::LayoutManager;
 pub use overlay_stack::{OverlayEntry, OverlayStack};

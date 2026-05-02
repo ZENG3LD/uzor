@@ -65,6 +65,18 @@ pub fn register_layout_manager_toolbar<P: DockPanel>(
         );
     }
 
+    // Resize handle (opt-in) — fires ResizeHandleDragStarted on mouse-down.
+    if view.resizable {
+        let edge = match kind {
+            ToolbarRenderKind::Vertical => crate::layout::ResizeEdge::E,
+            _                            => crate::layout::ResizeEdge::S,
+        };
+        layout.dispatcher_mut().on_exact(
+            format!("{}:resize", id.0),
+            EventBuilder::ResizeHandle { host_id: id.clone(), edge },
+        );
+    }
+
     // Auto-forward hovered_item_id from the coordinator into toolbar state.
     let prefix = format!("{}:", id.0);
     state.sync_hover_from(&layout.ctx_mut().input, &prefix);
