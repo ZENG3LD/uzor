@@ -1064,8 +1064,13 @@ impl AppState {
 
         // ── 4. Scene ──────────────────────────────────────────────────────────
         self.scene.reset();
+        // Theme-aware background fill (Dark vs Light).
+        let bg_color = match self.theme_idx {
+            1 => Color::from_rgb8(0xf2, 0xf2, 0xf6), // Light
+            _ => BG,                                  // Dark
+        };
         self.scene.fill(
-            Fill::NonZero, Affine::IDENTITY, BG, None,
+            Fill::NonZero, Affine::IDENTITY, bg_color, None,
             &vello::kurbo::Rect::new(0.0, 0.0, width as f64, height as f64),
         );
 
@@ -2381,6 +2386,36 @@ impl AppState {
         self.popup_item = hovered_id.as_deref()
             .and_then(|id| if toolbar_items_with_popup.contains(&id) { Some(id.to_string()) } else { None });
 
+        // ── Status badge (bottom-right) — shows current variant selections ────
+        // Visual feedback for the new dropdowns: even if a variant has no
+        // dedicated demo widget yet, the user can see that the choice was
+        // applied to app state.
+        {
+            let toolbar_label = ["Horizontal","Vertical","ChromeStrip","Inline"][self.toolbar_kind.min(3) as usize];
+            let popup_label   = match self.popup_kind {
+                Some(0) => "ColorPickerGrid",
+                Some(1) => "ColorPickerHsv",
+                Some(2) => "SwatchGrid",
+                Some(3) => "ItemList",
+                Some(4) => "IndicatorStrip",
+                _       => "(none)",
+            };
+            let theme_label = if self.theme_idx == 0 { "Dark" } else { "Light" };
+            let status = format!(
+                "Sidebar: {}  |  Toolbar: {}  |  Popup: {}  |  Theme: {}",
+                sidebar_kind_label(self.sidebar_kind),
+                toolbar_label,
+                popup_label,
+                theme_label,
+            );
+            let badge_color = if self.theme_idx == 0 { "#7080a0" } else { "#404858" };
+            render.set_fill_color(badge_color);
+            render.set_font("11px sans-serif");
+            render.set_text_align(TextAlign::Right);
+            render.set_text_baseline(TextBaseline::Bottom);
+            render.fill_text(&status, width as f64 - 12.0, height as f64 - 8.0);
+        }
+
         // ── GPU submit ────────────────────────────────────────────────────────
         let dev = &self.render_cx.devices[self.surface.dev_id];
         let render_params = RenderParams {
@@ -2532,58 +2567,10 @@ impl AppState {
                     }
                     return;
                 }
-                "tb-sidebar" => {
-                    if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                        let was_open = self.dropdown_sidebar_state.open;
-                        self.close_all_dropdowns_except("sidebar");
-                        if !was_open {
-                            self.dropdown_sidebar_state.open_at(
-                                toolbar_rect.x + 4.0 + 140.0,
-                                toolbar_rect.y + toolbar_rect.height,
-                            );
-                        }
-                    }
-                    return;
-                }
-                "tb-toolbar" => {
-                    if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                        let was_open = self.dropdown_toolbar_state.open;
-                        self.close_all_dropdowns_except("toolbar");
-                        if !was_open {
-                            self.dropdown_toolbar_state.open_at(
-                                toolbar_rect.x + 4.0 + 200.0,
-                                toolbar_rect.y + toolbar_rect.height,
-                            );
-                        }
-                    }
-                    return;
-                }
-                "tb-popup" => {
-                    if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                        let was_open = self.dropdown_popup_state.open;
-                        self.close_all_dropdowns_except("popup");
-                        if !was_open {
-                            self.dropdown_popup_state.open_at(
-                                toolbar_rect.x + 4.0 + 260.0,
-                                toolbar_rect.y + toolbar_rect.height,
-                            );
-                        }
-                    }
-                    return;
-                }
-                "tb-theme" => {
-                    if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                        let was_open = self.dropdown_theme_state.open;
-                        self.close_all_dropdowns_except("theme");
-                        if !was_open {
-                            self.dropdown_theme_state.open_at(
-                                toolbar_rect.x + 4.0 + 320.0,
-                                toolbar_rect.y + toolbar_rect.height,
-                            );
-                        }
-                    }
-                    return;
-                }
+                // tb-sidebar / tb-toolbar / tb-popup / tb-theme are handled in
+                // the prefix-match dispatcher further down where the real
+                // "top-toolbar-widget:<id>" event lands. (This first match is
+                // by full id only — composite events are prefixed and never hit it.)
                 _ => {}
             }
 
@@ -2644,7 +2631,7 @@ impl AppState {
                     "sidebar-embed"   => self.sidebar_kind = 3,
                     _ => {}
                 }
-                self.dropdown_sidebar_state.close();
+                // Toggle items stay open so the user sees the new selection.
                 println!("[L3] sidebar kind → {}", sidebar_kind_label(self.sidebar_kind));
                 return;
             }
@@ -2680,7 +2667,8 @@ impl AppState {
                     "theme-light" => self.theme_idx = 1,
                     _ => {}
                 }
-                self.dropdown_theme_state.close();
+                // Toggle items stay open so the user sees the new selection.
+                println!("[L3] theme → {}", if self.theme_idx == 0 { "Dark" } else { "Light" });
                 return;
             }
             // Context menu items — registered as "{menu_widget_id}:item:{IDX}"
@@ -2948,6 +2936,42 @@ impl AppState {
                             }
                             return;
                         }
+                        "tb-sidebar" => {
+                            let was = self.dropdown_sidebar_state.open;
+                            self.close_all_dropdowns_except("sidebar");
+                            if was {
+                                self.dropdown_sidebar_state.close();
+                            } else {
+                                self.dropdown_sidebar_state.open_at(toolbar_rect.x + 144.0, dd_y);
+                            }
+                        }
+                        "tb-toolbar" => {
+                            let was = self.dropdown_toolbar_state.open;
+                            self.close_all_dropdowns_except("toolbar");
+                            if was {
+                                self.dropdown_toolbar_state.close();
+                            } else {
+                                self.dropdown_toolbar_state.open_at(toolbar_rect.x + 204.0, dd_y);
+                            }
+                        }
+                        "tb-popup" => {
+                            let was = self.dropdown_popup_state.open;
+                            self.close_all_dropdowns_except("popup");
+                            if was {
+                                self.dropdown_popup_state.close();
+                            } else {
+                                self.dropdown_popup_state.open_at(toolbar_rect.x + 264.0, dd_y);
+                            }
+                        }
+                        "tb-theme" => {
+                            let was = self.dropdown_theme_state.open;
+                            self.close_all_dropdowns_except("theme");
+                            if was {
+                                self.dropdown_theme_state.close();
+                            } else {
+                                self.dropdown_theme_state.open_at(toolbar_rect.x + 324.0, dd_y);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -3056,18 +3080,33 @@ impl AppState {
         }
 
         // ── Dropdown item clicks ──────────────────────────────────────────────
-        let any_dd_open = self.dropdown_file_state.open || self.dropdown_view_state.open || self.dropdown_help_state.open || self.dropdown_addpanel_state.open;
+        let any_dd_open = self.dropdown_file_state.open
+            || self.dropdown_view_state.open
+            || self.dropdown_help_state.open
+            || self.dropdown_addpanel_state.open
+            || self.dropdown_sidebar_state.open
+            || self.dropdown_toolbar_state.open
+            || self.dropdown_popup_state.open
+            || self.dropdown_theme_state.open;
         if any_dd_open {
             let clicked_dd =
-                (self.dropdown_file_state.open && self.layout.rect_for_overlay("dd-file-overlay").map(|r| r.contains(x, y)).unwrap_or(false)) ||
-                (self.dropdown_view_state.open && self.layout.rect_for_overlay("dd-view-overlay").map(|r| r.contains(x, y)).unwrap_or(false)) ||
-                (self.dropdown_help_state.open && self.layout.rect_for_overlay("dd-help-overlay").map(|r| r.contains(x, y)).unwrap_or(false)) ||
-                (self.dropdown_addpanel_state.open && self.layout.rect_for_overlay("dd-addpanel-overlay").map(|r| r.contains(x, y)).unwrap_or(false));
+                (self.dropdown_file_state.open     && self.layout.rect_for_overlay("dd-file-overlay")    .map(|r| r.contains(x, y)).unwrap_or(false)) ||
+                (self.dropdown_view_state.open     && self.layout.rect_for_overlay("dd-view-overlay")    .map(|r| r.contains(x, y)).unwrap_or(false)) ||
+                (self.dropdown_help_state.open     && self.layout.rect_for_overlay("dd-help-overlay")    .map(|r| r.contains(x, y)).unwrap_or(false)) ||
+                (self.dropdown_addpanel_state.open && self.layout.rect_for_overlay("dd-addpanel-overlay").map(|r| r.contains(x, y)).unwrap_or(false)) ||
+                (self.dropdown_sidebar_state.open  && self.layout.rect_for_overlay("dd-sidebar-overlay") .map(|r| r.contains(x, y)).unwrap_or(false)) ||
+                (self.dropdown_toolbar_state.open  && self.layout.rect_for_overlay("dd-toolbar-overlay") .map(|r| r.contains(x, y)).unwrap_or(false)) ||
+                (self.dropdown_popup_state.open    && self.layout.rect_for_overlay("dd-popup-overlay")   .map(|r| r.contains(x, y)).unwrap_or(false)) ||
+                (self.dropdown_theme_state.open    && self.layout.rect_for_overlay("dd-theme-overlay")   .map(|r| r.contains(x, y)).unwrap_or(false));
             if !clicked_dd {
                 self.dropdown_file_state.close();
                 self.dropdown_view_state.close();
                 self.dropdown_help_state.close();
                 self.dropdown_addpanel_state.close();
+                self.dropdown_sidebar_state.close();
+                self.dropdown_toolbar_state.close();
+                self.dropdown_popup_state.close();
+                self.dropdown_theme_state.close();
             } else {
                 // Handle specific items via hovered_id
                 if let Some(ref hid) = self.dropdown_file_state.hovered_id.clone() {
@@ -3110,6 +3149,46 @@ impl AppState {
                         _                 => println!("[L3] modals item: {hid}"),
                     }
                     self.dropdown_help_state.close();
+                }
+                if let Some(ref hid) = self.dropdown_sidebar_state.hovered_id.clone() {
+                    match hid.as_str() {
+                        "sidebar-left"    => self.sidebar_kind = 0,
+                        "sidebar-right"   => self.sidebar_kind = 1,
+                        "sidebar-typesel" => self.sidebar_kind = 2,
+                        "sidebar-embed"   => self.sidebar_kind = 3,
+                        _ => {}
+                    }
+                    self.dropdown_sidebar_state.close();
+                    println!("[L3] sidebar kind → {}", sidebar_kind_label(self.sidebar_kind));
+                }
+                if let Some(ref hid) = self.dropdown_toolbar_state.hovered_id.clone() {
+                    match hid.as_str() {
+                        "toolbar-horiz"  => self.toolbar_kind = 0,
+                        "toolbar-vert"   => self.toolbar_kind = 1,
+                        "toolbar-chrome" => self.toolbar_kind = 2,
+                        "toolbar-inline" => self.toolbar_kind = 3,
+                        _ => {}
+                    }
+                    self.dropdown_toolbar_state.close();
+                }
+                if let Some(ref hid) = self.dropdown_popup_state.hovered_id.clone() {
+                    self.popup_kind = match hid.as_str() {
+                        "popup-cpgrid"   => Some(0),
+                        "popup-cphsv"    => Some(1),
+                        "popup-swatch"   => Some(2),
+                        "popup-itemlist" => Some(3),
+                        "popup-strip"    => Some(4),
+                        _                => self.popup_kind,
+                    };
+                    self.dropdown_popup_state.close();
+                }
+                if let Some(ref hid) = self.dropdown_theme_state.hovered_id.clone() {
+                    match hid.as_str() {
+                        "theme-dark"  => self.theme_idx = 0,
+                        "theme-light" => self.theme_idx = 1,
+                        _ => {}
+                    }
+                    self.dropdown_theme_state.close();
                 }
             }
             return;
@@ -3348,21 +3427,27 @@ impl AppState {
                 .and_then(|id| id.strip_prefix("left-vtoolbar-widget:"))
                 .map(|s| s.to_string());
             let hovered_id = hovered_id;
-            if self.dropdown_file_state.open || self.dropdown_view_state.open || self.dropdown_help_state.open {
-                self.dropdown_file_state.hovered_id = hovered_id.clone()
-                    .filter(|id| id.starts_with("dd-file-widget:item:"))
-                    .map(|id| id["dd-file-widget:item:".len()..].to_owned());
-                self.dropdown_view_state.hovered_id = hovered_id.clone()
-                    .filter(|id| id.starts_with("dd-view-widget:item:"))
-                    .map(|id| id["dd-view-widget:item:".len()..].to_owned());
-                self.dropdown_help_state.hovered_id = hovered_id.clone()
-                    .filter(|id| id.starts_with("dd-help-widget:item:"))
-                    .map(|id| id["dd-help-widget:item:".len()..].to_owned());
-            }
-            if self.dropdown_addpanel_state.open {
-                self.dropdown_addpanel_state.hovered_id = hovered_id.clone()
-                    .filter(|id| id.starts_with("dd-addpanel-widget:item:"))
-                    .map(|id| id["dd-addpanel-widget:item:".len()..].to_owned());
+            // Universal dropdown hovered_id forwarder. For each open dropdown,
+            // strip its widget-id prefix from the global hovered_id and stash
+            // the suffix in dropdown_state.hovered_id so the next render frame
+            // highlights the correct item. Adding a new dropdown = one extra
+            // (state_field, widget_id_prefix) pair in this list.
+            let drops: [(&mut DropdownState, &str); 8] = [
+                (&mut self.dropdown_file_state,     "dd-file-widget:item:"),
+                (&mut self.dropdown_view_state,     "dd-view-widget:item:"),
+                (&mut self.dropdown_help_state,     "dd-help-widget:item:"),
+                (&mut self.dropdown_addpanel_state, "dd-addpanel-widget:item:"),
+                (&mut self.dropdown_sidebar_state,  "dd-sidebar-widget:item:"),
+                (&mut self.dropdown_toolbar_state,  "dd-toolbar-widget:item:"),
+                (&mut self.dropdown_popup_state,    "dd-popup-widget:item:"),
+                (&mut self.dropdown_theme_state,    "dd-theme-widget:item:"),
+            ];
+            for (state, prefix) in drops {
+                if state.open {
+                    state.hovered_id = hovered_id.as_ref()
+                        .filter(|id| id.starts_with(prefix))
+                        .map(|id| id[prefix.len()..].to_owned());
+                }
             }
             if self.ctx_menu_state.is_open {
                 if let Some(ref id) = hovered_id {
