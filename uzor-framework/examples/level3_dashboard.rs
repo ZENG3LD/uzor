@@ -737,20 +737,9 @@ enum DragTarget {
     /// converts cursor Y into scroll offset using track height + content_h.
     SidebarScrollbar { track_rect: Rect, content_h: f64, viewport_h: f64 },
     /// Sidebar resize drag.
-    /// - `which` — string key identifying which sidebar's state to update
-    ///   ("main" / "right" / "top" / "bottom").
-    /// - `axis` — 'h' (horizontal drag, width changes) or 'v' (vertical drag, height changes).
-    /// - `sign` — `+1.0` if dragging the inner edge in the positive axis grows the
-    ///   sidebar (Left+right-edge, Top+bottom-edge); `-1.0` for the mirrored case.
-    /// - `start_size` — sidebar width/height at drag start.
-    /// - `start_pos`  — cursor x or y at drag start.
-    SidebarResize {
-        which: &'static str,
-        axis: char,
-        sign: f64,
-        start_size: f64,
-        start_pos: f64,
-    },
+    /// Sidebar resize — math lives on `SidebarState::resize_drag`. `which`
+    /// selects which sidebar's state to update.
+    SidebarResize { which: &'static str },
     /// Modal header drag — stores cursor-relative-to-modal offset so modal moves smoothly.
     ModalDrag,
     /// Dock separator drag — stores separator index and start mouse position.
@@ -2030,24 +2019,23 @@ impl AppState {
             }
         }
 
-        // ── Dock separators (fix 5/6) ─────────────────────────────────────────
+        // ── Dock separators ──────────────────────────────────────────────────
+        // Paint only — registration is owned by LayoutManager via
+        // `register_dock_separators` (called after all composite registration
+        // so overlays outrank separators in z-order hit-testing).
         {
             use uzor::docking::panels::SeparatorOrientation as DockSepOrient;
-            use uzor::input::core::sense::Sense;
-            use uzor::input::core::widget_kind::WidgetKind;
             let separators: Vec<_> = self.layout.panels().separators().iter().enumerate().map(|(i, s)| {
                 let thickness = s.thickness_for_state() as f64;
                 let (sx, sy, sw, sh) = match s.orientation {
                     DockSepOrient::Vertical => {
-                        // position = x, start = y, length = height
                         (s.position as f64 - thickness / 2.0, s.start as f64, thickness, s.length as f64)
                     }
                     DockSepOrient::Horizontal => {
-                        // position = y, start = x, length = width
                         (s.start as f64, s.position as f64 - thickness / 2.0, s.length as f64, thickness)
                     }
                 };
-                (i, sx, sy, sw, sh, s.orientation)
+                (i, sx, sy, sw, sh)
             }).collect();
 
             let dragging_sep = if let Some(DragTarget::SeparatorDrag { sep_idx, .. }) = self.drag_target {
@@ -2056,7 +2044,7 @@ impl AppState {
                 None
             };
 
-            for (i, sx, sy, sw, sh, _orient) in &separators {
+            for (i, sx, sy, sw, sh) in &separators {
                 let color = if dragging_sep == Some(*i) {
                     "rgba(100,160,255,0.7)"
                 } else {
@@ -2064,21 +2052,6 @@ impl AppState {
                 };
                 render.set_fill_color(color);
                 render.fill_rect(*sx, *sy, *sw, *sh);
-
-                // Register separator as a coord drag-handle so it participates
-                // in z-ordered hit-testing. Clicks/drags on it resolve to
-                // "dock-sep-{i}" via process_click / handle_click. This means
-                // a separator under an open dropdown or popup will NOT be grabbed
-                // — the overlay owns the cursor at that z-level.
-                let sep_id = WidgetId::new(format!("dock-sep-{i}"));
-                let sep_rect = Rect::new(*sx, *sy, *sw, *sh);
-                self.layout.ctx_mut().input.register_atomic(
-                    sep_id,
-                    WidgetKind::DragHandle,
-                    sep_rect,
-                    Sense::DRAG | Sense::CLICK,
-                    &LayerId::main(),
-                );
             }
         }
 
@@ -3447,6 +3420,12 @@ impl AppState {
             }
         }
 
+        // ── Dock separators — z-aware hit-test registration ───────────────────
+        // Owned by LayoutManager. Called after composites so overlays already
+        // pushed their (modal=true) layers; separator clicks under an open
+        // overlay are blocked by z-ordered hit-test.
+        self.layout.register_dock_separators(&LayerId::main());
+
         // ── end_frame ─────────────────────────────────────────────────────────
         let responses = self.layout.ctx_mut().input.end_frame();
 
@@ -3578,6 +3557,12 @@ impl AppState {
         let cursor = (x, y);
 
         match event {
+            // Mouse-up on a separator drag-handle — drag was started on
+            // mouse-down and is ended in on_mouse_up's release path.
+            DispatchEvent::DockSeparatorDragStarted { .. } => return,
+            // Mouse-up on a resize handle — drag started on mouse-down,
+            // ended elsewhere; no action on release click.
+            DispatchEvent::ResizeHandleDragStarted { .. } => return,
             DispatchEvent::ModalCloseRequested(_) => {
                 eprintln!("[DISPATCHER] ModalCloseRequested");
                 self.modal_open = false;
@@ -3729,9 +3714,6 @@ impl AppState {
                 // opt_ev still Some(Unhandled(id)) → app-specific id routing.
                 if let Some(DispatchEvent::Unhandled(ref id)) = opt_ev {
                     let id_str = id.0.as_str();
-                    // ── Dock separator drag handle click — no-op on release
-                    // (drag started on mouse-down; release is handled by on_mouse_up)
-                    if id_str.starts_with("dock-sep-") { return; }
                     // ── L2-modal widgets (coord-registered atomics inside L2 body)
                     match id_str {
                         "l2-btn-connect" => { eprintln!("[DISPATCH] l2-btn-connect"); self.l2_connected = !self.l2_connected; return; }
@@ -4012,55 +3994,9 @@ impl AppState {
             }
         }
 
-        // Sidebar resize handle — composite registers each as
-        // "{widget_id}:resize" with Sense::DRAG. Probe every spawned sidebar
-        // and start a drag if its handle rect contains the cursor.
-        if !self.modal_open {
-            let probes: [(&'static str, &'static str, char, f64, f64); 4] = [
-                // (key,    widget_id,                       axis, sign, current_size)
-                ("main",   "sidebar-widget:resize",                'h',  1.0, self.sidebar_state.width),
-                ("right",  "demo-sidebar-right-widget:resize",     'h', -1.0, self.demo_sidebar_right_state.width),
-                ("top",    "demo-sidebar-top-widget:resize",       'v',  1.0, self.demo_sidebar_top_state.width),
-                ("bottom", "demo-sidebar-bottom-widget:resize",    'v', -1.0, self.demo_sidebar_bottom_state.width),
-            ];
-            for (key, wid, axis, sign, cur) in probes {
-                let zone = self.layout.ctx().input.widget_rect(&WidgetId::new(wid));
-                if let Some(zone) = zone {
-                    if zone.contains(x, y) {
-                        let start_pos = if axis == 'h' { x } else { y };
-                        // Top/Bottom sidebars use SidebarState.width as the
-                        // height (single dimension stored in the same field).
-                        // For Top/Bottom we initialise it from the slot's
-                        // current rect if width == 0.
-                        let start_size = if cur > 0.0 {
-                            cur
-                        } else {
-                            // Best-effort default — measure_sidebar's default_width.
-                            uzor::ui::widgets::composite::sidebar::render::measure(
-                                &SidebarSettings::default(),
-                                &SidebarRenderKind::Left,
-                            ).0
-                        };
-                        // Mark the relevant sidebar as actively resizing so
-                        // the composite paints the accent stripe on its border.
-                        let st: Option<&mut SidebarState> = match key {
-                            "main"   => Some(&mut self.sidebar_state),
-                            "right"  => Some(&mut self.demo_sidebar_right_state),
-                            "top"    => Some(&mut self.demo_sidebar_top_state),
-                            "bottom" => Some(&mut self.demo_sidebar_bottom_state),
-                            _ => None,
-                        };
-                        if let Some(s) = st {
-                            s.resize_dragging = true;
-                        }
-                        self.drag_target = Some(DragTarget::SidebarResize {
-                            which: key, axis, sign, start_size, start_pos,
-                        });
-                        return;
-                    }
-                }
-            }
-        }
+        // Sidebar resize handle is now resolved via the LayoutManager
+        // dispatcher (z-aware). See bridge mouse-down: it routes drag_id
+        // through dispatch_widget → ResizeHandleDragStarted.
 
         // Fix 2: track L1 button pressed state
         if self.modal_open && self.modal_kind == ModalKind::L1 {
@@ -4231,24 +4167,16 @@ impl AppState {
                     let scroll = self.sidebar_state.get_or_insert_scroll("default");
                     scroll.handle_drag(y, track_rect.height, *content_h, *viewport_h);
                 }
-                DragTarget::SidebarResize { which, axis, sign, start_size, start_pos } => {
-                    let cur_pos = if *axis == 'h' { x } else { y };
-                    let delta = (cur_pos - *start_pos) * *sign;
-                    let new_size = (*start_size + delta).max(0.0);
-                    use uzor::ui::widgets::composite::sidebar::input::handle_sidebar_resize_clamped;
-                    // Per-edge bounds — horizontal sidebars use the standard
-                    // sidebar-width range; vertical (Top/Bottom) need their
-                    // own (lower) min and a viewport-relative max.
-                    let mb = match *which {
-                        "main"   => Some((&mut self.sidebar_state,             280.0_f64, 4000.0_f64)),
-                        "right"  => Some((&mut self.demo_sidebar_right_state,  280.0,     4000.0)),
-                        "top"    => Some((&mut self.demo_sidebar_top_state,     60.0,     4000.0)),
-                        "bottom" => Some((&mut self.demo_sidebar_bottom_state,  60.0,     4000.0)),
-                        _ => None,
+                DragTarget::SidebarResize { which } => {
+                    // Resize math lives on SidebarState — just forward the cursor.
+                    let (st, is_h): (&mut SidebarState, bool) = match *which {
+                        "main"   => (&mut self.sidebar_state,             true),
+                        "right"  => (&mut self.demo_sidebar_right_state,  true),
+                        "top"    => (&mut self.demo_sidebar_top_state,    false),
+                        "bottom" => (&mut self.demo_sidebar_bottom_state, false),
+                        _        => return,
                     };
-                    if let Some((state, min, max)) = mb {
-                        handle_sidebar_resize_clamped(state, new_size, min, max);
-                    }
+                    st.update_resize((x, y), is_h);
                 }
                 DragTarget::ToolbarResize { which } => {
                     // Resize math lives on ToolbarState — just forward the cursor.
@@ -4305,11 +4233,11 @@ impl AppState {
         self.popup_state.end_body_scroll_drag();
         // Fix 3: end modal drag
         self.modal_state.end_drag();
-        // Clear sidebar resize-drag flags so composites stop highlighting their handles.
-        self.sidebar_state.resize_dragging              = false;
-        self.demo_sidebar_right_state.resize_dragging   = false;
-        self.demo_sidebar_top_state.resize_dragging     = false;
-        self.demo_sidebar_bottom_state.resize_dragging  = false;
+        // End any active sidebar resize drags.
+        self.sidebar_state.end_resize();
+        self.demo_sidebar_right_state.end_resize();
+        self.demo_sidebar_top_state.end_resize();
+        self.demo_sidebar_bottom_state.end_resize();
         // End any active scrollbar thumb drag.
         if let Some(scroll) = self.sidebar_state.scroll_per_panel.get_mut("default") {
             scroll.end_drag();
@@ -4740,6 +4668,9 @@ impl ApplicationHandler for Handler {
                     };
                     try_consume_bridge!(sidebar_input, st, host, rect);
                     if handled {
+                        if st.resize_drag.is_some() {
+                            app.drag_target = Some(DragTarget::SidebarResize { which });
+                        }
                         if let Some(scroll) = st.scroll_per_panel.get("default") {
                             if scroll.is_dragging {
                                 if let Some(sb_rect) = app.layout.rect_for_edge_slot(slot) {
@@ -4763,25 +4694,18 @@ impl ApplicationHandler for Handler {
                     }
                 }
             }
-            // ── Dock separator drag — resolved via coord, no geometry needed ──
-            // Separators are registered as DragHandle widgets with id "dock-sep-{i}".
-            // If the bridge resolved one as the topmost drag widget, start the sep
-            // drag here without falling through to on_mouse_down's geometric test.
+            // ── Dock separator drag — fully via LayoutManager dispatcher ──────
             if !handled {
                 if let Some(ref id) = drag_id {
-                    if let Some(n_str) = id.0.strip_prefix("dock-sep-") {
-                        if let Ok(sep_idx) = n_str.parse::<usize>() {
-                            if !app.modal_open {
-                                app.drag_target = Some(DragTarget::SeparatorDrag {
-                                    sep_idx,
-                                    start_x: x,
-                                    start_y: y,
-                                });
-                                app.drag_origin = Some((x, y));
-                                app.mouse_down = true;
-                                handled = true;
-                            }
-                        }
+                    if let uzor::layout::DispatchEvent::DockSeparatorDragStarted { sep_idx } =
+                        app.layout.dispatch_widget(id)
+                    {
+                        app.drag_target = Some(DragTarget::SeparatorDrag {
+                            sep_idx, start_x: x, start_y: y,
+                        });
+                        app.drag_origin = Some((x, y));
+                        app.mouse_down = true;
+                        handled = true;
                     }
                 }
             }

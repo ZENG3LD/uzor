@@ -527,7 +527,7 @@ fn draw_sidebar_with_coord(
             | SidebarRenderKind::Bottom
             | SidebarRenderKind::WithTypeSelector
     );
-    if shows_resize && state.resize_dragging {
+    if shows_resize && state.resize_drag.is_some() {
         let bl = layout.border_line;
         if bl.width > 0.0 && bl.height > 0.0 {
             let stripe_w = 2.0_f64;

@@ -5,7 +5,8 @@
 
 use std::collections::HashMap;
 
-use crate::types::ScrollState;
+use crate::types::{Rect, ScrollState};
+use super::super::resize_drag::ResizeDrag;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,14 +58,10 @@ pub struct SidebarState {
 
     // --- Resize drag ---
 
-    /// Whether a resize drag gesture is currently in progress.
-    pub resize_dragging: bool,
-
-    /// Screen X at the start of the current resize drag.
-    pub resize_drag_start_x: f64,
-
-    /// Sidebar width recorded at drag start (used to compute new width).
-    pub resize_drag_start_width: f64,
+    /// Resize drag in progress (set by [`Self::start_resize`]).
+    /// Mirrors `ToolbarState::resize_drag` — single source of truth for
+    /// the drag math; legacy bool/start fields removed.
+    pub resize_drag: Option<ResizeDrag>,
 
     // --- Header action hover ---
 
@@ -83,9 +80,7 @@ impl Default for SidebarState {
             width: 0.0,
             active_tab: None,
             scroll_per_panel: HashMap::new(),
-            resize_dragging: false,
-            resize_drag_start_x: 0.0,
-            resize_drag_start_width: 0.0,
+            resize_drag: None,
             header_action_hovered: None,
         }
     }
@@ -113,7 +108,6 @@ impl SidebarState {
         let axis = if is_horizontal_kind { viewport_w } else { viewport_h };
         let min  = if is_horizontal_kind { MIN_SIDEBAR_WIDTH } else { MIN_SIDEBAR_HEIGHT };
         self.width = (axis * DEFAULT_SIDEBAR_VIEWPORT_FRAC).max(min);
-        self.resize_drag_start_width = self.width;
     }
 
     // -------------------------------------------------------------------------
@@ -132,30 +126,35 @@ impl SidebarState {
     // Resize helpers
     // -------------------------------------------------------------------------
 
-    /// Begin a resize drag at screen position `x`.
-    pub fn start_resize_drag(&mut self, x: f64) {
-        self.resize_dragging = true;
-        self.resize_drag_start_x = x;
-        self.resize_drag_start_width = self.width;
+    /// Begin a resize drag. Composite's `consume_event` calls this when it
+    /// matches `ResizeHandleDragStarted` for its host id.
+    pub fn start_resize(
+        &mut self,
+        edge:       crate::layout::ResizeEdge,
+        start_rect: Rect,
+        cursor:     (f64, f64),
+        min_size:   f64,
+        cap_size:   f64,
+    ) {
+        self.resize_drag = Some(ResizeDrag::begin(
+            edge, start_rect, cursor, (min_size, min_size), (cap_size, cap_size),
+        ));
     }
 
-    /// Update width while dragging.
-    ///
-    /// For a `Right` sidebar the resize edge is on the left:
-    /// moving left (`x` decreasing) increases width.
-    /// `delta_sign`: pass `+1.0` for Right sidebar (left edge), `-1.0` for Left sidebar (right edge).
-    pub fn update_resize_drag(&mut self, x: f64, delta_sign: f64) {
-        if !self.resize_dragging {
-            return;
+    /// Update `width` from a fresh cursor position while a drag is live.
+    /// `is_horizontal_axis` — true for Left/Right (width axis), false for
+    /// Top/Bottom (sidebar's `width` field stores its height).
+    pub fn update_resize(&mut self, cursor: (f64, f64), is_horizontal_axis: bool) {
+        if let Some(drag) = self.resize_drag {
+            let r = drag.resolve(cursor);
+            let raw = if is_horizontal_axis { r.width } else { r.height };
+            self.width = raw.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
         }
-        let delta = (self.resize_drag_start_x - x) * delta_sign;
-        self.width = (self.resize_drag_start_width + delta)
-            .clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
     }
 
-    /// End the current resize drag.
-    pub fn end_resize_drag(&mut self) {
-        self.resize_dragging = false;
+    /// End any active resize drag.
+    pub fn end_resize(&mut self) {
+        self.resize_drag = None;
     }
 
     // -------------------------------------------------------------------------

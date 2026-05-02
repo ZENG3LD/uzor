@@ -57,9 +57,11 @@ pub fn consume_event(
                 Some(event)
             }
         }
-        DispatchEvent::ResizeHandleDragStarted { host_id: ref hid, .. } => {
+        DispatchEvent::ResizeHandleDragStarted { host_id: ref hid, edge } => {
             if hid == host_id {
-                state.start_resize_drag(ctx.cursor.0);
+                let min_size = MIN_SIDEBAR_WIDTH;
+                let cap_size = (ctx.viewport.0.max(ctx.viewport.1)).max(MAX_SIDEBAR_WIDTH);
+                state.start_resize(edge, ctx.frame_rect, ctx.cursor, min_size, cap_size);
                 None
             } else {
                 Some(event)
@@ -115,6 +117,27 @@ pub fn register_layout_manager_sidebar<P: DockPanel>(
     }
 
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Sidebar, rect, sense: Sense::CLICK });
+
+    // Resize handle dispatcher pattern. Composite already registers a child
+    // `:resize` Sense::DRAG zone on the appropriate edge; install the pattern
+    // so an L1 hit translates to ResizeHandleDragStarted with the right edge,
+    // and z-order filtering automatically suppresses hits under open overlays.
+    {
+        use crate::layout::{EventBuilder, ResizeEdge};
+        let edge = match kind {
+            super::types::SidebarRenderKind::Left
+            | super::types::SidebarRenderKind::WithTypeSelector => ResizeEdge::E,
+            super::types::SidebarRenderKind::Right              => ResizeEdge::W,
+            super::types::SidebarRenderKind::Top                => ResizeEdge::S,
+            super::types::SidebarRenderKind::Bottom             => ResizeEdge::N,
+            super::types::SidebarRenderKind::Embedded           => ResizeEdge::E,
+            super::types::SidebarRenderKind::Custom(_)          => ResizeEdge::E,
+        };
+        layout.dispatcher_mut().on_exact(
+            format!("{}:resize", id.0),
+            EventBuilder::ResizeHandle { host_id: id.clone(), edge },
+        );
+    }
 
     // Register dispatcher patterns so the inner scrollbar (when shown) gets
     // semantic events. Sidebar composite registers child rects as

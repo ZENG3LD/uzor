@@ -512,6 +512,66 @@ impl<P: DockPanel> LayoutManager<P> {
     }
 
     // ------------------------------------------------------------------
+    // Dock separators — register as drag-handle widgets
+    // ------------------------------------------------------------------
+
+    /// Register every dock separator as a coord drag-handle widget on `layer`.
+    ///
+    /// Call once per frame, after `solve(...)` and after composite registration
+    /// (so overlay layers are pushed first and outrank the main layer in
+    /// hit-testing). The separators participate in z-ordered hit-test, so a
+    /// click under an open dropdown / popup / modal will be claimed by the
+    /// overlay, not the separator.
+    ///
+    /// Each separator is registered with id `"dock-sep-{idx}"` where `idx`
+    /// matches `panels().separators()[idx]`. A dispatcher pattern is also
+    /// installed so a hit translates to
+    /// [`super::DispatchEvent::DockSeparatorDragStarted`].
+    pub fn register_dock_separators(&mut self, layer: &LayerId) {
+        use crate::docking::panels::SeparatorOrientation as SepOrient;
+        let sep_rects: Vec<(usize, Rect)> = self
+            .panels
+            .separators()
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let thickness = s.thickness_for_state() as f64;
+                let (x, y, w, h) = match s.orientation {
+                    SepOrient::Vertical => (
+                        s.position as f64 - thickness / 2.0,
+                        s.start as f64,
+                        thickness,
+                        s.length as f64,
+                    ),
+                    SepOrient::Horizontal => (
+                        s.start as f64,
+                        s.position as f64 - thickness / 2.0,
+                        s.length as f64,
+                        thickness,
+                    ),
+                };
+                (i, Rect::new(x, y, w, h))
+            })
+            .collect();
+
+        let coord = &mut self.ctx.input;
+        for (i, rect) in &sep_rects {
+            coord.register_atomic(
+                WidgetId::new(format!("dock-sep-{i}")),
+                WidgetKind::DragHandle,
+                *rect,
+                crate::input::Sense::DRAG | crate::input::Sense::CLICK,
+                layer,
+            );
+        }
+
+        self.dispatcher.on_prefix(
+            "dock-sep-",
+            super::EventBuilder::DockSeparatorFromSuffix,
+        );
+    }
+
+    // ------------------------------------------------------------------
     // Unified click entry point
     // ------------------------------------------------------------------
 

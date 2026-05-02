@@ -122,6 +122,12 @@ pub enum DispatchEvent {
     /// `host_id` is the parent composite; `slot` is the label passed at
     /// registration time (e.g. `"n"`, `"s"`, `"e"`, `"w"`).
     StickyChevronAtSlotClicked { host_id: WidgetId, slot: String },
+
+    /// User mouse-downed on a dock-panel separator. `sep_idx` is the index
+    /// into `panels().separators()` for this frame. The app should record a
+    /// drag-start (origin x/y) and drive `panels_mut().drag_separator(...)`
+    /// on subsequent pointer-moves.
+    DockSeparatorDragStarted { sep_idx: usize },
 }
 
 /// Edges and corners a resize handle can be attached to. Used by
@@ -219,6 +225,11 @@ pub enum EventBuilder {
     /// multiple chevrons share the same host (e.g. 4-direction chevrons).
     /// `slot` is extracted from the suffix of `{host_id}:chev:{slot}`.
     StickyChevronWithSlot { host_id: WidgetId },
+
+    /// Fires `DockSeparatorDragStarted { sep_idx = parsed suffix }` when a
+    /// `dock-sep-{idx}` widget is hit. Suffix is parsed as `usize`; bad
+    /// parse falls through to `Unhandled`.
+    DockSeparatorFromSuffix,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -387,6 +398,12 @@ fn build(builder: &EventBuilder, id: &str, pattern: &str) -> DispatchEvent {
             // id is "{host_id}:chev:{slot}", pattern is "{host_id}:chev:"
             let slot = suffix();
             DispatchEvent::StickyChevronAtSlotClicked { host_id: host_id.clone(), slot }
+        }
+        EventBuilder::DockSeparatorFromSuffix => {
+            match suffix().parse::<usize>() {
+                Ok(sep_idx) => DispatchEvent::DockSeparatorDragStarted { sep_idx },
+                Err(_)      => DispatchEvent::Unhandled(WidgetId::new(id)),
+            }
         }
     }
 }
