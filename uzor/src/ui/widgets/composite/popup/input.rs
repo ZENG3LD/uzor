@@ -10,9 +10,63 @@ use super::types::{PopupRenderKind, PopupView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{EventBuilder, LayoutManager, LayoutNodeId, PopupNode, WidgetNode};
+use crate::layout::{DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, PopupNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
+
+/// Cursor position and view metadata for events that need spatial context
+/// (scrollbar drag start, track click).
+pub struct ConsumeEventCtx {
+    /// Current pointer position in screen coordinates.
+    pub cursor: (f64, f64),
+    /// Resolved frame rect of the popup this frame.
+    pub frame_rect: Rect,
+    /// Viewport size used for resize cap computation.
+    pub viewport: (f64, f64),
+}
+
+/// Consume a `DispatchEvent` if it belongs to this popup. Returns:
+/// - `None` — the event was consumed (composite mutated its state).
+/// - `Some(event)` — the event is not for this popup; pass it through.
+///
+/// `host_id` is the popup composite's WidgetId (e.g. `"popup-widget"`). Only
+/// events whose carried id starts with `{host_id}:` are consumed.
+pub fn consume_event(
+    event: DispatchEvent,
+    state: &mut PopupState,
+    host_id: &WidgetId,
+    ctx: ConsumeEventCtx,
+) -> Option<DispatchEvent> {
+    match event {
+        DispatchEvent::ChevronStepRequested { ref chevron_id, direction } => {
+            let is_own = chevron_id.0 == format!("{}:chevron_up", host_id.0)
+                || chevron_id.0 == format!("{}:chevron_down", host_id.0);
+            if is_own {
+                state.body_chevron_step(direction);
+                None
+            } else {
+                Some(event)
+            }
+        }
+        DispatchEvent::ScrollbarTrackClicked { ref track_id } => {
+            if track_id.0 == format!("{}:scrollbar_track", host_id.0) {
+                state.body_scroll_track_click(ctx.cursor.1);
+                None
+            } else {
+                Some(event)
+            }
+        }
+        DispatchEvent::ScrollbarThumbDragStarted { ref thumb_id } => {
+            if thumb_id.0 == format!("{}:scrollbar_handle", host_id.0) {
+                state.start_body_scroll_drag(ctx.cursor.1);
+                None
+            } else {
+                Some(event)
+            }
+        }
+        _ => Some(event),
+    }
+}
 
 /// Register + draw a popup in one call using a [`LayoutManager`].
 ///

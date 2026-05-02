@@ -13,9 +13,51 @@ use super::types::{DropdownRenderKind, DropdownView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{DropdownNode, EventBuilder, LayoutManager, LayoutNodeId, WidgetNode};
+use crate::layout::{DispatchEvent, DropdownNode, EventBuilder, LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
+
+/// Cursor position and view metadata for events that need spatial context.
+///
+/// Included for API uniformity with other composites; not used by dropdown
+/// event handling today.
+pub struct ConsumeEventCtx {
+    /// Current pointer position in screen coordinates.
+    pub cursor: (f64, f64),
+    /// Resolved frame rect of the dropdown this frame.
+    pub frame_rect: Rect,
+    /// Viewport size used for resize cap computation.
+    pub viewport: (f64, f64),
+}
+
+/// Consume a `DispatchEvent` if it belongs to this dropdown. Returns:
+/// - `None` — the event was consumed (composite mutated its state).
+/// - `Some(event)` — the event is not for this dropdown; pass it through.
+///
+/// `host_id` is the dropdown composite's WidgetId. Only events whose carried
+/// `dropdown_id` equals `host_id` are consumed.
+pub fn consume_event(
+    event: DispatchEvent,
+    state: &mut DropdownState,
+    host_id: &WidgetId,
+    _ctx: ConsumeEventCtx,
+) -> Option<DispatchEvent> {
+    match event {
+        DispatchEvent::DropdownSubmenuToggle { ref dropdown_id, ref trigger_id } => {
+            if dropdown_id == host_id {
+                if state.submenu_open.as_deref() == Some(trigger_id.as_str()) {
+                    state.submenu_open = None;
+                } else {
+                    state.submenu_open = Some(trigger_id.clone());
+                }
+                None
+            } else {
+                Some(event)
+            }
+        }
+        _ => Some(event),
+    }
+}
 
 /// Register + draw a dropdown in one call using a [`LayoutManager`].
 ///
