@@ -3,6 +3,73 @@
 //! Values ported from the mlc sidebar audit (`sidebar-deep.md` §9).
 
 // ---------------------------------------------------------------------------
+// Border / Divider styling
+// ---------------------------------------------------------------------------
+
+/// Per-edge border configuration for a sidebar frame.
+///
+/// Each side independently picks visibility, width, and an opacity
+/// multiplier applied on top of the theme's border colour. `None` means
+/// "no border on this side". The default — `BorderConfig::inner()` —
+/// reproduces the legacy behaviour: a 1-px line on the inner edge only.
+#[derive(Clone, Debug)]
+pub struct BorderConfig {
+    pub top:    Option<BorderStroke>,
+    pub right:  Option<BorderStroke>,
+    pub bottom: Option<BorderStroke>,
+    pub left:   Option<BorderStroke>,
+}
+
+/// One side of a `BorderConfig`.
+#[derive(Clone, Copy, Debug)]
+pub struct BorderStroke {
+    /// Line thickness in pixels.
+    pub width: f64,
+    /// Opacity multiplier `[0.0, 1.0]` applied to the theme border colour.
+    pub opacity: f64,
+}
+
+impl Default for BorderStroke {
+    fn default() -> Self {
+        Self { width: 1.0, opacity: 1.0 }
+    }
+}
+
+impl BorderConfig {
+    /// All sides off.
+    pub fn none() -> Self {
+        Self { top: None, right: None, bottom: None, left: None }
+    }
+
+    /// All four sides at the default 1-px / fully opaque stroke.
+    pub fn all() -> Self {
+        let s = Some(BorderStroke::default());
+        Self { top: s, right: s, bottom: s, left: s }
+    }
+}
+
+/// Configuration for one of the composite's internal divider lines
+/// (header bottom, footer top, item separator, …).
+#[derive(Clone, Copy, Debug)]
+pub struct DividerConfig {
+    /// Whether the divider is drawn at all.
+    pub visible: bool,
+    /// Line thickness in pixels.
+    pub width:   f64,
+    /// Opacity multiplier `[0.0, 1.0]` applied to the theme divider colour.
+    pub opacity: f64,
+    /// Length of the line as a fraction of the available extent `[0.0, 1.0]`.
+    /// `1.0` = full edge-to-edge; `0.5` = centred 50% line; etc.
+    pub length_frac: f64,
+}
+
+impl Default for DividerConfig {
+    fn default() -> Self {
+        Self { visible: true, width: 1.0, opacity: 1.0, length_frac: 1.0 }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BackgroundFill
 // ---------------------------------------------------------------------------
 
@@ -65,8 +132,38 @@ pub trait SidebarStyle {
     }
 
     /// Whether to render a 1 px divider line under the header.  Default: `true`.
+    ///
+    /// **Deprecated**: prefer `header_divider()`. Kept for backwards
+    /// compatibility — when this returns `false` the new `header_divider`
+    /// is force-hidden.
     fn show_header_divider(&self) -> bool {
         true
+    }
+
+    /// Per-side border configuration. Default: a 1-px stroke on the inner
+    /// edge only — i.e. `Right` for `Left` sidebars, `Left` for `Right`/
+    /// `WithTypeSelector`, `Bottom` for `Top` sidebars, `Top` for `Bottom`.
+    /// Returning `BorderConfig::none()` paints no frame border at all.
+    /// The composite resolves "inner edge" against the active render kind.
+    fn borders(&self) -> BorderConfig {
+        BorderConfig {
+            top:    None,
+            right:  None,
+            bottom: None,
+            left:   None,
+        } // sentinel — composite falls back to legacy single-edge mode
+    }
+
+    /// Configuration for the divider line drawn below the header.
+    /// Default: visible, 1 px, fully opaque, full width.
+    fn header_divider(&self) -> DividerConfig {
+        DividerConfig::default()
+    }
+
+    /// Configuration for an optional divider above the footer (if the
+    /// caller draws a footer band). Default: hidden.
+    fn footer_divider(&self) -> DividerConfig {
+        DividerConfig { visible: false, ..DividerConfig::default() }
     }
 }
 

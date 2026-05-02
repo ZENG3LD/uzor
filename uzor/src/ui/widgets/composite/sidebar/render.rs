@@ -258,52 +258,53 @@ fn draw_sidebar_with_coord(
         }
     }
 
-    // --- 2. Border line (sidebar separator) ----------------------------------
-    if layout.border_line.width > 0.0 {
-        let sep_settings = SeparatorSettings::default();
+    // --- 2. Frame borders ----------------------------------------------------
+    // Per-side configuration via `style.borders()`. If the style returns the
+    // all-None sentinel (legacy default) we fall back to "inner edge only"
+    // — the previous single-line behaviour — so existing presets keep
+    // looking the same.
+    let raw_borders = style.borders();
+    let resolved_borders = if raw_borders.top.is_none()
+        && raw_borders.right.is_none()
+        && raw_borders.bottom.is_none()
+        && raw_borders.left.is_none()
+    {
+        let s = Some(super::style::BorderStroke::default());
         match kind {
-            SidebarRenderKind::Left => {
-                // Right edge: stroke at the right line of the border zone.
-                draw_sidebar_handle(
-                    ctx,
-                    layout.border_line.x + layout.border_line.width,
-                    layout.border_line.y,
-                    layout.border_line.height,
-                    &sep_settings,
-                );
-            }
-            SidebarRenderKind::Top => {
-                // Bottom edge of a top sidebar — horizontal stroke.
-                draw_sidebar_handle_horizontal(
-                    ctx,
-                    layout.border_line.x,
-                    layout.border_line.y + layout.border_line.height,
-                    layout.border_line.width,
-                    &sep_settings,
-                );
-            }
-            SidebarRenderKind::Bottom => {
-                // Top edge of a bottom sidebar — horizontal stroke.
-                draw_sidebar_handle_horizontal(
-                    ctx,
-                    layout.border_line.x,
-                    layout.border_line.y,
-                    layout.border_line.width,
-                    &sep_settings,
-                );
-            }
-            _ => {
-                // Right / WithTypeSelector: left edge — vertical stroke.
-                draw_sidebar_handle(
-                    ctx,
-                    layout.border_line.x,
-                    layout.border_line.y,
-                    layout.border_line.height,
-                    &sep_settings,
-                );
-            }
+            SidebarRenderKind::Left => super::style::BorderConfig {
+                top: None, right: s, bottom: None, left: None,
+            },
+            SidebarRenderKind::Top => super::style::BorderConfig {
+                top: None, right: None, bottom: s, left: None,
+            },
+            SidebarRenderKind::Bottom => super::style::BorderConfig {
+                top: s, right: None, bottom: None, left: None,
+            },
+            SidebarRenderKind::Embedded => super::style::BorderConfig::none(),
+            _ => super::style::BorderConfig {
+                top: None, right: None, bottom: None, left: s,
+            },
         }
-    }
+    } else {
+        raw_borders
+    };
+
+    let f = layout.frame;
+    let theme_border = theme.border();
+    let mut paint_stroke = |x: f64, y: f64, w: f64, h: f64, stroke: super::style::BorderStroke| {
+        if w <= 0.0 || h <= 0.0 || stroke.width <= 0.0 || stroke.opacity <= 0.0 {
+            return;
+        }
+        ctx.save();
+        ctx.set_global_alpha(stroke.opacity);
+        ctx.set_fill_color(theme_border);
+        ctx.fill_rect(x, y, w, h);
+        ctx.restore();
+    };
+    if let Some(s) = resolved_borders.top    { paint_stroke(f.x, f.y, f.width, s.width, s); }
+    if let Some(s) = resolved_borders.bottom { paint_stroke(f.x, f.y + f.height - s.width, f.width, s.width, s); }
+    if let Some(s) = resolved_borders.left   { paint_stroke(f.x, f.y, s.width, f.height, s); }
+    if let Some(s) = resolved_borders.right  { paint_stroke(f.x + f.width - s.width, f.y, s.width, f.height, s); }
 
     // --- 3. Header background + icon + title ---------------------------------
     ctx.set_fill_color(theme.header_bg());
@@ -376,14 +377,24 @@ fn draw_sidebar_with_coord(
     }
 
     // --- 4. Header bottom divider --------------------------------------------
-    if style.show_header_divider() {
-        ctx.set_fill_color(theme.divider());
-        ctx.fill_rect(
-            layout.header.x,
-            layout.header.y + layout.header.height - 1.0,
-            layout.header.width,
-            1.0,
-        );
+    {
+        let cfg = style.header_divider();
+        // Legacy `show_header_divider() == false` overrides the new config.
+        if cfg.visible && style.show_header_divider() && cfg.opacity > 0.0 && cfg.width > 0.0 {
+            let len_frac = cfg.length_frac.clamp(0.0, 1.0);
+            let line_w   = layout.header.width * len_frac;
+            let line_x   = layout.header.x + (layout.header.width - line_w) / 2.0;
+            ctx.save();
+            ctx.set_global_alpha(cfg.opacity.clamp(0.0, 1.0));
+            ctx.set_fill_color(theme.divider());
+            ctx.fill_rect(
+                line_x,
+                layout.header.y + layout.header.height - cfg.width,
+                line_w,
+                cfg.width,
+            );
+            ctx.restore();
+        }
     }
 
     // --- 5. Tab strip (WithTypeSelector) -------------------------------------
@@ -526,6 +537,70 @@ fn draw_tab_strip(
 // ---------------------------------------------------------------------------
 // Layout computation
 // ---------------------------------------------------------------------------
+
+/// The body region as the caller should treat it: scroll-clipped rect plus
+/// the y-coordinate at which to anchor the first row of content.
+///
+/// Returned by [`body_viewport`]. The composite has already applied the
+/// scroll offset to `content_origin_y`, so the caller draws relative to it
+/// without thinking about scroll. Drawing outside `clip_rect` is hidden by
+/// the composite-supplied `ctx.save() / clip_rect / restore` pair (see
+/// [`begin_body`] / [`end_body`]).
+#[derive(Clone, Copy, Debug)]
+pub struct SidebarBodyViewport {
+    /// Clip rectangle — the caller must keep all body content inside this.
+    pub clip_rect: Rect,
+    /// Y coordinate of the first row of scrollable content (already shifted
+    /// by `state.scroll_per_panel[panel_key].offset`).
+    pub content_origin_y: f64,
+    /// Scroll offset that has been applied (informational; useful for
+    /// callers that compute child rects relative to scroll).
+    pub scroll_offset: f64,
+    /// Visible viewport height (= `clip_rect.height`).
+    pub viewport_height: f64,
+}
+
+/// Compute the body viewport — header / tab-strip / scrollbar are excluded
+/// from `clip_rect`, and `content_origin_y` already has scroll applied.
+pub fn body_viewport(
+    frame_rect: Rect,
+    state:      &SidebarState,
+    view:       &SidebarView<'_>,
+    settings:   &SidebarSettings,
+    kind:       &SidebarRenderKind,
+) -> SidebarBodyViewport {
+    let layout = compute_layout(frame_rect, state, view, settings, kind);
+    let panel_key = view.active_tab.unwrap_or("default");
+    let scroll_offset = state.scroll_per_panel.get(panel_key).map(|s| s.offset).unwrap_or(0.0);
+    SidebarBodyViewport {
+        clip_rect: layout.body,
+        content_origin_y: layout.body.y - scroll_offset,
+        scroll_offset,
+        viewport_height: layout.body.height,
+    }
+}
+
+/// Push a scroll-aware clip rect for the sidebar body. Pair with
+/// [`end_body`] to restore the render context. Returns the same viewport
+/// info as [`body_viewport`] for convenience.
+pub fn begin_body(
+    ctx:        &mut dyn RenderContext,
+    frame_rect: Rect,
+    state:      &SidebarState,
+    view:       &SidebarView<'_>,
+    settings:   &SidebarSettings,
+    kind:       &SidebarRenderKind,
+) -> SidebarBodyViewport {
+    let vp = body_viewport(frame_rect, state, view, settings, kind);
+    ctx.save();
+    ctx.clip_rect(vp.clip_rect.x, vp.clip_rect.y, vp.clip_rect.width, vp.clip_rect.height);
+    vp
+}
+
+/// Restore the render context after a [`begin_body`] call.
+pub fn end_body(ctx: &mut dyn RenderContext) {
+    ctx.restore();
+}
 
 /// Measure the natural width of a sidebar (`style.default_width()`) and the
 /// chrome overhead height (header + optional tab strip).

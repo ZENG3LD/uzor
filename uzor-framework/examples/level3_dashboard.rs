@@ -1569,6 +1569,7 @@ impl AppState {
             let actions: &[HeaderAction<'_>] = &[];
             let mut view = SidebarView {
                 header: SidebarHeader { icon: None, title: "Right sidebar", actions },
+                header_mode: uzor::ui::widgets::composite::sidebar::types::SidebarHeaderMode::Sticky,
                 tabs: &[],
                 active_tab: None,
                 show_scrollbar: false,
@@ -1592,6 +1593,7 @@ impl AppState {
             let actions: &[HeaderAction<'_>] = &[];
             let mut view = SidebarView {
                 header: SidebarHeader { icon: None, title: "Top sidebar", actions },
+                header_mode: uzor::ui::widgets::composite::sidebar::types::SidebarHeaderMode::Sticky,
                 tabs: &[],
                 active_tab: None,
                 show_scrollbar: false,
@@ -1614,6 +1616,7 @@ impl AppState {
             let actions: &[HeaderAction<'_>] = &[];
             let mut view = SidebarView {
                 header: SidebarHeader { icon: None, title: "Bottom sidebar", actions },
+                header_mode: uzor::ui::widgets::composite::sidebar::types::SidebarHeaderMode::Sticky,
                 tabs: &[],
                 active_tab: None,
                 show_scrollbar: false,
@@ -1645,6 +1648,7 @@ impl AppState {
             let est_content_h = 480.0 + est_panels * 30.0;
             let mut sidebar_view = SidebarView {
                 header: sidebar_header,
+                header_mode: uzor::ui::widgets::composite::sidebar::types::SidebarHeaderMode::Sticky,
                 tabs: &[],
                 active_tab: None,
                 show_scrollbar: false,
@@ -1672,18 +1676,22 @@ impl AppState {
                 use uzor::input::core::sense::Sense;
                 use uzor::input::core::widget_kind::WidgetKind;
 
-                // Clip everything we draw in here to the sidebar frame so it
-                // can't bleed into neighbouring panels when the user shrinks
-                // the sidebar past the natural width of this content.
-                render.save();
-                render.clip_rect(body_rect.x, body_rect.y, body_rect.width, body_rect.height);
-
-                // Apply current scroll offset so the body shifts up when the
-                // user mousewheels / drags the scrollbar thumb.
-                let scroll_off = self.sidebar_state.scroll_per_panel.get("default").map(|s| s.offset).unwrap_or(0.0);
-
-                const SIDEBAR_HEADER_H: f64 = 40.0;
-                let mut y = body_rect.y + SIDEBAR_HEADER_H + 8.0 - scroll_off;
+                // Composite hands us a scroll-aware viewport (clip rect +
+                // y-anchor with scroll already applied). No app-side
+                // header-offset / clip bookkeeping needed any more.
+                let body_vp = uzor::ui::widgets::composite::sidebar::render::begin_body(
+                    &mut render,
+                    body_rect,
+                    &self.sidebar_state,
+                    &sidebar_view,
+                    &{
+                        let mut s = SidebarSettings::default();
+                        s.style = Box::new(NoDividerSidebarStyle(DefaultSidebarStyle));
+                        s
+                    },
+                    &sidebar_kind_value,
+                );
+                let mut y = body_vp.content_origin_y + 8.0;
                 let bx = body_rect.x + 8.0;
                 let bw = body_rect.width - 16.0;
 
@@ -1824,7 +1832,8 @@ impl AppState {
 
                 // (keep y alive so borrow checker doesn't warn on unused assignment)
                 let _ = y;
-                render.restore();
+                let _ = body_vp;
+                uzor::ui::widgets::composite::sidebar::render::end_body(&mut render);
             }
         }
 

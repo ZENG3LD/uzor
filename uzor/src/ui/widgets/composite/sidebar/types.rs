@@ -56,10 +56,27 @@ pub struct SidebarTab<'a> {
 // SidebarView
 // ---------------------------------------------------------------------------
 
+/// How the sidebar's header behaves when the body scrolls.
+///
+/// `Sticky` (default): the header stays pinned to the edge while the body
+/// scrolls underneath. `Scrolling`: the header is part of the scrolling
+/// content and disappears off the top as the user scrolls down.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum SidebarHeaderMode {
+    /// Header pinned at the leading edge, body scrolls beneath it. Default.
+    #[default]
+    Sticky,
+    /// Header is part of the scrollable content. Scroll moves header out.
+    Scrolling,
+}
+
 /// Per-frame data handed to `register_*_sidebar`.
 pub struct SidebarView<'a> {
     /// Header slot — icon, title, actions.
     pub header: SidebarHeader<'a>,
+
+    /// How the header reacts to body scroll. Default: Sticky.
+    pub header_mode: SidebarHeaderMode,
 
     /// Tab entries for `WithTypeSelector`.  Empty for other kinds.
     pub tabs: &'a [SidebarTab<'a>],
