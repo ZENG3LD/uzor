@@ -2135,12 +2135,18 @@ impl AppState {
                 footer_buttons: &footer_btns,
                 wizard_pages: wizard_pages_ref,
                 backdrop: BackdropKind::Dim,
-                overflow: uzor::types::OverflowMode::Scrollbar,
+                overflow: uzor::types::OverflowMode::Chevrons,
                 resizable: true,
             };
-            // Tell composite how tall body content is so the body scrollbar
-            // can size its thumb. Demo: oversize so scrollbar always shows.
-            self.modal_state.body_content_h = 4000.0;
+            // Tell the composite the natural body content size BEFORE
+            // it registers — `register_body_overflow` reads these to
+            // decide whether to register vertical / horizontal chevrons.
+            let (cw, ch): (f64, f64) = match modal_kind {
+                ModalKind::L2 => (L2_WIN_W, L2_WIN_H),
+                _             => (4000.0, 4000.0),
+            };
+            self.modal_state.body_content_w = cw;
+            self.modal_state.body_content_h = ch;
             let _modal_node = register_layout_manager_modal(
                 &mut self.layout,
                 &mut render,
@@ -2154,13 +2160,31 @@ impl AppState {
             );
             // Draw modal body content inline.
             // `frame_rect` = full overlay rect (includes chrome).
-            // `body_rect` = content area carved out by the composite (header/footer/tabs/sidebar excluded).
+            // `body_rect` = content area carved out by the composite.
             if let Some(frame_rect) = self.layout.rect_for_overlay("modal-overlay") {
-                let body_rect = uzor::ui::widgets::composite::modal::render::body_rect(
+                let body_rect_raw = uzor::ui::widgets::composite::modal::render::body_rect(
                     frame_rect,
                     &modal_view,
                     &ModalSettings::default(),
                     &render_kind,
+                );
+                // Apply scroll offset so dragging the scrollbar moves the
+                // content. Composite paints the scrollbar; body content
+                // is shifted by scroll offsets and clipped to body_rect.
+                let scroll_y = self.modal_state.scroll.offset;
+                let scroll_x = self.modal_state.body_scroll_x;
+                let body_rect = Rect::new(
+                    body_rect_raw.x - scroll_x,
+                    body_rect_raw.y - scroll_y,
+                    body_rect_raw.width  + scroll_x,
+                    body_rect_raw.height + scroll_y,
+                );
+                // Hard-clip everything we draw inside body_rect_raw so
+                // the overflow can't bleed past the modal frame.
+                render.save();
+                render.clip_rect(
+                    body_rect_raw.x, body_rect_raw.y,
+                    body_rect_raw.width, body_rect_raw.height,
                 );
                 let layer = LayerId::modal();
                 match modal_kind {
@@ -2568,6 +2592,34 @@ impl AppState {
                         );
                     }
                 }
+                // Close the body clip established before the per-kind branch.
+                render.restore();
+
+                // Body chevron overlays — paint AFTER body so they're the
+                // top-most layer over body widgets.
+                uzor::ui::widgets::composite::modal::render::draw_body_overflow_chevrons(
+                    &mut render,
+                    frame_rect,
+                    &self.modal_state,
+                    &modal_view,
+                    &ModalSettings::default(),
+                    &render_kind,
+                );
+
+                // Re-register chevron / scrollbar hit zones AFTER body
+                // widgets so they sit on top in the coordinator's
+                // last-registered-wins hit-test (otherwise body widgets
+                // mask the strips and clicks miss).
+                let modal_id = uzor::types::WidgetId::new("modal-widget");
+                uzor::ui::widgets::composite::modal::render::register_body_overflow(
+                    &mut self.layout.ctx_mut().input,
+                    &modal_id,
+                    frame_rect,
+                    &modal_view,
+                    &ModalSettings::default(),
+                    &render_kind,
+                    &mut self.modal_state,
+                );
             }
         }
 
@@ -3321,14 +3373,13 @@ impl AppState {
                         }
                         return;
                     }
-                    // Modal / popup body chevrons.
+                    // Modal / popup body chevrons. body_content_h was set
+                    // earlier this frame when registering the modal/popup.
                     if chevron_id.0.starts_with("modal-widget:chevron_") {
-                        self.modal_state.body_content_h = 4000.0;
                         self.modal_state.body_chevron_step(direction);
                         return;
                     }
                     if chevron_id.0.starts_with("popup-widget:chevron_") {
-                        self.popup_state.body_content_h = 1200.0;
                         self.popup_state.body_chevron_step(direction);
                         return;
                     }

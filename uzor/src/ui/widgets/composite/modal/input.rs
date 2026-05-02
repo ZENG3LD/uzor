@@ -81,20 +81,20 @@ pub fn register_layout_manager_modal<P: DockPanel>(
     }
     if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
         use crate::layout::ChevronStepDirection;
-        dispatcher.on_exact(
-            format!("{}:chevron_up", id.0),
-            EventBuilder::ChevronStep {
-                chevron_id: WidgetId::new(format!("{}:chevron_up", id.0)),
-                direction:  ChevronStepDirection::Up,
-            },
-        );
-        dispatcher.on_exact(
-            format!("{}:chevron_down", id.0),
-            EventBuilder::ChevronStep {
-                chevron_id: WidgetId::new(format!("{}:chevron_down", id.0)),
-                direction:  ChevronStepDirection::Down,
-            },
-        );
+        for (suffix, dir) in [
+            ("chevron_up",    ChevronStepDirection::Up),
+            ("chevron_down",  ChevronStepDirection::Down),
+            ("chevron_left",  ChevronStepDirection::Left),
+            ("chevron_right", ChevronStepDirection::Right),
+        ] {
+            dispatcher.on_exact(
+                format!("{}:{}", id.0, suffix),
+                EventBuilder::ChevronStep {
+                    chevron_id: WidgetId::new(format!("{}:{}", id.0, suffix)),
+                    direction:  dir,
+                },
+            );
+        }
     }
     // Resize handles (8): N S W E + NW NE SW SE.
     if view.resizable {

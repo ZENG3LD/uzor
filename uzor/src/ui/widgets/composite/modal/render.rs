@@ -481,6 +481,104 @@ fn draw_modal_with_coord(
             let _ = draw_scrollbar(ctx, track, &sv);
         }
     }
+
+    // --- 11. Body scrollbar / chevron OVERLAYS ------------------------------
+    // Chevrons must paint AFTER the caller-drawn body so they're the
+    // top-most overlay over body content. The composite drew the
+    // scrollbar at step 10 above, but the chevron overlays are exposed
+    // as a public helper the host calls AFTER its body draw — see
+    // `draw_body_overflow_chevrons`.
+}
+
+/// Paint the body chevron overlays (top / bottom / left / right strips
+/// with a `▲▼◀▶` paging chevron). Call AFTER drawing body content so
+/// the chevrons sit on top of every body widget.
+///
+/// No-op when `view.overflow != OverflowMode::Chevrons` or no overflow
+/// on the corresponding axis.
+pub fn draw_body_overflow_chevrons(
+    ctx:      &mut dyn RenderContext,
+    rect:     Rect,
+    state:    &ModalState,
+    view:     &ModalView<'_>,
+    settings: &ModalSettings,
+    kind:     &ModalRenderKind,
+) {
+    if !matches!(view.overflow, crate::types::OverflowMode::Chevrons) { return; }
+    let frame = resolve_frame(rect, state, kind);
+    let body  = body_rect(frame, view, settings, kind);
+    if body.width <= 0.0 || body.height <= 0.0 { return; }
+
+    use crate::ui::widgets::atomic::chevron::{
+        draw_chevron,
+        settings::ChevronSettings,
+        types::{ChevronDirection, ChevronUseCase, ChevronView, ChevronVisualKind,
+                HitAreaPolicy, PlacementPolicy, VisibilityPolicy},
+    };
+    let strip = 26.0_f64;
+    let theme = settings.theme.as_ref();
+    let chev_settings = ChevronSettings::default();
+
+    if state.body_content_h > body.height + 0.5 {
+        let up = Rect::new(body.x, body.y, body.width, strip);
+        let dn = Rect::new(body.x, body.y + body.height - strip, body.width, strip);
+        let max_v = (state.body_content_h - body.height).max(0.0);
+        let has_back = state.scroll.offset > 0.5;
+        let has_fwd  = state.scroll.offset < max_v - 0.5;
+        ctx.set_fill_color(theme.bg());
+        ctx.fill_rect(up.x, up.y, up.width, up.height);
+        ctx.fill_rect(dn.x, dn.y, dn.width, dn.height);
+        let v_up = ChevronView {
+            direction:   ChevronDirection::Up,
+            use_case:    ChevronUseCase::PixelScrollStep,
+            visibility:  VisibilityPolicy::WhenOverflow { has_more: has_back },
+            placement:   PlacementPolicy::Overlay,
+            hit_area:    HitAreaPolicy::Visual,
+            visual_kind: ChevronVisualKind::Stroked,
+            ..Default::default()
+        };
+        let v_dn = ChevronView {
+            direction:   ChevronDirection::Down,
+            use_case:    ChevronUseCase::PixelScrollStep,
+            visibility:  VisibilityPolicy::WhenOverflow { has_more: has_fwd },
+            placement:   PlacementPolicy::Overlay,
+            hit_area:    HitAreaPolicy::Visual,
+            visual_kind: ChevronVisualKind::Stroked,
+            ..Default::default()
+        };
+        draw_chevron(ctx, up, &v_up, &chev_settings);
+        draw_chevron(ctx, dn, &v_dn, &chev_settings);
+    }
+    if state.body_content_w > body.width + 0.5 {
+        let lf = Rect::new(body.x, body.y, strip, body.height);
+        let rt = Rect::new(body.x + body.width - strip, body.y, strip, body.height);
+        let max_h = (state.body_content_w - body.width).max(0.0);
+        let has_back = state.body_scroll_x > 0.5;
+        let has_fwd  = state.body_scroll_x < max_h - 0.5;
+        ctx.set_fill_color(theme.bg());
+        ctx.fill_rect(lf.x, lf.y, lf.width, lf.height);
+        ctx.fill_rect(rt.x, rt.y, rt.width, rt.height);
+        let v_lf = ChevronView {
+            direction:   ChevronDirection::Left,
+            use_case:    ChevronUseCase::PixelScrollStep,
+            visibility:  VisibilityPolicy::WhenOverflow { has_more: has_back },
+            placement:   PlacementPolicy::Overlay,
+            hit_area:    HitAreaPolicy::Visual,
+            visual_kind: ChevronVisualKind::Stroked,
+            ..Default::default()
+        };
+        let v_rt = ChevronView {
+            direction:   ChevronDirection::Right,
+            use_case:    ChevronUseCase::PixelScrollStep,
+            visibility:  VisibilityPolicy::WhenOverflow { has_more: has_fwd },
+            placement:   PlacementPolicy::Overlay,
+            hit_area:    HitAreaPolicy::Visual,
+            visual_kind: ChevronVisualKind::Stroked,
+            ..Default::default()
+        };
+        draw_chevron(ctx, lf, &v_lf, &chev_settings);
+        draw_chevron(ctx, rt, &v_rt, &chev_settings);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -942,7 +1040,7 @@ fn draw_wizard_nav(
 /// inherit double-axis behaviour by overlapping two strips.
 const RESIZE_HANDLE_THICKNESS: f64 = 6.0;
 
-fn register_body_overflow(
+pub fn register_body_overflow(
     coord:    &mut InputCoordinator,
     modal_id: &WidgetId,
     frame:    Rect,
@@ -958,6 +1056,7 @@ fn register_body_overflow(
     // Cache body geometry on state so input helpers can drive scroll math
     // without the host having to remember anything.
     state.body_viewport_h = body.height;
+    state.body_viewport_w = body.width;
 
     match view.overflow {
         crate::types::OverflowMode::Scrollbar => {
@@ -970,13 +1069,25 @@ fn register_body_overflow(
                 WidgetKind::ScrollbarHandle, track, Sense::DRAG | Sense::HOVER);
         }
         crate::types::OverflowMode::Chevrons => {
-            let strip = 18.0_f64;
-            let up = Rect::new(body.x, body.y, body.width, strip);
-            let dn = Rect::new(body.x, body.y + body.height - strip, body.width, strip);
-            coord.register_child(modal_id, format!("{}:chevron_up", modal_id.0),
-                WidgetKind::Button, up, Sense::CLICK | Sense::HOVER);
-            coord.register_child(modal_id, format!("{}:chevron_down", modal_id.0),
-                WidgetKind::Button, dn, Sense::CLICK | Sense::HOVER);
+            let strip = 26.0_f64;
+            // Vertical strips
+            if state.body_content_h > body.height + 0.5 {
+                let up = Rect::new(body.x, body.y, body.width, strip);
+                let dn = Rect::new(body.x, body.y + body.height - strip, body.width, strip);
+                coord.register_child(modal_id, format!("{}:chevron_up", modal_id.0),
+                    WidgetKind::Button, up, Sense::CLICK | Sense::HOVER);
+                coord.register_child(modal_id, format!("{}:chevron_down", modal_id.0),
+                    WidgetKind::Button, dn, Sense::CLICK | Sense::HOVER);
+            }
+            // Horizontal strips
+            if state.body_content_w > body.width + 0.5 {
+                let lf = Rect::new(body.x, body.y, strip, body.height);
+                let rt = Rect::new(body.x + body.width - strip, body.y, strip, body.height);
+                coord.register_child(modal_id, format!("{}:chevron_left", modal_id.0),
+                    WidgetKind::Button, lf, Sense::CLICK | Sense::HOVER);
+                coord.register_child(modal_id, format!("{}:chevron_right", modal_id.0),
+                    WidgetKind::Button, rt, Sense::CLICK | Sense::HOVER);
+            }
         }
         _ => {}
     }

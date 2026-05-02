@@ -63,15 +63,21 @@ pub struct ModalState {
 
     // --- Body scroll (Scrollbar / Chevrons overflow modes) ---
 
-    /// Total content height of the body (caller-set every frame).
+    /// Total content size of the body (caller-set every frame).
     pub body_content_h: f64,
+    pub body_content_w: f64,
 
     /// Track rect of the body scrollbar — set by the composite at
     /// register time. Used by `body_scroll_track_click` / drag.
     pub body_scroll_track: Option<Rect>,
 
-    /// Body viewport height — set by the composite at register time.
+    /// Body viewport size — set by the composite at register time.
     pub body_viewport_h: f64,
+    pub body_viewport_w: f64,
+
+    /// Horizontal scroll offset (Chevrons / Scrollbar overflow). Vertical
+    /// offset lives on `scroll.offset` (legacy).
+    pub body_scroll_x: f64,
 }
 
 impl ModalState {
@@ -185,14 +191,21 @@ impl ModalState {
 
     /// Step the body scroll by one viewport in the given direction.
     pub fn body_chevron_step(&mut self, direction: crate::layout::ChevronStepDirection) {
-        let max = (self.body_content_h - self.body_viewport_h).max(0.0);
-        let step = self.body_viewport_h.max(40.0);
-        let signed = match direction {
-            crate::layout::ChevronStepDirection::Up
-            | crate::layout::ChevronStepDirection::Left => -step,
-            _ => step,
-        };
-        self.scroll.offset = (self.scroll.offset + signed).clamp(0.0, max);
+        use crate::layout::ChevronStepDirection as D;
+        match direction {
+            D::Up | D::Down => {
+                let max = (self.body_content_h - self.body_viewport_h).max(0.0);
+                let step = self.body_viewport_h.max(40.0);
+                let signed = if matches!(direction, D::Up) { -step } else { step };
+                self.scroll.offset = (self.scroll.offset + signed).clamp(0.0, max);
+            }
+            D::Left | D::Right => {
+                let max = (self.body_content_w - self.body_viewport_w).max(0.0);
+                let step = self.body_viewport_w.max(40.0);
+                let signed = if matches!(direction, D::Left) { -step } else { step };
+                self.body_scroll_x = (self.body_scroll_x + signed).clamp(0.0, max);
+            }
+        }
     }
 
     /// End any scrollbar drag (call from `on_mouse_up`).

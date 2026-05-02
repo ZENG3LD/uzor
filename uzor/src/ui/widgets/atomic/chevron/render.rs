@@ -72,10 +72,15 @@ fn draw_stroked(
     color:     &str,
     style:     &dyn super::style::ChevronStyle,
 ) {
-    let inset = style.inset();
-    let cx    = rect.center_x();
-    let cy    = rect.center_y();
-    let half  = (rect.width.min(rect.height) / 2.0 - inset).max(2.0);
+    let cx = rect.center_x();
+    let cy = rect.center_y();
+    // Fixed size from style — independent of rect dimensions, so a chevron
+    // sitting in a wide strip looks the same as one in a square button.
+    // Clamp to whatever fits when the rect is genuinely tiny.
+    let half = (style.size() / 2.0)
+        .min(rect.width / 2.0)
+        .min(rect.height / 2.0)
+        .max(2.0);
 
     ctx.set_stroke_color(color);
     ctx.set_stroke_width(style.thickness());
