@@ -59,7 +59,7 @@ pub fn register_input_coordinator_popup(
     coord:    &mut InputCoordinator,
     id:       impl Into<WidgetId>,
     rect:     Rect,
-    state:    &PopupState,
+    state:    &mut PopupState,
     view:     &PopupView<'_>,
     _settings: &PopupSettings,
     kind:     PopupRenderKind,
@@ -99,7 +99,7 @@ pub fn register_input_coordinator_popup(
     }
 
     // Body overflow strips + opt-in resize handles.
-    register_popup_body_overflow(coord, &popup_id, layout.content, view);
+    register_popup_body_overflow(coord, &popup_id, layout.content, view, state);
     if view.resizable {
         register_popup_resize_handles(coord, &popup_id, frame);
     }
@@ -118,12 +118,15 @@ fn register_popup_body_overflow(
     popup_id: &WidgetId,
     body:     Rect,
     view:     &PopupView<'_>,
+    state:    &mut PopupState,
 ) {
     if body.width <= 0.0 || body.height <= 0.0 { return; }
+    state.body_viewport_h = body.height;
     match view.overflow {
         crate::types::OverflowMode::Scrollbar => {
             let track_w = 8.0;
             let track = Rect::new(body.x + body.width - track_w, body.y, track_w, body.height);
+            state.body_scroll_track = Some(track);
             coord.register_child(popup_id, format!("{}:scrollbar_track", popup_id.0),
                 WidgetKind::ScrollbarTrack, track, Sense::CLICK);
             coord.register_child(popup_id, format!("{}:scrollbar_handle", popup_id.0),
@@ -327,6 +330,34 @@ fn draw_popup_with_coord(
             }
         }
         PopupRenderKind::Custom => {}
+    }
+
+    // Body scrollbar (overflow Scrollbar) — drawn after content so it's on top.
+    if matches!(view.overflow, crate::types::OverflowMode::Scrollbar) {
+        if let Some(track) = state.body_scroll_track {
+            use crate::ui::widgets::atomic::scrollbar::{
+                render::{draw_scrollbar, ScrollbarView, ScrollbarVisualState},
+                style::StandardScrollbarStyle,
+                theme::DefaultScrollbarTheme,
+            };
+            let style = StandardScrollbarStyle::default();
+            let theme = DefaultScrollbarTheme::default();
+            let visual_state = if state.scroll.is_dragging {
+                ScrollbarVisualState::Dragging
+            } else {
+                ScrollbarVisualState::Active
+            };
+            let sv = ScrollbarView {
+                content_height:  state.body_content_h,
+                viewport_height: state.body_viewport_h,
+                scroll_offset:   state.scroll.offset,
+                state:           visual_state,
+                drag_pos_y:      None,
+                style:           &style,
+                theme:           &theme,
+            };
+            let _ = draw_scrollbar(ctx, track, &sv);
+        }
     }
 }
 

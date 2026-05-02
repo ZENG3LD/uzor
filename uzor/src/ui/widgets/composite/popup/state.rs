@@ -3,7 +3,7 @@
 //! `PopupState` is a flat struct — fields irrelevant to the active
 //! `PopupRenderKind` are simply never touched.
 
-use crate::types::Rect;
+use crate::types::{Rect, ScrollState};
 use super::super::resize_drag::ResizeDrag;
 use super::types::{ColorPickerLevel, HsvColor};
 
@@ -103,6 +103,13 @@ pub struct PopupState {
     /// User-resized override for the popup frame. `None` = use the
     /// caller-supplied measured rect.
     pub resized_rect: Option<Rect>,
+
+    // --- Body scroll (Scrollbar / Chevrons overflow modes) ---
+
+    pub scroll: ScrollState,
+    pub body_content_h: f64,
+    pub body_scroll_track: Option<Rect>,
+    pub body_viewport_h: f64,
 }
 
 impl Default for PopupState {
@@ -133,6 +140,10 @@ impl Default for PopupState {
             hovered_action: None,
             resize_drag: None,
             resized_rect: None,
+            scroll: ScrollState::default(),
+            body_content_h: 0.0,
+            body_scroll_track: None,
+            body_viewport_h: 0.0,
         }
     }
 }
@@ -209,5 +220,36 @@ impl PopupState {
     /// End any active resize drag.
     pub fn end_resize(&mut self) {
         self.resize_drag = None;
+    }
+
+    // --- Body scroll helpers ---
+
+    pub fn start_body_scroll_drag(&mut self, cursor_y: f64) {
+        self.scroll.start_drag(cursor_y);
+    }
+    pub fn update_body_scroll_drag(&mut self, cursor_y: f64) {
+        if let Some(track) = self.body_scroll_track {
+            self.scroll.handle_drag(cursor_y, track.height,
+                self.body_content_h, self.body_viewport_h);
+        }
+    }
+    pub fn body_scroll_track_click(&mut self, cursor_y: f64) {
+        if let Some(track) = self.body_scroll_track {
+            self.scroll.handle_track_click(cursor_y, track.y, track.height,
+                self.body_content_h, self.body_viewport_h);
+        }
+    }
+    pub fn body_chevron_step(&mut self, direction: crate::layout::ChevronStepDirection) {
+        let max = (self.body_content_h - self.body_viewport_h).max(0.0);
+        let step = self.body_viewport_h.max(40.0);
+        let signed = match direction {
+            crate::layout::ChevronStepDirection::Up
+            | crate::layout::ChevronStepDirection::Left => -step,
+            _ => step,
+        };
+        self.scroll.offset = (self.scroll.offset + signed).clamp(0.0, max);
+    }
+    pub fn end_body_scroll_drag(&mut self) {
+        self.scroll.end_drag();
     }
 }

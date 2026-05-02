@@ -60,6 +60,18 @@ pub struct ModalState {
     /// caller-supplied measured rect. `Some(rect)` = composite returns
     /// this rect from `effective_rect()`.
     pub resized_rect: Option<Rect>,
+
+    // --- Body scroll (Scrollbar / Chevrons overflow modes) ---
+
+    /// Total content height of the body (caller-set every frame).
+    pub body_content_h: f64,
+
+    /// Track rect of the body scrollbar — set by the composite at
+    /// register time. Used by `body_scroll_track_click` / drag.
+    pub body_scroll_track: Option<Rect>,
+
+    /// Body viewport height — set by the composite at register time.
+    pub body_viewport_h: f64,
 }
 
 impl ModalState {
@@ -145,5 +157,46 @@ impl ModalState {
     /// End any active resize drag (call from `on_mouse_up`).
     pub fn end_resize(&mut self) {
         self.resize_drag = None;
+    }
+
+    // --- Body scroll helpers (used by overflow Scrollbar / Chevrons) ---
+
+    /// Begin a scrollbar-thumb drag. Cursor Y at mouse-down.
+    pub fn start_body_scroll_drag(&mut self, cursor_y: f64) {
+        self.scroll.start_drag(cursor_y);
+    }
+
+    /// Update the scrollbar drag from a fresh cursor Y. Uses the
+    /// composite-recorded track rect / viewport / content height.
+    pub fn update_body_scroll_drag(&mut self, cursor_y: f64) {
+        if let Some(track) = self.body_scroll_track {
+            self.scroll.handle_drag(cursor_y, track.height,
+                self.body_content_h, self.body_viewport_h);
+        }
+    }
+
+    /// Apply a track click — jump scroll to the click position.
+    pub fn body_scroll_track_click(&mut self, cursor_y: f64) {
+        if let Some(track) = self.body_scroll_track {
+            self.scroll.handle_track_click(cursor_y, track.y, track.height,
+                self.body_content_h, self.body_viewport_h);
+        }
+    }
+
+    /// Step the body scroll by one viewport in the given direction.
+    pub fn body_chevron_step(&mut self, direction: crate::layout::ChevronStepDirection) {
+        let max = (self.body_content_h - self.body_viewport_h).max(0.0);
+        let step = self.body_viewport_h.max(40.0);
+        let signed = match direction {
+            crate::layout::ChevronStepDirection::Up
+            | crate::layout::ChevronStepDirection::Left => -step,
+            _ => step,
+        };
+        self.scroll.offset = (self.scroll.offset + signed).clamp(0.0, max);
+    }
+
+    /// End any scrollbar drag (call from `on_mouse_up`).
+    pub fn end_body_scroll_drag(&mut self) {
+        self.scroll.end_drag();
     }
 }

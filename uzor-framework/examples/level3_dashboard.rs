@@ -744,6 +744,11 @@ enum DragTarget {
     ToolbarResize { which: &'static str },
     /// Modal / popup resize — math lives on the composite's state.
     OverlayResize { which: &'static str },
+    /// Modal body scrollbar thumb drag — `ModalState::update_body_scroll_drag`
+    /// runs the math.
+    ModalBodyScroll,
+    /// Popup body scrollbar thumb drag.
+    PopupBodyScroll,
 }
 
 /// Resolve a `sidebar_kind` index back to a fresh `SidebarRenderKind`.
@@ -788,6 +793,9 @@ struct AppState {
     chrome_state: ChromeState,
     top_toolbar_state: ToolbarState,
     left_vtoolbar_state: ToolbarState,
+    demo_toolbar_left2_state:  ToolbarState,
+    demo_toolbar_right_state:  ToolbarState,
+    demo_toolbar_bottom_state: ToolbarState,
     /// User-resized override for top toolbar height (px). 0.0 = use measured.
     top_toolbar_height_override: f64,
     /// User-resized modal size override (w, h). (0.0, 0.0) = use measured.
@@ -1500,8 +1508,8 @@ impl AppState {
             center: ToolbarSection::empty(),
             end: ToolbarSection { items: &clock_items },
             chrome: None,
-            overflow: uzor::types::OverflowMode::Chevrons,
-            resizable: true,
+            overflow: uzor::types::OverflowMode::Clip,
+            resizable: false,
         };
         register_layout_manager_toolbar(
             &mut self.layout,
@@ -1559,43 +1567,76 @@ impl AppState {
             ("demo-toolbar-right",  self.demo_toolbar_right,  ToolbarRenderKind::Vertical),
             ("demo-toolbar-bottom", self.demo_toolbar_bottom, ToolbarRenderKind::Horizontal),
         ];
-        for (slot_id, visible, kind) in demo_tb_specs {
-            if !visible { continue; }
-            let kind = &kind;
-            // Empty toolbar — composite still draws frame + border per its theme.
-            let view = ToolbarView {
-                start: ToolbarSection::empty(),
-                center: ToolbarSection::empty(),
-                end: ToolbarSection::empty(),
-                chrome: None,
-                overflow: uzor::types::OverflowMode::Clip,
-                resizable: false,
-            };
-            let style: Box<dyn uzor::ui::widgets::composite::toolbar::style::ToolbarStyle> =
-                if matches!(kind, ToolbarRenderKind::Vertical) {
-                    Box::new(VertToolbarWithBorder)
-                } else {
-                    Box::new(HorizToolbarWithBorder)
-                };
-            let widget_id = format!("{slot_id}-widget");
-            // Per-frame state — these toolbars are stateless demos, fresh state
-            // each frame is fine.
-            let mut tb_state = ToolbarState::default();
+        // Build a fat item list once — demo toolbars use it to force overflow.
+        // 30 buttons guarantee the strip is wider/taller than any reasonable
+        // viewport, so the chevron paging mode actually has work to do.
+        let demo_overflow_labels: [&str; 30] = [
+            "A1","A2","A3","A4","A5","A6","A7","A8","A9","A10",
+            "B1","B2","B3","B4","B5","B6","B7","B8","B9","B10",
+            "C1","C2","C3","C4","C5","C6","C7","C8","C9","C10",
+        ];
+        let demo_overflow_items: Vec<ToolbarItem<'_>> = demo_overflow_labels
+            .iter()
+            .map(|lbl| ToolbarItem::TextButton {
+                id: lbl, text: lbl, active: false, tooltip: None,
+            })
+            .collect();
+        // Each demo toolbar uses its own stored ToolbarState so the overflow
+        // chevron's scroll_offset persists between frames (otherwise paging
+        // can't accumulate).
+        let demo_view_v = ToolbarView {
+            start: ToolbarSection { items: &demo_overflow_items },
+            center: ToolbarSection::empty(),
+            end: ToolbarSection::empty(),
+            chrome: None,
+            overflow: uzor::types::OverflowMode::Chevrons,
+            resizable: false,
+        };
+        let demo_view_h = ToolbarView {
+            start: ToolbarSection { items: &demo_overflow_items },
+            center: ToolbarSection::empty(),
+            end: ToolbarSection::empty(),
+            chrome: None,
+            overflow: uzor::types::OverflowMode::Chevrons,
+            resizable: false,
+        };
+        if self.demo_toolbar_left2 {
             register_layout_manager_toolbar(
-                &mut self.layout,
-                &mut render,
-                LayoutNodeId::ROOT,
-                slot_id,
-                widget_id,
-                &mut tb_state,
-                &view,
+                &mut self.layout, &mut render, LayoutNodeId::ROOT,
+                "demo-toolbar-left2", "demo-toolbar-left2-widget",
+                &mut self.demo_toolbar_left2_state, &demo_view_v,
                 &ToolbarSettings::new(
                     Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
-                    style,
+                    Box::new(VertToolbarWithBorder),
                 ),
-                kind,
+                &ToolbarRenderKind::Vertical,
             );
         }
+        if self.demo_toolbar_right {
+            register_layout_manager_toolbar(
+                &mut self.layout, &mut render, LayoutNodeId::ROOT,
+                "demo-toolbar-right", "demo-toolbar-right-widget",
+                &mut self.demo_toolbar_right_state, &demo_view_v,
+                &ToolbarSettings::new(
+                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+                    Box::new(VertToolbarWithBorder),
+                ),
+                &ToolbarRenderKind::Vertical,
+            );
+        }
+        if self.demo_toolbar_bottom {
+            register_layout_manager_toolbar(
+                &mut self.layout, &mut render, LayoutNodeId::ROOT,
+                "demo-toolbar-bottom", "demo-toolbar-bottom-widget",
+                &mut self.demo_toolbar_bottom_state, &demo_view_h,
+                &ToolbarSettings::new(
+                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+                    Box::new(HorizToolbarWithBorder),
+                ),
+                &ToolbarRenderKind::Horizontal,
+            );
+        }
+        let _ = demo_tb_specs;
 
         // ── Spawned demo sidebars — REAL sidebar composite instances ─────────
         // Sidebar composite currently supports Left / Right (Top / Bottom are
@@ -2091,6 +2132,9 @@ impl AppState {
                 overflow: uzor::types::OverflowMode::Scrollbar,
                 resizable: true,
             };
+            // Tell composite how tall body content is so the body scrollbar
+            // can size its thumb. Demo: oversize so scrollbar always shows.
+            self.modal_state.body_content_h = 4000.0;
             let _modal_node = register_layout_manager_modal(
                 &mut self.layout,
                 &mut render,
@@ -2865,6 +2909,7 @@ impl AppState {
                 overflow: uzor::types::OverflowMode::Scrollbar,
                 resizable: true,
             };
+            self.popup_state.body_content_h = 1200.0;
             let _popup_node = register_layout_manager_popup(
                 &mut self.layout, &mut render,
                 LayoutNodeId::ROOT, "popup-overlay", "popup-widget",
@@ -3056,36 +3101,6 @@ impl AppState {
         self.popup_item = hovered_id.as_deref()
             .and_then(|id| if toolbar_items_with_popup.contains(&id) { Some(id.to_string()) } else { None });
 
-        // ── Status badge (bottom-right) — shows current variant selections ────
-        // Visual feedback for the new dropdowns: even if a variant has no
-        // dedicated demo widget yet, the user can see that the choice was
-        // applied to app state.
-        {
-            let toolbar_label = ["Horizontal","Vertical","ChromeStrip","Inline"][self.toolbar_kind.min(3) as usize];
-            let popup_label   = match self.popup_kind {
-                Some(0) => "ColorPickerGrid",
-                Some(1) => "ColorPickerHsv",
-                Some(2) => "SwatchGrid",
-                Some(3) => "ItemList",
-                Some(4) => "IndicatorStrip",
-                _       => "(none)",
-            };
-            let theme_label = if self.theme_idx == 0 { "Dark" } else { "Light" };
-            let status = format!(
-                "Sidebar: {}  |  Toolbar: {}  |  Popup: {}  |  Theme: {}",
-                sidebar_kind_label(self.sidebar_kind),
-                toolbar_label,
-                popup_label,
-                theme_label,
-            );
-            let badge_color = if self.theme_idx == 0 { "#7080a0" } else { "#404858" };
-            render.set_fill_color(badge_color);
-            render.set_font("11px sans-serif");
-            render.set_text_align(TextAlign::Right);
-            render.set_text_baseline(TextBaseline::Bottom);
-            render.fill_text(&status, width as f64 - 12.0, height as f64 - 8.0);
-        }
-
         // ── GPU submit ────────────────────────────────────────────────────────
         let dev = &self.render_cx.devices[self.surface.dev_id];
         let render_params = RenderParams {
@@ -3197,6 +3212,17 @@ impl AppState {
                 }
                 DispatchEvent::ScrollbarTrackClicked { track_id } => {
                     eprintln!("[DISPATCHER] ScrollbarTrackClicked id={}", track_id.0);
+                    // Modal body scrollbar.
+                    if track_id.0 == "modal-widget:scrollbar_track" {
+                        self.modal_state.body_content_h = 4000.0; // demo content_h
+                        self.modal_state.body_scroll_track_click(y);
+                        return;
+                    }
+                    if track_id.0 == "popup-widget:scrollbar_track" {
+                        self.popup_state.body_content_h = 1200.0;
+                        self.popup_state.body_scroll_track_click(y);
+                        return;
+                    }
                     // Sidebar scrollbar lives on track-id "sidebar-widget:scrollbar_track".
                     if track_id.0 == "sidebar-widget:scrollbar_track" {
                         if let Some(sb_rect) = self.layout.rect_for_edge_slot("sidebar") {
@@ -3262,13 +3288,29 @@ impl AppState {
                     }
                     // Toolbar overflow chevrons live on "<toolbar-id>:chevron_back|chevron_fwd".
                     if let Some(tb_id) = chevron_id.0.strip_suffix(":chevron_back").or_else(|| chevron_id.0.strip_suffix(":chevron_fwd")) {
-                        // Only the top toolbar uses overflow chevrons in this example.
-                        if tb_id == "top-toolbar-widget" {
-                            let step = 80.0;
-                            let signed = if signed_sign { -step } else { step };
-                            let cur = self.top_toolbar_state.scroll_offset;
-                            self.top_toolbar_state.scroll_offset = (cur + signed).max(0.0);
+                        let step = 80.0;
+                        let signed = if signed_sign { -step } else { step };
+                        let st: Option<&mut ToolbarState> = match tb_id {
+                            "top-toolbar-widget"          => Some(&mut self.top_toolbar_state),
+                            "demo-toolbar-left2-widget"   => Some(&mut self.demo_toolbar_left2_state),
+                            "demo-toolbar-right-widget"   => Some(&mut self.demo_toolbar_right_state),
+                            "demo-toolbar-bottom-widget"  => Some(&mut self.demo_toolbar_bottom_state),
+                            _ => None,
+                        };
+                        if let Some(s) = st {
+                            s.scroll_offset = (s.scroll_offset + signed).max(0.0);
                         }
+                        return;
+                    }
+                    // Modal / popup body chevrons.
+                    if chevron_id.0.starts_with("modal-widget:chevron_") {
+                        self.modal_state.body_content_h = 4000.0;
+                        self.modal_state.body_chevron_step(direction);
+                        return;
+                    }
+                    if chevron_id.0.starts_with("popup-widget:chevron_") {
+                        self.popup_state.body_content_h = 1200.0;
+                        self.popup_state.body_chevron_step(direction);
                         return;
                     }
                     return;
@@ -3981,6 +4023,12 @@ impl AppState {
                         self.top_toolbar_height_override = self.top_toolbar_state.resized_thickness;
                     }
                 }
+                DragTarget::ModalBodyScroll => {
+                    self.modal_state.update_body_scroll_drag(y);
+                }
+                DragTarget::PopupBodyScroll => {
+                    self.popup_state.update_body_scroll_drag(y);
+                }
                 DragTarget::OverlayResize { which } => {
                     match *which {
                         "modal" => {
@@ -4009,6 +4057,9 @@ impl AppState {
         self.top_toolbar_state.end_resize();
         self.modal_state.end_resize();
         self.popup_state.end_resize();
+        // End body scroll drags.
+        self.modal_state.end_body_scroll_drag();
+        self.popup_state.end_body_scroll_drag();
         // Fix 3: end modal drag
         self.modal_state.end_drag();
         // Clear sidebar resize-drag flags so composites stop highlighting their handles.
@@ -4128,6 +4179,9 @@ impl ApplicationHandler for Handler {
             chrome_state,
             top_toolbar_state: ToolbarState::default(),
             left_vtoolbar_state: ToolbarState::default(),
+            demo_toolbar_left2_state:  ToolbarState::default(),
+            demo_toolbar_right_state:  ToolbarState::default(),
+            demo_toolbar_bottom_state: ToolbarState::default(),
             top_toolbar_height_override: 0.0,
             modal_size_override: (0.0, 0.0),
             popup_size_override: (0.0, 0.0),
@@ -4293,7 +4347,22 @@ impl ApplicationHandler for Handler {
                 match app.layout.dispatch_widget(id) {
                     DispatchEvent::ScrollbarThumbDragStarted { thumb_id } => {
                         eprintln!("[BRIDGE] drag-press → ScrollbarThumbDragStarted {}", thumb_id.0);
-                        if thumb_id.0 == "sidebar-widget:scrollbar_handle" {
+                        // Modal / popup body scrollbar.
+                        if thumb_id.0 == "modal-widget:scrollbar_handle" {
+                            app.modal_state.body_content_h = 4000.0;
+                            app.modal_state.start_body_scroll_drag(y);
+                            app.drag_target = Some(DragTarget::ModalBodyScroll);
+                            app.drag_origin = Some((x, y));
+                            app.mouse_down = true;
+                            handled = true;
+                        } else if thumb_id.0 == "popup-widget:scrollbar_handle" {
+                            app.popup_state.body_content_h = 1200.0;
+                            app.popup_state.start_body_scroll_drag(y);
+                            app.drag_target = Some(DragTarget::PopupBodyScroll);
+                            app.drag_origin = Some((x, y));
+                            app.mouse_down = true;
+                            handled = true;
+                        } else if thumb_id.0 == "sidebar-widget:scrollbar_handle" {
                             let scroll = app.sidebar_state.get_or_insert_scroll("default");
                             scroll.start_drag(y);
                             if let Some(sb_rect) = app.layout.rect_for_edge_slot("sidebar") {

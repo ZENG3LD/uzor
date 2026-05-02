@@ -151,13 +151,17 @@ fn draw_toolbar_internal(
     // 1. Background
     draw_background(ctx, rect, settings);
 
-    // 2–4. Sections
+    // 2–4. Sections — clipped to the toolbar rect so overflow content can't
+    // bleed into adjacent regions (chrome, dock area, neighbour panels).
     let is_vertical = matches!(kind, ToolbarRenderKind::Vertical);
+    ctx.save();
+    ctx.clip_rect(rect.x, rect.y, rect.width, rect.height);
     if is_vertical {
         draw_sections_vertical(ctx, rect, view, settings, state);
     } else {
         draw_sections_horizontal(ctx, rect, view, settings, state);
     }
+    ctx.restore();
 
     // 5. Edge border (opt-in via style)
     let style = settings.style.as_ref();
@@ -1171,6 +1175,19 @@ fn draw_overflow_chevrons(
     } else {
         (ChevronDirection::Left, ChevronDirection::Right)
     };
+
+    // Paint an opaque background under each visible chevron strip so the
+    // content scrolling past underneath gets hidden — chevron is a paging
+    // control, not a transparent overlay.
+    let theme = settings.theme.as_ref();
+    if has_back {
+        ctx.set_fill_color(theme.bg());
+        ctx.fill_rect(back_rect.x, back_rect.y, back_rect.width, back_rect.height);
+    }
+    if has_fwd {
+        ctx.set_fill_color(theme.bg());
+        ctx.fill_rect(fwd_rect.x, fwd_rect.y, fwd_rect.width, fwd_rect.height);
+    }
 
     let back_view = ChevronView {
         direction: back_dir,

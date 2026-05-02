@@ -89,7 +89,7 @@ pub fn register_input_coordinator_modal(
     coord:    &mut InputCoordinator,
     id:       impl Into<WidgetId>,
     rect:     Rect,
-    state:    &ModalState,
+    state:    &mut ModalState,
     _view:    &ModalView<'_>,
     settings: &ModalSettings,
     kind:     &ModalRenderKind,
@@ -202,7 +202,7 @@ pub fn register_input_coordinator_modal(
     }
 
     // Body overflow strips (scrollbar / chevrons) and resize handles.
-    register_body_overflow(coord, &modal_id, frame, _view, settings, kind);
+    register_body_overflow(coord, &modal_id, frame, _view, settings, kind, state);
     if _view.resizable {
         register_resize_handles(coord, &modal_id, frame);
     }
@@ -452,6 +452,34 @@ fn draw_modal_with_coord(
     // --- 9. Wizard nav --------------------------------------------------------
     if matches!(kind, ModalRenderKind::Wizard) {
         draw_wizard_nav(ctx, &layout, view, state, settings);
+    }
+
+    // --- 10. Body scrollbar (overflow Scrollbar) ----------------------------
+    if matches!(view.overflow, crate::types::OverflowMode::Scrollbar) {
+        if let Some(track) = state.body_scroll_track {
+            use crate::ui::widgets::atomic::scrollbar::{
+                render::{draw_scrollbar, ScrollbarView, ScrollbarVisualState},
+                style::StandardScrollbarStyle,
+                theme::DefaultScrollbarTheme,
+            };
+            let style = StandardScrollbarStyle::default();
+            let theme = DefaultScrollbarTheme::default();
+            let visual_state = if state.scroll.is_dragging {
+                ScrollbarVisualState::Dragging
+            } else {
+                ScrollbarVisualState::Active
+            };
+            let sv = ScrollbarView {
+                content_height:  state.body_content_h,
+                viewport_height: state.body_viewport_h,
+                scroll_offset:   state.scroll.offset,
+                state:           visual_state,
+                drag_pos_y:      None,
+                style:           &style,
+                theme:           &theme,
+            };
+            let _ = draw_scrollbar(ctx, track, &sv);
+        }
     }
 }
 
@@ -921,15 +949,21 @@ fn register_body_overflow(
     view:     &ModalView<'_>,
     settings: &ModalSettings,
     kind:     &ModalRenderKind,
+    state:    &mut ModalState,
 ) {
     let body = body_rect(frame, view, settings, kind);
     if body.width <= 0.0 || body.height <= 0.0 {
         return;
     }
+    // Cache body geometry on state so input helpers can drive scroll math
+    // without the host having to remember anything.
+    state.body_viewport_h = body.height;
+
     match view.overflow {
         crate::types::OverflowMode::Scrollbar => {
             let track_w = 8.0_f64;
             let track = Rect::new(body.x + body.width - track_w, body.y, track_w, body.height);
+            state.body_scroll_track = Some(track);
             coord.register_child(modal_id, format!("{}:scrollbar_track", modal_id.0),
                 WidgetKind::ScrollbarTrack, track, Sense::CLICK);
             coord.register_child(modal_id, format!("{}:scrollbar_handle", modal_id.0),

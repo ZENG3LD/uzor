@@ -101,7 +101,7 @@ fn plain_view() -> ModalView<'static> {
 #[test]
 fn modal_l1_registers_in_input_coordinator() {
     let mut coord    = InputCoordinator::new();
-    let     state    = ModalState::default();
+    let mut state    = ModalState::default();
     let     view     = plain_view();
     let     settings = ModalSettings::default();
     let     kind     = ModalRenderKind::Plain;
@@ -112,7 +112,7 @@ fn modal_l1_registers_in_input_coordinator() {
         &mut coord,
         "test-modal-l1",
         modal_rect,
-        &state,
+        &mut state,
         &view,
         &settings,
         &kind,
@@ -136,7 +136,7 @@ fn modal_l1_registers_in_input_coordinator() {
         &mut coord,
         "test-modal-l1-b",
         rect(200.0, 200.0, 300.0, 200.0),
-        &state,
+        &mut state,
         &view,
         &settings,
         &kind,
