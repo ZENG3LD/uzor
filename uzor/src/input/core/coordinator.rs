@@ -7,7 +7,7 @@
 //! widgets within a bounded screen region (e.g. a chart panel toolbar) without
 //! polluting the global widget namespace.
 
-use crate::types::{Rect, WidgetId};
+use crate::types::{Rect, WidgetId, CompositeId, AtomicId};
 use crate::input::core::sense::Sense;
 use crate::input::core::response::WidgetResponse;
 use crate::input::core::widget_kind::WidgetKind;
@@ -223,7 +223,10 @@ impl InputCoordinator {
         });
     }
 
-    /// Register a composite (parent) widget and return its id for use in `register_child`.
+    /// Register a composite (parent) widget and return its typed [`CompositeId`].
+    ///
+    /// The returned `CompositeId` is the only way to call [`Self::register_child`].
+    /// This enforces at compile time that only composite widgets can have children.
     ///
     /// `sense` for composites is typically `Sense::NONE` — children handle events.
     /// For `BlackboxPanel`, supply whatever sense flags cover the whole panel area.
@@ -237,7 +240,7 @@ impl InputCoordinator {
         rect: Rect,
         sense: Sense,
         layer: &LayerId,
-    ) -> WidgetId {
+    ) -> CompositeId {
         assert!(
             kind.is_composite(),
             "register_composite requires composite WidgetKind, got {:?}",
@@ -252,10 +255,13 @@ impl InputCoordinator {
             kind,
             parent: None,
         });
-        id
+        CompositeId(id)
     }
 
     /// Register an atomic child widget under a composite parent.
+    ///
+    /// `parent` must be a [`CompositeId`] returned by [`Self::register_composite`].
+    /// This is enforced at compile time — passing an [`AtomicId`] is a type error.
     ///
     /// The child inherits the layer of its parent. Children must be registered
     /// **after** their parent so that the last-registered-wins hit-test rule
@@ -263,11 +269,11 @@ impl InputCoordinator {
     ///
     /// # Panics
     /// - `kind` must be atomic.
-    /// - `parent_id` must already be registered this frame.
+    /// - `parent` must already be registered this frame.
     /// - Parent must not be a `BlackboxPanel` (blackbox panels reject children).
     pub fn register_child(
         &mut self,
-        parent_id: &WidgetId,
+        parent: &CompositeId,
         child_id: impl Into<WidgetId>,
         kind: WidgetKind,
         rect: Rect,
@@ -278,8 +284,9 @@ impl InputCoordinator {
             "register_child requires atomic WidgetKind, got {:?}",
             kind
         );
+        let parent_id = &parent.0;
         let parent_layer = {
-            let parent = self
+            let pw = self
                 .widgets
                 .iter()
                 .rev()
@@ -291,12 +298,12 @@ impl InputCoordinator {
                     )
                 });
             assert!(
-                parent.kind.allows_children(),
+                pw.kind.allows_children(),
                 "register_child: parent {:?} kind {:?} does not allow children",
                 parent_id,
-                parent.kind
+                pw.kind
             );
-            parent.layer.clone()
+            pw.layer.clone()
         };
         self.widgets.push(RegisteredWidget {
             id: child_id.into(),
@@ -310,6 +317,9 @@ impl InputCoordinator {
 
     /// Register a top-level atomic widget without a parent.
     ///
+    /// Returns an [`AtomicId`] — a compile-time proof that this widget is a leaf
+    /// and cannot be passed to [`Self::register_child`] as a parent.
+    ///
     /// Equivalent to `register_on_layer` with an explicit `WidgetKind`.
     ///
     /// # Panics
@@ -321,20 +331,22 @@ impl InputCoordinator {
         rect: Rect,
         sense: Sense,
         layer: &LayerId,
-    ) {
+    ) -> AtomicId {
         assert!(
             kind.is_atomic(),
             "register_atomic requires atomic WidgetKind, got {:?}",
             kind
         );
+        let id = id.into();
         self.widgets.push(RegisteredWidget {
-            id: id.into(),
+            id: id.clone(),
             rect,
             sense,
             layer: layer.clone(),
             kind,
             parent: None,
         });
+        AtomicId(id)
     }
 
     /// Returns the `WidgetKind` of a registered widget (current frame only).
@@ -1511,11 +1523,15 @@ mod tests {
     #[test]
     #[should_panic(expected = "not registered this frame")]
     fn test_register_child_nonexistent_parent_panics() {
+        use crate::types::CompositeId;
         let mut coord = make_coordinator();
         coord.begin_frame(make_input_at(0.0, 0.0));
 
+        // Construct a CompositeId whose underlying WidgetId was never registered.
+        // This is intentionally testing the runtime panic path.
+        let ghost = CompositeId(WidgetId::new("ghost"));
         coord.register_child(
-            &WidgetId::new("ghost"),
+            &ghost,
             "btn",
             WidgetKind::Button,
             Rect::new(0.0, 0.0, 50.0, 30.0),

@@ -2241,24 +2241,35 @@ impl AppState {
                         let btn_r = Rect::new(cx - btn_w / 2.0, cy - btn_h / 2.0, btn_w, btn_h);
                         use uzor::input::core::sense::Sense;
                         use uzor::input::core::widget_kind::WidgetKind;
-                        self.layout.ctx_mut().input.register_atomic(
-                            WidgetId::new("l1-mybtn"),
-                            WidgetKind::Custom,
+                        let btn_id = WidgetId::new("l1-mybtn");
+                        // Button is atomic — use register_atomic.
+                        // Sticky chevrons require a composite parent; to add a
+                        // chevron to a button, wrap it in a composite container
+                        // (e.g. WidgetKind::Panel) or use a ToolbarItem::SplitIconButton.
+                        let btn_composite_id = self.layout.ctx_mut().input.register_atomic(
+                            btn_id.clone(),
+                            WidgetKind::Button,
                             btn_r,
                             Sense::CLICK | Sense::HOVER,
                             &layer,
                         );
                         // Fix 2: three-state colour: pressed > hovered > normal
                         let btn_color = if self.l1_btn_pressed {
-                            "#1a40c8"   // pressed — darker blue
+                            "#1a40c8"
                         } else if self.l1_btn_hovered {
-                            "#4080ff"   // hovered — lighter blue
+                            "#4080ff"
                         } else {
-                            "#3769af"   // normal
+                            "#3769af"
                         };
                         render.set_fill_color(btn_color);
                         render.fill_rounded_rect(btn_r.x, btn_r.y, btn_r.width, btn_r.height, 6.0);
                         label(&mut render, btn_r, "Click me (L1 custom)", TextAlign::Center, "#ffffff");
+
+                        // Sticky chevron requires a composite parent widget.
+                        // Button is atomic — chevron attachment removed.
+                        // To add a chevron to a button, use ToolbarItem::SplitIconButton
+                        // or wrap the button in a composite Panel container.
+                        let _ = btn_composite_id;
                     }
                     ModalKind::Settings => {
                         label(&mut render, Rect::new(body_rect.x, body_rect.y, body_rect.width, 40.0), "Settings content", TextAlign::Center, "rgba(255,255,255,0.55)");
@@ -2654,7 +2665,7 @@ impl AppState {
                 // widgets so they sit on top in the coordinator's
                 // last-registered-wins hit-test (otherwise body widgets
                 // mask the strips and clicks miss).
-                let modal_id = uzor::types::WidgetId::new("modal-widget");
+                let modal_id = uzor::types::CompositeId(uzor::types::WidgetId::new("modal-widget"));
                 uzor::ui::widgets::composite::modal::render::register_body_overflow(
                     &mut self.layout.ctx_mut().input,
                     &modal_id,
@@ -3152,7 +3163,7 @@ impl AppState {
                     // Caller body — register every cell + paint its swatch.
                     if let Some(frame) = self.layout.rect_for_overlay("demo-popup-overlay") {
                         let body = body_rect(frame, &popup_settings);
-                        let popup_id = uzor::types::WidgetId::new("demo-popup-widget");
+                        let popup_id = uzor::types::CompositeId(uzor::types::WidgetId::new("demo-popup-widget"));
                         let coord = &mut self.layout.ctx_mut().input;
                         for (i, color) in palette.iter().enumerate() {
                             let col = i % cols;
@@ -3323,6 +3334,18 @@ impl AppState {
                 DispatchEvent::ChromeTabClicked { tab_index } => {
                     eprintln!("[DISPATCHER] ChromeTabClicked index={tab_index}");
                     self.switch_tab(tab_index);
+                    return;
+                }
+                DispatchEvent::StickyChevronClicked { host_id } => {
+                    eprintln!("[DISPATCHER] StickyChevronClicked host={}", host_id.0);
+                    // Demo: sticky chevron on the L1 modal "Click me" button
+                    // pops the theme dropdown.
+                    if host_id.0 == "l1-mybtn" {
+                        let anchor_rect = self.layout.ctx_mut().input
+                            .widget_rect(&host_id)
+                            .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+                        self.dropdown_theme_state.open_below(anchor_rect, 4.0);
+                    }
                     return;
                 }
                 ev => {

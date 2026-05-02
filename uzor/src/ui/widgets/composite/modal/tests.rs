@@ -8,7 +8,7 @@ use crate::input::{InputCoordinator, WidgetKind};
 use crate::input::core::coordinator::LayerId;
 use crate::layout::{LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
-use crate::types::{Rect, WidgetId};
+use crate::types::{Rect, WidgetId, CompositeId};
 
 use super::input::{register_input_coordinator_modal, register_layout_manager_modal};
 use super::render::register_context_manager_modal;
@@ -108,7 +108,7 @@ fn modal_l1_registers_in_input_coordinator() {
     let     layer    = LayerId::modal();
     let     modal_rect = rect(100.0, 100.0, 400.0, 300.0);
 
-    let modal_id: WidgetId = register_input_coordinator_modal(
+    let modal_id: CompositeId = register_input_coordinator_modal(
         &mut coord,
         "test-modal-l1",
         modal_rect,
@@ -121,13 +121,13 @@ fn modal_l1_registers_in_input_coordinator() {
 
     // The composite must have been registered.
     assert_eq!(
-        coord.widget_kind(&modal_id),
+        coord.widget_kind(modal_id.as_widget_id()),
         Some(WidgetKind::Modal),
         "modal composite must be registered with kind Modal",
     );
 
     // The rect stored must match what we passed in.
-    let stored = coord.widget_rect(&modal_id)
+    let stored = coord.widget_rect(modal_id.as_widget_id())
         .expect("registered modal must have a rect");
     assert_eq!(stored, modal_rect, "stored rect must equal the rect passed to registration");
 

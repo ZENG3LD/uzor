@@ -2,7 +2,7 @@
 
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::render::RenderContext;
-use crate::types::{Rect, WidgetId, WidgetState};
+use crate::types::{Rect, WidgetId, WidgetState, CompositeId};
 use crate::ui::widgets::atomic::chevron::{
     render::draw_chevron,
     settings::ChevronSettings,
@@ -19,12 +19,12 @@ use super::types::{place_sticky_chevron, StickyChevronSpec, StickyVisibility};
 /// whether the chevron should be present this frame for `OnHostHover`).
 pub fn register_sticky_chevron(
     coord:      &mut InputCoordinator,
-    host_id:    &WidgetId,
+    host_id:    &CompositeId,
     host_rect:  Rect,
     spec:       &StickyChevronSpec,
     host_state: WidgetState,
 ) -> Option<WidgetId> {
-    let chev_id = WidgetId::new(format!("{}:chev", host_id.0));
+    let chev_id = WidgetId::new(format!("{}:chev", host_id.0.0));
     let visible = match spec.visibility {
         StickyVisibility::Always     => true,
         StickyVisibility::OnHostHover => host_state.is_hovered() || host_state.is_pressed(),

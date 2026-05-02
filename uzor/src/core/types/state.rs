@@ -57,6 +57,69 @@ impl From<String> for WidgetId {
     }
 }
 
+/// Widget id known at compile time to be a composite (kind allows children).
+///
+/// Returned exclusively by [`InputCoordinator::register_composite`].
+/// Composites are the only widgets that may have children attached via
+/// [`InputCoordinator::register_child`].
+///
+/// Deliberately does NOT implement `From<WidgetId>` — the only way to
+/// construct one is through `register_composite`.  This gives compile-time
+/// assurance that any `&CompositeId` passed to `register_child` actually came
+/// from a composite registration.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CompositeId(pub WidgetId);
+
+impl CompositeId {
+    /// Borrow the inner [`WidgetId`].
+    pub fn as_widget_id(&self) -> &WidgetId {
+        &self.0
+    }
+
+    /// Consume and return the inner [`WidgetId`].
+    pub fn into_widget_id(self) -> WidgetId {
+        self.0
+    }
+}
+
+impl AsRef<WidgetId> for CompositeId {
+    fn as_ref(&self) -> &WidgetId {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for CompositeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.0.fmt(f)
+    }
+}
+
+/// Widget id known at compile time to be an atomic leaf (no children).
+///
+/// Returned exclusively by [`InputCoordinator::register_atomic`].
+///
+/// Deliberately does NOT implement `From<WidgetId>`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AtomicId(pub WidgetId);
+
+impl AtomicId {
+    /// Borrow the inner [`WidgetId`].
+    pub fn as_widget_id(&self) -> &WidgetId {
+        &self.0
+    }
+
+    /// Consume and return the inner [`WidgetId`].
+    pub fn into_widget_id(self) -> WidgetId {
+        self.0
+    }
+}
+
+impl AsRef<WidgetId> for AtomicId {
+    fn as_ref(&self) -> &WidgetId {
+        &self.0
+    }
+}
+
 /// Focus state for widgets
 #[derive(Clone, Debug, Default)]
 pub struct FocusState {

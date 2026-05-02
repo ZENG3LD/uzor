@@ -35,7 +35,7 @@
 use uzor::input::core::sense::Sense;
 use uzor::input::core::widget_kind::WidgetKind;
 use uzor::input::LayerId;
-use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager};
+use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager, LayoutNodeId};
 use uzor::types::{Rect, WidgetId, WidgetState};
 use uzor::ui::widgets::atomic::button::input::register_layout_manager_button;
 use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonView};
@@ -68,6 +68,7 @@ impl App<NoPanel> for DashboardApp {
             thickness: 200.0,
             visible: true,
             order: 0,
+            ..Default::default()
         });
 
         // Right sidebar: 180 px wide
@@ -77,6 +78,7 @@ impl App<NoPanel> for DashboardApp {
             thickness: 180.0,
             visible: true,
             order: 0,
+            ..Default::default()
         });
     }
 
@@ -108,9 +110,9 @@ impl App<NoPanel> for DashboardApp {
                     register_layout_manager_button(
                         layout,
                         render,
+                        LayoutNodeId::ROOT,
                         *id,
                         Rect::new(btn_x, btn_y, btn_w, btn_h),
-                        &layer,
                         WidgetState::Normal,
                         &view,
                         &settings,
@@ -137,9 +139,9 @@ impl App<NoPanel> for DashboardApp {
                     register_layout_manager_button(
                         layout,
                         render,
+                        LayoutNodeId::ROOT,
                         *id,
                         Rect::new(btn_x, btn_y, btn_w, btn_h),
-                        &layer,
                         WidgetState::Normal,
                         &view,
                         &settings,

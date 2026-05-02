@@ -25,7 +25,7 @@
 //! cargo run --example level4_launcher -p uzor-framework
 //! ```
 
-use uzor::layout::LayoutManager;
+use uzor::layout::{LayoutManager, LayoutNodeId};
 use uzor::types::WidgetState;
 use uzor::ui::widgets::atomic::button::input::register_layout_manager_button;
 use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonView};
@@ -70,9 +70,9 @@ impl App<NoPanel> for LauncherApp {
             register_layout_manager_button(
                 layout,
                 render,
+                LayoutNodeId::ROOT,
                 "connect_btn",
                 btn_rect,
-                &uzor::input::LayerId::main(),
                 WidgetState::Normal,
                 &view,
                 &ButtonSettings::default(),

@@ -39,7 +39,7 @@ pub use self::core as engine;
 pub use app_context::ContextManager;
 pub use i18n::{Language, current_language, set_language, Translatable, TextKey, MonthKey, TooltipKey, month_names_short, t_tooltip};
 pub use ui::animation::AnimationCoordinator;
-pub use types::{IconId, Rect, WidgetId, WidgetState};
+pub use types::{IconId, Rect, WidgetId, WidgetState, CompositeId, AtomicId};
 pub use input::{InputState, InputCoordinator, LayerId, ScopedRegion};
 pub use input::{TextFieldStore, TextFieldConfig, TextAction, InputCapability, KeyPress};
 

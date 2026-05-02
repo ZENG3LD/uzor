@@ -20,7 +20,7 @@
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::render::RenderContext;
-use crate::types::{Rect, WidgetId};
+use crate::types::{Rect, WidgetId, CompositeId};
 
 use super::settings::PopupSettings;
 use super::state::PopupState;
@@ -41,7 +41,7 @@ pub fn register_input_coordinator_popup(
     _settings: &PopupSettings,
     kind:     PopupRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let popup_id = coord.register_composite(id, WidgetKind::Popup, rect, Sense::CLICK, layer);
 
     if matches!(kind, PopupRenderKind::Custom) {
@@ -58,7 +58,7 @@ pub fn register_input_coordinator_popup(
 /// Body overflow hit-rects (Scrollbar / Chevrons).
 fn register_popup_body_overflow(
     coord:    &mut InputCoordinator,
-    popup_id: &WidgetId,
+    popup_id: &CompositeId,
     body:     Rect,
     view:     &PopupView<'_>,
     state:    &mut PopupState,
@@ -70,18 +70,18 @@ fn register_popup_body_overflow(
             let track_w = 8.0;
             let track = Rect::new(body.x + body.width - track_w, body.y, track_w, body.height);
             state.body_scroll_track = Some(track);
-            coord.register_child(popup_id, format!("{}:scrollbar_track", popup_id.0),
+            coord.register_child(popup_id, format!("{}:scrollbar_track", popup_id.0.0),
                 WidgetKind::ScrollbarTrack, track, Sense::CLICK);
-            coord.register_child(popup_id, format!("{}:scrollbar_handle", popup_id.0),
+            coord.register_child(popup_id, format!("{}:scrollbar_handle", popup_id.0.0),
                 WidgetKind::ScrollbarHandle, track, Sense::DRAG | Sense::HOVER);
         }
         crate::types::OverflowMode::Chevrons => {
             let strip = 16.0;
             let up = Rect::new(body.x, body.y, body.width, strip);
             let dn = Rect::new(body.x, body.y + body.height - strip, body.width, strip);
-            coord.register_child(popup_id, format!("{}:chevron_up", popup_id.0),
+            coord.register_child(popup_id, format!("{}:chevron_up", popup_id.0.0),
                 WidgetKind::Button, up, Sense::CLICK | Sense::HOVER);
-            coord.register_child(popup_id, format!("{}:chevron_down", popup_id.0),
+            coord.register_child(popup_id, format!("{}:chevron_down", popup_id.0.0),
                 WidgetKind::Button, dn, Sense::CLICK | Sense::HOVER);
         }
         _ => {}
@@ -102,7 +102,7 @@ pub fn register_context_manager_popup(
     settings: &PopupSettings,
     kind:     PopupRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let coord = &mut ctx_mgr.input;
     let popup_id =
         register_input_coordinator_popup(coord, id, rect, state, view, settings, kind, layer);

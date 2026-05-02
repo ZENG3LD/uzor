@@ -31,7 +31,7 @@
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, WidgetKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
-use crate::types::{Rect, WidgetId};
+use crate::types::{Rect, WidgetId, CompositeId};
 
 use super::settings::BlackboxPanelSettings;
 use super::state::BlackboxState;
@@ -60,7 +60,7 @@ struct BlackboxLayout {
 /// Registers ONE rect — no children (blackbox panels reject children).
 /// The `view.sense` flags control which events the coordinator forwards.
 ///
-/// Returns the `WidgetId` assigned to the panel.
+/// Returns the [`CompositeId`] assigned to the panel.
 pub fn register_input_coordinator_blackbox_panel(
     coord:    &mut InputCoordinator,
     id:       impl Into<WidgetId>,
@@ -70,7 +70,7 @@ pub fn register_input_coordinator_blackbox_panel(
     _settings: &BlackboxPanelSettings,
     _kind:    &BlackboxRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     // BlackboxPanel is a composite kind; register_composite is the correct call.
     // No children are registered — BlackboxPanel rejects them at coordinator level.
     coord.register_composite(id, WidgetKind::BlackboxPanel, rect, view.sense, layer)
@@ -82,7 +82,7 @@ pub fn register_input_coordinator_blackbox_panel(
 
 /// Register + draw the blackbox panel in one call.
 ///
-/// Returns the `WidgetId` assigned to the panel.
+/// Returns the [`CompositeId`] assigned to the panel.
 pub fn register_context_manager_blackbox_panel(
     ctx_mgr:  &mut crate::app_context::ContextManager,
     render:   &mut dyn RenderContext,
@@ -93,7 +93,7 @@ pub fn register_context_manager_blackbox_panel(
     settings: &BlackboxPanelSettings,
     kind:     &BlackboxRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let panel_id = register_input_coordinator_blackbox_panel(
         &mut ctx_mgr.input,
         id,

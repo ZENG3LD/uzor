@@ -30,7 +30,7 @@ use crate::app_context::ContextManager;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
-use crate::types::{Rect, WidgetId};
+use crate::types::{Rect, WidgetId, CompositeId};
 
 use super::settings::ChromeSettings;
 use super::state::ChromeState;
@@ -87,7 +87,7 @@ impl ButtonPositions {
 ///
 /// **No drawing happens here.**
 ///
-/// Returns the `WidgetId` assigned to the composite.
+/// Returns the [`CompositeId`] assigned to the composite.
 pub fn register_input_coordinator_chrome(
     coord:    &mut InputCoordinator,
     id:       impl Into<WidgetId>,
@@ -97,7 +97,7 @@ pub fn register_input_coordinator_chrome(
     settings: &ChromeSettings,
     kind:     &ChromeRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let chrome_id = coord.register_composite(
         id,
         WidgetKind::Chrome,
@@ -127,7 +127,7 @@ pub fn register_input_coordinator_chrome(
             // Tab body
             coord.register_child(
                 &chrome_id,
-                format!("{}:tab:{}", chrome_id.0, i),
+                format!("{}:tab:{}", chrome_id.0.0, i),
                 WidgetKind::Button,
                 tab_rect,
                 Sense::CLICK | Sense::HOVER,
@@ -140,7 +140,7 @@ pub fn register_input_coordinator_chrome(
                 let close_y = rect.y + (h - close_w) / 2.0;
                 coord.register_child(
                     &chrome_id,
-                    format!("{}:tab:{}:close", chrome_id.0, i),
+                    format!("{}:tab:{}:close", chrome_id.0.0, i),
                     WidgetKind::Button,
                     Rect::new(close_x, close_y, close_w, close_w),
                     Sense::CLICK | Sense::HOVER,
@@ -154,7 +154,7 @@ pub fn register_input_coordinator_chrome(
         if view.show_new_tab_btn {
             coord.register_child(
                 &chrome_id,
-                format!("{}:new_tab", chrome_id.0),
+                format!("{}:new_tab", chrome_id.0.0),
                 WidgetKind::Button,
                 Rect::new(x, rect.y, NEW_TAB_BTN_WIDTH, h),
                 Sense::CLICK | Sense::HOVER,
@@ -168,7 +168,7 @@ pub fn register_input_coordinator_chrome(
         if drag_w > 0.0 {
             coord.register_child(
                 &chrome_id,
-                format!("{}:drag", chrome_id.0),
+                format!("{}:drag", chrome_id.0.0),
                 WidgetKind::DragHandle,
                 Rect::new(x, rect.y, drag_w, h),
                 Sense::DRAG,
@@ -181,7 +181,7 @@ pub fn register_input_coordinator_chrome(
         if drag_w > 0.0 {
             coord.register_child(
                 &chrome_id,
-                format!("{}:drag", chrome_id.0),
+                format!("{}:drag", chrome_id.0.0),
                 WidgetKind::DragHandle,
                 Rect::new(rect.x, rect.y, drag_w, h),
                 Sense::DRAG,
@@ -197,7 +197,7 @@ pub fn register_input_coordinator_chrome(
         if !matches!(kind, ChromeRenderKind::WindowControlsOnly) && view.show_new_window_btn {
             coord.register_child(
                 &chrome_id,
-                format!("{}:new_win", chrome_id.0),
+                format!("{}:new_win", chrome_id.0.0),
                 WidgetKind::Button,
                 Rect::new(rect.x + bp.new_window_left, rect.y, NEW_WINDOW_BTN_WIDTH, h),
                 Sense::CLICK | Sense::HOVER,
@@ -209,7 +209,7 @@ pub fn register_input_coordinator_chrome(
             if view.show_menu_btn {
                 coord.register_child(
                     &chrome_id,
-                    format!("{}:menu", chrome_id.0),
+                    format!("{}:menu", chrome_id.0.0),
                     WidgetKind::Button,
                     Rect::new(rect.x + bp.menu_left, rect.y, MENU_BTN_WIDTH, h),
                     Sense::CLICK | Sense::HOVER,
@@ -220,7 +220,7 @@ pub fn register_input_coordinator_chrome(
             if view.show_close_window_btn {
                 coord.register_child(
                     &chrome_id,
-                    format!("{}:close_win", chrome_id.0),
+                    format!("{}:close_win", chrome_id.0.0),
                     WidgetKind::Button,
                     Rect::new(rect.x + bp.close_window_left, rect.y, CLOSE_WINDOW_BTN_WIDTH, h),
                     Sense::CLICK | Sense::HOVER,
@@ -231,7 +231,7 @@ pub fn register_input_coordinator_chrome(
         // Minimize
         coord.register_child(
             &chrome_id,
-            format!("{}:min", chrome_id.0),
+            format!("{}:min", chrome_id.0.0),
             WidgetKind::Button,
             Rect::new(rect.x + bp.minimize_x, rect.y, BUTTON_WIDTH, h),
             Sense::CLICK | Sense::HOVER,
@@ -240,7 +240,7 @@ pub fn register_input_coordinator_chrome(
         // Maximize / restore
         coord.register_child(
             &chrome_id,
-            format!("{}:max", chrome_id.0),
+            format!("{}:max", chrome_id.0.0),
             WidgetKind::Button,
             Rect::new(rect.x + bp.maximize_x, rect.y, BUTTON_WIDTH, h),
             Sense::CLICK | Sense::HOVER,
@@ -249,7 +249,7 @@ pub fn register_input_coordinator_chrome(
         // Close app
         coord.register_child(
             &chrome_id,
-            format!("{}:close", chrome_id.0),
+            format!("{}:close", chrome_id.0.0),
             WidgetKind::Button,
             Rect::new(rect.x + bp.close_x, rect.y, BUTTON_WIDTH, h),
             Sense::CLICK | Sense::HOVER,
@@ -265,7 +265,7 @@ pub fn register_input_coordinator_chrome(
 
 /// Register + draw the Chrome composite in one call using a `ContextManager`.
 ///
-/// Returns the `WidgetId` assigned to the composite.
+/// Returns the [`CompositeId`] assigned to the composite.
 pub fn register_context_manager_chrome(
     ctx_mgr:  &mut ContextManager,
     render:   &mut dyn RenderContext,
@@ -276,7 +276,7 @@ pub fn register_context_manager_chrome(
     settings: &ChromeSettings,
     kind:     &ChromeRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let coord = &mut ctx_mgr.input;
     let chrome_id =
         register_input_coordinator_chrome(coord, id, rect, state, view, settings, kind, layer);

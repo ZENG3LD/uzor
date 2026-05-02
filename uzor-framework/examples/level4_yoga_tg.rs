@@ -34,7 +34,7 @@
 //! ```
 
 use uzor::input::LayerId;
-use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager};
+use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager, LayoutNodeId};
 use uzor::types::{Rect, WidgetId, WidgetState};
 use uzor::ui::widgets::atomic::button::input::register_layout_manager_button;
 use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonView};
@@ -66,6 +66,7 @@ impl App<NoPanel> for YogaTgApp {
             thickness: 40.0,
             visible: true,
             order: 0,
+            ..Default::default()
         });
 
         // Bottom tab bar: 56 px
@@ -75,6 +76,7 @@ impl App<NoPanel> for YogaTgApp {
             thickness: 56.0,
             visible: true,
             order: 0,
+            ..Default::default()
         });
     }
 
@@ -83,7 +85,7 @@ impl App<NoPanel> for YogaTgApp {
         layout: &mut LayoutManager<NoPanel>,
         render_state: &mut WindowRenderState,
     ) {
-        let layer = LayerId::main();
+        let _layer = LayerId::main();
         let settings = ButtonSettings::default();
         let view = ButtonView { icon: None, text: None, active: false, disabled: false, active_border: None, hover_chevron: None };
 
@@ -99,9 +101,9 @@ impl App<NoPanel> for YogaTgApp {
                 register_layout_manager_button(
                     layout,
                     render,
+                    LayoutNodeId::ROOT,
                     "top_back",
                     Rect::new(top_rect.x + 8.0, btn_y, 64.0, btn_h),
-                    &layer,
                     WidgetState::Normal,
                     &view,
                     &settings,
@@ -113,9 +115,9 @@ impl App<NoPanel> for YogaTgApp {
                 register_layout_manager_button(
                     layout,
                     render,
+                    LayoutNodeId::ROOT,
                     "top_share",
                     Rect::new(top_rect.x + top_rect.width - 72.0, btn_y, 64.0, btn_h),
-                    &layer,
                     WidgetState::Normal,
                     &view,
                     &settings,
@@ -138,9 +140,9 @@ impl App<NoPanel> for YogaTgApp {
                     register_layout_manager_button(
                         layout,
                         render,
+                        LayoutNodeId::ROOT,
                         *id,
                         Rect::new(tab_x, tab_y, tab_w - 8.0, tab_h),
-                        &layer,
                         WidgetState::Normal,
                         &view,
                         &settings,

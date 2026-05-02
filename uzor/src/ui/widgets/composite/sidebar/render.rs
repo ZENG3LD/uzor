@@ -20,7 +20,7 @@
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
-use crate::types::{Rect, WidgetId};
+use crate::types::{Rect, WidgetId, CompositeId};
 use crate::ui::widgets::atomic::scrollbar::render::{
     draw_scrollbar_standard, ScrollbarVisualState,
 };
@@ -59,7 +59,7 @@ struct SidebarLayout {
 ///
 /// **No drawing happens here.**  Use when you need explicit z-order control.
 ///
-/// Returns the `WidgetId` assigned to the sidebar composite.
+/// Returns the [`CompositeId`] assigned to the sidebar composite.
 pub fn register_input_coordinator_sidebar(
     coord:    &mut InputCoordinator,
     id:       impl Into<WidgetId>,
@@ -69,7 +69,7 @@ pub fn register_input_coordinator_sidebar(
     settings: &SidebarSettings,
     kind:     &SidebarRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let sidebar_id = coord.register_composite(id, WidgetKind::Sidebar, rect, Sense::CLICK, layer);
 
     if let SidebarRenderKind::Custom(_) = kind {
@@ -90,7 +90,7 @@ pub fn register_input_coordinator_sidebar(
         let btn_y = layout.header.y + (layout.header.height - btn_size) / 2.0;
         coord.register_child(
             &sidebar_id,
-            format!("{}:action:{}", sidebar_id.0, action.id),
+            format!("{}:action:{}", sidebar_id.0.0, action.id),
             WidgetKind::Button,
             Rect::new(btn_x, btn_y, btn_size, btn_size),
             Sense::CLICK | Sense::HOVER,
@@ -111,7 +111,7 @@ pub fn register_input_coordinator_sidebar(
                 );
                 coord.register_child(
                     &sidebar_id,
-                    format!("{}:tab:{}", sidebar_id.0, i),
+                    format!("{}:tab:{}", sidebar_id.0.0, i),
                     WidgetKind::Button,
                     tab_rect,
                     Sense::CLICK | Sense::HOVER,
@@ -124,7 +124,7 @@ pub fn register_input_coordinator_sidebar(
     if layout.resize_zone.width > 0.0 && layout.resize_zone.height > 0.0 {
         coord.register_child(
             &sidebar_id,
-            format!("{}:resize", sidebar_id.0),
+            format!("{}:resize", sidebar_id.0.0),
             WidgetKind::Separator,
             layout.resize_zone,
             Sense::DRAG,
@@ -158,14 +158,14 @@ pub fn register_input_coordinator_sidebar(
 
             coord.register_child(
                 &sidebar_id,
-                format!("{}:scrollbar_handle", sidebar_id.0),
+                format!("{}:scrollbar_handle", sidebar_id.0.0),
                 WidgetKind::ScrollbarHandle,
                 inflated,
                 Sense::DRAG,
             );
             coord.register_child(
                 &sidebar_id,
-                format!("{}:scrollbar_track", sidebar_id.0),
+                format!("{}:scrollbar_track", sidebar_id.0.0),
                 WidgetKind::ScrollbarTrack,
                 layout.scrollbar,
                 Sense::CLICK,
@@ -176,7 +176,7 @@ pub fn register_input_coordinator_sidebar(
     // --- Viewport scroll zone ---
     coord.register_child(
         &sidebar_id,
-        format!("{}:viewport", sidebar_id.0),
+        format!("{}:viewport", sidebar_id.0.0),
         WidgetKind::Custom,
         layout.body,
         Sense::SCROLL,
@@ -197,7 +197,7 @@ pub fn register_input_coordinator_sidebar(
             if cur_offset > 0.0 {
                 coord.register_child(
                     &sidebar_id,
-                    format!("{}:chevron_up", sidebar_id.0),
+                    format!("{}:chevron_up", sidebar_id.0.0),
                     WidgetKind::ScrollChevron,
                     Rect::new(layout.body.x, layout.body.y, layout.body.width, strip_h),
                     Sense::CLICK | Sense::HOVER,
@@ -206,7 +206,7 @@ pub fn register_input_coordinator_sidebar(
             if cur_offset < max_offset {
                 coord.register_child(
                     &sidebar_id,
-                    format!("{}:chevron_down", sidebar_id.0),
+                    format!("{}:chevron_down", sidebar_id.0.0),
                     WidgetKind::ScrollChevron,
                     Rect::new(layout.body.x, layout.body.y + layout.body.height - strip_h, layout.body.width, strip_h),
                     Sense::CLICK | Sense::HOVER,
@@ -246,7 +246,7 @@ pub fn register_context_manager_sidebar(
     settings: &SidebarSettings,
     kind:     &SidebarRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let coord = &mut ctx_mgr.input;
     let sidebar_id =
         register_input_coordinator_sidebar(coord, id, rect, state, view, settings, kind, layer);

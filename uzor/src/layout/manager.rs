@@ -477,6 +477,7 @@ mod tests {
             thickness: 40.0,
             visible: true,
             order: 0,
+            ..Default::default()
         });
         lm.edges_mut().add(EdgeSlot {
             id: "sidebar".to_string(),
@@ -484,6 +485,7 @@ mod tests {
             thickness: 200.0,
             visible: true,
             order: 0,
+            ..Default::default()
         });
 
         let solved = lm.solve(rect(0.0, 0.0, 1920.0, 1080.0));

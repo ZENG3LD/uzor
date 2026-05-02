@@ -31,7 +31,7 @@
 //! ```
 
 use uzor::input::LayerId;
-use uzor::layout::LayoutManager;
+use uzor::layout::{LayoutManager, LayoutNodeId};
 use uzor::types::{Rect, WidgetState};
 use uzor::ui::widgets::atomic::button::input::register_layout_manager_button;
 use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonView};
@@ -168,16 +168,16 @@ impl App<NoPanel> for KktTrayApp {
         // ── Window content ────────────────────────────────────────────────────
         //
         // Register a simple "Connect" toggle button in the window center.
-        let layer = LayerId::main();
+        let _layer = LayerId::main();
         let btn_rect = Rect::new(80.0, 80.0, 160.0, 40.0);
         let view = ButtonView { icon: None, text: Some("Connect"), active: self.connected, disabled: false, active_border: None, hover_chevron: None };
         render_state.with_render_context(|render| {
             register_layout_manager_button(
                 layout,
                 render,
+                LayoutNodeId::ROOT,
                 "toggle_connect",
                 btn_rect,
-                &layer,
                 WidgetState::Normal,
                 &view,
                 &ButtonSettings::default(),

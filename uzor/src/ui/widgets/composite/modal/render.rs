@@ -24,7 +24,7 @@
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
-use crate::types::{Rect, WidgetId, WidgetState};
+use crate::types::{Rect, WidgetId, WidgetState, CompositeId};
 use crate::ui::widgets::atomic::button::render::{
     draw_danger_button, draw_ghost_outline_button, draw_primary_button, DangerButtonView,
     DangerVariant, GhostOutlineButtonView, PrimaryButtonView,
@@ -84,7 +84,7 @@ struct ModalLayout {
 /// **No drawing happens here.**  Use this when you need explicit z-order control
 /// (register multiple composites, then draw them in order).
 ///
-/// Returns the `WidgetId` assigned to the modal composite.
+/// Returns the [`CompositeId`] assigned to the modal composite.
 pub fn register_input_coordinator_modal(
     coord:    &mut InputCoordinator,
     id:       impl Into<WidgetId>,
@@ -94,7 +94,7 @@ pub fn register_input_coordinator_modal(
     settings: &ModalSettings,
     kind:     &ModalRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     // The composite catches clicks that land inside the modal frame but miss
     // every child widget, preventing click-through to the canvas behind.
     let modal_id = coord.register_composite(id, WidgetKind::Modal, rect, Sense::CLICK, layer);
@@ -111,11 +111,13 @@ pub fn register_input_coordinator_modal(
     let frame = resolve_frame(rect, state, kind);
     let layout = compute_layout(frame, state, _view, settings, kind);
 
+    let mid = &modal_id.0.0; // &String — used in child id format strings
+
     // Close button.
     if layout.close_btn.width > 0.0 {
         coord.register_child(
             &modal_id,
-            format!("{}:close", modal_id.0),
+            format!("{}:close", mid),
             WidgetKind::CloseButton,
             layout.close_btn,
             Sense::CLICK,
@@ -126,7 +128,7 @@ pub fn register_input_coordinator_modal(
     if layout.drag_handle.width > 0.0 && layout.drag_handle.height > 0.0 {
         coord.register_child(
             &modal_id,
-            format!("{}:drag", modal_id.0),
+            format!("{}:drag", mid),
             WidgetKind::DragHandle,
             layout.drag_handle,
             Sense::DRAG,
@@ -148,7 +150,7 @@ pub fn register_input_coordinator_modal(
                     );
                     coord.register_child(
                         &modal_id,
-                        format!("{}:tab:{}", modal_id.0, i),
+                        format!("{}:tab:{}", mid, i),
                         WidgetKind::Button,
                         tab_rect,
                         Sense::CLICK | Sense::HOVER,
@@ -166,7 +168,7 @@ pub fn register_input_coordinator_modal(
                     );
                     coord.register_child(
                         &modal_id,
-                        format!("{}:tab:{}", modal_id.0, i),
+                        format!("{}:tab:{}", mid, i),
                         WidgetKind::Button,
                         tab_rect,
                         Sense::CLICK | Sense::HOVER,
@@ -193,7 +195,7 @@ pub fn register_input_coordinator_modal(
             let btn_x = start_x + i as f64 * (btn_w + btn_gap);
             coord.register_child(
                 &modal_id,
-                format!("{}:footer:{}", modal_id.0, i),
+                format!("{}:footer:{}", mid, i),
                 WidgetKind::Button,
                 Rect::new(btn_x, btn_y, btn_w, btn_h),
                 Sense::CLICK | Sense::HOVER,
@@ -221,7 +223,7 @@ pub fn register_input_coordinator_modal(
         if state.current_page > 0 {
             coord.register_child(
                 &modal_id,
-                format!("{}:wizard:back", modal_id.0),
+                format!("{}:wizard:back", mid),
                 WidgetKind::Button,
                 Rect::new(nav.x + padding_x, btn_y, btn_w, btn_h),
                 Sense::CLICK,
@@ -231,7 +233,7 @@ pub fn register_input_coordinator_modal(
         // Next / Finish button.
         coord.register_child(
             &modal_id,
-            format!("{}:wizard:next", modal_id.0),
+            format!("{}:wizard:next", mid),
             WidgetKind::Button,
             Rect::new(nav.x + nav.width - padding_x - btn_w, btn_y, btn_w, btn_h),
             Sense::CLICK,
@@ -288,7 +290,7 @@ fn draw_modal_with_coord(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
     _coord:    &mut InputCoordinator,
-    _modal_id: &WidgetId,
+    _modal_id: &CompositeId,
     state:    &ModalState,
     view:     &mut ModalView<'_>,
     settings: &ModalSettings,
@@ -1042,7 +1044,7 @@ const RESIZE_HANDLE_THICKNESS: f64 = 6.0;
 
 pub fn register_body_overflow(
     coord:    &mut InputCoordinator,
-    modal_id: &WidgetId,
+    modal_id: &CompositeId,
     frame:    Rect,
     view:     &ModalView<'_>,
     settings: &ModalSettings,
@@ -1063,9 +1065,9 @@ pub fn register_body_overflow(
             let track_w = 8.0_f64;
             let track = Rect::new(body.x + body.width - track_w, body.y, track_w, body.height);
             state.body_scroll_track = Some(track);
-            coord.register_child(modal_id, format!("{}:scrollbar_track", modal_id.0),
+            coord.register_child(modal_id, format!("{}:scrollbar_track", modal_id.0.0),
                 WidgetKind::ScrollbarTrack, track, Sense::CLICK);
-            coord.register_child(modal_id, format!("{}:scrollbar_handle", modal_id.0),
+            coord.register_child(modal_id, format!("{}:scrollbar_handle", modal_id.0.0),
                 WidgetKind::ScrollbarHandle, track, Sense::DRAG | Sense::HOVER);
         }
         crate::types::OverflowMode::Chevrons => {
@@ -1082,18 +1084,18 @@ pub fn register_body_overflow(
                 let up_w = (body.width - inset_x * 2.0).max(0.0);
                 let up = Rect::new(body.x + inset_x, body.y, up_w, strip);
                 let dn = Rect::new(body.x + inset_x, body.y + body.height - strip, up_w, strip);
-                coord.register_child(modal_id, format!("{}:chevron_up", modal_id.0),
+                coord.register_child(modal_id, format!("{}:chevron_up", modal_id.0.0),
                     WidgetKind::Button, up, Sense::CLICK | Sense::HOVER);
-                coord.register_child(modal_id, format!("{}:chevron_down", modal_id.0),
+                coord.register_child(modal_id, format!("{}:chevron_down", modal_id.0.0),
                     WidgetKind::Button, dn, Sense::CLICK | Sense::HOVER);
             }
             if h_overflow {
                 let lf_h = (body.height - inset_y * 2.0).max(0.0);
                 let lf = Rect::new(body.x, body.y + inset_y, strip, lf_h);
                 let rt = Rect::new(body.x + body.width - strip, body.y + inset_y, strip, lf_h);
-                coord.register_child(modal_id, format!("{}:chevron_left", modal_id.0),
+                coord.register_child(modal_id, format!("{}:chevron_left", modal_id.0.0),
                     WidgetKind::Button, lf, Sense::CLICK | Sense::HOVER);
-                coord.register_child(modal_id, format!("{}:chevron_right", modal_id.0),
+                coord.register_child(modal_id, format!("{}:chevron_right", modal_id.0.0),
                     WidgetKind::Button, rt, Sense::CLICK | Sense::HOVER);
             }
         }
@@ -1101,7 +1103,7 @@ pub fn register_body_overflow(
     }
 }
 
-fn register_resize_handles(coord: &mut InputCoordinator, modal_id: &WidgetId, frame: Rect) {
+fn register_resize_handles(coord: &mut InputCoordinator, modal_id: &CompositeId, frame: Rect) {
     let t = RESIZE_HANDLE_THICKNESS;
     // Edges: N / S / W / E and four corners (NW NE SW SE).
     let edges = [
@@ -1117,7 +1119,7 @@ fn register_resize_handles(coord: &mut InputCoordinator, modal_id: &WidgetId, fr
     for (suffix, rect) in edges {
         coord.register_child(
             modal_id,
-            format!("{}:{}", modal_id.0, suffix),
+            format!("{}:{}", modal_id.0.0, suffix),
             WidgetKind::DragHandle,
             rect,
             Sense::DRAG | Sense::HOVER,

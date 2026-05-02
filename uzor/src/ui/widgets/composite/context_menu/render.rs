@@ -18,7 +18,7 @@ use crate::app_context::ContextManager;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
-use crate::types::{Rect, WidgetId};
+use crate::types::{Rect, WidgetId, CompositeId};
 
 use super::settings::ContextMenuSettings;
 use super::state::ContextMenuState;
@@ -32,7 +32,7 @@ use super::types::{ContextMenuRenderKind, ContextMenuView};
 /// Register the context menu composite and all child hit-rects with the
 /// coordinator.  No drawing occurs.
 ///
-/// Returns the `WidgetId` assigned to the context menu composite.
+/// Returns the [`CompositeId`] assigned to the context menu composite.
 pub fn register_input_coordinator_context_menu(
     coord:    &mut InputCoordinator,
     id:       impl Into<WidgetId>,
@@ -41,7 +41,7 @@ pub fn register_input_coordinator_context_menu(
     settings: &ContextMenuSettings,
     kind:     &ContextMenuRenderKind<'_>,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let style  = settings.style.as_ref();
     let menu_w = style.min_width();
     let menu_h = compute_menu_height(view, settings, kind);
@@ -81,7 +81,7 @@ pub fn register_context_manager_context_menu(
     settings: &ContextMenuSettings,
     kind:     &ContextMenuRenderKind<'_>,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let coord = &mut ctx_mgr.input;
     let cm_id = register_input_coordinator_context_menu(
         coord, id, state, view, settings, kind, layer,
@@ -282,7 +282,7 @@ fn draw_items(
 
 fn register_item_hits(
     coord:    &mut InputCoordinator,
-    parent:   &WidgetId,
+    parent:   &CompositeId,
     content:  Rect,
     view:     &ContextMenuView<'_>,
     settings: &ContextMenuSettings,
@@ -302,7 +302,7 @@ fn register_item_hits(
         if item.enabled {
             coord.register_child(
                 parent,
-                format!("{}:item:{}", parent.0, idx),
+                format!("{}:item:{}", parent.0.0, idx),
                 WidgetKind::Button,
                 Rect::new(content.x, cursor_y, content.width, h),
                 Sense::CLICK | Sense::HOVER,

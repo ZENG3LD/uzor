@@ -7,7 +7,7 @@ use crate::input::core::sense::Sense;
 use crate::input::core::widget_kind::WidgetKind;
 use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
-use crate::types::{Rect, WidgetId};
+use crate::types::{Rect, WidgetId, CompositeId};
 
 use super::render::{draw_tab, TabView};
 use super::settings::TabSettings;
@@ -22,17 +22,17 @@ use super::state::TabState;
 /// If `close_btn_rect` is `Some`, an atomic `Button` child is registered for
 /// the close button. The close button id is `"{tab_id}:close"`.
 ///
-/// Returns the `WidgetId` of the tab composite.
+/// Returns the [`CompositeId`] of the tab composite.
 pub fn register_tab(
     coord: &mut InputCoordinator,
     tab_id: impl Into<WidgetId>,
     rect: Rect,
     sense: Sense,
     close_btn_rect: Option<Rect>,
-) -> WidgetId {
+) -> CompositeId {
     let id = coord.register_composite(tab_id, WidgetKind::ChromeTab, rect, sense, &LayerId::main());
     if let Some(close_rect) = close_btn_rect {
-        let close_id = format!("{}:close", id.0);
+        let close_id = format!("{}:close", id.0.0);
         coord.register_child(&id, close_id, WidgetKind::Button, close_rect, Sense::CLICK);
     }
     id
@@ -49,10 +49,10 @@ pub fn register_tab_on_layer(
     sense: Sense,
     close_btn_rect: Option<Rect>,
     layer: &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let id = coord.register_composite(tab_id, WidgetKind::ChromeTab, rect, sense, layer);
     if let Some(close_rect) = close_btn_rect {
-        let close_id = format!("{}:close", id.0);
+        let close_id = format!("{}:close", id.0.0);
         coord.register_child(&id, close_id, WidgetKind::Button, close_rect, Sense::CLICK);
     }
     id
@@ -73,7 +73,7 @@ pub fn register_chrome_tab(
     tab_id: impl Into<WidgetId>,
     rect: Rect,
     close_btn_rect: Option<Rect>,
-) -> WidgetId {
+) -> CompositeId {
     register_tab(coord, tab_id, rect, Sense::CLICK | Sense::HOVER, close_btn_rect)
 }
 
@@ -86,7 +86,7 @@ pub fn register_sidebar_tab(
     tab_id: impl Into<WidgetId>,
     rect: Rect,
     layer: &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     // Sidebar tabs are never closable — no close child needed.
     register_tab_on_layer(coord, tab_id, rect, Sense::CLICK | Sense::HOVER, None, layer)
 }
@@ -101,7 +101,7 @@ pub fn register_horizontal_tab(
     rect: Rect,
     close_btn_rect: Option<Rect>,
     layer: &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     register_tab_on_layer(coord, tab_id, rect, Sense::CLICK | Sense::HOVER, close_btn_rect, layer)
 }
 
@@ -119,7 +119,7 @@ pub fn register_input_coordinator_tab(
     close_btn_rect: Option<Rect>,
     layer: &LayerId,
     state: &mut TabState,
-) -> WidgetId {
+) -> CompositeId {
     let _ = state; // transient per-frame state; managed by caller each frame
     register_tab_on_layer(coord, tab_id, rect, sense, close_btn_rect, layer)
 }
@@ -139,7 +139,7 @@ pub fn register_context_manager_tab(
     layer: &LayerId,
     view: &TabView<'_>,
     settings: &TabSettings,
-) -> WidgetId {
+) -> CompositeId {
     let tab_id: WidgetId = tab_id.into();
     let state = ctx.registry.get_or_insert_with(tab_id.clone(), TabState::default);
     let id = register_input_coordinator_tab(
@@ -165,7 +165,7 @@ pub fn register_layout_manager_tab<P: DockPanel>(
     close_btn_rect: Option<Rect>,
     view: &TabView<'_>,
     settings: &TabSettings,
-) -> WidgetId {
+) -> CompositeId {
     let tab_id: WidgetId = tab_id.into();
     let layer = layout.compute_layer_for(parent);
     layout.tree_mut().add_widget(parent, WidgetNode { id: tab_id.clone(), kind: WidgetKind::ChromeTab, rect, sense: Sense::CLICK | Sense::HOVER });

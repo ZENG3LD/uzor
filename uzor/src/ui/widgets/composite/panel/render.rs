@@ -21,7 +21,7 @@
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
-use crate::types::{Rect, WidgetId};
+use crate::types::{Rect, WidgetId, CompositeId};
 use crate::ui::widgets::atomic::scrollbar::render::{
     draw_scrollbar_standard, ScrollbarVisualState,
 };
@@ -58,7 +58,7 @@ struct PanelLayout {
 ///
 /// **No drawing happens here.**  Use when you need explicit z-order control.
 ///
-/// Returns the `WidgetId` assigned to the panel composite.
+/// Returns the [`CompositeId`] assigned to the panel composite.
 pub fn register_input_coordinator_panel(
     coord:    &mut InputCoordinator,
     id:       impl Into<WidgetId>,
@@ -68,7 +68,7 @@ pub fn register_input_coordinator_panel(
     settings: &PanelSettings,
     kind:     &PanelRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let panel_id = coord.register_composite(id, WidgetKind::Panel, rect, Sense::CLICK, layer);
 
     if let PanelRenderKind::Custom(_) = kind {
@@ -91,7 +91,7 @@ pub fn register_input_coordinator_panel(
             let btn_y = layout.header.y + (layout.header.height - btn_size) / 2.0;
             coord.register_child(
                 &panel_id,
-                format!("{}:action:{}", panel_id.0, action.id),
+                format!("{}:action:{}", panel_id.0.0, action.id),
                 WidgetKind::Button,
                 Rect::new(btn_x, btn_y, btn_size, btn_size),
                 Sense::CLICK | Sense::HOVER,
@@ -111,7 +111,7 @@ pub fn register_input_coordinator_panel(
             if col.sortable {
                 coord.register_child(
                     &panel_id,
-                    format!("{}:col:{}", panel_id.0, col.id),
+                    format!("{}:col:{}", panel_id.0.0, col.id),
                     WidgetKind::Button,
                     col_rect,
                     Sense::CLICK | Sense::HOVER,
@@ -130,7 +130,7 @@ pub fn register_input_coordinator_panel(
                 );
                 coord.register_child(
                     &panel_id,
-                    format!("{}:colsep:{}", panel_id.0, i),
+                    format!("{}:colsep:{}", panel_id.0.0, i),
                     WidgetKind::Separator,
                     sep_rect,
                     Sense::DRAG | Sense::HOVER,
@@ -142,7 +142,7 @@ pub fn register_input_coordinator_panel(
     // --- Viewport scroll zone ---
     coord.register_child(
         &panel_id,
-        format!("{}:viewport", panel_id.0),
+        format!("{}:viewport", panel_id.0.0),
         WidgetKind::Custom,
         layout.body,
         Sense::SCROLL | Sense::HOVER,
@@ -171,14 +171,14 @@ pub fn register_input_coordinator_panel(
 
             coord.register_child(
                 &panel_id,
-                format!("{}:scrollbar_handle", panel_id.0),
+                format!("{}:scrollbar_handle", panel_id.0.0),
                 WidgetKind::ScrollbarHandle,
                 inflated,
                 Sense::DRAG,
             );
             coord.register_child(
                 &panel_id,
-                format!("{}:scrollbar_track", panel_id.0),
+                format!("{}:scrollbar_track", panel_id.0.0),
                 WidgetKind::ScrollbarTrack,
                 layout.scrollbar,
                 Sense::CLICK,
@@ -195,7 +195,7 @@ pub fn register_input_coordinator_panel(
 
 /// Register + draw a panel in one call using a `ContextManager`.
 ///
-/// Returns the `WidgetId` assigned to the panel composite.
+/// Returns the [`CompositeId`] assigned to the panel composite.
 pub fn register_context_manager_panel(
     ctx_mgr:  &mut crate::app_context::ContextManager,
     render:   &mut dyn RenderContext,
@@ -206,7 +206,7 @@ pub fn register_context_manager_panel(
     settings: &PanelSettings,
     kind:     &PanelRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let coord = &mut ctx_mgr.input;
     let panel_id =
         register_input_coordinator_panel(coord, id, rect, state, view, settings, kind, layer);

@@ -19,7 +19,7 @@ use crate::app_context::ContextManager;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
-use crate::types::{Rect, WidgetId};
+use crate::types::{Rect, WidgetId, CompositeId};
 
 use super::settings::DropdownSettings;
 use super::state::DropdownState;
@@ -132,7 +132,7 @@ fn right_content_width(right: &DropdownItemRight<'_>, toggle_w: f64) -> f64 {
 ///
 /// No drawing occurs.  Use when explicit z-order control is needed.
 ///
-/// Returns the `WidgetId` assigned to the dropdown composite.
+/// Returns the [`CompositeId`] assigned to the dropdown composite.
 pub fn register_input_coordinator_dropdown(
     coord:    &mut InputCoordinator,
     id:       impl Into<WidgetId>,
@@ -142,7 +142,7 @@ pub fn register_input_coordinator_dropdown(
     settings: &DropdownSettings,
     kind:     DropdownRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let dd_id = coord.register_composite(id, WidgetKind::Dropdown, rect, Sense::CLICK, layer);
 
     if !view.open {
@@ -178,7 +178,7 @@ pub fn register_input_coordinator_dropdown(
 
 /// Register + draw a dropdown in one call using a `ContextManager`.
 ///
-/// Returns the `WidgetId` assigned to the dropdown composite.
+/// Returns the [`CompositeId`] assigned to the dropdown composite.
 pub fn register_context_manager_dropdown(
     ctx_mgr:  &mut ContextManager,
     render:   &mut dyn RenderContext,
@@ -189,7 +189,7 @@ pub fn register_context_manager_dropdown(
     settings: &DropdownSettings,
     kind:     DropdownRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let coord = &mut ctx_mgr.input;
     let dd_id =
         register_input_coordinator_dropdown(coord, id, rect, state, view, settings, kind, layer);
@@ -572,7 +572,7 @@ fn draw_flat_list(
 
 fn register_flat_hits(
     coord:       &mut InputCoordinator,
-    parent:      &WidgetId,
+    parent:      &CompositeId,
     content:     Rect,
     items:       &[DropdownItem<'_>],
     settings:    &DropdownSettings,
@@ -591,7 +591,7 @@ fn register_flat_hits(
                 if !disabled {
                     coord.register_child(
                         parent,
-                        format!("{}:{}:{}", parent.0, item_prefix, id),
+                        format!("{}:{}:{}", parent.0.0, item_prefix, id),
                         WidgetKind::Button,
                         Rect::new(content.x, cursor_y, content.width, h),
                         Sense::CLICK | Sense::HOVER,
@@ -610,7 +610,7 @@ fn register_flat_hits(
                         // The whole row toggles submenu on hover.
                         coord.register_child(
                             parent,
-                            format!("{}:submenu:{}", parent.0, id),
+                            format!("{}:submenu:{}", parent.0.0, id),
                             WidgetKind::Button,
                             row,
                             Sense::CLICK | Sense::HOVER,
@@ -628,7 +628,7 @@ fn register_flat_hits(
                         );
                         coord.register_child(
                             parent,
-                            format!("{}:submenu-chevron:{}", parent.0, id),
+                            format!("{}:submenu-chevron:{}", parent.0.0, id),
                             WidgetKind::Button,
                             chev_rect,
                             Sense::CLICK | Sense::HOVER,

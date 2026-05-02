@@ -18,7 +18,7 @@
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
-use crate::types::{Rect, WidgetId};
+use crate::types::{Rect, WidgetId, CompositeId};
 
 use super::settings::ToolbarSettings;
 use super::state::ToolbarState;
@@ -32,7 +32,7 @@ use super::types::{ToolbarItem, ToolbarRenderKind, ToolbarSection, ToolbarView};
 /// Register the toolbar composite and all child item hit-rects with the
 /// coordinator.  **No drawing happens here.**
 ///
-/// Returns the `WidgetId` assigned to the toolbar composite.
+/// Returns the [`CompositeId`] assigned to the toolbar composite.
 pub fn register_input_coordinator_toolbar(
     coord:    &mut InputCoordinator,
     id:       impl Into<WidgetId>,
@@ -42,7 +42,7 @@ pub fn register_input_coordinator_toolbar(
     settings: &ToolbarSettings,
     kind:     &ToolbarRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let toolbar_id = coord.register_composite(id, WidgetKind::Toolbar, rect, Sense::CLICK, layer);
 
     match kind {
@@ -78,7 +78,7 @@ pub fn register_input_coordinator_toolbar(
 /// N/S/W/E (no corners — single-axis resize).
 fn register_toolbar_resize_handle(
     coord:  &mut InputCoordinator,
-    parent: &WidgetId,
+    parent: &CompositeId,
     rect:   Rect,
     edge:   crate::layout::ResizeEdge,
 ) {
@@ -94,7 +94,7 @@ fn register_toolbar_resize_handle(
     };
     coord.register_child(
         parent,
-        format!("{}:resize", parent.0),
+        format!("{}:resize", parent.0.0),
         WidgetKind::DragHandle,
         handle,
         Sense::DRAG | Sense::HOVER,
@@ -118,7 +118,7 @@ pub fn register_context_manager_toolbar(
     settings: &ToolbarSettings,
     kind:     &ToolbarRenderKind,
     layer:    &LayerId,
-) -> WidgetId {
+) -> CompositeId {
     let coord = &mut ctx_mgr.input;
     let toolbar_id = register_input_coordinator_toolbar(coord, id, rect, state, view, settings, kind, layer);
     draw_toolbar_internal(render, rect, state, view, settings, kind);
@@ -757,7 +757,7 @@ fn draw_chrome_strip(
 
 fn register_horizontal_items(
     coord:    &mut InputCoordinator,
-    parent:   &WidgetId,
+    parent:   &CompositeId,
     rect:     Rect,
     view:     &ToolbarView<'_>,
     settings: &ToolbarSettings,
@@ -788,7 +788,7 @@ fn register_horizontal_items(
 
 fn register_section_horizontal(
     coord:    &mut InputCoordinator,
-    parent:   &WidgetId,
+    parent:   &CompositeId,
     section:  &ToolbarSection<'_>,
     start_x:  f64,
     bar:      Rect,
@@ -802,7 +802,7 @@ fn register_section_horizontal(
 
 fn register_vertical_items(
     coord:    &mut InputCoordinator,
-    parent:   &WidgetId,
+    parent:   &CompositeId,
     rect:     Rect,
     view:     &ToolbarView<'_>,
     settings: &ToolbarSettings,
@@ -842,7 +842,7 @@ fn register_vertical_items(
 
 fn register_item(
     coord:    &mut InputCoordinator,
-    parent:   &WidgetId,
+    parent:   &CompositeId,
     item:     &ToolbarItem<'_>,
     rect:     Rect,
     settings: &ToolbarSettings,
@@ -854,7 +854,7 @@ fn register_item(
         ToolbarItem::Clock { id, .. } => {
             coord.register_child(
                 parent,
-                format!("{}:{}", parent.0, id),
+                format!("{}:{}", parent.0.0, id),
                 WidgetKind::Clock,
                 rect,
                 Sense::HOVER,
@@ -864,7 +864,7 @@ fn register_item(
         ToolbarItem::Custom { id, .. } => {
             coord.register_child(
                 parent,
-                format!("{}:{}", parent.0, id),
+                format!("{}:{}", parent.0.0, id),
                 WidgetKind::Custom,
                 rect,
                 Sense::CLICK | Sense::HOVER,
@@ -878,7 +878,7 @@ fn register_item(
         | ToolbarItem::LineWidthButton { id, .. } => {
             coord.register_child(
                 parent,
-                format!("{}:{}", parent.0, id),
+                format!("{}:{}", parent.0.0, id),
                 WidgetKind::Button,
                 rect,
                 Sense::CLICK | Sense::HOVER,
@@ -888,7 +888,7 @@ fn register_item(
         ToolbarItem::Dropdown { id, .. } => {
             coord.register_child(
                 parent,
-                format!("{}:{}", parent.0, id),
+                format!("{}:{}", parent.0.0, id),
                 WidgetKind::DropdownTrigger,
                 rect,
                 Sense::CLICK | Sense::HOVER,
@@ -901,14 +901,14 @@ fn register_item(
             let chevron_rect = Rect::new(rect.x + rect.width - split_w, rect.y, split_w, rect.height);
             coord.register_child(
                 parent,
-                format!("{}:{}", parent.0, id),
+                format!("{}:{}", parent.0.0, id),
                 WidgetKind::Button,
                 main_rect,
                 Sense::CLICK | Sense::HOVER,
             );
             coord.register_child(
                 parent,
-                format!("{}:{}:chevron", parent.0, id),
+                format!("{}:{}:chevron", parent.0.0, id),
                 WidgetKind::Button,
                 chevron_rect,
                 Sense::CLICK | Sense::HOVER,
@@ -919,7 +919,7 @@ fn register_item(
 
 fn register_chrome_items(
     coord:    &mut InputCoordinator,
-    parent:   &WidgetId,
+    parent:   &CompositeId,
     rect:     Rect,
     view:     &ToolbarView<'_>,
     settings: &ToolbarSettings,
@@ -943,7 +943,7 @@ fn register_chrome_items(
         let tab_rect = Rect::new(tab_x, rect.y, tab_w, rect.height);
         coord.register_child(
             parent,
-            format!("{}:chrome_tab:{}", parent.0, i),
+            format!("{}:chrome_tab:{}", parent.0.0, i),
             WidgetKind::Button,
             tab_rect,
             Sense::CLICK | Sense::HOVER,
@@ -958,21 +958,21 @@ fn register_chrome_items(
 
         coord.register_child(
             parent,
-            format!("{}:chrome_minimize", parent.0),
+            format!("{}:chrome_minimize", parent.0.0),
             WidgetKind::Button,
             Rect::new(base_x, rect.y, ctrl_sz, rect.height),
             Sense::CLICK | Sense::HOVER,
         );
         coord.register_child(
             parent,
-            format!("{}:chrome_maximize", parent.0),
+            format!("{}:chrome_maximize", parent.0.0),
             WidgetKind::Button,
             Rect::new(base_x + ctrl_sz, rect.y, ctrl_sz, rect.height),
             Sense::CLICK | Sense::HOVER,
         );
         coord.register_child(
             parent,
-            format!("{}:chrome_close", parent.0),
+            format!("{}:chrome_close", parent.0.0),
             WidgetKind::Button,
             Rect::new(base_x + ctrl_sz * 2.0, rect.y, ctrl_sz, rect.height),
             Sense::CLICK | Sense::HOVER,
@@ -987,7 +987,7 @@ fn register_chrome_items(
         if drag_w > 0.0 {
             coord.register_child(
                 parent,
-                format!("{}:chrome_drag", parent.0),
+                format!("{}:chrome_drag", parent.0.0),
                 WidgetKind::DragHandle,
                 Rect::new(drag_x, rect.y, drag_w, rect.height),
                 Sense::DRAG,
@@ -1218,7 +1218,7 @@ fn draw_overflow_chevrons(
 /// handler against scroll bounds.
 fn register_overflow_chevrons(
     coord:      &mut InputCoordinator,
-    parent:     &WidgetId,
+    parent:     &CompositeId,
     rect:       Rect,
     view:       &ToolbarView<'_>,
     settings:   &ToolbarSettings,
@@ -1234,8 +1234,8 @@ fn register_overflow_chevrons(
     let (back_rect, fwd_rect) = chevron_strip_rects(rect, is_vertical, strip_size);
 
     let _ = layer;
-    let back_id = WidgetId::new(format!("{}:chevron_back", parent.0));
-    let fwd_id  = WidgetId::new(format!("{}:chevron_fwd",  parent.0));
+    let back_id = WidgetId::new(format!("{}:chevron_back", parent.0.0));
+    let fwd_id  = WidgetId::new(format!("{}:chevron_fwd",  parent.0.0));
     coord.register_child(parent, back_id, WidgetKind::Button, back_rect, Sense::CLICK | Sense::HOVER);
     coord.register_child(parent, fwd_id,  WidgetKind::Button, fwd_rect,  Sense::CLICK | Sense::HOVER);
 }
