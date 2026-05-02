@@ -113,7 +113,6 @@ use uzor::ui::widgets::composite::toolbar::types::{
 };
 
 // ── atomic widgets (used inside modals) ──────────────────────────────────────
-use uzor::ui::widgets::atomic::button::input::register_context_manager_button;
 use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonTheme, ButtonView};
 
 use uzor::ui::widgets::atomic::checkbox::input::register_context_manager_checkbox;
@@ -171,6 +170,13 @@ use uzor::render::{draw_svg_icon, RenderContext};
 use uzor::ui::widgets::atomic::text::{draw_text, TextSettings};
 use uzor::ui::widgets::atomic::text::types::{TextOverflow, TextView};
 use uzor::render::{TextAlign, TextBaseline};
+
+// ── sticky chevron ────────────────────────────────────────────────────────────
+use uzor::ui::widgets::atomic::sticky_chevron::{
+    draw_sticky_chevron, register_sticky_chevron, StickyAnchor, StickyChevronSpec, StickyVisibility,
+};
+use uzor::ui::widgets::atomic::chevron::types::{ChevronDirection, ChevronVisualKind};
+use uzor::layout::EventBuilder;
 
 // ── GPU render context ────────────────────────────────────────────────────────
 use uzor_render_vello_gpu::VelloGpuRenderContext;
@@ -902,6 +908,14 @@ struct AppState {
 
     // Fix 3: Watchlist blackbox state
     watchlist: watchlist_blackbox::WatchlistState,
+
+    // Demo A — sticky chevron on L2 Connect button
+    l2_connect_popup_open: bool,
+    l2_connect_popup_state: PopupState,
+
+    // Demo D — 4-direction chevrons in L2 modal body
+    l2_4dir_popup: Option<&'static str>,
+    l2_4dir_popup_state: PopupState,
 }
 
 impl AppState {
@@ -2019,6 +2033,8 @@ impl AppState {
         // ── Dock separators (fix 5/6) ─────────────────────────────────────────
         {
             use uzor::docking::panels::SeparatorOrientation as DockSepOrient;
+            use uzor::input::core::sense::Sense;
+            use uzor::input::core::widget_kind::WidgetKind;
             let separators: Vec<_> = self.layout.panels().separators().iter().enumerate().map(|(i, s)| {
                 let thickness = s.thickness_for_state() as f64;
                 let (sx, sy, sw, sh) = match s.orientation {
@@ -2048,6 +2064,21 @@ impl AppState {
                 };
                 render.set_fill_color(color);
                 render.fill_rect(*sx, *sy, *sw, *sh);
+
+                // Register separator as a coord drag-handle so it participates
+                // in z-ordered hit-testing. Clicks/drags on it resolve to
+                // "dock-sep-{i}" via process_click / handle_click. This means
+                // a separator under an open dropdown or popup will NOT be grabbed
+                // — the overlay owns the cursor at that z-level.
+                let sep_id = WidgetId::new(format!("dock-sep-{i}"));
+                let sep_rect = Rect::new(*sx, *sy, *sw, *sh);
+                self.layout.ctx_mut().input.register_atomic(
+                    sep_id,
+                    WidgetKind::DragHandle,
+                    sep_rect,
+                    Sense::DRAG | Sense::CLICK,
+                    &LayerId::main(),
+                );
             }
         }
 
@@ -2111,7 +2142,6 @@ impl AppState {
                 rect: modal_rect,
                 anchor: None,
             });
-            self.layout.ctx_mut().input.push_layer(LayerId::modal(), 10, true);
 
             let modal_kind = self.modal_kind;
             let l2_connected = self.l2_connected;
@@ -2377,22 +2407,77 @@ impl AppState {
                         render.save();
                         render.clip_rect(ox + LEFT_PANEL_X, oy + 12.0, left_panel_w, panel_inner_h);
 
-                        // 1. Button
+                        // 1. Button — wrapped in a composite Panel so a sticky chevron child can attach.
+                        let btn_rect = Rect::new(BTN_RECT.x + ox, BTN_RECT.y + oy, BTN_RECT.width, BTN_RECT.height);
                         let btn_state = if l2_hovered.as_deref() == Some("l2-btn-connect") { WidgetState::Hovered } else if l2_connected { WidgetState::Active } else { WidgetState::Normal };
-                        register_context_manager_button(
-                            self.layout.ctx_mut(), &mut render,
-                            "l2-btn-connect", Rect::new(BTN_RECT.x + ox, BTN_RECT.y + oy, BTN_RECT.width, BTN_RECT.height), &layer,
-                            btn_state,
-                            &ButtonView {
+                        // Register composite Panel as the host so register_child / register_sticky_chevron work.
+                        let btn_host_id = {
+                            use uzor::input::core::widget_kind::WidgetKind as WK;
+                            use uzor::input::Sense;
+                            self.layout.ctx_mut().input.register_composite(
+                                WidgetId::new("l2-btn-connect-host"),
+                                WK::Panel,
+                                btn_rect,
+                                Sense::NONE,
+                                &layer,
+                            )
+                        };
+                        // Register the visual button as a child of the composite.
+                        {
+                            use uzor::input::core::widget_kind::WidgetKind as WK;
+                            use uzor::input::Sense;
+                            self.layout.ctx_mut().input.register_child(
+                                &btn_host_id,
+                                WidgetId::new("l2-btn-connect"),
+                                WK::Button,
+                                btn_rect,
+                                Sense::CLICK | Sense::HOVER,
+                            );
+                        }
+                        // Draw the button visuals.
+                        // Demo A: hover_chevron removed — the sticky chevron below is the sole chevron.
+                        {
+                            use uzor::ui::widgets::atomic::button::render::draw_button;
+                            draw_button(&mut render, btn_rect, btn_state, &ButtonView {
                                 text: Some(if l2_connected { "Disconnect" } else { "Connect" }),
                                 icon: None,
                                 active: l2_connected,
                                 disabled: false,
                                 active_border: None,
-                                hover_chevron: Some(uzor::ui::widgets::atomic::button::render::HoverChevronSpec::default()),
-                            },
-                            &ButtonSettings::default().with_theme(Box::new(VisibleButtonTheme)),
+                                hover_chevron: None,
+                            }, &ButtonSettings::default().with_theme(Box::new(VisibleButtonTheme)), |_, _, _, _| {});
+                        }
+                        // Demo A: sticky chevron at East edge of the Connect button.
+                        let connect_chev_spec = StickyChevronSpec {
+                            direction: ChevronDirection::Right,
+                            size: 16.0,
+                            inset: 4.0,
+                            anchor: StickyAnchor::E,
+                            visibility: StickyVisibility::Always,
+                            visual: ChevronVisualKind::Stroked,
+                        };
+                        let connect_chev_id = register_sticky_chevron(
+                            &mut self.layout.ctx_mut().input,
+                            &btn_host_id,
+                            btn_rect,
+                            &connect_chev_spec,
+                            btn_state,
+                            "_",
                         );
+                        // Wire chevron click → StickyChevronClicked { host_id: "l2-btn-connect-host" }
+                        if let Some(ref chev_id) = connect_chev_id {
+                            self.layout.dispatcher_mut().on_exact(
+                                chev_id.0.clone(),
+                                EventBuilder::StickyChevron { host_id: WidgetId::new("l2-btn-connect-host") },
+                            );
+                            // Draw the chevron — derive state from coordinator hover info.
+                            let chev_state = if self.layout.ctx_mut().input.is_hovered(chev_id) {
+                                WidgetState::Hovered
+                            } else {
+                                WidgetState::Normal
+                            };
+                            draw_sticky_chevron(&mut render, btn_rect, &connect_chev_spec, chev_state, btn_state);
+                        }
                         // 2. Checkbox
                         register_context_manager_checkbox(
                             self.layout.ctx_mut(), &mut render,
@@ -2552,6 +2637,101 @@ impl AppState {
                             "l2-splitter", dh_rect, &layer,
                             &DragHandleView { rect: dh_rect }, &DragHandleSettings::default(), &DragHandleRenderKind::GripDots,
                         );
+
+                        // ── Demo D: 4-direction sticky chevrons ───────────────
+                        // ONE composite host at the center panel. Four chevrons
+                        // (n/s/e/w) with OnHostHover visibility — they appear only
+                        // when the host is hovered and disappear when cursor leaves.
+                        let panel_4dir_cx = ox + LEFT_PANEL_X + 80.0;
+                        let panel_4dir_cy = oy + 390.0;
+                        let panel_4dir_w  = 80.0_f64;
+                        let panel_4dir_h  = 40.0_f64;
+                        let host_4dir_rect = Rect::new(
+                            panel_4dir_cx - panel_4dir_w / 2.0,
+                            panel_4dir_cy - panel_4dir_h / 2.0,
+                            panel_4dir_w,
+                            panel_4dir_h,
+                        );
+
+                        // Draw a subtle backdrop so the user can see the panel.
+                        render.set_fill_color("rgba(255,255,255,0.06)");
+                        render.fill_rounded_rect(
+                            host_4dir_rect.x, host_4dir_rect.y,
+                            host_4dir_rect.width, host_4dir_rect.height, 4.0,
+                        );
+                        label(
+                            &mut render,
+                            host_4dir_rect,
+                            "4-dir chev", TextAlign::Center, "rgba(255,255,255,0.4)",
+                        );
+
+                        // Register ONE composite host that receives hover input.
+                        let host_4dir_cid = {
+                            use uzor::input::core::widget_kind::WidgetKind as WK;
+                            use uzor::input::Sense;
+                            self.layout.ctx_mut().input.register_composite(
+                                WidgetId::new("l2-4dir-host"),
+                                WK::Panel,
+                                host_4dir_rect,
+                                Sense::HOVER,
+                                &layer,
+                            )
+                        };
+                        // Query host hover state once for all chevrons.
+                        let host_4dir_state = if self.layout.ctx_mut().input.is_hovered(
+                            &WidgetId::new("l2-4dir-host"),
+                        ) {
+                            WidgetState::Hovered
+                        } else {
+                            WidgetState::Normal
+                        };
+
+                        // 4 chevrons — each using a named slot and OnHostHover visibility.
+                        let chev_4dir_configs: [(&str, StickyAnchor, ChevronDirection); 4] = [
+                            ("n", StickyAnchor::N, ChevronDirection::Up),
+                            ("s", StickyAnchor::S, ChevronDirection::Down),
+                            ("w", StickyAnchor::W, ChevronDirection::Left),
+                            ("e", StickyAnchor::E, ChevronDirection::Right),
+                        ];
+                        // Register dispatcher prefix once for all 4 slot chevrons.
+                        self.layout.dispatcher_mut().on_prefix(
+                            "l2-4dir-host:chev:".to_string(),
+                            EventBuilder::StickyChevronWithSlot {
+                                host_id: WidgetId::new("l2-4dir-host"),
+                            },
+                        );
+                        for (slot, anchor, dir) in &chev_4dir_configs {
+                            let chev_spec = StickyChevronSpec {
+                                direction: *dir,
+                                size: 16.0,
+                                inset: 4.0, // inside the host rect, 4px from each edge
+                                anchor: *anchor,
+                                visibility: StickyVisibility::OnHostHover,
+                                visual: ChevronVisualKind::Stroked,
+                            };
+                            let chev_id = register_sticky_chevron(
+                                &mut self.layout.ctx_mut().input,
+                                &host_4dir_cid,
+                                host_4dir_rect,
+                                &chev_spec,
+                                host_4dir_state,
+                                slot,
+                            );
+                            if let Some(ref cid) = chev_id {
+                                let chev_st = if self.layout.ctx_mut().input.is_hovered(cid) {
+                                    WidgetState::Hovered
+                                } else {
+                                    WidgetState::Normal
+                                };
+                                draw_sticky_chevron(
+                                    &mut render,
+                                    host_4dir_rect,
+                                    &chev_spec,
+                                    chev_st,
+                                    host_4dir_state,
+                                );
+                            }
+                        }
                     }
                     ModalKind::PlainDemo => {
                         // No header/footer — caller draws everything inside the body.
@@ -2678,6 +2858,88 @@ impl AppState {
             }
         }
 
+        // ── Demo A popup — "Connect options" ─────────────────────────────────
+        if self.l2_connect_popup_open {
+            use uzor::ui::widgets::composite::popup::render::body_rect as popup_body_rect;
+            let popup_settings = PopupSettings::default();
+            let pad = popup_settings.style.padding();
+            let body_w = 180.0_f64;
+            let body_h = 48.0_f64;
+            let popup_w = body_w + pad * 2.0;
+            let popup_h = body_h + pad * 2.0;
+            let px = (width as f64 - popup_w) / 2.0;
+            let py = (height as f64 - popup_h) / 2.0;
+            self.layout.push_overlay(OverlayEntry {
+                id: "l2-connect-popup".to_string(),
+                kind: OverlayKind::Popup,
+                rect: Rect::new(px, py, popup_w, popup_h),
+                anchor: None,
+            });
+            let mut v = PopupView {
+                origin: (px, py),
+                anchor: None,
+                backdrop: PopupBackdrop::Dim,
+                kind: PopupViewKind::Plain,
+                size_mode: uzor::types::SizeMode::AutoFit,
+                overflow: uzor::types::OverflowMode::Clip,
+            };
+            let _ = register_layout_manager_popup(
+                &mut self.layout, &mut render,
+                LayoutNodeId::ROOT,
+                "l2-connect-popup", "l2-connect-popup-widget",
+                &mut self.l2_connect_popup_state, &mut v,
+                &popup_settings, PopupRenderKind::Plain,
+            );
+            if let Some(frame) = self.layout.rect_for_overlay("l2-connect-popup") {
+                let body = popup_body_rect(frame, &popup_settings);
+                label(&mut render, body, "Connect options", TextAlign::Center, "#d1d4dc");
+            }
+        }
+
+        // ── Demo D popup — 4-dir chevron result ──────────────────────────────
+        if let Some(dir_label) = self.l2_4dir_popup {
+            use uzor::ui::widgets::composite::popup::render::body_rect as popup_body_rect;
+            let popup_settings = PopupSettings::default();
+            let pad = popup_settings.style.padding();
+            let body_w = 140.0_f64;
+            let body_h = 40.0_f64;
+            let popup_w = body_w + pad * 2.0;
+            let popup_h = body_h + pad * 2.0;
+            let px = (width as f64 - popup_w) / 2.0;
+            let py = (height as f64 - popup_h) / 2.0;
+            self.layout.push_overlay(OverlayEntry {
+                id: "l2-4dir-popup".to_string(),
+                kind: OverlayKind::Popup,
+                rect: Rect::new(px, py, popup_w, popup_h),
+                anchor: None,
+            });
+            let mut v = PopupView {
+                origin: (px, py),
+                anchor: None,
+                backdrop: PopupBackdrop::Dim,
+                kind: PopupViewKind::Plain,
+                size_mode: uzor::types::SizeMode::AutoFit,
+                overflow: uzor::types::OverflowMode::Clip,
+            };
+            let _ = register_layout_manager_popup(
+                &mut self.layout, &mut render,
+                LayoutNodeId::ROOT,
+                "l2-4dir-popup", "l2-4dir-popup-widget",
+                &mut self.l2_4dir_popup_state, &mut v,
+                &popup_settings, PopupRenderKind::Plain,
+            );
+            if let Some(frame) = self.layout.rect_for_overlay("l2-4dir-popup") {
+                let body = popup_body_rect(frame, &popup_settings);
+                let popup_text = match dir_label {
+                    "N" => "N popup",
+                    "S" => "S popup",
+                    "W" => "W popup",
+                    _   => "E popup",
+                };
+                label(&mut render, body, popup_text, TextAlign::Center, "#d1d4dc");
+            }
+        }
+
         // ── Context menu ──────────────────────────────────────────────────────
         if self.ctx_menu_state.is_open {
             let items = [
@@ -2694,7 +2956,6 @@ impl AppState {
                 rect: Rect::new(self.ctx_menu_state.x, self.ctx_menu_state.y, 170.0, menu_h),
                 anchor: None,
             });
-            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 20, false);
             let mut ctx_menu_view = ContextMenuView { items: &items, target_id: None, title: None };
             register_layout_manager_context_menu(
                 &mut self.layout,
@@ -2727,7 +2988,6 @@ impl AppState {
                 rect: Rect::new(origin.0, origin.1, fw, fh),
                 anchor: None,
             });
-            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
             let mut dd_file_view = DropdownView {
                 anchor: self.dropdown_file_state.anchor_rect,
                 position_override: self.dropdown_file_state.open_position_override,
@@ -2761,7 +3021,6 @@ impl AppState {
                 rect: Rect::new(origin.0, origin.1, vw, vh),
                 anchor: None,
             });
-            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
             let mut dd_view_view = DropdownView {
                 anchor: self.dropdown_view_state.anchor_rect,
                 position_override: self.dropdown_view_state.open_position_override,
@@ -2805,7 +3064,6 @@ impl AppState {
                 rect: Rect::new(origin.0, origin.1, hw, hh),
                 anchor: None,
             });
-            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
             let mut dd_help_view = DropdownView {
                 anchor: self.dropdown_help_state.anchor_rect,
                 position_override: self.dropdown_help_state.open_position_override,
@@ -2846,7 +3104,6 @@ impl AppState {
                 rect: Rect::new(origin.0, origin.1, sw, sh),
                 anchor: None,
             });
-            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
             let mut dd_view = DropdownView {
                 anchor: self.dropdown_sidebar_state.anchor_rect,
                 position_override: self.dropdown_sidebar_state.open_position_override,
@@ -2886,7 +3143,6 @@ impl AppState {
                 rect: Rect::new(origin.0, origin.1, tw, th),
                 anchor: None,
             });
-            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
             let mut dd_view = DropdownView {
                 anchor: self.dropdown_toolbar_state.anchor_rect,
                 position_override: self.dropdown_toolbar_state.open_position_override,
@@ -2968,7 +3224,6 @@ impl AppState {
                 rect: Rect::new(origin.0, origin.1, pw, ph),
                 anchor: None,
             });
-            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
             let submenu_items = match open_id.as_deref() {
                 Some("popup-plain")  => Some(("popup-plain",  &popup_plain_sub_items[..])),
                 Some("popup-custom") => Some(("popup-custom", &popup_custom_sub_items[..])),
@@ -3015,7 +3270,6 @@ impl AppState {
                 rect: Rect::new(origin.0, origin.1, tw, th),
                 anchor: None,
             });
-            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
             let mut dd_view = DropdownView {
                 anchor: self.dropdown_theme_state.anchor_rect,
                 position_override: self.dropdown_theme_state.open_position_override,
@@ -3053,7 +3307,6 @@ impl AppState {
                 rect: Rect::new(origin.0, origin.1, aw, ah),
                 anchor: None,
             });
-            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
             let mut dd_addpanel_view = DropdownView {
                 anchor: self.dropdown_addpanel_state.anchor_rect,
                 position_override: self.dropdown_addpanel_state.open_position_override,
@@ -3262,11 +3515,11 @@ impl AppState {
         &mut self,
         x: f64,
         y: f64,
-        clicked_id: Option<WidgetId>,
+        _clicked_id: Option<WidgetId>,
         event_loop: &ActiveEventLoop,
     ) {
-        eprintln!("[LEFT_UP] pos=({:.1},{:.1}) clicked_id={:?} modal_open={} dropdown_open=(file:{} view:{} help:{}) ctx_menu_open={}",
-            x, y, clicked_id.as_ref().map(|id| id.0.as_str()),
+        eprintln!("[LEFT_UP] pos=({:.1},{:.1}) modal_open={} dropdown_open=(file:{} view:{} help:{}) ctx_menu_open={}",
+            x, y,
             self.modal_open,
             self.dropdown_file_state.open,
             self.dropdown_view_state.open,
@@ -3274,399 +3527,355 @@ impl AppState {
             self.ctx_menu_state.is_open,
         );
 
-        // ── Priority 1: coord-resolved widget id ──────────────────────────────
-        // If InputCoordinator identified the click as landing on a registered
-        // widget, dispatch by id BEFORE the manual geometry fallback.  This
-        // makes every register_*-ed widget click-able without per-button hit
-        // testing in the example.
-        if let Some(id) = clicked_id.as_ref() {
-            let id_str = id.0.as_str();
+        use uzor::layout::ClickOutcome;
+        match self.layout.handle_click((x, y)) {
+            ClickOutcome::DismissOverlay { overlay_id } => {
+                eprintln!("[DISMISS] overlay_id={}", overlay_id.0);
+                match overlay_id.0.as_str() {
+                    "modal-overlay"       => { self.modal_open = false; }
+                    "demo-popup-overlay"  => { self.popup_kind = None; }
+                    "l2-connect-popup"    => { self.l2_connect_popup_open = false; }
+                    "l2-4dir-popup"       => { self.l2_4dir_popup = None; }
+                    "ctx-menu-overlay"    => { self.ctx_menu_state.close(); }
+                    "dd-file-overlay"     => { self.dropdown_file_state.close(); }
+                    "dd-view-overlay"     => { self.dropdown_view_state.close(); }
+                    "dd-help-overlay"     => { self.dropdown_help_state.close(); }
+                    "dd-addpanel-overlay" => { self.dropdown_addpanel_state.close(); }
+                    "dd-sidebar-overlay"  => { self.dropdown_sidebar_state.close(); }
+                    "dd-toolbar-overlay"  => { self.dropdown_toolbar_state.close(); }
+                    "dd-popup-overlay"    => { self.dropdown_popup_state.close(); }
+                    "dd-theme-overlay"    => { self.dropdown_theme_state.close(); }
+                    _                     => {}
+                }
+            }
+            ClickOutcome::DispatchEvent(event) => {
+                self.dispatch_event(event, x, y, event_loop);
+            }
+            ClickOutcome::Unhandled { .. } => {
+                // No overlay to dismiss, no coord widget hit.
+                // Fall through to legacy geometry-based handlers below.
+                self.on_left_up_geometry(x, y, event_loop);
+            }
+        }
+    }
 
-            // ── NEW: high-level dispatcher path ───────────────────────────────
-            // Composites register their patterns at register_layout_manager_*
-            // time. We ask the dispatcher to translate the raw WidgetId into a
-            // semantic DispatchEvent. If it knows the id, we handle the event
-            // and return. Unknown ids fall through to the legacy parsing below.
-            use uzor::layout::DispatchEvent;
-            match self.layout.dispatch_widget(id) {
-                DispatchEvent::ModalCloseRequested(_) => {
-                    eprintln!("[DISPATCHER] ModalCloseRequested");
+    /// Handle a click that resolved to a semantic DispatchEvent from the
+    /// LayoutManager dispatch table.  Called from `on_left_up`'s
+    /// `ClickOutcome::DispatchEvent` arm.
+    fn dispatch_event(
+        &mut self,
+        event: uzor::layout::DispatchEvent,
+        x: f64,
+        y: f64,
+        event_loop: &ActiveEventLoop,
+    ) {
+        use uzor::layout::DispatchEvent;
+
+        let viewport = {
+            let cfg = &self.surface.config;
+            (cfg.width as f64, cfg.height as f64)
+        };
+        let cursor = (x, y);
+
+        match event {
+            DispatchEvent::ModalCloseRequested(_) => {
+                eprintln!("[DISPATCHER] ModalCloseRequested");
+                self.modal_open = false;
+            }
+            DispatchEvent::ModalTabClicked { index, .. } => {
+                eprintln!("[DISPATCHER] ModalTabClicked index={index}");
+                self.modal_state.active_tab = index;
+            }
+            DispatchEvent::ModalWizardNext(_) => {
+                eprintln!("[DISPATCHER] ModalWizardNext");
+                let last = 2;
+                if self.modal_state.current_page < last {
+                    self.modal_state.current_page += 1;
+                } else {
                     self.modal_open = false;
-                    return;
                 }
-                DispatchEvent::ModalTabClicked { index, .. } => {
-                    eprintln!("[DISPATCHER] ModalTabClicked index={index}");
-                    self.modal_state.active_tab = index;
-                    return;
+            }
+            DispatchEvent::ModalWizardBack(_) => {
+                eprintln!("[DISPATCHER] ModalWizardBack");
+                if self.modal_state.current_page > 0 {
+                    self.modal_state.current_page -= 1;
                 }
-                DispatchEvent::ModalWizardNext(_) => {
-                    eprintln!("[DISPATCHER] ModalWizardNext");
-                    let last = 2;
-                    if self.modal_state.current_page < last {
-                        self.modal_state.current_page += 1;
-                    } else {
-                        self.modal_open = false;
-                    }
-                    return;
-                }
-                DispatchEvent::ModalWizardBack(_) => {
-                    eprintln!("[DISPATCHER] ModalWizardBack");
-                    if self.modal_state.current_page > 0 {
-                        self.modal_state.current_page -= 1;
-                    }
-                    return;
-                }
-                DispatchEvent::DropdownItemClicked { dropdown_id, item_id } => {
-                    eprintln!("[DISPATCHER] DropdownItemClicked dropdown={} item={}", dropdown_id.0, item_id);
-                    self.handle_dropdown_item(dropdown_id.0.as_str(), item_id.as_str(), event_loop);
-                    return;
-                }
-                DispatchEvent::ToolbarItemClicked { toolbar_id, item_id } => {
-                    eprintln!("[DISPATCHER] ToolbarItemClicked toolbar={} item={}", toolbar_id.0, item_id);
-                    self.handle_toolbar_item(toolbar_id.0.as_str(), item_id.as_str());
-                    return;
-                }
-                DispatchEvent::ContextMenuItemClicked { item_index, .. } => {
-                    eprintln!("[DISPATCHER] ContextMenuItemClicked index={item_index}");
-                    self.handle_ctx_menu_item(item_index);
-                    return;
-                }
-                DispatchEvent::ChromeTabClicked { tab_index } => {
-                    eprintln!("[DISPATCHER] ChromeTabClicked index={tab_index}");
-                    self.switch_tab(tab_index);
-                    return;
-                }
-                DispatchEvent::StickyChevronClicked { host_id } => {
-                    eprintln!("[DISPATCHER] StickyChevronClicked host={}", host_id.0);
-                    // Demo: sticky chevron on the L1 modal "Click me" button
-                    // pops the theme dropdown.
-                    if host_id.0 == "l1-mybtn" {
+            }
+            DispatchEvent::DropdownItemClicked { dropdown_id, item_id } => {
+                eprintln!("[DISPATCHER] DropdownItemClicked dropdown={} item={}", dropdown_id.0, item_id);
+                self.handle_dropdown_item(dropdown_id.0.as_str(), item_id.as_str(), event_loop);
+            }
+            DispatchEvent::ToolbarItemClicked { toolbar_id, item_id } => {
+                eprintln!("[DISPATCHER] ToolbarItemClicked toolbar={} item={}", toolbar_id.0, item_id);
+                self.handle_toolbar_item(toolbar_id.0.as_str(), item_id.as_str());
+            }
+            DispatchEvent::ContextMenuItemClicked { item_index, .. } => {
+                eprintln!("[DISPATCHER] ContextMenuItemClicked index={item_index}");
+                self.handle_ctx_menu_item(item_index);
+            }
+            DispatchEvent::ChromeTabClicked { tab_index } => {
+                eprintln!("[DISPATCHER] ChromeTabClicked index={tab_index}");
+                self.switch_tab(tab_index);
+            }
+            DispatchEvent::StickyChevronClicked { host_id } => {
+                eprintln!("[DISPATCHER] StickyChevronClicked host={}", host_id.0);
+                match host_id.0.as_str() {
+                    "l1-mybtn" => {
                         let anchor_rect = self.layout.ctx_mut().input
                             .widget_rect(&host_id)
                             .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
                         self.dropdown_theme_state.open_below(anchor_rect, 4.0);
                     }
-                    return;
-                }
-                ev => {
-                    // Run the event through every composite's consume_event.
-                    // First composite to consume (returns None) wins; the rest
-                    // are skipped. Public events (ModalClose, DropdownItem, etc.)
-                    // fall through because their arms are matched above.
-                    let viewport = {
-                        let cfg = &self.surface.config;
-                        (cfg.width as f64, cfg.height as f64)
-                    };
-                    let cursor   = (x, y);
-
-                    // Wrap in Option so ownership moves cleanly through the chain.
-                    let mut opt_ev: Option<DispatchEvent> = Some(ev);
-
-                    // Macro: pass event through one composite.
-                    // If consumed → clears opt_ev (caller should return).
-                    // If not consumed → restores opt_ev with the returned event.
-                    macro_rules! try_consume {
-                        ($mod:ident, $state:expr, $host:expr, $rect_expr:expr) => {
-                            if let Some(ev) = opt_ev.take() {
-                                match $mod::consume_event(
-                                    ev,
-                                    $state,
-                                    &WidgetId::new($host),
-                                    $mod::ConsumeEventCtx {
-                                        cursor,
-                                        frame_rect: $rect_expr.unwrap_or_default(),
-                                        viewport,
-                                    },
-                                ) {
-                                    None    => { /* consumed — opt_ev stays None */ }
-                                    Some(e) => { opt_ev = Some(e); }
-                                }
-                            }
-                        };
-                    }
-
-                    // ── Modal ─────────────────────────────────────────────────
-                    try_consume!(modal_input, &mut self.modal_state, "modal-widget",
-                        self.layout.rect_for_overlay("modal-overlay"));
-
-                    // ── Popup ─────────────────────────────────────────────────
-                    try_consume!(popup_input, &mut self.popup_state, "demo-popup-widget",
-                        self.layout.rect_for_overlay("demo-popup-overlay"));
-
-                    // ── Dropdowns ─────────────────────────────────────────────
-                    try_consume!(dropdown_input, &mut self.dropdown_file_state,    "dd-file-widget",
-                        self.layout.rect_for_overlay("dd-file-overlay"));
-                    try_consume!(dropdown_input, &mut self.dropdown_view_state,    "dd-view-widget",
-                        self.layout.rect_for_overlay("dd-view-overlay"));
-                    try_consume!(dropdown_input, &mut self.dropdown_help_state,    "dd-help-widget",
-                        self.layout.rect_for_overlay("dd-help-overlay"));
-                    try_consume!(dropdown_input, &mut self.dropdown_addpanel_state,"dd-addpanel-widget",
-                        self.layout.rect_for_overlay("dd-addpanel-overlay"));
-                    try_consume!(dropdown_input, &mut self.dropdown_sidebar_state, "dd-sidebar-widget",
-                        self.layout.rect_for_overlay("dd-sidebar-overlay"));
-                    try_consume!(dropdown_input, &mut self.dropdown_toolbar_state, "dd-toolbar-widget",
-                        self.layout.rect_for_overlay("dd-toolbar-overlay"));
-                    try_consume!(dropdown_input, &mut self.dropdown_popup_state,   "dd-popup-widget",
-                        self.layout.rect_for_overlay("dd-popup-overlay"));
-                    try_consume!(dropdown_input, &mut self.dropdown_theme_state,   "dd-theme-widget",
-                        self.layout.rect_for_overlay("dd-theme-overlay"));
-
-                    // ── Toolbars ──────────────────────────────────────────────
-                    try_consume!(toolbar_input, &mut self.top_toolbar_state, "top-toolbar-widget",
-                        self.layout.rect_for_edge_slot("top-toolbar"));
-                    try_consume!(toolbar_input, &mut self.left_vtoolbar_state, "left-vtoolbar-widget",
-                        self.layout.rect_for_edge_slot("left-vtoolbar"));
-                    try_consume!(toolbar_input, &mut self.demo_toolbar_left2_state, "demo-toolbar-left2-widget",
-                        self.layout.rect_for_edge_slot("demo-toolbar-left2"));
-                    try_consume!(toolbar_input, &mut self.demo_toolbar_right_state, "demo-toolbar-right-widget",
-                        self.layout.rect_for_edge_slot("demo-toolbar-right"));
-                    try_consume!(toolbar_input, &mut self.demo_toolbar_bottom_state, "demo-toolbar-bottom-widget",
-                        self.layout.rect_for_edge_slot("demo-toolbar-bottom"));
-
-                    // ── Sidebars ──────────────────────────────────────────────
-                    try_consume!(sidebar_input, &mut self.sidebar_state, "sidebar-widget",
-                        self.layout.rect_for_edge_slot("sidebar"));
-                    try_consume!(sidebar_input, &mut self.demo_sidebar_right_state, "demo-sidebar-right-widget",
-                        self.layout.rect_for_edge_slot("demo-sidebar-right"));
-                    try_consume!(sidebar_input, &mut self.demo_sidebar_top_state, "demo-sidebar-top-widget",
-                        self.layout.rect_for_edge_slot("demo-sidebar-top"));
-                    try_consume!(sidebar_input, &mut self.demo_sidebar_bottom_state, "demo-sidebar-bottom-widget",
-                        self.layout.rect_for_edge_slot("demo-sidebar-bottom"));
-
-                    // If opt_ev is None, the event was consumed — return early.
-                    // If Some(Unhandled), fall through to legacy handlers.
-                    // If Some(other), a semantic event survived — ignore it here
-                    // (all public semantic events are matched in arms above).
-                    match opt_ev {
-                        None => { return; }
-                        Some(DispatchEvent::Unhandled(_)) => {}
-                        Some(_) => { return; }
-                    }
-                }
-            }
-
-            // ── Legacy patterns superseded by ClickDispatcher ─────────────────
-            // Modal close / tab / wizard, dropdown items, toolbar items,
-            // context-menu items and chrome tabs all flow through
-            // layout.dispatch_widget() above. The remaining branches below
-            // handle widgets that DON'T go through a registered composite
-            // (e.g. L2-modal-internal hand-rolled widgets, manual chart hits).
-            // ── L2-modal widgets (clicked inside L2 modal body) ──────────────
-            match id_str {
-                "l2-btn-connect" => {
-                    eprintln!("[DISPATCH] l2-btn-connect");
-                    self.l2_connected = !self.l2_connected;
-                    return;
-                }
-                "l2-btn-close" => {
-                    eprintln!("[DISPATCH] l2-btn-close");
-                    self.modal_open = false;
-                    return;
-                }
-                "l2-cb" => {
-                    eprintln!("[DISPATCH] l2-cb");
-                    self.l2_checked = !self.l2_checked;
-                    return;
-                }
-                "l2-tog" => {
-                    eprintln!("[DISPATCH] l2-tog");
-                    self.l2_toggled = !self.l2_toggled;
-                    return;
-                }
-                _ => {}
-            }
-            if let Some(n_str) = id_str.strip_prefix("l2-radio-") {
-                if let Ok(n) = n_str.parse::<usize>() {
-                    eprintln!("[DISPATCH] l2-radio → {n}");
-                    self.l2_radio_sel = n;
-                    return;
-                }
-            }
-            if let Some(n_str) = id_str.strip_prefix("l2-swatch-") {
-                if let Ok(n) = n_str.parse::<usize>() {
-                    eprintln!("[DISPATCH] l2-swatch → {n}");
-                    self.l2_swatch_sel = n;
-                    return;
-                }
-            }
-            if let Some(n_str) = id_str.strip_prefix("l2-sub-tab-") {
-                if let Ok(n) = n_str.parse::<usize>() {
-                    eprintln!("[DISPATCH] l2-sub-tab → {n}");
-                    self.l2_active_sub_tab = n;
-                    return;
-                }
-            }
-            if let Some(n_str) = id_str.strip_prefix("l2-tab-") {
-                if let Ok(n) = n_str.parse::<usize>() {
-                    eprintln!("[DISPATCH] l2-tab → {n}");
-                    self.l2_active_tab = n;
-                    self.l2_scroll_off = 0.0;
-                    return;
-                }
-            }
-            // Sidebar: spawn kind radio buttons
-            if let Some(kind_str) = id_str.strip_prefix("spawn-kind-") {
-                eprintln!("[DISPATCH] spawn-kind → {kind_str}");
-                self.spawn_kind = match kind_str {
-                    "watchlist"   => PanelKind::Watchlist,
-                    "spreadsheet" => PanelKind::Spreadsheet,
-                    "notes"       => PanelKind::Notes,
-                    "inbox"       => PanelKind::Inbox,
-                    "tasks"       => PanelKind::Tasks,
-                    "calendar"    => PanelKind::Calendar,
-                    _             => PanelKind::Notes,
-                };
-                return;
-            }
-            // Sidebar: spawn split radio buttons
-            match id_str {
-                "spawn-split-horiz" => { self.spawn_split = SpawnSplit::SplitRight;  return; }
-                "spawn-split-vert"  => { self.spawn_split = SpawnSplit::SplitBottom; return; }
-                "spawn-split-grid"  => { self.spawn_split = SpawnSplit::Grid2x2;     return; }
-                _ => {}
-            }
-            // Sidebar: Spawn button
-            if id_str == "sidebar-spawn" {
-                eprintln!("[DISPATCH] sidebar-spawn kind={:?} split={:?}", self.spawn_kind, self.spawn_split);
-                let split_kind = match self.spawn_split {
-                    SpawnSplit::SplitRight  => SplitKind::SplitRight,
-                    SpawnSplit::SplitBottom => SplitKind::SplitBottom,
-                    SpawnSplit::Grid2x2     => SplitKind::Grid2x2,
-                };
-                let new_panel = DemoPanel {
-                    title: self.spawn_kind.title().to_string(),
-                    kind: self.spawn_kind.clone(),
-                };
-                let active = self.layout.panels().active_leaf();
-                if let Some(active_leaf) = active {
-                    let new_ids = self.layout.panels_mut().tree_mut()
-                        .split_leaf(active_leaf, split_kind, 0.0, 0.0);
-                    if let Some(&new_id) = new_ids.last() {
-                        if let Some(leaf) = self.layout.panels_mut().tree_mut().leaf_mut(new_id) {
-                            leaf.panels.clear();
-                            leaf.panels.push(new_panel);
-                        }
-                    }
-                } else {
-                    self.layout.panels_mut().tree_mut().add_leaf(new_panel);
-                }
-                return;
-            }
-            // Dock leaf click — set active leaf
-            if let Some(idx_str) = id_str.strip_prefix("dock-leaf-") {
-                if let Ok(n) = idx_str.parse::<u64>() {
-                    eprintln!("[DISPATCH] dock-leaf-{n} → set active");
-                    self.layout.panels_mut().set_active_leaf(uzor::docking::panels::LeafId(n));
-                    return;
-                }
-            }
-            // Sidebar: × close leaf button
-            if let Some(idx_str) = id_str.strip_prefix("dock-leaf-close-") {
-                if let Ok(idx) = idx_str.parse::<usize>() {
-                    eprintln!("[DISPATCH] dock-leaf-close-{idx}");
-                    let mut leaves: Vec<uzor::docking::panels::LeafId> = self
-                        .layout
-                        .panels()
-                        .panel_rects()
-                        .keys()
-                        .copied()
-                        .collect();
-                    leaves.sort_by_key(|id| id.0);
-                    if leaves.len() > 1 {
-                        if let Some(&leaf_id) = leaves.get(idx) {
-                            self.layout.panels_mut().tree_mut().remove_leaf(leaf_id);
-                        }
-                    }
-                }
-                return;
-            }
-            // L1-modal custom button
-            if id_str == "l1-mybtn" {
-                eprintln!("[DISPATCH] l1-mybtn");
-                println!("[L3] L1 custom button clicked");
-                return;
-            }
-            // Watchlist blackbox — row clicks dispatched by leaf id pattern
-            if let Some(leaf_n_str) = id_str.strip_prefix("dock-leaf-") {
-                // If leaf_n_str is a pure integer, it's a leaf click (handled above).
-                // However "watchlist-bb" was the old id — keep compatibility by checking
-                // if the clicked leaf contains a Watchlist kind.
-                if let Ok(n) = leaf_n_str.parse::<u64>() {
-                    let leaf_id = uzor::docking::panels::LeafId(n);
-                    let is_watchlist = self.layout.panels().tree().leaf(leaf_id)
-                        .and_then(|l| l.panels.first())
-                        .map(|p| p.kind == PanelKind::Watchlist)
-                        .unwrap_or(false);
-                    if is_watchlist {
-                        if let Some(&rect) = self.layout.panels().panel_rects().get(&leaf_id) {
-                            let r = Rect::new(rect.x as f64, rect.y as f64, rect.width as f64, rect.height as f64);
-                            let symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "ADA/USDT"];
-                            let local = (x - r.x, y - r.y);
-                            if let Some(row) = watchlist_blackbox::click_row(&self.watchlist, (r.width, r.height), local.0, local.1) {
-                                if let Some(sym) = symbols.get(row) {
-                                    println!("[L3] watchlist row clicked: {sym}");
-                                }
-                            }
-                        }
-                    }
-                    self.layout.panels_mut().set_active_leaf(leaf_id);
-                    return;
-                }
-            }
-            // Left vertical toolbar items — registered as "left-vtoolbar-widget:<id>"
-            if let Some(item) = id_str.strip_prefix("left-vtoolbar-widget:") {
-                eprintln!("[DISPATCH] left toolbar → {item}");
-                match item {
-                    "lt-toggle-sidebar" => {
-                        self.sidebar_open = !self.sidebar_open;
-                        println!("[L3] sidebar → {}", self.sidebar_open);
+                    "l2-btn-connect-host" => {
+                        self.l2_connect_popup_open = true;
                     }
                     _ => {}
                 }
-                return;
             }
-            // Sidebar/chrome composite frames — no-op
-            if id_str == "chrome" || id_str == "sidebar-widget"
-                || id_str == "top-toolbar-widget" || id_str == "left-vtoolbar-widget"
-            {
-                eprintln!("[DISPATCH] composite frame click — no-op");
-                return;
+            DispatchEvent::StickyChevronAtSlotClicked { host_id, slot } => {
+                eprintln!("[DISPATCHER] StickyChevronAtSlotClicked host={} slot={}", host_id.0, slot);
+                if host_id.0 == "l2-4dir-host" {
+                    self.l2_4dir_popup = match slot.as_str() {
+                        "n" => Some("N"),
+                        "s" => Some("S"),
+                        "w" => Some("W"),
+                        "e" => Some("E"),
+                        _   => None,
+                    };
+                }
             }
-            // Modal frame click WITHOUT hitting any child — modal stays open
-            if id_str == "modal-widget" {
-                eprintln!("[DISPATCH] modal frame click (kept open)");
-                return;
-            }
-            // Else fall through to manual dispatch
-            eprintln!("[DISPATCH] id={id_str} unmatched — falling through to manual geometry");
-        } else {
-            eprintln!("[FALLBACK] no priority match (clicked_id=None), trying manual geometry");
-        }
-        let _ = clicked_id; // silence unused warning if no fall-through uses it
+            ev => {
+                // Run the event through every composite's consume_event.
+                // First composite to consume (returns None) wins; the rest
+                // are skipped. Public events (ModalClose, DropdownItem, etc.)
+                // are already matched in arms above.
+                let mut opt_ev: Option<DispatchEvent> = Some(ev);
 
-        // ── Modal guard ───────────────────────────────────────────────────────
-        // When a modal is open, the geometric fallbacks below (chrome / toolbar /
-        // sidebar / dropdowns) MUST NOT fire. Coord-level modal layer already
-        // blocks coord dispatch, but the manual geometry path below bypasses
-        // that — so we early-return here. Outside-click dismiss is handled at
-        // the bottom of this function.
-        if self.modal_open {
-            if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
-                if !modal_rect.contains(x, y) {
-                    self.modal_open = false;
+                // Macro: pass event through one composite.
+                // If consumed → clears opt_ev.
+                // If not consumed → restores opt_ev with the returned event.
+                macro_rules! try_consume {
+                    ($mod:ident, $state:expr, $host:expr, $rect_expr:expr) => {
+                        if let Some(ev) = opt_ev.take() {
+                            match $mod::consume_event(
+                                ev,
+                                $state,
+                                &WidgetId::new($host),
+                                $mod::ConsumeEventCtx {
+                                    cursor,
+                                    frame_rect: $rect_expr.unwrap_or_default(),
+                                    viewport,
+                                },
+                            ) {
+                                None    => { /* consumed — opt_ev stays None */ }
+                                Some(e) => { opt_ev = Some(e); }
+                            }
+                        }
+                    };
                 }
-            }
-            return;
-        }
-        // Demo popup — also modal-blocking; outside click closes it.
-        if self.popup_kind.is_some() {
-            if let Some(popup_rect) = self.layout.rect_for_overlay("demo-popup-overlay") {
-                if !popup_rect.contains(x, y) {
-                    self.popup_kind = None;
+
+                // ── Modal ─────────────────────────────────────────────────────
+                try_consume!(modal_input, &mut self.modal_state, "modal-widget",
+                    self.layout.rect_for_overlay("modal-overlay"));
+
+                // ── Popup ─────────────────────────────────────────────────────
+                try_consume!(popup_input, &mut self.popup_state, "demo-popup-widget",
+                    self.layout.rect_for_overlay("demo-popup-overlay"));
+                try_consume!(popup_input, &mut self.l2_connect_popup_state, "l2-connect-popup-widget",
+                    self.layout.rect_for_overlay("l2-connect-popup"));
+                try_consume!(popup_input, &mut self.l2_4dir_popup_state, "l2-4dir-popup-widget",
+                    self.layout.rect_for_overlay("l2-4dir-popup"));
+
+                // ── Dropdowns ─────────────────────────────────────────────────
+                try_consume!(dropdown_input, &mut self.dropdown_file_state,    "dd-file-widget",
+                    self.layout.rect_for_overlay("dd-file-overlay"));
+                try_consume!(dropdown_input, &mut self.dropdown_view_state,    "dd-view-widget",
+                    self.layout.rect_for_overlay("dd-view-overlay"));
+                try_consume!(dropdown_input, &mut self.dropdown_help_state,    "dd-help-widget",
+                    self.layout.rect_for_overlay("dd-help-overlay"));
+                try_consume!(dropdown_input, &mut self.dropdown_addpanel_state,"dd-addpanel-widget",
+                    self.layout.rect_for_overlay("dd-addpanel-overlay"));
+                try_consume!(dropdown_input, &mut self.dropdown_sidebar_state, "dd-sidebar-widget",
+                    self.layout.rect_for_overlay("dd-sidebar-overlay"));
+                try_consume!(dropdown_input, &mut self.dropdown_toolbar_state, "dd-toolbar-widget",
+                    self.layout.rect_for_overlay("dd-toolbar-overlay"));
+                try_consume!(dropdown_input, &mut self.dropdown_popup_state,   "dd-popup-widget",
+                    self.layout.rect_for_overlay("dd-popup-overlay"));
+                try_consume!(dropdown_input, &mut self.dropdown_theme_state,   "dd-theme-widget",
+                    self.layout.rect_for_overlay("dd-theme-overlay"));
+
+                // ── Toolbars ──────────────────────────────────────────────────
+                try_consume!(toolbar_input, &mut self.top_toolbar_state, "top-toolbar-widget",
+                    self.layout.rect_for_edge_slot("top-toolbar"));
+                try_consume!(toolbar_input, &mut self.left_vtoolbar_state, "left-vtoolbar-widget",
+                    self.layout.rect_for_edge_slot("left-vtoolbar"));
+                try_consume!(toolbar_input, &mut self.demo_toolbar_left2_state, "demo-toolbar-left2-widget",
+                    self.layout.rect_for_edge_slot("demo-toolbar-left2"));
+                try_consume!(toolbar_input, &mut self.demo_toolbar_right_state, "demo-toolbar-right-widget",
+                    self.layout.rect_for_edge_slot("demo-toolbar-right"));
+                try_consume!(toolbar_input, &mut self.demo_toolbar_bottom_state, "demo-toolbar-bottom-widget",
+                    self.layout.rect_for_edge_slot("demo-toolbar-bottom"));
+
+                // ── Sidebars ──────────────────────────────────────────────────
+                try_consume!(sidebar_input, &mut self.sidebar_state, "sidebar-widget",
+                    self.layout.rect_for_edge_slot("sidebar"));
+                try_consume!(sidebar_input, &mut self.demo_sidebar_right_state, "demo-sidebar-right-widget",
+                    self.layout.rect_for_edge_slot("demo-sidebar-right"));
+                try_consume!(sidebar_input, &mut self.demo_sidebar_top_state, "demo-sidebar-top-widget",
+                    self.layout.rect_for_edge_slot("demo-sidebar-top"));
+                try_consume!(sidebar_input, &mut self.demo_sidebar_bottom_state, "demo-sidebar-bottom-widget",
+                    self.layout.rect_for_edge_slot("demo-sidebar-bottom"));
+
+                // opt_ev still Some(Unhandled(id)) → app-specific id routing.
+                if let Some(DispatchEvent::Unhandled(ref id)) = opt_ev {
+                    let id_str = id.0.as_str();
+                    // ── Dock separator drag handle click — no-op on release
+                    // (drag started on mouse-down; release is handled by on_mouse_up)
+                    if id_str.starts_with("dock-sep-") { return; }
+                    // ── L2-modal widgets (coord-registered atomics inside L2 body)
+                    match id_str {
+                        "l2-btn-connect" => { eprintln!("[DISPATCH] l2-btn-connect"); self.l2_connected = !self.l2_connected; return; }
+                        "l2-btn-close"   => { eprintln!("[DISPATCH] l2-btn-close");   self.modal_open = false; return; }
+                        "l2-cb"          => { eprintln!("[DISPATCH] l2-cb");          self.l2_checked = !self.l2_checked; return; }
+                        "l2-tog"         => { eprintln!("[DISPATCH] l2-tog");         self.l2_toggled = !self.l2_toggled; return; }
+                        _ => {}
+                    }
+                    if let Some(n_str) = id_str.strip_prefix("l2-radio-") {
+                        if let Ok(n) = n_str.parse::<usize>() { eprintln!("[DISPATCH] l2-radio→{n}"); self.l2_radio_sel = n; return; }
+                    }
+                    if let Some(n_str) = id_str.strip_prefix("l2-swatch-") {
+                        if let Ok(n) = n_str.parse::<usize>() { eprintln!("[DISPATCH] l2-swatch→{n}"); self.l2_swatch_sel = n; return; }
+                    }
+                    if let Some(n_str) = id_str.strip_prefix("l2-sub-tab-") {
+                        if let Ok(n) = n_str.parse::<usize>() { eprintln!("[DISPATCH] l2-sub-tab→{n}"); self.l2_active_sub_tab = n; return; }
+                    }
+                    if let Some(n_str) = id_str.strip_prefix("l2-tab-") {
+                        if let Ok(n) = n_str.parse::<usize>() { eprintln!("[DISPATCH] l2-tab→{n}"); self.l2_active_tab = n; self.l2_scroll_off = 0.0; return; }
+                    }
+                    // ── Sidebar: spawn kind radio buttons
+                    if let Some(kind_str) = id_str.strip_prefix("spawn-kind-") {
+                        eprintln!("[DISPATCH] spawn-kind→{kind_str}");
+                        self.spawn_kind = match kind_str {
+                            "watchlist"   => PanelKind::Watchlist,
+                            "spreadsheet" => PanelKind::Spreadsheet,
+                            "notes"       => PanelKind::Notes,
+                            "inbox"       => PanelKind::Inbox,
+                            "tasks"       => PanelKind::Tasks,
+                            "calendar"    => PanelKind::Calendar,
+                            _             => PanelKind::Notes,
+                        };
+                        return;
+                    }
+                    // ── Sidebar: spawn split radio buttons
+                    match id_str {
+                        "spawn-split-horiz" => { self.spawn_split = SpawnSplit::SplitRight;  return; }
+                        "spawn-split-vert"  => { self.spawn_split = SpawnSplit::SplitBottom; return; }
+                        "spawn-split-grid"  => { self.spawn_split = SpawnSplit::Grid2x2;     return; }
+                        _ => {}
+                    }
+                    // ── Sidebar: Spawn button
+                    if id_str == "sidebar-spawn" {
+                        eprintln!("[DISPATCH] sidebar-spawn kind={:?} split={:?}", self.spawn_kind, self.spawn_split);
+                        let split_kind = match self.spawn_split {
+                            SpawnSplit::SplitRight  => SplitKind::SplitRight,
+                            SpawnSplit::SplitBottom => SplitKind::SplitBottom,
+                            SpawnSplit::Grid2x2     => SplitKind::Grid2x2,
+                        };
+                        let new_panel = DemoPanel {
+                            title: self.spawn_kind.title().to_string(),
+                            kind: self.spawn_kind.clone(),
+                        };
+                        let active = self.layout.panels().active_leaf();
+                        if let Some(active_leaf) = active {
+                            let new_ids = self.layout.panels_mut().tree_mut()
+                                .split_leaf(active_leaf, split_kind, 0.0, 0.0);
+                            if let Some(&new_id) = new_ids.last() {
+                                if let Some(leaf) = self.layout.panels_mut().tree_mut().leaf_mut(new_id) {
+                                    leaf.panels.clear();
+                                    leaf.panels.push(new_panel);
+                                }
+                            }
+                        } else {
+                            self.layout.panels_mut().tree_mut().add_leaf(new_panel);
+                        }
+                        return;
+                    }
+                    // ── Dock leaf click — set active leaf and handle watchlist rows
+                    if let Some(idx_str) = id_str.strip_prefix("dock-leaf-close-") {
+                        if let Ok(idx) = idx_str.parse::<usize>() {
+                            eprintln!("[DISPATCH] dock-leaf-close-{idx}");
+                            let mut leaves: Vec<uzor::docking::panels::LeafId> = self
+                                .layout
+                                .panels()
+                                .panel_rects()
+                                .keys()
+                                .copied()
+                                .collect();
+                            leaves.sort_by_key(|l| l.0);
+                            if leaves.len() > 1 {
+                                if let Some(&leaf_id) = leaves.get(idx) {
+                                    self.layout.panels_mut().tree_mut().remove_leaf(leaf_id);
+                                }
+                            }
+                        }
+                        return;
+                    }
+                    if let Some(n_str) = id_str.strip_prefix("dock-leaf-") {
+                        if let Ok(n) = n_str.parse::<u64>() {
+                            let leaf_id = uzor::docking::panels::LeafId(n);
+                            let is_watchlist = self.layout.panels().tree().leaf(leaf_id)
+                                .and_then(|l| l.panels.first())
+                                .map(|p| p.kind == PanelKind::Watchlist)
+                                .unwrap_or(false);
+                            if is_watchlist {
+                                if let Some(&rect) = self.layout.panels().panel_rects().get(&leaf_id) {
+                                    let r = Rect::new(rect.x as f64, rect.y as f64, rect.width as f64, rect.height as f64);
+                                    let symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "ADA/USDT"];
+                                    let local = (x - r.x, y - r.y);
+                                    if let Some(row) = watchlist_blackbox::click_row(&self.watchlist, (r.width, r.height), local.0, local.1) {
+                                        if let Some(sym) = symbols.get(row) {
+                                            println!("[L3] watchlist row clicked: {sym}");
+                                        }
+                                    }
+                                }
+                            }
+                            eprintln!("[DISPATCH] dock-leaf-{n} → set active");
+                            self.layout.panels_mut().set_active_leaf(leaf_id);
+                            return;
+                        }
+                    }
+                    // ── L1-modal custom button
+                    if id_str == "l1-mybtn" {
+                        eprintln!("[DISPATCH] l1-mybtn");
+                        println!("[L3] L1 custom button clicked");
+                        return;
+                    }
+                    // Composite frame clicks (chrome, sidebar, toolbar, modal) are no-ops.
+                    // They fall through the match without matching and are silently dropped.
+                    eprintln!("[DISPATCH] Unhandled id={id_str} — no-op");
                 }
+                // Consumed by composite (opt_ev is None) or a semantic event that
+                // was handled in an arm above — nothing more to do.
             }
-            return;
         }
+    }
+
+    /// Geometry-based fallback click handler for when `handle_click` returns
+    /// `Unhandled` (no overlay to dismiss, no coord widget hit).
+    fn on_left_up_geometry(
+        &mut self,
+        x: f64,
+        y: f64,
+        event_loop: &ActiveEventLoop,
+    ) {
+        // Guard: if any overlay is open (modal/popup) and coord didn't hit a
+        // widget in it, the click was on the backdrop — but dismiss_topmost_at
+        // already handled that in handle_click. If we're here, the overlay is
+        // closed or the click missed everything. Proceed with geometry.
+        if self.modal_open { return; }
+        if self.popup_kind.is_some() { return; }
+        if self.l2_connect_popup_open { return; }
+        if self.l2_4dir_popup.is_some() { return; }
 
         // ── Chrome hit ────────────────────────────────────────────────────────
         let tab_ids = ["tab-0", "tab-1", "tab-2"];
@@ -3694,7 +3903,6 @@ impl AppState {
         // ── Toolbar buttons ───────────────────────────────────────────────────
         if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
             if x >= toolbar_rect.x && y >= toolbar_rect.y && y <= toolbar_rect.y + toolbar_rect.height {
-                // Determine approximate button areas from toolbar left
                 let file_x = toolbar_rect.x + 4.0;
                 let view_x = file_x + 44.0;
                 let help_x = view_x + 44.0;
@@ -3726,7 +3934,6 @@ impl AppState {
         // ── Left toolbar: sidebar toggle ──────────────────────────────────────
         if let Some(lt_rect) = self.layout.rect_for_edge_slot("left-vtoolbar") {
             if x >= lt_rect.x && x <= lt_rect.x + lt_rect.width {
-                // First button area (top ~44px after chrome + top toolbar)
                 let btn_y = lt_rect.y + 4.0;
                 if y >= btn_y && y <= btn_y + 36.0 {
                     self.sidebar_open = !self.sidebar_open;
@@ -3736,73 +3943,16 @@ impl AppState {
             }
         }
 
-        // ── Outside-click → close all open dropdowns ──────────────────────────
-        // Item clicks are handled by the dispatcher above. Reaching here means
-        // either no widget was hit or a widget unrelated to the open dropdowns
-        // was hit — either way, dismiss every open dropdown.
-        let any_dd_open = self.dropdown_file_state.open
-            || self.dropdown_view_state.open
-            || self.dropdown_help_state.open
-            || self.dropdown_addpanel_state.open
-            || self.dropdown_sidebar_state.open
-            || self.dropdown_toolbar_state.open
-            || self.dropdown_popup_state.open
-            || self.dropdown_theme_state.open;
-        if any_dd_open {
-            let any_inside =
-                (self.dropdown_file_state.open     && self.layout.rect_for_overlay("dd-file-overlay")    .map(|r| r.contains(x, y)).unwrap_or(false)) ||
-                (self.dropdown_view_state.open     && self.layout.rect_for_overlay("dd-view-overlay")    .map(|r| r.contains(x, y)).unwrap_or(false)) ||
-                (self.dropdown_help_state.open     && self.layout.rect_for_overlay("dd-help-overlay")    .map(|r| r.contains(x, y)).unwrap_or(false)) ||
-                (self.dropdown_addpanel_state.open && self.layout.rect_for_overlay("dd-addpanel-overlay").map(|r| r.contains(x, y)).unwrap_or(false)) ||
-                (self.dropdown_sidebar_state.open  && self.layout.rect_for_overlay("dd-sidebar-overlay") .map(|r| r.contains(x, y)).unwrap_or(false)) ||
-                (self.dropdown_toolbar_state.open  && self.layout.rect_for_overlay("dd-toolbar-overlay") .map(|r| r.contains(x, y)).unwrap_or(false)) ||
-                (self.dropdown_popup_state.open    && self.layout.rect_for_overlay("dd-popup-overlay")   .map(|r| r.contains(x, y)).unwrap_or(false)) ||
-                (self.dropdown_theme_state.open    && self.layout.rect_for_overlay("dd-theme-overlay")   .map(|r| r.contains(x, y)).unwrap_or(false));
-            if !any_inside {
-                self.dropdown_file_state.close();
-                self.dropdown_view_state.close();
-                self.dropdown_help_state.close();
-                self.dropdown_addpanel_state.close();
-                self.dropdown_sidebar_state.close();
-                self.dropdown_toolbar_state.close();
-                self.dropdown_popup_state.close();
-                self.dropdown_theme_state.close();
-            }
-            return;
-        }
-
-        // ── Modal: dismiss on outside click ───────────────────────────────────
-        if self.modal_open {
-            if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
-                if !modal_rect.contains(x, y) {
-                    self.modal_open = false;
-                }
-            }
-        }
-
-        // ── Context menu: dismiss on outside click ────────────────────────────
-        if self.ctx_menu_state.is_open {
-            if let Some(menu_rect) = self.layout.rect_for_overlay("ctx-menu-overlay") {
-                if !menu_rect.contains(x, y) {
-                    self.ctx_menu_state.close();
-                } else {
-                    // Item dispatch is handled via the coordinator dispatch above
-                    self.ctx_menu_state.close();
-                }
-            }
-        }
-
-        // ── L2 modal widget clicks ────────────────────────────────────────────
+        // ── L2 modal widget clicks (geometric fallback for non-coord widgets)
         if self.modal_open && self.modal_kind == ModalKind::L2 {
             if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
-                // body starts after header (~40px) + inside padding
-                let body_y = modal_rect.y + 44.0; // modal header height = 44px (Fix 2)
+                let body_y = modal_rect.y + 44.0;
                 let rel_x = x - modal_rect.x;
                 let rel_y = y - body_y;
                 match self.l2_hovered_at(rel_x, rel_y) {
                     Some(ref id) if id == "l2-btn-connect" => { self.l2_connected = !self.l2_connected; }
-                    Some(ref id) if id == "l2-cb" => { self.l2_checked = !self.l2_checked; }
-                    Some(ref id) if id == "l2-tog" => { self.l2_toggled = !self.l2_toggled; }
+                    Some(ref id) if id == "l2-cb"          => { self.l2_checked = !self.l2_checked; }
+                    Some(ref id) if id == "l2-tog"         => { self.l2_toggled = !self.l2_toggled; }
                     Some(ref id) if id.starts_with("l2-radio-") => {
                         if let Ok(n) = id["l2-radio-".len()..].parse::<usize>() { self.l2_radio_sel = n; }
                     }
@@ -3859,17 +4009,6 @@ impl AppState {
                     self.drag_target = Some(DragTarget::ModalDrag);
                     return;
                 }
-            }
-        }
-
-        // Dock separator drag (fix 6)
-        if !self.modal_open {
-            let sep_hit: Option<usize> = self.layout.panels().separators().iter().enumerate()
-                .find(|(_, s)| s.hit_test(x as f32, y as f32))
-                .map(|(i, _)| i);
-            if let Some(sep_idx) = sep_hit {
-                self.drag_target = Some(DragTarget::SeparatorDrag { sep_idx, start_x: x, start_y: y });
-                return;
             }
         }
 
@@ -4348,6 +4487,10 @@ impl ApplicationHandler for Handler {
             l1_btn_hovered: false,
             l1_btn_pressed: false,
             watchlist: watchlist_blackbox::WatchlistState::default(),
+            l2_connect_popup_open: false,
+            l2_connect_popup_state: PopupState::default(),
+            l2_4dir_popup: None,
+            l2_4dir_popup_state: PopupState::default(),
         });
     }
 
@@ -4617,6 +4760,28 @@ impl ApplicationHandler for Handler {
                         }
                         app.drag_origin = Some((x, y));
                         app.mouse_down = true;
+                    }
+                }
+            }
+            // ── Dock separator drag — resolved via coord, no geometry needed ──
+            // Separators are registered as DragHandle widgets with id "dock-sep-{i}".
+            // If the bridge resolved one as the topmost drag widget, start the sep
+            // drag here without falling through to on_mouse_down's geometric test.
+            if !handled {
+                if let Some(ref id) = drag_id {
+                    if let Some(n_str) = id.0.strip_prefix("dock-sep-") {
+                        if let Ok(sep_idx) = n_str.parse::<usize>() {
+                            if !app.modal_open {
+                                app.drag_target = Some(DragTarget::SeparatorDrag {
+                                    sep_idx,
+                                    start_x: x,
+                                    start_y: y,
+                                });
+                                app.drag_origin = Some((x, y));
+                                app.mouse_down = true;
+                                handled = true;
+                            }
+                        }
                     }
                 }
             }

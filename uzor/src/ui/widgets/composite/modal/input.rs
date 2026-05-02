@@ -14,7 +14,7 @@ use super::types::{ModalRenderKind, ModalView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ModalNode, WidgetNode};
+use crate::layout::{DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ModalNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -106,6 +106,12 @@ pub fn register_layout_manager_modal<P: DockPanel>(
     let rect = layout.rect_for_overlay(slot_id)?;
     let layer = LayerId::modal();
     let z_order = layout.z_layers().modal as u32;
+    // Register this overlay for outside-click dismiss resolution.
+    layout.push_dismiss_frame(DismissFrame {
+        z: z_order,
+        rect,
+        overlay_id: WidgetId::new(slot_id),
+    });
     // Push the modal layer so that the coordinator's hit-test blocks lower layers.
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Modal, rect, sense: Sense::CLICK });

@@ -10,7 +10,7 @@ use super::types::{PopupRenderKind, PopupView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, PopupNode, WidgetNode};
+use crate::layout::{DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, PopupNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -89,6 +89,12 @@ pub fn register_layout_manager_popup<P: DockPanel>(
     let rect = layout.rect_for_overlay(slot_id)?;
     let layer = LayerId::popup();
     let z_order = layout.z_layers().popup as u32;
+    // Register this overlay for outside-click dismiss resolution.
+    layout.push_dismiss_frame(DismissFrame {
+        z: z_order,
+        rect,
+        overlay_id: WidgetId::new(slot_id),
+    });
     // Popup blocks lower layers when open — push the layer so the coordinator
     // can apply the modal-blocking hit-test rule.
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);

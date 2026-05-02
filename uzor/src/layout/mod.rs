@@ -26,7 +26,7 @@ mod z_layers;
 pub use chrome_slot::ChromeSlot;
 pub use dispatcher::{ChevronStepDirection, ClickDispatcher, DispatchEvent, EventBuilder, ResizeEdge};
 pub use edge_panels::{EdgePanels, EdgePlacement, EdgeSlot};
-pub use manager::LayoutManager;
+pub use manager::{ClickOutcome, DismissFrame, LayoutManager};
 pub use overlay_stack::{OverlayEntry, OverlayStack};
 pub use solve::solve_layout;
 pub use handles::{

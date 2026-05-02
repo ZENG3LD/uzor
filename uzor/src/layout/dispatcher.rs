@@ -114,8 +114,14 @@ pub enum DispatchEvent {
     /// User clicked a sticky chevron attached to a host widget. The host
     /// is identified by `host_id` (the chevron's parent in the coord tree).
     /// App decides what to open (dropdown / popup / submenu) based on the
-    /// host id. The chevron's own widget id is `{host_id}:chev` if needed.
+    /// host id. The chevron's own widget id is `{host_id}:chev:{slot}`.
     StickyChevronClicked { host_id: WidgetId },
+
+    /// User clicked a sticky chevron that was registered with an explicit
+    /// `slot` label (via `register_sticky_chevron` with a non-`"_"` slot).
+    /// `host_id` is the parent composite; `slot` is the label passed at
+    /// registration time (e.g. `"n"`, `"s"`, `"e"`, `"w"`).
+    StickyChevronAtSlotClicked { host_id: WidgetId, slot: String },
 }
 
 /// Edges and corners a resize handle can be attached to. Used by
@@ -204,10 +210,15 @@ pub enum EventBuilder {
     /// when a `:submenu-chevron:{trigger_id}` row is clicked.
     DropdownSubmenuToggleFromSuffix { dropdown_id: WidgetId },
 
-    /// Fires `StickyChevronClicked { host_id }` when a `:chev` child is
+    /// Fires `StickyChevronClicked { host_id }` when a `:chev:_` child is
     /// clicked. Composite host registers the pattern when it places a
-    /// sticky chevron on a child widget.
+    /// single sticky chevron on a child widget (slot = `"_"`).
     StickyChevron { host_id: WidgetId },
+
+    /// Fires `StickyChevronAtSlotClicked { host_id, slot }` — used when
+    /// multiple chevrons share the same host (e.g. 4-direction chevrons).
+    /// `slot` is extracted from the suffix of `{host_id}:chev:{slot}`.
+    StickyChevronWithSlot { host_id: WidgetId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -371,6 +382,11 @@ fn build(builder: &EventBuilder, id: &str, pattern: &str) -> DispatchEvent {
         }
         EventBuilder::StickyChevron { host_id } => {
             DispatchEvent::StickyChevronClicked { host_id: host_id.clone() }
+        }
+        EventBuilder::StickyChevronWithSlot { host_id } => {
+            // id is "{host_id}:chev:{slot}", pattern is "{host_id}:chev:"
+            let slot = suffix();
+            DispatchEvent::StickyChevronAtSlotClicked { host_id: host_id.clone(), slot }
         }
     }
 }

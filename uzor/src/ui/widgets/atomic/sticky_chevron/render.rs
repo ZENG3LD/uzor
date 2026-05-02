@@ -12,8 +12,12 @@ use crate::ui::widgets::atomic::chevron::{
 use super::types::{place_sticky_chevron, StickyChevronSpec, StickyVisibility};
 
 /// Register the chevron as a child of `host_id` in the coordinator if
-/// the visibility policy is satisfied. Returns the chevron's [`WidgetId`]
-/// (suffix `:chev` of the host id).
+/// the visibility policy is satisfied. Returns the chevron's [`WidgetId`].
+///
+/// `slot` — disambiguates multiple chevrons on the same host. The child
+/// widget id becomes `{host_id}:chev:{slot}`. Use `"_"` for a single
+/// chevron per host (produces the legacy `{host_id}:chev:_` id) or a
+/// cardinal label (`"n"`, `"s"`, `"e"`, `"w"`) for 4-direction demos.
 ///
 /// `host_state` is the host's current widget state (so we can decide
 /// whether the chevron should be present this frame for `OnHostHover`).
@@ -23,8 +27,9 @@ pub fn register_sticky_chevron(
     host_rect:  Rect,
     spec:       &StickyChevronSpec,
     host_state: WidgetState,
+    slot:       &str,
 ) -> Option<WidgetId> {
-    let chev_id = WidgetId::new(format!("{}:chev", host_id.0.0));
+    let chev_id = WidgetId::new(format!("{}:chev:{}", host_id.0.0, slot));
     let visible = match spec.visibility {
         StickyVisibility::Always     => true,
         StickyVisibility::OnHostHover => host_state.is_hovered() || host_state.is_pressed(),

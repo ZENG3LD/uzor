@@ -3,6 +3,7 @@ use crate::core::types::Rect;
 use crate::app_context::{ContextManager, layout::types::LayoutNode};
 use crate::input::core::coordinator::LayerId;
 use crate::input::WidgetKind;
+use crate::types::WidgetId;
 use super::chrome_slot::ChromeSlot;
 use super::edge_panels::EdgePanels;
 use super::overlay_stack::{OverlayStack, OverlayEntry};
@@ -10,6 +11,36 @@ use super::tree::{LayoutNode as TreeLayoutNode, LayoutNodeId, LayoutTree};
 use super::z_layers::ZLayerTable;
 use super::types::{OverlayKind, LayoutSolved};
 use super::solve::solve_layout;
+
+// ---------------------------------------------------------------------------
+// Overlay dismiss registry
+// ---------------------------------------------------------------------------
+
+/// A single entry in the per-frame overlay dismiss registry.
+///
+/// Composites push one entry when they call their `register_layout_manager_*`
+/// helper. The LayoutManager uses these entries to implement
+/// [`LayoutManager::dismiss_topmost_at`].
+#[derive(Clone)]
+pub struct DismissFrame {
+    /// Z-order priority. Higher = on top. The topmost open overlay is
+    /// the one with the highest z value.  Ties are broken by insertion
+    /// order: the most-recently-pushed entry wins.
+    ///
+    /// Recommended values:
+    /// - 100 for context menu / popup
+    /// - 50  for dropdown
+    /// - 10  for modal
+    pub z: u32,
+    /// Screen-space rect of the overlay this frame.
+    pub rect: Rect,
+    /// Overlay slot id (e.g. `"modal-overlay"`, `"dd-file-overlay"`).
+    ///
+    /// This is the id the app matched in its dispatch block before the
+    /// registry was introduced — the same strings still work, just with
+    /// a single `match` in one place.
+    pub overlay_id: WidgetId,
+}
 
 /// Map a composite `WidgetKind` to its coordinator `LayerId`, or `None` for atomics.
 fn layer_for_widget_kind(kind: WidgetKind) -> Option<LayerId> {
@@ -75,6 +106,8 @@ pub struct LayoutManager<P: DockPanel> {
     /// resolves to a `WidgetId` and gets back a high-level
     /// [`super::DispatchEvent`].
     dispatcher: super::ClickDispatcher,
+    /// Per-frame overlay dismiss registry. Cleared by [`LayoutManager::begin_frame_widgets`].
+    dismiss_frames: Vec<DismissFrame>,
 }
 
 impl<P: DockPanel> LayoutManager<P> {
@@ -92,6 +125,7 @@ impl<P: DockPanel> LayoutManager<P> {
             last_window: None,
             ctx: ContextManager::new(LayoutNode::new("__layout_root__")),
             dispatcher: super::ClickDispatcher::new(),
+            dismiss_frames: Vec::new(),
         }
     }
 
@@ -212,13 +246,14 @@ impl<P: DockPanel> LayoutManager<P> {
             .unwrap_or_else(|| super::DispatchEvent::Unhandled(id.clone()))
     }
 
-    /// Clear the dispatch table.
+    /// Clear the dispatch table and the overlay dismiss registry.
     ///
     /// Composites re-register their patterns each frame, mirroring the
     /// immediate-mode model of widget registration. Call this once per
     /// frame before re-running composite registration.
     pub fn dispatcher_begin_frame(&mut self) {
         self.dispatcher.clear();
+        self.dismiss_frames.clear();
     }
 
     /// Read-only access to the macro layout tree (solved node rects).
@@ -233,12 +268,70 @@ impl<P: DockPanel> LayoutManager<P> {
         &mut self.tree
     }
 
-    /// Clear all per-frame widget nodes from the tree.
+    /// Clear all per-frame widget nodes from the tree and the overlay dismiss registry.
     ///
     /// Call at the start of each frame, before any L3 widget registration.
     /// System nodes (chrome, edges, dock, overlay) are preserved.
     pub fn begin_frame_widgets(&mut self) {
         self.tree.clear_widgets();
+        self.dismiss_frames.clear();
+    }
+
+    // ------------------------------------------------------------------
+    // Overlay dismiss registry
+    // ------------------------------------------------------------------
+
+    /// Register an overlay frame for outside-click dismiss resolution.
+    ///
+    /// Composite `register_layout_manager_*` helpers call this after they
+    /// have resolved the overlay rect. The registry is cleared each frame
+    /// by [`Self::begin_frame_widgets`].
+    ///
+    /// Only open overlays should push a frame — if the overlay is closed,
+    /// skip the call entirely so `dismiss_topmost_at` ignores it.
+    pub fn push_dismiss_frame(&mut self, frame: DismissFrame) {
+        self.dismiss_frames.push(frame);
+    }
+
+    /// Resolve which overlay (if any) should close when a click lands at `pos`.
+    ///
+    /// Walks the registered frames in z-order (top first). The first frame
+    /// whose rect does **not** contain `pos` is the topmost overlay being
+    /// clicked outside — return its `overlay_id`.
+    ///
+    /// Returns `None` when:
+    /// - No overlay frames are registered (no overlay is open).
+    /// - `pos` is inside the topmost overlay (the click belongs to that
+    ///   overlay's own widgets — let the normal dispatch chain handle it).
+    ///
+    /// Behaviour:
+    /// 1. Find the entry with the highest `z` value (most-recently-pushed
+    ///    wins ties — i.e. last-registered beats earlier at the same z).
+    /// 2. If `pos` is inside that entry's rect → click is inside the topmost
+    ///    overlay → return `None` (let dispatch chain handle).
+    /// 3. If `pos` is outside → return `Some(overlay_id)` for that entry.
+    ///    Only ONE overlay closes per click — callers must `return` after
+    ///    acting on the result.
+    pub fn dismiss_topmost_at(&self, pos: (f64, f64)) -> Option<WidgetId> {
+        if self.dismiss_frames.is_empty() {
+            return None;
+        }
+        // Find the topmost frame: highest z, with ties broken by last push order.
+        // We iterate in reverse to give last-registered priority at equal z.
+        let topmost = self
+            .dismiss_frames
+            .iter()
+            .enumerate()
+            .rev()
+            .max_by_key(|(i, f)| (f.z, *i))?
+            .1;
+
+        if topmost.rect.contains(pos.0, pos.1) {
+            // Click is inside the topmost overlay — not an outside-click.
+            None
+        } else {
+            Some(topmost.overlay_id.clone())
+        }
     }
 
     /// Compute the effective `LayerId` for a node based on its parent chain.
@@ -417,6 +510,64 @@ impl<P: DockPanel> LayoutManager<P> {
     pub fn z_for(&self, kind: OverlayKind) -> i32 {
         self.z_layers.z_for(kind)
     }
+
+    // ------------------------------------------------------------------
+    // Unified click entry point
+    // ------------------------------------------------------------------
+
+    /// Combined dismiss-or-dispatch click entry.
+    ///
+    /// Resolves a screen-space click at `pos` to exactly one of three outcomes:
+    ///
+    /// 1. **`DismissOverlay`** — the topmost open overlay did NOT contain `pos`.
+    ///    The caller must close the identified overlay and return.  This catches
+    ///    the "click on modal frame underneath a popup" case: the popup is
+    ///    topmost, so it gets dismissed regardless of what `process_click`
+    ///    returned for the coordinate.
+    ///
+    /// 2. **`DispatchEvent`** — no overlay needs dismissing (click was inside
+    ///    the topmost overlay, or no overlay is open); `InputCoordinator`
+    ///    resolved a widget at `pos`.  The returned event comes from
+    ///    `dispatch_widget`.
+    ///
+    /// 3. **`Unhandled`** — no overlay needs dismissing and no widget was hit.
+    pub fn handle_click(&mut self, pos: (f64, f64)) -> ClickOutcome {
+        // Step 1 — check whether the click is outside the topmost open overlay.
+        // dismiss_topmost_at returns Some(slot_id) if the click missed the
+        // topmost overlay.  We return early regardless of what process_click
+        // resolved: even if coord sees "modal-widget" under the cursor, the
+        // popup sitting above it is what owns the "outside" region.
+        if let Some(overlay_id) = self.dismiss_topmost_at(pos) {
+            return ClickOutcome::DismissOverlay { overlay_id };
+        }
+
+        // Step 2 — click is inside the topmost overlay (or no overlay open).
+        // Route through coord + dispatcher.
+        let clicked = self.ctx.input.process_click(pos.0, pos.1);
+        match clicked {
+            Some(id) => {
+                let event = self.dispatch_widget(&id);
+                ClickOutcome::DispatchEvent(event)
+            }
+            None => ClickOutcome::Unhandled { pos },
+        }
+    }
+}
+
+/// Outcome of [`LayoutManager::handle_click`].
+///
+/// The application inspects this enum to decide what to do with a click
+/// instead of parsing raw `WidgetId` strings with `==` / `starts_with`.
+#[derive(Debug, Clone)]
+pub enum ClickOutcome {
+    /// Click landed outside the topmost open overlay — the caller must close
+    /// the corresponding overlay state.
+    DismissOverlay { overlay_id: WidgetId },
+    /// Click landed on a registered widget (overlay was not dismissed).
+    /// The caller handles the semantic event.
+    DispatchEvent(super::DispatchEvent),
+    /// No widget was hit and no overlay was dismissed.
+    Unhandled { pos: (f64, f64) },
 }
 
 impl<P: DockPanel> Default for LayoutManager<P> {

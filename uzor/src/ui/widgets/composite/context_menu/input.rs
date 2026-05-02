@@ -13,7 +13,7 @@ use super::types::{ContextMenuRenderKind, ContextMenuView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{ContextMenuNode, EventBuilder, LayoutManager, LayoutNodeId, WidgetNode};
+use crate::layout::{ContextMenuNode, DismissFrame, EventBuilder, LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -36,9 +36,15 @@ pub fn register_layout_manager_context_menu<P: DockPanel>(
     kind:     &ContextMenuRenderKind<'_>,
 ) -> Option<ContextMenuNode> {
     let id: WidgetId = id.into();
-    let _rect: Rect = layout.rect_for_overlay(slot_id)?;
+    let slot_rect: Rect = layout.rect_for_overlay(slot_id)?;
     let layer = LayerId::new("context_menu");
     let z_order = layout.z_layers().context_menu as u32;
+    // Register this overlay for outside-click dismiss resolution.
+    layout.push_dismiss_frame(DismissFrame {
+        z: z_order,
+        rect: slot_rect,
+        overlay_id: WidgetId::new(slot_id),
+    });
     // Context menu blocks lower layers — push the layer into the coordinator.
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
     // Context menu positions itself from state.x/state.y; use a zero rect for tree metadata.

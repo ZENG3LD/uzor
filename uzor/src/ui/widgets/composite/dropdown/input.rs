@@ -13,7 +13,7 @@ use super::types::{DropdownRenderKind, DropdownView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{DispatchEvent, DropdownNode, EventBuilder, LayoutManager, LayoutNodeId, WidgetNode};
+use crate::layout::{DismissFrame, DispatchEvent, DropdownNode, EventBuilder, LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -80,6 +80,12 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
     let rect = layout.rect_for_overlay(slot_id)?;
     let layer = LayerId::new("dropdown");
     let z_order = layout.z_layers().dropdown as u32;
+    // Register this overlay for outside-click dismiss resolution.
+    layout.push_dismiss_frame(DismissFrame {
+        z: z_order,
+        rect,
+        overlay_id: WidgetId::new(slot_id),
+    });
     // Dropdown blocks lower layers — push the layer into the coordinator.
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Dropdown, rect, sense: Sense::CLICK });
