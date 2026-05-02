@@ -14,7 +14,7 @@ use super::types::{ModalRenderKind, ModalView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{LayoutManager, LayoutNodeId, ModalNode, WidgetNode};
+use crate::layout::{EventBuilder, LayoutManager, LayoutNodeId, ModalNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::WidgetId;
 
@@ -42,6 +42,32 @@ pub fn register_layout_manager_modal<P: DockPanel>(
     // Push the modal layer so that the coordinator's hit-test blocks lower layers.
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Modal, rect, sense: Sense::CLICK });
+
+    // Register dispatcher patterns so the app gets semantic events instead of
+    // raw "modal-widget:close" string matching.
+    let dispatcher = layout.dispatcher_mut();
+    dispatcher.on_exact(
+        format!("{}:close", id.0),
+        EventBuilder::ModalClose { modal_id: id.clone() },
+    );
+    // Footer buttons close the modal by default — same semantics as the X.
+    dispatcher.on_prefix(
+        format!("{}:footer:", id.0),
+        EventBuilder::ModalClose { modal_id: id.clone() },
+    );
+    dispatcher.on_prefix(
+        format!("{}:tab:", id.0),
+        EventBuilder::ModalTabFromSuffix { modal_id: id.clone() },
+    );
+    dispatcher.on_exact(
+        format!("{}:wizard:next", id.0),
+        EventBuilder::ModalWizardNext { modal_id: id.clone() },
+    );
+    dispatcher.on_exact(
+        format!("{}:wizard:back", id.0),
+        EventBuilder::ModalWizardBack { modal_id: id.clone() },
+    );
+
     register_context_manager_modal(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
     );

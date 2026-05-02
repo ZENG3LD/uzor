@@ -10,7 +10,7 @@ use super::state::ToolbarState;
 use super::types::{ToolbarRenderKind, ToolbarView};
 use crate::docking::panels::DockPanel;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{LayoutManager, LayoutNodeId, ToolbarNode, WidgetNode};
+use crate::layout::{EventBuilder, LayoutManager, LayoutNodeId, ToolbarNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::WidgetId;
 
@@ -34,6 +34,15 @@ pub fn register_layout_manager_toolbar<P: DockPanel>(
     let rect = layout.rect_for_edge_slot(slot_id)?;
     let layer = layout.compute_layer_for(parent);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Toolbar, rect, sense: Sense::CLICK });
+
+    // Toolbar item ids land as "{toolbar-widget-id}:tb-foo" in the coordinator;
+    // register a prefix pattern so any item click surfaces as
+    // DispatchEvent::ToolbarItemClicked { toolbar_id, item_id = "tb-foo" }.
+    layout.dispatcher_mut().on_prefix(
+        format!("{}:", id.0),
+        EventBuilder::ToolbarItem { toolbar_id: id.clone() },
+    );
+
     register_context_manager_toolbar(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
     );

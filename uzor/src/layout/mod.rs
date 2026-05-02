@@ -13,6 +13,7 @@
 //! `docs/uzor-widget-research/layout-manager-deep.md` for the full design doc.
 
 mod chrome_slot;
+mod dispatcher;
 mod edge_panels;
 mod handles;
 mod manager;
@@ -23,6 +24,7 @@ mod types;
 mod z_layers;
 
 pub use chrome_slot::ChromeSlot;
+pub use dispatcher::{ClickDispatcher, DispatchEvent, EventBuilder};
 pub use edge_panels::{EdgePanels, EdgeSlot};
 pub use manager::LayoutManager;
 pub use overlay_stack::{OverlayEntry, OverlayStack};

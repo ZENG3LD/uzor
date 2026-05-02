@@ -70,6 +70,11 @@ pub struct LayoutManager<P: DockPanel> {
     /// Retained-mode context manager — owned here so Level-3 composite
     /// helpers can access it directly via `layout.ctx_mut()`.
     ctx: ContextManager,
+    /// Per-frame click dispatch table. Composites push patterns at register
+    /// time; the app calls [`LayoutManager::dispatch_click`] when a hit
+    /// resolves to a `WidgetId` and gets back a high-level
+    /// [`super::DispatchEvent`].
+    dispatcher: super::ClickDispatcher,
 }
 
 impl<P: DockPanel> LayoutManager<P> {
@@ -86,6 +91,7 @@ impl<P: DockPanel> LayoutManager<P> {
             last_solved: None,
             last_window: None,
             ctx: ContextManager::new(LayoutNode::new("__layout_root__")),
+            dispatcher: super::ClickDispatcher::new(),
         }
     }
 
@@ -145,6 +151,59 @@ impl<P: DockPanel> LayoutManager<P> {
     /// separate `ContextManager` reference.
     pub fn ctx_mut(&mut self) -> &mut ContextManager {
         &mut self.ctx
+    }
+
+    /// Read-only access to the click dispatch table.
+    pub fn dispatcher(&self) -> &super::ClickDispatcher {
+        &self.dispatcher
+    }
+
+    /// Mutable access to the click dispatch table.
+    ///
+    /// Composites call this in their `register_layout_manager_*` helpers
+    /// to install the patterns that translate raw `WidgetId` hits into
+    /// semantic [`super::DispatchEvent`]s. The app may also register its
+    /// own patterns to override a composite's default behaviour.
+    pub fn dispatcher_mut(&mut self) -> &mut super::ClickDispatcher {
+        &mut self.dispatcher
+    }
+
+    /// Run a click coordinate through the embedded `InputCoordinator`,
+    /// then translate the resulting `WidgetId` (if any) via the dispatch
+    /// table into a high-level [`super::DispatchEvent`].
+    ///
+    /// Returns:
+    /// - `Some(event)` — a registered widget was hit; pattern matched.
+    /// - `Some(DispatchEvent::Unhandled(id))` — widget was hit, but no
+    ///   pattern matched it. The app may still react to the raw id.
+    /// - `None` — no widget was hit (outside-click; close menus, etc.).
+    pub fn dispatch_click(&mut self, x: f64, y: f64) -> Option<super::DispatchEvent> {
+        let clicked = self.ctx.input.process_click(x, y)?;
+        Some(
+            self.dispatcher
+                .dispatch(&clicked)
+                .unwrap_or(super::DispatchEvent::Unhandled(clicked)),
+        )
+    }
+
+    /// Translate a pre-resolved `WidgetId` into a high-level event.
+    ///
+    /// Use this when the click was already routed (e.g. by `WinitInputBridge`
+    /// which calls `process_click` itself and returns `Option<WidgetId>`).
+    /// Avoids running hit-test twice.
+    pub fn dispatch_widget(&self, id: &crate::types::WidgetId) -> super::DispatchEvent {
+        self.dispatcher
+            .dispatch(id)
+            .unwrap_or_else(|| super::DispatchEvent::Unhandled(id.clone()))
+    }
+
+    /// Clear the dispatch table.
+    ///
+    /// Composites re-register their patterns each frame, mirroring the
+    /// immediate-mode model of widget registration. Call this once per
+    /// frame before re-running composite registration.
+    pub fn dispatcher_begin_frame(&mut self) {
+        self.dispatcher.clear();
     }
 
     /// Read-only access to the macro layout tree (solved node rects).

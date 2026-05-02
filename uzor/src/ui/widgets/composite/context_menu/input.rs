@@ -13,7 +13,7 @@ use super::types::{ContextMenuRenderKind, ContextMenuView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{ContextMenuNode, LayoutManager, LayoutNodeId, WidgetNode};
+use crate::layout::{ContextMenuNode, EventBuilder, LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -43,6 +43,14 @@ pub fn register_layout_manager_context_menu<P: DockPanel>(
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
     // Context menu positions itself from state.x/state.y; use a zero rect for tree metadata.
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::ContextMenu, rect: Rect::new(state.x, state.y, 0.0, 0.0), sense: Sense::CLICK });
+
+    // Item ids are "{menu-id}:item:N" — surface as
+    // DispatchEvent::ContextMenuItemClicked { menu_id, item_index }.
+    layout.dispatcher_mut().on_prefix(
+        format!("{}:item:", id.0),
+        EventBuilder::ContextMenuItem { menu_id: id.clone() },
+    );
+
     register_context_manager_context_menu(
         layout.ctx_mut(), render, id, state, view, settings, kind, &layer,
     );

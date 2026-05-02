@@ -1033,6 +1033,9 @@ impl AppState {
             ..InputState::default()
         };
         self.layout.ctx_mut().input.begin_frame(input);
+        // Wipe last frame's dispatcher patterns — composites re-register on
+        // each register_layout_manager_* call below.
+        self.layout.dispatcher_begin_frame();
 
         // Fix 4: register L2 text field at its actual screen-space rect.
         // Compute modal rect using the same formula as the rendering pass below
@@ -2470,6 +2473,51 @@ impl AppState {
         // testing in the example.
         if let Some(id) = clicked_id.as_ref() {
             let id_str = id.0.as_str();
+
+            // ── NEW: high-level dispatcher path ───────────────────────────────
+            // Composites register their patterns at register_layout_manager_*
+            // time. We ask the dispatcher to translate the raw WidgetId into a
+            // semantic DispatchEvent. If it knows the id, we handle the event
+            // and return. Unknown ids fall through to the legacy parsing below.
+            use uzor::layout::DispatchEvent;
+            match self.layout.dispatch_widget(id) {
+                DispatchEvent::ModalCloseRequested(_) => {
+                    eprintln!("[DISPATCHER] ModalCloseRequested");
+                    self.modal_open = false;
+                    return;
+                }
+                DispatchEvent::ModalTabClicked { index, .. } => {
+                    eprintln!("[DISPATCHER] ModalTabClicked index={index}");
+                    self.modal_state.active_tab = index;
+                    return;
+                }
+                DispatchEvent::ModalWizardNext(_) => {
+                    eprintln!("[DISPATCHER] ModalWizardNext");
+                    let last = 2;
+                    if self.modal_state.current_page < last {
+                        self.modal_state.current_page += 1;
+                    } else {
+                        self.modal_open = false;
+                    }
+                    return;
+                }
+                DispatchEvent::ModalWizardBack(_) => {
+                    eprintln!("[DISPATCHER] ModalWizardBack");
+                    if self.modal_state.current_page > 0 {
+                        self.modal_state.current_page -= 1;
+                    }
+                    return;
+                }
+                // The other variants — Dropdown / Toolbar / ContextMenu / Chrome —
+                // we let fall through to the legacy parsers below for now so
+                // existing dashboard behaviour stays intact. They'll be migrated
+                // here one at a time.
+                DispatchEvent::DropdownItemClicked { .. }
+                | DispatchEvent::ToolbarItemClicked { .. }
+                | DispatchEvent::ContextMenuItemClicked { .. }
+                | DispatchEvent::ChromeTabClicked { .. }
+                | DispatchEvent::Unhandled(_) => {}
+            }
 
             // Modal close affordances registered as "modal-widget:close" /
             // "modal-widget:footer:0" / "modal-widget:footer:1"

@@ -13,7 +13,7 @@ use super::types::{DropdownRenderKind, DropdownView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{DropdownNode, LayoutManager, LayoutNodeId, WidgetNode};
+use crate::layout::{DropdownNode, EventBuilder, LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -41,6 +41,14 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
     // Dropdown blocks lower layers — push the layer into the coordinator.
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Dropdown, rect, sense: Sense::CLICK });
+
+    // Register dispatch pattern: any item click on this dropdown surfaces
+    // as DispatchEvent::DropdownItemClicked { dropdown_id, item_id }.
+    layout.dispatcher_mut().on_prefix(
+        format!("{}:item:", id.0),
+        EventBuilder::DropdownItem { dropdown_id: id.clone() },
+    );
+
     register_context_manager_dropdown(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
     );
