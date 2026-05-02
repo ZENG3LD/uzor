@@ -43,6 +43,10 @@ pub fn register_layout_manager_toolbar<P: DockPanel>(
         EventBuilder::ToolbarItem { toolbar_id: id.clone() },
     );
 
+    // Auto-forward hovered_item_id from the coordinator into toolbar state.
+    let prefix = format!("{}:", id.0);
+    state.sync_hover_from(&layout.ctx_mut().input, &prefix);
+
     register_context_manager_toolbar(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
     );

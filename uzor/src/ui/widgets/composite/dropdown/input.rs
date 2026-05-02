@@ -49,6 +49,11 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
         EventBuilder::DropdownItem { dropdown_id: id.clone() },
     );
 
+    // Auto-forward hovered_id from the coordinator into the dropdown state.
+    // The app no longer needs to copy coord.hovered_widget() by hand.
+    let prefix = format!("{}:item:", id.0);
+    state.sync_hover_from(&layout.ctx_mut().input, &prefix);
+
     register_context_manager_dropdown(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
     );

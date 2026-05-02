@@ -3,6 +3,8 @@
 //! Unlike Dropdown, ContextMenu positions at raw cursor coordinates with
 //! smart screen-edge clamping (`open_smart`). There is no anchor widget.
 
+use crate::input::core::coordinator::InputCoordinator;
+
 /// All per-instance state for a context menu.
 #[derive(Debug, Clone, Default)]
 pub struct ContextMenuState {
@@ -94,5 +96,24 @@ impl ContextMenuState {
     /// Set the primed item index (pointer-down on a row).
     pub fn set_primed(&mut self, index: Option<usize>) {
         self.primed_index = index;
+    }
+
+    /// Sync the hovered-item index from the coordinator's hovered widget.
+    ///
+    /// `widget_id_prefix` — the `"{menu_widget_id}:item:"` prefix used at
+    /// registration time. When the coord's hovered widget id starts with
+    /// this prefix and the suffix parses as a `usize`, that becomes
+    /// `hovered_index`. Otherwise `hovered_index` is cleared.
+    ///
+    /// Composite registration helpers call this automatically.
+    pub fn sync_hover_from(&mut self, coord: &InputCoordinator, widget_id_prefix: &str) {
+        if !self.is_open {
+            return;
+        }
+        self.hovered_index = coord
+            .hovered_widget()
+            .map(|id| id.0.as_str())
+            .filter(|s| s.starts_with(widget_id_prefix))
+            .and_then(|s| s[widget_id_prefix.len()..].parse::<usize>().ok());
     }
 }

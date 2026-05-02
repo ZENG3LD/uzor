@@ -3271,52 +3271,9 @@ impl AppState {
             }
         }
 
-        // Fix #13: update toolbar hover state (strip parent prefix so render matches plain item id)
-        {
-            let hovered_id = self.layout.ctx_mut().input.hovered_widget().map(|id| id.0.clone());
-            self.top_toolbar_state.hovered_item_id = hovered_id
-                .as_ref()
-                .and_then(|id| id.strip_prefix("top-toolbar-widget:"))
-                .map(|s| s.to_string());
-            self.left_vtoolbar_state.hovered_item_id = hovered_id
-                .as_ref()
-                .and_then(|id| id.strip_prefix("left-vtoolbar-widget:"))
-                .map(|s| s.to_string());
-            let hovered_id = hovered_id;
-            // Universal dropdown hovered_id forwarder. For each open dropdown,
-            // strip its widget-id prefix from the global hovered_id and stash
-            // the suffix in dropdown_state.hovered_id so the next render frame
-            // highlights the correct item. Adding a new dropdown = one extra
-            // (state_field, widget_id_prefix) pair in this list.
-            let drops: [(&mut DropdownState, &str); 8] = [
-                (&mut self.dropdown_file_state,     "dd-file-widget:item:"),
-                (&mut self.dropdown_view_state,     "dd-view-widget:item:"),
-                (&mut self.dropdown_help_state,     "dd-help-widget:item:"),
-                (&mut self.dropdown_addpanel_state, "dd-addpanel-widget:item:"),
-                (&mut self.dropdown_sidebar_state,  "dd-sidebar-widget:item:"),
-                (&mut self.dropdown_toolbar_state,  "dd-toolbar-widget:item:"),
-                (&mut self.dropdown_popup_state,    "dd-popup-widget:item:"),
-                (&mut self.dropdown_theme_state,    "dd-theme-widget:item:"),
-            ];
-            for (state, prefix) in drops {
-                if state.open {
-                    state.hovered_id = hovered_id.as_ref()
-                        .filter(|id| id.starts_with(prefix))
-                        .map(|id| id[prefix.len()..].to_owned());
-                }
-            }
-            if self.ctx_menu_state.is_open {
-                if let Some(ref id) = hovered_id {
-                    if let Some(idx_str) = id.strip_prefix("ctx-menu-widget:item:") {
-                        self.ctx_menu_state.hovered_index = idx_str.parse().ok();
-                    } else {
-                        self.ctx_menu_state.hovered_index = None;
-                    }
-                } else {
-                    self.ctx_menu_state.hovered_index = None;
-                }
-            }
-        }
+        // Hover-state forwarding is now done inside each composite's
+        // register_layout_manager_* helper via *State::sync_hover_from().
+        // No app-side bookkeeping needed.
 
         // Fix 3: modal drag — update position while dragging modal header
         if matches!(self.drag_target, Some(DragTarget::ModalDrag)) {

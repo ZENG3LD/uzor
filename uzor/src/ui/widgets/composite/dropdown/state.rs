@@ -3,6 +3,7 @@
 //! `DropdownState` is a flat struct — fields irrelevant to the active
 //! `DropdownRenderKind` are never touched.
 
+use crate::input::core::coordinator::InputCoordinator;
 use crate::types::Rect;
 
 /// All per-dropdown instance state.
@@ -137,5 +138,25 @@ impl DropdownState {
     /// Returns the effective panel origin: override > anchor-derived.
     pub fn effective_origin(&self) -> (f64, f64) {
         self.open_position_override.unwrap_or(self.origin)
+    }
+
+    /// Sync the hovered-item id from the coordinator's hovered widget.
+    ///
+    /// `widget_id_prefix` — the `"{dropdown_widget_id}:item:"` prefix used at
+    /// registration time. When the coord's hovered widget id starts with this
+    /// prefix, the suffix becomes the new `hovered_id`. Otherwise `hovered_id`
+    /// is cleared.
+    ///
+    /// Composite registration helpers call this automatically — apps don't
+    /// need to forward `coord.hovered_widget()` by hand.
+    pub fn sync_hover_from(&mut self, coord: &InputCoordinator, widget_id_prefix: &str) {
+        if !self.open {
+            return;
+        }
+        self.hovered_id = coord
+            .hovered_widget()
+            .map(|id| id.0.as_str())
+            .filter(|s| s.starts_with(widget_id_prefix))
+            .map(|s| s[widget_id_prefix.len()..].to_owned());
     }
 }

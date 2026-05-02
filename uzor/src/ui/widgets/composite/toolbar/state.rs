@@ -1,5 +1,6 @@
 //! Toolbar persistent state.
 
+use crate::input::core::coordinator::InputCoordinator;
 use crate::types::Rect;
 
 use super::types::SplitButtonHoverZone;
@@ -122,5 +123,22 @@ impl ToolbarState {
     /// End a split-button interaction.
     pub fn end_split_drag(&mut self) {
         self.dragging_split = None;
+    }
+
+    /// Sync the hovered-item id from the coordinator's hovered widget.
+    ///
+    /// `widget_id_prefix` — the `"{toolbar_widget_id}:"` prefix used at
+    /// registration time. When the coord's hovered widget id starts with
+    /// this prefix, the suffix becomes the new `hovered_item_id`. Otherwise
+    /// `hovered_item_id` is cleared.
+    ///
+    /// Composite registration helpers call this automatically — apps don't
+    /// need to forward `coord.hovered_widget()` by hand.
+    pub fn sync_hover_from(&mut self, coord: &InputCoordinator, widget_id_prefix: &str) {
+        self.hovered_item_id = coord
+            .hovered_widget()
+            .map(|id| id.0.as_str())
+            .filter(|s| s.starts_with(widget_id_prefix))
+            .map(|s| s[widget_id_prefix.len()..].to_owned());
     }
 }
