@@ -1958,22 +1958,75 @@ impl AppState {
                     panel_rect.width as f64,
                     panel_rect.height as f64,
                 );
-
-                // Register hit zone for this leaf as a Blackbox composite —
-                // coord won't recurse into it, app owns the entire rect.
                 let leaf_widget_id = format!("dock-leaf-{}", leaf_id.0);
-                let _composite_id = self.layout.ctx_mut().input.register_composite(
-                    WidgetId::new(leaf_widget_id),
-                    WidgetKind::BlackboxPanel,
-                    rect,
-                    Sense::CLICK | Sense::HOVER | Sense::DRAG | Sense::SCROLL,
-                    &LayerId::main(),
-                );
 
-                // Render panel body by kind
-                render_panel_body(kind, &mut render, rect, &self.watchlist);
+                if matches!(kind, PanelKind::Watchlist) {
+                    // Watchlist — wired through the real BlackboxPanel
+                    // composite. The lib owns hover routing: when an
+                    // overlay (dropdown / popup / modal) is over the
+                    // panel, the composite suppresses PointerMove.
+                    use std::cell::RefCell;
+                    use uzor::ui::widgets::composite::blackbox_panel::{
+                        input::register_layout_manager_blackbox_panel,
+                        settings::BlackboxPanelSettings,
+                        state::BlackboxState,
+                        types::{BlackboxEvent, BlackboxEventResult, BlackboxRenderKind, BlackboxView},
+                    };
+                    let watchlist = RefCell::new(std::mem::take(&mut self.watchlist));
+                    let panel_size = (rect.width, rect.height);
+                    let mut bb_state = BlackboxState::default();
+                    let mut view = BlackboxView {
+                        title: None,
+                        body: Box::new(|ctx, body_rect| {
+                            watchlist_blackbox::render(&watchlist.borrow(), ctx, body_rect);
+                        }),
+                        handle_event: Box::new(|evt: BlackboxEvent| {
+                            match evt {
+                                BlackboxEvent::PointerMove { local_x, local_y } => {
+                                    watchlist_blackbox::on_pointer_move(
+                                        &mut watchlist.borrow_mut(), panel_size, local_x, local_y);
+                                    BlackboxEventResult::Redraw
+                                }
+                                BlackboxEvent::PointerDown { local_x, local_y, .. } => {
+                                    watchlist_blackbox::on_pointer_down(
+                                        &mut watchlist.borrow_mut(), panel_size, local_x, local_y);
+                                    BlackboxEventResult::Consumed
+                                }
+                                BlackboxEvent::PointerUp { .. } => {
+                                    watchlist_blackbox::on_pointer_up(&mut watchlist.borrow_mut());
+                                    BlackboxEventResult::Consumed
+                                }
+                                BlackboxEvent::Wheel { delta_y, .. } => {
+                                    watchlist_blackbox::on_wheel(&mut watchlist.borrow_mut(), delta_y);
+                                    BlackboxEventResult::Consumed
+                                }
+                                _ => BlackboxEventResult::NotConsumed,
+                            }
+                        }),
+                        sense: Sense::CLICK | Sense::HOVER | Sense::DRAG | Sense::SCROLL,
+                    };
+                    let slot = leaf_id.to_string();
+                    let _ = register_layout_manager_blackbox_panel(
+                        &mut self.layout, &mut render,
+                        LayoutNodeId::ROOT, &slot, leaf_widget_id.clone(),
+                        &mut bb_state, &mut view,
+                        &BlackboxPanelSettings::default(),
+                        &BlackboxRenderKind::Default,
+                    );
+                    // Drop the closures (and their borrows) before reclaiming watchlist.
+                    drop(view);
+                    self.watchlist = watchlist.into_inner();
+                } else {
+                    let _composite_id = self.layout.ctx_mut().input.register_composite(
+                        WidgetId::new(leaf_widget_id),
+                        WidgetKind::BlackboxPanel,
+                        rect,
+                        Sense::CLICK | Sense::HOVER | Sense::DRAG | Sense::SCROLL,
+                        &LayerId::main(),
+                    );
+                    render_panel_body(kind, &mut render, rect, &self.watchlist);
+                }
 
-                // Active leaf border (fix 4)
                 if Some(*leaf_id) == active_leaf {
                     render.set_stroke_color("#2962ff");
                     render.set_stroke_width(2.0);
@@ -3544,7 +3597,8 @@ impl AppState {
                         if let Some(&rect) = self.layout.panels().panel_rects().get(&leaf_id) {
                             let r = Rect::new(rect.x as f64, rect.y as f64, rect.width as f64, rect.height as f64);
                             let symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "ADA/USDT"];
-                            if let watchlist_blackbox::Hit::Row(row) = watchlist_blackbox::hit_test(&self.watchlist, r, x, y) {
+                            let local = (x - r.x, y - r.y);
+                            if let Some(row) = watchlist_blackbox::click_row(&self.watchlist, (r.width, r.height), local.0, local.1) {
                                 if let Some(sym) = symbols.get(row) {
                                     println!("[L3] watchlist row clicked: {sym}");
                                 }
@@ -3871,24 +3925,8 @@ impl AppState {
             self.l1_btn_pressed = hovered_id.as_deref() == Some("l1-mybtn");
         }
 
-        // Route mouse-down to watchlist blackbox if the active leaf is a Watchlist
-        if !self.modal_open {
-            let watchlist_leaf = self.layout.panels().panel_rects().iter()
-                .find(|(&id, _)| {
-                    self.layout.panels().tree().leaf(id)
-                        .and_then(|l| l.panels.first())
-                        .map(|p| p.kind == PanelKind::Watchlist)
-                        .unwrap_or(false)
-                })
-                .map(|(&id, &rect)| (id, rect));
-            if let Some((_leaf_id, panel_rect)) = watchlist_leaf {
-                let r = Rect::new(panel_rect.x as f64, panel_rect.y as f64, panel_rect.width as f64, panel_rect.height as f64);
-                watchlist_blackbox::on_mouse_down(&mut self.watchlist, r, x, y);
-                if self.watchlist.drag_sep.is_some() {
-                    return;
-                }
-            }
-        }
+        // Watchlist mouse-down is now routed by the BlackboxPanel composite
+        // through view.handle_event(PointerDown). No manual forwarding here.
 
         // L2 drag targets
         if self.modal_open && self.modal_kind == ModalKind::L2 {
@@ -3969,20 +4007,9 @@ impl AppState {
             self.l1_btn_hovered = hovered_id.as_deref() == Some("l1-mybtn");
         }
 
-        // Route mouse-move into watchlist blackbox
-        if !self.modal_open {
-            let watchlist_rect = self.layout.panels().panel_rects().iter()
-                .find(|(&id, _)| {
-                    self.layout.panels().tree().leaf(id)
-                        .and_then(|l| l.panels.first())
-                        .map(|p| p.kind == PanelKind::Watchlist)
-                        .unwrap_or(false)
-                })
-                .map(|(_, &r)| Rect::new(r.x as f64, r.y as f64, r.width as f64, r.height as f64));
-            if let Some(r) = watchlist_rect {
-                watchlist_blackbox::on_mouse_move(&mut self.watchlist, r, x, y);
-            }
-        }
+        // Watchlist mouse-move is now routed by the BlackboxPanel composite
+        // through view.handle_event(PointerMove). The composite suppresses
+        // forwarding when an overlay is on top.
 
         // Hover-state forwarding is now done inside each composite's
         // register_layout_manager_* helper via *State::sync_hover_from().
@@ -4149,8 +4176,7 @@ impl AppState {
         self.l2_pressed = None;
         // Fix 2: clear L1 press state
         self.l1_btn_pressed = false;
-        // Fix 3: clear watchlist drag
-        watchlist_blackbox::on_mouse_up(&mut self.watchlist);
+        // Watchlist drag end is routed by the composite via PointerUp.
     }
 }
 
@@ -4605,7 +4631,7 @@ impl ApplicationHandler for Handler {
                     .map(|(_, &r)| Rect::new(r.x as f64, r.y as f64, r.width as f64, r.height as f64));
                 if let Some(r) = watchlist_rect {
                     if r.contains(cx, cy) {
-                        watchlist_blackbox::on_wheel(&mut app.watchlist, r, dy);
+                        watchlist_blackbox::on_wheel(&mut app.watchlist, dy);
                         app.window.request_redraw();
                     }
                 }
@@ -4856,43 +4882,37 @@ mod watchlist_blackbox {
         None,
     }
 
-    pub fn hit_test(state: &WatchlistState, rect: Rect, x: f64, y: f64) -> Hit {
-        if !rect.contains(x, y) {
+    pub fn hit_test_local(state: &WatchlistState, panel_size: (f64, f64), lx: f64, ly: f64) -> Hit {
+        if lx < 0.0 || ly < 0.0 || lx > panel_size.0 || ly > panel_size.1 {
             return Hit::None;
         }
         const HEADER_H: f64 = 28.0;
         const ROW_H:    f64 = 24.0;
-        const SEP_HALF: f64 = 4.0;  // ±4 px sensitivity
+        const SEP_HALF: f64 = 4.0;
 
-        // Compute column boundary xs
-        let mut cx = rect.x;
+        let mut cx = 0.0_f64;
         let mut boundaries = [0.0_f64; 3];
         for i in 0..3 {
-            cx += rect.width * state.col_widths[i];
+            cx += panel_size.0 * state.col_widths[i];
             boundaries[i] = cx;
         }
-
-        // Separator wins if within ±SEP_HALF of a boundary
         for (i, &bx) in boundaries.iter().enumerate() {
-            if (x - bx).abs() <= SEP_HALF {
+            if (lx - bx).abs() <= SEP_HALF {
                 return Hit::Separator(i);
             }
         }
-
-        // Row (below header)
-        if y >= rect.y + HEADER_H {
-            let row_f = (y - rect.y - HEADER_H + state.scroll_off) / ROW_H;
+        if ly >= HEADER_H {
+            let row_f = (ly - HEADER_H + state.scroll_off) / ROW_H;
             if row_f >= 0.0 {
                 return Hit::Row(row_f as usize);
             }
         }
-
         Hit::None
     }
 
-    // ── Input handlers ─────────────────────────────────────────────────────────
+    // ── Input handlers (panel-local coords) ───────────────────────────────────
 
-    pub fn on_mouse_move(state: &mut WatchlistState, rect: Rect, x: f64, y: f64) {
+    pub fn on_pointer_move(state: &mut WatchlistState, panel_size: (f64, f64), lx: f64, ly: f64) {
         // Normalize col_widths so they always sum to 1.0 (guards against drift).
         {
             let sum: f64 = state.col_widths.iter().sum();
@@ -4902,18 +4922,14 @@ mod watchlist_blackbox {
                 }
             }
         }
-
-        // Continue column drag if active — use fraction cursor position so
-        // the delta is rect-width-independent, fixing resize when rect changes.
         if let Some((idx, start_frac, start_widths)) = state.drag_sep {
-            if rect.width > 0.0 {
-                let cur_frac = (x - rect.x) / rect.width;
+            if panel_size.0 > 0.0 {
+                let cur_frac = lx / panel_size.0;
                 let delta_frac = cur_frac - start_frac;
                 let new_left  = (start_widths[idx]     + delta_frac).clamp(0.05, 0.90);
                 let new_right = (start_widths[idx + 1] - delta_frac).clamp(0.05, 0.90);
                 let total_before = start_widths[idx] + start_widths[idx + 1];
                 let total_after  = new_left + new_right;
-                // Only apply when widths still sum correctly (both clamped independently)
                 if (total_after - total_before).abs() < 1e-9 {
                     state.col_widths[idx]     = new_left;
                     state.col_widths[idx + 1] = new_right;
@@ -4921,38 +4937,35 @@ mod watchlist_blackbox {
             }
             return;
         }
-
-        match hit_test(state, rect, x, y) {
-            Hit::Separator(i) => {
-                state.hovered_sep = Some(i);
-                state.hovered_row = Option::None;
-            }
-            Hit::Row(r) => {
-                state.hovered_row = Some(r);
-                state.hovered_sep = Option::None;
-            }
-            Hit::None => {
-                state.hovered_row = Option::None;
-                state.hovered_sep = Option::None;
-            }
+        match hit_test_local(state, panel_size, lx, ly) {
+            Hit::Separator(i) => { state.hovered_sep = Some(i); state.hovered_row = Option::None; }
+            Hit::Row(r)       => { state.hovered_row = Some(r); state.hovered_sep = Option::None; }
+            Hit::None         => { state.hovered_row = Option::None; state.hovered_sep = Option::None; }
         }
     }
 
-    pub fn on_mouse_down(state: &mut WatchlistState, rect: Rect, x: f64, y: f64) {
-        if let Hit::Separator(i) = hit_test(state, rect, x, y) {
-            // Store cursor position as a fraction of rect.width so that drag
-            // deltas remain correct even if rect.width changes later.
-            let start_frac = if rect.width > 0.0 { (x - rect.x) / rect.width } else { 0.0 };
+    pub fn on_pointer_down(state: &mut WatchlistState, panel_size: (f64, f64), lx: f64, ly: f64) {
+        if let Hit::Separator(i) = hit_test_local(state, panel_size, lx, ly) {
+            let start_frac = if panel_size.0 > 0.0 { lx / panel_size.0 } else { 0.0 };
             state.drag_sep = Some((i, start_frac, state.col_widths));
         }
     }
 
-    pub fn on_mouse_up(state: &mut WatchlistState) {
+    pub fn on_pointer_up(state: &mut WatchlistState) {
         state.drag_sep = Option::None;
     }
 
-    pub fn on_wheel(state: &mut WatchlistState, _rect: Rect, dy: f64) {
+    pub fn on_wheel(state: &mut WatchlistState, dy: f64) {
         state.scroll_off = (state.scroll_off - dy * 20.0).max(0.0);
+    }
+
+    /// Returns the row index that was clicked (for app-level row routing).
+    /// `None` if the click was not on a row (separator / header / outside).
+    pub fn click_row(state: &WatchlistState, panel_size: (f64, f64), lx: f64, ly: f64) -> Option<usize> {
+        match hit_test_local(state, panel_size, lx, ly) {
+            Hit::Row(r) => Some(r),
+            _           => None,
+        }
     }
 }
 

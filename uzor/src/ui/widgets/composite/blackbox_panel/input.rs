@@ -38,6 +38,26 @@ pub fn register_layout_manager_blackbox_panel<P: DockPanel>(
     let layer = layout.compute_layer_for(parent);
     let sense = view.sense;
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::BlackboxPanel, rect, sense });
+
+    // Auto-forward pointer events into the blackbox view ONLY when this
+    // blackbox is the top-most widget under the cursor. Higher layers
+    // (dropdown / popup / modal) shadow this and forwarding is
+    // suppressed — events can't bleed through to the panel underneath.
+    {
+        use super::types::BlackboxEvent;
+        let coord = &layout.ctx_mut().input;
+        let is_top = coord.hovered_widget() == Some(&id);
+        let pos    = coord.pointer_pos();
+        if is_top {
+            if let Some((mx, my)) = pos {
+                let _ = dispatch_blackbox_event(
+                    view, rect, mx, my,
+                    BlackboxEvent::PointerMove { local_x: 0.0, local_y: 0.0 },
+                );
+            }
+        }
+    }
+
     register_context_manager_blackbox_panel(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
     );

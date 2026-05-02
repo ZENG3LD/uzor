@@ -342,6 +342,12 @@ impl InputCoordinator {
         self.widgets.iter().rev().find(|w| w.id == *id).map(|w| w.kind)
     }
 
+    /// Current pointer position in screen coordinates, if any cursor
+    /// data has been received this frame.
+    pub fn pointer_pos(&self) -> Option<(f64, f64)> {
+        self.input.pointer.pos
+    }
+
     /// Returns the parent `WidgetId` of a child widget, if any.
     pub fn widget_parent(&self, id: &WidgetId) -> Option<WidgetId> {
         self.widgets.iter().rev().find(|w| w.id == *id).and_then(|w| w.parent.clone())
