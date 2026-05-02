@@ -183,7 +183,8 @@ impl DropdownState {
         }
         let main_pref = format!("{}:item:", dropdown_id);
         let sm_pref   = format!("{}:submenu:", dropdown_id);
-        let chev_pref = format!("{}:submenu-chevron:", dropdown_id);
+        // Sticky chevron registers as `{parent}:chev:submenu:{row_id}`.
+        let chev_pref = format!("{}:chev:submenu:", dropdown_id);
         let sub_pref  = format!("{}:sub-item:", dropdown_id);
 
         self.hovered_id = None;

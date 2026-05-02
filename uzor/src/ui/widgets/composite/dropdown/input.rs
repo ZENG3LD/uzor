@@ -101,8 +101,9 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
         EventBuilder::DropdownItem { dropdown_id: id.clone() },
     );
     // Submenu chevron clicks (only used for SubmenuTrigger::ChevronClick).
+    // Sticky chevron registers as `{dropdown}:chev:submenu:{row_id}`.
     layout.dispatcher_mut().on_prefix(
-        format!("{}:submenu-chevron:", id.0),
+        format!("{}:chev:submenu:", id.0),
         EventBuilder::DropdownSubmenuToggleFromSuffix { dropdown_id: id.clone() },
     );
 
@@ -122,7 +123,7 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
         let coord = &layout.ctx_mut().input;
         let main_prefix    = format!("{}:item:", id.0);
         let submenu_prefix = format!("{}:submenu:", id.0);
-        let chev_prefix    = format!("{}:submenu-chevron:", id.0);
+        let chev_prefix    = format!("{}:chev:submenu:", id.0);
         let sub_prefix     = format!("{}:sub-item:", id.0);
         let hovered = coord.hovered_widget().map(|w| w.0.clone());
         match hovered {

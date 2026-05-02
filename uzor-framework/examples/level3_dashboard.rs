@@ -2432,6 +2432,8 @@ impl AppState {
                             anchor: StickyAnchor::E,
                             visibility: StickyVisibility::Always,
                             visual: ChevronVisualKind::Stroked,
+                            hover_visual: true,
+                            interactive: true,
                         };
                         let connect_chev_id = register_sticky_chevron(
                             &mut self.layout.ctx_mut().input,
@@ -2685,6 +2687,8 @@ impl AppState {
                                 anchor: *anchor,
                                 visibility: StickyVisibility::OnHostHover,
                                 visual: ChevronVisualKind::Stroked,
+                                hover_visual: true,
+                                interactive: true,
                             };
                             let chev_id = register_sticky_chevron(
                                 &mut self.layout.ctx_mut().input,
@@ -3150,12 +3154,14 @@ impl AppState {
                 label: "Plain",
                 icon: None,
                 trigger: uzor::ui::widgets::composite::dropdown::types::SubmenuTrigger::Hover,
+                chevron_hover: false,
             },
             DropdownItem::Submenu {
                 id: "popup-custom",
                 label: "Custom",
                 icon: None,
                 trigger: uzor::ui::widgets::composite::dropdown::types::SubmenuTrigger::ChevronClick,
+                chevron_hover: true,
             },
         ];
         let popup_plain_sub_items = [

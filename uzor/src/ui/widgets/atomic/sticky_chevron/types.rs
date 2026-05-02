@@ -54,6 +54,18 @@ pub struct StickyChevronSpec {
     /// Drawing primitive (Stroked / Filled / Glyph / Icon — passed to the
     /// underlying chevron atomic).
     pub visual:     ChevronVisualKind,
+    /// Whether the chevron paints its own hover state when the cursor is
+    /// over its rect. Default `true` (legacy behaviour). Set `false` for
+    /// purely-decorative chevrons that visually inherit the host's state
+    /// — they still register a hit zone (so click events work) but ignore
+    /// `chev_state.is_hovered()` when drawing.
+    pub hover_visual: bool,
+    /// Whether the chevron child registers as `Sense::CLICK | HOVER`
+    /// (`true`, default) or `Sense::NONE` (`false`). Set `false` for
+    /// pure-decoration chevrons — they're still real coord widgets (so
+    /// they participate in the tree) but never claim hover/click; the
+    /// host alone collects the row's events.
+    pub interactive: bool,
 }
 
 impl Default for StickyChevronSpec {
@@ -65,6 +77,8 @@ impl Default for StickyChevronSpec {
             anchor:     StickyAnchor::E,
             visibility: StickyVisibility::Always,
             visual:     ChevronVisualKind::Stroked,
+            hover_visual: true,
+            interactive: true,
         }
     }
 }

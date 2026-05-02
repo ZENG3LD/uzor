@@ -41,12 +41,17 @@ pub fn register_sticky_chevron(
         return None;
     }
     let rect = place_sticky_chevron(host_rect, spec);
+    let sense = if spec.interactive {
+        Sense::CLICK | Sense::HOVER
+    } else {
+        Sense::NONE
+    };
     coord.register_child(
         host_id,
         chev_id.clone(),
         WidgetKind::Button,
         rect,
-        Sense::CLICK | Sense::HOVER,
+        sense,
     );
     Some(chev_id)
 }
@@ -81,8 +86,8 @@ pub fn draw_sticky_chevron(
         placement:   PlacementPolicy::Standalone,
         hit_area:    HitAreaPolicy::Visual,
         visual_kind: spec.visual,
-        hovered:     chev_state.is_hovered(),
-        pressed:     chev_state.is_pressed(),
+        hovered:     spec.hover_visual && chev_state.is_hovered(),
+        pressed:     spec.hover_visual && chev_state.is_pressed(),
         ..Default::default()
     };
     draw_chevron(ctx, rect, &view, &ChevronSettings::default());

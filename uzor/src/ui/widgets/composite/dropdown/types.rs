@@ -50,6 +50,11 @@ pub enum DropdownItem<'a> {
         /// hovered; `ChevronClick` = opens only when the user clicks the
         /// chevron at the trailing edge of the row.
         trigger: SubmenuTrigger,
+        /// Whether the chevron paints a hover state when the cursor is
+        /// over its rect. Default `false` — the chevron is decorative
+        /// and only follows the row's hover. Set `true` for ChevronClick
+        /// rows that want the chevron to light up independently.
+        chevron_hover: bool,
     },
 }
 

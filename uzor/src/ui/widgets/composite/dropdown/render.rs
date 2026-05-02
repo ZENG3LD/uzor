@@ -19,7 +19,7 @@ use crate::app_context::ContextManager;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::render::{RenderContext, TextAlign, TextBaseline};
-use crate::types::{Rect, WidgetId, CompositeId};
+use crate::types::{Rect, WidgetId, WidgetState, CompositeId};
 
 use super::settings::DropdownSettings;
 use super::state::DropdownState;
@@ -498,13 +498,15 @@ fn draw_flat_list(
                 cursor_y += h;
             }
 
-            DropdownItem::Submenu { id, label, icon, .. } => {
+            DropdownItem::Submenu { id, label, icon, trigger, chevron_hover } => {
                 let h       = style.item_height();
                 let hovered = hovered_id == Some(id);
                 // Chevron of a ChevronClick row may be hovered while the
-                // row body is not — track separately so the chevron lights
-                // up alone.
-                let chev_hovered = state.submenu_chevron_hovered_id.as_deref() == Some(id);
+                // row body is not — but only when the row opted in via
+                // `chevron_hover: true`. Otherwise the chevron is purely
+                // decorative and follows the row's own hover state.
+                let chev_hovered = *chevron_hover
+                    && state.submenu_chevron_hovered_id.as_deref() == Some(id);
 
                 let bg = if hovered { theme.item_bg_hover() } else { theme.item_bg_normal() };
                 ctx.set_fill_color(bg);
@@ -538,29 +540,65 @@ fn draw_flat_list(
                 ctx.set_text_baseline(TextBaseline::Middle);
                 ctx.fill_text(label, text_x, cursor_y + h / 2.0);
 
-                // Caret — atomic chevron, Right direction.
-                use crate::ui::widgets::atomic::chevron::{
-                    draw_chevron,
-                    settings::ChevronSettings,
-                    types::{ChevronDirection, ChevronUseCase, ChevronView, ChevronVisualKind,
-                            HitAreaPolicy, PlacementPolicy, VisibilityPolicy},
-                };
-                let chev_size = (h * 0.6).clamp(10.0, 18.0);
-                let chev_x = content.x + content.width - style.item_padding_x() - chev_size;
-                let chev_y = cursor_y + (h - chev_size) / 2.0;
-                let cv = ChevronView {
-                    direction:   ChevronDirection::Right,
-                    use_case:    ChevronUseCase::SubmenuTrigger,
-                    visibility:  VisibilityPolicy::Always,
-                    placement:   PlacementPolicy::InlineCorner { trailing: true },
-                    hit_area:    HitAreaPolicy::None,
-                    visual_kind: ChevronVisualKind::Stroked,
-                    hovered: hovered || chev_hovered, ..Default::default()
-                };
-                draw_chevron(ctx,
-                    Rect::new(chev_x, chev_y, chev_size, chev_size),
-                    &cv,
-                    &ChevronSettings::default());
+                match trigger {
+                    super::types::SubmenuTrigger::Hover => {
+                        // Hover-trigger row — chevron is a paint-only call,
+                        // not a widget. No coord registration. Uses the same
+                        // atomic chevron paint primitive as the sticky chevron
+                        // in ChevronClick rows so the two row kinds line up.
+                        use crate::ui::widgets::atomic::chevron::{
+                            render::draw_chevron, settings::ChevronSettings,
+                            types::{ChevronDirection, ChevronUseCase, ChevronView,
+                                    ChevronVisualKind, HitAreaPolicy, PlacementPolicy,
+                                    VisibilityPolicy},
+                        };
+                        let chev_size = (h * 0.6).clamp(10.0, 18.0);
+                        let chev_x = content.x + content.width - style.item_padding_x() - chev_size;
+                        let chev_y = cursor_y + (h - chev_size) / 2.0;
+                        let cv = ChevronView {
+                            direction:   ChevronDirection::Right,
+                            use_case:    ChevronUseCase::SubmenuTrigger,
+                            visibility:  VisibilityPolicy::Always,
+                            placement:   PlacementPolicy::Standalone,
+                            hit_area:    HitAreaPolicy::None,
+                            visual_kind: ChevronVisualKind::Stroked,
+                            hovered: false, pressed: false,
+                            ..Default::default()
+                        };
+                        draw_chevron(ctx,
+                            Rect::new(chev_x, chev_y, chev_size, chev_size),
+                            &cv,
+                            &ChevronSettings::default());
+                    }
+                    super::types::SubmenuTrigger::ChevronClick => {
+                        // ChevronClick — real sticky chevron widget,
+                        // registered separately by `register_flat_hits`.
+                        use crate::ui::widgets::atomic::sticky_chevron::{
+                            draw_sticky_chevron, StickyAnchor, StickyChevronSpec, StickyVisibility,
+                        };
+                        use crate::ui::widgets::atomic::chevron::types::{
+                            ChevronDirection, ChevronVisualKind,
+                        };
+                        let chev_size_sticky = (h * 0.6).clamp(10.0, 18.0);
+                        let row_rect = Rect::new(content.x, cursor_y, content.width, h);
+                        let spec = StickyChevronSpec {
+                            direction: ChevronDirection::Right,
+                            size: chev_size_sticky,
+                            inset: style.item_padding_x(),
+                            anchor: StickyAnchor::E,
+                            visibility: StickyVisibility::Always,
+                            visual: ChevronVisualKind::Stroked,
+                            hover_visual: *chevron_hover,
+                            interactive: true,
+                        };
+                        let chev_state = if chev_hovered {
+                            WidgetState::Hovered
+                        } else {
+                            WidgetState::Normal
+                        };
+                        draw_sticky_chevron(ctx, row_rect, &spec, chev_state, WidgetState::Normal);
+                    }
+                }
 
                 cursor_y += h;
             }
@@ -606,12 +644,22 @@ fn register_flat_hits(
             DropdownItem::Separator => {
                 cursor_y += style.separator_height();
             }
-            DropdownItem::Submenu { id, trigger, .. } => {
+            DropdownItem::Submenu { id, trigger, chevron_hover, .. } => {
                 let h = style.item_height();
                 let row = Rect::new(content.x, cursor_y, content.width, h);
+                let chev_size = (h * 0.6).clamp(10.0, 18.0);
+                let pad_x = style.item_padding_x();
+                use crate::ui::widgets::atomic::sticky_chevron::{
+                    register_sticky_chevron, StickyAnchor, StickyChevronSpec, StickyVisibility,
+                };
+                use crate::ui::widgets::atomic::chevron::types::{
+                    ChevronDirection, ChevronVisualKind,
+                };
                 match trigger {
                     super::types::SubmenuTrigger::Hover => {
-                        // The whole row toggles submenu on hover.
+                        // Row body is the hit zone — opens submenu on row hover.
+                        // Chevron is rendered as plain text in draw_flat_list,
+                        // no separate widget registration.
                         coord.register_child(
                             parent,
                             format!("{}:submenu:{}", parent.0.0, id),
@@ -621,21 +669,21 @@ fn register_flat_hits(
                         );
                     }
                     super::types::SubmenuTrigger::ChevronClick => {
-                        // Body of the row is inert; the trailing chevron
-                        // is its own hit zone that opens on click.
-                        let chev_w = h; // square at the end
-                        let chev_rect = Rect::new(
-                            content.x + content.width - chev_w,
-                            cursor_y,
-                            chev_w,
-                            h,
-                        );
-                        coord.register_child(
-                            parent,
-                            format!("{}:submenu-chevron:{}", parent.0.0, id),
-                            WidgetKind::Button,
-                            chev_rect,
-                            Sense::CLICK | Sense::HOVER,
+                        // Row body is inert — only the chevron opens the
+                        // submenu. The chevron is a real interactive sticky.
+                        let spec = StickyChevronSpec {
+                            direction: ChevronDirection::Right,
+                            size: chev_size,
+                            inset: pad_x,
+                            anchor: StickyAnchor::E,
+                            visibility: StickyVisibility::Always,
+                            visual: ChevronVisualKind::Stroked,
+                            hover_visual: *chevron_hover,
+                            interactive: true,
+                        };
+                        let _ = register_sticky_chevron(
+                            coord, parent, row, &spec, WidgetState::Normal,
+                            &format!("submenu:{id}"),
                         );
                     }
                 }
