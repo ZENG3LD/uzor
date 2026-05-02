@@ -24,8 +24,7 @@ use crate::types::{Rect, WidgetId};
 use super::settings::DropdownSettings;
 use super::state::DropdownState;
 use super::types::{
-    CheckboxItem, DropdownGroup, DropdownItem, DropdownItemRight, DropdownRenderKind,
-    DropdownView, DropdownViewKind, GridDropdownItem,
+    DropdownItem, DropdownItemRight, DropdownRenderKind, DropdownView, DropdownViewKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -157,29 +156,14 @@ pub fn register_input_coordinator_dropdown(
     match kind {
         DropdownRenderKind::Flat => {
             if let DropdownViewKind::Flat { items, submenu_items, .. } = &view.kind {
-                register_flat_hits(coord, &dd_id, layout.content, items, settings);
+                register_flat_hits(coord, &dd_id, layout.content, items, settings, "item");
                 if let Some((trigger_id, sub_items)) = submenu_items {
                     if state.submenu_open.as_deref() == Some(trigger_id) {
-                        let sub_frame = compute_submenu_frame(frame, state, settings);
+                        let sub_frame = compute_submenu_frame(frame, items, sub_items, trigger_id, settings, view.submenu_width);
                         let sub_layout = compute_layout(sub_frame, settings);
-                        register_flat_hits(coord, &dd_id, sub_layout.content, sub_items, settings);
+                        register_flat_hits(coord, &dd_id, sub_layout.content, sub_items, settings, "sub-item");
                     }
                 }
-            }
-        }
-        DropdownRenderKind::Inline => {
-            if let DropdownViewKind::Inline { options, .. } = &view.kind {
-                register_inline_hits(coord, &dd_id, layout.content, options, settings);
-            }
-        }
-        DropdownRenderKind::Grid => {
-            if let DropdownViewKind::Grid { items, columns, .. } = &view.kind {
-                register_grid_hits(coord, &dd_id, layout.content, items, *columns, settings);
-            }
-        }
-        DropdownRenderKind::Grouped => {
-            if let DropdownViewKind::Grouped { groups, list_items, .. } = &view.kind {
-                register_grouped_hits(coord, &dd_id, layout.content, groups, list_items, settings);
             }
         }
         DropdownRenderKind::Custom => {}
@@ -256,27 +240,16 @@ fn draw_dropdown_panels(
                 // Submenu sibling panel
                 if let Some((trigger_id, sub_items)) = submenu_items {
                     if state.submenu_open.as_deref() == Some(trigger_id) {
-                        let sub_frame = compute_submenu_frame(frame, state, settings);
+                        let sub_frame = compute_submenu_frame(frame, items, sub_items, trigger_id, settings, view.submenu_width);
                         draw_frame(ctx, sub_frame, settings);
                         let sub_layout = compute_layout(sub_frame, settings);
-                        draw_flat_list(ctx, sub_layout.content, sub_items, *submenu_hovered_id, state, settings);
+                        // Prefer caller-supplied hover id if present, otherwise
+                        // fall back to the auto-synced value on state.
+                        let sub_hov = submenu_hovered_id
+                            .or(state.submenu_hovered_id.as_deref());
+                        draw_flat_list(ctx, sub_layout.content, sub_items, sub_hov, state, settings);
                     }
                 }
-            }
-        }
-        DropdownRenderKind::Inline => {
-            if let DropdownViewKind::Inline { options, hovered_id, .. } = &view.kind {
-                draw_inline_list(ctx, layout.content, options, *hovered_id, settings);
-            }
-        }
-        DropdownRenderKind::Grid => {
-            if let DropdownViewKind::Grid { items, columns, hovered_id } = &view.kind {
-                draw_grid(ctx, layout.content, items, *columns, *hovered_id, settings);
-            }
-        }
-        DropdownRenderKind::Grouped => {
-            if let DropdownViewKind::Grouped { groups, list_items, hovered_id } = &view.kind {
-                draw_grouped(ctx, layout.content, groups, list_items, *hovered_id, settings);
             }
         }
         DropdownRenderKind::Custom => {}
@@ -344,20 +317,49 @@ fn compute_layout(frame: Rect, settings: &DropdownSettings) -> DropdownLayout {
     }
 }
 
-/// Compute the submenu panel frame (sibling to the right of parent).
+/// Compute the submenu panel frame (sibling to the right of parent),
+/// row-to-head: the submenu's top edge aligns with the trigger row's top.
+/// Width / height come from `measure_flat(sub_items)`.
 fn compute_submenu_frame(
-    parent:   Rect,
-    state:    &DropdownState,
-    settings: &DropdownSettings,
+    parent:        Rect,
+    main_items:    &[DropdownItem<'_>],
+    sub_items:     &[DropdownItem<'_>],
+    trigger_id:    &str,
+    settings:      &DropdownSettings,
+    submenu_width: super::types::SubmenuWidth,
 ) -> Rect {
-    let gap = settings.style.submenu_gap();
-    let (_, sy) = state.submenu_origin;
-    // X: parent.right() + gap; Y: from submenu_origin (trigger item y)
+    let style    = settings.style.as_ref();
+    let pad      = style.padding();
+    let gap      = style.submenu_gap();
+
+    // Walk main_items computing each row's Y until we hit the trigger.
+    let mut cursor_y = parent.y + pad;
+    for item in main_items {
+        let h = match item {
+            DropdownItem::Header { .. }     => style.header_height(),
+            DropdownItem::Separator         => style.separator_height(),
+            DropdownItem::Item { .. }       => style.item_height(),
+            DropdownItem::Submenu { id, .. } => {
+                if *id == trigger_id { break; }
+                style.item_height()
+            }
+        };
+        cursor_y += h;
+    }
+
+    let (sw, sh) = measure_flat(sub_items, settings);
+    let width = match submenu_width {
+        super::types::SubmenuWidth::Auto          => sw,
+        super::types::SubmenuWidth::InheritParent => parent.width,
+    };
+    // Natural sizing — frame keeps its own padding so its first row
+    // sits inside, just like the parent panel's first row sits below
+    // the parent's top padding.
     Rect::new(
         parent.x + parent.width + gap,
-        sy,
-        parent.width,
-        parent.height,
+        cursor_y - pad,
+        width,
+        sh,
     )
 }
 
@@ -496,7 +498,7 @@ fn draw_flat_list(
                 cursor_y += h;
             }
 
-            DropdownItem::Submenu { id, label, icon } => {
+            DropdownItem::Submenu { id, label, icon, .. } => {
                 let h       = style.item_height();
                 let hovered = hovered_id == Some(id);
 
@@ -532,10 +534,29 @@ fn draw_flat_list(
                 ctx.set_text_baseline(TextBaseline::Middle);
                 ctx.fill_text(label, text_x, cursor_y + h / 2.0);
 
-                // Caret arrow
-                ctx.set_fill_color(theme.caret_color());
-                ctx.set_text_align(TextAlign::Right);
-                ctx.fill_text("▶", content.x + content.width - style.item_padding_x(), cursor_y + h / 2.0);
+                // Caret — atomic chevron, Right direction.
+                use crate::ui::widgets::atomic::chevron::{
+                    draw_chevron,
+                    settings::ChevronSettings,
+                    types::{ChevronDirection, ChevronUseCase, ChevronView, ChevronVisualKind,
+                            HitAreaPolicy, PlacementPolicy, VisibilityPolicy},
+                };
+                let chev_size = (h * 0.6).clamp(10.0, 18.0);
+                let chev_x = content.x + content.width - style.item_padding_x() - chev_size;
+                let chev_y = cursor_y + (h - chev_size) / 2.0;
+                let cv = ChevronView {
+                    direction:   ChevronDirection::Right,
+                    use_case:    ChevronUseCase::SubmenuTrigger,
+                    visibility:  VisibilityPolicy::Always,
+                    placement:   PlacementPolicy::InlineCorner { trailing: true },
+                    hit_area:    HitAreaPolicy::None,
+                    visual_kind: ChevronVisualKind::Stroked,
+                    hovered, ..Default::default()
+                };
+                draw_chevron(ctx,
+                    Rect::new(chev_x, chev_y, chev_size, chev_size),
+                    &cv,
+                    &ChevronSettings::default());
 
                 cursor_y += h;
             }
@@ -547,191 +568,82 @@ fn draw_flat_list(
 // Template: Inline (split button)
 // ---------------------------------------------------------------------------
 
-fn draw_inline_list(
-    ctx:        &mut dyn RenderContext,
-    content:    Rect,
-    options:    &[(&str, &str)],
-    hovered_id: Option<&str>,
-    settings:   &DropdownSettings,
+// ---------------------------------------------------------------------------
+
+fn register_flat_hits(
+    coord:       &mut InputCoordinator,
+    parent:      &WidgetId,
+    content:     Rect,
+    items:       &[DropdownItem<'_>],
+    settings:    &DropdownSettings,
+    item_prefix: &str,
 ) {
-    let theme = settings.theme.as_ref();
-    let style = settings.style.as_ref();
+    let style     = settings.style.as_ref();
     let mut cursor_y = content.y;
 
-    for (id, label) in options {
-        let h       = style.item_height();
-        let hovered = hovered_id == Some(id);
-
-        let bg = if hovered { theme.item_bg_hover() } else { theme.item_bg_normal() };
-        ctx.set_fill_color(bg);
-        ctx.fill_rounded_rect(content.x, cursor_y, content.width, h, style.item_hover_radius());
-
-        let text_color = if hovered { theme.item_text_hover() } else { theme.item_text() };
-        ctx.set_fill_color(text_color);
-        ctx.set_font(&format!("{}px sans-serif", style.font_size()));
-        ctx.set_text_align(TextAlign::Left);
-        ctx.set_text_baseline(TextBaseline::Middle);
-        ctx.fill_text(label, content.x + style.item_padding_x(), cursor_y + h / 2.0);
-
-        cursor_y += h;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Template: Grid
-// ---------------------------------------------------------------------------
-
-fn draw_grid(
-    ctx:        &mut dyn RenderContext,
-    content:    Rect,
-    items:      &[GridDropdownItem<'_>],
-    columns:    usize,
-    hovered_id: Option<&str>,
-    settings:   &DropdownSettings,
-) {
-    let theme    = settings.theme.as_ref();
-    let style    = settings.style.as_ref();
-    let cell_sz  = style.cell_size();
-    let gap      = style.cell_gap();
-    let icon_sz  = style.icon_size();
-    let columns  = columns.max(1);
-
-    for (i, cell) in items.iter().enumerate() {
-        let col = i % columns;
-        let row = i / columns;
-        let cx  = content.x + col as f64 * (cell_sz + gap);
-        let cy  = content.y + row as f64 * (cell_sz + gap);
-        let cr  = Rect::new(cx, cy, cell_sz, cell_sz);
-
-        let hovered = hovered_id == Some(cell.id);
-
-        // Cell background
-        let bg = if hovered { theme.cell_bg_hover() } else { theme.item_bg_normal() };
-        ctx.set_fill_color(bg);
-        ctx.fill_rounded_rect(cr.x, cr.y, cr.width, cr.height, style.item_hover_radius());
-
-        // Cell border
-        ctx.set_stroke_color(theme.cell_border());
-        ctx.set_stroke_width(1.0);
-        ctx.set_line_dash(&[]);
-        ctx.stroke_rounded_rect(cr.x, cr.y, cr.width, cr.height, style.item_hover_radius());
-
-        // Icon centered in cell
-        let icon_color = if cell.disabled {
-            theme.item_text_disabled()
-        } else {
-            theme.item_text()
-        };
-        ctx.set_fill_color(icon_color);
-        ctx.set_font(&format!("{}px sans-serif", icon_sz));
-        ctx.set_text_align(TextAlign::Center);
-        ctx.set_text_baseline(TextBaseline::Middle);
-        ctx.fill_text(cell.icon, cx + cell_sz / 2.0, cy + cell_sz / 2.0);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Template: Grouped
-// ---------------------------------------------------------------------------
-
-fn draw_grouped(
-    ctx:        &mut dyn RenderContext,
-    content:    Rect,
-    groups:     &[DropdownGroup<'_>],
-    list_items: &[CheckboxItem<'_>],
-    hovered_id: Option<&str>,
-    settings:   &DropdownSettings,
-) {
-    let theme       = settings.theme.as_ref();
-    let style       = settings.style.as_ref();
-    let cell_sz     = style.cell_size();
-    let gap         = style.cell_gap();
-    let icon_sz     = style.icon_size();
-    let label_w     = style.row_label_width();
-    let item_h      = style.item_height();
-    let sep_h       = style.separator_height();
-    let checkbox_sz = style.checkbox_size();
-
-    let mut cursor_y = content.y;
-
-    // --- Grid section ---
-    for group in groups {
-        // Row label
-        ctx.set_fill_color(theme.item_text_disabled());
-        ctx.set_font(&format!("{}px sans-serif", style.font_size()));
-        ctx.set_text_align(TextAlign::Left);
-        ctx.set_text_baseline(TextBaseline::Middle);
-        ctx.fill_text(group.label, content.x, cursor_y + cell_sz / 2.0);
-
-        // Cells in this row
-        let cells_x = content.x + label_w + gap;
-        for (j, cell) in group.items.iter().enumerate() {
-            let cx = cells_x + j as f64 * (cell_sz + gap);
-            let cy = cursor_y;
-            let cr = Rect::new(cx, cy, cell_sz, cell_sz);
-
-            let hovered = hovered_id == Some(cell.id);
-            let bg = if hovered { theme.cell_bg_hover() } else { theme.item_bg_normal() };
-            ctx.set_fill_color(bg);
-            ctx.fill_rounded_rect(cr.x, cr.y, cr.width, cr.height, style.item_hover_radius());
-
-            ctx.set_stroke_color(theme.cell_border());
-            ctx.set_stroke_width(1.0);
-            ctx.set_line_dash(&[]);
-            ctx.stroke_rounded_rect(cr.x, cr.y, cr.width, cr.height, style.item_hover_radius());
-
-            let icon_color = if cell.disabled { theme.item_text_disabled() } else { theme.item_text() };
-            ctx.set_fill_color(icon_color);
-            ctx.set_font(&format!("{}px sans-serif", icon_sz));
-            ctx.set_text_align(TextAlign::Center);
-            ctx.set_text_baseline(TextBaseline::Middle);
-            ctx.fill_text(cell.icon, cx + cell_sz / 2.0, cy + cell_sz / 2.0);
-        }
-
-        cursor_y += cell_sz + gap;
-    }
-
-    if !list_items.is_empty() {
-        // Separator between grid and list sections
-        ctx.set_fill_color(theme.separator());
-        ctx.fill_rect(content.x, cursor_y + sep_h / 2.0 - 0.5, content.width, 1.0);
-        cursor_y += sep_h;
-
-        // --- Checkbox list section ---
-        for cb in list_items {
-            let hovered = hovered_id == Some(cb.id);
-
-            let bg = if hovered { theme.item_bg_hover() } else { theme.item_bg_normal() };
-            ctx.set_fill_color(bg);
-            ctx.fill_rounded_rect(content.x, cursor_y, content.width, item_h, style.item_hover_radius());
-
-            // Stroke-only checkbox square
-            let cb_x = content.x + style.item_padding_x();
-            let cb_y = cursor_y + (item_h - checkbox_sz) / 2.0;
-            if cb.checked {
-                ctx.set_fill_color(theme.checkbox_checked());
-                ctx.fill_rect(cb_x, cb_y, checkbox_sz, checkbox_sz);
+    for item in items {
+        match item {
+            DropdownItem::Header { .. } => {
+                cursor_y += style.header_height();
             }
-            ctx.set_stroke_color(if cb.checked { theme.checkbox_checked() } else { theme.checkbox_border() });
-            ctx.set_stroke_width(1.0);
-            ctx.set_line_dash(&[]);
-            ctx.stroke_rect(cb_x, cb_y, checkbox_sz, checkbox_sz);
-
-            // Label
-            let text_color = if cb.disabled { theme.item_text_disabled() } else { theme.item_text() };
-            ctx.set_fill_color(text_color);
-            ctx.set_font(&format!("{}px sans-serif", style.font_size()));
-            ctx.set_text_align(TextAlign::Left);
-            ctx.set_text_baseline(TextBaseline::Middle);
-            ctx.fill_text(cb.label, cb_x + checkbox_sz + style.icon_text_gap(), cursor_y + item_h / 2.0);
-
-            cursor_y += item_h;
+            DropdownItem::Item { id, disabled, .. } => {
+                let h = style.item_height();
+                if !disabled {
+                    coord.register_child(
+                        parent,
+                        format!("{}:{}:{}", parent.0, item_prefix, id),
+                        WidgetKind::Button,
+                        Rect::new(content.x, cursor_y, content.width, h),
+                        Sense::CLICK | Sense::HOVER,
+                    );
+                }
+                cursor_y += h;
+            }
+            DropdownItem::Separator => {
+                cursor_y += style.separator_height();
+            }
+            DropdownItem::Submenu { id, trigger, .. } => {
+                let h = style.item_height();
+                let row = Rect::new(content.x, cursor_y, content.width, h);
+                match trigger {
+                    super::types::SubmenuTrigger::Hover => {
+                        // The whole row toggles submenu on hover.
+                        coord.register_child(
+                            parent,
+                            format!("{}:submenu:{}", parent.0, id),
+                            WidgetKind::Button,
+                            row,
+                            Sense::CLICK | Sense::HOVER,
+                        );
+                    }
+                    super::types::SubmenuTrigger::ChevronClick => {
+                        // Body of the row is inert; the trailing chevron
+                        // is its own hit zone that opens on click.
+                        let chev_w = h; // square at the end
+                        let chev_rect = Rect::new(
+                            content.x + content.width - chev_w,
+                            cursor_y,
+                            chev_w,
+                            h,
+                        );
+                        coord.register_child(
+                            parent,
+                            format!("{}:submenu-chevron:{}", parent.0, id),
+                            WidgetKind::Button,
+                            chev_rect,
+                            Sense::CLICK | Sense::HOVER,
+                        );
+                    }
+                }
+                cursor_y += h;
+            }
         }
     }
 }
 
+
 // ---------------------------------------------------------------------------
-// Toggle pill helper
+// Toggle pill helper (used by Flat rows with DropdownItemRight::Toggle)
 // ---------------------------------------------------------------------------
 
 fn draw_toggle_pill(
@@ -752,12 +664,10 @@ fn draw_toggle_pill(
     let track_x = content.x + content.width - pad - track_w;
     let track_y = cursor_y + (row_h - track_h) / 2.0;
 
-    // Track
     let track_color = if on { theme.toggle_on() } else { theme.toggle_off() };
     ctx.set_fill_color(track_color);
     ctx.fill_rounded_rect(track_x, track_y, track_w, track_h, track_h / 2.0);
 
-    // Thumb
     let thumb_margin = (track_h - thumb_d) / 2.0;
     let thumb_x = if on {
         track_x + track_w - thumb_d - thumb_margin
@@ -768,160 +678,4 @@ fn draw_toggle_pill(
 
     ctx.set_fill_color(theme.toggle_thumb());
     ctx.fill_rounded_rect(thumb_x, thumb_y, thumb_d, thumb_d, thumb_d / 2.0);
-}
-
-// ---------------------------------------------------------------------------
-// Hit-rect registration helpers
-// ---------------------------------------------------------------------------
-
-fn register_flat_hits(
-    coord:    &mut InputCoordinator,
-    parent:   &WidgetId,
-    content:  Rect,
-    items:    &[DropdownItem<'_>],
-    settings: &DropdownSettings,
-) {
-    let style     = settings.style.as_ref();
-    let mut cursor_y = content.y;
-
-    for item in items {
-        match item {
-            DropdownItem::Header { .. } => {
-                cursor_y += style.header_height();
-            }
-            DropdownItem::Item { id, disabled, .. } => {
-                let h = style.item_height();
-                if !disabled {
-                    coord.register_child(
-                        parent,
-                        format!("{}:item:{}", parent.0, id),
-                        WidgetKind::Button,
-                        Rect::new(content.x, cursor_y, content.width, h),
-                        Sense::CLICK | Sense::HOVER,
-                    );
-                }
-                cursor_y += h;
-            }
-            DropdownItem::Separator => {
-                cursor_y += style.separator_height();
-            }
-            DropdownItem::Submenu { id, .. } => {
-                let h = style.item_height();
-                coord.register_child(
-                    parent,
-                    format!("{}:submenu:{}", parent.0, id),
-                    WidgetKind::Button,
-                    Rect::new(content.x, cursor_y, content.width, h),
-                    Sense::CLICK | Sense::HOVER,
-                );
-                cursor_y += h;
-            }
-        }
-    }
-}
-
-fn register_inline_hits(
-    coord:    &mut InputCoordinator,
-    parent:   &WidgetId,
-    content:  Rect,
-    options:  &[(&str, &str)],
-    settings: &DropdownSettings,
-) {
-    let style     = settings.style.as_ref();
-    let mut cursor_y = content.y;
-
-    for (id, _label) in options {
-        let h = style.item_height();
-        coord.register_child(
-            parent,
-            format!("{}:option:{}", parent.0, id),
-            WidgetKind::Button,
-            Rect::new(content.x, cursor_y, content.width, h),
-            Sense::CLICK | Sense::HOVER,
-        );
-        cursor_y += h;
-    }
-}
-
-fn register_grid_hits(
-    coord:    &mut InputCoordinator,
-    parent:   &WidgetId,
-    content:  Rect,
-    items:    &[GridDropdownItem<'_>],
-    columns:  usize,
-    settings: &DropdownSettings,
-) {
-    let style   = settings.style.as_ref();
-    let cell_sz = style.cell_size();
-    let gap     = style.cell_gap();
-    let columns = columns.max(1);
-
-    for (i, cell) in items.iter().enumerate() {
-        if cell.disabled {
-            continue;
-        }
-        let col = i % columns;
-        let row = i / columns;
-        let cx  = content.x + col as f64 * (cell_sz + gap);
-        let cy  = content.y + row as f64 * (cell_sz + gap);
-        coord.register_child(
-            parent,
-            format!("{}:cell:{}", parent.0, cell.id),
-            WidgetKind::Button,
-            Rect::new(cx, cy, cell_sz, cell_sz),
-            Sense::CLICK | Sense::HOVER,
-        );
-    }
-}
-
-fn register_grouped_hits(
-    coord:      &mut InputCoordinator,
-    parent:     &WidgetId,
-    content:    Rect,
-    groups:     &[DropdownGroup<'_>],
-    list_items: &[CheckboxItem<'_>],
-    settings:   &DropdownSettings,
-) {
-    let style       = settings.style.as_ref();
-    let cell_sz     = style.cell_size();
-    let gap         = style.cell_gap();
-    let label_w     = style.row_label_width();
-    let item_h      = style.item_height();
-    let sep_h       = style.separator_height();
-
-    let mut cursor_y = content.y;
-
-    for group in groups {
-        let cells_x = content.x + label_w + gap;
-        for (j, cell) in group.items.iter().enumerate() {
-            if cell.disabled {
-                continue;
-            }
-            let cx = cells_x + j as f64 * (cell_sz + gap);
-            coord.register_child(
-                parent,
-                format!("{}:cell:{}", parent.0, cell.id),
-                WidgetKind::Button,
-                Rect::new(cx, cursor_y, cell_sz, cell_sz),
-                Sense::CLICK | Sense::HOVER,
-            );
-        }
-        cursor_y += cell_sz + gap;
-    }
-
-    if !list_items.is_empty() {
-        cursor_y += sep_h;
-        for cb in list_items {
-            if !cb.disabled {
-                coord.register_child(
-                    parent,
-                    format!("{}:checkbox:{}", parent.0, cb.id),
-                    WidgetKind::Button,
-                    Rect::new(content.x, cursor_y, content.width, item_h),
-                    Sense::CLICK | Sense::HOVER,
-                );
-            }
-            cursor_y += item_h;
-        }
-    }
 }

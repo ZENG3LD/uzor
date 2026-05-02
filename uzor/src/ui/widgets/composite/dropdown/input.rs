@@ -42,17 +42,60 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Dropdown, rect, sense: Sense::CLICK });
 
-    // Register dispatch pattern: any item click on this dropdown surfaces
+    // Register dispatch patterns: clicks on items + sub-items both surface
     // as DispatchEvent::DropdownItemClicked { dropdown_id, item_id }.
     layout.dispatcher_mut().on_prefix(
         format!("{}:item:", id.0),
         EventBuilder::DropdownItem { dropdown_id: id.clone() },
     );
+    layout.dispatcher_mut().on_prefix(
+        format!("{}:sub-item:", id.0),
+        EventBuilder::DropdownItem { dropdown_id: id.clone() },
+    );
+    // Submenu chevron clicks (only used for SubmenuTrigger::ChevronClick).
+    layout.dispatcher_mut().on_prefix(
+        format!("{}:submenu-chevron:", id.0),
+        EventBuilder::DropdownSubmenuToggleFromSuffix { dropdown_id: id.clone() },
+    );
 
-    // Auto-forward hovered_id from the coordinator into the dropdown state.
-    // The app no longer needs to copy coord.hovered_widget() by hand.
-    let prefix = format!("{}:item:", id.0);
-    state.sync_hover_from(&layout.ctx_mut().input, &prefix);
+    // Auto-forward hovered_id (main panel) and submenu_hovered_id
+    // (submenu panel) from the coordinator into the dropdown state.
+    state.sync_flat_hover(&layout.ctx_mut().input, &id.0);
+
+    // Auto-manage submenu open/close from coordinator hover state.
+    //
+    // - Hovering a `:submenu:{id}` row (trigger=Hover) opens it.
+    // - Hovering inside the submenu panel keeps it open.
+    // - Hovering a *non-submenu* main row closes the submenu.
+    // - Hovering a `:submenu-chevron:` row keeps the submenu state alone
+    //   (open is driven by *click* on the chevron, dispatched as
+    //   DispatchEvent::DropdownSubmenuToggle).
+    {
+        let coord = &layout.ctx_mut().input;
+        let main_prefix    = format!("{}:item:", id.0);
+        let submenu_prefix = format!("{}:submenu:", id.0);
+        let chev_prefix    = format!("{}:submenu-chevron:", id.0);
+        let sub_prefix     = format!("{}:sub-item:", id.0);
+        let hovered = coord.hovered_widget().map(|w| w.0.clone());
+        match hovered {
+            Some(h) if h.starts_with(&submenu_prefix) && !h.starts_with(&chev_prefix) => {
+                let rest = &h[submenu_prefix.len()..];
+                state.submenu_open = Some(rest.to_string());
+            }
+            Some(h) if h.starts_with(&chev_prefix) => {
+                // Chevron hover — leave submenu state untouched; click
+                // toggles via dispatcher.
+            }
+            Some(h) if h.starts_with(&sub_prefix) => {
+                // Inside the open submenu panel — keep it.
+            }
+            Some(h) if h.starts_with(&main_prefix) => {
+                // Hovered a regular item — close any open submenu.
+                state.submenu_open = None;
+            }
+            _ => {}
+        }
+    }
 
     register_context_manager_dropdown(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,

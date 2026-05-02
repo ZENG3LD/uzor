@@ -12,24 +12,12 @@
 //!
 //! | Kind | Chrome | Body |
 //! |------|--------|------|
-//! | `Plain` | frame + shadow | body closure |
-//! | `ColorPickerGrid` | frame + shadow + blur | swatch grid + opacity |
-//! | `ColorPickerHsv` | frame + shadow + blur | SV + hue + hex + opacity + actions |
-//! | `SwatchGrid` | frame + shadow | preset grid + custom + remove |
-//! | `ItemList` | frame + shadow | vertical item list |
-//! | `IndicatorStrip` | alpha fill only | per-indicator action rows |
-//! | `Custom` | none | caller-provided draw closure |
+//! | `Plain` | frame + shadow | caller-drawn into `body_rect()` |
+//! | `Custom` | none | caller drives every paint call |
 //!
-//! ## Usage
-//!
-//! ```ignore
-//! use uzor::ui::widgets::composite::popup::{
-//!     register_context_manager_popup,
-//!     PopupView, PopupViewKind, PopupState, PopupSettings,
-//!     PopupRenderKind, BackdropKind, ColorPickerLevel,
-//!     DefaultPopupTheme, DefaultPopupStyle, BackgroundFill,
-//! };
-//! ```
+//! Anything more elaborate (color pickers, swatch grids, indicator strips,
+//! item lists) is composed by the caller inside a `Plain` popup using
+//! atomic widgets. The composite is intentionally minimal.
 
 pub mod input;
 pub mod render;
@@ -47,7 +35,4 @@ pub use settings::PopupSettings;
 pub use state::PopupState;
 pub use style::{BackgroundFill, DefaultPopupStyle, PopupStyle};
 pub use theme::{DefaultPopupTheme, PopupTheme};
-pub use types::{
-    BackdropKind, ColorPickerLevel, DropdownItem, HsvColor, IndicatorRowInfo,
-    PopupRenderKind, PopupView, PopupViewKind,
-};
+pub use types::{BackdropKind, PopupRenderKind, PopupView, PopupViewKind};

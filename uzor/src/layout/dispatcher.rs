@@ -102,6 +102,14 @@ pub enum DispatchEvent {
         /// Which edge / corner is being grabbed.
         edge:    ResizeEdge,
     },
+
+    /// User clicked a submenu trigger chevron inside a `Flat` dropdown.
+    /// The host should set `dropdown_state.submenu_open = Some(trigger_id)`
+    /// (or clear it if it was already that id, to toggle).
+    DropdownSubmenuToggle {
+        dropdown_id: WidgetId,
+        trigger_id:  String,
+    },
 }
 
 /// Edges and corners a resize handle can be attached to. Used by
@@ -185,6 +193,10 @@ pub enum EventBuilder {
     /// Fires `ResizeHandleDragStarted { host_id, edge }` when a resize
     /// handle is grabbed on the composite identified by `host_id`.
     ResizeHandle { host_id: WidgetId, edge: super::ResizeEdge },
+
+    /// Fires `DropdownSubmenuToggle { dropdown_id, trigger_id = suffix }`
+    /// when a `:submenu-chevron:{trigger_id}` row is clicked.
+    DropdownSubmenuToggleFromSuffix { dropdown_id: WidgetId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -338,6 +350,12 @@ fn build(builder: &EventBuilder, id: &str, pattern: &str) -> DispatchEvent {
             DispatchEvent::ResizeHandleDragStarted {
                 host_id: host_id.clone(),
                 edge: *edge,
+            }
+        }
+        EventBuilder::DropdownSubmenuToggleFromSuffix { dropdown_id } => {
+            DispatchEvent::DropdownSubmenuToggle {
+                dropdown_id: dropdown_id.clone(),
+                trigger_id:  suffix(),
             }
         }
     }

@@ -38,7 +38,7 @@ pub enum DropdownItem<'a> {
     /// Horizontal 1 px divider.
     Separator,
 
-    /// Item that opens a sibling submenu panel on hover/click.
+    /// Item that opens a sibling submenu panel.
     Submenu {
         /// Stable string id for the submenu trigger row.
         id: &'a str,
@@ -46,7 +46,32 @@ pub enum DropdownItem<'a> {
         label: &'a str,
         /// Optional icon identifier.
         icon: Option<&'a str>,
+        /// How the submenu opens. `Hover` = opens whenever the row is
+        /// hovered; `ChevronClick` = opens only when the user clicks the
+        /// chevron at the trailing edge of the row.
+        trigger: SubmenuTrigger,
     },
+}
+
+/// How a submenu opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubmenuTrigger {
+    /// Hovering the trigger row opens the submenu (classic menu UX).
+    Hover,
+    /// Clicking the chevron at the trailing edge of the row opens the
+    /// submenu. Hovering the row alone does nothing.
+    ChevronClick,
+}
+
+/// How the submenu panel width is computed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SubmenuWidth {
+    /// Auto-fit: width = `measure_flat(sub_items).w`. Each panel hugs
+    /// its own labels (default, the natural choice).
+    #[default]
+    Auto,
+    /// Inherit the parent panel's width — the two columns line up.
+    InheritParent,
 }
 
 // ---------------------------------------------------------------------------
@@ -66,54 +91,21 @@ pub enum DropdownItemRight<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// GridDropdownItem
-// ---------------------------------------------------------------------------
-
-/// Single cell for the `Grid` template (icon-only, no label).
-pub struct GridDropdownItem<'a> {
-    /// Stable string id.
-    pub id: &'a str,
-    /// Icon identifier.
-    pub icon: &'a str,
-    /// Whether the cell is selectable.
-    pub disabled: bool,
-}
-
-// ---------------------------------------------------------------------------
-// DropdownGroup  (Grouped template)
-// ---------------------------------------------------------------------------
-
-/// One group row in the `Grouped` template (row label + cells).
-pub struct DropdownGroup<'a> {
-    /// Row label shown on the left (e.g. "1", "2", "3").
-    pub label: &'a str,
-    /// Icon cells in this row.
-    pub items: &'a [GridDropdownItem<'a>],
-}
-
-// ---------------------------------------------------------------------------
-// CheckboxItem  (Grouped template list section)
-// ---------------------------------------------------------------------------
-
-/// Stroke-only checkbox item below the grid section in `Grouped`.
-pub struct CheckboxItem<'a> {
-    /// Stable string id.
-    pub id: &'a str,
-    /// Display label.
-    pub label: &'a str,
-    /// Whether the checkbox is checked.
-    pub checked: bool,
-    /// Whether the item is selectable.
-    pub disabled: bool,
-}
-
-// ---------------------------------------------------------------------------
 // DropdownViewKind
 // ---------------------------------------------------------------------------
 
 /// Template-specific per-frame data.
+///
+/// Two variants only:
+/// - `Flat`   — vertical list of [`DropdownItem`] rows, with optional sibling
+///   submenu panel; covers single-level menus *and* one-level-deep menus.
+/// - `Custom` — escape hatch.
+///
+/// More elaborate pickers (icon grids, grouped rows, inline current-value
+/// triggers) are domain-specific compositions the application assembles
+/// on top of `Flat` or in a `Custom` closure.
 pub enum DropdownViewKind<'a> {
-    /// Single-level item list anchored below trigger (Template 1: Flat).
+    /// Single-level item list anchored below the trigger.
     Flat {
         /// Ordered item rows.
         items: &'a [DropdownItem<'a>],
@@ -126,37 +118,7 @@ pub enum DropdownViewKind<'a> {
         submenu_hovered_id: Option<&'a str>,
     },
 
-    /// Split trigger + option list inside settings modals (Template 2: Inline).
-    Inline {
-        /// Currently selected / displayed value.
-        current_value: &'a str,
-        /// Options as `(id, label)` pairs.
-        options: &'a [(&'a str, &'a str)],
-        /// Id of the currently hovered option, if any.
-        hovered_id: Option<&'a str>,
-    },
-
-    /// Icon-only N×M grid of cells, no labels (Template 3: Grid).
-    Grid {
-        /// All cells in row-major order.
-        items: &'a [GridDropdownItem<'a>],
-        /// Number of columns.
-        columns: usize,
-        /// Id of the currently hovered cell, if any.
-        hovered_id: Option<&'a str>,
-    },
-
-    /// Grouped rows of square cells + checkbox list section (Template 4: Grouped).
-    Grouped {
-        /// Row groups (label + cells).
-        groups: &'a [DropdownGroup<'a>],
-        /// Checkbox items in the list section below the grid.
-        list_items: &'a [CheckboxItem<'a>],
-        /// Id of the currently hovered item (grid cell or checkbox row).
-        hovered_id: Option<&'a str>,
-    },
-
-    /// Escape hatch — caller supplies draw closure; composite provides frame (Template 5).
+    /// Escape hatch — caller supplies draw closure; composite provides frame.
     Custom(Box<dyn Fn(&mut dyn RenderContext, Rect, &DropdownState, &DropdownSettings) + 'a>),
 }
 
@@ -190,6 +152,11 @@ pub struct DropdownView<'a> {
     /// Dropdowns are never resizable / draggable — they're transient
     /// surfaces.
     pub overflow: crate::types::OverflowMode,
+
+    /// How a submenu panel sizes its width relative to the parent.
+    /// `Auto` (default) — each panel measures its own labels.
+    /// `InheritParent` — sub panel matches parent panel width.
+    pub submenu_width: SubmenuWidth,
 }
 
 // ---------------------------------------------------------------------------
@@ -197,19 +164,10 @@ pub struct DropdownView<'a> {
 // ---------------------------------------------------------------------------
 
 /// Layout / input registration strategy selector.
-///
-/// Mirrors the active `DropdownViewKind` variant but without per-frame data,
-/// making it cheap to pass around for registration-only paths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropdownRenderKind {
-    /// Single-level item list (Template 1: Flat).
+    /// Single-level item list with optional sibling submenu panel.
     Flat,
-    /// Split trigger + option list (Template 2: Inline).
-    Inline,
-    /// Icon-only grid (Template 3: Grid).
-    Grid,
-    /// Grouped rows + checkbox list (Template 4: Grouped).
-    Grouped,
-    /// Escape hatch (Template 5: Custom).
+    /// Escape hatch — caller-driven draw.
     Custom,
 }

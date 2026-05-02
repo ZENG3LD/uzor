@@ -51,6 +51,10 @@ pub struct DropdownState {
     /// Computed as `(parent_menu.right() + gap, trigger_item.y)`.
     pub submenu_origin: (f64, f64),
 
+    /// Id of the item the pointer is hovering over inside the submenu
+    /// panel.  Set by `sync_flat_hover`.
+    pub submenu_hovered_id: Option<String>,
+
     // --- Sizing constraints ---
 
     /// Maximum height of the panel in pixels.
@@ -87,6 +91,7 @@ impl Default for DropdownState {
             scroll_offset: 0.0,
             submenu_open: None,
             submenu_origin: (0.0, 0.0),
+            submenu_hovered_id: None,
             max_height: 0.0,
             min_width: 180.0,
             primed_id: None,
@@ -158,5 +163,38 @@ impl DropdownState {
             .map(|id| id.0.as_str())
             .filter(|s| s.starts_with(widget_id_prefix))
             .map(|s| s[widget_id_prefix.len()..].to_owned());
+    }
+
+    /// Sync hover state for a Flat dropdown that has both a main panel
+    /// and a submenu panel.  Recognises four child-id prefixes:
+    /// `:item:`, `:submenu:`, `:submenu-chevron:`, `:sub-item:`.
+    /// Updates `hovered_id` (main panel) and `submenu_hovered_id`
+    /// (submenu panel).
+    pub fn sync_flat_hover(&mut self, coord: &InputCoordinator, dropdown_id: &str) {
+        if !self.open {
+            return;
+        }
+        let main_pref = format!("{}:item:", dropdown_id);
+        let sm_pref   = format!("{}:submenu:", dropdown_id);
+        let chev_pref = format!("{}:submenu-chevron:", dropdown_id);
+        let sub_pref  = format!("{}:sub-item:", dropdown_id);
+
+        self.hovered_id = None;
+        self.submenu_hovered_id = None;
+
+        if let Some(id) = coord.hovered_widget().map(|w| w.0.clone()) {
+            if let Some(rest) = id.strip_prefix(&main_pref) {
+                self.hovered_id = Some(rest.to_string());
+            } else if let Some(rest) = id.strip_prefix(&chev_pref) {
+                // Chevron of a submenu trigger row hovered — surface the
+                // *trigger row id* as the main panel's hovered_id so the
+                // row paints in the hover state.
+                self.hovered_id = Some(rest.to_string());
+            } else if let Some(rest) = id.strip_prefix(&sm_pref) {
+                self.hovered_id = Some(rest.to_string());
+            } else if let Some(rest) = id.strip_prefix(&sub_pref) {
+                self.submenu_hovered_id = Some(rest.to_string());
+            }
+        }
     }
 }

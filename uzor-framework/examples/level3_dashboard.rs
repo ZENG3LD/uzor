@@ -78,8 +78,7 @@ use uzor::ui::widgets::composite::popup::input::register_layout_manager_popup;
 use uzor::ui::widgets::composite::popup::settings::PopupSettings;
 use uzor::ui::widgets::composite::popup::state::PopupState;
 use uzor::ui::widgets::composite::popup::types::{
-    BackdropKind as PopupBackdrop, DropdownItem as PopupItem, HsvColor, IndicatorRowInfo,
-    PopupRenderKind, PopupView, PopupViewKind,
+    BackdropKind as PopupBackdrop, PopupRenderKind, PopupView, PopupViewKind,
 };
 
 use uzor::ui::widgets::composite::sidebar::input::register_layout_manager_sidebar;
@@ -990,13 +989,13 @@ impl AppState {
                     self.demo_toolbar_right, self.demo_toolbar_bottom);
             }
             "dd-popup-widget" => {
-                // Like Modals dropdown — picking a kind opens the popup.
+                // L2 sub-items (under :sub-item: prefix) reach this branch.
+                // 0 = Plain (text body), 1 = Custom (color grid 4×4 with
+                // each cell registered as a Button child of the popup).
                 self.popup_kind = match item_id {
-                    "popup-cpgrid"   => Some(0),
-                    "popup-cphsv"    => Some(1),
-                    "popup-swatch"   => Some(2),
-                    "popup-strip"    => Some(4),
-                    _                => self.popup_kind,
+                    "popup-plain"        => Some(0),
+                    "popup-custom-grid"  => Some(1),
+                    _                    => self.popup_kind,
                 };
                 self.dropdown_popup_state.close();
             }
@@ -2629,6 +2628,7 @@ impl AppState {
                 kind: DropdownViewKind::Flat { items: &file_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
                 size_mode: uzor::types::SizeMode::AutoFit,
                 overflow: uzor::types::OverflowMode::Clip,
+                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2662,6 +2662,7 @@ impl AppState {
                 kind: DropdownViewKind::Flat { items: &view_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
                 size_mode: uzor::types::SizeMode::AutoFit,
                 overflow: uzor::types::OverflowMode::Clip,
+                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2705,6 +2706,7 @@ impl AppState {
                 kind: DropdownViewKind::Flat { items: &help_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
                 size_mode: uzor::types::SizeMode::AutoFit,
                 overflow: uzor::types::OverflowMode::Clip,
+                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2745,6 +2747,7 @@ impl AppState {
                 kind: DropdownViewKind::Flat { items: &sidebar_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
                 size_mode: uzor::types::SizeMode::AutoFit,
                 overflow: uzor::types::OverflowMode::Clip,
+                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2784,6 +2787,7 @@ impl AppState {
                 kind: DropdownViewKind::Flat { items: &toolbar_items_dd, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
                 size_mode: uzor::types::SizeMode::AutoFit,
                 overflow: uzor::types::OverflowMode::Clip,
+                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2795,16 +2799,60 @@ impl AppState {
             );
         }
 
-        // ── Popup templates dropdown ──────────────────────────────────────────
+        // ── Popup templates dropdown (Plain | Custom) ──────────────────────────
+        // Both rows are submenu triggers — Plain opens its L2 on hover,
+        // Custom opens its L2 only on chevron click. Demonstrates both
+        // SubmenuTrigger variants in one place.
         let popup_items_dd = [
-            DropdownItem::Header { label: "PopupViewKind" },
-            DropdownItem::Item { id: "popup-cpgrid",    label: "ColorPickerGrid", icon: None, right: DropdownItemRight::Shortcut("L1 picker"),   disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "popup-cphsv",     label: "ColorPickerHsv",  icon: None, right: DropdownItemRight::Shortcut("L2 picker"),   disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "popup-swatch",    label: "SwatchGrid",      icon: None, right: DropdownItemRight::Shortcut("compact"),     disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "popup-strip",     label: "IndicatorStrip",  icon: None, right: DropdownItemRight::Shortcut("horizontal"),  disabled: false, danger: false, accent_color: None },
+            DropdownItem::Header { label: "Popup kind" },
+            DropdownItem::Submenu {
+                id: "popup-plain",
+                label: "Plain",
+                icon: None,
+                trigger: uzor::ui::widgets::composite::dropdown::types::SubmenuTrigger::Hover,
+            },
+            DropdownItem::Submenu {
+                id: "popup-custom",
+                label: "Custom",
+                icon: None,
+                trigger: uzor::ui::widgets::composite::dropdown::types::SubmenuTrigger::ChevronClick,
+            },
+        ];
+        let popup_plain_sub_items = [
+            DropdownItem::Item {
+                id: "popup-plain", label: "Plain popup",
+                icon: None,
+                right: DropdownItemRight::Shortcut("text"),
+                disabled: false, danger: false, accent_color: None,
+            },
+        ];
+        let popup_custom_sub_items = [
+            DropdownItem::Item {
+                id: "popup-custom-grid", label: "Color grid 4×4",
+                icon: None,
+                right: DropdownItemRight::Shortcut("buttons"),
+                disabled: false, danger: false, accent_color: None,
+            },
+            // Debug stubs — exercise multi-row submenu hover.
+            DropdownItem::Item {
+                id: "popup-stub-a", label: "Stub A",
+                icon: None, right: DropdownItemRight::None,
+                disabled: false, danger: false, accent_color: None,
+            },
+            DropdownItem::Item {
+                id: "popup-stub-b", label: "Stub B",
+                icon: None, right: DropdownItemRight::None,
+                disabled: false, danger: false, accent_color: None,
+            },
+            DropdownItem::Item {
+                id: "popup-stub-c", label: "Stub C",
+                icon: None, right: DropdownItemRight::None,
+                disabled: false, danger: false, accent_color: None,
+            },
         ];
         if self.dropdown_popup_state.open {
             let hovered_id = self.dropdown_popup_state.hovered_id.clone();
+            let open_id = self.dropdown_popup_state.submenu_open.clone();
             let origin = self.dropdown_popup_state.effective_origin();
             let (pw, ph) = measure_flat(&popup_items_dd, &DropdownSettings::default());
             self.layout.push_overlay(OverlayEntry {
@@ -2814,13 +2862,24 @@ impl AppState {
                 anchor: None,
             });
             self.layout.ctx_mut().input.push_layer(LayerId::popup(), 25, false);
+            let submenu_items = match open_id.as_deref() {
+                Some("popup-plain")  => Some(("popup-plain",  &popup_plain_sub_items[..])),
+                Some("popup-custom") => Some(("popup-custom", &popup_custom_sub_items[..])),
+                _                    => None,
+            };
             let mut dd_view = DropdownView {
                 anchor: self.dropdown_popup_state.anchor_rect,
                 position_override: self.dropdown_popup_state.open_position_override,
                 open: true,
-                kind: DropdownViewKind::Flat { items: &popup_items_dd, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
+                kind: DropdownViewKind::Flat {
+                    items: &popup_items_dd,
+                    hovered_id: hovered_id.as_deref(),
+                    submenu_items,
+                    submenu_hovered_id: None,
+                },
                 size_mode: uzor::types::SizeMode::AutoFit,
                 overflow: uzor::types::OverflowMode::Clip,
+                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2857,6 +2916,7 @@ impl AppState {
                 kind: DropdownViewKind::Flat { items: &theme_items_dd, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
                 size_mode: uzor::types::SizeMode::AutoFit,
                 overflow: uzor::types::OverflowMode::Clip,
+                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2894,6 +2954,7 @@ impl AppState {
                 kind: DropdownViewKind::Flat { items: &addpanel_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
                 size_mode: uzor::types::SizeMode::AutoFit,
                 overflow: uzor::types::OverflowMode::Clip,
+                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2905,116 +2966,124 @@ impl AppState {
             );
         }
 
-        // ── Demo popup (selected from Popup dropdown) ─────────────────────────
-        // Each variant is a real PopupViewKind rendered through the popup
-        // composite — composite measures the natural rect (AutoFit) so we
-        // don't hardcode w/h here.
+        // ── Demo popup ────────────────────────────────────────────────────────
+        // Two flavours, both via the slim popup composite:
+        //   0 (Plain)  → text body, no inner widgets
+        //   1 (Custom) → caller-driven 4×4 color grid where every cell is
+        //                registered as a child Button so it hovers/clicks
+        //                through the dispatcher
         if let Some(kind_idx) = self.popup_kind {
-            use uzor::ui::widgets::composite::popup::render::{
-                measure_color_picker_grid, measure_color_picker_hsv,
-                measure_indicator_strip, measure_swatch_grid,
-            };
+            use uzor::ui::widgets::composite::popup::render::body_rect;
             let popup_settings = PopupSettings::default();
-            // Demo content shared by ColorPickerGrid / SwatchGrid.
-            let palette: [&str; 16] = [
-                "#ef5350","#f59e0b","#fbbf24","#10b981","#22d3ee","#2962ff","#7c3aed","#ec4899",
-                "#94a3b8","#fde68a","#86efac","#67e8f9","#93c5fd","#c4b5fd","#fbcfe8","#1f2937",
-            ];
-            let preset_rgba: [[f32; 4]; 12] = [
-                [0.94,0.33,0.31,1.0],[0.96,0.62,0.04,1.0],[0.98,0.75,0.14,1.0],[0.06,0.73,0.51,1.0],
-                [0.13,0.83,0.93,1.0],[0.16,0.38,1.0, 1.0],[0.49,0.23,0.93,1.0],[0.93,0.28,0.60,1.0],
-                [0.58,0.64,0.72,1.0],[0.99,0.90,0.52,1.0],[0.53,0.94,0.67,1.0],[0.40,0.91,0.98,1.0],
-            ];
-            let item_list_rows: [PopupItem<'_>; 6] = [
-                PopupItem::Header { label: "Recent" },
-                PopupItem::Item { id: "i1", label: "Open project", right_label: Some("Ctrl+O"), disabled: false, danger: false },
-                PopupItem::Item { id: "i2", label: "New chart",    right_label: Some("Ctrl+N"), disabled: false, danger: false },
-                PopupItem::Separator,
-                PopupItem::Submenu { id: "i3", label: "Recent files" },
-                PopupItem::Item { id: "i4", label: "Delete",       right_label: None,           disabled: false, danger: true  },
-            ];
-            let indicator_rows: [IndicatorRowInfo<'_>; 3] = [
-                IndicatorRowInfo { id: 1, display_name: "RSI",    visible: true  },
-                IndicatorRowInfo { id: 2, display_name: "MACD",   visible: false },
-                IndicatorRowInfo { id: 3, display_name: "BBands", visible: true  },
-            ];
+            let pad = popup_settings.style.padding();
 
-            // Build per-kind view + measured size.
-            let (popup_kind_e, view_kind, popup_w, popup_h) = match kind_idx {
+            match kind_idx {
                 0 => {
-                    let (w, h) = measure_color_picker_grid(&palette, &popup_settings);
-                    (PopupRenderKind::ColorPickerGrid,
-                     PopupViewKind::ColorPickerGrid {
-                        current_color: "#2962ff",
-                        swatches: &palette,
-                        hovered_swatch: None,
-                        opacity: 1.0,
-                        opacity_hidden: false,
-                     }, w, h)
-                }
-                1 => {
-                    let (w, h) = measure_color_picker_hsv(&popup_settings);
-                    (PopupRenderKind::ColorPickerHsv,
-                     PopupViewKind::ColorPickerHsv {
-                        hsv: HsvColor { h: 220.0, s: 0.9, v: 1.0 },
-                        hex_input: "2962ff",
-                        hex_editing: false,
-                        opacity: 1.0,
-                        opacity_hidden: false,
-                     }, w, h)
-                }
-                2 => {
-                    let (w, h) = measure_swatch_grid(&preset_rgba, &[], &popup_settings);
-                    (PopupRenderKind::SwatchGrid,
-                     PopupViewKind::SwatchGrid {
-                        preset_swatches: &preset_rgba,
-                        custom_swatches: &[],
-                        hovered_index: None,
-                        hovered_remove: false,
-                        hovered_add: false,
-                     }, w, h)
+                    // Plain popup — text body sized from font metric.
+                    let body_w = 220.0_f64;
+                    let body_h = 60.0_f64;
+                    let popup_w = body_w + pad * 2.0;
+                    let popup_h = body_h + pad * 2.0;
+                    let px = (width as f64 - popup_w) / 2.0;
+                    let py = (height as f64 - popup_h) / 2.0;
+                    self.layout.push_overlay(OverlayEntry {
+                        id: "demo-popup-overlay".to_string(),
+                        kind: OverlayKind::Popup,
+                        rect: Rect::new(px, py, popup_w, popup_h),
+                        anchor: None,
+                    });
+                    let mut v = PopupView {
+                        origin: (px, py),
+                        anchor: None,
+                        backdrop: PopupBackdrop::Dim,
+                        kind: PopupViewKind::Plain,
+                        size_mode: uzor::types::SizeMode::AutoFit,
+                        overflow: uzor::types::OverflowMode::Clip,
+                    };
+                    let _ = register_layout_manager_popup(
+                        &mut self.layout, &mut render,
+                        LayoutNodeId::ROOT,
+                        "demo-popup-overlay", "demo-popup-widget",
+                        &mut self.popup_state, &mut v,
+                        &popup_settings, PopupRenderKind::Plain,
+                    );
+                    if let Some(frame) = self.layout.rect_for_overlay("demo-popup-overlay") {
+                        let body = body_rect(frame, &popup_settings);
+                        label(&mut render, body, "Plain popup body", TextAlign::Center, "#d1d4dc");
+                    }
                 }
                 _ => {
-                    // IndicatorStrip — width = style.min_width().
-                    let (w, h) = measure_indicator_strip(indicator_rows.len(), &popup_settings);
-                    (PopupRenderKind::IndicatorStrip,
-                     PopupViewKind::IndicatorStrip {
-                        indicators: &indicator_rows,
-                        hovered_indicator_id: None,
-                        hovered_action: None,
-                     }, w, h)
+                    // Custom popup — 4×4 grid of color buttons. Every cell
+                    // is a real child button so it dispatches through the
+                    // coordinator (hover / click / focus).
+                    let palette: [&str; 16] = [
+                        "#ef5350","#f59e0b","#fbbf24","#10b981","#22d3ee","#2962ff","#7c3aed","#ec4899",
+                        "#94a3b8","#fde68a","#86efac","#67e8f9","#93c5fd","#c4b5fd","#fbcfe8","#1f2937",
+                    ];
+                    let cols = 4_usize;
+                    let cell = 28.0_f64;
+                    let gap  = 6.0_f64;
+                    let rows = (palette.len() + cols - 1) / cols;
+                    let body_w = cols as f64 * cell + (cols as f64 - 1.0) * gap;
+                    let body_h = rows as f64 * cell + (rows as f64 - 1.0) * gap;
+                    let popup_w = body_w + pad * 2.0;
+                    let popup_h = body_h + pad * 2.0;
+                    let px = (width as f64 - popup_w) / 2.0;
+                    let py = (height as f64 - popup_h) / 2.0;
+                    self.layout.push_overlay(OverlayEntry {
+                        id: "demo-popup-overlay".to_string(),
+                        kind: OverlayKind::Popup,
+                        rect: Rect::new(px, py, popup_w, popup_h),
+                        anchor: None,
+                    });
+                    // Use Plain so the composite paints the chrome — Custom
+                    // would skip the frame draw.
+                    let mut v = PopupView {
+                        origin: (px, py),
+                        anchor: None,
+                        backdrop: PopupBackdrop::Dim,
+                        kind: PopupViewKind::Plain,
+                        size_mode: uzor::types::SizeMode::AutoFit,
+                        overflow: uzor::types::OverflowMode::Clip,
+                    };
+                    let _ = register_layout_manager_popup(
+                        &mut self.layout, &mut render,
+                        LayoutNodeId::ROOT,
+                        "demo-popup-overlay", "demo-popup-widget",
+                        &mut self.popup_state, &mut v,
+                        &popup_settings, PopupRenderKind::Plain,
+                    );
+                    // Caller body — register every cell + paint its swatch.
+                    if let Some(frame) = self.layout.rect_for_overlay("demo-popup-overlay") {
+                        let body = body_rect(frame, &popup_settings);
+                        let popup_id = uzor::types::WidgetId::new("demo-popup-widget");
+                        let coord = &mut self.layout.ctx_mut().input;
+                        for (i, color) in palette.iter().enumerate() {
+                            let col = i % cols;
+                            let row = i / cols;
+                            let cx = body.x + col as f64 * (cell + gap);
+                            let cy = body.y + row as f64 * (cell + gap);
+                            let cell_rect = Rect::new(cx, cy, cell, cell);
+                            coord.register_child(
+                                &popup_id,
+                                format!("demo-popup-cell-{i}"),
+                                uzor::input::WidgetKind::Button,
+                                cell_rect,
+                                uzor::input::Sense::CLICK | uzor::input::Sense::HOVER,
+                            );
+                            // Hover halo from coord state.
+                            let hovered = coord.hovered_widget()
+                                .map(|id| id.0.as_str() == format!("demo-popup-cell-{i}"))
+                                .unwrap_or(false);
+                            if hovered {
+                                render.set_fill_color("#ffffff");
+                                render.fill_rounded_rect(cx - 2.0, cy - 2.0, cell + 4.0, cell + 4.0, 5.0);
+                            }
+                            render.set_fill_color(color);
+                            render.fill_rounded_rect(cx, cy, cell, cell, 4.0);
+                        }
+                    }
                 }
-            };
-            let _ = item_list_rows;
-
-            let px = (width as f64 - popup_w) / 2.0;
-            let py = (height as f64 - popup_h) / 2.0;
-            self.layout.push_overlay(OverlayEntry {
-                id: "demo-popup-overlay".to_string(),
-                kind: OverlayKind::Popup,
-                rect: Rect::new(px, py, popup_w, popup_h),
-                anchor: None,
-            });
-            let mut demo_popup_view = PopupView {
-                origin: (px, py),
-                anchor: None,
-                backdrop: PopupBackdrop::Dim,
-                kind: view_kind,
-                size_mode: uzor::types::SizeMode::AutoFit,
-                overflow: uzor::types::OverflowMode::Clip,
-            };
-            let _ = register_layout_manager_popup(
-                &mut self.layout, &mut render,
-                LayoutNodeId::ROOT,
-                "demo-popup-overlay",
-                "demo-popup-widget",
-                &mut self.popup_state,
-                &mut demo_popup_view,
-                &popup_settings,
-                popup_kind_e,
-            );
-            // Suppress unused warning when the shape stays only as fallback.
-            if false {
             }
         }
 
@@ -3267,6 +3336,23 @@ impl AppState {
                 }
                 DispatchEvent::ResizeHandleDragStarted { .. } => {
                     // Resize start is handled by the drag-press bridge arm.
+                    return;
+                }
+                DispatchEvent::DropdownSubmenuToggle { dropdown_id, trigger_id } => {
+                    eprintln!("[DISPATCHER] DropdownSubmenuToggle dd={} trigger={}", dropdown_id.0, trigger_id);
+                    // Toggle the submenu — minimal glue between dispatcher
+                    // and dropdown state.
+                    let st = match dropdown_id.0.as_str() {
+                        "dd-popup-widget" => Some(&mut self.dropdown_popup_state),
+                        _ => None,
+                    };
+                    if let Some(s) = st {
+                        if s.submenu_open.as_deref() == Some(trigger_id.as_str()) {
+                            s.submenu_open = None;
+                        } else {
+                            s.submenu_open = Some(trigger_id);
+                        }
+                    }
                     return;
                 }
                 DispatchEvent::Unhandled(_) => {
