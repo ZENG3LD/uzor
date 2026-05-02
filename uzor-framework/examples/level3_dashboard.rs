@@ -850,6 +850,207 @@ impl AppState {
         if keep != "theme"   { self.dropdown_theme_state.close(); }
     }
 
+    /// Handle a dropdown item click coming from the dispatcher.
+    /// Replaces the strip_prefix("dd-X-widget:item:") cascade.
+    fn handle_dropdown_item(&mut self, dropdown_id: &str, item_id: &str, event_loop: &ActiveEventLoop) {
+        match dropdown_id {
+            "dd-file-widget" => {
+                match item_id {
+                    "file-quit" => { event_loop.exit(); }
+                    "file-new"  => println!("[L3] File → New"),
+                    "file-open" => println!("[L3] File → Open"),
+                    "file-save" => println!("[L3] File → Save"),
+                    _ => {}
+                }
+                self.dropdown_file_state.close();
+            }
+            "dd-view-widget" => {
+                // Toggle items: keep dropdown OPEN.
+                match item_id {
+                    "view-sidebar" => { self.sidebar_open = !self.sidebar_open; }
+                    "view-toolbar" => { self.left_toolbar_visible = !self.left_toolbar_visible; }
+                    other => {
+                        println!("[L3] View → {other}");
+                        self.dropdown_view_state.close();
+                    }
+                }
+            }
+            "dd-help-widget" => {
+                let open_modal = |kind: ModalKind, this: &mut AppState| {
+                    this.modal_open = true;
+                    this.modal_kind = kind;
+                    this.modal_state.position = (0.0, 0.0);
+                };
+                match item_id {
+                    "modals-l2"       => open_modal(ModalKind::L2,           self),
+                    "modals-l1"       => open_modal(ModalKind::L1,           self),
+                    "modals-panels"   => open_modal(ModalKind::Tags,         self),
+                    "modals-settings" => open_modal(ModalKind::Settings,     self),
+                    "modals-plain"    => open_modal(ModalKind::PlainDemo,    self),
+                    "modals-header"   => open_modal(ModalKind::HeaderDemo,   self),
+                    "modals-toptabs"  => open_modal(ModalKind::TopTabsDemo,  self),
+                    "modals-sidetabs" => open_modal(ModalKind::SideTabsDemo, self),
+                    "modals-wizard"   => open_modal(ModalKind::WizardDemo,   self),
+                    other             => println!("[L3] Modals → {other}"),
+                }
+                self.dropdown_help_state.close();
+            }
+            "dd-sidebar-widget" => {
+                // Toggle items keep dropdown open.
+                match item_id {
+                    "sidebar-left"    => self.sidebar_kind = 0,
+                    "sidebar-right"   => self.sidebar_kind = 1,
+                    "sidebar-typesel" => self.sidebar_kind = 2,
+                    "sidebar-embed"   => self.sidebar_kind = 3,
+                    _ => {}
+                }
+                println!("[L3] sidebar kind → {}", sidebar_kind_label(self.sidebar_kind));
+            }
+            "dd-toolbar-widget" => {
+                match item_id {
+                    "toolbar-horiz"  => self.toolbar_kind = 0,
+                    "toolbar-vert"   => self.toolbar_kind = 1,
+                    "toolbar-chrome" => self.toolbar_kind = 2,
+                    "toolbar-inline" => self.toolbar_kind = 3,
+                    _ => {}
+                }
+                self.dropdown_toolbar_state.close();
+            }
+            "dd-popup-widget" => {
+                self.popup_kind = match item_id {
+                    "popup-cpgrid"   => Some(0),
+                    "popup-cphsv"    => Some(1),
+                    "popup-swatch"   => Some(2),
+                    "popup-itemlist" => Some(3),
+                    "popup-strip"    => Some(4),
+                    _                => self.popup_kind,
+                };
+                self.dropdown_popup_state.close();
+            }
+            "dd-theme-widget" => {
+                // Toggle items keep dropdown open.
+                match item_id {
+                    "theme-dark"  => self.theme_idx = 0,
+                    "theme-light" => self.theme_idx = 1,
+                    _ => {}
+                }
+                println!("[L3] theme → {}", if self.theme_idx == 0 { "Dark" } else { "Light" });
+            }
+            "dd-addpanel-widget" => {
+                let kind_to_apply = match item_id {
+                    "split-horiz"       => Some(SpawnSplit::SplitRight),
+                    "split-vert"        => Some(SpawnSplit::SplitBottom),
+                    "split-grid"        => Some(SpawnSplit::Grid2x2),
+                    _ => None,
+                };
+                if let Some(k) = kind_to_apply {
+                    self.spawn_split = k;
+                }
+                self.dropdown_addpanel_state.close();
+            }
+            other => println!("[L3] dropdown {other} item: {item_id}"),
+        }
+    }
+
+    /// Handle a toolbar item click coming from the dispatcher.
+    /// Replaces the prefix-match strip_prefix("top-toolbar-widget:") cascade.
+    fn handle_toolbar_item(&mut self, toolbar_id: &str, item_id: &str) {
+        match (toolbar_id, item_id) {
+            ("top-toolbar-widget", "tb-file") => {
+                if let Some(rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                    let was = self.dropdown_file_state.open;
+                    self.close_all_dropdowns_except("file");
+                    if !was {
+                        self.dropdown_file_state.open_at(rect.x + 4.0, rect.y + rect.height);
+                    }
+                }
+            }
+            ("top-toolbar-widget", "tb-view") => {
+                if let Some(rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                    let was = self.dropdown_view_state.open;
+                    self.close_all_dropdowns_except("view");
+                    if !was {
+                        self.dropdown_view_state.open_at(rect.x + 4.0, rect.y + rect.height);
+                    }
+                }
+            }
+            ("top-toolbar-widget", "tb-help") => {
+                if let Some(rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                    let was = self.dropdown_help_state.open;
+                    self.close_all_dropdowns_except("help");
+                    if !was {
+                        self.dropdown_help_state.open_at(rect.x + 48.0, rect.y + rect.height);
+                    }
+                }
+            }
+            ("top-toolbar-widget", "tb-sidebar") => {
+                if let Some(rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                    let was = self.dropdown_sidebar_state.open;
+                    self.close_all_dropdowns_except("sidebar");
+                    if !was {
+                        self.dropdown_sidebar_state.open_at(rect.x + 144.0, rect.y + rect.height);
+                    }
+                }
+            }
+            ("top-toolbar-widget", "tb-toolbar") => {
+                if let Some(rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                    let was = self.dropdown_toolbar_state.open;
+                    self.close_all_dropdowns_except("toolbar");
+                    if !was {
+                        self.dropdown_toolbar_state.open_at(rect.x + 204.0, rect.y + rect.height);
+                    }
+                }
+            }
+            ("top-toolbar-widget", "tb-popup") => {
+                if let Some(rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                    let was = self.dropdown_popup_state.open;
+                    self.close_all_dropdowns_except("popup");
+                    if !was {
+                        self.dropdown_popup_state.open_at(rect.x + 264.0, rect.y + rect.height);
+                    }
+                }
+            }
+            ("top-toolbar-widget", "tb-theme") => {
+                if let Some(rect) = self.layout.rect_for_edge_slot("top-toolbar") {
+                    let was = self.dropdown_theme_state.open;
+                    self.close_all_dropdowns_except("theme");
+                    if !was {
+                        self.dropdown_theme_state.open_at(rect.x + 324.0, rect.y + rect.height);
+                    }
+                }
+            }
+            ("left-vtoolbar-widget", "lt-toggle-sidebar") => {
+                self.sidebar_open = !self.sidebar_open;
+                println!("[L3] sidebar → {}", self.sidebar_open);
+            }
+            (tb, item) => {
+                println!("[L3] toolbar {tb} item {item}");
+            }
+        }
+    }
+
+    /// Handle a context-menu item click coming from the dispatcher.
+    /// Replaces the strip_prefix("ctx-menu-widget:item:") cascade.
+    fn handle_ctx_menu_item(&mut self, item_index: usize) {
+        match item_index {
+            0 => println!("[L3] ctx → Copy"),
+            1 => println!("[L3] ctx → Paste"),
+            2 => println!("[L3] ctx → Delete"),
+            3 => println!("[L3] ctx → Properties"),
+            4 => {
+                if self.modal_open && self.modal_kind == ModalKind::Settings {
+                    self.modal_open = false;
+                } else {
+                    self.modal_open = true;
+                    self.modal_kind = ModalKind::Settings;
+                    self.modal_state.position = (0.0, 0.0);
+                }
+            }
+            _ => {}
+        }
+        self.ctx_menu_state.close();
+    }
+
     fn switch_tab(&mut self, new_tab: usize) {
         if new_tab == self.active_view { return; }
         let old_tree = std::mem::take(self.layout.panels_mut().tree_mut());
@@ -2508,251 +2709,37 @@ impl AppState {
                     }
                     return;
                 }
-                // The other variants — Dropdown / Toolbar / ContextMenu / Chrome —
-                // we let fall through to the legacy parsers below for now so
-                // existing dashboard behaviour stays intact. They'll be migrated
-                // here one at a time.
-                DispatchEvent::DropdownItemClicked { .. }
-                | DispatchEvent::ToolbarItemClicked { .. }
-                | DispatchEvent::ContextMenuItemClicked { .. }
-                | DispatchEvent::ChromeTabClicked { .. }
-                | DispatchEvent::Unhandled(_) => {}
+                DispatchEvent::DropdownItemClicked { dropdown_id, item_id } => {
+                    eprintln!("[DISPATCHER] DropdownItemClicked dropdown={} item={}", dropdown_id.0, item_id);
+                    self.handle_dropdown_item(dropdown_id.0.as_str(), item_id.as_str(), event_loop);
+                    return;
+                }
+                DispatchEvent::ToolbarItemClicked { toolbar_id, item_id } => {
+                    eprintln!("[DISPATCHER] ToolbarItemClicked toolbar={} item={}", toolbar_id.0, item_id);
+                    self.handle_toolbar_item(toolbar_id.0.as_str(), item_id.as_str());
+                    return;
+                }
+                DispatchEvent::ContextMenuItemClicked { item_index, .. } => {
+                    eprintln!("[DISPATCHER] ContextMenuItemClicked index={item_index}");
+                    self.handle_ctx_menu_item(item_index);
+                    return;
+                }
+                DispatchEvent::ChromeTabClicked { tab_index } => {
+                    eprintln!("[DISPATCHER] ChromeTabClicked index={tab_index}");
+                    self.switch_tab(tab_index);
+                    return;
+                }
+                DispatchEvent::Unhandled(_) => {
+                    // No semantic match — fall through to legacy id-string parsers.
+                }
             }
 
-            // Modal close affordances registered as "modal-widget:close" /
-            // "modal-widget:footer:0" / "modal-widget:footer:1"
-            if id_str == "modal-widget:close"
-                || id_str == "modal-widget:footer:0"
-                || id_str == "modal-widget:footer:1"
-            {
-                eprintln!("[DISPATCH] modal close via {id_str}");
-                self.modal_open = false;
-                println!("[L3] modal closed via {id_str}");
-                return;
-            }
-            // Modal TopTabs / SideTabs — composite registers as "modal-widget:tab:N"
-            if let Some(idx_str) = id_str.strip_prefix("modal-widget:tab:") {
-                if let Ok(idx) = idx_str.parse::<usize>() {
-                    eprintln!("[DISPATCH] modal tab → {idx}");
-                    self.modal_state.active_tab = idx;
-                    return;
-                }
-            }
-            // Modal Wizard — back / next nav buttons
-            if id_str == "modal-widget:wizard:back" {
-                eprintln!("[DISPATCH] modal wizard back");
-                if self.modal_state.current_page > 0 {
-                    self.modal_state.current_page -= 1;
-                }
-                return;
-            }
-            if id_str == "modal-widget:wizard:next" {
-                eprintln!("[DISPATCH] modal wizard next");
-                let last = 2; // wizard_pages_data.len() - 1 in render(); 3 pages → last=2
-                if self.modal_state.current_page < last {
-                    self.modal_state.current_page += 1;
-                } else {
-                    // On final page, "Finish" → close modal.
-                    self.modal_open = false;
-                }
-                return;
-            }
-            // Legacy pattern fallback (other modals that use "-close" suffix)
-            if id_str.starts_with("modal-") && (
-                id_str.ends_with("-close") ||
-                id_str.ends_with("-apply") ||
-                id_str.ends_with("-cancel")
-            ) {
-                eprintln!("[DISPATCH] modal close (legacy) via {id_str}");
-                self.modal_open = false;
-                println!("[L3] modal closed via {id_str}");
-                return;
-            }
-
-            // Toolbar dropdown triggers
-            match id_str {
-                "tb-file" => {
-                    eprintln!("[DISPATCH] tb-file toolbar button");
-                    if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                        let was_open = self.dropdown_file_state.open;
-                        self.dropdown_view_state.close();
-                        self.dropdown_help_state.close();
-                        if was_open {
-                            self.dropdown_file_state.close();
-                        } else {
-                            let file_x = toolbar_rect.x + 4.0;
-                            self.dropdown_file_state.open_at(file_x, toolbar_rect.y + toolbar_rect.height);
-                        }
-                    }
-                    return;
-                }
-                "tb-view" => {
-                    eprintln!("[DISPATCH] tb-view toolbar button");
-                    if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                        let was_open = self.dropdown_view_state.open;
-                        self.dropdown_file_state.close();
-                        self.dropdown_help_state.close();
-                        if was_open {
-                            self.dropdown_view_state.close();
-                        } else {
-                            let view_x = toolbar_rect.x + 4.0 + 44.0;
-                            self.dropdown_view_state.open_at(view_x, toolbar_rect.y + toolbar_rect.height);
-                        }
-                    }
-                    return;
-                }
-                "tb-help" => {
-                    eprintln!("[DISPATCH] tb-help toolbar button");
-                    if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                        let was_open = self.dropdown_help_state.open;
-                        self.close_all_dropdowns_except("help");
-                        if was_open {
-                            self.dropdown_help_state.close();
-                        } else {
-                            let help_x = toolbar_rect.x + 4.0 + 88.0;
-                            self.dropdown_help_state.open_at(help_x, toolbar_rect.y + toolbar_rect.height);
-                        }
-                    }
-                    return;
-                }
-                // tb-sidebar / tb-toolbar / tb-popup / tb-theme are handled in
-                // the prefix-match dispatcher further down where the real
-                // "top-toolbar-widget:<id>" event lands. (This first match is
-                // by full id only — composite events are prefixed and never hit it.)
-                _ => {}
-            }
-
-            // Dropdown items — registered as "{dropdown_widget_id}:item:{item_id}"
-            if let Some(item_id) = id_str.strip_prefix("dd-file-widget:item:") {
-                eprintln!("[DISPATCH] dropdown file item → {item_id}");
-                match item_id {
-                    "file-quit" => { event_loop.exit(); return; }
-                    "file-new"  => println!("[L3] File → New"),
-                    "file-open" => println!("[L3] File → Open"),
-                    "file-save" => println!("[L3] File → Save"),
-                    _ => {}
-                }
-                self.dropdown_file_state.close();
-                return;
-            }
-            if let Some(item_id) = id_str.strip_prefix("dd-view-widget:item:") {
-                eprintln!("[DISPATCH] dropdown view item → {item_id}");
-                // Toggle items: keep dropdown OPEN so user sees the new state.
-                match item_id {
-                    "view-sidebar" => { self.sidebar_open = !self.sidebar_open; }
-                    "view-toolbar" => { self.left_toolbar_visible = !self.left_toolbar_visible; }
-                    other          => {
-                        println!("[L3] View → {other}");
-                        self.dropdown_view_state.close();
-                    }
-                }
-                return;
-            }
-            if let Some(item_id) = id_str.strip_prefix("dd-help-widget:item:") {
-                eprintln!("[DISPATCH] dropdown modals item → {item_id}");
-                let open_modal = |kind: ModalKind, this: &mut AppState| {
-                    this.modal_open = true;
-                    this.modal_kind = kind;
-                    this.modal_state.position = (0.0, 0.0);
-                };
-                match item_id {
-                    "modals-l2"       => open_modal(ModalKind::L2,             self),
-                    "modals-l1"       => open_modal(ModalKind::L1,             self),
-                    "modals-panels"   => open_modal(ModalKind::Tags,           self),
-                    "modals-settings" => open_modal(ModalKind::Settings,       self),
-                    "modals-plain"    => open_modal(ModalKind::PlainDemo,      self),
-                    "modals-header"   => open_modal(ModalKind::HeaderDemo,     self),
-                    "modals-toptabs"  => open_modal(ModalKind::TopTabsDemo,    self),
-                    "modals-sidetabs" => open_modal(ModalKind::SideTabsDemo,   self),
-                    "modals-wizard"   => open_modal(ModalKind::WizardDemo,     self),
-                    other             => println!("[L3] Modals → {other}"),
-                }
-                self.dropdown_help_state.close();
-                return;
-            }
-            if let Some(item_id) = id_str.strip_prefix("dd-sidebar-widget:item:") {
-                eprintln!("[DISPATCH] dropdown sidebar item → {item_id}");
-                match item_id {
-                    "sidebar-left"    => self.sidebar_kind = 0,
-                    "sidebar-right"   => self.sidebar_kind = 1,
-                    "sidebar-typesel" => self.sidebar_kind = 2,
-                    "sidebar-embed"   => self.sidebar_kind = 3,
-                    _ => {}
-                }
-                // Toggle items stay open so the user sees the new selection.
-                println!("[L3] sidebar kind → {}", sidebar_kind_label(self.sidebar_kind));
-                return;
-            }
-            if let Some(item_id) = id_str.strip_prefix("dd-toolbar-widget:item:") {
-                eprintln!("[DISPATCH] dropdown toolbar item → {item_id}");
-                match item_id {
-                    "toolbar-horiz"  => self.toolbar_kind = 0,
-                    "toolbar-vert"   => self.toolbar_kind = 1,
-                    "toolbar-chrome" => self.toolbar_kind = 2,
-                    "toolbar-inline" => self.toolbar_kind = 3,
-                    _ => {}
-                }
-                self.dropdown_toolbar_state.close();
-                return;
-            }
-            if let Some(item_id) = id_str.strip_prefix("dd-popup-widget:item:") {
-                eprintln!("[DISPATCH] dropdown popup item → {item_id}");
-                self.popup_kind = match item_id {
-                    "popup-cpgrid"   => Some(0),
-                    "popup-cphsv"    => Some(1),
-                    "popup-swatch"   => Some(2),
-                    "popup-itemlist" => Some(3),
-                    "popup-strip"    => Some(4),
-                    _                => self.popup_kind,
-                };
-                self.dropdown_popup_state.close();
-                return;
-            }
-            if let Some(item_id) = id_str.strip_prefix("dd-theme-widget:item:") {
-                eprintln!("[DISPATCH] dropdown theme item → {item_id}");
-                match item_id {
-                    "theme-dark"  => self.theme_idx = 0,
-                    "theme-light" => self.theme_idx = 1,
-                    _ => {}
-                }
-                // Toggle items stay open so the user sees the new selection.
-                println!("[L3] theme → {}", if self.theme_idx == 0 { "Dark" } else { "Light" });
-                return;
-            }
-            // Context menu items — registered as "{menu_widget_id}:item:{IDX}"
-            if let Some(idx_str) = id_str.strip_prefix("ctx-menu-widget:item:") {
-                if let Ok(idx) = idx_str.parse::<usize>() {
-                    eprintln!("[DISPATCH] ctxmenu item idx={idx}");
-                    match idx {
-                        0 => println!("[L3] ctx → Copy"),
-                        1 => println!("[L3] ctx → Paste"),
-                        2 => println!("[L3] ctx → Delete"),
-                        3 => println!("[L3] ctx → Properties"),
-                        4 => {
-                            // Fix #12: Settings via context menu
-                            if self.modal_open && self.modal_kind == ModalKind::Settings {
-                                self.modal_open = false;
-                            } else {
-                                self.modal_open = true;
-                                self.modal_kind = ModalKind::Settings;
-                                self.modal_state.position = (0.0, 0.0);
-                            }
-                        }
-                        _ => {}
-                    }
-                    self.ctx_menu_state.close();
-                    return;
-                }
-            }
-            // Chrome tabs — registered as "tab-N" (composite chrome registers tabs)
-            if let Some(n_str) = id_str.strip_prefix("tab-") {
-                if let Ok(n) = n_str.parse::<usize>() {
-                    eprintln!("[DISPATCH] chrome tab → {n}");
-                    self.switch_tab(n);
-                    println!("[L3] tab → {n}");
-                    return;
-                }
-            }
+            // ── Legacy patterns superseded by ClickDispatcher ─────────────────
+            // Modal close / tab / wizard, dropdown items, toolbar items,
+            // context-menu items and chrome tabs all flow through
+            // layout.dispatch_widget() above. The remaining branches below
+            // handle widgets that DON'T go through a registered composite
+            // (e.g. L2-modal-internal hand-rolled widgets, manual chart hits).
             // ── L2-modal widgets (clicked inside L2 modal body) ──────────────
             match id_str {
                 "l2-btn-connect" => {
@@ -2926,105 +2913,6 @@ impl AppState {
                 }
                 return;
             }
-            // Top toolbar items registered as "top-toolbar-widget:<id>"
-            if let Some(item) = id_str.strip_prefix("top-toolbar-widget:") {
-                eprintln!("[DISPATCH] top toolbar → {item}");
-                if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-                    let dd_y = toolbar_rect.y + toolbar_rect.height;
-                    match item {
-                        "tb-file" => {
-                            let was = self.dropdown_file_state.open;
-                            self.dropdown_view_state.close();
-                            self.dropdown_help_state.close();
-                            if was { self.dropdown_file_state.close(); }
-                            else   { self.dropdown_file_state.open_at(toolbar_rect.x + 4.0, dd_y); }
-                        }
-                        "tb-view" => {
-                            let was = self.dropdown_view_state.open;
-                            self.dropdown_file_state.close();
-                            self.dropdown_help_state.close();
-                            if was { self.dropdown_view_state.close(); }
-                            else   { self.dropdown_view_state.open_at(toolbar_rect.x + 48.0, dd_y); }
-                        }
-                        "tb-help" => {
-                            let was = self.dropdown_help_state.open;
-                            self.dropdown_file_state.close();
-                            self.dropdown_view_state.close();
-                            if was { self.dropdown_help_state.close(); }
-                            else   { self.dropdown_help_state.open_at(toolbar_rect.x + 92.0, dd_y); }
-                        }
-                        "tb-new" => println!("[L3] new"),
-                        "tb-l2" => {
-                            if self.modal_open && self.modal_kind == ModalKind::L2 {
-                                self.modal_open = false;
-                            } else {
-                                self.modal_open = true;
-                                self.modal_kind = ModalKind::L2;
-                                self.modal_state.position = (0.0, 0.0);
-                            }
-                            return;
-                        }
-                        "tb-l1" => {
-                            if self.modal_open && self.modal_kind == ModalKind::L1 {
-                                self.modal_open = false;
-                            } else {
-                                self.modal_open = true;
-                                self.modal_kind = ModalKind::L1;
-                                self.modal_state.position = (0.0, 0.0);
-                            }
-                            return;
-                        }
-                        "tb-tags" => {
-                            if self.modal_open && self.modal_kind == ModalKind::Tags {
-                                self.modal_open = false;
-                            } else {
-                                self.modal_open = true;
-                                self.modal_kind = ModalKind::Tags;
-                                self.modal_state.position = (0.0, 0.0);
-                            }
-                            return;
-                        }
-                        "tb-sidebar" => {
-                            let was = self.dropdown_sidebar_state.open;
-                            self.close_all_dropdowns_except("sidebar");
-                            if was {
-                                self.dropdown_sidebar_state.close();
-                            } else {
-                                self.dropdown_sidebar_state.open_at(toolbar_rect.x + 144.0, dd_y);
-                            }
-                        }
-                        "tb-toolbar" => {
-                            let was = self.dropdown_toolbar_state.open;
-                            self.close_all_dropdowns_except("toolbar");
-                            if was {
-                                self.dropdown_toolbar_state.close();
-                            } else {
-                                self.dropdown_toolbar_state.open_at(toolbar_rect.x + 204.0, dd_y);
-                            }
-                        }
-                        "tb-popup" => {
-                            let was = self.dropdown_popup_state.open;
-                            self.close_all_dropdowns_except("popup");
-                            if was {
-                                self.dropdown_popup_state.close();
-                            } else {
-                                self.dropdown_popup_state.open_at(toolbar_rect.x + 264.0, dd_y);
-                            }
-                        }
-                        "tb-theme" => {
-                            let was = self.dropdown_theme_state.open;
-                            self.close_all_dropdowns_except("theme");
-                            if was {
-                                self.dropdown_theme_state.close();
-                            } else {
-                                self.dropdown_theme_state.open_at(toolbar_rect.x + 324.0, dd_y);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                return;
-            }
             // Sidebar/chrome composite frames — no-op
             if id_str == "chrome" || id_str == "sidebar-widget"
                 || id_str == "top-toolbar-widget" || id_str == "left-vtoolbar-widget"
@@ -3127,7 +3015,10 @@ impl AppState {
             }
         }
 
-        // ── Dropdown item clicks ──────────────────────────────────────────────
+        // ── Outside-click → close all open dropdowns ──────────────────────────
+        // Item clicks are handled by the dispatcher above. Reaching here means
+        // either no widget was hit or a widget unrelated to the open dropdowns
+        // was hit — either way, dismiss every open dropdown.
         let any_dd_open = self.dropdown_file_state.open
             || self.dropdown_view_state.open
             || self.dropdown_help_state.open
@@ -3137,7 +3028,7 @@ impl AppState {
             || self.dropdown_popup_state.open
             || self.dropdown_theme_state.open;
         if any_dd_open {
-            let clicked_dd =
+            let any_inside =
                 (self.dropdown_file_state.open     && self.layout.rect_for_overlay("dd-file-overlay")    .map(|r| r.contains(x, y)).unwrap_or(false)) ||
                 (self.dropdown_view_state.open     && self.layout.rect_for_overlay("dd-view-overlay")    .map(|r| r.contains(x, y)).unwrap_or(false)) ||
                 (self.dropdown_help_state.open     && self.layout.rect_for_overlay("dd-help-overlay")    .map(|r| r.contains(x, y)).unwrap_or(false)) ||
@@ -3146,7 +3037,7 @@ impl AppState {
                 (self.dropdown_toolbar_state.open  && self.layout.rect_for_overlay("dd-toolbar-overlay") .map(|r| r.contains(x, y)).unwrap_or(false)) ||
                 (self.dropdown_popup_state.open    && self.layout.rect_for_overlay("dd-popup-overlay")   .map(|r| r.contains(x, y)).unwrap_or(false)) ||
                 (self.dropdown_theme_state.open    && self.layout.rect_for_overlay("dd-theme-overlay")   .map(|r| r.contains(x, y)).unwrap_or(false));
-            if !clicked_dd {
+            if !any_inside {
                 self.dropdown_file_state.close();
                 self.dropdown_view_state.close();
                 self.dropdown_help_state.close();
@@ -3155,89 +3046,6 @@ impl AppState {
                 self.dropdown_toolbar_state.close();
                 self.dropdown_popup_state.close();
                 self.dropdown_theme_state.close();
-            } else {
-                // Handle specific items via hovered_id
-                if let Some(ref hid) = self.dropdown_file_state.hovered_id.clone() {
-                    match hid.as_str() {
-                        "file-quit" => event_loop.exit(),
-                        "file-new"  => println!("[L3] New"),
-                        "file-open" => println!("[L3] Open"),
-                        "file-save" => println!("[L3] Save"),
-                        _ => {}
-                    }
-                    self.dropdown_file_state.close();
-                }
-                if let Some(ref hid) = self.dropdown_view_state.hovered_id.clone() {
-                    // Toggle items — keep dropdown OPEN.
-                    match hid.as_str() {
-                        "view-sidebar" => { self.sidebar_open = !self.sidebar_open; }
-                        "view-toolbar" => { self.left_toolbar_visible = !self.left_toolbar_visible; }
-                        _ => {
-                            println!("[L3] view item: {hid}");
-                            self.dropdown_view_state.close();
-                        }
-                    }
-                }
-                if let Some(ref hid) = self.dropdown_help_state.hovered_id.clone() {
-                    let open_modal = |kind: ModalKind, this: &mut AppState| {
-                        this.modal_open = true;
-                        this.modal_kind = kind;
-                        this.modal_state.position = (0.0, 0.0);
-                    };
-                    match hid.as_str() {
-                        "modals-l2"       => open_modal(ModalKind::L2,             self),
-                        "modals-l1"       => open_modal(ModalKind::L1,             self),
-                        "modals-panels"   => open_modal(ModalKind::Tags,           self),
-                        "modals-settings" => open_modal(ModalKind::Settings,       self),
-                        "modals-plain"    => open_modal(ModalKind::PlainDemo,      self),
-                        "modals-header"   => open_modal(ModalKind::HeaderDemo,     self),
-                        "modals-toptabs"  => open_modal(ModalKind::TopTabsDemo,    self),
-                        "modals-sidetabs" => open_modal(ModalKind::SideTabsDemo,   self),
-                        "modals-wizard"   => open_modal(ModalKind::WizardDemo,     self),
-                        _                 => println!("[L3] modals item: {hid}"),
-                    }
-                    self.dropdown_help_state.close();
-                }
-                if let Some(ref hid) = self.dropdown_sidebar_state.hovered_id.clone() {
-                    match hid.as_str() {
-                        "sidebar-left"    => self.sidebar_kind = 0,
-                        "sidebar-right"   => self.sidebar_kind = 1,
-                        "sidebar-typesel" => self.sidebar_kind = 2,
-                        "sidebar-embed"   => self.sidebar_kind = 3,
-                        _ => {}
-                    }
-                    self.dropdown_sidebar_state.close();
-                    println!("[L3] sidebar kind → {}", sidebar_kind_label(self.sidebar_kind));
-                }
-                if let Some(ref hid) = self.dropdown_toolbar_state.hovered_id.clone() {
-                    match hid.as_str() {
-                        "toolbar-horiz"  => self.toolbar_kind = 0,
-                        "toolbar-vert"   => self.toolbar_kind = 1,
-                        "toolbar-chrome" => self.toolbar_kind = 2,
-                        "toolbar-inline" => self.toolbar_kind = 3,
-                        _ => {}
-                    }
-                    self.dropdown_toolbar_state.close();
-                }
-                if let Some(ref hid) = self.dropdown_popup_state.hovered_id.clone() {
-                    self.popup_kind = match hid.as_str() {
-                        "popup-cpgrid"   => Some(0),
-                        "popup-cphsv"    => Some(1),
-                        "popup-swatch"   => Some(2),
-                        "popup-itemlist" => Some(3),
-                        "popup-strip"    => Some(4),
-                        _                => self.popup_kind,
-                    };
-                    self.dropdown_popup_state.close();
-                }
-                if let Some(ref hid) = self.dropdown_theme_state.hovered_id.clone() {
-                    match hid.as_str() {
-                        "theme-dark"  => self.theme_idx = 0,
-                        "theme-light" => self.theme_idx = 1,
-                        _ => {}
-                    }
-                    self.dropdown_theme_state.close();
-                }
             }
             return;
         }
