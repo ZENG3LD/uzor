@@ -24,8 +24,6 @@ use crate::types::{Rect, WidgetId};
 use crate::ui::widgets::atomic::scrollbar::render::{
     draw_scrollbar_standard, ScrollbarVisualState,
 };
-use crate::ui::widgets::atomic::separator::render::{draw_sidebar_handle, draw_sidebar_handle_horizontal};
-use crate::ui::widgets::atomic::separator::settings::SeparatorSettings;
 
 use super::settings::SidebarSettings;
 use super::state::SidebarState;

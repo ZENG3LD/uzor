@@ -14,9 +14,76 @@ use super::types::{ModalRenderKind, ModalView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{EventBuilder, LayoutManager, LayoutNodeId, ModalNode, WidgetNode};
+use crate::layout::{DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ModalNode, WidgetNode};
 use crate::render::RenderContext;
-use crate::types::WidgetId;
+use crate::types::{Rect, WidgetId};
+
+/// Cursor position and view metadata for events that need spatial context
+/// (resize start, scrollbar drag start, track click).
+pub struct ConsumeEventCtx {
+    /// Current pointer position in screen coordinates.
+    pub cursor: (f64, f64),
+    /// Resolved frame rect of the modal this frame (post-drag, post-resize).
+    pub frame_rect: Rect,
+    /// Viewport size used for resize cap computation.
+    pub viewport: (f64, f64),
+}
+
+/// Consume a `DispatchEvent` if it belongs to this modal. Returns:
+/// - `None` — the event was consumed (composite mutated its state).
+/// - `Some(event)` — the event is not for this modal; pass it through.
+///
+/// `host_id` is the modal composite's WidgetId (e.g. `"modal-widget"`). Only
+/// events whose carried id starts with `{host_id}:` (or equals `host_id` for
+/// resize) are consumed.
+pub fn consume_event(
+    event: DispatchEvent,
+    state: &mut ModalState,
+    host_id: &WidgetId,
+    ctx: ConsumeEventCtx,
+) -> Option<DispatchEvent> {
+    match event {
+        DispatchEvent::ChevronStepRequested { ref chevron_id, direction } => {
+            let is_own = chevron_id.0 == format!("{}:chevron_up", host_id.0)
+                || chevron_id.0 == format!("{}:chevron_down", host_id.0)
+                || chevron_id.0 == format!("{}:chevron_left", host_id.0)
+                || chevron_id.0 == format!("{}:chevron_right", host_id.0);
+            if is_own {
+                state.body_chevron_step(direction);
+                None
+            } else {
+                Some(event)
+            }
+        }
+        DispatchEvent::ResizeHandleDragStarted { host_id: ref hid, edge } => {
+            if hid == host_id {
+                let min = (200.0_f64, 120.0_f64);
+                let cap = (f64::INFINITY, f64::INFINITY);
+                state.start_resize(edge, ctx.frame_rect, ctx.cursor, min, cap);
+                None
+            } else {
+                Some(event)
+            }
+        }
+        DispatchEvent::ScrollbarTrackClicked { ref track_id } => {
+            if track_id.0 == format!("{}:scrollbar_track", host_id.0) {
+                state.body_scroll_track_click(ctx.cursor.1);
+                None
+            } else {
+                Some(event)
+            }
+        }
+        DispatchEvent::ScrollbarThumbDragStarted { ref thumb_id } => {
+            if thumb_id.0 == format!("{}:scrollbar_handle", host_id.0) {
+                state.start_body_scroll_drag(ctx.cursor.1);
+                None
+            } else {
+                Some(event)
+            }
+        }
+        _ => Some(event),
+    }
+}
 
 /// Register + draw a modal in one call using a [`LayoutManager`].
 ///
