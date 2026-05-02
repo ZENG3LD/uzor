@@ -37,6 +37,22 @@ pub fn register_layout_manager_chrome<P: DockPanel>(
     let rect = layout.rect_for_chrome()?;
     let layer = layout.compute_layer_for(parent);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Chrome, rect, sense: Sense::NONE });
+
+    // Dispatcher patterns — translate child hits into semantic chrome events.
+    {
+        use crate::layout::{ChromeWindowControl as CC, EventBuilder};
+        let d = layout.dispatcher_mut();
+        d.on_prefix(format!("{}:tab_close:", id.0), EventBuilder::ChromeTabCloseFromSuffix);
+        d.on_prefix(format!("{}:tab:",       id.0), EventBuilder::ChromeTabFromSuffix);
+        d.on_exact(format!("{}:new_tab",   id.0), EventBuilder::ChromeNewTab);
+        d.on_exact(format!("{}:menu",      id.0), EventBuilder::ChromeControl(CC::Menu));
+        d.on_exact(format!("{}:new_win",   id.0), EventBuilder::ChromeControl(CC::NewWindow));
+        d.on_exact(format!("{}:close_win", id.0), EventBuilder::ChromeControl(CC::CloseWindow));
+        d.on_exact(format!("{}:min",       id.0), EventBuilder::ChromeControl(CC::Minimize));
+        d.on_exact(format!("{}:max",       id.0), EventBuilder::ChromeControl(CC::MaximizeRestore));
+        d.on_exact(format!("{}:close",     id.0), EventBuilder::ChromeControl(CC::CloseApp));
+    }
+
     register_context_manager_chrome(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
     );

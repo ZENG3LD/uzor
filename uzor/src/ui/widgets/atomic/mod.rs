@@ -3,6 +3,7 @@
 //! See `WidgetKind::is_atomic()` for the full list. Each module owns the
 //! widget's data, theme, style, state, render math, and input registration.
 
+pub mod active_frame;
 pub mod button;
 pub mod checkbox;
 pub mod chevron;

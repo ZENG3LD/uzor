@@ -70,6 +70,15 @@ pub enum DispatchEvent {
     /// User clicked a chrome tab.
     ChromeTabClicked { tab_index: usize },
 
+    /// User clicked the close-X on a chrome tab.
+    ChromeTabClosed { tab_index: usize },
+
+    /// User clicked the chrome "+" new-tab button.
+    ChromeNewTab,
+
+    /// User clicked one of the right-side chrome window controls.
+    ChromeWindowControl { control: ChromeWindowControl },
+
     /// User clicked an item in a context menu (semantic shortcut for the
     /// common shape of ctx-menu hits).
     ContextMenuItemClicked { menu_id: WidgetId, item_index: usize },
@@ -153,6 +162,23 @@ pub enum ResizeEdge {
     SE,
 }
 
+/// Which chrome window-control button was clicked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChromeWindowControl {
+    /// Minimize button.
+    Minimize,
+    /// Maximize / restore button.
+    MaximizeRestore,
+    /// Close-app (red) button.
+    CloseApp,
+    /// Close-window button (left of min/max group).
+    CloseWindow,
+    /// New-window icon button.
+    NewWindow,
+    /// Gear / hamburger menu button.
+    Menu,
+}
+
 /// Direction passed inside `DispatchEvent::ChevronStepRequested`. Mirrors
 /// the atomic chevron's directions; isolated from the atomic so the
 /// dispatcher module has no cyclical dep on the widget tree.
@@ -192,6 +218,15 @@ pub enum EventBuilder {
 
     /// Fires `ChromeTabClicked { tab_index = parsed suffix }`.
     ChromeTabFromSuffix,
+
+    /// Fires `ChromeTabClosed { tab_index = parsed suffix }`.
+    ChromeTabCloseFromSuffix,
+
+    /// Fires `ChromeNewTab`.
+    ChromeNewTab,
+
+    /// Fires `ChromeWindowControl { control }`.
+    ChromeControl(super::ChromeWindowControl),
 
     /// Fires `ContextMenuItemClicked { menu_id, item_index = parsed suffix }`.
     ContextMenuItem { menu_id: WidgetId },
@@ -357,6 +392,16 @@ fn build(builder: &EventBuilder, id: &str, pattern: &str) -> DispatchEvent {
                 Ok(tab_index) => DispatchEvent::ChromeTabClicked { tab_index },
                 Err(_)        => DispatchEvent::Unhandled(WidgetId::new(id)),
             }
+        }
+        EventBuilder::ChromeTabCloseFromSuffix => {
+            match suffix().parse::<usize>() {
+                Ok(tab_index) => DispatchEvent::ChromeTabClosed { tab_index },
+                Err(_)        => DispatchEvent::Unhandled(WidgetId::new(id)),
+            }
+        }
+        EventBuilder::ChromeNewTab => DispatchEvent::ChromeNewTab,
+        EventBuilder::ChromeControl(control) => {
+            DispatchEvent::ChromeWindowControl { control: *control }
         }
         EventBuilder::ContextMenuItem { menu_id } => {
             match suffix().parse::<usize>() {

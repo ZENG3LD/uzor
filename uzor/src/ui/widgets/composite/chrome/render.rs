@@ -140,7 +140,7 @@ pub fn register_input_coordinator_chrome(
                 let close_y = rect.y + (h - close_w) / 2.0;
                 coord.register_child(
                     &chrome_id,
-                    format!("{}:tab:{}:close", chrome_id.0.0, i),
+                    format!("{}:tab_close:{}", chrome_id.0.0, i),
                     WidgetKind::Button,
                     Rect::new(close_x, close_y, close_w, close_w),
                     Sense::CLICK | Sense::HOVER,

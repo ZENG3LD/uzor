@@ -55,6 +55,12 @@ pub struct DropdownState {
     /// panel.  Set by `sync_flat_hover`.
     pub submenu_hovered_id: Option<String>,
 
+    /// Submenu-trigger row id whose **chevron** is currently hovered (only
+    /// for `SubmenuTrigger::ChevronClick` rows). Independent from
+    /// `hovered_id` so the row body stays un-hovered while the chevron lights
+    /// up. Set by `sync_flat_hover`.
+    pub submenu_chevron_hovered_id: Option<String>,
+
     // --- Sizing constraints ---
 
     /// Maximum height of the panel in pixels.
@@ -92,6 +98,7 @@ impl Default for DropdownState {
             submenu_open: None,
             submenu_origin: (0.0, 0.0),
             submenu_hovered_id: None,
+            submenu_chevron_hovered_id: None,
             max_height: 0.0,
             min_width: 180.0,
             primed_id: None,
@@ -181,19 +188,20 @@ impl DropdownState {
 
         self.hovered_id = None;
         self.submenu_hovered_id = None;
+        self.submenu_chevron_hovered_id = None;
 
         if let Some(id) = coord.hovered_widget().map(|w| w.0.clone()) {
             if let Some(rest) = id.strip_prefix(&main_pref) {
                 self.hovered_id = Some(rest.to_string());
-            } else if let Some(rest) = id.strip_prefix(&chev_pref) {
-                // Chevron of a submenu trigger row hovered — surface the
-                // *trigger row id* as the main panel's hovered_id so the
-                // row paints in the hover state.
-                self.hovered_id = Some(rest.to_string());
             } else if let Some(rest) = id.strip_prefix(&sm_pref) {
+                // Hover on a submenu-trigger row body itself.
                 self.hovered_id = Some(rest.to_string());
             } else if let Some(rest) = id.strip_prefix(&sub_pref) {
                 self.submenu_hovered_id = Some(rest.to_string());
+            } else if let Some(rest) = id.strip_prefix(&chev_pref) {
+                // Chevron of a ChevronClick submenu trigger — light up the
+                // chevron only, keep the row body un-hovered.
+                self.submenu_chevron_hovered_id = Some(rest.to_string());
             }
         }
     }

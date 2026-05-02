@@ -501,6 +501,10 @@ fn draw_flat_list(
             DropdownItem::Submenu { id, label, icon, .. } => {
                 let h       = style.item_height();
                 let hovered = hovered_id == Some(id);
+                // Chevron of a ChevronClick row may be hovered while the
+                // row body is not — track separately so the chevron lights
+                // up alone.
+                let chev_hovered = state.submenu_chevron_hovered_id.as_deref() == Some(id);
 
                 let bg = if hovered { theme.item_bg_hover() } else { theme.item_bg_normal() };
                 ctx.set_fill_color(bg);
@@ -551,7 +555,7 @@ fn draw_flat_list(
                     placement:   PlacementPolicy::InlineCorner { trailing: true },
                     hit_area:    HitAreaPolicy::None,
                     visual_kind: ChevronVisualKind::Stroked,
-                    hovered, ..Default::default()
+                    hovered: hovered || chev_hovered, ..Default::default()
                 };
                 draw_chevron(ctx,
                     Rect::new(chev_x, chev_y, chev_size, chev_size),

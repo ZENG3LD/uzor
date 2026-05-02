@@ -2012,9 +2012,13 @@ impl AppState {
                 }
 
                 if Some(*leaf_id) == active_leaf {
-                    render.set_stroke_color("#2962ff");
-                    render.set_stroke_width(2.0);
-                    render.stroke_rect(rect.x, rect.y, rect.width, rect.height);
+                    use uzor::ui::widgets::atomic::active_frame::render::draw_active_frame;
+                    use uzor::ui::widgets::atomic::active_frame::types::{ActiveFrameKind, ActiveFrameView};
+                    draw_active_frame(
+                        &mut render,
+                        &ActiveFrameView { rect, color: "#2962ff", width: 2.0 },
+                        ActiveFrameKind::Stroke,
+                    );
                 }
             }
         }
@@ -3602,6 +3606,22 @@ impl AppState {
                 eprintln!("[DISPATCHER] ChromeTabClicked index={tab_index}");
                 self.switch_tab(tab_index);
             }
+            DispatchEvent::ChromeTabClosed { tab_index } => {
+                eprintln!("[DISPATCHER] ChromeTabClosed index={tab_index}");
+            }
+            DispatchEvent::ChromeNewTab => {
+                eprintln!("[DISPATCHER] ChromeNewTab");
+            }
+            DispatchEvent::ChromeWindowControl { control } => {
+                eprintln!("[DISPATCHER] ChromeWindowControl {:?}", control);
+                use uzor::layout::ChromeWindowControl as CC;
+                match control {
+                    CC::CloseApp        => { self.window.request_redraw(); std::process::exit(0); }
+                    CC::Minimize        => { self.window.set_minimized(true); }
+                    CC::MaximizeRestore => { self.window.set_maximized(!self.window.is_maximized()); }
+                    _ => {}
+                }
+            }
             DispatchEvent::StickyChevronClicked { host_id } => {
                 eprintln!("[DISPATCHER] StickyChevronClicked host={}", host_id.0);
                 match host_id.0.as_str() {
@@ -3866,21 +3886,12 @@ impl AppState {
             ChromeTabConfig { id: "tab-1", label: "Panels",     icon: None, color_tag: None, closable: false, active: self.active_view == 1 },
             ChromeTabConfig { id: "tab-2", label: "Monitoring", icon: None, color_tag: None, closable: false, active: self.active_view == 2 },
         ];
-        let chrome_view = ChromeView { tabs: &chrome_tabs, active_tab_id: Some(tab_ids[self.active_view]), show_new_tab_btn: false, show_menu_btn: false, show_new_window_btn: false, show_close_window_btn: false, is_maximized: self.window.is_maximized(), cursor_x: x, cursor_y: y, time_ms: self.time_ms() };
-        if let Some(chrome_rect) = self.layout.rect_for_chrome() {
-            let hit = chrome_hit_test(&self.chrome_state, &chrome_view, &ChromeSettings::default(), &ChromeRenderKind::Default, chrome_rect, (x, y));
-            match handle_chrome_action(hit) {
-                ChromeAction::SelectTab(i) => {
-                    self.switch_tab(i);
-                    println!("[L3] tab → {i}");
-                }
-                ChromeAction::CloseApp => {
-                    event_loop.exit();
-                    return;
-                }
-                _ => {}
-            }
-        }
+        // Chrome tab/buttons handled via LayoutManager dispatcher
+        // (DispatchEvent::ChromeTabClicked / ChromeWindowControl) — no
+        // geometry hit-test needed here. tab_ids/chrome_tabs/_chrome_view
+        // kept above for the hover path elsewhere in this method.
+        let _ = tab_ids;
+        let _ = chrome_tabs;
 
         // ── Toolbar buttons ───────────────────────────────────────────────────
         if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
