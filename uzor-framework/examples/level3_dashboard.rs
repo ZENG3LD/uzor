@@ -780,6 +780,15 @@ struct AppState {
     /// Toolbar render variant index (0=Horizontal, 1=Vertical, 2=ChromeStrip, 3=Inline).
     /// Affects only the demo toolbar — main top toolbar stays Horizontal.
     toolbar_kind: u8,
+    /// Toggle visibility for demo toolbars (extra to the main top one).
+    /// Sidebar dropdown items toggle these bits — clicking spawns/hides.
+    demo_toolbar_left2:  bool,
+    demo_toolbar_right:  bool,
+    demo_toolbar_bottom: bool,
+    /// Toggle visibility for demo sidebars (extra to the main left one).
+    demo_sidebar_right:  bool,
+    demo_sidebar_top:    bool,
+    demo_sidebar_bottom: bool,
     left_toolbar_visible: bool,
     modal_open: bool,
     modal_kind: ModalKind,
@@ -898,25 +907,31 @@ impl AppState {
             "dd-sidebar-widget" => {
                 // Toggle items keep dropdown open.
                 match item_id {
-                    "sidebar-left"    => self.sidebar_kind = 0,
-                    "sidebar-right"   => self.sidebar_kind = 1,
-                    "sidebar-typesel" => self.sidebar_kind = 2,
-                    "sidebar-embed"   => self.sidebar_kind = 3,
+                    "sb-toggle-main"  => self.sidebar_open       = !self.sidebar_open,
+                    "sb-spawn-right"  => self.demo_sidebar_right  = !self.demo_sidebar_right,
+                    "sb-spawn-top"    => self.demo_sidebar_top    = !self.demo_sidebar_top,
+                    "sb-spawn-bottom" => self.demo_sidebar_bottom = !self.demo_sidebar_bottom,
                     _ => {}
                 }
-                println!("[L3] sidebar kind → {}", sidebar_kind_label(self.sidebar_kind));
+                println!("[L3] sidebars: main={} right={} top={} bottom={}",
+                    self.sidebar_open, self.demo_sidebar_right, self.demo_sidebar_top, self.demo_sidebar_bottom);
             }
             "dd-toolbar-widget" => {
+                // Toggle items keep dropdown open.
                 match item_id {
-                    "toolbar-horiz"  => self.toolbar_kind = 0,
-                    "toolbar-vert"   => self.toolbar_kind = 1,
-                    "toolbar-chrome" => self.toolbar_kind = 2,
-                    "toolbar-inline" => self.toolbar_kind = 3,
+                    "tb-toggle-main"  => {} // main toolbar is always on
+                    "tb-toggle-left"  => self.left_toolbar_visible = !self.left_toolbar_visible,
+                    "tb-spawn-left2"  => self.demo_toolbar_left2  = !self.demo_toolbar_left2,
+                    "tb-spawn-right"  => self.demo_toolbar_right  = !self.demo_toolbar_right,
+                    "tb-spawn-bottom" => self.demo_toolbar_bottom = !self.demo_toolbar_bottom,
                     _ => {}
                 }
-                self.dropdown_toolbar_state.close();
+                println!("[L3] toolbars: top=on left={} left2={} right={} bottom={}",
+                    self.left_toolbar_visible, self.demo_toolbar_left2,
+                    self.demo_toolbar_right, self.demo_toolbar_bottom);
             }
             "dd-popup-widget" => {
+                // Like Modals dropdown — picking a kind opens the popup.
                 self.popup_kind = match item_id {
                     "popup-cpgrid"   => Some(0),
                     "popup-cphsv"    => Some(1),
@@ -1216,6 +1231,62 @@ impl AppState {
             order: 1,
         });
 
+        // ── Demo toolbars / sidebars (toggleable from dropdowns) ──────────────
+        if self.demo_toolbar_left2 {
+            self.layout.edges_mut().add(EdgeSlot {
+                id: "demo-toolbar-left2".into(),
+                side: EdgeSide::Left,
+                thickness: left_w as f32,
+                visible: true,
+                order: 2,
+            });
+        }
+        if self.demo_toolbar_right {
+            self.layout.edges_mut().add(EdgeSlot {
+                id: "demo-toolbar-right".into(),
+                side: EdgeSide::Right,
+                thickness: left_w as f32,
+                visible: true,
+                order: 0,
+            });
+        }
+        if self.demo_toolbar_bottom {
+            self.layout.edges_mut().add(EdgeSlot {
+                id: "demo-toolbar-bottom".into(),
+                side: EdgeSide::Bottom,
+                thickness: top_h as f32,
+                visible: true,
+                order: 0,
+            });
+        }
+        if self.demo_sidebar_right {
+            self.layout.edges_mut().add(EdgeSlot {
+                id: "demo-sidebar-right".into(),
+                side: EdgeSide::Right,
+                thickness: sidebar_w as f32,
+                visible: true,
+                order: 1,
+            });
+        }
+        if self.demo_sidebar_top {
+            self.layout.edges_mut().add(EdgeSlot {
+                id: "demo-sidebar-top".into(),
+                side: EdgeSide::Top,
+                thickness: 120.0,
+                visible: true,
+                order: 1,
+            });
+        }
+        if self.demo_sidebar_bottom {
+            self.layout.edges_mut().add(EdgeSlot {
+                id: "demo-sidebar-bottom".into(),
+                side: EdgeSide::Bottom,
+                thickness: 120.0,
+                visible: true,
+                order: 1,
+            });
+        }
+
         // Clear overlays at the START of frame (before push_overlay calls).
         // If we cleared at the end, rect_for_overlay would return None for
         // outside-click handlers running between frames.
@@ -1389,6 +1460,35 @@ impl AppState {
                 ),
                 &ToolbarRenderKind::Vertical,
             );
+        }
+
+        // ── Demo edge slots (filled with a labelled stub) ─────────────────────
+        // Spawned via Toolbar / Sidebar dropdowns; rendered as plain rectangles
+        // with a centred label so it's obvious they appeared.
+        let demo_slots: &[(&str, &str, bool)] = &[
+            ("demo-toolbar-left2",  "Left2 toolbar",  self.demo_toolbar_left2),
+            ("demo-toolbar-right",  "Right toolbar",  self.demo_toolbar_right),
+            ("demo-toolbar-bottom", "Bottom toolbar", self.demo_toolbar_bottom),
+            ("demo-sidebar-right",  "Right sidebar",  self.demo_sidebar_right),
+            ("demo-sidebar-top",    "Top sidebar",    self.demo_sidebar_top),
+            ("demo-sidebar-bottom", "Bottom sidebar", self.demo_sidebar_bottom),
+        ];
+        for (slot_id, label, visible) in demo_slots {
+            if !visible { continue; }
+            if let Some(rect) = self.layout.rect_for_edge_slot(slot_id) {
+                render.set_fill_color("#252a36");
+                render.fill_rect(rect.x, rect.y, rect.width, rect.height);
+                render.set_fill_color("#3a4458");
+                render.fill_rect(rect.x, rect.y, rect.width, 1.0);
+                render.fill_rect(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0);
+                render.fill_rect(rect.x, rect.y, 1.0, rect.height);
+                render.fill_rect(rect.x + rect.width - 1.0, rect.y, 1.0, rect.height);
+                render.set_fill_color("#a0a8b8");
+                render.set_font("12px sans-serif");
+                render.set_text_align(TextAlign::Center);
+                render.set_text_baseline(TextBaseline::Middle);
+                render.fill_text(label, rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+            }
         }
 
         // ── Sidebar ───────────────────────────────────────────────────────────
@@ -2341,14 +2441,14 @@ impl AppState {
             );
         }
 
-        // ── Sidebar variants dropdown ─────────────────────────────────────────
-        let sk = self.sidebar_kind;
+        // ── Sidebar dropdown — toggles to spawn / hide demo sidebars ─────────
+        let main_open = self.sidebar_open;
         let sidebar_items = [
-            DropdownItem::Header { label: "SidebarRenderKind" },
-            DropdownItem::Item { id: "sidebar-left",    label: "Left",             icon: None, right: DropdownItemRight::Toggle(sk == 0), disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "sidebar-right",   label: "Right",            icon: None, right: DropdownItemRight::Toggle(sk == 1), disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "sidebar-typesel", label: "WithTypeSelector", icon: None, right: DropdownItemRight::Toggle(sk == 2), disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "sidebar-embed",   label: "Embedded",         icon: None, right: DropdownItemRight::Toggle(sk == 3), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Header { label: "Spawn extra sidebars" },
+            DropdownItem::Item { id: "sb-toggle-main",   label: "Main (Left)",    icon: None, right: DropdownItemRight::Toggle(main_open),               disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "sb-spawn-right",   label: "Right sidebar",  icon: None, right: DropdownItemRight::Toggle(self.demo_sidebar_right), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "sb-spawn-top",     label: "Top sidebar",    icon: None, right: DropdownItemRight::Toggle(self.demo_sidebar_top),   disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "sb-spawn-bottom",  label: "Bottom sidebar", icon: None, right: DropdownItemRight::Toggle(self.demo_sidebar_bottom),disabled: false, danger: false, accent_color: None },
         ];
         if self.dropdown_sidebar_state.open {
             let hovered_id = self.dropdown_sidebar_state.hovered_id.clone();
@@ -2377,13 +2477,15 @@ impl AppState {
             );
         }
 
-        // ── Toolbar variants dropdown ─────────────────────────────────────────
+        // ── Toolbar dropdown — toggles to spawn / hide demo toolbars ─────────
+        let left_main_visible = self.left_toolbar_visible;
         let toolbar_items_dd = [
-            DropdownItem::Header { label: "ToolbarRenderKind" },
-            DropdownItem::Item { id: "toolbar-horiz",   label: "Horizontal",  icon: None, right: DropdownItemRight::Shortcut("default"),    disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "toolbar-vert",    label: "Vertical",    icon: None, right: DropdownItemRight::Shortcut("left bar"),   disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "toolbar-chrome",  label: "ChromeStrip", icon: None, right: DropdownItemRight::Shortcut("tabs"),       disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "toolbar-inline",  label: "Inline",      icon: None, right: DropdownItemRight::Shortcut("compact"),    disabled: false, danger: false, accent_color: None },
+            DropdownItem::Header { label: "Spawn extra toolbars" },
+            DropdownItem::Item { id: "tb-toggle-main",  label: "Main (Top)",     icon: None, right: DropdownItemRight::Toggle(true),                    disabled: true, danger: false, accent_color: None },
+            DropdownItem::Item { id: "tb-toggle-left",  label: "Left (Vertical)",icon: None, right: DropdownItemRight::Toggle(left_main_visible),       disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "tb-spawn-left2",  label: "Left2 (extra)",  icon: None, right: DropdownItemRight::Toggle(self.demo_toolbar_left2), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "tb-spawn-right",  label: "Right toolbar",  icon: None, right: DropdownItemRight::Toggle(self.demo_toolbar_right), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "tb-spawn-bottom", label: "Bottom toolbar", icon: None, right: DropdownItemRight::Toggle(self.demo_toolbar_bottom),disabled: false, danger: false, accent_color: None },
         ];
         if self.dropdown_toolbar_state.open {
             let hovered_id = self.dropdown_toolbar_state.hovered_id.clone();
@@ -2554,6 +2656,47 @@ impl AppState {
                 render.set_fill_color("#1e222d");
                 render.fill_rounded_rect(body_rect.x, body_rect.y, body_rect.width, body_rect.height, 4.0);
                 label(&mut render, body_rect, text_for_popup, TextAlign::Center, "#d1d4dc");
+            }
+        }
+
+        // ── Demo popup (selected from Popup dropdown) ─────────────────────────
+        // Renders one of the PopupViewKind templates — placeholder body for now.
+        if let Some(kind_idx) = self.popup_kind {
+            let (label_text, popup_w, popup_h) = match kind_idx {
+                0 => ("ColorPickerGrid (L1 picker)", 220.0, 240.0),
+                1 => ("ColorPickerHsv (L2 picker)",  280.0, 320.0),
+                2 => ("SwatchGrid",                  180.0, 160.0),
+                3 => ("ItemList",                    200.0, 200.0),
+                _ => ("IndicatorStrip",              260.0,  80.0),
+            };
+            let px = (width as f64 - popup_w) / 2.0;
+            let py = (height as f64 - popup_h) / 2.0;
+            self.layout.push_overlay(OverlayEntry {
+                id: "demo-popup-overlay".to_string(),
+                kind: OverlayKind::Popup,
+                rect: Rect::new(px, py, popup_w, popup_h),
+                anchor: None,
+            });
+            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 30, true);
+            if let Some(r) = self.layout.rect_for_overlay("demo-popup-overlay") {
+                // Frame
+                render.set_fill_color("#1a1a22");
+                render.fill_rounded_rect(r.x, r.y, r.width, r.height, 6.0);
+                render.set_fill_color("#3a4458");
+                render.fill_rect(r.x, r.y, r.width, 1.0);
+                render.fill_rect(r.x, r.y + r.height - 1.0, r.width, 1.0);
+                render.fill_rect(r.x, r.y, 1.0, r.height);
+                render.fill_rect(r.x + r.width - 1.0, r.y, 1.0, r.height);
+                // Title
+                render.set_fill_color("#d1d4dc");
+                render.set_font("13px sans-serif");
+                render.set_text_align(TextAlign::Center);
+                render.set_text_baseline(TextBaseline::Top);
+                render.fill_text(label_text, r.x + r.width / 2.0, r.y + 12.0);
+                render.set_fill_color("#7080a0");
+                render.set_font("11px sans-serif");
+                render.fill_text("(placeholder body — click outside to close)",
+                    r.x + r.width / 2.0, r.y + 36.0);
             }
         }
 
@@ -2942,6 +3085,15 @@ impl AppState {
             if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
                 if !modal_rect.contains(x, y) {
                     self.modal_open = false;
+                }
+            }
+            return;
+        }
+        // Demo popup — also modal-blocking; outside click closes it.
+        if self.popup_kind.is_some() {
+            if let Some(popup_rect) = self.layout.rect_for_overlay("demo-popup-overlay") {
+                if !popup_rect.contains(x, y) {
+                    self.popup_kind = None;
                 }
             }
             return;
@@ -3477,6 +3629,12 @@ impl ApplicationHandler for Handler {
             theme_idx: 0,    // Dark
             popup_kind: None,
             toolbar_kind: 0, // Horizontal
+            demo_toolbar_left2: false,
+            demo_toolbar_right: false,
+            demo_toolbar_bottom: false,
+            demo_sidebar_right: false,
+            demo_sidebar_top: false,
+            demo_sidebar_bottom: false,
             left_toolbar_visible: true,
             modal_open: false,
             modal_kind: ModalKind::L2,
