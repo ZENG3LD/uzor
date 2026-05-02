@@ -96,6 +96,25 @@ pub fn register_layout_manager_modal<P: DockPanel>(
             },
         );
     }
+    // Resize handles (8): N S W E + NW NE SW SE.
+    if view.resizable {
+        use crate::layout::ResizeEdge;
+        for (suffix, edge) in &[
+            ("resize_n",  ResizeEdge::N),
+            ("resize_s",  ResizeEdge::S),
+            ("resize_w",  ResizeEdge::W),
+            ("resize_e",  ResizeEdge::E),
+            ("resize_nw", ResizeEdge::NW),
+            ("resize_ne", ResizeEdge::NE),
+            ("resize_sw", ResizeEdge::SW),
+            ("resize_se", ResizeEdge::SE),
+        ] {
+            dispatcher.on_exact(
+                format!("{}:{}", id.0, suffix),
+                EventBuilder::ResizeHandle { host_id: id.clone(), edge: *edge },
+            );
+        }
+    }
 
     register_context_manager_modal(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,

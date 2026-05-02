@@ -750,6 +750,20 @@ enum DragTarget {
         min:        f64,
         cap:        f64,
     },
+    /// Modal / popup edge or corner resize drag. Captures the rect + cursor at
+    /// mouse-down; on_mouse_move computes the new size and (when shrinking
+    /// from N / W) the new top-left position.
+    OverlayResize {
+        /// "modal" or "popup" — selects which override field to write into.
+        which:      &'static str,
+        edge:       uzor::layout::ResizeEdge,
+        start_x:    f64,
+        start_y:    f64,
+        start_w:    f64,
+        start_h:    f64,
+        start_pos_x: f64,
+        start_pos_y: f64,
+    },
 }
 
 /// Resolve a `sidebar_kind` index back to a fresh `SidebarRenderKind`.
@@ -796,6 +810,10 @@ struct AppState {
     left_vtoolbar_state: ToolbarState,
     /// User-resized override for top toolbar height (px). 0.0 = use measured.
     top_toolbar_height_override: f64,
+    /// User-resized modal size override (w, h). (0.0, 0.0) = use measured.
+    modal_size_override: (f64, f64),
+    /// User-resized popup size override (w, h). (0.0, 0.0) = use measured.
+    popup_size_override: (f64, f64),
     sidebar_state: SidebarState,
     modal_state: ModalState,
     popup_state: PopupState,
@@ -2003,8 +2021,10 @@ impl AppState {
                 &ModalSettings::default(),
                 &probe_kind,
             );
-            let modal_w = body_w + extra_w;
-            let modal_h = body_h + extra_h;
+            let measured_w = body_w + extra_w;
+            let measured_h = body_h + extra_h;
+            let modal_w = if self.modal_size_override.0 > 0.0 { self.modal_size_override.0 } else { measured_w };
+            let modal_h = if self.modal_size_override.1 > 0.0 { self.modal_size_override.1 } else { measured_h };
             // Fix #10/#11: use modal_state.position (dragged) instead of always centering.
             let default_x = (width as f64 / 2.0 - modal_w / 2.0).max(0.0);
             let default_y = (height as f64 / 2.0 - modal_h / 2.0).max(0.0);
@@ -3983,6 +4003,38 @@ impl AppState {
                         self.top_toolbar_height_override = new_size;
                     }
                 }
+                DragTarget::OverlayResize { which, edge, start_x, start_y, start_w, start_h, start_pos_x, start_pos_y } => {
+                    use uzor::layout::ResizeEdge;
+                    let dx = x - *start_pos_x;
+                    let dy = y - *start_pos_y;
+                    let min_w = 200.0_f64;
+                    let min_h = 120.0_f64;
+                    let mut new_x = *start_x;
+                    let mut new_y = *start_y;
+                    let mut new_w = *start_w;
+                    let mut new_h = *start_h;
+                    match edge {
+                        ResizeEdge::E  => { new_w = (start_w + dx).max(min_w); }
+                        ResizeEdge::W  => { let w = (start_w - dx).max(min_w); new_x = start_x + (start_w - w); new_w = w; }
+                        ResizeEdge::S  => { new_h = (start_h + dy).max(min_h); }
+                        ResizeEdge::N  => { let h = (start_h - dy).max(min_h); new_y = start_y + (start_h - h); new_h = h; }
+                        ResizeEdge::SE => { new_w = (start_w + dx).max(min_w); new_h = (start_h + dy).max(min_h); }
+                        ResizeEdge::NE => { new_w = (start_w + dx).max(min_w); let h = (start_h - dy).max(min_h); new_y = start_y + (start_h - h); new_h = h; }
+                        ResizeEdge::SW => { let w = (start_w - dx).max(min_w); new_x = start_x + (start_w - w); new_w = w; new_h = (start_h + dy).max(min_h); }
+                        ResizeEdge::NW => { let w = (start_w - dx).max(min_w); new_x = start_x + (start_w - w); new_w = w; let h = (start_h - dy).max(min_h); new_y = start_y + (start_h - h); new_h = h; }
+                    }
+                    match *which {
+                        "modal" => {
+                            self.modal_size_override = (new_w, new_h);
+                            self.modal_state.position = (new_x, new_y);
+                        }
+                        "popup" => {
+                            self.popup_size_override = (new_w, new_h);
+                            self.popup_state.position = (new_x, new_y);
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
     }
@@ -4110,6 +4162,8 @@ impl ApplicationHandler for Handler {
             top_toolbar_state: ToolbarState::default(),
             left_vtoolbar_state: ToolbarState::default(),
             top_toolbar_height_override: 0.0,
+            modal_size_override: (0.0, 0.0),
+            popup_size_override: (0.0, 0.0),
             sidebar_state,
             modal_state: ModalState::default(),
             popup_state: PopupState::default(),
@@ -4318,6 +4372,30 @@ impl ApplicationHandler for Handler {
                             app.drag_origin = Some((x, y));
                             app.mouse_down = true;
                             handled = true;
+                        } else if host_id.0 == "modal-widget" {
+                            if let Some(rect) = app.layout.rect_for_overlay("modal-overlay") {
+                                app.drag_target = Some(DragTarget::OverlayResize {
+                                    which: "modal", edge,
+                                    start_x: rect.x, start_y: rect.y,
+                                    start_w: rect.width, start_h: rect.height,
+                                    start_pos_x: x, start_pos_y: y,
+                                });
+                                app.drag_origin = Some((x, y));
+                                app.mouse_down = true;
+                                handled = true;
+                            }
+                        } else if host_id.0 == "popup-widget" {
+                            if let Some(rect) = app.layout.rect_for_overlay("popup-overlay") {
+                                app.drag_target = Some(DragTarget::OverlayResize {
+                                    which: "popup", edge,
+                                    start_x: rect.x, start_y: rect.y,
+                                    start_w: rect.width, start_h: rect.height,
+                                    start_pos_x: x, start_pos_y: y,
+                                });
+                                app.drag_origin = Some((x, y));
+                                app.mouse_down = true;
+                                handled = true;
+                            }
                         }
                     }
                     _ => {}
