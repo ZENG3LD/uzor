@@ -180,6 +180,16 @@ pub struct DropdownView<'a> {
 
     /// Template-specific data.
     pub kind: DropdownViewKind<'a>,
+
+    /// How the dropdown picks its outer rect. Default `AutoFit` measures
+    /// content; `Fixed(w, h)` pins the rect.
+    pub size_mode: crate::types::SizeMode,
+
+    /// What to do when content exceeds the panel rect. `Clip` (default)
+    /// just hides; `Scrollbar` / `Chevrons` activate paging affordances.
+    /// Dropdowns are never resizable / draggable — they're transient
+    /// surfaces.
+    pub overflow: crate::types::OverflowMode,
 }
 
 // ---------------------------------------------------------------------------

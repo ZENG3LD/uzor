@@ -7,10 +7,12 @@
 pub mod icon;
 pub mod overflow;
 pub mod rect;
+pub mod size_mode;
 pub mod state;
 
 // Re-export all types at the module level
 pub use icon::IconId;
 pub use overflow::OverflowMode;
 pub use rect::*;
+pub use size_mode::SizeMode;
 pub use state::*;

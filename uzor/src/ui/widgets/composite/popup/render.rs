@@ -98,20 +98,15 @@ pub fn register_input_coordinator_popup(
         _ => {}
     }
 
-    // Body overflow strips + opt-in resize handles.
+    // Body overflow strips (no resize handles — popups are not resizable).
     register_popup_body_overflow(coord, &popup_id, layout.content, view, state);
-    if view.resizable {
-        register_popup_resize_handles(coord, &popup_id, frame);
-    }
 
     popup_id
 }
 
 // ---------------------------------------------------------------------------
-// Body overflow strips & resize handles
+// Body overflow strips (Scrollbar / Chevrons modes)
 // ---------------------------------------------------------------------------
-
-const POPUP_RESIZE_THICKNESS: f64 = 6.0;
 
 fn register_popup_body_overflow(
     coord:    &mut InputCoordinator,
@@ -142,21 +137,6 @@ fn register_popup_body_overflow(
                 WidgetKind::Button, dn, Sense::CLICK | Sense::HOVER);
         }
         _ => {}
-    }
-}
-
-fn register_popup_resize_handles(coord: &mut InputCoordinator, popup_id: &WidgetId, frame: Rect) {
-    let t = POPUP_RESIZE_THICKNESS;
-    let handles = [
-        ("resize_n",  Rect::new(frame.x, frame.y, frame.width, t)),
-        ("resize_s",  Rect::new(frame.x, frame.y + frame.height - t, frame.width, t)),
-        ("resize_w",  Rect::new(frame.x, frame.y, t, frame.height)),
-        ("resize_e",  Rect::new(frame.x + frame.width - t, frame.y, t, frame.height)),
-        ("resize_se", Rect::new(frame.x + frame.width - t * 2.0, frame.y + frame.height - t * 2.0, t * 2.0, t * 2.0)),
-    ];
-    for (suffix, rect) in handles {
-        coord.register_child(popup_id, format!("{}:{}", popup_id.0, suffix),
-            WidgetKind::DragHandle, rect, Sense::DRAG | Sense::HOVER);
     }
 }
 
@@ -469,8 +449,11 @@ pub fn measure_color_picker_grid(
     let grid_h = l1_grid_height(rows, settings);
     let grid_w = (cols as f64 * (sz + gap) - gap).max(0.0);
 
+    // Vertical stack matches `draw_color_picker_grid` exactly:
+    // swatch_grid (grid_h) → gap*2 → custom_row (sz+4) → gap*2 → opacity_row (opa_h)
+    let custom_h = sz + 4.0;
     let w = pad * 2.0 + grid_w;
-    let h = pad * 2.0 + grid_h + gap + opa_h;
+    let h = pad * 2.0 + grid_h + gap * 2.0 + custom_h + gap * 2.0 + opa_h;
     (w, h)
 }
 
@@ -485,17 +468,20 @@ pub fn measure_color_picker_hsv(settings: &PopupSettings) -> (f64, f64) {
     let hue   = style.hue_bar_width();
     let gap   = style.hsv_inner_gap();
     let hex_h = style.hex_row_height();
+    let opa_h = style.opacity_row_height();
     let act_h = style.action_button_height();
 
     let w = pad * 2.0 + sq + gap + hue;
-    let h = pad * 2.0 + sq + gap + hex_h + gap + act_h;
+    // Vertical stack: square / hex / opacity / action — three gaps in
+    // between, mirroring the draw pipeline (sq → hex → opa → act).
+    let h = pad * 2.0 + sq + gap + hex_h + gap + opa_h + gap + act_h;
     (w, h)
 }
 
 /// Measure natural size of a `SwatchGrid` popup (compact preset + custom + Remove).
 pub fn measure_swatch_grid(
     preset_swatches: &[[f32; 4]],
-    custom_swatches: &[[f32; 4]],
+    _custom_swatches: &[[f32; 4]],
     settings: &PopupSettings,
 ) -> (f64, f64) {
     let style = settings.style.as_ref();
@@ -504,20 +490,26 @@ pub fn measure_swatch_grid(
     let sz    = style.swatch_grid_size();
     let gap   = style.swatch_grid_gap();
     let rem_h = style.remove_row_height();
+    let sep_h: f64 = 1.0;
+    let sep_gap: f64 = 4.0;
 
-    let preset_rows = l1_grid_rows(preset_swatches.len(), cols);
-    let custom_rows = l1_grid_rows(custom_swatches.len(), cols);
-
-    let row_height = sz + gap;
-    let preset_h = (preset_rows as f64 * row_height - gap).max(0.0);
-    let custom_h = if custom_swatches.is_empty() {
-        0.0
-    } else {
-        (custom_rows as f64 * row_height - gap).max(0.0) + gap
-    };
+    // Mirror draw_swatch_grid stack:
+    // preset_grid_h
+    //   + sep_gap + sep_h
+    //   + sep_gap + custom_row (sz)         (one row, "+" included)
+    //   + sep_gap + sep_h
+    //   + sep_gap + remove_h
+    let preset_rows  = l1_grid_rows(preset_swatches.len(), cols);
+    let preset_grid_h = (preset_rows as f64 * (sz + gap) - gap).max(0.0);
+    let custom_h     = sz;
 
     let w = pad * 2.0 + (cols as f64 * (sz + gap) - gap).max(0.0);
-    let h = pad * 2.0 + preset_h + custom_h + gap + rem_h;
+    let h = pad * 2.0
+        + preset_grid_h
+        + sep_gap + sep_h
+        + sep_gap + custom_h
+        + sep_gap + sep_h
+        + sep_gap + rem_h;
     (w, h)
 }
 

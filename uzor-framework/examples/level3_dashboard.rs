@@ -78,7 +78,8 @@ use uzor::ui::widgets::composite::popup::input::register_layout_manager_popup;
 use uzor::ui::widgets::composite::popup::settings::PopupSettings;
 use uzor::ui::widgets::composite::popup::state::PopupState;
 use uzor::ui::widgets::composite::popup::types::{
-    BackdropKind as PopupBackdrop, PopupRenderKind, PopupView, PopupViewKind,
+    BackdropKind as PopupBackdrop, DropdownItem as PopupItem, HsvColor, IndicatorRowInfo,
+    PopupRenderKind, PopupView, PopupViewKind,
 };
 
 use uzor::ui::widgets::composite::sidebar::input::register_layout_manager_sidebar;
@@ -803,8 +804,6 @@ struct AppState {
     demo_toolbar_bottom_h_override: f64,
     /// User-resized modal size override (w, h). (0.0, 0.0) = use measured.
     modal_size_override: (f64, f64),
-    /// User-resized popup size override (w, h). (0.0, 0.0) = use measured.
-    popup_size_override: (f64, f64),
     sidebar_state: SidebarState,
     modal_state: ModalState,
     popup_state: PopupState,
@@ -996,7 +995,6 @@ impl AppState {
                     "popup-cpgrid"   => Some(0),
                     "popup-cphsv"    => Some(1),
                     "popup-swatch"   => Some(2),
-                    "popup-itemlist" => Some(3),
                     "popup-strip"    => Some(4),
                     _                => self.popup_kind,
                 };
@@ -2629,6 +2627,8 @@ impl AppState {
                 position_override: self.dropdown_file_state.open_position_override,
                 open: true,
                 kind: DropdownViewKind::Flat { items: &file_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
+                size_mode: uzor::types::SizeMode::AutoFit,
+                overflow: uzor::types::OverflowMode::Clip,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2660,6 +2660,8 @@ impl AppState {
                 position_override: self.dropdown_view_state.open_position_override,
                 open: true,
                 kind: DropdownViewKind::Flat { items: &view_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
+                size_mode: uzor::types::SizeMode::AutoFit,
+                overflow: uzor::types::OverflowMode::Clip,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2701,6 +2703,8 @@ impl AppState {
                 position_override: self.dropdown_help_state.open_position_override,
                 open: true,
                 kind: DropdownViewKind::Flat { items: &help_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
+                size_mode: uzor::types::SizeMode::AutoFit,
+                overflow: uzor::types::OverflowMode::Clip,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2739,6 +2743,8 @@ impl AppState {
                 position_override: self.dropdown_sidebar_state.open_position_override,
                 open: true,
                 kind: DropdownViewKind::Flat { items: &sidebar_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
+                size_mode: uzor::types::SizeMode::AutoFit,
+                overflow: uzor::types::OverflowMode::Clip,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2776,6 +2782,8 @@ impl AppState {
                 position_override: self.dropdown_toolbar_state.open_position_override,
                 open: true,
                 kind: DropdownViewKind::Flat { items: &toolbar_items_dd, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
+                size_mode: uzor::types::SizeMode::AutoFit,
+                overflow: uzor::types::OverflowMode::Clip,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2793,7 +2801,6 @@ impl AppState {
             DropdownItem::Item { id: "popup-cpgrid",    label: "ColorPickerGrid", icon: None, right: DropdownItemRight::Shortcut("L1 picker"),   disabled: false, danger: false, accent_color: None },
             DropdownItem::Item { id: "popup-cphsv",     label: "ColorPickerHsv",  icon: None, right: DropdownItemRight::Shortcut("L2 picker"),   disabled: false, danger: false, accent_color: None },
             DropdownItem::Item { id: "popup-swatch",    label: "SwatchGrid",      icon: None, right: DropdownItemRight::Shortcut("compact"),     disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "popup-itemlist",  label: "ItemList",        icon: None, right: DropdownItemRight::Shortcut("vertical"),    disabled: false, danger: false, accent_color: None },
             DropdownItem::Item { id: "popup-strip",     label: "IndicatorStrip",  icon: None, right: DropdownItemRight::Shortcut("horizontal"),  disabled: false, danger: false, accent_color: None },
         ];
         if self.dropdown_popup_state.open {
@@ -2812,6 +2819,8 @@ impl AppState {
                 position_override: self.dropdown_popup_state.open_position_override,
                 open: true,
                 kind: DropdownViewKind::Flat { items: &popup_items_dd, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
+                size_mode: uzor::types::SizeMode::AutoFit,
+                overflow: uzor::types::OverflowMode::Clip,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2846,6 +2855,8 @@ impl AppState {
                 position_override: self.dropdown_theme_state.open_position_override,
                 open: true,
                 kind: DropdownViewKind::Flat { items: &theme_items_dd, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
+                size_mode: uzor::types::SizeMode::AutoFit,
+                overflow: uzor::types::OverflowMode::Clip,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2881,6 +2892,8 @@ impl AppState {
                 position_override: self.dropdown_addpanel_state.open_position_override,
                 open: true,
                 kind: DropdownViewKind::Flat { items: &addpanel_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
+                size_mode: uzor::types::SizeMode::AutoFit,
+                overflow: uzor::types::OverflowMode::Clip,
             };
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
@@ -2892,59 +2905,88 @@ impl AppState {
             );
         }
 
-        // ── Popup (hover on toolbar items) ────────────────────────────────────
-        if let Some(ref item) = self.popup_item.clone() {
-            let popup_text = match item.as_str() {
-                "tb-file" => "Open file menu (Alt+F)",
-                "tb-view" => "Toggle view options",
-                "tb-help" => "Help and documentation",
-                "tb-new"  => "Create new chart (Ctrl+N)",
-                _         => "Toolbar item",
-            };
-            let popup_origin = (mx, my + 20.0);
-            self.layout.push_overlay(OverlayEntry {
-                id: "popup-overlay".to_string(),
-                kind: OverlayKind::Popup,
-                rect: Rect::new(popup_origin.0, popup_origin.1, 220.0, 32.0),
-                anchor: None,
-            });
-            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 15, false);
-            let text_for_popup = popup_text;
-            let mut popup_view = PopupView {
-                origin: popup_origin,
-                anchor: None,
-                backdrop: PopupBackdrop::None,
-                kind: PopupViewKind::Plain,
-                overflow: uzor::types::OverflowMode::Scrollbar,
-                resizable: true,
-            };
-            self.popup_state.body_content_h = 1200.0;
-            let _popup_node = register_layout_manager_popup(
-                &mut self.layout, &mut render,
-                LayoutNodeId::ROOT, "popup-overlay", "popup-widget",
-                &mut self.popup_state,
-                &mut popup_view,
-                &PopupSettings::default(),
-                PopupRenderKind::Plain,
-            );
-            // Draw popup body inline
-            if let Some(body_rect) = self.layout.rect_for_overlay("popup-overlay") {
-                render.set_fill_color("#1e222d");
-                render.fill_rounded_rect(body_rect.x, body_rect.y, body_rect.width, body_rect.height, 4.0);
-                label(&mut render, body_rect, text_for_popup, TextAlign::Center, "#d1d4dc");
-            }
-        }
-
         // ── Demo popup (selected from Popup dropdown) ─────────────────────────
-        // Renders one of the PopupViewKind templates as a centred overlay.
+        // Each variant is a real PopupViewKind rendered through the popup
+        // composite — composite measures the natural rect (AutoFit) so we
+        // don't hardcode w/h here.
         if let Some(kind_idx) = self.popup_kind {
-            let (label_text, popup_w, popup_h) = match kind_idx {
-                0 => ("ColorPickerGrid (L1 picker)", 240.0, 260.0),
-                1 => ("ColorPickerHsv (L2 picker)",  300.0, 340.0),
-                2 => ("SwatchGrid",                  220.0, 180.0),
-                3 => ("ItemList",                    240.0, 220.0),
-                _ => ("IndicatorStrip",              320.0, 100.0),
+            use uzor::ui::widgets::composite::popup::render::{
+                measure_color_picker_grid, measure_color_picker_hsv,
+                measure_indicator_strip, measure_swatch_grid,
             };
+            let popup_settings = PopupSettings::default();
+            // Demo content shared by ColorPickerGrid / SwatchGrid.
+            let palette: [&str; 16] = [
+                "#ef5350","#f59e0b","#fbbf24","#10b981","#22d3ee","#2962ff","#7c3aed","#ec4899",
+                "#94a3b8","#fde68a","#86efac","#67e8f9","#93c5fd","#c4b5fd","#fbcfe8","#1f2937",
+            ];
+            let preset_rgba: [[f32; 4]; 12] = [
+                [0.94,0.33,0.31,1.0],[0.96,0.62,0.04,1.0],[0.98,0.75,0.14,1.0],[0.06,0.73,0.51,1.0],
+                [0.13,0.83,0.93,1.0],[0.16,0.38,1.0, 1.0],[0.49,0.23,0.93,1.0],[0.93,0.28,0.60,1.0],
+                [0.58,0.64,0.72,1.0],[0.99,0.90,0.52,1.0],[0.53,0.94,0.67,1.0],[0.40,0.91,0.98,1.0],
+            ];
+            let item_list_rows: [PopupItem<'_>; 6] = [
+                PopupItem::Header { label: "Recent" },
+                PopupItem::Item { id: "i1", label: "Open project", right_label: Some("Ctrl+O"), disabled: false, danger: false },
+                PopupItem::Item { id: "i2", label: "New chart",    right_label: Some("Ctrl+N"), disabled: false, danger: false },
+                PopupItem::Separator,
+                PopupItem::Submenu { id: "i3", label: "Recent files" },
+                PopupItem::Item { id: "i4", label: "Delete",       right_label: None,           disabled: false, danger: true  },
+            ];
+            let indicator_rows: [IndicatorRowInfo<'_>; 3] = [
+                IndicatorRowInfo { id: 1, display_name: "RSI",    visible: true  },
+                IndicatorRowInfo { id: 2, display_name: "MACD",   visible: false },
+                IndicatorRowInfo { id: 3, display_name: "BBands", visible: true  },
+            ];
+
+            // Build per-kind view + measured size.
+            let (popup_kind_e, view_kind, popup_w, popup_h) = match kind_idx {
+                0 => {
+                    let (w, h) = measure_color_picker_grid(&palette, &popup_settings);
+                    (PopupRenderKind::ColorPickerGrid,
+                     PopupViewKind::ColorPickerGrid {
+                        current_color: "#2962ff",
+                        swatches: &palette,
+                        hovered_swatch: None,
+                        opacity: 1.0,
+                        opacity_hidden: false,
+                     }, w, h)
+                }
+                1 => {
+                    let (w, h) = measure_color_picker_hsv(&popup_settings);
+                    (PopupRenderKind::ColorPickerHsv,
+                     PopupViewKind::ColorPickerHsv {
+                        hsv: HsvColor { h: 220.0, s: 0.9, v: 1.0 },
+                        hex_input: "2962ff",
+                        hex_editing: false,
+                        opacity: 1.0,
+                        opacity_hidden: false,
+                     }, w, h)
+                }
+                2 => {
+                    let (w, h) = measure_swatch_grid(&preset_rgba, &[], &popup_settings);
+                    (PopupRenderKind::SwatchGrid,
+                     PopupViewKind::SwatchGrid {
+                        preset_swatches: &preset_rgba,
+                        custom_swatches: &[],
+                        hovered_index: None,
+                        hovered_remove: false,
+                        hovered_add: false,
+                     }, w, h)
+                }
+                _ => {
+                    // IndicatorStrip — width = style.min_width().
+                    let (w, h) = measure_indicator_strip(indicator_rows.len(), &popup_settings);
+                    (PopupRenderKind::IndicatorStrip,
+                     PopupViewKind::IndicatorStrip {
+                        indicators: &indicator_rows,
+                        hovered_indicator_id: None,
+                        hovered_action: None,
+                     }, w, h)
+                }
+            };
+            let _ = item_list_rows;
+
             let px = (width as f64 - popup_w) / 2.0;
             let py = (height as f64 - popup_h) / 2.0;
             self.layout.push_overlay(OverlayEntry {
@@ -2953,127 +2995,26 @@ impl AppState {
                 rect: Rect::new(px, py, popup_w, popup_h),
                 anchor: None,
             });
-            self.layout.ctx_mut().input.push_layer(LayerId::popup(), 30, true);
-            if let Some(r) = self.layout.rect_for_overlay("demo-popup-overlay") {
-                use uzor::ui::widgets::atomic::text::render::draw_text;
-                use uzor::ui::widgets::atomic::text::settings::TextSettings;
-                use uzor::ui::widgets::atomic::text::types::{TextOverflow, TextView};
-
-                // Frame
-                render.set_fill_color("#1a1a22");
-                render.fill_rounded_rect(r.x, r.y, r.width, r.height, 6.0);
-                render.set_fill_color("#3a4458");
-                render.fill_rect(r.x, r.y, r.width, 1.0);
-                render.fill_rect(r.x, r.y + r.height - 1.0, r.width, 1.0);
-                render.fill_rect(r.x, r.y, 1.0, r.height);
-                render.fill_rect(r.x + r.width - 1.0, r.y, 1.0, r.height);
-
-                // Title (atomic Text → ellipsis on overflow, no bleed)
-                let title_view = TextView {
-                    text: label_text,
-                    align: TextAlign::Center,
-                    baseline: TextBaseline::Middle,
-                    color: Some("#d1d4dc"),
-                    font: Some("13px sans-serif"),
-                    overflow: TextOverflow::Ellipsis,
-                    hovered: false,
-                };
-                let title_rect = Rect::new(r.x + 12.0, r.y + 8.0, r.width - 24.0, 22.0);
-                draw_text(&mut render, title_rect, &title_view, &TextSettings::default());
-
-                // Hint
-                let hint_view = TextView {
-                    text: "click outside to close",
-                    align: TextAlign::Center,
-                    baseline: TextBaseline::Middle,
-                    color: Some("#7080a0"),
-                    font: Some("11px sans-serif"),
-                    overflow: TextOverflow::Ellipsis,
-                    hovered: false,
-                };
-                let hint_rect = Rect::new(r.x + 12.0, r.y + r.height - 22.0, r.width - 24.0, 16.0);
-                draw_text(&mut render, hint_rect, &hint_view, &TextSettings::default());
-
-                // Body — small per-kind preview so popups aren't empty.
-                let body = Rect::new(r.x + 16.0, r.y + 38.0, r.width - 32.0, r.height - 64.0);
-                match kind_idx {
-                    0 | 2 => {
-                        // ColorPickerGrid / SwatchGrid: a small grid of sample swatches.
-                        let cols = 8_usize;
-                        let cell = ((body.width - (cols as f64 - 1.0) * 4.0) / cols as f64).max(8.0);
-                        let palette: [&str; 16] = [
-                            "#ef5350","#f59e0b","#fbbf24","#10b981","#22d3ee","#2962ff","#7c3aed","#ec4899",
-                            "#94a3b8","#fde68a","#86efac","#67e8f9","#93c5fd","#c4b5fd","#fbcfe8","#1f2937",
-                        ];
-                        for (i, color) in palette.iter().enumerate() {
-                            let cx = body.x + (i % cols) as f64 * (cell + 4.0);
-                            let cy = body.y + (i / cols) as f64 * (cell + 4.0);
-                            render.set_fill_color(color);
-                            render.fill_rounded_rect(cx, cy, cell, cell, 3.0);
-                        }
-                    }
-                    1 => {
-                        // ColorPickerHsv: SV square + hue bar placeholder.
-                        let sq = body.height.min(body.width - 32.0);
-                        // SV square fill (saturation+value gradient stub — solid for now)
-                        render.set_fill_color("#3769af");
-                        render.fill_rounded_rect(body.x, body.y, sq, sq, 4.0);
-                        // Hue bar
-                        let hue_x = body.x + sq + 8.0;
-                        let hue_w = (body.width - sq - 8.0).max(16.0);
-                        let stripes = ["#ff0000","#ffff00","#00ff00","#00ffff","#0000ff","#ff00ff","#ff0000"];
-                        let stripe_h = sq / stripes.len() as f64;
-                        for (i, c) in stripes.iter().enumerate() {
-                            render.set_fill_color(c);
-                            render.fill_rect(hue_x, body.y + i as f64 * stripe_h, hue_w, stripe_h + 1.0);
-                        }
-                    }
-                    3 => {
-                        // ItemList: 5 sample rows.
-                        let rows = ["Item A","Item B","Item C","Item D","Item E"];
-                        let row_h = (body.height / rows.len() as f64).min(28.0);
-                        for (i, label) in rows.iter().enumerate() {
-                            let ry = body.y + i as f64 * row_h;
-                            if i % 2 == 0 {
-                                render.set_fill_color("#1e222d");
-                                render.fill_rect(body.x, ry, body.width, row_h);
-                            }
-                            let row_view = TextView {
-                                text: label,
-                                align: TextAlign::Left,
-                                baseline: TextBaseline::Middle,
-                                color: Some("#d1d4dc"),
-                                font: Some("12px sans-serif"),
-                                overflow: TextOverflow::Ellipsis,
-                                hovered: false,
-                            };
-                            let row_rect = Rect::new(body.x + 8.0, ry, body.width - 16.0, row_h);
-                            draw_text(&mut render, row_rect, &row_view, &TextSettings::default());
-                        }
-                    }
-                    _ => {
-                        // IndicatorStrip: 4 short labels in a row.
-                        let labels = ["RSI","MACD","BBands","ATR"];
-                        let chip_w = body.width / labels.len() as f64;
-                        for (i, label) in labels.iter().enumerate() {
-                            let cx = body.x + i as f64 * chip_w;
-                            render.set_fill_color("#252a36");
-                            render.fill_rounded_rect(cx + 4.0, body.y + 8.0, chip_w - 8.0, body.height - 16.0, 4.0);
-                            let chip_view = TextView {
-                                text: label,
-                                align: TextAlign::Center,
-                                baseline: TextBaseline::Middle,
-                                color: Some("#d1d4dc"),
-                                font: Some("12px sans-serif"),
-                                overflow: TextOverflow::Ellipsis,
-                                hovered: false,
-                            };
-                            draw_text(&mut render,
-                                Rect::new(cx + 4.0, body.y + 8.0, chip_w - 8.0, body.height - 16.0),
-                                &chip_view, &TextSettings::default());
-                        }
-                    }
-                }
+            let mut demo_popup_view = PopupView {
+                origin: (px, py),
+                anchor: None,
+                backdrop: PopupBackdrop::Dim,
+                kind: view_kind,
+                size_mode: uzor::types::SizeMode::AutoFit,
+                overflow: uzor::types::OverflowMode::Clip,
+            };
+            let _ = register_layout_manager_popup(
+                &mut self.layout, &mut render,
+                LayoutNodeId::ROOT,
+                "demo-popup-overlay",
+                "demo-popup-widget",
+                &mut self.popup_state,
+                &mut demo_popup_view,
+                &popup_settings,
+                popup_kind_e,
+            );
+            // Suppress unused warning when the shape stays only as fallback.
+            if false {
             }
         }
 
@@ -4061,12 +4002,6 @@ impl AppState {
                                 self.modal_size_override = (r.width, r.height);
                             }
                         }
-                        "popup" => {
-                            self.popup_state.update_resize((x, y));
-                            if let Some(r) = self.popup_state.resized_rect {
-                                self.popup_size_override = (r.width, r.height);
-                            }
-                        }
                         _ => {}
                     }
                 }
@@ -4211,7 +4146,6 @@ impl ApplicationHandler for Handler {
             demo_toolbar_right_w_override:  0.0,
             demo_toolbar_bottom_h_override: 0.0,
             modal_size_override: (0.0, 0.0),
-            popup_size_override: (0.0, 0.0),
             sidebar_state,
             modal_state: ModalState::default(),
             popup_state: PopupState::default(),
@@ -4448,15 +4382,6 @@ impl ApplicationHandler for Handler {
                                 app.modal_state.start_resize(edge, rect, (x, y),
                                     (200.0, 120.0), (f64::INFINITY, f64::INFINITY));
                                 app.drag_target = Some(DragTarget::OverlayResize { which: "modal" });
-                                app.drag_origin = Some((x, y));
-                                app.mouse_down = true;
-                                handled = true;
-                            }
-                        } else if host_id.0 == "popup-widget" {
-                            if let Some(rect) = app.layout.rect_for_overlay("popup-overlay") {
-                                app.popup_state.start_resize(edge, rect, (x, y),
-                                    (160.0, 100.0), (f64::INFINITY, f64::INFINITY));
-                                app.drag_target = Some(DragTarget::OverlayResize { which: "popup" });
                                 app.drag_origin = Some((x, y));
                                 app.mouse_down = true;
                                 handled = true;

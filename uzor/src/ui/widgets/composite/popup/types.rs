@@ -131,13 +131,16 @@ pub struct PopupView<'a> {
     /// Template-specific data and (for `Plain`) the body closure.
     pub kind: PopupViewKind<'a>,
 
-    /// What to do when popup body content exceeds the popup rect. Default
-    /// `Clip` (legacy behaviour).
-    pub overflow: crate::types::OverflowMode,
+    /// How the popup picks its outer rect. `AutoFit` (default) measures
+    /// content; `Fixed(w, h)` pins the rect.
+    pub size_mode: crate::types::SizeMode,
 
-    /// Allow user to drag the popup edges / corners to resize. Default
-    /// `false` — popup stays at its measured rect.
-    pub resizable: bool,
+    /// What to do when content exceeds the popup rect — happens when the
+    /// viewport clips an `AutoFit` popup, or when `Fixed` is smaller than
+    /// content. `Clip` (default) just hides; `Scrollbar` / `Chevrons`
+    /// activate paging affordances. Popups never resize / drag — for
+    /// movable / resizable surfaces, use a modal.
+    pub overflow: crate::types::OverflowMode,
 }
 
 // ---------------------------------------------------------------------------
