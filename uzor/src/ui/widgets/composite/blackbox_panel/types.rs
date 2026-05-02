@@ -106,3 +106,29 @@ pub enum BlackboxRenderKind {
     /// Escape hatch — caller drives every draw call.
     Custom(Box<dyn Fn(&mut dyn RenderContext, Rect, &BlackboxView<'_>, &BlackboxPanelSettings)>),
 }
+
+// ---------------------------------------------------------------------------
+// BlackboxHandler
+// ---------------------------------------------------------------------------
+
+/// Long-lived handler for a blackbox panel — implemented on the panel's
+/// own state struct (e.g. `ChartState`, `WatchlistState`, `DomState`).
+///
+/// The host registers `&mut dyn BlackboxHandler` somewhere it can be
+/// reached synchronously from the input bridge, then dispatches input
+/// events directly via `handle_event`. There is no event queue and no
+/// per-frame closure rebuild — the trait object lives across frames
+/// inside the host's state.
+///
+/// `render` is invoked by the composite's frame-scoped `BlackboxView`
+/// (typically via a `FnMut` closure that forwards to this method).
+pub trait BlackboxHandler {
+    /// Render the panel body. `body_rect` is in screen coordinates.
+    fn render(&self, ctx: &mut dyn RenderContext, body_rect: Rect);
+
+    /// Handle a single input event in panel-local coordinates.
+    /// Return value should mirror `BlackboxEventResult` semantics —
+    /// `true` = event consumed (do not propagate further), `false` =
+    /// not for this panel.
+    fn handle_event(&mut self, event: BlackboxEvent) -> BlackboxEventResult;
+}

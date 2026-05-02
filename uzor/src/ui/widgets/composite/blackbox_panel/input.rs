@@ -10,7 +10,7 @@ use super::render::register_context_manager_blackbox_panel;
 
 use super::settings::BlackboxPanelSettings;
 use super::state::BlackboxState;
-use super::types::{BlackboxEvent, BlackboxEventResult, BlackboxRenderKind, BlackboxView};
+use super::types::{BlackboxEvent, BlackboxEventResult, BlackboxHandler, BlackboxRenderKind, BlackboxView};
 use crate::docking::panels::DockPanel;
 use crate::input::WidgetKind;
 use crate::layout::{BlackboxPanelNode, LayoutManager, LayoutNodeId, WidgetNode};
@@ -107,4 +107,34 @@ pub fn dispatch_blackbox_event(
     };
 
     (view.handle_event)(local_event)
+}
+
+/// Convert a screen-space pointer position to panel-local coordinates and
+/// dispatch the event to the handler trait object directly. Use this on
+/// the bridge side (winit event callback) for zero-lag sync dispatch:
+/// the host routes `(widget_id, event)` to the right `&mut dyn BlackboxHandler`
+/// (typically by looking up the panel id in a host-owned registry) and
+/// calls this helper.
+///
+/// Mirrors the local-coordinate conversion logic of `dispatch_blackbox_event`
+/// but dispatches via the trait instead of through a `BlackboxView` closure.
+pub fn dispatch_to_handler(
+    handler:   &mut dyn BlackboxHandler,
+    body_rect: Rect,
+    screen_x:  f64,
+    screen_y:  f64,
+    event:     BlackboxEvent,
+) -> BlackboxEventResult {
+    let local_x = screen_x - body_rect.x;
+    let local_y = screen_y - body_rect.y;
+    let local_event = match event {
+        BlackboxEvent::PointerMove { .. } =>
+            BlackboxEvent::PointerMove { local_x, local_y },
+        BlackboxEvent::PointerDown { button, .. } =>
+            BlackboxEvent::PointerDown { local_x, local_y, button },
+        BlackboxEvent::PointerUp { button, .. } =>
+            BlackboxEvent::PointerUp { local_x, local_y, button },
+        other => other,
+    };
+    handler.handle_event(local_event)
 }
