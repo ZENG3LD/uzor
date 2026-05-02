@@ -1,6 +1,7 @@
 //! Modal persistent state.
 
-use crate::types::ScrollState;
+use crate::types::{Rect, ScrollState};
+use super::super::resize_drag::ResizeDrag;
 
 /// All per-modal frame state.
 ///
@@ -47,6 +48,18 @@ pub struct ModalState {
 
     /// Index of the footer button the pointer is hovering over (0-based).
     pub footer_hovered: Option<usize>,
+
+    // --- Resize ---
+
+    /// Resize drag in progress. Set by `start_resize`, consumed by
+    /// `update_resize`, cleared on `end_resize` (called from
+    /// `on_mouse_up` / `end_drag`).
+    pub resize_drag: Option<ResizeDrag>,
+
+    /// User-resized override for the modal frame. `None` = use the
+    /// caller-supplied measured rect. `Some(rect)` = composite returns
+    /// this rect from `effective_rect()`.
+    pub resized_rect: Option<Rect>,
 }
 
 impl ModalState {
@@ -101,5 +114,36 @@ impl ModalState {
     /// Go back to the previous wizard page (saturates at 0).
     pub fn prev_page(&mut self) {
         self.current_page = self.current_page.saturating_sub(1);
+    }
+
+    /// Begin a resize drag from a `ResizeHandleDragStarted` event.
+    /// `start_rect` — the current frame rect, `cursor` — pointer at mouse-down.
+    /// `min` / `cap` — width/height bounds.
+    pub fn start_resize(
+        &mut self,
+        edge:       crate::layout::ResizeEdge,
+        start_rect: Rect,
+        cursor:     (f64, f64),
+        min:        (f64, f64),
+        cap:        (f64, f64),
+    ) {
+        self.resize_drag = Some(ResizeDrag::begin(edge, start_rect, cursor, min, cap));
+    }
+
+    /// Update the resized rect from a fresh cursor position. No-op when
+    /// no resize drag is in progress. Writes the resolved rect to
+    /// `resized_rect` and the resolved origin to `position` so the modal
+    /// composite picks them up next frame.
+    pub fn update_resize(&mut self, cursor: (f64, f64)) {
+        if let Some(drag) = self.resize_drag {
+            let rect = drag.resolve(cursor);
+            self.resized_rect = Some(rect);
+            self.position = (rect.x, rect.y);
+        }
+    }
+
+    /// End any active resize drag (call from `on_mouse_up`).
+    pub fn end_resize(&mut self) {
+        self.resize_drag = None;
     }
 }

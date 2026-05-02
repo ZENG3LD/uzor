@@ -3,6 +3,8 @@
 //! `PopupState` is a flat struct — fields irrelevant to the active
 //! `PopupRenderKind` are simply never touched.
 
+use crate::types::Rect;
+use super::super::resize_drag::ResizeDrag;
 use super::types::{ColorPickerLevel, HsvColor};
 
 /// All per-popup frame state.
@@ -92,6 +94,15 @@ pub struct PopupState {
 
     /// `(indicator_id, action_name)` of the hovered action button.
     pub hovered_action: Option<(u64, &'static str)>,
+
+    // --- Resize ---
+
+    /// Resize drag in progress.
+    pub resize_drag: Option<ResizeDrag>,
+
+    /// User-resized override for the popup frame. `None` = use the
+    /// caller-supplied measured rect.
+    pub resized_rect: Option<Rect>,
 }
 
 impl Default for PopupState {
@@ -120,6 +131,8 @@ impl Default for PopupState {
             hovered_item_id: None,
             hovered_indicator_id: None,
             hovered_action: None,
+            resize_drag: None,
+            resized_rect: None,
         }
     }
 }
@@ -169,6 +182,32 @@ impl PopupState {
 
     /// Returns `true` if any drag gesture is in progress (guards click-outside dismiss).
     pub fn is_dragging_any(&self) -> bool {
-        self.dragging_sv || self.dragging_hue || self.dragging_opacity
+        self.dragging_sv || self.dragging_hue || self.dragging_opacity || self.resize_drag.is_some()
+    }
+
+    /// Begin a resize drag from a `ResizeHandleDragStarted` event.
+    pub fn start_resize(
+        &mut self,
+        edge:       crate::layout::ResizeEdge,
+        start_rect: Rect,
+        cursor:     (f64, f64),
+        min:        (f64, f64),
+        cap:        (f64, f64),
+    ) {
+        self.resize_drag = Some(ResizeDrag::begin(edge, start_rect, cursor, min, cap));
+    }
+
+    /// Update the resized rect from a fresh cursor position.
+    pub fn update_resize(&mut self, cursor: (f64, f64)) {
+        if let Some(drag) = self.resize_drag {
+            let rect = drag.resolve(cursor);
+            self.resized_rect = Some(rect);
+            self.position = (rect.x, rect.y);
+        }
+    }
+
+    /// End any active resize drag.
+    pub fn end_resize(&mut self) {
+        self.resize_drag = None;
     }
 }

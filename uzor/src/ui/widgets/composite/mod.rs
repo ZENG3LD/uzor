@@ -25,5 +25,8 @@ pub mod dropdown;
 pub mod modal;
 pub mod panel;
 pub mod popup;
+pub mod resize_drag;
 pub mod sidebar;
 pub mod toolbar;
+
+pub use resize_drag::ResizeDrag;

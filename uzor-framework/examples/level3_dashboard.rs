@@ -739,31 +739,11 @@ enum DragTarget {
     ModalDrag,
     /// Dock separator drag — stores separator index and start mouse position.
     SeparatorDrag { sep_idx: usize, start_x: f64, start_y: f64 },
-    /// Toolbar inner-edge resize drag. `axis` = 'h' (vertical bar, drag right edge → width)
-    /// or 'v' (horizontal bar, drag bottom edge → height). `start_size` / `start_pos`
-    /// captured at mouse-down; `cap` is the maximum allowed thickness (e.g. 10% viewport).
-    ToolbarResize {
-        which:      &'static str,
-        axis:       char,
-        start_size: f64,
-        start_pos:  f64,
-        min:        f64,
-        cap:        f64,
-    },
-    /// Modal / popup edge or corner resize drag. Captures the rect + cursor at
-    /// mouse-down; on_mouse_move computes the new size and (when shrinking
-    /// from N / W) the new top-left position.
-    OverlayResize {
-        /// "modal" or "popup" — selects which override field to write into.
-        which:      &'static str,
-        edge:       uzor::layout::ResizeEdge,
-        start_x:    f64,
-        start_y:    f64,
-        start_w:    f64,
-        start_h:    f64,
-        start_pos_x: f64,
-        start_pos_y: f64,
-    },
+    /// Toolbar resize — math lives on `ToolbarState`. `which` selects
+    /// which toolbar's state to update.
+    ToolbarResize { which: &'static str },
+    /// Modal / popup resize — math lives on the composite's state.
+    OverlayResize { which: &'static str },
 }
 
 /// Resolve a `sidebar_kind` index back to a fresh `SidebarRenderKind`.
@@ -3994,43 +3974,26 @@ impl AppState {
                         handle_sidebar_resize_clamped(state, new_size, min, max);
                     }
                 }
-                DragTarget::ToolbarResize { which, axis, start_size, start_pos, min, cap } => {
-                    // Top toolbar — drag the bottom edge → cursor.y > start_pos grows.
-                    let cur_pos = if *axis == 'h' { x } else { y };
-                    let delta = cur_pos - *start_pos;
-                    let new_size = (*start_size + delta).clamp(*min, *cap);
+                DragTarget::ToolbarResize { which } => {
+                    // Resize math lives on ToolbarState — just forward the cursor.
                     if *which == "top" {
-                        self.top_toolbar_height_override = new_size;
+                        self.top_toolbar_state.update_resize((x, y), false);
+                        self.top_toolbar_height_override = self.top_toolbar_state.resized_thickness;
                     }
                 }
-                DragTarget::OverlayResize { which, edge, start_x, start_y, start_w, start_h, start_pos_x, start_pos_y } => {
-                    use uzor::layout::ResizeEdge;
-                    let dx = x - *start_pos_x;
-                    let dy = y - *start_pos_y;
-                    let min_w = 200.0_f64;
-                    let min_h = 120.0_f64;
-                    let mut new_x = *start_x;
-                    let mut new_y = *start_y;
-                    let mut new_w = *start_w;
-                    let mut new_h = *start_h;
-                    match edge {
-                        ResizeEdge::E  => { new_w = (start_w + dx).max(min_w); }
-                        ResizeEdge::W  => { let w = (start_w - dx).max(min_w); new_x = start_x + (start_w - w); new_w = w; }
-                        ResizeEdge::S  => { new_h = (start_h + dy).max(min_h); }
-                        ResizeEdge::N  => { let h = (start_h - dy).max(min_h); new_y = start_y + (start_h - h); new_h = h; }
-                        ResizeEdge::SE => { new_w = (start_w + dx).max(min_w); new_h = (start_h + dy).max(min_h); }
-                        ResizeEdge::NE => { new_w = (start_w + dx).max(min_w); let h = (start_h - dy).max(min_h); new_y = start_y + (start_h - h); new_h = h; }
-                        ResizeEdge::SW => { let w = (start_w - dx).max(min_w); new_x = start_x + (start_w - w); new_w = w; new_h = (start_h + dy).max(min_h); }
-                        ResizeEdge::NW => { let w = (start_w - dx).max(min_w); new_x = start_x + (start_w - w); new_w = w; let h = (start_h - dy).max(min_h); new_y = start_y + (start_h - h); new_h = h; }
-                    }
+                DragTarget::OverlayResize { which } => {
                     match *which {
                         "modal" => {
-                            self.modal_size_override = (new_w, new_h);
-                            self.modal_state.position = (new_x, new_y);
+                            self.modal_state.update_resize((x, y));
+                            if let Some(r) = self.modal_state.resized_rect {
+                                self.modal_size_override = (r.width, r.height);
+                            }
                         }
                         "popup" => {
-                            self.popup_size_override = (new_w, new_h);
-                            self.popup_state.position = (new_x, new_y);
+                            self.popup_state.update_resize((x, y));
+                            if let Some(r) = self.popup_state.resized_rect {
+                                self.popup_size_override = (r.width, r.height);
+                            }
                         }
                         _ => {}
                     }
@@ -4042,6 +4005,10 @@ impl AppState {
     fn on_mouse_up(&mut self) {
         self.mouse_down = false;
         self.drag_origin = None;
+        // End any composite resize drags.
+        self.top_toolbar_state.end_resize();
+        self.modal_state.end_resize();
+        self.popup_state.end_resize();
         // Fix 3: end modal drag
         self.modal_state.end_drag();
         // Clear sidebar resize-drag flags so composites stop highlighting their handles.
@@ -4352,46 +4319,32 @@ impl ApplicationHandler for Handler {
                     }
                     DispatchEvent::ResizeHandleDragStarted { host_id, edge } => {
                         eprintln!("[BRIDGE] drag-press → ResizeHandleDragStarted host={} edge={:?}", host_id.0, edge);
-                        // Top toolbar: vertical drag (edge S → height grows downward).
+                        // Each composite owns its resize math; we just hand
+                        // it the start rect + cursor + bounds.
                         if host_id.0 == "top-toolbar-widget" {
                             let viewport_h = app.layout.last_window().map(|w| w.height).unwrap_or(800.0);
                             let cap = (viewport_h * 0.10).max(60.0);
-                            let start_size = app
-                                .layout
-                                .rect_for_edge_slot("top-toolbar")
-                                .map(|r| r.height)
-                                .unwrap_or(36.0);
-                            app.drag_target = Some(DragTarget::ToolbarResize {
-                                which: "top",
-                                axis: 'v',
-                                start_size,
-                                start_pos: y,
-                                min: 24.0,
-                                cap,
-                            });
-                            app.drag_origin = Some((x, y));
-                            app.mouse_down = true;
-                            handled = true;
+                            if let Some(rect) = app.layout.rect_for_edge_slot("top-toolbar") {
+                                app.top_toolbar_state.start_resize(edge, rect, (x, y), 24.0, cap);
+                                app.drag_target = Some(DragTarget::ToolbarResize { which: "top" });
+                                app.drag_origin = Some((x, y));
+                                app.mouse_down = true;
+                                handled = true;
+                            }
                         } else if host_id.0 == "modal-widget" {
                             if let Some(rect) = app.layout.rect_for_overlay("modal-overlay") {
-                                app.drag_target = Some(DragTarget::OverlayResize {
-                                    which: "modal", edge,
-                                    start_x: rect.x, start_y: rect.y,
-                                    start_w: rect.width, start_h: rect.height,
-                                    start_pos_x: x, start_pos_y: y,
-                                });
+                                app.modal_state.start_resize(edge, rect, (x, y),
+                                    (200.0, 120.0), (f64::INFINITY, f64::INFINITY));
+                                app.drag_target = Some(DragTarget::OverlayResize { which: "modal" });
                                 app.drag_origin = Some((x, y));
                                 app.mouse_down = true;
                                 handled = true;
                             }
                         } else if host_id.0 == "popup-widget" {
                             if let Some(rect) = app.layout.rect_for_overlay("popup-overlay") {
-                                app.drag_target = Some(DragTarget::OverlayResize {
-                                    which: "popup", edge,
-                                    start_x: rect.x, start_y: rect.y,
-                                    start_w: rect.width, start_h: rect.height,
-                                    start_pos_x: x, start_pos_y: y,
-                                });
+                                app.popup_state.start_resize(edge, rect, (x, y),
+                                    (160.0, 100.0), (f64::INFINITY, f64::INFINITY));
+                                app.drag_target = Some(DragTarget::OverlayResize { which: "popup" });
                                 app.drag_origin = Some((x, y));
                                 app.mouse_down = true;
                                 handled = true;

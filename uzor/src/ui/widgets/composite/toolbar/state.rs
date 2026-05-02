@@ -3,6 +3,7 @@
 use crate::input::core::coordinator::InputCoordinator;
 use crate::types::Rect;
 
+use super::super::resize_drag::ResizeDrag;
 use super::types::SplitButtonHoverZone;
 
 /// All per-toolbar instance state.
@@ -65,6 +66,15 @@ pub struct ToolbarState {
 
     /// Whether the window-control maximize button is hovered.
     pub chrome_maximize_hovered: bool,
+
+    // --- Resize ---
+
+    /// Resize drag in progress (set by `start_resize`).
+    pub resize_drag: Option<ResizeDrag>,
+
+    /// User-resized override for thickness (height for horizontal /
+    /// width for vertical toolbars). `0.0` = use the measured value.
+    pub resized_thickness: f64,
 }
 
 impl ToolbarState {
@@ -140,5 +150,40 @@ impl ToolbarState {
             .map(|id| id.0.as_str())
             .filter(|s| s.starts_with(widget_id_prefix))
             .map(|s| s[widget_id_prefix.len()..].to_owned());
+    }
+
+    /// Begin a thickness-resize drag.
+    ///
+    /// Toolbars only resize on a single axis (height for horizontal,
+    /// width for vertical), so the dummy zero dimension on the inactive
+    /// axis is sized to a large value to keep the drag math simple.
+    pub fn start_resize(
+        &mut self,
+        edge:        crate::layout::ResizeEdge,
+        start_rect:  Rect,
+        cursor:      (f64, f64),
+        min_size:    f64,
+        cap_size:    f64,
+    ) {
+        self.resize_drag = Some(ResizeDrag::begin(
+            edge,
+            start_rect,
+            cursor,
+            (min_size, min_size),
+            (cap_size, cap_size),
+        ));
+    }
+
+    /// Update the resized thickness from a fresh cursor position.
+    pub fn update_resize(&mut self, cursor: (f64, f64), is_vertical: bool) {
+        if let Some(drag) = self.resize_drag {
+            let rect = drag.resolve(cursor);
+            self.resized_thickness = if is_vertical { rect.width } else { rect.height };
+        }
+    }
+
+    /// End any active resize drag.
+    pub fn end_resize(&mut self) {
+        self.resize_drag = None;
     }
 }
