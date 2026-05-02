@@ -55,8 +55,8 @@ pub fn register_input_coordinator_toolbar(
             if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
                 register_overflow_chevrons(coord, &toolbar_id, rect, view, settings, false, layer);
             }
-            if view.resizable {
-                register_toolbar_resize_handle(coord, &toolbar_id, rect, false);
+            if let Some(edge) = view.resize_edge {
+                register_toolbar_resize_handle(coord, &toolbar_id, rect, edge);
             }
         }
         ToolbarRenderKind::Vertical => {
@@ -64,8 +64,8 @@ pub fn register_input_coordinator_toolbar(
             if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
                 register_overflow_chevrons(coord, &toolbar_id, rect, view, settings, true, layer);
             }
-            if view.resizable {
-                register_toolbar_resize_handle(coord, &toolbar_id, rect, true);
+            if let Some(edge) = view.resize_edge {
+                register_toolbar_resize_handle(coord, &toolbar_id, rect, edge);
             }
         }
     }
@@ -73,22 +73,24 @@ pub fn register_input_coordinator_toolbar(
     toolbar_id
 }
 
-/// Register a single drag handle on the toolbar's inner edge so the user can
-/// resize toolbar thickness. The bar's host is responsible for clamping the
-/// resulting size (typical cap is 10% of the viewport on the main axis).
+/// Register a single drag handle on the requested edge of the toolbar.
+/// Edge picks side: N=top, S=bottom, W=left, E=right. Toolbars only support
+/// N/S/W/E (no corners — single-axis resize).
 fn register_toolbar_resize_handle(
-    coord:       &mut InputCoordinator,
-    parent:      &WidgetId,
-    rect:        Rect,
-    is_vertical: bool,
+    coord:  &mut InputCoordinator,
+    parent: &WidgetId,
+    rect:   Rect,
+    edge:   crate::layout::ResizeEdge,
 ) {
+    use crate::layout::ResizeEdge;
     let t = 5.0_f64;
-    // Horizontal toolbar lives on top → drag bottom edge.
-    // Vertical toolbar lives on left → drag right edge.
-    let handle = if is_vertical {
-        Rect::new(rect.x + rect.width - t, rect.y, t, rect.height)
-    } else {
-        Rect::new(rect.x, rect.y + rect.height - t, rect.width, t)
+    let handle = match edge {
+        ResizeEdge::N => Rect::new(rect.x, rect.y, rect.width, t),
+        ResizeEdge::S => Rect::new(rect.x, rect.y + rect.height - t, rect.width, t),
+        ResizeEdge::W => Rect::new(rect.x, rect.y, t, rect.height),
+        ResizeEdge::E => Rect::new(rect.x + rect.width - t, rect.y, t, rect.height),
+        // Corners are nonsensical on toolbars; default to S.
+        _             => Rect::new(rect.x, rect.y + rect.height - t, rect.width, t),
     };
     coord.register_child(
         parent,

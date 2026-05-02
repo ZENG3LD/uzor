@@ -798,6 +798,9 @@ struct AppState {
     demo_toolbar_bottom_state: ToolbarState,
     /// User-resized override for top toolbar height (px). 0.0 = use measured.
     top_toolbar_height_override: f64,
+    demo_toolbar_left2_w_override:  f64,
+    demo_toolbar_right_w_override:  f64,
+    demo_toolbar_bottom_h_override: f64,
     /// User-resized modal size override (w, h). (0.0, 0.0) = use measured.
     modal_size_override: (f64, f64),
     /// User-resized popup size override (w, h). (0.0, 0.0) = use measured.
@@ -1226,7 +1229,7 @@ impl AppState {
             start: ToolbarSection::empty(), center: ToolbarSection::empty(),
             end: ToolbarSection::empty(), chrome: None,
             overflow: uzor::types::OverflowMode::Clip,
-            resizable: false,
+            resize_edge: None,
         };
         let probe_settings = ToolbarSettings::new(
             Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
@@ -1257,7 +1260,7 @@ impl AppState {
             start: ToolbarSection::empty(), center: ToolbarSection::empty(),
             end: ToolbarSection::empty(), chrome: None,
             overflow: uzor::types::OverflowMode::Clip,
-            resizable: false,
+            resize_edge: None,
         };
         let probe_settings_v = ToolbarSettings::new(
             Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
@@ -1310,30 +1313,39 @@ impl AppState {
             uzor::layout::EdgePlacement::Compress
         };
         if self.demo_toolbar_left2 {
+            let t = if self.demo_toolbar_left2_w_override > 0.0 {
+                self.demo_toolbar_left2_w_override as f32
+            } else { left_w as f32 };
             self.layout.edges_mut().add(EdgeSlot {
                 id: "demo-toolbar-left2".into(),
                 side: EdgeSide::Left,
-                thickness: left_w as f32,
+                thickness: t,
                 visible: true,
                 order: 2,
                 placement: demo_placement,
             });
         }
         if self.demo_toolbar_right {
+            let t = if self.demo_toolbar_right_w_override > 0.0 {
+                self.demo_toolbar_right_w_override as f32
+            } else { left_w as f32 };
             self.layout.edges_mut().add(EdgeSlot {
                 id: "demo-toolbar-right".into(),
                 side: EdgeSide::Right,
-                thickness: left_w as f32,
+                thickness: t,
                 visible: true,
                 order: 0,
                 placement: demo_placement,
             });
         }
         if self.demo_toolbar_bottom {
+            let t = if self.demo_toolbar_bottom_h_override > 0.0 {
+                self.demo_toolbar_bottom_h_override as f32
+            } else { top_h as f32 };
             self.layout.edges_mut().add(EdgeSlot {
                 id: "demo-toolbar-bottom".into(),
                 side: EdgeSide::Bottom,
-                thickness: top_h as f32,
+                thickness: t,
                 visible: true,
                 order: 0,
                 placement: demo_placement,
@@ -1509,7 +1521,7 @@ impl AppState {
             end: ToolbarSection { items: &clock_items },
             chrome: None,
             overflow: uzor::types::OverflowMode::Clip,
-            resizable: false,
+            resize_edge: None,
         };
         register_layout_manager_toolbar(
             &mut self.layout,
@@ -1540,7 +1552,7 @@ impl AppState {
                 end: ToolbarSection::empty(),
                 chrome: None,
                 overflow: uzor::types::OverflowMode::Clip,
-                resizable: false,
+                resize_edge: Some(uzor::layout::ResizeEdge::E),
             };
             register_layout_manager_toolbar(
                 &mut self.layout,
@@ -1583,28 +1595,23 @@ impl AppState {
             .collect();
         // Each demo toolbar uses its own stored ToolbarState so the overflow
         // chevron's scroll_offset persists between frames (otherwise paging
-        // can't accumulate).
-        let demo_view_v = ToolbarView {
+        // can't accumulate). Resize edge is per-side: Left toolbar drags its
+        // E (right) edge, Right toolbar drags its W (left) edge, Bottom
+        // toolbar drags its N (top) edge.
+        let mk_demo = |edge: uzor::layout::ResizeEdge| ToolbarView {
             start: ToolbarSection { items: &demo_overflow_items },
             center: ToolbarSection::empty(),
             end: ToolbarSection::empty(),
             chrome: None,
             overflow: uzor::types::OverflowMode::Chevrons,
-            resizable: false,
-        };
-        let demo_view_h = ToolbarView {
-            start: ToolbarSection { items: &demo_overflow_items },
-            center: ToolbarSection::empty(),
-            end: ToolbarSection::empty(),
-            chrome: None,
-            overflow: uzor::types::OverflowMode::Chevrons,
-            resizable: false,
+            resize_edge: Some(edge),
         };
         if self.demo_toolbar_left2 {
+            let view = mk_demo(uzor::layout::ResizeEdge::E);
             register_layout_manager_toolbar(
                 &mut self.layout, &mut render, LayoutNodeId::ROOT,
                 "demo-toolbar-left2", "demo-toolbar-left2-widget",
-                &mut self.demo_toolbar_left2_state, &demo_view_v,
+                &mut self.demo_toolbar_left2_state, &view,
                 &ToolbarSettings::new(
                     Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
                     Box::new(VertToolbarWithBorder),
@@ -1613,10 +1620,11 @@ impl AppState {
             );
         }
         if self.demo_toolbar_right {
+            let view = mk_demo(uzor::layout::ResizeEdge::W);
             register_layout_manager_toolbar(
                 &mut self.layout, &mut render, LayoutNodeId::ROOT,
                 "demo-toolbar-right", "demo-toolbar-right-widget",
-                &mut self.demo_toolbar_right_state, &demo_view_v,
+                &mut self.demo_toolbar_right_state, &view,
                 &ToolbarSettings::new(
                     Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
                     Box::new(VertToolbarWithBorder),
@@ -1625,10 +1633,11 @@ impl AppState {
             );
         }
         if self.demo_toolbar_bottom {
+            let view = mk_demo(uzor::layout::ResizeEdge::N);
             register_layout_manager_toolbar(
                 &mut self.layout, &mut render, LayoutNodeId::ROOT,
                 "demo-toolbar-bottom", "demo-toolbar-bottom-widget",
-                &mut self.demo_toolbar_bottom_state, &demo_view_h,
+                &mut self.demo_toolbar_bottom_state, &view,
                 &ToolbarSettings::new(
                     Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
                     Box::new(HorizToolbarWithBorder),
@@ -4018,9 +4027,24 @@ impl AppState {
                 }
                 DragTarget::ToolbarResize { which } => {
                     // Resize math lives on ToolbarState — just forward the cursor.
-                    if *which == "top" {
-                        self.top_toolbar_state.update_resize((x, y), false);
-                        self.top_toolbar_height_override = self.top_toolbar_state.resized_thickness;
+                    match *which {
+                        "top" => {
+                            self.top_toolbar_state.update_resize((x, y), false);
+                            self.top_toolbar_height_override = self.top_toolbar_state.resized_thickness;
+                        }
+                        "demo-left2" => {
+                            self.demo_toolbar_left2_state.update_resize((x, y), true);
+                            self.demo_toolbar_left2_w_override = self.demo_toolbar_left2_state.resized_thickness;
+                        }
+                        "demo-right" => {
+                            self.demo_toolbar_right_state.update_resize((x, y), true);
+                            self.demo_toolbar_right_w_override = self.demo_toolbar_right_state.resized_thickness;
+                        }
+                        "demo-bottom" => {
+                            self.demo_toolbar_bottom_state.update_resize((x, y), false);
+                            self.demo_toolbar_bottom_h_override = self.demo_toolbar_bottom_state.resized_thickness;
+                        }
+                        _ => {}
                     }
                 }
                 DragTarget::ModalBodyScroll => {
@@ -4183,6 +4207,9 @@ impl ApplicationHandler for Handler {
             demo_toolbar_right_state:  ToolbarState::default(),
             demo_toolbar_bottom_state: ToolbarState::default(),
             top_toolbar_height_override: 0.0,
+            demo_toolbar_left2_w_override:  0.0,
+            demo_toolbar_right_w_override:  0.0,
+            demo_toolbar_bottom_h_override: 0.0,
             modal_size_override: (0.0, 0.0),
             popup_size_override: (0.0, 0.0),
             sidebar_state,
@@ -4390,12 +4417,28 @@ impl ApplicationHandler for Handler {
                         eprintln!("[BRIDGE] drag-press → ResizeHandleDragStarted host={} edge={:?}", host_id.0, edge);
                         // Each composite owns its resize math; we just hand
                         // it the start rect + cursor + bounds.
-                        if host_id.0 == "top-toolbar-widget" {
-                            let viewport_h = app.layout.last_window().map(|w| w.height).unwrap_or(800.0);
-                            let cap = (viewport_h * 0.10).max(60.0);
-                            if let Some(rect) = app.layout.rect_for_edge_slot("top-toolbar") {
-                                app.top_toolbar_state.start_resize(edge, rect, (x, y), 24.0, cap);
-                                app.drag_target = Some(DragTarget::ToolbarResize { which: "top" });
+                        let toolbar_target: Option<(&str, &'static str, (&str, f64, f64))> = match host_id.0.as_str() {
+                            // (slot_id, drag-target which, (axis-letter, viewport-fraction-cap-axis, min))
+                            "top-toolbar-widget"          => Some(("top-toolbar",          "top",          ("h", 0.10, 24.0))),
+                            "demo-toolbar-left2-widget"   => Some(("demo-toolbar-left2",   "demo-left2",   ("w", 0.20, 60.0))),
+                            "demo-toolbar-right-widget"   => Some(("demo-toolbar-right",   "demo-right",   ("w", 0.20, 60.0))),
+                            "demo-toolbar-bottom-widget"  => Some(("demo-toolbar-bottom",  "demo-bottom",  ("h", 0.20, 24.0))),
+                            _ => None,
+                        };
+                        if let Some((slot_id, which, (axis, frac, min))) = toolbar_target {
+                            let viewport = app.layout.last_window().map(|w|
+                                if axis == "w" { w.width } else { w.height }).unwrap_or(800.0);
+                            let cap = (viewport * frac).max(min + 10.0);
+                            if let Some(rect) = app.layout.rect_for_edge_slot(slot_id) {
+                                let st: &mut ToolbarState = match which {
+                                    "top"        => &mut app.top_toolbar_state,
+                                    "demo-left2" => &mut app.demo_toolbar_left2_state,
+                                    "demo-right" => &mut app.demo_toolbar_right_state,
+                                    "demo-bottom"=> &mut app.demo_toolbar_bottom_state,
+                                    _ => unreachable!(),
+                                };
+                                st.start_resize(edge, rect, (x, y), min, cap);
+                                app.drag_target = Some(DragTarget::ToolbarResize { which });
                                 app.drag_origin = Some((x, y));
                                 app.mouse_down = true;
                                 handled = true;

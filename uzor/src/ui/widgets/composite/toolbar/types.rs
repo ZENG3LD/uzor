@@ -203,11 +203,14 @@ pub struct ToolbarView<'a> {
     /// What to do when items overflow the bar's main axis.
     /// Default `Clip` matches legacy behaviour.
     pub overflow: crate::types::OverflowMode,
-    /// Allow user to drag the inner edge to resize toolbar thickness.
-    /// `false` (default) keeps the toolbar at its measured thickness.
-    /// The host is expected to clamp the resulting size — typical cap is
-    /// 10% of the viewport on the toolbar's main axis.
-    pub resizable: bool,
+    /// Which edge of the toolbar exposes a resize handle. `None` (default)
+    /// = no resize. The caller picks the side because the toolbar itself
+    /// doesn't know which window-edge it lives on:
+    /// - Top horizontal toolbar → `Some(S)`  (drag bottom edge)
+    /// - Bottom horizontal toolbar → `Some(N)`
+    /// - Left vertical toolbar → `Some(E)`
+    /// - Right vertical toolbar → `Some(W)`
+    pub resize_edge: Option<crate::layout::ResizeEdge>,
 }
 
 impl<'a> ToolbarView<'a> {
@@ -220,7 +223,7 @@ impl<'a> ToolbarView<'a> {
             end,
             chrome: None,
             overflow: crate::types::OverflowMode::Clip,
-            resizable: false,
+            resize_edge: None,
         }
     }
 }

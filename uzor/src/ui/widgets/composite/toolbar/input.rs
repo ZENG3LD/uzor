@@ -66,11 +66,9 @@ pub fn register_layout_manager_toolbar<P: DockPanel>(
     }
 
     // Resize handle (opt-in) — fires ResizeHandleDragStarted on mouse-down.
-    if view.resizable {
-        let edge = match kind {
-            ToolbarRenderKind::Vertical => crate::layout::ResizeEdge::E,
-            _                            => crate::layout::ResizeEdge::S,
-        };
+    // Caller picks the edge so a Vertical toolbar on the right side reports
+    // W (drag-left-edge → grow leftward) instead of always E.
+    if let Some(edge) = view.resize_edge {
         layout.dispatcher_mut().on_exact(
             format!("{}:resize", id.0),
             EventBuilder::ResizeHandle { host_id: id.clone(), edge },
