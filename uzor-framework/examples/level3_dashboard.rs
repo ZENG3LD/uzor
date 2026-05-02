@@ -57,7 +57,9 @@ use uzor::ui::widgets::composite::context_menu::types::{
     ContextMenuItem, ContextMenuRenderKind, ContextMenuView,
 };
 
-use uzor::ui::widgets::composite::dropdown::input::register_layout_manager_dropdown;
+use uzor::ui::widgets::composite::dropdown::input::{
+    self as dropdown_input, register_layout_manager_dropdown,
+};
 use uzor::ui::widgets::composite::dropdown::render::measure_flat;
 use uzor::ui::widgets::composite::dropdown::settings::DropdownSettings;
 use uzor::ui::widgets::composite::dropdown::state::DropdownState;
@@ -65,7 +67,9 @@ use uzor::ui::widgets::composite::dropdown::types::{
     DropdownItem, DropdownItemRight, DropdownRenderKind, DropdownView, DropdownViewKind,
 };
 
-use uzor::ui::widgets::composite::modal::input::{handle_modal_drag, register_layout_manager_modal};
+use uzor::ui::widgets::composite::modal::input::{
+    self as modal_input, handle_modal_drag, register_layout_manager_modal,
+};
 use uzor::ui::widgets::composite::modal::render::measure_chrome as measure_modal_chrome;
 use uzor::ui::widgets::composite::modal::settings::ModalSettings;
 use uzor::ui::widgets::composite::modal::state::ModalState;
@@ -74,14 +78,18 @@ use uzor::ui::widgets::composite::modal::types::{
 };
 
 
-use uzor::ui::widgets::composite::popup::input::register_layout_manager_popup;
+use uzor::ui::widgets::composite::popup::input::{
+    self as popup_input, register_layout_manager_popup,
+};
 use uzor::ui::widgets::composite::popup::settings::PopupSettings;
 use uzor::ui::widgets::composite::popup::state::PopupState;
 use uzor::ui::widgets::composite::popup::types::{
     BackdropKind as PopupBackdrop, PopupRenderKind, PopupView, PopupViewKind,
 };
 
-use uzor::ui::widgets::composite::sidebar::input::register_layout_manager_sidebar;
+use uzor::ui::widgets::composite::sidebar::input::{
+    self as sidebar_input, register_layout_manager_sidebar,
+};
 use uzor::ui::widgets::composite::sidebar::render::measure as measure_sidebar;
 use uzor::ui::widgets::composite::sidebar::settings::SidebarSettings;
 use uzor::ui::widgets::composite::sidebar::state::SidebarState;
@@ -90,7 +98,9 @@ use uzor::ui::widgets::composite::sidebar::types::{
     HeaderAction, SidebarHeader, SidebarRenderKind, SidebarView,
 };
 
-use uzor::ui::widgets::composite::toolbar::input::register_layout_manager_toolbar;
+use uzor::ui::widgets::composite::toolbar::input::{
+    self as toolbar_input, register_layout_manager_toolbar,
+};
 use uzor::ui::widgets::composite::toolbar::render::{measure_horizontal as measure_toolbar_h, measure_vertical as measure_toolbar_v};
 use uzor::ui::widgets::composite::toolbar::settings::ToolbarSettings;
 use uzor::ui::widgets::composite::toolbar::state::ToolbarState;
@@ -3281,141 +3291,100 @@ impl AppState {
                     self.switch_tab(tab_index);
                     return;
                 }
-                DispatchEvent::ScrollbarTrackClicked { track_id } => {
-                    eprintln!("[DISPATCHER] ScrollbarTrackClicked id={}", track_id.0);
-                    // Modal body scrollbar.
-                    if track_id.0 == "modal-widget:scrollbar_track" {
-                        self.modal_state.body_content_h = 4000.0; // demo content_h
-                        self.modal_state.body_scroll_track_click(y);
-                        return;
-                    }
-                    if track_id.0 == "popup-widget:scrollbar_track" {
-                        self.popup_state.body_content_h = 1200.0;
-                        self.popup_state.body_scroll_track_click(y);
-                        return;
-                    }
-                    // Sidebar scrollbar lives on track-id "sidebar-widget:scrollbar_track".
-                    if track_id.0 == "sidebar-widget:scrollbar_track" {
-                        if let Some(sb_rect) = self.layout.rect_for_edge_slot("sidebar") {
-                            let est_panels = self.layout.panels().tree().leaves().len() as f64;
-                            let viewport_h = sb_rect.height - 40.0;
-                            let content_h  = 480.0 + est_panels * 30.0;
-                            // Track rect ≈ scrollbar column on the inner edge of the sidebar.
-                            // Use composite's scrollbar layout heuristic (8 px col on right edge).
-                            let track_rect = Rect::new(
-                                sb_rect.x + sb_rect.width - 8.0,
-                                sb_rect.y + 40.0,
-                                8.0,
-                                viewport_h,
-                            );
-                            let scroll = self.sidebar_state.get_or_insert_scroll("default");
-                            scroll.handle_track_click(y, track_rect.y, track_rect.height, content_h, viewport_h);
-                        }
-                    }
-                    return;
-                }
-                DispatchEvent::ScrollbarThumbDragStarted { thumb_id } => {
-                    eprintln!("[DISPATCHER] ScrollbarThumbDragStarted id={}", thumb_id.0);
-                    if thumb_id.0 == "sidebar-widget:scrollbar_handle" {
-                        let scroll = self.sidebar_state.get_or_insert_scroll("default");
-                        scroll.start_drag(y);
-                        // Capture geometry for ongoing drag updates in on_mouse_move.
-                        if let Some(sb_rect) = self.layout.rect_for_edge_slot("sidebar") {
-                            let est_panels = self.layout.panels().tree().leaves().len() as f64;
-                            let viewport_h = sb_rect.height - 40.0;
-                            let content_h  = 480.0 + est_panels * 30.0;
-                            let track_rect = Rect::new(
-                                sb_rect.x + sb_rect.width - 8.0,
-                                sb_rect.y + 40.0,
-                                8.0,
-                                viewport_h,
-                            );
-                            self.drag_target = Some(DragTarget::SidebarScrollbar {
-                                track_rect, content_h, viewport_h,
-                            });
-                        }
-                    }
-                    return;
-                }
-                DispatchEvent::ChevronStepRequested { chevron_id, direction } => {
-                    eprintln!("[DISPATCHER] ChevronStepRequested id={} dir={:?}", chevron_id.0, direction);
-                    let signed_sign = matches!(direction,
-                        uzor::layout::ChevronStepDirection::Up | uzor::layout::ChevronStepDirection::Left
-                    );
-                    // Sidebar chevrons live on ids "<sidebar-id>:chevron_up|chevron_down".
-                    // Guard the suffix-match by sidebar widget id so it doesn't
-                    // eat modal/popup chevrons which share the up/down suffix.
-                    if let Some(sb_id) = chevron_id.0.strip_suffix(":chevron_up").or_else(|| chevron_id.0.strip_suffix(":chevron_down")) {
-                        let slot_id = match sb_id {
-                            "sidebar-widget" => Some("sidebar"),
-                            id if id.starts_with("demo-sidebar-") => Some(id),
-                            _ => None,
-                        };
-                        if let Some(slot_id) = slot_id {
-                            if let Some(sb_rect) = self.layout.rect_for_edge_slot(slot_id) {
-                                let est_panels = self.layout.panels().tree().leaves().len() as f64;
-                                let viewport_h = (sb_rect.height - 40.0).max(0.0);
-                                let content_h  = 480.0 + est_panels * 30.0;
-                                let max_scroll = (content_h - viewport_h).max(0.0);
-                                let step = viewport_h.max(40.0);
-                                let scroll = self.sidebar_state.get_or_insert_scroll("default");
-                                let signed = if signed_sign { -step } else { step };
-                                scroll.offset = (scroll.offset + signed).clamp(0.0, max_scroll);
-                            }
-                            return;
-                        }
-                    }
-                    // Toolbar overflow chevrons live on "<toolbar-id>:chevron_back|chevron_fwd".
-                    if let Some(tb_id) = chevron_id.0.strip_suffix(":chevron_back").or_else(|| chevron_id.0.strip_suffix(":chevron_fwd")) {
-                        let step = 80.0;
-                        let signed = if signed_sign { -step } else { step };
-                        let st: Option<&mut ToolbarState> = match tb_id {
-                            "top-toolbar-widget"          => Some(&mut self.top_toolbar_state),
-                            "demo-toolbar-left2-widget"   => Some(&mut self.demo_toolbar_left2_state),
-                            "demo-toolbar-right-widget"   => Some(&mut self.demo_toolbar_right_state),
-                            "demo-toolbar-bottom-widget"  => Some(&mut self.demo_toolbar_bottom_state),
-                            _ => None,
-                        };
-                        if let Some(s) = st {
-                            s.scroll_offset = (s.scroll_offset + signed).max(0.0);
-                        }
-                        return;
-                    }
-                    // Modal / popup body chevrons. body_content_h was set
-                    // earlier this frame when registering the modal/popup.
-                    if chevron_id.0.starts_with("modal-widget:chevron_") {
-                        self.modal_state.body_chevron_step(direction);
-                        return;
-                    }
-                    if chevron_id.0.starts_with("popup-widget:chevron_") {
-                        self.popup_state.body_chevron_step(direction);
-                        return;
-                    }
-                    return;
-                }
-                DispatchEvent::ResizeHandleDragStarted { .. } => {
-                    // Resize start is handled by the drag-press bridge arm.
-                    return;
-                }
-                DispatchEvent::DropdownSubmenuToggle { dropdown_id, trigger_id } => {
-                    eprintln!("[DISPATCHER] DropdownSubmenuToggle dd={} trigger={}", dropdown_id.0, trigger_id);
-                    // Toggle the submenu — minimal glue between dispatcher
-                    // and dropdown state.
-                    let st = match dropdown_id.0.as_str() {
-                        "dd-popup-widget" => Some(&mut self.dropdown_popup_state),
-                        _ => None,
+                ev => {
+                    // Run the event through every composite's consume_event.
+                    // First composite to consume (returns None) wins; the rest
+                    // are skipped. Public events (ModalClose, DropdownItem, etc.)
+                    // fall through because their arms are matched above.
+                    let viewport = {
+                        let cfg = &self.surface.config;
+                        (cfg.width as f64, cfg.height as f64)
                     };
-                    if let Some(s) = st {
-                        if s.submenu_open.as_deref() == Some(trigger_id.as_str()) {
-                            s.submenu_open = None;
-                        } else {
-                            s.submenu_open = Some(trigger_id);
-                        }
+                    let cursor   = (x, y);
+
+                    // Wrap in Option so ownership moves cleanly through the chain.
+                    let mut opt_ev: Option<DispatchEvent> = Some(ev);
+
+                    // Macro: pass event through one composite.
+                    // If consumed → clears opt_ev (caller should return).
+                    // If not consumed → restores opt_ev with the returned event.
+                    macro_rules! try_consume {
+                        ($mod:ident, $state:expr, $host:expr, $rect_expr:expr) => {
+                            if let Some(ev) = opt_ev.take() {
+                                match $mod::consume_event(
+                                    ev,
+                                    $state,
+                                    &WidgetId::new($host),
+                                    $mod::ConsumeEventCtx {
+                                        cursor,
+                                        frame_rect: $rect_expr.unwrap_or_default(),
+                                        viewport,
+                                    },
+                                ) {
+                                    None    => { /* consumed — opt_ev stays None */ }
+                                    Some(e) => { opt_ev = Some(e); }
+                                }
+                            }
+                        };
                     }
-                    return;
-                }
-                DispatchEvent::Unhandled(_) => {
-                    // No semantic match — fall through to legacy id-string parsers.
+
+                    // ── Modal ─────────────────────────────────────────────────
+                    try_consume!(modal_input, &mut self.modal_state, "modal-widget",
+                        self.layout.rect_for_overlay("modal-overlay"));
+
+                    // ── Popup ─────────────────────────────────────────────────
+                    try_consume!(popup_input, &mut self.popup_state, "demo-popup-widget",
+                        self.layout.rect_for_overlay("demo-popup-overlay"));
+
+                    // ── Dropdowns ─────────────────────────────────────────────
+                    try_consume!(dropdown_input, &mut self.dropdown_file_state,    "dd-file-widget",
+                        self.layout.rect_for_overlay("dd-file-overlay"));
+                    try_consume!(dropdown_input, &mut self.dropdown_view_state,    "dd-view-widget",
+                        self.layout.rect_for_overlay("dd-view-overlay"));
+                    try_consume!(dropdown_input, &mut self.dropdown_help_state,    "dd-help-widget",
+                        self.layout.rect_for_overlay("dd-help-overlay"));
+                    try_consume!(dropdown_input, &mut self.dropdown_addpanel_state,"dd-addpanel-widget",
+                        self.layout.rect_for_overlay("dd-addpanel-overlay"));
+                    try_consume!(dropdown_input, &mut self.dropdown_sidebar_state, "dd-sidebar-widget",
+                        self.layout.rect_for_overlay("dd-sidebar-overlay"));
+                    try_consume!(dropdown_input, &mut self.dropdown_toolbar_state, "dd-toolbar-widget",
+                        self.layout.rect_for_overlay("dd-toolbar-overlay"));
+                    try_consume!(dropdown_input, &mut self.dropdown_popup_state,   "dd-popup-widget",
+                        self.layout.rect_for_overlay("dd-popup-overlay"));
+                    try_consume!(dropdown_input, &mut self.dropdown_theme_state,   "dd-theme-widget",
+                        self.layout.rect_for_overlay("dd-theme-overlay"));
+
+                    // ── Toolbars ──────────────────────────────────────────────
+                    try_consume!(toolbar_input, &mut self.top_toolbar_state, "top-toolbar-widget",
+                        self.layout.rect_for_edge_slot("top-toolbar"));
+                    try_consume!(toolbar_input, &mut self.left_vtoolbar_state, "left-vtoolbar-widget",
+                        self.layout.rect_for_edge_slot("left-vtoolbar"));
+                    try_consume!(toolbar_input, &mut self.demo_toolbar_left2_state, "demo-toolbar-left2-widget",
+                        self.layout.rect_for_edge_slot("demo-toolbar-left2"));
+                    try_consume!(toolbar_input, &mut self.demo_toolbar_right_state, "demo-toolbar-right-widget",
+                        self.layout.rect_for_edge_slot("demo-toolbar-right"));
+                    try_consume!(toolbar_input, &mut self.demo_toolbar_bottom_state, "demo-toolbar-bottom-widget",
+                        self.layout.rect_for_edge_slot("demo-toolbar-bottom"));
+
+                    // ── Sidebars ──────────────────────────────────────────────
+                    try_consume!(sidebar_input, &mut self.sidebar_state, "sidebar-widget",
+                        self.layout.rect_for_edge_slot("sidebar"));
+                    try_consume!(sidebar_input, &mut self.demo_sidebar_right_state, "demo-sidebar-right-widget",
+                        self.layout.rect_for_edge_slot("demo-sidebar-right"));
+                    try_consume!(sidebar_input, &mut self.demo_sidebar_top_state, "demo-sidebar-top-widget",
+                        self.layout.rect_for_edge_slot("demo-sidebar-top"));
+                    try_consume!(sidebar_input, &mut self.demo_sidebar_bottom_state, "demo-sidebar-bottom-widget",
+                        self.layout.rect_for_edge_slot("demo-sidebar-bottom"));
+
+                    // If opt_ev is None, the event was consumed — return early.
+                    // If Some(Unhandled), fall through to legacy handlers.
+                    // If Some(other), a semantic event survived — ignore it here
+                    // (all public semantic events are matched in arms above).
+                    match opt_ev {
+                        None => { return; }
+                        Some(DispatchEvent::Unhandled(_)) => {}
+                        Some(_) => { return; }
+                    }
                 }
             }
 
@@ -4445,95 +4414,140 @@ impl ApplicationHandler for Handler {
         if let Some(((x, y), drag_id)) = out.left_down {
             // If the bridge resolved a DRAG-sense widget under the cursor,
             // dispatch through LayoutManager so registered drag patterns
-            // (scrollbar thumb, etc.) fire ScrollbarThumbDragStarted /
-            // similar events. Otherwise fall through to legacy on_mouse_down.
+            // (scrollbar thumb, resize handle, etc.) fire semantic events.
+            // Pass the event through every composite's consume_event; the
+            // first one to consume it sets drag_target and we skip
+            // on_mouse_down.  Unconsumed events fall through to the legacy
+            // geometry-based on_mouse_down path.
             let mut handled = false;
             if let Some(ref id) = drag_id {
-                use uzor::layout::DispatchEvent;
-                match app.layout.dispatch_widget(id) {
-                    DispatchEvent::ScrollbarThumbDragStarted { thumb_id } => {
-                        eprintln!("[BRIDGE] drag-press → ScrollbarThumbDragStarted {}", thumb_id.0);
-                        // Modal / popup body scrollbar.
-                        if thumb_id.0 == "modal-widget:scrollbar_handle" {
-                            app.modal_state.body_content_h = 4000.0;
-                            app.modal_state.start_body_scroll_drag(y);
-                            app.drag_target = Some(DragTarget::ModalBodyScroll);
-                            app.drag_origin = Some((x, y));
-                            app.mouse_down = true;
-                            handled = true;
-                        } else if thumb_id.0 == "popup-widget:scrollbar_handle" {
-                            app.popup_state.body_content_h = 1200.0;
-                            app.popup_state.start_body_scroll_drag(y);
+                let viewport = {
+                    let cfg = &app.surface.config;
+                    (cfg.width as f64, cfg.height as f64)
+                };
+                let cursor = (x, y);
+                // Wrap in Option so ownership moves correctly through the chain.
+                // Each composite either takes the event (returns None → consumed)
+                // or gives it back (returns Some → pass on).
+                let mut opt_ev: Option<uzor::layout::DispatchEvent> =
+                    Some(app.layout.dispatch_widget(id));
+
+                // Helper macro: pass the event through one composite.
+                // If consumed, clears opt_ev and sets handled = true.
+                // If not consumed, restores opt_ev with the returned event.
+                macro_rules! try_consume_bridge {
+                    ($mod:ident, $state:expr, $host:expr, $rect_expr:expr) => {
+                        if let Some(ev) = opt_ev.take() {
+                            match $mod::consume_event(
+                                ev,
+                                $state,
+                                &WidgetId::new($host),
+                                $mod::ConsumeEventCtx {
+                                    cursor,
+                                    frame_rect: $rect_expr.unwrap_or_default(),
+                                    viewport,
+                                },
+                            ) {
+                                None    => { handled = true; }
+                                Some(e) => { opt_ev = Some(e); }
+                            }
+                        }
+                    };
+                }
+
+                // ── Modal ─────────────────────────────────────────────────────
+                try_consume_bridge!(modal_input, &mut app.modal_state, "modal-widget",
+                    app.layout.rect_for_overlay("modal-overlay"));
+                if handled {
+                    if app.modal_state.scroll.is_dragging {
+                        app.drag_target = Some(DragTarget::ModalBodyScroll);
+                    } else if app.modal_state.resize_drag.is_some() {
+                        app.drag_target = Some(DragTarget::OverlayResize { which: "modal" });
+                    }
+                    app.drag_origin = Some((x, y));
+                    app.mouse_down = true;
+                }
+
+                // ── Popup ─────────────────────────────────────────────────────
+                if !handled {
+                    try_consume_bridge!(popup_input, &mut app.popup_state, "demo-popup-widget",
+                        app.layout.rect_for_overlay("demo-popup-overlay"));
+                    if handled {
+                        if app.popup_state.scroll.is_dragging {
                             app.drag_target = Some(DragTarget::PopupBodyScroll);
-                            app.drag_origin = Some((x, y));
-                            app.mouse_down = true;
-                            handled = true;
-                        } else if thumb_id.0 == "sidebar-widget:scrollbar_handle" {
-                            let scroll = app.sidebar_state.get_or_insert_scroll("default");
-                            scroll.start_drag(y);
-                            if let Some(sb_rect) = app.layout.rect_for_edge_slot("sidebar") {
-                                let est_panels = app.layout.panels().tree().leaves().len() as f64;
-                                let viewport_h = sb_rect.height - 40.0;
-                                let content_h  = 480.0 + est_panels * 30.0;
-                                let track_rect = Rect::new(
-                                    sb_rect.x + sb_rect.width - 8.0,
-                                    sb_rect.y + 40.0,
-                                    8.0,
-                                    viewport_h,
-                                );
-                                app.drag_target = Some(DragTarget::SidebarScrollbar {
-                                    track_rect, content_h, viewport_h,
-                                });
-                                // Mark drag as active so on_mouse_move's
-                                // drag-target dispatcher fires.
-                                app.drag_origin = Some((x, y));
-                                app.mouse_down = true;
-                            }
-                            handled = true;
                         }
+                        app.drag_origin = Some((x, y));
+                        app.mouse_down = true;
                     }
-                    DispatchEvent::ResizeHandleDragStarted { host_id, edge } => {
-                        eprintln!("[BRIDGE] drag-press → ResizeHandleDragStarted host={} edge={:?}", host_id.0, edge);
-                        // Each composite owns its resize math; we just hand
-                        // it the start rect + cursor + bounds.
-                        let toolbar_target: Option<(&str, &'static str, (&str, f64, f64))> = match host_id.0.as_str() {
-                            // (slot_id, drag-target which, (axis-letter, viewport-fraction-cap-axis, min))
-                            "top-toolbar-widget"          => Some(("top-toolbar",          "top",          ("h", 0.10, 24.0))),
-                            "demo-toolbar-left2-widget"   => Some(("demo-toolbar-left2",   "demo-left2",   ("w", 0.20, 60.0))),
-                            "demo-toolbar-right-widget"   => Some(("demo-toolbar-right",   "demo-right",   ("w", 0.20, 60.0))),
-                            "demo-toolbar-bottom-widget"  => Some(("demo-toolbar-bottom",  "demo-bottom",  ("h", 0.20, 24.0))),
-                            _ => None,
-                        };
-                        if let Some((slot_id, which, (axis, frac, min))) = toolbar_target {
-                            let viewport = app.layout.last_window().map(|w|
-                                if axis == "w" { w.width } else { w.height }).unwrap_or(800.0);
-                            let cap = (viewport * frac).max(min + 10.0);
-                            if let Some(rect) = app.layout.rect_for_edge_slot(slot_id) {
-                                let st: &mut ToolbarState = match which {
-                                    "top"        => &mut app.top_toolbar_state,
-                                    "demo-left2" => &mut app.demo_toolbar_left2_state,
-                                    "demo-right" => &mut app.demo_toolbar_right_state,
-                                    "demo-bottom"=> &mut app.demo_toolbar_bottom_state,
-                                    _ => unreachable!(),
-                                };
-                                st.start_resize(edge, rect, (x, y), min, cap);
-                                app.drag_target = Some(DragTarget::ToolbarResize { which });
-                                app.drag_origin = Some((x, y));
-                                app.mouse_down = true;
-                                handled = true;
-                            }
-                        } else if host_id.0 == "modal-widget" {
-                            if let Some(rect) = app.layout.rect_for_overlay("modal-overlay") {
-                                app.modal_state.start_resize(edge, rect, (x, y),
-                                    (200.0, 120.0), (f64::INFINITY, f64::INFINITY));
-                                app.drag_target = Some(DragTarget::OverlayResize { which: "modal" });
-                                app.drag_origin = Some((x, y));
-                                app.mouse_down = true;
-                                handled = true;
+                }
+
+                // ── Toolbars ──────────────────────────────────────────────────
+                let toolbar_specs: [(&str, &'static str, &'static str); 4] = [
+                    ("top-toolbar-widget",         "top-toolbar",         "top"),
+                    ("demo-toolbar-left2-widget",  "demo-toolbar-left2",  "demo-left2"),
+                    ("demo-toolbar-right-widget",  "demo-toolbar-right",  "demo-right"),
+                    ("demo-toolbar-bottom-widget", "demo-toolbar-bottom", "demo-bottom"),
+                ];
+                for (host, slot, which) in toolbar_specs {
+                    if handled { break; }
+                    let rect = app.layout.rect_for_edge_slot(slot);
+                    let st: &mut ToolbarState = match which {
+                        "top"         => &mut app.top_toolbar_state,
+                        "demo-left2"  => &mut app.demo_toolbar_left2_state,
+                        "demo-right"  => &mut app.demo_toolbar_right_state,
+                        "demo-bottom" => &mut app.demo_toolbar_bottom_state,
+                        _             => continue,
+                    };
+                    try_consume_bridge!(toolbar_input, st, host, rect);
+                    if handled {
+                        if st.resize_drag.is_some() {
+                            app.drag_target = Some(DragTarget::ToolbarResize { which });
+                        }
+                        app.drag_origin = Some((x, y));
+                        app.mouse_down = true;
+                    }
+                }
+
+                // ── Sidebars ──────────────────────────────────────────────────
+                let sidebar_specs: [(&str, &'static str, &'static str); 4] = [
+                    ("sidebar-widget",             "sidebar",             "main"),
+                    ("demo-sidebar-right-widget",  "demo-sidebar-right",  "right"),
+                    ("demo-sidebar-top-widget",    "demo-sidebar-top",    "top"),
+                    ("demo-sidebar-bottom-widget", "demo-sidebar-bottom", "bottom"),
+                ];
+                for (host, slot, which) in sidebar_specs {
+                    if handled { break; }
+                    let rect = app.layout.rect_for_edge_slot(slot);
+                    let st: &mut SidebarState = match which {
+                        "main"   => &mut app.sidebar_state,
+                        "right"  => &mut app.demo_sidebar_right_state,
+                        "top"    => &mut app.demo_sidebar_top_state,
+                        "bottom" => &mut app.demo_sidebar_bottom_state,
+                        _        => continue,
+                    };
+                    try_consume_bridge!(sidebar_input, st, host, rect);
+                    if handled {
+                        if let Some(scroll) = st.scroll_per_panel.get("default") {
+                            if scroll.is_dragging {
+                                if let Some(sb_rect) = app.layout.rect_for_edge_slot(slot) {
+                                    let est_panels = app.layout.panels().tree().leaves().len() as f64;
+                                    let viewport_h = sb_rect.height - 40.0;
+                                    let content_h  = 480.0 + est_panels * 30.0;
+                                    let track_rect = Rect::new(
+                                        sb_rect.x + sb_rect.width - 8.0,
+                                        sb_rect.y + 40.0,
+                                        8.0,
+                                        viewport_h,
+                                    );
+                                    app.drag_target = Some(DragTarget::SidebarScrollbar {
+                                        track_rect, content_h, viewport_h,
+                                    });
+                                }
                             }
                         }
+                        app.drag_origin = Some((x, y));
+                        app.mouse_down = true;
                     }
-                    _ => {}
                 }
             }
             if !handled {
