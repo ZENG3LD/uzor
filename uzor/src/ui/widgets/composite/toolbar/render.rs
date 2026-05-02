@@ -52,13 +52,51 @@ pub fn register_input_coordinator_toolbar(
         }
         ToolbarRenderKind::Horizontal | ToolbarRenderKind::Inline => {
             register_horizontal_items(coord, &toolbar_id, rect, view, settings, state);
+            if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
+                register_overflow_chevrons(coord, &toolbar_id, rect, view, settings, false, layer);
+            }
+            if view.resizable {
+                register_toolbar_resize_handle(coord, &toolbar_id, rect, false);
+            }
         }
         ToolbarRenderKind::Vertical => {
             register_vertical_items(coord, &toolbar_id, rect, view, settings, state);
+            if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
+                register_overflow_chevrons(coord, &toolbar_id, rect, view, settings, true, layer);
+            }
+            if view.resizable {
+                register_toolbar_resize_handle(coord, &toolbar_id, rect, true);
+            }
         }
     }
 
     toolbar_id
+}
+
+/// Register a single drag handle on the toolbar's inner edge so the user can
+/// resize toolbar thickness. The bar's host is responsible for clamping the
+/// resulting size (typical cap is 10% of the viewport on the main axis).
+fn register_toolbar_resize_handle(
+    coord:       &mut InputCoordinator,
+    parent:      &WidgetId,
+    rect:        Rect,
+    is_vertical: bool,
+) {
+    let t = 5.0_f64;
+    // Horizontal toolbar lives on top → drag bottom edge.
+    // Vertical toolbar lives on left → drag right edge.
+    let handle = if is_vertical {
+        Rect::new(rect.x + rect.width - t, rect.y, t, rect.height)
+    } else {
+        Rect::new(rect.x, rect.y + rect.height - t, rect.width, t)
+    };
+    coord.register_child(
+        parent,
+        format!("{}:resize", parent.0),
+        WidgetKind::DragHandle,
+        handle,
+        Sense::DRAG | Sense::HOVER,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +171,11 @@ fn draw_toolbar_internal(
             // Horizontal toolbar → bottom edge
             ctx.fill_rect(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0);
         }
+    }
+
+    // 6. Overflow chevrons — only when policy is Chevrons and content overflows.
+    if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
+        draw_overflow_chevrons(ctx, rect, view, settings, state, is_vertical);
     }
 }
 
@@ -1055,4 +1098,125 @@ fn rgba_to_hex(color: [u8; 4]) -> String {
     } else {
         format!("#{:02x}{:02x}{:02x}{:02x}", color[0], color[1], color[2], color[3])
     }
+}
+
+// ---------------------------------------------------------------------------
+// Overflow chevrons — Chevrons mode
+// ---------------------------------------------------------------------------
+
+/// Compute the natural content extent (width for horizontal, height for
+/// vertical) of all sections rendered in their natural order, ignoring
+/// overflow. Used by `draw_overflow_chevrons` to decide whether to show the
+/// chevrons at all.
+fn content_extent(view: &ToolbarView<'_>, settings: &ToolbarSettings, is_vertical: bool) -> f64 {
+    let style   = settings.style.as_ref();
+    let padding = style.padding();
+    let sec_gap = style.section_gap();
+
+    let measure = if is_vertical { section_height_vertical } else { section_width_horizontal };
+    let start_e  = measure(&view.start, settings);
+    let center_e = measure(&view.center, settings);
+    let end_e    = measure(&view.end, settings);
+
+    let mut total = start_e;
+    if !view.center.is_empty() { total += sec_gap + center_e; }
+    if !view.end.is_empty()    { total += sec_gap + end_e;    }
+    padding * 2.0 + total
+}
+
+/// Bounding rects for the back/forward chevron strips in Chevrons mode.
+fn chevron_strip_rects(rect: Rect, is_vertical: bool, strip_size: f64) -> (Rect, Rect) {
+    if is_vertical {
+        let back = Rect::new(rect.x, rect.y, rect.width, strip_size);
+        let fwd  = Rect::new(rect.x, rect.y + rect.height - strip_size, rect.width, strip_size);
+        (back, fwd)
+    } else {
+        let back = Rect::new(rect.x, rect.y, strip_size, rect.height);
+        let fwd  = Rect::new(rect.x + rect.width - strip_size, rect.y, strip_size, rect.height);
+        (back, fwd)
+    }
+}
+
+fn draw_overflow_chevrons(
+    ctx:        &mut dyn RenderContext,
+    rect:       Rect,
+    view:       &ToolbarView<'_>,
+    settings:   &ToolbarSettings,
+    state:      &ToolbarState,
+    is_vertical: bool,
+) {
+    let bar_extent = if is_vertical { rect.height } else { rect.width };
+    let total = content_extent(view, settings, is_vertical);
+    if total <= bar_extent + 0.5 {
+        return; // nothing overflows; no chevrons.
+    }
+
+    use crate::ui::widgets::atomic::chevron::{
+        draw_chevron, types::{ChevronDirection, ChevronUseCase, ChevronView, ChevronVisualKind, HitAreaPolicy, PlacementPolicy, VisibilityPolicy},
+        settings::ChevronSettings,
+    };
+
+    let style       = settings.style.as_ref();
+    let strip_size  = (style.height() * 0.6).max(16.0).min(28.0);
+    let (back_rect, fwd_rect) = chevron_strip_rects(rect, is_vertical, strip_size);
+
+    let max_scroll = (total - bar_extent).max(0.0);
+    let has_back = state.scroll_offset > 0.5;
+    let has_fwd  = state.scroll_offset < max_scroll - 0.5;
+
+    let chev_settings = ChevronSettings::default();
+
+    let (back_dir, fwd_dir) = if is_vertical {
+        (ChevronDirection::Up, ChevronDirection::Down)
+    } else {
+        (ChevronDirection::Left, ChevronDirection::Right)
+    };
+
+    let back_view = ChevronView {
+        direction: back_dir,
+        use_case:  ChevronUseCase::PixelScrollStep,
+        visibility: VisibilityPolicy::WhenOverflow { has_more: has_back },
+        placement:  PlacementPolicy::Overlay,
+        hit_area:   HitAreaPolicy::Visual,
+        visual_kind: ChevronVisualKind::Stroked,
+        ..Default::default()
+    };
+    let fwd_view = ChevronView {
+        direction: fwd_dir,
+        use_case:  ChevronUseCase::PixelScrollStep,
+        visibility: VisibilityPolicy::WhenOverflow { has_more: has_fwd },
+        placement:  PlacementPolicy::Overlay,
+        hit_area:   HitAreaPolicy::Visual,
+        visual_kind: ChevronVisualKind::Stroked,
+        ..Default::default()
+    };
+    draw_chevron(ctx, back_rect, &back_view, &chev_settings);
+    draw_chevron(ctx, fwd_rect,  &fwd_view,  &chev_settings);
+}
+
+/// Register hit zones for the overflow chevron strips so the dispatcher fires
+/// `ChevronStepRequested`. Visibility is checked at click time by the L3
+/// handler against scroll bounds.
+fn register_overflow_chevrons(
+    coord:      &mut InputCoordinator,
+    parent:     &WidgetId,
+    rect:       Rect,
+    view:       &ToolbarView<'_>,
+    settings:   &ToolbarSettings,
+    is_vertical: bool,
+    layer:      &LayerId,
+) {
+    let bar_extent = if is_vertical { rect.height } else { rect.width };
+    let total = content_extent(view, settings, is_vertical);
+    if total <= bar_extent + 0.5 { return; }
+
+    let style       = settings.style.as_ref();
+    let strip_size  = (style.height() * 0.6).max(16.0).min(28.0);
+    let (back_rect, fwd_rect) = chevron_strip_rects(rect, is_vertical, strip_size);
+
+    let _ = layer;
+    let back_id = WidgetId::new(format!("{}:chevron_back", parent.0));
+    let fwd_id  = WidgetId::new(format!("{}:chevron_fwd",  parent.0));
+    coord.register_child(parent, back_id, WidgetKind::Button, back_rect, Sense::CLICK | Sense::HOVER);
+    coord.register_child(parent, fwd_id,  WidgetKind::Button, fwd_rect,  Sense::CLICK | Sense::HOVER);
 }

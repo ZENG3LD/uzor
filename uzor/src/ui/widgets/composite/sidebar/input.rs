@@ -61,6 +61,21 @@ pub fn register_layout_manager_sidebar<P: DockPanel>(
         );
     }
 
+    // Chevrons mode — register paging step events on the two overlay strips.
+    if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
+        use crate::layout::{ChevronStepDirection, EventBuilder};
+        let chev_up_id = WidgetId::new(format!("{}:chevron_up", id.0));
+        let chev_down_id = WidgetId::new(format!("{}:chevron_down", id.0));
+        layout.dispatcher_mut().on_exact(
+            format!("{}:chevron_up", id.0),
+            EventBuilder::ChevronStep { chevron_id: chev_up_id, direction: ChevronStepDirection::Up },
+        );
+        layout.dispatcher_mut().on_exact(
+            format!("{}:chevron_down", id.0),
+            EventBuilder::ChevronStep { chevron_id: chev_down_id, direction: ChevronStepDirection::Down },
+        );
+    }
+
     register_context_manager_sidebar(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
     );

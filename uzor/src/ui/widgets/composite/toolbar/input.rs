@@ -43,6 +43,28 @@ pub fn register_layout_manager_toolbar<P: DockPanel>(
         EventBuilder::ToolbarItem { toolbar_id: id.clone() },
     );
 
+    // Overflow chevrons — register paging step events for the two strips.
+    // Exact-pattern dispatch beats the per-item prefix above.
+    if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
+        use crate::layout::ChevronStepDirection;
+        let is_vertical = matches!(kind, ToolbarRenderKind::Vertical);
+        let (back_dir, fwd_dir) = if is_vertical {
+            (ChevronStepDirection::Up, ChevronStepDirection::Down)
+        } else {
+            (ChevronStepDirection::Left, ChevronStepDirection::Right)
+        };
+        let back_id = WidgetId::new(format!("{}:chevron_back", id.0));
+        let fwd_id  = WidgetId::new(format!("{}:chevron_fwd",  id.0));
+        layout.dispatcher_mut().on_exact(
+            format!("{}:chevron_back", id.0),
+            EventBuilder::ChevronStep { chevron_id: back_id, direction: back_dir },
+        );
+        layout.dispatcher_mut().on_exact(
+            format!("{}:chevron_fwd", id.0),
+            EventBuilder::ChevronStep { chevron_id: fwd_id, direction: fwd_dir },
+        );
+    }
+
     // Auto-forward hovered_item_id from the coordinator into toolbar state.
     let prefix = format!("{}:", id.0);
     state.sync_hover_from(&layout.ctx_mut().input, &prefix);

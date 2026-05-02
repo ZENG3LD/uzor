@@ -10,7 +10,7 @@ use super::types::{PopupRenderKind, PopupView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{LayoutManager, LayoutNodeId, PopupNode, WidgetNode};
+use crate::layout::{EventBuilder, LayoutManager, LayoutNodeId, PopupNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -39,6 +39,37 @@ pub fn register_layout_manager_popup<P: DockPanel>(
     // can apply the modal-blocking hit-test rule.
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Popup, rect, sense: Sense::CLICK });
+
+    // Body overflow patterns + opt-in resize handles.
+    let dispatcher = layout.dispatcher_mut();
+    if matches!(view.overflow, crate::types::OverflowMode::Scrollbar) {
+        dispatcher.on_exact(
+            format!("{}:scrollbar_track", id.0),
+            EventBuilder::ScrollbarTrack { track_id: WidgetId::new(format!("{}:scrollbar_track", id.0)) },
+        );
+        dispatcher.on_exact(
+            format!("{}:scrollbar_handle", id.0),
+            EventBuilder::ScrollbarThumb { thumb_id: WidgetId::new(format!("{}:scrollbar_handle", id.0)) },
+        );
+    }
+    if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
+        use crate::layout::ChevronStepDirection;
+        dispatcher.on_exact(
+            format!("{}:chevron_up", id.0),
+            EventBuilder::ChevronStep {
+                chevron_id: WidgetId::new(format!("{}:chevron_up", id.0)),
+                direction:  ChevronStepDirection::Up,
+            },
+        );
+        dispatcher.on_exact(
+            format!("{}:chevron_down", id.0),
+            EventBuilder::ChevronStep {
+                chevron_id: WidgetId::new(format!("{}:chevron_down", id.0)),
+                direction:  ChevronStepDirection::Down,
+            },
+        );
+    }
+
     register_context_manager_popup(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
     );

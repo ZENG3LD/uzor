@@ -200,6 +200,14 @@ pub struct ToolbarView<'a> {
     pub end: ToolbarSection<'a>,
     /// ChromeStrip-specific data.  Ignored by non-Chrome kinds.
     pub chrome: Option<ChromeStripView<'a>>,
+    /// What to do when items overflow the bar's main axis.
+    /// Default `Clip` matches legacy behaviour.
+    pub overflow: crate::types::OverflowMode,
+    /// Allow user to drag the inner edge to resize toolbar thickness.
+    /// `false` (default) keeps the toolbar at its measured thickness.
+    /// The host is expected to clamp the resulting size — typical cap is
+    /// 10% of the viewport on the toolbar's main axis.
+    pub resizable: bool,
 }
 
 impl<'a> ToolbarView<'a> {
@@ -211,6 +219,8 @@ impl<'a> ToolbarView<'a> {
             center: ToolbarSection::empty(),
             end,
             chrome: None,
+            overflow: crate::types::OverflowMode::Clip,
+            resizable: false,
         }
     }
 }

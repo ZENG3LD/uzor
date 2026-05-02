@@ -85,7 +85,7 @@ impl App<NoPanel> for YogaTgApp {
     ) {
         let layer = LayerId::main();
         let settings = ButtonSettings::default();
-        let view = ButtonView { icon: None, text: None, active: false, disabled: false, active_border: None };
+        let view = ButtonView { icon: None, text: None, active: false, disabled: false, active_border: None, hover_chevron: None };
 
         // ── Top toolbar buttons ───────────────────────────────────────────────
         //

@@ -184,6 +184,39 @@ pub fn register_input_coordinator_sidebar(
         Sense::SCROLL,
     );
 
+    // --- Chevron pager hit zones (OverflowMode::Chevrons) -------------------
+    // Two 16-px overlay strips at the top and bottom of the body region.
+    // Visible only when content overflows; each chevron pages the body
+    // scroll offset by one viewport.
+    if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
+        let content_h  = view.content_height;
+        let viewport_h = layout.body.height;
+        if content_h > viewport_h && viewport_h > 0.0 {
+            let panel_key   = view.active_tab.unwrap_or("default");
+            let cur_offset  = state.scroll_per_panel.get(panel_key).map(|s| s.offset).unwrap_or(0.0);
+            let max_offset  = (content_h - viewport_h).max(0.0);
+            let strip_h     = 16.0_f64;
+            if cur_offset > 0.0 {
+                coord.register_child(
+                    &sidebar_id,
+                    format!("{}:chevron_up", sidebar_id.0),
+                    WidgetKind::ScrollChevron,
+                    Rect::new(layout.body.x, layout.body.y, layout.body.width, strip_h),
+                    Sense::CLICK | Sense::HOVER,
+                );
+            }
+            if cur_offset < max_offset {
+                coord.register_child(
+                    &sidebar_id,
+                    format!("{}:chevron_down", sidebar_id.0),
+                    WidgetKind::ScrollChevron,
+                    Rect::new(layout.body.x, layout.body.y + layout.body.height - strip_h, layout.body.width, strip_h),
+                    Sense::CLICK | Sense::HOVER,
+                );
+            }
+        }
+    }
+
     sidebar_id
 }
 
@@ -430,6 +463,58 @@ fn draw_sidebar_with_coord(
             scb_state,
             None,
         );
+    }
+
+    // --- 7b. Chevron pager (OverflowMode::Chevrons) -------------------------
+    if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
+        let content_h  = view.content_height;
+        let viewport_h = layout.body.height;
+        if content_h > viewport_h && viewport_h > 0.0 {
+            let panel_key  = view.active_tab.unwrap_or("default");
+            let cur_offset = state.scroll_per_panel.get(panel_key).map(|s| s.offset).unwrap_or(0.0);
+            let max_offset = (content_h - viewport_h).max(0.0);
+            let strip_h    = 16.0_f64;
+
+            use crate::ui::widgets::atomic::chevron::render::draw_chevron;
+            use crate::ui::widgets::atomic::chevron::settings::ChevronSettings;
+            use crate::ui::widgets::atomic::chevron::types::{
+                ChevronDirection, ChevronUseCase, ChevronView, ChevronVisualKind,
+                HitAreaPolicy, PlacementPolicy, VisibilityPolicy,
+            };
+
+            let cs = ChevronSettings::default();
+            // Top strip — visible only if there's content above.
+            if cur_offset > 0.0 {
+                let r = Rect::new(layout.body.x, layout.body.y, layout.body.width, strip_h);
+                // Faint backdrop so the strip reads as a control, not a row.
+                ctx.set_fill_color("rgba(20,22,28,0.85)");
+                ctx.fill_rect(r.x, r.y, r.width, r.height);
+                draw_chevron(ctx, r, &ChevronView {
+                    direction: ChevronDirection::Up,
+                    use_case: ChevronUseCase::PageStep,
+                    visibility: VisibilityPolicy::Always,
+                    placement: PlacementPolicy::Overlay,
+                    hit_area: HitAreaPolicy::Visual,
+                    visual_kind: ChevronVisualKind::Stroked,
+                    ..ChevronView::default()
+                }, &cs);
+            }
+            // Bottom strip — visible only if there's content below.
+            if cur_offset < max_offset {
+                let r = Rect::new(layout.body.x, layout.body.y + layout.body.height - strip_h, layout.body.width, strip_h);
+                ctx.set_fill_color("rgba(20,22,28,0.85)");
+                ctx.fill_rect(r.x, r.y, r.width, r.height);
+                draw_chevron(ctx, r, &ChevronView {
+                    direction: ChevronDirection::Down,
+                    use_case: ChevronUseCase::PageStep,
+                    visibility: VisibilityPolicy::Always,
+                    placement: PlacementPolicy::Overlay,
+                    hit_area: HitAreaPolicy::Visual,
+                    visual_kind: ChevronVisualKind::Stroked,
+                    ..ChevronView::default()
+                }, &cs);
+            }
+        }
     }
 
     // --- 8. Resize edge visual — only highlights while actively resizing ----

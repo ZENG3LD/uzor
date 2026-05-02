@@ -83,6 +83,26 @@ pub enum DispatchEvent {
     /// and follow up with `update_thumb_drag` on every mouse-move while the
     /// drag is live.
     ScrollbarThumbDragStarted { thumb_id: WidgetId },
+
+    /// User clicked a navigation chevron — request to advance content one
+    /// step in `direction`. Used by overflow-mode `Chevrons` for sidebars,
+    /// toolbars, modals, popups and similar containers.
+    /// `chevron_id` lets the app distinguish multiple chevron sites.
+    ChevronStepRequested {
+        chevron_id: WidgetId,
+        direction:  super::ChevronStepDirection,
+    },
+}
+
+/// Direction passed inside `DispatchEvent::ChevronStepRequested`. Mirrors
+/// the atomic chevron's directions; isolated from the atomic so the
+/// dispatcher module has no cyclical dep on the widget tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChevronStepDirection {
+    Up,
+    Down,
+    Left,
+    Right,
 }
 
 /// How to construct a [`DispatchEvent`] when a pattern matches.
@@ -124,6 +144,10 @@ pub enum EventBuilder {
     /// Fires `ScrollbarThumbDragStarted { thumb_id }` when the user
     /// mouse-downs on a scrollbar thumb.
     ScrollbarThumb { thumb_id: WidgetId },
+
+    /// Fires `ChevronStepRequested { chevron_id, direction }` — used by
+    /// overflow-mode `Chevrons` paging strips.
+    ChevronStep { chevron_id: WidgetId, direction: super::ChevronStepDirection },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,6 +290,12 @@ fn build(builder: &EventBuilder, id: &str, pattern: &str) -> DispatchEvent {
         }
         EventBuilder::ScrollbarThumb { thumb_id } => {
             DispatchEvent::ScrollbarThumbDragStarted { thumb_id: thumb_id.clone() }
+        }
+        EventBuilder::ChevronStep { chevron_id, direction } => {
+            DispatchEvent::ChevronStepRequested {
+                chevron_id: chevron_id.clone(),
+                direction: *direction,
+            }
         }
     }
 }

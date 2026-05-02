@@ -621,6 +621,7 @@ impl AppState {
                 active:        connected,
                 disabled:      false,
                 active_border: None,
+                hover_chevron: None,
             };
             register_context_manager_button(
                 ctx, &mut render,

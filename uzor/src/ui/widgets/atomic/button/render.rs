@@ -38,6 +38,34 @@ pub struct ButtonView<'a> {
     ///
     /// Mirrors mlc `ButtonConfig::active_border` which is per-instance.
     pub active_border: Option<bool>,
+    /// Hover-chevron — when `Some`, the button paints a chevron in its
+    /// trailing inline corner only while the button is hovered. Used as a
+    /// visual hint that clicking the button opens a dropdown / menu (the
+    /// "zengeld terminal" pattern).
+    pub hover_chevron: Option<HoverChevronSpec>,
+}
+
+/// How a hover-revealed chevron paints inside a button. The chevron is
+/// purely decorative — the button itself stays the click target. The host
+/// is free to wire the click handler to open a dropdown.
+#[derive(Debug, Clone, Copy)]
+pub struct HoverChevronSpec {
+    /// Direction the chevron points.
+    pub direction: super::types::ChevronDirection,
+    /// Trailing-corner inset in pixels (gap from the button's right edge).
+    pub inset: f64,
+    /// Side length of the chevron rect in pixels.
+    pub size: f64,
+}
+
+impl Default for HoverChevronSpec {
+    fn default() -> Self {
+        Self {
+            direction: super::types::ChevronDirection::Down,
+            inset:     6.0,
+            size:      14.0,
+        }
+    }
 }
 
 /// What the renderer returns. `clicked`/`hovered`/`pressed` are derived
@@ -179,6 +207,38 @@ where
         ctx.set_text_align(TextAlign::Center);
         ctx.set_text_baseline(TextBaseline::Middle);
         ctx.fill_text(text, rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
+    }
+
+    // Hover-chevron — opt-in trailing-corner overlay shown only while hovered.
+    // Decorative; click target remains the host button.
+    if let Some(spec) = view.hover_chevron {
+        if effective.is_hovered() && !view.disabled {
+            use crate::ui::widgets::atomic::chevron::{
+                draw_chevron,
+                settings::ChevronSettings,
+                types::{ChevronDirection as ChDir, ChevronUseCase, ChevronView, ChevronVisualKind, HitAreaPolicy, PlacementPolicy, VisibilityPolicy},
+            };
+            let chev_dir = match spec.direction {
+                super::types::ChevronDirection::Up    => ChDir::Up,
+                super::types::ChevronDirection::Down  => ChDir::Down,
+                super::types::ChevronDirection::Left  => ChDir::Left,
+                super::types::ChevronDirection::Right => ChDir::Right,
+            };
+            let cx = rect.x + rect.width  - spec.inset - spec.size / 2.0;
+            let cy = rect.y + rect.height / 2.0;
+            let chev_rect = Rect::new(cx - spec.size / 2.0, cy - spec.size / 2.0, spec.size, spec.size);
+            let chev_view = ChevronView {
+                direction:   chev_dir,
+                use_case:    ChevronUseCase::Affordance,
+                visibility:  VisibilityPolicy::Always,
+                placement:   PlacementPolicy::InlineCorner { trailing: true },
+                hit_area:    HitAreaPolicy::None,
+                visual_kind: ChevronVisualKind::Stroked,
+                hovered: true,
+                ..Default::default()
+            };
+            draw_chevron(ctx, chev_rect, &chev_view, &ChevronSettings::default());
+        }
     }
 
     ButtonResult {

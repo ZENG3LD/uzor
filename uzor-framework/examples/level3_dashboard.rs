@@ -1206,6 +1206,8 @@ impl AppState {
         let probe_view_h = ToolbarView {
             start: ToolbarSection::empty(), center: ToolbarSection::empty(),
             end: ToolbarSection::empty(), chrome: None,
+            overflow: uzor::types::OverflowMode::Clip,
+            resizable: false,
         };
         let probe_settings = ToolbarSettings::new(
             Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
@@ -1230,6 +1232,8 @@ impl AppState {
         let probe_view_v = ToolbarView {
             start: ToolbarSection::empty(), center: ToolbarSection::empty(),
             end: ToolbarSection::empty(), chrome: None,
+            overflow: uzor::types::OverflowMode::Clip,
+            resizable: false,
         };
         let probe_settings_v = ToolbarSettings::new(
             Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
@@ -1480,6 +1484,8 @@ impl AppState {
             center: ToolbarSection::empty(),
             end: ToolbarSection { items: &clock_items },
             chrome: None,
+            overflow: uzor::types::OverflowMode::Chevrons,
+            resizable: true,
         };
         register_layout_manager_toolbar(
             &mut self.layout,
@@ -1509,6 +1515,8 @@ impl AppState {
                 center: ToolbarSection::empty(),
                 end: ToolbarSection::empty(),
                 chrome: None,
+                overflow: uzor::types::OverflowMode::Clip,
+                resizable: false,
             };
             register_layout_manager_toolbar(
                 &mut self.layout,
@@ -1544,6 +1552,8 @@ impl AppState {
                 center: ToolbarSection::empty(),
                 end: ToolbarSection::empty(),
                 chrome: None,
+                overflow: uzor::types::OverflowMode::Clip,
+                resizable: false,
             };
             let style: Box<dyn uzor::ui::widgets::composite::toolbar::style::ToolbarStyle> =
                 if matches!(kind, ToolbarRenderKind::Vertical) {
@@ -1967,6 +1977,8 @@ impl AppState {
                 footer_buttons: &probe_btns,
                 wizard_pages: &[],
                 backdrop: BackdropKind::Dim,
+                overflow: uzor::types::OverflowMode::Clip,
+                resizable: false,
             };
             let (extra_w, extra_h) = measure_modal_chrome(
                 &probe_view,
@@ -2058,6 +2070,8 @@ impl AppState {
                 footer_buttons: &footer_btns,
                 wizard_pages: wizard_pages_ref,
                 backdrop: BackdropKind::Dim,
+                overflow: uzor::types::OverflowMode::Scrollbar,
+                resizable: true,
             };
             let _modal_node = register_layout_manager_modal(
                 &mut self.layout,
@@ -2222,7 +2236,14 @@ impl AppState {
                             self.layout.ctx_mut(), &mut render,
                             "l2-btn-connect", Rect::new(BTN_RECT.x + ox, BTN_RECT.y + oy, BTN_RECT.width, BTN_RECT.height), &layer,
                             btn_state,
-                            &ButtonView { text: Some(if l2_connected { "Disconnect" } else { "Connect" }), icon: None, active: l2_connected, disabled: false, active_border: None },
+                            &ButtonView {
+                                text: Some(if l2_connected { "Disconnect" } else { "Connect" }),
+                                icon: None,
+                                active: l2_connected,
+                                disabled: false,
+                                active_border: None,
+                                hover_chevron: Some(uzor::ui::widgets::atomic::button::render::HoverChevronSpec::default()),
+                            },
                             &ButtonSettings::default().with_theme(Box::new(VisibleButtonTheme)),
                         );
                         // 2. Checkbox
@@ -2823,6 +2844,8 @@ impl AppState {
                 anchor: None,
                 backdrop: PopupBackdrop::None,
                 kind: PopupViewKind::Plain,
+                overflow: uzor::types::OverflowMode::Scrollbar,
+                resizable: true,
             };
             let _popup_node = register_layout_manager_popup(
                 &mut self.layout, &mut render,
@@ -3196,6 +3219,39 @@ impl AppState {
                                 track_rect, content_h, viewport_h,
                             });
                         }
+                    }
+                    return;
+                }
+                DispatchEvent::ChevronStepRequested { chevron_id, direction } => {
+                    eprintln!("[DISPATCHER] ChevronStepRequested id={} dir={:?}", chevron_id.0, direction);
+                    let signed_sign = matches!(direction,
+                        uzor::layout::ChevronStepDirection::Up | uzor::layout::ChevronStepDirection::Left
+                    );
+                    // Sidebar chevrons live on ids "<sidebar-id>:chevron_up|chevron_down".
+                    if let Some(sb_id) = chevron_id.0.strip_suffix(":chevron_up").or_else(|| chevron_id.0.strip_suffix(":chevron_down")) {
+                        let slot_id = if sb_id == "sidebar-widget" { "sidebar" } else { sb_id };
+                        if let Some(sb_rect) = self.layout.rect_for_edge_slot(slot_id) {
+                            let est_panels = self.layout.panels().tree().leaves().len() as f64;
+                            let viewport_h = (sb_rect.height - 40.0).max(0.0);
+                            let content_h  = 480.0 + est_panels * 30.0;
+                            let max_scroll = (content_h - viewport_h).max(0.0);
+                            let step = viewport_h.max(40.0);
+                            let scroll = self.sidebar_state.get_or_insert_scroll("default");
+                            let signed = if signed_sign { -step } else { step };
+                            scroll.offset = (scroll.offset + signed).clamp(0.0, max_scroll);
+                        }
+                        return;
+                    }
+                    // Toolbar overflow chevrons live on "<toolbar-id>:chevron_back|chevron_fwd".
+                    if let Some(tb_id) = chevron_id.0.strip_suffix(":chevron_back").or_else(|| chevron_id.0.strip_suffix(":chevron_fwd")) {
+                        // Only the top toolbar uses overflow chevrons in this example.
+                        if tb_id == "top-toolbar-widget" {
+                            let step = 80.0;
+                            let signed = if signed_sign { -step } else { step };
+                            let cur = self.top_toolbar_state.scroll_offset;
+                            self.top_toolbar_state.scroll_offset = (cur + signed).max(0.0);
+                        }
+                        return;
                     }
                     return;
                 }

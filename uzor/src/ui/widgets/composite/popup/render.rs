@@ -98,7 +98,63 @@ pub fn register_input_coordinator_popup(
         _ => {}
     }
 
+    // Body overflow strips + opt-in resize handles.
+    register_popup_body_overflow(coord, &popup_id, layout.content, view);
+    if view.resizable {
+        register_popup_resize_handles(coord, &popup_id, frame);
+    }
+
     popup_id
+}
+
+// ---------------------------------------------------------------------------
+// Body overflow strips & resize handles
+// ---------------------------------------------------------------------------
+
+const POPUP_RESIZE_THICKNESS: f64 = 6.0;
+
+fn register_popup_body_overflow(
+    coord:    &mut InputCoordinator,
+    popup_id: &WidgetId,
+    body:     Rect,
+    view:     &PopupView<'_>,
+) {
+    if body.width <= 0.0 || body.height <= 0.0 { return; }
+    match view.overflow {
+        crate::types::OverflowMode::Scrollbar => {
+            let track_w = 8.0;
+            let track = Rect::new(body.x + body.width - track_w, body.y, track_w, body.height);
+            coord.register_child(popup_id, format!("{}:scrollbar_track", popup_id.0),
+                WidgetKind::ScrollbarTrack, track, Sense::CLICK);
+            coord.register_child(popup_id, format!("{}:scrollbar_handle", popup_id.0),
+                WidgetKind::ScrollbarHandle, track, Sense::DRAG | Sense::HOVER);
+        }
+        crate::types::OverflowMode::Chevrons => {
+            let strip = 16.0;
+            let up = Rect::new(body.x, body.y, body.width, strip);
+            let dn = Rect::new(body.x, body.y + body.height - strip, body.width, strip);
+            coord.register_child(popup_id, format!("{}:chevron_up", popup_id.0),
+                WidgetKind::Button, up, Sense::CLICK | Sense::HOVER);
+            coord.register_child(popup_id, format!("{}:chevron_down", popup_id.0),
+                WidgetKind::Button, dn, Sense::CLICK | Sense::HOVER);
+        }
+        _ => {}
+    }
+}
+
+fn register_popup_resize_handles(coord: &mut InputCoordinator, popup_id: &WidgetId, frame: Rect) {
+    let t = POPUP_RESIZE_THICKNESS;
+    let handles = [
+        ("resize_n",  Rect::new(frame.x, frame.y, frame.width, t)),
+        ("resize_s",  Rect::new(frame.x, frame.y + frame.height - t, frame.width, t)),
+        ("resize_w",  Rect::new(frame.x, frame.y, t, frame.height)),
+        ("resize_e",  Rect::new(frame.x + frame.width - t, frame.y, t, frame.height)),
+        ("resize_se", Rect::new(frame.x + frame.width - t * 2.0, frame.y + frame.height - t * 2.0, t * 2.0, t * 2.0)),
+    ];
+    for (suffix, rect) in handles {
+        coord.register_child(popup_id, format!("{}:{}", popup_id.0, suffix),
+            WidgetKind::DragHandle, rect, Sense::DRAG | Sense::HOVER);
+    }
 }
 
 // ---------------------------------------------------------------------------

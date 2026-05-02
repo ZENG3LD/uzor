@@ -68,6 +68,35 @@ pub fn register_layout_manager_modal<P: DockPanel>(
         EventBuilder::ModalWizardBack { modal_id: id.clone() },
     );
 
+    // Body overflow patterns (Scrollbar / Chevrons) and resize handles.
+    if matches!(view.overflow, crate::types::OverflowMode::Scrollbar) {
+        dispatcher.on_exact(
+            format!("{}:scrollbar_track", id.0),
+            EventBuilder::ScrollbarTrack { track_id: WidgetId::new(format!("{}:scrollbar_track", id.0)) },
+        );
+        dispatcher.on_exact(
+            format!("{}:scrollbar_handle", id.0),
+            EventBuilder::ScrollbarThumb { thumb_id: WidgetId::new(format!("{}:scrollbar_handle", id.0)) },
+        );
+    }
+    if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
+        use crate::layout::ChevronStepDirection;
+        dispatcher.on_exact(
+            format!("{}:chevron_up", id.0),
+            EventBuilder::ChevronStep {
+                chevron_id: WidgetId::new(format!("{}:chevron_up", id.0)),
+                direction:  ChevronStepDirection::Up,
+            },
+        );
+        dispatcher.on_exact(
+            format!("{}:chevron_down", id.0),
+            EventBuilder::ChevronStep {
+                chevron_id: WidgetId::new(format!("{}:chevron_down", id.0)),
+                direction:  ChevronStepDirection::Down,
+            },
+        );
+    }
+
     register_context_manager_modal(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
     );

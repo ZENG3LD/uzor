@@ -201,6 +201,12 @@ pub fn register_input_coordinator_modal(
         }
     }
 
+    // Body overflow strips (scrollbar / chevrons) and resize handles.
+    register_body_overflow(coord, &modal_id, frame, _view, settings, kind);
+    if _view.resizable {
+        register_resize_handles(coord, &modal_id, frame);
+    }
+
     // Wizard nav buttons.
     if matches!(kind, ModalRenderKind::Wizard) && !_view.wizard_pages.is_empty() {
         let style     = settings.style.as_ref();
@@ -898,4 +904,70 @@ fn draw_wizard_nav(
     let hovered    = state.footer_hovered == Some(1);
     let next_view  = PrimaryButtonView { text: next_label, hovered };
     draw_primary_button(ctx, next_rect, &next_view, 4.0, &btn_theme);
+}
+
+// ---------------------------------------------------------------------------
+// Body overflow strips & resize handles
+// ---------------------------------------------------------------------------
+
+/// Width / height of the resize-handle strips along each modal edge. Corners
+/// inherit double-axis behaviour by overlapping two strips.
+const RESIZE_HANDLE_THICKNESS: f64 = 6.0;
+
+fn register_body_overflow(
+    coord:    &mut InputCoordinator,
+    modal_id: &WidgetId,
+    frame:    Rect,
+    view:     &ModalView<'_>,
+    settings: &ModalSettings,
+    kind:     &ModalRenderKind,
+) {
+    let body = body_rect(frame, view, settings, kind);
+    if body.width <= 0.0 || body.height <= 0.0 {
+        return;
+    }
+    match view.overflow {
+        crate::types::OverflowMode::Scrollbar => {
+            let track_w = 8.0_f64;
+            let track = Rect::new(body.x + body.width - track_w, body.y, track_w, body.height);
+            coord.register_child(modal_id, format!("{}:scrollbar_track", modal_id.0),
+                WidgetKind::ScrollbarTrack, track, Sense::CLICK);
+            coord.register_child(modal_id, format!("{}:scrollbar_handle", modal_id.0),
+                WidgetKind::ScrollbarHandle, track, Sense::DRAG | Sense::HOVER);
+        }
+        crate::types::OverflowMode::Chevrons => {
+            let strip = 18.0_f64;
+            let up = Rect::new(body.x, body.y, body.width, strip);
+            let dn = Rect::new(body.x, body.y + body.height - strip, body.width, strip);
+            coord.register_child(modal_id, format!("{}:chevron_up", modal_id.0),
+                WidgetKind::Button, up, Sense::CLICK | Sense::HOVER);
+            coord.register_child(modal_id, format!("{}:chevron_down", modal_id.0),
+                WidgetKind::Button, dn, Sense::CLICK | Sense::HOVER);
+        }
+        _ => {}
+    }
+}
+
+fn register_resize_handles(coord: &mut InputCoordinator, modal_id: &WidgetId, frame: Rect) {
+    let t = RESIZE_HANDLE_THICKNESS;
+    // Edges: N / S / W / E and four corners (NW NE SW SE).
+    let edges = [
+        ("resize_n",  Rect::new(frame.x, frame.y, frame.width, t)),
+        ("resize_s",  Rect::new(frame.x, frame.y + frame.height - t, frame.width, t)),
+        ("resize_w",  Rect::new(frame.x, frame.y, t, frame.height)),
+        ("resize_e",  Rect::new(frame.x + frame.width - t, frame.y, t, frame.height)),
+        ("resize_nw", Rect::new(frame.x, frame.y, t * 2.0, t * 2.0)),
+        ("resize_ne", Rect::new(frame.x + frame.width - t * 2.0, frame.y, t * 2.0, t * 2.0)),
+        ("resize_sw", Rect::new(frame.x, frame.y + frame.height - t * 2.0, t * 2.0, t * 2.0)),
+        ("resize_se", Rect::new(frame.x + frame.width - t * 2.0, frame.y + frame.height - t * 2.0, t * 2.0, t * 2.0)),
+    ];
+    for (suffix, rect) in edges {
+        coord.register_child(
+            modal_id,
+            format!("{}:{}", modal_id.0, suffix),
+            WidgetKind::DragHandle,
+            rect,
+            Sense::DRAG | Sense::HOVER,
+        );
+    }
 }

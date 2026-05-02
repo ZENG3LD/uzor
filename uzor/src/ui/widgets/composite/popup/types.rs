@@ -130,6 +130,14 @@ pub struct PopupView<'a> {
 
     /// Template-specific data and (for `Plain`) the body closure.
     pub kind: PopupViewKind<'a>,
+
+    /// What to do when popup body content exceeds the popup rect. Default
+    /// `Clip` (legacy behaviour).
+    pub overflow: crate::types::OverflowMode,
+
+    /// Allow user to drag the popup edges / corners to resize. Default
+    /// `false` — popup stays at its measured rect.
+    pub resizable: bool,
 }
 
 // ---------------------------------------------------------------------------

@@ -87,7 +87,7 @@ impl App<NoPanel> for DashboardApp {
     ) {
         let layer = LayerId::main();
         let settings = ButtonSettings::default();
-        let view = ButtonView { icon: None, text: None, active: false, disabled: false, active_border: None };
+        let view = ButtonView { icon: None, text: None, active: false, disabled: false, active_border: None, hover_chevron: None };
 
         // ── Left sidebar navigation buttons ──────────────────────────────────
         if let Some(left_rect) = layout.rect_for_edge_slot("left_sidebar") {

@@ -87,6 +87,8 @@ fn plain_view() -> ModalView<'static> {
         footer_buttons: &[],
         wizard_pages: &[],
         backdrop: BackdropKind::None,
+        overflow: crate::types::OverflowMode::Clip,
+        resizable: false,
     }
 }
 

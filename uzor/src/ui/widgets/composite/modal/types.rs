@@ -90,6 +90,18 @@ pub struct ModalView<'a> {
 
     /// Backdrop fill strategy.
     pub backdrop: BackdropKind,
+
+    /// What to do when the body content exceeds the body rect. Default
+    /// `Clip` matches legacy behaviour (caller pre-clips inside the body
+    /// closure). `Scrollbar` / `Chevrons` both let the modal show paging
+    /// affordances, with the body closure free to draw at full size.
+    pub overflow: crate::types::OverflowMode,
+
+    /// Allow user to drag the modal corners / edges to resize. `false`
+    /// (default) keeps the modal pinned at its initial rect. When `true`
+    /// the composite registers handle hit zones along the border;
+    /// dispatching wires them to the L1 drag pipeline.
+    pub resizable: bool,
 }
 
 // ---------------------------------------------------------------------------
