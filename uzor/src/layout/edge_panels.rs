@@ -1,10 +1,36 @@
 use super::types::EdgeSide;
 
+/// How an edge slot relates to the dock area.
+///
+/// - **Compress** (default): the slot eats `thickness` pixels off the dock
+///   area. Center content (panels, etc.) shrinks to fit. Use this for
+///   primary navigation and sidebars that should never overlap content.
+/// - **Overlay**: the slot reserves visual space at the edge but the dock
+///   area keeps its full size. Render order makes the slot appear on top
+///   of the dock content. Use this for transient panels (notifications,
+///   floating toolboxes, drawers that animate in over content).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EdgePlacement {
+    /// Subtract `thickness` from the dock area. Default for traditional
+    /// app-shell layout.
+    #[default]
+    Compress,
+    /// Don't touch the dock area; the slot draws over it.
+    Overlay,
+}
+
 /// A single named edge panel slot (toolbar strip or sidebar column).
 ///
 /// Slots on the same side are stacked in `order` ascending: lower order = closer
 /// to the viewport edge.
-#[derive(Debug, Clone)]
+///
+/// Use struct-update syntax to opt into the new `placement` field without
+/// touching every existing call site:
+/// ```ignore
+/// EdgeSlot { id: "right-drawer".into(), side: EdgeSide::Right, thickness: 240.0,
+///            visible: true, placement: EdgePlacement::Overlay, ..Default::default() }
+/// ```
+#[derive(Debug, Clone, Default)]
 pub struct EdgeSlot {
     /// Stable identifier (used for rect queries and input registration).
     pub id: String,
@@ -16,6 +42,9 @@ pub struct EdgeSlot {
     pub visible: bool,
     /// Stack order within the edge; lower = outer (closer to viewport border).
     pub order: u32,
+    /// Whether the slot compresses the dock area or overlays on top of it.
+    /// Default: `Compress`.
+    pub placement: EdgePlacement,
 }
 
 /// Registry of all edge panel slots for all four sides.

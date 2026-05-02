@@ -158,6 +158,21 @@ impl<P: DockPanel> LayoutManager<P> {
         &self.dispatcher
     }
 
+    /// Default opening size for a sidebar kind, computed from the most
+    /// recent viewport `LayoutManager` saw via `solve(window_rect)`.
+    ///
+    /// L/R sidebars get `frac * viewport.width`, T/B get `frac * viewport.height`.
+    /// Returns `None` until the first `solve()` has been called.
+    ///
+    /// Callers use this to seed `EdgeSlot.thickness` and the first
+    /// `SidebarState.width` so demo / spawned sidebars open at a sensible
+    /// fraction (default 20%) instead of a hardcoded pixel constant.
+    pub fn sidebar_default_size(&self, is_horizontal_kind: bool, frac: f64) -> Option<f64> {
+        let win = self.last_window?;
+        let axis = if is_horizontal_kind { win.width } else { win.height };
+        Some(axis * frac)
+    }
+
     /// Mutable access to the click dispatch table.
     ///
     /// Composites call this in their `register_layout_manager_*` helpers

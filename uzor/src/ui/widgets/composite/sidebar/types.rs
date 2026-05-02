@@ -67,11 +67,31 @@ pub struct SidebarView<'a> {
     /// Currently active tab id for `WithTypeSelector`.  `None` = no tab active.
     pub active_tab: Option<&'a str>,
 
-    /// Whether to render a scrollbar on the body edge.
+    /// Legacy: whether to render a scrollbar on the body edge.
+    /// Kept for backwards compatibility — new callers should use `overflow`
+    /// instead. When `overflow == OverflowMode::Scrollbar` this becomes true
+    /// automatically (see `effective_show_scrollbar`).
     pub show_scrollbar: bool,
 
     /// Total content height in pixels (for scrollbar ratio).
     pub content_height: f64,
+
+    /// What the sidebar should do when its body's content extent exceeds the
+    /// laid-out body rect. `Clip` (default) preserves the legacy behaviour;
+    /// `Scrollbar` shows a vertical scroll track and the caller advances
+    /// `state.scroll_per_panel`; `Chevrons` would show step-arrows; `Compress`
+    /// is meaningless for a sidebar (its body is caller-driven) and is
+    /// downgraded to `Clip` by the render path.
+    pub overflow: crate::types::OverflowMode,
+}
+
+impl<'a> SidebarView<'a> {
+    /// Resolve the actual scrollbar visibility from `overflow` + the legacy
+    /// boolean. The composite uses this value when laying out its scrollbar
+    /// strip so callers can pick either API.
+    pub fn effective_show_scrollbar(&self) -> bool {
+        self.show_scrollbar || self.overflow.shows_scrollbar()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -80,18 +100,24 @@ pub struct SidebarView<'a> {
 
 /// Selects which layout pipeline the composite runs.
 ///
-/// | Kind             | border | resize-edge | tab-strip | scrollbar | collapse |
-/// |------------------|--------|-------------|-----------|-----------|----------|
-/// | `Right`          | left   | left edge   | ✗         | right     | ✓        |
-/// | `Left`           | right  | right edge  | ✗         | right     | ✓        |
-/// | `WithTypeSelector` | left | left edge   | top strip | right     | ✓        |
-/// | `Embedded`       | ✗      | ✗           | ✗         | right     | ✗        |
-/// | `Custom`         | —      | —           | —         | —         | —        |
+/// | Kind             | border       | resize-edge   | tab-strip | scrollbar | collapse |
+/// |------------------|--------------|---------------|-----------|-----------|----------|
+/// | `Right`          | left         | left edge     | ✗         | right     | ✓        |
+/// | `Left`           | right        | right edge    | ✗         | right     | ✓        |
+/// | `Top`            | bottom       | bottom edge   | ✗         | right     | ✓        |
+/// | `Bottom`         | top          | top edge      | ✗         | right     | ✓        |
+/// | `WithTypeSelector` | left       | left edge     | top strip | right     | ✓        |
+/// | `Embedded`       | ✗            | ✗             | ✗         | right     | ✗        |
+/// | `Custom`         | —            | —             | —         | —         | —        |
 pub enum SidebarRenderKind {
     /// Collapsible right-side panel.  Border and resize edge on the left.
     Right,
     /// Collapsible left-side panel.  Mirror of `Right` — resize edge on the right.
     Left,
+    /// Collapsible top panel.  Border and resize edge on the bottom.
+    Top,
+    /// Collapsible bottom panel.  Border and resize edge on the top.
+    Bottom,
     /// Sidebar with a top tab strip that switches panel type.
     WithTypeSelector,
     /// Minimalist embedded sidebar (inside modals).  No resize, no collapse.

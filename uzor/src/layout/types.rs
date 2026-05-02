@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use crate::core::types::Rect;
 
 /// Side of the window edge for edge panels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum EdgeSide {
+    #[default]
     Top,
     Bottom,
     Left,

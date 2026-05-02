@@ -14,7 +14,7 @@
 //! 3. Header bottom divider
 //! 4. Tab strip (WithTypeSelector only)
 //! 5. (body drawn by caller after composite call)
-//! 6. Scrollbar (if `view.show_scrollbar`)
+//! 6. Scrollbar (if `view.effective_show_scrollbar()`)
 //! 7. Resize edge handle (Right/Left/WithTypeSelector — sidebar variant stroke)
 
 use crate::input::core::coordinator::LayerId;
@@ -24,7 +24,7 @@ use crate::types::{Rect, WidgetId};
 use crate::ui::widgets::atomic::scrollbar::render::{
     draw_scrollbar_standard, ScrollbarVisualState,
 };
-use crate::ui::widgets::atomic::separator::render::draw_sidebar_handle;
+use crate::ui::widgets::atomic::separator::render::{draw_sidebar_handle, draw_sidebar_handle_horizontal};
 use crate::ui::widgets::atomic::separator::settings::SeparatorSettings;
 
 use super::settings::SidebarSettings;
@@ -134,7 +134,7 @@ pub fn register_input_coordinator_sidebar(
     }
 
     // --- Scrollbar handle + track ---
-    if view.show_scrollbar && layout.scrollbar.width > 0.0 {
+    if view.effective_show_scrollbar() && layout.scrollbar.width > 0.0 {
         // Inflated hit zone: ±5 px on x-axis (matches mlc scrollbar_handle inflation).
         let scroll = state
             .scroll_per_panel
@@ -263,7 +263,7 @@ fn draw_sidebar_with_coord(
         let sep_settings = SeparatorSettings::default();
         match kind {
             SidebarRenderKind::Left => {
-                // Right edge: stroke at border_line.x + border_line.width - 0.5
+                // Right edge: stroke at the right line of the border zone.
                 draw_sidebar_handle(
                     ctx,
                     layout.border_line.x + layout.border_line.width,
@@ -272,8 +272,28 @@ fn draw_sidebar_with_coord(
                     &sep_settings,
                 );
             }
+            SidebarRenderKind::Top => {
+                // Bottom edge of a top sidebar — horizontal stroke.
+                draw_sidebar_handle_horizontal(
+                    ctx,
+                    layout.border_line.x,
+                    layout.border_line.y + layout.border_line.height,
+                    layout.border_line.width,
+                    &sep_settings,
+                );
+            }
+            SidebarRenderKind::Bottom => {
+                // Top edge of a bottom sidebar — horizontal stroke.
+                draw_sidebar_handle_horizontal(
+                    ctx,
+                    layout.border_line.x,
+                    layout.border_line.y,
+                    layout.border_line.width,
+                    &sep_settings,
+                );
+            }
             _ => {
-                // Right / WithTypeSelector: left edge
+                // Right / WithTypeSelector: left edge — vertical stroke.
                 draw_sidebar_handle(
                     ctx,
                     layout.border_line.x,
@@ -374,7 +394,7 @@ fn draw_sidebar_with_coord(
     // --- 6. (body drawn by caller after composite call) ----------------------
 
     // --- 7. Scrollbar --------------------------------------------------------
-    if view.show_scrollbar && layout.scrollbar.width > 0.0 {
+    if view.effective_show_scrollbar() && layout.scrollbar.width > 0.0 {
         let panel_key = view.active_tab.unwrap_or("default");
         let scroll_offset = state
             .scroll_per_panel
@@ -401,16 +421,29 @@ fn draw_sidebar_with_coord(
         );
     }
 
-    // --- 8. Resize edge visual (Right / Left / WithTypeSelector) -------------
+    // --- 8. Resize edge visual — only highlights while actively resizing ----
+    // Border line itself was already drawn in step 2 at the standard divider
+    // colour. We only repaint it with the accent colour while the user is
+    // dragging the handle; otherwise it blends in with the regular UI border.
     let shows_resize = matches!(
         kind,
         SidebarRenderKind::Right
             | SidebarRenderKind::Left
+            | SidebarRenderKind::Top
+            | SidebarRenderKind::Bottom
             | SidebarRenderKind::WithTypeSelector
     );
-    if shows_resize && layout.resize_zone.width > 0.0 {
-        // The visual is handled by draw_sidebar_handle (already drawn in step 2).
-        // Resize zone only provides the interactive hit rect; no extra draw needed.
+    if shows_resize && state.resize_dragging {
+        let bl = layout.border_line;
+        if bl.width > 0.0 && bl.height > 0.0 {
+            let stripe_w = 2.0_f64;
+            ctx.set_fill_color(settings.theme.tab_accent());
+            if bl.width >= bl.height {
+                ctx.fill_rect(bl.x, bl.y - (stripe_w - bl.height) / 2.0, bl.width, stripe_w);
+            } else {
+                ctx.fill_rect(bl.x - (stripe_w - bl.width) / 2.0, bl.y, stripe_w, bl.height);
+            }
+        }
     }
 }
 
@@ -528,7 +561,7 @@ fn compute_layout(
         SidebarRenderKind::WithTypeSelector => style.tab_strip_height(),
         _ => 0.0,
     };
-    let scrollbar_w  = if view.show_scrollbar { style.scrollbar_width() } else { 0.0 };
+    let scrollbar_w  = if view.effective_show_scrollbar() { style.scrollbar_width() } else { 0.0 };
     let resize_w     = match kind {
         SidebarRenderKind::Embedded | SidebarRenderKind::Custom(_) => 0.0,
         _ => style.resize_zone_width(),
@@ -557,7 +590,9 @@ fn compute_layout(
         Rect::default()
     };
 
-    // Resize zone: centered on the relevant border edge
+    // Resize zone: centered on the relevant border edge.
+    // The handle sits OUTSIDE the sidebar frame (half its width straddles into
+    // the dock area) so dragging from the visible separator line works.
     let resize_zone = if resize_w > 0.0 {
         match kind {
             SidebarRenderKind::Left => {
@@ -569,8 +604,26 @@ fn compute_layout(
                     frame.height,
                 )
             }
+            SidebarRenderKind::Top => {
+                // Bottom edge of a top sidebar
+                Rect::new(
+                    frame.x,
+                    frame.y + frame.height - resize_w / 2.0,
+                    frame.width,
+                    resize_w,
+                )
+            }
+            SidebarRenderKind::Bottom => {
+                // Top edge of a bottom sidebar
+                Rect::new(
+                    frame.x,
+                    frame.y - resize_w / 2.0,
+                    frame.width,
+                    resize_w,
+                )
+            }
             _ => {
-                // Left edge of a right sidebar
+                // Left edge of a right sidebar (Right / WithTypeSelector / Custom)
                 Rect::new(
                     frame.x - resize_w / 2.0,
                     frame.y,
@@ -583,11 +636,17 @@ fn compute_layout(
         Rect::default()
     };
 
-    // Border line (1 px visual)
+    // Border line (1 px visual) on the inner edge that faces the dock area.
     let border_line = if border_w > 0.0 {
         match kind {
             SidebarRenderKind::Left => {
                 Rect::new(frame.x + frame.width - border_w, frame.y, border_w, frame.height)
+            }
+            SidebarRenderKind::Top => {
+                Rect::new(frame.x, frame.y + frame.height - border_w, frame.width, border_w)
+            }
+            SidebarRenderKind::Bottom => {
+                Rect::new(frame.x, frame.y, frame.width, border_w)
             }
             _ => {
                 Rect::new(frame.x, frame.y, border_w, frame.height)

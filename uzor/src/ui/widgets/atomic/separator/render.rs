@@ -211,6 +211,24 @@ pub fn draw_sidebar_handle(
     ctx.stroke();
 }
 
+/// Horizontal counterpart of [`draw_sidebar_handle`] — used by `Top` /
+/// `Bottom` sidebars whose resize border runs along the X axis.
+pub fn draw_sidebar_handle_horizontal(
+    ctx: &mut dyn RenderContext,
+    x: f64,
+    y: f64,
+    width: f64,
+    settings: &SeparatorSettings,
+) {
+    let theme = settings.theme.as_ref();
+    ctx.set_stroke_color(theme.sidebar_separator());
+    ctx.set_stroke_width(1.0);
+    ctx.begin_path();
+    ctx.move_to(x, y);
+    ctx.line_to(x + width, y);
+    ctx.stroke();
+}
+
 // =============================================================================
 // 6. draw_modal_section_divider — stroked 1 px modal divider
 // =============================================================================

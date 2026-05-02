@@ -50,8 +50,11 @@ pub fn solve_layout(
         for slot in &top_slots {
             let h = slot.thickness as f64;
             let r = Rect::new(remaining.x, remaining.y, remaining.width, h);
-            remaining.y += h;
-            remaining.height = (remaining.height - h).max(0.0);
+            // Overlay slots float on top of the dock area without shrinking it.
+            if matches!(slot.placement, super::edge_panels::EdgePlacement::Compress) {
+                remaining.y += h;
+                remaining.height = (remaining.height - h).max(0.0);
+            }
             slot_rects.push(r);
         }
         let combined_h: f64 = slot_rects.iter().map(|r| r.height).sum();
@@ -76,7 +79,9 @@ pub fn solve_layout(
                 remaining.width,
                 h,
             );
-            remaining.height = (remaining.height - h).max(0.0);
+            if matches!(slot.placement, super::edge_panels::EdgePlacement::Compress) {
+                remaining.height = (remaining.height - h).max(0.0);
+            }
             slot_rects.push(r);
         }
         let combined_h: f64 = slot_rects.iter().map(|r| r.height).sum();
@@ -96,8 +101,10 @@ pub fn solve_layout(
         for slot in &left_slots {
             let w = slot.thickness as f64;
             let r = Rect::new(remaining.x, remaining.y, w, remaining.height);
-            remaining.x += w;
-            remaining.width = (remaining.width - w).max(0.0);
+            if matches!(slot.placement, super::edge_panels::EdgePlacement::Compress) {
+                remaining.x += w;
+                remaining.width = (remaining.width - w).max(0.0);
+            }
             slot_rects.push(r);
         }
         let combined_w: f64 = slot_rects.iter().map(|r| r.width).sum();
@@ -122,7 +129,9 @@ pub fn solve_layout(
                 w,
                 remaining.height,
             );
-            remaining.width = (remaining.width - w).max(0.0);
+            if matches!(slot.placement, super::edge_panels::EdgePlacement::Compress) {
+                remaining.width = (remaining.width - w).max(0.0);
+            }
             slot_rects.push(r);
         }
         let combined_w: f64 = slot_rects.iter().map(|r| r.width).sum();

@@ -705,6 +705,21 @@ enum DragTarget {
     L2RangeMax(f64),
     L2Scroll(f64),
     L2Splitter(f64),
+    /// Sidebar resize drag.
+    /// - `which` — string key identifying which sidebar's state to update
+    ///   ("main" / "right" / "top" / "bottom").
+    /// - `axis` — 'h' (horizontal drag, width changes) or 'v' (vertical drag, height changes).
+    /// - `sign` — `+1.0` if dragging the inner edge in the positive axis grows the
+    ///   sidebar (Left+right-edge, Top+bottom-edge); `-1.0` for the mirrored case.
+    /// - `start_size` — sidebar width/height at drag start.
+    /// - `start_pos`  — cursor x or y at drag start.
+    SidebarResize {
+        which: &'static str,
+        axis: char,
+        sign: f64,
+        start_size: f64,
+        start_pos: f64,
+    },
     /// Modal header drag — stores cursor-relative-to-modal offset so modal moves smoothly.
     ModalDrag,
     /// Dock separator drag — stores separator index and start mouse position.
@@ -789,6 +804,13 @@ struct AppState {
     demo_sidebar_right:  bool,
     demo_sidebar_top:    bool,
     demo_sidebar_bottom: bool,
+    /// Persistent state for the spawned right-side sidebar composite.
+    demo_sidebar_right_state:  SidebarState,
+    demo_sidebar_top_state:    SidebarState,
+    demo_sidebar_bottom_state: SidebarState,
+    /// When true, demo edges use EdgePlacement::Overlay (float over dock area)
+    /// instead of the default Compress (shrink dock area).
+    demo_overlay_mode: bool,
     left_toolbar_visible: bool,
     modal_open: bool,
     modal_kind: ModalKind,
@@ -911,6 +933,7 @@ impl AppState {
                     "sb-spawn-right"  => self.demo_sidebar_right  = !self.demo_sidebar_right,
                     "sb-spawn-top"    => self.demo_sidebar_top    = !self.demo_sidebar_top,
                     "sb-spawn-bottom" => self.demo_sidebar_bottom = !self.demo_sidebar_bottom,
+                    "sb-overlay-mode" => self.demo_overlay_mode   = !self.demo_overlay_mode,
                     _ => {}
                 }
                 println!("[L3] sidebars: main={} right={} top={} bottom={}",
@@ -1184,6 +1207,7 @@ impl AppState {
             thickness: top_h as f32,
             visible: true,
             order: 0,
+            ..Default::default()
         });
 
         // Left vertical toolbar (toggled via View → Show Toolbar) —
@@ -1203,6 +1227,7 @@ impl AppState {
             thickness: left_w as f32,
             visible: self.left_toolbar_visible,
             order: 0,
+            ..Default::default()
         });
 
         // Sidebar (slide-out, toggled): always registered, visible toggled.
@@ -1212,19 +1237,35 @@ impl AppState {
             1 => EdgeSide::Right,           // Right
             _ => EdgeSide::Left,            // Left, WithTypeSelector, Embedded → left
         };
-        let (sidebar_w, _chrome_h) = measure_sidebar(
+        let (default_sidebar_w, _chrome_h) = measure_sidebar(
             &SidebarSettings::default(),
             &kind_value,
         );
+        // Sidebar width follows user resize (sidebar_state.width). Initialised
+        // from measure_sidebar()'s default; the resize-handle drag updates
+        // sidebar_state.width which then flows back into the edge slot.
+        let sidebar_w = if self.sidebar_state.width > 0.0 {
+            self.sidebar_state.width
+        } else {
+            default_sidebar_w
+        };
         self.layout.edges_mut().add(EdgeSlot {
             id: "sidebar".to_string(),
             side: edge_side,
             thickness: sidebar_w as f32,
             visible: self.sidebar_open,
             order: 1,
+            ..Default::default()
         });
 
         // ── Demo toolbars / sidebars (toggleable from dropdowns) ──────────────
+        // Placement follows the Sidebar dropdown's "Overlay mode" toggle:
+        // Compress → shrink dock area; Overlay → float on top of dock.
+        let demo_placement = if self.demo_overlay_mode {
+            uzor::layout::EdgePlacement::Overlay
+        } else {
+            uzor::layout::EdgePlacement::Compress
+        };
         if self.demo_toolbar_left2 {
             self.layout.edges_mut().add(EdgeSlot {
                 id: "demo-toolbar-left2".into(),
@@ -1232,6 +1273,7 @@ impl AppState {
                 thickness: left_w as f32,
                 visible: true,
                 order: 2,
+                placement: demo_placement,
             });
         }
         if self.demo_toolbar_right {
@@ -1241,6 +1283,7 @@ impl AppState {
                 thickness: left_w as f32,
                 visible: true,
                 order: 0,
+                placement: demo_placement,
             });
         }
         if self.demo_toolbar_bottom {
@@ -1250,33 +1293,46 @@ impl AppState {
                 thickness: top_h as f32,
                 visible: true,
                 order: 0,
+                placement: demo_placement,
             });
         }
+        // EdgeSlot.thickness pulls from state.width — composite initialises it
+        // via SidebarState::ensure_sized() on first register from viewport %.
+        // Until that first register fires we seed it here too so the slot
+        // reserves the right space on the very first frame.
+        let viewport_w = width as f64;
+        let viewport_h = height as f64;
+        self.demo_sidebar_right_state.ensure_sized(viewport_w, viewport_h, true);
+        self.demo_sidebar_top_state.ensure_sized(viewport_w, viewport_h, false);
+        self.demo_sidebar_bottom_state.ensure_sized(viewport_w, viewport_h, false);
         if self.demo_sidebar_right {
             self.layout.edges_mut().add(EdgeSlot {
                 id: "demo-sidebar-right".into(),
                 side: EdgeSide::Right,
-                thickness: sidebar_w as f32,
+                thickness: self.demo_sidebar_right_state.width as f32,
                 visible: true,
                 order: 1,
+                placement: demo_placement,
             });
         }
         if self.demo_sidebar_top {
             self.layout.edges_mut().add(EdgeSlot {
                 id: "demo-sidebar-top".into(),
                 side: EdgeSide::Top,
-                thickness: 120.0,
+                thickness: self.demo_sidebar_top_state.width as f32,
                 visible: true,
                 order: 1,
+                placement: demo_placement,
             });
         }
         if self.demo_sidebar_bottom {
             self.layout.edges_mut().add(EdgeSlot {
                 id: "demo-sidebar-bottom".into(),
                 side: EdgeSide::Bottom,
-                thickness: 120.0,
+                thickness: self.demo_sidebar_bottom_state.width as f32,
                 visible: true,
                 order: 1,
+                placement: demo_placement,
             });
         }
 
@@ -1455,33 +1511,122 @@ impl AppState {
             );
         }
 
-        // ── Demo edge slots (filled with a labelled stub) ─────────────────────
-        // Spawned via Toolbar / Sidebar dropdowns; rendered as plain rectangles
-        // with a centred label so it's obvious they appeared.
-        let demo_slots: &[(&str, &str, bool)] = &[
-            ("demo-toolbar-left2",  "Left2 toolbar",  self.demo_toolbar_left2),
-            ("demo-toolbar-right",  "Right toolbar",  self.demo_toolbar_right),
-            ("demo-toolbar-bottom", "Bottom toolbar", self.demo_toolbar_bottom),
-            ("demo-sidebar-right",  "Right sidebar",  self.demo_sidebar_right),
-            ("demo-sidebar-top",    "Top sidebar",    self.demo_sidebar_top),
-            ("demo-sidebar-bottom", "Bottom sidebar", self.demo_sidebar_bottom),
+        // ── Spawned demo toolbars — REAL toolbar composite instances ─────────
+        // Toolbar composite supports every side (Horizontal for Top/Bottom,
+        // Vertical for Left/Right). Each spawned instance is registered the
+        // same way as the main top toolbar.
+        let demo_tb_specs: [(&str, bool, ToolbarRenderKind); 3] = [
+            ("demo-toolbar-left2",  self.demo_toolbar_left2,  ToolbarRenderKind::Vertical),
+            ("demo-toolbar-right",  self.demo_toolbar_right,  ToolbarRenderKind::Vertical),
+            ("demo-toolbar-bottom", self.demo_toolbar_bottom, ToolbarRenderKind::Horizontal),
         ];
-        for (slot_id, label, visible) in demo_slots {
+        for (slot_id, visible, kind) in demo_tb_specs {
             if !visible { continue; }
-            if let Some(rect) = self.layout.rect_for_edge_slot(slot_id) {
-                render.set_fill_color("#252a36");
-                render.fill_rect(rect.x, rect.y, rect.width, rect.height);
-                render.set_fill_color("#3a4458");
-                render.fill_rect(rect.x, rect.y, rect.width, 1.0);
-                render.fill_rect(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0);
-                render.fill_rect(rect.x, rect.y, 1.0, rect.height);
-                render.fill_rect(rect.x + rect.width - 1.0, rect.y, 1.0, rect.height);
-                render.set_fill_color("#a0a8b8");
-                render.set_font("12px sans-serif");
-                render.set_text_align(TextAlign::Center);
-                render.set_text_baseline(TextBaseline::Middle);
-                render.fill_text(label, rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
-            }
+            let kind = &kind;
+            // Empty toolbar — composite still draws frame + border per its theme.
+            let view = ToolbarView {
+                start: ToolbarSection::empty(),
+                center: ToolbarSection::empty(),
+                end: ToolbarSection::empty(),
+                chrome: None,
+            };
+            let style: Box<dyn uzor::ui::widgets::composite::toolbar::style::ToolbarStyle> =
+                if matches!(kind, ToolbarRenderKind::Vertical) {
+                    Box::new(VertToolbarWithBorder)
+                } else {
+                    Box::new(HorizToolbarWithBorder)
+                };
+            let widget_id = format!("{slot_id}-widget");
+            // Per-frame state — these toolbars are stateless demos, fresh state
+            // each frame is fine.
+            let mut tb_state = ToolbarState::default();
+            register_layout_manager_toolbar(
+                &mut self.layout,
+                &mut render,
+                LayoutNodeId::ROOT,
+                slot_id,
+                widget_id,
+                &mut tb_state,
+                &view,
+                &ToolbarSettings::new(
+                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+                    style,
+                ),
+                kind,
+            );
+        }
+
+        // ── Spawned demo sidebars — REAL sidebar composite instances ─────────
+        // Sidebar composite currently supports Left / Right (Top / Bottom are
+        // not in SidebarRenderKind yet — they'd need a composite-level addition).
+        // For Top / Bottom we register an empty edge slot and fall back to a
+        // Horizontal toolbar frame so the strip is at least visibly present.
+        if self.demo_sidebar_right {
+            let actions: &[HeaderAction<'_>] = &[];
+            let mut view = SidebarView {
+                header: SidebarHeader { icon: None, title: "Right sidebar", actions },
+                tabs: &[],
+                active_tab: None,
+                show_scrollbar: false,
+                overflow: uzor::types::OverflowMode::Clip,
+                content_height: 200.0,
+            };
+            let _ = register_layout_manager_sidebar(
+                &mut self.layout,
+                &mut render,
+                LayoutNodeId::ROOT,
+                "demo-sidebar-right",
+                "demo-sidebar-right-widget",
+                &mut self.demo_sidebar_right_state,
+                &mut view,
+                &SidebarSettings::default(),
+                &SidebarRenderKind::Right,
+            );
+        }
+        // Top / Bottom sidebars now first-class composite kinds.
+        if self.demo_sidebar_top {
+            let actions: &[HeaderAction<'_>] = &[];
+            let mut view = SidebarView {
+                header: SidebarHeader { icon: None, title: "Top sidebar", actions },
+                tabs: &[],
+                active_tab: None,
+                show_scrollbar: false,
+                overflow: uzor::types::OverflowMode::Clip,
+                content_height: 200.0,
+            };
+            let _ = register_layout_manager_sidebar(
+                &mut self.layout,
+                &mut render,
+                LayoutNodeId::ROOT,
+                "demo-sidebar-top",
+                "demo-sidebar-top-widget",
+                &mut self.demo_sidebar_top_state,
+                &mut view,
+                &SidebarSettings::default(),
+                &SidebarRenderKind::Top,
+            );
+        }
+        if self.demo_sidebar_bottom {
+            let actions: &[HeaderAction<'_>] = &[];
+            let mut view = SidebarView {
+                header: SidebarHeader { icon: None, title: "Bottom sidebar", actions },
+                tabs: &[],
+                active_tab: None,
+                show_scrollbar: false,
+                overflow: uzor::types::OverflowMode::Clip,
+                content_height: 200.0,
+            };
+            let _ = register_layout_manager_sidebar(
+                &mut self.layout,
+                &mut render,
+                LayoutNodeId::ROOT,
+                "demo-sidebar-bottom",
+                "demo-sidebar-bottom-widget",
+                &mut self.demo_sidebar_bottom_state,
+                &mut view,
+                &SidebarSettings::default(),
+                &SidebarRenderKind::Bottom,
+            );
         }
 
         // ── Sidebar ───────────────────────────────────────────────────────────
@@ -1489,12 +1634,18 @@ impl AppState {
         if self.sidebar_open {
             let sidebar_actions: &[HeaderAction<'_>] = &[];
             let sidebar_header = SidebarHeader { icon: None, title: "Dock Panels", actions: sidebar_actions };
+            // Estimated body height — header + spawn UI + per-leaf rows.
+            // When a Top/Bottom sidebar shrinks the available body the
+            // composite shows a scrollbar instead of clipping content.
+            let est_panels = self.layout.panels().tree().leaves().len() as f64;
+            let est_content_h = 480.0 + est_panels * 30.0;
             let mut sidebar_view = SidebarView {
                 header: sidebar_header,
                 tabs: &[],
                 active_tab: None,
                 show_scrollbar: false,
-                content_height: 200.0,
+                overflow: uzor::types::OverflowMode::Scrollbar,
+                content_height: est_content_h,
             };
             let sidebar_kind_value = sidebar_kind_from_index(self.sidebar_kind);
             let _sidebar_node = register_layout_manager_sidebar(
@@ -1517,8 +1668,18 @@ impl AppState {
                 use uzor::input::core::sense::Sense;
                 use uzor::input::core::widget_kind::WidgetKind;
 
+                // Clip everything we draw in here to the sidebar frame so it
+                // can't bleed into neighbouring panels when the user shrinks
+                // the sidebar past the natural width of this content.
+                render.save();
+                render.clip_rect(body_rect.x, body_rect.y, body_rect.width, body_rect.height);
+
+                // Apply current scroll offset so the body shifts up when the
+                // user mousewheels / drags the scrollbar thumb.
+                let scroll_off = self.sidebar_state.scroll_per_panel.get("default").map(|s| s.offset).unwrap_or(0.0);
+
                 const SIDEBAR_HEADER_H: f64 = 40.0;
-                let mut y = body_rect.y + SIDEBAR_HEADER_H + 8.0;
+                let mut y = body_rect.y + SIDEBAR_HEADER_H + 8.0 - scroll_off;
                 let bx = body_rect.x + 8.0;
                 let bw = body_rect.width - 16.0;
 
@@ -1659,6 +1820,7 @@ impl AppState {
 
                 // (keep y alive so borrow checker doesn't warn on unused assignment)
                 let _ = y;
+                render.restore();
             }
         }
 
@@ -2442,6 +2604,8 @@ impl AppState {
             DropdownItem::Item { id: "sb-spawn-right",   label: "Right sidebar",  icon: None, right: DropdownItemRight::Toggle(self.demo_sidebar_right), disabled: false, danger: false, accent_color: None },
             DropdownItem::Item { id: "sb-spawn-top",     label: "Top sidebar",    icon: None, right: DropdownItemRight::Toggle(self.demo_sidebar_top),   disabled: false, danger: false, accent_color: None },
             DropdownItem::Item { id: "sb-spawn-bottom",  label: "Bottom sidebar", icon: None, right: DropdownItemRight::Toggle(self.demo_sidebar_bottom),disabled: false, danger: false, accent_color: None },
+            DropdownItem::Separator,
+            DropdownItem::Item { id: "sb-overlay-mode",  label: "Overlay mode",   icon: None, right: DropdownItemRight::Toggle(self.demo_overlay_mode),  disabled: false, danger: false, accent_color: None },
         ];
         if self.dropdown_sidebar_state.open {
             let hovered_id = self.dropdown_sidebar_state.hovered_id.clone();
@@ -3398,6 +3562,56 @@ impl AppState {
             }
         }
 
+        // Sidebar resize handle — composite registers each as
+        // "{widget_id}:resize" with Sense::DRAG. Probe every spawned sidebar
+        // and start a drag if its handle rect contains the cursor.
+        if !self.modal_open {
+            let probes: [(&'static str, &'static str, char, f64, f64); 4] = [
+                // (key,    widget_id,                       axis, sign, current_size)
+                ("main",   "sidebar-widget:resize",                'h',  1.0, self.sidebar_state.width),
+                ("right",  "demo-sidebar-right-widget:resize",     'h', -1.0, self.demo_sidebar_right_state.width),
+                ("top",    "demo-sidebar-top-widget:resize",       'v',  1.0, self.demo_sidebar_top_state.width),
+                ("bottom", "demo-sidebar-bottom-widget:resize",    'v', -1.0, self.demo_sidebar_bottom_state.width),
+            ];
+            for (key, wid, axis, sign, cur) in probes {
+                let zone = self.layout.ctx().input.widget_rect(&WidgetId::new(wid));
+                if let Some(zone) = zone {
+                    if zone.contains(x, y) {
+                        let start_pos = if axis == 'h' { x } else { y };
+                        // Top/Bottom sidebars use SidebarState.width as the
+                        // height (single dimension stored in the same field).
+                        // For Top/Bottom we initialise it from the slot's
+                        // current rect if width == 0.
+                        let start_size = if cur > 0.0 {
+                            cur
+                        } else {
+                            // Best-effort default — measure_sidebar's default_width.
+                            uzor::ui::widgets::composite::sidebar::render::measure(
+                                &SidebarSettings::default(),
+                                &SidebarRenderKind::Left,
+                            ).0
+                        };
+                        // Mark the relevant sidebar as actively resizing so
+                        // the composite paints the accent stripe on its border.
+                        let st: Option<&mut SidebarState> = match key {
+                            "main"   => Some(&mut self.sidebar_state),
+                            "right"  => Some(&mut self.demo_sidebar_right_state),
+                            "top"    => Some(&mut self.demo_sidebar_top_state),
+                            "bottom" => Some(&mut self.demo_sidebar_bottom_state),
+                            _ => None,
+                        };
+                        if let Some(s) = st {
+                            s.resize_dragging = true;
+                        }
+                        self.drag_target = Some(DragTarget::SidebarResize {
+                            which: key, axis, sign, start_size, start_pos,
+                        });
+                        return;
+                    }
+                }
+            }
+        }
+
         // Fix 2: track L1 button pressed state
         if self.modal_open && self.modal_kind == ModalKind::L1 {
             let hovered_id = self.layout.ctx_mut().input.hovered_widget().map(|id| id.0.clone());
@@ -3588,6 +3802,25 @@ impl AppState {
                 DragTarget::L2Splitter(w0) => {
                     self.l2_right_panel_w = (w0 - dx).clamp(200.0, L2_WIN_W - 100.0);
                 }
+                DragTarget::SidebarResize { which, axis, sign, start_size, start_pos } => {
+                    let cur_pos = if *axis == 'h' { x } else { y };
+                    let delta = (cur_pos - *start_pos) * *sign;
+                    let new_size = (*start_size + delta).max(0.0);
+                    use uzor::ui::widgets::composite::sidebar::input::handle_sidebar_resize_clamped;
+                    // Per-edge bounds — horizontal sidebars use the standard
+                    // sidebar-width range; vertical (Top/Bottom) need their
+                    // own (lower) min and a viewport-relative max.
+                    let mb = match *which {
+                        "main"   => Some((&mut self.sidebar_state,             280.0_f64, 4000.0_f64)),
+                        "right"  => Some((&mut self.demo_sidebar_right_state,  280.0,     4000.0)),
+                        "top"    => Some((&mut self.demo_sidebar_top_state,     60.0,     4000.0)),
+                        "bottom" => Some((&mut self.demo_sidebar_bottom_state,  60.0,     4000.0)),
+                        _ => None,
+                    };
+                    if let Some((state, min, max)) = mb {
+                        handle_sidebar_resize_clamped(state, new_size, min, max);
+                    }
+                }
             }
         }
     }
@@ -3597,6 +3830,11 @@ impl AppState {
         self.drag_origin = None;
         // Fix 3: end modal drag
         self.modal_state.end_drag();
+        // Clear sidebar resize-drag flags so composites stop highlighting their handles.
+        self.sidebar_state.resize_dragging              = false;
+        self.demo_sidebar_right_state.resize_dragging   = false;
+        self.demo_sidebar_top_state.resize_dragging     = false;
+        self.demo_sidebar_bottom_state.resize_dragging  = false;
         self.drag_target = None;
         self.l2_range_drag_handle = None;
         self.l2_pressed = None;
@@ -3729,6 +3967,10 @@ impl ApplicationHandler for Handler {
             demo_sidebar_right: false,
             demo_sidebar_top: false,
             demo_sidebar_bottom: false,
+            demo_sidebar_right_state:  SidebarState::default(),
+            demo_sidebar_top_state:    SidebarState::default(),
+            demo_sidebar_bottom_state: SidebarState::default(),
+            demo_overlay_mode: false,
             left_toolbar_visible: true,
             modal_open: false,
             modal_kind: ModalKind::L2,
@@ -3874,6 +4116,23 @@ impl ApplicationHandler for Handler {
         if let Some((x, y)) = out.cursor_moved {
             app.on_mouse_move(x, y);
             app.window.request_redraw();
+        }
+
+        // Main sidebar mousewheel scroll — forward to its scroll_per_panel state.
+        if let Some(((cx, cy), (_, dy))) = out.wheel {
+            if !app.modal_open && app.sidebar_open {
+                if let Some(sidebar_rect) = app.layout.rect_for_edge_slot("sidebar") {
+                    if sidebar_rect.contains(cx, cy) {
+                        let est_panels = app.layout.panels().tree().leaves().len() as f64;
+                        let viewport_h = sidebar_rect.height - 40.0; // minus header
+                        let content_h = 480.0 + est_panels * 30.0;
+                        let max = (content_h - viewport_h).max(0.0);
+                        let scroll = app.sidebar_state.get_or_insert_scroll("default");
+                        scroll.offset = (scroll.offset - dy * 30.0).clamp(0.0, max);
+                        app.window.request_redraw();
+                    }
+                }
+            }
         }
 
         // Watchlist blackbox scroll

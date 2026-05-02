@@ -14,7 +14,15 @@ use crate::types::ScrollState;
 /// Default sidebar width in pixels (matches mlc `RIGHT_SIDEBAR_WIDTH`).
 pub const DEFAULT_SIDEBAR_WIDTH: f64 = 340.0;
 /// Minimum allowed sidebar width in pixels (matches mlc `MIN_SIDEBAR_WIDTH`).
+///
+/// Used only as a hard floor for `Left` / `Right` sidebars. `Top` / `Bottom`
+/// kinds use [`MIN_SIDEBAR_HEIGHT`] instead.
 pub const MIN_SIDEBAR_WIDTH: f64 = 280.0;
+/// Minimum allowed sidebar height in pixels (for `Top` / `Bottom` kinds).
+pub const MIN_SIDEBAR_HEIGHT: f64 = 60.0;
+/// Default opening size as a fraction of the viewport's relevant axis.
+/// Left/Right → fraction of viewport width; Top/Bottom → fraction of viewport height.
+pub const DEFAULT_SIDEBAR_VIEWPORT_FRAC: f64 = 0.20;
 /// Maximum allowed sidebar width in pixels (matches mlc `MAX_SIDEBAR_WIDTH`).
 pub const MAX_SIDEBAR_WIDTH: f64 = 4000.0;
 
@@ -68,18 +76,46 @@ impl Default for SidebarState {
     fn default() -> Self {
         Self {
             is_collapsed: false,
-            width: DEFAULT_SIDEBAR_WIDTH,
+            // Sentinel — `0.0` means "not yet sized". The composite (or
+            // [`SidebarState::ensure_sized`]) fills this in from the current
+            // viewport on first render so the sidebar opens at a sensible
+            // fraction (default: 20%) instead of a hardcoded pixel value.
+            width: 0.0,
             active_tab: None,
             scroll_per_panel: HashMap::new(),
             resize_dragging: false,
             resize_drag_start_x: 0.0,
-            resize_drag_start_width: DEFAULT_SIDEBAR_WIDTH,
+            resize_drag_start_width: 0.0,
             header_action_hovered: None,
         }
     }
 }
 
 impl SidebarState {
+    // -------------------------------------------------------------------------
+    // Default sizing
+    // -------------------------------------------------------------------------
+
+    /// First-render initialiser: if `self.width` hasn't been set yet (sentinel
+    /// `0.0` from `Default::default`), fill it from the viewport at
+    /// `DEFAULT_SIDEBAR_VIEWPORT_FRAC` of the relevant axis.
+    ///
+    /// `is_horizontal_kind` — `true` for `Left` / `Right` / `WithTypeSelector`
+    /// (size = fraction of viewport WIDTH), `false` for `Top` / `Bottom`
+    /// (size = fraction of viewport HEIGHT).
+    ///
+    /// Composite `register_layout_manager_sidebar` calls this automatically.
+    /// Once set, future calls are no-ops — the user's resize stays sticky.
+    pub fn ensure_sized(&mut self, viewport_w: f64, viewport_h: f64, is_horizontal_kind: bool) {
+        if self.width > 0.0 {
+            return;
+        }
+        let axis = if is_horizontal_kind { viewport_w } else { viewport_h };
+        let min  = if is_horizontal_kind { MIN_SIDEBAR_WIDTH } else { MIN_SIDEBAR_HEIGHT };
+        self.width = (axis * DEFAULT_SIDEBAR_VIEWPORT_FRAC).max(min);
+        self.resize_drag_start_width = self.width;
+    }
+
     // -------------------------------------------------------------------------
     // Scroll helpers
     // -------------------------------------------------------------------------

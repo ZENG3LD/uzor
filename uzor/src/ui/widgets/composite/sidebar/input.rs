@@ -35,6 +35,15 @@ pub fn register_layout_manager_sidebar<P: DockPanel>(
     let id: WidgetId = id.into();
     let rect = layout.rect_for_edge_slot(slot_id)?;
     let layer = layout.compute_layer_for(parent);
+
+    // Initialise size from viewport % on first registration. Top/Bottom use
+    // viewport height, Left/Right/WithTypeSelector use viewport width. Once
+    // sized, subsequent calls are no-ops so user resize stays sticky.
+    if let Some(win) = layout.last_window() {
+        let is_horizontal_kind = !matches!(kind, super::types::SidebarRenderKind::Top | super::types::SidebarRenderKind::Bottom);
+        state.ensure_sized(win.width, win.height, is_horizontal_kind);
+    }
+
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Sidebar, rect, sense: Sense::CLICK });
     register_context_manager_sidebar(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
@@ -46,12 +55,22 @@ pub fn register_layout_manager_sidebar<P: DockPanel>(
 // Resize
 // ---------------------------------------------------------------------------
 
-/// Clamp a new width and apply it to `state`.
+/// Clamp a new size and apply it to `state.width` using the global pixel
+/// limits `[MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH]`.
 ///
-/// Used by callers that compute the desired width from drag deltas outside the
-/// composite (e.g. chart-app dragging the resize zone).
+/// Use this when the sidebar lives on a vertical edge (Left/Right) — the
+/// default min/max are sized for typical sidebar widths.
 pub fn handle_sidebar_resize(state: &mut SidebarState, new_width: f64) {
     state.width = new_width.clamp(MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+}
+
+/// Like [`handle_sidebar_resize`] but with explicit min/max bounds.
+///
+/// Top / Bottom sidebars want different limits than Left / Right because the
+/// dimension being resized is height, not width. Caller passes whatever range
+/// is appropriate (e.g. 60..viewport_height/2).
+pub fn handle_sidebar_resize_clamped(state: &mut SidebarState, new_size: f64, min: f64, max: f64) {
+    state.width = new_size.clamp(min, max);
 }
 
 // ---------------------------------------------------------------------------
