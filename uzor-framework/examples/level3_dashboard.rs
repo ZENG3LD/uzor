@@ -772,7 +772,7 @@ fn sidebar_kind_from_index(idx: u8) -> SidebarRenderKind {
     }
 }
 
-fn sidebar_kind_label(idx: u8) -> &'static str {
+fn _sidebar_kind_label(idx: u8) -> &'static str {
     match idx {
         1 => "Right",
         2 => "WithTypeSelector",
@@ -839,7 +839,7 @@ struct AppState {
     popup_kind: Option<u8>,
     /// Toolbar render variant index (0=Horizontal, 1=Vertical, 2=ChromeStrip, 3=Inline).
     /// Affects only the demo toolbar — main top toolbar stays Horizontal.
-    toolbar_kind: u8,
+    _toolbar_kind: u8,
     /// Toggle visibility for demo toolbars (extra to the main top one).
     /// Sidebar dropdown items toggle these bits — clicking spawns/hides.
     demo_toolbar_left2:  bool,
@@ -1970,38 +1970,19 @@ impl AppState {
                         input::register_layout_manager_blackbox_panel,
                         settings::BlackboxPanelSettings,
                         state::BlackboxState,
-                        types::{BlackboxEvent, BlackboxEventResult, BlackboxRenderKind, BlackboxView},
+                        types::{BlackboxHandler, BlackboxRenderKind, BlackboxView},
                     };
-                    let watchlist = RefCell::new(std::mem::take(&mut self.watchlist));
-                    let panel_size = (rect.width, rect.height);
+                    let mut taken = std::mem::take(&mut self.watchlist);
+                    taken.set_panel_size((rect.width, rect.height));
+                    let watchlist = RefCell::new(taken);
                     let mut bb_state = BlackboxState::default();
                     let mut view = BlackboxView {
                         title: None,
                         body: Box::new(|ctx, body_rect| {
-                            watchlist_blackbox::render(&watchlist.borrow(), ctx, body_rect);
+                            BlackboxHandler::render(&*watchlist.borrow(), ctx, body_rect);
                         }),
-                        handle_event: Box::new(|evt: BlackboxEvent| {
-                            match evt {
-                                BlackboxEvent::PointerMove { local_x, local_y } => {
-                                    watchlist_blackbox::on_pointer_move(
-                                        &mut watchlist.borrow_mut(), panel_size, local_x, local_y);
-                                    BlackboxEventResult::Redraw
-                                }
-                                BlackboxEvent::PointerDown { local_x, local_y, .. } => {
-                                    watchlist_blackbox::on_pointer_down(
-                                        &mut watchlist.borrow_mut(), panel_size, local_x, local_y);
-                                    BlackboxEventResult::Consumed
-                                }
-                                BlackboxEvent::PointerUp { .. } => {
-                                    watchlist_blackbox::on_pointer_up(&mut watchlist.borrow_mut());
-                                    BlackboxEventResult::Consumed
-                                }
-                                BlackboxEvent::Wheel { delta_y, .. } => {
-                                    watchlist_blackbox::on_wheel(&mut watchlist.borrow_mut(), delta_y);
-                                    BlackboxEventResult::Consumed
-                                }
-                                _ => BlackboxEventResult::NotConsumed,
-                            }
+                        handle_event: Box::new(|evt| {
+                            BlackboxHandler::handle_event(&mut *watchlist.borrow_mut(), evt)
                         }),
                         sense: Sense::CLICK | Sense::HOVER | Sense::DRAG | Sense::SCROLL,
                     };
@@ -4303,7 +4284,7 @@ impl ApplicationHandler for Handler {
             sidebar_kind: 0, // Left
             theme_idx: 0,    // Dark
             popup_kind: None,
-            toolbar_kind: 0, // Horizontal
+            _toolbar_kind: 0, // Horizontal
             demo_toolbar_left2: false,
             demo_toolbar_right: false,
             demo_toolbar_bottom: false,
@@ -4438,6 +4419,46 @@ impl ApplicationHandler for Handler {
 
         // Left mouse down
         if let Some(((x, y), drag_id)) = out.left_down {
+            // Blackbox sync dispatch — same overlay-aware pattern as wheel.
+            // If the cursor is on a top-most BlackboxPanel, route the
+            // PointerDown directly to the handler trait and skip the
+            // rest of the down-pipeline.
+            let blackbox_consumed = {
+                use uzor::ui::widgets::composite::blackbox_panel::input::dispatch_to_handler;
+                use uzor::ui::widgets::composite::blackbox_panel::types::BlackboxEvent;
+                use uzor::input::WidgetKind as WK;
+                let coord = &app.layout.ctx_mut().input;
+                let top = coord.hovered_widget().cloned();
+                let mut consumed = false;
+                if let Some(top_id) = top {
+                    if coord.widget_kind(&top_id) == Some(WK::BlackboxPanel) {
+                        let watchlist_rect = app.layout.panels().panel_rects().iter()
+                            .find(|(&id, _)| {
+                                app.layout.panels().tree().leaf(id)
+                                    .and_then(|l| l.panels.first())
+                                    .map(|p| p.kind == PanelKind::Watchlist)
+                                    .unwrap_or(false)
+                                    && format!("dock-leaf-{}", id.0) == top_id.0
+                            })
+                            .map(|(_, &r)| Rect::new(r.x as f64, r.y as f64, r.width as f64, r.height as f64));
+                        if let Some(rect) = watchlist_rect {
+                            let _ = dispatch_to_handler(
+                                &mut app.watchlist, rect, x, y,
+                                BlackboxEvent::PointerDown {
+                                    local_x: 0.0, local_y: 0.0,
+                                    button: uzor::input::MouseButton::Left,
+                                },
+                            );
+                            app.window.request_redraw();
+                            consumed = true;
+                        }
+                    }
+                }
+                consumed
+            };
+            if blackbox_consumed {
+                // skip the rest of the down pipeline
+            } else {
             // If the bridge resolved a DRAG-sense widget under the cursor,
             // dispatch through LayoutManager so registered drag patterns
             // (scrollbar thumb, resize handle, etc.) fire semantic events.
@@ -4580,10 +4601,56 @@ impl ApplicationHandler for Handler {
                 app.on_mouse_down(x, y);
             }
             app.window.request_redraw();
+            } // close blackbox_consumed-else
         }
 
         // Left mouse up
         if let Some(((x, y), clicked_id)) = out.left_up {
+            // Blackbox PointerUp sync dispatch (mirror of left_down).
+            let blackbox_consumed = {
+                use uzor::ui::widgets::composite::blackbox_panel::input::dispatch_to_handler;
+                use uzor::ui::widgets::composite::blackbox_panel::types::BlackboxEvent;
+                use uzor::input::WidgetKind as WK;
+                let coord = &app.layout.ctx_mut().input;
+                let top = coord.hovered_widget().cloned();
+                let mut consumed = false;
+                if let Some(top_id) = top {
+                    if coord.widget_kind(&top_id) == Some(WK::BlackboxPanel) {
+                        let watchlist_rect = app.layout.panels().panel_rects().iter()
+                            .find(|(&id, _)| {
+                                app.layout.panels().tree().leaf(id)
+                                    .and_then(|l| l.panels.first())
+                                    .map(|p| p.kind == PanelKind::Watchlist)
+                                    .unwrap_or(false)
+                                    && format!("dock-leaf-{}", id.0) == top_id.0
+                            })
+                            .map(|(_, &r)| Rect::new(r.x as f64, r.y as f64, r.width as f64, r.height as f64));
+                        if let Some(rect) = watchlist_rect {
+                            let _ = dispatch_to_handler(
+                                &mut app.watchlist, rect, x, y,
+                                BlackboxEvent::PointerUp {
+                                    local_x: 0.0, local_y: 0.0,
+                                    button: uzor::input::MouseButton::Left,
+                                },
+                            );
+                            app.window.request_redraw();
+                            consumed = true;
+                        }
+                    }
+                }
+                // Always end any drag separator on mouse-up regardless of cursor pos
+                // (user may release outside panel after a drag started inside).
+                if app.watchlist.drag_sep.is_some() {
+                    use uzor::ui::widgets::composite::blackbox_panel::types::BlackboxHandler;
+                    let _ = app.watchlist.handle_event(BlackboxEvent::PointerUp {
+                        local_x: 0.0, local_y: 0.0, button: uzor::input::MouseButton::Left,
+                    });
+                    app.window.request_redraw();
+                    consumed = true;
+                }
+                consumed
+            };
+            let _ = blackbox_consumed;
             app.on_mouse_up();
             app.on_left_up(x, y, clicked_id, event_loop);
             app.window.request_redraw();
@@ -4618,20 +4685,34 @@ impl ApplicationHandler for Handler {
             }
         }
 
-        // Watchlist blackbox scroll
+        // Watchlist blackbox scroll — sync dispatch via BlackboxHandler trait.
+        // Coord-side hit test (hovered_widget + WidgetKind::BlackboxPanel) ensures
+        // overlay-aware routing: a modal/dropdown above the panel shadows it and
+        // the hovered_widget will not be the watchlist leaf, so the block is skipped.
         if let Some(((cx, cy), (_, dy))) = out.wheel {
-            if !app.modal_open {
-                let watchlist_rect = app.layout.panels().panel_rects().iter()
-                    .find(|(&id, _)| {
-                        app.layout.panels().tree().leaf(id)
-                            .and_then(|l| l.panels.first())
-                            .map(|p| p.kind == PanelKind::Watchlist)
-                            .unwrap_or(false)
-                    })
-                    .map(|(_, &r)| Rect::new(r.x as f64, r.y as f64, r.width as f64, r.height as f64));
-                if let Some(r) = watchlist_rect {
-                    if r.contains(cx, cy) {
-                        watchlist_blackbox::on_wheel(&mut app.watchlist, dy);
+            use uzor::ui::widgets::composite::blackbox_panel::input::dispatch_to_handler;
+            use uzor::ui::widgets::composite::blackbox_panel::types::BlackboxEvent;
+            use uzor::input::WidgetKind;
+            let hovered = app.layout.ctx_mut().input.hovered_widget().cloned();
+            let hovered_is_blackbox = hovered.as_ref().map(|id| {
+                app.layout.ctx_mut().input.widget_kind(id) == Some(WidgetKind::BlackboxPanel)
+            }).unwrap_or(false);
+            if hovered_is_blackbox {
+                if let Some(hovered_id) = hovered {
+                    let watchlist_rect = app.layout.panels().panel_rects().iter()
+                        .find(|(&id, _)| {
+                            app.layout.panels().tree().leaf(id)
+                                .and_then(|l| l.panels.first())
+                                .map(|p| p.kind == PanelKind::Watchlist)
+                                .unwrap_or(false)
+                                && format!("dock-leaf-{}", id.0) == hovered_id.0
+                        })
+                        .map(|(_, &r)| Rect::new(r.x as f64, r.y as f64, r.width as f64, r.height as f64));
+                    if let Some(rect) = watchlist_rect {
+                        let _ = dispatch_to_handler(
+                            &mut app.watchlist, rect, cx, cy,
+                            BlackboxEvent::Wheel { delta_x: 0.0, delta_y: dy },
+                        );
                         app.window.request_redraw();
                     }
                 }
@@ -4727,6 +4808,9 @@ fn ensure_debug_console() {}
 mod watchlist_blackbox {
     use uzor::render::{RenderContext, TextAlign, TextBaseline};
     use uzor::types::Rect;
+    use uzor::ui::widgets::composite::blackbox_panel::types::{
+        BlackboxEvent, BlackboxEventResult, BlackboxHandler,
+    };
 
     pub struct WatchlistState {
         pub col_widths:  [f64; 4],
@@ -4735,6 +4819,8 @@ mod watchlist_blackbox {
         pub hovered_sep: Option<usize>,
         /// (sep_idx, start_frac, widths_at_drag_start) — start_frac is cursor x as fraction of rect.width
         pub drag_sep: Option<(usize, f64, [f64; 4])>,
+        /// Panel body size (width, height) — set by host each frame before events.
+        pub panel_size: (f64, f64),
     }
 
     impl Default for WatchlistState {
@@ -4745,6 +4831,42 @@ mod watchlist_blackbox {
                 hovered_row: None,
                 hovered_sep: None,
                 drag_sep:    None,
+                panel_size:  (0.0, 0.0),
+            }
+        }
+    }
+
+    impl WatchlistState {
+        pub fn set_panel_size(&mut self, size: (f64, f64)) {
+            self.panel_size = size;
+        }
+    }
+
+    impl BlackboxHandler for WatchlistState {
+        fn render(&self, ctx: &mut dyn RenderContext, body_rect: Rect) {
+            render(self, ctx, body_rect);
+        }
+
+        fn handle_event(&mut self, event: BlackboxEvent) -> BlackboxEventResult {
+            let ps = self.panel_size;
+            match event {
+                BlackboxEvent::PointerMove { local_x, local_y } => {
+                    on_pointer_move(self, ps, local_x, local_y);
+                    BlackboxEventResult::Redraw
+                }
+                BlackboxEvent::PointerDown { local_x, local_y, .. } => {
+                    on_pointer_down(self, ps, local_x, local_y);
+                    BlackboxEventResult::Consumed
+                }
+                BlackboxEvent::PointerUp { .. } => {
+                    on_pointer_up(self);
+                    BlackboxEventResult::Consumed
+                }
+                BlackboxEvent::Wheel { delta_y, .. } => {
+                    on_wheel(self, delta_y);
+                    BlackboxEventResult::Consumed
+                }
+                _ => BlackboxEventResult::NotConsumed,
             }
         }
     }
