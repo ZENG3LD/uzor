@@ -92,7 +92,6 @@ use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene};
 use uzor::docking::panels::{DockPanel, SplitKind};
 use uzor::input::core::coordinator::LayerId;
 use uzor::input::pointer::state::{InputState, PointerState};
-use uzor::input::text::store::TextFieldConfig;
 use uzor::layout::{
     ContextMenuHandle, DropdownHandle, EdgeSide, EdgeSlot, LayoutManager, LayoutNodeId,
     ModalHandle, OverlayHandle, PopupHandle, SidebarHandle, ToolbarHandle,
@@ -167,70 +166,17 @@ use uzor::ui::widgets::composite::toolbar::types::{
 };
 
 // ── atomic widgets (used inside modals) ──────────────────────────────────────
-use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonTheme, ButtonView};
+use uzor::ui::widgets::atomic::button::ButtonTheme;
 
 use uzor::ui::widgets::atomic::checkbox::input::register_context_manager_checkbox;
 use uzor::ui::widgets::atomic::checkbox::settings::CheckboxSettings;
 use uzor::ui::widgets::atomic::checkbox::theme::CheckboxTheme;
 use uzor::ui::widgets::atomic::checkbox::types::{CheckboxRenderKind, CheckboxView};
 
-use uzor::ui::widgets::atomic::color_swatch::input::register_context_manager_color_swatch;
-use uzor::ui::widgets::atomic::color_swatch::settings::ColorSwatchSettings;
-use uzor::ui::widgets::atomic::color_swatch::types::{ColorSwatchRenderKind, ColorSwatchView};
-
-use uzor::ui::widgets::atomic::drag_handle::input::register_context_manager_drag_handle;
-use uzor::ui::widgets::atomic::drag_handle::settings::DragHandleSettings;
-use uzor::ui::widgets::atomic::drag_handle::types::{DragHandleRenderKind, DragHandleView};
-
-use uzor::ui::widgets::atomic::item::input::register_context_manager_item;
-use uzor::ui::widgets::atomic::item::render::ItemView;
-use uzor::ui::widgets::atomic::item::settings::ItemSettings;
-use uzor::ui::widgets::atomic::item::style::ItemStyle;
-use uzor::ui::widgets::atomic::item::types::ItemRenderKind;
-
-use uzor::ui::widgets::atomic::radio::input::register_context_manager_radio;
-use uzor::ui::widgets::atomic::radio::settings::RadioSettings;
-use uzor::ui::widgets::atomic::radio::types::{DotShape, RadioDotView, RadioRenderKind};
-
-use uzor::ui::widgets::atomic::scrollbar::input::register_context_manager_scrollbar;
-use uzor::ui::widgets::atomic::scrollbar::settings::ScrollbarSettings;
-
-use uzor::ui::widgets::atomic::separator::input::{
-    register_context_manager_separator, SeparatorKind,
-};
-use uzor::ui::widgets::atomic::separator::render::SeparatorView;
-use uzor::ui::widgets::atomic::separator::settings::SeparatorSettings;
-use uzor::ui::widgets::atomic::separator::types::{SeparatorOrientation, SeparatorType};
-
-use uzor::ui::widgets::atomic::slider::input::register_context_manager_slider;
-use uzor::ui::widgets::atomic::slider::render::SliderView;
-use uzor::ui::widgets::atomic::slider::settings::SliderSettings;
-use uzor::ui::widgets::atomic::slider::types::{DualSliderHandle, SliderType};
-
-use uzor::ui::widgets::atomic::tab::input::register_context_manager_tab;
-use uzor::ui::widgets::atomic::tab::render::TabView;
-use uzor::ui::widgets::atomic::tab::settings::TabSettings;
-use uzor::ui::widgets::atomic::tab::types::TabConfig;
-
-use uzor::ui::widgets::atomic::text_input::render::{draw_input, draw_input_cursor, InputView};
-use uzor::ui::widgets::atomic::text_input::settings::TextInputSettings;
-use uzor::ui::widgets::atomic::text_input::types::InputType;
-
-use uzor::ui::widgets::atomic::toggle::input::register_context_manager_toggle;
-use uzor::ui::widgets::atomic::toggle::settings::ToggleSettings;
-use uzor::ui::widgets::atomic::toggle::types::{ToggleRenderKind, ToggleView};
-
-use uzor::render::{draw_svg_icon, RenderContext};
+use uzor::render::RenderContext;
 use uzor::ui::widgets::atomic::text::{draw_text, TextSettings};
 use uzor::ui::widgets::atomic::text::types::{TextOverflow, TextView};
 use uzor::render::{TextAlign, TextBaseline};
-
-// ── sticky chevron ────────────────────────────────────────────────────────────
-use uzor::ui::widgets::atomic::sticky_chevron::{
-    draw_sticky_chevron, register_sticky_chevron, StickyAnchor, StickyChevronSpec, StickyVisibility,
-};
-use uzor::ui::widgets::atomic::chevron::types::{ChevronDirection, ChevronVisualKind};
-use uzor::layout::EventBuilder;
 
 // ── GPU render context ────────────────────────────────────────────────────────
 use uzor_render_vello_gpu::VelloGpuRenderContext;
@@ -262,38 +208,7 @@ const SVG_TRIANGLE: &str =
 const SVG_DIAMOND: &str =
     r#"<svg viewBox="0 0 24 24" fill="none"><polyline points="12,2 22,12 12,22 2,12 12,2" stroke-width="2"/></svg>"#;
 
-// ── L2-INSIDE-L3 BLOCK: constants ────────────────────────────────────────────
-// Hand-rolled L2 widget catalog rendered inside ModalKind::L2.  These rects
-// describe the manual layout of the L2 demo modal — they are NOT framework
-// geometry and MUST NOT be promoted into the lib.
-//
-// Migration target (Phase D, decided): all of L2-inside-L3 — constants,
-// state, render, drag, dispatch, wheel — collapses into ONE BlackboxHandler
-// impl.  The L2 demo continues to exist as a working example, but lives
-// fully inside `add_blackbox_panel(L2DemoBlackbox::new())` so the L3 app
-// no longer sees its widgets, ids, math, or geometry.
-
-const L2_WIN_W: f64 = 560.0;
-const L2_WIN_H: f64 = 420.0;
-
-const BTN_RECT: Rect = Rect { x: 28.0, y: 28.0, width: 130.0, height: 36.0 };
-const CB_RECT: Rect = Rect { x: 28.0, y: 88.0, width: 160.0, height: 22.0 };
-const TOG_RECT: Rect = Rect { x: 28.0, y: 130.0, width: 80.0, height: 24.0 };
-const SLID_RECT: Rect = Rect { x: 28.0, y: 200.0, width: 260.0, height: 24.0 };
-const RANGE_RECT: Rect = Rect { x: 28.0, y: 228.0, width: 260.0, height: 24.0 };
-const TI_RECT: Rect = Rect { x: 28.0, y: 278.0, width: 200.0, height: 28.0 };
-
-const TAB_STRIP_Y: f64 = 12.0;
-const TAB_STRIP_H: f64 = 28.0;
-const CONTENT_START_Y: f64 = 52.0;
-const SB_W: f64 = 10.0;
-const SB_H: f64 = 376.0;
-const CONTENT_ROWS: usize = 20;
-const ROW_H: f64 = 28.0;
-const CONTENT_H: f64 = CONTENT_ROWS as f64 * ROW_H;
-const SPLITTER_W: f64 = 6.0;
-const LEFT_PANEL_X: f64 = 12.0;
-// ── /L2-INSIDE-L3 BLOCK: constants ───────────────────────────────────────────
+// L2 widget catalog constants moved into mod l2_demo_blackbox below.
 
 // =============================================================================
 // Text label helper — thin wrapper around draw_text for static labels.
@@ -454,39 +369,6 @@ impl CheckboxTheme for VisibleCheckboxTheme {
     fn checkbox_checkmark(&self) -> &str { "#ffffff" }
     fn checkbox_notification_inner(&self) -> &str { "#ffffff" }
     fn checkbox_label_text(&self) -> &str { "#d1d4dc" }
-}
-
-// L2 row styles
-struct RowStyleRoboto;
-impl ItemStyle for RowStyleRoboto {
-    fn font(&self) -> &str { "13px Roboto" }
-}
-struct RowStyleJetBrains;
-impl ItemStyle for RowStyleJetBrains {
-    fn font(&self) -> &str { "13px JetBrainsMono" }
-}
-struct RowStylePtRoot;
-impl ItemStyle for RowStylePtRoot {
-    fn font(&self) -> &str { "13px PT-Root-UI" }
-}
-struct RowStyleRobotoBold;
-impl ItemStyle for RowStyleRobotoBold {
-    fn font(&self) -> &str { "bold 14px Roboto" }
-}
-
-// =============================================================================
-// TabConfig active_if extension
-// =============================================================================
-
-trait TabConfigExt {
-    fn active_if(self, cond: bool) -> Self;
-}
-
-impl TabConfigExt for TabConfig {
-    fn active_if(mut self, cond: bool) -> Self {
-        self.active = cond;
-        self
-    }
 }
 
 // =============================================================================
@@ -791,11 +673,6 @@ enum ModalKind {
 // =============================================================================
 
 enum DragTarget {
-    L2Slider(f64),
-    L2RangeMin(f64),
-    L2RangeMax(f64),
-    L2Scroll(f64),
-    L2Splitter(f64),
     /// Sidebar scrollbar thumb drag.
     /// `track_rect` is captured at drag start; the scrollbar atomic API
     /// converts cursor Y into scroll offset using track height + content_h.
@@ -900,26 +777,8 @@ struct AppState {
     // popup: which toolbar item is hovered
     popup_item: Option<String>,
 
-    // ── L2-INSIDE-L3 BLOCK: state ────────────────────────────────────────────
-    // These fields back the hand-rolled L2 widget catalog rendered inside
-    // ModalKind::L2.  After Phase D they ALL move into the L2DemoBlackbox
-    // handler struct that owns this demo — they are NOT first-class L3 app
-    // state.  AppState shouldn't know about l2_* anything; only the
-    // blackbox handler should.
-    l2_connected: bool,
-    l2_checked: bool,
-    l2_toggled: bool,
-    l2_radio_sel: usize,
-    l2_slider_val: f64,
-    l2_range_min: f64,
-    l2_range_max: f64,
-    l2_range_drag_handle: Option<DualSliderHandle>,
-    l2_scroll_off: f64,
-    l2_swatch_sel: usize,
-    l2_active_tab: usize,
-    l2_active_sub_tab: usize,
-    l2_right_panel_w: f64,
-    // ── /L2-INSIDE-L3 BLOCK: state ───────────────────────────────────────────
+    // L2 demo blackbox — owns all state, render, and input for ModalKind::L2.
+    l2_demo: l2_demo_blackbox::L2DemoBlackbox,
 
     // Mouse tracking
     last_mouse: (f64, f64),
@@ -939,14 +798,6 @@ struct AppState {
 
     // Fix 3: Watchlist blackbox state
     watchlist: watchlist_blackbox::WatchlistState,
-
-    // Demo A — sticky chevron on L2 Connect button
-    l2_connect_popup_open: bool,
-    // l2_connect_popup_state is now in layout.popups
-
-    // Demo D — 4-direction chevrons in L2 modal body
-    l2_4dir_popup: Option<&'static str>,
-    // l2_4dir_popup_state is now in layout.popups
 
     // ── Phase A+C: typed composite handles ───────────────────────────────────
     modal_h:               ModalHandle,
@@ -968,8 +819,6 @@ struct AppState {
     demo_sidebar_top_h:    SidebarHandle,
     demo_sidebar_bottom_h: SidebarHandle,
     demo_popup_h:          PopupHandle,
-    l2_connect_popup_h:    PopupHandle,
-    l2_4dir_popup_h:       PopupHandle,
 }
 
 impl AppState {
@@ -1400,29 +1249,6 @@ impl AppState {
         // Wipe last frame's dispatcher patterns — composites re-register on
         // each register_layout_manager_* call below.
         self.layout.dispatcher_begin_frame();
-
-        // Fix 4: register L2 text field at its actual screen-space rect.
-        // Compute modal body rect (frame origin + header offset) and delegate
-        // field registration to the lib helper.
-        if self.modal_open && self.modal_kind == ModalKind::L2 {
-            let modal_w = L2_WIN_W + 24.0;
-            let modal_h = L2_WIN_H + 80.0;
-            let modal_x = (width as f64 / 2.0 - modal_w / 2.0).max(0.0);
-            let modal_y = (height as f64 / 2.0 - modal_h / 2.0).max(0.0);
-            let modal_pos = self.layout.modal(&self.modal_h).position;
-            let (frame_x, frame_y) = if modal_pos != (0.0, 0.0) {
-                modal_pos
-            } else {
-                (modal_x, modal_y)
-            };
-            // body_rect origin: frame + header (44 px)
-            let body_rect = Rect::new(frame_x, frame_y + 44.0, modal_w, modal_h - 44.0);
-            modal_input::register_modal_text_fields(
-                &mut self.layout,
-                body_rect,
-                &[("l2-text", TI_RECT, TextFieldConfig::text())],
-            );
-        }
 
         // ── 4. Scene ──────────────────────────────────────────────────────────
         self.scene.reset();
@@ -1956,7 +1782,7 @@ impl AppState {
         if self.modal_open {
             // Body size per kind. Frame (modal_w, modal_h) = body + measure_chrome().
             let (body_w, body_h) = match self.modal_kind {
-                ModalKind::L2             => (L2_WIN_W, L2_WIN_H),
+                ModalKind::L2             => (l2_demo_blackbox::L2_WIN_W, l2_demo_blackbox::L2_WIN_H),
                 ModalKind::L1             => (320.0,    150.0),
                 ModalKind::Settings       => (400.0,    250.0),
                 ModalKind::Tags           => (480.0,    310.0),
@@ -2009,22 +1835,6 @@ impl AppState {
             let modal_rect = Rect::new(frame_x, frame_y, modal_w, modal_h);
 
             let modal_kind = self.modal_kind;
-            let l2_connected = self.l2_connected;
-            let l2_checked = self.l2_checked;
-            let l2_toggled = self.l2_toggled;
-            let l2_radio_sel = self.l2_radio_sel;
-            let l2_slider_val = self.l2_slider_val;
-            let l2_range_min = self.l2_range_min;
-            let l2_range_max = self.l2_range_max;
-            let l2_range_drag_handle = self.l2_range_drag_handle;
-            let l2_scroll_off = self.l2_scroll_off;
-            let l2_swatch_sel = self.l2_swatch_sel;
-            let l2_active_tab = self.l2_active_tab;
-            let l2_active_sub_tab = self.l2_active_sub_tab;
-            let l2_right_panel_w = self.l2_right_panel_w;
-            let start_time = self.start;
-            let l2_sb_x = L2_WIN_W - SB_W - 8.0;
-            let l2_right_panel_x = L2_WIN_W - l2_right_panel_w;
 
             let title = match modal_kind {
                 ModalKind::L2             => "L2 Widget Set",
@@ -2079,7 +1889,7 @@ impl AppState {
             // it registers — `register_body_overflow` reads these to
             // decide whether to register vertical / horizontal chevrons.
             let (cw, ch): (f64, f64) = match modal_kind {
-                ModalKind::L2 => (L2_WIN_W, L2_WIN_H),
+                ModalKind::L2 => (l2_demo_blackbox::L2_WIN_W, l2_demo_blackbox::L2_WIN_H),
                 _             => (4000.0, 4000.0),
             };
             {
@@ -2248,375 +2058,11 @@ impl AppState {
                         render.restore();
                     }
                     ModalKind::L2 => {
-                        // ── L2-INSIDE-L3 BLOCK: render ───────────────────────
-                        // Hand-rolled L2 widget catalog: text-input, button +
-                        // sticky chevron, checkbox, toggle, radio×3, slider,
-                        // dual-range, swatch grid, sub-tabs, sticky 4-dir
-                        // chevrons, scrollable content, splitter.  Each atomic
-                        // is registered directly via register_context_manager_*
-                        // and given a manual rect derived from the L2_* /
-                        // *_RECT constants above.  This is L2-style work
-                        // intentionally living inside an L3 app to demo every
-                        // atomic in one place.
-                        //
-                        // Decided migration (Phase D): the entire L2 demo
-                        // (this render block + state + drag + dispatch +
-                        // wheel) becomes ONE
-                        //   layout.add_blackbox_panel(L2DemoBlackbox::new())
-                        // so the L2 demo continues to live and be useful, but
-                        // hidden behind a single blackbox handler — the L3
-                        // app stops seeing the widgets, ids, math, geometry.
-                        // Full L2 widget set rendered inside modal body.
-                        // body_rect already accounts for header/footer via composite::modal::body_rect().
-                        let left_panel_w = l2_right_panel_x - LEFT_PANEL_X - SPLITTER_W / 2.0;
-                        let ox = body_rect.x;
-                        let oy = body_rect.y;
-                        let body_h = body_rect.height;
-
-                        let text_id = unsafe_widget_id("l2-text");
-                        let text_str = self.layout.ctx_mut().input.text_fields().text(&text_id).to_owned();
-                        let text_cursor = self.layout.ctx_mut().input.text_fields().cursor(&text_id);
-                        let text_sel = self.layout.ctx_mut().input.text_fields().selection_range(&text_id);
-                        let text_focused = self.layout.ctx_mut().input.text_fields().is_focused(&text_id);
-                        let now_ms = start_time.elapsed().as_millis() as u64;
-                        let cursor_vis = text_focused && self.layout.ctx_mut().input.text_fields().cursor_visible(now_ms);
-
-                        // Draw panel BGs via RenderContext (Fix 2: use body_h, not L2_WIN_H)
-                        let panel_inner_h = body_h - 24.0;
-                        render.set_fill_color("#1e222d");
-                        render.fill_rounded_rect(ox + LEFT_PANEL_X, oy + 12.0, left_panel_w, panel_inner_h, 8.0);
-                        render.fill_rounded_rect(ox + l2_right_panel_x, oy + 12.0, L2_WIN_W - l2_right_panel_x - 12.0, panel_inner_h, 8.0);
-
-                        // ctx_l2 removed — use self.layout.ctx_mut() directly so widgets
-                        // register into the real coordinator and clicks are dispatched.
-
-                        // ── Left panel (clipped) ──────────────────────────
-                        render.save();
-                        render.clip_rect(ox + LEFT_PANEL_X, oy + 12.0, left_panel_w, panel_inner_h);
-
-                        // 1. Button — wrapped in a composite Panel so a sticky chevron child can attach.
-                        let btn_rect = Rect::new(BTN_RECT.x + ox, BTN_RECT.y + oy, BTN_RECT.width, BTN_RECT.height);
-                        let btn_state = if self.layout.ctx().input.is_hovered(&unsafe_widget_id("l2-btn-connect")) { WidgetState::Hovered } else if l2_connected { WidgetState::Active } else { WidgetState::Normal };
-                        // Register composite Panel host + Button child via lib helper.
-                        let btn_host_id = modal_input::register_modal_button(
-                            &mut self.layout,
-                            "l2-btn-connect-host",
-                            "l2-btn-connect",
-                            btn_rect,
-                            uzor::input::Sense::CLICK | uzor::input::Sense::HOVER,
-                            &layer,
-                        );
-                        // Draw the button visuals.
-                        // Demo A: hover_chevron removed — the sticky chevron below is the sole chevron.
-                        {
-                            use uzor::ui::widgets::atomic::button::render::draw_button;
-                            draw_button(&mut render, btn_rect, btn_state, &ButtonView {
-                                text: Some(if l2_connected { "Disconnect" } else { "Connect" }),
-                                icon: None,
-                                active: l2_connected,
-                                disabled: false,
-                                active_border: None,
-                                hover_chevron: None,
-                            }, &ButtonSettings::default().with_theme(Box::new(VisibleButtonTheme)), |_, _, _, _| {});
-                        }
-                        // Demo A: sticky chevron at East edge of the Connect button.
-                        let connect_chev_spec = StickyChevronSpec {
-                            direction: ChevronDirection::Right,
-                            size: 16.0,
-                            inset: 4.0,
-                            anchor: StickyAnchor::E,
-                            visibility: StickyVisibility::Always,
-                            visual: ChevronVisualKind::Stroked,
-                            hover_visual: true,
-                            interactive: true,
-                        };
-                        let connect_chev_id = register_sticky_chevron(
-                            &mut self.layout.ctx_mut().input,
-                            &btn_host_id,
-                            btn_rect,
-                            &connect_chev_spec,
-                            btn_state,
-                            "_",
-                        );
-                        // Wire chevron click → StickyChevronClicked { host_id: "l2-btn-connect-host" }
-                        if let Some(ref chev_id) = connect_chev_id {
-                            self.layout.dispatcher_mut().on_exact(
-                                chev_id.as_str().to_owned(),
-                                EventBuilder::StickyChevron { host_id: unsafe_widget_id("l2-btn-connect-host") },
-                            );
-                            // Draw the chevron — derive state from coordinator hover info.
-                            let chev_state = if self.layout.ctx_mut().input.is_hovered(chev_id) {
-                                WidgetState::Hovered
-                            } else {
-                                WidgetState::Normal
-                            };
-                            draw_sticky_chevron(&mut render, btn_rect, &connect_chev_spec, chev_state, btn_state);
-                        }
-                        // 2. Checkbox
-                        let l2_cb_hovered = self.layout.ctx().input.is_hovered(&unsafe_widget_id("l2-cb"));
-                        register_context_manager_checkbox(
-                            self.layout.ctx_mut(), &mut render,
-                            "l2-cb", Rect::new(CB_RECT.x + ox, CB_RECT.y + oy, CB_RECT.width, CB_RECT.height), &layer,
-                            if l2_cb_hovered { WidgetState::Hovered } else { WidgetState::Normal },
-                            &CheckboxView { checked: l2_checked, label: Some("Setting A") },
-                            &CheckboxSettings::default().with_theme(Box::new(VisibleCheckboxTheme)),
-                            &CheckboxRenderKind::Standard, "13px sans-serif",
-                        );
-                        // 3. Toggle
-                        let l2_tog_hovered = self.layout.ctx().input.is_hovered(&unsafe_widget_id("l2-tog"));
-                        register_context_manager_toggle(
-                            self.layout.ctx_mut(), &mut render,
-                            "l2-tog", Rect::new(TOG_RECT.x + ox, TOG_RECT.y + oy, TOG_RECT.width, TOG_RECT.height), &layer,
-                            if l2_tog_hovered { WidgetState::Hovered } else { WidgetState::Normal },
-                            &ToggleView { toggled: l2_toggled, label: Some("ON"), disabled: false },
-                            &ToggleSettings::default(), &ToggleRenderKind::Switch,
-                        );
-                        // 4. Radio
-                        for (i, cx_off) in [28.0_f64, 68.0, 108.0].iter().enumerate() {
-                            let rid = format!("l2-radio-{i}");
-                            let rid_hovered = self.layout.ctx().input.is_hovered(&unsafe_widget_id(rid.as_str()));
-                            register_context_manager_radio(
-                                self.layout.ctx_mut(), &mut render,
-                                rid.as_str(), Rect::new(cx_off + ox, 175.0 + oy, 28.0, 28.0), &layer,
-                                if rid_hovered { WidgetState::Hovered } else { WidgetState::Normal },
-                                &RadioSettings::default(),
-                                &RadioRenderKind::Dot { shape: DotShape::Circle, cx: cx_off + 14.0 + ox, cy: 175.0 + 14.0 + oy, view: RadioDotView { selected: l2_radio_sel == i } },
-                            );
-                        }
-                        // 5. Slider
-                        let l2_slider_hovered = self.layout.ctx().input.is_hovered(&unsafe_widget_id("l2-slider"));
-                        register_context_manager_slider(
-                            self.layout.ctx_mut(), &mut render,
-                            "l2-slider", Rect::new(SLID_RECT.x + ox, SLID_RECT.y + oy, SLID_RECT.width, SLID_RECT.height), &layer,
-                            if l2_slider_hovered { WidgetState::Hovered } else { WidgetState::Normal },
-                            &SliderView { kind: SliderType::Single { value: l2_slider_val, min: 0.0, max: 100.0, step: 1.0 }, hovered: false, disabled: false, dragging_handle: None },
-                            &SliderSettings::default(),
-                        );
-                        // 6. Range slider
-                        let l2_range_hovered = self.layout.ctx().input.is_hovered(&unsafe_widget_id("l2-range"));
-                        register_context_manager_slider(
-                            self.layout.ctx_mut(), &mut render,
-                            "l2-range", Rect::new(RANGE_RECT.x + ox, RANGE_RECT.y + oy, RANGE_RECT.width, RANGE_RECT.height), &layer,
-                            if l2_range_hovered { WidgetState::Hovered } else { WidgetState::Normal },
-                            &SliderView { kind: SliderType::Dual { min_value: l2_range_min, max_value: l2_range_max, min: 0.0, max: 100.0, step: 1.0 }, hovered: false, disabled: false, dragging_handle: l2_range_drag_handle },
-                            &SliderSettings::default(),
-                        );
-                        // 7. Separator
-                        register_context_manager_separator(
-                            self.layout.ctx_mut(), &mut render,
-                            "l2-sep", Rect::new(28.0 + ox, 260.0 + oy, 260.0, 2.0), SeparatorKind::Divider, &layer,
-                            &SeparatorView { kind: SeparatorType::Divider { orientation: SeparatorOrientation::Horizontal }, hovered: false, dragging: false },
-                            &SeparatorSettings::default(),
-                        );
-                        // 8. Text input
-                        let ti_state = if text_focused { WidgetState::Active } else if self.layout.ctx().input.is_hovered(&unsafe_widget_id("l2-text")) { WidgetState::Hovered } else { WidgetState::Normal };
-                        let ti_settings = TextInputSettings::with_config(uzor::ui::widgets::atomic::text_input::state::TextFieldConfig::text());
-                        let ti_view = InputView { text: text_str.as_str(), placeholder: "Search...", cursor: text_cursor, selection: text_sel, focused: text_focused, disabled: false, input_type: InputType::Search };
-                        let ti_rect = Rect::new(TI_RECT.x + ox, TI_RECT.y + oy, TI_RECT.width, TI_RECT.height);
-                        let ir = draw_input(&mut render, ti_rect, ti_state, &ti_view, &ti_settings);
-                        if cursor_vis {
-                            draw_input_cursor(&mut render, ir.cursor_x, ir.cursor_y, ir.cursor_height, 1.5, [220, 220, 220, 255]);
-                        }
-                        // 9. Color swatches
-                        let swatch_colors: [[u8; 4]; 4] = [[41,98,255,255],[16,185,129,255],[245,158,11,255],[239,83,80,255]];
-                        for (i, color) in swatch_colors.iter().enumerate() {
-                            let sid = format!("l2-swatch-{i}");
-                            let sid_hovered = self.layout.ctx().input.is_hovered(&unsafe_widget_id(sid.as_str()));
-                            register_context_manager_color_swatch(
-                                self.layout.ctx_mut(), &mut render,
-                                sid.as_str(), Rect::new(28.0 + i as f64 * 34.0 + ox, 344.0 + oy, 26.0, 26.0), &layer,
-                                if sid_hovered { WidgetState::Hovered } else { WidgetState::Normal },
-                                &ColorSwatchView { color: *color, hovered: false, selected: l2_swatch_sel == i, show_transparency: false, border_color_override: None },
-                                &ColorSwatchSettings::default(), &ColorSwatchRenderKind::Simple,
-                            );
-                        }
-
-                        render.restore();
-
-                        // ── Right panel (clipped) ─────────────────────────
-                        render.save();
-                        render.clip_rect(ox + l2_right_panel_x, oy + 12.0, L2_WIN_W - l2_right_panel_x - 12.0, panel_inner_h);
-
-                        let tab_labels = ["List", "Empty", "Sub-tabs"];
-                        for (i, lbl) in tab_labels.iter().enumerate() {
-                            let tab_w = ((l2_right_panel_w - 16.0) / 3.0).floor();
-                            let tab_x = l2_right_panel_x + 8.0 + i as f64 * (tab_w + 4.0);
-                            let tab_rect = Rect::new(tab_x + ox, TAB_STRIP_Y + oy, tab_w, TAB_STRIP_H);
-                            let tab_id = format!("l2-tab-{i}");
-                            let tab_hovered = self.layout.ctx().input.is_hovered(&unsafe_widget_id(tab_id.as_str()));
-                            let tab_cfg = TabConfig::new(tab_id.as_str(), *lbl).active_if(l2_active_tab == i);
-                            register_context_manager_tab(
-                                self.layout.ctx_mut(), &mut render,
-                                tab_id.as_str(), tab_rect, None, &layer,
-                                &TabView { tab: &tab_cfg, hovered: tab_hovered, pressed: false, close_btn_hovered: false },
-                                &TabSettings::default(),
-                            );
-                        }
-                        if l2_active_tab == 0 {
-                            let sb_x = l2_sb_x + ox;
-                            let sb_track = Rect::new(sb_x, 52.0 + oy, SB_W, SB_H);
-                            let viewport_h = SB_H;
-                            let thumb_ratio = (viewport_h / CONTENT_H).clamp(0.0, 1.0);
-                            let thumb_h = (thumb_ratio * sb_track.height).max(30.0);
-                            let scroll_range = sb_track.height - thumb_h;
-                            let thumb_y = sb_track.y + (l2_scroll_off / (CONTENT_H - viewport_h).max(1.0)) * scroll_range;
-                            let sb_thumb = Rect::new(sb_x, thumb_y, SB_W, thumb_h);
-                            register_context_manager_scrollbar(self.layout.ctx_mut(), &mut render, "l2-sb-track", "l2-sb-thumb", sb_track, sb_thumb, 5.0, &layer, CONTENT_H, viewport_h, l2_scroll_off, &ScrollbarSettings::default());
-
-                            let row_labels = ["★ Roboto regular","Sans-serif clean","→ arrow + ✓ check","Quick brown fox","✨ ★ ☀ ☂ ❤","fn main() { ... }","let x: u32 = 42;","if let Some(v) = opt","// monospace code","0xCAFE_BABE","PT Root UI light","вариативный шрифт","12345 67890","Кириллица OK","ƒ unicode glyphs","Bold Roboto bold","❗ Heads up ❗","✓ Done · 14 items","🌍 globe · 🌟 star","═══ end of list ═══"];
-                            let content_x = l2_right_panel_x + 8.0 + ox;
-                            let content_w = l2_right_panel_w - SB_W - 20.0;
-                            for row in 0..CONTENT_ROWS {
-                                let row_y = 52.0 + oy + row as f64 * ROW_H - l2_scroll_off;
-                                if row_y + ROW_H < 52.0 + oy || row_y > 52.0 + oy + SB_H { continue; }
-                                let row_rect = Rect::new(content_x, row_y, content_w, ROW_H - 2.0);
-                                let row_id = format!("l2-row-{row}");
-                                let row_settings = match row { 0..=4 => ItemSettings::default().with_style(Box::new(RowStyleRoboto)), 5..=9 => ItemSettings::default().with_style(Box::new(RowStyleJetBrains)), 10..=14 => ItemSettings::default().with_style(Box::new(RowStylePtRoot)), _ => ItemSettings::default().with_style(Box::new(RowStyleRobotoBold)) };
-                                register_context_manager_item(self.layout.ctx_mut(), &mut render, row_id.as_str(), row_rect, &layer, WidgetState::Normal, &ItemView { label: Some(row_labels[row]), icon: None, svg: None }, &row_settings, &ItemRenderKind::Label);
-                            }
-                        }
-                        if l2_active_tab == 2 {
-                            for (i, lbl) in ["Alpha","Beta","Gamma"].iter().enumerate() {
-                                let sub_rect = Rect::new(l2_right_panel_x + 8.0 + ox, CONTENT_START_Y + 8.0 + i as f64 * 36.0 + oy, 90.0, 30.0);
-                                let sub_id = format!("l2-sub-tab-{i}");
-                                let sub_hovered = self.layout.ctx().input.is_hovered(&unsafe_widget_id(sub_id.as_str()));
-                                let sub_cfg = TabConfig::new(sub_id.as_str(), *lbl).active_if(l2_active_sub_tab == i);
-                                register_context_manager_tab(self.layout.ctx_mut(), &mut render, sub_id.as_str(), sub_rect, None, &layer, &TabView { tab: &sub_cfg, hovered: sub_hovered, pressed: false, close_btn_hovered: false }, &TabSettings::default());
-                            }
-                            // Fix 6: SVG icon below the sub-tab buttons, changes with active sub-tab
-                            let sub_content_y = CONTENT_START_Y + 8.0 + 3.0 * 36.0 + 8.0;
-                            let sub_cx = l2_right_panel_x + l2_right_panel_w / 2.0 + ox;
-                            let icon_size = 64.0_f64;
-                            let ix = sub_cx - icon_size / 2.0;
-                            let iy = sub_content_y + oy + 8.0;
-                            let (sub_svg, sub_color) = match l2_active_sub_tab {
-                                0 => (SVG_CIRCLE,   "#2962ff"),
-                                1 => (SVG_TRIANGLE, "#f59e0b"),
-                                _ => (SVG_DIAMOND,  "#ef5350"),
-                            };
-                            draw_svg_icon(&mut render, sub_svg, ix, iy, icon_size, icon_size, sub_color);
-                        }
-                        if l2_active_tab == 1 {
-                            let icon_size = 64.0_f64;
-                            let gap = 16.0_f64;
-                            let content_cx = l2_right_panel_x + l2_right_panel_w / 2.0 + ox;
-                            let content_cy = CONTENT_START_Y + (L2_WIN_H - CONTENT_START_Y - 12.0) / 2.0 + oy;
-                            let grid_x0 = content_cx - (icon_size * 2.0 + gap) / 2.0;
-                            let grid_y0 = content_cy - (icon_size * 2.0 + gap) / 2.0;
-                            for (idx, (svg, color)) in [(SVG_CIRCLE,"#2962ff"),(SVG_SQUARE,"#10b981"),(SVG_TRIANGLE,"#f59e0b"),(SVG_DIAMOND,"#ef5350")].iter().enumerate() {
-                                let col = idx % 2;
-                                let row = idx / 2;
-                                draw_svg_icon(&mut render, svg, grid_x0 + col as f64 * (icon_size + gap), grid_y0 + row as f64 * (icon_size + gap), icon_size, icon_size, color);
-                            }
-                        }
-
-                        render.restore();
-
-                        // Splitter drag handle (no clip needed) — height matches body panels
-                        let dh_rect = Rect::new(l2_right_panel_x - SPLITTER_W / 2.0 + ox, 12.0 + oy, SPLITTER_W, panel_inner_h);
-                        register_context_manager_drag_handle(
-                            self.layout.ctx_mut(), &mut render,
-                            "l2-splitter", dh_rect, &layer,
-                            &DragHandleView { rect: dh_rect }, &DragHandleSettings::default(), &DragHandleRenderKind::GripDots,
-                        );
-
-                        // ── Demo D: 4-direction sticky chevrons ───────────────
-                        // ONE composite host at the center panel. Four chevrons
-                        // (n/s/e/w) with OnHostHover visibility — they appear only
-                        // when the host is hovered and disappear when cursor leaves.
-                        let panel_4dir_cx = ox + LEFT_PANEL_X + 80.0;
-                        let panel_4dir_cy = oy + 390.0;
-                        let panel_4dir_w  = 80.0_f64;
-                        let panel_4dir_h  = 40.0_f64;
-                        let host_4dir_rect = Rect::new(
-                            panel_4dir_cx - panel_4dir_w / 2.0,
-                            panel_4dir_cy - panel_4dir_h / 2.0,
-                            panel_4dir_w,
-                            panel_4dir_h,
-                        );
-
-                        // Draw a subtle backdrop so the user can see the panel.
-                        render.set_fill_color("rgba(255,255,255,0.06)");
-                        render.fill_rounded_rect(
-                            host_4dir_rect.x, host_4dir_rect.y,
-                            host_4dir_rect.width, host_4dir_rect.height, 4.0,
-                        );
-                        label(
-                            &mut render,
-                            host_4dir_rect,
-                            "4-dir chev", TextAlign::Center, "rgba(255,255,255,0.4)",
-                        );
-
-                        // Register ONE composite host that receives hover input.
-                        let host_4dir_cid = {
-                            use uzor::input::core::widget_kind::WidgetKind as WK;
-                            use uzor::input::Sense;
-                            self.layout.ctx_mut().input.register_composite(
-                                unsafe_widget_id("l2-4dir-host"),
-                                WK::Panel,
-                                host_4dir_rect,
-                                Sense::HOVER,
-                                &layer,
-                            )
-                        };
-                        // Query host hover state once for all chevrons.
-                        let host_4dir_state = if self.layout.ctx_mut().input.is_hovered(
-                            &unsafe_widget_id("l2-4dir-host"),
-                        ) {
-                            WidgetState::Hovered
-                        } else {
-                            WidgetState::Normal
-                        };
-
-                        // 4 chevrons — each using a named slot and OnHostHover visibility.
-                        let chev_4dir_configs: [(&str, StickyAnchor, ChevronDirection); 4] = [
-                            ("n", StickyAnchor::N, ChevronDirection::Up),
-                            ("s", StickyAnchor::S, ChevronDirection::Down),
-                            ("w", StickyAnchor::W, ChevronDirection::Left),
-                            ("e", StickyAnchor::E, ChevronDirection::Right),
-                        ];
-                        // Register dispatcher prefix once for all 4 slot chevrons.
-                        self.layout.dispatcher_mut().on_prefix(
-                            "l2-4dir-host:chev:".to_string(),
-                            EventBuilder::StickyChevronWithSlot {
-                                host_id: unsafe_widget_id("l2-4dir-host"),
-                            },
-                        );
-                        for (slot, anchor, dir) in &chev_4dir_configs {
-                            let chev_spec = StickyChevronSpec {
-                                direction: *dir,
-                                size: 16.0,
-                                inset: 4.0, // inside the host rect, 4px from each edge
-                                anchor: *anchor,
-                                visibility: StickyVisibility::OnHostHover,
-                                visual: ChevronVisualKind::Stroked,
-                                hover_visual: true,
-                                interactive: true,
-                            };
-                            let chev_id = register_sticky_chevron(
-                                &mut self.layout.ctx_mut().input,
-                                &host_4dir_cid,
-                                host_4dir_rect,
-                                &chev_spec,
-                                host_4dir_state,
-                                slot,
-                            );
-                            if let Some(ref cid) = chev_id {
-                                let chev_st = if self.layout.ctx_mut().input.is_hovered(cid) {
-                                    WidgetState::Hovered
-                                } else {
-                                    WidgetState::Normal
-                                };
-                                draw_sticky_chevron(
-                                    &mut render,
-                                    host_4dir_rect,
-                                    &chev_spec,
-                                    chev_st,
-                                    host_4dir_state,
-                                );
-                            }
-                        }
-                        // ── /L2-INSIDE-L3 BLOCK: render ──────────────────────
+                        // Phase D: L2 demo now lives entirely inside L2DemoBlackbox.
+                        // body_rect is in screen coords — render directly.
+                        use uzor::ui::widgets::composite::blackbox_panel::types::BlackboxHandler;
+                        self.l2_demo.set_panel_size((body_rect.width, body_rect.height));
+                        self.l2_demo.render(&mut render, body_rect);
                     }
                     ModalKind::PlainDemo => {
                         // No header/footer — caller draws everything inside the body.
@@ -2736,77 +2182,7 @@ impl AppState {
             }
         }
 
-        // ── Demo A popup — "Connect options" ─────────────────────────────────
-        if self.l2_connect_popup_open {
-            use uzor::ui::widgets::composite::popup::render::body_rect as popup_body_rect;
-            let popup_settings = PopupSettings::default();
-            let pad = popup_settings.style.padding();
-            let body_w = 180.0_f64;
-            let body_h = 48.0_f64;
-            let popup_w = body_w + pad * 2.0;
-            let popup_h = body_h + pad * 2.0;
-            let px = (width as f64 - popup_w) / 2.0;
-            let py = (height as f64 - popup_h) / 2.0;
-            let mut v = PopupView {
-                origin: (px, py),
-                anchor: None,
-                backdrop: PopupBackdrop::Dim,
-                kind: PopupViewKind::Plain,
-                size_mode: uzor::types::SizeMode::AutoFit,
-                overflow: uzor::types::OverflowMode::Clip,
-            };
-            let _ = register_layout_manager_popup(
-                &mut self.layout, &mut render,
-                LayoutNodeId::ROOT,
-                "l2-connect-popup", &self.l2_connect_popup_h.clone(),
-                Rect::new(px, py, popup_w, popup_h), None,
-                &mut v,
-                &popup_settings, PopupRenderKind::Plain,
-            );
-            if let Some(frame) = self.layout.rect_for_overlay("l2-connect-popup") {
-                let body = popup_body_rect(frame, &popup_settings);
-                label(&mut render, body, "Connect options", TextAlign::Center, "#d1d4dc");
-            }
-        }
-
-        // ── Demo D popup — 4-dir chevron result ──────────────────────────────
-        if let Some(dir_label) = self.l2_4dir_popup {
-            use uzor::ui::widgets::composite::popup::render::body_rect as popup_body_rect;
-            let popup_settings = PopupSettings::default();
-            let pad = popup_settings.style.padding();
-            let body_w = 140.0_f64;
-            let body_h = 40.0_f64;
-            let popup_w = body_w + pad * 2.0;
-            let popup_h = body_h + pad * 2.0;
-            let px = (width as f64 - popup_w) / 2.0;
-            let py = (height as f64 - popup_h) / 2.0;
-            let mut v = PopupView {
-                origin: (px, py),
-                anchor: None,
-                backdrop: PopupBackdrop::Dim,
-                kind: PopupViewKind::Plain,
-                size_mode: uzor::types::SizeMode::AutoFit,
-                overflow: uzor::types::OverflowMode::Clip,
-            };
-            let _ = register_layout_manager_popup(
-                &mut self.layout, &mut render,
-                LayoutNodeId::ROOT,
-                "l2-4dir-popup", &self.l2_4dir_popup_h.clone(),
-                Rect::new(px, py, popup_w, popup_h), None,
-                &mut v,
-                &popup_settings, PopupRenderKind::Plain,
-            );
-            if let Some(frame) = self.layout.rect_for_overlay("l2-4dir-popup") {
-                let body = popup_body_rect(frame, &popup_settings);
-                let popup_text = match dir_label {
-                    "N" => "N popup",
-                    "S" => "S popup",
-                    "W" => "W popup",
-                    _   => "E popup",
-                };
-                label(&mut render, body, popup_text, TextAlign::Center, "#d1d4dc");
-            }
-        }
+        // Demo A (l2-connect popup) and Demo D (l2-4dir popup) removed — simplified in Phase D.
 
         // ── Context menu ──────────────────────────────────────────────────────
         let ctx_menu_is_open = self.layout.context_menu(&self.ctx_menu_h).is_open;
@@ -3149,15 +2525,7 @@ impl AppState {
             }
         }
 
-        // Process coordinator responses
-        for (id, resp) in &responses {
-            let ids = id.as_str();
-            if resp.scrolled && (ids == "l2-sb-track" || ids == "l2-sb-thumb") {
-                let dy = resp.scroll_delta.1;
-                self.l2_scroll_off = (self.l2_scroll_off + dy * 20.0)
-                    .clamp(0.0, (CONTENT_H - SB_H).max(0.0));
-            }
-        }
+        // Process coordinator responses (l2 scrollbar is now inside the blackbox — no orphan ids here)
 
         // Update popup based on hovered widget.
         // Items with popup_on_hover:true open on hover — derive the set from the
@@ -3234,10 +2602,6 @@ impl AppState {
                         // Discriminate by comparing handle identity.
                         if *ph == self.demo_popup_h {
                             self.popup_kind = None;
-                        } else if *ph == self.l2_connect_popup_h {
-                            self.l2_connect_popup_open = false;
-                        } else if *ph == self.l2_4dir_popup_h {
-                            self.l2_4dir_popup = None;
                         }
                     }
                     OverlayHandle::Dropdown(ref dh) => {
@@ -3366,42 +2730,14 @@ impl AppState {
                             .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
                         self.layout.dropdown_mut(&self.dd_theme_h.clone()).open_below(anchor_rect, 4.0);
                     }
-                    "l2-btn-connect-host" => {
-                        self.l2_connect_popup_open = true;
-                    }
                     _ => {}
                 }
             }
             DispatchEvent::StickyChevronAtSlotClicked { host_id, slot } => {
-                eprintln!("[DISPATCHER] StickyChevronAtSlotClicked host={} slot={}", host_id.as_str(), slot);
-                if host_id.as_str() == "l2-4dir-host" {
-                    self.l2_4dir_popup = match slot.as_str() {
-                        "n" => Some("N"),
-                        "s" => Some("S"),
-                        "w" => Some("W"),
-                        "e" => Some("E"),
-                        _   => None,
-                    };
-                }
+                eprintln!("[DISPATCHER] StickyChevronAtSlotClicked host={} slot={} — no-op (L2 removed)", host_id.as_str(), slot);
             }
             DispatchEvent::Indexed { ref base, n } => {
-                // ── L2-INSIDE-L3 BLOCK: indexed click dispatch ───────────────
-                // Routes the typed Indexed events emitted by the L2 demo
-                // modal's `l2-radio-N` / `l2-swatch-N` / `l2-sub-tab-N` /
-                // `l2-tab-N` atomics back into l2_* state fields.
-                //
-                // Phase D target: L2 demo lives inside L2DemoBlackbox; the
-                // blackbox handles its own atomics' clicks via
-                // BlackboxHandler::handle_event(PointerDown).  No L2 ids
-                // surface as DispatchEvent — L3 doesn't see them.
-                match base.as_str() {
-                    "l2-radio"   => { eprintln!("[DISPATCHER] l2-radio→{n}");   self.l2_radio_sel = n; }
-                    "l2-swatch"  => { eprintln!("[DISPATCHER] l2-swatch→{n}");  self.l2_swatch_sel = n; }
-                    "l2-sub-tab" => { eprintln!("[DISPATCHER] l2-sub-tab→{n}"); self.l2_active_sub_tab = n; }
-                    "l2-tab"     => { eprintln!("[DISPATCHER] l2-tab→{n}");     self.l2_active_tab = n; self.l2_scroll_off = 0.0; }
-                    _ => { eprintln!("[DISPATCHER] Indexed base={base} n={n} — no-op"); }
-                }
-                // ── /L2-INSIDE-L3 BLOCK: indexed click dispatch ──────────────
+                eprintln!("[DISPATCHER] Indexed base={base} n={n} — no-op");
             }
             DispatchEvent::DockLeafClicked { leaf_id } => {
                 eprintln!("[DISPATCHER] DockLeafClicked leaf_id={}", leaf_id.0);
@@ -3447,23 +2783,6 @@ impl AppState {
                 // opt_ev still Some(Unhandled(id)) → app-specific id routing.
                 if let Some(DispatchEvent::Unhandled(ref id)) = opt_ev {
                     let id_str = id.as_str();
-                    // ── L2-INSIDE-L3 BLOCK: unhandled-id click dispatch ──────
-                    // The L2 demo modal registers its atomics (button, close,
-                    // checkbox, toggle) with raw widget ids that fall through
-                    // to `Unhandled` because no dispatcher pattern matches
-                    // them.
-                    //
-                    // Phase D target: L2 demo moves into L2DemoBlackbox;
-                    // those atomics never reach the L3 dispatcher because the
-                    // blackbox eats PointerDown inside its rect first.
-                    match id_str {
-                        "l2-btn-connect" => { eprintln!("[DISPATCH] l2-btn-connect"); self.l2_connected = !self.l2_connected; return; }
-                        "l2-btn-close"   => { eprintln!("[DISPATCH] l2-btn-close");   self.modal_open = false; return; }
-                        "l2-cb"          => { eprintln!("[DISPATCH] l2-cb");          self.l2_checked = !self.l2_checked; return; }
-                        "l2-tog"         => { eprintln!("[DISPATCH] l2-tog");         self.l2_toggled = !self.l2_toggled; return; }
-                        _ => {}
-                    }
-                    // ── /L2-INSIDE-L3 BLOCK: unhandled-id click dispatch ─────
                     // ── Sidebar: spawn kind radio buttons
                     if let Some(kind_str) = id_str.strip_prefix("spawn-kind-") {
                         eprintln!("[DISPATCH] spawn-kind→{kind_str}");
@@ -3542,8 +2861,6 @@ impl AppState {
         // closed or the click missed everything. Proceed with geometry.
         if self.modal_open { return; }
         if self.popup_kind.is_some() { return; }
-        if self.l2_connect_popup_open { return; }
-        if self.l2_4dir_popup.is_some() { return; }
 
         // Chrome tab/buttons handled via LayoutManager dispatcher
         // (DispatchEvent::ChromeTabClicked / ChromeWindowControl) — no
@@ -3592,36 +2909,27 @@ impl AppState {
         // Watchlist mouse-down is now routed by the BlackboxPanel composite
         // through view.handle_event(PointerDown). No manual forwarding here.
 
-        // ── L2-INSIDE-L3 BLOCK: drag-start ───────────────────────────────────
-        // Manual drag-start dispatch for the hand-rolled L2 widget catalog.
-        // Phase D target: the whole L2 demo lives inside L2DemoBlackbox; this
-        // block becomes BlackboxHandler::handle_event(PointerDown) inside that
-        // handler.  L3 app no longer dispatches L2 widget hits.
+        // L2 demo: forward PointerDown to blackbox handler.
         if self.modal_open && self.modal_kind == ModalKind::L2 {
-            let hovered_id = self.layout.ctx().input.hovered_widget().map(|w| w.as_str().to_owned());
-            let modal_rect = self.layout.rect_for_overlay("modal-overlay");
-            let target = match hovered_id.as_deref() {
-                Some("l2-slider")   => Some(DragTarget::L2Slider(self.l2_slider_val)),
-                Some("l2-splitter") => Some(DragTarget::L2Splitter(self.l2_right_panel_w)),
-                Some("l2-range") => {
-                    // Determine which range handle is closer to the cursor.
-                    let rel_x = modal_rect.map(|r| x - r.x).unwrap_or(0.0);
-                    let x_min = RANGE_RECT.x + (self.l2_range_min / 100.0) * RANGE_RECT.width;
-                    let x_max = RANGE_RECT.x + (self.l2_range_max / 100.0) * RANGE_RECT.width;
-                    if (rel_x - x_min).abs() <= (rel_x - x_max).abs() {
-                        self.l2_range_drag_handle = Some(DualSliderHandle::Min);
-                        Some(DragTarget::L2RangeMin(self.l2_range_min))
-                    } else {
-                        self.l2_range_drag_handle = Some(DualSliderHandle::Max);
-                        Some(DragTarget::L2RangeMax(self.l2_range_max))
-                    }
+            use uzor::ui::widgets::composite::blackbox_panel::types::{BlackboxEvent, BlackboxHandler};
+            if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
+                let modal_pos = self.layout.modal(&self.modal_h).position;
+                let frame_x = if modal_pos != (0.0, 0.0) { modal_pos.0 } else { modal_rect.x };
+                let frame_y = if modal_pos != (0.0, 0.0) { modal_pos.1 } else { modal_rect.y };
+                // body_rect starts 44px from top (header), 52px from bottom (footer)
+                let body_y = frame_y + 44.0;
+                let body_h = modal_rect.height - 44.0 - 52.0;
+                let body_rect = uzor::types::Rect::new(frame_x, body_y, modal_rect.width, body_h);
+                if body_rect.contains(x, y) {
+                    let lx = x - body_rect.x;
+                    let ly = y - body_rect.y;
+                    self.l2_demo.handle_event(BlackboxEvent::PointerDown {
+                        local_x: lx, local_y: ly,
+                        button: uzor::input::MouseButton::Left,
+                    });
                 }
-                Some("l2-sb-track") | Some("l2-sb-thumb") => Some(DragTarget::L2Scroll(self.l2_scroll_off)),
-                _ => None,
-            };
-            self.drag_target = target;
+            }
         }
-        // ── /L2-INSIDE-L3 BLOCK: drag-start ──────────────────────────────────
     }
 
     fn on_mouse_move(&mut self, x: f64, y: f64) {
@@ -3690,6 +2998,23 @@ impl AppState {
             return;
         }
 
+        // L2 demo: forward PointerMove to blackbox handler (drag tracking inside).
+        if self.modal_open && self.modal_kind == ModalKind::L2 {
+            use uzor::ui::widgets::composite::blackbox_panel::types::{BlackboxEvent, BlackboxHandler};
+            if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
+                let modal_pos = self.layout.modal(&self.modal_h).position;
+                let frame_x = if modal_pos != (0.0, 0.0) { modal_pos.0 } else { modal_rect.x };
+                let frame_y = if modal_pos != (0.0, 0.0) { modal_pos.1 } else { modal_rect.y };
+                let body_y = frame_y + 44.0;
+                let body_h = modal_rect.height - 44.0 - 52.0;
+                let lx = x - frame_x;
+                let ly = y - body_y;
+                if body_h > 0.0 {
+                    self.l2_demo.handle_event(BlackboxEvent::PointerMove { local_x: lx, local_y: ly });
+                }
+            }
+        }
+
         // Drag
         // Separator drag (fix 6) — handle before the shared drag block to avoid borrow conflicts
         if let Some(DragTarget::SeparatorDrag { sep_idx, start_x: ref mut sx, start_y: ref mut sy }) = self.drag_target {
@@ -3712,47 +3037,12 @@ impl AppState {
         }
 
         if let (Some((ox, oy)), Some(ref target)) = (self.drag_origin, self.drag_target.as_ref()) {
-            let dx = x - ox;
-            let dy = y - oy;
+            let _dx = x - ox;
+            let _dy = y - oy;
             match target {
                 DragTarget::ModalDrag => {} // handled above
                 DragTarget::SeparatorDrag { .. } => {} // handled above
-                // ── L2-INSIDE-L3 BLOCK: drag-update ──────────────────────────
-                // Hand-rolled drag math for slider / range / scroll / splitter
-                // inside the L2 demo modal.  The lib already exposes the right
-                // primitives (slider::pixel_to_value, scrollbar::handle_drag,
-                // thumb_height) — this code intentionally uses the
-                // delta-from-start pattern instead because the surrounding L2
-                // region pre-dates the typed body builder.
-                //
-                // Phase D target: this block lives inside L2DemoBlackbox as
-                // BlackboxHandler::handle_event(PointerMove); L3 app stops
-                // seeing L2Slider / L2RangeMin / L2Scroll / L2Splitter as
-                // its own DragTarget variants — the blackbox owns its drag
-                // entirely.
-                DragTarget::L2Slider(v0) => {
-                    let frac = dx / SLID_RECT.width;
-                    self.l2_slider_val = (v0 + frac * 100.0).clamp(0.0, 100.0);
-                }
-                DragTarget::L2RangeMin(v0) => {
-                    let frac = dx / RANGE_RECT.width;
-                    self.l2_range_min = (v0 + frac * 100.0).clamp(0.0, self.l2_range_max);
-                }
-                DragTarget::L2RangeMax(v0) => {
-                    let frac = dx / RANGE_RECT.width;
-                    self.l2_range_max = (v0 + frac * 100.0).clamp(self.l2_range_min, 100.0);
-                }
-                DragTarget::L2Scroll(v0) => {
-                    use uzor::ui::widgets::atomic::scrollbar::input::thumb_height;
-                    let sr = SB_H - thumb_height(CONTENT_H, SB_H, SB_H, 30.0);
-                    if sr > 0.0 {
-                        self.l2_scroll_off = (v0 + dy / sr * (CONTENT_H - SB_H)).clamp(0.0, (CONTENT_H - SB_H).max(0.0));
-                    }
-                }
-                DragTarget::L2Splitter(w0) => {
-                    self.l2_right_panel_w = (w0 - dx).clamp(200.0, L2_WIN_W - 100.0);
-                }
-                // ── /L2-INSIDE-L3 BLOCK: drag-update ─────────────────────────
+                // L2 drag math lives inside L2DemoBlackbox::handle_event(PointerMove).
                 DragTarget::SidebarScrollbar { track_rect, content_h, viewport_h } => {
                     // Atomic scrollbar API converts current cursor Y → scroll offset
                     // using the track height + content/viewport ratios.
@@ -3854,7 +3144,13 @@ impl AppState {
             }
         }
         self.drag_target = None;
-        self.l2_range_drag_handle = None;
+        // L2 demo drag end.
+        {
+            use uzor::ui::widgets::composite::blackbox_panel::types::{BlackboxEvent, BlackboxHandler};
+            self.l2_demo.handle_event(BlackboxEvent::PointerUp {
+                local_x: 0.0, local_y: 0.0, button: uzor::input::MouseButton::Left,
+            });
+        }
         // Watchlist drag end is routed by the composite via PointerUp.
     }
 }
@@ -3956,8 +3252,6 @@ impl ApplicationHandler for Handler {
         let demo_sidebar_top_h    = layout.add_sidebar("demo-sidebar-top-widget");
         let demo_sidebar_bottom_h = layout.add_sidebar("demo-sidebar-bottom-widget");
         let demo_popup_h          = layout.add_popup("demo-popup-widget");
-        let l2_connect_popup_h    = layout.add_popup("l2-connect-popup-widget");
-        let l2_4dir_popup_h       = layout.add_popup("l2-4dir-popup-widget");
 
         // Seed initial sidebar width.
         {
@@ -4001,19 +3295,7 @@ impl ApplicationHandler for Handler {
             modal_open: false,
             modal_kind: ModalKind::L2,
             popup_item: None,
-            l2_connected: false,
-            l2_checked: true,
-            l2_toggled: true,
-            l2_radio_sel: 1,
-            l2_slider_val: 40.0,
-            l2_range_min: 20.0,
-            l2_range_max: 80.0,
-            l2_range_drag_handle: None,
-            l2_scroll_off: 0.0,
-            l2_swatch_sel: 0,
-            l2_active_tab: 0,
-            l2_active_sub_tab: 0,
-            l2_right_panel_w: 330.0,
+            l2_demo: l2_demo_blackbox::L2DemoBlackbox::default(),
             last_mouse: (0.0, 0.0),
             mouse_down: false,
             drag_origin: None,
@@ -4023,10 +3305,6 @@ impl ApplicationHandler for Handler {
             spawn_split: SpawnSplit::SplitRight,
             exit_requested: false,
             watchlist: watchlist_blackbox::WatchlistState::default(),
-            l2_connect_popup_open: false,
-            // l2_connect_popup_state is in layout.popups
-            l2_4dir_popup: None,
-            // l2_4dir_popup_state is in layout.popups
             modal_h,
             dd_file_h,
             dd_view_h,
@@ -4046,8 +3324,6 @@ impl ApplicationHandler for Handler {
             demo_sidebar_top_h,
             demo_sidebar_bottom_h,
             demo_popup_h,
-            l2_connect_popup_h,
-            l2_4dir_popup_h,
         });
     }
 
@@ -4361,37 +3637,23 @@ impl ApplicationHandler for Handler {
             if consumed { app.window.request_redraw(); }
         }
 
-        // ── L2-INSIDE-L3 BLOCK: wheel routing ────────────────────────────────
-        // Manual hit-test against the L2 modal's right sub-panel rect, with
-        // magic header/footer offsets (44.0 / 52.0) reconstructed from
-        // composite-internal modal chrome geometry.
-        //
-        // Phase D target: L2 demo lives inside L2DemoBlackbox; wheel routing
-        // becomes BlackboxHandler::handle_event(Wheel).  The blackbox knows
-        // its own rect and sub-panels — no magic offsets re-derived in app.
+        // L2 demo wheel — forwarded to blackbox handler.
         if let Some(((cx, cy), (_, dy))) = out.wheel {
-            if app.modal_open && app.modal_kind == ModalKind::L2 && app.l2_active_tab == 0 {
+            if app.modal_open && app.modal_kind == ModalKind::L2 {
+                use uzor::ui::widgets::composite::blackbox_panel::types::{BlackboxEvent, BlackboxHandler};
                 if let Some(modal_rect) = app.layout.rect_for_overlay("modal-overlay") {
                     let modal_pos = app.layout.modal(&app.modal_h).position;
                     let frame_x = if modal_pos != (0.0, 0.0) { modal_pos.0 } else { modal_rect.x };
                     let frame_y = if modal_pos != (0.0, 0.0) { modal_pos.1 } else { modal_rect.y };
-                    let body_y  = frame_y + 44.0; // header height
-                    let body_h  = modal_rect.height - 44.0 - 52.0;
-                    // right panel starts at frame_x + (L2_WIN_W - l2_right_panel_w)
-                    let rp_screen_x = frame_x + L2_WIN_W - app.l2_right_panel_w;
-                    let right_panel_rect = Rect::new(
-                        rp_screen_x,
-                        body_y + 12.0,
-                        app.l2_right_panel_w - 12.0,
-                        body_h - 24.0,
-                    );
-                    if right_panel_rect.contains(cx, cy) {
-                        app.l2_scroll_off = (app.l2_scroll_off - dy * 20.0)
-                            .clamp(0.0, (CONTENT_H - SB_H).max(0.0));
+                    let body_y = frame_y + 44.0;
+                    let body_h = modal_rect.height - 44.0 - 52.0;
+                    let body_rect = uzor::types::Rect::new(frame_x, body_y, modal_rect.width, body_h);
+                    if body_rect.contains(cx, cy) {
+                        app.l2_demo.handle_event(BlackboxEvent::Wheel { delta_x: 0.0, delta_y: dy });
+                        app.window.request_redraw();
                     }
                 }
             }
-            // ── /L2-INSIDE-L3 BLOCK: wheel routing ───────────────────────────
             app.window.request_redraw();
         }
 
@@ -4742,6 +4004,568 @@ mod watchlist_blackbox {
             Hit::Row(r) => Some(r),
             _           => None,
         }
+    }
+}
+
+// =============================================================================
+// === BLACKBOX PANEL DEMO === L2 Widget Set
+// === Phase D: all L2-inside-L3 state, render, drag, and input moves here.
+// === The modal body calls L2DemoBlackbox::render() + routes events to
+// === L2DemoBlackbox::handle_event().  AppState no longer sees l2_* fields.
+// =============================================================================
+
+mod l2_demo_blackbox {
+    use uzor::render::{RenderContext, TextAlign, TextBaseline};
+    use uzor::types::{Rect, WidgetState};
+    use uzor::ui::widgets::composite::blackbox_panel::types::{
+        BlackboxEvent, BlackboxEventResult, BlackboxHandler,
+    };
+
+    // ── Layout constants (local to this demo) ─────────────────────────────────
+    pub const L2_WIN_W: f64 = 560.0;
+    pub const L2_WIN_H: f64 = 440.0;
+
+    const BTN_RECT:   Rect = Rect { x: 28.0, y: 28.0,  width: 130.0, height: 36.0 };
+    const CB_RECT:    Rect = Rect { x: 28.0, y: 88.0,  width: 160.0, height: 22.0 };
+    const TOG_RECT:   Rect = Rect { x: 28.0, y: 130.0, width: 80.0,  height: 24.0 };
+    const SLID_RECT:  Rect = Rect { x: 28.0, y: 200.0, width: 260.0, height: 24.0 };
+    const RANGE_RECT: Rect = Rect { x: 28.0, y: 228.0, width: 260.0, height: 24.0 };
+
+    const TAB_STRIP_Y:    f64 = 12.0;
+    const TAB_STRIP_H:    f64 = 28.0;
+    const CONTENT_START_Y: f64 = 52.0;
+    const SB_W:           f64 = 10.0;
+    const SB_H:           f64 = 376.0;
+    const CONTENT_ROWS:   usize = 20;
+    const ROW_H:          f64 = 28.0;
+    const CONTENT_H:      f64 = CONTENT_ROWS as f64 * ROW_H;
+    const SPLITTER_W:     f64 = 6.0;
+    const LEFT_PANEL_X:   f64 = 12.0;
+
+    // ── Drag state ────────────────────────────────────────────────────────────
+
+    #[derive(Clone, Copy)]
+    enum L2Drag {
+        Slider  { start_x: f64, v0: f64 },
+        RangeMin { start_x: f64, v0: f64 },
+        RangeMax { start_x: f64, v0: f64 },
+        Scroll  { start_y: f64, v0: f64 },
+        Splitter { start_x: f64, w0: f64 },
+    }
+
+    // ── Hovered widget id (for visual feedback) ───────────────────────────────
+    #[derive(Clone, Copy, PartialEq, Eq, Default)]
+    enum Hovered {
+        #[default]
+        None,
+        Button,
+        Checkbox,
+        Toggle,
+        Radio(usize),
+        Slider,
+        Range,
+        Swatch(usize),
+        Tab(usize),
+        SubTab(usize),
+        Scrollbar,
+        Splitter,
+    }
+
+    // ── Main struct ───────────────────────────────────────────────────────────
+
+    pub struct L2DemoBlackbox {
+        // Widget state
+        connected:      bool,
+        checked:        bool,
+        toggled:        bool,
+        radio_sel:      usize,
+        slider_val:     f64,
+        range_min:      f64,
+        range_max:      f64,
+        scroll_off:     f64,
+        swatch_sel:     usize,
+        active_tab:     usize,
+        active_sub_tab: usize,
+        right_panel_w:  f64,
+
+        // Input tracking
+        hovered:        Hovered,
+        drag:           Option<L2Drag>,
+
+        // Panel geometry (set each frame by host before render)
+        panel_size:     (f64, f64),
+    }
+
+    impl Default for L2DemoBlackbox {
+        fn default() -> Self {
+            Self {
+                connected:      false,
+                checked:        true,
+                toggled:        true,
+                radio_sel:      1,
+                slider_val:     40.0,
+                range_min:      20.0,
+                range_max:      80.0,
+                scroll_off:     0.0,
+                swatch_sel:     0,
+                active_tab:     0,
+                active_sub_tab: 0,
+                right_panel_w:  330.0,
+                hovered:        Hovered::None,
+                drag:           None,
+                panel_size:     (0.0, 0.0),
+            }
+        }
+    }
+
+    impl L2DemoBlackbox {
+        pub fn set_panel_size(&mut self, size: (f64, f64)) {
+            self.panel_size = size;
+        }
+    }
+
+    // ── BlackboxHandler impl ──────────────────────────────────────────────────
+
+    impl BlackboxHandler for L2DemoBlackbox {
+        fn render(&self, ctx: &mut dyn RenderContext, body_rect: Rect) {
+            render_l2(self, ctx, body_rect);
+        }
+
+        fn handle_event(&mut self, event: BlackboxEvent) -> BlackboxEventResult {
+            match event {
+                BlackboxEvent::PointerMove { local_x, local_y } => {
+                    on_move(self, local_x, local_y);
+                    BlackboxEventResult::Redraw
+                }
+                BlackboxEvent::PointerDown { local_x, local_y, .. } => {
+                    on_down(self, local_x, local_y);
+                    BlackboxEventResult::Consumed
+                }
+                BlackboxEvent::PointerUp { .. } => {
+                    self.drag = None;
+                    BlackboxEventResult::Consumed
+                }
+                BlackboxEvent::Wheel { delta_y, .. } => {
+                    if self.active_tab == 0 {
+                        self.scroll_off = (self.scroll_off - delta_y * 20.0)
+                            .clamp(0.0, (CONTENT_H - SB_H).max(0.0));
+                    }
+                    BlackboxEventResult::Consumed
+                }
+                _ => BlackboxEventResult::NotConsumed,
+            }
+        }
+
+        fn needs_pointer_up(&self) -> bool {
+            self.drag.is_some()
+        }
+    }
+
+    // ── Hit-test (local coords: 0,0 = body top-left) ─────────────────────────
+
+    fn right_panel_x(right_panel_w: f64) -> f64 {
+        L2_WIN_W - right_panel_w
+    }
+
+    fn hit_test(state: &L2DemoBlackbox, lx: f64, ly: f64) -> Hovered {
+        let rpx = right_panel_x(state.right_panel_w);
+        // Splitter zone
+        let splitter_cx = rpx - SPLITTER_W / 2.0;
+        if (lx - splitter_cx).abs() <= SPLITTER_W / 2.0 + 2.0 {
+            return Hovered::Splitter;
+        }
+        // Left panel widgets
+        if lx < rpx - SPLITTER_W / 2.0 {
+            if BTN_RECT.contains(lx, ly)  { return Hovered::Button; }
+            if CB_RECT.contains(lx, ly)   { return Hovered::Checkbox; }
+            if TOG_RECT.contains(lx, ly)  { return Hovered::Toggle; }
+            for (i, cx_off) in [28.0_f64, 68.0, 108.0].iter().enumerate() {
+                let r = Rect::new(*cx_off, 175.0, 28.0, 28.0);
+                if r.contains(lx, ly) { return Hovered::Radio(i); }
+            }
+            if SLID_RECT.contains(lx, ly)  { return Hovered::Slider; }
+            if RANGE_RECT.contains(lx, ly) { return Hovered::Range; }
+            let swatch_colors: [usize; 4] = [0, 1, 2, 3];
+            for i in swatch_colors {
+                let r = Rect::new(28.0 + i as f64 * 34.0, 344.0, 26.0, 26.0);
+                if r.contains(lx, ly) { return Hovered::Swatch(i); }
+            }
+        }
+        // Right panel
+        if lx >= rpx {
+            let tab_w = ((state.right_panel_w - 16.0) / 3.0).floor();
+            for i in 0..3 {
+                let tab_x = rpx + 8.0 + i as f64 * (tab_w + 4.0);
+                let tab_rect = Rect::new(tab_x, TAB_STRIP_Y, tab_w, TAB_STRIP_H);
+                if tab_rect.contains(lx, ly) { return Hovered::Tab(i); }
+            }
+            // Scrollbar
+            let sb_x = L2_WIN_W - SB_W - 8.0;
+            if lx >= sb_x && ly >= 52.0 && ly <= 52.0 + SB_H {
+                return Hovered::Scrollbar;
+            }
+            // Sub-tabs
+            if state.active_tab == 2 {
+                for i in 0..3 {
+                    let r = Rect::new(rpx + 8.0, CONTENT_START_Y + 8.0 + i as f64 * 36.0, 90.0, 30.0);
+                    if r.contains(lx, ly) { return Hovered::SubTab(i); }
+                }
+            }
+        }
+        Hovered::None
+    }
+
+    // ── Input handlers ────────────────────────────────────────────────────────
+
+    fn on_move(state: &mut L2DemoBlackbox, lx: f64, ly: f64) {
+        // If dragging, update drag math
+        if let Some(drag) = state.drag {
+            match drag {
+                L2Drag::Slider { start_x, v0 } => {
+                    let frac = (lx - start_x) / SLID_RECT.width;
+                    state.slider_val = (v0 + frac * 100.0).clamp(0.0, 100.0);
+                }
+                L2Drag::RangeMin { start_x, v0 } => {
+                    let frac = (lx - start_x) / RANGE_RECT.width;
+                    state.range_min = (v0 + frac * 100.0).clamp(0.0, state.range_max);
+                }
+                L2Drag::RangeMax { start_x, v0 } => {
+                    let frac = (lx - start_x) / RANGE_RECT.width;
+                    state.range_max = (v0 + frac * 100.0).clamp(state.range_min, 100.0);
+                }
+                L2Drag::Scroll { start_y, v0 } => {
+                    use uzor::ui::widgets::atomic::scrollbar::input::thumb_height;
+                    let sr = SB_H - thumb_height(CONTENT_H, SB_H, SB_H, 30.0);
+                    if sr > 0.0 {
+                        let dy = lx - start_y; // using x axis for vertical scroll? No: scroll uses y.
+                        let _ = dy;
+                        let dy_real = lx - start_y; // see below: we stored start_y as start_y
+                        let _ = dy_real;
+                        // Correction: scroll drag stores start_y from ly
+                        let dy2 = ly - start_y;
+                        state.scroll_off = (v0 + dy2 / sr * (CONTENT_H - SB_H))
+                            .clamp(0.0, (CONTENT_H - SB_H).max(0.0));
+                    }
+                }
+                L2Drag::Splitter { start_x, w0 } => {
+                    let dx = lx - start_x;
+                    state.right_panel_w = (w0 - dx).clamp(200.0, L2_WIN_W - 100.0);
+                }
+            }
+        } else {
+            state.hovered = hit_test(state, lx, ly);
+        }
+    }
+
+    fn on_down(state: &mut L2DemoBlackbox, lx: f64, ly: f64) {
+        let hit = hit_test(state, lx, ly);
+        match hit {
+            Hovered::Button   => { state.connected = !state.connected; }
+            Hovered::Checkbox => { state.checked = !state.checked; }
+            Hovered::Toggle   => { state.toggled = !state.toggled; }
+            Hovered::Radio(i) => { state.radio_sel = i; }
+            Hovered::Swatch(i) => { state.swatch_sel = i; }
+            Hovered::Tab(i)   => { state.active_tab = i; state.scroll_off = 0.0; }
+            Hovered::SubTab(i) => { state.active_sub_tab = i; }
+            Hovered::Slider   => {
+                state.drag = Some(L2Drag::Slider { start_x: lx, v0: state.slider_val });
+            }
+            Hovered::Range => {
+                let x_min = RANGE_RECT.x + (state.range_min / 100.0) * RANGE_RECT.width;
+                let x_max = RANGE_RECT.x + (state.range_max / 100.0) * RANGE_RECT.width;
+                if (lx - x_min).abs() <= (lx - x_max).abs() {
+                    state.drag = Some(L2Drag::RangeMin { start_x: lx, v0: state.range_min });
+                } else {
+                    state.drag = Some(L2Drag::RangeMax { start_x: lx, v0: state.range_max });
+                }
+            }
+            Hovered::Scrollbar => {
+                state.drag = Some(L2Drag::Scroll { start_y: ly, v0: state.scroll_off });
+            }
+            Hovered::Splitter => {
+                state.drag = Some(L2Drag::Splitter { start_x: lx, w0: state.right_panel_w });
+            }
+            Hovered::None => {}
+        }
+    }
+
+    // ── Render (body_rect is in SCREEN coordinates) ───────────────────────────
+
+    fn draw_label(
+        render: &mut dyn RenderContext,
+        rect:   Rect,
+        text:   &str,
+        align:  TextAlign,
+        color:  &str,
+    ) {
+        use uzor::ui::widgets::atomic::text::{draw_text, TextSettings};
+        use uzor::ui::widgets::atomic::text::types::{TextOverflow, TextView};
+        draw_text(render, rect, &TextView {
+            text,
+            align,
+            baseline: TextBaseline::Middle,
+            color:    Some(color),
+            font:     None,
+            overflow: TextOverflow::Clip,
+            hovered:  false,
+        }, &TextSettings::default());
+    }
+
+    fn render_l2(state: &L2DemoBlackbox, render: &mut dyn RenderContext, body_rect: Rect) {
+        use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonView};
+        use uzor::ui::widgets::atomic::button::render::draw_button;
+        use uzor::ui::widgets::atomic::checkbox::render::draw_checkbox;
+        use uzor::ui::widgets::atomic::checkbox::settings::CheckboxSettings;
+        use uzor::ui::widgets::atomic::checkbox::types::{CheckboxRenderKind, CheckboxView};
+        use uzor::ui::widgets::atomic::toggle::render::draw_toggle;
+        use uzor::ui::widgets::atomic::toggle::settings::ToggleSettings;
+        use uzor::ui::widgets::atomic::toggle::types::{ToggleRenderKind, ToggleView};
+        use uzor::ui::widgets::atomic::radio::render::draw_radio;
+        use uzor::ui::widgets::atomic::radio::settings::RadioSettings;
+        use uzor::ui::widgets::atomic::radio::types::{DotShape, RadioDotView, RadioRenderKind};
+        use uzor::ui::widgets::atomic::slider::render::draw_slider;
+        use uzor::ui::widgets::atomic::slider::settings::SliderSettings;
+        use uzor::ui::widgets::atomic::slider::types::SliderType;
+        use uzor::ui::widgets::atomic::slider::render::SliderView;
+        use uzor::ui::widgets::atomic::color_swatch::render::draw_color_swatch;
+        use uzor::ui::widgets::atomic::color_swatch::settings::ColorSwatchSettings;
+        use uzor::ui::widgets::atomic::color_swatch::types::{ColorSwatchRenderKind, ColorSwatchView};
+        use uzor::ui::widgets::atomic::drag_handle::render::draw_drag_handle;
+        use uzor::ui::widgets::atomic::drag_handle::settings::DragHandleSettings;
+        use uzor::ui::widgets::atomic::drag_handle::types::{DragHandleRenderKind, DragHandleView};
+        use uzor::ui::widgets::atomic::tab::render::{draw_tab, TabView};
+        use uzor::ui::widgets::atomic::tab::settings::TabSettings;
+        use uzor::ui::widgets::atomic::tab::types::TabConfig;
+        use uzor::ui::widgets::atomic::scrollbar::render::{draw_scrollbar, ScrollbarView, ScrollbarVisualState};
+        use uzor::ui::widgets::atomic::scrollbar::style::StandardScrollbarStyle;
+        use uzor::ui::widgets::atomic::scrollbar::theme::DefaultScrollbarTheme;
+        use uzor::ui::widgets::atomic::separator::render::draw_separator;
+        use uzor::ui::widgets::atomic::separator::settings::SeparatorSettings;
+        use uzor::ui::widgets::atomic::separator::types::{SeparatorOrientation, SeparatorType};
+        use uzor::ui::widgets::atomic::separator::render::SeparatorView;
+        use uzor::render::draw_svg_icon;
+
+        let rpx = right_panel_x(state.right_panel_w);
+        let ox = body_rect.x;
+        let oy = body_rect.y;
+        let body_h = body_rect.height;
+        let left_panel_w = rpx - LEFT_PANEL_X - SPLITTER_W / 2.0;
+        let panel_inner_h = body_h - 24.0;
+
+        // Panel backgrounds
+        render.set_fill_color("#1e222d");
+        render.fill_rounded_rect(ox + LEFT_PANEL_X, oy + 12.0, left_panel_w, panel_inner_h, 8.0);
+        render.fill_rounded_rect(ox + rpx, oy + 12.0, L2_WIN_W - rpx - 12.0, panel_inner_h, 8.0);
+
+        // ── Left panel ────────────────────────────────────────────────────────
+        render.save();
+        render.clip_rect(ox + LEFT_PANEL_X, oy + 12.0, left_panel_w, panel_inner_h);
+
+        // 1. Button
+        let btn_rect = Rect::new(BTN_RECT.x + ox, BTN_RECT.y + oy, BTN_RECT.width, BTN_RECT.height);
+        let btn_state = if state.hovered == Hovered::Button { WidgetState::Hovered }
+                        else if state.connected { WidgetState::Active }
+                        else { WidgetState::Normal };
+        draw_button(&mut *render, btn_rect, btn_state, &ButtonView {
+            text: Some(if state.connected { "Disconnect" } else { "Connect" }),
+            icon: None,
+            active: state.connected,
+            disabled: false,
+            active_border: None,
+            hover_chevron: None,
+        }, &ButtonSettings::default().with_theme(Box::new(super::VisibleButtonTheme)), |_, _, _, _| {});
+
+        // 2. Checkbox
+        let cb_state = if state.hovered == Hovered::Checkbox { WidgetState::Hovered } else { WidgetState::Normal };
+        draw_checkbox(&mut *render,
+            Rect::new(CB_RECT.x + ox, CB_RECT.y + oy, CB_RECT.width, CB_RECT.height),
+            cb_state,
+            &CheckboxView { checked: state.checked, label: Some("Setting A") },
+            &CheckboxSettings::default().with_theme(Box::new(super::VisibleCheckboxTheme)),
+            &CheckboxRenderKind::Standard, "13px sans-serif",
+        );
+
+        // 3. Toggle
+        let tog_state = if state.hovered == Hovered::Toggle { WidgetState::Hovered } else { WidgetState::Normal };
+        draw_toggle(&mut *render,
+            Rect::new(TOG_RECT.x + ox, TOG_RECT.y + oy, TOG_RECT.width, TOG_RECT.height),
+            tog_state,
+            &ToggleView { toggled: state.toggled, label: Some("ON"), disabled: false },
+            &ToggleSettings::default(),
+            &ToggleRenderKind::Switch,
+            |_, _, _, _| {},
+        );
+
+        // 4. Radio ×3
+        for (i, cx_off) in [28.0_f64, 68.0, 108.0].iter().enumerate() {
+            let r_state = if state.hovered == Hovered::Radio(i) { WidgetState::Hovered } else { WidgetState::Normal };
+            draw_radio(&mut *render,
+                Rect::new(cx_off + ox, 175.0 + oy, 28.0, 28.0),
+                r_state,
+                &RadioSettings::default(),
+                &RadioRenderKind::Dot {
+                    shape: DotShape::Circle,
+                    cx:   cx_off + 14.0 + ox,
+                    cy:   175.0 + 14.0 + oy,
+                    view: RadioDotView { selected: state.radio_sel == i },
+                },
+            );
+        }
+
+        // 5. Slider
+        let sl_state = if state.hovered == Hovered::Slider { WidgetState::Hovered } else { WidgetState::Normal };
+        draw_slider(&mut *render,
+            Rect::new(SLID_RECT.x + ox, SLID_RECT.y + oy, SLID_RECT.width, SLID_RECT.height),
+            sl_state,
+            &SliderView { kind: SliderType::Single { value: state.slider_val, min: 0.0, max: 100.0, step: 1.0 }, hovered: false, disabled: false, dragging_handle: None },
+            &SliderSettings::default(),
+        );
+
+        // 6. Range slider
+        let rng_state = if state.hovered == Hovered::Range { WidgetState::Hovered } else { WidgetState::Normal };
+        draw_slider(&mut *render,
+            Rect::new(RANGE_RECT.x + ox, RANGE_RECT.y + oy, RANGE_RECT.width, RANGE_RECT.height),
+            rng_state,
+            &SliderView { kind: SliderType::Dual { min_value: state.range_min, max_value: state.range_max, min: 0.0, max: 100.0, step: 1.0 }, hovered: false, disabled: false, dragging_handle: None },
+            &SliderSettings::default(),
+        );
+
+        // 7. Separator line
+        draw_separator(&mut *render,
+            Rect::new(28.0 + ox, 260.0 + oy, 260.0, 2.0),
+            &SeparatorView { kind: SeparatorType::Divider { orientation: SeparatorOrientation::Horizontal }, hovered: false, dragging: false },
+            &SeparatorSettings::default(),
+        );
+
+        // 8. Color swatches ×4
+        let swatch_colors: [[u8; 4]; 4] = [
+            [41, 98, 255, 255], [16, 185, 129, 255], [245, 158, 11, 255], [239, 83, 80, 255],
+        ];
+        for (i, color) in swatch_colors.iter().enumerate() {
+            let sw_state = if state.hovered == Hovered::Swatch(i) { WidgetState::Hovered } else { WidgetState::Normal };
+            draw_color_swatch(&mut *render,
+                Rect::new(28.0 + i as f64 * 34.0 + ox, 344.0 + oy, 26.0, 26.0),
+                sw_state,
+                &ColorSwatchView { color: *color, hovered: false, selected: state.swatch_sel == i, show_transparency: false, border_color_override: None },
+                &ColorSwatchSettings::default(),
+                &ColorSwatchRenderKind::Simple,
+            );
+        }
+
+        render.restore();
+
+        // ── Right panel ───────────────────────────────────────────────────────
+        render.save();
+        render.clip_rect(ox + rpx, oy + 12.0, L2_WIN_W - rpx - 12.0, panel_inner_h);
+
+        // Tab strip
+        let tab_labels = ["List", "Empty", "Sub-tabs"];
+        let tab_w = ((state.right_panel_w - 16.0) / 3.0).floor();
+        for (i, lbl) in tab_labels.iter().enumerate() {
+            let tab_x = rpx + 8.0 + i as f64 * (tab_w + 4.0);
+            let tab_rect = Rect::new(tab_x + ox, TAB_STRIP_Y + oy, tab_w, TAB_STRIP_H);
+            let tab_hovered = state.hovered == Hovered::Tab(i);
+            let tab_cfg = TabConfig::new(
+                if i == 0 { "l2-tab-0" } else if i == 1 { "l2-tab-1" } else { "l2-tab-2" },
+                *lbl,
+            );
+            let tab_cfg = {
+                let mut tc = tab_cfg;
+                tc.active = state.active_tab == i;
+                tc
+            };
+            draw_tab(&mut *render, tab_rect, &TabView { tab: &tab_cfg, hovered: tab_hovered, pressed: false, close_btn_hovered: false }, &TabSettings::default());
+        }
+
+        // Tab content
+        if state.active_tab == 0 {
+            // Scrollable list + scrollbar
+            let sb_x = L2_WIN_W - SB_W - 8.0;
+            let sb_track = Rect::new(sb_x + ox, 52.0 + oy, SB_W, SB_H);
+            let sb_vis = if state.hovered == Hovered::Scrollbar {
+                ScrollbarVisualState::HandleHovered
+            } else if state.drag.is_some() {
+                ScrollbarVisualState::Dragging
+            } else {
+                ScrollbarVisualState::Active
+            };
+            draw_scrollbar(&mut *render, sb_track, &ScrollbarView {
+                content_height:  CONTENT_H,
+                viewport_height: SB_H,
+                scroll_offset:   state.scroll_off,
+                state:           sb_vis,
+                drag_pos_y:      None,
+                style:           &StandardScrollbarStyle,
+                theme:           &DefaultScrollbarTheme,
+            });
+
+            let row_labels = [
+                "★ Roboto regular", "Sans-serif clean", "→ arrow + ✓ check",
+                "Quick brown fox", "✨ ★ ☀ ☂ ❤", "fn main() { ... }",
+                "let x: u32 = 42;", "if let Some(v) = opt", "// monospace code",
+                "0xCAFE_BABE", "PT Root UI light", "вариативный шрифт",
+                "12345 67890", "Кириллица OK", "ƒ unicode glyphs",
+                "Bold Roboto bold", "❗ Heads up ❗", "✓ Done · 14 items",
+                "🌍 globe · 🌟 star", "═══ end of list ═══",
+            ];
+            let content_x = rpx + 8.0 + ox;
+            let content_w = state.right_panel_w - SB_W - 20.0;
+            for row in 0..CONTENT_ROWS {
+                let row_y = 52.0 + oy + row as f64 * ROW_H - state.scroll_off;
+                if row_y + ROW_H < 52.0 + oy || row_y > 52.0 + oy + SB_H { continue; }
+                let color = if row % 2 == 0 { "rgba(255,255,255,0.08)" } else { "rgba(0,0,0,0)" };
+                render.set_fill_color(color);
+                render.fill_rect(content_x, row_y, content_w, ROW_H - 2.0);
+                draw_label(render, Rect::new(content_x + 4.0, row_y, content_w - 8.0, ROW_H - 2.0),
+                    row_labels[row], TextAlign::Left, "#c8c8dc");
+            }
+        }
+
+        if state.active_tab == 2 {
+            for (i, lbl) in ["Alpha", "Beta", "Gamma"].iter().enumerate() {
+                let sub_rect = Rect::new(rpx + 8.0 + ox, CONTENT_START_Y + 8.0 + i as f64 * 36.0 + oy, 90.0, 30.0);
+                let sub_hov = state.hovered == Hovered::SubTab(i);
+                let sub_id = if i == 0 { "l2-sub-0" } else if i == 1 { "l2-sub-1" } else { "l2-sub-2" };
+                let sub_cfg = { let mut tc = TabConfig::new(sub_id, *lbl); tc.active = state.active_sub_tab == i; tc };
+                draw_tab(&mut *render, sub_rect, &TabView { tab: &sub_cfg, hovered: sub_hov, pressed: false, close_btn_hovered: false }, &TabSettings::default());
+            }
+            let sub_content_y = CONTENT_START_Y + 8.0 + 3.0 * 36.0 + 8.0;
+            let sub_cx = rpx + state.right_panel_w / 2.0 + ox;
+            let icon_size = 64.0_f64;
+            let ix = sub_cx - icon_size / 2.0;
+            let iy = sub_content_y + oy + 8.0;
+            let (sub_svg, sub_color) = match state.active_sub_tab {
+                0 => (super::SVG_CIRCLE,   "#2962ff"),
+                1 => (super::SVG_TRIANGLE, "#f59e0b"),
+                _ => (super::SVG_DIAMOND,  "#ef5350"),
+            };
+            draw_svg_icon(&mut *render, sub_svg, ix, iy, icon_size, icon_size, sub_color);
+        }
+
+        if state.active_tab == 1 {
+            let icon_size = 64.0_f64;
+            let gap = 16.0_f64;
+            let content_cx = rpx + state.right_panel_w / 2.0 + ox;
+            let content_cy = CONTENT_START_Y + (420.0 - CONTENT_START_Y - 12.0) / 2.0 + oy;
+            let grid_x0 = content_cx - (icon_size * 2.0 + gap) / 2.0;
+            let grid_y0 = content_cy - (icon_size * 2.0 + gap) / 2.0;
+            for (idx, (svg, color)) in [
+                (super::SVG_CIRCLE, "#2962ff"), (super::SVG_SQUARE, "#10b981"),
+                (super::SVG_TRIANGLE, "#f59e0b"), (super::SVG_DIAMOND, "#ef5350"),
+            ].iter().enumerate() {
+                let col = idx % 2;
+                let row = idx / 2;
+                draw_svg_icon(&mut *render, svg, grid_x0 + col as f64 * (icon_size + gap), grid_y0 + row as f64 * (icon_size + gap), icon_size, icon_size, color);
+            }
+        }
+
+        render.restore();
+
+        // ── Splitter handle ───────────────────────────────────────────────────
+        let dh_rect = Rect::new(rpx - SPLITTER_W / 2.0 + ox, 12.0 + oy, SPLITTER_W, panel_inner_h);
+        let dh_state = if state.hovered == Hovered::Splitter { WidgetState::Hovered } else { WidgetState::Normal };
+        let _ = dh_state;
+        draw_drag_handle(&mut *render, dh_rect, &DragHandleView { rect: dh_rect }, &DragHandleSettings::default(), &DragHandleRenderKind::GripDots);
     }
 }
 
