@@ -15,6 +15,63 @@
 //! ```sh
 //! cargo run --example level3_dashboard -p uzor-framework
 //! ```
+//!
+//! # ⚠️ "L2-INSIDE-L3" REGIONS
+//!
+//! Some sections of this example are deliberately written in the L2 manual
+//! style — direct atomic registration, hand-rolled hit-tests, app-side drag
+//! math — even though they live inside an L3 app. They are clearly framed
+//! with `// ── L2-INSIDE-L3 BLOCK ──` / `// ── /L2-INSIDE-L3 BLOCK ──`
+//! markers and an inline note explaining what is happening.
+//!
+//! The "L2 widget set" modal (`ModalKind::L2`) is the largest such region:
+//! it carries a full catalog of low-level widgets (radio / slider / range /
+//! swatch / scrollbar / splitter / sub-tabs) registered + driven manually so
+//! the framework demo can show all atomic widgets in one place.
+//!
+//! ## Why this is OK
+//!
+//! After the planned **Phase D** refactor (see
+//! `docs/uzor-widget-research/l3-architecture-plan-v2.md`), L2-inside-L3
+//! becomes a **proper escape hatch** via `add_blackbox_panel(handler)`:
+//! - L3-app declares a blackbox region with a rect.
+//! - Inside the handler, the app does whatever it wants — hand-rolled paint,
+//!   manual hit-test, custom drag math, even a parallel mini-L2 mini-runtime.
+//! - The rest of the L3-app keeps using the typed builder API
+//!   (`layout.modal_mut(h).body(|b| b.slider(..) b.radio_group(..))`).
+//!
+//! ## What NOT to do
+//!
+//! - **Do NOT migrate the math inside an L2-inside-L3 block to LayoutManager.**
+//!   It does not belong there — LM owns L3 composite state, not arbitrary
+//!   app drag math. The right answer for "L3-style typed slider/range/scroll"
+//!   is the **lib-side body builder** (Phase D), not pulling app math into LM.
+//! - **Do NOT promote magic constants from these blocks** (`SLID_RECT`,
+//!   `RANGE_RECT`, `SB_H`, `CONTENT_H`, `TAB_STRIP_Y`, …) into the lib.
+//!   They are private layout numbers of *this* example's hand-rolled L2
+//!   region, not framework geometry.
+//! - **Do NOT generalise `l2_*` state fields onto AppState as if they were
+//!   first-class.** They belong inside the future blackbox handler struct.
+//!
+//! ## Migration target (decided)
+//!
+//! All L2-inside-L3 work survives — it does NOT get deleted.  It moves into
+//! a `L2DemoBlackbox: BlackboxHandler` that owns the entire L2 catalog:
+//!
+//! 1. The L2 modal body becomes one `add_blackbox_panel(L2DemoBlackbox::new())`
+//!    call.  `BlackboxHandler::render` paints the catalog; `handle_event`
+//!    dispatches `PointerDown / PointerMove / PointerUp / Wheel` to the
+//!    same hand-rolled code that lives in the marked blocks today.
+//! 2. The same demo is duplicated next to it via the L3 body builder —
+//!    `b.slider(..)`, `b.radio_group(..)` — for side-by-side comparison
+//!    of the two paths.
+//! 3. All `L2_*` constants and `l2_*` fields move into the blackbox handler
+//!    struct.  `AppState` stops knowing the L2 demo exists; only the
+//!    blackbox holds it.
+//!
+//! After Phase D `level3_dashboard.rs` no longer contains a single
+//! `L2-INSIDE-L3 BLOCK` marker — every block has migrated wholesale into
+//! `L2DemoBlackbox`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -208,7 +265,17 @@ const SVG_TRIANGLE: &str =
 const SVG_DIAMOND: &str =
     r#"<svg viewBox="0 0 24 24" fill="none"><polyline points="12,2 22,12 12,22 2,12 12,2" stroke-width="2"/></svg>"#;
 
-// L2 modal constants (same geometry as level2_launcher)
+// ── L2-INSIDE-L3 BLOCK: constants ────────────────────────────────────────────
+// Hand-rolled L2 widget catalog rendered inside ModalKind::L2.  These rects
+// describe the manual layout of the L2 demo modal — they are NOT framework
+// geometry and MUST NOT be promoted into the lib.
+//
+// Migration target (Phase D, decided): all of L2-inside-L3 — constants,
+// state, render, drag, dispatch, wheel — collapses into ONE BlackboxHandler
+// impl.  The L2 demo continues to exist as a working example, but lives
+// fully inside `add_blackbox_panel(L2DemoBlackbox::new())` so the L3 app
+// no longer sees its widgets, ids, math, or geometry.
+
 const L2_WIN_W: f64 = 560.0;
 const L2_WIN_H: f64 = 420.0;
 
@@ -229,6 +296,7 @@ const ROW_H: f64 = 28.0;
 const CONTENT_H: f64 = CONTENT_ROWS as f64 * ROW_H;
 const SPLITTER_W: f64 = 6.0;
 const LEFT_PANEL_X: f64 = 12.0;
+// ── /L2-INSIDE-L3 BLOCK: constants ───────────────────────────────────────────
 
 // =============================================================================
 // Text label helper — thin wrapper around draw_text for static labels.
@@ -856,7 +924,12 @@ struct AppState {
     // popup: which toolbar item is hovered
     popup_item: Option<String>,
 
-    // L2 widget state (inside modal)
+    // ── L2-INSIDE-L3 BLOCK: state ────────────────────────────────────────────
+    // These fields back the hand-rolled L2 widget catalog rendered inside
+    // ModalKind::L2.  After Phase D they ALL move into the L2DemoBlackbox
+    // handler struct that owns this demo — they are NOT first-class L3 app
+    // state.  AppState shouldn't know about l2_* anything; only the
+    // blackbox handler should.
     l2_connected: bool,
     l2_checked: bool,
     l2_toggled: bool,
@@ -870,6 +943,7 @@ struct AppState {
     l2_active_tab: usize,
     l2_active_sub_tab: usize,
     l2_right_panel_w: f64,
+    // ── /L2-INSIDE-L3 BLOCK: state ───────────────────────────────────────────
 
     // Mouse tracking
     last_mouse: (f64, f64),
@@ -2151,6 +2225,24 @@ impl AppState {
                         render.restore();
                     }
                     ModalKind::L2 => {
+                        // ── L2-INSIDE-L3 BLOCK: render ───────────────────────
+                        // Hand-rolled L2 widget catalog: text-input, button +
+                        // sticky chevron, checkbox, toggle, radio×3, slider,
+                        // dual-range, swatch grid, sub-tabs, sticky 4-dir
+                        // chevrons, scrollable content, splitter.  Each atomic
+                        // is registered directly via register_context_manager_*
+                        // and given a manual rect derived from the L2_* /
+                        // *_RECT constants above.  This is L2-style work
+                        // intentionally living inside an L3 app to demo every
+                        // atomic in one place.
+                        //
+                        // Decided migration (Phase D): the entire L2 demo
+                        // (this render block + state + drag + dispatch +
+                        // wheel) becomes ONE
+                        //   layout.add_blackbox_panel(L2DemoBlackbox::new())
+                        // so the L2 demo continues to live and be useful, but
+                        // hidden behind a single blackbox handler — the L3
+                        // app stops seeing the widgets, ids, math, geometry.
                         // Full L2 widget set rendered inside modal body.
                         // body_rect already accounts for header/footer via composite::modal::body_rect().
                         let left_panel_w = l2_right_panel_x - LEFT_PANEL_X - SPLITTER_W / 2.0;
@@ -2501,6 +2593,7 @@ impl AppState {
                                 );
                             }
                         }
+                        // ── /L2-INSIDE-L3 BLOCK: render ──────────────────────
                     }
                     ModalKind::PlainDemo => {
                         // No header/footer — caller draws everything inside the body.
@@ -3242,6 +3335,15 @@ impl AppState {
                 }
             }
             DispatchEvent::Indexed { ref base, n } => {
+                // ── L2-INSIDE-L3 BLOCK: indexed click dispatch ───────────────
+                // Routes the typed Indexed events emitted by the L2 demo
+                // modal's `l2-radio-N` / `l2-swatch-N` / `l2-sub-tab-N` /
+                // `l2-tab-N` atomics back into l2_* state fields.
+                //
+                // Phase D target: L2 demo lives inside L2DemoBlackbox; the
+                // blackbox handles its own atomics' clicks via
+                // BlackboxHandler::handle_event(PointerDown).  No L2 ids
+                // surface as DispatchEvent — L3 doesn't see them.
                 match base.as_str() {
                     "l2-radio"   => { eprintln!("[DISPATCHER] l2-radio→{n}");   self.l2_radio_sel = n; }
                     "l2-swatch"  => { eprintln!("[DISPATCHER] l2-swatch→{n}");  self.l2_swatch_sel = n; }
@@ -3249,6 +3351,7 @@ impl AppState {
                     "l2-tab"     => { eprintln!("[DISPATCHER] l2-tab→{n}");     self.l2_active_tab = n; self.l2_scroll_off = 0.0; }
                     _ => { eprintln!("[DISPATCHER] Indexed base={base} n={n} — no-op"); }
                 }
+                // ── /L2-INSIDE-L3 BLOCK: indexed click dispatch ──────────────
             }
             DispatchEvent::DockLeafClicked { leaf_id } => {
                 eprintln!("[DISPATCHER] DockLeafClicked leaf_id={}", leaf_id.0);
@@ -3336,7 +3439,15 @@ impl AppState {
                 // opt_ev still Some(Unhandled(id)) → app-specific id routing.
                 if let Some(DispatchEvent::Unhandled(ref id)) = opt_ev {
                     let id_str = id.0.as_str();
-                    // ── L2-modal widgets (coord-registered atomics inside L2 body)
+                    // ── L2-INSIDE-L3 BLOCK: unhandled-id click dispatch ──────
+                    // The L2 demo modal registers its atomics (button, close,
+                    // checkbox, toggle) with raw widget ids that fall through
+                    // to `Unhandled` because no dispatcher pattern matches
+                    // them.
+                    //
+                    // Phase D target: L2 demo moves into L2DemoBlackbox;
+                    // those atomics never reach the L3 dispatcher because the
+                    // blackbox eats PointerDown inside its rect first.
                     match id_str {
                         "l2-btn-connect" => { eprintln!("[DISPATCH] l2-btn-connect"); self.l2_connected = !self.l2_connected; return; }
                         "l2-btn-close"   => { eprintln!("[DISPATCH] l2-btn-close");   self.modal_open = false; return; }
@@ -3344,6 +3455,7 @@ impl AppState {
                         "l2-tog"         => { eprintln!("[DISPATCH] l2-tog");         self.l2_toggled = !self.l2_toggled; return; }
                         _ => {}
                     }
+                    // ── /L2-INSIDE-L3 BLOCK: unhandled-id click dispatch ─────
                     // ── Sidebar: spawn kind radio buttons
                     if let Some(kind_str) = id_str.strip_prefix("spawn-kind-") {
                         eprintln!("[DISPATCH] spawn-kind→{kind_str}");
@@ -3471,7 +3583,11 @@ impl AppState {
         // Watchlist mouse-down is now routed by the BlackboxPanel composite
         // through view.handle_event(PointerDown). No manual forwarding here.
 
-        // L2 drag targets — use coordinator hover state instead of geometric hit-test.
+        // ── L2-INSIDE-L3 BLOCK: drag-start ───────────────────────────────────
+        // Manual drag-start dispatch for the hand-rolled L2 widget catalog.
+        // Phase D target: the whole L2 demo lives inside L2DemoBlackbox; this
+        // block becomes BlackboxHandler::handle_event(PointerDown) inside that
+        // handler.  L3 app no longer dispatches L2 widget hits.
         if self.modal_open && self.modal_kind == ModalKind::L2 {
             let hovered_id = self.layout.ctx().input.hovered_widget().map(|w| w.0.clone());
             let modal_rect = self.layout.rect_for_overlay("modal-overlay");
@@ -3496,6 +3612,7 @@ impl AppState {
             };
             self.drag_target = target;
         }
+        // ── /L2-INSIDE-L3 BLOCK: drag-start ──────────────────────────────────
     }
 
     fn on_mouse_move(&mut self, x: f64, y: f64) {
@@ -3587,6 +3704,19 @@ impl AppState {
             match target {
                 DragTarget::ModalDrag => {} // handled above
                 DragTarget::SeparatorDrag { .. } => {} // handled above
+                // ── L2-INSIDE-L3 BLOCK: drag-update ──────────────────────────
+                // Hand-rolled drag math for slider / range / scroll / splitter
+                // inside the L2 demo modal.  The lib already exposes the right
+                // primitives (slider::pixel_to_value, scrollbar::handle_drag,
+                // thumb_height) — this code intentionally uses the
+                // delta-from-start pattern instead because the surrounding L2
+                // region pre-dates the typed body builder.
+                //
+                // Phase D target: this block lives inside L2DemoBlackbox as
+                // BlackboxHandler::handle_event(PointerMove); L3 app stops
+                // seeing L2Slider / L2RangeMin / L2Scroll / L2Splitter as
+                // its own DragTarget variants — the blackbox owns its drag
+                // entirely.
                 DragTarget::L2Slider(v0) => {
                     let frac = dx / SLID_RECT.width;
                     self.l2_slider_val = (v0 + frac * 100.0).clamp(0.0, 100.0);
@@ -3609,6 +3739,7 @@ impl AppState {
                 DragTarget::L2Splitter(w0) => {
                     self.l2_right_panel_w = (w0 - dx).clamp(200.0, L2_WIN_W - 100.0);
                 }
+                // ── /L2-INSIDE-L3 BLOCK: drag-update ─────────────────────────
                 DragTarget::SidebarScrollbar { track_rect, content_h, viewport_h } => {
                     // Atomic scrollbar API converts current cursor Y → scroll offset
                     // using the track height + content/viewport ratios.
@@ -4177,8 +4308,14 @@ impl ApplicationHandler for Handler {
             if consumed { app.window.request_redraw(); }
         }
 
-        // Fix 5: Wheel routing per sub-panel — only scroll right panel if cursor
-        // is over the right panel. Left panel wheel is ignored.
+        // ── L2-INSIDE-L3 BLOCK: wheel routing ────────────────────────────────
+        // Manual hit-test against the L2 modal's right sub-panel rect, with
+        // magic header/footer offsets (44.0 / 52.0) reconstructed from
+        // composite-internal modal chrome geometry.
+        //
+        // Phase D target: L2 demo lives inside L2DemoBlackbox; wheel routing
+        // becomes BlackboxHandler::handle_event(Wheel).  The blackbox knows
+        // its own rect and sub-panels — no magic offsets re-derived in app.
         if let Some(((cx, cy), (_, dy))) = out.wheel {
             if app.modal_open && app.modal_kind == ModalKind::L2 && app.l2_active_tab == 0 {
                 if let Some(modal_rect) = app.layout.rect_for_overlay("modal-overlay") {
@@ -4200,6 +4337,7 @@ impl ApplicationHandler for Handler {
                     }
                 }
             }
+            // ── /L2-INSIDE-L3 BLOCK: wheel routing ───────────────────────────
             app.window.request_redraw();
         }
 
