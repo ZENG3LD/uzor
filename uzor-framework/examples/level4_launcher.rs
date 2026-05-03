@@ -27,7 +27,6 @@
 
 use uzor::layout::{LayoutManager, LayoutNodeId};
 use uzor::types::WidgetState;
-use uzor::ui::widgets::atomic::button::input::register_layout_manager_button;
 use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonView};
 use uzor_framework::app::{App, NoPanel};
 use uzor_framework::builder::AppBuilder;
@@ -61,13 +60,13 @@ impl App<NoPanel> for LauncherApp {
     ) {
         // ── Register the "Connect" button at L3 level ────────────────────────
         //
-        // L3 = register_layout_manager_button.
+        // L3 = uzor::lm::build_button.
         // It takes the LayoutManager directly, extracts ContextManager internally,
         // pulls ButtonState from the registry, and calls draw_button.
         let btn_rect = uzor::types::Rect::new(80.0, 100.0, 160.0, 40.0);
         let view = ButtonView { icon: None, text: Some("Connect"), active: false, disabled: false, active_border: None, hover_chevron: None };
         render_state.with_render_context(|render| {
-            register_layout_manager_button(
+            uzor::lm::build_button(
                 layout,
                 render,
                 LayoutNodeId::ROOT,
@@ -82,7 +81,7 @@ impl App<NoPanel> for LauncherApp {
         // Collect responses
         let responses = layout.ctx_mut().end_frame();
         for (id, resp) in &responses {
-            if resp.clicked && id.0 == "connect_btn" {
+            if resp.clicked && id.as_str() == "connect_btn" {
                 self.connect_clicks += 1;
                 println!("[L4 launcher] Connect clicked ({}x)", self.connect_clicks);
             }

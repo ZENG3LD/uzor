@@ -44,38 +44,30 @@ use uzor::input::core::coordinator::LayerId;
 use uzor::input::keyboard::keyboard::KeyPress;
 use uzor::input::pointer::state::{InputState, PointerState};
 use uzor::input::text::store::TextFieldConfig;
-use uzor::types::{Rect, WidgetId, WidgetState, unsafe_widget_id};
+use uzor::types::{Rect, WidgetState, unsafe_widget_id};
 
 // ── widgets ──────────────────────────────────────────────────────────────────
-use uzor::ui::widgets::atomic::button::input::register_context_manager_button;
 use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonTheme, ButtonView};
 
-use uzor::ui::widgets::atomic::checkbox::input::register_context_manager_checkbox;
 use uzor::ui::widgets::atomic::checkbox::settings::CheckboxSettings;
 use uzor::ui::widgets::atomic::checkbox::theme::CheckboxTheme;
 use uzor::ui::widgets::atomic::checkbox::types::{CheckboxRenderKind, CheckboxView};
 
-use uzor::ui::widgets::atomic::toggle::input::register_context_manager_toggle;
 use uzor::ui::widgets::atomic::toggle::settings::ToggleSettings;
 use uzor::ui::widgets::atomic::toggle::types::{ToggleRenderKind, ToggleView};
 
-use uzor::ui::widgets::atomic::radio::input::register_context_manager_radio;
 use uzor::ui::widgets::atomic::radio::settings::RadioSettings;
 use uzor::ui::widgets::atomic::radio::types::{
     DotShape, RadioDotView, RadioRenderKind,
 };
 
-use uzor::ui::widgets::atomic::slider::input::register_context_manager_slider;
 use uzor::ui::widgets::atomic::slider::render::SliderView;
 use uzor::ui::widgets::atomic::slider::settings::SliderSettings;
 use uzor::ui::widgets::atomic::slider::types::{DualSliderHandle, SliderType};
 
-use uzor::ui::widgets::atomic::scrollbar::input::register_context_manager_scrollbar;
 use uzor::ui::widgets::atomic::scrollbar::settings::ScrollbarSettings;
 
-use uzor::ui::widgets::atomic::separator::input::{
-    register_context_manager_separator, SeparatorKind,
-};
+use uzor::ui::widgets::atomic::separator::input::SeparatorKind;
 use uzor::ui::widgets::atomic::separator::render::SeparatorView;
 use uzor::ui::widgets::atomic::separator::settings::SeparatorSettings;
 use uzor::ui::widgets::atomic::separator::types::{SeparatorOrientation, SeparatorType};
@@ -86,26 +78,21 @@ use uzor::ui::widgets::atomic::text_input::render::{
 use uzor::ui::widgets::atomic::text_input::settings::TextInputSettings;
 use uzor::ui::widgets::atomic::text_input::types::InputType;
 
-use uzor::ui::widgets::atomic::color_swatch::input::register_context_manager_color_swatch;
 use uzor::ui::widgets::atomic::color_swatch::settings::ColorSwatchSettings;
 use uzor::ui::widgets::atomic::color_swatch::types::{ColorSwatchRenderKind, ColorSwatchView};
 
-use uzor::ui::widgets::atomic::close_button::input::register_context_manager_close_button;
 use uzor::ui::widgets::atomic::close_button::render::CloseButtonView;
 use uzor::ui::widgets::atomic::close_button::settings::CloseButtonSettings;
 use uzor::ui::widgets::atomic::close_button::theme::CloseButtonTheme;
 use uzor::ui::widgets::atomic::close_button::types::CloseButtonRenderKind;
 
-use uzor::ui::widgets::atomic::drag_handle::input::register_context_manager_drag_handle;
 use uzor::ui::widgets::atomic::drag_handle::settings::DragHandleSettings;
 use uzor::ui::widgets::atomic::drag_handle::types::{DragHandleRenderKind, DragHandleView};
 
-use uzor::ui::widgets::atomic::tab::input::register_context_manager_tab;
 use uzor::ui::widgets::atomic::tab::render::TabView;
 use uzor::ui::widgets::atomic::tab::settings::TabSettings;
 use uzor::ui::widgets::atomic::tab::types::TabConfig;
 
-use uzor::ui::widgets::atomic::item::input::register_context_manager_item;
 use uzor::ui::widgets::atomic::item::render::ItemView;
 use uzor::ui::widgets::atomic::item::settings::ItemSettings;
 use uzor::ui::widgets::atomic::item::style::ItemStyle;
@@ -623,7 +610,7 @@ impl AppState {
                 active_border: None,
                 hover_chevron: None,
             };
-            register_context_manager_button(
+            uzor::ctx::draw_button(
                 ctx, &mut render,
                 "btn-connect", BTN_RECT, &layer,
                 btn_state,
@@ -632,7 +619,7 @@ impl AppState {
             );
 
             // ── 2. Close button ───────────────────────────────────────────────
-            register_context_manager_close_button(
+            uzor::ctx::draw_close_button(
                 ctx, &mut render,
                 "btn-close", CLOSE_RECT, &layer,
                 match (hovered.as_deref() == Some("btn-close"), pressed_id_ref.as_deref() == Some("btn-close")) {
@@ -647,7 +634,7 @@ impl AppState {
             );
 
             // ── 3. Checkbox ───────────────────────────────────────────────────
-            register_context_manager_checkbox(
+            uzor::ctx::draw_checkbox(
                 ctx, &mut render,
                 "cb-setting-a", CB_RECT, &layer,
                 match (hovered.as_deref() == Some("cb-setting-a"), pressed_id_ref.as_deref() == Some("cb-setting-a")) {
@@ -663,7 +650,7 @@ impl AppState {
             );
 
             // ── 4. Toggle ─────────────────────────────────────────────────────
-            register_context_manager_toggle(
+            uzor::ctx::draw_toggle(
                 ctx, &mut render,
                 "tog-enable", TOG_RECT, &layer,
                 match (hovered.as_deref() == Some("tog-enable"), pressed_id_ref.as_deref() == Some("tog-enable")) {
@@ -680,7 +667,7 @@ impl AppState {
             for (i, cx) in [28.0_f64, 68.0, 108.0].iter().enumerate() {
                 let dot_rect = Rect::new(*cx, 175.0, 28.0, 28.0);
                 let radio_id = format!("radio-opt-{i}");
-                register_context_manager_radio(
+                uzor::ctx::draw_radio(
                     ctx, &mut render,
                     radio_id.as_str(), dot_rect, &layer,
                     match (hovered.as_deref() == Some(radio_id.as_str()), pressed_id_ref.as_deref() == Some(radio_id.as_str())) {
@@ -699,7 +686,7 @@ impl AppState {
             }
 
             // ── 6. Slider ─────────────────────────────────────────────────────
-            register_context_manager_slider(
+            uzor::ctx::draw_slider(
                 ctx, &mut render,
                 "slider-main", SLID_RECT, &layer,
                 match (hovered.as_deref() == Some("slider-main"), pressed_id_ref.as_deref() == Some("slider-main")) {
@@ -720,7 +707,7 @@ impl AppState {
             );
 
             // ── 6b. Range slider ──────────────────────────────────────────────
-            register_context_manager_slider(
+            uzor::ctx::draw_slider(
                 ctx, &mut render,
                 "range-slider", RANGE_RECT, &layer,
                 match (hovered.as_deref() == Some("range-slider"), pressed_id_ref.as_deref() == Some("range-slider")) {
@@ -743,7 +730,7 @@ impl AppState {
 
             // ── 7. Separator ──────────────────────────────────────────────────
             let sep_rect = Rect::new(28.0, 260.0, 260.0, 2.0);
-            register_context_manager_separator(
+            uzor::ctx::draw_separator(
                 ctx, &mut render,
                 "sep-h", sep_rect, SeparatorKind::Divider, &layer,
                 &SeparatorView {
@@ -801,7 +788,7 @@ impl AppState {
                 let sx = 28.0 + i as f64 * 34.0;
                 let sw_rect = Rect::new(sx, 344.0, 26.0, 26.0);
                 let sw_id = format!("swatch-{i}");
-                register_context_manager_color_swatch(
+                uzor::ctx::draw_color_swatch(
                     ctx, &mut render,
                     sw_id.as_str(), sw_rect, &layer,
                     match (hovered.as_deref() == Some(sw_id.as_str()), pressed_id_ref.as_deref() == Some(sw_id.as_str())) {
@@ -849,7 +836,7 @@ impl AppState {
                     pressed: pressed_id_ref.as_deref() == Some(tab_id.as_str()),
                     close_btn_hovered: false,
                 };
-                register_context_manager_tab(
+                uzor::ctx::draw_tab(
                     ctx, &mut render,
                     tab_id.as_str(), tab_rect, None,
                     &layer,
@@ -869,7 +856,7 @@ impl AppState {
                     + (scroll_off / (CONTENT_H - viewport_h).max(1.0)) * scroll_range;
                 let sb_thumb = Rect::new(sb_x, thumb_y, SB_W, thumb_h);
 
-                register_context_manager_scrollbar(
+                uzor::ctx::draw_scrollbar(
                     ctx, &mut render,
                     "sb-track", "sb-thumb",
                     sb_track, sb_thumb,
@@ -922,7 +909,7 @@ impl AppState {
                         10..=14 => ItemSettings::default().with_style(Box::new(RowStylePtRoot)),
                         _       => ItemSettings::default().with_style(Box::new(RowStyleRobotoBold)),
                     };
-                    register_context_manager_item(
+                    uzor::ctx::draw_item(
                         ctx, &mut render,
                         row_id.as_str(), row_rect, &layer,
                         WidgetState::Normal,
@@ -955,7 +942,7 @@ impl AppState {
                         pressed: pressed_id_ref.as_deref() == Some(sub_id.as_str()),
                         close_btn_hovered: false,
                     };
-                    register_context_manager_tab(
+                    uzor::ctx::draw_tab(
                         ctx, &mut render,
                         sub_id.as_str(), sub_rect, None,
                         &layer,
@@ -1033,7 +1020,7 @@ impl AppState {
         {
             let mut render = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
             let layer = LayerId::main();
-            register_context_manager_drag_handle(
+            uzor::ctx::draw_drag_handle(
                 &mut self.ctx, &mut render,
                 "drag-handle", dh_rect, &layer,
                 &DragHandleView { rect: dh_rect },
@@ -1069,7 +1056,7 @@ impl AppState {
         let scroll_range = SB_H - thumb_h;
 
         for (id, resp) in &responses {
-            let id_str = id.0.as_str();
+            let id_str = id.as_str();
 
             if resp.scrolled && (id_str == "sb-track" || id_str == "sb-thumb") {
                 let dy = resp.scroll_delta.1;
@@ -1359,7 +1346,7 @@ impl ApplicationHandler for Handler {
                 let (x, y) = app.last_mouse_pos;
 
                 if let Some(id) = app.ctx.input.process_click(x, y) {
-                    match id.0.as_str() {
+                    match id.as_str() {
                         "btn-connect" => {
                             app.connected = !app.connected;
                             println!("[L2] connected → {}", app.connected);

@@ -35,8 +35,7 @@
 
 use uzor::input::LayerId;
 use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager, LayoutNodeId};
-use uzor::types::{Rect, WidgetId, WidgetState, unsafe_widget_id};
-use uzor::ui::widgets::atomic::button::input::register_layout_manager_button;
+use uzor::types::{Rect, WidgetState, unsafe_widget_id};
 use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonView};
 use uzor_framework::app::{App, NoPanel};
 use uzor_framework::builder::AppBuilder;
@@ -98,7 +97,7 @@ impl App<NoPanel> for YogaTgApp {
 
             // Back button (left edge)
             render_state.with_render_context(|render| {
-                register_layout_manager_button(
+                uzor::lm::build_button(
                     layout,
                     render,
                     LayoutNodeId::ROOT,
@@ -112,7 +111,7 @@ impl App<NoPanel> for YogaTgApp {
 
             // Share button (right edge)
             render_state.with_render_context(|render| {
-                register_layout_manager_button(
+                uzor::lm::build_button(
                     layout,
                     render,
                     LayoutNodeId::ROOT,
@@ -137,7 +136,7 @@ impl App<NoPanel> for YogaTgApp {
             for (i, id) in tabs.iter().enumerate() {
                 let tab_x = bot_rect.x + i as f64 * tab_w + 4.0;
                 render_state.with_render_context(|render| {
-                    register_layout_manager_button(
+                    uzor::lm::build_button(
                         layout,
                         render,
                         LayoutNodeId::ROOT,
@@ -155,7 +154,7 @@ impl App<NoPanel> for YogaTgApp {
         let responses = layout.ctx_mut().end_frame();
         for (id, resp) in &responses {
             if resp.clicked {
-                match id.0.as_str() {
+                match id.as_str() {
                     "top_back"      => println!("[yoga_tg] Back"),
                     "top_share"     => println!("[yoga_tg] Share"),
                     "tab_home"      => { self.active_tab = 0; println!("[yoga_tg] Home tab"); }

@@ -100,7 +100,7 @@ use uzor::types::{Rect, WidgetId, WidgetState, unsafe_widget_id};
 
 // ── composite widgets ─────────────────────────────────────────────────────────
 use uzor::ui::widgets::composite::chrome::input::{
-    chrome_hit_test, handle_chrome_action, register_layout_manager_chrome,
+    chrome_hit_test, handle_chrome_action,
 };
 use uzor::ui::widgets::composite::chrome::settings::ChromeSettings;
 
@@ -109,15 +109,12 @@ use uzor::ui::widgets::composite::chrome::types::{
     ChromeAction, ChromeRenderKind, ChromeTabConfig, ChromeView,
 };
 
-use uzor::ui::widgets::composite::context_menu::input::register_layout_manager_context_menu;
 use uzor::ui::widgets::composite::context_menu::settings::ContextMenuSettings;
 use uzor::ui::widgets::composite::context_menu::types::{
     ContextMenuItem, ContextMenuRenderKind, ContextMenuView,
 };
 
-use uzor::ui::widgets::composite::dropdown::input::{
-    open_dropdown_flat, register_layout_manager_dropdown,
-};
+use uzor::ui::widgets::composite::dropdown::input::open_dropdown_flat;
 use uzor::ui::widgets::composite::dropdown::render::measure_flat;
 use uzor::ui::widgets::composite::dropdown::settings::DropdownSettings;
 use uzor::ui::widgets::composite::dropdown::types::{
@@ -125,7 +122,7 @@ use uzor::ui::widgets::composite::dropdown::types::{
 };
 
 use uzor::ui::widgets::composite::modal::input::{
-    self as modal_input, handle_modal_drag, register_layout_manager_modal,
+    self as modal_input, handle_modal_drag,
 };
 use uzor::ui::widgets::composite::modal::render::measure_chrome as measure_modal_chrome;
 use uzor::ui::widgets::composite::modal::settings::ModalSettings;
@@ -135,7 +132,7 @@ use uzor::ui::widgets::composite::modal::types::{
 
 
 use uzor::ui::widgets::composite::popup::input::{
-    self as popup_input, register_layout_manager_popup,
+    self as popup_input,
 };
 use uzor::ui::widgets::composite::popup::settings::PopupSettings;
 use uzor::ui::widgets::composite::popup::types::{
@@ -143,7 +140,7 @@ use uzor::ui::widgets::composite::popup::types::{
 };
 
 use uzor::ui::widgets::composite::sidebar::input::{
-    self as sidebar_input, register_layout_manager_sidebar,
+    self as sidebar_input,
 };
 use uzor::ui::widgets::composite::sidebar::render::measure as measure_sidebar;
 use uzor::ui::widgets::composite::sidebar::settings::SidebarSettings;
@@ -153,7 +150,7 @@ use uzor::ui::widgets::composite::sidebar::types::{
 };
 
 use uzor::ui::widgets::composite::toolbar::input::{
-    self as toolbar_input, register_layout_manager_toolbar,
+    self as toolbar_input,
 };
 use uzor::ui::widgets::composite::toolbar::render::{measure_horizontal as measure_toolbar_h, measure_vertical as measure_toolbar_v};
 use uzor::ui::widgets::composite::toolbar::settings::ToolbarSettings;
@@ -168,7 +165,6 @@ use uzor::ui::widgets::composite::toolbar::types::{
 // ── atomic widgets (used inside modals) ──────────────────────────────────────
 use uzor::ui::widgets::atomic::button::ButtonTheme;
 
-use uzor::ui::widgets::atomic::checkbox::input::register_context_manager_checkbox;
 use uzor::ui::widgets::atomic::checkbox::settings::CheckboxSettings;
 use uzor::ui::widgets::atomic::checkbox::theme::CheckboxTheme;
 use uzor::ui::widgets::atomic::checkbox::types::{CheckboxRenderKind, CheckboxView};
@@ -1290,7 +1286,7 @@ impl AppState {
             style: Box::new(ChromeWithBottomBorder),
         };
         let chrome_kind = ChromeRenderKind::Default;
-        register_layout_manager_chrome(
+        uzor::lm::build_chrome(
             &mut self.layout,
             &mut render,
             LayoutNodeId::ROOT,
@@ -1327,7 +1323,7 @@ impl AppState {
             overflow: uzor::types::OverflowMode::Clip,
             resize_edge: None,
         };
-        register_layout_manager_toolbar(
+        uzor::lm::build_toolbar(
             &mut self.layout,
             &mut render,
             LayoutNodeId::ROOT,
@@ -1357,7 +1353,7 @@ impl AppState {
                 overflow: uzor::types::OverflowMode::Clip,
                 resize_edge: Some(uzor::layout::ResizeEdge::E),
             };
-            register_layout_manager_toolbar(
+            uzor::lm::build_toolbar(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -1410,7 +1406,7 @@ impl AppState {
         };
         if self.demo_toolbar_left2 {
             let view = mk_demo(uzor::layout::ResizeEdge::E);
-            register_layout_manager_toolbar(
+            uzor::lm::build_toolbar(
                 &mut self.layout, &mut render, LayoutNodeId::ROOT,
                 "demo-toolbar-left2", &self.demo_toolbar_left2_h.clone(),
                 &view,
@@ -1423,7 +1419,7 @@ impl AppState {
         }
         if self.demo_toolbar_right {
             let view = mk_demo(uzor::layout::ResizeEdge::W);
-            register_layout_manager_toolbar(
+            uzor::lm::build_toolbar(
                 &mut self.layout, &mut render, LayoutNodeId::ROOT,
                 "demo-toolbar-right", &self.demo_toolbar_right_h.clone(),
                 &view,
@@ -1436,7 +1432,7 @@ impl AppState {
         }
         if self.demo_toolbar_bottom {
             let view = mk_demo(uzor::layout::ResizeEdge::N);
-            register_layout_manager_toolbar(
+            uzor::lm::build_toolbar(
                 &mut self.layout, &mut render, LayoutNodeId::ROOT,
                 "demo-toolbar-bottom", &self.demo_toolbar_bottom_h.clone(),
                 &view,
@@ -1465,7 +1461,7 @@ impl AppState {
                 overflow: uzor::types::OverflowMode::Clip,
                 content_height: 200.0,
             };
-            let _ = register_layout_manager_sidebar(
+            let _ = uzor::lm::build_sidebar(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -1488,7 +1484,7 @@ impl AppState {
                 overflow: uzor::types::OverflowMode::Clip,
                 content_height: 200.0,
             };
-            let _ = register_layout_manager_sidebar(
+            let _ = uzor::lm::build_sidebar(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -1510,7 +1506,7 @@ impl AppState {
                 overflow: uzor::types::OverflowMode::Clip,
                 content_height: 200.0,
             };
-            let _ = register_layout_manager_sidebar(
+            let _ = uzor::lm::build_sidebar(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -1542,7 +1538,7 @@ impl AppState {
                 content_height: est_content_h,
             };
             let sidebar_kind_value = sidebar_kind_from_index(self.sidebar_kind);
-            let _sidebar_node = register_layout_manager_sidebar(
+            let _sidebar_node = uzor::lm::build_sidebar(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -1689,7 +1685,6 @@ impl AppState {
                     // panel, the composite suppresses PointerMove.
                     use std::cell::RefCell;
                     use uzor::ui::widgets::composite::blackbox_panel::{
-                        input::register_layout_manager_blackbox_panel,
                         settings::BlackboxPanelSettings,
                         state::BlackboxState,
                         types::{BlackboxHandler, BlackboxRenderKind, BlackboxView},
@@ -1709,7 +1704,7 @@ impl AppState {
                         sense: Sense::CLICK | Sense::HOVER | Sense::DRAG | Sense::SCROLL,
                     };
                     let slot = leaf_id.to_string();
-                    let _ = register_layout_manager_blackbox_panel(
+                    let _ = uzor::lm::build_blackbox_panel(
                         &mut self.layout, &mut render,
                         LayoutNodeId::ROOT, &slot, leaf_widget_id.clone(),
                         &mut bb_state, &mut view,
@@ -1720,8 +1715,8 @@ impl AppState {
                     drop(view);
                     self.watchlist = watchlist.into_inner();
                 } else {
-                    use uzor::ui::widgets::composite::blackbox_panel::input::register_layout_manager_stub_panel;
-                    let _ = register_layout_manager_stub_panel(
+                    
+                    let _ = uzor::lm::build_stub_panel(
                         &mut self.layout,
                         leaf_widget_id,
                         rect,
@@ -1898,7 +1893,7 @@ impl AppState {
                 ms.body_content_w = cw;
                 ms.body_content_h = ch;
             }
-            let _modal_node = register_layout_manager_modal(
+            let _modal_node = uzor::lm::build_modal(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -1990,7 +1985,7 @@ impl AppState {
                         for (i, (label, checked)) in items.iter().enumerate() {
                             let r = Rect::new(body_rect.x + 16.0, body_rect.y + 48.0 + i as f64 * 36.0, body_rect.width - 32.0, 28.0);
                             let cb_id = format!("settings-cb-{i}");
-                            register_context_manager_checkbox(
+                            uzor::ctx::draw_checkbox(
                                 self.layout.ctx_mut(), &mut render,
                                 cb_id.as_str(), r, &layer,
                                 WidgetState::Normal,
@@ -2201,7 +2196,7 @@ impl AppState {
             let menu_h = items.len() as f64 * 28.0 + 16.0;
             let ctx_menu_rect = Rect::new(ctx_x, ctx_y, 170.0, menu_h);
             let mut ctx_menu_view = ContextMenuView { items: &items, target_id: None, title: None };
-            register_layout_manager_context_menu(
+            uzor::lm::build_context_menu(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -2372,7 +2367,7 @@ impl AppState {
                     overflow: uzor::types::OverflowMode::Clip,
                     submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
                 };
-                register_layout_manager_dropdown(
+                uzor::lm::build_dropdown(
                     &mut self.layout, &mut render,
                     LayoutNodeId::ROOT, "dd-popup-overlay", &self.dd_popup_h.clone(),
                     Rect::new(origin.0, origin.1, pw, ph), None,
@@ -2424,7 +2419,7 @@ impl AppState {
                         size_mode: uzor::types::SizeMode::AutoFit,
                         overflow: uzor::types::OverflowMode::Clip,
                     };
-                    let _ = register_layout_manager_popup(
+                    let _ = uzor::lm::build_popup(
                         &mut self.layout, &mut render,
                         LayoutNodeId::ROOT,
                         "demo-popup-overlay", &self.demo_popup_h.clone(),
@@ -2465,7 +2460,7 @@ impl AppState {
                         size_mode: uzor::types::SizeMode::AutoFit,
                         overflow: uzor::types::OverflowMode::Clip,
                     };
-                    let _ = register_layout_manager_popup(
+                    let _ = uzor::lm::build_popup(
                         &mut self.layout, &mut render,
                         LayoutNodeId::ROOT,
                         "demo-popup-overlay", &self.demo_popup_h.clone(),

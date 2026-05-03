@@ -33,7 +33,6 @@
 use uzor::input::LayerId;
 use uzor::layout::{LayoutManager, LayoutNodeId};
 use uzor::types::{Rect, WidgetState};
-use uzor::ui::widgets::atomic::button::input::register_layout_manager_button;
 use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonView};
 use uzor_framework::app::{App, AppConfig, NoPanel};
 use uzor_framework::builder::AppBuilder;
@@ -172,7 +171,7 @@ impl App<NoPanel> for KktTrayApp {
         let btn_rect = Rect::new(80.0, 80.0, 160.0, 40.0);
         let view = ButtonView { icon: None, text: Some("Connect"), active: self.connected, disabled: false, active_border: None, hover_chevron: None };
         render_state.with_render_context(|render| {
-            register_layout_manager_button(
+            uzor::lm::build_button(
                 layout,
                 render,
                 LayoutNodeId::ROOT,
@@ -186,7 +185,7 @@ impl App<NoPanel> for KktTrayApp {
 
         let responses = layout.ctx_mut().end_frame();
         for (id, resp) in &responses {
-            if resp.clicked && id.0 == "toggle_connect" {
+            if resp.clicked && id.as_str() == "toggle_connect" {
                 self.connected = !self.connected;
                 println!(
                     "[kkt_tray] {}",

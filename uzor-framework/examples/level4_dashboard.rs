@@ -36,8 +36,7 @@ use uzor::input::core::sense::Sense;
 use uzor::input::core::widget_kind::WidgetKind;
 use uzor::input::LayerId;
 use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager, LayoutNodeId};
-use uzor::types::{Rect, WidgetId, WidgetState, unsafe_widget_id};
-use uzor::ui::widgets::atomic::button::input::register_layout_manager_button;
+use uzor::types::{Rect, WidgetState, unsafe_widget_id};
 use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonView};
 use uzor_framework::app::{App, NoPanel};
 use uzor_framework::builder::AppBuilder;
@@ -107,7 +106,7 @@ impl App<NoPanel> for DashboardApp {
             for (i, (id, _label)) in nav_items.iter().enumerate() {
                 let btn_y = left_rect.y + 16.0 + i as f64 * (btn_h + 8.0);
                 render_state.with_render_context(|render| {
-                    register_layout_manager_button(
+                    uzor::lm::build_button(
                         layout,
                         render,
                         LayoutNodeId::ROOT,
@@ -136,7 +135,7 @@ impl App<NoPanel> for DashboardApp {
             for (i, (id, _label)) in settings_items.iter().enumerate() {
                 let btn_y = right_rect.y + 16.0 + i as f64 * (btn_h + 8.0);
                 render_state.with_render_context(|render| {
-                    register_layout_manager_button(
+                    uzor::lm::build_button(
                         layout,
                         render,
                         LayoutNodeId::ROOT,
@@ -175,7 +174,7 @@ impl App<NoPanel> for DashboardApp {
         let responses = layout.ctx_mut().end_frame();
         for (id, resp) in &responses {
             if resp.clicked {
-                match id.0.as_str() {
+                match id.as_str() {
                     id @ ("nav_dashboard" | "nav_orders" | "nav_products" | "nav_customers") => {
                         self.active_nav = id.to_string();
                         println!("[dashboard] nav: {id}");
