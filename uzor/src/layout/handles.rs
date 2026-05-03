@@ -61,6 +61,17 @@ macro_rules! state_handle {
         pub struct $name {
             pub(crate) id: WidgetId,
         }
+
+        impl $name {
+            /// Read-only access to the inner widget id as a string slice.
+            ///
+            /// Used by framework-level builders to derive overlay slot ids.
+            /// External crates cannot construct a handle from a string —
+            /// they obtain it from `LayoutManager::add_*`.
+            pub fn id_str(&self) -> &str {
+                self.id.as_str()
+            }
+        }
     };
 }
 

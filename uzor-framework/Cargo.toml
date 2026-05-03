@@ -55,20 +55,8 @@ path = "examples/level2_launcher.rs"
 
 # ── Level 4: uzor-framework (App trait) ───────────────────────────────────────
 [[example]]
-name = "level4_launcher"
-path = "examples/level4_launcher.rs"
-
-[[example]]
-name = "level4_yoga_tg"
-path = "examples/level4_yoga_tg.rs"
-
-[[example]]
-name = "level4_kkt_tray"
-path = "examples/level4_kkt_tray.rs"
-
-[[example]]
-name = "level4_dashboard"
-path = "examples/level4_dashboard.rs"
+name = "level4_design_bureau"
+path = "examples/level4_design_bureau.rs"
 
 # ── Level 3: LayoutManager + composite widgets + WinitInputBridge ────────────
 [[example]]

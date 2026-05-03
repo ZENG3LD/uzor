@@ -1,10 +1,8 @@
-//! L3 — `LayoutManager` declarative API.
+//! Raw `register_layout_manager_*` re-exports under short `build_*` names.
 //!
-//! `build_X(layout, render, ...)` resolves the widget rect from the layout's
-//! slot map (overlay / edge / dock leaf), pulls state out of the typed handle,
-//! draws + registers in one call.  The framework-app callsite sees only this
-//! tier — no `WidgetId::new`, no manual `push_overlay`, no atomic-level
-//! plumbing.
+//! These are unchanged sigs from `uzor` core — useful as escape hatch when
+//! the chainable builder doesn't expose every option.  Most code should
+//! prefer the typed builders in the parent `lm` module.
 
 // Atomics
 pub use uzor::ui::widgets::atomic::button::input::register_layout_manager_button as build_button;
