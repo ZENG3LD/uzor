@@ -331,6 +331,17 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             // 5. User UI callback.
             self.app.ui(&mut self.layout, render_state);
 
+            // 5b. Auto-route a left-click released this frame through
+            //     `App::route_click`, which decodes via
+            //     `LayoutManager::handle_click` and fans out to typed
+            //     `on_*` callbacks.  App that needs raw access can override
+            //     `route_click` to return early.
+            if matches!(self.input.pointer.clicked, Some(uzor::input::MouseButton::Left)) {
+                if let Some((x, y)) = self.input.pointer.pos {
+                    let _ = self.app.route_click(&mut self.layout, x, y);
+                }
+            }
+
             // 6. Collect widget responses.
             let _responses = self.layout.ctx_mut().end_frame();
 

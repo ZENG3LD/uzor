@@ -474,6 +474,25 @@ impl<P: DockPanel> LayoutManager<P> {
         self.ctx.input.pointer_pos()
     }
 
+    /// Was the given widget id clicked (via the cursor's last left-up
+    /// position) in the current frame?
+    ///
+    /// Routes through the coordinator's z-aware `process_click` so widgets
+    /// shadowed by an overlay correctly return `false`.  Used by reactive
+    /// `.bind(&mut value)` builder helpers (checkbox / toggle / etc.) to
+    /// flip state without the app writing a `match` on `DispatchEvent`.
+    pub fn was_clicked(&self, id: &WidgetId) -> bool {
+        let st = self.ctx.input.input_state();
+        if !matches!(st.pointer.clicked, Some(crate::input::MouseButton::Left)) {
+            return false;
+        }
+        let pos = match st.pointer.pos {
+            Some(p) => p,
+            None => return false,
+        };
+        self.ctx.input.process_click(pos.0, pos.1).as_ref() == Some(id)
+    }
+
     /// Iterate every dock leaf and its solved screen-space rect.
     ///
     /// Use to drive per-leaf body rendering (`for (id, rect) in

@@ -356,6 +356,13 @@ impl InputCoordinator {
 
     /// Current pointer position in screen coordinates, if any cursor
     /// data has been received this frame.
+    /// Read-only access to the current frame's `InputState`.
+    /// Used by builder helpers that need to inspect `pointer.clicked` /
+    /// `pointer.pos` without going through `begin_frame` again.
+    pub fn input_state(&self) -> &InputState {
+        &self.input
+    }
+
     pub fn pointer_pos(&self) -> Option<(f64, f64)> {
         self.input.pointer.pos
     }

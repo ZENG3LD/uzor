@@ -25,6 +25,12 @@ use uzor::ui::widgets::atomic::button::settings::ButtonSettings;
 use uzor::types::IconId;
 
 /// Chainable builder for an atomic button.
+///
+/// Reactive options:
+/// - `.on_click(|| ...)` — closure invoked when the widget is clicked in the
+///   current frame.  No need to handle the click via `App::on_*`.
+/// - `.bind_count(&mut u32)` — increments a counter per click (for "increment"
+///   style demos).
 pub struct ButtonBuilder<'a> {
     id:            WidgetId,
     rect:          Rect,
@@ -35,6 +41,8 @@ pub struct ButtonBuilder<'a> {
     disabled:      bool,
     widget_state:  Option<WidgetState>,
     settings:      Option<ButtonSettings>,
+    on_click:      Option<Box<dyn FnOnce() + 'a>>,
+    bind_count:    Option<&'a mut u32>,
 }
 
 /// Entry point: build a button at the given id + rect.
@@ -49,6 +57,8 @@ pub fn button<'a>(id: impl Into<WidgetId>, rect: Rect) -> ButtonBuilder<'a> {
         disabled:     false,
         widget_state: None,
         settings:     None,
+        on_click:     None,
+        bind_count:   None,
     }
 }
 
@@ -61,11 +71,32 @@ impl<'a> ButtonBuilder<'a> {
     pub fn state(mut self, s: WidgetState) -> Self { self.widget_state = Some(s); self }
     pub fn settings(mut self, s: ButtonSettings) -> Self { self.settings = Some(s); self }
 
+    /// Reactive on-click closure.  Invoked at `.build()` if the widget was
+    /// clicked this frame.  Replaces the need for an `App::on_*` callback.
+    pub fn on_click(mut self, f: impl FnOnce() + 'a) -> Self {
+        self.on_click = Some(Box::new(f));
+        self
+    }
+
+    /// Reactive counter — increments on each click.  Useful for click-counter
+    /// demos and toolbar action telemetry.
+    pub fn bind_count(mut self, n: &'a mut u32) -> Self { self.bind_count = Some(n); self }
+
     pub fn build<P: DockPanel>(
         self,
         layout: &mut LayoutManager<P>,
         render: &mut dyn RenderContext,
     ) {
+        // Invoke reactive callbacks if clicked this frame (and not disabled).
+        if !self.disabled && layout.was_clicked(&self.id) {
+            if let Some(cb) = self.on_click {
+                cb();
+            }
+            if let Some(n) = self.bind_count {
+                *n = n.wrapping_add(1);
+            }
+        }
+
         let view = ButtonView {
             icon: self.icon,
             text: self.text,
@@ -161,11 +192,18 @@ use uzor::ui::widgets::atomic::checkbox::settings::CheckboxSettings;
 use uzor::ui::widgets::atomic::checkbox::types::{CheckboxRenderKind, CheckboxView};
 
 /// Chainable builder for a checkbox.
+///
+/// Two ways to wire state:
+/// - `.checked(bool)` + handle click yourself in `App::on_unhandled_click`.
+/// - `.bind(&mut bool)` — reactive: builder reads the value for paint AND
+///   toggles it on click in the same frame.  The app does not write a click
+///   handler.
 pub struct CheckboxBuilder<'a> {
     id:       WidgetId,
     rect:     Rect,
     parent:   LayoutNodeId,
     checked:  bool,
+    bind:     Option<&'a mut bool>,
     label:    Option<&'a str>,
     settings: Option<CheckboxSettings>,
     kind:     Option<CheckboxRenderKind<'a>>,
@@ -178,6 +216,7 @@ pub fn checkbox<'a>(id: impl Into<WidgetId>, rect: Rect) -> CheckboxBuilder<'a> 
         rect,
         parent:   LayoutNodeId::ROOT,
         checked:  false,
+        bind:     None,
         label:    None,
         settings: None,
         kind:     None,
@@ -188,6 +227,12 @@ pub fn checkbox<'a>(id: impl Into<WidgetId>, rect: Rect) -> CheckboxBuilder<'a> 
 impl<'a> CheckboxBuilder<'a> {
     pub fn parent(mut self, p: LayoutNodeId) -> Self { self.parent = p; self }
     pub fn checked(mut self, on: bool) -> Self { self.checked = on; self }
+
+    /// Reactive binding: the builder reads `*flag` for paint AND, if the
+    /// widget is clicked this frame, flips `*flag = !*flag` before paint.
+    /// The app does not need any click handler for this checkbox.
+    pub fn bind(mut self, flag: &'a mut bool) -> Self { self.bind = Some(flag); self }
+
     pub fn label(mut self, l: &'a str) -> Self { self.label = Some(l); self }
     pub fn settings(mut self, s: CheckboxSettings) -> Self { self.settings = Some(s); self }
     pub fn kind(mut self, k: CheckboxRenderKind<'a>) -> Self { self.kind = Some(k); self }
@@ -198,8 +243,18 @@ impl<'a> CheckboxBuilder<'a> {
         layout: &mut LayoutManager<P>,
         render: &mut dyn RenderContext,
     ) {
+        // Resolve checked state: bind takes priority; toggle on click.
+        let checked = if let Some(flag) = self.bind {
+            if layout.was_clicked(&self.id) {
+                *flag = !*flag;
+            }
+            *flag
+        } else {
+            self.checked
+        };
+
         let view = CheckboxView {
-            checked: self.checked,
+            checked,
             label:   self.label,
         };
         let settings = self.settings.unwrap_or_default();
@@ -224,6 +279,7 @@ pub struct ToggleBuilder<'a> {
     rect:     Rect,
     parent:   LayoutNodeId,
     toggled:  bool,
+    bind:     Option<&'a mut bool>,
     label:    Option<&'a str>,
     disabled: bool,
     settings: Option<ToggleSettings>,
@@ -236,6 +292,7 @@ pub fn toggle<'a>(id: impl Into<WidgetId>, rect: Rect) -> ToggleBuilder<'a> {
         rect,
         parent:   LayoutNodeId::ROOT,
         toggled:  false,
+        bind:     None,
         label:    None,
         disabled: false,
         settings: None,
@@ -246,6 +303,10 @@ pub fn toggle<'a>(id: impl Into<WidgetId>, rect: Rect) -> ToggleBuilder<'a> {
 impl<'a> ToggleBuilder<'a> {
     pub fn parent(mut self, p: LayoutNodeId) -> Self { self.parent = p; self }
     pub fn toggled(mut self, on: bool) -> Self { self.toggled = on; self }
+
+    /// Reactive binding — see [`CheckboxBuilder::bind`].
+    pub fn bind(mut self, flag: &'a mut bool) -> Self { self.bind = Some(flag); self }
+
     pub fn label(mut self, l: &'a str) -> Self { self.label = Some(l); self }
     pub fn disabled(mut self, on: bool) -> Self { self.disabled = on; self }
     pub fn settings(mut self, s: ToggleSettings) -> Self { self.settings = Some(s); self }
@@ -256,8 +317,17 @@ impl<'a> ToggleBuilder<'a> {
         layout: &mut LayoutManager<P>,
         render: &mut dyn RenderContext,
     ) {
+        let toggled = if let Some(flag) = self.bind {
+            if layout.was_clicked(&self.id) && !self.disabled {
+                *flag = !*flag;
+            }
+            *flag
+        } else {
+            self.toggled
+        };
+
         let view = ToggleView {
-            toggled:  self.toggled,
+            toggled,
             label:    self.label,
             disabled: self.disabled,
         };
