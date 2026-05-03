@@ -13,30 +13,41 @@ use super::types::{ContextMenuRenderKind, ContextMenuView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{ContextMenuNode, DismissFrame, EventBuilder, LayoutManager, LayoutNodeId, WidgetNode};
+use crate::layout::{ContextMenuNode, DismissFrame, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
 /// Register + draw a context menu in one call using a [`LayoutManager`].
 ///
-/// Confirms the overlay slot identified by `slot_id` is registered, pushes
-/// the context-menu layer onto the coordinator (blocking lower layers), then
-/// forwards to [`register_context_manager_context_menu`].  The menu positions
-/// itself from `state.x`/`state.y`; the overlay rect is used only to verify
-/// the slot exists.  Returns `None` if the slot is not present.
+/// Pushes the overlay entry, then registers the context-menu layer with the
+/// coordinator (blocking lower layers) and forwards to
+/// [`register_context_manager_context_menu`].  The menu positions itself from
+/// `state.x`/`state.y`; `overlay_rect` is used for dismiss-frame resolution.
+///
+/// `slot_id`      — stable overlay id (e.g. `"ctx-menu-overlay"`).
+/// `overlay_rect` — screen-space rect of the menu panel this frame.
+/// `anchor`       — optional anchor rect for positioning.
 pub fn register_layout_manager_context_menu<P: DockPanel>(
-    layout:   &mut LayoutManager<P>,
-    render:   &mut dyn RenderContext,
-    parent:   LayoutNodeId,
-    slot_id:  &str,
-    id:       impl Into<WidgetId>,
-    state:    &mut ContextMenuState,
-    view:     &mut ContextMenuView<'_>,
-    settings: &ContextMenuSettings,
-    kind:     &ContextMenuRenderKind<'_>,
+    layout:       &mut LayoutManager<P>,
+    render:       &mut dyn RenderContext,
+    parent:       LayoutNodeId,
+    slot_id:      &str,
+    id:           impl Into<WidgetId>,
+    overlay_rect: Rect,
+    anchor:       Option<Rect>,
+    state:        &mut ContextMenuState,
+    view:         &mut ContextMenuView<'_>,
+    settings:     &ContextMenuSettings,
+    kind:         &ContextMenuRenderKind<'_>,
 ) -> Option<ContextMenuNode> {
     let id: WidgetId = id.into();
-    let slot_rect: Rect = layout.rect_for_overlay(slot_id)?;
+    layout.push_overlay(OverlayEntry {
+        id:   slot_id.to_string(),
+        kind: OverlayKind::ContextMenu,
+        rect: overlay_rect,
+        anchor,
+    });
+    let slot_rect = overlay_rect;
     let layer = LayerId::new("context_menu");
     let z_order = layout.z_layers().context_menu as u32;
     // Register this overlay for outside-click dismiss resolution.

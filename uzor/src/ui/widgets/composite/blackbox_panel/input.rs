@@ -12,7 +12,8 @@ use super::settings::BlackboxPanelSettings;
 use super::state::BlackboxState;
 use super::types::{BlackboxEvent, BlackboxEventResult, BlackboxHandler, BlackboxRenderKind, BlackboxView};
 use crate::docking::panels::DockPanel;
-use crate::input::WidgetKind;
+use crate::input::core::coordinator::LayerId;
+use crate::input::{Sense, WidgetKind};
 use crate::layout::{BlackboxPanelNode, LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
@@ -137,4 +138,138 @@ pub fn dispatch_to_handler(
         other => other,
     };
     handler.handle_event(local_event)
+}
+
+// ---------------------------------------------------------------------------
+// Stub panel registration
+// ---------------------------------------------------------------------------
+
+/// Register a non-blackbox (stub) panel in the coordinator as a `BlackboxPanel`
+/// widget without providing a full `BlackboxView` render closure.
+///
+/// Use this for dock-leaf panels that have their own custom render function
+/// and do not need the composite's body closure mechanism.  The panel is
+/// registered for hit-testing with full pointer sense (`CLICK | HOVER | DRAG
+/// | SCROLL`) so that overlays above it are still correctly shadowed.
+///
+/// Returns the registered [`WidgetId`] (same as `id`).
+///
+/// # Parameters
+///
+/// - `layout`   — the layout manager (coordinator accessed via `ctx_mut()`).
+/// - `id`       — stable widget id for this panel.
+/// - `rect`     — screen-space rect of the panel.
+/// - `layer`    — render layer (typically `LayerId::main()`).
+pub fn register_layout_manager_stub_panel<P: DockPanel>(
+    layout: &mut LayoutManager<P>,
+    id:     impl Into<WidgetId>,
+    rect:   Rect,
+    layer:  &LayerId,
+) -> WidgetId {
+    let id: WidgetId = id.into();
+    let coord = &mut layout.ctx_mut().input;
+    coord.register_composite(
+        id.clone(),
+        WidgetKind::BlackboxPanel,
+        rect,
+        Sense::CLICK | Sense::HOVER | Sense::DRAG | Sense::SCROLL,
+        layer,
+    );
+    id
+}
+
+// ---------------------------------------------------------------------------
+// Sync-dispatch routing helpers
+// ---------------------------------------------------------------------------
+
+/// Route a pointer event to the `BlackboxPanel` under the cursor, if any.
+///
+/// Checks whether the currently-hovered widget (from the coordinator) is a
+/// `BlackboxPanel`.  If so, calls `dispatch` with the hovered `WidgetId`,
+/// screen coordinates, and event.  The `dispatch` closure is responsible for
+/// finding the right handler and calling [`dispatch_to_handler`] itself.
+/// Returns `true` when `dispatch` returns `true` (consumed).
+///
+/// Returns `false` when:
+/// - No widget is hovered.
+/// - The hovered widget is not a `BlackboxPanel`.
+/// - `dispatch` returns `false` (panel not managed here).
+///
+/// ## Why this pattern?
+///
+/// Returning a `(&mut dyn BlackboxHandler, Rect)` from a closure causes
+/// lifetime/borrow conflicts because the caller typically needs to borrow both
+/// `layout` (for the coordinator check) and the handler (owned by `app`).
+/// Inverting the control — passing `widget_id` into a closure that owns the
+/// handler — avoids the conflict entirely.
+///
+/// ## Usage
+///
+/// ```rust,ignore
+/// // Resolve panel info before the mutable layout borrow.
+/// let watchlist_rect: Option<Rect> = ...;
+///
+/// let consumed = route_blackbox_pointer_down(
+///     &mut app.layout, x, y,
+///     BlackboxEvent::PointerDown { local_x: 0.0, local_y: 0.0, button: MouseButton::Left },
+///     |widget_id, sx, sy, ev| {
+///         if let Some(rect) = watchlist_rect {
+///             if widget_id.0 == watchlist_widget_id {
+///                 dispatch_to_handler(&mut app.watchlist, rect, sx, sy, ev);
+///                 return true;
+///             }
+///         }
+///         false
+///     },
+/// );
+/// ```
+pub fn route_blackbox_pointer_down<P, F>(
+    layout:   &mut LayoutManager<P>,
+    screen_x: f64,
+    screen_y: f64,
+    event:    BlackboxEvent,
+    dispatch: F,
+) -> bool
+where
+    P: DockPanel,
+    F: FnOnce(&WidgetId, f64, f64, BlackboxEvent) -> bool,
+{
+    let top_id = layout.ctx_mut().input.hovered_widget().cloned();
+    let top_id = match top_id {
+        Some(id) => id,
+        None     => return false,
+    };
+    if layout.ctx_mut().input.widget_kind(&top_id) != Some(WidgetKind::BlackboxPanel) {
+        return false;
+    }
+    dispatch(&top_id, screen_x, screen_y, event)
+}
+
+/// Route a wheel event to the `BlackboxPanel` under the cursor, if any.
+///
+/// Mirrors [`route_blackbox_pointer_down`] but for wheel events.  The
+/// `dispatch` closure receives `(widget_id, delta_x, delta_y)` and returns
+/// `true` when the event was consumed.
+///
+/// `delta_x` / `delta_y` are passed directly — no coordinate conversion is
+/// needed for wheel events (they carry no spatial origin).
+pub fn route_blackbox_wheel<P, F>(
+    layout:  &mut LayoutManager<P>,
+    delta_x: f64,
+    delta_y: f64,
+    dispatch: F,
+) -> bool
+where
+    P: DockPanel,
+    F: FnOnce(&WidgetId, f64, f64) -> bool,
+{
+    let top_id = layout.ctx_mut().input.hovered_widget().cloned();
+    let top_id = match top_id {
+        Some(id) => id,
+        None     => return false,
+    };
+    if layout.ctx_mut().input.widget_kind(&top_id) != Some(WidgetKind::BlackboxPanel) {
+        return false;
+    }
+    dispatch(&top_id, delta_x, delta_y)
 }

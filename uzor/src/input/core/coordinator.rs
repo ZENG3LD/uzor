@@ -700,6 +700,26 @@ impl InputCoordinator {
         self.widgets.iter().find(|w| &w.id == id).map(|w| w.rect)
     }
 
+    /// Query the interaction state of a widget by id.
+    ///
+    /// Returns [`WidgetState::Pressed`] when the widget is both hovered and the
+    /// mouse button is held, [`WidgetState::Hovered`] when only hovered, and
+    /// [`WidgetState::Normal`] otherwise.
+    ///
+    /// This is the canonical way to read button state — no string comparison or
+    /// manual `l1_btn_hovered`/`l1_btn_pressed` fields needed in caller code.
+    pub fn widget_state(&self, id: &WidgetId) -> crate::types::WidgetState {
+        use crate::types::WidgetState;
+        let hovered = self.is_hovered(id);
+        if hovered && self.widget_state.hover.mouse_pressed {
+            WidgetState::Pressed
+        } else if hovered {
+            WidgetState::Hovered
+        } else {
+            WidgetState::Normal
+        }
+    }
+
     /// Set focus to a specific widget.
     ///
     /// If the target is not a registered text field, any focused text field is blurred.

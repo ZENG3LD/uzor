@@ -293,6 +293,11 @@ impl<P: DockPanel> LayoutManager<P> {
         self.dismiss_frames.push(frame);
     }
 
+    /// Return the `OverlayKind` for a given overlay slot id, if it is registered.
+    pub fn overlay_kind_for(&self, overlay_id: &str) -> Option<super::OverlayKind> {
+        self.overlays.get(overlay_id).map(|e| e.kind)
+    }
+
     /// Resolve which overlay (if any) should close when a click lands at `pos`.
     ///
     /// Walks the registered frames in z-order (top first). The first frame
@@ -598,7 +603,8 @@ impl<P: DockPanel> LayoutManager<P> {
         // resolved: even if coord sees "modal-widget" under the cursor, the
         // popup sitting above it is what owns the "outside" region.
         if let Some(overlay_id) = self.dismiss_topmost_at(pos) {
-            return ClickOutcome::DismissOverlay { overlay_id };
+            let kind = self.overlay_kind_for(overlay_id.0.as_str());
+            return ClickOutcome::DismissOverlay { overlay_id, kind };
         }
 
         // Step 2 — click is inside the topmost overlay (or no overlay open).
@@ -622,7 +628,17 @@ impl<P: DockPanel> LayoutManager<P> {
 pub enum ClickOutcome {
     /// Click landed outside the topmost open overlay — the caller must close
     /// the corresponding overlay state.
-    DismissOverlay { overlay_id: WidgetId },
+    ///
+    /// `overlay_id` — the stable slot id of the overlay to close.
+    /// `kind`       — the `OverlayKind` of the dismissed overlay, if it was
+    ///                still registered (present in the overlay stack this frame).
+    ///                Use this to avoid string comparisons: match on kind first,
+    ///                then use `overlay_id` only for disambiguation among multiple
+    ///                open overlays of the same kind (e.g. 7 dropdowns).
+    DismissOverlay {
+        overlay_id: WidgetId,
+        kind:       Option<super::OverlayKind>,
+    },
     /// Click landed on a registered widget (overlay was not dismissed).
     /// The caller handles the semantic event.
     DispatchEvent(super::DispatchEvent),

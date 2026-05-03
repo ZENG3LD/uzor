@@ -36,7 +36,7 @@ use uzor::docking::panels::{DockPanel, SplitKind};
 use uzor::input::core::coordinator::LayerId;
 use uzor::input::pointer::state::{InputState, PointerState};
 use uzor::input::text::store::TextFieldConfig;
-use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind};
+use uzor::layout::{consume_event_chain, EdgeSide, EdgeSlot, LayoutManager, LayoutNodeId};
 use uzor::types::{Rect, WidgetId, WidgetState};
 
 // ── composite widgets ─────────────────────────────────────────────────────────
@@ -47,7 +47,7 @@ use uzor::ui::widgets::composite::chrome::settings::ChromeSettings;
 use uzor::ui::widgets::composite::chrome::state::ChromeState;
 use uzor::ui::widgets::composite::chrome::style::ChromeStyle;
 use uzor::ui::widgets::composite::chrome::types::{
-    ChromeAction, ChromeHit, ChromeRenderKind, ChromeTabConfig, ChromeView,
+    ChromeAction, ChromeRenderKind, ChromeTabConfig, ChromeView,
 };
 
 use uzor::ui::widgets::composite::context_menu::input::register_layout_manager_context_menu;
@@ -58,7 +58,7 @@ use uzor::ui::widgets::composite::context_menu::types::{
 };
 
 use uzor::ui::widgets::composite::dropdown::input::{
-    self as dropdown_input, register_layout_manager_dropdown,
+    self as dropdown_input, open_dropdown_flat, register_layout_manager_dropdown,
 };
 use uzor::ui::widgets::composite::dropdown::render::measure_flat;
 use uzor::ui::widgets::composite::dropdown::settings::DropdownSettings;
@@ -213,7 +213,6 @@ const L2_WIN_W: f64 = 560.0;
 const L2_WIN_H: f64 = 420.0;
 
 const BTN_RECT: Rect = Rect { x: 28.0, y: 28.0, width: 130.0, height: 36.0 };
-const CLOSE_RECT: Rect = Rect { x: 278.0, y: 28.0, width: 24.0, height: 24.0 };
 const CB_RECT: Rect = Rect { x: 28.0, y: 88.0, width: 160.0, height: 22.0 };
 const TOG_RECT: Rect = Rect { x: 28.0, y: 130.0, width: 80.0, height: 24.0 };
 const SLID_RECT: Rect = Rect { x: 28.0, y: 200.0, width: 260.0, height: 24.0 };
@@ -815,7 +814,6 @@ struct AppState {
     dropdown_file_state: DropdownState,
     dropdown_view_state: DropdownState,
     dropdown_help_state: DropdownState,
-    dropdown_addpanel_state: DropdownState,
     dropdown_sidebar_state: DropdownState,
     dropdown_toolbar_state: DropdownState,
     dropdown_popup_state: DropdownState,
@@ -872,8 +870,6 @@ struct AppState {
     l2_active_tab: usize,
     l2_active_sub_tab: usize,
     l2_right_panel_w: f64,
-    l2_hovered: Option<String>,
-    l2_pressed: Option<String>,
 
     // Mouse tracking
     last_mouse: (f64, f64),
@@ -890,10 +886,6 @@ struct AppState {
 
     // Need-exit flag set by close button
     exit_requested: bool,
-
-    // Fix 2: L1 custom button hover/press state
-    l1_btn_hovered: bool,
-    l1_btn_pressed: bool,
 
     // Fix 3: Watchlist blackbox state
     watchlist: watchlist_blackbox::WatchlistState,
@@ -916,17 +908,18 @@ impl AppState {
         self.start.elapsed().as_millis() as f64
     }
 
-    /// Close every top-level dropdown except the one named in `keep`.
-    /// Used for one-click switching between adjacent toolbar dropdown buttons —
-    /// otherwise opening B while A is open would require an explicit close-A click.
-    fn close_all_dropdowns_except(&mut self, keep: &str) {
-        if keep != "file"    { self.dropdown_file_state.close(); }
-        if keep != "view"    { self.dropdown_view_state.close(); }
-        if keep != "help"    { self.dropdown_help_state.close(); }
-        if keep != "sidebar" { self.dropdown_sidebar_state.close(); }
-        if keep != "toolbar" { self.dropdown_toolbar_state.close(); }
-        if keep != "popup"   { self.dropdown_popup_state.close(); }
-        if keep != "theme"   { self.dropdown_theme_state.close(); }
+    /// Build the mutable slice of all top-level dropdown states with their overlay ids.
+    /// Used by `toggle_dropdown_at` and `close_all_dropdowns`.
+    fn all_dropdown_states(&mut self) -> [(&'static str, &mut DropdownState); 7] {
+        [
+            ("dd-file-overlay",    &mut self.dropdown_file_state),
+            ("dd-view-overlay",    &mut self.dropdown_view_state),
+            ("dd-help-overlay",    &mut self.dropdown_help_state),
+            ("dd-sidebar-overlay", &mut self.dropdown_sidebar_state),
+            ("dd-toolbar-overlay", &mut self.dropdown_toolbar_state),
+            ("dd-popup-overlay",   &mut self.dropdown_popup_state),
+            ("dd-theme-overlay",   &mut self.dropdown_theme_state),
+        ]
     }
 
     /// Handle a dropdown item click coming from the dispatcher.
@@ -1021,18 +1014,6 @@ impl AppState {
                 }
                 println!("[L3] theme → {}", if self.theme_idx == 0 { "Dark" } else { "Light" });
             }
-            "dd-addpanel-widget" => {
-                let kind_to_apply = match item_id {
-                    "split-horiz"       => Some(SpawnSplit::SplitRight),
-                    "split-vert"        => Some(SpawnSplit::SplitBottom),
-                    "split-grid"        => Some(SpawnSplit::Grid2x2),
-                    _ => None,
-                };
-                if let Some(k) = kind_to_apply {
-                    self.spawn_split = k;
-                }
-                self.dropdown_addpanel_state.close();
-            }
             other => println!("[L3] dropdown {other} item: {item_id}"),
         }
     }
@@ -1047,36 +1028,9 @@ impl AppState {
 
     /// Open a dropdown anchored to the bottom-left of a toolbar item's rect.
     /// Toggles closed if it was already open under that key.
-    fn toggle_dropdown_at(&mut self, key: &'static str, item_rect: Rect) {
-        let dd_rect = (item_rect.x, item_rect.y + item_rect.height);
-        let target = match key {
-            "file"    => &mut self.dropdown_file_state,
-            "view"    => &mut self.dropdown_view_state,
-            "help"    => &mut self.dropdown_help_state,
-            "sidebar" => &mut self.dropdown_sidebar_state,
-            "toolbar" => &mut self.dropdown_toolbar_state,
-            "popup"   => &mut self.dropdown_popup_state,
-            "theme"   => &mut self.dropdown_theme_state,
-            _ => return,
-        };
-        let was = target.open;
-        // Close every dropdown, then re-open the requested one if it was closed.
-        // (Borrowing rules — close_all_dropdowns_except does the rest.)
-        let want_open = !was;
-        self.close_all_dropdowns_except("none");
-        if want_open {
-            let target = match key {
-                "file"    => &mut self.dropdown_file_state,
-                "view"    => &mut self.dropdown_view_state,
-                "help"    => &mut self.dropdown_help_state,
-                "sidebar" => &mut self.dropdown_sidebar_state,
-                "toolbar" => &mut self.dropdown_toolbar_state,
-                "popup"   => &mut self.dropdown_popup_state,
-                "theme"   => &mut self.dropdown_theme_state,
-                _ => return,
-            };
-            target.open_at(dd_rect.0, dd_rect.1);
-        }
+    fn toggle_dropdown_at(&mut self, overlay_id: &'static str, item_rect: Rect) {
+        let mut all = self.all_dropdown_states();
+        DropdownState::toggle_at(overlay_id, item_rect, 0.0, &mut all);
     }
 
     /// Handle a toolbar item click coming from the dispatcher.
@@ -1086,13 +1040,13 @@ impl AppState {
         // dropdown to its bottom-left edge regardless of toolbar layout.
         let item_rect = self.toolbar_item_rect(toolbar_id, item_id);
         match (toolbar_id, item_id) {
-            ("top-toolbar-widget", "tb-file")    => if let Some(r) = item_rect { self.toggle_dropdown_at("file",    r); },
-            ("top-toolbar-widget", "tb-view")    => if let Some(r) = item_rect { self.toggle_dropdown_at("view",    r); },
-            ("top-toolbar-widget", "tb-help")    => if let Some(r) = item_rect { self.toggle_dropdown_at("help",    r); },
-            ("top-toolbar-widget", "tb-sidebar") => if let Some(r) = item_rect { self.toggle_dropdown_at("sidebar", r); },
-            ("top-toolbar-widget", "tb-toolbar") => if let Some(r) = item_rect { self.toggle_dropdown_at("toolbar", r); },
-            ("top-toolbar-widget", "tb-popup")   => if let Some(r) = item_rect { self.toggle_dropdown_at("popup",   r); },
-            ("top-toolbar-widget", "tb-theme")   => if let Some(r) = item_rect { self.toggle_dropdown_at("theme",   r); },
+            ("top-toolbar-widget", "tb-file")    => if let Some(r) = item_rect { self.toggle_dropdown_at("dd-file-overlay",    r); },
+            ("top-toolbar-widget", "tb-view")    => if let Some(r) = item_rect { self.toggle_dropdown_at("dd-view-overlay",    r); },
+            ("top-toolbar-widget", "tb-help")    => if let Some(r) = item_rect { self.toggle_dropdown_at("dd-help-overlay",    r); },
+            ("top-toolbar-widget", "tb-sidebar") => if let Some(r) = item_rect { self.toggle_dropdown_at("dd-sidebar-overlay", r); },
+            ("top-toolbar-widget", "tb-toolbar") => if let Some(r) = item_rect { self.toggle_dropdown_at("dd-toolbar-overlay", r); },
+            ("top-toolbar-widget", "tb-popup")   => if let Some(r) = item_rect { self.toggle_dropdown_at("dd-popup-overlay",   r); },
+            ("top-toolbar-widget", "tb-theme")   => if let Some(r) = item_rect { self.toggle_dropdown_at("dd-theme-overlay",   r); },
             ("left-vtoolbar-widget", "lt-toggle-sidebar") => {
                 self.sidebar_open = !self.sidebar_open;
                 println!("[L3] sidebar → {}", self.sidebar_open);
@@ -1132,83 +1086,6 @@ impl AppState {
         let new_tree = std::mem::take(&mut self.tab_trees[new_tab]);
         *self.layout.panels_mut().tree_mut() = new_tree;
         self.active_view = new_tab;
-    }
-
-    fn l2_sb_x(&self) -> f64 {
-        L2_WIN_W - SB_W - 8.0
-    }
-
-    fn l2_right_panel_x(&self) -> f64 {
-        L2_WIN_W - self.l2_right_panel_w
-    }
-
-    fn l2_splitter_rect(&self) -> Rect {
-        let rx = self.l2_right_panel_x();
-        Rect::new(rx - SPLITTER_W / 2.0, 12.0, SPLITTER_W, L2_WIN_H - 24.0)
-    }
-
-    fn l2_tab_rect(&self, i: usize) -> Rect {
-        let rx = self.l2_right_panel_x();
-        let rw = self.l2_right_panel_w;
-        let tab_w = ((rw - 16.0) / 3.0).floor();
-        let tab_x = rx + 8.0 + i as f64 * (tab_w + 4.0);
-        Rect::new(tab_x, TAB_STRIP_Y, tab_w, TAB_STRIP_H)
-    }
-
-    fn l2_sub_tab_rect(&self, i: usize) -> Rect {
-        let rx = self.l2_right_panel_x() + 8.0;
-        Rect::new(rx, CONTENT_START_Y + 8.0 + i as f64 * 36.0, 90.0, 30.0)
-    }
-
-    fn l2_thumb_h() -> f64 {
-        let ratio = (SB_H / CONTENT_H).clamp(0.0, 1.0);
-        (ratio * SB_H).max(30.0)
-    }
-
-    // Hit-test inside L2 modal body (offsets relative to body_rect origin)
-    fn l2_hovered_at(&self, mx: f64, my: f64) -> Option<String> {
-        fn contains(r: Rect, x: f64, y: f64) -> bool {
-            x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height
-        }
-        if contains(BTN_RECT,   mx, my) { return Some("l2-btn-connect".into()); }
-        if contains(CLOSE_RECT, mx, my) { return Some("l2-btn-close".into()); }
-        if contains(CB_RECT,    mx, my) { return Some("l2-cb".into()); }
-        if contains(TOG_RECT,   mx, my) { return Some("l2-tog".into()); }
-        if contains(SLID_RECT,  mx, my) { return Some("l2-slider".into()); }
-        if contains(RANGE_RECT, mx, my) { return Some("l2-range".into()); }
-        if contains(TI_RECT,    mx, my) { return Some("l2-text".into()); }
-        let sp = self.l2_splitter_rect();
-        let sp_hit = Rect::new(sp.x - 4.0, sp.y, sp.width + 8.0, sp.height);
-        if contains(sp_hit, mx, my) { return Some("l2-splitter".into()); }
-        for i in 0..3_usize {
-            let cx = 28.0 + i as f64 * 40.0;
-            if contains(Rect::new(cx, 175.0, 28.0, 28.0), mx, my) {
-                return Some(format!("l2-radio-{i}"));
-            }
-        }
-        for i in 0..4_usize {
-            let sx = 28.0 + i as f64 * 34.0;
-            if contains(Rect::new(sx, 344.0, 26.0, 26.0), mx, my) {
-                return Some(format!("l2-swatch-{i}"));
-            }
-        }
-        for i in 0..3_usize {
-            if contains(self.l2_tab_rect(i), mx, my) {
-                return Some(format!("l2-tab-{i}"));
-            }
-        }
-        if self.l2_active_tab == 2 {
-            for i in 0..3_usize {
-                if contains(self.l2_sub_tab_rect(i), mx, my) {
-                    return Some(format!("l2-sub-tab-{i}"));
-                }
-            }
-        }
-        if self.l2_active_tab == 0 {
-            let sb_track = Rect::new(self.l2_sb_x(), 52.0, SB_W, SB_H);
-            if contains(sb_track, mx, my) { return Some("l2-sb".into()); }
-        }
-        None
     }
 
     fn render(&mut self, event_loop: &ActiveEventLoop) {
@@ -1401,7 +1278,8 @@ impl AppState {
             });
         }
 
-        // Clear overlays at the START of frame (before push_overlay calls).
+        // Clear overlays at the START of frame (composites push them via
+        // register_layout_manager_* calls below).
         // If we cleared at the end, rect_for_overlay would return None for
         // outside-click handlers running between frames.
         self.layout.clear_overlays();
@@ -1424,30 +1302,24 @@ impl AppState {
         self.layout.dispatcher_begin_frame();
 
         // Fix 4: register L2 text field at its actual screen-space rect.
-        // Compute modal rect using the same formula as the rendering pass below
-        // so the text field hit-zone matches the drawn widget.
+        // Compute modal body rect (frame origin + header offset) and delegate
+        // field registration to the lib helper.
         if self.modal_open && self.modal_kind == ModalKind::L2 {
             let modal_w = L2_WIN_W + 24.0;
             let modal_h = L2_WIN_H + 80.0;
             let modal_x = (width as f64 / 2.0 - modal_w / 2.0).max(0.0);
             let modal_y = (height as f64 / 2.0 - modal_h / 2.0).max(0.0);
-            // If the modal has been dragged, its render position differs.
             let (frame_x, frame_y) = if self.modal_state.position != (0.0, 0.0) {
                 self.modal_state.position
             } else {
                 (modal_x, modal_y)
             };
-            // ox/oy as used in the render pass: ox = frame_x, oy = frame_y + 44.0 (header)
-            let ti_screen_rect = Rect::new(
-                frame_x + TI_RECT.x,
-                frame_y + 44.0 + TI_RECT.y,
-                TI_RECT.width,
-                TI_RECT.height,
-            );
-            self.layout.ctx_mut().input.register_text_field(
-                "l2-text",
-                ti_screen_rect,
-                TextFieldConfig::text(),
+            // body_rect origin: frame + header (44 px)
+            let body_rect = Rect::new(frame_x, frame_y + 44.0, modal_w, modal_h - 44.0);
+            modal_input::register_modal_text_fields(
+                &mut self.layout,
+                body_rect,
+                &[("l2-text", TI_RECT, TextFieldConfig::text())],
             );
         }
 
@@ -1514,13 +1386,13 @@ impl AppState {
         let popup_btn_active   = self.dropdown_popup_state.open;
         let theme_btn_active   = self.dropdown_theme_state.open;
         let top_toolbar_items = [
-            ToolbarItem::TextButton { id: "tb-view",    text: "View",    active: view_btn_active,    tooltip: Some("View menu") },
-            ToolbarItem::TextButton { id: "tb-help",    text: "Modals",  active: modals_btn_active,  tooltip: Some("Modals menu") },
+            ToolbarItem::TextButton { id: "tb-view",    text: "View",    active: view_btn_active,    tooltip: Some("View menu"),         popup_on_hover: true },
+            ToolbarItem::TextButton { id: "tb-help",    text: "Modals",  active: modals_btn_active,  tooltip: Some("Modals menu"),       popup_on_hover: true },
             ToolbarItem::Separator,
-            ToolbarItem::TextButton { id: "tb-sidebar", text: "Sidebar", active: sidebar_btn_active, tooltip: Some("Sidebar variants") },
-            ToolbarItem::TextButton { id: "tb-toolbar", text: "Toolbar", active: toolbar_btn_active, tooltip: Some("Toolbar variants") },
-            ToolbarItem::TextButton { id: "tb-popup",   text: "Popup",   active: popup_btn_active,   tooltip: Some("Popup templates") },
-            ToolbarItem::TextButton { id: "tb-theme",   text: "Theme",   active: theme_btn_active,   tooltip: Some("Theme switcher") },
+            ToolbarItem::TextButton { id: "tb-sidebar", text: "Sidebar", active: sidebar_btn_active, tooltip: Some("Sidebar variants"),  popup_on_hover: false },
+            ToolbarItem::TextButton { id: "tb-toolbar", text: "Toolbar", active: toolbar_btn_active, tooltip: Some("Toolbar variants"),  popup_on_hover: false },
+            ToolbarItem::TextButton { id: "tb-popup",   text: "Popup",   active: popup_btn_active,   tooltip: Some("Popup templates"),   popup_on_hover: false },
+            ToolbarItem::TextButton { id: "tb-theme",   text: "Theme",   active: theme_btn_active,   tooltip: Some("Theme switcher"),    popup_on_hover: false },
         ];
         let clock_items = [
             ToolbarItem::Clock { id: "top-clock", time_text: clock.as_str() },
@@ -1553,7 +1425,7 @@ impl AppState {
         // populated icon registry which may be empty in examples.
         let sidebar_open = self.sidebar_open;
         let left_items = [
-            ToolbarItem::TextButton { id: "lt-toggle-sidebar", text: "☰", active: sidebar_open, tooltip: Some("Toggle sidebar") },
+            ToolbarItem::TextButton { id: "lt-toggle-sidebar", text: "☰", active: sidebar_open, tooltip: Some("Toggle sidebar"), popup_on_hover: false },
         ];
         if self.left_toolbar_visible {
             let left_toolbar_view = ToolbarView {
@@ -1600,7 +1472,7 @@ impl AppState {
         let demo_overflow_items: Vec<ToolbarItem<'_>> = demo_overflow_labels
             .iter()
             .map(|lbl| ToolbarItem::TextButton {
-                id: lbl, text: lbl, active: false, tooltip: None,
+                id: lbl, text: lbl, active: false, tooltip: None, popup_on_hover: false,
             })
             .collect();
         // Each demo toolbar uses its own stored ToolbarState so the overflow
@@ -1768,125 +1640,12 @@ impl AppState {
                 },
                 &sidebar_kind_value,
             );
-            // Sidebar body — spawn UI + panel list.
+            // Sidebar body — spawn UI + panel list (via SidebarBodyBuilder).
             if let Some(body_rect) = self.layout.rect_for_edge_slot("sidebar") {
-                use uzor::input::core::sense::Sense;
-                use uzor::input::core::widget_kind::WidgetKind;
-
-                // Composite hands us a scroll-aware viewport (clip rect +
-                // y-anchor with scroll already applied). No app-side
-                // header-offset / clip bookkeeping needed any more.
-                let body_vp = uzor::ui::widgets::composite::sidebar::render::begin_body(
-                    &mut render,
-                    body_rect,
-                    &self.sidebar_state,
-                    &sidebar_view,
-                    &{
-                        let mut s = SidebarSettings::default();
-                        s.style = Box::new(NoDividerSidebarStyle(DefaultSidebarStyle));
-                        s
-                    },
-                    &sidebar_kind_value,
-                );
-                let mut y = body_vp.content_origin_y + 8.0;
-                let bx = body_rect.x + 8.0;
-                let bw = body_rect.width - 16.0;
-
-                // ── NEW PANEL section header
-                label(&mut render, Rect::new(bx, y, bw, 22.0), "NEW PANEL", TextAlign::Left, "rgba(255,255,255,0.4)");
-                y += 22.0;
-
-                // ── Type label
-                label(&mut render, Rect::new(bx, y, bw, 20.0), "Type:", TextAlign::Left, "rgba(255,255,255,0.55)");
-                y += 20.0;
-
-                // Radio buttons for panel kind
-                for kind in PanelKind::all() {
-                    let radio_id = format!("spawn-kind-{}", kind.title().to_lowercase());
-                    let selected = &self.spawn_kind == kind;
-                    let rx = bx + 6.0;
-                    let ry = y;
-                    // radio dot
-                    if selected {
-                        render.set_fill_color("#2962ff");
-                        render.fill_rounded_rect(rx, ry + 3.0, 10.0, 10.0, 5.0);
-                    } else {
-                        render.set_fill_color("rgba(255,255,255,0.18)");
-                        render.fill_rounded_rect(rx, ry + 3.0, 10.0, 10.0, 5.0);
-                    }
-                    label(&mut render, Rect::new(rx + 16.0, ry, bw - 22.0, 20.0), kind.title(), TextAlign::Left, if selected { "#ffffff" } else { "#a0a0b0" });
-                    self.layout.ctx_mut().input.register_atomic(
-                        WidgetId::new(radio_id),
-                        WidgetKind::Button,
-                        Rect::new(bx, ry, bw, 20.0),
-                        Sense::CLICK | Sense::HOVER,
-                        &LayerId::main(),
-                    );
-                    y += 22.0;
-                }
-
-                y += 6.0;
-                // ── Split label
-                label(&mut render, Rect::new(bx, y, bw, 20.0), "Split:", TextAlign::Left, "rgba(255,255,255,0.55)");
-                y += 20.0;
-
-                let splits = [
-                    ("Split right",  "spawn-split-horiz"),
-                    ("Split bottom", "spawn-split-vert"),
-                    ("Grid 2×2",     "spawn-split-grid"),
-                ];
-                for (split_lbl, id) in &splits {
-                    let selected = match *id {
-                        "spawn-split-horiz" => self.spawn_split == SpawnSplit::SplitRight,
-                        "spawn-split-vert"  => self.spawn_split == SpawnSplit::SplitBottom,
-                        _                   => self.spawn_split == SpawnSplit::Grid2x2,
-                    };
-                    let rx = bx + 6.0;
-                    if selected {
-                        render.set_fill_color("#2962ff");
-                        render.fill_rounded_rect(rx, y + 3.0, 10.0, 10.0, 5.0);
-                    } else {
-                        render.set_fill_color("rgba(255,255,255,0.18)");
-                        render.fill_rounded_rect(rx, y + 3.0, 10.0, 10.0, 5.0);
-                    }
-                    label(&mut render, Rect::new(rx + 16.0, y, bw - 22.0, 20.0), split_lbl, TextAlign::Left, if selected { "#ffffff" } else { "#a0a0b0" });
-                    self.layout.ctx_mut().input.register_atomic(
-                        WidgetId::new(*id),
-                        WidgetKind::Button,
-                        Rect::new(bx, y, bw, 20.0),
-                        Sense::CLICK | Sense::HOVER,
-                        &LayerId::main(),
-                    );
-                    y += 22.0;
-                }
-
-                y += 8.0;
-
-                // ── Spawn button
-                render.set_fill_color("#2962ff");
-                render.fill_rounded_rect(bx, y, bw, 28.0, 4.0);
-                label(&mut render, Rect::new(bx, y, bw, 28.0), "Spawn", TextAlign::Center, "#ffffff");
-                self.layout.ctx_mut().input.register_atomic(
-                    WidgetId::new("sidebar-spawn"),
-                    WidgetKind::Button,
-                    Rect::new(bx, y, bw, 28.0),
-                    Sense::CLICK | Sense::HOVER,
-                    &LayerId::main(),
-                );
-                y += 36.0;
-
-                // ── Divider
-                render.set_fill_color("rgba(255,255,255,0.08)");
-                render.fill_rect(bx, y, bw, 1.0);
-                y += 10.0;
-
-                // ── PANELS section header
-                label(&mut render, Rect::new(bx, y, bw, 22.0), "PANELS", TextAlign::Left, "rgba(255,255,255,0.4)");
-                y += 22.0;
-
-                // Collect current tab's leaves
-                let leaf_entries: Vec<(uzor::docking::panels::LeafId, String)> = {
-                    let mut entries: Vec<(uzor::docking::panels::LeafId, String)> = self
+                // Collect leaf data before borrowing layout mutably for the builder.
+                let leaf_entries: Vec<(uzor::docking::panels::LeafId, String, bool)> = {
+                    let active = self.layout.panels().active_leaf();
+                    let mut entries: Vec<_> = self
                         .layout
                         .panels()
                         .panel_rects()
@@ -1900,44 +1659,87 @@ impl AppState {
                                 .and_then(|l| l.panels.first())
                                 .map(|p| p.title().to_string())
                                 .unwrap_or_else(|| format!("Panel {}", id.0));
-                            (id, title)
+                            (id, title, active == Some(id))
                         })
                         .collect();
-                    entries.sort_by_key(|(id, _)| id.0);
+                    entries.sort_by_key(|(id, _, _)| id.0);
                     entries
                 };
 
-                for (idx, (leaf_id, title)) in leaf_entries.iter().enumerate() {
-                    let is_active = self.layout.panels().active_leaf() == Some(*leaf_id);
-                    render.set_fill_color(if is_active { "rgba(41,98,255,0.18)" } else { "rgba(255,255,255,0.05)" });
-                    render.fill_rounded_rect(bx, y, bw, 26.0, 3.0);
-                    label(&mut render, Rect::new(bx + 10.0, y, bw - 36.0, 26.0), title.as_str(), TextAlign::Left, if is_active { "#4d90fe" } else { "#d1d4dc" });
+                let body_vp = uzor::ui::widgets::composite::sidebar::render::begin_body(
+                    &mut render,
+                    body_rect,
+                    &self.sidebar_state,
+                    &sidebar_view,
+                    &{
+                        let mut s = SidebarSettings::default();
+                        s.style = Box::new(NoDividerSidebarStyle(DefaultSidebarStyle));
+                        s
+                    },
+                    &sidebar_kind_value,
+                );
 
-                    let close_x = bx + bw - 22.0;
-                    let close_id = format!("dock-leaf-close-{idx}");
-                    self.layout.ctx_mut().input.register_atomic(
-                        WidgetId::new(close_id),
-                        WidgetKind::Button,
-                        Rect::new(close_x, y + 5.0, 16.0, 16.0),
-                        Sense::CLICK | Sense::HOVER,
-                        &LayerId::main(),
-                    );
-                    label(&mut render, Rect::new(close_x, y + 5.0, 16.0, 16.0), "×", TextAlign::Center, "rgba(255,80,80,0.5)");
+                // Build radio items from PanelKind::all()
+                let spawn_kind = &self.spawn_kind;
+                let kind_radio_ids: Vec<String> = PanelKind::all()
+                    .iter()
+                    .map(|k| format!("spawn-kind-{}", k.title().to_lowercase()))
+                    .collect();
+                let kind_radio_items: Vec<sidebar_input::SidebarRadioItem<'_>> = PanelKind::all()
+                    .iter()
+                    .zip(kind_radio_ids.iter())
+                    .map(|(k, id)| sidebar_input::SidebarRadioItem {
+                        id: id.as_str(),
+                        label: k.title(),
+                        selected: spawn_kind == k,
+                    })
+                    .collect();
 
-                    y += 30.0;
-                }
+                let spawn_split = &self.spawn_split;
+                let split_radio_items = [
+                    sidebar_input::SidebarRadioItem { id: "spawn-split-horiz", label: "Split right",  selected: *spawn_split == SpawnSplit::SplitRight  },
+                    sidebar_input::SidebarRadioItem { id: "spawn-split-vert",  label: "Split bottom", selected: *spawn_split == SpawnSplit::SplitBottom },
+                    sidebar_input::SidebarRadioItem { id: "spawn-split-grid",  label: "Grid 2×2",     selected: *spawn_split == SpawnSplit::Grid2x2     },
+                ];
 
-                // (keep y alive so borrow checker doesn't warn on unused assignment)
-                let _ = y;
-                let _ = body_vp;
-                uzor::ui::widgets::composite::sidebar::render::end_body(&mut render);
+                let close_ids: Vec<String> = (0..leaf_entries.len())
+                    .map(|i| format!("dock-leaf-close-{i}"))
+                    .collect();
+                let panel_entries: Vec<sidebar_input::SidebarPanelEntry<'_>> = leaf_entries
+                    .iter()
+                    .zip(close_ids.iter())
+                    .map(|((_, title, active), close_id)| sidebar_input::SidebarPanelEntry {
+                        close_id: close_id.as_str(),
+                        title: title.as_str(),
+                        active: *active,
+                    })
+                    .collect();
+
+                let mut builder = sidebar_input::SidebarBodyBuilder::new(
+                    &mut render,
+                    &mut self.layout,
+                    body_rect,
+                    body_vp.content_origin_y,
+                    LayerId::main(),
+                );
+                builder.add_section_header("NEW PANEL");
+                builder.add_sub_label("Type:");
+                builder.add_radio_group(&kind_radio_items);
+                builder.add_spacer(6.0);
+                builder.add_sub_label("Split:");
+                builder.add_radio_group(&split_radio_items);
+                builder.add_spacer(8.0);
+                builder.add_action_button("sidebar-spawn", "Spawn");
+                builder.add_divider();
+                builder.add_section_header("PANELS");
+                builder.add_panel_list(&panel_entries, "×");
+                builder.finish();
             }
         }
 
         // ── Main content — iterate ALL leaves of the current dock tree ──────────
         {
             use uzor::input::core::sense::Sense;
-            use uzor::input::core::widget_kind::WidgetKind;
 
             let active_leaf = self.layout.panels().active_leaf();
 
@@ -2001,11 +1803,11 @@ impl AppState {
                     drop(view);
                     self.watchlist = watchlist.into_inner();
                 } else {
-                    let _composite_id = self.layout.ctx_mut().input.register_composite(
-                        WidgetId::new(leaf_widget_id),
-                        WidgetKind::BlackboxPanel,
+                    use uzor::ui::widgets::composite::blackbox_panel::input::register_layout_manager_stub_panel;
+                    let _ = register_layout_manager_stub_panel(
+                        &mut self.layout,
+                        leaf_widget_id,
                         rect,
-                        Sense::CLICK | Sense::HOVER | Sense::DRAG | Sense::SCROLL,
                         &LayerId::main(),
                     );
                     render_panel_body(kind, &mut render, rect, &self.watchlist);
@@ -2113,12 +1915,6 @@ impl AppState {
                 (default_x, default_y)
             };
             let modal_rect = Rect::new(frame_x, frame_y, modal_w, modal_h);
-            self.layout.push_overlay(OverlayEntry {
-                id: "modal-overlay".to_string(),
-                kind: OverlayKind::Modal,
-                rect: modal_rect,
-                anchor: None,
-            });
 
             let modal_kind = self.modal_kind;
             let l2_connected = self.l2_connected;
@@ -2134,8 +1930,6 @@ impl AppState {
             let l2_active_tab = self.l2_active_tab;
             let l2_active_sub_tab = self.l2_active_sub_tab;
             let l2_right_panel_w = self.l2_right_panel_w;
-            let l2_hovered = self.l2_hovered.clone();
-            let l2_pressed = self.l2_pressed.clone();
             let start_time = self.start;
             let l2_sb_x = L2_WIN_W - SB_W - 8.0;
             let l2_right_panel_x = L2_WIN_W - l2_right_panel_w;
@@ -2204,6 +1998,8 @@ impl AppState {
                 LayoutNodeId::ROOT,
                 "modal-overlay",
                 "modal-widget",
+                modal_rect,
+                None,
                 &mut self.modal_state,
                 &mut modal_view,
                 &ModalSettings::default(),
@@ -2260,13 +2056,12 @@ impl AppState {
                             Sense::CLICK | Sense::HOVER,
                             &layer,
                         );
-                        // Fix 2: three-state colour: pressed > hovered > normal
-                        let btn_color = if self.l1_btn_pressed {
-                            "#1a40c8"
-                        } else if self.l1_btn_hovered {
-                            "#4080ff"
-                        } else {
-                            "#3769af"
+                        // Three-state colour via coordinator widget_state — no manual fields needed.
+                        let btn_state = self.layout.ctx_mut().input.widget_state(&btn_id);
+                        let btn_color = match btn_state {
+                            WidgetState::Pressed  => "#1a40c8",
+                            WidgetState::Hovered  => "#4080ff",
+                            _                     => "#3769af",
                         };
                         render.set_fill_color(btn_color);
                         render.fill_rounded_rect(btn_r.x, btn_r.y, btn_r.width, btn_r.height, 6.0);
@@ -2386,31 +2181,16 @@ impl AppState {
 
                         // 1. Button — wrapped in a composite Panel so a sticky chevron child can attach.
                         let btn_rect = Rect::new(BTN_RECT.x + ox, BTN_RECT.y + oy, BTN_RECT.width, BTN_RECT.height);
-                        let btn_state = if l2_hovered.as_deref() == Some("l2-btn-connect") { WidgetState::Hovered } else if l2_connected { WidgetState::Active } else { WidgetState::Normal };
-                        // Register composite Panel as the host so register_child / register_sticky_chevron work.
-                        let btn_host_id = {
-                            use uzor::input::core::widget_kind::WidgetKind as WK;
-                            use uzor::input::Sense;
-                            self.layout.ctx_mut().input.register_composite(
-                                WidgetId::new("l2-btn-connect-host"),
-                                WK::Panel,
-                                btn_rect,
-                                Sense::NONE,
-                                &layer,
-                            )
-                        };
-                        // Register the visual button as a child of the composite.
-                        {
-                            use uzor::input::core::widget_kind::WidgetKind as WK;
-                            use uzor::input::Sense;
-                            self.layout.ctx_mut().input.register_child(
-                                &btn_host_id,
-                                WidgetId::new("l2-btn-connect"),
-                                WK::Button,
-                                btn_rect,
-                                Sense::CLICK | Sense::HOVER,
-                            );
-                        }
+                        let btn_state = if self.layout.ctx().input.is_hovered(&WidgetId::new("l2-btn-connect")) { WidgetState::Hovered } else if l2_connected { WidgetState::Active } else { WidgetState::Normal };
+                        // Register composite Panel host + Button child via lib helper.
+                        let btn_host_id = modal_input::register_modal_button(
+                            &mut self.layout,
+                            "l2-btn-connect-host",
+                            "l2-btn-connect",
+                            btn_rect,
+                            uzor::input::Sense::CLICK | uzor::input::Sense::HOVER,
+                            &layer,
+                        );
                         // Draw the button visuals.
                         // Demo A: hover_chevron removed — the sticky chevron below is the sole chevron.
                         {
@@ -2458,46 +2238,51 @@ impl AppState {
                             draw_sticky_chevron(&mut render, btn_rect, &connect_chev_spec, chev_state, btn_state);
                         }
                         // 2. Checkbox
+                        let l2_cb_hovered = self.layout.ctx().input.is_hovered(&WidgetId::new("l2-cb"));
                         register_context_manager_checkbox(
                             self.layout.ctx_mut(), &mut render,
                             "l2-cb", Rect::new(CB_RECT.x + ox, CB_RECT.y + oy, CB_RECT.width, CB_RECT.height), &layer,
-                            if l2_hovered.as_deref() == Some("l2-cb") { WidgetState::Hovered } else { WidgetState::Normal },
+                            if l2_cb_hovered { WidgetState::Hovered } else { WidgetState::Normal },
                             &CheckboxView { checked: l2_checked, label: Some("Setting A") },
                             &CheckboxSettings::default().with_theme(Box::new(VisibleCheckboxTheme)),
                             &CheckboxRenderKind::Standard, "13px sans-serif",
                         );
                         // 3. Toggle
+                        let l2_tog_hovered = self.layout.ctx().input.is_hovered(&WidgetId::new("l2-tog"));
                         register_context_manager_toggle(
                             self.layout.ctx_mut(), &mut render,
                             "l2-tog", Rect::new(TOG_RECT.x + ox, TOG_RECT.y + oy, TOG_RECT.width, TOG_RECT.height), &layer,
-                            if l2_hovered.as_deref() == Some("l2-tog") { WidgetState::Hovered } else { WidgetState::Normal },
+                            if l2_tog_hovered { WidgetState::Hovered } else { WidgetState::Normal },
                             &ToggleView { toggled: l2_toggled, label: Some("ON"), disabled: false },
                             &ToggleSettings::default(), &ToggleRenderKind::Switch,
                         );
                         // 4. Radio
                         for (i, cx_off) in [28.0_f64, 68.0, 108.0].iter().enumerate() {
                             let rid = format!("l2-radio-{i}");
+                            let rid_hovered = self.layout.ctx().input.is_hovered(&WidgetId::new(rid.as_str()));
                             register_context_manager_radio(
                                 self.layout.ctx_mut(), &mut render,
                                 rid.as_str(), Rect::new(cx_off + ox, 175.0 + oy, 28.0, 28.0), &layer,
-                                if l2_hovered.as_deref() == Some(rid.as_str()) { WidgetState::Hovered } else { WidgetState::Normal },
+                                if rid_hovered { WidgetState::Hovered } else { WidgetState::Normal },
                                 &RadioSettings::default(),
                                 &RadioRenderKind::Dot { shape: DotShape::Circle, cx: cx_off + 14.0 + ox, cy: 175.0 + 14.0 + oy, view: RadioDotView { selected: l2_radio_sel == i } },
                             );
                         }
                         // 5. Slider
+                        let l2_slider_hovered = self.layout.ctx().input.is_hovered(&WidgetId::new("l2-slider"));
                         register_context_manager_slider(
                             self.layout.ctx_mut(), &mut render,
                             "l2-slider", Rect::new(SLID_RECT.x + ox, SLID_RECT.y + oy, SLID_RECT.width, SLID_RECT.height), &layer,
-                            if l2_hovered.as_deref() == Some("l2-slider") { WidgetState::Hovered } else { WidgetState::Normal },
+                            if l2_slider_hovered { WidgetState::Hovered } else { WidgetState::Normal },
                             &SliderView { kind: SliderType::Single { value: l2_slider_val, min: 0.0, max: 100.0, step: 1.0 }, hovered: false, disabled: false, dragging_handle: None },
                             &SliderSettings::default(),
                         );
                         // 6. Range slider
+                        let l2_range_hovered = self.layout.ctx().input.is_hovered(&WidgetId::new("l2-range"));
                         register_context_manager_slider(
                             self.layout.ctx_mut(), &mut render,
                             "l2-range", Rect::new(RANGE_RECT.x + ox, RANGE_RECT.y + oy, RANGE_RECT.width, RANGE_RECT.height), &layer,
-                            if l2_hovered.as_deref() == Some("l2-range") { WidgetState::Hovered } else { WidgetState::Normal },
+                            if l2_range_hovered { WidgetState::Hovered } else { WidgetState::Normal },
                             &SliderView { kind: SliderType::Dual { min_value: l2_range_min, max_value: l2_range_max, min: 0.0, max: 100.0, step: 1.0 }, hovered: false, disabled: false, dragging_handle: l2_range_drag_handle },
                             &SliderSettings::default(),
                         );
@@ -2509,7 +2294,7 @@ impl AppState {
                             &SeparatorSettings::default(),
                         );
                         // 8. Text input
-                        let ti_state = if text_focused { WidgetState::Active } else if l2_hovered.as_deref() == Some("l2-text") { WidgetState::Hovered } else { WidgetState::Normal };
+                        let ti_state = if text_focused { WidgetState::Active } else if self.layout.ctx().input.is_hovered(&WidgetId::new("l2-text")) { WidgetState::Hovered } else { WidgetState::Normal };
                         let ti_settings = TextInputSettings::with_config(uzor::ui::widgets::atomic::text_input::state::TextFieldConfig::text());
                         let ti_view = InputView { text: text_str.as_str(), placeholder: "Search...", cursor: text_cursor, selection: text_sel, focused: text_focused, disabled: false, input_type: InputType::Search };
                         let ti_rect = Rect::new(TI_RECT.x + ox, TI_RECT.y + oy, TI_RECT.width, TI_RECT.height);
@@ -2521,10 +2306,11 @@ impl AppState {
                         let swatch_colors: [[u8; 4]; 4] = [[41,98,255,255],[16,185,129,255],[245,158,11,255],[239,83,80,255]];
                         for (i, color) in swatch_colors.iter().enumerate() {
                             let sid = format!("l2-swatch-{i}");
+                            let sid_hovered = self.layout.ctx().input.is_hovered(&WidgetId::new(sid.as_str()));
                             register_context_manager_color_swatch(
                                 self.layout.ctx_mut(), &mut render,
                                 sid.as_str(), Rect::new(28.0 + i as f64 * 34.0 + ox, 344.0 + oy, 26.0, 26.0), &layer,
-                                if l2_hovered.as_deref() == Some(sid.as_str()) { WidgetState::Hovered } else { WidgetState::Normal },
+                                if sid_hovered { WidgetState::Hovered } else { WidgetState::Normal },
                                 &ColorSwatchView { color: *color, hovered: false, selected: l2_swatch_sel == i, show_transparency: false, border_color_override: None },
                                 &ColorSwatchSettings::default(), &ColorSwatchRenderKind::Simple,
                             );
@@ -2542,11 +2328,12 @@ impl AppState {
                             let tab_x = l2_right_panel_x + 8.0 + i as f64 * (tab_w + 4.0);
                             let tab_rect = Rect::new(tab_x + ox, TAB_STRIP_Y + oy, tab_w, TAB_STRIP_H);
                             let tab_id = format!("l2-tab-{i}");
+                            let tab_hovered = self.layout.ctx().input.is_hovered(&WidgetId::new(tab_id.as_str()));
                             let tab_cfg = TabConfig::new(tab_id.as_str(), *lbl).active_if(l2_active_tab == i);
                             register_context_manager_tab(
                                 self.layout.ctx_mut(), &mut render,
                                 tab_id.as_str(), tab_rect, None, &layer,
-                                &TabView { tab: &tab_cfg, hovered: l2_hovered.as_deref() == Some(tab_id.as_str()), pressed: l2_pressed.as_deref() == Some(tab_id.as_str()), close_btn_hovered: false },
+                                &TabView { tab: &tab_cfg, hovered: tab_hovered, pressed: false, close_btn_hovered: false },
                                 &TabSettings::default(),
                             );
                         }
@@ -2577,8 +2364,9 @@ impl AppState {
                             for (i, lbl) in ["Alpha","Beta","Gamma"].iter().enumerate() {
                                 let sub_rect = Rect::new(l2_right_panel_x + 8.0 + ox, CONTENT_START_Y + 8.0 + i as f64 * 36.0 + oy, 90.0, 30.0);
                                 let sub_id = format!("l2-sub-tab-{i}");
+                                let sub_hovered = self.layout.ctx().input.is_hovered(&WidgetId::new(sub_id.as_str()));
                                 let sub_cfg = TabConfig::new(sub_id.as_str(), *lbl).active_if(l2_active_sub_tab == i);
-                                register_context_manager_tab(self.layout.ctx_mut(), &mut render, sub_id.as_str(), sub_rect, None, &layer, &TabView { tab: &sub_cfg, hovered: l2_hovered.as_deref() == Some(sub_id.as_str()), pressed: false, close_btn_hovered: false }, &TabSettings::default());
+                                register_context_manager_tab(self.layout.ctx_mut(), &mut render, sub_id.as_str(), sub_rect, None, &layer, &TabView { tab: &sub_cfg, hovered: sub_hovered, pressed: false, close_btn_hovered: false }, &TabSettings::default());
                             }
                             // Fix 6: SVG icon below the sub-tab buttons, changes with active sub-tab
                             let sub_content_y = CONTENT_START_Y + 8.0 + 3.0 * 36.0 + 8.0;
@@ -2811,30 +2599,16 @@ impl AppState {
                 // Close the body clip established before the per-kind branch.
                 render.restore();
 
-                // Body chevron overlays — paint AFTER body so they're the
-                // top-most layer over body widgets.
-                uzor::ui::widgets::composite::modal::render::draw_body_overflow_chevrons(
+                // Two-pass body finish: paint overflow overlays, then re-register
+                // overflow hit-zones after body content so they outrank body widgets.
+                modal_input::modal_body_finish(
+                    &mut self.layout,
                     &mut render,
                     frame_rect,
-                    &self.modal_state,
-                    &modal_view,
-                    &ModalSettings::default(),
-                    &render_kind,
-                );
-
-                // Re-register chevron / scrollbar hit zones AFTER body
-                // widgets so they sit on top in the coordinator's
-                // last-registered-wins hit-test (otherwise body widgets
-                // mask the strips and clicks miss).
-                let modal_id = uzor::types::CompositeId(uzor::types::WidgetId::new("modal-widget"));
-                uzor::ui::widgets::composite::modal::render::register_body_overflow(
-                    &mut self.layout.ctx_mut().input,
-                    &modal_id,
-                    frame_rect,
-                    &modal_view,
-                    &ModalSettings::default(),
-                    &render_kind,
                     &mut self.modal_state,
+                    &modal_view,
+                    &ModalSettings::default(),
+                    &render_kind,
                 );
             }
         }
@@ -2850,12 +2624,6 @@ impl AppState {
             let popup_h = body_h + pad * 2.0;
             let px = (width as f64 - popup_w) / 2.0;
             let py = (height as f64 - popup_h) / 2.0;
-            self.layout.push_overlay(OverlayEntry {
-                id: "l2-connect-popup".to_string(),
-                kind: OverlayKind::Popup,
-                rect: Rect::new(px, py, popup_w, popup_h),
-                anchor: None,
-            });
             let mut v = PopupView {
                 origin: (px, py),
                 anchor: None,
@@ -2868,6 +2636,7 @@ impl AppState {
                 &mut self.layout, &mut render,
                 LayoutNodeId::ROOT,
                 "l2-connect-popup", "l2-connect-popup-widget",
+                Rect::new(px, py, popup_w, popup_h), None,
                 &mut self.l2_connect_popup_state, &mut v,
                 &popup_settings, PopupRenderKind::Plain,
             );
@@ -2888,12 +2657,6 @@ impl AppState {
             let popup_h = body_h + pad * 2.0;
             let px = (width as f64 - popup_w) / 2.0;
             let py = (height as f64 - popup_h) / 2.0;
-            self.layout.push_overlay(OverlayEntry {
-                id: "l2-4dir-popup".to_string(),
-                kind: OverlayKind::Popup,
-                rect: Rect::new(px, py, popup_w, popup_h),
-                anchor: None,
-            });
             let mut v = PopupView {
                 origin: (px, py),
                 anchor: None,
@@ -2906,6 +2669,7 @@ impl AppState {
                 &mut self.layout, &mut render,
                 LayoutNodeId::ROOT,
                 "l2-4dir-popup", "l2-4dir-popup-widget",
+                Rect::new(px, py, popup_w, popup_h), None,
                 &mut self.l2_4dir_popup_state, &mut v,
                 &popup_settings, PopupRenderKind::Plain,
             );
@@ -2931,12 +2695,7 @@ impl AppState {
                 ContextMenuItem { action: "ctx-settings", label: "Settings",   icon: None, danger: false, separator_after: false, enabled: true },
             ];
             let menu_h = items.len() as f64 * 28.0 + 16.0;
-            self.layout.push_overlay(OverlayEntry {
-                id: "ctx-menu-overlay".to_string(),
-                kind: OverlayKind::ContextMenu,
-                rect: Rect::new(self.ctx_menu_state.x, self.ctx_menu_state.y, 170.0, menu_h),
-                anchor: None,
-            });
+            let ctx_menu_rect = Rect::new(self.ctx_menu_state.x, self.ctx_menu_state.y, 170.0, menu_h);
             let mut ctx_menu_view = ContextMenuView { items: &items, target_id: None, title: None };
             register_layout_manager_context_menu(
                 &mut self.layout,
@@ -2944,6 +2703,8 @@ impl AppState {
                 LayoutNodeId::ROOT,
                 "ctx-menu-overlay",
                 "ctx-menu-widget",
+                ctx_menu_rect,
+                None,
                 &mut self.ctx_menu_state,
                 &mut ctx_menu_view,
                 &ContextMenuSettings::default(),
@@ -2959,67 +2720,21 @@ impl AppState {
             DropdownItem::Separator,
             DropdownItem::Item { id: "file-quit", label: "Quit", icon: None, right: DropdownItemRight::None, disabled: false, danger: true, accent_color: None },
         ];
-        if self.dropdown_file_state.open {
-            let hovered_id = self.dropdown_file_state.hovered_id.clone();
-            let origin = self.dropdown_file_state.effective_origin();
-            let (fw, fh) = measure_flat(&file_items, &DropdownSettings::default());
-            self.layout.push_overlay(OverlayEntry {
-                id: "dd-file-overlay".to_string(),
-                kind: OverlayKind::Dropdown,
-                rect: Rect::new(origin.0, origin.1, fw, fh),
-                anchor: None,
-            });
-            let mut dd_file_view = DropdownView {
-                anchor: self.dropdown_file_state.anchor_rect,
-                position_override: self.dropdown_file_state.open_position_override,
-                open: true,
-                kind: DropdownViewKind::Flat { items: &file_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
-                size_mode: uzor::types::SizeMode::AutoFit,
-                overflow: uzor::types::OverflowMode::Clip,
-                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
-            };
-            register_layout_manager_dropdown(
-                &mut self.layout, &mut render,
-                LayoutNodeId::ROOT, "dd-file-overlay", "dd-file-widget",
-                &mut self.dropdown_file_state,
-                &mut dd_file_view,
-                &DropdownSettings::default(),
-                DropdownRenderKind::Flat,
-            );
-        }
+        open_dropdown_flat(
+            &mut self.layout, &mut render, LayoutNodeId::ROOT,
+            "dd-file-overlay", "dd-file-widget",
+            &file_items, &mut self.dropdown_file_state, &DropdownSettings::default(),
+        );
 
         let view_items = [
             DropdownItem::Item { id: "view-sidebar", label: "Toggle Sidebar", icon: None, right: DropdownItemRight::Toggle(self.sidebar_open),         disabled: false, danger: false, accent_color: None },
             DropdownItem::Item { id: "view-toolbar", label: "Show Toolbar",   icon: None, right: DropdownItemRight::Toggle(self.left_toolbar_visible), disabled: false, danger: false, accent_color: None },
         ];
-        if self.dropdown_view_state.open {
-            let hovered_id = self.dropdown_view_state.hovered_id.clone();
-            let origin = self.dropdown_view_state.effective_origin();
-            let (vw, vh) = measure_flat(&view_items, &DropdownSettings::default());
-            self.layout.push_overlay(OverlayEntry {
-                id: "dd-view-overlay".to_string(),
-                kind: OverlayKind::Dropdown,
-                rect: Rect::new(origin.0, origin.1, vw, vh),
-                anchor: None,
-            });
-            let mut dd_view_view = DropdownView {
-                anchor: self.dropdown_view_state.anchor_rect,
-                position_override: self.dropdown_view_state.open_position_override,
-                open: true,
-                kind: DropdownViewKind::Flat { items: &view_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
-                size_mode: uzor::types::SizeMode::AutoFit,
-                overflow: uzor::types::OverflowMode::Clip,
-                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
-            };
-            register_layout_manager_dropdown(
-                &mut self.layout, &mut render,
-                LayoutNodeId::ROOT, "dd-view-overlay", "dd-view-widget",
-                &mut self.dropdown_view_state,
-                &mut dd_view_view,
-                &DropdownSettings::default(),
-                DropdownRenderKind::Flat,
-            );
-        }
+        open_dropdown_flat(
+            &mut self.layout, &mut render, LayoutNodeId::ROOT,
+            "dd-view-overlay", "dd-view-widget",
+            &view_items, &mut self.dropdown_view_state, &DropdownSettings::default(),
+        );
 
         let help_items = [
             DropdownItem::Header { label: "Existing demos" },
@@ -3035,34 +2750,11 @@ impl AppState {
             DropdownItem::Item { id: "modals-sidetabs", label: "SideTabs",       icon: None, right: DropdownItemRight::Shortcut("icon sidebar"),  disabled: false, danger: false, accent_color: None },
             DropdownItem::Item { id: "modals-wizard",   label: "Wizard",         icon: None, right: DropdownItemRight::Shortcut("multi-step"),    disabled: false, danger: false, accent_color: None },
         ];
-        if self.dropdown_help_state.open {
-            let hovered_id = self.dropdown_help_state.hovered_id.clone();
-            let origin = self.dropdown_help_state.effective_origin();
-            let (hw, hh) = measure_flat(&help_items, &DropdownSettings::default());
-            self.layout.push_overlay(OverlayEntry {
-                id: "dd-help-overlay".to_string(),
-                kind: OverlayKind::Dropdown,
-                rect: Rect::new(origin.0, origin.1, hw, hh),
-                anchor: None,
-            });
-            let mut dd_help_view = DropdownView {
-                anchor: self.dropdown_help_state.anchor_rect,
-                position_override: self.dropdown_help_state.open_position_override,
-                open: true,
-                kind: DropdownViewKind::Flat { items: &help_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
-                size_mode: uzor::types::SizeMode::AutoFit,
-                overflow: uzor::types::OverflowMode::Clip,
-                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
-            };
-            register_layout_manager_dropdown(
-                &mut self.layout, &mut render,
-                LayoutNodeId::ROOT, "dd-help-overlay", "dd-help-widget",
-                &mut self.dropdown_help_state,
-                &mut dd_help_view,
-                &DropdownSettings::default(),
-                DropdownRenderKind::Flat,
-            );
-        }
+        open_dropdown_flat(
+            &mut self.layout, &mut render, LayoutNodeId::ROOT,
+            "dd-help-overlay", "dd-help-widget",
+            &help_items, &mut self.dropdown_help_state, &DropdownSettings::default(),
+        );
 
         // ── Sidebar dropdown — toggles to spawn / hide demo sidebars ─────────
         let main_open = self.sidebar_open;
@@ -3075,34 +2767,11 @@ impl AppState {
             DropdownItem::Separator,
             DropdownItem::Item { id: "sb-overlay-mode",  label: "Overlay mode",   icon: None, right: DropdownItemRight::Toggle(self.demo_overlay_mode),  disabled: false, danger: false, accent_color: None },
         ];
-        if self.dropdown_sidebar_state.open {
-            let hovered_id = self.dropdown_sidebar_state.hovered_id.clone();
-            let origin = self.dropdown_sidebar_state.effective_origin();
-            let (sw, sh) = measure_flat(&sidebar_items, &DropdownSettings::default());
-            self.layout.push_overlay(OverlayEntry {
-                id: "dd-sidebar-overlay".to_string(),
-                kind: OverlayKind::Dropdown,
-                rect: Rect::new(origin.0, origin.1, sw, sh),
-                anchor: None,
-            });
-            let mut dd_view = DropdownView {
-                anchor: self.dropdown_sidebar_state.anchor_rect,
-                position_override: self.dropdown_sidebar_state.open_position_override,
-                open: true,
-                kind: DropdownViewKind::Flat { items: &sidebar_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
-                size_mode: uzor::types::SizeMode::AutoFit,
-                overflow: uzor::types::OverflowMode::Clip,
-                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
-            };
-            register_layout_manager_dropdown(
-                &mut self.layout, &mut render,
-                LayoutNodeId::ROOT, "dd-sidebar-overlay", "dd-sidebar-widget",
-                &mut self.dropdown_sidebar_state,
-                &mut dd_view,
-                &DropdownSettings::default(),
-                DropdownRenderKind::Flat,
-            );
-        }
+        open_dropdown_flat(
+            &mut self.layout, &mut render, LayoutNodeId::ROOT,
+            "dd-sidebar-overlay", "dd-sidebar-widget",
+            &sidebar_items, &mut self.dropdown_sidebar_state, &DropdownSettings::default(),
+        );
 
         // ── Toolbar dropdown — toggles to spawn / hide demo toolbars ─────────
         let left_main_visible = self.left_toolbar_visible;
@@ -3114,34 +2783,11 @@ impl AppState {
             DropdownItem::Item { id: "tb-spawn-right",  label: "Right toolbar",  icon: None, right: DropdownItemRight::Toggle(self.demo_toolbar_right), disabled: false, danger: false, accent_color: None },
             DropdownItem::Item { id: "tb-spawn-bottom", label: "Bottom toolbar", icon: None, right: DropdownItemRight::Toggle(self.demo_toolbar_bottom),disabled: false, danger: false, accent_color: None },
         ];
-        if self.dropdown_toolbar_state.open {
-            let hovered_id = self.dropdown_toolbar_state.hovered_id.clone();
-            let origin = self.dropdown_toolbar_state.effective_origin();
-            let (tw, th) = measure_flat(&toolbar_items_dd, &DropdownSettings::default());
-            self.layout.push_overlay(OverlayEntry {
-                id: "dd-toolbar-overlay".to_string(),
-                kind: OverlayKind::Dropdown,
-                rect: Rect::new(origin.0, origin.1, tw, th),
-                anchor: None,
-            });
-            let mut dd_view = DropdownView {
-                anchor: self.dropdown_toolbar_state.anchor_rect,
-                position_override: self.dropdown_toolbar_state.open_position_override,
-                open: true,
-                kind: DropdownViewKind::Flat { items: &toolbar_items_dd, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
-                size_mode: uzor::types::SizeMode::AutoFit,
-                overflow: uzor::types::OverflowMode::Clip,
-                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
-            };
-            register_layout_manager_dropdown(
-                &mut self.layout, &mut render,
-                LayoutNodeId::ROOT, "dd-toolbar-overlay", "dd-toolbar-widget",
-                &mut self.dropdown_toolbar_state,
-                &mut dd_view,
-                &DropdownSettings::default(),
-                DropdownRenderKind::Flat,
-            );
-        }
+        open_dropdown_flat(
+            &mut self.layout, &mut render, LayoutNodeId::ROOT,
+            "dd-toolbar-overlay", "dd-toolbar-widget",
+            &toolbar_items_dd, &mut self.dropdown_toolbar_state, &DropdownSettings::default(),
+        );
 
         // ── Popup templates dropdown (Plain | Custom) ──────────────────────────
         // Both rows are submenu triggers — Plain opens its L2 on hover,
@@ -3201,12 +2847,6 @@ impl AppState {
             let open_id = self.dropdown_popup_state.submenu_open.clone();
             let origin = self.dropdown_popup_state.effective_origin();
             let (pw, ph) = measure_flat(&popup_items_dd, &DropdownSettings::default());
-            self.layout.push_overlay(OverlayEntry {
-                id: "dd-popup-overlay".to_string(),
-                kind: OverlayKind::Dropdown,
-                rect: Rect::new(origin.0, origin.1, pw, ph),
-                anchor: None,
-            });
             let submenu_items = match open_id.as_deref() {
                 Some("popup-plain")  => Some(("popup-plain",  &popup_plain_sub_items[..])),
                 Some("popup-custom") => Some(("popup-custom", &popup_custom_sub_items[..])),
@@ -3229,6 +2869,7 @@ impl AppState {
             register_layout_manager_dropdown(
                 &mut self.layout, &mut render,
                 LayoutNodeId::ROOT, "dd-popup-overlay", "dd-popup-widget",
+                Rect::new(origin.0, origin.1, pw, ph), None,
                 &mut self.dropdown_popup_state,
                 &mut dd_view,
                 &DropdownSettings::default(),
@@ -3243,71 +2884,11 @@ impl AppState {
             DropdownItem::Item { id: "theme-dark",  label: "Dark",   icon: None, right: DropdownItemRight::Toggle(theme_idx == 0), disabled: false, danger: false, accent_color: None },
             DropdownItem::Item { id: "theme-light", label: "Light",  icon: None, right: DropdownItemRight::Toggle(theme_idx == 1), disabled: false, danger: false, accent_color: None },
         ];
-        if self.dropdown_theme_state.open {
-            let hovered_id = self.dropdown_theme_state.hovered_id.clone();
-            let origin = self.dropdown_theme_state.effective_origin();
-            let (tw, th) = measure_flat(&theme_items_dd, &DropdownSettings::default());
-            self.layout.push_overlay(OverlayEntry {
-                id: "dd-theme-overlay".to_string(),
-                kind: OverlayKind::Dropdown,
-                rect: Rect::new(origin.0, origin.1, tw, th),
-                anchor: None,
-            });
-            let mut dd_view = DropdownView {
-                anchor: self.dropdown_theme_state.anchor_rect,
-                position_override: self.dropdown_theme_state.open_position_override,
-                open: true,
-                kind: DropdownViewKind::Flat { items: &theme_items_dd, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
-                size_mode: uzor::types::SizeMode::AutoFit,
-                overflow: uzor::types::OverflowMode::Clip,
-                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
-            };
-            register_layout_manager_dropdown(
-                &mut self.layout, &mut render,
-                LayoutNodeId::ROOT, "dd-theme-overlay", "dd-theme-widget",
-                &mut self.dropdown_theme_state,
-                &mut dd_view,
-                &DropdownSettings::default(),
-                DropdownRenderKind::Flat,
-            );
-        }
-
-        // ── Add Panel split-kind dropdown ─────────────────────────────────────
-        let addpanel_items = [
-            DropdownItem::Item { id: "split-horiz",       label: "Split Horizontal",  icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "split-vert",        label: "Split Vertical",    icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "split-grid",        label: "Grid 2×2",          icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "split-2left1right", label: "2 Left + 1 Right",  icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "split-1left2right", label: "1 Left + 2 Right",  icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
-        ];
-        if self.dropdown_addpanel_state.open {
-            let hovered_id = self.dropdown_addpanel_state.hovered_id.clone();
-            let origin = self.dropdown_addpanel_state.effective_origin();
-            let (aw, ah) = measure_flat(&addpanel_items, &DropdownSettings::default());
-            self.layout.push_overlay(OverlayEntry {
-                id: "dd-addpanel-overlay".to_string(),
-                kind: OverlayKind::Dropdown,
-                rect: Rect::new(origin.0, origin.1, aw, ah),
-                anchor: None,
-            });
-            let mut dd_addpanel_view = DropdownView {
-                anchor: self.dropdown_addpanel_state.anchor_rect,
-                position_override: self.dropdown_addpanel_state.open_position_override,
-                open: true,
-                kind: DropdownViewKind::Flat { items: &addpanel_items, hovered_id: hovered_id.as_deref(), submenu_items: None, submenu_hovered_id: None },
-                size_mode: uzor::types::SizeMode::AutoFit,
-                overflow: uzor::types::OverflowMode::Clip,
-                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
-            };
-            register_layout_manager_dropdown(
-                &mut self.layout, &mut render,
-                LayoutNodeId::ROOT, "dd-addpanel-overlay", "dd-addpanel-widget",
-                &mut self.dropdown_addpanel_state,
-                &mut dd_addpanel_view,
-                &DropdownSettings::default(),
-                DropdownRenderKind::Flat,
-            );
-        }
+        open_dropdown_flat(
+            &mut self.layout, &mut render, LayoutNodeId::ROOT,
+            "dd-theme-overlay", "dd-theme-widget",
+            &theme_items_dd, &mut self.dropdown_theme_state, &DropdownSettings::default(),
+        );
 
         // ── Demo popup ────────────────────────────────────────────────────────
         // Two flavours, both via the slim popup composite:
@@ -3329,12 +2910,6 @@ impl AppState {
                     let popup_h = body_h + pad * 2.0;
                     let px = (width as f64 - popup_w) / 2.0;
                     let py = (height as f64 - popup_h) / 2.0;
-                    self.layout.push_overlay(OverlayEntry {
-                        id: "demo-popup-overlay".to_string(),
-                        kind: OverlayKind::Popup,
-                        rect: Rect::new(px, py, popup_w, popup_h),
-                        anchor: None,
-                    });
                     let mut v = PopupView {
                         origin: (px, py),
                         anchor: None,
@@ -3347,6 +2922,7 @@ impl AppState {
                         &mut self.layout, &mut render,
                         LayoutNodeId::ROOT,
                         "demo-popup-overlay", "demo-popup-widget",
+                        Rect::new(px, py, popup_w, popup_h), None,
                         &mut self.popup_state, &mut v,
                         &popup_settings, PopupRenderKind::Plain,
                     );
@@ -3373,12 +2949,6 @@ impl AppState {
                     let popup_h = body_h + pad * 2.0;
                     let px = (width as f64 - popup_w) / 2.0;
                     let py = (height as f64 - popup_h) / 2.0;
-                    self.layout.push_overlay(OverlayEntry {
-                        id: "demo-popup-overlay".to_string(),
-                        kind: OverlayKind::Popup,
-                        rect: Rect::new(px, py, popup_w, popup_h),
-                        anchor: None,
-                    });
                     // Use Plain so the composite paints the chrome — Custom
                     // would skip the frame draw.
                     let mut v = PopupView {
@@ -3393,38 +2963,19 @@ impl AppState {
                         &mut self.layout, &mut render,
                         LayoutNodeId::ROOT,
                         "demo-popup-overlay", "demo-popup-widget",
+                        Rect::new(px, py, popup_w, popup_h), None,
                         &mut self.popup_state, &mut v,
                         &popup_settings, PopupRenderKind::Plain,
                     );
-                    // Caller body — register every cell + paint its swatch.
+                    // Caller body — register every cell + paint its swatch via register_popup_grid.
                     if let Some(frame) = self.layout.rect_for_overlay("demo-popup-overlay") {
+                        use uzor::ui::widgets::composite::popup::input::{register_popup_grid, PopupGridCell};
                         let body = body_rect(frame, &popup_settings);
-                        let popup_id = uzor::types::CompositeId(uzor::types::WidgetId::new("demo-popup-widget"));
-                        let coord = &mut self.layout.ctx_mut().input;
-                        for (i, color) in palette.iter().enumerate() {
-                            let col = i % cols;
-                            let row = i / cols;
-                            let cx = body.x + col as f64 * (cell + gap);
-                            let cy = body.y + row as f64 * (cell + gap);
-                            let cell_rect = Rect::new(cx, cy, cell, cell);
-                            coord.register_child(
-                                &popup_id,
-                                format!("demo-popup-cell-{i}"),
-                                uzor::input::WidgetKind::Button,
-                                cell_rect,
-                                uzor::input::Sense::CLICK | uzor::input::Sense::HOVER,
-                            );
-                            // Hover halo from coord state.
-                            let hovered = coord.hovered_widget()
-                                .map(|id| id.0.as_str() == format!("demo-popup-cell-{i}"))
-                                .unwrap_or(false);
-                            if hovered {
-                                render.set_fill_color("#ffffff");
-                                render.fill_rounded_rect(cx - 2.0, cy - 2.0, cell + 4.0, cell + 4.0, 5.0);
-                            }
-                            render.set_fill_color(color);
-                            render.fill_rounded_rect(cx, cy, cell, cell, 4.0);
-                        }
+                        let cell_ids: Vec<String> = (0..palette.len()).map(|i| format!("demo-popup-cell-{i}")).collect();
+                        let grid_cells: Vec<PopupGridCell<'_>> = palette.iter().zip(cell_ids.iter())
+                            .map(|(color, id)| PopupGridCell { id: id.as_str(), color })
+                            .collect();
+                        register_popup_grid(&mut self.layout, &mut render, "demo-popup-widget", body, &grid_cells, cols, cell, gap);
                     }
                 }
             }
@@ -3435,6 +2986,21 @@ impl AppState {
         // pushed their (modal=true) layers; separator clicks under an open
         // overlay are blocked by z-ordered hit-test.
         self.layout.register_dock_separators(&LayerId::main());
+
+        // Register prefix patterns for dock-leaf clicks and close buttons so
+        // the dispatcher surfaces DockLeafClicked / DockLeafClosedByIndex
+        // instead of raw Unhandled ids.
+        // Also register Indexed patterns for L2 modal radio/swatch/tab buttons.
+        {
+            use uzor::layout::EventBuilder;
+            self.layout.dispatcher_mut().on_prefix("dock-leaf-close-", EventBuilder::DockLeafCloseFromSuffix);
+            self.layout.dispatcher_mut().on_prefix("dock-leaf-",       EventBuilder::DockLeafFromSuffix);
+            // L2 modal indexed widgets (radio, swatch, tab — all have numeric suffixes)
+            self.layout.dispatcher_mut().on_prefix("l2-radio-",    EventBuilder::IndexedFromSuffix { base: "l2-radio".into()    });
+            self.layout.dispatcher_mut().on_prefix("l2-swatch-",   EventBuilder::IndexedFromSuffix { base: "l2-swatch".into()   });
+            self.layout.dispatcher_mut().on_prefix("l2-sub-tab-",  EventBuilder::IndexedFromSuffix { base: "l2-sub-tab".into()  });
+            self.layout.dispatcher_mut().on_prefix("l2-tab-",      EventBuilder::IndexedFromSuffix { base: "l2-tab".into()      });
+        }
 
         // ── end_frame ─────────────────────────────────────────────────────────
         let responses = self.layout.ctx_mut().input.end_frame();
@@ -3463,11 +3029,20 @@ impl AppState {
             }
         }
 
-        // Update popup based on hovered widget
+        // Update popup based on hovered widget.
+        // Items with popup_on_hover:true open on hover — derive the set from the
+        // toolbar item definitions rather than a separate hardcoded allowlist.
         let hovered_id = self.layout.ctx_mut().input.hovered_widget().map(|id| id.0.clone());
-        let toolbar_items_with_popup = ["tb-file", "tb-view", "tb-help", "tb-new"];
-        self.popup_item = hovered_id.as_deref()
-            .and_then(|id| if toolbar_items_with_popup.contains(&id) { Some(id.to_string()) } else { None });
+        self.popup_item = hovered_id.as_deref().and_then(|hovered| {
+            // Iterate the top toolbar items and check popup_on_hover flag.
+            let top_items: &[(&str, bool)] = &[
+                ("tb-view", true),
+                ("tb-help", true),
+            ];
+            top_items.iter()
+                .find(|(id, on_hover)| *on_hover && *id == hovered)
+                .map(|(id, _)| id.to_string())
+        });
 
         // ── GPU submit ────────────────────────────────────────────────────────
         let dev = &self.render_cx.devices[self.surface.dev_id];
@@ -3516,25 +3091,36 @@ impl AppState {
             self.ctx_menu_state.is_open,
         );
 
-        use uzor::layout::ClickOutcome;
+        use uzor::layout::{ClickOutcome, OverlayKind};
         match self.layout.handle_click((x, y)) {
-            ClickOutcome::DismissOverlay { overlay_id } => {
-                eprintln!("[DISMISS] overlay_id={}", overlay_id.0);
-                match overlay_id.0.as_str() {
-                    "modal-overlay"       => { self.modal_open = false; }
-                    "demo-popup-overlay"  => { self.popup_kind = None; }
-                    "l2-connect-popup"    => { self.l2_connect_popup_open = false; }
-                    "l2-4dir-popup"       => { self.l2_4dir_popup = None; }
-                    "ctx-menu-overlay"    => { self.ctx_menu_state.close(); }
-                    "dd-file-overlay"     => { self.dropdown_file_state.close(); }
-                    "dd-view-overlay"     => { self.dropdown_view_state.close(); }
-                    "dd-help-overlay"     => { self.dropdown_help_state.close(); }
-                    "dd-addpanel-overlay" => { self.dropdown_addpanel_state.close(); }
-                    "dd-sidebar-overlay"  => { self.dropdown_sidebar_state.close(); }
-                    "dd-toolbar-overlay"  => { self.dropdown_toolbar_state.close(); }
-                    "dd-popup-overlay"    => { self.dropdown_popup_state.close(); }
-                    "dd-theme-overlay"    => { self.dropdown_theme_state.close(); }
-                    _                     => {}
+            ClickOutcome::DismissOverlay { overlay_id, kind } => {
+                eprintln!("[DISMISS] overlay_id={} kind={:?}", overlay_id.0, kind);
+                match kind {
+                    Some(OverlayKind::Modal) => { self.modal_open = false; }
+                    Some(OverlayKind::ContextMenu) => { self.ctx_menu_state.close(); }
+                    Some(OverlayKind::Popup) => {
+                        // Multiple popups — discriminate by id.
+                        match overlay_id.0.as_str() {
+                            "demo-popup-overlay" => { self.popup_kind = None; }
+                            "l2-connect-popup"   => { self.l2_connect_popup_open = false; }
+                            "l2-4dir-popup"      => { self.l2_4dir_popup = None; }
+                            _ => {}
+                        }
+                    }
+                    Some(OverlayKind::Dropdown) => {
+                        // Close the specific dropdown by overlay slot id.
+                        match overlay_id.0.as_str() {
+                            "dd-file-overlay"    => self.dropdown_file_state.close(),
+                            "dd-view-overlay"    => self.dropdown_view_state.close(),
+                            "dd-help-overlay"    => self.dropdown_help_state.close(),
+                            "dd-sidebar-overlay" => self.dropdown_sidebar_state.close(),
+                            "dd-toolbar-overlay" => self.dropdown_toolbar_state.close(),
+                            "dd-popup-overlay"   => self.dropdown_popup_state.close(),
+                            "dd-theme-overlay"   => self.dropdown_theme_state.close(),
+                            _ => {}
+                        }
+                    }
+                    _ => {}
                 }
             }
             ClickOutcome::DispatchEvent(event) => {
@@ -3655,88 +3241,98 @@ impl AppState {
                     };
                 }
             }
-            ev => {
-                // Run the event through every composite's consume_event.
-                // First composite to consume (returns None) wins; the rest
-                // are skipped. Public events (ModalClose, DropdownItem, etc.)
-                // are already matched in arms above.
-                let mut opt_ev: Option<DispatchEvent> = Some(ev);
-
-                // Macro: pass event through one composite.
-                // If consumed → clears opt_ev.
-                // If not consumed → restores opt_ev with the returned event.
-                macro_rules! try_consume {
-                    ($mod:ident, $state:expr, $host:expr, $rect_expr:expr) => {
-                        if let Some(ev) = opt_ev.take() {
-                            match $mod::consume_event(
-                                ev,
-                                $state,
-                                &WidgetId::new($host),
-                                $mod::ConsumeEventCtx {
-                                    cursor,
-                                    frame_rect: $rect_expr.unwrap_or_default(),
-                                    viewport,
-                                },
-                            ) {
-                                None    => { /* consumed — opt_ev stays None */ }
-                                Some(e) => { opt_ev = Some(e); }
+            DispatchEvent::Indexed { ref base, n } => {
+                match base.as_str() {
+                    "l2-radio"   => { eprintln!("[DISPATCHER] l2-radio→{n}");   self.l2_radio_sel = n; }
+                    "l2-swatch"  => { eprintln!("[DISPATCHER] l2-swatch→{n}");  self.l2_swatch_sel = n; }
+                    "l2-sub-tab" => { eprintln!("[DISPATCHER] l2-sub-tab→{n}"); self.l2_active_sub_tab = n; }
+                    "l2-tab"     => { eprintln!("[DISPATCHER] l2-tab→{n}");     self.l2_active_tab = n; self.l2_scroll_off = 0.0; }
+                    _ => { eprintln!("[DISPATCHER] Indexed base={base} n={n} — no-op"); }
+                }
+            }
+            DispatchEvent::DockLeafClicked { leaf_id } => {
+                eprintln!("[DISPATCHER] DockLeafClicked leaf_id={}", leaf_id.0);
+                let is_watchlist = self.layout.panels().tree().leaf(leaf_id)
+                    .and_then(|l| l.panels.first())
+                    .map(|p| p.kind == PanelKind::Watchlist)
+                    .unwrap_or(false);
+                if is_watchlist {
+                    if let Some(&rect) = self.layout.panels().panel_rects().get(&leaf_id) {
+                        let r = Rect::new(rect.x as f64, rect.y as f64, rect.width as f64, rect.height as f64);
+                        let symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "ADA/USDT"];
+                        let local = (x - r.x, y - r.y);
+                        if let Some(row) = watchlist_blackbox::click_row(&self.watchlist, (r.width, r.height), local.0, local.1) {
+                            if let Some(sym) = symbols.get(row) {
+                                println!("[L3] watchlist row clicked: {sym}");
                             }
                         }
-                    };
+                    }
                 }
+                self.layout.panels_mut().set_active_leaf(leaf_id);
+            }
+            DispatchEvent::DockLeafClosedByIndex { leaf_idx } => {
+                eprintln!("[DISPATCHER] DockLeafClosedByIndex idx={leaf_idx}");
+                let mut leaves: Vec<uzor::docking::panels::LeafId> = self
+                    .layout
+                    .panels()
+                    .panel_rects()
+                    .keys()
+                    .copied()
+                    .collect();
+                leaves.sort_by_key(|l| l.0);
+                if leaves.len() > 1 {
+                    if let Some(&leaf_id) = leaves.get(leaf_idx) {
+                        self.layout.panels_mut().tree_mut().remove_leaf(leaf_id);
+                    }
+                }
+            }
+            ev => {
+                // Run the event through every composite's consume_event via
+                // consume_event_chain.  Rects are resolved first to avoid
+                // borrow conflicts when closures capture mutable state refs.
+                let r_modal        = self.layout.rect_for_overlay("modal-overlay");
+                let r_popup_demo   = self.layout.rect_for_overlay("demo-popup-overlay");
+                let r_popup_conn   = self.layout.rect_for_overlay("l2-connect-popup");
+                let r_popup_4dir   = self.layout.rect_for_overlay("l2-4dir-popup");
+                let r_dd_file      = self.layout.rect_for_overlay("dd-file-overlay");
+                let r_dd_view      = self.layout.rect_for_overlay("dd-view-overlay");
+                let r_dd_help      = self.layout.rect_for_overlay("dd-help-overlay");
+                let r_dd_sidebar   = self.layout.rect_for_overlay("dd-sidebar-overlay");
+                let r_dd_toolbar   = self.layout.rect_for_overlay("dd-toolbar-overlay");
+                let r_dd_popup     = self.layout.rect_for_overlay("dd-popup-overlay");
+                let r_dd_theme     = self.layout.rect_for_overlay("dd-theme-overlay");
+                let r_tb_top       = self.layout.rect_for_edge_slot("top-toolbar");
+                let r_tb_left_v    = self.layout.rect_for_edge_slot("left-vtoolbar");
+                let r_tb_left2     = self.layout.rect_for_edge_slot("demo-toolbar-left2");
+                let r_tb_right     = self.layout.rect_for_edge_slot("demo-toolbar-right");
+                let r_tb_bottom    = self.layout.rect_for_edge_slot("demo-toolbar-bottom");
+                let r_sb_main      = self.layout.rect_for_edge_slot("sidebar");
+                let r_sb_right     = self.layout.rect_for_edge_slot("demo-sidebar-right");
+                let r_sb_top       = self.layout.rect_for_edge_slot("demo-sidebar-top");
+                let r_sb_bottom    = self.layout.rect_for_edge_slot("demo-sidebar-bottom");
 
-                // ── Modal ─────────────────────────────────────────────────────
-                try_consume!(modal_input, &mut self.modal_state, "modal-widget",
-                    self.layout.rect_for_overlay("modal-overlay"));
-
-                // ── Popup ─────────────────────────────────────────────────────
-                try_consume!(popup_input, &mut self.popup_state, "demo-popup-widget",
-                    self.layout.rect_for_overlay("demo-popup-overlay"));
-                try_consume!(popup_input, &mut self.l2_connect_popup_state, "l2-connect-popup-widget",
-                    self.layout.rect_for_overlay("l2-connect-popup"));
-                try_consume!(popup_input, &mut self.l2_4dir_popup_state, "l2-4dir-popup-widget",
-                    self.layout.rect_for_overlay("l2-4dir-popup"));
-
-                // ── Dropdowns ─────────────────────────────────────────────────
-                try_consume!(dropdown_input, &mut self.dropdown_file_state,    "dd-file-widget",
-                    self.layout.rect_for_overlay("dd-file-overlay"));
-                try_consume!(dropdown_input, &mut self.dropdown_view_state,    "dd-view-widget",
-                    self.layout.rect_for_overlay("dd-view-overlay"));
-                try_consume!(dropdown_input, &mut self.dropdown_help_state,    "dd-help-widget",
-                    self.layout.rect_for_overlay("dd-help-overlay"));
-                try_consume!(dropdown_input, &mut self.dropdown_addpanel_state,"dd-addpanel-widget",
-                    self.layout.rect_for_overlay("dd-addpanel-overlay"));
-                try_consume!(dropdown_input, &mut self.dropdown_sidebar_state, "dd-sidebar-widget",
-                    self.layout.rect_for_overlay("dd-sidebar-overlay"));
-                try_consume!(dropdown_input, &mut self.dropdown_toolbar_state, "dd-toolbar-widget",
-                    self.layout.rect_for_overlay("dd-toolbar-overlay"));
-                try_consume!(dropdown_input, &mut self.dropdown_popup_state,   "dd-popup-widget",
-                    self.layout.rect_for_overlay("dd-popup-overlay"));
-                try_consume!(dropdown_input, &mut self.dropdown_theme_state,   "dd-theme-widget",
-                    self.layout.rect_for_overlay("dd-theme-overlay"));
-
-                // ── Toolbars ──────────────────────────────────────────────────
-                try_consume!(toolbar_input, &mut self.top_toolbar_state, "top-toolbar-widget",
-                    self.layout.rect_for_edge_slot("top-toolbar"));
-                try_consume!(toolbar_input, &mut self.left_vtoolbar_state, "left-vtoolbar-widget",
-                    self.layout.rect_for_edge_slot("left-vtoolbar"));
-                try_consume!(toolbar_input, &mut self.demo_toolbar_left2_state, "demo-toolbar-left2-widget",
-                    self.layout.rect_for_edge_slot("demo-toolbar-left2"));
-                try_consume!(toolbar_input, &mut self.demo_toolbar_right_state, "demo-toolbar-right-widget",
-                    self.layout.rect_for_edge_slot("demo-toolbar-right"));
-                try_consume!(toolbar_input, &mut self.demo_toolbar_bottom_state, "demo-toolbar-bottom-widget",
-                    self.layout.rect_for_edge_slot("demo-toolbar-bottom"));
-
-                // ── Sidebars ──────────────────────────────────────────────────
-                try_consume!(sidebar_input, &mut self.sidebar_state, "sidebar-widget",
-                    self.layout.rect_for_edge_slot("sidebar"));
-                try_consume!(sidebar_input, &mut self.demo_sidebar_right_state, "demo-sidebar-right-widget",
-                    self.layout.rect_for_edge_slot("demo-sidebar-right"));
-                try_consume!(sidebar_input, &mut self.demo_sidebar_top_state, "demo-sidebar-top-widget",
-                    self.layout.rect_for_edge_slot("demo-sidebar-top"));
-                try_consume!(sidebar_input, &mut self.demo_sidebar_bottom_state, "demo-sidebar-bottom-widget",
-                    self.layout.rect_for_edge_slot("demo-sidebar-bottom"));
-
+                let opt_ev = consume_event_chain(ev, &mut [
+                    &mut |e| modal_input::consume_event(e, &mut self.modal_state, &WidgetId::new("modal-widget"), modal_input::ConsumeEventCtx { cursor, frame_rect: r_modal.unwrap_or_default(), viewport }),
+                    &mut |e| popup_input::consume_event(e, &mut self.popup_state, &WidgetId::new("demo-popup-widget"), popup_input::ConsumeEventCtx { cursor, frame_rect: r_popup_demo.unwrap_or_default(), viewport }),
+                    &mut |e| popup_input::consume_event(e, &mut self.l2_connect_popup_state, &WidgetId::new("l2-connect-popup-widget"), popup_input::ConsumeEventCtx { cursor, frame_rect: r_popup_conn.unwrap_or_default(), viewport }),
+                    &mut |e| popup_input::consume_event(e, &mut self.l2_4dir_popup_state, &WidgetId::new("l2-4dir-popup-widget"), popup_input::ConsumeEventCtx { cursor, frame_rect: r_popup_4dir.unwrap_or_default(), viewport }),
+                    &mut |e| dropdown_input::consume_event(e, &mut self.dropdown_file_state,     &WidgetId::new("dd-file-widget"),     dropdown_input::ConsumeEventCtx { cursor, frame_rect: r_dd_file.unwrap_or_default(),     viewport }),
+                    &mut |e| dropdown_input::consume_event(e, &mut self.dropdown_view_state,     &WidgetId::new("dd-view-widget"),     dropdown_input::ConsumeEventCtx { cursor, frame_rect: r_dd_view.unwrap_or_default(),     viewport }),
+                    &mut |e| dropdown_input::consume_event(e, &mut self.dropdown_help_state,     &WidgetId::new("dd-help-widget"),     dropdown_input::ConsumeEventCtx { cursor, frame_rect: r_dd_help.unwrap_or_default(),     viewport }),
+                    &mut |e| dropdown_input::consume_event(e, &mut self.dropdown_sidebar_state,  &WidgetId::new("dd-sidebar-widget"),  dropdown_input::ConsumeEventCtx { cursor, frame_rect: r_dd_sidebar.unwrap_or_default(),  viewport }),
+                    &mut |e| dropdown_input::consume_event(e, &mut self.dropdown_toolbar_state,  &WidgetId::new("dd-toolbar-widget"),  dropdown_input::ConsumeEventCtx { cursor, frame_rect: r_dd_toolbar.unwrap_or_default(),  viewport }),
+                    &mut |e| dropdown_input::consume_event(e, &mut self.dropdown_popup_state,    &WidgetId::new("dd-popup-widget"),    dropdown_input::ConsumeEventCtx { cursor, frame_rect: r_dd_popup.unwrap_or_default(),    viewport }),
+                    &mut |e| dropdown_input::consume_event(e, &mut self.dropdown_theme_state,    &WidgetId::new("dd-theme-widget"),    dropdown_input::ConsumeEventCtx { cursor, frame_rect: r_dd_theme.unwrap_or_default(),    viewport }),
+                    &mut |e| toolbar_input::consume_event(e, &mut self.top_toolbar_state,         &WidgetId::new("top-toolbar-widget"),        toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_top.unwrap_or_default(),    viewport }),
+                    &mut |e| toolbar_input::consume_event(e, &mut self.left_vtoolbar_state,       &WidgetId::new("left-vtoolbar-widget"),      toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_left_v.unwrap_or_default(), viewport }),
+                    &mut |e| toolbar_input::consume_event(e, &mut self.demo_toolbar_left2_state,  &WidgetId::new("demo-toolbar-left2-widget"),  toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_left2.unwrap_or_default(), viewport }),
+                    &mut |e| toolbar_input::consume_event(e, &mut self.demo_toolbar_right_state,  &WidgetId::new("demo-toolbar-right-widget"),  toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_right.unwrap_or_default(), viewport }),
+                    &mut |e| toolbar_input::consume_event(e, &mut self.demo_toolbar_bottom_state, &WidgetId::new("demo-toolbar-bottom-widget"), toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_bottom.unwrap_or_default(), viewport }),
+                    &mut |e| sidebar_input::consume_event(e, &mut self.sidebar_state,             &WidgetId::new("sidebar-widget"),             sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_main.unwrap_or_default(),   viewport }),
+                    &mut |e| sidebar_input::consume_event(e, &mut self.demo_sidebar_right_state,  &WidgetId::new("demo-sidebar-right-widget"),  sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_right.unwrap_or_default(),  viewport }),
+                    &mut |e| sidebar_input::consume_event(e, &mut self.demo_sidebar_top_state,    &WidgetId::new("demo-sidebar-top-widget"),    sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_top.unwrap_or_default(),    viewport }),
+                    &mut |e| sidebar_input::consume_event(e, &mut self.demo_sidebar_bottom_state, &WidgetId::new("demo-sidebar-bottom-widget"), sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_bottom.unwrap_or_default(), viewport }),
+                ]);
                 // opt_ev still Some(Unhandled(id)) → app-specific id routing.
                 if let Some(DispatchEvent::Unhandled(ref id)) = opt_ev {
                     let id_str = id.0.as_str();
@@ -3747,18 +3343,6 @@ impl AppState {
                         "l2-cb"          => { eprintln!("[DISPATCH] l2-cb");          self.l2_checked = !self.l2_checked; return; }
                         "l2-tog"         => { eprintln!("[DISPATCH] l2-tog");         self.l2_toggled = !self.l2_toggled; return; }
                         _ => {}
-                    }
-                    if let Some(n_str) = id_str.strip_prefix("l2-radio-") {
-                        if let Ok(n) = n_str.parse::<usize>() { eprintln!("[DISPATCH] l2-radio→{n}"); self.l2_radio_sel = n; return; }
-                    }
-                    if let Some(n_str) = id_str.strip_prefix("l2-swatch-") {
-                        if let Ok(n) = n_str.parse::<usize>() { eprintln!("[DISPATCH] l2-swatch→{n}"); self.l2_swatch_sel = n; return; }
-                    }
-                    if let Some(n_str) = id_str.strip_prefix("l2-sub-tab-") {
-                        if let Ok(n) = n_str.parse::<usize>() { eprintln!("[DISPATCH] l2-sub-tab→{n}"); self.l2_active_sub_tab = n; return; }
-                    }
-                    if let Some(n_str) = id_str.strip_prefix("l2-tab-") {
-                        if let Ok(n) = n_str.parse::<usize>() { eprintln!("[DISPATCH] l2-tab→{n}"); self.l2_active_tab = n; self.l2_scroll_off = 0.0; return; }
                     }
                     // ── Sidebar: spawn kind radio buttons
                     if let Some(kind_str) = id_str.strip_prefix("spawn-kind-") {
@@ -3808,50 +3392,6 @@ impl AppState {
                         }
                         return;
                     }
-                    // ── Dock leaf click — set active leaf and handle watchlist rows
-                    if let Some(idx_str) = id_str.strip_prefix("dock-leaf-close-") {
-                        if let Ok(idx) = idx_str.parse::<usize>() {
-                            eprintln!("[DISPATCH] dock-leaf-close-{idx}");
-                            let mut leaves: Vec<uzor::docking::panels::LeafId> = self
-                                .layout
-                                .panels()
-                                .panel_rects()
-                                .keys()
-                                .copied()
-                                .collect();
-                            leaves.sort_by_key(|l| l.0);
-                            if leaves.len() > 1 {
-                                if let Some(&leaf_id) = leaves.get(idx) {
-                                    self.layout.panels_mut().tree_mut().remove_leaf(leaf_id);
-                                }
-                            }
-                        }
-                        return;
-                    }
-                    if let Some(n_str) = id_str.strip_prefix("dock-leaf-") {
-                        if let Ok(n) = n_str.parse::<u64>() {
-                            let leaf_id = uzor::docking::panels::LeafId(n);
-                            let is_watchlist = self.layout.panels().tree().leaf(leaf_id)
-                                .and_then(|l| l.panels.first())
-                                .map(|p| p.kind == PanelKind::Watchlist)
-                                .unwrap_or(false);
-                            if is_watchlist {
-                                if let Some(&rect) = self.layout.panels().panel_rects().get(&leaf_id) {
-                                    let r = Rect::new(rect.x as f64, rect.y as f64, rect.width as f64, rect.height as f64);
-                                    let symbols = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "ADA/USDT"];
-                                    let local = (x - r.x, y - r.y);
-                                    if let Some(row) = watchlist_blackbox::click_row(&self.watchlist, (r.width, r.height), local.0, local.1) {
-                                        if let Some(sym) = symbols.get(row) {
-                                            println!("[L3] watchlist row clicked: {sym}");
-                                        }
-                                    }
-                                }
-                            }
-                            eprintln!("[DISPATCH] dock-leaf-{n} → set active");
-                            self.layout.panels_mut().set_active_leaf(leaf_id);
-                            return;
-                        }
-                    }
                     // ── L1-modal custom button
                     if id_str == "l1-mybtn" {
                         eprintln!("[DISPATCH] l1-mybtn");
@@ -3872,9 +3412,9 @@ impl AppState {
     /// `Unhandled` (no overlay to dismiss, no coord widget hit).
     fn on_left_up_geometry(
         &mut self,
-        x: f64,
-        y: f64,
-        event_loop: &ActiveEventLoop,
+        _x: f64,
+        _y: f64,
+        _event_loop: &ActiveEventLoop,
     ) {
         // Guard: if any overlay is open (modal/popup) and coord didn't hit a
         // widget in it, the click was on the backdrop — but dismiss_topmost_at
@@ -3885,92 +3425,11 @@ impl AppState {
         if self.l2_connect_popup_open { return; }
         if self.l2_4dir_popup.is_some() { return; }
 
-        // ── Chrome hit ────────────────────────────────────────────────────────
-        let tab_ids = ["tab-0", "tab-1", "tab-2"];
-        let chrome_tabs = [
-            ChromeTabConfig { id: "tab-0", label: "Dashboard",  icon: None, color_tag: None, closable: false, active: self.active_view == 0 },
-            ChromeTabConfig { id: "tab-1", label: "Panels",     icon: None, color_tag: None, closable: false, active: self.active_view == 1 },
-            ChromeTabConfig { id: "tab-2", label: "Monitoring", icon: None, color_tag: None, closable: false, active: self.active_view == 2 },
-        ];
         // Chrome tab/buttons handled via LayoutManager dispatcher
         // (DispatchEvent::ChromeTabClicked / ChromeWindowControl) — no
-        // geometry hit-test needed here. tab_ids/chrome_tabs/_chrome_view
-        // kept above for the hover path elsewhere in this method.
-        let _ = tab_ids;
-        let _ = chrome_tabs;
-
-        // ── Toolbar buttons ───────────────────────────────────────────────────
-        if let Some(toolbar_rect) = self.layout.rect_for_edge_slot("top-toolbar") {
-            if x >= toolbar_rect.x && y >= toolbar_rect.y && y <= toolbar_rect.y + toolbar_rect.height {
-                let file_x = toolbar_rect.x + 4.0;
-                let view_x = file_x + 44.0;
-                let help_x = view_x + 44.0;
-
-                if x >= file_x && x < view_x {
-                    let was_open = self.dropdown_file_state.open;
-                    self.dropdown_view_state.close();
-                    self.dropdown_help_state.close();
-                    if was_open { self.dropdown_file_state.close(); } else { self.dropdown_file_state.open_at(file_x, toolbar_rect.y + toolbar_rect.height); }
-                    return;
-                }
-                if x >= view_x && x < help_x {
-                    let was_open = self.dropdown_view_state.open;
-                    self.dropdown_file_state.close();
-                    self.dropdown_help_state.close();
-                    if was_open { self.dropdown_view_state.close(); } else { self.dropdown_view_state.open_at(view_x, toolbar_rect.y + toolbar_rect.height); }
-                    return;
-                }
-                if x >= help_x && x < help_x + 44.0 {
-                    let was_open = self.dropdown_help_state.open;
-                    self.dropdown_file_state.close();
-                    self.dropdown_view_state.close();
-                    if was_open { self.dropdown_help_state.close(); } else { self.dropdown_help_state.open_at(help_x, toolbar_rect.y + toolbar_rect.height); }
-                    return;
-                }
-            }
-        }
-
-        // ── Left toolbar: sidebar toggle ──────────────────────────────────────
-        if let Some(lt_rect) = self.layout.rect_for_edge_slot("left-vtoolbar") {
-            if x >= lt_rect.x && x <= lt_rect.x + lt_rect.width {
-                let btn_y = lt_rect.y + 4.0;
-                if y >= btn_y && y <= btn_y + 36.0 {
-                    self.sidebar_open = !self.sidebar_open;
-                    println!("[L3] sidebar → {}", self.sidebar_open);
-                    return;
-                }
-            }
-        }
-
-        // ── L2 modal widget clicks (geometric fallback for non-coord widgets)
-        if self.modal_open && self.modal_kind == ModalKind::L2 {
-            if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
-                let body_y = modal_rect.y + 44.0;
-                let rel_x = x - modal_rect.x;
-                let rel_y = y - body_y;
-                match self.l2_hovered_at(rel_x, rel_y) {
-                    Some(ref id) if id == "l2-btn-connect" => { self.l2_connected = !self.l2_connected; }
-                    Some(ref id) if id == "l2-cb"          => { self.l2_checked = !self.l2_checked; }
-                    Some(ref id) if id == "l2-tog"         => { self.l2_toggled = !self.l2_toggled; }
-                    Some(ref id) if id.starts_with("l2-radio-") => {
-                        if let Ok(n) = id["l2-radio-".len()..].parse::<usize>() { self.l2_radio_sel = n; }
-                    }
-                    Some(ref id) if id.starts_with("l2-swatch-") => {
-                        if let Ok(n) = id["l2-swatch-".len()..].parse::<usize>() { self.l2_swatch_sel = n; }
-                    }
-                    Some(ref id) if id.starts_with("l2-tab-") => {
-                        if let Ok(n) = id["l2-tab-".len()..].parse::<usize>() {
-                            self.l2_active_tab = n;
-                            self.l2_scroll_off = 0.0;
-                        }
-                    }
-                    Some(ref id) if id.starts_with("l2-sub-tab-") => {
-                        if let Ok(n) = id["l2-sub-tab-".len()..].parse::<usize>() { self.l2_active_sub_tab = n; }
-                    }
-                    _ => {}
-                }
-            }
-        }
+        // geometry hit-test needed here.
+        // L2 modal widget clicks are now handled by the coordinator dispatch
+        // chain (all L2 widgets are registered via register_context_manager_*).
     }
 
     fn on_right_up(&mut self, x: f64, y: f64) {
@@ -3988,17 +3447,9 @@ impl AppState {
         self.drag_origin = Some((x, y));
 
         // Fix 3: modal header drag — start drag when clicking in modal header zone.
-        // Header zone: modal top .. modal top + 44px, minus close-button right 34px.
         if self.modal_open {
             if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
-                let header_rect = Rect::new(
-                    modal_rect.x,
-                    modal_rect.y,
-                    modal_rect.width - 34.0, // leave close-button area (24px + 10px padding)
-                    44.0,
-                );
-                if header_rect.contains(x, y) {
-                    // resolve current modal origin (may have been dragged before)
+                if modal_input::modal_header_hit(modal_rect, x, y, 44.0, 34.0) {
                     let origin = if self.modal_state.position != (0.0, 0.0) {
                         self.modal_state.position
                     } else {
@@ -4015,49 +3466,45 @@ impl AppState {
         // dispatcher (z-aware). See bridge mouse-down: it routes drag_id
         // through dispatch_widget → ResizeHandleDragStarted.
 
-        // Fix 2: track L1 button pressed state
-        if self.modal_open && self.modal_kind == ModalKind::L1 {
-            let hovered_id = self.layout.ctx_mut().input.hovered_widget().map(|id| id.0.clone());
-            self.l1_btn_pressed = hovered_id.as_deref() == Some("l1-mybtn");
-        }
+        // L1 button pressed state is read via coordinator widget_state() on each render frame.
 
         // Watchlist mouse-down is now routed by the BlackboxPanel composite
         // through view.handle_event(PointerDown). No manual forwarding here.
 
-        // L2 drag targets
+        // L2 drag targets — use coordinator hover state instead of geometric hit-test.
         if self.modal_open && self.modal_kind == ModalKind::L2 {
-            if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
-                let body_y = modal_rect.y + 44.0; // modal header height = 44px (Fix 2)
-                let rel_x = x - modal_rect.x;
-                let rel_y = y - body_y;
-                self.l2_pressed = self.l2_hovered_at(rel_x, rel_y);
-                self.l2_hovered = self.l2_pressed.clone();
-                let target = match self.l2_hovered.as_deref() {
-                    Some("l2-slider")   => Some(DragTarget::L2Slider(self.l2_slider_val)),
-                    Some("l2-splitter") => Some(DragTarget::L2Splitter(self.l2_right_panel_w)),
-                    Some("l2-range") => {
-                        let x_min = RANGE_RECT.x + (self.l2_range_min / 100.0) * RANGE_RECT.width;
-                        let x_max = RANGE_RECT.x + (self.l2_range_max / 100.0) * RANGE_RECT.width;
-                        if (rel_x - x_min).abs() <= (rel_x - x_max).abs() {
-                            self.l2_range_drag_handle = Some(DualSliderHandle::Min);
-                            Some(DragTarget::L2RangeMin(self.l2_range_min))
-                        } else {
-                            self.l2_range_drag_handle = Some(DualSliderHandle::Max);
-                            Some(DragTarget::L2RangeMax(self.l2_range_max))
-                        }
+            let hovered_id = self.layout.ctx().input.hovered_widget().map(|w| w.0.clone());
+            let modal_rect = self.layout.rect_for_overlay("modal-overlay");
+            let target = match hovered_id.as_deref() {
+                Some("l2-slider")   => Some(DragTarget::L2Slider(self.l2_slider_val)),
+                Some("l2-splitter") => Some(DragTarget::L2Splitter(self.l2_right_panel_w)),
+                Some("l2-range") => {
+                    // Determine which range handle is closer to the cursor.
+                    let rel_x = modal_rect.map(|r| x - r.x).unwrap_or(0.0);
+                    let x_min = RANGE_RECT.x + (self.l2_range_min / 100.0) * RANGE_RECT.width;
+                    let x_max = RANGE_RECT.x + (self.l2_range_max / 100.0) * RANGE_RECT.width;
+                    if (rel_x - x_min).abs() <= (rel_x - x_max).abs() {
+                        self.l2_range_drag_handle = Some(DualSliderHandle::Min);
+                        Some(DragTarget::L2RangeMin(self.l2_range_min))
+                    } else {
+                        self.l2_range_drag_handle = Some(DualSliderHandle::Max);
+                        Some(DragTarget::L2RangeMax(self.l2_range_max))
                     }
-                    Some("l2-sb") | Some("l2-sb-track") | Some("l2-sb-thumb") => Some(DragTarget::L2Scroll(self.l2_scroll_off)),
-                    _ => None,
-                };
-                self.drag_target = target;
-            }
+                }
+                Some("l2-sb-track") | Some("l2-sb-thumb") => Some(DragTarget::L2Scroll(self.l2_scroll_off)),
+                _ => None,
+            };
+            self.drag_target = target;
         }
     }
 
     fn on_mouse_move(&mut self, x: f64, y: f64) {
         self.last_mouse = (x, y);
 
-        // Fix #2/#13: update chrome hover state so buttons visually highlight
+        // Fix #2/#13: update chrome hover state so buttons visually highlight.
+        // Tab-slot hover is resolved via the coordinator (sync_hover_from_coordinator);
+        // the geometry-based chrome_hit_test is still needed for the overall
+        // ChromeHit (min/max/close button zones, drag zone, resize edges).
         {
             let tab_ids = ["tab-0", "tab-1", "tab-2"];
             let chrome_tabs_mv = [
@@ -4086,22 +3533,15 @@ impl AppState {
                     chrome_rect,
                     (x, y),
                 );
-                // Update per-tab hover state before storing hit
-                let tab_hovered = if let ChromeHit::Tab(j) = hit { Some(j) } else { None };
-                let tab_close_hovered = if let ChromeHit::CloseTab(j) = hit { Some(j) } else { None };
-                for (i, ts) in self.chrome_state.tabs_state.iter_mut().enumerate() {
-                    ts.hovered = tab_hovered == Some(i);
-                    ts.close_hovered = tab_close_hovered == Some(i);
-                }
                 self.chrome_state.hovered = hit;
             }
+            // Sync per-tab hover flags from coordinator (replaces manual Tab(j) loop).
+            self.chrome_state.sync_hover_from_coordinator(
+                &self.layout.ctx_mut().input,
+                "chrome-widget",
+            );
         }
 
-        // Fix 2: update L1 button hover state from coordinator hovered widget
-        {
-            let hovered_id = self.layout.ctx_mut().input.hovered_widget().map(|id| id.0.clone());
-            self.l1_btn_hovered = hovered_id.as_deref() == Some("l1-mybtn");
-        }
 
         // Watchlist mouse-move is now routed by the BlackboxPanel composite
         // through view.handle_event(PointerMove). The composite suppresses
@@ -4118,16 +3558,6 @@ impl AppState {
                 handle_modal_drag(&mut self.modal_state, (x, y), (sw, sh), (modal_rect.width, modal_rect.height));
             }
             return;
-        }
-
-        // L2 hover tracking
-        if self.modal_open && self.modal_kind == ModalKind::L2 {
-            if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
-                let body_y = modal_rect.y + 44.0; // modal header height = 44px (Fix 2)
-                let rel_x = x - modal_rect.x;
-                let rel_y = y - body_y;
-                self.l2_hovered = self.l2_hovered_at(rel_x, rel_y);
-            }
         }
 
         // Drag
@@ -4170,7 +3600,8 @@ impl AppState {
                     self.l2_range_max = (v0 + frac * 100.0).clamp(self.l2_range_min, 100.0);
                 }
                 DragTarget::L2Scroll(v0) => {
-                    let sr = SB_H - AppState::l2_thumb_h();
+                    use uzor::ui::widgets::atomic::scrollbar::input::thumb_height;
+                    let sr = SB_H - thumb_height(CONTENT_H, SB_H, SB_H, 30.0);
                     if sr > 0.0 {
                         self.l2_scroll_off = (v0 + dy / sr * (CONTENT_H - SB_H)).clamp(0.0, (CONTENT_H - SB_H).max(0.0));
                     }
@@ -4261,9 +3692,6 @@ impl AppState {
         }
         self.drag_target = None;
         self.l2_range_drag_handle = None;
-        self.l2_pressed = None;
-        // Fix 2: clear L1 press state
-        self.l1_btn_pressed = false;
         // Watchlist drag end is routed by the composite via PointerUp.
     }
 }
@@ -4381,7 +3809,6 @@ impl ApplicationHandler for Handler {
             dropdown_file_state: DropdownState::default(),
             dropdown_view_state: DropdownState::default(),
             dropdown_help_state: DropdownState::default(),
-            dropdown_addpanel_state: DropdownState::default(),
             dropdown_sidebar_state: DropdownState::default(),
             dropdown_toolbar_state: DropdownState::default(),
             dropdown_popup_state: DropdownState::default(),
@@ -4419,8 +3846,6 @@ impl ApplicationHandler for Handler {
             l2_active_tab: 0,
             l2_active_sub_tab: 0,
             l2_right_panel_w: 330.0,
-            l2_hovered: None,
-            l2_pressed: None,
             last_mouse: (0.0, 0.0),
             mouse_down: false,
             drag_origin: None,
@@ -4429,8 +3854,6 @@ impl ApplicationHandler for Handler {
             spawn_kind: PanelKind::Notes,
             spawn_split: SpawnSplit::SplitRight,
             exit_requested: false,
-            l1_btn_hovered: false,
-            l1_btn_pressed: false,
             watchlist: watchlist_blackbox::WatchlistState::default(),
             l2_connect_popup_open: false,
             l2_connect_popup_state: PopupState::default(),
@@ -4473,28 +3896,18 @@ impl ApplicationHandler for Handler {
                 ChromeTabConfig { id: "tab-2", label: "Monitoring", icon: None, color_tag: None, closable: false, active: app.active_view == 2 },
             ];
             let chrome_view_tmp = ChromeView { tabs: &chrome_tabs_tmp, active_tab_id: Some(tab_ids[app.active_view]), show_new_tab_btn: false, show_menu_btn: false, show_new_window_btn: false, show_close_window_btn: false, is_maximized: app.window.is_maximized(), cursor_x: mx, cursor_y: my, time_ms: app.time_ms() };
+            // Close-app is app-specific (sets exit_requested); others delegated to helper.
             if let Some(chrome_rect) = app.layout.rect_for_chrome() {
                 let hit = chrome_hit_test(&app.chrome_state, &chrome_view_tmp, &ChromeSettings::default(), &ChromeRenderKind::Default, chrome_rect, (mx, my));
-                match handle_chrome_action(hit) {
-                    ChromeAction::WindowDragStart => {
-                        let _ = app.window.drag_window();
-                        return;
-                    }
-                    ChromeAction::Minimize => {
-                        app.window.set_minimized(true);
-                        return;
-                    }
-                    ChromeAction::MaximizeRestore => {
-                        app.window.set_maximized(!app.window.is_maximized());
-                        return;
-                    }
-                    ChromeAction::CloseApp => {
-                        app.exit_requested = true;
-                        app.window.request_redraw();
-                        return;
-                    }
-                    _ => {}
+                if matches!(handle_chrome_action(hit), ChromeAction::CloseApp) {
+                    app.exit_requested = true;
+                    app.window.request_redraw();
+                    return;
                 }
+            }
+            use uzor_framework::chrome::handle_chrome_window_event;
+            if handle_chrome_window_event(&app.layout, &app.chrome_state, &chrome_view_tmp, &ChromeSettings::default(), &ChromeRenderKind::Default, &app.window, mx, my) {
+                return;
             }
         }
 
@@ -4530,185 +3943,105 @@ impl ApplicationHandler for Handler {
 
         // Left mouse down
         if let Some(((x, y), drag_id)) = out.left_down {
-            // Blackbox sync dispatch — same overlay-aware pattern as wheel.
-            // If the cursor is on a top-most BlackboxPanel, route the
-            // PointerDown directly to the handler trait and skip the
-            // rest of the down-pipeline.
-            let blackbox_consumed = {
-                use uzor::ui::widgets::composite::blackbox_panel::input::dispatch_to_handler;
-                use uzor::ui::widgets::composite::blackbox_panel::types::BlackboxEvent;
-                use uzor::input::WidgetKind as WK;
-                let coord = &app.layout.ctx_mut().input;
-                let top = coord.hovered_widget().cloned();
-                let mut consumed = false;
-                if let Some(top_id) = top {
-                    if coord.widget_kind(&top_id) == Some(WK::BlackboxPanel) {
-                        let watchlist_rect = app.layout.panels().panel_rects().iter()
-                            .find(|(&id, _)| {
-                                app.layout.panels().tree().leaf(id)
-                                    .and_then(|l| l.panels.first())
-                                    .map(|p| p.kind == PanelKind::Watchlist)
-                                    .unwrap_or(false)
-                                    && format!("dock-leaf-{}", id.0) == top_id.0
-                            })
-                            .map(|(_, &r)| Rect::new(r.x as f64, r.y as f64, r.width as f64, r.height as f64));
-                        if let Some(rect) = watchlist_rect {
-                            let _ = dispatch_to_handler(
-                                &mut app.watchlist, rect, x, y,
-                                BlackboxEvent::PointerDown {
-                                    local_x: 0.0, local_y: 0.0,
-                                    button: uzor::input::MouseButton::Left,
-                                },
-                            );
-                            app.window.request_redraw();
-                            consumed = true;
+            // Blackbox sync dispatch — if the hovered widget is a BlackboxPanel,
+            // route PointerDown directly to the handler and skip the rest.
+            use uzor::ui::widgets::composite::blackbox_panel::types::BlackboxEvent;
+            use uzor::ui::widgets::composite::blackbox_panel::input::route_blackbox_pointer_down;
+            // Resolve the watchlist panel rect before borrowing layout mutably.
+            let watchlist_info: Option<(uzor::docking::panels::LeafId, Rect)> =
+                app.layout.panels().panel_rects().iter()
+                    .find(|(&id, _)| {
+                        app.layout.panels().tree().leaf(id)
+                            .and_then(|l| l.panels.first())
+                            .map(|p| p.kind == PanelKind::Watchlist)
+                            .unwrap_or(false)
+                    })
+                    .map(|(&id, &r)| (id, Rect::new(r.x as f64, r.y as f64, r.width as f64, r.height as f64)));
+            let blackbox_consumed = route_blackbox_pointer_down(
+                &mut app.layout, x, y,
+                BlackboxEvent::PointerDown { local_x: 0.0, local_y: 0.0, button: uzor::input::MouseButton::Left },
+                |widget_id, sx, sy, ev| {
+                    if let Some((leaf_id, rect)) = watchlist_info {
+                        if format!("dock-leaf-{}", leaf_id.0) == widget_id.0 {
+                            use uzor::ui::widgets::composite::blackbox_panel::input::dispatch_to_handler;
+                            dispatch_to_handler(&mut app.watchlist, rect, sx, sy, ev);
+                            return true;
                         }
                     }
-                }
-                consumed
-            };
+                    false
+                },
+            );
+            if blackbox_consumed { app.window.request_redraw(); }
             if blackbox_consumed {
                 // skip the rest of the down pipeline
             } else {
             // If the bridge resolved a DRAG-sense widget under the cursor,
             // dispatch through LayoutManager so registered drag patterns
             // (scrollbar thumb, resize handle, etc.) fire semantic events.
-            // Pass the event through every composite's consume_event; the
-            // first one to consume it sets drag_target and we skip
-            // on_mouse_down.  Unconsumed events fall through to the legacy
-            // geometry-based on_mouse_down path.
+            // Use consume_event_chain + drag_outcome_* helpers to collapse
+            // the per-composite post-consume drag detection into one place.
             let mut handled = false;
             if let Some(ref id) = drag_id {
-                let viewport = {
-                    let cfg = &app.surface.config;
-                    (cfg.width as f64, cfg.height as f64)
-                };
-                let cursor = (x, y);
-                // Wrap in Option so ownership moves correctly through the chain.
-                // Each composite either takes the event (returns None → consumed)
-                // or gives it back (returns Some → pass on).
-                let mut opt_ev: Option<uzor::layout::DispatchEvent> =
-                    Some(app.layout.dispatch_widget(id));
+                use uzor::layout::{consume_event_chain, DragOutcome};
 
-                // Helper macro: pass the event through one composite.
-                // If consumed, clears opt_ev and sets handled = true.
-                // If not consumed, restores opt_ev with the returned event.
-                macro_rules! try_consume_bridge {
-                    ($mod:ident, $state:expr, $host:expr, $rect_expr:expr) => {
-                        if let Some(ev) = opt_ev.take() {
-                            match $mod::consume_event(
-                                ev,
-                                $state,
-                                &WidgetId::new($host),
-                                $mod::ConsumeEventCtx {
-                                    cursor,
-                                    frame_rect: $rect_expr.unwrap_or_default(),
-                                    viewport,
-                                },
-                            ) {
-                                None    => { handled = true; }
-                                Some(e) => { opt_ev = Some(e); }
-                            }
-                        }
-                    };
-                }
+                let viewport = { let cfg = &app.surface.config; (cfg.width as f64, cfg.height as f64) };
+                let cursor   = (x, y);
+                let ev       = app.layout.dispatch_widget(id);
 
-                // ── Modal ─────────────────────────────────────────────────────
-                try_consume_bridge!(modal_input, &mut app.modal_state, "modal-widget",
-                    app.layout.rect_for_overlay("modal-overlay"));
-                if handled {
-                    if app.modal_state.scroll.is_dragging {
-                        app.drag_target = Some(DragTarget::ModalBodyScroll);
-                    } else if app.modal_state.resize_drag.is_some() {
-                        app.drag_target = Some(DragTarget::OverlayResize { which: "modal" });
-                    }
+                // Pre-resolve all frame rects before the chain to avoid borrow conflicts.
+                let r_modal      = app.layout.rect_for_overlay("modal-overlay");
+                let r_popup_demo = app.layout.rect_for_overlay("demo-popup-overlay");
+                let r_tb_top     = app.layout.rect_for_edge_slot("top-toolbar");
+                let r_tb_left2   = app.layout.rect_for_edge_slot("demo-toolbar-left2");
+                let r_tb_right   = app.layout.rect_for_edge_slot("demo-toolbar-right");
+                let r_tb_bottom  = app.layout.rect_for_edge_slot("demo-toolbar-bottom");
+                let r_sb_main    = app.layout.rect_for_edge_slot("sidebar");
+                let r_sb_right   = app.layout.rect_for_edge_slot("demo-sidebar-right");
+                let r_sb_top     = app.layout.rect_for_edge_slot("demo-sidebar-top");
+                let r_sb_bottom  = app.layout.rect_for_edge_slot("demo-sidebar-bottom");
+                let est_panels   = app.layout.panels().tree().leaves().len() as f64;
+                let sidebar_content_h = 480.0 + est_panels * 30.0;
+
+                let remaining = consume_event_chain(ev, &mut [
+                    &mut |e| modal_input::consume_event(e, &mut app.modal_state,   &WidgetId::new("modal-widget"),         modal_input::ConsumeEventCtx   { cursor, frame_rect: r_modal.unwrap_or_default(),    viewport }),
+                    &mut |e| popup_input::consume_event(e, &mut app.popup_state,   &WidgetId::new("demo-popup-widget"),    popup_input::ConsumeEventCtx   { cursor, frame_rect: r_popup_demo.unwrap_or_default(), viewport }),
+                    &mut |e| toolbar_input::consume_event(e, &mut app.top_toolbar_state,          &WidgetId::new("top-toolbar-widget"),         toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_top.unwrap_or_default(),    viewport }),
+                    &mut |e| toolbar_input::consume_event(e, &mut app.demo_toolbar_left2_state,   &WidgetId::new("demo-toolbar-left2-widget"),  toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_left2.unwrap_or_default(),  viewport }),
+                    &mut |e| toolbar_input::consume_event(e, &mut app.demo_toolbar_right_state,   &WidgetId::new("demo-toolbar-right-widget"),  toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_right.unwrap_or_default(),  viewport }),
+                    &mut |e| toolbar_input::consume_event(e, &mut app.demo_toolbar_bottom_state,  &WidgetId::new("demo-toolbar-bottom-widget"), toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_bottom.unwrap_or_default(), viewport }),
+                    &mut |e| sidebar_input::consume_event(e, &mut app.sidebar_state,              &WidgetId::new("sidebar-widget"),             sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_main.unwrap_or_default(),   viewport }),
+                    &mut |e| sidebar_input::consume_event(e, &mut app.demo_sidebar_right_state,   &WidgetId::new("demo-sidebar-right-widget"),  sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_right.unwrap_or_default(),  viewport }),
+                    &mut |e| sidebar_input::consume_event(e, &mut app.demo_sidebar_top_state,     &WidgetId::new("demo-sidebar-top-widget"),    sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_top.unwrap_or_default(),    viewport }),
+                    &mut |e| sidebar_input::consume_event(e, &mut app.demo_sidebar_bottom_state,  &WidgetId::new("demo-sidebar-bottom-widget"), sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_bottom.unwrap_or_default(), viewport }),
+                ]);
+
+                if remaining.is_none() {
+                    handled = true;
+                    // Determine what drag was started using drag_outcome_* helpers.
+                    let drag_outcome =
+                        modal_input::drag_outcome_modal(&app.modal_state)
+                        .or_else(|| popup_input::drag_outcome_popup(&app.popup_state))
+                        .or_else(|| toolbar_input::drag_outcome_toolbar(&app.top_toolbar_state,         "top"))
+                        .or_else(|| toolbar_input::drag_outcome_toolbar(&app.demo_toolbar_left2_state,  "demo-left2"))
+                        .or_else(|| toolbar_input::drag_outcome_toolbar(&app.demo_toolbar_right_state,  "demo-right"))
+                        .or_else(|| toolbar_input::drag_outcome_toolbar(&app.demo_toolbar_bottom_state, "demo-bottom"))
+                        .or_else(|| sidebar_input::drag_outcome_sidebar(&app.sidebar_state,              "main",   r_sb_main.unwrap_or_default(),   sidebar_content_h))
+                        .or_else(|| sidebar_input::drag_outcome_sidebar(&app.demo_sidebar_right_state,  "right",  r_sb_right.unwrap_or_default(),   sidebar_content_h))
+                        .or_else(|| sidebar_input::drag_outcome_sidebar(&app.demo_sidebar_top_state,    "top",    r_sb_top.unwrap_or_default(),     sidebar_content_h))
+                        .or_else(|| sidebar_input::drag_outcome_sidebar(&app.demo_sidebar_bottom_state, "bottom", r_sb_bottom.unwrap_or_default(),  sidebar_content_h));
+
+                    app.drag_target = drag_outcome.map(|o| match o {
+                        DragOutcome::ModalBodyScroll      => DragTarget::ModalBodyScroll,
+                        DragOutcome::ModalResize          => DragTarget::OverlayResize { which: "modal" },
+                        DragOutcome::PopupBodyScroll      => DragTarget::PopupBodyScroll,
+                        DragOutcome::PopupResize          => DragTarget::OverlayResize { which: "popup" },
+                        DragOutcome::ToolbarResize{which} => DragTarget::ToolbarResize { which },
+                        DragOutcome::SidebarResize{which} => DragTarget::SidebarResize { which },
+                        DragOutcome::SidebarScrollbar { track_rect, content_h, viewport_h }
+                            => DragTarget::SidebarScrollbar { track_rect, content_h, viewport_h },
+                    });
                     app.drag_origin = Some((x, y));
                     app.mouse_down = true;
-                }
-
-                // ── Popup ─────────────────────────────────────────────────────
-                if !handled {
-                    try_consume_bridge!(popup_input, &mut app.popup_state, "demo-popup-widget",
-                        app.layout.rect_for_overlay("demo-popup-overlay"));
-                    if handled {
-                        if app.popup_state.scroll.is_dragging {
-                            app.drag_target = Some(DragTarget::PopupBodyScroll);
-                        }
-                        app.drag_origin = Some((x, y));
-                        app.mouse_down = true;
-                    }
-                }
-
-                // ── Toolbars ──────────────────────────────────────────────────
-                let toolbar_specs: [(&str, &'static str, &'static str); 4] = [
-                    ("top-toolbar-widget",         "top-toolbar",         "top"),
-                    ("demo-toolbar-left2-widget",  "demo-toolbar-left2",  "demo-left2"),
-                    ("demo-toolbar-right-widget",  "demo-toolbar-right",  "demo-right"),
-                    ("demo-toolbar-bottom-widget", "demo-toolbar-bottom", "demo-bottom"),
-                ];
-                for (host, slot, which) in toolbar_specs {
-                    if handled { break; }
-                    let rect = app.layout.rect_for_edge_slot(slot);
-                    let st: &mut ToolbarState = match which {
-                        "top"         => &mut app.top_toolbar_state,
-                        "demo-left2"  => &mut app.demo_toolbar_left2_state,
-                        "demo-right"  => &mut app.demo_toolbar_right_state,
-                        "demo-bottom" => &mut app.demo_toolbar_bottom_state,
-                        _             => continue,
-                    };
-                    try_consume_bridge!(toolbar_input, st, host, rect);
-                    if handled {
-                        if st.resize_drag.is_some() {
-                            app.drag_target = Some(DragTarget::ToolbarResize { which });
-                        }
-                        app.drag_origin = Some((x, y));
-                        app.mouse_down = true;
-                    }
-                }
-
-                // ── Sidebars ──────────────────────────────────────────────────
-                let sidebar_specs: [(&str, &'static str, &'static str); 4] = [
-                    ("sidebar-widget",             "sidebar",             "main"),
-                    ("demo-sidebar-right-widget",  "demo-sidebar-right",  "right"),
-                    ("demo-sidebar-top-widget",    "demo-sidebar-top",    "top"),
-                    ("demo-sidebar-bottom-widget", "demo-sidebar-bottom", "bottom"),
-                ];
-                for (host, slot, which) in sidebar_specs {
-                    if handled { break; }
-                    let rect = app.layout.rect_for_edge_slot(slot);
-                    let st: &mut SidebarState = match which {
-                        "main"   => &mut app.sidebar_state,
-                        "right"  => &mut app.demo_sidebar_right_state,
-                        "top"    => &mut app.demo_sidebar_top_state,
-                        "bottom" => &mut app.demo_sidebar_bottom_state,
-                        _        => continue,
-                    };
-                    try_consume_bridge!(sidebar_input, st, host, rect);
-                    if handled {
-                        if st.resize_drag.is_some() {
-                            app.drag_target = Some(DragTarget::SidebarResize { which });
-                        }
-                        if let Some(scroll) = st.scroll_per_panel.get("default") {
-                            if scroll.is_dragging {
-                                if let Some(sb_rect) = app.layout.rect_for_edge_slot(slot) {
-                                    let est_panels = app.layout.panels().tree().leaves().len() as f64;
-                                    let viewport_h = sb_rect.height - 40.0;
-                                    let content_h  = 480.0 + est_panels * 30.0;
-                                    let track_rect = Rect::new(
-                                        sb_rect.x + sb_rect.width - 8.0,
-                                        sb_rect.y + 40.0,
-                                        8.0,
-                                        viewport_h,
-                                    );
-                                    app.drag_target = Some(DragTarget::SidebarScrollbar {
-                                        track_rect, content_h, viewport_h,
-                                    });
-                                }
-                            }
-                        }
-                        app.drag_origin = Some((x, y));
-                        app.mouse_down = true;
-                    }
                 }
             }
             // ── Dock separator drag — fully via LayoutManager dispatcher ──────
@@ -4769,13 +4102,15 @@ impl ApplicationHandler for Handler {
                 }
                 // Always end any drag separator on mouse-up regardless of cursor pos
                 // (user may release outside panel after a drag started inside).
-                if app.watchlist.drag_sep.is_some() {
+                {
                     use uzor::ui::widgets::composite::blackbox_panel::types::BlackboxHandler;
-                    let _ = app.watchlist.handle_event(BlackboxEvent::PointerUp {
-                        local_x: 0.0, local_y: 0.0, button: uzor::input::MouseButton::Left,
-                    });
-                    app.window.request_redraw();
-                    consumed = true;
+                    if app.watchlist.needs_pointer_up() {
+                        let _ = app.watchlist.handle_event(BlackboxEvent::PointerUp {
+                            local_x: 0.0, local_y: 0.0, button: uzor::input::MouseButton::Left,
+                        });
+                        app.window.request_redraw();
+                        consumed = true;
+                    }
                 }
                 consumed
             };
@@ -4797,55 +4132,49 @@ impl ApplicationHandler for Handler {
             app.window.request_redraw();
         }
 
-        // Main sidebar mousewheel scroll — forward to its scroll_per_panel state.
+        // Main sidebar mousewheel scroll — forward via SidebarState::handle_wheel.
         if let Some(((cx, cy), (_, dy))) = out.wheel {
             if !app.modal_open && app.sidebar_open {
                 if let Some(sidebar_rect) = app.layout.rect_for_edge_slot("sidebar") {
                     if sidebar_rect.contains(cx, cy) {
                         let est_panels = app.layout.panels().tree().leaves().len() as f64;
-                        let viewport_h = sidebar_rect.height - 40.0; // minus header
                         let content_h = 480.0 + est_panels * 30.0;
-                        let max = (content_h - viewport_h).max(0.0);
-                        let scroll = app.sidebar_state.get_or_insert_scroll("default");
-                        scroll.offset = (scroll.offset - dy * 30.0).clamp(0.0, max);
+                        app.sidebar_state.handle_wheel(sidebar_rect, dy, content_h);
                         app.window.request_redraw();
                     }
                 }
             }
         }
 
-        // Watchlist blackbox scroll — sync dispatch via BlackboxHandler trait.
-        // Coord-side hit test (hovered_widget + WidgetKind::BlackboxPanel) ensures
-        // overlay-aware routing: a modal/dropdown above the panel shadows it and
-        // the hovered_widget will not be the watchlist leaf, so the block is skipped.
-        if let Some(((cx, cy), (_, dy))) = out.wheel {
-            use uzor::ui::widgets::composite::blackbox_panel::input::dispatch_to_handler;
+        // Watchlist blackbox scroll — routed via route_blackbox_wheel.
+        // Overlay-aware: hovered_widget won't be a BlackboxPanel when a modal/dropdown
+        // is on top, so the dispatch closure is never called in those cases.
+        if let Some(((_, _), (_, dy))) = out.wheel {
+            use uzor::ui::widgets::composite::blackbox_panel::input::{dispatch_to_handler, route_blackbox_wheel};
             use uzor::ui::widgets::composite::blackbox_panel::types::BlackboxEvent;
-            use uzor::input::WidgetKind;
-            let hovered = app.layout.ctx_mut().input.hovered_widget().cloned();
-            let hovered_is_blackbox = hovered.as_ref().map(|id| {
-                app.layout.ctx_mut().input.widget_kind(id) == Some(WidgetKind::BlackboxPanel)
-            }).unwrap_or(false);
-            if hovered_is_blackbox {
-                if let Some(hovered_id) = hovered {
-                    let watchlist_rect = app.layout.panels().panel_rects().iter()
-                        .find(|(&id, _)| {
-                            app.layout.panels().tree().leaf(id)
-                                .and_then(|l| l.panels.first())
-                                .map(|p| p.kind == PanelKind::Watchlist)
-                                .unwrap_or(false)
-                                && format!("dock-leaf-{}", id.0) == hovered_id.0
-                        })
-                        .map(|(_, &r)| Rect::new(r.x as f64, r.y as f64, r.width as f64, r.height as f64));
-                    if let Some(rect) = watchlist_rect {
+            // Snapshot watchlist rect before borrowing layout for routing.
+            let watchlist_info: Option<(uzor::docking::panels::LeafId, Rect)> =
+                app.layout.panels().panel_rects().iter()
+                    .find(|(&id, _)| {
+                        app.layout.panels().tree().leaf(id)
+                            .and_then(|l| l.panels.first())
+                            .map(|p| p.kind == PanelKind::Watchlist)
+                            .unwrap_or(false)
+                    })
+                    .map(|(&id, &r)| (id, Rect::new(r.x as f64, r.y as f64, r.width as f64, r.height as f64)));
+            let consumed = route_blackbox_wheel(&mut app.layout, 0.0, dy, |widget_id, _dx, _dy| {
+                if let Some((leaf_id, rect)) = watchlist_info {
+                    if widget_id.0 == format!("dock-leaf-{}", leaf_id.0) {
                         let _ = dispatch_to_handler(
-                            &mut app.watchlist, rect, cx, cy,
-                            BlackboxEvent::Wheel { delta_x: 0.0, delta_y: dy },
+                            &mut app.watchlist, rect, 0.0, 0.0,
+                            BlackboxEvent::Wheel { delta_x: 0.0, delta_y: _dy },
                         );
-                        app.window.request_redraw();
+                        return true;
                     }
                 }
-            }
+                false
+            });
+            if consumed { app.window.request_redraw(); }
         }
 
         // Fix 5: Wheel routing per sub-panel — only scroll right panel if cursor
@@ -4887,7 +4216,6 @@ impl ApplicationHandler for Handler {
                         app.dropdown_file_state.close();
                         app.dropdown_view_state.close();
                         app.dropdown_help_state.close();
-                        app.dropdown_addpanel_state.close();
                     }
                     app.window.request_redraw();
                 }
@@ -4997,6 +4325,10 @@ mod watchlist_blackbox {
                 }
                 _ => BlackboxEventResult::NotConsumed,
             }
+        }
+
+        fn needs_pointer_up(&self) -> bool {
+            self.drag_sep.is_some()
         }
     }
 

@@ -131,4 +131,14 @@ pub trait BlackboxHandler {
     /// `true` = event consumed (do not propagate further), `false` =
     /// not for this panel.
     fn handle_event(&mut self, event: BlackboxEvent) -> BlackboxEventResult;
+
+    /// Returns `true` when this panel has an in-progress drag (e.g. a column
+    /// separator drag) that must be terminated with a `PointerUp` event even if
+    /// the cursor has left the panel.
+    ///
+    /// The host should call `handle_event(PointerUp { … })` on mouse-up when
+    /// this returns `true`, regardless of where the cursor currently is.
+    fn needs_pointer_up(&self) -> bool {
+        false
+    }
 }

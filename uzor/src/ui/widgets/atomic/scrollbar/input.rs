@@ -239,6 +239,27 @@ pub fn try_handle_track_click(
     false
 }
 
+// ── Thumb geometry ────────────────────────────────────────────────────────────
+
+/// Compute the scrollbar thumb height in pixels.
+///
+/// The thumb occupies a fraction of `track_h` proportional to
+/// `viewport_h / content_h`, clamped to `[min_thumb_h, track_h]`.
+///
+/// - `content_h`  — total scrollable content height.
+/// - `viewport_h` — visible viewport height.
+/// - `track_h`    — rendered scrollbar track height (usually ≈ `viewport_h`).
+/// - `min_thumb_h` — minimum thumb height (30.0 is a sensible default).
+///
+/// Returns `track_h` when `content_h ≤ viewport_h` (nothing to scroll).
+pub fn thumb_height(content_h: f64, viewport_h: f64, track_h: f64, min_thumb_h: f64) -> f64 {
+    if content_h <= 0.0 || viewport_h >= content_h {
+        return track_h;
+    }
+    let ratio = (viewport_h / content_h).clamp(0.0, 1.0);
+    (ratio * track_h).max(min_thumb_h)
+}
+
 // ── Level 1 / Level 2 entry points ───────────────────────────────────────────
 
 /// Level 1 — register a scrollbar (track + thumb) with an explicit `InputCoordinator`.

@@ -3,6 +3,7 @@
 //! All fields are stored flat so the caller holds a single `ChromeState`
 //! regardless of which `ChromeRenderKind` is active.
 
+use crate::input::core::coordinator::InputCoordinator;
 use crate::ui::widgets::atomic::tooltip::TooltipState;
 use crate::ui::widgets::composite::context_menu::ContextMenuState;
 
@@ -146,6 +147,30 @@ impl ChromeState {
             ts.hovered = false;
             ts.pressed = false;
             ts.close_hovered = false;
+        }
+    }
+
+    /// Sync per-tab hover state from the input coordinator.
+    ///
+    /// The coordinator tracks which registered child widget is hovered; this
+    /// method translates coordinator widget-ids of the form
+    /// `{chrome_id}:tab:{i}` and `{chrome_id}:tab_close:{i}` into the
+    /// corresponding `TabState` hover flags.
+    ///
+    /// Call this once per frame after `register_layout_manager_chrome` (which
+    /// registers the child zones) but before rendering tab highlights.
+    ///
+    /// `chrome_id` — the stable id passed to `register_layout_manager_chrome`
+    ///               (e.g. `"chrome-widget"`).
+    pub fn sync_hover_from_coordinator(&mut self, coord: &InputCoordinator, chrome_id: &str) {
+        let hovered = coord.hovered_widget().map(|w| w.0.as_str());
+        let tab_prefix      = format!("{chrome_id}:tab:");
+        let close_prefix    = format!("{chrome_id}:tab_close:");
+
+        for (i, ts) in self.tabs_state.iter_mut().enumerate() {
+            let idx_str = i.to_string();
+            ts.hovered       = hovered.map(|h| h == format!("{}{}", tab_prefix, idx_str)).unwrap_or(false);
+            ts.close_hovered = hovered.map(|h| h == format!("{}{}", close_prefix, idx_str)).unwrap_or(false);
         }
     }
 }

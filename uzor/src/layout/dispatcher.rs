@@ -26,6 +26,7 @@
 //! override a composite's default handler by registering its own pattern
 //! after `register_layout_manager_*`.
 
+use crate::docking::panels::LeafId;
 use crate::types::WidgetId;
 
 /// High-level events surfaced to the app after a click is dispatched.
@@ -137,6 +138,23 @@ pub enum DispatchEvent {
     /// drag-start (origin x/y) and drive `panels_mut().drag_separator(...)`
     /// on subsequent pointer-moves.
     DockSeparatorDragStarted { sep_idx: usize },
+
+    /// User clicked on a dock leaf header / body. `leaf_id` is the stable
+    /// `LeafId` parsed from the widget id suffix `"dock-leaf-{n}"`.
+    DockLeafClicked { leaf_id: LeafId },
+
+    /// User clicked the close button for a dock leaf. `leaf_idx` is the
+    /// ordinal position of the leaf in sorted leaf order (same as the
+    /// `"dock-leaf-close-{idx}"` suffix).
+    DockLeafClosedByIndex { leaf_idx: usize },
+
+    /// Generic indexed click: a widget whose id matches `"{base}-{n}"` was
+    /// clicked.  `base` is the registered prefix (without trailing `-`) and
+    /// `n` is the parsed `usize` index.
+    ///
+    /// Use this for groups of similar widgets (radio buttons, swatches,
+    /// tabs) that share a common prefix and differ only in their index.
+    Indexed { base: String, n: usize },
 }
 
 /// Edges and corners a resize handle can be attached to. Used by
@@ -265,6 +283,21 @@ pub enum EventBuilder {
     /// `dock-sep-{idx}` widget is hit. Suffix is parsed as `usize`; bad
     /// parse falls through to `Unhandled`.
     DockSeparatorFromSuffix,
+
+    /// Fires `DockLeafClicked { leaf_id }` when a `dock-leaf-{n}` widget
+    /// is hit. The `n` suffix is parsed as `u64`; bad parse falls through
+    /// to `Unhandled`.
+    DockLeafFromSuffix,
+
+    /// Fires `DockLeafClosedByIndex { leaf_idx }` when a
+    /// `dock-leaf-close-{idx}` widget is hit. The suffix is parsed as
+    /// `usize`; bad parse falls through to `Unhandled`.
+    DockLeafCloseFromSuffix,
+
+    /// Fires `Indexed { base, n }` when a `"{prefix}{n}"` widget is clicked.
+    /// `base` is the `prefix` string (stored at registration time); `n` is
+    /// parsed from the suffix.  Bad parse falls through to `Unhandled`.
+    IndexedFromSuffix { base: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -448,6 +481,24 @@ fn build(builder: &EventBuilder, id: &str, pattern: &str) -> DispatchEvent {
             match suffix().parse::<usize>() {
                 Ok(sep_idx) => DispatchEvent::DockSeparatorDragStarted { sep_idx },
                 Err(_)      => DispatchEvent::Unhandled(WidgetId::new(id)),
+            }
+        }
+        EventBuilder::DockLeafFromSuffix => {
+            match suffix().parse::<u64>() {
+                Ok(n)  => DispatchEvent::DockLeafClicked { leaf_id: LeafId(n) },
+                Err(_) => DispatchEvent::Unhandled(WidgetId::new(id)),
+            }
+        }
+        EventBuilder::DockLeafCloseFromSuffix => {
+            match suffix().parse::<usize>() {
+                Ok(leaf_idx) => DispatchEvent::DockLeafClosedByIndex { leaf_idx },
+                Err(_)       => DispatchEvent::Unhandled(WidgetId::new(id)),
+            }
+        }
+        EventBuilder::IndexedFromSuffix { base } => {
+            match suffix().parse::<usize>() {
+                Ok(n)  => DispatchEvent::Indexed { base: base.clone(), n },
+                Err(_) => DispatchEvent::Unhandled(WidgetId::new(id)),
             }
         }
     }

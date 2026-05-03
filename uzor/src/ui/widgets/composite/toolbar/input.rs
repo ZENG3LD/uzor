@@ -68,6 +68,17 @@ pub fn consume_event(
     }
 }
 
+/// Inspect toolbar state after `consume_event` returned `None` (consumed) to
+/// determine what drag was started.
+///
+/// `which` — app-supplied tag for the toolbar (e.g. `"top"`, `"demo-left2"`).
+pub fn drag_outcome_toolbar(state: &ToolbarState, which: &'static str) -> Option<crate::layout::DragOutcome> {
+    if state.resize_drag.is_some() {
+        return Some(crate::layout::DragOutcome::ToolbarResize { which });
+    }
+    None
+}
+
 /// Register + draw a toolbar in one call using a [`LayoutManager`].
 ///
 /// Resolves the rect from the edge slot identified by `slot_id`, then

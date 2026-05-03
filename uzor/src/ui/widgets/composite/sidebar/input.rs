@@ -11,10 +11,15 @@ use super::settings::SidebarSettings;
 use super::state::{SidebarState, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
 use super::types::{SidebarRenderKind, SidebarView};
 use crate::docking::panels::DockPanel;
+use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
 use crate::layout::{ChevronStepDirection, DispatchEvent, LayoutManager, LayoutNodeId, SidebarNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
+use crate::ui::widgets::atomic::text::render::draw_text;
+use crate::ui::widgets::atomic::text::settings::TextSettings;
+use crate::ui::widgets::atomic::text::types::{TextOverflow, TextView};
+use crate::render::{TextAlign, TextBaseline};
 
 /// Cursor position and view metadata for events that need spatial context
 /// (resize start, scrollbar drag start, track click).
@@ -86,6 +91,35 @@ pub fn consume_event(
         }
         _ => Some(event),
     }
+}
+
+/// Inspect sidebar state after `consume_event` returned `None` (consumed) to
+/// determine what drag was started.
+///
+/// `which`       — app-supplied tag for the sidebar (e.g. `"main"`, `"right"`).
+/// `sidebar_rect`— the sidebar frame rect this frame (used for scrollbar track geometry).
+/// `est_content_h` — estimated content height in pixels (used for scrollbar math).
+pub fn drag_outcome_sidebar(
+    state:       &SidebarState,
+    which:       &'static str,
+    sidebar_rect: crate::types::Rect,
+    est_content_h: f64,
+) -> Option<crate::layout::DragOutcome> {
+    if state.resize_drag.is_some() {
+        return Some(crate::layout::DragOutcome::SidebarResize { which });
+    }
+    if let Some(scroll) = state.scroll_per_panel.get("default") {
+        if scroll.is_dragging {
+            let track_rect   = SidebarState::scrollbar_track_rect(sidebar_rect);
+            let viewport_h   = track_rect.height;
+            return Some(crate::layout::DragOutcome::SidebarScrollbar {
+                track_rect,
+                content_h:  est_content_h,
+                viewport_h,
+            });
+        }
+    }
+    None
 }
 
 /// Register + draw a sidebar in one call using a [`LayoutManager`].
@@ -225,4 +259,253 @@ pub fn handle_sidebar_scroll(
 /// Toggle the sidebar between collapsed and expanded.
 pub fn handle_sidebar_collapse_toggle(state: &mut SidebarState) {
     state.toggle_collapse();
+}
+
+// ---------------------------------------------------------------------------
+// SidebarBodyBuilder
+// ---------------------------------------------------------------------------
+
+/// A row entry for [`SidebarBodyBuilder::add_radio_group`].
+pub struct SidebarRadioItem<'a> {
+    /// Stable widget id for this radio button.
+    pub id: &'a str,
+    /// Display label.
+    pub label: &'a str,
+    /// Whether this item is currently selected.
+    pub selected: bool,
+}
+
+/// A row entry for [`SidebarBodyBuilder::add_panel_list`].
+pub struct SidebarPanelEntry<'a> {
+    /// Widget id for the panel row's close button (e.g. `"dock-leaf-close-0"`).
+    pub close_id: &'a str,
+    /// Display title.
+    pub title: &'a str,
+    /// Whether this panel is the active leaf.
+    pub active: bool,
+}
+
+/// Stateful builder for rendering and registering sidebar body content.
+///
+/// Create via [`SidebarBodyBuilder::new`], call item methods to add rows,
+/// then call [`SidebarBodyBuilder::finish`] to end the body clip region.
+///
+/// The builder tracks a y-cursor internally and applies standard horizontal
+/// padding (`8 px` on each side).
+pub struct SidebarBodyBuilder<'a, P: DockPanel> {
+    render: &'a mut dyn RenderContext,
+    layout: &'a mut LayoutManager<P>,
+    layer:  LayerId,
+    bx:     f64,
+    bw:     f64,
+    y:      f64,
+}
+
+impl<'a, P: DockPanel> SidebarBodyBuilder<'a, P> {
+    /// Create a new builder.
+    ///
+    /// `body_rect`      — screen-space rect of the sidebar body (header
+    ///                    excluded).  Typically from
+    ///                    `begin_body(…).content_origin_y` + `body_rect.x/width`.
+    /// `content_origin_y` — first y of scrollable content (scroll already
+    ///                    applied; from `SidebarBodyViewport::content_origin_y`).
+    /// `layer`          — render layer to register atomics on (typically
+    ///                    `LayerId::main()`).
+    pub fn new(
+        render:          &'a mut dyn RenderContext,
+        layout:          &'a mut LayoutManager<P>,
+        body_rect:        Rect,
+        content_origin_y: f64,
+        layer:            LayerId,
+    ) -> Self {
+        let bx = body_rect.x + 8.0;
+        let bw = body_rect.width - 16.0;
+        Self { render, layout, layer, bx, bw, y: content_origin_y + 8.0 }
+    }
+
+    /// Draw a section header label (e.g. `"NEW PANEL"`, `"PANELS"`).
+    ///
+    /// Advances `y` by 22 px.
+    pub fn add_section_header(&mut self, text: &str) {
+        draw_text(
+            self.render,
+            Rect::new(self.bx, self.y, self.bw, 22.0),
+            &TextView { text, align: TextAlign::Left, baseline: TextBaseline::Middle,
+                color: Some("rgba(255,255,255,0.4)"), font: None, overflow: TextOverflow::Clip, hovered: false },
+            &TextSettings::default(),
+        );
+        self.y += 22.0;
+    }
+
+    /// Draw a muted sub-label (e.g. `"Type:"`, `"Split:"`).
+    ///
+    /// Advances `y` by 20 px.
+    pub fn add_sub_label(&mut self, text: &str) {
+        draw_text(
+            self.render,
+            Rect::new(self.bx, self.y, self.bw, 20.0),
+            &TextView { text, align: TextAlign::Left, baseline: TextBaseline::Middle,
+                color: Some("rgba(255,255,255,0.55)"), font: None, overflow: TextOverflow::Clip, hovered: false },
+            &TextSettings::default(),
+        );
+        self.y += 20.0;
+    }
+
+    /// Draw a vertical spacer.
+    ///
+    /// Advances `y` by `height` px.
+    pub fn add_spacer(&mut self, height: f64) {
+        self.y += height;
+    }
+
+    /// Draw a horizontal divider line and advance y by 10 px.
+    pub fn add_divider(&mut self) {
+        self.render.set_fill_color("rgba(255,255,255,0.08)");
+        self.render.fill_rect(self.bx, self.y, self.bw, 1.0);
+        self.y += 10.0;
+    }
+
+    /// Draw a list of radio-button rows and register each as a `Button` atomic.
+    ///
+    /// Each row is 22 px tall.  The selected item shows a filled blue dot;
+    /// unselected items show a dim dot.  Clicking any row will be reported
+    /// as a click on `item.id`.
+    pub fn add_radio_group(&mut self, items: &[SidebarRadioItem<'_>]) {
+        let bx = self.bx;
+        let bw = self.bw;
+        for item in items {
+            let rx = bx + 6.0;
+            let ry = self.y;
+            // Radio dot
+            if item.selected {
+                self.render.set_fill_color("#2962ff");
+            } else {
+                self.render.set_fill_color("rgba(255,255,255,0.18)");
+            }
+            self.render.fill_rounded_rect(rx, ry + 3.0, 10.0, 10.0, 5.0);
+            // Label
+            draw_text(
+                self.render,
+                Rect::new(rx + 16.0, ry, bw - 22.0, 20.0),
+                &TextView {
+                    text: item.label,
+                    align: TextAlign::Left,
+                    baseline: TextBaseline::Middle,
+                    color: Some(if item.selected { "#ffffff" } else { "#a0a0b0" }),
+                    font: None, overflow: TextOverflow::Clip, hovered: false,
+                },
+                &TextSettings::default(),
+            );
+            // Register hit rect (full row width for easy clicking).
+            let layer = self.layer.clone();
+            self.layout.ctx_mut().input.register_atomic(
+                WidgetId::new(item.id),
+                WidgetKind::Button,
+                Rect::new(bx, ry, bw, 20.0),
+                Sense::CLICK | Sense::HOVER,
+                &layer,
+            );
+            self.y += 22.0;
+        }
+    }
+
+    /// Draw a filled action button with centered label and register it.
+    ///
+    /// The button is 28 px tall.  Advances `y` by 36 px (button + gap).
+    ///
+    /// `id`    — stable widget id.
+    /// `label` — button text.
+    pub fn add_action_button(&mut self, id: &str, label: &str) {
+        let bx = self.bx;
+        let bw = self.bw;
+        let y = self.y;
+        self.render.set_fill_color("#2962ff");
+        self.render.fill_rounded_rect(bx, y, bw, 28.0, 4.0);
+        draw_text(
+            self.render,
+            Rect::new(bx, y, bw, 28.0),
+            &TextView { text: label, align: TextAlign::Center, baseline: TextBaseline::Middle,
+                color: Some("#ffffff"), font: None, overflow: TextOverflow::Clip, hovered: false },
+            &TextSettings::default(),
+        );
+        let layer = self.layer.clone();
+        self.layout.ctx_mut().input.register_atomic(
+            WidgetId::new(id),
+            WidgetKind::Button,
+            Rect::new(bx, y, bw, 28.0),
+            Sense::CLICK | Sense::HOVER,
+            &layer,
+        );
+        self.y += 36.0;
+    }
+
+    /// Draw a list of dock-panel rows with close buttons.
+    ///
+    /// Each row is 30 px tall.  Active panels are highlighted in blue.
+    /// For each entry, two atomics are registered:
+    /// - Row click (whole row minus close zone) — id `"{entry.close_id}-row"`.
+    ///   Actually, only the close button is registered; row-activation is
+    ///   handled by the caller via dispatch on `entry.close_id`.
+    ///
+    /// `close_label` — character drawn in the close zone (default `"×"`).
+    pub fn add_panel_list(
+        &mut self,
+        entries:     &[SidebarPanelEntry<'_>],
+        close_label: &str,
+    ) {
+        let bx = self.bx;
+        let bw = self.bw;
+        for entry in entries {
+            let y = self.y;
+            // Row background
+            self.render.set_fill_color(if entry.active {
+                "rgba(41,98,255,0.18)"
+            } else {
+                "rgba(255,255,255,0.05)"
+            });
+            self.render.fill_rounded_rect(bx, y, bw, 26.0, 3.0);
+            // Title
+            draw_text(
+                self.render,
+                Rect::new(bx + 10.0, y, bw - 36.0, 26.0),
+                &TextView {
+                    text: entry.title,
+                    align: TextAlign::Left,
+                    baseline: TextBaseline::Middle,
+                    color: Some(if entry.active { "#4d90fe" } else { "#d1d4dc" }),
+                    font: None, overflow: TextOverflow::Clip, hovered: false,
+                },
+                &TextSettings::default(),
+            );
+            // Close button
+            let close_x = bx + bw - 22.0;
+            draw_text(
+                self.render,
+                Rect::new(close_x, y + 5.0, 16.0, 16.0),
+                &TextView { text: close_label, align: TextAlign::Center,
+                    baseline: TextBaseline::Middle, color: Some("rgba(255,80,80,0.5)"),
+                    font: None, overflow: TextOverflow::Clip, hovered: false },
+                &TextSettings::default(),
+            );
+            let layer = self.layer.clone();
+            self.layout.ctx_mut().input.register_atomic(
+                WidgetId::new(entry.close_id),
+                WidgetKind::Button,
+                Rect::new(close_x, y + 5.0, 16.0, 16.0),
+                Sense::CLICK | Sense::HOVER,
+                &layer,
+            );
+            self.y += 30.0;
+        }
+    }
+
+    /// End the body clip region.  Must be called after all `add_*` methods.
+    pub fn finish(self) {
+        self.render.restore();
+    }
+
+    /// Current y-cursor position (useful for custom content between builder calls).
+    pub fn current_y(&self) -> f64 {
+        self.y
+    }
 }

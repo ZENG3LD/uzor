@@ -10,7 +10,7 @@ use super::types::{PopupRenderKind, PopupView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, PopupNode, WidgetNode};
+use crate::layout::{DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, PopupNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -68,25 +68,47 @@ pub fn consume_event(
     }
 }
 
+/// Inspect popup state after `consume_event` returned `None` (consumed) to
+/// determine what drag was started.
+pub fn drag_outcome_popup(state: &PopupState) -> Option<crate::layout::DragOutcome> {
+    if state.scroll.is_dragging {
+        return Some(crate::layout::DragOutcome::PopupBodyScroll);
+    }
+    if state.resize_drag.is_some() {
+        return Some(crate::layout::DragOutcome::PopupResize);
+    }
+    None
+}
+
 /// Register + draw a popup in one call using a [`LayoutManager`].
 ///
-/// Resolves the rect from the overlay slot identified by `slot_id`, then
-/// pushes the popup layer onto the coordinator and forwards to
-/// [`register_context_manager_popup`].  Returns `None` if the slot is not
-/// present in the overlay stack.
+/// Pushes the overlay entry, then registers the popup layer with the
+/// coordinator and forwards to [`register_context_manager_popup`].
+///
+/// `slot_id`      — stable overlay id (e.g. `"demo-popup-overlay"`).
+/// `overlay_rect` — screen-space rect of the popup frame this frame.
+/// `anchor`       — optional anchor rect for repositioning logic.
 pub fn register_layout_manager_popup<P: DockPanel>(
-    layout:   &mut LayoutManager<P>,
-    render:   &mut dyn RenderContext,
-    parent:   LayoutNodeId,
-    slot_id:  &str,
-    id:       impl Into<WidgetId>,
-    state:    &mut PopupState,
-    view:     &mut PopupView<'_>,
-    settings: &PopupSettings,
-    kind:     PopupRenderKind,
+    layout:       &mut LayoutManager<P>,
+    render:       &mut dyn RenderContext,
+    parent:       LayoutNodeId,
+    slot_id:      &str,
+    id:           impl Into<WidgetId>,
+    overlay_rect: Rect,
+    anchor:       Option<Rect>,
+    state:        &mut PopupState,
+    view:         &mut PopupView<'_>,
+    settings:     &PopupSettings,
+    kind:         PopupRenderKind,
 ) -> Option<PopupNode> {
     let id: WidgetId = id.into();
-    let rect = layout.rect_for_overlay(slot_id)?;
+    layout.push_overlay(OverlayEntry {
+        id:   slot_id.to_string(),
+        kind: OverlayKind::Popup,
+        rect: overlay_rect,
+        anchor,
+    });
+    let rect = overlay_rect;
     let layer = LayerId::popup();
     let z_order = layout.z_layers().popup as u32;
     // Register this overlay for outside-click dismiss resolution.
@@ -147,4 +169,74 @@ pub fn handle_popup_dismiss(state: &PopupState, click_pos: (f64, f64), popup_rec
         return false;
     }
     !popup_rect.contains(click_pos.0, click_pos.1)
+}
+
+// ---------------------------------------------------------------------------
+// Grid cell helper
+// ---------------------------------------------------------------------------
+
+/// A single cell in a popup color/icon grid.
+pub struct PopupGridCell<'a> {
+    /// Stable widget id for this cell (e.g. `"demo-popup-cell-0"`).
+    pub id: &'a str,
+    /// Fill color string (e.g. `"#ef5350"`).
+    pub color: &'a str,
+}
+
+/// Register and draw a grid of color/swatch cells inside an open popup body.
+///
+/// Cells are laid out in `cols` columns with `gap` pixels between cells.
+/// Each cell is `cell_size × cell_size` pixels, filled with `cell.color` and
+/// rounded with radius `4.0`. A white halo is drawn when the cell is hovered.
+///
+/// All cells are registered as `Button` children of `popup_id` on `layer`.
+///
+/// # Parameters
+///
+/// - `layout`    — layout manager (coordinator accessed via `ctx_mut()`).
+/// - `render`    — render context.
+/// - `popup_id`  — composite id of the parent popup (for `register_child`).
+/// - `body_rect` — popup body rect in screen space.
+/// - `cells`     — slice of cell descriptors.
+/// - `cols`      — number of columns.
+/// - `cell_size` — width and height of each cell in pixels.
+/// - `gap`       — gap between cells in pixels.
+/// - `layer`     — render layer for hit-test registration.
+pub fn register_popup_grid<P: DockPanel>(
+    layout:    &mut LayoutManager<P>,
+    render:    &mut dyn RenderContext,
+    popup_id:  &str,
+    body_rect: Rect,
+    cells:     &[PopupGridCell<'_>],
+    cols:      usize,
+    cell_size: f64,
+    gap:       f64,
+) {
+    use crate::types::CompositeId;
+    let composite_id = CompositeId(WidgetId::new(popup_id));
+    let coord = &mut layout.ctx_mut().input;
+    for (i, cell) in cells.iter().enumerate() {
+        let col = i % cols.max(1);
+        let row = i / cols.max(1);
+        let cx = body_rect.x + col as f64 * (cell_size + gap);
+        let cy = body_rect.y + row as f64 * (cell_size + gap);
+        let cell_rect = Rect::new(cx, cy, cell_size, cell_size);
+        coord.register_child(
+            &composite_id,
+            cell.id,
+            WidgetKind::Button,
+            cell_rect,
+            Sense::CLICK | Sense::HOVER,
+        );
+        // Hover halo
+        let hovered = coord.hovered_widget()
+            .map(|id| id.0.as_str() == cell.id)
+            .unwrap_or(false);
+        if hovered {
+            render.set_fill_color("#ffffff");
+            render.fill_rounded_rect(cx - 2.0, cy - 2.0, cell_size + 4.0, cell_size + 4.0, 5.0);
+        }
+        render.set_fill_color(cell.color);
+        render.fill_rounded_rect(cx, cy, cell_size, cell_size, 4.0);
+    }
 }

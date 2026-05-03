@@ -25,11 +25,14 @@
 //! }
 //! ```
 
+use winit::window::Window;
+
 use uzor::docking::panels::DockPanel;
 use uzor::layout::{ChromeNode, LayoutManager, LayoutNodeId};
 use uzor::render::RenderContext;
 use uzor::ui::widgets::composite::chrome::{
-    register_layout_manager_chrome, ChromeRenderKind, ChromeSettings, ChromeState, ChromeView,
+    chrome_hit_test, handle_chrome_action, register_layout_manager_chrome, ChromeAction,
+    ChromeRenderKind, ChromeSettings, ChromeState, ChromeView,
 };
 
 /// Register and draw the default chrome titlebar in one call.
@@ -91,4 +94,62 @@ pub fn register_chrome_with_settings<P: DockPanel>(
     kind: &ChromeRenderKind,
 ) -> Option<ChromeNode> {
     register_layout_manager_chrome(layout, render, LayoutNodeId::ROOT, "chrome", state, view, settings, kind)
+}
+
+// ---------------------------------------------------------------------------
+// Window event integration
+// ---------------------------------------------------------------------------
+
+/// Handle a left-mouse-button-down event for the chrome strip (caption drag,
+/// minimize, maximize/restore, close).
+///
+/// Must be called **before** the WinitInputBridge processes the event so that
+/// `drag_window()` is called while the button is still held (winit requires
+/// this).
+///
+/// Returns `true` when the event was consumed by a chrome action (the caller
+/// should `return` from the event handler and not forward the event further).
+///
+/// # Parameters
+///
+/// - `layout`   — solved layout for this frame.
+/// - `state`    — mutable chrome state.
+/// - `view`     — per-frame chrome view (tabs, cursor position, …).
+/// - `settings` — chrome style settings (or `&ChromeSettings::default()`).
+/// - `kind`     — render kind (or `&ChromeRenderKind::Default`).
+/// - `window`   — winit window reference used to issue window commands.
+/// - `mx`, `my` — pointer position in logical pixels.
+pub fn handle_chrome_window_event<P: DockPanel>(
+    layout:   &LayoutManager<P>,
+    state:    &ChromeState,
+    view:     &ChromeView<'_>,
+    settings: &ChromeSettings,
+    kind:     &ChromeRenderKind,
+    window:   &Window,
+    mx:       f64,
+    my:       f64,
+) -> bool {
+    let Some(chrome_rect) = layout.rect_for_chrome() else { return false };
+    let hit    = chrome_hit_test(state, view, settings, kind, chrome_rect, (mx, my));
+    let action = handle_chrome_action(hit);
+    match action {
+        ChromeAction::WindowDragStart => {
+            let _ = window.drag_window();
+            true
+        }
+        ChromeAction::Minimize => {
+            window.set_minimized(true);
+            true
+        }
+        ChromeAction::MaximizeRestore => {
+            window.set_maximized(!window.is_maximized());
+            true
+        }
+        ChromeAction::CloseApp => {
+            // Caller must handle the exit flag; we return true so the event
+            // is consumed and the caller can set its own exit_requested flag.
+            true
+        }
+        _ => false,
+    }
 }

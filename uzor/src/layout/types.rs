@@ -1,6 +1,34 @@
 use std::collections::HashMap;
 use crate::core::types::Rect;
 
+/// Outcome of a composite drag-start consume.
+///
+/// Returned by `drag_outcome_*` helpers after `consume_event` returns `None`
+/// (consumed). The app uses this to set its own `DragTarget` enum without
+/// reading composite-internal state fields.
+#[derive(Debug, Clone)]
+pub enum DragOutcome {
+    /// The modal body scrollbar thumb started dragging.
+    ModalBodyScroll,
+    /// The modal frame is being resized (resize-handle drag started).
+    ModalResize,
+    /// The popup body scrollbar thumb started dragging.
+    PopupBodyScroll,
+    /// The popup frame is being resized.
+    PopupResize,
+    /// A toolbar resize handle started dragging.  `which` is an app-supplied
+    /// tag identifying the toolbar (e.g. `"top"`, `"demo-left2"`).
+    ToolbarResize { which: &'static str },
+    /// A sidebar resize handle started dragging.  `which` tags the sidebar.
+    SidebarResize { which: &'static str },
+    /// A sidebar scrollbar thumb started dragging.
+    SidebarScrollbar {
+        track_rect: Rect,
+        content_h:  f64,
+        viewport_h: f64,
+    },
+}
+
 /// Side of the window edge for edge panels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum EdgeSide {

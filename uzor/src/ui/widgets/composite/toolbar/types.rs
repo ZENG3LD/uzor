@@ -51,6 +51,11 @@ pub enum ToolbarItem<'a> {
         active: bool,
         /// Tooltip text.
         tooltip: Option<&'a str>,
+        /// When `true`, hovering this button opens the associated popup/dropdown
+        /// immediately (no click required). Useful for top-level menu items
+        /// (File, View, Help) that follow the "open-on-hover once any sibling
+        /// is open" pattern.
+        popup_on_hover: bool,
     },
 
     /// Button with both icon and text label.

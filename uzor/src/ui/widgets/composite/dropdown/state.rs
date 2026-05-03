@@ -152,6 +152,46 @@ impl DropdownState {
         self.open_position_override.unwrap_or(self.origin)
     }
 
+    /// Close all dropdowns in `states` except the one identified by `keep_id`.
+    ///
+    /// `keep_id` — overlay slot id of the dropdown to leave open (e.g.
+    /// `"dd-file-overlay"`).  Pass `""` to close every dropdown.
+    ///
+    /// Designed for toolbar "one-click switch": opening dropdown B while A is
+    /// open should close A without a separate click.
+    ///
+    /// # Example
+    /// ```ignore
+    /// DropdownState::close_all_except("", &mut [
+    ///     ("dd-file-overlay", &mut self.dropdown_file_state),
+    ///     ("dd-view-overlay", &mut self.dropdown_view_state),
+    /// ]);
+    /// ```
+    pub fn close_all_except(keep_id: &str, states: &mut [(&'static str, &mut Self)]) {
+        for (id, state) in states.iter_mut() {
+            if *id != keep_id {
+                state.close();
+            }
+        }
+    }
+
+    /// Toggle a dropdown open/closed, closing all others first.
+    ///
+    /// `own_id`  — overlay slot id of the dropdown to toggle.
+    /// `anchor`  — trigger widget rect used to position the panel below the button.
+    /// `gap`     — gap between trigger bottom and panel top.
+    /// `states`  — mutable slice of `(overlay_id, state)` covering ALL
+    ///             managed dropdowns (including the one being toggled).
+    pub fn toggle_at(own_id: &str, anchor: Rect, gap: f64, states: &mut [(&'static str, &mut Self)]) {
+        let was_open = states.iter().find(|(id, _)| *id == own_id).map(|(_, st)| st.open).unwrap_or(false);
+        Self::close_all_except("", states);
+        if !was_open {
+            if let Some((_, state)) = states.iter_mut().find(|(id, _)| *id == own_id) {
+                state.open_below(anchor, gap);
+            }
+        }
+    }
+
     /// Sync the hovered-item id from the coordinator's hovered widget.
     ///
     /// `widget_id_prefix` — the `"{dropdown_widget_id}:item:"` prefix used at

@@ -174,4 +174,44 @@ impl SidebarState {
     pub fn set_active_tab(&mut self, id: impl Into<String>) {
         self.active_tab = Some(id.into());
     }
+
+    // -------------------------------------------------------------------------
+    // Scroll helpers (wheel)
+    // -------------------------------------------------------------------------
+
+    /// Apply a mouse-wheel delta to the `"default"` scroll panel.
+    ///
+    /// Clamps the offset to `[0, (content_h − viewport_h).max(0)]`.
+    /// The magic `40.0`-px header offset and `30.0`-px per-panel row height
+    /// that were previously inlined in app code are captured here.
+    ///
+    /// `rect`      — sidebar frame rect (height used to derive viewport_h).
+    /// `dy`        — raw wheel delta in pixels (positive = down).
+    /// `content_h` — total scrollable content height.
+    pub fn handle_wheel(&mut self, rect: crate::types::Rect, dy: f64, content_h: f64) {
+        const HEADER_H: f64 = 40.0;
+        const SCROLL_STEP: f64 = 30.0;
+        let viewport_h = (rect.height - HEADER_H).max(0.0);
+        let max = (content_h - viewport_h).max(0.0);
+        let scroll = self.get_or_insert_scroll("default");
+        scroll.offset = (scroll.offset - dy * SCROLL_STEP).clamp(0.0, max);
+    }
+
+    /// Compute the scrollbar track rect from the sidebar's frame rect.
+    ///
+    /// The track occupies the right-hand 8 px strip of the sidebar body
+    /// (below the 40 px header).  Returns the track rect in screen space.
+    ///
+    /// `sidebar_rect` — full sidebar frame rect (including header).
+    pub fn scrollbar_track_rect(sidebar_rect: crate::types::Rect) -> crate::types::Rect {
+        const HEADER_H:  f64 = 40.0;
+        const TRACK_W:   f64 =  8.0;
+        let viewport_h = (sidebar_rect.height - HEADER_H).max(0.0);
+        crate::types::Rect::new(
+            sidebar_rect.x + sidebar_rect.width - TRACK_W,
+            sidebar_rect.y + HEADER_H,
+            TRACK_W,
+            viewport_h,
+        )
+    }
 }
