@@ -13,7 +13,7 @@ use super::types::{ContextMenuRenderKind, ContextMenuView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{CompositeKind, CompositeRegistration, ContextMenuNode, DismissFrame, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, WidgetNode};
+use crate::layout::{CompositeKind, CompositeRegistration, ContextMenuHandle, ContextMenuNode, DismissFrame, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -32,14 +32,14 @@ pub fn register_layout_manager_context_menu<P: DockPanel>(
     render:       &mut dyn RenderContext,
     parent:       LayoutNodeId,
     slot_id:      &str,
-    id:           impl Into<WidgetId>,
+    handle:       &ContextMenuHandle,
     overlay_rect: Rect,
     anchor:       Option<Rect>,
     view:         &mut ContextMenuView<'_>,
     settings:     &ContextMenuSettings,
     kind:         &ContextMenuRenderKind<'_>,
 ) -> Option<ContextMenuNode> {
-    let id: WidgetId = id.into();
+    let id: WidgetId = handle.id.clone();
 
     // Take state out of the map (or create default), work with it, then
     // re-insert — avoids borrow conflicts with the rest of `layout`.
@@ -58,7 +58,7 @@ pub fn register_layout_manager_context_menu<P: DockPanel>(
     layout.push_dismiss_frame(DismissFrame {
         z: z_order,
         rect: slot_rect,
-        overlay_id: WidgetId::new(slot_id),
+        overlay_id: WidgetId(slot_id.to_owned()),
     });
     // Context menu blocks lower layers — push the layer into the coordinator.
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
@@ -66,10 +66,10 @@ pub fn register_layout_manager_context_menu<P: DockPanel>(
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::ContextMenu, rect: Rect::new(state.x, state.y, 0.0, 0.0), sense: Sense::CLICK });
 
     // Item ids are "{menu-id}:item:N" — surface as
-    // DispatchEvent::ContextMenuItemClicked { menu_id, item_index }.
+    // DispatchEvent::ContextMenuItemClicked { menu, item_index }.
     layout.dispatcher_mut().on_prefix(
         format!("{}:item:", id.0),
-        EventBuilder::ContextMenuItem { menu_id: id.clone() },
+        EventBuilder::ContextMenuItem { handle: handle.clone() },
     );
 
     // Auto-forward hovered_index from the coordinator into menu state.

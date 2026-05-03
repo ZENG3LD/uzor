@@ -15,6 +15,10 @@ use crate::ui::widgets::composite::context_menu::state::ContextMenuState;
 use crate::ui::widgets::composite::chrome::state::ChromeState;
 use super::chrome_slot::ChromeSlot;
 use super::edge_panels::EdgePanels;
+use super::handles::{
+    ContextMenuHandle, DropdownHandle, ModalHandle, OverlayHandle,
+    PopupHandle, SidebarHandle, ToolbarHandle,
+};
 use super::overlay_stack::{OverlayStack, OverlayEntry};
 use super::tree::{LayoutNode as TreeLayoutNode, LayoutNodeId, LayoutTree};
 use super::z_layers::ZLayerTable;
@@ -336,68 +340,134 @@ impl<P: DockPanel> LayoutManager<P> {
     }
 
     // -----------------------------------------------------------------------
-    // Phase A — composite state accessors
+    // Phase A+C — add_* factory methods (return typed handles)
     // -----------------------------------------------------------------------
 
-    /// Read-only access to a modal's state by widget id.
-    /// Returns `None` if no state has been created for this id yet.
-    pub fn modal(&self, id: &str) -> Option<&ModalState> {
-        self.modals.get(&WidgetId::new(id))
+    /// Register a modal by id and return a typed handle.
+    ///
+    /// Creates default state if not already present.  Call once at app init or
+    /// the first time the modal is about to be shown.  Subsequent calls with
+    /// the same id are idempotent — they return a handle to the existing state.
+    pub fn add_modal(&mut self, id: &str) -> ModalHandle {
+        let widget_id = WidgetId(id.to_owned());
+        self.modals.entry(widget_id.clone()).or_default();
+        ModalHandle { id: widget_id }
     }
 
-    /// Mutable access to a modal's state, creating a default if absent.
-    pub fn modal_mut(&mut self, id: &str) -> &mut ModalState {
-        self.modals.entry(WidgetId::new(id)).or_default()
+    /// Register a popup and return a typed handle.
+    pub fn add_popup(&mut self, id: &str) -> PopupHandle {
+        let widget_id = WidgetId(id.to_owned());
+        self.popups.entry(widget_id.clone()).or_default();
+        PopupHandle { id: widget_id }
     }
 
-    /// Read-only access to a popup's state by widget id.
-    pub fn popup(&self, id: &str) -> Option<&PopupState> {
-        self.popups.get(&WidgetId::new(id))
+    /// Register a dropdown and return a typed handle.
+    pub fn add_dropdown(&mut self, id: &str) -> DropdownHandle {
+        let widget_id = WidgetId(id.to_owned());
+        self.dropdowns.entry(widget_id.clone()).or_default();
+        DropdownHandle { id: widget_id }
     }
 
-    /// Mutable access to a popup's state, creating a default if absent.
-    pub fn popup_mut(&mut self, id: &str) -> &mut PopupState {
-        self.popups.entry(WidgetId::new(id)).or_default()
+    /// Register a toolbar and return a typed handle.
+    pub fn add_toolbar(&mut self, id: &str) -> ToolbarHandle {
+        let widget_id = WidgetId(id.to_owned());
+        self.toolbars.entry(widget_id.clone()).or_default();
+        ToolbarHandle { id: widget_id }
     }
 
-    /// Read-only access to a dropdown's state by widget id.
-    pub fn dropdown(&self, id: &str) -> Option<&DropdownState> {
-        self.dropdowns.get(&WidgetId::new(id))
+    /// Register a sidebar and return a typed handle.
+    pub fn add_sidebar(&mut self, id: &str) -> SidebarHandle {
+        let widget_id = WidgetId(id.to_owned());
+        self.sidebars.entry(widget_id.clone()).or_default();
+        SidebarHandle { id: widget_id }
     }
 
-    /// Mutable access to a dropdown's state, creating a default if absent.
-    pub fn dropdown_mut(&mut self, id: &str) -> &mut DropdownState {
-        self.dropdowns.entry(WidgetId::new(id)).or_default()
+    /// Register a context menu and return a typed handle.
+    pub fn add_context_menu(&mut self, id: &str) -> ContextMenuHandle {
+        let widget_id = WidgetId(id.to_owned());
+        self.context_menus.entry(widget_id.clone()).or_default();
+        ContextMenuHandle { id: widget_id }
     }
 
-    /// Read-only access to a toolbar's state by widget id.
-    pub fn toolbar(&self, id: &str) -> Option<&ToolbarState> {
-        self.toolbars.get(&WidgetId::new(id))
+    // -----------------------------------------------------------------------
+    // Phase A+C — handle-based state accessors (typed handles)
+    // -----------------------------------------------------------------------
+
+    /// Read-only access to a modal's state via its typed handle.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the handle's state was removed from the registry
+    /// (should not happen in normal usage — handles are stable).
+    pub fn modal(&self, h: &ModalHandle) -> &ModalState {
+        self.modals.get(&h.id)
+            .expect("modal handle invalidated — state dropped from registry")
     }
 
-    /// Mutable access to a toolbar's state, creating a default if absent.
-    pub fn toolbar_mut(&mut self, id: &str) -> &mut ToolbarState {
-        self.toolbars.entry(WidgetId::new(id)).or_default()
+    /// Mutable access to a modal's state via its typed handle.
+    pub fn modal_mut(&mut self, h: &ModalHandle) -> &mut ModalState {
+        self.modals.get_mut(&h.id)
+            .expect("modal handle invalidated — state dropped from registry")
     }
 
-    /// Read-only access to a sidebar's state by widget id.
-    pub fn sidebar(&self, id: &str) -> Option<&SidebarState> {
-        self.sidebars.get(&WidgetId::new(id))
+    /// Read-only access to a popup's state via its typed handle.
+    pub fn popup(&self, h: &PopupHandle) -> &PopupState {
+        self.popups.get(&h.id)
+            .expect("popup handle invalidated — state dropped from registry")
     }
 
-    /// Mutable access to a sidebar's state, creating a default if absent.
-    pub fn sidebar_mut(&mut self, id: &str) -> &mut SidebarState {
-        self.sidebars.entry(WidgetId::new(id)).or_default()
+    /// Mutable access to a popup's state via its typed handle.
+    pub fn popup_mut(&mut self, h: &PopupHandle) -> &mut PopupState {
+        self.popups.get_mut(&h.id)
+            .expect("popup handle invalidated — state dropped from registry")
     }
 
-    /// Read-only access to a context menu's state by widget id.
-    pub fn context_menu(&self, id: &str) -> Option<&ContextMenuState> {
-        self.context_menus.get(&WidgetId::new(id))
+    /// Read-only access to a dropdown's state via its typed handle.
+    pub fn dropdown(&self, h: &DropdownHandle) -> &DropdownState {
+        self.dropdowns.get(&h.id)
+            .expect("dropdown handle invalidated — state dropped from registry")
     }
 
-    /// Mutable access to a context menu's state, creating a default if absent.
-    pub fn context_menu_mut(&mut self, id: &str) -> &mut ContextMenuState {
-        self.context_menus.entry(WidgetId::new(id)).or_default()
+    /// Mutable access to a dropdown's state via its typed handle.
+    pub fn dropdown_mut(&mut self, h: &DropdownHandle) -> &mut DropdownState {
+        self.dropdowns.get_mut(&h.id)
+            .expect("dropdown handle invalidated — state dropped from registry")
+    }
+
+    /// Read-only access to a toolbar's state via its typed handle.
+    pub fn toolbar(&self, h: &ToolbarHandle) -> &ToolbarState {
+        self.toolbars.get(&h.id)
+            .expect("toolbar handle invalidated — state dropped from registry")
+    }
+
+    /// Mutable access to a toolbar's state via its typed handle.
+    pub fn toolbar_mut(&mut self, h: &ToolbarHandle) -> &mut ToolbarState {
+        self.toolbars.get_mut(&h.id)
+            .expect("toolbar handle invalidated — state dropped from registry")
+    }
+
+    /// Read-only access to a sidebar's state via its typed handle.
+    pub fn sidebar(&self, h: &SidebarHandle) -> &SidebarState {
+        self.sidebars.get(&h.id)
+            .expect("sidebar handle invalidated — state dropped from registry")
+    }
+
+    /// Mutable access to a sidebar's state via its typed handle.
+    pub fn sidebar_mut(&mut self, h: &SidebarHandle) -> &mut SidebarState {
+        self.sidebars.get_mut(&h.id)
+            .expect("sidebar handle invalidated — state dropped from registry")
+    }
+
+    /// Read-only access to a context menu's state via its typed handle.
+    pub fn context_menu(&self, h: &ContextMenuHandle) -> &ContextMenuState {
+        self.context_menus.get(&h.id)
+            .expect("context_menu handle invalidated — state dropped from registry")
+    }
+
+    /// Mutable access to a context menu's state via its typed handle.
+    pub fn context_menu_mut(&mut self, h: &ContextMenuHandle) -> &mut ContextMenuState {
+        self.context_menus.get_mut(&h.id)
+            .expect("context_menu handle invalidated — state dropped from registry")
     }
 
     /// Read-only access to the chrome widget state.
@@ -855,30 +925,19 @@ impl<P: DockPanel> LayoutManager<P> {
     /// Resolves a screen-space click at `pos` to exactly one of three outcomes:
     ///
     /// 1. **`DismissOverlay`** — the topmost open overlay did NOT contain `pos`.
-    ///    The caller must close the identified overlay and return.  This catches
-    ///    the "click on modal frame underneath a popup" case: the popup is
-    ///    topmost, so it gets dismissed regardless of what `process_click`
-    ///    returned for the coordinate.
+    ///    The caller must close the identified overlay and return.
     ///
-    /// 2. **`DispatchEvent`** — no overlay needs dismissing (click was inside
-    ///    the topmost overlay, or no overlay is open); `InputCoordinator`
-    ///    resolved a widget at `pos`.  The returned event comes from
-    ///    `dispatch_widget`.
+    /// 2. **`DispatchEvent`** — no overlay needs dismissing; a widget was hit.
     ///
     /// 3. **`Unhandled`** — no overlay needs dismissing and no widget was hit.
     pub fn handle_click(&mut self, pos: (f64, f64)) -> ClickOutcome {
-        // Step 1 — check whether the click is outside the topmost open overlay.
-        // dismiss_topmost_at returns Some(slot_id) if the click missed the
-        // topmost overlay.  We return early regardless of what process_click
-        // resolved: even if coord sees "modal-widget" under the cursor, the
-        // popup sitting above it is what owns the "outside" region.
         if let Some(overlay_id) = self.dismiss_topmost_at(pos) {
             let kind = self.overlay_kind_for(overlay_id.0.as_str());
-            return ClickOutcome::DismissOverlay { overlay_id, kind };
+            // Build a typed OverlayHandle from the overlay slot id.
+            let handle = self.make_overlay_handle(overlay_id, kind);
+            return ClickOutcome::DismissOverlay(handle);
         }
 
-        // Step 2 — click is inside the topmost overlay (or no overlay open).
-        // Route through coord + dispatcher.
         let clicked = self.ctx.input.process_click(pos.0, pos.1);
         match clicked {
             Some(id) => {
@@ -889,29 +948,50 @@ impl<P: DockPanel> LayoutManager<P> {
         }
     }
 
+    /// Build a typed [`OverlayHandle`] from a raw overlay slot id + kind.
+    ///
+    /// Matches the slot id against the registered state maps to produce the
+    /// specific typed variant.  Falls back to `OverlayHandle::Other` for
+    /// unknown ids (e.g. chrome, tooltips).
+    fn make_overlay_handle(
+        &self,
+        overlay_id: WidgetId,
+        kind: Option<super::OverlayKind>,
+    ) -> OverlayHandle {
+        // The overlay slot id is like "modal-overlay", "dd-file-overlay", etc.
+        // We need to find the widget_id that registered under that slot.
+        // The DismissFrame carries the slot_id; we correlate through overlay stack.
+        // Strategy: walk state maps and find the first entry whose key WidgetId
+        // matches a known pattern or walk composite_registry for the slot.
+        // Simplest: scan composite_registry (populated each frame) for slot_id match.
+        let slot = overlay_id.0.as_str();
+        if let Some(reg) = self.composite_registry.iter().find(|r| r.slot_id == slot) {
+            let wid = &reg.widget_id;
+            return match reg.kind {
+                CompositeKind::Modal => OverlayHandle::Modal(ModalHandle { id: wid.clone() }),
+                CompositeKind::Popup => OverlayHandle::Popup(PopupHandle { id: wid.clone() }),
+                CompositeKind::Dropdown => OverlayHandle::Dropdown(DropdownHandle { id: wid.clone() }),
+                CompositeKind::ContextMenu => OverlayHandle::ContextMenu(ContextMenuHandle { id: wid.clone() }),
+                _ => OverlayHandle::Other { overlay_id, kind },
+            };
+        }
+        OverlayHandle::Other { overlay_id, kind }
+    }
+
 }
 
 /// Outcome of [`LayoutManager::handle_click`].
 ///
-/// The application inspects this enum to decide what to do with a click
-/// instead of parsing raw `WidgetId` strings with `==` / `starts_with`.
+/// The application inspects this enum to decide what to do with a click.
 #[derive(Debug, Clone)]
 pub enum ClickOutcome {
-    /// Click landed outside the topmost open overlay — the caller must close
-    /// the corresponding overlay state.
+    /// Click landed outside the topmost open overlay — the caller must close it.
     ///
-    /// `overlay_id` — the stable slot id of the overlay to close.
-    /// `kind`       — the `OverlayKind` of the dismissed overlay, if it was
-    ///                still registered (present in the overlay stack this frame).
-    ///                Use this to avoid string comparisons: match on kind first,
-    ///                then use `overlay_id` only for disambiguation among multiple
-    ///                open overlays of the same kind (e.g. 7 dropdowns).
-    DismissOverlay {
-        overlay_id: WidgetId,
-        kind:       Option<super::OverlayKind>,
-    },
+    /// The typed [`OverlayHandle`] identifies which composite to close without
+    /// string matching.  For multiple open overlays of the same kind (e.g. 7
+    /// dropdowns), compare the `DropdownHandle` inside the variant.
+    DismissOverlay(OverlayHandle),
     /// Click landed on a registered widget (overlay was not dismissed).
-    /// The caller handles the semantic event.
     DispatchEvent(super::DispatchEvent),
     /// No widget was hit and no overlay was dismissed.
     Unhandled { pos: (f64, f64) },

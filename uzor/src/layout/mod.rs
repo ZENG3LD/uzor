@@ -34,6 +34,9 @@ pub use solve::solve_layout;
 pub use handles::{
     BlackboxPanelNode, ChromeNode, ContextMenuNode, DropdownNode, ModalNode,
     PanelNode, PopupNode, SidebarNode, ToolbarNode,
+    // State handles — opaque composite keys returned by LayoutManager::add_*
+    ContextMenuHandle, DropdownHandle, ModalHandle, OverlayHandle, PopupHandle,
+    SidebarHandle, ToolbarHandle,
 };
 pub use tree::{LayoutNode, LayoutNodeId, LayoutTree, LayoutTreeEntry, SystemNodeKind, WidgetNode};
 pub use types::{DragOutcome, EdgeRects, EdgeSide, LayoutSolved, OverlayKind, OverlayRect, SlotId};

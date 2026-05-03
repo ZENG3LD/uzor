@@ -36,7 +36,7 @@ use uzor::input::core::sense::Sense;
 use uzor::input::core::widget_kind::WidgetKind;
 use uzor::input::LayerId;
 use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager, LayoutNodeId};
-use uzor::types::{Rect, WidgetId, WidgetState};
+use uzor::types::{Rect, WidgetId, WidgetState, unsafe_widget_id};
 use uzor::ui::widgets::atomic::button::input::register_layout_manager_button;
 use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonView};
 use uzor_framework::app::{App, NoPanel};
@@ -163,7 +163,7 @@ impl App<NoPanel> for DashboardApp {
         // other self-contained canvas that has its own hit-testing.
         if let Some(dock) = layout.rect_for_dock_area() {
             layout.ctx_mut().input.register_composite(
-                WidgetId::new("chart_canvas"),
+                unsafe_widget_id("chart_canvas"),
                 WidgetKind::BlackboxPanel,
                 dock,
                 Sense::NONE,

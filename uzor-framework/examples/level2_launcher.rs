@@ -44,7 +44,7 @@ use uzor::input::core::coordinator::LayerId;
 use uzor::input::keyboard::keyboard::KeyPress;
 use uzor::input::pointer::state::{InputState, PointerState};
 use uzor::input::text::store::TextFieldConfig;
-use uzor::types::{Rect, WidgetId, WidgetState};
+use uzor::types::{Rect, WidgetId, WidgetState, unsafe_widget_id};
 
 // ── widgets ──────────────────────────────────────────────────────────────────
 use uzor::ui::widgets::atomic::button::input::register_context_manager_button;
@@ -347,7 +347,7 @@ impl AppState {
     }
 
     fn text_focused(&self) -> bool {
-        self.ctx.input.text_fields().is_focused(&WidgetId::new(TEXT_FIELD_ID))
+        self.ctx.input.text_fields().is_focused(&unsafe_widget_id(TEXT_FIELD_ID))
     }
 
     /// Scrollbar X (right edge of right panel minus scrollbar width and margin).
@@ -542,7 +542,7 @@ impl AppState {
         }
 
         // ── Snapshot text field state ────────────────────────────────────────
-        let text_id = WidgetId::new(TEXT_FIELD_ID);
+        let text_id = unsafe_widget_id(TEXT_FIELD_ID);
         let text_str = self.ctx.input.text_fields()
             .text(&text_id)
             .to_owned();
@@ -1044,7 +1044,7 @@ impl AppState {
 
         // ── Update text field geometry ────────────────────────────────────────
         self.ctx.input.text_fields_mut().update_field(
-            &WidgetId::new(TEXT_FIELD_ID),
+            &unsafe_widget_id(TEXT_FIELD_ID),
             (TI_RECT.x, TI_RECT.y, TI_RECT.width, TI_RECT.height),
             captured_char_positions,
         );
@@ -1466,7 +1466,7 @@ impl ApplicationHandler for Handler {
             WindowEvent::KeyboardInput { event: ke, .. }
                 if ke.state == ElementState::Pressed =>
             {
-                let text_id = WidgetId::new(TEXT_FIELD_ID);
+                let text_id = unsafe_widget_id(TEXT_FIELD_ID);
                 if app.ctx.input.text_fields().is_focused(&text_id) {
                     let shift = app.modifiers_shift;
                     let ctrl  = app.modifiers_ctrl;

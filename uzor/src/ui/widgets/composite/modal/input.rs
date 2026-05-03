@@ -16,7 +16,7 @@ use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::types::CompositeId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ModalNode, OverlayEntry, OverlayKind, WidgetNode};
+use crate::layout::{CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ModalHandle, ModalNode, OverlayEntry, OverlayKind, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -128,14 +128,14 @@ pub fn register_layout_manager_modal<P: DockPanel>(
     render:       &mut dyn RenderContext,
     parent:       LayoutNodeId,
     slot_id:      &str,
-    id:           impl Into<WidgetId>,
+    handle:       &ModalHandle,
     overlay_rect: Rect,
     anchor:       Option<Rect>,
     view:         &mut ModalView<'_>,
     settings:     &ModalSettings,
     kind:         &ModalRenderKind,
 ) -> Option<ModalNode> {
-    let id: WidgetId = id.into();
+    let id: WidgetId = handle.id.clone();
 
     // Take state out of the map (or create default), work with it, then
     // re-insert — avoids borrow conflicts with the rest of `layout`.
@@ -155,7 +155,7 @@ pub fn register_layout_manager_modal<P: DockPanel>(
     layout.push_dismiss_frame(DismissFrame {
         z: z_order,
         rect,
-        overlay_id: WidgetId::new(slot_id),
+        overlay_id: WidgetId(slot_id.to_owned()),
     });
     // Push the modal layer so that the coordinator's hit-test blocks lower layers.
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
@@ -166,24 +166,24 @@ pub fn register_layout_manager_modal<P: DockPanel>(
     let dispatcher = layout.dispatcher_mut();
     dispatcher.on_exact(
         format!("{}:close", id.0),
-        EventBuilder::ModalClose { modal_id: id.clone() },
+        EventBuilder::ModalClose { handle: handle.clone() },
     );
     // Footer buttons close the modal by default — same semantics as the X.
     dispatcher.on_prefix(
         format!("{}:footer:", id.0),
-        EventBuilder::ModalClose { modal_id: id.clone() },
+        EventBuilder::ModalClose { handle: handle.clone() },
     );
     dispatcher.on_prefix(
         format!("{}:tab:", id.0),
-        EventBuilder::ModalTabFromSuffix { modal_id: id.clone() },
+        EventBuilder::ModalTabFromSuffix { handle: handle.clone() },
     );
     dispatcher.on_exact(
         format!("{}:wizard:next", id.0),
-        EventBuilder::ModalWizardNext { modal_id: id.clone() },
+        EventBuilder::ModalWizardNext { handle: handle.clone() },
     );
     dispatcher.on_exact(
         format!("{}:wizard:back", id.0),
-        EventBuilder::ModalWizardBack { modal_id: id.clone() },
+        EventBuilder::ModalWizardBack { handle: handle.clone() },
     );
 
     // Body overflow patterns (Scrollbar / Chevrons) and resize handles.

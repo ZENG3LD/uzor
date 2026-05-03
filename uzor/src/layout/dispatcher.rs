@@ -28,6 +28,10 @@
 
 use crate::docking::panels::LeafId;
 use crate::types::WidgetId;
+use super::handles::{
+    ModalHandle, DropdownHandle,
+    ToolbarHandle, ContextMenuHandle,
+};
 
 /// High-level events surfaced to the app after a click is dispatched.
 ///
@@ -43,30 +47,30 @@ use crate::types::WidgetId;
 pub enum DispatchEvent {
     /// User clicked a registered widget that has no semantic handler.
     /// The app may still react via raw id matching if it wants.
+    /// `WidgetId` inner field is opaque from outside the crate — compare
+    /// with handles or use `as_str()` only for diagnostics.
     Unhandled(WidgetId),
 
     /// User clicked the close-X / a footer button on a modal.
-    /// Carries the modal composite's WidgetId so multi-modal apps
-    /// can identify which one.
-    ModalCloseRequested(WidgetId),
+    ModalCloseRequested(ModalHandle),
 
     /// User clicked a TopTabs / SideTabs tab inside a modal.
     /// `index` is the tab index registered with the composite.
-    ModalTabClicked { modal_id: WidgetId, index: usize },
+    ModalTabClicked { modal: ModalHandle, index: usize },
 
     /// User clicked the Wizard "Next" button.
-    ModalWizardNext(WidgetId),
+    ModalWizardNext(ModalHandle),
 
     /// User clicked the Wizard "Back" button.
-    ModalWizardBack(WidgetId),
+    ModalWizardBack(ModalHandle),
 
     /// User clicked an item inside a dropdown.
-    /// `dropdown_id` — composite WidgetId; `item_id` — application-defined
-    /// id string the caller used when building the items list.
-    DropdownItemClicked { dropdown_id: WidgetId, item_id: String },
+    /// `dropdown` — typed handle; `item_id` — application-defined id string
+    /// the caller used when building the items list.
+    DropdownItemClicked { dropdown: DropdownHandle, item_id: String },
 
     /// User clicked an item inside a top-level toolbar.
-    ToolbarItemClicked { toolbar_id: WidgetId, item_id: String },
+    ToolbarItemClicked { toolbar: ToolbarHandle, item_id: String },
 
     /// User clicked a chrome tab.
     ChromeTabClicked { tab_index: usize },
@@ -80,80 +84,55 @@ pub enum DispatchEvent {
     /// User clicked one of the right-side chrome window controls.
     ChromeWindowControl { control: ChromeWindowControl },
 
-    /// User clicked an item in a context menu (semantic shortcut for the
-    /// common shape of ctx-menu hits).
-    ContextMenuItemClicked { menu_id: WidgetId, item_index: usize },
+    /// User clicked an item in a context menu.
+    ContextMenuItemClicked { menu: ContextMenuHandle, item_index: usize },
 
     /// User clicked the scrollbar **track** (jump to that position).
-    /// `track_id` lets the app distinguish between multiple scrollbars.
+    /// `track_id` is an internal raw id; app uses it only for multi-scrollbar
+    /// disambiguation.
     ScrollbarTrackClicked { track_id: WidgetId },
 
     /// User started dragging the scrollbar **thumb** (mouse-down on it).
-    /// The app should call atomic-scrollbar `start_thumb_drag` on its state
-    /// and follow up with `update_thumb_drag` on every mouse-move while the
-    /// drag is live.
     ScrollbarThumbDragStarted { thumb_id: WidgetId },
 
     /// User clicked a navigation chevron — request to advance content one
-    /// step in `direction`. Used by overflow-mode `Chevrons` for sidebars,
-    /// toolbars, modals, popups and similar containers.
-    /// `chevron_id` lets the app distinguish multiple chevron sites.
+    /// step in `direction`.
     ChevronStepRequested {
         chevron_id: WidgetId,
         direction:  super::ChevronStepDirection,
     },
 
-    /// User started dragging a resize handle on a composite (toolbar /
-    /// modal / popup / sidebar). The app should capture initial geometry
-    /// and consume subsequent mouse-move events to drive the resize.
+    /// User started dragging a resize handle on a composite.
     ResizeHandleDragStarted {
-        /// The composite that owns the handle (e.g. modal / toolbar id).
+        /// Raw host widget id — lib internals use this; app should treat it as opaque.
         host_id: WidgetId,
         /// Which edge / corner is being grabbed.
         edge:    ResizeEdge,
     },
 
     /// User clicked a submenu trigger chevron inside a `Flat` dropdown.
-    /// The host should set `dropdown_state.submenu_open = Some(trigger_id)`
-    /// (or clear it if it was already that id, to toggle).
     DropdownSubmenuToggle {
-        dropdown_id: WidgetId,
+        dropdown: DropdownHandle,
         trigger_id:  String,
     },
 
-    /// User clicked a sticky chevron attached to a host widget. The host
-    /// is identified by `host_id` (the chevron's parent in the coord tree).
-    /// App decides what to open (dropdown / popup / submenu) based on the
-    /// host id. The chevron's own widget id is `{host_id}:chev:{slot}`.
+    /// User clicked a sticky chevron (single, slot `"_"`).
     StickyChevronClicked { host_id: WidgetId },
 
-    /// User clicked a sticky chevron that was registered with an explicit
-    /// `slot` label (via `register_sticky_chevron` with a non-`"_"` slot).
-    /// `host_id` is the parent composite; `slot` is the label passed at
-    /// registration time (e.g. `"n"`, `"s"`, `"e"`, `"w"`).
+    /// User clicked a sticky chevron with an explicit slot label.
     StickyChevronAtSlotClicked { host_id: WidgetId, slot: String },
 
-    /// User mouse-downed on a dock-panel separator. `sep_idx` is the index
-    /// into `panels().separators()` for this frame. The app should record a
-    /// drag-start (origin x/y) and drive `panels_mut().drag_separator(...)`
-    /// on subsequent pointer-moves.
+    /// User mouse-downed on a dock-panel separator.
     DockSeparatorDragStarted { sep_idx: usize },
 
-    /// User clicked on a dock leaf header / body. `leaf_id` is the stable
-    /// `LeafId` parsed from the widget id suffix `"dock-leaf-{n}"`.
+    /// User clicked on a dock leaf header / body.
     DockLeafClicked { leaf_id: LeafId },
 
-    /// User clicked the close button for a dock leaf. `leaf_idx` is the
-    /// ordinal position of the leaf in sorted leaf order (same as the
-    /// `"dock-leaf-close-{idx}"` suffix).
+    /// User clicked the close button for a dock leaf.
     DockLeafClosedByIndex { leaf_idx: usize },
 
     /// Generic indexed click: a widget whose id matches `"{base}-{n}"` was
-    /// clicked.  `base` is the registered prefix (without trailing `-`) and
-    /// `n` is the parsed `usize` index.
-    ///
-    /// Use this for groups of similar widgets (radio buttons, swatches,
-    /// tabs) that share a common prefix and differ only in their index.
+    /// clicked.
     Indexed { base: String, n: usize },
 }
 
@@ -211,28 +190,28 @@ pub enum ChevronStepDirection {
 /// How to construct a [`DispatchEvent`] when a pattern matches.
 ///
 /// Each variant captures whatever extra context the composite supplied at
-/// registration time (the composite's own `WidgetId`, sometimes a parsed
+/// registration time (the composite's own handle / id, sometimes a parsed
 /// integer index, etc.).
 #[derive(Clone)]
 pub enum EventBuilder {
-    /// Fires `ModalCloseRequested(modal_id)` on match.
-    ModalClose { modal_id: WidgetId },
+    /// Fires `ModalCloseRequested(handle)` on match.
+    ModalClose { handle: ModalHandle },
 
-    /// Fires `ModalTabClicked { modal_id, index }` — `index` parsed from the
+    /// Fires `ModalTabClicked { modal, index }` — `index` parsed from the
     /// suffix after the prefix as a `usize`. If parse fails, falls through.
-    ModalTabFromSuffix { modal_id: WidgetId },
+    ModalTabFromSuffix { handle: ModalHandle },
 
-    /// Fires `ModalWizardNext(modal_id)`.
-    ModalWizardNext { modal_id: WidgetId },
+    /// Fires `ModalWizardNext(handle)`.
+    ModalWizardNext { handle: ModalHandle },
 
-    /// Fires `ModalWizardBack(modal_id)`.
-    ModalWizardBack { modal_id: WidgetId },
+    /// Fires `ModalWizardBack(handle)`.
+    ModalWizardBack { handle: ModalHandle },
 
-    /// Fires `DropdownItemClicked { dropdown_id, item_id = suffix }`.
-    DropdownItem { dropdown_id: WidgetId },
+    /// Fires `DropdownItemClicked { dropdown, item_id = suffix }`.
+    DropdownItem { handle: DropdownHandle },
 
-    /// Fires `ToolbarItemClicked { toolbar_id, item_id = suffix }`.
-    ToolbarItem { toolbar_id: WidgetId },
+    /// Fires `ToolbarItemClicked { toolbar, item_id = suffix }`.
+    ToolbarItem { handle: ToolbarHandle },
 
     /// Fires `ChromeTabClicked { tab_index = parsed suffix }`.
     ChromeTabFromSuffix,
@@ -246,57 +225,40 @@ pub enum EventBuilder {
     /// Fires `ChromeWindowControl { control }`.
     ChromeControl(super::ChromeWindowControl),
 
-    /// Fires `ContextMenuItemClicked { menu_id, item_index = parsed suffix }`.
-    ContextMenuItem { menu_id: WidgetId },
+    /// Fires `ContextMenuItemClicked { menu, item_index = parsed suffix }`.
+    ContextMenuItem { handle: ContextMenuHandle },
 
-    /// Fires `ScrollbarTrackClicked { track_id }` when the user clicks the
-    /// track of a scrollbar (i.e. jump-to-position).
+    /// Fires `ScrollbarTrackClicked { track_id }`.
     ScrollbarTrack { track_id: WidgetId },
 
-    /// Fires `ScrollbarThumbDragStarted { thumb_id }` when the user
-    /// mouse-downs on a scrollbar thumb.
+    /// Fires `ScrollbarThumbDragStarted { thumb_id }`.
     ScrollbarThumb { thumb_id: WidgetId },
 
-    /// Fires `ChevronStepRequested { chevron_id, direction }` — used by
-    /// overflow-mode `Chevrons` paging strips.
+    /// Fires `ChevronStepRequested { chevron_id, direction }`.
     ChevronStep { chevron_id: WidgetId, direction: super::ChevronStepDirection },
 
-    /// Fires `ResizeHandleDragStarted { host_id, edge }` when a resize
-    /// handle is grabbed on the composite identified by `host_id`.
+    /// Fires `ResizeHandleDragStarted { host_id, edge }`.
     ResizeHandle { host_id: WidgetId, edge: super::ResizeEdge },
 
-    /// Fires `DropdownSubmenuToggle { dropdown_id, trigger_id = suffix }`
-    /// when a `:submenu-chevron:{trigger_id}` row is clicked.
-    DropdownSubmenuToggleFromSuffix { dropdown_id: WidgetId },
+    /// Fires `DropdownSubmenuToggle { dropdown, trigger_id = suffix }`.
+    DropdownSubmenuToggleFromSuffix { handle: DropdownHandle },
 
-    /// Fires `StickyChevronClicked { host_id }` when a `:chev:_` child is
-    /// clicked. Composite host registers the pattern when it places a
-    /// single sticky chevron on a child widget (slot = `"_"`).
+    /// Fires `StickyChevronClicked { host_id }`.
     StickyChevron { host_id: WidgetId },
 
-    /// Fires `StickyChevronAtSlotClicked { host_id, slot }` — used when
-    /// multiple chevrons share the same host (e.g. 4-direction chevrons).
-    /// `slot` is extracted from the suffix of `{host_id}:chev:{slot}`.
+    /// Fires `StickyChevronAtSlotClicked { host_id, slot }`.
     StickyChevronWithSlot { host_id: WidgetId },
 
-    /// Fires `DockSeparatorDragStarted { sep_idx = parsed suffix }` when a
-    /// `dock-sep-{idx}` widget is hit. Suffix is parsed as `usize`; bad
-    /// parse falls through to `Unhandled`.
+    /// Fires `DockSeparatorDragStarted { sep_idx = parsed suffix }`.
     DockSeparatorFromSuffix,
 
-    /// Fires `DockLeafClicked { leaf_id }` when a `dock-leaf-{n}` widget
-    /// is hit. The `n` suffix is parsed as `u64`; bad parse falls through
-    /// to `Unhandled`.
+    /// Fires `DockLeafClicked { leaf_id }`.
     DockLeafFromSuffix,
 
-    /// Fires `DockLeafClosedByIndex { leaf_idx }` when a
-    /// `dock-leaf-close-{idx}` widget is hit. The suffix is parsed as
-    /// `usize`; bad parse falls through to `Unhandled`.
+    /// Fires `DockLeafClosedByIndex { leaf_idx }`.
     DockLeafCloseFromSuffix,
 
     /// Fires `Indexed { base, n }` when a `"{prefix}{n}"` widget is clicked.
-    /// `base` is the `prefix` string (stored at registration time); `n` is
-    /// parsed from the suffix.  Bad parse falls through to `Unhandled`.
     IndexedFromSuffix { base: String },
 }
 
@@ -392,57 +354,58 @@ impl ClickDispatcher {
 /// Run an [`EventBuilder`] for a given clicked id and the pattern that matched.
 fn build(builder: &EventBuilder, id: &str, pattern: &str) -> DispatchEvent {
     let suffix = || id.strip_prefix(pattern).unwrap_or("").to_owned();
+    let unhandled = || DispatchEvent::Unhandled(WidgetId(id.to_owned()));
     match builder {
-        EventBuilder::ModalClose { modal_id } => {
-            DispatchEvent::ModalCloseRequested(modal_id.clone())
+        EventBuilder::ModalClose { handle } => {
+            DispatchEvent::ModalCloseRequested(handle.clone())
         }
-        EventBuilder::ModalTabFromSuffix { modal_id } => {
+        EventBuilder::ModalTabFromSuffix { handle } => {
             match suffix().parse::<usize>() {
-                Ok(index) => DispatchEvent::ModalTabClicked { modal_id: modal_id.clone(), index },
-                Err(_)    => DispatchEvent::Unhandled(WidgetId::new(id)),
+                Ok(index) => DispatchEvent::ModalTabClicked { modal: handle.clone(), index },
+                Err(_)    => unhandled(),
             }
         }
-        EventBuilder::ModalWizardNext { modal_id } => {
-            DispatchEvent::ModalWizardNext(modal_id.clone())
+        EventBuilder::ModalWizardNext { handle } => {
+            DispatchEvent::ModalWizardNext(handle.clone())
         }
-        EventBuilder::ModalWizardBack { modal_id } => {
-            DispatchEvent::ModalWizardBack(modal_id.clone())
+        EventBuilder::ModalWizardBack { handle } => {
+            DispatchEvent::ModalWizardBack(handle.clone())
         }
-        EventBuilder::DropdownItem { dropdown_id } => {
+        EventBuilder::DropdownItem { handle } => {
             DispatchEvent::DropdownItemClicked {
-                dropdown_id: dropdown_id.clone(),
+                dropdown: handle.clone(),
                 item_id: suffix(),
             }
         }
-        EventBuilder::ToolbarItem { toolbar_id } => {
+        EventBuilder::ToolbarItem { handle } => {
             DispatchEvent::ToolbarItemClicked {
-                toolbar_id: toolbar_id.clone(),
+                toolbar: handle.clone(),
                 item_id: suffix(),
             }
         }
         EventBuilder::ChromeTabFromSuffix => {
             match suffix().parse::<usize>() {
                 Ok(tab_index) => DispatchEvent::ChromeTabClicked { tab_index },
-                Err(_)        => DispatchEvent::Unhandled(WidgetId::new(id)),
+                Err(_)        => unhandled(),
             }
         }
         EventBuilder::ChromeTabCloseFromSuffix => {
             match suffix().parse::<usize>() {
                 Ok(tab_index) => DispatchEvent::ChromeTabClosed { tab_index },
-                Err(_)        => DispatchEvent::Unhandled(WidgetId::new(id)),
+                Err(_)        => unhandled(),
             }
         }
         EventBuilder::ChromeNewTab => DispatchEvent::ChromeNewTab,
         EventBuilder::ChromeControl(control) => {
             DispatchEvent::ChromeWindowControl { control: *control }
         }
-        EventBuilder::ContextMenuItem { menu_id } => {
+        EventBuilder::ContextMenuItem { handle } => {
             match suffix().parse::<usize>() {
                 Ok(item_index) => DispatchEvent::ContextMenuItemClicked {
-                    menu_id: menu_id.clone(),
+                    menu: handle.clone(),
                     item_index,
                 },
-                Err(_) => DispatchEvent::Unhandled(WidgetId::new(id)),
+                Err(_) => unhandled(),
             }
         }
         EventBuilder::ScrollbarTrack { track_id } => {
@@ -463,42 +426,41 @@ fn build(builder: &EventBuilder, id: &str, pattern: &str) -> DispatchEvent {
                 edge: *edge,
             }
         }
-        EventBuilder::DropdownSubmenuToggleFromSuffix { dropdown_id } => {
+        EventBuilder::DropdownSubmenuToggleFromSuffix { handle } => {
             DispatchEvent::DropdownSubmenuToggle {
-                dropdown_id: dropdown_id.clone(),
-                trigger_id:  suffix(),
+                dropdown: handle.clone(),
+                trigger_id: suffix(),
             }
         }
         EventBuilder::StickyChevron { host_id } => {
             DispatchEvent::StickyChevronClicked { host_id: host_id.clone() }
         }
         EventBuilder::StickyChevronWithSlot { host_id } => {
-            // id is "{host_id}:chev:{slot}", pattern is "{host_id}:chev:"
             let slot = suffix();
             DispatchEvent::StickyChevronAtSlotClicked { host_id: host_id.clone(), slot }
         }
         EventBuilder::DockSeparatorFromSuffix => {
             match suffix().parse::<usize>() {
                 Ok(sep_idx) => DispatchEvent::DockSeparatorDragStarted { sep_idx },
-                Err(_)      => DispatchEvent::Unhandled(WidgetId::new(id)),
+                Err(_)      => unhandled(),
             }
         }
         EventBuilder::DockLeafFromSuffix => {
             match suffix().parse::<u64>() {
                 Ok(n)  => DispatchEvent::DockLeafClicked { leaf_id: LeafId(n) },
-                Err(_) => DispatchEvent::Unhandled(WidgetId::new(id)),
+                Err(_) => unhandled(),
             }
         }
         EventBuilder::DockLeafCloseFromSuffix => {
             match suffix().parse::<usize>() {
                 Ok(leaf_idx) => DispatchEvent::DockLeafClosedByIndex { leaf_idx },
-                Err(_)       => DispatchEvent::Unhandled(WidgetId::new(id)),
+                Err(_)       => unhandled(),
             }
         }
         EventBuilder::IndexedFromSuffix { base } => {
             match suffix().parse::<usize>() {
                 Ok(n)  => DispatchEvent::Indexed { base: base.clone(), n },
-                Err(_) => DispatchEvent::Unhandled(WidgetId::new(id)),
+                Err(_) => unhandled(),
             }
         }
     }
@@ -507,21 +469,29 @@ fn build(builder: &EventBuilder, id: &str, pattern: &str) -> DispatchEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::handles::{DropdownHandle, ModalHandle};
+
+    fn modal_h(id: &str) -> ModalHandle {
+        ModalHandle { id: WidgetId(id.to_owned()) }
+    }
+    fn dropdown_h(id: &str) -> DropdownHandle {
+        DropdownHandle { id: WidgetId(id.to_owned()) }
+    }
 
     #[test]
     fn exact_beats_prefix_regardless_of_order() {
         let mut d = ClickDispatcher::new();
         d.on_prefix(
             "m:",
-            EventBuilder::DropdownItem { dropdown_id: WidgetId::new("m") },
+            EventBuilder::DropdownItem { handle: dropdown_h("m") },
         );
         d.on_exact(
             "m:close",
-            EventBuilder::ModalClose { modal_id: WidgetId::new("m") },
+            EventBuilder::ModalClose { handle: modal_h("m") },
         );
 
-        let ev = d.dispatch(&WidgetId::new("m:close")).unwrap();
-        assert_eq!(ev, DispatchEvent::ModalCloseRequested(WidgetId::new("m")));
+        let ev = d.dispatch(&WidgetId(String::from("m:close"))).unwrap();
+        assert_eq!(ev, DispatchEvent::ModalCloseRequested(modal_h("m")));
     }
 
     #[test]
@@ -529,14 +499,14 @@ mod tests {
         let mut d = ClickDispatcher::new();
         d.on_prefix(
             "dd:item:",
-            EventBuilder::DropdownItem { dropdown_id: WidgetId::new("dd") },
+            EventBuilder::DropdownItem { handle: dropdown_h("dd") },
         );
 
-        let ev = d.dispatch(&WidgetId::new("dd:item:save")).unwrap();
+        let ev = d.dispatch(&WidgetId(String::from("dd:item:save"))).unwrap();
         assert_eq!(
             ev,
             DispatchEvent::DropdownItemClicked {
-                dropdown_id: WidgetId::new("dd"),
+                dropdown: dropdown_h("dd"),
                 item_id: "save".to_string(),
             },
         );
@@ -545,7 +515,7 @@ mod tests {
     #[test]
     fn miss_returns_none() {
         let d = ClickDispatcher::new();
-        assert_eq!(d.dispatch(&WidgetId::new("nope")), None);
+        assert_eq!(d.dispatch(&WidgetId(String::from("nope"))), None);
     }
 
     #[test]
@@ -553,10 +523,10 @@ mod tests {
         let mut d = ClickDispatcher::new();
         d.on_prefix(
             "m:tab:",
-            EventBuilder::ModalTabFromSuffix { modal_id: WidgetId::new("m") },
+            EventBuilder::ModalTabFromSuffix { handle: modal_h("m") },
         );
 
-        let ev = d.dispatch(&WidgetId::new("m:tab:notanumber")).unwrap();
-        assert_eq!(ev, DispatchEvent::Unhandled(WidgetId::new("m:tab:notanumber")));
+        let ev = d.dispatch(&WidgetId(String::from("m:tab:notanumber"))).unwrap();
+        assert_eq!(ev, DispatchEvent::Unhandled(WidgetId(String::from("m:tab:notanumber"))));
     }
 }

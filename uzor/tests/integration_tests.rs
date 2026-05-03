@@ -8,6 +8,7 @@ use uzor::input::{InputState, MouseButton, ModifierKeys, PointerState};
 use uzor::input::state::DragState as InputDragState;
 use uzor::types::{
     ScrollState, WidgetId, WidgetInputState, WidgetInteraction, WidgetRect, WidgetState,
+    unsafe_widget_id,
 };
 
 // =============================================================================
@@ -281,8 +282,8 @@ fn test_scrollbar_no_scroll_when_content_fits() {
 #[test]
 fn test_widget_input_state_management() {
     let mut state = WidgetInputState::new();
-    let widget1 = WidgetId::new("widget1");
-    let widget2 = WidgetId::new("widget2");
+    let widget1 = unsafe_widget_id("widget1");
+    let widget2 = unsafe_widget_id("widget2");
 
     // Focus changes
     state.focus.set_focus(widget1.clone());
@@ -311,7 +312,7 @@ fn test_widget_input_state_management() {
     assert!(!state.drag.is_dragging(&widget1));
 
     // Double-click detection
-    let widget_id = WidgetId::new("button1");
+    let widget_id = unsafe_widget_id("button1");
 
     state.mouse_press(100.0, 50.0, Some(widget_id.clone()));
     let interaction = state.mouse_release(100.0, 50.0, 1000.0);
@@ -325,7 +326,7 @@ fn test_widget_input_state_management() {
 #[test]
 fn test_widget_input_state_pending_focus() {
     let mut state = WidgetInputState::new();
-    let widget_id = WidgetId::new("input1");
+    let widget_id = unsafe_widget_id("input1");
 
     state.focus.request_focus(widget_id.clone());
     assert!(!state.focus.is_focused(&widget_id));
@@ -546,7 +547,7 @@ fn test_drag_delta_calculation() {
 #[test]
 fn test_complex_drag_sequence() {
     let mut widget_state = WidgetInputState::new();
-    let slider_id = WidgetId::new("slider1");
+    let slider_id = unsafe_widget_id("slider1");
 
     widget_state.start_drag_with_value(slider_id.clone(), 100.0, 50.0, 0.0);
     assert!(widget_state.drag.is_dragging(&slider_id));

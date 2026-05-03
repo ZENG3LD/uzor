@@ -35,7 +35,7 @@
 
 use uzor::input::LayerId;
 use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager, LayoutNodeId};
-use uzor::types::{Rect, WidgetId, WidgetState};
+use uzor::types::{Rect, WidgetId, WidgetState, unsafe_widget_id};
 use uzor::ui::widgets::atomic::button::input::register_layout_manager_button;
 use uzor::ui::widgets::atomic::button::{ButtonSettings, ButtonView};
 use uzor_framework::app::{App, NoPanel};
@@ -171,7 +171,7 @@ impl App<NoPanel> for YogaTgApp {
         // A real app would render chart/list content here.
         if let Some(dock) = layout.rect_for_dock_area() {
             layout.ctx_mut().input.register_composite(
-                WidgetId::new("main_content"),
+                unsafe_widget_id("main_content"),
                 uzor::input::core::widget_kind::WidgetKind::BlackboxPanel,
                 dock,
                 uzor::input::core::sense::Sense::NONE,

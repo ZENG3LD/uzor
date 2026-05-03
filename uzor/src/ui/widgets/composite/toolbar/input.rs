@@ -10,7 +10,7 @@ use super::state::ToolbarState;
 use super::types::{ToolbarRenderKind, ToolbarView};
 use crate::docking::panels::DockPanel;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{ChevronStepDirection, CompositeKind, CompositeRegistration, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ToolbarNode, WidgetNode};
+use crate::layout::{ChevronStepDirection, CompositeKind, CompositeRegistration, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ToolbarHandle, ToolbarNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -89,12 +89,12 @@ pub fn register_layout_manager_toolbar<P: DockPanel>(
     render:   &mut dyn RenderContext,
     parent:   LayoutNodeId,
     slot_id:  &str,
-    id:       impl Into<WidgetId>,
+    handle:   &ToolbarHandle,
     view:     &ToolbarView<'_>,
     settings: &ToolbarSettings,
     kind:     &ToolbarRenderKind,
 ) -> Option<ToolbarNode> {
-    let id: WidgetId = id.into();
+    let id: WidgetId = handle.id.clone();
     let rect = layout.rect_for_edge_slot(slot_id)?;
 
     // Take state out of the map (or create default), work with it, then
@@ -106,10 +106,10 @@ pub fn register_layout_manager_toolbar<P: DockPanel>(
 
     // Toolbar item ids land as "{toolbar-widget-id}:tb-foo" in the coordinator;
     // register a prefix pattern so any item click surfaces as
-    // DispatchEvent::ToolbarItemClicked { toolbar_id, item_id = "tb-foo" }.
+    // DispatchEvent::ToolbarItemClicked { toolbar, item_id = "tb-foo" }.
     layout.dispatcher_mut().on_prefix(
         format!("{}:", id.0),
-        EventBuilder::ToolbarItem { toolbar_id: id.clone() },
+        EventBuilder::ToolbarItem { handle: handle.clone() },
     );
 
     // Overflow chevrons — register paging step events for the two strips.
@@ -122,8 +122,8 @@ pub fn register_layout_manager_toolbar<P: DockPanel>(
         } else {
             (ChevronStepDirection::Left, ChevronStepDirection::Right)
         };
-        let back_id = WidgetId::new(format!("{}:chevron_back", id.0));
-        let fwd_id  = WidgetId::new(format!("{}:chevron_fwd",  id.0));
+        let back_id = WidgetId(format!("{}:chevron_back", id.0));
+        let fwd_id  = WidgetId(format!("{}:chevron_fwd",  id.0));
         layout.dispatcher_mut().on_exact(
             format!("{}:chevron_back", id.0),
             EventBuilder::ChevronStep { chevron_id: back_id, direction: back_dir },

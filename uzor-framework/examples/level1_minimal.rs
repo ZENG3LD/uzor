@@ -41,7 +41,7 @@ use uzor::input::core::coordinator::{InputCoordinator, LayerId};
 use uzor::input::core::sense::Sense;
 use uzor::input::core::widget_kind::WidgetKind;
 use uzor::input::pointer::state::{InputState, MouseButton as UzorBtn};
-use uzor::types::{Rect, WidgetId};
+use uzor::types::{Rect, WidgetId, unsafe_widget_id};
 
 // ── vello scene building ──────────────────────────────────────────────────────
 use vello::kurbo::{Affine, RoundedRect};
@@ -97,7 +97,7 @@ struct MyButton {
 impl MyButton {
     fn new(id: &str, rect: Rect) -> Self {
         Self {
-            id: WidgetId::new(id),
+            id: unsafe_widget_id(id),
             rect,
             hovered: false,
             pressed: false,

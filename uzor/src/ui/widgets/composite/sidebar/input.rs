@@ -13,7 +13,7 @@ use super::types::{SidebarRenderKind, SidebarView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{ChevronStepDirection, CompositeKind, CompositeRegistration, DispatchEvent, LayoutManager, LayoutNodeId, SidebarNode, WidgetNode};
+use crate::layout::{ChevronStepDirection, CompositeKind, CompositeRegistration, DispatchEvent, LayoutManager, LayoutNodeId, SidebarHandle, SidebarNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 use crate::ui::widgets::atomic::text::render::draw_text;
@@ -132,12 +132,12 @@ pub fn register_layout_manager_sidebar<P: DockPanel>(
     render:   &mut dyn RenderContext,
     parent:   LayoutNodeId,
     slot_id:  &str,
-    id:       impl Into<WidgetId>,
+    handle:   &SidebarHandle,
     view:     &mut SidebarView<'_>,
     settings: &SidebarSettings,
     kind:     &SidebarRenderKind,
 ) -> Option<SidebarNode> {
-    let id: WidgetId = id.into();
+    let id: WidgetId = handle.id.clone();
     let rect = layout.rect_for_edge_slot(slot_id)?;
 
     // Take state out of the map (or create default), work with it, then
@@ -184,19 +184,19 @@ pub fn register_layout_manager_sidebar<P: DockPanel>(
         use crate::layout::EventBuilder;
         layout.dispatcher_mut().on_exact(
             format!("{}:scrollbar_track", id.0),
-            EventBuilder::ScrollbarTrack { track_id: WidgetId::new(format!("{}:scrollbar_track", id.0)) },
+            EventBuilder::ScrollbarTrack { track_id: WidgetId(format!("{}:scrollbar_track", id.0)) },
         );
         layout.dispatcher_mut().on_exact(
             format!("{}:scrollbar_handle", id.0),
-            EventBuilder::ScrollbarThumb { thumb_id: WidgetId::new(format!("{}:scrollbar_handle", id.0)) },
+            EventBuilder::ScrollbarThumb { thumb_id: WidgetId(format!("{}:scrollbar_handle", id.0)) },
         );
     }
 
     // Chevrons mode — register paging step events on the two overlay strips.
     if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
         use crate::layout::{ChevronStepDirection, EventBuilder};
-        let chev_up_id = WidgetId::new(format!("{}:chevron_up", id.0));
-        let chev_down_id = WidgetId::new(format!("{}:chevron_down", id.0));
+        let chev_up_id = WidgetId(format!("{}:chevron_up", id.0));
+        let chev_down_id = WidgetId(format!("{}:chevron_down", id.0));
         layout.dispatcher_mut().on_exact(
             format!("{}:chevron_up", id.0),
             EventBuilder::ChevronStep { chevron_id: chev_up_id, direction: ChevronStepDirection::Up },
@@ -415,7 +415,7 @@ impl<'a, P: DockPanel> SidebarBodyBuilder<'a, P> {
             // Register hit rect (full row width for easy clicking).
             let layer = self.layer.clone();
             self.layout.ctx_mut().input.register_atomic(
-                WidgetId::new(item.id),
+                WidgetId(item.id.to_owned()),
                 WidgetKind::Button,
                 Rect::new(bx, ry, bw, 20.0),
                 Sense::CLICK | Sense::HOVER,
@@ -446,7 +446,7 @@ impl<'a, P: DockPanel> SidebarBodyBuilder<'a, P> {
         );
         let layer = self.layer.clone();
         self.layout.ctx_mut().input.register_atomic(
-            WidgetId::new(id),
+            WidgetId(id.to_owned()),
             WidgetKind::Button,
             Rect::new(bx, y, bw, 28.0),
             Sense::CLICK | Sense::HOVER,
@@ -505,7 +505,7 @@ impl<'a, P: DockPanel> SidebarBodyBuilder<'a, P> {
             );
             let layer = self.layer.clone();
             self.layout.ctx_mut().input.register_atomic(
-                WidgetId::new(entry.close_id),
+                WidgetId(entry.close_id.to_owned()),
                 WidgetKind::Button,
                 Rect::new(close_x, y + 5.0, 16.0, 16.0),
                 Sense::CLICK | Sense::HOVER,

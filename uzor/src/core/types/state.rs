@@ -36,12 +36,27 @@ impl WidgetState {
 }
 
 /// Unique widget identifier
+///
+/// Inner string is `pub(crate)` — outside the crate widget ids can only be
+/// obtained via typed handles from `LayoutManager::add_modal` etc. or via
+/// the [`unsafe_widget_id`] escape (L1/L2 legacy + L2-INSIDE-L3 blocks).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct WidgetId(pub String);
+pub struct WidgetId(pub(crate) String);
 
 impl WidgetId {
-    pub fn new(id: impl Into<String>) -> Self {
+    /// Construct a `WidgetId` from any string.
+    ///
+    /// `pub(crate)` — L3 app code outside this crate must not build raw ids.
+    /// L3 app code receives typed handles from `LayoutManager::add_modal` etc.
+    ///
+    /// **L1/L2 escape**: use [`unsafe_widget_id`] outside the crate where a
+    /// raw string id is unavoidable (legacy L1/L2 registration, tests).
+    pub(crate) fn new(id: impl Into<String>) -> Self {
         Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -55,6 +70,26 @@ impl From<String> for WidgetId {
     fn from(s: String) -> Self {
         Self(s)
     }
+}
+
+/// Construct a [`WidgetId`] from a raw string outside the `uzor` crate.
+///
+/// # When to use
+///
+/// - **L1/L2 registration** (`InputCoordinator::register_atomic`, etc.) where
+///   the widget id is a raw string owned by legacy or hand-rolled code.
+/// - **Integration tests** that operate at the L1/L2 level.
+/// - **L2-INSIDE-L3 escape blocks** — see the `L2-INSIDE-L3 BLOCK` markers in
+///   `uzor-framework/examples/level3_dashboard.rs`. Will be removed in Phase D
+///   when those blocks migrate into `BlackboxHandler`.
+///
+/// # Do NOT use
+///
+/// - In L3 app code for composite handles — obtain typed handles from
+///   `LayoutManager::add_modal` / `add_popup` / `add_dropdown` etc. instead.
+#[doc(hidden)]
+pub fn unsafe_widget_id(s: impl Into<String>) -> WidgetId {
+    WidgetId(s.into())
 }
 
 /// Widget id known at compile time to be a composite (kind allows children).

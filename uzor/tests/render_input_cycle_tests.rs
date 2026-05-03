@@ -10,6 +10,7 @@ use uzor::input::{
     handle_slider_input, FocusState, WidgetId, WidgetInputState,
     WidgetInteraction,
 };
+use uzor::types::unsafe_widget_id;
 use uzor::types::{ScrollState, WidgetRect};
 
 // =============================================================================
@@ -19,7 +20,7 @@ use uzor::types::{ScrollState, WidgetRect};
 #[test]
 fn test_button_hover_and_click() {
     let mut state = WidgetInputState::new();
-    let id = WidgetId::new("btn1");
+    let id = unsafe_widget_id("btn1");
     let rect = WidgetRect::new(10.0, 10.0, 100.0, 40.0);
 
     // Hover over button
@@ -37,7 +38,7 @@ fn test_button_hover_and_click() {
 #[test]
 fn test_button_press_and_release() {
     let mut state = WidgetInputState::new();
-    let id = WidgetId::new("btn1");
+    let id = unsafe_widget_id("btn1");
     let rect = WidgetRect::new(10.0, 10.0, 100.0, 40.0);
 
     // Mouse press on button
@@ -60,7 +61,7 @@ fn test_button_press_and_release() {
 #[test]
 fn test_checkbox_toggle_via_widget_state() {
     let mut state = WidgetInputState::new();
-    let id = WidgetId::new("chk1");
+    let id = unsafe_widget_id("chk1");
     let rect = WidgetRect::new(10.0, 10.0, 20.0, 20.0);
 
     // Hover checkbox
@@ -77,7 +78,7 @@ fn test_checkbox_toggle_via_widget_state() {
 #[test]
 fn test_slider_drag_cycle() {
     let mut state = WidgetInputState::new();
-    let id = WidgetId::new("slider1");
+    let id = unsafe_widget_id("slider1");
     let track_rect = WidgetRect::new(10.0, 10.0, 200.0, 20.0);
     let handle_rect = WidgetRect::new(10.0, 10.0, 20.0, 20.0);
 
@@ -171,8 +172,8 @@ fn test_scroll_state_reset() {
 #[test]
 fn test_focus_flow() {
     let mut focus = FocusState::new();
-    let input1 = WidgetId::new("input1");
-    let input2 = WidgetId::new("input2");
+    let input1 = unsafe_widget_id("input1");
+    let input2 = unsafe_widget_id("input2");
 
     assert!(!focus.is_focused(&input1));
     assert!(!focus.is_focused(&input2));
@@ -196,9 +197,9 @@ fn test_focus_flow() {
 #[test]
 fn test_focus_multiple_requests() {
     let mut focus = FocusState::new();
-    let input1 = WidgetId::new("input1");
-    let input2 = WidgetId::new("input2");
-    let input3 = WidgetId::new("input3");
+    let input1 = unsafe_widget_id("input1");
+    let input2 = unsafe_widget_id("input2");
+    let input3 = unsafe_widget_id("input3");
 
     focus.request_focus(input1.clone());
     focus.request_focus(input2.clone());
@@ -217,7 +218,7 @@ fn test_focus_multiple_requests() {
 #[test]
 fn test_double_click_detection_timing() {
     let mut state = WidgetInputState::new();
-    let button_id = WidgetId::new("button1");
+    let button_id = unsafe_widget_id("button1");
 
     state.mouse_press(100.0, 50.0, Some(button_id.clone()));
     let result1 = state.mouse_release(100.0, 50.0, 1000.0);
@@ -236,7 +237,7 @@ fn test_double_click_detection_timing() {
 #[test]
 fn test_double_click_distance_threshold() {
     let mut state = WidgetInputState::new();
-    let button_id = WidgetId::new("button1");
+    let button_id = unsafe_widget_id("button1");
 
     state.mouse_press(100.0, 50.0, Some(button_id.clone()));
     state.mouse_release(100.0, 50.0, 1000.0);
@@ -261,8 +262,8 @@ fn test_double_click_distance_threshold() {
 #[test]
 fn test_double_click_different_widgets() {
     let mut state = WidgetInputState::new();
-    let button1 = WidgetId::new("button1");
-    let button2 = WidgetId::new("button2");
+    let button1 = unsafe_widget_id("button1");
+    let button2 = unsafe_widget_id("button2");
 
     state.mouse_press(100.0, 50.0, Some(button1.clone()));
     state.mouse_release(100.0, 50.0, 1000.0);
@@ -279,7 +280,7 @@ fn test_double_click_different_widgets() {
 #[test]
 fn test_complex_drag_sequence() {
     let mut widget_state = WidgetInputState::new();
-    let slider_id = WidgetId::new("slider1");
+    let slider_id = unsafe_widget_id("slider1");
 
     widget_state.start_drag_with_value(slider_id.clone(), 100.0, 50.0, 0.0);
     assert!(widget_state.drag.is_dragging(&slider_id));
@@ -300,7 +301,7 @@ fn test_complex_drag_sequence() {
 #[test]
 fn test_end_frame_processing() {
     let mut widget_state = WidgetInputState::new();
-    let input_id = WidgetId::new("input1");
+    let input_id = unsafe_widget_id("input1");
 
     widget_state.focus.request_focus(input_id.clone());
     assert!(!widget_state.focus.is_focused(&input_id));

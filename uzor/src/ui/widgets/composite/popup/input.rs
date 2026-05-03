@@ -10,7 +10,7 @@ use super::types::{PopupRenderKind, PopupView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, PopupNode, WidgetNode};
+use crate::layout::{CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, PopupHandle, PopupNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -93,14 +93,14 @@ pub fn register_layout_manager_popup<P: DockPanel>(
     render:       &mut dyn RenderContext,
     parent:       LayoutNodeId,
     slot_id:      &str,
-    id:           impl Into<WidgetId>,
+    handle:       &PopupHandle,
     overlay_rect: Rect,
     anchor:       Option<Rect>,
     view:         &mut PopupView<'_>,
     settings:     &PopupSettings,
     kind:         PopupRenderKind,
 ) -> Option<PopupNode> {
-    let id: WidgetId = id.into();
+    let id: WidgetId = handle.id.clone();
 
     // Take state out of the map (or create default), work with it, then
     // re-insert — avoids borrow conflicts with the rest of `layout`.
@@ -119,7 +119,7 @@ pub fn register_layout_manager_popup<P: DockPanel>(
     layout.push_dismiss_frame(DismissFrame {
         z: z_order,
         rect,
-        overlay_id: WidgetId::new(slot_id),
+        overlay_id: WidgetId(slot_id.to_owned()),
     });
     // Popup blocks lower layers when open — push the layer so the coordinator
     // can apply the modal-blocking hit-test rule.
@@ -131,11 +131,11 @@ pub fn register_layout_manager_popup<P: DockPanel>(
     if matches!(view.overflow, crate::types::OverflowMode::Scrollbar) {
         dispatcher.on_exact(
             format!("{}:scrollbar_track", id.0),
-            EventBuilder::ScrollbarTrack { track_id: WidgetId::new(format!("{}:scrollbar_track", id.0)) },
+            EventBuilder::ScrollbarTrack { track_id: WidgetId(format!("{}:scrollbar_track", id.0)) },
         );
         dispatcher.on_exact(
             format!("{}:scrollbar_handle", id.0),
-            EventBuilder::ScrollbarThumb { thumb_id: WidgetId::new(format!("{}:scrollbar_handle", id.0)) },
+            EventBuilder::ScrollbarThumb { thumb_id: WidgetId(format!("{}:scrollbar_handle", id.0)) },
         );
     }
     if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
@@ -143,14 +143,14 @@ pub fn register_layout_manager_popup<P: DockPanel>(
         dispatcher.on_exact(
             format!("{}:chevron_up", id.0),
             EventBuilder::ChevronStep {
-                chevron_id: WidgetId::new(format!("{}:chevron_up", id.0)),
+                chevron_id: WidgetId(format!("{}:chevron_up", id.0)),
                 direction:  ChevronStepDirection::Up,
             },
         );
         dispatcher.on_exact(
             format!("{}:chevron_down", id.0),
             EventBuilder::ChevronStep {
-                chevron_id: WidgetId::new(format!("{}:chevron_down", id.0)),
+                chevron_id: WidgetId(format!("{}:chevron_down", id.0)),
                 direction:  ChevronStepDirection::Down,
             },
         );
