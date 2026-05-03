@@ -203,7 +203,6 @@ fn modal_l2_registers_via_context_manager() {
 fn modal_l3_resolves_rect_from_layout_manager() {
     let mut layout = LayoutManager::<DummyPanel>::new();
     let mut render = NoopRender;
-    let mut state  = ModalState::default();
     let     settings = ModalSettings::default();
     let     kind   = ModalRenderKind::Plain;
     // Solve first so the layout is initialised (not strictly required for
@@ -237,7 +236,6 @@ fn modal_l3_resolves_rect_from_layout_manager() {
             "modal-widget-l3",
             overlay_rect,
             None,
-            &mut state,
             &mut view,
             &settings,
             &kind,
@@ -267,7 +265,6 @@ fn modal_l3_resolves_rect_from_layout_manager() {
             "modal-widget-missing",
             rect(0.0, 0.0, 0.0, 0.0),
             None,
-            &mut state,
             &mut view,
             &settings,
             &kind,

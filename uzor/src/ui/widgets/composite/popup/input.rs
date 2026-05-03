@@ -10,7 +10,7 @@ use super::types::{PopupRenderKind, PopupView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, PopupNode, WidgetNode};
+use crate::layout::{CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, PopupNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -96,12 +96,16 @@ pub fn register_layout_manager_popup<P: DockPanel>(
     id:           impl Into<WidgetId>,
     overlay_rect: Rect,
     anchor:       Option<Rect>,
-    state:        &mut PopupState,
     view:         &mut PopupView<'_>,
     settings:     &PopupSettings,
     kind:         PopupRenderKind,
 ) -> Option<PopupNode> {
     let id: WidgetId = id.into();
+
+    // Take state out of the map (or create default), work with it, then
+    // re-insert — avoids borrow conflicts with the rest of `layout`.
+    let mut state = layout.popups.remove(&id).unwrap_or_default();
+
     layout.push_overlay(OverlayEntry {
         id:   slot_id.to_string(),
         kind: OverlayKind::Popup,
@@ -153,8 +157,20 @@ pub fn register_layout_manager_popup<P: DockPanel>(
     }
 
     register_context_manager_popup(
-        layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
+        layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,
     );
+
+    // Register this composite in the per-frame registry so consume_event can route it.
+    layout.push_composite_registration(CompositeRegistration {
+        kind:       CompositeKind::Popup,
+        slot_id:    slot_id.to_string(),
+        widget_id:  id.clone(),
+        frame_rect: rect,
+    });
+
+    // Return state to the map.
+    layout.popups.insert(id, state);
+
     Some(PopupNode(node_id))
 }
 

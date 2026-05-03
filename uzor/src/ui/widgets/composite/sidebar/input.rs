@@ -13,7 +13,7 @@ use super::types::{SidebarRenderKind, SidebarView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{ChevronStepDirection, DispatchEvent, LayoutManager, LayoutNodeId, SidebarNode, WidgetNode};
+use crate::layout::{ChevronStepDirection, CompositeKind, CompositeRegistration, DispatchEvent, LayoutManager, LayoutNodeId, SidebarNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 use crate::ui::widgets::atomic::text::render::draw_text;
@@ -133,13 +133,17 @@ pub fn register_layout_manager_sidebar<P: DockPanel>(
     parent:   LayoutNodeId,
     slot_id:  &str,
     id:       impl Into<WidgetId>,
-    state:    &mut SidebarState,
     view:     &mut SidebarView<'_>,
     settings: &SidebarSettings,
     kind:     &SidebarRenderKind,
 ) -> Option<SidebarNode> {
     let id: WidgetId = id.into();
     let rect = layout.rect_for_edge_slot(slot_id)?;
+
+    // Take state out of the map (or create default), work with it, then
+    // re-insert — avoids borrow conflicts with the rest of `layout`.
+    let mut state = layout.sidebars.remove(&id).unwrap_or_default();
+
     let layer = layout.compute_layer_for(parent);
 
     // Initialise size from viewport % on first registration. Top/Bottom use
@@ -204,8 +208,20 @@ pub fn register_layout_manager_sidebar<P: DockPanel>(
     }
 
     register_context_manager_sidebar(
-        layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
+        layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,
     );
+
+    // Register this composite in the per-frame registry so consume_event can route it.
+    layout.push_composite_registration(CompositeRegistration {
+        kind:       CompositeKind::Sidebar,
+        slot_id:    slot_id.to_string(),
+        widget_id:  id.clone(),
+        frame_rect: rect,
+    });
+
+    // Return state to the map.
+    layout.sidebars.insert(id, state);
+
     Some(SidebarNode(node_id))
 }
 

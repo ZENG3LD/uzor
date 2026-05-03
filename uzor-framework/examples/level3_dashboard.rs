@@ -93,7 +93,7 @@ use uzor::docking::panels::{DockPanel, SplitKind};
 use uzor::input::core::coordinator::LayerId;
 use uzor::input::pointer::state::{InputState, PointerState};
 use uzor::input::text::store::TextFieldConfig;
-use uzor::layout::{consume_event_chain, EdgeSide, EdgeSlot, LayoutManager, LayoutNodeId};
+use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager, LayoutNodeId};
 use uzor::types::{Rect, WidgetId, WidgetState};
 
 // ── composite widgets ─────────────────────────────────────────────────────────
@@ -101,7 +101,7 @@ use uzor::ui::widgets::composite::chrome::input::{
     chrome_hit_test, handle_chrome_action, register_layout_manager_chrome,
 };
 use uzor::ui::widgets::composite::chrome::settings::ChromeSettings;
-use uzor::ui::widgets::composite::chrome::state::ChromeState;
+
 use uzor::ui::widgets::composite::chrome::style::ChromeStyle;
 use uzor::ui::widgets::composite::chrome::types::{
     ChromeAction, ChromeRenderKind, ChromeTabConfig, ChromeView,
@@ -109,17 +109,15 @@ use uzor::ui::widgets::composite::chrome::types::{
 
 use uzor::ui::widgets::composite::context_menu::input::register_layout_manager_context_menu;
 use uzor::ui::widgets::composite::context_menu::settings::ContextMenuSettings;
-use uzor::ui::widgets::composite::context_menu::state::ContextMenuState;
 use uzor::ui::widgets::composite::context_menu::types::{
     ContextMenuItem, ContextMenuRenderKind, ContextMenuView,
 };
 
 use uzor::ui::widgets::composite::dropdown::input::{
-    self as dropdown_input, open_dropdown_flat, register_layout_manager_dropdown,
+    open_dropdown_flat, register_layout_manager_dropdown,
 };
 use uzor::ui::widgets::composite::dropdown::render::measure_flat;
 use uzor::ui::widgets::composite::dropdown::settings::DropdownSettings;
-use uzor::ui::widgets::composite::dropdown::state::DropdownState;
 use uzor::ui::widgets::composite::dropdown::types::{
     DropdownItem, DropdownItemRight, DropdownRenderKind, DropdownView, DropdownViewKind,
 };
@@ -129,7 +127,6 @@ use uzor::ui::widgets::composite::modal::input::{
 };
 use uzor::ui::widgets::composite::modal::render::measure_chrome as measure_modal_chrome;
 use uzor::ui::widgets::composite::modal::settings::ModalSettings;
-use uzor::ui::widgets::composite::modal::state::ModalState;
 use uzor::ui::widgets::composite::modal::types::{
     BackdropKind, FooterBtn, FooterBtnStyle, ModalRenderKind, ModalView, WizardPageInfo,
 };
@@ -139,7 +136,6 @@ use uzor::ui::widgets::composite::popup::input::{
     self as popup_input, register_layout_manager_popup,
 };
 use uzor::ui::widgets::composite::popup::settings::PopupSettings;
-use uzor::ui::widgets::composite::popup::state::PopupState;
 use uzor::ui::widgets::composite::popup::types::{
     BackdropKind as PopupBackdrop, PopupRenderKind, PopupView, PopupViewKind,
 };
@@ -149,7 +145,6 @@ use uzor::ui::widgets::composite::sidebar::input::{
 };
 use uzor::ui::widgets::composite::sidebar::render::measure as measure_sidebar;
 use uzor::ui::widgets::composite::sidebar::settings::SidebarSettings;
-use uzor::ui::widgets::composite::sidebar::state::SidebarState;
 use uzor::ui::widgets::composite::sidebar::style::{DefaultSidebarStyle, SidebarStyle};
 use uzor::ui::widgets::composite::sidebar::types::{
     HeaderAction, SidebarHeader, SidebarRenderKind, SidebarView,
@@ -160,7 +155,6 @@ use uzor::ui::widgets::composite::toolbar::input::{
 };
 use uzor::ui::widgets::composite::toolbar::render::{measure_horizontal as measure_toolbar_h, measure_vertical as measure_toolbar_v};
 use uzor::ui::widgets::composite::toolbar::settings::ToolbarSettings;
-use uzor::ui::widgets::composite::toolbar::state::ToolbarState;
 use uzor::ui::widgets::composite::toolbar::style::{
     BackgroundFill as ToolbarBackgroundFill, HorizontalToolbarStyle, ToolbarStyle,
     VerticalToolbarStyle,
@@ -861,13 +855,6 @@ struct AppState {
     last_clock_tick: Instant,
     clock_str: String,
 
-    // Composite widget states
-    chrome_state: ChromeState,
-    top_toolbar_state: ToolbarState,
-    left_vtoolbar_state: ToolbarState,
-    demo_toolbar_left2_state:  ToolbarState,
-    demo_toolbar_right_state:  ToolbarState,
-    demo_toolbar_bottom_state: ToolbarState,
     /// User-resized override for top toolbar height (px). 0.0 = use measured.
     top_toolbar_height_override: f64,
     demo_toolbar_left2_w_override:  f64,
@@ -875,17 +862,6 @@ struct AppState {
     demo_toolbar_bottom_h_override: f64,
     /// User-resized modal size override (w, h). (0.0, 0.0) = use measured.
     modal_size_override: (f64, f64),
-    sidebar_state: SidebarState,
-    modal_state: ModalState,
-    popup_state: PopupState,
-    ctx_menu_state: ContextMenuState,
-    dropdown_file_state: DropdownState,
-    dropdown_view_state: DropdownState,
-    dropdown_help_state: DropdownState,
-    dropdown_sidebar_state: DropdownState,
-    dropdown_toolbar_state: DropdownState,
-    dropdown_popup_state: DropdownState,
-    dropdown_theme_state: DropdownState,
 
     // App interaction state
     active_view: usize, // 0=Dashboard,1=Charts,2=Settings
@@ -910,10 +886,7 @@ struct AppState {
     demo_sidebar_right:  bool,
     demo_sidebar_top:    bool,
     demo_sidebar_bottom: bool,
-    /// Persistent state for the spawned right-side sidebar composite.
-    demo_sidebar_right_state:  SidebarState,
-    demo_sidebar_top_state:    SidebarState,
-    demo_sidebar_bottom_state: SidebarState,
+    // demo sidebar states are now in layout.sidebars
     /// When true, demo edges use EdgePlacement::Overlay (float over dock area)
     /// instead of the default Compress (shrink dock area).
     demo_overlay_mode: bool,
@@ -966,11 +939,11 @@ struct AppState {
 
     // Demo A — sticky chevron on L2 Connect button
     l2_connect_popup_open: bool,
-    l2_connect_popup_state: PopupState,
+    // l2_connect_popup_state is now in layout.popups
 
     // Demo D — 4-direction chevrons in L2 modal body
     l2_4dir_popup: Option<&'static str>,
-    l2_4dir_popup_state: PopupState,
+    // l2_4dir_popup_state is now in layout.popups
 }
 
 impl AppState {
@@ -982,19 +955,16 @@ impl AppState {
         self.start.elapsed().as_millis() as f64
     }
 
-    /// Build the mutable slice of all top-level dropdown states with their overlay ids.
-    /// Used by `toggle_dropdown_at` and `close_all_dropdowns`.
-    fn all_dropdown_states(&mut self) -> [(&'static str, &mut DropdownState); 7] {
-        [
-            ("dd-file-overlay",    &mut self.dropdown_file_state),
-            ("dd-view-overlay",    &mut self.dropdown_view_state),
-            ("dd-help-overlay",    &mut self.dropdown_help_state),
-            ("dd-sidebar-overlay", &mut self.dropdown_sidebar_state),
-            ("dd-toolbar-overlay", &mut self.dropdown_toolbar_state),
-            ("dd-popup-overlay",   &mut self.dropdown_popup_state),
-            ("dd-theme-overlay",   &mut self.dropdown_theme_state),
-        ]
-    }
+    /// IDs of the top-level dropdown (overlay_id, widget_id) pairs.
+    const DROPDOWN_IDS: [(&'static str, &'static str); 7] = [
+        ("dd-file-overlay",    "dd-file-widget"),
+        ("dd-view-overlay",    "dd-view-widget"),
+        ("dd-help-overlay",    "dd-help-widget"),
+        ("dd-sidebar-overlay", "dd-sidebar-widget"),
+        ("dd-toolbar-overlay", "dd-toolbar-widget"),
+        ("dd-popup-overlay",   "dd-popup-widget"),
+        ("dd-theme-overlay",   "dd-theme-widget"),
+    ];
 
     /// Handle a dropdown item click coming from the dispatcher.
     /// Replaces the strip_prefix("dd-X-widget:item:") cascade.
@@ -1008,7 +978,7 @@ impl AppState {
                     "file-save" => println!("[L3] File → Save"),
                     _ => {}
                 }
-                self.dropdown_file_state.close();
+                self.layout.dropdown_mut("dd-file-widget").close();
             }
             "dd-view-widget" => {
                 // Toggle items: keep dropdown OPEN.
@@ -1017,7 +987,7 @@ impl AppState {
                     "view-toolbar" => { self.left_toolbar_visible = !self.left_toolbar_visible; }
                     other => {
                         println!("[L3] View → {other}");
-                        self.dropdown_view_state.close();
+                        self.layout.dropdown_mut("dd-view-widget").close();
                     }
                 }
             }
@@ -1025,7 +995,7 @@ impl AppState {
                 let open_modal = |kind: ModalKind, this: &mut AppState| {
                     this.modal_open = true;
                     this.modal_kind = kind;
-                    this.modal_state.position = (0.0, 0.0);
+                    this.layout.modal_mut("modal-widget").position = (0.0, 0.0);
                 };
                 match item_id {
                     "modals-l2"       => open_modal(ModalKind::L2,           self),
@@ -1039,7 +1009,7 @@ impl AppState {
                     "modals-wizard"   => open_modal(ModalKind::WizardDemo,   self),
                     other             => println!("[L3] Modals → {other}"),
                 }
-                self.dropdown_help_state.close();
+                self.layout.dropdown_mut("dd-help-widget").close();
             }
             "dd-sidebar-widget" => {
                 // Toggle items keep dropdown open.
@@ -1077,7 +1047,7 @@ impl AppState {
                     "popup-custom-grid"  => Some(1),
                     _                    => self.popup_kind,
                 };
-                self.dropdown_popup_state.close();
+                self.layout.dropdown_mut("dd-popup-widget").close();
             }
             "dd-theme-widget" => {
                 // Toggle items keep dropdown open.
@@ -1103,8 +1073,26 @@ impl AppState {
     /// Open a dropdown anchored to the bottom-left of a toolbar item's rect.
     /// Toggles closed if it was already open under that key.
     fn toggle_dropdown_at(&mut self, overlay_id: &'static str, item_rect: Rect) {
-        let mut all = self.all_dropdown_states();
-        DropdownState::toggle_at(overlay_id, item_rect, 0.0, &mut all);
+        // Find the widget_id that matches the overlay_id.
+        let own_widget_id = Self::DROPDOWN_IDS.iter()
+            .find(|(oid, _)| *oid == overlay_id)
+            .map(|(_, wid)| WidgetId::new(*wid));
+        let own_widget_id = match own_widget_id {
+            Some(id) => id,
+            None => return,
+        };
+        // Check if currently open.
+        let was_open = self.layout.dropdown(own_widget_id.0.as_str()).map(|s| s.open).unwrap_or(false);
+        // Close all dropdowns.
+        for (_, wid) in Self::DROPDOWN_IDS {
+            self.layout.dropdown_mut(wid).close();
+        }
+        // If was closed, open this one.
+        if !was_open {
+            self.layout
+                .dropdown_mut(own_widget_id.0.as_str())
+                .open_below(item_rect, 0.0);
+        }
     }
 
     /// Handle a toolbar item click coming from the dispatcher.
@@ -1145,12 +1133,12 @@ impl AppState {
                 } else {
                     self.modal_open = true;
                     self.modal_kind = ModalKind::Settings;
-                    self.modal_state.position = (0.0, 0.0);
+                    self.layout.modal_mut("modal-widget").position = (0.0, 0.0);
                 }
             }
             _ => {}
         }
-        self.ctx_menu_state.close();
+        self.layout.context_menu_mut("ctx-menu-widget").close();
     }
 
     fn switch_tab(&mut self, new_tab: usize) {
@@ -1248,14 +1236,12 @@ impl AppState {
             &SidebarSettings::default(),
             &kind_value,
         );
-        // Sidebar width follows user resize (sidebar_state.width). Initialised
+        // Sidebar width follows user resize (sidebar state.width). Initialised
         // from measure_sidebar()'s default; the resize-handle drag updates
-        // sidebar_state.width which then flows back into the edge slot.
-        let sidebar_w = if self.sidebar_state.width > 0.0 {
-            self.sidebar_state.width
-        } else {
-            default_sidebar_w
-        };
+        // state.width which then flows back into the edge slot.
+        let sidebar_w = self.layout.sidebar("sidebar-widget")
+            .map(|s| s.width).filter(|&w| w > 0.0)
+            .unwrap_or(default_sidebar_w);
         self.layout.edges_mut().add(EdgeSlot {
             id: "sidebar".to_string(),
             side: edge_side,
@@ -1318,34 +1304,46 @@ impl AppState {
         // reserves the right space on the very first frame.
         let viewport_w = width as f64;
         let viewport_h = height as f64;
-        self.demo_sidebar_right_state.ensure_sized(viewport_w, viewport_h, true);
-        self.demo_sidebar_top_state.ensure_sized(viewport_w, viewport_h, false);
-        self.demo_sidebar_bottom_state.ensure_sized(viewport_w, viewport_h, false);
+        {
+            let st = self.layout.sidebar_mut("demo-sidebar-right-widget");
+            st.ensure_sized(viewport_w, viewport_h, true);
+        }
+        {
+            let st = self.layout.sidebar_mut("demo-sidebar-top-widget");
+            st.ensure_sized(viewport_w, viewport_h, false);
+        }
+        {
+            let st = self.layout.sidebar_mut("demo-sidebar-bottom-widget");
+            st.ensure_sized(viewport_w, viewport_h, false);
+        }
         if self.demo_sidebar_right {
+            let w = self.layout.sidebar("demo-sidebar-right-widget").map(|s| s.width as f32).unwrap_or(0.0);
             self.layout.edges_mut().add(EdgeSlot {
                 id: "demo-sidebar-right".into(),
                 side: EdgeSide::Right,
-                thickness: self.demo_sidebar_right_state.width as f32,
+                thickness: w,
                 visible: true,
                 order: 1,
                 placement: demo_placement,
             });
         }
         if self.demo_sidebar_top {
+            let w = self.layout.sidebar("demo-sidebar-top-widget").map(|s| s.width as f32).unwrap_or(0.0);
             self.layout.edges_mut().add(EdgeSlot {
                 id: "demo-sidebar-top".into(),
                 side: EdgeSide::Top,
-                thickness: self.demo_sidebar_top_state.width as f32,
+                thickness: w,
                 visible: true,
                 order: 1,
                 placement: demo_placement,
             });
         }
         if self.demo_sidebar_bottom {
+            let w = self.layout.sidebar("demo-sidebar-bottom-widget").map(|s| s.width as f32).unwrap_or(0.0);
             self.layout.edges_mut().add(EdgeSlot {
                 id: "demo-sidebar-bottom".into(),
                 side: EdgeSide::Bottom,
-                thickness: self.demo_sidebar_bottom_state.width as f32,
+                thickness: w,
                 visible: true,
                 order: 1,
                 placement: demo_placement,
@@ -1383,8 +1381,9 @@ impl AppState {
             let modal_h = L2_WIN_H + 80.0;
             let modal_x = (width as f64 / 2.0 - modal_w / 2.0).max(0.0);
             let modal_y = (height as f64 / 2.0 - modal_h / 2.0).max(0.0);
-            let (frame_x, frame_y) = if self.modal_state.position != (0.0, 0.0) {
-                self.modal_state.position
+            let modal_pos = self.layout.modal("modal-widget").map(|s| s.position).unwrap_or((0.0, 0.0));
+            let (frame_x, frame_y) = if modal_pos != (0.0, 0.0) {
+                modal_pos
             } else {
                 (modal_x, modal_y)
             };
@@ -1442,23 +1441,18 @@ impl AppState {
             &mut render,
             LayoutNodeId::ROOT,
             "chrome",
-            &mut self.chrome_state,
             &chrome_view,
             &chrome_settings,
             &chrome_kind,
         );
 
         // ── Top toolbar ───────────────────────────────────────────────────────
-        let file_btn_active = self.dropdown_file_state.open;
-        let view_btn_active = self.dropdown_view_state.open;
-        let modals_btn_active = self.dropdown_help_state.open;
-        // Suppress unused warnings — file dropdown removed; keep state field
-        // for now to avoid larger refactor.
-        let _ = file_btn_active;
-        let sidebar_btn_active = self.dropdown_sidebar_state.open;
-        let toolbar_btn_active = self.dropdown_toolbar_state.open;
-        let popup_btn_active   = self.dropdown_popup_state.open;
-        let theme_btn_active   = self.dropdown_theme_state.open;
+        let view_btn_active    = self.layout.dropdown("dd-view-widget").map(|s| s.open).unwrap_or(false);
+        let modals_btn_active  = self.layout.dropdown("dd-help-widget").map(|s| s.open).unwrap_or(false);
+        let sidebar_btn_active = self.layout.dropdown("dd-sidebar-widget").map(|s| s.open).unwrap_or(false);
+        let toolbar_btn_active = self.layout.dropdown("dd-toolbar-widget").map(|s| s.open).unwrap_or(false);
+        let popup_btn_active   = self.layout.dropdown("dd-popup-widget").map(|s| s.open).unwrap_or(false);
+        let theme_btn_active   = self.layout.dropdown("dd-theme-widget").map(|s| s.open).unwrap_or(false);
         let top_toolbar_items = [
             ToolbarItem::TextButton { id: "tb-view",    text: "View",    active: view_btn_active,    tooltip: Some("View menu"),         popup_on_hover: true },
             ToolbarItem::TextButton { id: "tb-help",    text: "Modals",  active: modals_btn_active,  tooltip: Some("Modals menu"),       popup_on_hover: true },
@@ -1485,7 +1479,6 @@ impl AppState {
             LayoutNodeId::ROOT,
             "top-toolbar",
             "top-toolbar-widget",
-            &mut self.top_toolbar_state,
             &top_toolbar_view,
             &ToolbarSettings::new(
                 Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
@@ -1516,7 +1509,6 @@ impl AppState {
                 LayoutNodeId::ROOT,
                 "left-vtoolbar",
                 "left-vtoolbar-widget",
-                &mut self.left_vtoolbar_state,
                 &left_toolbar_view,
                 &ToolbarSettings::new(
                     Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
@@ -1567,7 +1559,7 @@ impl AppState {
             register_layout_manager_toolbar(
                 &mut self.layout, &mut render, LayoutNodeId::ROOT,
                 "demo-toolbar-left2", "demo-toolbar-left2-widget",
-                &mut self.demo_toolbar_left2_state, &view,
+                &view,
                 &ToolbarSettings::new(
                     Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
                     Box::new(VertToolbarWithBorder),
@@ -1580,7 +1572,7 @@ impl AppState {
             register_layout_manager_toolbar(
                 &mut self.layout, &mut render, LayoutNodeId::ROOT,
                 "demo-toolbar-right", "demo-toolbar-right-widget",
-                &mut self.demo_toolbar_right_state, &view,
+                &view,
                 &ToolbarSettings::new(
                     Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
                     Box::new(VertToolbarWithBorder),
@@ -1593,7 +1585,7 @@ impl AppState {
             register_layout_manager_toolbar(
                 &mut self.layout, &mut render, LayoutNodeId::ROOT,
                 "demo-toolbar-bottom", "demo-toolbar-bottom-widget",
-                &mut self.demo_toolbar_bottom_state, &view,
+                &view,
                 &ToolbarSettings::new(
                     Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
                     Box::new(HorizToolbarWithBorder),
@@ -1625,7 +1617,6 @@ impl AppState {
                 LayoutNodeId::ROOT,
                 "demo-sidebar-right",
                 "demo-sidebar-right-widget",
-                &mut self.demo_sidebar_right_state,
                 &mut view,
                 &SidebarSettings::default(),
                 &SidebarRenderKind::Right,
@@ -1649,7 +1640,6 @@ impl AppState {
                 LayoutNodeId::ROOT,
                 "demo-sidebar-top",
                 "demo-sidebar-top-widget",
-                &mut self.demo_sidebar_top_state,
                 &mut view,
                 &SidebarSettings::default(),
                 &SidebarRenderKind::Top,
@@ -1672,7 +1662,6 @@ impl AppState {
                 LayoutNodeId::ROOT,
                 "demo-sidebar-bottom",
                 "demo-sidebar-bottom-widget",
-                &mut self.demo_sidebar_bottom_state,
                 &mut view,
                 &SidebarSettings::default(),
                 &SidebarRenderKind::Bottom,
@@ -1705,7 +1694,6 @@ impl AppState {
                 LayoutNodeId::ROOT,
                 "sidebar",
                 "sidebar-widget",
-                &mut self.sidebar_state,
                 &mut sidebar_view,
                 &{
                     let mut s = SidebarSettings::default();
@@ -1740,10 +1728,11 @@ impl AppState {
                     entries
                 };
 
+                let sidebar_state_snap = self.layout.sidebar("sidebar-widget").cloned().unwrap_or_default();
                 let body_vp = uzor::ui::widgets::composite::sidebar::render::begin_body(
                     &mut render,
                     body_rect,
-                    &self.sidebar_state,
+                    &sidebar_state_snap,
                     &sidebar_view,
                     &{
                         let mut s = SidebarSettings::default();
@@ -1980,11 +1969,12 @@ impl AppState {
             let measured_h = body_h + extra_h;
             let modal_w = if self.modal_size_override.0 > 0.0 { self.modal_size_override.0 } else { measured_w };
             let modal_h = if self.modal_size_override.1 > 0.0 { self.modal_size_override.1 } else { measured_h };
-            // Fix #10/#11: use modal_state.position (dragged) instead of always centering.
+            // Fix #10/#11: use modal state.position (dragged) instead of always centering.
             let default_x = (width as f64 / 2.0 - modal_w / 2.0).max(0.0);
             let default_y = (height as f64 / 2.0 - modal_h / 2.0).max(0.0);
-            let (frame_x, frame_y) = if self.modal_state.position != (0.0, 0.0) {
-                self.modal_state.position
+            let modal_pos = self.layout.modal("modal-widget").map(|s| s.position).unwrap_or((0.0, 0.0));
+            let (frame_x, frame_y) = if modal_pos != (0.0, 0.0) {
+                modal_pos
             } else {
                 (default_x, default_y)
             };
@@ -2064,8 +2054,11 @@ impl AppState {
                 ModalKind::L2 => (L2_WIN_W, L2_WIN_H),
                 _             => (4000.0, 4000.0),
             };
-            self.modal_state.body_content_w = cw;
-            self.modal_state.body_content_h = ch;
+            {
+                let ms = self.layout.modal_mut("modal-widget");
+                ms.body_content_w = cw;
+                ms.body_content_h = ch;
+            }
             let _modal_node = register_layout_manager_modal(
                 &mut self.layout,
                 &mut render,
@@ -2074,7 +2067,6 @@ impl AppState {
                 "modal-widget",
                 modal_rect,
                 None,
-                &mut self.modal_state,
                 &mut modal_view,
                 &ModalSettings::default(),
                 &render_kind,
@@ -2092,8 +2084,9 @@ impl AppState {
                 // Apply scroll offset so dragging the scrollbar moves the
                 // content. Composite paints the scrollbar; body content
                 // is shifted by scroll offsets and clipped to body_rect.
-                let scroll_y = self.modal_state.scroll.offset;
-                let scroll_x = self.modal_state.body_scroll_x;
+                let (scroll_y, scroll_x) = self.layout.modal("modal-widget")
+                    .map(|s| (s.scroll.offset, s.body_scroll_x))
+                    .unwrap_or((0.0, 0.0));
                 let body_rect = Rect::new(
                     body_rect_raw.x - scroll_x,
                     body_rect_raw.y - scroll_y,
@@ -2694,15 +2687,21 @@ impl AppState {
 
                 // Two-pass body finish: paint overflow overlays, then re-register
                 // overflow hit-zones after body content so they outrank body widgets.
-                modal_input::modal_body_finish(
-                    &mut self.layout,
-                    &mut render,
-                    frame_rect,
-                    &mut self.modal_state,
-                    &modal_view,
-                    &ModalSettings::default(),
-                    &render_kind,
-                );
+                {
+                    // Take/return state via mem::replace because modal_body_finish
+                    // takes &mut LayoutManager + &mut ModalState concurrently.
+                    let mut ms = std::mem::take(self.layout.modal_mut("modal-widget"));
+                    modal_input::modal_body_finish(
+                        &mut self.layout,
+                        &mut render,
+                        frame_rect,
+                        &mut ms,
+                        &modal_view,
+                        &ModalSettings::default(),
+                        &render_kind,
+                    );
+                    *self.layout.modal_mut("modal-widget") = ms;
+                }
             }
         }
 
@@ -2730,7 +2729,7 @@ impl AppState {
                 LayoutNodeId::ROOT,
                 "l2-connect-popup", "l2-connect-popup-widget",
                 Rect::new(px, py, popup_w, popup_h), None,
-                &mut self.l2_connect_popup_state, &mut v,
+                &mut v,
                 &popup_settings, PopupRenderKind::Plain,
             );
             if let Some(frame) = self.layout.rect_for_overlay("l2-connect-popup") {
@@ -2763,7 +2762,7 @@ impl AppState {
                 LayoutNodeId::ROOT,
                 "l2-4dir-popup", "l2-4dir-popup-widget",
                 Rect::new(px, py, popup_w, popup_h), None,
-                &mut self.l2_4dir_popup_state, &mut v,
+                &mut v,
                 &popup_settings, PopupRenderKind::Plain,
             );
             if let Some(frame) = self.layout.rect_for_overlay("l2-4dir-popup") {
@@ -2779,7 +2778,10 @@ impl AppState {
         }
 
         // ── Context menu ──────────────────────────────────────────────────────
-        if self.ctx_menu_state.is_open {
+        let ctx_menu_is_open = self.layout.context_menu("ctx-menu-widget").map(|s| s.is_open).unwrap_or(false);
+        if ctx_menu_is_open {
+            let (ctx_x, ctx_y) = self.layout.context_menu("ctx-menu-widget")
+                .map(|s| (s.x, s.y)).unwrap_or((0.0, 0.0));
             let items = [
                 ContextMenuItem { action: "ctx-copy",     label: "Copy",       icon: None, danger: false, separator_after: false, enabled: true },
                 ContextMenuItem { action: "ctx-paste",    label: "Paste",      icon: None, danger: false, separator_after: false, enabled: true },
@@ -2788,7 +2790,7 @@ impl AppState {
                 ContextMenuItem { action: "ctx-settings", label: "Settings",   icon: None, danger: false, separator_after: false, enabled: true },
             ];
             let menu_h = items.len() as f64 * 28.0 + 16.0;
-            let ctx_menu_rect = Rect::new(self.ctx_menu_state.x, self.ctx_menu_state.y, 170.0, menu_h);
+            let ctx_menu_rect = Rect::new(ctx_x, ctx_y, 170.0, menu_h);
             let mut ctx_menu_view = ContextMenuView { items: &items, target_id: None, title: None };
             register_layout_manager_context_menu(
                 &mut self.layout,
@@ -2798,7 +2800,6 @@ impl AppState {
                 "ctx-menu-widget",
                 ctx_menu_rect,
                 None,
-                &mut self.ctx_menu_state,
                 &mut ctx_menu_view,
                 &ContextMenuSettings::default(),
                 &ContextMenuRenderKind::Minimal,
@@ -2816,7 +2817,7 @@ impl AppState {
         open_dropdown_flat(
             &mut self.layout, &mut render, LayoutNodeId::ROOT,
             "dd-file-overlay", "dd-file-widget",
-            &file_items, &mut self.dropdown_file_state, &DropdownSettings::default(),
+            &file_items, &DropdownSettings::default(),
         );
 
         let view_items = [
@@ -2826,7 +2827,7 @@ impl AppState {
         open_dropdown_flat(
             &mut self.layout, &mut render, LayoutNodeId::ROOT,
             "dd-view-overlay", "dd-view-widget",
-            &view_items, &mut self.dropdown_view_state, &DropdownSettings::default(),
+            &view_items, &DropdownSettings::default(),
         );
 
         let help_items = [
@@ -2846,7 +2847,7 @@ impl AppState {
         open_dropdown_flat(
             &mut self.layout, &mut render, LayoutNodeId::ROOT,
             "dd-help-overlay", "dd-help-widget",
-            &help_items, &mut self.dropdown_help_state, &DropdownSettings::default(),
+            &help_items, &DropdownSettings::default(),
         );
 
         // ── Sidebar dropdown — toggles to spawn / hide demo sidebars ─────────
@@ -2863,7 +2864,7 @@ impl AppState {
         open_dropdown_flat(
             &mut self.layout, &mut render, LayoutNodeId::ROOT,
             "dd-sidebar-overlay", "dd-sidebar-widget",
-            &sidebar_items, &mut self.dropdown_sidebar_state, &DropdownSettings::default(),
+            &sidebar_items, &DropdownSettings::default(),
         );
 
         // ── Toolbar dropdown — toggles to spawn / hide demo toolbars ─────────
@@ -2879,7 +2880,7 @@ impl AppState {
         open_dropdown_flat(
             &mut self.layout, &mut render, LayoutNodeId::ROOT,
             "dd-toolbar-overlay", "dd-toolbar-widget",
-            &toolbar_items_dd, &mut self.dropdown_toolbar_state, &DropdownSettings::default(),
+            &toolbar_items_dd, &DropdownSettings::default(),
         );
 
         // ── Popup templates dropdown (Plain | Custom) ──────────────────────────
@@ -2935,39 +2936,42 @@ impl AppState {
                 disabled: false, danger: false, accent_color: None,
             },
         ];
-        if self.dropdown_popup_state.open {
-            let hovered_id = self.dropdown_popup_state.hovered_id.clone();
-            let open_id = self.dropdown_popup_state.submenu_open.clone();
-            let origin = self.dropdown_popup_state.effective_origin();
-            let (pw, ph) = measure_flat(&popup_items_dd, &DropdownSettings::default());
-            let submenu_items = match open_id.as_deref() {
-                Some("popup-plain")  => Some(("popup-plain",  &popup_plain_sub_items[..])),
-                Some("popup-custom") => Some(("popup-custom", &popup_custom_sub_items[..])),
-                _                    => None,
-            };
-            let mut dd_view = DropdownView {
-                anchor: self.dropdown_popup_state.anchor_rect,
-                position_override: self.dropdown_popup_state.open_position_override,
-                open: true,
-                kind: DropdownViewKind::Flat {
-                    items: &popup_items_dd,
-                    hovered_id: hovered_id.as_deref(),
-                    submenu_items,
-                    submenu_hovered_id: None,
-                },
-                size_mode: uzor::types::SizeMode::AutoFit,
-                overflow: uzor::types::OverflowMode::Clip,
-                submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
-            };
-            register_layout_manager_dropdown(
-                &mut self.layout, &mut render,
-                LayoutNodeId::ROOT, "dd-popup-overlay", "dd-popup-widget",
-                Rect::new(origin.0, origin.1, pw, ph), None,
-                &mut self.dropdown_popup_state,
-                &mut dd_view,
-                &DropdownSettings::default(),
-                DropdownRenderKind::Flat,
-            );
+        {
+            let dd_popup_open = self.layout.dropdown("dd-popup-widget").map(|s| s.open).unwrap_or(false);
+            if dd_popup_open {
+                let (hovered_id, open_id, origin, anchor_rect, position_override) = {
+                    let s = self.layout.dropdown("dd-popup-widget").unwrap();
+                    (s.hovered_id.clone(), s.submenu_open.clone(), s.effective_origin(), s.anchor_rect, s.open_position_override)
+                };
+                let (pw, ph) = measure_flat(&popup_items_dd, &DropdownSettings::default());
+                let submenu_items = match open_id.as_deref() {
+                    Some("popup-plain")  => Some(("popup-plain",  &popup_plain_sub_items[..])),
+                    Some("popup-custom") => Some(("popup-custom", &popup_custom_sub_items[..])),
+                    _                    => None,
+                };
+                let mut dd_view = DropdownView {
+                    anchor: anchor_rect,
+                    position_override,
+                    open: true,
+                    kind: DropdownViewKind::Flat {
+                        items: &popup_items_dd,
+                        hovered_id: hovered_id.as_deref(),
+                        submenu_items,
+                        submenu_hovered_id: None,
+                    },
+                    size_mode: uzor::types::SizeMode::AutoFit,
+                    overflow: uzor::types::OverflowMode::Clip,
+                    submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
+                };
+                register_layout_manager_dropdown(
+                    &mut self.layout, &mut render,
+                    LayoutNodeId::ROOT, "dd-popup-overlay", "dd-popup-widget",
+                    Rect::new(origin.0, origin.1, pw, ph), None,
+                    &mut dd_view,
+                    &DropdownSettings::default(),
+                    DropdownRenderKind::Flat,
+                );
+            }
         }
 
         // ── Theme switcher dropdown ───────────────────────────────────────────
@@ -2980,7 +2984,7 @@ impl AppState {
         open_dropdown_flat(
             &mut self.layout, &mut render, LayoutNodeId::ROOT,
             "dd-theme-overlay", "dd-theme-widget",
-            &theme_items_dd, &mut self.dropdown_theme_state, &DropdownSettings::default(),
+            &theme_items_dd, &DropdownSettings::default(),
         );
 
         // ── Demo popup ────────────────────────────────────────────────────────
@@ -3016,7 +3020,7 @@ impl AppState {
                         LayoutNodeId::ROOT,
                         "demo-popup-overlay", "demo-popup-widget",
                         Rect::new(px, py, popup_w, popup_h), None,
-                        &mut self.popup_state, &mut v,
+                        &mut v,
                         &popup_settings, PopupRenderKind::Plain,
                     );
                     if let Some(frame) = self.layout.rect_for_overlay("demo-popup-overlay") {
@@ -3057,7 +3061,7 @@ impl AppState {
                         LayoutNodeId::ROOT,
                         "demo-popup-overlay", "demo-popup-widget",
                         Rect::new(px, py, popup_w, popup_h), None,
-                        &mut self.popup_state, &mut v,
+                        &mut v,
                         &popup_settings, PopupRenderKind::Plain,
                     );
                     // Caller body — register every cell + paint its swatch via register_popup_grid.
@@ -3178,10 +3182,10 @@ impl AppState {
         eprintln!("[LEFT_UP] pos=({:.1},{:.1}) modal_open={} dropdown_open=(file:{} view:{} help:{}) ctx_menu_open={}",
             x, y,
             self.modal_open,
-            self.dropdown_file_state.open,
-            self.dropdown_view_state.open,
-            self.dropdown_help_state.open,
-            self.ctx_menu_state.is_open,
+            self.layout.dropdown("dd-file-widget").map(|s| s.open).unwrap_or(false),
+            self.layout.dropdown("dd-view-widget").map(|s| s.open).unwrap_or(false),
+            self.layout.dropdown("dd-help-widget").map(|s| s.open).unwrap_or(false),
+            self.layout.context_menu("ctx-menu-widget").map(|s| s.is_open).unwrap_or(false),
         );
 
         use uzor::layout::{ClickOutcome, OverlayKind};
@@ -3190,7 +3194,9 @@ impl AppState {
                 eprintln!("[DISMISS] overlay_id={} kind={:?}", overlay_id.0, kind);
                 match kind {
                     Some(OverlayKind::Modal) => { self.modal_open = false; }
-                    Some(OverlayKind::ContextMenu) => { self.ctx_menu_state.close(); }
+                    Some(OverlayKind::ContextMenu) => {
+                        self.layout.context_menu_mut("ctx-menu-widget").close();
+                    }
                     Some(OverlayKind::Popup) => {
                         // Multiple popups — discriminate by id.
                         match overlay_id.0.as_str() {
@@ -3202,15 +3208,18 @@ impl AppState {
                     }
                     Some(OverlayKind::Dropdown) => {
                         // Close the specific dropdown by overlay slot id.
-                        match overlay_id.0.as_str() {
-                            "dd-file-overlay"    => self.dropdown_file_state.close(),
-                            "dd-view-overlay"    => self.dropdown_view_state.close(),
-                            "dd-help-overlay"    => self.dropdown_help_state.close(),
-                            "dd-sidebar-overlay" => self.dropdown_sidebar_state.close(),
-                            "dd-toolbar-overlay" => self.dropdown_toolbar_state.close(),
-                            "dd-popup-overlay"   => self.dropdown_popup_state.close(),
-                            "dd-theme-overlay"   => self.dropdown_theme_state.close(),
-                            _ => {}
+                        let widget_id = match overlay_id.0.as_str() {
+                            "dd-file-overlay"    => Some("dd-file-widget"),
+                            "dd-view-overlay"    => Some("dd-view-widget"),
+                            "dd-help-overlay"    => Some("dd-help-widget"),
+                            "dd-sidebar-overlay" => Some("dd-sidebar-widget"),
+                            "dd-toolbar-overlay" => Some("dd-toolbar-widget"),
+                            "dd-popup-overlay"   => Some("dd-popup-widget"),
+                            "dd-theme-overlay"   => Some("dd-theme-widget"),
+                            _ => None,
+                        };
+                        if let Some(wid) = widget_id {
+                            self.layout.dropdown_mut(wid).close();
                         }
                     }
                     _ => {}
@@ -3258,21 +3267,23 @@ impl AppState {
             }
             DispatchEvent::ModalTabClicked { index, .. } => {
                 eprintln!("[DISPATCHER] ModalTabClicked index={index}");
-                self.modal_state.active_tab = index;
+                self.layout.modal_mut("modal-widget").active_tab = index;
             }
             DispatchEvent::ModalWizardNext(_) => {
                 eprintln!("[DISPATCHER] ModalWizardNext");
                 let last = 2;
-                if self.modal_state.current_page < last {
-                    self.modal_state.current_page += 1;
+                let ms = self.layout.modal_mut("modal-widget");
+                if ms.current_page < last {
+                    ms.current_page += 1;
                 } else {
                     self.modal_open = false;
                 }
             }
             DispatchEvent::ModalWizardBack(_) => {
                 eprintln!("[DISPATCHER] ModalWizardBack");
-                if self.modal_state.current_page > 0 {
-                    self.modal_state.current_page -= 1;
+                let ms = self.layout.modal_mut("modal-widget");
+                if ms.current_page > 0 {
+                    ms.current_page -= 1;
                 }
             }
             DispatchEvent::DropdownItemClicked { dropdown_id, item_id } => {
@@ -3314,7 +3325,7 @@ impl AppState {
                         let anchor_rect = self.layout.ctx_mut().input
                             .widget_rect(&host_id)
                             .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
-                        self.dropdown_theme_state.open_below(anchor_rect, 4.0);
+                        self.layout.dropdown_mut("dd-theme-widget").open_below(anchor_rect, 4.0);
                     }
                     "l2-btn-connect-host" => {
                         self.l2_connect_popup_open = true;
@@ -3391,51 +3402,9 @@ impl AppState {
             }
             ev => {
                 // Run the event through every composite's consume_event via
-                // consume_event_chain.  Rects are resolved first to avoid
-                // borrow conflicts when closures capture mutable state refs.
-                let r_modal        = self.layout.rect_for_overlay("modal-overlay");
-                let r_popup_demo   = self.layout.rect_for_overlay("demo-popup-overlay");
-                let r_popup_conn   = self.layout.rect_for_overlay("l2-connect-popup");
-                let r_popup_4dir   = self.layout.rect_for_overlay("l2-4dir-popup");
-                let r_dd_file      = self.layout.rect_for_overlay("dd-file-overlay");
-                let r_dd_view      = self.layout.rect_for_overlay("dd-view-overlay");
-                let r_dd_help      = self.layout.rect_for_overlay("dd-help-overlay");
-                let r_dd_sidebar   = self.layout.rect_for_overlay("dd-sidebar-overlay");
-                let r_dd_toolbar   = self.layout.rect_for_overlay("dd-toolbar-overlay");
-                let r_dd_popup     = self.layout.rect_for_overlay("dd-popup-overlay");
-                let r_dd_theme     = self.layout.rect_for_overlay("dd-theme-overlay");
-                let r_tb_top       = self.layout.rect_for_edge_slot("top-toolbar");
-                let r_tb_left_v    = self.layout.rect_for_edge_slot("left-vtoolbar");
-                let r_tb_left2     = self.layout.rect_for_edge_slot("demo-toolbar-left2");
-                let r_tb_right     = self.layout.rect_for_edge_slot("demo-toolbar-right");
-                let r_tb_bottom    = self.layout.rect_for_edge_slot("demo-toolbar-bottom");
-                let r_sb_main      = self.layout.rect_for_edge_slot("sidebar");
-                let r_sb_right     = self.layout.rect_for_edge_slot("demo-sidebar-right");
-                let r_sb_top       = self.layout.rect_for_edge_slot("demo-sidebar-top");
-                let r_sb_bottom    = self.layout.rect_for_edge_slot("demo-sidebar-bottom");
-
-                let opt_ev = consume_event_chain(ev, &mut [
-                    &mut |e| modal_input::consume_event(e, &mut self.modal_state, &WidgetId::new("modal-widget"), modal_input::ConsumeEventCtx { cursor, frame_rect: r_modal.unwrap_or_default(), viewport }),
-                    &mut |e| popup_input::consume_event(e, &mut self.popup_state, &WidgetId::new("demo-popup-widget"), popup_input::ConsumeEventCtx { cursor, frame_rect: r_popup_demo.unwrap_or_default(), viewport }),
-                    &mut |e| popup_input::consume_event(e, &mut self.l2_connect_popup_state, &WidgetId::new("l2-connect-popup-widget"), popup_input::ConsumeEventCtx { cursor, frame_rect: r_popup_conn.unwrap_or_default(), viewport }),
-                    &mut |e| popup_input::consume_event(e, &mut self.l2_4dir_popup_state, &WidgetId::new("l2-4dir-popup-widget"), popup_input::ConsumeEventCtx { cursor, frame_rect: r_popup_4dir.unwrap_or_default(), viewport }),
-                    &mut |e| dropdown_input::consume_event(e, &mut self.dropdown_file_state,     &WidgetId::new("dd-file-widget"),     dropdown_input::ConsumeEventCtx { cursor, frame_rect: r_dd_file.unwrap_or_default(),     viewport }),
-                    &mut |e| dropdown_input::consume_event(e, &mut self.dropdown_view_state,     &WidgetId::new("dd-view-widget"),     dropdown_input::ConsumeEventCtx { cursor, frame_rect: r_dd_view.unwrap_or_default(),     viewport }),
-                    &mut |e| dropdown_input::consume_event(e, &mut self.dropdown_help_state,     &WidgetId::new("dd-help-widget"),     dropdown_input::ConsumeEventCtx { cursor, frame_rect: r_dd_help.unwrap_or_default(),     viewport }),
-                    &mut |e| dropdown_input::consume_event(e, &mut self.dropdown_sidebar_state,  &WidgetId::new("dd-sidebar-widget"),  dropdown_input::ConsumeEventCtx { cursor, frame_rect: r_dd_sidebar.unwrap_or_default(),  viewport }),
-                    &mut |e| dropdown_input::consume_event(e, &mut self.dropdown_toolbar_state,  &WidgetId::new("dd-toolbar-widget"),  dropdown_input::ConsumeEventCtx { cursor, frame_rect: r_dd_toolbar.unwrap_or_default(),  viewport }),
-                    &mut |e| dropdown_input::consume_event(e, &mut self.dropdown_popup_state,    &WidgetId::new("dd-popup-widget"),    dropdown_input::ConsumeEventCtx { cursor, frame_rect: r_dd_popup.unwrap_or_default(),    viewport }),
-                    &mut |e| dropdown_input::consume_event(e, &mut self.dropdown_theme_state,    &WidgetId::new("dd-theme-widget"),    dropdown_input::ConsumeEventCtx { cursor, frame_rect: r_dd_theme.unwrap_or_default(),    viewport }),
-                    &mut |e| toolbar_input::consume_event(e, &mut self.top_toolbar_state,         &WidgetId::new("top-toolbar-widget"),        toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_top.unwrap_or_default(),    viewport }),
-                    &mut |e| toolbar_input::consume_event(e, &mut self.left_vtoolbar_state,       &WidgetId::new("left-vtoolbar-widget"),      toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_left_v.unwrap_or_default(), viewport }),
-                    &mut |e| toolbar_input::consume_event(e, &mut self.demo_toolbar_left2_state,  &WidgetId::new("demo-toolbar-left2-widget"),  toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_left2.unwrap_or_default(), viewport }),
-                    &mut |e| toolbar_input::consume_event(e, &mut self.demo_toolbar_right_state,  &WidgetId::new("demo-toolbar-right-widget"),  toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_right.unwrap_or_default(), viewport }),
-                    &mut |e| toolbar_input::consume_event(e, &mut self.demo_toolbar_bottom_state, &WidgetId::new("demo-toolbar-bottom-widget"), toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_bottom.unwrap_or_default(), viewport }),
-                    &mut |e| sidebar_input::consume_event(e, &mut self.sidebar_state,             &WidgetId::new("sidebar-widget"),             sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_main.unwrap_or_default(),   viewport }),
-                    &mut |e| sidebar_input::consume_event(e, &mut self.demo_sidebar_right_state,  &WidgetId::new("demo-sidebar-right-widget"),  sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_right.unwrap_or_default(),  viewport }),
-                    &mut |e| sidebar_input::consume_event(e, &mut self.demo_sidebar_top_state,    &WidgetId::new("demo-sidebar-top-widget"),    sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_top.unwrap_or_default(),    viewport }),
-                    &mut |e| sidebar_input::consume_event(e, &mut self.demo_sidebar_bottom_state, &WidgetId::new("demo-sidebar-bottom-widget"), sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_bottom.unwrap_or_default(), viewport }),
-                ]);
+                // LayoutManager::consume_event — it iterates the per-frame
+                // composite registry using the states stored in layout maps.
+                let opt_ev = self.layout.consume_event(ev, cursor, viewport);
                 // opt_ev still Some(Unhandled(id)) → app-specific id routing.
                 if let Some(DispatchEvent::Unhandled(ref id)) = opt_ev {
                     let id_str = id.0.as_str();
@@ -3547,10 +3516,10 @@ impl AppState {
     fn on_right_up(&mut self, x: f64, y: f64) {
         eprintln!("[RIGHT_UP] pos=({:.1},{:.1})", x, y);
         let (w, h) = { let s = &self.surface; (s.config.width as f64, s.config.height as f64) };
-        self.ctx_menu_state.open_smart(x, y, w, h, 170.0, 156.0, None);
-        self.dropdown_file_state.close();
-        self.dropdown_view_state.close();
-        self.dropdown_help_state.close();
+        self.layout.context_menu_mut("ctx-menu-widget").open_smart(x, y, w, h, 170.0, 156.0, None);
+        for wid in &["dd-file-widget", "dd-view-widget", "dd-help-widget"] {
+            self.layout.dropdown_mut(wid).close();
+        }
     }
 
     fn on_mouse_down(&mut self, x: f64, y: f64) {
@@ -3562,12 +3531,13 @@ impl AppState {
         if self.modal_open {
             if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
                 if modal_input::modal_header_hit(modal_rect, x, y, 44.0, 34.0) {
-                    let origin = if self.modal_state.position != (0.0, 0.0) {
-                        self.modal_state.position
+                    let modal_pos = self.layout.modal("modal-widget").map(|s| s.position).unwrap_or((0.0, 0.0));
+                    let origin = if modal_pos != (0.0, 0.0) {
+                        modal_pos
                     } else {
                         (modal_rect.x, modal_rect.y)
                     };
-                    self.modal_state.start_drag((x, y), origin);
+                    self.layout.modal_mut("modal-widget").start_drag((x, y), origin);
                     self.drag_target = Some(DragTarget::ModalDrag);
                     return;
                 }
@@ -3643,20 +3613,22 @@ impl AppState {
             };
             if let Some(chrome_rect) = self.layout.rect_for_chrome() {
                 let hit = chrome_hit_test(
-                    &self.chrome_state,
+                    &self.layout.chrome_state(),
                     &chrome_view_mv,
                     &ChromeSettings::default(),
                     &ChromeRenderKind::Default,
                     chrome_rect,
                     (x, y),
                 );
-                self.chrome_state.hovered = hit;
+                self.layout.chrome_state_mut().hovered = hit;
             }
             // Sync per-tab hover flags from coordinator (replaces manual Tab(j) loop).
-            self.chrome_state.sync_hover_from_coordinator(
-                &self.layout.ctx_mut().input,
-                "chrome-widget",
-            );
+            // Use take/put-back to avoid simultaneous mutable borrows of `self.layout`.
+            {
+                let mut cs = std::mem::take(self.layout.chrome_state_mut());
+                cs.sync_hover_from_coordinator(&self.layout.ctx().input, "chrome-widget");
+                *self.layout.chrome_state_mut() = cs;
+            }
         }
 
 
@@ -3672,7 +3644,8 @@ impl AppState {
         if matches!(self.drag_target, Some(DragTarget::ModalDrag)) {
             let (sw, sh) = { let s = &self.surface; (s.config.width as f64, s.config.height as f64) };
             if let Some(modal_rect) = self.layout.rect_for_overlay("modal-overlay") {
-                handle_modal_drag(&mut self.modal_state, (x, y), (sw, sh), (modal_rect.width, modal_rect.height));
+                let ms = self.layout.modal_mut("modal-widget");
+                handle_modal_drag(ms, (x, y), (sw, sh), (modal_rect.width, modal_rect.height));
             }
             return;
         }
@@ -3743,53 +3716,60 @@ impl AppState {
                 DragTarget::SidebarScrollbar { track_rect, content_h, viewport_h } => {
                     // Atomic scrollbar API converts current cursor Y → scroll offset
                     // using the track height + content/viewport ratios.
-                    let scroll = self.sidebar_state.get_or_insert_scroll("default");
+                    let scroll = self.layout.sidebar_mut("sidebar-widget")
+                        .get_or_insert_scroll("default");
                     scroll.handle_drag(y, track_rect.height, *content_h, *viewport_h);
                 }
                 DragTarget::SidebarResize { which } => {
                     // Resize math lives on SidebarState — just forward the cursor.
-                    let (st, is_h): (&mut SidebarState, bool) = match *which {
-                        "main"   => (&mut self.sidebar_state,             true),
-                        "right"  => (&mut self.demo_sidebar_right_state,  true),
-                        "top"    => (&mut self.demo_sidebar_top_state,    false),
-                        "bottom" => (&mut self.demo_sidebar_bottom_state, false),
+                    let (widget_id, is_h): (&str, bool) = match *which {
+                        "main"   => ("sidebar-widget",              true),
+                        "right"  => ("demo-sidebar-right-widget",   true),
+                        "top"    => ("demo-sidebar-top-widget",     false),
+                        "bottom" => ("demo-sidebar-bottom-widget",  false),
                         _        => return,
                     };
-                    st.update_resize((x, y), is_h);
+                    self.layout.sidebar_mut(widget_id)
+                        .update_resize((x, y), is_h);
                 }
                 DragTarget::ToolbarResize { which } => {
                     // Resize math lives on ToolbarState — just forward the cursor.
                     match *which {
                         "top" => {
-                            self.top_toolbar_state.update_resize((x, y), false);
-                            self.top_toolbar_height_override = self.top_toolbar_state.resized_thickness;
+                            let st = self.layout.toolbar_mut("top-toolbar-widget");
+                            st.update_resize((x, y), false);
+                            self.top_toolbar_height_override = st.resized_thickness;
                         }
                         "demo-left2" => {
-                            self.demo_toolbar_left2_state.update_resize((x, y), true);
-                            self.demo_toolbar_left2_w_override = self.demo_toolbar_left2_state.resized_thickness;
+                            let st = self.layout.toolbar_mut("demo-toolbar-left2-widget");
+                            st.update_resize((x, y), true);
+                            self.demo_toolbar_left2_w_override = st.resized_thickness;
                         }
                         "demo-right" => {
-                            self.demo_toolbar_right_state.update_resize((x, y), true);
-                            self.demo_toolbar_right_w_override = self.demo_toolbar_right_state.resized_thickness;
+                            let st = self.layout.toolbar_mut("demo-toolbar-right-widget");
+                            st.update_resize((x, y), true);
+                            self.demo_toolbar_right_w_override = st.resized_thickness;
                         }
                         "demo-bottom" => {
-                            self.demo_toolbar_bottom_state.update_resize((x, y), false);
-                            self.demo_toolbar_bottom_h_override = self.demo_toolbar_bottom_state.resized_thickness;
+                            let st = self.layout.toolbar_mut("demo-toolbar-bottom-widget");
+                            st.update_resize((x, y), false);
+                            self.demo_toolbar_bottom_h_override = st.resized_thickness;
                         }
                         _ => {}
                     }
                 }
                 DragTarget::ModalBodyScroll => {
-                    self.modal_state.update_body_scroll_drag(y);
+                    self.layout.modal_mut("modal-widget").update_body_scroll_drag(y);
                 }
                 DragTarget::PopupBodyScroll => {
-                    self.popup_state.update_body_scroll_drag(y);
+                    self.layout.popup_mut("demo-popup-widget").update_body_scroll_drag(y);
                 }
                 DragTarget::OverlayResize { which } => {
                     match *which {
                         "modal" => {
-                            self.modal_state.update_resize((x, y));
-                            if let Some(r) = self.modal_state.resized_rect {
+                            let ms = self.layout.modal_mut("modal-widget");
+                            ms.update_resize((x, y));
+                            if let Some(r) = ms.resized_rect {
                                 self.modal_size_override = (r.width, r.height);
                             }
                         }
@@ -3804,22 +3784,24 @@ impl AppState {
         self.mouse_down = false;
         self.drag_origin = None;
         // End any composite resize drags.
-        self.top_toolbar_state.end_resize();
-        self.modal_state.end_resize();
-        self.popup_state.end_resize();
+        { let st = self.layout.toolbar_mut("top-toolbar-widget"); st.end_resize(); }
+        { let st = self.layout.modal_mut("modal-widget"); st.end_resize(); }
+        { let st = self.layout.popup_mut("demo-popup-widget"); st.end_resize(); }
         // End body scroll drags.
-        self.modal_state.end_body_scroll_drag();
-        self.popup_state.end_body_scroll_drag();
+        { let st = self.layout.modal_mut("modal-widget"); st.end_body_scroll_drag(); }
+        { let st = self.layout.popup_mut("demo-popup-widget"); st.end_body_scroll_drag(); }
         // Fix 3: end modal drag
-        self.modal_state.end_drag();
+        { let st = self.layout.modal_mut("modal-widget"); st.end_drag(); }
         // End any active sidebar resize drags.
-        self.sidebar_state.end_resize();
-        self.demo_sidebar_right_state.end_resize();
-        self.demo_sidebar_top_state.end_resize();
-        self.demo_sidebar_bottom_state.end_resize();
+        for wid in &["sidebar-widget", "demo-sidebar-right-widget", "demo-sidebar-top-widget", "demo-sidebar-bottom-widget"] {
+            { let st = self.layout.sidebar_mut(*wid); st.end_resize(); }
+        }
         // End any active scrollbar thumb drag.
-        if let Some(scroll) = self.sidebar_state.scroll_per_panel.get_mut("default") {
-            scroll.end_drag();
+        {
+            let st = self.layout.sidebar_mut("sidebar-widget");
+            if let Some(scroll) = st.scroll_per_panel.get_mut("default") {
+                scroll.end_drag();
+            }
         }
         self.drag_target = None;
         self.l2_range_drag_handle = None;
@@ -3898,16 +3880,17 @@ impl ApplicationHandler for Handler {
         let mut tab_trees = build_initial_trees();
         setup_dock(&mut layout, &mut tab_trees);
 
-        let mut chrome_state = ChromeState::new();
-        chrome_state.sync_tabs(&["tab-0", "tab-1", "tab-2"]);
-        chrome_state.active_tab_id = Some("tab-0".into());
-
-        let mut sidebar_state = SidebarState::default();
-        let (sidebar_w_init, _) = measure_sidebar(
-            &SidebarSettings::default(),
-            &SidebarRenderKind::Left,
-        );
-        sidebar_state.width = sidebar_w_init;
+        // Seed chrome state into the layout.
+        {
+            let cs = layout.chrome_state_mut();
+            cs.sync_tabs(&["tab-0", "tab-1", "tab-2"]);
+            cs.active_tab_id = Some("tab-0".into());
+        }
+        // Seed initial sidebar width.
+        {
+            let (sidebar_w_init, _) = measure_sidebar(&SidebarSettings::default(), &SidebarRenderKind::Left);
+            layout.sidebar_mut("sidebar-widget").width = sidebar_w_init;
+        }
 
         window.request_redraw();
 
@@ -3922,28 +3905,12 @@ impl ApplicationHandler for Handler {
             start: Instant::now(),
             last_clock_tick: Instant::now(),
             clock_str: "00:00:00".into(),
-            chrome_state,
-            top_toolbar_state: ToolbarState::default(),
-            left_vtoolbar_state: ToolbarState::default(),
-            demo_toolbar_left2_state:  ToolbarState::default(),
-            demo_toolbar_right_state:  ToolbarState::default(),
-            demo_toolbar_bottom_state: ToolbarState::default(),
             top_toolbar_height_override: 0.0,
             demo_toolbar_left2_w_override:  0.0,
             demo_toolbar_right_w_override:  0.0,
             demo_toolbar_bottom_h_override: 0.0,
             modal_size_override: (0.0, 0.0),
-            sidebar_state,
-            modal_state: ModalState::default(),
-            popup_state: PopupState::default(),
-            ctx_menu_state: ContextMenuState::default(),
-            dropdown_file_state: DropdownState::default(),
-            dropdown_view_state: DropdownState::default(),
-            dropdown_help_state: DropdownState::default(),
-            dropdown_sidebar_state: DropdownState::default(),
-            dropdown_toolbar_state: DropdownState::default(),
-            dropdown_popup_state: DropdownState::default(),
-            dropdown_theme_state: DropdownState::default(),
+            // demo sidebar states are now in layout.sidebars
             active_view: 0,
             sidebar_open: true,
             sidebar_kind: 0, // Left
@@ -3956,9 +3923,6 @@ impl ApplicationHandler for Handler {
             demo_sidebar_right: false,
             demo_sidebar_top: false,
             demo_sidebar_bottom: false,
-            demo_sidebar_right_state:  SidebarState::default(),
-            demo_sidebar_top_state:    SidebarState::default(),
-            demo_sidebar_bottom_state: SidebarState::default(),
             demo_overlay_mode: false,
             left_toolbar_visible: true,
             modal_open: false,
@@ -3987,9 +3951,9 @@ impl ApplicationHandler for Handler {
             exit_requested: false,
             watchlist: watchlist_blackbox::WatchlistState::default(),
             l2_connect_popup_open: false,
-            l2_connect_popup_state: PopupState::default(),
+            // l2_connect_popup_state is in layout.popups
             l2_4dir_popup: None,
-            l2_4dir_popup_state: PopupState::default(),
+            // l2_4dir_popup_state is in layout.popups
         });
     }
 
@@ -4029,7 +3993,7 @@ impl ApplicationHandler for Handler {
             let chrome_view_tmp = ChromeView { tabs: &chrome_tabs_tmp, active_tab_id: Some(tab_ids[app.active_view]), show_new_tab_btn: false, show_menu_btn: false, show_new_window_btn: false, show_close_window_btn: false, is_maximized: app.window.is_maximized(), cursor_x: mx, cursor_y: my, time_ms: app.time_ms() };
             // Close-app is app-specific (sets exit_requested); others delegated to helper.
             if let Some(chrome_rect) = app.layout.rect_for_chrome() {
-                let hit = chrome_hit_test(&app.chrome_state, &chrome_view_tmp, &ChromeSettings::default(), &ChromeRenderKind::Default, chrome_rect, (mx, my));
+                let hit = chrome_hit_test(&app.layout.chrome_state(), &chrome_view_tmp, &ChromeSettings::default(), &ChromeRenderKind::Default, chrome_rect, (mx, my));
                 if matches!(handle_chrome_action(hit), ChromeAction::CloseApp) {
                     app.exit_requested = true;
                     app.window.request_redraw();
@@ -4037,7 +4001,7 @@ impl ApplicationHandler for Handler {
                 }
             }
             use uzor_framework::chrome::handle_chrome_window_event;
-            if handle_chrome_window_event(&app.layout, &app.chrome_state, &chrome_view_tmp, &ChromeSettings::default(), &ChromeRenderKind::Default, &app.window, mx, my) {
+            if handle_chrome_window_event(&app.layout, &app.layout.chrome_state(), &chrome_view_tmp, &ChromeSettings::default(), &ChromeRenderKind::Default, &app.window, mx, my) {
                 return;
             }
         }
@@ -4109,57 +4073,53 @@ impl ApplicationHandler for Handler {
             // If the bridge resolved a DRAG-sense widget under the cursor,
             // dispatch through LayoutManager so registered drag patterns
             // (scrollbar thumb, resize handle, etc.) fire semantic events.
-            // Use consume_event_chain + drag_outcome_* helpers to collapse
+            // Use layout.consume_event + drag_outcome_* helpers to collapse
             // the per-composite post-consume drag detection into one place.
             let mut handled = false;
             if let Some(ref id) = drag_id {
-                use uzor::layout::{consume_event_chain, DragOutcome};
+                use uzor::layout::DragOutcome;
 
                 let viewport = { let cfg = &app.surface.config; (cfg.width as f64, cfg.height as f64) };
                 let cursor   = (x, y);
                 let ev       = app.layout.dispatch_widget(id);
 
-                // Pre-resolve all frame rects before the chain to avoid borrow conflicts.
-                let r_modal      = app.layout.rect_for_overlay("modal-overlay");
-                let r_popup_demo = app.layout.rect_for_overlay("demo-popup-overlay");
-                let r_tb_top     = app.layout.rect_for_edge_slot("top-toolbar");
-                let r_tb_left2   = app.layout.rect_for_edge_slot("demo-toolbar-left2");
-                let r_tb_right   = app.layout.rect_for_edge_slot("demo-toolbar-right");
-                let r_tb_bottom  = app.layout.rect_for_edge_slot("demo-toolbar-bottom");
+                let est_panels = app.layout.panels().tree().leaves().len() as f64;
+                let sidebar_content_h = 480.0 + est_panels * 30.0;
+
+                // Pre-resolve sidebar rects for drag_outcome_sidebar calls below.
                 let r_sb_main    = app.layout.rect_for_edge_slot("sidebar");
                 let r_sb_right   = app.layout.rect_for_edge_slot("demo-sidebar-right");
                 let r_sb_top     = app.layout.rect_for_edge_slot("demo-sidebar-top");
                 let r_sb_bottom  = app.layout.rect_for_edge_slot("demo-sidebar-bottom");
-                let est_panels   = app.layout.panels().tree().leaves().len() as f64;
-                let sidebar_content_h = 480.0 + est_panels * 30.0;
 
-                let remaining = consume_event_chain(ev, &mut [
-                    &mut |e| modal_input::consume_event(e, &mut app.modal_state,   &WidgetId::new("modal-widget"),         modal_input::ConsumeEventCtx   { cursor, frame_rect: r_modal.unwrap_or_default(),    viewport }),
-                    &mut |e| popup_input::consume_event(e, &mut app.popup_state,   &WidgetId::new("demo-popup-widget"),    popup_input::ConsumeEventCtx   { cursor, frame_rect: r_popup_demo.unwrap_or_default(), viewport }),
-                    &mut |e| toolbar_input::consume_event(e, &mut app.top_toolbar_state,          &WidgetId::new("top-toolbar-widget"),         toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_top.unwrap_or_default(),    viewport }),
-                    &mut |e| toolbar_input::consume_event(e, &mut app.demo_toolbar_left2_state,   &WidgetId::new("demo-toolbar-left2-widget"),  toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_left2.unwrap_or_default(),  viewport }),
-                    &mut |e| toolbar_input::consume_event(e, &mut app.demo_toolbar_right_state,   &WidgetId::new("demo-toolbar-right-widget"),  toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_right.unwrap_or_default(),  viewport }),
-                    &mut |e| toolbar_input::consume_event(e, &mut app.demo_toolbar_bottom_state,  &WidgetId::new("demo-toolbar-bottom-widget"), toolbar_input::ConsumeEventCtx { cursor, frame_rect: r_tb_bottom.unwrap_or_default(), viewport }),
-                    &mut |e| sidebar_input::consume_event(e, &mut app.sidebar_state,              &WidgetId::new("sidebar-widget"),             sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_main.unwrap_or_default(),   viewport }),
-                    &mut |e| sidebar_input::consume_event(e, &mut app.demo_sidebar_right_state,   &WidgetId::new("demo-sidebar-right-widget"),  sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_right.unwrap_or_default(),  viewport }),
-                    &mut |e| sidebar_input::consume_event(e, &mut app.demo_sidebar_top_state,     &WidgetId::new("demo-sidebar-top-widget"),    sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_top.unwrap_or_default(),    viewport }),
-                    &mut |e| sidebar_input::consume_event(e, &mut app.demo_sidebar_bottom_state,  &WidgetId::new("demo-sidebar-bottom-widget"), sidebar_input::ConsumeEventCtx { cursor, frame_rect: r_sb_bottom.unwrap_or_default(), viewport }),
-                ]);
+                let remaining = app.layout.consume_event(ev, cursor, viewport);
 
                 if remaining.is_none() {
                     handled = true;
                     // Determine what drag was started using drag_outcome_* helpers.
-                    let drag_outcome =
-                        modal_input::drag_outcome_modal(&app.modal_state)
-                        .or_else(|| popup_input::drag_outcome_popup(&app.popup_state))
-                        .or_else(|| toolbar_input::drag_outcome_toolbar(&app.top_toolbar_state,         "top"))
-                        .or_else(|| toolbar_input::drag_outcome_toolbar(&app.demo_toolbar_left2_state,  "demo-left2"))
-                        .or_else(|| toolbar_input::drag_outcome_toolbar(&app.demo_toolbar_right_state,  "demo-right"))
-                        .or_else(|| toolbar_input::drag_outcome_toolbar(&app.demo_toolbar_bottom_state, "demo-bottom"))
-                        .or_else(|| sidebar_input::drag_outcome_sidebar(&app.sidebar_state,              "main",   r_sb_main.unwrap_or_default(),   sidebar_content_h))
-                        .or_else(|| sidebar_input::drag_outcome_sidebar(&app.demo_sidebar_right_state,  "right",  r_sb_right.unwrap_or_default(),   sidebar_content_h))
-                        .or_else(|| sidebar_input::drag_outcome_sidebar(&app.demo_sidebar_top_state,    "top",    r_sb_top.unwrap_or_default(),     sidebar_content_h))
-                        .or_else(|| sidebar_input::drag_outcome_sidebar(&app.demo_sidebar_bottom_state, "bottom", r_sb_bottom.unwrap_or_default(),  sidebar_content_h));
+                    let drag_outcome = {
+                        
+                        let ms  = app.layout.modal("modal-widget");
+                        let ps  = app.layout.popup("demo-popup-widget");
+                        let tts = app.layout.toolbar("top-toolbar-widget");
+                        let tl2 = app.layout.toolbar("demo-toolbar-left2-widget");
+                        let tr  = app.layout.toolbar("demo-toolbar-right-widget");
+                        let tb  = app.layout.toolbar("demo-toolbar-bottom-widget");
+                        let sb  = app.layout.sidebar("sidebar-widget");
+                        let sbr = app.layout.sidebar("demo-sidebar-right-widget");
+                        let sbt = app.layout.sidebar("demo-sidebar-top-widget");
+                        let sbb = app.layout.sidebar("demo-sidebar-bottom-widget");
+                        ms.and_then(|s| modal_input::drag_outcome_modal(s))
+                        .or_else(|| ps.and_then(|s| popup_input::drag_outcome_popup(s)))
+                        .or_else(|| tts.and_then(|s| toolbar_input::drag_outcome_toolbar(s, "top")))
+                        .or_else(|| tl2.and_then(|s| toolbar_input::drag_outcome_toolbar(s, "demo-left2")))
+                        .or_else(|| tr.and_then(|s| toolbar_input::drag_outcome_toolbar(s, "demo-right")))
+                        .or_else(|| tb.and_then(|s| toolbar_input::drag_outcome_toolbar(s, "demo-bottom")))
+                        .or_else(|| sb.and_then(|s| sidebar_input::drag_outcome_sidebar(s, "main",   r_sb_main.unwrap_or_default(),   sidebar_content_h)))
+                        .or_else(|| sbr.and_then(|s| sidebar_input::drag_outcome_sidebar(s, "right",  r_sb_right.unwrap_or_default(),   sidebar_content_h)))
+                        .or_else(|| sbt.and_then(|s| sidebar_input::drag_outcome_sidebar(s, "top",    r_sb_top.unwrap_or_default(),     sidebar_content_h)))
+                        .or_else(|| sbb.and_then(|s| sidebar_input::drag_outcome_sidebar(s, "bottom", r_sb_bottom.unwrap_or_default(),  sidebar_content_h)))
+                    };
 
                     app.drag_target = drag_outcome.map(|o| match o {
                         DragOutcome::ModalBodyScroll      => DragTarget::ModalBodyScroll,
@@ -4270,7 +4230,7 @@ impl ApplicationHandler for Handler {
                     if sidebar_rect.contains(cx, cy) {
                         let est_panels = app.layout.panels().tree().leaves().len() as f64;
                         let content_h = 480.0 + est_panels * 30.0;
-                        app.sidebar_state.handle_wheel(sidebar_rect, dy, content_h);
+                        app.layout.sidebar_mut("sidebar-widget").handle_wheel(sidebar_rect, dy, content_h);
                         app.window.request_redraw();
                     }
                 }
@@ -4319,8 +4279,9 @@ impl ApplicationHandler for Handler {
         if let Some(((cx, cy), (_, dy))) = out.wheel {
             if app.modal_open && app.modal_kind == ModalKind::L2 && app.l2_active_tab == 0 {
                 if let Some(modal_rect) = app.layout.rect_for_overlay("modal-overlay") {
-                    let frame_x = if app.modal_state.position != (0.0, 0.0) { app.modal_state.position.0 } else { modal_rect.x };
-                    let frame_y = if app.modal_state.position != (0.0, 0.0) { app.modal_state.position.1 } else { modal_rect.y };
+                    let modal_pos = app.layout.modal("modal-widget").map(|s| s.position).unwrap_or((0.0, 0.0));
+                    let frame_x = if modal_pos != (0.0, 0.0) { modal_pos.0 } else { modal_rect.x };
+                    let frame_y = if modal_pos != (0.0, 0.0) { modal_pos.1 } else { modal_rect.y };
                     let body_y  = frame_y + 44.0; // header height
                     let body_h  = modal_rect.height - 44.0 - 52.0;
                     // right panel starts at frame_x + (L2_WIN_W - l2_right_panel_w)
@@ -4346,14 +4307,15 @@ impl ApplicationHandler for Handler {
             if ke.state == ElementState::Pressed {
                 use winit::keyboard::{Key, NamedKey};
                 if let Key::Named(NamedKey::Escape) = ke.logical_key {
+                    let ctx_open = app.layout.context_menu("ctx-menu-widget").map(|s| s.is_open).unwrap_or(false);
                     if app.modal_open {
                         app.modal_open = false;
-                    } else if app.ctx_menu_state.is_open {
-                        app.ctx_menu_state.close();
+                    } else if ctx_open {
+                        app.layout.context_menu_mut("ctx-menu-widget").close();
                     } else {
-                        app.dropdown_file_state.close();
-                        app.dropdown_view_state.close();
-                        app.dropdown_help_state.close();
+                        for wid in &["dd-file-widget", "dd-view-widget", "dd-help-widget"] {
+                            app.layout.dropdown_mut(wid).close();
+                        }
                     }
                     app.window.request_redraw();
                 }

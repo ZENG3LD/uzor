@@ -13,7 +13,7 @@ use super::types::{ContextMenuRenderKind, ContextMenuView};
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{ContextMenuNode, DismissFrame, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, WidgetNode};
+use crate::layout::{CompositeKind, CompositeRegistration, ContextMenuNode, DismissFrame, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -35,12 +35,16 @@ pub fn register_layout_manager_context_menu<P: DockPanel>(
     id:           impl Into<WidgetId>,
     overlay_rect: Rect,
     anchor:       Option<Rect>,
-    state:        &mut ContextMenuState,
     view:         &mut ContextMenuView<'_>,
     settings:     &ContextMenuSettings,
     kind:         &ContextMenuRenderKind<'_>,
 ) -> Option<ContextMenuNode> {
     let id: WidgetId = id.into();
+
+    // Take state out of the map (or create default), work with it, then
+    // re-insert — avoids borrow conflicts with the rest of `layout`.
+    let mut state = layout.context_menus.remove(&id).unwrap_or_default();
+
     layout.push_overlay(OverlayEntry {
         id:   slot_id.to_string(),
         kind: OverlayKind::ContextMenu,
@@ -73,8 +77,20 @@ pub fn register_layout_manager_context_menu<P: DockPanel>(
     state.sync_hover_from(&layout.ctx_mut().input, &prefix);
 
     register_context_manager_context_menu(
-        layout.ctx_mut(), render, id, state, view, settings, kind, &layer,
+        layout.ctx_mut(), render, id.clone(), &mut state, view, settings, kind, &layer,
     );
+
+    // Register this composite in the per-frame registry so consume_event can route it.
+    layout.push_composite_registration(CompositeRegistration {
+        kind:       CompositeKind::ContextMenu,
+        slot_id:    slot_id.to_string(),
+        widget_id:  id.clone(),
+        frame_rect: overlay_rect,
+    });
+
+    // Return state to the map.
+    layout.context_menus.insert(id, state);
+
     Some(ContextMenuNode(node_id))
 }
 

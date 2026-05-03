@@ -14,7 +14,7 @@ use super::types::{ChromeAction, ChromeHit, ChromeRenderKind, ChromeView, Resize
 use crate::core::types::Rect;
 use crate::docking::panels::DockPanel;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{ChromeNode, LayoutManager, LayoutNodeId, WidgetNode};
+use crate::layout::{ChromeNode, CompositeKind, CompositeRegistration, LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::WidgetId;
 
@@ -28,13 +28,16 @@ pub fn register_layout_manager_chrome<P: DockPanel>(
     render:   &mut dyn RenderContext,
     parent:   LayoutNodeId,
     id:       impl Into<WidgetId>,
-    state:    &mut ChromeState,
     view:     &ChromeView<'_>,
     settings: &ChromeSettings,
     kind:     &ChromeRenderKind,
 ) -> Option<ChromeNode> {
     let id: WidgetId = id.into();
     let rect = layout.rect_for_chrome()?;
+
+    // Take state out of the layout (or use default), work with it, then put back.
+    let mut state = std::mem::take(&mut layout.chrome_widget_state);
+
     let layer = layout.compute_layer_for(parent);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Chrome, rect, sense: Sense::NONE });
 
@@ -54,8 +57,20 @@ pub fn register_layout_manager_chrome<P: DockPanel>(
     }
 
     register_context_manager_chrome(
-        layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
+        layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,
     );
+
+    // Register this composite in the per-frame registry so consume_event can route it.
+    layout.push_composite_registration(CompositeRegistration {
+        kind:       CompositeKind::Chrome,
+        slot_id:    id.0.clone(),
+        widget_id:  id.clone(),
+        frame_rect: rect,
+    });
+
+    // Return state to the layout.
+    layout.chrome_widget_state = state;
+
     Some(ChromeNode(node_id))
 }
 

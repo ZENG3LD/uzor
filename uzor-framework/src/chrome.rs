@@ -8,20 +8,18 @@
 //! # Example
 //!
 //! ```no_run
-//! use uzor::docking::panels::DockPanel;
 //! use uzor::layout::LayoutManager;
 //! use uzor::render::RenderContext;
-//! use uzor::ui::widgets::composite::chrome::{ChromeAction, ChromeState, ChromeView};
+//! use uzor::ui::widgets::composite::chrome::ChromeView;
 //! use uzor_framework::chrome::register_chrome_default;
 //! use uzor_framework::app::NoPanel;
 //!
 //! fn ui(
 //!     layout: &mut LayoutManager<NoPanel>,
 //!     render: &mut dyn RenderContext,
-//!     state:  &mut ChromeState,
 //! ) {
 //!     let view = ChromeView::new(&[]);
-//!     register_chrome_default(layout, render, state, &view);
+//!     register_chrome_default(layout, render, &view);
 //! }
 //! ```
 
@@ -48,29 +46,23 @@ use uzor::ui::widgets::composite::chrome::{
 /// been solved yet (e.g. before the first `layout.solve()` call) or when the
 /// chrome strip is hidden.
 ///
-/// # Caller responsibilities
-///
-/// - Set `layout.chrome_mut().visible = true` and optionally adjust
-///   `layout.chrome_mut().height` before the first `layout.solve(viewport)`.
-/// - Query `state.hovered` / call `handle_chrome_action` each frame to react to
-///   drag, minimize, maximize, and close actions.
+/// Chrome state is stored inside the `LayoutManager` (`layout.chrome_widget_state`).
+/// Query `layout.chrome_widget_state.hovered` / call `handle_chrome_action` each
+/// frame to react to drag, minimize, maximize, and close actions.
 ///
 /// # Arguments
 ///
 /// * `layout`  — the app's layout manager (must have been solved this frame).
 /// * `render`  — a mutable `dyn RenderContext` (backend-specific draw context).
-/// * `state`   — persistent per-frame chrome state (hover, click, tooltips …).
 /// * `view`    — per-frame descriptor (tabs, active tab, cursor position …).
 pub fn register_chrome_default<P: DockPanel>(
     layout: &mut LayoutManager<P>,
     render: &mut dyn RenderContext,
-    state: &mut ChromeState,
     view: &ChromeView<'_>,
 ) -> Option<ChromeNode> {
     register_chrome_with_settings(
         layout,
         render,
-        state,
         view,
         &ChromeSettings::default(),
         &ChromeRenderKind::Default,
@@ -83,17 +75,16 @@ pub fn register_chrome_default<P: DockPanel>(
 /// [`ChromeSettings`] (colours, height) and a [`ChromeRenderKind`]
 /// (e.g. `WindowControlsOnly` or `Custom`).
 ///
-/// Returns the registered [`WidgetId`], or `None` when the chrome rect is not
+/// Returns the registered [`ChromeNode`], or `None` when the chrome rect is not
 /// yet available from the layout solver.
 pub fn register_chrome_with_settings<P: DockPanel>(
     layout: &mut LayoutManager<P>,
     render: &mut dyn RenderContext,
-    state: &mut ChromeState,
     view: &ChromeView<'_>,
     settings: &ChromeSettings,
     kind: &ChromeRenderKind,
 ) -> Option<ChromeNode> {
-    register_layout_manager_chrome(layout, render, LayoutNodeId::ROOT, "chrome", state, view, settings, kind)
+    register_layout_manager_chrome(layout, render, LayoutNodeId::ROOT, "chrome", view, settings, kind)
 }
 
 // ---------------------------------------------------------------------------

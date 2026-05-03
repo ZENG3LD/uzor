@@ -13,7 +13,7 @@ use super::types::{DropdownItem, DropdownRenderKind, DropdownView, DropdownViewK
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{DismissFrame, DispatchEvent, DropdownNode, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, WidgetNode};
+use crate::layout::{CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, DropdownNode, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{OverflowMode, Rect, SizeMode, WidgetId};
 
@@ -75,12 +75,16 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
     id:           impl Into<WidgetId>,
     overlay_rect: Rect,
     anchor:       Option<Rect>,
-    state:        &mut DropdownState,
     view:         &mut DropdownView<'_>,
     settings:     &DropdownSettings,
     kind:         DropdownRenderKind,
 ) -> Option<DropdownNode> {
     let id: WidgetId = id.into();
+
+    // Take state out of the map (or create default), work with it, then
+    // re-insert — avoids borrow conflicts with the rest of `layout`.
+    let mut state = layout.dropdowns.remove(&id).unwrap_or_default();
+
     layout.push_overlay(OverlayEntry {
         id:   slot_id.to_string(),
         kind: OverlayKind::Dropdown,
@@ -157,8 +161,20 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
     }
 
     register_context_manager_dropdown(
-        layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
+        layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,
     );
+
+    // Register this composite in the per-frame registry so consume_event can route it.
+    layout.push_composite_registration(CompositeRegistration {
+        kind:       CompositeKind::Dropdown,
+        slot_id:    slot_id.to_string(),
+        widget_id:  id.clone(),
+        frame_rect: rect,
+    });
+
+    // Return state to the map.
+    layout.dropdowns.insert(id, state);
+
     Some(DropdownNode(node_id))
 }
 
@@ -166,9 +182,10 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
 ///
 /// This is the common-case helper that covers 5 of the 7 dropdowns in a
 /// typical app: File, View, Help, Sidebar, Toolbar, Theme.  It does:
-///   1. Measures panel size via `measure_flat`.
-///   2. Builds a `DropdownView` with `DropdownViewKind::Flat` (no submenu).
-///   3. Calls `register_layout_manager_dropdown`.
+///   1. Peeks at dropdown state in the layout map to see if open.
+///   2. Measures panel size via `measure_flat`.
+///   3. Builds a `DropdownView` with `DropdownViewKind::Flat` (no submenu).
+///   4. Calls `register_layout_manager_dropdown`.
 ///
 /// Only use this for simple flat lists.  Dropdowns with submenu items (e.g.
 /// the Popup template picker) need to build `DropdownView` manually.
@@ -180,36 +197,48 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
 /// - `slot_id`    — stable overlay id (e.g. `"dd-file-overlay"`).
 /// - `widget_id`  — stable widget id (e.g. `"dd-file-widget"`).
 /// - `items`      — flat item list; must outlive this call frame.
-/// - `state`      — mutable dropdown state.
 /// - `settings`   — pass `&DropdownSettings::default()` for stock look.
 pub fn open_dropdown_flat<'items, P: DockPanel>(
-    layout:   &mut LayoutManager<P>,
-    render:   &mut dyn RenderContext,
-    parent:   LayoutNodeId,
-    slot_id:  &str,
+    layout:    &mut LayoutManager<P>,
+    render:    &mut dyn RenderContext,
+    parent:    LayoutNodeId,
+    slot_id:   &str,
     widget_id: impl Into<WidgetId>,
-    items:    &'items [DropdownItem<'items>],
-    state:    &mut DropdownState,
-    settings: &DropdownSettings,
+    items:     &'items [DropdownItem<'items>],
+    settings:  &DropdownSettings,
 ) -> Option<DropdownNode> {
-    if !state.open {
+    let widget_id: WidgetId = widget_id.into();
+    // Peek at state to decide whether to open (do not take it out yet —
+    // register_layout_manager_dropdown will do the remove/insert dance).
+    let (open, hovered_id, origin, anchor_rect, position_override) = {
+        let st = layout.dropdowns.get(&widget_id).map(|s| (
+            s.open,
+            s.hovered_id.clone(),
+            s.effective_origin(),
+            s.anchor_rect,
+            s.open_position_override,
+        ));
+        match st {
+            Some(v) => v,
+            None    => return None, // no state → not open
+        }
+    };
+    if !open {
         return None;
     }
-    let hovered_id = state.hovered_id.clone();
-    let origin = state.effective_origin();
     let (w, h) = measure_flat(items, settings);
     let mut view = DropdownView {
-        anchor:            state.anchor_rect,
-        position_override: state.open_position_override,
-        open:              true,
-        kind:              DropdownViewKind::Flat {
+        anchor:             anchor_rect,
+        position_override,
+        open:               true,
+        kind:               DropdownViewKind::Flat {
             items,
-            hovered_id:        hovered_id.as_deref(),
-            submenu_items:     None,
+            hovered_id:         hovered_id.as_deref(),
+            submenu_items:      None,
             submenu_hovered_id: None,
         },
-        size_mode:    SizeMode::AutoFit,
-        overflow:     OverflowMode::Clip,
+        size_mode:     SizeMode::AutoFit,
+        overflow:      OverflowMode::Clip,
         submenu_width: SubmenuWidth::Auto,
     };
     register_layout_manager_dropdown(
@@ -217,7 +246,7 @@ pub fn open_dropdown_flat<'items, P: DockPanel>(
         slot_id, widget_id,
         Rect::new(origin.0, origin.1, w, h),
         None,
-        state, &mut view, settings,
+        &mut view, settings,
         DropdownRenderKind::Flat,
     )
 }

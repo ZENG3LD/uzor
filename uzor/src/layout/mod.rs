@@ -28,7 +28,7 @@ pub use chrome_slot::ChromeSlot;
 pub use consume_chain::consume_event_chain;
 pub use dispatcher::{ChevronStepDirection, ChromeWindowControl, ClickDispatcher, DispatchEvent, EventBuilder, ResizeEdge};
 pub use edge_panels::{EdgePanels, EdgePlacement, EdgeSlot};
-pub use manager::{ClickOutcome, DismissFrame, LayoutManager};
+pub use manager::{ClickOutcome, CompositeKind, CompositeRegistration, DismissFrame, LayoutManager};
 pub use overlay_stack::{OverlayEntry, OverlayStack};
 pub use solve::solve_layout;
 pub use handles::{

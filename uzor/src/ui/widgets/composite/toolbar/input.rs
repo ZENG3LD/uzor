@@ -10,7 +10,7 @@ use super::state::ToolbarState;
 use super::types::{ToolbarRenderKind, ToolbarView};
 use crate::docking::panels::DockPanel;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{ChevronStepDirection, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ToolbarNode, WidgetNode};
+use crate::layout::{ChevronStepDirection, CompositeKind, CompositeRegistration, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ToolbarNode, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -90,13 +90,17 @@ pub fn register_layout_manager_toolbar<P: DockPanel>(
     parent:   LayoutNodeId,
     slot_id:  &str,
     id:       impl Into<WidgetId>,
-    state:    &mut ToolbarState,
     view:     &ToolbarView<'_>,
     settings: &ToolbarSettings,
     kind:     &ToolbarRenderKind,
 ) -> Option<ToolbarNode> {
     let id: WidgetId = id.into();
     let rect = layout.rect_for_edge_slot(slot_id)?;
+
+    // Take state out of the map (or create default), work with it, then
+    // re-insert — avoids borrow conflicts with the rest of `layout`.
+    let mut state = layout.toolbars.remove(&id).unwrap_or_default();
+
     let layer = layout.compute_layer_for(parent);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Toolbar, rect, sense: Sense::CLICK });
 
@@ -145,8 +149,20 @@ pub fn register_layout_manager_toolbar<P: DockPanel>(
     state.sync_hover_from(&layout.ctx_mut().input, &prefix);
 
     register_context_manager_toolbar(
-        layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
+        layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,
     );
+
+    // Register this composite in the per-frame registry so consume_event can route it.
+    layout.push_composite_registration(CompositeRegistration {
+        kind:       CompositeKind::Toolbar,
+        slot_id:    slot_id.to_string(),
+        widget_id:  id.clone(),
+        frame_rect: rect,
+    });
+
+    // Return state to the map.
+    layout.toolbars.insert(id, state);
+
     Some(ToolbarNode(node_id))
 }
 

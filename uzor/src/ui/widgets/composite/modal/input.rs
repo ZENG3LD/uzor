@@ -16,7 +16,7 @@ use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::types::CompositeId;
 use crate::input::{Sense, WidgetKind};
-use crate::layout::{DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ModalNode, OverlayEntry, OverlayKind, WidgetNode};
+use crate::layout::{CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ModalNode, OverlayEntry, OverlayKind, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId};
 
@@ -114,6 +114,10 @@ pub fn consume_event(
 /// the modal layer with the coordinator (so it blocks lower layers) and
 /// forwards to [`register_context_manager_modal`].
 ///
+/// State is taken from the layout manager's internal `modals` map (keyed by
+/// `id`) and created with `Default` if absent — the caller no longer owns or
+/// passes `&mut ModalState`.
+///
 /// `slot_id`      — stable overlay id (e.g. `"modal-overlay"`).  Used for
 ///                  dismiss-frame identity; must be unique per open overlay.
 /// `overlay_rect` — screen-space rect of the modal frame this frame.
@@ -127,12 +131,16 @@ pub fn register_layout_manager_modal<P: DockPanel>(
     id:           impl Into<WidgetId>,
     overlay_rect: Rect,
     anchor:       Option<Rect>,
-    state:        &mut ModalState,
     view:         &mut ModalView<'_>,
     settings:     &ModalSettings,
     kind:         &ModalRenderKind,
 ) -> Option<ModalNode> {
     let id: WidgetId = id.into();
+
+    // Take state out of the map (or create default), work with it, then
+    // re-insert — avoids borrow conflicts with the rest of `layout`.
+    let mut state = layout.modals.remove(&id).unwrap_or_default();
+
     // Push the overlay entry so rect_for_overlay and dismiss resolution work.
     layout.push_overlay(OverlayEntry {
         id:   slot_id.to_string(),
@@ -227,8 +235,20 @@ pub fn register_layout_manager_modal<P: DockPanel>(
     }
 
     register_context_manager_modal(
-        layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
+        layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,
     );
+
+    // Register this composite in the per-frame registry so consume_event can route it.
+    layout.push_composite_registration(CompositeRegistration {
+        kind:       CompositeKind::Modal,
+        slot_id:    slot_id.to_string(),
+        widget_id:  id.clone(),
+        frame_rect: rect,
+    });
+
+    // Return state to the map.
+    layout.modals.insert(id, state);
+
     Some(ModalNode(node_id))
 }
 

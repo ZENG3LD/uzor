@@ -1,9 +1,18 @@
+use std::collections::HashMap;
+
 use crate::docking::panels::{PanelDockingManager, PanelRect, DockPanel};
 use crate::core::types::Rect;
 use crate::app_context::{ContextManager, layout::types::LayoutNode};
 use crate::input::core::coordinator::LayerId;
 use crate::input::WidgetKind;
 use crate::types::WidgetId;
+use crate::ui::widgets::composite::modal::state::ModalState;
+use crate::ui::widgets::composite::popup::state::PopupState;
+use crate::ui::widgets::composite::dropdown::state::DropdownState;
+use crate::ui::widgets::composite::toolbar::state::ToolbarState;
+use crate::ui::widgets::composite::sidebar::state::SidebarState;
+use crate::ui::widgets::composite::context_menu::state::ContextMenuState;
+use crate::ui::widgets::composite::chrome::state::ChromeState;
 use super::chrome_slot::ChromeSlot;
 use super::edge_panels::EdgePanels;
 use super::overlay_stack::{OverlayStack, OverlayEntry};
@@ -11,6 +20,41 @@ use super::tree::{LayoutNode as TreeLayoutNode, LayoutNodeId, LayoutTree};
 use super::z_layers::ZLayerTable;
 use super::types::{OverlayKind, LayoutSolved};
 use super::solve::solve_layout;
+
+// ---------------------------------------------------------------------------
+// Per-frame composite registry — used by consume_event
+// ---------------------------------------------------------------------------
+
+/// The kind of a registered composite, used for event routing in
+/// [`LayoutManager::consume_event`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompositeKind {
+    Modal,
+    Popup,
+    Dropdown,
+    Toolbar,
+    Sidebar,
+    ContextMenu,
+    Chrome,
+}
+
+/// One entry in the per-frame composite registry.
+///
+/// Composites push one entry in their `register_layout_manager_*` helper.
+/// [`LayoutManager::consume_event`] walks these in overlay-first order
+/// (Modal → Popup → Dropdown → ContextMenu → Toolbar → Sidebar) to route
+/// [`DispatchEvent`]s without the app spelling out the chain manually.
+#[derive(Debug, Clone)]
+pub struct CompositeRegistration {
+    pub kind:       CompositeKind,
+    /// The stable overlay or edge slot id (e.g. `"modal-overlay"`, `"top-toolbar"`).
+    pub slot_id:    String,
+    /// The widget id used when registering the composite with the coordinator
+    /// (e.g. `"modal-widget"`, `"top-toolbar-widget"`).
+    pub widget_id:  WidgetId,
+    /// Frame rect of the composite (overlay rect or edge slot rect).
+    pub frame_rect: Rect,
+}
 
 // ---------------------------------------------------------------------------
 // Overlay dismiss registry
@@ -108,6 +152,31 @@ pub struct LayoutManager<P: DockPanel> {
     dispatcher: super::ClickDispatcher,
     /// Per-frame overlay dismiss registry. Cleared by [`LayoutManager::begin_frame_widgets`].
     dismiss_frames: Vec<DismissFrame>,
+
+    // -----------------------------------------------------------------------
+    // Phase A — composite state ownership
+    // -----------------------------------------------------------------------
+
+    /// Persistent state for every modal instance keyed by widget id.
+    pub(crate) modals: HashMap<WidgetId, ModalState>,
+    /// Persistent state for every popup instance keyed by widget id.
+    pub(crate) popups: HashMap<WidgetId, PopupState>,
+    /// Persistent state for every dropdown instance keyed by widget id.
+    pub(crate) dropdowns: HashMap<WidgetId, DropdownState>,
+    /// Persistent state for every toolbar instance keyed by widget id.
+    pub(crate) toolbars: HashMap<WidgetId, ToolbarState>,
+    /// Persistent state for every sidebar instance keyed by widget id.
+    pub(crate) sidebars: HashMap<WidgetId, SidebarState>,
+    /// Persistent state for every context-menu instance keyed by widget id.
+    pub(crate) context_menus: HashMap<WidgetId, ContextMenuState>,
+    /// Single chrome state (there is at most one chrome per window).
+    pub(crate) chrome_widget_state: ChromeState,
+
+    /// Per-frame composite registry — cleared each frame by
+    /// [`Self::dispatcher_begin_frame`] together with the dispatch table.
+    /// Composites push one entry in their `register_layout_manager_*` helper
+    /// so [`Self::consume_event`] can iterate them without app boilerplate.
+    pub(crate) composite_registry: Vec<CompositeRegistration>,
 }
 
 impl<P: DockPanel> LayoutManager<P> {
@@ -126,6 +195,14 @@ impl<P: DockPanel> LayoutManager<P> {
             ctx: ContextManager::new(LayoutNode::new("__layout_root__")),
             dispatcher: super::ClickDispatcher::new(),
             dismiss_frames: Vec::new(),
+            modals: HashMap::new(),
+            popups: HashMap::new(),
+            dropdowns: HashMap::new(),
+            toolbars: HashMap::new(),
+            sidebars: HashMap::new(),
+            context_menus: HashMap::new(),
+            chrome_widget_state: ChromeState::default(),
+            composite_registry: Vec::new(),
         }
     }
 
@@ -246,7 +323,8 @@ impl<P: DockPanel> LayoutManager<P> {
             .unwrap_or_else(|| super::DispatchEvent::Unhandled(id.clone()))
     }
 
-    /// Clear the dispatch table and the overlay dismiss registry.
+    /// Clear the dispatch table, the overlay dismiss registry, and the
+    /// per-frame composite registry.
     ///
     /// Composites re-register their patterns each frame, mirroring the
     /// immediate-mode model of widget registration. Call this once per
@@ -254,6 +332,198 @@ impl<P: DockPanel> LayoutManager<P> {
     pub fn dispatcher_begin_frame(&mut self) {
         self.dispatcher.clear();
         self.dismiss_frames.clear();
+        self.composite_registry.clear();
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase A — composite state accessors
+    // -----------------------------------------------------------------------
+
+    /// Read-only access to a modal's state by widget id.
+    /// Returns `None` if no state has been created for this id yet.
+    pub fn modal(&self, id: &str) -> Option<&ModalState> {
+        self.modals.get(&WidgetId::new(id))
+    }
+
+    /// Mutable access to a modal's state, creating a default if absent.
+    pub fn modal_mut(&mut self, id: &str) -> &mut ModalState {
+        self.modals.entry(WidgetId::new(id)).or_default()
+    }
+
+    /// Read-only access to a popup's state by widget id.
+    pub fn popup(&self, id: &str) -> Option<&PopupState> {
+        self.popups.get(&WidgetId::new(id))
+    }
+
+    /// Mutable access to a popup's state, creating a default if absent.
+    pub fn popup_mut(&mut self, id: &str) -> &mut PopupState {
+        self.popups.entry(WidgetId::new(id)).or_default()
+    }
+
+    /// Read-only access to a dropdown's state by widget id.
+    pub fn dropdown(&self, id: &str) -> Option<&DropdownState> {
+        self.dropdowns.get(&WidgetId::new(id))
+    }
+
+    /// Mutable access to a dropdown's state, creating a default if absent.
+    pub fn dropdown_mut(&mut self, id: &str) -> &mut DropdownState {
+        self.dropdowns.entry(WidgetId::new(id)).or_default()
+    }
+
+    /// Read-only access to a toolbar's state by widget id.
+    pub fn toolbar(&self, id: &str) -> Option<&ToolbarState> {
+        self.toolbars.get(&WidgetId::new(id))
+    }
+
+    /// Mutable access to a toolbar's state, creating a default if absent.
+    pub fn toolbar_mut(&mut self, id: &str) -> &mut ToolbarState {
+        self.toolbars.entry(WidgetId::new(id)).or_default()
+    }
+
+    /// Read-only access to a sidebar's state by widget id.
+    pub fn sidebar(&self, id: &str) -> Option<&SidebarState> {
+        self.sidebars.get(&WidgetId::new(id))
+    }
+
+    /// Mutable access to a sidebar's state, creating a default if absent.
+    pub fn sidebar_mut(&mut self, id: &str) -> &mut SidebarState {
+        self.sidebars.entry(WidgetId::new(id)).or_default()
+    }
+
+    /// Read-only access to a context menu's state by widget id.
+    pub fn context_menu(&self, id: &str) -> Option<&ContextMenuState> {
+        self.context_menus.get(&WidgetId::new(id))
+    }
+
+    /// Mutable access to a context menu's state, creating a default if absent.
+    pub fn context_menu_mut(&mut self, id: &str) -> &mut ContextMenuState {
+        self.context_menus.entry(WidgetId::new(id)).or_default()
+    }
+
+    /// Read-only access to the chrome widget state.
+    pub fn chrome_state(&self) -> &ChromeState {
+        &self.chrome_widget_state
+    }
+
+    /// Mutable access to the chrome widget state.
+    pub fn chrome_state_mut(&mut self) -> &mut ChromeState {
+        &mut self.chrome_widget_state
+    }
+
+    /// Push a composite registration entry so [`Self::consume_event`] can
+    /// route events without the app maintaining the chain manually.
+    ///
+    /// Called internally by each `register_layout_manager_*` helper.
+    pub fn push_composite_registration(&mut self, reg: CompositeRegistration) {
+        self.composite_registry.push(reg);
+    }
+
+    // -----------------------------------------------------------------------
+    // Phase A — consume_event
+    // -----------------------------------------------------------------------
+
+    /// Route a [`DispatchEvent`] through all registered composites in
+    /// overlay-first priority order:
+    ///
+    /// Modal → Popup → Dropdown → ContextMenu → Toolbar → Sidebar
+    ///
+    /// Each composite gets to inspect the event and either consume it (return
+    /// `None`, stopping the chain) or pass it through (`Some(event)`).
+    ///
+    /// Returns `None` when a composite consumed the event; returns the
+    /// original event wrapped in `Some` when nothing consumed it.
+    ///
+    /// `cursor`   — current pointer position in screen coordinates.
+    /// `viewport` — window `(width, height)` for resize-cap computation.
+    pub fn consume_event(
+        &mut self,
+        event: super::DispatchEvent,
+        cursor: (f64, f64),
+        viewport: (f64, f64),
+    ) -> Option<super::DispatchEvent> {
+        use super::DispatchEvent;
+        use crate::ui::widgets::composite::modal::input as modal_input;
+        use crate::ui::widgets::composite::popup::input as popup_input;
+        use crate::ui::widgets::composite::dropdown::input as dropdown_input;
+        use crate::ui::widgets::composite::toolbar::input as toolbar_input;
+        use crate::ui::widgets::composite::sidebar::input as sidebar_input;
+
+        // Snapshot the registry so we can iterate it without holding a borrow
+        // on `self` while we also borrow the individual state maps.
+        let registry: Vec<CompositeRegistration> = self.composite_registry.clone();
+
+        let mut opt_ev: Option<DispatchEvent> = Some(event);
+
+        // Overlay-first order: Modal → Popup → Dropdown → ContextMenu → Toolbar → Sidebar
+        for priority in [
+            CompositeKind::Modal,
+            CompositeKind::Popup,
+            CompositeKind::Dropdown,
+            CompositeKind::ContextMenu,
+            CompositeKind::Toolbar,
+            CompositeKind::Sidebar,
+        ] {
+            for reg in registry.iter().filter(|r| r.kind == priority) {
+                let ev = match opt_ev.take() {
+                    Some(e) => e,
+                    None => return None,
+                };
+                opt_ev = match priority {
+                    CompositeKind::Modal => {
+                        let mut st = self.modals.remove(&reg.widget_id).unwrap_or_default();
+                        let result = modal_input::consume_event(
+                            ev, &mut st, &reg.widget_id,
+                            modal_input::ConsumeEventCtx { cursor, frame_rect: reg.frame_rect, viewport },
+                        );
+                        self.modals.insert(reg.widget_id.clone(), st);
+                        result
+                    }
+                    CompositeKind::Popup => {
+                        let mut st = self.popups.remove(&reg.widget_id).unwrap_or_default();
+                        let result = popup_input::consume_event(
+                            ev, &mut st, &reg.widget_id,
+                            popup_input::ConsumeEventCtx { cursor, frame_rect: reg.frame_rect, viewport },
+                        );
+                        self.popups.insert(reg.widget_id.clone(), st);
+                        result
+                    }
+                    CompositeKind::Dropdown => {
+                        let mut st = self.dropdowns.remove(&reg.widget_id).unwrap_or_default();
+                        let result = dropdown_input::consume_event(
+                            ev, &mut st, &reg.widget_id,
+                            dropdown_input::ConsumeEventCtx { cursor, frame_rect: reg.frame_rect, viewport },
+                        );
+                        self.dropdowns.insert(reg.widget_id.clone(), st);
+                        result
+                    }
+                    CompositeKind::ContextMenu => {
+                        // ContextMenu has no consume_event — pass through.
+                        Some(ev)
+                    }
+                    CompositeKind::Toolbar => {
+                        let mut st = self.toolbars.remove(&reg.widget_id).unwrap_or_default();
+                        let result = toolbar_input::consume_event(
+                            ev, &mut st, &reg.widget_id,
+                            toolbar_input::ConsumeEventCtx { cursor, frame_rect: reg.frame_rect, viewport },
+                        );
+                        self.toolbars.insert(reg.widget_id.clone(), st);
+                        result
+                    }
+                    CompositeKind::Sidebar => {
+                        let mut st = self.sidebars.remove(&reg.widget_id).unwrap_or_default();
+                        let result = sidebar_input::consume_event(
+                            ev, &mut st, &reg.widget_id,
+                            sidebar_input::ConsumeEventCtx { cursor, frame_rect: reg.frame_rect, viewport },
+                        );
+                        self.sidebars.insert(reg.widget_id.clone(), st);
+                        result
+                    }
+                    CompositeKind::Chrome => Some(ev),
+                };
+            }
+        }
+
+        opt_ev
     }
 
     /// Read-only access to the macro layout tree (solved node rects).
@@ -618,6 +888,7 @@ impl<P: DockPanel> LayoutManager<P> {
             None => ClickOutcome::Unhandled { pos },
         }
     }
+
 }
 
 /// Outcome of [`LayoutManager::handle_click`].
