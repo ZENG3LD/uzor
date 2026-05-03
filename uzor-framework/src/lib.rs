@@ -15,6 +15,7 @@ pub mod app;
 pub mod builder;
 pub mod runtime;
 pub mod utils;
+pub mod widgets;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod chrome;
@@ -44,6 +45,11 @@ pub use utils::screenshot::{
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use tray::{TrayBuilder, TrayError, TrayEvent, TrayHandle};
+
+// ── Tier-organised widget shortcuts ──────────────────────────────────────────
+
+/// Tier-organised widget registration shortcuts: `coord` (L1), `ctx` (L2), `lm` (L3).
+pub use widgets::{coord, ctx, lm};
 
 // ── Hub re-exports ────────────────────────────────────────────────────────────
 

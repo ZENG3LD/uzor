@@ -610,7 +610,7 @@ impl AppState {
                 active_border: None,
                 hover_chevron: None,
             };
-            uzor::ctx::draw_button(
+            uzor_framework::ctx::draw_button(
                 ctx, &mut render,
                 "btn-connect", BTN_RECT, &layer,
                 btn_state,
@@ -619,7 +619,7 @@ impl AppState {
             );
 
             // ── 2. Close button ───────────────────────────────────────────────
-            uzor::ctx::draw_close_button(
+            uzor_framework::ctx::draw_close_button(
                 ctx, &mut render,
                 "btn-close", CLOSE_RECT, &layer,
                 match (hovered.as_deref() == Some("btn-close"), pressed_id_ref.as_deref() == Some("btn-close")) {
@@ -634,7 +634,7 @@ impl AppState {
             );
 
             // ── 3. Checkbox ───────────────────────────────────────────────────
-            uzor::ctx::draw_checkbox(
+            uzor_framework::ctx::draw_checkbox(
                 ctx, &mut render,
                 "cb-setting-a", CB_RECT, &layer,
                 match (hovered.as_deref() == Some("cb-setting-a"), pressed_id_ref.as_deref() == Some("cb-setting-a")) {
@@ -650,7 +650,7 @@ impl AppState {
             );
 
             // ── 4. Toggle ─────────────────────────────────────────────────────
-            uzor::ctx::draw_toggle(
+            uzor_framework::ctx::draw_toggle(
                 ctx, &mut render,
                 "tog-enable", TOG_RECT, &layer,
                 match (hovered.as_deref() == Some("tog-enable"), pressed_id_ref.as_deref() == Some("tog-enable")) {
@@ -667,7 +667,7 @@ impl AppState {
             for (i, cx) in [28.0_f64, 68.0, 108.0].iter().enumerate() {
                 let dot_rect = Rect::new(*cx, 175.0, 28.0, 28.0);
                 let radio_id = format!("radio-opt-{i}");
-                uzor::ctx::draw_radio(
+                uzor_framework::ctx::draw_radio(
                     ctx, &mut render,
                     radio_id.as_str(), dot_rect, &layer,
                     match (hovered.as_deref() == Some(radio_id.as_str()), pressed_id_ref.as_deref() == Some(radio_id.as_str())) {
@@ -686,7 +686,7 @@ impl AppState {
             }
 
             // ── 6. Slider ─────────────────────────────────────────────────────
-            uzor::ctx::draw_slider(
+            uzor_framework::ctx::draw_slider(
                 ctx, &mut render,
                 "slider-main", SLID_RECT, &layer,
                 match (hovered.as_deref() == Some("slider-main"), pressed_id_ref.as_deref() == Some("slider-main")) {
@@ -707,7 +707,7 @@ impl AppState {
             );
 
             // ── 6b. Range slider ──────────────────────────────────────────────
-            uzor::ctx::draw_slider(
+            uzor_framework::ctx::draw_slider(
                 ctx, &mut render,
                 "range-slider", RANGE_RECT, &layer,
                 match (hovered.as_deref() == Some("range-slider"), pressed_id_ref.as_deref() == Some("range-slider")) {
@@ -730,7 +730,7 @@ impl AppState {
 
             // ── 7. Separator ──────────────────────────────────────────────────
             let sep_rect = Rect::new(28.0, 260.0, 260.0, 2.0);
-            uzor::ctx::draw_separator(
+            uzor_framework::ctx::draw_separator(
                 ctx, &mut render,
                 "sep-h", sep_rect, SeparatorKind::Divider, &layer,
                 &SeparatorView {
@@ -788,7 +788,7 @@ impl AppState {
                 let sx = 28.0 + i as f64 * 34.0;
                 let sw_rect = Rect::new(sx, 344.0, 26.0, 26.0);
                 let sw_id = format!("swatch-{i}");
-                uzor::ctx::draw_color_swatch(
+                uzor_framework::ctx::draw_color_swatch(
                     ctx, &mut render,
                     sw_id.as_str(), sw_rect, &layer,
                     match (hovered.as_deref() == Some(sw_id.as_str()), pressed_id_ref.as_deref() == Some(sw_id.as_str())) {
@@ -836,7 +836,7 @@ impl AppState {
                     pressed: pressed_id_ref.as_deref() == Some(tab_id.as_str()),
                     close_btn_hovered: false,
                 };
-                uzor::ctx::draw_tab(
+                uzor_framework::ctx::draw_tab(
                     ctx, &mut render,
                     tab_id.as_str(), tab_rect, None,
                     &layer,
@@ -856,7 +856,7 @@ impl AppState {
                     + (scroll_off / (CONTENT_H - viewport_h).max(1.0)) * scroll_range;
                 let sb_thumb = Rect::new(sb_x, thumb_y, SB_W, thumb_h);
 
-                uzor::ctx::draw_scrollbar(
+                uzor_framework::ctx::draw_scrollbar(
                     ctx, &mut render,
                     "sb-track", "sb-thumb",
                     sb_track, sb_thumb,
@@ -909,7 +909,7 @@ impl AppState {
                         10..=14 => ItemSettings::default().with_style(Box::new(RowStylePtRoot)),
                         _       => ItemSettings::default().with_style(Box::new(RowStyleRobotoBold)),
                     };
-                    uzor::ctx::draw_item(
+                    uzor_framework::ctx::draw_item(
                         ctx, &mut render,
                         row_id.as_str(), row_rect, &layer,
                         WidgetState::Normal,
@@ -942,7 +942,7 @@ impl AppState {
                         pressed: pressed_id_ref.as_deref() == Some(sub_id.as_str()),
                         close_btn_hovered: false,
                     };
-                    uzor::ctx::draw_tab(
+                    uzor_framework::ctx::draw_tab(
                         ctx, &mut render,
                         sub_id.as_str(), sub_rect, None,
                         &layer,
@@ -1020,7 +1020,7 @@ impl AppState {
         {
             let mut render = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
             let layer = LayerId::main();
-            uzor::ctx::draw_drag_handle(
+            uzor_framework::ctx::draw_drag_handle(
                 &mut self.ctx, &mut render,
                 "drag-handle", dh_rect, &layer,
                 &DragHandleView { rect: dh_rect },

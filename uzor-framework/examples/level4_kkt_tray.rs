@@ -171,7 +171,7 @@ impl App<NoPanel> for KktTrayApp {
         let btn_rect = Rect::new(80.0, 80.0, 160.0, 40.0);
         let view = ButtonView { icon: None, text: Some("Connect"), active: self.connected, disabled: false, active_border: None, hover_chevron: None };
         render_state.with_render_context(|render| {
-            uzor::lm::build_button(
+            uzor_framework::lm::build_button(
                 layout,
                 render,
                 LayoutNodeId::ROOT,

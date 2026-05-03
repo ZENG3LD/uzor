@@ -60,13 +60,13 @@ impl App<NoPanel> for LauncherApp {
     ) {
         // ── Register the "Connect" button at L3 level ────────────────────────
         //
-        // L3 = uzor::lm::build_button.
+        // L3 = uzor_framework::lm::build_button.
         // It takes the LayoutManager directly, extracts ContextManager internally,
         // pulls ButtonState from the registry, and calls draw_button.
         let btn_rect = uzor::types::Rect::new(80.0, 100.0, 160.0, 40.0);
         let view = ButtonView { icon: None, text: Some("Connect"), active: false, disabled: false, active_border: None, hover_chevron: None };
         render_state.with_render_context(|render| {
-            uzor::lm::build_button(
+            uzor_framework::lm::build_button(
                 layout,
                 render,
                 LayoutNodeId::ROOT,

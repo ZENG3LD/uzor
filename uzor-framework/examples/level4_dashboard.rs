@@ -106,7 +106,7 @@ impl App<NoPanel> for DashboardApp {
             for (i, (id, _label)) in nav_items.iter().enumerate() {
                 let btn_y = left_rect.y + 16.0 + i as f64 * (btn_h + 8.0);
                 render_state.with_render_context(|render| {
-                    uzor::lm::build_button(
+                    uzor_framework::lm::build_button(
                         layout,
                         render,
                         LayoutNodeId::ROOT,
@@ -135,7 +135,7 @@ impl App<NoPanel> for DashboardApp {
             for (i, (id, _label)) in settings_items.iter().enumerate() {
                 let btn_y = right_rect.y + 16.0 + i as f64 * (btn_h + 8.0);
                 render_state.with_render_context(|render| {
-                    uzor::lm::build_button(
+                    uzor_framework::lm::build_button(
                         layout,
                         render,
                         LayoutNodeId::ROOT,

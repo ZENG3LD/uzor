@@ -1286,7 +1286,7 @@ impl AppState {
             style: Box::new(ChromeWithBottomBorder),
         };
         let chrome_kind = ChromeRenderKind::Default;
-        uzor::lm::build_chrome(
+        uzor_framework::lm::build_chrome(
             &mut self.layout,
             &mut render,
             LayoutNodeId::ROOT,
@@ -1323,7 +1323,7 @@ impl AppState {
             overflow: uzor::types::OverflowMode::Clip,
             resize_edge: None,
         };
-        uzor::lm::build_toolbar(
+        uzor_framework::lm::build_toolbar(
             &mut self.layout,
             &mut render,
             LayoutNodeId::ROOT,
@@ -1353,7 +1353,7 @@ impl AppState {
                 overflow: uzor::types::OverflowMode::Clip,
                 resize_edge: Some(uzor::layout::ResizeEdge::E),
             };
-            uzor::lm::build_toolbar(
+            uzor_framework::lm::build_toolbar(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -1406,7 +1406,7 @@ impl AppState {
         };
         if self.demo_toolbar_left2 {
             let view = mk_demo(uzor::layout::ResizeEdge::E);
-            uzor::lm::build_toolbar(
+            uzor_framework::lm::build_toolbar(
                 &mut self.layout, &mut render, LayoutNodeId::ROOT,
                 "demo-toolbar-left2", &self.demo_toolbar_left2_h.clone(),
                 &view,
@@ -1419,7 +1419,7 @@ impl AppState {
         }
         if self.demo_toolbar_right {
             let view = mk_demo(uzor::layout::ResizeEdge::W);
-            uzor::lm::build_toolbar(
+            uzor_framework::lm::build_toolbar(
                 &mut self.layout, &mut render, LayoutNodeId::ROOT,
                 "demo-toolbar-right", &self.demo_toolbar_right_h.clone(),
                 &view,
@@ -1432,7 +1432,7 @@ impl AppState {
         }
         if self.demo_toolbar_bottom {
             let view = mk_demo(uzor::layout::ResizeEdge::N);
-            uzor::lm::build_toolbar(
+            uzor_framework::lm::build_toolbar(
                 &mut self.layout, &mut render, LayoutNodeId::ROOT,
                 "demo-toolbar-bottom", &self.demo_toolbar_bottom_h.clone(),
                 &view,
@@ -1461,7 +1461,7 @@ impl AppState {
                 overflow: uzor::types::OverflowMode::Clip,
                 content_height: 200.0,
             };
-            let _ = uzor::lm::build_sidebar(
+            let _ = uzor_framework::lm::build_sidebar(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -1484,7 +1484,7 @@ impl AppState {
                 overflow: uzor::types::OverflowMode::Clip,
                 content_height: 200.0,
             };
-            let _ = uzor::lm::build_sidebar(
+            let _ = uzor_framework::lm::build_sidebar(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -1506,7 +1506,7 @@ impl AppState {
                 overflow: uzor::types::OverflowMode::Clip,
                 content_height: 200.0,
             };
-            let _ = uzor::lm::build_sidebar(
+            let _ = uzor_framework::lm::build_sidebar(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -1538,7 +1538,7 @@ impl AppState {
                 content_height: est_content_h,
             };
             let sidebar_kind_value = sidebar_kind_from_index(self.sidebar_kind);
-            let _sidebar_node = uzor::lm::build_sidebar(
+            let _sidebar_node = uzor_framework::lm::build_sidebar(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -1704,7 +1704,7 @@ impl AppState {
                         sense: Sense::CLICK | Sense::HOVER | Sense::DRAG | Sense::SCROLL,
                     };
                     let slot = leaf_id.to_string();
-                    let _ = uzor::lm::build_blackbox_panel(
+                    let _ = uzor_framework::lm::build_blackbox_panel(
                         &mut self.layout, &mut render,
                         LayoutNodeId::ROOT, &slot, leaf_widget_id.clone(),
                         &mut bb_state, &mut view,
@@ -1716,7 +1716,7 @@ impl AppState {
                     self.watchlist = watchlist.into_inner();
                 } else {
                     
-                    let _ = uzor::lm::build_stub_panel(
+                    let _ = uzor_framework::lm::build_stub_panel(
                         &mut self.layout,
                         leaf_widget_id,
                         rect,
@@ -1893,7 +1893,7 @@ impl AppState {
                 ms.body_content_w = cw;
                 ms.body_content_h = ch;
             }
-            let _modal_node = uzor::lm::build_modal(
+            let _modal_node = uzor_framework::lm::build_modal(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -1985,7 +1985,7 @@ impl AppState {
                         for (i, (label, checked)) in items.iter().enumerate() {
                             let r = Rect::new(body_rect.x + 16.0, body_rect.y + 48.0 + i as f64 * 36.0, body_rect.width - 32.0, 28.0);
                             let cb_id = format!("settings-cb-{i}");
-                            uzor::ctx::draw_checkbox(
+                            uzor_framework::ctx::draw_checkbox(
                                 self.layout.ctx_mut(), &mut render,
                                 cb_id.as_str(), r, &layer,
                                 WidgetState::Normal,
@@ -2196,7 +2196,7 @@ impl AppState {
             let menu_h = items.len() as f64 * 28.0 + 16.0;
             let ctx_menu_rect = Rect::new(ctx_x, ctx_y, 170.0, menu_h);
             let mut ctx_menu_view = ContextMenuView { items: &items, target_id: None, title: None };
-            uzor::lm::build_context_menu(
+            uzor_framework::lm::build_context_menu(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -2367,7 +2367,7 @@ impl AppState {
                     overflow: uzor::types::OverflowMode::Clip,
                     submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
                 };
-                uzor::lm::build_dropdown(
+                uzor_framework::lm::build_dropdown(
                     &mut self.layout, &mut render,
                     LayoutNodeId::ROOT, "dd-popup-overlay", &self.dd_popup_h.clone(),
                     Rect::new(origin.0, origin.1, pw, ph), None,
@@ -2419,7 +2419,7 @@ impl AppState {
                         size_mode: uzor::types::SizeMode::AutoFit,
                         overflow: uzor::types::OverflowMode::Clip,
                     };
-                    let _ = uzor::lm::build_popup(
+                    let _ = uzor_framework::lm::build_popup(
                         &mut self.layout, &mut render,
                         LayoutNodeId::ROOT,
                         "demo-popup-overlay", &self.demo_popup_h.clone(),
@@ -2460,7 +2460,7 @@ impl AppState {
                         size_mode: uzor::types::SizeMode::AutoFit,
                         overflow: uzor::types::OverflowMode::Clip,
                     };
-                    let _ = uzor::lm::build_popup(
+                    let _ = uzor_framework::lm::build_popup(
                         &mut self.layout, &mut render,
                         LayoutNodeId::ROOT,
                         "demo-popup-overlay", &self.demo_popup_h.clone(),

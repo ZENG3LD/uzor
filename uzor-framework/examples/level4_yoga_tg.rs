@@ -97,7 +97,7 @@ impl App<NoPanel> for YogaTgApp {
 
             // Back button (left edge)
             render_state.with_render_context(|render| {
-                uzor::lm::build_button(
+                uzor_framework::lm::build_button(
                     layout,
                     render,
                     LayoutNodeId::ROOT,
@@ -111,7 +111,7 @@ impl App<NoPanel> for YogaTgApp {
 
             // Share button (right edge)
             render_state.with_render_context(|render| {
-                uzor::lm::build_button(
+                uzor_framework::lm::build_button(
                     layout,
                     render,
                     LayoutNodeId::ROOT,
@@ -136,7 +136,7 @@ impl App<NoPanel> for YogaTgApp {
             for (i, id) in tabs.iter().enumerate() {
                 let tab_x = bot_rect.x + i as f64 * tab_w + 4.0;
                 render_state.with_render_context(|render| {
-                    uzor::lm::build_button(
+                    uzor_framework::lm::build_button(
                         layout,
                         render,
                         LayoutNodeId::ROOT,
