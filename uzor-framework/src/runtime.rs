@@ -323,6 +323,11 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             // 4. begin_frame on render state (resets scene / cpu buffer).
             render_state.begin_frame();
 
+            // 4b. Publish frame timestamp into LayoutManager so builders
+            //     (chrome tooltip clock, animations) can read it without
+            //     the app passing it explicitly.
+            self.layout.set_frame_time_ms(self.start.elapsed().as_secs_f64() * 1000.0);
+
             // 5. User UI callback.
             self.app.ui(&mut self.layout, render_state);
 

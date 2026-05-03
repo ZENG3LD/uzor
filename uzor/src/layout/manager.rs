@@ -154,6 +154,13 @@ pub struct LayoutManager<P: DockPanel> {
     /// resolves to a `WidgetId` and gets back a high-level
     /// [`super::DispatchEvent`].
     dispatcher: super::ClickDispatcher,
+    /// Iterate every dock leaf and its solved screen-space rect.
+    ///
+    /// Use to drive per-leaf body rendering (`for (id, rect) in
+    /// layout.dock_leaves()`) without reaching into `panels()`.
+    /// (Pulled out of the impl block via inherent helpers below — this
+    /// field is just the runtime-published frame timestamp.)
+    pub(crate) frame_time_ms: f64,
     /// Per-frame overlay dismiss registry. Cleared by [`LayoutManager::begin_frame_widgets`].
     dismiss_frames: Vec<DismissFrame>,
 
@@ -199,6 +206,7 @@ impl<P: DockPanel> LayoutManager<P> {
             ctx: ContextManager::new(LayoutNode::new("__layout_root__")),
             dispatcher: super::ClickDispatcher::new(),
             dismiss_frames: Vec::new(),
+            frame_time_ms: 0.0,
             modals: HashMap::new(),
             popups: HashMap::new(),
             dropdowns: HashMap::new(),
@@ -444,6 +452,36 @@ impl<P: DockPanel> LayoutManager<P> {
     pub fn toolbar_mut(&mut self, h: &ToolbarHandle) -> &mut ToolbarState {
         self.toolbars.get_mut(&h.id)
             .expect("toolbar handle invalidated — state dropped from registry")
+    }
+
+    /// Frame timestamp in milliseconds since runtime start.  Set by the
+    /// framework runtime once per frame; defaults to `0.0` when running
+    /// outside `uzor-framework`.
+    pub fn frame_time_ms(&self) -> f64 {
+        self.frame_time_ms
+    }
+
+    /// Set the frame timestamp.  Called by `uzor-framework::Runtime` at
+    /// the top of each frame.  Apps should not call this directly.
+    pub fn set_frame_time_ms(&mut self, t: f64) {
+        self.frame_time_ms = t;
+    }
+
+    /// Cursor position in screen coordinates, if the pointer is inside
+    /// the window.  Forwarded from the input coordinator for builder
+    /// convenience (`chrome` reads it for tooltip routing).
+    pub fn cursor_pos(&self) -> Option<(f64, f64)> {
+        self.ctx.input.pointer_pos()
+    }
+
+    /// Iterate every dock leaf and its solved screen-space rect.
+    ///
+    /// Use to drive per-leaf body rendering (`for (id, rect) in
+    /// layout.dock_leaves()`) without reaching into `panels()`.
+    pub fn dock_leaves(&self) -> impl Iterator<Item = (crate::docking::panels::LeafId, Rect)> + '_ {
+        self.panels.panel_rects().iter().map(|(&id, &pr)| {
+            (id, panel_rect_to_rect(pr))
+        })
     }
 
     /// Read-only access to a sidebar's state via its typed handle.
@@ -780,6 +818,67 @@ impl<P: DockPanel> LayoutManager<P> {
     /// Rect for a named overlay entry, or `None` if not present.
     pub fn rect_for_overlay(&self, id: &str) -> Option<Rect> {
         self.overlays.get(id).map(|e| e.rect)
+    }
+
+    // ------------------------------------------------------------------
+    // Handle-friendly overlay rect lookups (chrome-aware body rect)
+    // ------------------------------------------------------------------
+
+    /// Full overlay rect for a modal handle (frame, including chrome strip).
+    pub fn modal_rect(&self, h: &ModalHandle) -> Option<Rect> {
+        self.rect_for_overlay(h.id_str())
+    }
+
+    /// Full overlay rect for a popup handle.
+    pub fn popup_rect(&self, h: &PopupHandle) -> Option<Rect> {
+        self.rect_for_overlay(h.id_str())
+    }
+
+    /// Full overlay rect for a dropdown handle.
+    pub fn dropdown_rect(&self, h: &DropdownHandle) -> Option<Rect> {
+        self.rect_for_overlay(h.id_str())
+    }
+
+    /// Full overlay rect for a context-menu handle.
+    pub fn context_menu_rect(&self, h: &ContextMenuHandle) -> Option<Rect> {
+        self.rect_for_overlay(h.id_str())
+    }
+
+    /// Body rect of a modal — overlay rect minus header / footer / padding,
+    /// using default `ModalSettings` + `WithHeader` geometry.
+    ///
+    /// Apps that override `kind` / `settings` on the modal builder should
+    /// compute the body rect themselves using the matching helpers in
+    /// `uzor::ui::widgets::composite::modal::render::body_rect`.
+    pub fn modal_body_rect(&self, h: &ModalHandle) -> Option<Rect> {
+        use crate::ui::widgets::composite::modal::{
+            render::body_rect as modal_body_rect_fn, settings::ModalSettings,
+            types::{BackdropKind, ModalRenderKind, ModalView},
+        };
+        let frame = self.modal_rect(h)?;
+        let view = ModalView {
+            title: None,
+            tabs: &[],
+            footer_buttons: &[],
+            wizard_pages: &[],
+            backdrop: BackdropKind::Dim,
+            overflow: crate::types::OverflowMode::Clip,
+            resizable: false,
+        };
+        let settings = ModalSettings::default();
+        let kind = ModalRenderKind::WithHeader;
+        Some(modal_body_rect_fn(frame, &view, &settings, &kind))
+    }
+
+    /// Body rect of a popup — overlay rect minus padding, using default
+    /// `PopupSettings`.
+    pub fn popup_body_rect(&self, h: &PopupHandle) -> Option<Rect> {
+        use crate::ui::widgets::composite::popup::{
+            render::body_rect as popup_body_rect_fn, settings::PopupSettings,
+        };
+        let frame = self.popup_rect(h)?;
+        let settings = PopupSettings::default();
+        Some(popup_body_rect_fn(frame, &settings))
     }
 
     /// Rect for a named edge slot, or `None` if not present or not yet solved.

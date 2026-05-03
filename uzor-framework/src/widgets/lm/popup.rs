@@ -5,7 +5,7 @@
 //! ```ignore
 //! let h = layout.add_popup("color-picker");
 //! lm::popup(&h)
-//!     .origin((100.0, 200.0))
+//!     .anchor_to("toolbar:tb-help") // auto-resolve from coord
 //!     .build(&mut layout, &mut render);
 //! ```
 
@@ -22,17 +22,19 @@ use uzor::ui::widgets::composite::popup::types::{
 
 /// Chainable builder for a popup overlay.
 pub struct PopupBuilder<'a> {
-    handle:       &'a PopupHandle,
-    parent:       LayoutNodeId,
-    slot_id:      Option<&'a str>,
-    overlay_rect: Option<Rect>,
-    anchor:       Option<Rect>,
-    origin:       (f64, f64),
-    backdrop:     BackdropKind,
-    size_mode:    SizeMode,
-    overflow:     OverflowMode,
-    settings:     Option<PopupSettings>,
-    kind:         PopupRenderKind,
+    handle:           &'a PopupHandle,
+    parent:           LayoutNodeId,
+    slot_id:          Option<&'a str>,
+    overlay_rect:     Option<Rect>,
+    anchor:           Option<Rect>,
+    /// Pending widget-id lookup — resolved at `.build()` via coord.
+    anchor_widget_id: Option<&'a str>,
+    origin:           (f64, f64),
+    backdrop:         BackdropKind,
+    size_mode:        SizeMode,
+    overflow:         OverflowMode,
+    settings:         Option<PopupSettings>,
+    kind:             PopupRenderKind,
 }
 
 /// Entry point: start a `PopupBuilder` for the given handle.
@@ -45,16 +47,17 @@ impl<'a> PopupBuilder<'a> {
     pub fn new(handle: &'a PopupHandle) -> Self {
         Self {
             handle,
-            parent:       LayoutNodeId::ROOT,
-            slot_id:      None,
-            overlay_rect: None,
-            anchor:       None,
-            origin:       (0.0, 0.0),
-            backdrop:     BackdropKind::default(),
-            size_mode:    SizeMode::default(),
-            overflow:     OverflowMode::Clip,
-            settings:     None,
-            kind:         PopupRenderKind::Plain,
+            parent:           LayoutNodeId::ROOT,
+            slot_id:          None,
+            overlay_rect:     None,
+            anchor:           None,
+            anchor_widget_id: None,
+            origin:           (0.0, 0.0),
+            backdrop:         BackdropKind::default(),
+            size_mode:        SizeMode::default(),
+            overflow:         OverflowMode::Clip,
+            settings:         None,
+            kind:             PopupRenderKind::Plain,
         }
     }
 
@@ -67,12 +70,20 @@ impl<'a> PopupBuilder<'a> {
     /// Top-left screen origin of the popup (default `(0, 0)`).
     pub fn origin(mut self, o: (f64, f64)) -> Self { self.origin = o; self }
 
-    /// Explicit overlay rect override (default: derived from origin +
+    /// Explicit overlay rect override (default: derived from origin / anchor +
     /// `size_mode`).
     pub fn rect(mut self, r: Rect) -> Self { self.overlay_rect = Some(r); self }
 
     /// Anchor rect used for smart re-positioning on viewport resize.
     pub fn anchor(mut self, r: Rect) -> Self { self.anchor = Some(r); self }
+
+    /// Auto-anchor to a registered widget by id — at `.build()` time the
+    /// builder looks up the widget's rect via the input coordinator and
+    /// uses it as the anchor.
+    pub fn anchor_to(mut self, widget_id: &'a str) -> Self {
+        self.anchor_widget_id = Some(widget_id);
+        self
+    }
 
     /// Backdrop fill behind the popup (default `None`).
     pub fn backdrop(mut self, b: BackdropKind) -> Self { self.backdrop = b; self }
@@ -99,17 +110,34 @@ impl<'a> PopupBuilder<'a> {
             .map(str::to_owned)
             .unwrap_or_else(|| self.handle.id_str().to_string());
 
+        // Resolve anchor: explicit `.anchor(...)` wins; otherwise look up
+        // the widget rect via coord using `.anchor_to(id)`.
+        let resolved_anchor: Option<Rect> = self.anchor.or_else(|| {
+            self.anchor_widget_id.and_then(|wid| {
+                layout.ctx().input.widget_rect(&uzor::types::unsafe_widget_id(wid))
+            })
+        });
+
+        // If origin wasn't explicitly set, anchor it below the resolved anchor.
+        let resolved_origin = if self.origin == (0.0, 0.0) {
+            resolved_anchor
+                .map(|a| (a.x, a.y + a.height))
+                .unwrap_or(self.origin)
+        } else {
+            self.origin
+        };
+
         let overlay_rect = self.overlay_rect.unwrap_or_else(|| {
             let (w, h) = match self.size_mode {
                 SizeMode::Fixed(w, h) => (w, h),
                 _                     => (240.0, 200.0),
             };
-            Rect::new(self.origin.0, self.origin.1, w, h)
+            Rect::new(resolved_origin.0, resolved_origin.1, w, h)
         });
 
         let mut view = PopupView {
-            origin:    self.origin,
-            anchor:    self.anchor,
+            origin:    resolved_origin,
+            anchor:    resolved_anchor,
             backdrop:  self.backdrop,
             kind:      PopupViewKind::Plain,
             size_mode: self.size_mode,
@@ -125,7 +153,7 @@ impl<'a> PopupBuilder<'a> {
             &slot_id,
             self.handle,
             overlay_rect,
-            self.anchor,
+            resolved_anchor,
             &mut view,
             &settings,
             self.kind,

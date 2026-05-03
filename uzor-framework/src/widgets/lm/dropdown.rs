@@ -28,6 +28,8 @@ pub struct DropdownBuilder<'a> {
     slot_id:          Option<&'a str>,
     overlay_rect:     Option<Rect>,
     anchor:           Option<Rect>,
+    /// Pending widget-id lookup — resolved at `.build()` via coord.
+    anchor_widget_id: Option<&'a str>,
     position_override:Option<(f64, f64)>,
     open:             bool,
     items:            &'a [DropdownItem<'a>],
@@ -55,6 +57,7 @@ impl<'a> DropdownBuilder<'a> {
             slot_id:           None,
             overlay_rect:      None,
             anchor:            None,
+            anchor_widget_id:  None,
             position_override: None,
             open:              true,
             items:             &[],
@@ -77,6 +80,15 @@ impl<'a> DropdownBuilder<'a> {
 
     /// Anchor rect of the trigger button (re-positioning on viewport resize).
     pub fn anchor(mut self, r: Rect) -> Self { self.anchor = Some(r); self }
+
+    /// Auto-anchor to a registered widget by id — at `.build()` time the
+    /// builder looks up the widget's rect via the input coordinator and
+    /// uses it as the anchor.  Equivalent to calling `.anchor(rect)` with
+    /// the rect resolved from `coord.widget_rect(id)`.
+    pub fn anchor_to(mut self, widget_id: &'a str) -> Self {
+        self.anchor_widget_id = Some(widget_id);
+        self
+    }
 
     /// Explicit screen-space origin override (takes priority over anchor).
     pub fn origin(mut self, o: (f64, f64)) -> Self { self.position_override = Some(o); self }
@@ -127,9 +139,17 @@ impl<'a> DropdownBuilder<'a> {
             .map(str::to_owned)
             .unwrap_or_else(|| self.handle.id_str().to_string());
 
+        // Resolve anchor: explicit `.anchor(...)` wins; otherwise look up
+        // the widget rect via coord using `.anchor_to(id)`.
+        let resolved_anchor: Option<Rect> = self.anchor.or_else(|| {
+            self.anchor_widget_id.and_then(|wid| {
+                layout.ctx().input.widget_rect(&uzor::types::unsafe_widget_id(wid))
+            })
+        });
+
         let overlay_rect = self.overlay_rect.unwrap_or_else(|| {
             let (x, y) = self.position_override
-                .or_else(|| self.anchor.map(|a| (a.x, a.y + a.height)))
+                .or_else(|| resolved_anchor.map(|a| (a.x, a.y + a.height)))
                 .unwrap_or((0.0, 0.0));
             let (w, h) = match self.size_mode {
                 SizeMode::Fixed(w, h) => (w, h),
@@ -139,7 +159,7 @@ impl<'a> DropdownBuilder<'a> {
         });
 
         let mut view = DropdownView {
-            anchor:            self.anchor,
+            anchor:            resolved_anchor,
             position_override: self.position_override,
             open:              self.open,
             kind:              DropdownViewKind::Flat {
@@ -162,7 +182,7 @@ impl<'a> DropdownBuilder<'a> {
             &slot_id,
             self.handle,
             overlay_rect,
-            self.anchor,
+            resolved_anchor,
             &mut view,
             &settings,
             self.kind,

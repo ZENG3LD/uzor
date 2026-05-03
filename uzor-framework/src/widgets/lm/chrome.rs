@@ -92,6 +92,19 @@ impl<'a> ChromeBuilder<'a> {
         layout: &mut LayoutManager<P>,
         render: &mut dyn RenderContext,
     ) -> Option<ChromeNode> {
+        // If cursor / time weren't explicitly set, read them from the
+        // layout manager — runtime publishes them each frame.
+        let (cx, cy) = if self.cursor_x == 0.0 && self.cursor_y == 0.0 {
+            layout.cursor_pos().unwrap_or((self.cursor_x, self.cursor_y))
+        } else {
+            (self.cursor_x, self.cursor_y)
+        };
+        let time_ms = if self.time_ms == 0.0 {
+            layout.frame_time_ms()
+        } else {
+            self.time_ms
+        };
+
         let view = ChromeView {
             tabs:                  self.tabs,
             active_tab_id:         self.active_tab_id,
@@ -100,9 +113,9 @@ impl<'a> ChromeBuilder<'a> {
             show_new_window_btn:   self.show_new_window_btn,
             show_close_window_btn: self.show_close_window_btn,
             is_maximized:          self.is_maximized,
-            cursor_x:              self.cursor_x,
-            cursor_y:              self.cursor_y,
-            time_ms:               self.time_ms,
+            cursor_x:              cx,
+            cursor_y:              cy,
+            time_ms,
         };
 
         let settings = self.settings.unwrap_or_default();

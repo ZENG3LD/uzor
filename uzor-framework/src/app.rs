@@ -94,6 +94,142 @@ pub trait App<P: DockPanel = NoPanel>: Sized + 'static {
     ///
     /// Use for cleanup: flush pending I/O, save state, etc.
     fn shutdown(&mut self, _layout: &mut LayoutManager<P>) {}
+
+    // ─── L4 typed dispatch hooks ──────────────────────────────────────────
+    //
+    // Optional callbacks the runtime invokes after `App::ui` once per frame
+    // for each pointer event.  Override the ones your app needs; defaults
+    // do nothing.  The runtime decodes the click via
+    // `LayoutManager::handle_click` and routes the resulting `ClickOutcome`
+    // here so the app does not write a giant `match` over `DispatchEvent`.
+    //
+    // For any event not covered below the runtime falls back to
+    // [`Self::on_dispatch`] with the raw `DispatchEvent`.
+
+    /// User dismissed an overlay by clicking outside it.
+    fn on_dismiss(&mut self,
+        _layout: &mut LayoutManager<P>,
+        _overlay: uzor::layout::OverlayHandle,
+    ) {}
+
+    /// User clicked the close-X / a footer button on a modal.
+    fn on_modal_close(&mut self,
+        _layout: &mut LayoutManager<P>,
+        _modal: uzor::layout::ModalHandle,
+    ) {}
+
+    /// User clicked a tab inside a modal.
+    fn on_modal_tab(&mut self,
+        _layout: &mut LayoutManager<P>,
+        _modal: uzor::layout::ModalHandle,
+        _index: usize,
+    ) {}
+
+    /// User clicked an item in a dropdown (`item_id` is the stable id from
+    /// the `DropdownItem` row).
+    fn on_dropdown_item(&mut self,
+        _layout: &mut LayoutManager<P>,
+        _dropdown: uzor::layout::DropdownHandle,
+        _item_id: &str,
+    ) {}
+
+    /// User clicked an item in a toolbar (`item_id` is the stable id from
+    /// the `ToolbarItem` row).
+    fn on_toolbar_item(&mut self,
+        _layout: &mut LayoutManager<P>,
+        _toolbar: uzor::layout::ToolbarHandle,
+        _item_id: &str,
+    ) {}
+
+    /// User clicked an item in a context menu.
+    fn on_context_menu_item(&mut self,
+        _layout: &mut LayoutManager<P>,
+        _menu: uzor::layout::ContextMenuHandle,
+        _index: usize,
+    ) {}
+
+    /// User clicked a chrome tab.  `tab_index` is the position in the
+    /// `tabs` slice passed to `lm::chrome().tabs(...)`.
+    fn on_chrome_tab(&mut self,
+        _layout: &mut LayoutManager<P>,
+        _tab_index: usize,
+    ) {}
+
+    /// User clicked one of the chrome window-control buttons (min / max
+    /// / close / new-tab / menu / etc.).
+    fn on_chrome_control(&mut self,
+        _layout: &mut LayoutManager<P>,
+        _control: uzor::layout::ChromeWindowControl,
+    ) {}
+
+    /// Catch-all for `DispatchEvent` variants without a typed hook above.
+    /// Override when the typed callbacks aren't enough.
+    fn on_dispatch(&mut self,
+        _layout: &mut LayoutManager<P>,
+        _event: uzor::layout::DispatchEvent,
+    ) {}
+
+    /// Catch-all for clicks that landed on a coordinator-registered widget
+    /// but did not match any dispatcher pattern (raw widget id).
+    fn on_unhandled_click(&mut self,
+        _layout: &mut LayoutManager<P>,
+        _widget_id: &uzor::types::WidgetId,
+    ) {}
+
+    // ─── Click routing entry point ────────────────────────────────────────
+
+    /// Resolve a screen-space click via `LayoutManager::handle_click` and
+    /// fan it out to the typed `on_*` callbacks above.  Apps call this from
+    /// inside `ui()` (or from their input bridge) instead of writing a
+    /// giant `match` on `ClickOutcome` / `DispatchEvent`.
+    ///
+    /// Returns `true` when at least one typed handler was invoked.
+    fn route_click(&mut self,
+        layout: &mut LayoutManager<P>,
+        x: f64,
+        y: f64,
+    ) -> bool {
+        use uzor::layout::{ClickOutcome, DispatchEvent};
+        match layout.handle_click((x, y)) {
+            ClickOutcome::DismissOverlay(handle) => {
+                self.on_dismiss(layout, handle);
+                true
+            }
+            ClickOutcome::DispatchEvent(ev) => {
+                match ev {
+                    DispatchEvent::ModalCloseRequested(h) => {
+                        self.on_modal_close(layout, h);
+                    }
+                    DispatchEvent::ModalTabClicked { modal, index } => {
+                        self.on_modal_tab(layout, modal, index);
+                    }
+                    DispatchEvent::DropdownItemClicked { dropdown, ref item_id } => {
+                        self.on_dropdown_item(layout, dropdown.clone(), item_id);
+                    }
+                    DispatchEvent::ToolbarItemClicked { toolbar, ref item_id } => {
+                        self.on_toolbar_item(layout, toolbar.clone(), item_id);
+                    }
+                    DispatchEvent::ContextMenuItemClicked { menu, item_index } => {
+                        self.on_context_menu_item(layout, menu, item_index);
+                    }
+                    DispatchEvent::ChromeTabClicked { tab_index } => {
+                        self.on_chrome_tab(layout, tab_index);
+                    }
+                    DispatchEvent::ChromeWindowControl { control } => {
+                        self.on_chrome_control(layout, control);
+                    }
+                    DispatchEvent::Unhandled(ref id) => {
+                        self.on_unhandled_click(layout, id);
+                    }
+                    other => {
+                        self.on_dispatch(layout, other);
+                    }
+                }
+                true
+            }
+            ClickOutcome::Unhandled { .. } => false,
+        }
+    }
 }
 
 // ── AppConfig ─────────────────────────────────────────────────────────────────

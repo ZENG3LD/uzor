@@ -22,17 +22,18 @@ use uzor::ui::widgets::composite::context_menu::types::{
 
 /// Chainable builder for a context menu overlay.
 pub struct ContextMenuBuilder<'a> {
-    handle:       &'a ContextMenuHandle,
-    parent:       LayoutNodeId,
-    slot_id:      Option<&'a str>,
-    overlay_rect: Option<Rect>,
-    anchor:       Option<Rect>,
-    origin:       (f64, f64),
-    items:        &'a [ContextMenuItem<'a>],
-    target_id:    Option<&'a str>,
-    title:        Option<&'a str>,
-    settings:     Option<ContextMenuSettings>,
-    kind:         ContextMenuRenderKind<'a>,
+    handle:           &'a ContextMenuHandle,
+    parent:           LayoutNodeId,
+    slot_id:          Option<&'a str>,
+    overlay_rect:     Option<Rect>,
+    anchor:           Option<Rect>,
+    anchor_widget_id: Option<&'a str>,
+    origin:           (f64, f64),
+    items:            &'a [ContextMenuItem<'a>],
+    target_id:        Option<&'a str>,
+    title:            Option<&'a str>,
+    settings:         Option<ContextMenuSettings>,
+    kind:             ContextMenuRenderKind<'a>,
 }
 
 /// Entry point: start a `ContextMenuBuilder`.
@@ -44,16 +45,17 @@ impl<'a> ContextMenuBuilder<'a> {
     pub fn new(handle: &'a ContextMenuHandle) -> Self {
         Self {
             handle,
-            parent:       LayoutNodeId::ROOT,
-            slot_id:      None,
-            overlay_rect: None,
-            anchor:       None,
-            origin:       (0.0, 0.0),
-            items:        &[],
-            target_id:    None,
-            title:        None,
-            settings:     None,
-            kind:         ContextMenuRenderKind::Default,
+            parent:           LayoutNodeId::ROOT,
+            slot_id:          None,
+            overlay_rect:     None,
+            anchor:           None,
+            anchor_widget_id: None,
+            origin:           (0.0, 0.0),
+            items:            &[],
+            target_id:        None,
+            title:            None,
+            settings:         None,
+            kind:             ContextMenuRenderKind::Default,
         }
     }
 
@@ -62,6 +64,13 @@ impl<'a> ContextMenuBuilder<'a> {
     pub fn origin(mut self, o: (f64, f64)) -> Self { self.origin = o; self }
     pub fn rect(mut self, r: Rect) -> Self { self.overlay_rect = Some(r); self }
     pub fn anchor(mut self, r: Rect) -> Self { self.anchor = Some(r); self }
+
+    /// Auto-anchor to a registered widget by id — at `.build()` time the
+    /// builder looks up the widget's rect via the input coordinator.
+    pub fn anchor_to(mut self, widget_id: &'a str) -> Self {
+        self.anchor_widget_id = Some(widget_id);
+        self
+    }
     pub fn items(mut self, items: &'a [ContextMenuItem<'a>]) -> Self { self.items = items; self }
     pub fn target_id(mut self, id: &'a str) -> Self { self.target_id = Some(id); self }
     pub fn title(mut self, t: &'a str) -> Self { self.title = Some(t); self }
@@ -77,10 +86,23 @@ impl<'a> ContextMenuBuilder<'a> {
             .map(str::to_owned)
             .unwrap_or_else(|| self.handle.id_str().to_string());
 
+        let resolved_anchor: Option<Rect> = self.anchor.or_else(|| {
+            self.anchor_widget_id.and_then(|wid| {
+                layout.ctx().input.widget_rect(&uzor::types::unsafe_widget_id(wid))
+            })
+        });
+
         // Default size based on kind: Default (180x ~item_h*N), Minimal (160x ...).
         // We approximate with a fixed (180, 200) — composite re-measures internally.
         let overlay_rect = self.overlay_rect.unwrap_or_else(|| {
-            Rect::new(self.origin.0, self.origin.1, 180.0, 240.0)
+            let (x, y) = if self.origin == (0.0, 0.0) {
+                resolved_anchor
+                    .map(|a| (a.x, a.y + a.height))
+                    .unwrap_or(self.origin)
+            } else {
+                self.origin
+            };
+            Rect::new(x, y, 180.0, 240.0)
         });
 
         let mut view = ContextMenuView {
@@ -98,7 +120,7 @@ impl<'a> ContextMenuBuilder<'a> {
             &slot_id,
             self.handle,
             overlay_rect,
-            self.anchor,
+            resolved_anchor,
             &mut view,
             &settings,
             &self.kind,
