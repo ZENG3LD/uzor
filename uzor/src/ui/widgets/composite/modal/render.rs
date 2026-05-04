@@ -1027,18 +1027,13 @@ pub fn register_body_overflow(
         crate::types::OverflowMode::Scrollbar => crate::types::OverflowMode::Scrollbar,
         crate::types::OverflowMode::Chevrons  => crate::types::OverflowMode::Chevrons,
         crate::types::OverflowMode::Compress  => {
+            // Compute factor down to a generous floor (0.4) so the squeeze
+            // can absorb large overflows without falling back to chevrons.
             let factor = compute_compress_factor(
-                state.body_content_w, state.body_content_h, body, 0.6,
+                state.body_content_w, state.body_content_h, body, 0.4,
             );
             state.body_compress_factor = factor;
-            // After applying factor, does content still overflow?
-            let post_w = state.body_content_w * factor.sx;
-            let post_h = state.body_content_h * factor.sy;
-            if post_w > body.width + 0.5 || post_h > body.height + 0.5 {
-                crate::types::OverflowMode::Chevrons
-            } else {
-                crate::types::OverflowMode::Compress
-            }
+            crate::types::OverflowMode::Compress
         }
         // Clip upgrades to Chevrons when the actual content overflows
         // (post-resize fallback).
@@ -1053,10 +1048,20 @@ pub fn register_body_overflow(
 
     match effective {
         crate::types::OverflowMode::Scrollbar => {
-            if let Some(track) = register_scrollbar_helper(
-                coord, modal_id, body, &scroll, ScrollAxis::Vertical, &layer,
-            ) {
-                state.body_scroll_track = Some(track);
+            // Pick whichever axis overflows. If both overflow, register
+            // both tracks so the user can scroll horizontally and vertically.
+            let o = scroll.overflows(body.width, body.height);
+            if o.vertical {
+                if let Some(track) = register_scrollbar_helper(
+                    coord, modal_id, body, &scroll, ScrollAxis::Vertical, &layer,
+                ) {
+                    state.body_scroll_track = Some(track);
+                }
+            }
+            if o.horizontal {
+                let _ = register_scrollbar_helper(
+                    coord, modal_id, body, &scroll, ScrollAxis::Horizontal, &layer,
+                );
             }
         }
         crate::types::OverflowMode::Chevrons => {
