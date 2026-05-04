@@ -37,6 +37,9 @@ use uzor::framework::render_control::RenderControl;
 /// Thin adapter that implements `RenderControl` by delegating to `&mut RenderHub`.
 struct HubControl<'a> {
     hub: &'a mut RenderHub,
+    fps_ema:           f32,
+    last_frame_time_ms: f32,
+    frame_count:       u64,
 }
 
 impl<'a> RenderControl for HubControl<'a> {
@@ -67,6 +70,9 @@ impl<'a> RenderControl for HubControl<'a> {
     fn set_vsync(&mut self, on: bool) {
         self.hub.set_vsync(on);
     }
+    fn measured_fps(&self) -> f32       { self.fps_ema }
+    fn last_frame_time_ms(&self) -> f32 { self.last_frame_time_ms }
+    fn frame_count(&self) -> u64        { self.frame_count }
 }
 
 // ── ManagerError ──────────────────────────────────────────────────────────────
@@ -210,6 +216,11 @@ pub struct Manager<A: App<P>, P: DockPanel> {
     /// Live tray handle kept alive for the manager's lifetime.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) tray: Option<crate::tray::TrayHandle>,
+    // ── Frame metrics (EMA, mlc pattern) ──
+    pub(crate) fps_ema:           f32,
+    pub(crate) last_frame_time_ms: f32,
+    pub(crate) frame_count:       u64,
+    pub(crate) last_frame_instant: std::time::Instant,
     _phantom: std::marker::PhantomData<P>,
 }
 
@@ -237,6 +248,10 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             tray_spec: None,
             #[cfg(not(target_arch = "wasm32"))]
             tray: None,
+            fps_ema: 60.0,
+            last_frame_time_ms: 16.0,
+            frame_count: 0,
+            last_frame_instant: std::time::Instant::now(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -638,6 +653,18 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         let now_ms   = now_secs * 1000.0;
         let msaa     = self.msaa_samples();
 
+        // ── Frame metrics (EMA, mlc pattern: α = 0.1) ──
+        let now_inst = std::time::Instant::now();
+        let dt = now_inst.duration_since(self.last_frame_instant);
+        self.last_frame_instant = now_inst;
+        let dt_ms = dt.as_secs_f64() * 1000.0;
+        if dt_ms > 0.1 && dt_ms < 1000.0 {
+            let instant_fps = 1000.0 / dt_ms;
+            self.fps_ema = (self.fps_ema as f64 * 0.9 + instant_fps * 0.1) as f32;
+            self.last_frame_time_ms = dt_ms as f32;
+        }
+        self.frame_count = self.frame_count.wrapping_add(1);
+
         // Init hook — runs once per window before its first frame.
         if let Some(pw) = self.windows.get_mut(&id) {
             if !pw.initialised {
@@ -672,8 +699,11 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 let layout = &mut pw.layout;
                 let render_state = &mut pw.render_state;
                 let app = &mut self.app;
+                let fps_ema = self.fps_ema;
+                let last_frame_time_ms = self.last_frame_time_ms;
+                let frame_count = self.frame_count;
                 let hub = self.hub.as_mut().expect("hub initialised");
-                let mut hub_ctrl = HubControl { hub };
+                let mut hub_ctrl = HubControl { hub, fps_ema, last_frame_time_ms, frame_count };
                 render_state.with_render_context(|render_ctx| {
                     let mut ctx = WindowCtx::<P> {
                         key,

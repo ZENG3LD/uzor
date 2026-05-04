@@ -21,4 +21,17 @@ pub trait RenderControl {
 
     fn vsync(&self) -> bool;
     fn set_vsync(&mut self, on: bool);
+
+    /// Current measured FPS (smoothed via EMA, α=0.1, like mlc).
+    /// Updated by the runtime once per frame from frame timing.
+    /// Default: returns 0.0 (runtimes that don't track this).
+    fn measured_fps(&self) -> f32 { 0.0 }
+
+    /// Last frame time in milliseconds (smoothed via EMA).
+    /// Default: returns 0.0.
+    fn last_frame_time_ms(&self) -> f32 { 0.0 }
+
+    /// Total frames rendered since the runtime started.
+    /// Default: returns 0.
+    fn frame_count(&self) -> u64 { 0 }
 }

@@ -71,6 +71,9 @@ impl App<NoPanel> for DashboardApp {
         let vsync_on       = win.render_control.vsync();
         let msaa           = win.render_control.msaa_samples();
         let fps            = win.render_control.fps_limit();
+        let measured_fps   = win.render_control.measured_fps();
+        let frame_time_ms  = win.render_control.last_frame_time_ms();
+        let frame_count    = win.render_control.frame_count();
 
         // ── Chrome strip ──────────────────────────────────────────────────────
         let dock = win.layout.last_solved()
@@ -257,6 +260,35 @@ impl App<NoPanel> for DashboardApp {
             let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 1.0 };
             cy += 1.0 + gap;
             uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep3"), r).build(layout, render);
+
+            // ── Metrics block (live) ────────────────────────────────────
+            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 20.0 };
+            cy += 20.0 + 2.0;
+            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:metrics_lbl"), r, "Metrics")
+                .build(layout, render);
+
+            let backend_line = format!("Backend: {}", active_backend.label());
+            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 18.0 };
+            cy += 18.0 + 2.0;
+            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:metrics_backend"), r, backend_line.as_str())
+                .build(layout, render);
+
+            let fps_line = format!("FPS: {:.1}  ({:.2} ms)", measured_fps, frame_time_ms);
+            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 18.0 };
+            cy += 18.0 + 2.0;
+            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:metrics_fps"), r, fps_line.as_str())
+                .build(layout, render);
+
+            let count_line = format!("Frames: {}", frame_count);
+            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 18.0 };
+            cy += 18.0 + gap;
+            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:metrics_count"), r, count_line.as_str())
+                .build(layout, render);
+
+            // Sep
+            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 1.0 };
+            cy += 1.0 + gap;
+            uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep_metrics"), r).build(layout, render);
 
             // FPS
             let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 20.0 };

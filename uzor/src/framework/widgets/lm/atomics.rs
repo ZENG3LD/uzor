@@ -24,12 +24,22 @@ use crate::ui::widgets::atomic::button::style::{ButtonStyle, DefaultButtonStyle}
 use crate::ui::widgets::atomic::button::settings::ButtonSettings;
 
 struct StyledButtonTheme {
+    bg_normal:               String,
     bg_hover:                String,
     bg_active:               String,
     bg_pressed:              String,
+    bg_disabled:             String,
     text_normal:             String,
     text_hover:              String,
     text_active:             String,
+    text_disabled:           String,
+    icon_normal:             String,
+    icon_hover:              String,
+    icon_active:             String,
+    icon_disabled:           String,
+    border_normal:           String,
+    border_hover:            String,
+    border_focused:          String,
     accent:                  String,
     danger:                  String,
     success:                 String,
@@ -43,25 +53,40 @@ struct StyledButtonTheme {
 
 impl StyledButtonTheme {
     fn from_styles(s: &StyleManager) -> Self {
-        let accent    = s.color_or_owned("accent",   "#2962ff");
-        let accent_dim = s.color_or_owned("accent_dim", "rgba(41,98,255,0.15)");
-        let fg_0      = s.color_or_owned("fg_0",     "#ffffff");
-        let fg_1      = s.color_or_owned("fg_1",     "#d1d5db");
-        let error_c   = s.color_or_owned("error",    "#ef5350");
-        let ok_c      = s.color_or_owned("ok",       "#10b981");
-        let warn_c    = s.color_or_owned("warn",      "#f59e0b");
+        let accent     = s.color_or_owned("accent",         "#2962ff");
+        let accent_dim = s.color_or_owned("accent_dim",     "rgba(41,98,255,0.15)");
+        let surface    = s.color_or_owned("surface",        "transparent");
+        let surface_r  = s.color_or_owned("surface_raised", "#2a2e39");
+        let fg_0       = s.color_or_owned("fg_0",           "#ffffff");
+        let fg_1       = s.color_or_owned("fg_1",           "#d1d5db");
+        let fg_2       = s.color_or_owned("fg_2",           "#878B91");
+        let fg_3       = s.color_or_owned("fg_3",           "#555860");
+        let border_c   = s.color_or_owned("border",         "rgba(255,255,255,0.06)");
+        let error_c    = s.color_or_owned("error",          "#ef5350");
+        let ok_c       = s.color_or_owned("ok",             "#10b981");
+        let warn_c     = s.color_or_owned("warn",           "#f59e0b");
         Self {
+            bg_normal:               "transparent".into(),     // button text-on-surface by default
             bg_hover:                accent_dim.clone(),
             bg_active:               accent.clone(),
             bg_pressed:              accent.clone(),
+            bg_disabled:             surface.clone(),
             text_normal:             fg_1.clone(),
             text_hover:              fg_0.clone(),
             text_active:             fg_0.clone(),
+            text_disabled:           fg_3.clone(),
+            icon_normal:             fg_2.clone(),
+            icon_hover:              fg_0.clone(),
+            icon_active:             fg_0.clone(),
+            icon_disabled:           fg_3.clone(),
+            border_normal:           border_c.clone(),
+            border_hover:            border_c.clone(),
+            border_focused:          accent.clone(),
             accent:                  accent.clone(),
             danger:                  error_c,
             success:                 ok_c,
             warning:                 warn_c,
-            toolbar_item_bg_hover:   s.color_or_owned("surface_raised", "#2a2e39"),
+            toolbar_item_bg_hover:   surface_r.clone(),
             toolbar_item_bg_active:  accent.clone(),
             toolbar_item_text:       fg_1,
             toolbar_item_text_hover: fg_0,
@@ -71,25 +96,25 @@ impl StyledButtonTheme {
 }
 
 impl ButtonTheme for StyledButtonTheme {
-    fn button_bg_normal(&self)   -> &str { self.fallback.button_bg_normal() }
+    fn button_bg_normal(&self)   -> &str { &self.bg_normal }
     fn button_bg_hover(&self)    -> &str { &self.bg_hover }
     fn button_bg_pressed(&self)  -> &str { &self.bg_pressed }
     fn button_bg_active(&self)   -> &str { &self.bg_active }
-    fn button_bg_disabled(&self) -> &str { self.fallback.button_bg_disabled() }
+    fn button_bg_disabled(&self) -> &str { &self.bg_disabled }
 
     fn button_text_normal(&self)   -> &str { &self.text_normal }
     fn button_text_hover(&self)    -> &str { &self.text_hover }
     fn button_text_active(&self)   -> &str { &self.text_active }
-    fn button_text_disabled(&self) -> &str { self.fallback.button_text_disabled() }
+    fn button_text_disabled(&self) -> &str { &self.text_disabled }
 
-    fn button_icon_normal(&self)   -> &str { self.fallback.button_icon_normal() }
-    fn button_icon_hover(&self)    -> &str { self.fallback.button_icon_hover() }
-    fn button_icon_active(&self)   -> &str { self.fallback.button_icon_active() }
-    fn button_icon_disabled(&self) -> &str { self.fallback.button_icon_disabled() }
+    fn button_icon_normal(&self)   -> &str { &self.icon_normal }
+    fn button_icon_hover(&self)    -> &str { &self.icon_hover }
+    fn button_icon_active(&self)   -> &str { &self.icon_active }
+    fn button_icon_disabled(&self) -> &str { &self.icon_disabled }
 
-    fn button_border_normal(&self)  -> &str { self.fallback.button_border_normal() }
-    fn button_border_hover(&self)   -> &str { self.fallback.button_border_hover() }
-    fn button_border_focused(&self) -> &str { &self.accent }
+    fn button_border_normal(&self)  -> &str { &self.border_normal }
+    fn button_border_hover(&self)   -> &str { &self.border_hover }
+    fn button_border_focused(&self) -> &str { &self.border_focused }
 
     fn button_accent(&self)   -> &str { &self.accent }
     fn button_danger(&self)   -> &str { &self.danger }
