@@ -165,6 +165,7 @@ impl ChromeState {
     pub fn sync_hover_from_coordinator(&mut self, coord: &InputCoordinator, chrome_id: &str) {
         use super::types::ChromeHit;
         let hovered = coord.hovered_widget().map(|w| w.0.clone());
+        eprintln!("[SYNC] chrome={} hov={:?}", chrome_id, hovered);
         let tab_prefix      = format!("{chrome_id}:tab:");
         let close_prefix    = format!("{chrome_id}:tab_close:");
 

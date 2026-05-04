@@ -17,6 +17,7 @@ mod consume_chain;
 mod dispatcher;
 mod edge_panels;
 mod handles;
+pub mod host;
 mod manager;
 mod overlay_stack;
 mod solve;
@@ -25,10 +26,11 @@ mod types;
 mod z_layers;
 
 pub use chrome_slot::ChromeSlot;
+pub use host::WindowHost;
 pub use consume_chain::consume_event_chain;
 pub use dispatcher::{ChevronStepDirection, ChromeWindowControl, ClickDispatcher, DispatchEvent, EventBuilder, ResizeEdge};
 pub use edge_panels::{EdgePanels, EdgePlacement, EdgeSlot};
-pub use manager::{ClickOutcome, CompositeKind, CompositeRegistration, DismissFrame, LayoutManager};
+pub use manager::{ClickOutcome, CompositeKind, CompositeRegistration, DismissFrame, LayoutManager, PointerUpOutcome};
 pub use overlay_stack::{OverlayEntry, OverlayStack};
 pub use solve::solve_layout;
 pub use handles::{

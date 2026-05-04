@@ -367,6 +367,13 @@ impl InputCoordinator {
         self.input.pointer.pos
     }
 
+    /// Update the cursor position for the current frame without a full
+    /// `begin_frame` call.  Used by L3 `on_pointer_move/down/up` so
+    /// hover/hit-test sees the latest cursor without waiting for begin_frame.
+    pub fn set_cursor_pos(&mut self, x: f64, y: f64) {
+        self.input.pointer.pos = Some((x, y));
+    }
+
     /// Returns the parent `WidgetId` of a child widget, if any.
     pub fn widget_parent(&self, id: &WidgetId) -> Option<WidgetId> {
         self.widgets.iter().rev().find(|w| w.id == *id).and_then(|w| w.parent.clone())

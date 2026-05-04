@@ -1098,6 +1098,21 @@ impl<P: DockPanel> LayoutManager<P> {
 
 }
 
+// =============================================================================
+// PointerUpOutcome — per-frame snapshot returned by on_pointer_up
+// =============================================================================
+
+/// Per-frame snapshot returned by [`LayoutManager::on_pointer_up`].
+#[derive(Debug, Clone)]
+pub enum PointerUpOutcome {
+    /// Pointer-up dismissed an overlay. Runtime should not treat it as a click.
+    DismissedOverlay(super::handles::OverlayHandle),
+    /// Pointer-up resolved to a widget. Runtime may call `App::on_*` hooks.
+    Click(crate::types::WidgetId, super::DispatchEvent),
+    /// Pointer-up landed somewhere unhandled (outside widgets/overlays).
+    Unhandled,
+}
+
 /// Outcome of [`LayoutManager::handle_click`].
 ///
 /// The application inspects this enum to decide what to do with a click.
@@ -1113,6 +1128,154 @@ pub enum ClickOutcome {
     DispatchEvent(super::DispatchEvent),
     /// No widget was hit and no overlay was dismissed.
     Unhandled { pos: (f64, f64) },
+}
+
+impl<P: DockPanel> LayoutManager<P> {
+    // ------------------------------------------------------------------
+    // L3 pointer bridge — called by L4 instead of touching ctx directly
+    // ------------------------------------------------------------------
+
+    /// Push a pointer-move event into the coordinator's pointer state.
+    pub fn on_pointer_move(&mut self, x: f64, y: f64) {
+        self.ctx.input.set_cursor_pos(x, y);
+    }
+
+    /// Push a pointer-down event. No-op for coordinator; exposed for symmetry.
+    pub fn on_pointer_down(&mut self, x: f64, y: f64) {
+        self.ctx.input.set_cursor_pos(x, y);
+    }
+
+    /// Push a pointer-up event, run hit-test + dispatch, and return the outcome.
+    pub fn on_pointer_up(&mut self, x: f64, y: f64) -> PointerUpOutcome {
+        self.ctx.input.set_cursor_pos(x, y);
+        match self.handle_click((x, y)) {
+            ClickOutcome::DismissOverlay(h) => PointerUpOutcome::DismissedOverlay(h),
+            ClickOutcome::DispatchEvent(ev) => {
+                let id = match &ev {
+                    super::DispatchEvent::Unhandled(id) => id.clone(),
+                    _ => crate::types::WidgetId::new(""),
+                };
+                PointerUpOutcome::Click(id, ev)
+            }
+            ClickOutcome::Unhandled { .. } => PointerUpOutcome::Unhandled,
+        }
+    }
+
+    /// Handle a pointer-down event on the chrome strip.
+    ///
+    /// Runs `chrome_hit_test` + `handle_chrome_action`, then calls the
+    /// appropriate `WindowHost` method. Returns `true` if consumed.
+    pub fn handle_chrome_press<H: super::host::WindowHost + ?Sized>(
+        &mut self,
+        x: f64,
+        y: f64,
+        host: &mut H,
+        time_ms: f64,
+    ) -> bool {
+        use crate::ui::widgets::composite::chrome::{
+            chrome_hit_test, handle_chrome_action, ChromeAction, ChromeRenderKind,
+            ChromeSettings, ChromeView,
+        };
+        use crate::ui::widgets::composite::chrome::types::{ChromeHit, ResizeCorner};
+        use crate::platform::types::ResizeDirection;
+
+        // Chrome zone hit-test.
+        if let Some(chrome_rect) = self.rect_for_chrome() {
+            let view = ChromeView {
+                tabs: &[],
+                active_tab_id: None,
+                show_new_tab_btn: false,
+                show_menu_btn: false,
+                show_new_window_btn: true,
+                show_close_window_btn: true,
+                is_maximized: host.is_maximized(),
+                cursor_x: x,
+                cursor_y: y,
+                time_ms,
+            };
+            let settings = ChromeSettings::default();
+            let kind = ChromeRenderKind::Default;
+            let hit = chrome_hit_test(
+                self.chrome_state(), &view, &settings, &kind,
+                chrome_rect, (x, y),
+            );
+            match handle_chrome_action(hit) {
+                ChromeAction::WindowDragStart => {
+                    host.drag_window();
+                    return true;
+                }
+                ChromeAction::Minimize => {
+                    host.set_minimized(true);
+                    return true;
+                }
+                ChromeAction::MaximizeRestore => {
+                    host.set_maximized(!host.is_maximized());
+                    return true;
+                }
+                ChromeAction::CloseWindow => {
+                    host.close_window();
+                    return true;
+                }
+                ChromeAction::CloseApp => {
+                    host.close_app();
+                    return true;
+                }
+                ChromeAction::NewWindow => {
+                    // L3 doesn't know App; host is responsible for acting on this.
+                    // Signal via a dummy WindowSpec placeholder — host ignores spec
+                    // if it uses on_chrome_new_window() from App directly.
+                    // We do NOT push a spec here; just return true so L4 can intercept.
+                    // The L4 manager's handle_chrome_press override calls app.on_chrome_new_window.
+                    return false; // let L4 handle NewWindow via its own override
+                }
+                ChromeAction::BeginResize(h) => {
+                    let dir = match h {
+                        ChromeHit::ResizeTop    => Some(ResizeDirection::North),
+                        ChromeHit::ResizeBottom => Some(ResizeDirection::South),
+                        ChromeHit::ResizeLeft   => Some(ResizeDirection::West),
+                        ChromeHit::ResizeRight  => Some(ResizeDirection::East),
+                        ChromeHit::ResizeCorner(ResizeCorner::TopLeft)     => Some(ResizeDirection::NorthWest),
+                        ChromeHit::ResizeCorner(ResizeCorner::TopRight)    => Some(ResizeDirection::NorthEast),
+                        ChromeHit::ResizeCorner(ResizeCorner::BottomLeft)  => Some(ResizeDirection::SouthWest),
+                        ChromeHit::ResizeCorner(ResizeCorner::BottomRight) => Some(ResizeDirection::SouthEast),
+                        _ => None,
+                    };
+                    if let Some(d) = dir {
+                        host.drag_resize_window(d);
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Bezel-based edge-resize fallback for borderless windows.
+        let win = self.last_window().unwrap_or_default();
+        let bezel = 6.0_f64;
+        if win.width > 0.0 && win.height > 0.0 {
+            let on_left   = x >= win.x                      && x < win.x + bezel;
+            let on_right  = x >= win.x + win.width  - bezel && x < win.x + win.width;
+            let on_top    = y >= win.y                      && y < win.y + bezel;
+            let on_bottom = y >= win.y + win.height - bezel && y < win.y + win.height;
+            let dir = match (on_top, on_bottom, on_left, on_right) {
+                (true,  _,    true,  _   ) => Some(ResizeDirection::NorthWest),
+                (true,  _,    _,     true) => Some(ResizeDirection::NorthEast),
+                (_,     true, true,  _   ) => Some(ResizeDirection::SouthWest),
+                (_,     true, _,     true) => Some(ResizeDirection::SouthEast),
+                (true,  _,    _,     _   ) => Some(ResizeDirection::North),
+                (_,     true, _,     _   ) => Some(ResizeDirection::South),
+                (_,     _,    true,  _   ) => Some(ResizeDirection::West),
+                (_,     _,    _,     true) => Some(ResizeDirection::East),
+                _ => None,
+            };
+            if let Some(d) = dir {
+                host.drag_resize_window(d);
+                return true;
+            }
+        }
+
+        false
+    }
 }
 
 impl<P: DockPanel> Default for LayoutManager<P> {

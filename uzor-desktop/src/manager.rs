@@ -1,7 +1,7 @@
 //! `Manager` — L4's window-and-event watchdog (formerly `WindowManager`).
 //!
 //! Owns shared `App` state plus a `HashMap<winit::WindowId, PerWindow>` of
-//! per-window state (window/provider/render_state/layout/bridge/input).
+//! per-window state (window/provider/render_state/layout/input).
 //! Implements winit's `ApplicationHandler` itself, so [`crate::AppRun::run`]
 //! constructs a `Manager` and hands it straight to the event loop.
 
@@ -13,7 +13,8 @@ use std::collections::HashMap;
 use uzor::core::types::Rect;
 use uzor::docking::panels::DockPanel;
 use uzor::input::InputState;
-use uzor::layout::LayoutManager;
+use uzor::layout::{LayoutManager, WindowHost};
+use uzor::framework::multi_window::WindowSpec;
 use uzor_render_hub::{
     RenderBackend, RenderHub, RenderSurfaceFactory, SurfaceSize, WindowRenderState,
     submit_frame, SubmitParams,
@@ -21,7 +22,7 @@ use uzor_render_hub::{
 use uzor_window_hub::lifecycle::WindowProvider;
 
 #[cfg(not(target_arch = "wasm32"))]
-use uzor_window_desktop::{WinitInputBridge, WinitWindowProvider};
+use uzor_window_desktop::WinitWindowProvider;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::event::WindowEvent;
 #[cfg(not(target_arch = "wasm32"))]
@@ -29,7 +30,7 @@ use winit::window::Window;
 
 use uzor::framework::app::{App, AppConfig};
 use uzor::framework::builder::{AnyFactory, BuildError, BuiltApp, TraySpec};
-use uzor::framework::multi_window::{WindowCtx, WindowKey, WindowSpec};
+use uzor::framework::multi_window::{WindowCtx, WindowKey};
 
 // ── ManagerError ──────────────────────────────────────────────────────────────
 
@@ -71,11 +72,79 @@ pub(crate) struct PerWindow<P: DockPanel> {
     pub provider:        WinitWindowProvider,
     pub render_state:    WindowRenderState,
     pub layout:          LayoutManager<P>,
-    pub bridge:          WinitInputBridge,
     pub input:           InputState,
+    /// Last known cursor position in logical pixels.
+    pub last_mouse_pos:  (f64, f64),
     pub last_frame:      std::time::Instant,
     pub initialised:     bool,
     pub close_requested: bool,
+}
+
+// ── PerWindowHost ─────────────────────────────────────────────────────────────
+
+/// Transient `WindowHost` adapter for one `PerWindow`.
+///
+/// Wraps the winit `Arc<Window>` and the `close_requested` flag so that
+/// `LayoutManager::handle_chrome_press` can call host operations without
+/// touching winit directly.
+#[cfg(not(target_arch = "wasm32"))]
+struct PerWindowHost<'a> {
+    window:          &'a std::sync::Arc<Window>,
+    close_requested: &'a mut bool,
+    pending_spawns:  &'a mut Vec<WindowSpec>,
+    /// Signals that close_app was requested — caller closes all windows.
+    close_app: bool,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<'a> WindowHost for PerWindowHost<'a> {
+    fn drag_window(&mut self) {
+        let _ = self.window.drag_window();
+    }
+
+    fn drag_resize_window(&mut self, dir: uzor::platform::types::ResizeDirection) {
+        use uzor::platform::types::ResizeDirection as D;
+        use winit::window::ResizeDirection as W;
+        let wd = match dir {
+            D::North     => W::North,
+            D::South     => W::South,
+            D::East      => W::East,
+            D::West      => W::West,
+            D::NorthEast => W::NorthEast,
+            D::NorthWest => W::NorthWest,
+            D::SouthEast => W::SouthEast,
+            D::SouthWest => W::SouthWest,
+        };
+        let _ = self.window.drag_resize_window(wd);
+    }
+
+    fn set_minimized(&mut self, on: bool) {
+        self.window.set_minimized(on);
+    }
+
+    fn set_maximized(&mut self, on: bool) {
+        self.window.set_maximized(on);
+    }
+
+    fn is_maximized(&self) -> bool {
+        self.window.is_maximized()
+    }
+
+    fn close_window(&mut self) {
+        *self.close_requested = true;
+    }
+
+    fn close_app(&mut self) {
+        self.close_app = true;
+    }
+
+    fn request_spawn_window(&mut self, spec: WindowSpec) {
+        self.pending_spawns.push(spec);
+    }
+
+    fn request_redraw(&mut self) {
+        self.window.request_redraw();
+    }
 }
 
 // ── Manager ───────────────────────────────────────────────────────────────────
@@ -97,6 +166,7 @@ pub struct Manager<A: App<P>, P: DockPanel> {
     pub(crate) pending_spawns: Vec<WindowSpec>,
     /// Window keys queued for destruction.
     #[cfg(not(target_arch = "wasm32"))]
+    #[allow(dead_code)]
     pub(crate) pending_closes: Vec<WindowKey>,
     /// Optional tray spec — applied once when the first window is created.
     #[cfg(not(target_arch = "wasm32"))]
@@ -296,8 +366,8 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             provider,
             render_state,
             layout:          LayoutManager::new(),
-            bridge:          WinitInputBridge::new(),
             input:           InputState::new(),
+            last_mouse_pos:  (0.0, 0.0),
             last_frame:      std::time::Instant::now(),
             initialised:     false,
             close_requested: false,
@@ -334,142 +404,116 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
 
     // ── Per-window event handling ─────────────────────────────────────────────
 
-    /// Process one raw winit event for the given window. Mirrors L3 example.
+    /// Process one raw winit event for the given window.
+    /// Only talks to `LayoutManager` via its L3 surface — no direct coord/bridge access.
     #[cfg(not(target_arch = "wasm32"))]
     fn handle_window_winit_event(&mut self, id: winit::window::WindowId, event: &WindowEvent) {
         let now_ms = self.start.elapsed().as_secs_f64() * 1000.0;
 
-        let Some(pw) = self.windows.get_mut(&id) else { return };
-
-        use uzor::ui::widgets::composite::chrome::{
-            chrome_hit_test, handle_chrome_action, ChromeAction, ChromeRenderKind,
-            ChromeSettings, ChromeView,
-        };
         use winit::event::{ElementState, MouseButton as WMouseButton};
 
-        // 1. Chrome / window-resize press handler — synchronous.
-        if let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: WMouseButton::Left,
-            ..
-        } = event
-        {
-            let (mx, my) = pw.bridge.last_mouse_pos;
+        match event {
+            // ── Cursor moved ─────────────────────────────────────────────────
+            WindowEvent::CursorMoved { position, .. } => {
+                let Some(pw) = self.windows.get_mut(&id) else { return };
+                let dpr = pw.provider.scale_factor();
+                let lx = position.x / dpr;
+                let ly = position.y / dpr;
+                pw.last_mouse_pos = (lx, ly);
+                pw.layout.on_pointer_move(lx, ly);
+            }
 
-            // Chrome zone (drag, min/max/close, in-strip resize edges).
-            if let Some(chrome_rect) = pw.layout.rect_for_chrome() {
-                let view = ChromeView {
-                    tabs: &[],
-                    active_tab_id: None,
-                    show_new_tab_btn: false,
-                    show_menu_btn: false,
-                    show_new_window_btn: true,
-                    show_close_window_btn: true,
-                    is_maximized: pw.window.is_maximized(),
-                    cursor_x: mx,
-                    cursor_y: my,
-                    time_ms: now_ms,
+            // ── Mouse button pressed ─────────────────────────────────────────
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: WMouseButton::Left,
+                ..
+            } => {
+                let Some(pw) = self.windows.get_mut(&id) else { return };
+                let (mx, my) = pw.last_mouse_pos;
+                pw.layout.on_pointer_down(mx, my);
+
+                // Try chrome / bezel resize via L3. If consumed — done.
+                // For NewWindow we need App, so we handle that case here.
+                // Build a transient host that delegates to winit.
+                let mut host = PerWindowHost {
+                    window:          &pw.window,
+                    close_requested: &mut pw.close_requested,
+                    pending_spawns:  &mut self.pending_spawns,
+                    close_app:       false,
                 };
-                let settings = ChromeSettings::default();
-                let kind = ChromeRenderKind::Default;
-                let hit = chrome_hit_test(
-                    pw.layout.chrome_state(), &view, &settings, &kind,
-                    chrome_rect, (mx, my),
-                );
-                match handle_chrome_action(hit) {
-                    ChromeAction::WindowDragStart => {
-                        let _ = pw.window.drag_window();
-                        return;
+                let consumed = pw.layout.handle_chrome_press(mx, my, &mut host, now_ms);
+
+                // If NewWindow was signalled (handle_chrome_press returns false for it),
+                // let the App resolve it.
+                // Note: handle_chrome_press returns false for NewWindow so we check
+                // whether the chrome hit was NewWindow by re-testing here.
+                // Simpler: unconditionally ask the App if nothing else consumed.
+                if host.close_app {
+                    for p in self.windows.values_mut() {
+                        p.close_requested = true;
                     }
-                    ChromeAction::Minimize => {
-                        pw.window.set_minimized(true);
-                        return;
-                    }
-                    ChromeAction::MaximizeRestore => {
-                        pw.window.set_maximized(!pw.window.is_maximized());
-                        return;
-                    }
-                    ChromeAction::CloseWindow => {
-                        pw.close_requested = true;
-                        return;
-                    }
-                    ChromeAction::CloseApp => {
-                        drop(pw);
-                        for p in self.windows.values_mut() {
-                            p.close_requested = true;
-                        }
-                        return;
-                    }
-                    ChromeAction::NewWindow => {
-                        let src = pw.key.clone();
+                    return;
+                }
+                if consumed {
+                    return;
+                }
+
+                // Not consumed by chrome — check if it's a NewWindow hit.
+                // We do this by calling chrome_hit_test again only if chrome is present.
+                let pw2 = match self.windows.get_mut(&id) { Some(p) => p, None => return };
+                if let Some(chrome_rect) = pw2.layout.rect_for_chrome() {
+                    use uzor::ui::widgets::composite::chrome::{
+                        chrome_hit_test, handle_chrome_action, ChromeAction,
+                        ChromeRenderKind, ChromeSettings, ChromeView,
+                    };
+                    let view = ChromeView {
+                        tabs: &[],
+                        active_tab_id: None,
+                        show_new_tab_btn: false,
+                        show_menu_btn: false,
+                        show_new_window_btn: true,
+                        show_close_window_btn: true,
+                        is_maximized: pw2.window.is_maximized(),
+                        cursor_x: mx,
+                        cursor_y: my,
+                        time_ms: now_ms,
+                    };
+                    let settings = ChromeSettings::default();
+                    let kind = ChromeRenderKind::Default;
+                    let hit = chrome_hit_test(
+                        pw2.layout.chrome_state(), &view, &settings, &kind,
+                        chrome_rect, (mx, my),
+                    );
+                    let action = handle_chrome_action(hit);
+                    if matches!(action, ChromeAction::NewWindow) {
+                        let src = pw2.key.clone();
                         if let Some(spec) = self.app.on_chrome_new_window(&src) {
                             self.pending_spawns.push(spec);
                         }
                         return;
                     }
-                    ChromeAction::BeginResize(h) => {
-                        use uzor::ui::widgets::composite::chrome::types::{ChromeHit, ResizeCorner};
-                        use winit::window::ResizeDirection as W;
-                        let dir = match h {
-                            ChromeHit::ResizeTop      => Some(W::North),
-                            ChromeHit::ResizeBottom   => Some(W::South),
-                            ChromeHit::ResizeLeft     => Some(W::West),
-                            ChromeHit::ResizeRight    => Some(W::East),
-                            ChromeHit::ResizeCorner(ResizeCorner::TopLeft)     => Some(W::NorthWest),
-                            ChromeHit::ResizeCorner(ResizeCorner::TopRight)    => Some(W::NorthEast),
-                            ChromeHit::ResizeCorner(ResizeCorner::BottomLeft)  => Some(W::SouthWest),
-                            ChromeHit::ResizeCorner(ResizeCorner::BottomRight) => Some(W::SouthEast),
-                            _ => None,
-                        };
-                        if let Some(d) = dir {
-                            let _ = pw.window.drag_resize_window(d);
-                            return;
-                        }
-                    }
-                    _ => {}
                 }
+
+                // Not a chrome press — forward as a regular click outcome to L3.
+                // (Actual click resolution happens on pointer-up.)
             }
 
-            // Edge-resize fallback for borderless windows.
-            let win = pw.layout.last_window().unwrap_or_default();
-            let bezel = 6.0_f64;
-            if win.width > 0.0 && win.height > 0.0 {
-                let on_left   = mx >= win.x                       && mx < win.x + bezel;
-                let on_right  = mx >= win.x + win.width  - bezel  && mx < win.x + win.width;
-                let on_top    = my >= win.y                       && my < win.y + bezel;
-                let on_bottom = my >= win.y + win.height - bezel  && my < win.y + win.height;
-                use winit::window::ResizeDirection as W;
-                let dir = match (on_top, on_bottom, on_left, on_right) {
-                    (true,  _,    true,  _   ) => Some(W::NorthWest),
-                    (true,  _,    _,     true) => Some(W::NorthEast),
-                    (_,     true, true,  _   ) => Some(W::SouthWest),
-                    (_,     true, _,     true) => Some(W::SouthEast),
-                    (true,  _,    _,     _   ) => Some(W::North),
-                    (_,     true, _,     _   ) => Some(W::South),
-                    (_,     _,    true,  _   ) => Some(W::West),
-                    (_,     _,    _,     true) => Some(W::East),
-                    _ => None,
-                };
-                if let Some(d) = dir {
-                    let _ = pw.window.drag_resize_window(d);
-                    return;
-                }
+            // ── Mouse button released ────────────────────────────────────────
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: WMouseButton::Left,
+                ..
+            } => {
+                let Some(pw) = self.windows.get_mut(&id) else { return };
+                let (mx, my) = pw.last_mouse_pos;
+                let _outcome = pw.layout.on_pointer_up(mx, my);
+                // App hooks on DispatchEvent / DismissedOverlay are called by
+                // App::ui each frame via consume_event — no immediate callback here.
             }
-        }
 
-        // 2. Bridge → InputCoordinator (L1).
-        let focused = pw.layout.ctx_mut().input.focused_widget().cloned();
-        let coord   = &mut pw.layout.ctx_mut().input;
-        let out     = pw.bridge.handle_event(coord, focused.as_ref(), event);
-
-        if let Some((x, y)) = out.cursor_moved {
-            pw.input.pointer.pos = Some((x, y));
-        }
-
-        // 3. On left-up → route click via L3 dispatcher.
-        if let Some(((x, y), _clicked_id)) = out.left_up {
-            pw.input.pointer.pos = Some((x, y));
-            let _ = self.app.route_click(&mut pw.layout, x, y);
+            // ── All other events — no direct coord / bridge access ───────────
+            _ => {}
         }
     }
 
@@ -516,9 +560,12 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 None    => return Ok(()),
             };
 
+            // Populate InputState from the last known cursor position.
+            // on_pointer_move already pushed it into L3's coordinator on the
+            // last CursorMoved event; here we keep pw.input in sync for
+            // begin_frame (which needs it for was_clicked / pointer_pos helpers).
             pw.input.time = now_secs;
-            let (mx, my) = pw.bridge.last_mouse_pos;
-            pw.input.pointer.pos = Some((mx, my));
+            pw.input.pointer.pos = Some(pw.last_mouse_pos);
 
             for ev in pw.provider.poll_events() {
                 let _ = self.app.on_event(&ev);
@@ -725,4 +772,3 @@ fn argb_to_alpha_color(argb: u32) -> vello::peniko::color::AlphaColor<vello::pen
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
 fn _suppress_unused(_: &dyn WindowProvider, _: &Rect) {}
-
