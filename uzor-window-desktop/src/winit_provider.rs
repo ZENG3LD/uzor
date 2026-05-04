@@ -101,19 +101,18 @@ impl WindowProvider for WinitWindowProvider {
         std::mem::take(&mut self.pending_events)
     }
 
-    /// Current logical rect of the window.
+    /// Current logical rect of the window's content area, in **window-local
+    /// coordinates** (origin = `(0, 0)`).
     ///
-    /// Origin uses `outer_position` when available; falls back to `(0, 0)`.
+    /// Layout uses local coords because the GPU draws into the window's own
+    /// surface; using screen-relative `outer_position` would make every widget
+    /// drift across the window content as the user dragged the title bar.
     fn window_rect(&self) -> Rect {
         let size = self.window.inner_size();
-        let pos = self
-            .window
-            .outer_position()
-            .unwrap_or(winit::dpi::PhysicalPosition::new(0, 0));
         let scale = self.window.scale_factor();
         Rect::new(
-            pos.x as f64 / scale,
-            pos.y as f64 / scale,
+            0.0,
+            0.0,
             size.width as f64 / scale,
             size.height as f64 / scale,
         )
