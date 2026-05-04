@@ -39,7 +39,6 @@
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 
 use uzor::docking::panels::DockPanel;
-use uzor::input::core::event_processor::EventProcessor;
 use uzor::input::InputState;
 use uzor::layout::LayoutManager;
 use uzor_render_hub::{
@@ -48,6 +47,8 @@ use uzor_render_hub::{
 };
 use uzor_window_hub::lifecycle::WindowProvider;
 
+#[cfg(not(target_arch = "wasm32"))]
+use uzor_window_desktop::WinitInputBridge;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::event::WindowEvent;
 #[cfg(not(target_arch = "wasm32"))]
@@ -109,18 +110,15 @@ pub struct Runtime<A: App<P>, P: DockPanel> {
     pub(crate) factory: Option<Box<dyn RenderSurfaceFactory>>,
     /// Layout manager.
     pub(crate) layout: LayoutManager<P>,
-    /// Platform-event processor — converts `PlatformEvent`s into the per-frame
-    /// `InputState`. Used by the main click/drag/scroll path; the chrome
-    /// press handler in `handle_winit_event` runs in parallel for OS-level
-    /// drag/resize that must execute synchronously while the button is held.
-    pub(crate) events: EventProcessor,
-    /// Accumulated per-frame input snapshot — populated by `events`.
-    pub(crate) input: InputState,
-    /// Last cursor position seen by `handle_winit_event`. Used by the chrome
-    /// press handler which has to know where the click landed without
-    /// waiting for the next `tick_inner`.
+    /// Desktop input bridge (mirrors L3 example): converts winit events into
+    /// `InputCoordinator` calls and emits a `BridgeOutput` per event the app
+    /// can react to (left_down/left_up/wheel/cursor_moved).
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) last_mouse_pos: (f64, f64),
+    pub(crate) bridge: WinitInputBridge,
+    /// Per-frame input snapshot built from `bridge.last_mouse_pos` at the top
+    /// of `tick_inner` and copied into `coord.begin_frame(input)` so widgets
+    /// see the current cursor.
+    pub(crate) input: InputState,
     /// Monotonic start instant for `InputState::time` tracking.
     pub(crate) start: std::time::Instant,
     /// Whether `app.init` has been called.
@@ -148,10 +146,9 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             hub,
             factory: None,
             layout: LayoutManager::new(),
-            events: EventProcessor::new(),
-            input: InputState::new(),
             #[cfg(not(target_arch = "wasm32"))]
-            last_mouse_pos: (0.0, 0.0),
+            bridge: WinitInputBridge::new(),
+            input: InputState::new(),
             start: std::time::Instant::now(),
             initialised: false,
             render_state: None,
@@ -251,53 +248,40 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             .unwrap_or(self.config.msaa_samples)
     }
 
-    /// Inspect a raw winit `WindowEvent` for OS-level window operations
-    /// (chrome drag, minimize/maximize, edge resize).
+    /// Process one raw winit `WindowEvent`.  Mirrors the L3 example's
+    /// `window_event` handler:
     ///
-    /// Runs *before* the event is queued for the regular `tick_inner` flow:
-    /// winit requires `drag_window()` / `drag_resize_window()` to be called
-    /// synchronously inside the press handler, while the mouse button is
-    /// still held — we cannot defer to the next frame.
+    /// 1. On left-button press: chrome hit-test → drag_window / min / max
+    ///    / edge-resize (winit requires this in the press handler while the
+    ///    button is held).
+    /// 2. Otherwise → `WinitInputBridge::handle_event` updates the L1
+    ///    `InputCoordinator` and returns a `BridgeOutput`.
+    /// 3. On `out.left_up` → `App::route_click` → `LayoutManager::handle_click`
+    ///    → ClickOutcome (DismissOverlay / DispatchEvent / Unhandled).
     ///
-    /// All other input (clicks, scrolls, keys, drag) flows through the
-    /// normal `EventProcessor` → `InputState` → `LayoutManager::handle_click`
-    /// pipeline driven by `tick_inner` and `App::route_click`.
-    ///
-    /// Returns `true` when the event was consumed by chrome (caller should
-    /// stop forwarding it further).
+    /// Called from `UzorHandler::window_event` for all events that aren't
+    /// `RedrawRequested` / `CloseRequested`.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn handle_winit_event(&mut self, event: &WindowEvent, window: &Window) -> bool {
+    pub fn handle_winit_event(&mut self, event: &WindowEvent, window: &Window) {
         use uzor::ui::widgets::composite::chrome::{
             chrome_hit_test, handle_chrome_action, ChromeAction, ChromeRenderKind,
             ChromeSettings, ChromeView,
         };
         use winit::event::{ElementState, MouseButton as WMouseButton};
 
-        // Track cursor for the chrome press handler — winit's MouseInput
-        // event doesn't carry the position, so we cache it from CursorMoved.
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            let scale = window.scale_factor();
-            self.last_mouse_pos = (position.x / scale, position.y / scale);
-        }
-
-        // Chrome press handler runs only on left-button press.
+        // ── 1. Chrome / window-resize press handler ──────────────────────
+        // winit requires drag_window / drag_resize_window to be called from
+        // within the press handler while the button is still held.
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: WMouseButton::Left,
             ..
         } = event
         {
-            let (mx, my) = self.last_mouse_pos;
-            // Chrome only does something useful if it has been registered
-            // this frame — `rect_for_chrome()` returns None otherwise.
+            let (mx, my) = self.bridge.last_mouse_pos;
+
+            // Chrome zone (drag, min, max, close, in-strip resize edges).
             if let Some(chrome_rect) = self.layout.rect_for_chrome() {
-                // We don't have the live ChromeView here (the app rebuilds
-                // it inside `App::ui`), but the geometric hit-test only
-                // depends on `is_maximized`, drag/edge zones, and tab count.
-                // For the chrome zones the empty-tabs view is sufficient
-                // because tabs are an *opt-in* concept for the framework's
-                // automatic chrome handling — apps that want clickable tabs
-                // route them via `App::on_chrome_tab` (TODO).
                 let view = ChromeView {
                     tabs: &[],
                     active_tab_id: None,
@@ -313,7 +297,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
                 let settings = ChromeSettings::default();
                 let kind = ChromeRenderKind::Default;
                 let hit = chrome_hit_test(
-                    &self.layout.chrome_state(),
+                    self.layout.chrome_state(),
                     &view,
                     &settings,
                     &kind,
@@ -323,26 +307,24 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
                 match handle_chrome_action(hit) {
                     ChromeAction::WindowDragStart => {
                         let _ = window.drag_window();
-                        return true;
+                        return;
                     }
                     ChromeAction::Minimize => {
                         window.set_minimized(true);
-                        return true;
+                        return;
                     }
                     ChromeAction::MaximizeRestore => {
                         window.set_maximized(!window.is_maximized());
-                        return true;
+                        return;
                     }
                     ChromeAction::CloseApp | ChromeAction::CloseWindow => {
-                        // Caller (UzorHandler) will see the bridge's left_up
-                        // next; for an immediate close we'd need to thread an
-                        // exit signal back up.  Defer to App on_event for now.
-                        return false;
+                        // Bridge's left_up will arrive next; user-side close
+                        // routing happens via App::on_event.
                     }
-                    ChromeAction::BeginResize(hit) => {
+                    ChromeAction::BeginResize(h) => {
                         use uzor::ui::widgets::composite::chrome::types::{ChromeHit, ResizeCorner};
                         use winit::window::ResizeDirection as W;
-                        let dir = match hit {
+                        let dir = match h {
                             ChromeHit::ResizeTop      => Some(W::North),
                             ChromeHit::ResizeBottom   => Some(W::South),
                             ChromeHit::ResizeLeft     => Some(W::West),
@@ -355,25 +337,22 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
                         };
                         if let Some(d) = dir {
                             let _ = window.drag_resize_window(d);
-                            return true;
+                            return;
                         }
-                        return false;
                     }
                     _ => {}
                 }
             }
 
-            // Edge-resize fallback for borderless windows: chrome_hit_test
-            // only covers the chrome strip, but the user can grab any of the
-            // window's four edges.  Test against the full window rect using
-            // a small bezel.
+            // Edge-resize fallback (covers all four window edges, not just
+            // the chrome strip).
             let win = self.layout.last_window().unwrap_or_default();
             let bezel = 6.0_f64;
             if win.width > 0.0 && win.height > 0.0 {
-                let on_left   = mx >= win.x          && mx < win.x + bezel;
-                let on_right  = mx >= win.x + win.width - bezel && mx < win.x + win.width;
-                let on_top    = my >= win.y          && my < win.y + bezel;
-                let on_bottom = my >= win.y + win.height - bezel && my < win.y + win.height;
+                let on_left   = mx >= win.x                       && mx < win.x + bezel;
+                let on_right  = mx >= win.x + win.width  - bezel  && mx < win.x + win.width;
+                let on_top    = my >= win.y                       && my < win.y + bezel;
+                let on_bottom = my >= win.y + win.height - bezel  && my < win.y + win.height;
                 use winit::window::ResizeDirection as W;
                 let dir = match (on_top, on_bottom, on_left, on_right) {
                     (true,  _,    true,  _   ) => Some(W::NorthWest),
@@ -388,12 +367,29 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
                 };
                 if let Some(d) = dir {
                     let _ = window.drag_resize_window(d);
-                    return true;
+                    return;
                 }
             }
         }
 
-        false
+        // ── 2. Bridge → InputCoordinator (L1) ───────────────────────────
+        let focused = self.layout.ctx_mut().input.focused_widget().cloned();
+        let coord   = &mut self.layout.ctx_mut().input;
+        let out     = self.bridge.handle_event(coord, focused.as_ref(), event);
+
+        // Keep the runtime's per-frame InputState cursor in sync so widgets
+        // that read it (chrome tooltip etc.) get the latest position.
+        if let Some((x, y)) = out.cursor_moved {
+            self.input.pointer.pos = Some((x, y));
+        }
+
+        // ── 3. On left-up → route click through L3 dispatcher ───────────
+        if let Some(((x, y), _clicked_id)) = out.left_up {
+            self.input.pointer.pos = Some((x, y));
+            // App::route_click default impl calls layout.handle_click(...)
+            // and matches ClickOutcome — same as L3 example's on_left_up.
+            let _ = self.app.route_click(&mut self.layout, x, y);
+        }
     }
 
     /// Process one frame: FPS cap guard → poll events → layout → begin/ui/submit.
@@ -453,17 +449,23 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             return Ok(());
         }
 
-        // 1. Drain platform events into InputState via EventProcessor.
-        //    The chrome / resize press handler in `handle_winit_event` ran
-        //    earlier (synchronously, while the button was held) and may have
-        //    short-circuited drag/resize before the event reached the
-        //    provider's queue.
+        // 1. Build per-frame InputState from bridge state. Click / drag /
+        //    drop events have already been processed in `handle_winit_event`
+        //    via `bridge.handle_event(coord, ...)`; here we just freeze the
+        //    cursor position and time for widgets that read InputState.
         let now_secs = self.start.elapsed().as_secs_f64();
         self.input.time = now_secs;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let (mx, my) = self.bridge.last_mouse_pos;
+            self.input.pointer.pos = Some((mx, my));
+        }
+        // Drain provider's PlatformEvent queue so apps that override
+        // `App::on_event` for high-level events (theme change / file drop)
+        // still receive them.  Click events are already routed via the
+        // bridge → coord → handle_click path.
         for ev in window.poll_events() {
-            if !self.app.on_event(&ev) {
-                self.events.process(&ev, &mut self.input, now_secs);
-            }
+            let _ = self.app.on_event(&ev);
         }
 
         // 2. Solve macro layout with the current window rect.
@@ -491,19 +493,11 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             //     the app passing it explicitly.
             self.layout.set_frame_time_ms(self.start.elapsed().as_secs_f64() * 1000.0);
 
-            // 5. User UI callback.
+            // 5. User UI callback.  Click routing happens earlier in
+            //    `handle_winit_event` on the bridge's `left_up` event so the
+            //    L3 dispatcher fires *before* the app re-registers widgets
+            //    for the next frame.
             self.app.ui(&mut self.layout, render_state);
-
-            // 5b. Auto-route a left-click released this frame through
-            //     `App::route_click`, which decodes via
-            //     `LayoutManager::handle_click` and fans out to typed
-            //     `on_*` callbacks.  App that needs raw access can override
-            //     `route_click` to return early.
-            if matches!(self.input.pointer.clicked, Some(uzor::input::MouseButton::Left)) {
-                if let Some((x, y)) = self.input.pointer.pos {
-                    let _ = self.app.route_click(&mut self.layout, x, y);
-                }
-            }
 
             // 6. Collect widget responses.
             let _responses = self.layout.ctx_mut().end_frame();

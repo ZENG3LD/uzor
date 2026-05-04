@@ -571,7 +571,7 @@ where
                 // Route raw winit events through the runtime's L1 bridge
                 // (this also runs chrome press handling for drag/min/max).
                 if let Some(ref window) = self.window {
-                    let _consumed = self.runtime.handle_winit_event(ev, window.as_ref());
+                    self.runtime.handle_winit_event(ev, window.as_ref());
                 }
                 // Also keep the platform-event queue so apps that override
                 // `App::on_event` for high-level events (theme/file-drop)
