@@ -4,15 +4,26 @@ use super::chrome_slot::ChromeSlot;
 use super::edge_panels::EdgePanels;
 use super::types::{EdgeSide, LayoutSolved};
 
-/// Run the macro layout pass: chrome → edges → dock area.
+/// Run the macro layout pass: chrome (overlay) → edges → dock area.
 ///
 /// Mutates `tree` to store the computed rect for each system node.
 /// Does **not** solve the dock subtree, floating window positions, or overlay
 /// rects — those are delegated to `PanelDockingManager` and `OverlayStack`.
 ///
+/// # Chrome semantics
+///
+/// Chrome is an **overlay** at the top z-layer — it floats over the window
+/// without shrinking the dock area.  Apps that want their content to start
+/// below the chrome strip should add a top-edge slot with the same thickness
+/// as `ChromeSlot::height`.  This keeps chrome a pure visual/input concern
+/// (drag/min/max/close + tabs) instead of mixing it with macro layout.
+///
+/// `solved.chrome` still records the strip rect so renderers know where to
+/// paint and so `chrome_hit_test` works.
+///
 /// # Algorithm
 ///
-/// 1. Chrome consumes from the top (if visible).
+/// 1. Chrome rect captured at top of window (no compression).
 /// 2. Top edge slots consume from the top, stacked in `order` ascending.
 /// 3. Bottom edge slots consume from the bottom, stacked in `order` ascending.
 /// 4. Left edge slots consume from the left, stacked in `order` ascending.
@@ -28,17 +39,16 @@ pub fn solve_layout(
     let mut solved = LayoutSolved::default();
 
     // ------------------------------------------------------------------
-    // 1. Chrome
+    // 1. Chrome — overlay at the top of the window (does NOT compress
+    //    `remaining`).  See header comment for the rationale.
     // ------------------------------------------------------------------
     if chrome.visible && chrome.height > 0.0 {
         let h = chrome.height as f64;
-        let chrome_rect = Rect::new(remaining.x, remaining.y, remaining.width, h);
-        remaining.y += h;
-        remaining.height = (remaining.height - h).max(0.0);
+        let chrome_rect = Rect::new(window.x, window.y, window.width, h);
         tree.set_rect(tree.chrome_id(), chrome_rect);
         solved.chrome = Some(chrome_rect);
     } else {
-        tree.set_rect(tree.chrome_id(), Rect::new(remaining.x, remaining.y, remaining.width, 0.0));
+        tree.set_rect(tree.chrome_id(), Rect::new(window.x, window.y, window.width, 0.0));
     }
 
     // ------------------------------------------------------------------

@@ -36,10 +36,19 @@ impl App<NoPanel> for DashboardApp {
     }
 
     fn ui(&mut self, layout: &mut LayoutManager<NoPanel>, render_state: &mut WindowRenderState) {
-        let body: Rect = layout
+        // Dock area = full window (chrome is an overlay, not a layout slot).
+        // We carve the body content area below the chrome strip ourselves.
+        let dock = layout
             .last_solved()
             .map(|s| s.dock_area)
             .unwrap_or(Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 });
+        let chrome_h = layout.chrome().height as f64;
+        let body = Rect {
+            x:      dock.x,
+            y:      dock.y + chrome_h,
+            width:  dock.width,
+            height: (dock.height - chrome_h).max(0.0),
+        };
 
         let tabs = [
             ChromeTabConfig { id: "dashboard", label: "Dashboard", icon: None, color_tag: None, closable: false, active: true },
