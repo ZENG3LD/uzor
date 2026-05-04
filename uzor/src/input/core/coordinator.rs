@@ -374,6 +374,16 @@ impl InputCoordinator {
         self.input.pointer.pos = Some((x, y));
     }
 
+    /// Debug accessor — current cursor position from internal input state.
+    pub fn input_pos(&self) -> Option<(f64, f64)> {
+        self.input.pointer.pos
+    }
+
+    /// Debug accessor — number of registered widgets in the current frame.
+    pub fn widgets_count(&self) -> usize {
+        self.widgets.len()
+    }
+
     /// Returns the parent `WidgetId` of a child widget, if any.
     pub fn widget_parent(&self, id: &WidgetId) -> Option<WidgetId> {
         self.widgets.iter().rev().find(|w| w.id == *id).and_then(|w| w.parent.clone())

@@ -421,6 +421,8 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 let ly = position.y / dpr;
                 pw.last_mouse_pos = (lx, ly);
                 pw.layout.on_pointer_move(lx, ly);
+                // Force a redraw so the next frame paints the hover state.
+                pw.window.request_redraw();
             }
 
             // ── Mouse button pressed ─────────────────────────────────────────
