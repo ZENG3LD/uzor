@@ -55,7 +55,7 @@ pub fn register_input_coordinator_popup(
     popup_id
 }
 
-/// Body overflow hit-rects (Scrollbar / Chevrons).
+/// Body overflow hit-rects (Scrollbar / Chevrons / fallback when Clip overflows).
 fn register_popup_body_overflow(
     coord:    &mut InputCoordinator,
     popup_id: &CompositeId,
@@ -65,24 +65,35 @@ fn register_popup_body_overflow(
 ) {
     if body.width <= 0.0 || body.height <= 0.0 { return; }
     state.body_viewport_h = body.height;
-    match view.overflow {
+
+    let scroll = crate::ui::widgets::composite::overflow::BodyScrollState {
+        offset_x:  0.0,
+        offset_y:  state.scroll.offset,
+        content_w: 0.0,
+        content_h: state.body_content_h,
+    };
+    let layer = crate::input::core::coordinator::LayerId::main();
+    let overflowing = scroll.overflows(body.width, body.height).any();
+    let effective = match view.overflow {
+        crate::types::OverflowMode::Scrollbar => crate::types::OverflowMode::Scrollbar,
+        crate::types::OverflowMode::Chevrons  => crate::types::OverflowMode::Chevrons,
+        _ if overflowing => crate::types::OverflowMode::Chevrons,
+        other             => other,
+    };
+    match effective {
         crate::types::OverflowMode::Scrollbar => {
-            let track_w = 8.0;
-            let track = Rect::new(body.x + body.width - track_w, body.y, track_w, body.height);
-            state.body_scroll_track = Some(track);
-            coord.register_child(popup_id, format!("{}:scrollbar_track", popup_id.0.0),
-                WidgetKind::ScrollbarTrack, track, Sense::CLICK);
-            coord.register_child(popup_id, format!("{}:scrollbar_handle", popup_id.0.0),
-                WidgetKind::ScrollbarHandle, track, Sense::DRAG | Sense::HOVER);
+            if let Some(track) = crate::ui::widgets::composite::overflow::register_scrollbar_helper(
+                coord, popup_id, body, &scroll,
+                crate::ui::widgets::composite::overflow::ScrollAxis::Vertical,
+                &layer,
+            ) {
+                state.body_scroll_track = Some(track);
+            }
         }
         crate::types::OverflowMode::Chevrons => {
-            let strip = 16.0;
-            let up = Rect::new(body.x, body.y, body.width, strip);
-            let dn = Rect::new(body.x, body.y + body.height - strip, body.width, strip);
-            coord.register_child(popup_id, format!("{}:chevron_up", popup_id.0.0),
-                WidgetKind::Button, up, Sense::CLICK | Sense::HOVER);
-            coord.register_child(popup_id, format!("{}:chevron_down", popup_id.0.0),
-                WidgetKind::Button, dn, Sense::CLICK | Sense::HOVER);
+            crate::ui::widgets::composite::overflow::register_chevrons_helper(
+                coord, popup_id, body, &scroll, &layer,
+            );
         }
         _ => {}
     }
