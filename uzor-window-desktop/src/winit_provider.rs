@@ -26,7 +26,7 @@ use winit::window::Window;
 use uzor::core::types::Rect;
 use uzor::platform::PlatformEvent;
 
-use uzor_window_hub::lifecycle::{RawHandle, RgbaIcon, SoftwarePresenter, WindowProvider};
+use uzor_window_hub::lifecycle::{RawHandle, ResizeDirection, RgbaIcon, SoftwarePresenter, WindowProvider};
 
 // ─── SendSyncHandlePair ───────────────────────────────────────────────────────
 
@@ -139,6 +139,38 @@ impl WindowProvider for WinitWindowProvider {
     /// outside a mouse-button-down event) are silently ignored.
     fn drag_window(&mut self) {
         let _ = self.window.drag_window();
+    }
+
+    /// Begin an OS-level resize-drag operation along the requested edge/corner.
+    fn drag_resize_window(&mut self, direction: ResizeDirection) {
+        use winit::window::ResizeDirection as W;
+        let dir = match direction {
+            ResizeDirection::North     => W::North,
+            ResizeDirection::South     => W::South,
+            ResizeDirection::East      => W::East,
+            ResizeDirection::West      => W::West,
+            ResizeDirection::NorthEast => W::NorthEast,
+            ResizeDirection::NorthWest => W::NorthWest,
+            ResizeDirection::SouthEast => W::SouthEast,
+            ResizeDirection::SouthWest => W::SouthWest,
+        };
+        let _ = self.window.drag_resize_window(dir);
+    }
+
+    fn set_minimized(&mut self, on: bool) {
+        self.window.set_minimized(on);
+    }
+
+    fn set_maximized(&mut self, on: bool) {
+        self.window.set_maximized(on);
+    }
+
+    fn is_maximized(&self) -> bool {
+        self.window.is_maximized()
+    }
+
+    fn request_close(&mut self) {
+        self.mark_close();
     }
 
     /// Set or clear the OS window icon (taskbar / window caption).

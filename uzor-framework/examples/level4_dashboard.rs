@@ -86,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .title("uzor — L4 Dashboard (view!)")
         .size(1400, 900)
         .min_size(Some((900, 600)))
-        .decorations(true)
+        .decorations(false) // borderless — our <chrome> handles drag/min/max/resize
         .background(0xFFF7F7F4)
         .backend(RenderBackend::VelloGpu)
         .surface_factory(Box::new(VelloGpuSurfaceFactory::new()))

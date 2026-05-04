@@ -86,6 +86,17 @@ impl RgbaIcon {
     }
 }
 
+// ── Resize direction ─────────────────────────────────────────────────────────
+
+/// Direction of a borderless-window resize drag, started via
+/// [`WindowProvider::drag_resize_window`].  Mirrors winit's `ResizeDirection`
+/// without forcing every consumer to depend on winit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResizeDirection {
+    North, South, East, West,
+    NorthEast, NorthWest, SouthEast, SouthWest,
+}
+
 // ── WindowProvider trait ──────────────────────────────────────────────────────
 
 /// Abstraction over any OS window source.
@@ -151,6 +162,24 @@ pub trait WindowProvider {
     /// The platform will move the window as the user drags.
     /// Default: no-op for providers that don't support OS-level drag.
     fn drag_window(&mut self) {}
+
+    /// Begin an OS-level window resize operation along the given edge or
+    /// corner. Call this on mouse-down within the custom resize hit-zone of
+    /// a borderless window. Default: no-op.
+    fn drag_resize_window(&mut self, _direction: ResizeDirection) {}
+
+    /// Minimize the window to the OS task strip. Default: no-op.
+    fn set_minimized(&mut self, _on: bool) {}
+
+    /// Toggle window maximize state. Default: no-op.
+    fn set_maximized(&mut self, _on: bool) {}
+
+    /// `true` when the window is currently maximized. Default: `false`.
+    fn is_maximized(&self) -> bool { false }
+
+    /// Request graceful application close (consumed by `should_close()`).
+    /// Default: no-op.
+    fn request_close(&mut self) {}
 
     /// Set or clear the OS window icon (taskbar / window caption).
     ///

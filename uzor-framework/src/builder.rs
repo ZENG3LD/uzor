@@ -383,6 +383,7 @@ where
                 runtime,
                 config,
                 provider: None,
+                window: None,
             };
 
             event_loop
@@ -476,6 +477,9 @@ struct UzorHandler<A: App<P>, P: DockPanel + Default + 'static> {
     runtime: Runtime<A, P>,
     config: AppConfig,
     provider: Option<WinitWindowProvider>,
+    /// Strong handle to the winit `Window` for `Runtime::handle_winit_event`
+    /// — needed to call `drag_window()` etc. while the press is still held.
+    window: Option<Arc<Window>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -537,6 +541,7 @@ where
         provider.request_redraw();
 
         self.provider = Some(provider);
+        self.window   = Some(window);
     }
 
     fn window_event(
@@ -563,6 +568,14 @@ where
                 }
             }
             ref ev => {
+                // Route raw winit events through the runtime's L1 bridge
+                // (this also runs chrome press handling for drag/min/max).
+                if let Some(ref window) = self.window {
+                    let _consumed = self.runtime.handle_winit_event(ev, window.as_ref());
+                }
+                // Also keep the platform-event queue so apps that override
+                // `App::on_event` for high-level events (theme/file-drop)
+                // still receive them.
                 provider.push_winit_event(ev);
             }
         }
