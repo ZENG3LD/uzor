@@ -92,6 +92,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .min_size(Some((900, 600)))
         .decorations(false) // borderless — our <chrome> handles drag/min/max/resize
         .background(0xFFF7F7F4)
+        // Window/Alt-Tab/taskbar icon (runtime).  Same RgbaIcon is reused
+        // by `.tray(...)` below so the system tray matches the window.
+        .icon_from_png(include_bytes!("assets/icon.png"))?
         .tray("uzor — L4 dashboard")
         .tray_item("show",  "Show window")
         .tray_item("about", "About uzor")

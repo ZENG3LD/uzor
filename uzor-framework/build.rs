@@ -14,26 +14,17 @@ fn main() {
     let crate_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
     let in_path  = PathBuf::from(&crate_dir).join("tokens.toml");
     let out_path = PathBuf::from(&crate_dir).join("src/tokens_generated.rs");
-    let ico_path = PathBuf::from(&crate_dir).join("assets/default_icon.ico");
 
     println!("cargo:rerun-if-changed={}", in_path.display());
-    println!("cargo:rerun-if-changed={}", ico_path.display());
 
-    // Embed the bundled default icon into the .exe on Windows so processes
-    // built from this crate (including framework examples) show an icon in
-    // Task Manager / Explorer / Start menu.  Apps that supply their own
-    // icon can override this in their own build.rs by calling
-    // `winresource::WindowsResource` again with a different .ico.
-    #[cfg(windows)]
-    {
-        if ico_path.exists() {
-            let mut res = winresource::WindowsResource::new();
-            res.set_icon(ico_path.to_str().expect("ico path utf8"));
-            if let Err(e) = res.compile() {
-                eprintln!("[uzor-framework build.rs] embed icon failed: {e}");
-            }
-        }
-    }
+    // EXE icon embedding lives in the application's own build.rs — see
+    // `uzor_framework::utils::resource::embed_icon_and_manifest`.  The
+    // framework crate itself ships no default .ico because end-user apps
+    // supply their own branding asset.  Examples that need a process icon
+    // place their .ico in `examples/assets/` and embed it via the example's
+    // own build script (per-example build.rs is not supported by cargo, so
+    // examples either go without the embedded .ico or move into a separate
+    // bin crate).
 
     let raw = fs::read_to_string(&in_path).unwrap_or_else(|e| {
         panic!("failed to read {}: {}", in_path.display(), e);
