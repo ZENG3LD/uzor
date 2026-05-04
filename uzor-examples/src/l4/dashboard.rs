@@ -86,18 +86,10 @@ impl App<NoPanel> for DashboardApp {
         }
 
         // ── Compute below-chrome body rect ────────────────────────────────────
+        // dock_area уже compressed по chrome — используем напрямую.
         let body = win.layout.last_solved()
             .map(|s| s.dock_area)
             .unwrap_or(Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 });
-        let chrome_h = win.layout.rect_for_chrome()
-            .map(|r| r.height)
-            .unwrap_or(32.0);
-        let body = Rect {
-            x:      body.x,
-            y:      body.y + chrome_h,
-            width:  body.width,
-            height: (body.height - chrome_h).max(0.0),
-        };
 
         let settings_w    = 280.0_f64;
         let settings_rect = Rect { x: body.x, y: body.y, width: settings_w, height: body.height };

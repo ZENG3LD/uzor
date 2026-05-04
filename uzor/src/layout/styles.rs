@@ -165,20 +165,23 @@ pub struct MirageLightPreset;
 
 impl Preset for MirageLightPreset {
     fn apply_to(&self, sm: &mut StyleManager) {
-        sm.set_color("surface_0",      "#EBEBEB");
-        sm.set_color("surface",        "#F7F7F4");
+        // Surface ladder: dark→light, panel-on-canvas distinction kept.
+        sm.set_color("surface_0",      "#E4E4E0");
+        sm.set_color("surface",        "#F0F0EC");
         sm.set_color("surface_raised", "#FFFFFF");
-        sm.set_color("fg_0",           "#1a1a1a");
-        sm.set_color("fg_1",           "#3a3a3a");
-        sm.set_color("fg_2",           "#6b6b6b");
-        sm.set_color("fg_3",           "#9a9a9a");
-        sm.set_color("accent",         "#D07000");
-        sm.set_color("accent_hover",   "#B86000");
-        sm.set_color("accent_dim",     "rgba(208,112,0,0.12)");
-        sm.set_color("border",         "rgba(0,0,0,0.08)");
-        sm.set_color("border_strong",  "rgba(0,0,0,0.16)");
-        sm.set_color("ok",             "#2A7A3A");
-        sm.set_color("warn",           "#A06010");
-        sm.set_color("error",          "#C03030");
+        // Foreground tones: high-contrast on light background.
+        sm.set_color("fg_0",           "#0A0A0A");
+        sm.set_color("fg_1",           "#1F1F1F");
+        sm.set_color("fg_2",           "#4A4A4A");
+        sm.set_color("fg_3",           "#7A7A7A");
+        // Accent — darker amber so text on white reads.
+        sm.set_color("accent",         "#B85F00");
+        sm.set_color("accent_hover",   "#9A4F00");
+        sm.set_color("accent_dim",     "rgba(184,95,0,0.16)");
+        sm.set_color("border",         "rgba(0,0,0,0.12)");
+        sm.set_color("border_strong",  "rgba(0,0,0,0.22)");
+        sm.set_color("ok",             "#1F6F30");
+        sm.set_color("warn",           "#8C5208");
+        sm.set_color("error",          "#A82828");
     }
 }
