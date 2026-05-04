@@ -13,6 +13,7 @@
 
 pub mod app;
 pub mod builder;
+pub mod layout;
 pub mod runtime;
 pub mod utils;
 pub mod widgets;
@@ -50,6 +51,18 @@ pub use tray::{TrayBuilder, TrayError, TrayEvent, TrayHandle};
 
 /// Tier-organised widget registration shortcuts: `coord` (L1), `ctx` (L2), `lm` (L3).
 pub use widgets::{coord, ctx, lm};
+
+/// JSX-mimicking macro DSL — see `uzor-framework-macros` for grammar.
+///
+/// ```ignore
+/// view! {
+///     <col rect={body} gap=8>
+///         <button text="Save" on_click={|| self.save()} />
+///         <checkbox bind={&mut self.dark} label="Dark"/>
+///     </col>
+/// }
+/// ```
+pub use uzor_framework_macros::view;
 
 // ── Hub re-exports ────────────────────────────────────────────────────────────
 

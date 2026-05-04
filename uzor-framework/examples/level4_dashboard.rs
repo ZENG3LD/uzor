@@ -1,43 +1,61 @@
-//! # Level 4 — Dashboard (stub)
+//! # Level 4 — Dashboard
 //!
-//! Polygon for the L4 framework architecture.  Will be fleshed out as the
-//! `uzor-framework::lm` chainable builders gain enough plumbing (auto-anchor,
-//! body-rect lookup, cursor/time frame context, app-router dispatch, dock-leaf
-//! iteration) to express an L3-grade UI without rect math in app code.
+//! First polygon for the L4 framework architecture using the JSX-mimicking
+//! `view!` macro on top of the existing `lm::*` builders.
 //!
-//! For now: a blank window with default chrome — proves the framework runtime
-//! starts cleanly.  Subsequent commits replace the body with real composites
-//! built via `uzor_framework::lm::*` builders.
-//!
-//! # Run
+//! Run:
 //!
 //! ```sh
 //! cargo run --example level4_dashboard -p uzor-framework
 //! ```
 
+use uzor::core::types::Rect;
 use uzor::layout::LayoutManager;
-use uzor_framework::{App, AppBuilder, NoPanel};
+use uzor_framework::{view, App, AppBuilder, NoPanel};
 use uzor_render_hub::{RenderBackend, VelloGpuSurfaceFactory, WindowRenderState};
 
-struct DashboardApp;
+struct DashboardApp {
+    dark:        bool,
+    sounds_on:   bool,
+    save_clicks: u32,
+}
 
 impl DashboardApp {
     fn new() -> Self {
-        Self
+        Self { dark: false, sounds_on: true, save_clicks: 0 }
     }
 }
 
 impl App<NoPanel> for DashboardApp {
     fn init(&mut self, _layout: &mut LayoutManager<NoPanel>) {}
 
-    fn ui(&mut self, _layout: &mut LayoutManager<NoPanel>, _render: &mut WindowRenderState) {
-        // Stub — fill in via lm::* builders as the framework layer matures.
+    fn ui(&mut self, layout: &mut LayoutManager<NoPanel>, render_state: &mut WindowRenderState) {
+        // Frame area (whole window for this stub).
+        let body: Rect = layout
+            .last_solved()
+            .map(|s| s.dock_area)
+            .unwrap_or(Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 });
+
+        render_state.with_render_context(|render| {
+            view! {
+                <col rect={body} gap=12 pad=24>
+                    <text   text="L4 Dashboard" color="#1a1a1a" />
+                    <button text="Save"
+                            bind_count={&mut self.save_clicks}
+                            on_click={|| { /* save */ }} />
+                    <checkbox bind={&mut self.dark}      label="Dark mode" />
+                    <checkbox bind={&mut self.sounds_on} label="Sounds" />
+                    <separator />
+                    <text text="↑ click Save to bump counter (no id strings)" color="#666" />
+                </col>
+            }
+        });
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     AppBuilder::new(DashboardApp::new())
-        .title("uzor — L4 Dashboard")
+        .title("uzor — L4 Dashboard (view!)")
         .size(1400, 900)
         .min_size(Some((900, 600)))
         .decorations(true)

@@ -13,6 +13,7 @@ description = "uzor-framework: end-to-end app runner — owns winit, windows, ch
 uzor = { workspace = true }
 uzor-render-hub = { workspace = true }
 uzor-window-hub = { workspace = true }
+uzor-framework-macros = { workspace = true }
 vello = "0.8"
 wgpu = "28"
 winit = "0.30"
