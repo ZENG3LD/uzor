@@ -24,8 +24,11 @@ slotmap = "1.0"
 fastrand = "2"
 
 [features]
+default = ["framework-png"]
 serde = []
 animation = []
+# PNG icon decoding for AppBuilder::icon_from_png. On by default; turn off
+# if you don't ship `image` (e.g. minimal embedded builds).
 framework-png = ["dep:image"]
 
 [dev-dependencies]
