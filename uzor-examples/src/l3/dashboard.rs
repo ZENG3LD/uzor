@@ -1864,9 +1864,20 @@ impl AppState {
             // Overflow mode: chevrons make sense only inside the L2 widget
             // catalog (its content can be wider than the body). All other
             // demo modals fit their body — clip is enough.
+            // Pick a different overflow strategy per kind so each demo modal
+            // exercises one of the three reactions:
+            //   • HeaderDemo   — Chevrons (paging arrows)
+            //   • TopTabsDemo  — Scrollbar (vertical track)
+            //   • SideTabsDemo — Compress (children scaled to fit; fallback
+            //                    chevrons kick in if min-factor is reached)
+            //   • L2           — Chevrons (legacy behaviour for catalog)
+            //   • everything else — Clip (with auto-fallback to chevrons)
             let overflow_mode = match modal_kind {
-                ModalKind::L2 => uzor::types::OverflowMode::Chevrons,
-                _             => uzor::types::OverflowMode::Clip,
+                ModalKind::L2           => uzor::types::OverflowMode::Chevrons,
+                ModalKind::HeaderDemo   => uzor::types::OverflowMode::Chevrons,
+                ModalKind::TopTabsDemo  => uzor::types::OverflowMode::Scrollbar,
+                ModalKind::SideTabsDemo => uzor::types::OverflowMode::Compress,
+                _                       => uzor::types::OverflowMode::Clip,
             };
             let mut modal_view = ModalView {
                 title: Some(title),

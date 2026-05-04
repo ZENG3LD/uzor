@@ -138,7 +138,9 @@ pub fn register_layout_manager_popup<P: DockPanel>(
             EventBuilder::ScrollbarThumb { thumb_id: WidgetId(format!("{}:scrollbar_handle", id.0)) },
         );
     }
-    if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
+    // Chevron routing: any non-Scrollbar mode may produce chevrons
+    // (Chevrons explicitly, or Clip/Compress when content overflows).
+    if !matches!(view.overflow, crate::types::OverflowMode::Scrollbar) {
         use crate::layout::ChevronStepDirection;
         dispatcher.on_exact(
             format!("{}:chevron_up", id.0),

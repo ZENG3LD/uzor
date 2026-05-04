@@ -36,6 +36,25 @@ pub fn register_layout_manager_panel<P: DockPanel>(
     let rect = layout.rect_for(slot_id)?;
     let layer = layout.compute_layer_for(parent);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Panel, rect, sense: Sense::CLICK });
+
+    // Body chevron routing (Chevrons explicitly OR Clip/Compress when
+    // content overflows the body — post-resize fallback).
+    if !matches!(view.overflow, crate::types::OverflowMode::Scrollbar) {
+        use crate::layout::{ChevronStepDirection, EventBuilder};
+        for (suffix, dir) in [
+            ("chevron_up",    ChevronStepDirection::Up),
+            ("chevron_down",  ChevronStepDirection::Down),
+            ("chevron_left",  ChevronStepDirection::Left),
+            ("chevron_right", ChevronStepDirection::Right),
+        ] {
+            let cid = WidgetId::new(format!("{}:{}", id.0, suffix));
+            layout.dispatcher_mut().on_exact(
+                format!("{}:{}", id.0, suffix),
+                EventBuilder::ChevronStep { chevron_id: cid, direction: dir },
+            );
+        }
+    }
+
     register_context_manager_panel(
         layout.ctx_mut(), render, id, rect, state, view, settings, kind, &layer,
     );
