@@ -11,9 +11,150 @@
 
 use crate::core::types::Rect;
 use crate::docking::panels::DockPanel;
-use crate::layout::{LayoutManager, LayoutNodeId};
+use crate::layout::{LayoutManager, LayoutNodeId, StyleManager};
 use crate::render::RenderContext;
 use crate::types::{WidgetId, WidgetState};
+
+// =============================================================================
+// StyledButtonTheme — reads from StyleManager, delegates rest to Default
+// =============================================================================
+
+use crate::ui::widgets::atomic::button::theme::{ButtonTheme, DefaultButtonTheme};
+use crate::ui::widgets::atomic::button::style::{ButtonStyle, DefaultButtonStyle};
+use crate::ui::widgets::atomic::button::settings::ButtonSettings;
+
+struct StyledButtonTheme {
+    bg_hover:                String,
+    bg_active:               String,
+    bg_pressed:              String,
+    text_normal:             String,
+    text_hover:              String,
+    text_active:             String,
+    accent:                  String,
+    danger:                  String,
+    success:                 String,
+    warning:                 String,
+    toolbar_item_bg_hover:   String,
+    toolbar_item_bg_active:  String,
+    toolbar_item_text:       String,
+    toolbar_item_text_hover: String,
+    fallback:                DefaultButtonTheme,
+}
+
+impl StyledButtonTheme {
+    fn from_styles(s: &StyleManager) -> Self {
+        let accent    = s.color_or_owned("accent",   "#2962ff");
+        let accent_dim = s.color_or_owned("accent_dim", "rgba(41,98,255,0.15)");
+        let fg_0      = s.color_or_owned("fg_0",     "#ffffff");
+        let fg_1      = s.color_or_owned("fg_1",     "#d1d5db");
+        let error_c   = s.color_or_owned("error",    "#ef5350");
+        let ok_c      = s.color_or_owned("ok",       "#10b981");
+        let warn_c    = s.color_or_owned("warn",      "#f59e0b");
+        Self {
+            bg_hover:                accent_dim.clone(),
+            bg_active:               accent.clone(),
+            bg_pressed:              accent.clone(),
+            text_normal:             fg_1.clone(),
+            text_hover:              fg_0.clone(),
+            text_active:             fg_0.clone(),
+            accent:                  accent.clone(),
+            danger:                  error_c,
+            success:                 ok_c,
+            warning:                 warn_c,
+            toolbar_item_bg_hover:   s.color_or_owned("surface_raised", "#2a2e39"),
+            toolbar_item_bg_active:  accent.clone(),
+            toolbar_item_text:       fg_1,
+            toolbar_item_text_hover: fg_0,
+            fallback:                DefaultButtonTheme,
+        }
+    }
+}
+
+impl ButtonTheme for StyledButtonTheme {
+    fn button_bg_normal(&self)   -> &str { self.fallback.button_bg_normal() }
+    fn button_bg_hover(&self)    -> &str { &self.bg_hover }
+    fn button_bg_pressed(&self)  -> &str { &self.bg_pressed }
+    fn button_bg_active(&self)   -> &str { &self.bg_active }
+    fn button_bg_disabled(&self) -> &str { self.fallback.button_bg_disabled() }
+
+    fn button_text_normal(&self)   -> &str { &self.text_normal }
+    fn button_text_hover(&self)    -> &str { &self.text_hover }
+    fn button_text_active(&self)   -> &str { &self.text_active }
+    fn button_text_disabled(&self) -> &str { self.fallback.button_text_disabled() }
+
+    fn button_icon_normal(&self)   -> &str { self.fallback.button_icon_normal() }
+    fn button_icon_hover(&self)    -> &str { self.fallback.button_icon_hover() }
+    fn button_icon_active(&self)   -> &str { self.fallback.button_icon_active() }
+    fn button_icon_disabled(&self) -> &str { self.fallback.button_icon_disabled() }
+
+    fn button_border_normal(&self)  -> &str { self.fallback.button_border_normal() }
+    fn button_border_hover(&self)   -> &str { self.fallback.button_border_hover() }
+    fn button_border_focused(&self) -> &str { &self.accent }
+
+    fn button_accent(&self)   -> &str { &self.accent }
+    fn button_danger(&self)   -> &str { &self.danger }
+    fn button_success(&self)  -> &str { &self.success }
+    fn button_warning(&self)  -> &str { &self.warning }
+
+    fn toolbar_item_bg_hover(&self)    -> &str { &self.toolbar_item_bg_hover }
+    fn toolbar_item_bg_active(&self)   -> &str { &self.toolbar_item_bg_active }
+    fn toolbar_item_text(&self)        -> &str { &self.toolbar_item_text }
+    fn toolbar_item_text_hover(&self)  -> &str { &self.toolbar_item_text_hover }
+    fn toolbar_item_text_active(&self) -> &str { self.fallback.toolbar_item_text_active() }
+    fn toolbar_separator(&self)        -> &str { self.fallback.toolbar_separator() }
+    fn toolbar_background(&self)       -> &str { self.fallback.toolbar_background() }
+    fn toolbar_accent(&self)           -> &str { &self.accent }
+
+    fn button_primary_bg(&self)           -> &str { &self.accent }
+    fn button_primary_bg_hover(&self)     -> &str { self.fallback.button_primary_bg_hover() }
+    fn button_danger_bg(&self)            -> &str { self.fallback.button_danger_bg() }
+    fn button_danger_bg_hover(&self)      -> &str { self.fallback.button_danger_bg_hover() }
+    fn button_danger_border(&self)        -> &str { self.fallback.button_danger_border() }
+    fn button_danger_border_hover(&self)  -> &str { self.fallback.button_danger_border_hover() }
+    fn button_danger_text(&self)          -> &str { &self.danger }
+    fn button_secondary_hover_bg(&self)   -> &str { self.fallback.button_secondary_hover_bg() }
+    fn button_secondary_text_muted(&self) -> &str { self.fallback.button_secondary_text_muted() }
+    fn button_secondary_text(&self)       -> &str { self.fallback.button_secondary_text() }
+    fn button_ghost_idle_bg(&self)        -> &str { self.fallback.button_ghost_idle_bg() }
+    fn button_utility_bg(&self)           -> &str { self.fallback.button_utility_bg() }
+    fn button_utility_bg_hover(&self)     -> &str { self.fallback.button_utility_bg_hover() }
+}
+
+struct StyledButtonStyle {
+    radius:    f64,
+    padding_x: f64,
+    font_size: f64,
+    fallback:  DefaultButtonStyle,
+}
+
+impl StyledButtonStyle {
+    fn from_styles(s: &StyleManager) -> Self {
+        Self {
+            radius:    s.size_or("button_radius",    4.0),
+            padding_x: s.size_or("button_padding",   8.0),
+            font_size: s.size_or("button_font_size", 13.0),
+            fallback:  DefaultButtonStyle,
+        }
+    }
+}
+
+impl ButtonStyle for StyledButtonStyle {
+    fn radius(&self)             -> f64  { self.radius }
+    fn padding_x(&self)          -> f64  { self.padding_x }
+    fn padding_y(&self)          -> f64  { self.fallback.padding_y() }
+    fn icon_size(&self)          -> f64  { self.fallback.icon_size() }
+    fn font_size(&self)          -> f64  { self.font_size }
+    fn gap(&self)                -> f64  { self.fallback.gap() }
+    fn border_width(&self)       -> f64  { self.fallback.border_width() }
+    fn show_active_border(&self) -> bool { self.fallback.show_active_border() }
+}
+
+fn button_settings_from_styles(s: &StyleManager) -> ButtonSettings {
+    ButtonSettings {
+        theme: Box::new(StyledButtonTheme::from_styles(s)),
+        style: Box::new(StyledButtonStyle::from_styles(s)),
+    }
+}
 
 // =============================================================================
 // Button
@@ -21,7 +162,6 @@ use crate::types::{WidgetId, WidgetState};
 
 use crate::ui::widgets::atomic::button::input::register_layout_manager_button;
 use crate::ui::widgets::atomic::button::render::ButtonView;
-use crate::ui::widgets::atomic::button::settings::ButtonSettings;
 use crate::types::IconId;
 
 /// Chainable builder for an atomic button.
@@ -105,7 +245,7 @@ impl<'a> ButtonBuilder<'a> {
             active_border: None,
             hover_chevron: None,
         };
-        let settings = self.settings.unwrap_or_default();
+        let settings = self.settings.unwrap_or_else(|| button_settings_from_styles(layout.styles()));
         let ws = self.widget_state.unwrap_or_else(|| {
             // Pull live state from coordinator if available.
             layout.ctx().input.widget_state(&self.id)

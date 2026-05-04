@@ -21,6 +21,7 @@ pub mod host;
 mod manager;
 mod overlay_stack;
 mod solve;
+pub mod styles;
 mod tree;
 mod types;
 mod z_layers;
@@ -42,4 +43,5 @@ pub use handles::{
 };
 pub use tree::{LayoutNode, LayoutNodeId, LayoutTree, LayoutTreeEntry, SystemNodeKind, WidgetNode};
 pub use types::{DragOutcome, EdgeRects, EdgeSide, LayoutSolved, OverlayKind, OverlayRect, SlotId};
+pub use styles::{MirageDarkPreset, MirageLightPreset, Preset, StyleManager, TextureKind};
 pub use z_layers::ZLayerTable;

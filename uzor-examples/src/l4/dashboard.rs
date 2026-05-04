@@ -1,10 +1,15 @@
 //! # Level 4 — Dashboard (Settings + Painting panels)
 //!
 //! Main window split into two side-by-side panels:
-//!   LEFT  (280 px fixed) — Settings: backend selector, vsync, msaa, fps.
+//!   LEFT  (280 px fixed) — Settings: backend selector, vsync, msaa, fps, theme.
 //!   RIGHT (flex=1)       — Stub painting panel with static text.
 //!
 //! Chrome strip at top with "+" spawns extra windows.
+//!
+//! **StyleManager demo**: two "Mirage Dark" / "Mirage Light" theme buttons in the
+//! Settings panel switch the palette without touching any per-widget settings.
+//! All chrome buttons + panel backgrounds pick up the change automatically
+//! because `lm::*` builders re-read `layout.styles()` every frame.
 //!
 //! Run:
 //!
@@ -16,6 +21,7 @@ use uzor::core::types::Rect;
 use uzor::framework::app::{App, NoPanel};
 use uzor::framework::builder::AppBuilder;
 use uzor::framework::multi_window::{WindowCtx, WindowKey, WindowSpec};
+use uzor::layout::{MirageDarkPreset, MirageLightPreset};
 use uzor::layout::LayoutNodeId;
 use uzor::platform::types::CornerStyle;
 use uzor::types::unsafe_widget_id;
@@ -25,14 +31,40 @@ use uzor::ui::widgets::atomic::button::settings::ButtonSettings;
 use uzor_desktop::AppRun as _;
 use uzor_framework_macros::view;
 
-struct DashboardApp;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ThemeMode {
+    Dark,
+    Light,
+}
+
+struct DashboardApp {
+    current_theme: ThemeMode,
+}
 
 impl DashboardApp {
-    fn new() -> Self { Self }
+    fn new() -> Self {
+        Self {
+            current_theme: ThemeMode::Dark,
+        }
+    }
 }
 
 impl App<NoPanel> for DashboardApp {
     fn ui(&mut self, win: &mut WindowCtx<'_, NoPanel>) {
+        // ── Apply theme if it changed ────────────────────────────────────────
+        {
+            let theme_dark_id  = unsafe_widget_id("settings:theme_dark");
+            let theme_light_id = unsafe_widget_id("settings:theme_light");
+            if win.layout.was_clicked(&theme_dark_id) && self.current_theme != ThemeMode::Dark {
+                self.current_theme = ThemeMode::Dark;
+                win.layout.styles_mut().apply(&MirageDarkPreset);
+            }
+            if win.layout.was_clicked(&theme_light_id) && self.current_theme != ThemeMode::Light {
+                self.current_theme = ThemeMode::Light;
+                win.layout.styles_mut().apply(&MirageLightPreset);
+            }
+        }
+
         // ── Snapshot render-control state (no borrows held) ───────────────────
         let active_backend = win.render_control.active_backend();
         let available      = win.render_control.available_backends();
@@ -125,6 +157,36 @@ impl App<NoPanel> for DashboardApp {
             let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 1.0 };
             cy += 1.0 + gap;
             uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep0"), r).build(layout, render);
+
+            // Theme section
+            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 20.0 };
+            cy += 20.0 + 4.0;
+            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:theme_lbl"), r, "Theme").build(layout, render);
+
+            let theme_btn_w = (settings_rect.width - 2.0*pad - gap) / 2.0;
+            // "Mirage Dark" button — uses lm::button which reads from StyleManager automatically
+            uzor::framework::widgets::lm::button(
+                unsafe_widget_id("settings:theme_dark"),
+                Rect { x: settings_rect.x + pad, y: cy, width: theme_btn_w, height: row_h },
+            )
+            .text("Mirage Dark")
+            .active(self.current_theme == ThemeMode::Dark)
+            .build(layout, render);
+
+            // "Mirage Light" button
+            uzor::framework::widgets::lm::button(
+                unsafe_widget_id("settings:theme_light"),
+                Rect { x: settings_rect.x + pad + theme_btn_w + gap, y: cy, width: theme_btn_w, height: row_h },
+            )
+            .text("Mirage Light")
+            .active(self.current_theme == ThemeMode::Light)
+            .build(layout, render);
+            cy += row_h + gap;
+
+            // Sep
+            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 1.0 };
+            cy += 1.0 + gap;
+            uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep_theme"), r).build(layout, render);
 
             // Backend section label
             let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 20.0 };
@@ -245,6 +307,7 @@ impl App<NoPanel> for DashboardApp {
             uzor::framework::widgets::lm::separator(unsafe_widget_id("paint:sep1"), r).build(layout, render);
 
             let btn_r = Rect { x: paint_rect.x + pad, y: cy, width: 160.0, height: 32.0 };
+            // This button uses lm::button which auto-reads from StyleManager.
             uzor::framework::widgets::lm::button(unsafe_widget_id("paint:open_settings"), btn_r)
                 .text("Open settings…")
                 .build(layout, render);

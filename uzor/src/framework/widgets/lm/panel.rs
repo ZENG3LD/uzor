@@ -15,14 +15,65 @@
 
 use crate::core::types::Rect;
 use crate::docking::panels::DockPanel;
-use crate::layout::{LayoutManager, LayoutNodeId, PanelNode};
+use crate::layout::{LayoutManager, LayoutNodeId, PanelNode, StyleManager};
 use crate::render::RenderContext;
 use crate::ui::widgets::composite::panel::input::register_layout_manager_panel;
 use crate::ui::widgets::composite::panel::settings::PanelSettings;
 use crate::ui::widgets::composite::panel::state::PanelState;
+use crate::ui::widgets::composite::panel::style::DefaultPanelStyle;
+use crate::ui::widgets::composite::panel::theme::{DefaultPanelTheme, PanelTheme};
 use crate::ui::widgets::composite::panel::types::{
     ColumnDef, HeaderAction, PanelHeader, PanelRenderKind, PanelView,
 };
+
+// =============================================================================
+// StyledPanelTheme
+// =============================================================================
+
+struct StyledPanelTheme {
+    bg:          String,
+    border:      String,
+    header_bg:   String,
+    header_text: String,
+    fallback:    DefaultPanelTheme,
+}
+
+impl StyledPanelTheme {
+    fn from_styles(s: &StyleManager) -> Self {
+        Self {
+            bg:          s.color_or_owned("surface_0",  "#0d1117"),
+            border:      s.color_or_owned("border",     "#30363d"),
+            header_bg:   s.color_or_owned("surface",    "#161b22"),
+            header_text: s.color_or_owned("fg_2",       "#8091a5"),
+            fallback:    DefaultPanelTheme,
+        }
+    }
+}
+
+impl PanelTheme for StyledPanelTheme {
+    fn bg(&self)                      -> &str { &self.bg }
+    fn border(&self)                  -> &str { &self.border }
+    fn header_bg(&self)               -> &str { &self.header_bg }
+    fn header_text(&self)             -> &str { &self.header_text }
+    fn column_header_bg(&self)        -> &str { &self.header_bg }
+    fn column_header_text(&self)      -> &str { self.fallback.column_header_text() }
+    fn row_bg_normal(&self)           -> &str { &self.bg }
+    fn row_bg_hover(&self)            -> &str { self.fallback.row_bg_hover() }
+    fn row_bg_selected(&self)         -> &str { self.fallback.row_bg_selected() }
+    fn footer_bg(&self)               -> &str { &self.header_bg }
+    fn footer_text(&self)             -> &str { self.fallback.footer_text() }
+    fn divider(&self)                 -> &str { &self.border }
+    fn action_icon_normal(&self)      -> &str { self.fallback.action_icon_normal() }
+    fn action_icon_hover(&self)       -> &str { self.fallback.action_icon_hover() }
+    fn sort_arrow_color(&self)        -> &str { self.fallback.sort_arrow_color() }
+}
+
+fn panel_settings_from_styles(s: &StyleManager) -> PanelSettings {
+    PanelSettings {
+        theme: Box::new(StyledPanelTheme::from_styles(s)),
+        style: Box::<DefaultPanelStyle>::default(),
+    }
+}
 
 /// Chainable builder for a docked content panel.
 pub struct PanelBuilder<'a> {
@@ -94,7 +145,7 @@ impl<'a> PanelBuilder<'a> {
             content_height: self.content_height,
         };
 
-        let settings = self.settings.unwrap_or_default();
+        let settings = self.settings.unwrap_or_else(|| panel_settings_from_styles(layout.styles()));
 
         register_layout_manager_panel(
             layout,

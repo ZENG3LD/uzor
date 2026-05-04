@@ -11,14 +11,75 @@
 
 use crate::core::types::Rect;
 use crate::docking::panels::DockPanel;
-use crate::layout::{LayoutManager, LayoutNodeId, PopupHandle, PopupNode};
+use crate::layout::{LayoutManager, LayoutNodeId, PopupHandle, PopupNode, StyleManager};
 use crate::render::RenderContext;
 use crate::types::{OverflowMode, SizeMode};
 use crate::ui::widgets::composite::popup::input::register_layout_manager_popup;
 use crate::ui::widgets::composite::popup::settings::PopupSettings;
+use crate::ui::widgets::composite::popup::style::DefaultPopupStyle;
+use crate::ui::widgets::composite::popup::theme::{DefaultPopupTheme, PopupTheme};
 use crate::ui::widgets::composite::popup::types::{
     BackdropKind, PopupRenderKind, PopupView, PopupViewKind,
 };
+
+// =============================================================================
+// StyledPopupTheme — reads bg/fg/accent from StyleManager, delegates rest
+// =============================================================================
+
+struct StyledPopupTheme {
+    bg:                String,
+    border:            String,
+    item_bg_hover:     String,
+    item_bg_selected:  String,
+    item_text:         String,
+    accent:            String,
+    fallback:          DefaultPopupTheme,
+}
+
+impl StyledPopupTheme {
+    fn from_styles(s: &StyleManager) -> Self {
+        let accent     = s.color_or_owned("accent",    "#2962ff");
+        let accent_dim = s.color_or_owned("accent_dim","rgba(41,98,255,0.15)");
+        Self {
+            bg:               s.color_or_owned("surface",       "#1e222d"),
+            border:           s.color_or_owned("border_strong", "#363a45"),
+            item_bg_hover:    s.color_or_owned("surface_raised","#2a2e39"),
+            item_bg_selected: accent_dim,
+            item_text:        s.color_or_owned("fg_1",          "#d1d4dc"),
+            accent:           accent,
+            fallback:         DefaultPopupTheme,
+        }
+    }
+}
+
+impl PopupTheme for StyledPopupTheme {
+    fn bg(&self)                     -> &str { &self.bg }
+    fn border(&self)                 -> &str { &self.border }
+    fn shadow(&self)                 -> &str { self.fallback.shadow() }
+    fn item_bg_normal(&self)         -> &str { self.fallback.item_bg_normal() }
+    fn item_bg_hover(&self)          -> &str { &self.item_bg_hover }
+    fn item_bg_selected(&self)       -> &str { &self.item_bg_selected }
+    fn item_text(&self)              -> &str { &self.item_text }
+    fn item_text_hover(&self)        -> &str { self.fallback.item_text_hover() }
+    fn item_text_disabled(&self)     -> &str { self.fallback.item_text_disabled() }
+    fn item_text_danger(&self)       -> &str { self.fallback.item_text_danger() }
+    fn item_bg_danger_hover(&self)   -> &str { self.fallback.item_bg_danger_hover() }
+    fn header_text(&self)            -> &str { self.fallback.header_text() }
+    fn separator(&self)              -> &str { &self.border }
+    fn hex_input_bg(&self)           -> &str { self.fallback.hex_input_bg() }
+    fn hex_input_text(&self)         -> &str { self.fallback.hex_input_text() }
+    fn hex_input_border_focus(&self) -> &str { &self.accent }
+    fn hsv_indicator(&self)          -> &str { self.fallback.hsv_indicator() }
+    fn accent(&self)                 -> &str { &self.accent }
+    fn backdrop_dim(&self)           -> &str { self.fallback.backdrop_dim() }
+}
+
+fn popup_settings_from_styles(s: &StyleManager) -> PopupSettings {
+    PopupSettings {
+        theme: Box::new(StyledPopupTheme::from_styles(s)),
+        style: Box::<DefaultPopupStyle>::default(),
+    }
+}
 
 /// Chainable builder for a popup overlay.
 pub struct PopupBuilder<'a> {
@@ -144,7 +205,7 @@ impl<'a> PopupBuilder<'a> {
             overflow:  self.overflow,
         };
 
-        let settings = self.settings.unwrap_or_default();
+        let settings = self.settings.unwrap_or_else(|| popup_settings_from_styles(layout.styles()));
 
         register_layout_manager_popup(
             layout,

@@ -15,14 +15,82 @@
 //! ```
 
 use crate::docking::panels::DockPanel;
-use crate::layout::{LayoutManager, LayoutNodeId, ResizeEdge, ToolbarHandle, ToolbarNode};
+use crate::layout::{LayoutManager, LayoutNodeId, ResizeEdge, StyleManager, ToolbarHandle, ToolbarNode};
 use crate::render::RenderContext;
 use crate::types::OverflowMode;
 use crate::ui::widgets::composite::toolbar::input::register_layout_manager_toolbar;
 use crate::ui::widgets::composite::toolbar::settings::ToolbarSettings;
+use crate::ui::widgets::composite::toolbar::style::DefaultToolbarStyle;
+use crate::ui::widgets::composite::toolbar::theme::{DefaultToolbarTheme, ToolbarTheme};
 use crate::ui::widgets::composite::toolbar::types::{
     ChromeStripView, ToolbarItem, ToolbarRenderKind, ToolbarSection, ToolbarView,
 };
+
+// =============================================================================
+// StyledToolbarTheme — reads bg/fg/accent from StyleManager, delegates rest
+// =============================================================================
+
+struct StyledToolbarTheme {
+    bg:               String,
+    item_bg_hover:    String,
+    item_bg_active:   String,
+    item_text_normal: String,
+    item_text_active: String,
+    fallback:         DefaultToolbarTheme,
+}
+
+impl StyledToolbarTheme {
+    fn from_styles(s: &StyleManager) -> Self {
+        let accent     = s.color_or_owned("accent",     "#2962ff");
+        let accent_dim = s.color_or_owned("accent_dim", "rgba(41,98,255,0.15)");
+        Self {
+            bg:               s.color_or_owned("surface",       "#1e222d"),
+            item_bg_hover:    s.color_or_owned("surface_raised","#2a2e39"),
+            item_bg_active:   accent_dim,
+            item_text_normal: s.color_or_owned("fg_1",          "#d1d4dc"),
+            item_text_active: accent,
+            fallback:         DefaultToolbarTheme,
+        }
+    }
+}
+
+impl ToolbarTheme for StyledToolbarTheme {
+    fn bg(&self)                     -> &str { &self.bg }
+    fn separator(&self)              -> &str { self.fallback.separator() }
+    fn item_bg_normal(&self)         -> &str { self.fallback.item_bg_normal() }
+    fn item_bg_hover(&self)          -> &str { &self.item_bg_hover }
+    fn item_bg_active(&self)         -> &str { &self.item_bg_active }
+    fn item_bg_pressed(&self)        -> &str { self.fallback.item_bg_pressed() }
+    fn item_text_normal(&self)       -> &str { &self.item_text_normal }
+    fn item_text_hover(&self)        -> &str { self.fallback.item_text_hover() }
+    fn item_text_active(&self)       -> &str { &self.item_text_active }
+    fn item_text_disabled(&self)     -> &str { self.fallback.item_text_disabled() }
+    fn icon_normal(&self)            -> &str { &self.item_text_normal }
+    fn icon_hover(&self)             -> &str { self.fallback.icon_hover() }
+    fn icon_active(&self)            -> &str { &self.item_text_active }
+    fn icon_disabled(&self)          -> &str { self.fallback.icon_disabled() }
+    fn scroll_chevron_color(&self)   -> &str { self.fallback.scroll_chevron_color() }
+    fn label_text(&self)             -> &str { self.fallback.label_text() }
+    fn clock_text(&self)             -> &str { &self.item_text_normal }
+    fn chrome_tab_bg_active(&self)   -> &str { self.fallback.chrome_tab_bg_active() }
+    fn chrome_tab_bg_inactive(&self) -> &str { self.fallback.chrome_tab_bg_inactive() }
+    fn chrome_tab_bg_hover(&self)    -> &str { &self.item_bg_hover }
+    fn chrome_tab_text_active(&self) -> &str { self.fallback.chrome_tab_text_active() }
+    fn chrome_tab_text_inactive(&self) -> &str { self.fallback.chrome_tab_text_inactive() }
+    fn chrome_ctrl_hover(&self)      -> &str { self.fallback.chrome_ctrl_hover() }
+    fn chrome_close_hover(&self)     -> &str { self.fallback.chrome_close_hover() }
+    fn chrome_ctrl_icon(&self)       -> &str { &self.item_text_normal }
+    fn color_swatch_border(&self)    -> &str { self.fallback.color_swatch_border() }
+    fn split_chevron(&self)          -> &str { self.fallback.split_chevron() }
+    fn split_divider(&self)          -> &str { self.fallback.split_divider() }
+}
+
+fn toolbar_settings_from_styles(s: &StyleManager) -> ToolbarSettings {
+    ToolbarSettings {
+        theme: Box::new(StyledToolbarTheme::from_styles(s)),
+        style: Box::<DefaultToolbarStyle>::default(),
+    }
+}
 
 /// Chainable builder for an edge-anchored toolbar.
 pub struct ToolbarBuilder<'a> {
@@ -96,7 +164,7 @@ impl<'a> ToolbarBuilder<'a> {
             resize_edge: self.resize_edge,
         };
 
-        let settings = self.settings.unwrap_or_default();
+        let settings = self.settings.unwrap_or_else(|| toolbar_settings_from_styles(layout.styles()));
 
         register_layout_manager_toolbar(
             layout,

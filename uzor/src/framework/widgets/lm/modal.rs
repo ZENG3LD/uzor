@@ -17,14 +17,75 @@
 
 use crate::core::types::Rect;
 use crate::docking::panels::DockPanel;
-use crate::layout::{LayoutManager, LayoutNodeId, ModalHandle, ModalNode};
+use crate::layout::{LayoutManager, LayoutNodeId, ModalHandle, ModalNode, StyleManager};
 use crate::render::RenderContext;
 use crate::ui::widgets::composite::modal::input::register_layout_manager_modal;
 use crate::ui::widgets::composite::modal::settings::ModalSettings;
+use crate::ui::widgets::composite::modal::style::DefaultModalStyle;
+use crate::ui::widgets::composite::modal::theme::{DefaultModalTheme, ModalTheme};
 use crate::ui::widgets::composite::modal::types::{
     BackdropKind, FooterBtn, ModalRenderKind, ModalView, WizardPageInfo,
 };
 use crate::types::OverflowMode;
+
+// =============================================================================
+// StyledModalTheme — reads bg/border from StyleManager, delegates rest
+// =============================================================================
+
+struct StyledModalTheme {
+    bg:          String,
+    border:      String,
+    header_text: String,
+    tab_accent:  String,
+    tab_bg_active: String,
+    fallback:    DefaultModalTheme,
+}
+
+impl StyledModalTheme {
+    fn from_styles(s: &StyleManager) -> Self {
+        let accent = s.color_or_owned("accent", "#2962ff");
+        let accent_dim = s.color_or_owned("accent_dim", "rgba(41,98,255,0.12)");
+        Self {
+            bg:            s.color_or_owned("surface",      "#1e222d"),
+            border:        s.color_or_owned("border_strong","#363a45"),
+            header_text:   s.color_or_owned("fg_0",         "#ffffff"),
+            tab_accent:    accent.clone(),
+            tab_bg_active: accent_dim,
+            fallback:      DefaultModalTheme,
+        }
+    }
+}
+
+impl ModalTheme for StyledModalTheme {
+    fn bg(&self)                  -> &str { &self.bg }
+    fn border(&self)              -> &str { &self.border }
+    fn shadow(&self)              -> &str { self.fallback.shadow() }
+    fn header_bg(&self)           -> &str { &self.bg }
+    fn header_text(&self)         -> &str { &self.header_text }
+    fn divider(&self)             -> &str { &self.border }
+    fn footer_bg(&self)           -> &str { &self.bg }
+    fn footer_border(&self)       -> &str { &self.border }
+    fn close_icon(&self)          -> &str { self.fallback.close_icon() }
+    fn close_icon_hover(&self)    -> &str { self.fallback.close_icon_hover() }
+    fn backdrop_dim(&self)        -> &str { self.fallback.backdrop_dim() }
+    fn backdrop_full(&self)       -> &str { self.fallback.backdrop_full() }
+    fn sidebar_bg(&self)          -> &str { &self.bg }
+    fn sidebar_border(&self)      -> &str { &self.border }
+    fn tab_text_active(&self)     -> &str { &self.header_text }
+    fn tab_text_inactive(&self)   -> &str { self.fallback.tab_text_inactive() }
+    fn tab_accent(&self)          -> &str { &self.tab_accent }
+    fn tab_bg_active(&self)       -> &str { &self.tab_bg_active }
+    fn tab_bg_hover(&self)        -> &str { self.fallback.tab_bg_hover() }
+    fn wizard_dot_inactive(&self) -> &str { self.fallback.wizard_dot_inactive() }
+    fn wizard_dot_active(&self)   -> &str { &self.tab_accent }
+}
+
+fn modal_settings_from_styles(s: &StyleManager) -> ModalSettings {
+    ModalSettings {
+        theme: Box::new(StyledModalTheme::from_styles(s)),
+        style: Box::<DefaultModalStyle>::default(),
+    }
+}
 
 /// Chainable builder for a modal overlay frame.
 ///
@@ -143,7 +204,7 @@ impl<'a> ModalBuilder<'a> {
             resizable:      self.resizable,
         };
 
-        let settings = self.settings.unwrap_or_default();
+        let settings = self.settings.unwrap_or_else(|| modal_settings_from_styles(layout.styles()));
 
         register_layout_manager_modal(
             layout,

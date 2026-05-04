@@ -24,6 +24,7 @@ use super::tree::{LayoutNode as TreeLayoutNode, LayoutNodeId, LayoutTree};
 use super::z_layers::ZLayerTable;
 use super::types::{OverlayKind, LayoutSolved};
 use super::solve::solve_layout;
+use super::styles::StyleManager;
 
 // ---------------------------------------------------------------------------
 // Per-frame composite registry — used by consume_event
@@ -188,6 +189,13 @@ pub struct LayoutManager<P: DockPanel> {
     /// Composites push one entry in their `register_layout_manager_*` helper
     /// so [`Self::consume_event`] can iterate them without app boilerplate.
     pub(crate) composite_registry: Vec<CompositeRegistration>,
+
+    /// Centralised style/colour/size/texture registry.
+    ///
+    /// `lm::*` builders read from this when no per-call `Settings` were supplied.
+    /// Per-call settings (`.settings(...)`) take priority — StyleManager is the
+    /// *default supplier* (lowest priority).
+    styles: StyleManager,
 }
 
 impl<P: DockPanel> LayoutManager<P> {
@@ -215,6 +223,7 @@ impl<P: DockPanel> LayoutManager<P> {
             context_menus: HashMap::new(),
             chrome_widget_state: ChromeState::default(),
             composite_registry: Vec::new(),
+            styles: StyleManager::default(),
         }
     }
 
@@ -535,6 +544,27 @@ impl<P: DockPanel> LayoutManager<P> {
     /// Mutable access to the chrome widget state.
     pub fn chrome_state_mut(&mut self) -> &mut ChromeState {
         &mut self.chrome_widget_state
+    }
+
+    /// Read-only access to the centralised style/colour/size/texture registry.
+    ///
+    /// `lm::*` builders call this to fall back to global palette tokens when no
+    /// per-call `Settings` were supplied via `.settings(...)`.
+    pub fn styles(&self) -> &StyleManager {
+        &self.styles
+    }
+
+    /// Mutable access to the style registry.
+    ///
+    /// Apps call this in `App::init` (or on theme-switch events) to configure
+    /// the global palette:
+    ///
+    /// ```ignore
+    /// layout.styles_mut().set_color("accent", "#FBB26A");
+    /// layout.styles_mut().apply(&MirageDarkPreset);
+    /// ```
+    pub fn styles_mut(&mut self) -> &mut StyleManager {
+        &mut self.styles
     }
 
     /// Push a composite registration entry so [`Self::consume_event`] can

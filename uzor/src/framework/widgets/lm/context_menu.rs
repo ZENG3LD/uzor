@@ -12,13 +12,60 @@
 
 use crate::core::types::Rect;
 use crate::docking::panels::DockPanel;
-use crate::layout::{ContextMenuHandle, ContextMenuNode, LayoutManager, LayoutNodeId};
+use crate::layout::{ContextMenuHandle, ContextMenuNode, LayoutManager, LayoutNodeId, StyleManager};
 use crate::render::RenderContext;
 use crate::ui::widgets::composite::context_menu::input::register_layout_manager_context_menu;
 use crate::ui::widgets::composite::context_menu::settings::ContextMenuSettings;
+use crate::ui::widgets::composite::context_menu::style::DefaultContextMenuStyle;
+use crate::ui::widgets::composite::context_menu::theme::{ContextMenuTheme, DefaultContextMenuTheme};
 use crate::ui::widgets::composite::context_menu::types::{
     ContextMenuItem, ContextMenuRenderKind, ContextMenuView,
 };
+
+// =============================================================================
+// StyledContextMenuTheme
+// =============================================================================
+
+struct StyledContextMenuTheme {
+    bg:            String,
+    border:        String,
+    item_bg_hover: String,
+    item_text:     String,
+    fallback:      DefaultContextMenuTheme,
+}
+
+impl StyledContextMenuTheme {
+    fn from_styles(s: &StyleManager) -> Self {
+        Self {
+            bg:            s.color_or_owned("surface",       "#1e222d"),
+            border:        s.color_or_owned("border_strong", "#363a45"),
+            item_bg_hover: s.color_or_owned("surface_raised","#2a2e39"),
+            item_text:     s.color_or_owned("fg_1",          "#d1d4dc"),
+            fallback:      DefaultContextMenuTheme,
+        }
+    }
+}
+
+impl ContextMenuTheme for StyledContextMenuTheme {
+    fn bg(&self)                    -> &str { &self.bg }
+    fn border(&self)                -> &str { &self.border }
+    fn shadow(&self)                -> &str { self.fallback.shadow() }
+    fn item_bg_normal(&self)        -> &str { &self.bg }
+    fn item_bg_hover(&self)         -> &str { &self.item_bg_hover }
+    fn item_bg_danger_hover(&self)  -> &str { self.fallback.item_bg_danger_hover() }
+    fn item_text(&self)             -> &str { &self.item_text }
+    fn item_text_hover(&self)       -> &str { self.fallback.item_text_hover() }
+    fn item_text_disabled(&self)    -> &str { self.fallback.item_text_disabled() }
+    fn item_text_danger(&self)      -> &str { self.fallback.item_text_danger() }
+    fn separator(&self)             -> &str { &self.border }
+}
+
+fn context_menu_settings_from_styles(s: &StyleManager) -> ContextMenuSettings {
+    ContextMenuSettings {
+        theme: Box::new(StyledContextMenuTheme::from_styles(s)),
+        style: Box::<DefaultContextMenuStyle>::default(),
+    }
+}
 
 /// Chainable builder for a context menu overlay.
 pub struct ContextMenuBuilder<'a> {
@@ -111,7 +158,7 @@ impl<'a> ContextMenuBuilder<'a> {
             title:     self.title,
         };
 
-        let settings = self.settings.unwrap_or_default();
+        let settings = self.settings.unwrap_or_else(|| context_menu_settings_from_styles(layout.styles()));
 
         register_layout_manager_context_menu(
             layout,

@@ -13,14 +13,69 @@
 //! ```
 
 use crate::docking::panels::DockPanel;
-use crate::layout::{LayoutManager, LayoutNodeId, SidebarHandle, SidebarNode};
+use crate::layout::{LayoutManager, LayoutNodeId, SidebarHandle, SidebarNode, StyleManager};
 use crate::render::RenderContext;
 use crate::types::OverflowMode;
 use crate::ui::widgets::composite::sidebar::input::register_layout_manager_sidebar;
 use crate::ui::widgets::composite::sidebar::settings::SidebarSettings;
+use crate::ui::widgets::composite::sidebar::style::DefaultSidebarStyle;
+use crate::ui::widgets::composite::sidebar::theme::{DefaultSidebarTheme, SidebarTheme};
 use crate::ui::widgets::composite::sidebar::types::{
     HeaderAction, SidebarHeader, SidebarHeaderMode, SidebarRenderKind, SidebarTab, SidebarView,
 };
+
+// =============================================================================
+// StyledSidebarTheme
+// =============================================================================
+
+struct StyledSidebarTheme {
+    bg:          String,
+    border:      String,
+    header_text: String,
+    tab_accent:  String,
+    tab_bg_active: String,
+    fallback:    DefaultSidebarTheme,
+}
+
+impl StyledSidebarTheme {
+    fn from_styles(s: &StyleManager) -> Self {
+        let accent     = s.color_or_owned("accent",    "#2962ff");
+        let accent_dim = s.color_or_owned("accent_dim","rgba(41,98,255,0.12)");
+        Self {
+            bg:            s.color_or_owned("surface",      "#1e222d"),
+            border:        s.color_or_owned("border_strong","#363a45"),
+            header_text:   s.color_or_owned("fg_0",         "#ffffff"),
+            tab_accent:    accent,
+            tab_bg_active: accent_dim,
+            fallback:      DefaultSidebarTheme,
+        }
+    }
+}
+
+impl SidebarTheme for StyledSidebarTheme {
+    fn bg(&self)                      -> &str { &self.bg }
+    fn border(&self)                  -> &str { &self.border }
+    fn header_bg(&self)               -> &str { &self.bg }
+    fn header_text(&self)             -> &str { &self.header_text }
+    fn header_icon(&self)             -> &str { self.fallback.header_icon() }
+    fn divider(&self)                 -> &str { &self.border }
+    fn action_icon_normal(&self)      -> &str { self.fallback.action_icon_normal() }
+    fn action_icon_hover(&self)       -> &str { self.fallback.action_icon_hover() }
+    fn scrollbar_thumb(&self)         -> &str { self.fallback.scrollbar_thumb() }
+    fn scrollbar_thumb_active(&self)  -> &str { self.fallback.scrollbar_thumb_active() }
+    fn tab_text_active(&self)         -> &str { &self.header_text }
+    fn tab_text_inactive(&self)       -> &str { self.fallback.tab_text_inactive() }
+    fn tab_accent(&self)              -> &str { &self.tab_accent }
+    fn tab_bg_active(&self)           -> &str { &self.tab_bg_active }
+    fn tab_bg_hover(&self)            -> &str { self.fallback.tab_bg_hover() }
+}
+
+fn sidebar_settings_from_styles(s: &StyleManager) -> SidebarSettings {
+    SidebarSettings {
+        theme: Box::new(StyledSidebarTheme::from_styles(s)),
+        style: Box::<DefaultSidebarStyle>::default(),
+    }
+}
 
 /// Chainable builder for an edge-anchored sidebar.
 pub struct SidebarBuilder<'a> {
@@ -106,7 +161,7 @@ impl<'a> SidebarBuilder<'a> {
             overflow:       self.overflow,
         };
 
-        let settings = self.settings.unwrap_or_default();
+        let settings = self.settings.unwrap_or_else(|| sidebar_settings_from_styles(layout.styles()));
 
         register_layout_manager_sidebar(
             layout,

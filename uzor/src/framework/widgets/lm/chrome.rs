@@ -15,13 +15,67 @@
 //! ```
 
 use crate::docking::panels::DockPanel;
-use crate::layout::{ChromeNode, LayoutManager, LayoutNodeId};
+use crate::layout::{ChromeNode, LayoutManager, LayoutNodeId, StyleManager};
 use crate::render::RenderContext;
 use crate::ui::widgets::composite::chrome::input::register_layout_manager_chrome;
 use crate::ui::widgets::composite::chrome::settings::ChromeSettings;
+use crate::ui::widgets::composite::chrome::style::DefaultChromeStyle;
+use crate::ui::widgets::composite::chrome::theme::{ChromeTheme, DefaultChromeTheme};
 use crate::ui::widgets::composite::chrome::types::{
     ChromeRenderKind, ChromeTabConfig, ChromeView,
 };
+
+// =============================================================================
+// StyledChromeTheme — reads accent/fg from StyleManager, delegates rest
+// =============================================================================
+
+struct StyledChromeTheme {
+    background:  String,
+    icon_normal: String,
+    icon_hover:  String,
+    button_hover:String,
+    tab_accent:  String,
+    fallback:    DefaultChromeTheme,
+}
+
+impl StyledChromeTheme {
+    fn from_styles(s: &StyleManager) -> Self {
+        Self {
+            background:   s.color_or_owned("surface",  "#131722"),
+            icon_normal:  s.color_or_owned("fg_2",     "#a6adc8"),
+            icon_hover:   s.color_or_owned("fg_0",     "#cdd6f4"),
+            button_hover: s.color_or_owned("surface_raised", "#1f2937"),
+            tab_accent:   s.color_or_owned("accent",   "#3b82f6"),
+            fallback:     DefaultChromeTheme,
+        }
+    }
+}
+
+impl ChromeTheme for StyledChromeTheme {
+    fn background(&self)      -> &str { &self.background }
+    fn icon_normal(&self)     -> &str { &self.icon_normal }
+    fn icon_hover(&self)      -> &str { &self.icon_hover }
+    fn button_hover(&self)    -> &str { &self.button_hover }
+    fn close_hover(&self)     -> &str { self.fallback.close_hover() }
+    fn separator(&self)       -> &str { self.fallback.separator() }
+    fn tab_bg_normal(&self)   -> &str { self.fallback.tab_bg_normal() }
+    fn tab_bg_hover(&self)    -> &str { &self.button_hover }
+    fn tab_bg_active(&self)   -> &str { self.fallback.tab_bg_active() }
+    fn tab_text_normal(&self) -> &str { &self.icon_normal }
+    fn tab_text_hover(&self)  -> &str { &self.icon_hover }
+    fn tab_text_active(&self) -> &str { self.fallback.tab_text_active() }
+    fn tab_accent(&self)      -> &str { &self.tab_accent }
+    fn drag_zone_bg(&self)    -> &str { self.fallback.drag_zone_bg() }
+    fn tooltip_bg(&self)      -> &str { self.fallback.tooltip_bg() }
+    fn tooltip_text(&self)    -> &str { self.fallback.tooltip_text() }
+}
+
+fn chrome_settings_from_styles(s: &StyleManager) -> ChromeSettings {
+    ChromeSettings {
+        theme: Box::new(StyledChromeTheme::from_styles(s)),
+        style: Box::<DefaultChromeStyle>::default(),
+    }
+}
 
 /// Chainable builder for the singleton window chrome strip.
 pub struct ChromeBuilder<'a> {
@@ -118,7 +172,7 @@ impl<'a> ChromeBuilder<'a> {
             time_ms,
         };
 
-        let settings = self.settings.unwrap_or_default();
+        let settings = self.settings.unwrap_or_else(|| chrome_settings_from_styles(layout.styles()));
 
         register_layout_manager_chrome(
             layout,

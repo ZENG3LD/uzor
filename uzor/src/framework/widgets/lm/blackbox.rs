@@ -18,7 +18,7 @@
 use crate::core::types::Rect;
 use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::LayerId;
-use crate::layout::{BlackboxPanelNode, LayoutManager, LayoutNodeId};
+use crate::layout::{BlackboxPanelNode, LayoutManager, LayoutNodeId, StyleManager};
 use crate::render::RenderContext;
 use crate::types::WidgetId;
 use crate::ui::widgets::composite::blackbox_panel::input::{
@@ -26,7 +26,46 @@ use crate::ui::widgets::composite::blackbox_panel::input::{
 };
 use crate::ui::widgets::composite::blackbox_panel::settings::BlackboxPanelSettings;
 use crate::ui::widgets::composite::blackbox_panel::state::BlackboxState;
+use crate::ui::widgets::composite::blackbox_panel::style::DefaultBlackboxStyle;
+use crate::ui::widgets::composite::blackbox_panel::theme::BlackboxTheme;
 use crate::ui::widgets::composite::blackbox_panel::types::{BlackboxRenderKind, BlackboxView};
+
+// =============================================================================
+// StyledBlackboxTheme
+// =============================================================================
+
+struct StyledBlackboxTheme {
+    bg:          String,
+    border:      String,
+    header_bg:   String,
+    header_text: String,
+}
+
+impl StyledBlackboxTheme {
+    fn from_styles(s: &StyleManager) -> Self {
+        Self {
+            bg:          s.color_or_owned("surface_0",  "#1a1d28"),
+            border:      s.color_or_owned("border",     "#363a45"),
+            header_bg:   s.color_or_owned("surface",    "#1e222d"),
+            header_text: s.color_or_owned("fg_0",       "#ffffff"),
+        }
+    }
+}
+
+impl BlackboxTheme for StyledBlackboxTheme {
+    fn bg(&self)          -> &str { &self.bg }
+    fn border(&self)      -> &str { &self.border }
+    fn header_bg(&self)   -> &str { &self.header_bg }
+    fn header_text(&self) -> &str { &self.header_text }
+    fn divider(&self)     -> &str { &self.border }
+}
+
+fn blackbox_settings_from_styles(s: &StyleManager) -> BlackboxPanelSettings {
+    BlackboxPanelSettings {
+        theme: Box::new(StyledBlackboxTheme::from_styles(s)),
+        style: Box::<DefaultBlackboxStyle>::default(),
+    }
+}
 
 /// Chainable builder for a blackbox panel.
 pub struct BlackboxBuilder<'a> {
@@ -75,7 +114,7 @@ impl<'a> BlackboxBuilder<'a> {
     ) -> Option<BlackboxPanelNode> {
         let state    = self.state.expect("BlackboxBuilder: .state(...) is required");
         let view     = self.view.expect("BlackboxBuilder: .view(...) is required");
-        let settings = self.settings.unwrap_or_default();
+        let settings = self.settings.unwrap_or_else(|| blackbox_settings_from_styles(layout.styles()));
 
         register_layout_manager_blackbox_panel(
             layout,
