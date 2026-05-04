@@ -118,7 +118,16 @@ where
     backend: Option<RenderBackend>,
     factory: Option<Box<dyn RenderSurfaceFactory>>,
     hub: Option<RenderHub>,
+    /// Optional tray spec — if set, the builder spawns a system-tray icon
+    /// using the same RGBA icon as the window.
+    tray: Option<TraySpec>,
     _phantom: std::marker::PhantomData<P>,
+}
+
+/// Spec for a system-tray icon spawned automatically by the builder.
+struct TraySpec {
+    tooltip: Option<String>,
+    items:   Vec<(String, String, bool)>, // (id, label, enabled)
 }
 
 impl<A, P> AppBuilder<A, P>
@@ -137,8 +146,40 @@ where
             backend: None,
             factory: None,
             hub: None,
+            tray: None,
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    /// Spawn a system-tray icon (with the window icon) when the runtime starts.
+    ///
+    /// The tooltip is shown when the user hovers the tray icon.  Menu items
+    /// are added in declaration order; click events are emitted as
+    /// [`crate::tray::TrayEvent::MenuClick { id }`].  Without a window icon
+    /// configured (`.icon` / `.icon_from_png`) the tray icon will use the
+    /// system default.
+    pub fn tray(mut self, tooltip: impl Into<String>) -> Self {
+        self.tray = Some(TraySpec {
+            tooltip: Some(tooltip.into()),
+            items:   Vec::new(),
+        });
+        self
+    }
+
+    /// Add a tray-menu item.  Requires `.tray(tooltip)` called first.
+    pub fn tray_item(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
+        if let Some(ref mut t) = self.tray {
+            t.items.push((id.into(), label.into(), true));
+        }
+        self
+    }
+
+    /// Add a disabled (greyed-out) tray-menu item.  Requires `.tray` first.
+    pub fn tray_item_disabled(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
+        if let Some(ref mut t) = self.tray {
+            t.items.push((id.into(), label.into(), false));
+        }
+        self
     }
 
     // ── Configuration setters ─────────────────────────────────────────────────
@@ -357,7 +398,7 @@ where
     /// Returns [`RuntimeError::Build`] if a required parameter is missing, a
     /// [`RuntimeError::Window`] variant if window or event-loop creation fails,
     /// or [`RuntimeError::Backend`] on GPU initialisation failure.
-    pub fn run(self) -> Result<(), RuntimeError> {
+    pub fn run(mut self) -> Result<(), RuntimeError> {
         #[cfg(target_arch = "wasm32")]
         {
             return self.run_wasm();
@@ -366,6 +407,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         {
             let config = self.config.clone();
+            let tray_spec = self.tray.take();
             let runtime = self.build()?;
 
             // ── Single-instance guard ─────────────────────────────────────────
@@ -384,6 +426,8 @@ where
                 config,
                 provider: None,
                 window: None,
+                tray_spec,
+                tray: None,
             };
 
             event_loop
@@ -480,6 +524,10 @@ struct UzorHandler<A: App<P>, P: DockPanel + Default + 'static> {
     /// Strong handle to the winit `Window` for `Runtime::handle_winit_event`
     /// — needed to call `drag_window()` etc. while the press is still held.
     window: Option<Arc<Window>>,
+    /// Pending tray spec (consumed once after `resumed`).
+    tray_spec: Option<TraySpec>,
+    /// Live tray-icon handle, kept alive for the runtime's lifetime.
+    tray: Option<crate::tray::TrayHandle>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -542,6 +590,29 @@ where
 
         self.provider = Some(provider);
         self.window   = Some(window);
+
+        // Spawn the system-tray icon if `.tray(...)` was configured on the
+        // builder.  Reuses the window icon (or system default if none).
+        if let Some(spec) = self.tray_spec.take() {
+            let mut tb = crate::tray::TrayBuilder::new();
+            if let Some(ref icon) = self.config.icon {
+                tb = tb.icon(icon.clone());
+            }
+            if let Some(t) = spec.tooltip {
+                tb = tb.tooltip(t);
+            }
+            for (id, label, enabled) in spec.items {
+                tb = if enabled {
+                    tb.menu_item(id, label)
+                } else {
+                    tb.menu_item_disabled(id, label)
+                };
+            }
+            match tb.build() {
+                Ok(handle) => self.tray = Some(handle),
+                Err(e) => eprintln!("[uzor-framework] tray init failed: {e}"),
+            }
+        }
     }
 
     fn window_event(
