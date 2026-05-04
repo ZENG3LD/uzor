@@ -39,16 +39,20 @@ pub fn solve_layout(
     let mut solved = LayoutSolved::default();
 
     // ------------------------------------------------------------------
-    // 1. Chrome — overlay at the top of the window (does NOT compress
-    //    `remaining`).  See header comment for the rationale.
+    // 1. Chrome — sits at the top of the window and compresses the
+    //    remaining rect so dock_area, top edges and dock panels start
+    //    below it.  `solved.chrome` records the strip rect for renderers
+    //    + chrome_hit_test.
     // ------------------------------------------------------------------
     if chrome.visible && chrome.height > 0.0 {
         let h = chrome.height as f64;
-        let chrome_rect = Rect::new(window.x, window.y, window.width, h);
+        let chrome_rect = Rect::new(remaining.x, remaining.y, remaining.width, h);
+        remaining.y += h;
+        remaining.height = (remaining.height - h).max(0.0);
         tree.set_rect(tree.chrome_id(), chrome_rect);
         solved.chrome = Some(chrome_rect);
     } else {
-        tree.set_rect(tree.chrome_id(), Rect::new(window.x, window.y, window.width, 0.0));
+        tree.set_rect(tree.chrome_id(), Rect::new(remaining.x, remaining.y, remaining.width, 0.0));
     }
 
     // ------------------------------------------------------------------
