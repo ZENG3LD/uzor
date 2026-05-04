@@ -156,33 +156,44 @@ pub fn chrome_hit_test(
     let bp_close_x     = rect.x + w - 46.0;
     let bp_maximize_x  = rect.x + w - 92.0;
     let bp_minimize_x  = rect.x + w - 138.0;
-    let bp_cw_left     = bp_minimize_x - 36.0;
-    let bp_menu_left   = bp_cw_left - 36.0;
-    let bp_nw_left     = bp_menu_left - 36.0;
+
+    // Pair rule: enabling new_window without close_window leaves no way to
+    // close the spawned window, so the chrome composite treats them as a
+    // pair when the caller only flipped `show_new_window_btn`.
+    let effective_close_window = view.show_close_window_btn || view.show_new_window_btn;
+
+    // Compact left edges for the optional group — disabled buttons leave
+    // no gap.  Mirrors `ButtonPositions::compute` in render.rs.
+    let mut cursor = bp_minimize_x;
+    let bp_cw_left   = if effective_close_window {
+        cursor -= 36.0; Some(cursor)
+    } else { None };
+    let bp_menu_left = if view.show_menu_btn {
+        cursor -= 36.0; Some(cursor)
+    } else { None };
+    let bp_nw_left   = if view.show_new_window_btn {
+        cursor -= 36.0; Some(cursor)
+    } else { None };
 
     let show_tabs     = !matches!(kind, ChromeRenderKind::WindowControlsOnly);
     let show_controls = !matches!(kind, ChromeRenderKind::Minimal);
 
     // --- Window control buttons (right-to-left) ---
     if show_controls {
-        if px >= rect.x + bp_close_x - rect.x {
-            return ChromeHit::CloseBtn;
-        }
-        if px >= bp_maximize_x {
-            return ChromeHit::MaxBtn;
-        }
-        if px >= bp_minimize_x {
-            return ChromeHit::MinBtn;
-        }
+        if px >= bp_close_x    { return ChromeHit::CloseBtn; }
+        if px >= bp_maximize_x { return ChromeHit::MaxBtn;   }
+        if px >= bp_minimize_x { return ChromeHit::MinBtn;   }
         if show_tabs {
-            if view.show_close_window_btn && px >= bp_cw_left {
-                return ChromeHit::CloseWindowBtn;
+            if let Some(left) = bp_cw_left {
+                if effective_close_window && px >= left && px < left + 36.0 {
+                    return ChromeHit::CloseWindowBtn;
+                }
             }
-            if view.show_menu_btn && px >= bp_menu_left {
-                return ChromeHit::Menu;
+            if let Some(left) = bp_menu_left {
+                if px >= left && px < left + 36.0 { return ChromeHit::Menu; }
             }
-            if view.show_new_window_btn && px >= bp_nw_left {
-                return ChromeHit::NewWindowBtn;
+            if let Some(left) = bp_nw_left {
+                if px >= left && px < left + 36.0 { return ChromeHit::NewWindowBtn; }
             }
         }
     }
@@ -216,9 +227,10 @@ pub fn chrome_hit_test(
         }
         let x_after_new_tab = x + 28.0;
 
-        // Caption drag zone
-        let drag_end = bp_nw_left;
-        if px >= x_after_new_tab && px < rect.x + drag_end {
+        // Caption drag zone — extends up to the leftmost enabled optional
+        // button, or to Min if none of them are enabled.
+        let drag_end = bp_nw_left.or(bp_menu_left).or(bp_cw_left).unwrap_or(bp_minimize_x);
+        if px >= x_after_new_tab && px < drag_end {
             return ChromeHit::Drag;
         }
     } else {

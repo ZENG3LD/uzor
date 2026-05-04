@@ -331,7 +331,10 @@ impl<A: App<P>, P: DockPanel + Default + 'static> WindowManager<A, P> {
                     show_new_tab_btn: false,
                     show_menu_btn: false,
                     show_new_window_btn: true,
-                    show_close_window_btn: false,
+                    // Chrome composite pulls close_window in automatically
+                    // when new_window is enabled (pair rule).  Mirror that
+                    // here so hit-test agrees with render.
+                    show_close_window_btn: true,
                     is_maximized: pw.window.is_maximized(),
                     cursor_x: mx,
                     cursor_y: my,

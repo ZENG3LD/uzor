@@ -55,23 +55,59 @@ struct ButtonPositions {
     close_x: f64,
     maximize_x: f64,
     minimize_x: f64,
-    close_window_left: f64,
-    menu_left: f64,
-    new_window_left: f64,
+    /// Pre-divider button column starts here (rightmost of the optional
+    /// button group: new_window / menu / close_window).  `None` means no
+    /// optional button is enabled and there is no left-group divider.
+    group_right: Option<f64>,
+    /// Compact left edges, `None` when the corresponding button is disabled.
+    close_window_left: Option<f64>,
+    menu_left:         Option<f64>,
+    new_window_left:   Option<f64>,
 }
 
 impl ButtonPositions {
-    fn compute(width: f64) -> Self {
-        let close_x           = width - BUTTON_WIDTH;
-        let maximize_x        = width - BUTTON_WIDTH * 2.0;
-        let minimize_x        = width - BUTTON_WIDTH * 3.0;
-        let close_window_left = minimize_x - CLOSE_WINDOW_BTN_WIDTH;
-        let menu_left         = close_window_left - MENU_BTN_WIDTH;
-        let new_window_left   = menu_left - NEW_WINDOW_BTN_WIDTH;
+    /// Compute compact positions: each optional button reserves its column
+    /// only when enabled.  Disabled buttons leave no gap — the next-left
+    /// button slides right against the previous.
+    fn compute(width: f64, view: &super::types::ChromeView<'_>) -> Self {
+        let close_x    = width - BUTTON_WIDTH;
+        let maximize_x = width - BUTTON_WIDTH * 2.0;
+        let minimize_x = width - BUTTON_WIDTH * 3.0;
+
+        // Walk right-to-left through the optional group, pushing each
+        // enabled button against the previous one.
+        let mut cursor = minimize_x;          // right edge of the group
+        let mut close_window_left: Option<f64> = None;
+        let mut menu_left:         Option<f64> = None;
+        let mut new_window_left:   Option<f64> = None;
+
+        // Pair rule: enabling new_window pulls in close_window so users
+        // always have a way to close the spawned window even if they only
+        // flipped one flag.
+        let effective_close_window =
+            view.show_close_window_btn || view.show_new_window_btn;
+        if effective_close_window {
+            cursor -= CLOSE_WINDOW_BTN_WIDTH;
+            close_window_left = Some(cursor);
+        }
+        if view.show_menu_btn {
+            cursor -= MENU_BTN_WIDTH;
+            menu_left = Some(cursor);
+        }
+        if view.show_new_window_btn {
+            cursor -= NEW_WINDOW_BTN_WIDTH;
+            new_window_left = Some(cursor);
+        }
+        let any_enabled = close_window_left.is_some()
+            || menu_left.is_some()
+            || new_window_left.is_some();
+        let group_right = if any_enabled { Some(minimize_x) } else { None };
+
         Self {
             close_x,
             maximize_x,
             minimize_x,
+            group_right,
             close_window_left,
             menu_left,
             new_window_left,
@@ -111,7 +147,7 @@ pub fn register_input_coordinator_chrome(
     }
 
     let style = settings.style.as_ref();
-    let bp    = ButtonPositions::compute(rect.width);
+    let bp    = ButtonPositions::compute(rect.width, view);
     let h     = style.chrome_height();
 
     // --- Tabs ---
@@ -162,8 +198,13 @@ pub fn register_input_coordinator_chrome(
             x += NEW_TAB_BTN_WIDTH;
         }
 
-        // Caption / drag zone
-        let drag_right = rect.x + bp.new_window_left;
+        // Caption / drag zone — extends up to the leftmost enabled
+        // optional button (or to Min when none are enabled).
+        let group_left = bp.new_window_left
+            .or(bp.menu_left)
+            .or(bp.close_window_left)
+            .unwrap_or(bp.minimize_x);
+        let drag_right = rect.x + group_left;
         let drag_w = (drag_right - x).max(0.0);
         if drag_w > 0.0 {
             coord.register_child(
@@ -193,36 +234,34 @@ pub fn register_input_coordinator_chrome(
     let show_window_controls = !matches!(kind, ChromeRenderKind::Minimal);
 
     if show_window_controls {
-        // New-window button
-        if !matches!(kind, ChromeRenderKind::WindowControlsOnly) && view.show_new_window_btn {
-            coord.register_child(
-                &chrome_id,
-                format!("{}:new_win", chrome_id.0.0),
-                WidgetKind::Button,
-                Rect::new(rect.x + bp.new_window_left, rect.y, NEW_WINDOW_BTN_WIDTH, h),
-                Sense::CLICK | Sense::HOVER,
-            );
-        }
+        let optional_visible = !matches!(kind, ChromeRenderKind::WindowControlsOnly);
 
-        if !matches!(kind, ChromeRenderKind::WindowControlsOnly) {
-            // Menu button
-            if view.show_menu_btn {
+        // New-window button
+        if optional_visible {
+            if let Some(left) = bp.new_window_left {
+                coord.register_child(
+                    &chrome_id,
+                    format!("{}:new_win", chrome_id.0.0),
+                    WidgetKind::Button,
+                    Rect::new(rect.x + left, rect.y, NEW_WINDOW_BTN_WIDTH, h),
+                    Sense::CLICK | Sense::HOVER,
+                );
+            }
+            if let Some(left) = bp.menu_left {
                 coord.register_child(
                     &chrome_id,
                     format!("{}:menu", chrome_id.0.0),
                     WidgetKind::Button,
-                    Rect::new(rect.x + bp.menu_left, rect.y, MENU_BTN_WIDTH, h),
+                    Rect::new(rect.x + left, rect.y, MENU_BTN_WIDTH, h),
                     Sense::CLICK | Sense::HOVER,
                 );
             }
-
-            // Close-window button
-            if view.show_close_window_btn {
+            if let Some(left) = bp.close_window_left {
                 coord.register_child(
                     &chrome_id,
                     format!("{}:close_win", chrome_id.0.0),
                     WidgetKind::Button,
-                    Rect::new(rect.x + bp.close_window_left, rect.y, CLOSE_WINDOW_BTN_WIDTH, h),
+                    Rect::new(rect.x + left, rect.y, CLOSE_WINDOW_BTN_WIDTH, h),
                     Sense::CLICK | Sense::HOVER,
                 );
             }
@@ -308,7 +347,7 @@ fn draw_chrome_internal(
     let style = settings.style.as_ref();
     let h     = style.chrome_height();
     let w     = rect.width;
-    let bp    = ButtonPositions::compute(w);
+    let bp    = ButtonPositions::compute(w, view);
 
     // --- 1. Background strip ---
     ctx.set_fill_color(theme.background());
@@ -415,72 +454,66 @@ fn draw_chrome_internal(
         let icon_hover   = theme.tab_text_hover();
 
         // --- 5. New-window icon (two overlapping rectangles) ---
-        if show_tabs && view.show_new_window_btn {
-            let bx = rect.x + bp.new_window_left;
-            let by = rect.y;
-            let hovered = state.hovered == ChromeHit::NewWindowBtn;
-            if hovered {
-                ctx.set_fill_color(hover_bg);
-                ctx.fill_rect(bx, by, NEW_WINDOW_BTN_WIDTH, h);
+        if show_tabs {
+            if let Some(left) = bp.new_window_left {
+                let bx = rect.x + left;
+                let by = rect.y;
+                let hovered = state.hovered == ChromeHit::NewWindowBtn;
+                if hovered {
+                    ctx.set_fill_color(hover_bg);
+                    ctx.fill_rect(bx, by, NEW_WINDOW_BTN_WIDTH, h);
+                }
+                let color = if hovered { icon_hover } else { icon_normal };
+                let s = icon_sz * 0.78;
+                let cx = bx + NEW_WINDOW_BTN_WIDTH / 2.0;
+                let cy = by + h / 2.0;
+                ctx.set_stroke_color(color);
+                ctx.set_stroke_width(1.2);
+                ctx.set_line_dash(&[]);
+                let bx0 = cx - s / 2.0 + 2.0;
+                let by0 = cy - s / 2.0 + 2.0;
+                ctx.move_to(bx0, by0); ctx.line_to(bx0 + s, by0);
+                ctx.line_to(bx0 + s, by0 + s); ctx.line_to(bx0, by0 + s);
+                ctx.line_to(bx0, by0); ctx.stroke();
+                ctx.set_fill_color(theme.background());
+                ctx.fill_rect(cx - s / 2.0 - 2.0, cy - s / 2.0 - 2.0, s, s);
+                ctx.set_stroke_color(color);
+                let fx0 = cx - s / 2.0 - 2.0;
+                let fy0 = cy - s / 2.0 - 2.0;
+                ctx.move_to(fx0, fy0); ctx.line_to(fx0 + s, fy0);
+                ctx.line_to(fx0 + s, fy0 + s); ctx.line_to(fx0, fy0 + s);
+                ctx.line_to(fx0, fy0); ctx.stroke();
             }
-            let color = if hovered { icon_hover } else { icon_normal };
-            // Background square (offset down-left)
-            let s = icon_sz * 0.78;
-            let cx = bx + NEW_WINDOW_BTN_WIDTH / 2.0;
-            let cy = by + h / 2.0;
-            // back square
-            ctx.set_stroke_color(color);
-            ctx.set_stroke_width(1.2);
-            ctx.set_line_dash(&[]);
-            let bx0 = cx - s / 2.0 + 2.0;
-            let by0 = cy - s / 2.0 + 2.0;
-            ctx.move_to(bx0, by0); ctx.line_to(bx0 + s, by0);
-            ctx.line_to(bx0 + s, by0 + s); ctx.line_to(bx0, by0 + s);
-            ctx.line_to(bx0, by0); ctx.stroke();
-            // front square (overlap top-left), filled background to mask back
-            ctx.set_fill_color(theme.background());
-            ctx.fill_rect(cx - s / 2.0 - 2.0, cy - s / 2.0 - 2.0, s, s);
-            ctx.set_stroke_color(color);
-            let fx0 = cx - s / 2.0 - 2.0;
-            let fy0 = cy - s / 2.0 - 2.0;
-            ctx.move_to(fx0, fy0); ctx.line_to(fx0 + s, fy0);
-            ctx.line_to(fx0 + s, fy0 + s); ctx.line_to(fx0, fy0 + s);
-            ctx.line_to(fx0, fy0); ctx.stroke();
         }
 
         // --- 6. Menu icon ---
-        if show_tabs && view.show_menu_btn {
-            let menu_cx = rect.x + bp.menu_left + MENU_BTN_WIDTH / 2.0;
-            let menu_cy = rect.y + h / 2.0;
-            let line_w  = icon_sz;
-            ctx.set_fill_color(theme.icon_normal());
-            for i in 0_i32..3_i32 {
-                let ly = menu_cy - 3.0 + i as f64 * 3.0;
-                ctx.fill_rect(menu_cx - line_w / 2.0, ly - 0.75, line_w, 1.5);
+        if show_tabs {
+            if let Some(left) = bp.menu_left {
+                let menu_cx = rect.x + left + MENU_BTN_WIDTH / 2.0;
+                let menu_cy = rect.y + h / 2.0;
+                let line_w  = icon_sz;
+                ctx.set_fill_color(theme.icon_normal());
+                for i in 0_i32..3_i32 {
+                    let ly = menu_cy - 3.0 + i as f64 * 3.0;
+                    ctx.fill_rect(menu_cx - line_w / 2.0, ly - 0.75, line_w, 1.5);
+                }
             }
         }
 
-        // --- 7. Divider left of min/max/close ---
-        ctx.set_fill_color(theme.separator());
-        ctx.fill_rect(rect.x + bp.minimize_x - 1.0, rect.y + 6.0, 1.0, h - 12.0);
-
-        // --- 8. Close-window icon ---
-        if show_tabs && view.show_close_window_btn {
-            let cw_cx = rect.x + bp.close_window_left + CLOSE_WINDOW_BTN_WIDTH / 2.0;
-            let cw_cy = rect.y + h / 2.0;
-            let arm = 3.5_f64;
-            draw_cross(ctx, cw_cx - arm, cw_cy - arm, arm * 2.0, theme.icon_normal(), 1.0);
+        // --- 7. Divider between optional group and min/max/close ---
+        if bp.group_right.is_some() {
+            ctx.set_fill_color(theme.separator());
+            ctx.fill_rect(rect.x + bp.minimize_x - 1.0, rect.y + 6.0, 1.0, h - 12.0);
         }
 
-        // --- 9. Divider between close-window and minimize group ---
-        if show_tabs && view.show_close_window_btn {
-            ctx.set_fill_color(theme.separator());
-            ctx.fill_rect(
-                rect.x + bp.close_window_left - 1.0,
-                rect.y + 6.0,
-                1.0,
-                h - 12.0,
-            );
+        // --- 8. Close-window icon ---
+        if show_tabs {
+            if let Some(left) = bp.close_window_left {
+                let cw_cx = rect.x + left + CLOSE_WINDOW_BTN_WIDTH / 2.0;
+                let cw_cy = rect.y + h / 2.0;
+                let arm = 3.5_f64;
+                draw_cross(ctx, cw_cx - arm, cw_cy - arm, arm * 2.0, theme.icon_normal(), 1.0);
+            }
         }
 
         // --- 10. Minimize icon (10×1 filled rect) ---
@@ -639,7 +672,9 @@ pub fn measure(
             if view.show_new_window_btn   { w += style.button_size_max();   }
             // min/max/close-app: a standard window controls trio (3 × button_size_min).
             w += style.button_size_min() * 3.0;
-            if view.show_close_window_btn { w += style.button_size_close(); }
+            if view.show_close_window_btn || view.show_new_window_btn {
+                w += style.button_size_close();
+            }
             w
         }
     };
