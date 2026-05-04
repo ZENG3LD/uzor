@@ -119,15 +119,15 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
         format!("{}:chev:submenu:", id.0),
         EventBuilder::DropdownSubmenuToggleFromSuffix { handle: handle.clone() },
     );
-
-    // Body-overflow chevron pager (Chevrons mode or Clip when content > frame).
+    // Body-overflow chevron pager — fires only when the dropdown panel was
+    // clipped by the window edge (window guard).  Routes are registered
+    // unconditionally; the strips themselves are registered later in
+    // register_input_coordinator_dropdown only when the panel is clipped.
     {
         use crate::layout::ChevronStepDirection;
         for (suffix, dir) in [
             ("chevron_up",    ChevronStepDirection::Up),
             ("chevron_down",  ChevronStepDirection::Down),
-            ("chevron_left",  ChevronStepDirection::Left),
-            ("chevron_right", ChevronStepDirection::Right),
         ] {
             let cid = WidgetId(format!("{}:{}", id.0, suffix));
             layout.dispatcher_mut().on_exact(
@@ -178,6 +178,86 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
     register_context_manager_dropdown(
         layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,
     );
+
+    // Window-edge guard: if the dropdown frame extends past the bottom of
+    // the window viewport, register chevron-strip overlays so the user
+    // can page through the clipped portion.  Pure overlay — no space
+    // reservation, no scroll state needed yet (paging is L4-driven).
+    if let Some(win) = layout.last_window() {
+        let frame_top    = rect.y;
+        let frame_bottom = rect.y + rect.height;
+        let win_bottom   = win.y + win.height;
+        let win_top      = win.y;
+        let clipped_top    = frame_top    < win_top;
+        let clipped_bottom = frame_bottom > win_bottom;
+        if clipped_top || clipped_bottom {
+            use crate::types::CompositeId;
+            let composite_id = CompositeId(id.clone());
+            let strip_h = 16.0_f64;
+            let visible_top    = frame_top.max(win_top);
+            let visible_bottom = frame_bottom.min(win_bottom);
+            let up_rect = crate::types::Rect::new(rect.x, visible_top, rect.width, strip_h);
+            let dn_rect = crate::types::Rect::new(rect.x, visible_bottom - strip_h, rect.width, strip_h);
+            // Register hit zones.
+            {
+                let coord = &mut layout.ctx_mut().input;
+                if clipped_top {
+                    coord.register_child(
+                        &composite_id,
+                        format!("{}:chevron_up", id.0),
+                        crate::input::WidgetKind::Button,
+                        up_rect,
+                        crate::input::Sense::CLICK | crate::input::Sense::HOVER,
+                    );
+                }
+                if clipped_bottom {
+                    coord.register_child(
+                        &composite_id,
+                        format!("{}:chevron_down", id.0),
+                        crate::input::WidgetKind::Button,
+                        dn_rect,
+                        crate::input::Sense::CLICK | crate::input::Sense::HOVER,
+                    );
+                }
+            }
+            // Paint overlay arrows on top of the dropdown content.
+            use crate::ui::widgets::atomic::chevron::{
+                draw_chevron, settings::ChevronSettings,
+                types::{ChevronDirection, ChevronUseCase, ChevronView, ChevronVisualKind,
+                        HitAreaPolicy, PlacementPolicy, VisibilityPolicy},
+            };
+            let bg = settings.theme.as_ref().bg();
+            let chev_settings = ChevronSettings::default();
+            if clipped_top {
+                render.set_fill_color(bg);
+                render.fill_rect(up_rect.x, up_rect.y, up_rect.width, up_rect.height);
+                let v = ChevronView {
+                    direction:   ChevronDirection::Up,
+                    use_case:    ChevronUseCase::PixelScrollStep,
+                    visibility:  VisibilityPolicy::WhenOverflow { has_more: true },
+                    placement:   PlacementPolicy::Overlay,
+                    hit_area:    HitAreaPolicy::Visual,
+                    visual_kind: ChevronVisualKind::Stroked,
+                    ..Default::default()
+                };
+                draw_chevron(render, up_rect, &v, &chev_settings);
+            }
+            if clipped_bottom {
+                render.set_fill_color(bg);
+                render.fill_rect(dn_rect.x, dn_rect.y, dn_rect.width, dn_rect.height);
+                let v = ChevronView {
+                    direction:   ChevronDirection::Down,
+                    use_case:    ChevronUseCase::PixelScrollStep,
+                    visibility:  VisibilityPolicy::WhenOverflow { has_more: true },
+                    placement:   PlacementPolicy::Overlay,
+                    hit_area:    HitAreaPolicy::Visual,
+                    visual_kind: ChevronVisualKind::Stroked,
+                    ..Default::default()
+                };
+                draw_chevron(render, dn_rect, &v, &chev_settings);
+            }
+        }
+    }
 
     // Register this composite in the per-frame registry so consume_event can route it.
     layout.push_composite_registration(CompositeRegistration {
