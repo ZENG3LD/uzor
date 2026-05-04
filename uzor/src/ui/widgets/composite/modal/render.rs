@@ -506,7 +506,12 @@ pub fn draw_body_overflow_chevrons(
     settings: &ModalSettings,
     kind:     &ModalRenderKind,
 ) {
-    if !matches!(view.overflow, crate::types::OverflowMode::Chevrons) { return; }
+    // Chevrons appear in two cases:
+    //   1. caller asked for them (`OverflowMode::Chevrons`), or
+    //   2. caller picked `Clip` (or any non-scrollbar mode) but the actual
+    //      body content no longer fits (post-resize fallback).
+    // Scrollbar mode owns its own track and is left untouched.
+    if matches!(view.overflow, crate::types::OverflowMode::Scrollbar) { return; }
     let frame = resolve_frame(rect, state, kind);
     let body  = body_rect(frame, view, settings, kind);
     if body.width <= 0.0 || body.height <= 0.0 { return; }
@@ -1060,8 +1065,20 @@ pub fn register_body_overflow(
     state.body_viewport_h = body.height;
     state.body_viewport_w = body.width;
 
-    match view.overflow {
-        crate::types::OverflowMode::Scrollbar => {
+    // Non-Scrollbar modes share the chevron registration path. `Clip` only
+    // registers chevrons when the body actually overflows (e.g. user shrank
+    // the modal past content size); otherwise it stays an empty body.
+    let v_overflow_now = state.body_content_h > body.height + 0.5;
+    let h_overflow_now = state.body_content_w > body.width  + 0.5;
+    let chevron_path = match view.overflow {
+        crate::types::OverflowMode::Scrollbar => false,
+        crate::types::OverflowMode::Chevrons  => true,
+        // Clip + content overflows → fall back to chevrons so the user can
+        // page through what got hidden by the resize.
+        _ => v_overflow_now || h_overflow_now,
+    };
+    match (view.overflow, chevron_path) {
+        (crate::types::OverflowMode::Scrollbar, _) => {
             let track_w = 8.0_f64;
             let track = Rect::new(body.x + body.width - track_w, body.y, track_w, body.height);
             state.body_scroll_track = Some(track);
@@ -1070,10 +1087,10 @@ pub fn register_body_overflow(
             coord.register_child(modal_id, format!("{}:scrollbar_handle", modal_id.0.0),
                 WidgetKind::ScrollbarHandle, track, Sense::DRAG | Sense::HOVER);
         }
-        crate::types::OverflowMode::Chevrons => {
+        (_, true) => {
             let strip = 26.0_f64;
-            let v_overflow = state.body_content_h > body.height + 0.5;
-            let h_overflow = state.body_content_w > body.width  + 0.5;
+            let v_overflow = v_overflow_now;
+            let h_overflow = h_overflow_now;
             // Carve corners off the vertical strips when horizontal
             // strips are also present, so the four hit-zones don't
             // overlap (last-registered wins would otherwise eat the

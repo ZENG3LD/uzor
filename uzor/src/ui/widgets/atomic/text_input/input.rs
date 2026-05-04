@@ -15,7 +15,7 @@ use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId, WidgetState};
 
-use super::render::{draw_input, InputView};
+use super::render::{draw_input, draw_input_cursor, InputResult, InputView};
 use super::settings::TextInputSettings;
 use super::state::TextFieldStore;
 
@@ -69,11 +69,11 @@ pub fn register_context_manager_text_input(
     widget_state: WidgetState,
     view: &InputView<'_>,
     settings: &TextInputSettings,
-) {
+) -> InputResult {
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), TextFieldStore::default);
     register_input_coordinator_text_input(&mut ctx.input, id, rect, layer, settings, state);
-    draw_input(render, rect, widget_state, view, settings);
+    draw_input(render, rect, widget_state, view, settings)
 }
 
 /// Level 3 — register a text input via `LayoutManager`, forwarding to L2.
@@ -86,12 +86,29 @@ pub fn register_layout_manager_text_input<P: DockPanel>(
     widget_state: WidgetState,
     view: &InputView<'_>,
     settings: &TextInputSettings,
-) {
+) -> InputResult {
     let id: WidgetId = id.into();
     let layer = layout.compute_layer_for(parent);
     let sense = Sense::CLICK.with_focus().with_text();
     layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Custom, rect, sense });
-    register_context_manager_text_input(
-        layout.ctx_mut(), render, id, rect, &layer, widget_state, view, settings,
+    let now_ms = layout.frame_time_ms() as u64;
+    let result = register_context_manager_text_input(
+        layout.ctx_mut(), render, id.clone(), rect, &layer, widget_state, view, settings,
     );
+    // Draw blink caret automatically when the field is focused — caller no
+    // longer needs to read `text_fields().cursor_visible()` and call
+    // `draw_input_cursor` by hand.
+    if view.focused
+        && layout.ctx().input.text_fields().cursor_visible(now_ms)
+    {
+        draw_input_cursor(
+            render,
+            result.cursor_x,
+            result.cursor_y,
+            result.cursor_height,
+            1.5,
+            [220, 220, 220, 255],
+        );
+    }
+    result
 }

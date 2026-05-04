@@ -1248,8 +1248,11 @@ impl<P: DockPanel> LayoutManager<P> {
     pub fn on_pointer_move(&mut self, x: f64, y: f64) {
         self.ctx.input.set_cursor_pos(x, y);
         self.last_pointer_pos = Some((x, y));
-        // Hit-test for hover (reuses process_click which finds topmost click-sense widget).
-        self.last_hovered = self.ctx.input.process_click(x, y);
+        // Hit-test: prefer click-sense (most composite items), fall back to
+        // hover-only widgets (e.g. text labels, tab strips registered with
+        // `Sense::HOVER` only).
+        self.last_hovered = self.ctx.input.process_click(x, y)
+            .or_else(|| self.ctx.input.process_hover(x, y));
     }
 
     /// Push a pointer-down event and record the pressed widget.

@@ -178,6 +178,13 @@ use uzor::ui::widgets::atomic::text::{draw_text, TextSettings};
 use uzor::ui::widgets::atomic::text::types::{TextOverflow, TextView};
 use uzor::render::{TextAlign, TextBaseline};
 
+use uzor::ui::widgets::atomic::text_input::input::register_layout_manager_text_input;
+use uzor::ui::widgets::atomic::text_input::render::InputView;
+use uzor::ui::widgets::atomic::text_input::settings::TextInputSettings;
+use uzor::ui::widgets::atomic::text_input::state::TextFieldConfig as TiTextFieldConfig;
+use uzor::ui::widgets::atomic::text_input::types::InputType;
+use uzor::input::text::store::TextFieldConfig as StoreTextFieldConfig;
+
 // ── GPU render context ────────────────────────────────────────────────────────
 use uzor_render_vello_gpu::VelloGpuRenderContext;
 
@@ -749,8 +756,6 @@ struct AppState {
     /// 0=Left, 1=Right, 2=WithTypeSelector, 3=Embedded.
     /// Stored as index because SidebarRenderKind isn't Clone (has a closure variant).
     sidebar_kind: u8,
-    /// 0=Dark, 1=Light. Just two presets for now — runtime theme swap demo.
-    theme_idx: u8,
     /// Which popup template is currently open: None / Some(PopupKindIdx).
     /// 0=ColorPickerGrid, 1=ColorPickerHsv, 2=SwatchGrid, 3=ItemList, 4=IndicatorStrip.
     popup_kind: Option<u8>,
@@ -807,7 +812,6 @@ struct AppState {
     dd_sidebar_h:          DropdownHandle,
     dd_toolbar_h:          DropdownHandle,
     dd_popup_h:            DropdownHandle,
-    dd_theme_h:            DropdownHandle,
     ctx_menu_h:            ContextMenuHandle,
     top_toolbar_h:         ToolbarHandle,
     left_vtoolbar_h:       ToolbarHandle,
@@ -913,15 +917,6 @@ impl AppState {
                 };
                 self.layout.dropdown_mut(&self.dd_popup_h.clone()).close();
             }
-            "dd-theme-widget" => {
-                // Toggle items keep dropdown open.
-                match item_id {
-                    "theme-dark"  => self.theme_idx = 0,
-                    "theme-light" => self.theme_idx = 1,
-                    _ => {}
-                }
-                println!("[L3] theme → {}", if self.theme_idx == 0 { "Dark" } else { "Light" });
-            }
             other => println!("[L3] dropdown {other} item: {item_id}"),
         }
     }
@@ -945,7 +940,6 @@ impl AppState {
             "dd-sidebar-overlay" => self.dd_sidebar_h.clone(),
             "dd-toolbar-overlay" => self.dd_toolbar_h.clone(),
             "dd-popup-overlay"   => self.dd_popup_h.clone(),
-            "dd-theme-overlay"   => self.dd_theme_h.clone(),
             _ => return,
         };
         // Check if currently open.
@@ -954,7 +948,6 @@ impl AppState {
         let all = [
             self.dd_file_h.clone(), self.dd_view_h.clone(), self.dd_help_h.clone(),
             self.dd_sidebar_h.clone(), self.dd_toolbar_h.clone(), self.dd_popup_h.clone(),
-            self.dd_theme_h.clone(),
         ];
         for h in &all {
             self.layout.dropdown_mut(h).close();
@@ -978,7 +971,6 @@ impl AppState {
             ("top-toolbar-widget", "tb-sidebar") => if let Some(r) = item_rect { self.toggle_dropdown_at("dd-sidebar-overlay", r); },
             ("top-toolbar-widget", "tb-toolbar") => if let Some(r) = item_rect { self.toggle_dropdown_at("dd-toolbar-overlay", r); },
             ("top-toolbar-widget", "tb-popup")   => if let Some(r) = item_rect { self.toggle_dropdown_at("dd-popup-overlay",   r); },
-            ("top-toolbar-widget", "tb-theme")   => if let Some(r) = item_rect { self.toggle_dropdown_at("dd-theme-overlay",   r); },
             ("left-vtoolbar-widget", "lt-toggle-sidebar") => {
                 self.sidebar_open = !self.sidebar_open;
                 println!("[L3] sidebar → {}", self.sidebar_open);
@@ -1252,13 +1244,8 @@ impl AppState {
 
         // ── 4. Scene ──────────────────────────────────────────────────────────
         self.scene.reset();
-        // Theme-aware background fill (Dark vs Light).
-        let bg_color = match self.theme_idx {
-            1 => Color::from_rgb8(0xf2, 0xf2, 0xf6), // Light
-            _ => BG,                                  // Dark
-        };
         self.scene.fill(
-            Fill::NonZero, Affine::IDENTITY, bg_color, None,
+            Fill::NonZero, Affine::IDENTITY, BG, None,
             &vello::kurbo::Rect::new(0.0, 0.0, width as f64, height as f64),
         );
 
@@ -1306,7 +1293,6 @@ impl AppState {
         let sidebar_btn_active = self.layout.dropdown(&self.dd_sidebar_h).open;
         let toolbar_btn_active = self.layout.dropdown(&self.dd_toolbar_h).open;
         let popup_btn_active   = self.layout.dropdown(&self.dd_popup_h).open;
-        let theme_btn_active   = self.layout.dropdown(&self.dd_theme_h).open;
         let top_toolbar_items = [
             ToolbarItem::TextButton { id: "tb-view",    text: "View",    active: view_btn_active,    tooltip: Some("View menu"),         popup_on_hover: true },
             ToolbarItem::TextButton { id: "tb-help",    text: "Modals",  active: modals_btn_active,  tooltip: Some("Modals menu"),       popup_on_hover: true },
@@ -1314,7 +1300,6 @@ impl AppState {
             ToolbarItem::TextButton { id: "tb-sidebar", text: "Sidebar", active: sidebar_btn_active, tooltip: Some("Sidebar variants"),  popup_on_hover: false },
             ToolbarItem::TextButton { id: "tb-toolbar", text: "Toolbar", active: toolbar_btn_active, tooltip: Some("Toolbar variants"),  popup_on_hover: false },
             ToolbarItem::TextButton { id: "tb-popup",   text: "Popup",   active: popup_btn_active,   tooltip: Some("Popup templates"),   popup_on_hover: false },
-            ToolbarItem::TextButton { id: "tb-theme",   text: "Theme",   active: theme_btn_active,   tooltip: Some("Theme switcher"),    popup_on_hover: false },
         ];
         let clock_items = [
             ToolbarItem::Clock { id: "top-clock", time_text: clock.as_str() },
@@ -1876,21 +1861,39 @@ impl AppState {
                 ModalKind::WizardDemo => &wizard_pages_data,
                 _                     => &[],
             };
+            // Overflow mode: chevrons make sense only inside the L2 widget
+            // catalog (its content can be wider than the body). All other
+            // demo modals fit their body — clip is enough.
+            let overflow_mode = match modal_kind {
+                ModalKind::L2 => uzor::types::OverflowMode::Chevrons,
+                _             => uzor::types::OverflowMode::Clip,
+            };
             let mut modal_view = ModalView {
                 title: Some(title),
                 tabs,
                 footer_buttons: &footer_btns,
                 wizard_pages: wizard_pages_ref,
                 backdrop: BackdropKind::Dim,
-                overflow: uzor::types::OverflowMode::Chevrons,
+                overflow: overflow_mode,
                 resizable: true,
             };
             // Tell the composite the natural body content size BEFORE
             // it registers — `register_body_overflow` reads these to
             // decide whether to register vertical / horizontal chevrons.
+            // Natural body content size per kind. These are the dimensions
+            // that the body *would* like to occupy. When the modal is shrunk
+            // below this, register_body_overflow falls back to chevrons even
+            // when overflow is set to Clip.
             let (cw, ch): (f64, f64) = match modal_kind {
-                ModalKind::L2 => (l2_demo_blackbox::L2_WIN_W, l2_demo_blackbox::L2_WIN_H),
-                _             => (4000.0, 4000.0),
+                ModalKind::L2           => (l2_demo_blackbox::L2_WIN_W, l2_demo_blackbox::L2_WIN_H),
+                ModalKind::L1           => (360.0, 200.0),
+                ModalKind::Settings     => (520.0, 360.0),
+                ModalKind::Tags         => (520.0, 320.0),
+                ModalKind::PlainDemo    => (360.0, 120.0),
+                ModalKind::HeaderDemo   => (420.0, 180.0),
+                ModalKind::TopTabsDemo  => (420.0, 220.0),
+                ModalKind::SideTabsDemo => (480.0, 280.0),
+                ModalKind::WizardDemo   => (480.0, 240.0),
             };
             {
                 let h = self.modal_h.clone();
@@ -1898,7 +1901,7 @@ impl AppState {
                 ms.body_content_w = cw;
                 ms.body_content_h = ch;
             }
-            let _modal_node = register_layout_manager_modal(
+            let modal_node = register_layout_manager_modal(
                 &mut self.layout,
                 &mut render,
                 LayoutNodeId::ROOT,
@@ -2101,6 +2104,46 @@ impl AppState {
                             "Drag the title bar to move me. Click X or outside to close.",
                             body_rect.x + 16.0,
                             body_rect.y + 40.0,
+                        );
+
+                        // ── Live text input ────────────────────────────────
+                        let ti_id = unsafe_widget_id("modal:header_demo:text_input");
+                        let ti_rect = Rect::new(
+                            body_rect.x + 16.0,
+                            body_rect.y + 72.0,
+                            (body_rect.width - 32.0).max(120.0),
+                            32.0,
+                        );
+                        self.layout.ctx_mut().input.register_text_field(
+                            ti_id.clone(),
+                            ti_rect,
+                            StoreTextFieldConfig::text(),
+                        );
+                        let text_str = self.layout.ctx().input.text_fields()
+                            .text(&ti_id).to_owned();
+                        let cursor_pos = self.layout.ctx().input.text_fields().cursor(&ti_id);
+                        let selection  = self.layout.ctx().input.text_fields().selection_range(&ti_id);
+                        let focused    = self.layout.ctx().input.text_fields().is_focused(&ti_id);
+                        let ti_view = InputView {
+                            text:        text_str.as_str(),
+                            placeholder: "Type here...",
+                            cursor:      cursor_pos,
+                            selection,
+                            focused,
+                            disabled:    false,
+                            input_type:  InputType::Text,
+                        };
+                        let ti_state = if focused { WidgetState::Active } else { WidgetState::Normal };
+                        let parent_node = modal_node.map(|n| n.0).unwrap_or(LayoutNodeId::ROOT);
+                        let _ = register_layout_manager_text_input(
+                            &mut self.layout,
+                            &mut render,
+                            parent_node,
+                            ti_id,
+                            ti_rect,
+                            ti_state,
+                            &ti_view,
+                            &TextInputSettings::with_config(TiTextFieldConfig::text()),
                         );
                     }
                     ModalKind::TopTabsDemo => {
@@ -2382,19 +2425,6 @@ impl AppState {
                 );
             }
         }
-
-        // ── Theme switcher dropdown ───────────────────────────────────────────
-        let theme_idx = self.theme_idx;
-        let theme_items_dd = [
-            DropdownItem::Header { label: "Theme" },
-            DropdownItem::Item { id: "theme-dark",  label: "Dark",   icon: None, right: DropdownItemRight::Toggle(theme_idx == 0), disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "theme-light", label: "Light",  icon: None, right: DropdownItemRight::Toggle(theme_idx == 1), disabled: false, danger: false, accent_color: None },
-        ];
-        open_dropdown_flat(
-            &mut self.layout, &mut render, LayoutNodeId::ROOT,
-            "dd-theme-overlay", &self.dd_theme_h.clone(),
-            &theme_items_dd, &DropdownSettings::default(),
-        );
 
         // ── Demo popup ────────────────────────────────────────────────────────
         // Two flavours, both via the slim popup composite:
@@ -2683,7 +2713,6 @@ impl AppState {
                     else if dropdown == self.dd_sidebar_h      { "dd-sidebar-widget" }
                     else if dropdown == self.dd_toolbar_h      { "dd-toolbar-widget" }
                     else if dropdown == self.dd_popup_h        { "dd-popup-widget" }
-                    else if dropdown == self.dd_theme_h        { "dd-theme-widget" }
                     else                                       { "unknown" };
                 self.handle_dropdown_item(dd_name, item_id.as_str(), event_loop);
             }
@@ -2724,12 +2753,6 @@ impl AppState {
             DispatchEvent::StickyChevronClicked { host_id } => {
                 eprintln!("[DISPATCHER] StickyChevronClicked host={}", host_id.as_str());
                 match host_id.as_str() {
-                    "l1-mybtn" => {
-                        let anchor_rect = self.layout.ctx_mut().input
-                            .widget_rect(&host_id)
-                            .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
-                        self.layout.dropdown_mut(&self.dd_theme_h.clone()).open_below(anchor_rect, 4.0);
-                    }
                     _ => {}
                 }
             }
@@ -3240,7 +3263,6 @@ impl ApplicationHandler for Handler {
         let dd_sidebar_h          = layout.add_dropdown("dd-sidebar-widget");
         let dd_toolbar_h          = layout.add_dropdown("dd-toolbar-widget");
         let dd_popup_h            = layout.add_dropdown("dd-popup-widget");
-        let dd_theme_h            = layout.add_dropdown("dd-theme-widget");
         let ctx_menu_h            = layout.add_context_menu("ctx-menu-widget");
         let top_toolbar_h         = layout.add_toolbar("top-toolbar-widget");
         let left_vtoolbar_h       = layout.add_toolbar("left-vtoolbar-widget");
@@ -3281,7 +3303,6 @@ impl ApplicationHandler for Handler {
             active_view: 0,
             sidebar_open: true,
             sidebar_kind: 0, // Left
-            theme_idx: 0,    // Dark
             popup_kind: None,
             _toolbar_kind: 0, // Horizontal
             demo_toolbar_left2: false,
@@ -3312,7 +3333,6 @@ impl ApplicationHandler for Handler {
             dd_sidebar_h,
             dd_toolbar_h,
             dd_popup_h,
-            dd_theme_h,
             ctx_menu_h,
             top_toolbar_h,
             left_vtoolbar_h,
@@ -3588,6 +3608,7 @@ impl ApplicationHandler for Handler {
 
         // Cursor move
         if let Some((x, y)) = out.cursor_moved {
+            app.layout.on_pointer_move(x, y);
             app.on_mouse_move(x, y);
             app.window.request_redraw();
         }
