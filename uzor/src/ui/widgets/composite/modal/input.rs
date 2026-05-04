@@ -186,21 +186,18 @@ pub fn register_layout_manager_modal<P: DockPanel>(
         EventBuilder::ModalWizardBack { handle: handle.clone() },
     );
 
-    // Body overflow patterns (Scrollbar / Chevrons) and resize handles.
-    if matches!(view.overflow, crate::types::OverflowMode::Scrollbar) {
-        dispatcher.on_exact(
-            format!("{}:scrollbar_track", id.0),
-            EventBuilder::ScrollbarTrack { track_id: WidgetId::new(format!("{}:scrollbar_track", id.0)) },
-        );
-        dispatcher.on_exact(
-            format!("{}:scrollbar_handle", id.0),
-            EventBuilder::ScrollbarThumb { thumb_id: WidgetId::new(format!("{}:scrollbar_handle", id.0)) },
-        );
-    }
-    // Chevron routing must mirror register_body_overflow: any non-Scrollbar
-    // mode can produce chevrons (Chevrons explicitly, or Clip/Compress when
-    // content overflows the body — post-resize fallback).
-    if !matches!(view.overflow, crate::types::OverflowMode::Scrollbar) {
+    // Body overflow dispatcher routing — both chevron and scrollbar routes
+    // are registered unconditionally; the active guard is chosen per frame
+    // inside register_body_overflow based on view.overflow.
+    dispatcher.on_exact(
+        format!("{}:scrollbar_track", id.0),
+        EventBuilder::ScrollbarTrack { track_id: WidgetId::new(format!("{}:scrollbar_track", id.0)) },
+    );
+    dispatcher.on_exact(
+        format!("{}:scrollbar_handle", id.0),
+        EventBuilder::ScrollbarThumb { thumb_id: WidgetId::new(format!("{}:scrollbar_handle", id.0)) },
+    );
+    {
         use crate::layout::ChevronStepDirection;
         for (suffix, dir) in [
             ("chevron_up",    ChevronStepDirection::Up),

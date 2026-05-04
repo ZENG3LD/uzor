@@ -177,11 +177,11 @@ pub fn register_layout_manager_sidebar<P: DockPanel>(
         );
     }
 
-    // Register dispatcher patterns so the inner scrollbar (when shown) gets
-    // semantic events. Sidebar composite registers child rects as
-    // "{id}:scrollbar_handle" (DRAG) and "{id}:scrollbar_track" (CLICK).
-    if view.effective_show_scrollbar() {
-        use crate::layout::EventBuilder;
+    // Body overflow dispatcher routing — both scrollbar and chevron routes
+    // are registered unconditionally; the active guard is chosen per frame
+    // inside register/draw based on view.overflow.
+    {
+        use crate::layout::{ChevronStepDirection, EventBuilder};
         layout.dispatcher_mut().on_exact(
             format!("{}:scrollbar_track", id.0),
             EventBuilder::ScrollbarTrack { track_id: WidgetId(format!("{}:scrollbar_track", id.0)) },
@@ -190,21 +190,18 @@ pub fn register_layout_manager_sidebar<P: DockPanel>(
             format!("{}:scrollbar_handle", id.0),
             EventBuilder::ScrollbarThumb { thumb_id: WidgetId(format!("{}:scrollbar_handle", id.0)) },
         );
-    }
-
-    // Chevrons mode — register paging step events on the two overlay strips.
-    if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
-        use crate::layout::{ChevronStepDirection, EventBuilder};
-        let chev_up_id = WidgetId(format!("{}:chevron_up", id.0));
-        let chev_down_id = WidgetId(format!("{}:chevron_down", id.0));
-        layout.dispatcher_mut().on_exact(
-            format!("{}:chevron_up", id.0),
-            EventBuilder::ChevronStep { chevron_id: chev_up_id, direction: ChevronStepDirection::Up },
-        );
-        layout.dispatcher_mut().on_exact(
-            format!("{}:chevron_down", id.0),
-            EventBuilder::ChevronStep { chevron_id: chev_down_id, direction: ChevronStepDirection::Down },
-        );
+        for (suffix, dir) in [
+            ("chevron_up",    ChevronStepDirection::Up),
+            ("chevron_down",  ChevronStepDirection::Down),
+            ("chevron_left",  ChevronStepDirection::Left),
+            ("chevron_right", ChevronStepDirection::Right),
+        ] {
+            let cid = WidgetId(format!("{}:{}", id.0, suffix));
+            layout.dispatcher_mut().on_exact(
+                format!("{}:{}", id.0, suffix),
+                EventBuilder::ChevronStep { chevron_id: cid, direction: dir },
+            );
+        }
     }
 
     register_context_manager_sidebar(

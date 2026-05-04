@@ -37,9 +37,10 @@ pub fn register_layout_manager_panel<P: DockPanel>(
     let layer = layout.compute_layer_for(parent);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Panel, rect, sense: Sense::CLICK });
 
-    // Body chevron routing (Chevrons explicitly OR Clip/Compress when
-    // content overflows the body — post-resize fallback).
-    if !matches!(view.overflow, crate::types::OverflowMode::Scrollbar) {
+    // Body overflow dispatcher routing.  Each composite registers BOTH
+    // chevron and scrollbar routes unconditionally — the active guard is
+    // chosen per frame inside register_*/draw_* based on view.overflow.
+    {
         use crate::layout::{ChevronStepDirection, EventBuilder};
         for (suffix, dir) in [
             ("chevron_up",    ChevronStepDirection::Up),
@@ -53,6 +54,18 @@ pub fn register_layout_manager_panel<P: DockPanel>(
                 EventBuilder::ChevronStep { chevron_id: cid, direction: dir },
             );
         }
+        layout.dispatcher_mut().on_exact(
+            format!("{}:scrollbar_track", id.0),
+            EventBuilder::ScrollbarTrack {
+                track_id: WidgetId::new(format!("{}:scrollbar_track", id.0)),
+            },
+        );
+        layout.dispatcher_mut().on_exact(
+            format!("{}:scrollbar_handle", id.0),
+            EventBuilder::ScrollbarThumb {
+                thumb_id: WidgetId::new(format!("{}:scrollbar_handle", id.0)),
+            },
+        );
     }
 
     register_context_manager_panel(

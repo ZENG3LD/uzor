@@ -126,36 +126,24 @@ pub fn register_layout_manager_popup<P: DockPanel>(
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Popup, rect, sense: Sense::CLICK });
 
-    // Body overflow patterns + opt-in resize handles.
-    let dispatcher = layout.dispatcher_mut();
-    if matches!(view.overflow, crate::types::OverflowMode::Scrollbar) {
-        dispatcher.on_exact(
-            format!("{}:scrollbar_track", id.0),
-            EventBuilder::ScrollbarTrack { track_id: WidgetId(format!("{}:scrollbar_track", id.0)) },
-        );
-        dispatcher.on_exact(
-            format!("{}:scrollbar_handle", id.0),
-            EventBuilder::ScrollbarThumb { thumb_id: WidgetId(format!("{}:scrollbar_handle", id.0)) },
-        );
-    }
-    // Chevron routing: any non-Scrollbar mode may produce chevrons
-    // (Chevrons explicitly, or Clip/Compress when content overflows).
-    if !matches!(view.overflow, crate::types::OverflowMode::Scrollbar) {
+    // Popup overflow guard — chevrons only (popup auto-sizes; scrollbar /
+    // compress are non-applicable). Chevron routing is unconditional so
+    // Clip-content-overflow falls back without re-registration.
+    {
         use crate::layout::ChevronStepDirection;
-        dispatcher.on_exact(
-            format!("{}:chevron_up", id.0),
-            EventBuilder::ChevronStep {
-                chevron_id: WidgetId(format!("{}:chevron_up", id.0)),
-                direction:  ChevronStepDirection::Up,
-            },
-        );
-        dispatcher.on_exact(
-            format!("{}:chevron_down", id.0),
-            EventBuilder::ChevronStep {
-                chevron_id: WidgetId(format!("{}:chevron_down", id.0)),
-                direction:  ChevronStepDirection::Down,
-            },
-        );
+        let dispatcher = layout.dispatcher_mut();
+        for (suffix, dir) in [
+            ("chevron_up",    ChevronStepDirection::Up),
+            ("chevron_down",  ChevronStepDirection::Down),
+            ("chevron_left",  ChevronStepDirection::Left),
+            ("chevron_right", ChevronStepDirection::Right),
+        ] {
+            let cid = WidgetId(format!("{}:{}", id.0, suffix));
+            dispatcher.on_exact(
+                format!("{}:{}", id.0, suffix),
+                EventBuilder::ChevronStep { chevron_id: cid, direction: dir },
+            );
+        }
     }
 
     register_context_manager_popup(
