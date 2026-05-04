@@ -18,6 +18,14 @@ pub mod runtime;
 pub mod utils;
 pub mod widgets;
 
+/// Mirage-derived design tokens (palette, type scale, spacing, radii).
+///
+/// Codegened from `tokens.toml` at build time. Edit the TOML and rebuild.
+#[allow(dead_code, non_upper_case_globals)]
+pub mod tokens {
+    include!("tokens_generated.rs");
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub mod chrome;
 #[cfg(not(target_arch = "wasm32"))]

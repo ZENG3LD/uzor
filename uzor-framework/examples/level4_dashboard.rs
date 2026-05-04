@@ -12,6 +12,7 @@
 use uzor::core::types::Rect;
 use uzor::layout::{LayoutManager, ModalHandle};
 use uzor::ui::widgets::composite::chrome::types::ChromeTabConfig;
+use uzor_framework::tokens;
 use uzor_framework::{view, App, AppBuilder, NoPanel};
 use uzor_render_hub::{RenderBackend, VelloGpuSurfaceFactory, WindowRenderState};
 
@@ -51,7 +52,7 @@ impl App<NoPanel> for DashboardApp {
                 <col rect={body}>
                     <chrome tabs={&tabs} active_tab="dashboard" />
                     <col gap=12 pad=24>
-                        <text   text="L4 Dashboard" color="#1a1a1a" />
+                        <text   text="L4 Dashboard" color={tokens::colors::fg::fg_0} />
                         <button text="Save"
                                 bind_count={&mut self.save_clicks}
                                 on_click={|| { /* save */ }} />
@@ -60,13 +61,15 @@ impl App<NoPanel> for DashboardApp {
                         <checkbox bind={&mut self.dark}      label="Dark mode" />
                         <checkbox bind={&mut self.sounds_on} label="Sounds" />
                         <separator />
-                        <text text="click Save to bump counter • no id strings" color="#666" />
+                        <text text="click Save to bump counter • no id strings"
+                              color={tokens::colors::fg::fg_2} />
                     </col>
 
                     { if self.show_modal {
                         view! {
                             <modal handle={modal_handle} title="Settings" resizable=true gap=10 pad=20>
-                                <text text="Settings (close to dismiss — backdrop click)" color="#333" />
+                                <text text="Settings (close to dismiss — backdrop click)"
+                                      color={tokens::colors::fg::fg_1} />
                                 <checkbox bind={&mut self.dark}      label="Dark mode" />
                                 <checkbox bind={&mut self.sounds_on} label="Sounds" />
                             </modal>
