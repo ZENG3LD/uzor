@@ -4,6 +4,8 @@
 //! regardless of which `ChromeRenderKind` is active.
 
 use crate::input::core::coordinator::InputCoordinator;
+use crate::docking::panels::DockPanel;
+use crate::layout::LayoutManager;
 use crate::ui::widgets::atomic::tooltip::TooltipState;
 use crate::ui::widgets::composite::context_menu::ContextMenuState;
 
@@ -152,21 +154,38 @@ impl ChromeState {
 
     /// Sync per-tab hover state from the input coordinator.
     ///
+    /// **Deprecated** — use `sync_hover_from_layout` instead when a
+    /// `LayoutManager` is available.  Kept for back-compat with L3 callers that
+    /// hold a raw `InputCoordinator` reference.
+    ///
     /// The coordinator tracks which registered child widget is hovered; this
     /// method translates coordinator widget-ids of the form
     /// `{chrome_id}:tab:{i}` and `{chrome_id}:tab_close:{i}` into the
     /// corresponding `TabState` hover flags.
     ///
-    /// Call this once per frame after `register_layout_manager_chrome` (which
-    /// registers the child zones) but before rendering tab highlights.
-    ///
     /// `chrome_id` — the stable id passed to `register_layout_manager_chrome`
     ///               (e.g. `"chrome-widget"`).
     pub fn sync_hover_from_coordinator(&mut self, coord: &InputCoordinator, chrome_id: &str) {
-        use super::types::ChromeHit;
         let hovered = coord.hovered_widget().map(|w| w.0.clone());
-        let tab_prefix      = format!("{chrome_id}:tab:");
-        let close_prefix    = format!("{chrome_id}:tab_close:");
+        self.apply_hover_from_id(hovered, chrome_id);
+    }
+
+    /// Sync per-tab hover state from the `LayoutManager` (L3 authoritative hover).
+    ///
+    /// Preferred over `sync_hover_from_coordinator` — reads from
+    /// `LayoutManager::hovered_widget()` which is kept current by
+    /// `on_pointer_move` and is not reset by `begin_frame`.
+    ///
+    /// `chrome_id` — the stable id passed to `register_layout_manager_chrome`.
+    pub fn sync_hover_from_layout<P: DockPanel>(&mut self, layout: &LayoutManager<P>, chrome_id: &str) {
+        let hovered = layout.hovered_widget().map(|w| w.0.clone());
+        self.apply_hover_from_id(hovered, chrome_id);
+    }
+
+    fn apply_hover_from_id(&mut self, hovered: Option<String>, chrome_id: &str) {
+        use super::types::ChromeHit;
+        let tab_prefix   = format!("{chrome_id}:tab:");
+        let close_prefix = format!("{chrome_id}:tab_close:");
 
         for (i, ts) in self.tabs_state.iter_mut().enumerate() {
             let idx_str = i.to_string();

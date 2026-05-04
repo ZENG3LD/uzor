@@ -12,7 +12,6 @@ use std::collections::HashMap;
 
 use uzor::core::types::Rect;
 use uzor::docking::panels::DockPanel;
-use uzor::input::InputState;
 use uzor::layout::{LayoutManager, WindowHost};
 use uzor::framework::multi_window::WindowSpec;
 use uzor_render_hub::{
@@ -110,7 +109,6 @@ pub(crate) struct PerWindow<P: DockPanel> {
     pub provider:        WinitWindowProvider,
     pub render_state:    WindowRenderState,
     pub layout:          LayoutManager<P>,
-    pub input:           InputState,
     /// Last known cursor position in logical pixels.
     pub last_mouse_pos:  (f64, f64),
     pub last_frame:      std::time::Instant,
@@ -428,7 +426,6 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             provider,
             render_state,
             layout:          LayoutManager::new(),
-            input:           InputState::new(),
             last_mouse_pos:  (0.0, 0.0),
             last_frame:      std::time::Instant::now(),
             initialised:     false,
@@ -571,7 +568,9 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             } => {
                 let Some(pw) = self.windows.get_mut(&id) else { return };
                 let (mx, my) = pw.last_mouse_pos;
+                // L3 records the click in last_click; no pw.input write needed.
                 let _outcome = pw.layout.on_pointer_up(mx, my);
+                pw.window.request_redraw();
                 // App hooks on DispatchEvent / DismissedOverlay are called by
                 // App::ui each frame via consume_event — no immediate callback here.
             }
@@ -624,13 +623,6 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 None    => return Ok(()),
             };
 
-            // Populate InputState from the last known cursor position.
-            // on_pointer_move already pushed it into L3's coordinator on the
-            // last CursorMoved event; here we keep pw.input in sync for
-            // begin_frame (which needs it for was_clicked / pointer_pos helpers).
-            pw.input.time = now_secs;
-            pw.input.pointer.pos = Some(pw.last_mouse_pos);
-
             for ev in pw.provider.poll_events() {
                 let _ = self.app.on_event(&ev);
             }
@@ -638,8 +630,9 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             let rect = pw.provider.window_rect();
             pw.layout.solve(rect);
             let viewport = pw.layout.rect_for_dock_area().unwrap_or(rect);
-            let input_snapshot = pw.input.clone();
-            pw.layout.ctx_mut().begin_frame(input_snapshot, viewport);
+            // begin_frame clears one-shot input flags and refreshes widget registrations
+            // WITHOUT overwriting the pointer state that on_pointer_* already set.
+            pw.layout.begin_frame(now_ms, viewport);
             pw.layout.set_frame_time_ms(now_ms);
 
             let bg_color = argb_to_alpha_color(pw.spec.background);
@@ -663,6 +656,8 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 });
             }
             let _responses = pw.layout.ctx_mut().end_frame();
+            // Clear one-shot input flags AFTER app.ui consumed them.
+            pw.layout.end_frame_inputs();
 
             let outcome = submit_frame(
                 &mut pw.render_state,
@@ -670,9 +665,6 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             );
 
             pw.last_frame = std::time::Instant::now();
-            pw.input.pointer.clicked = None;
-            pw.input.pointer.double_clicked = None;
-            pw.input.scroll_delta = (0.0, 0.0);
             pw.window.request_redraw();
 
             outcome

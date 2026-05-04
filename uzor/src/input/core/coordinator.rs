@@ -200,6 +200,28 @@ impl InputCoordinator {
         }
     }
 
+    /// Begin a new frame WITHOUT overwriting the current pointer/click state.
+    ///
+    /// Clears widget registrations, layers, and advances the frame counter, but
+    /// does NOT touch `self.input`.  Use this when the pointer state is managed
+    /// externally (e.g. via `set_cursor_pos` + `LayoutManager::on_pointer_*`)
+    /// and must not be reset by a stale `InputState` snapshot.
+    ///
+    /// Scoped-region propagation is skipped because their pointer coords are
+    /// derived from `self.input`; callers that use this path are responsible for
+    /// calling `set_cursor_pos` before any hit-tests.
+    pub fn begin_frame_widgets_only(&mut self) {
+        self.widgets.clear();
+        self.layers.clear();
+        self.layers.push(Layer {
+            id: LayerId::main(),
+            z_order: 0,
+            modal: false,
+        });
+        self.frame += 1;
+        self.text_fields.begin_frame();
+    }
+
     /// Register widget for this frame on main layer
     pub fn register(&mut self, id: impl Into<WidgetId>, rect: Rect, sense: Sense) {
         self.register_on_layer(id, rect, sense, &LayerId::main());

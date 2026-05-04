@@ -72,9 +72,9 @@ pub fn register_layout_manager_context_menu<P: DockPanel>(
         EventBuilder::ContextMenuItem { handle: handle.clone() },
     );
 
-    // Auto-forward hovered_index from the coordinator into menu state.
+    // Auto-forward hovered_index from the layout manager (L3 authoritative hover source).
     let prefix = format!("{}:item:", id.0);
-    state.sync_hover_from(&layout.ctx_mut().input, &prefix);
+    state.sync_hover_from_layout(layout, &prefix);
 
     register_context_manager_context_menu(
         layout.ctx_mut(), render, id.clone(), &mut state, view, settings, kind, &layer,

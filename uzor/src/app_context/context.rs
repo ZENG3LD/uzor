@@ -60,6 +60,21 @@ impl ContextManager {
         self.layout.compute(viewport);
     }
 
+    /// Begin a new frame without overwriting pointer/click state.
+    ///
+    /// Clears widget registrations and advances the frame counter, but preserves
+    /// the current `input` state (pointer pos, clicked, etc.) so that
+    /// `on_pointer_*` pushes made before this call are visible to hit-tests.
+    ///
+    /// Used by `LayoutManager::begin_frame` which manages pointer state directly
+    /// via its `on_pointer_*` API.
+    pub fn begin_frame_widgets_only(&mut self, time_secs: f64, viewport: Rect) {
+        self.time = time_secs;
+        self.input.begin_frame_widgets_only();
+        self.animations.update(self.time);
+        self.layout.compute(viewport);
+    }
+
     /// End the current frame and collect widget responses.
     ///
     /// Delegates to `InputCoordinator::end_frame`.

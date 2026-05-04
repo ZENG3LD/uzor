@@ -121,10 +121,10 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
     );
 
     // Auto-forward hovered_id (main panel) and submenu_hovered_id
-    // (submenu panel) from the coordinator into the dropdown state.
-    state.sync_flat_hover(&layout.ctx_mut().input, &id.0);
+    // (submenu panel) from the layout manager (L3 authoritative hover source).
+    state.sync_flat_hover_from_layout(layout, &id.0);
 
-    // Auto-manage submenu open/close from coordinator hover state.
+    // Auto-manage submenu open/close from layout hover state.
     //
     // - Hovering a `:submenu:{id}` row (trigger=Hover) opens it.
     // - Hovering inside the submenu panel keeps it open.
@@ -133,12 +133,11 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
     //   (open is driven by *click* on the chevron, dispatched as
     //   DispatchEvent::DropdownSubmenuToggle).
     {
-        let coord = &layout.ctx_mut().input;
         let main_prefix    = format!("{}:item:", id.0);
         let submenu_prefix = format!("{}:submenu:", id.0);
         let chev_prefix    = format!("{}:chev:submenu:", id.0);
         let sub_prefix     = format!("{}:sub-item:", id.0);
-        let hovered = coord.hovered_widget().map(|w| w.0.clone());
+        let hovered = layout.hovered_widget().map(|w| w.0.clone());
         match hovered {
             Some(h) if h.starts_with(&submenu_prefix) && !h.starts_with(&chev_prefix) => {
                 let rest = &h[submenu_prefix.len()..];

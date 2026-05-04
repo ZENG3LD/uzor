@@ -196,6 +196,23 @@ pub struct LayoutManager<P: DockPanel> {
     /// Per-call settings (`.settings(...)`) take priority — StyleManager is the
     /// *default supplier* (lowest priority).
     styles: StyleManager,
+
+    // -----------------------------------------------------------------------
+    // L3-owned input state — cleared each frame by inputs_begin_frame()
+    // -----------------------------------------------------------------------
+
+    /// The widget (if any) currently under the cursor — updated by on_pointer_move.
+    last_hovered: Option<crate::types::WidgetId>,
+    /// Left-click that landed this frame: (widget_id, position).
+    last_click: Option<(crate::types::WidgetId, (f64, f64))>,
+    /// Right-click that landed this frame: (widget_id, position).
+    last_right_click: Option<(crate::types::WidgetId, (f64, f64))>,
+    /// Last known pointer position.
+    last_pointer_pos: Option<(f64, f64)>,
+    /// Accumulated scroll delta this frame (reset each frame).
+    last_scroll: (f64, f64),
+    /// Widget hit by the most recent pointer-down (drag candidates).
+    last_pressed: Option<crate::types::WidgetId>,
 }
 
 impl<P: DockPanel> LayoutManager<P> {
@@ -224,6 +241,12 @@ impl<P: DockPanel> LayoutManager<P> {
             chrome_widget_state: ChromeState::default(),
             composite_registry: Vec::new(),
             styles: StyleManager::default(),
+            last_hovered: None,
+            last_click: None,
+            last_right_click: None,
+            last_pointer_pos: None,
+            last_scroll: (0.0, 0.0),
+            last_pressed: None,
         }
     }
 
@@ -483,23 +506,79 @@ impl<P: DockPanel> LayoutManager<P> {
         self.ctx.input.pointer_pos()
     }
 
-    /// Was the given widget id clicked (via the cursor's last left-up
-    /// position) in the current frame?
+    // -----------------------------------------------------------------------
+    // L3-owned input accessors — read from fields maintained by on_pointer_*
+    // -----------------------------------------------------------------------
+
+    /// Widget currently under the cursor (updated on every pointer-move).
     ///
-    /// Routes through the coordinator's z-aware `process_click` so widgets
-    /// shadowed by an overlay correctly return `false`.  Used by reactive
-    /// `.bind(&mut value)` builder helpers (checkbox / toggle / etc.) to
-    /// flip state without the app writing a `match` on `DispatchEvent`.
+    /// This is the single authoritative hover source for all of L3+.
+    /// Composite helpers (`chrome`, `dropdown`, etc.) must read from this
+    /// instead of reaching into `coord.hovered_widget()` directly.
+    pub fn hovered_widget(&self) -> Option<&crate::types::WidgetId> {
+        self.last_hovered.as_ref()
+    }
+
+    /// Was the given widget pressed (pointer-down) this frame?
+    pub fn was_pressed(&self, id: &WidgetId) -> bool {
+        self.last_pressed.as_ref() == Some(id)
+    }
+
+    /// Last known pointer position (persists across frames).
+    pub fn pointer_pos(&self) -> Option<(f64, f64)> {
+        self.last_pointer_pos
+    }
+
+    /// Accumulated scroll delta this frame (reset by `inputs_begin_frame`).
+    pub fn scroll_delta(&self) -> (f64, f64) {
+        self.last_scroll
+    }
+
+    /// Clear one-shot input fields.  Call once per frame BEFORE widget registration.
+    ///
+    /// Clears `last_click`, `last_right_click`, `last_pressed`, `last_scroll`.
+    /// Does NOT clear `last_hovered` or `last_pointer_pos` — those persist
+    /// between events so hover is always current.
+    pub fn inputs_begin_frame(&mut self) {
+        self.last_click       = None;
+        self.last_right_click = None;
+        self.last_pressed     = None;
+        self.last_scroll      = (0.0, 0.0);
+    }
+
+    /// Full per-frame setup: clear one-shot input flags, then call
+    /// `ctx.begin_frame_widgets_only` (which clears widget registrations
+    /// but preserves pointer state).
+    ///
+    /// Call this once per frame BEFORE calling `App::ui`.  Replaces the
+    /// old `ctx.begin_frame(input_snapshot, viewport)` pattern; pointer
+    /// state is now pushed incrementally via `on_pointer_*`.
+    ///
+    /// `time_ms`  — milliseconds since runtime start (for animations).
+    /// `viewport` — the content area rect (used for layout re-compute).
+    pub fn begin_frame(&mut self, time_ms: f64, viewport: crate::core::types::Rect) {
+        // NOTE: do NOT call inputs_begin_frame() here — it would erase a
+        // click that arrived between the previous tick's end_frame and this
+        // tick's begin_frame.  L4 is responsible for calling
+        // `inputs_end_frame()` after `App::ui` returns (or use
+        // `LayoutManager::end_frame` shortcut).
+        self.ctx.begin_frame_widgets_only(time_ms / 1000.0, viewport);
+    }
+
+    /// Per-frame teardown — clears one-shot input flags.  Call AFTER
+    /// `App::ui` so `was_clicked` / `was_pressed` see the click that
+    /// arrived just before this frame.
+    pub fn end_frame_inputs(&mut self) {
+        self.inputs_begin_frame();
+    }
+
+    /// Was the given widget id clicked (left-button) in the current frame?
+    ///
+    /// Reads from the L3-owned `last_click` field which is set by
+    /// `on_pointer_up` — correct regardless of when `begin_frame` was
+    /// called relative to the click event.
     pub fn was_clicked(&self, id: &WidgetId) -> bool {
-        let st = self.ctx.input.input_state();
-        if !matches!(st.pointer.clicked, Some(crate::input::MouseButton::Left)) {
-            return false;
-        }
-        let pos = match st.pointer.pos {
-            Some(p) => p,
-            None => return false,
-        };
-        self.ctx.input.process_click(pos.0, pos.1).as_ref() == Some(id)
+        self.last_click.as_ref().map_or(false, |(c, _)| c == id)
     }
 
     /// Iterate every dock leaf and its solved screen-space rect.
@@ -1165,19 +1244,33 @@ impl<P: DockPanel> LayoutManager<P> {
     // L3 pointer bridge — called by L4 instead of touching ctx directly
     // ------------------------------------------------------------------
 
-    /// Push a pointer-move event into the coordinator's pointer state.
+    /// Push a pointer-move event into the coordinator and update L3 hover state.
     pub fn on_pointer_move(&mut self, x: f64, y: f64) {
         self.ctx.input.set_cursor_pos(x, y);
+        self.last_pointer_pos = Some((x, y));
+        // Hit-test for hover (reuses process_click which finds topmost click-sense widget).
+        self.last_hovered = self.ctx.input.process_click(x, y);
     }
 
-    /// Push a pointer-down event. No-op for coordinator; exposed for symmetry.
+    /// Push a pointer-down event and record the pressed widget.
     pub fn on_pointer_down(&mut self, x: f64, y: f64) {
         self.ctx.input.set_cursor_pos(x, y);
+        self.last_pointer_pos = Some((x, y));
+        self.last_pressed = self.ctx.input.process_drag_press(x, y);
     }
 
     /// Push a pointer-up event, run hit-test + dispatch, and return the outcome.
+    ///
+    /// Also records the click in `last_click` so `was_clicked` works correctly
+    /// regardless of when `begin_frame` is called.
     pub fn on_pointer_up(&mut self, x: f64, y: f64) -> PointerUpOutcome {
         self.ctx.input.set_cursor_pos(x, y);
+        self.last_pointer_pos = Some((x, y));
+        // Record click before handle_click (which may clear state internally).
+        let hit = self.ctx.input.process_click(x, y);
+        if let Some(ref id) = hit {
+            self.last_click = Some((id.clone(), (x, y)));
+        }
         match self.handle_click((x, y)) {
             ClickOutcome::DismissOverlay(h) => PointerUpOutcome::DismissedOverlay(h),
             ClickOutcome::DispatchEvent(ev) => {
@@ -1189,6 +1282,22 @@ impl<P: DockPanel> LayoutManager<P> {
             }
             ClickOutcome::Unhandled { .. } => PointerUpOutcome::Unhandled,
         }
+    }
+
+    /// Push a right pointer-up event and record the right-click.
+    pub fn on_pointer_right_up(&mut self, x: f64, y: f64) {
+        self.ctx.input.set_cursor_pos(x, y);
+        self.last_pointer_pos = Some((x, y));
+        let hit = self.ctx.input.process_right_click(x, y);
+        if let Some(id) = hit {
+            self.last_right_click = Some((id, (x, y)));
+        }
+    }
+
+    /// Push a scroll delta for this frame.  Accumulates until `inputs_begin_frame`.
+    pub fn on_scroll(&mut self, dx: f64, dy: f64) {
+        self.last_scroll.0 += dx;
+        self.last_scroll.1 += dy;
     }
 
     /// Handle a pointer-down event on the chrome strip.

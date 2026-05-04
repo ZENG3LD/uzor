@@ -1,6 +1,8 @@
 //! Toolbar persistent state.
 
+use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::InputCoordinator;
+use crate::layout::LayoutManager;
 use crate::types::Rect;
 
 use super::super::resize_drag::ResizeDrag;
@@ -137,17 +139,28 @@ impl ToolbarState {
 
     /// Sync the hovered-item id from the coordinator's hovered widget.
     ///
-    /// `widget_id_prefix` — the `"{toolbar_widget_id}:"` prefix used at
-    /// registration time. When the coord's hovered widget id starts with
-    /// this prefix, the suffix becomes the new `hovered_item_id`. Otherwise
-    /// `hovered_item_id` is cleared.
-    ///
-    /// Composite registration helpers call this automatically — apps don't
-    /// need to forward `coord.hovered_widget()` by hand.
+    /// **Deprecated** — use `sync_hover_from_layout` when a `LayoutManager`
+    /// is available.  Kept for back-compat with L3 callers.
     pub fn sync_hover_from(&mut self, coord: &InputCoordinator, widget_id_prefix: &str) {
-        self.hovered_item_id = coord
-            .hovered_widget()
-            .map(|id| id.0.as_str())
+        let hovered = coord.hovered_widget().map(|id| id.0.clone());
+        self.apply_hover(hovered, widget_id_prefix);
+    }
+
+    /// Sync hover state from the `LayoutManager` (L3 authoritative hover).
+    ///
+    /// Preferred over `sync_hover_from`.
+    pub fn sync_hover_from_layout<P: DockPanel>(
+        &mut self,
+        layout: &LayoutManager<P>,
+        widget_id_prefix: &str,
+    ) {
+        let hovered = layout.hovered_widget().map(|id| id.0.clone());
+        self.apply_hover(hovered, widget_id_prefix);
+    }
+
+    fn apply_hover(&mut self, hovered: Option<String>, widget_id_prefix: &str) {
+        self.hovered_item_id = hovered
+            .as_deref()
             .filter(|s| s.starts_with(widget_id_prefix))
             .map(|s| s[widget_id_prefix.len()..].to_owned());
     }

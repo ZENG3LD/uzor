@@ -3,7 +3,9 @@
 //! Unlike Dropdown, ContextMenu positions at raw cursor coordinates with
 //! smart screen-edge clamping (`open_smart`). There is no anchor widget.
 
+use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::InputCoordinator;
+use crate::layout::LayoutManager;
 
 /// All per-instance state for a context menu.
 #[derive(Debug, Clone, Default)]
@@ -100,19 +102,34 @@ impl ContextMenuState {
 
     /// Sync the hovered-item index from the coordinator's hovered widget.
     ///
-    /// `widget_id_prefix` — the `"{menu_widget_id}:item:"` prefix used at
-    /// registration time. When the coord's hovered widget id starts with
-    /// this prefix and the suffix parses as a `usize`, that becomes
-    /// `hovered_index`. Otherwise `hovered_index` is cleared.
-    ///
-    /// Composite registration helpers call this automatically.
+    /// **Deprecated** — use `sync_hover_from_layout` when a `LayoutManager`
+    /// is available.  Kept for back-compat with L3 callers.
     pub fn sync_hover_from(&mut self, coord: &InputCoordinator, widget_id_prefix: &str) {
         if !self.is_open {
             return;
         }
-        self.hovered_index = coord
-            .hovered_widget()
-            .map(|id| id.0.as_str())
+        let hovered = coord.hovered_widget().map(|id| id.0.clone());
+        self.apply_hover(hovered, widget_id_prefix);
+    }
+
+    /// Sync the hovered-item index from the `LayoutManager` (L3 authoritative hover).
+    ///
+    /// Preferred over `sync_hover_from`.
+    pub fn sync_hover_from_layout<P: DockPanel>(
+        &mut self,
+        layout: &LayoutManager<P>,
+        widget_id_prefix: &str,
+    ) {
+        if !self.is_open {
+            return;
+        }
+        let hovered = layout.hovered_widget().map(|id| id.0.clone());
+        self.apply_hover(hovered, widget_id_prefix);
+    }
+
+    fn apply_hover(&mut self, hovered: Option<String>, widget_id_prefix: &str) {
+        self.hovered_index = hovered
+            .as_deref()
             .filter(|s| s.starts_with(widget_id_prefix))
             .and_then(|s| s[widget_id_prefix.len()..].parse::<usize>().ok());
     }

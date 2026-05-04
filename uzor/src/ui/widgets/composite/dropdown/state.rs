@@ -3,7 +3,9 @@
 //! `DropdownState` is a flat struct — fields irrelevant to the active
 //! `DropdownRenderKind` are never touched.
 
+use crate::docking::panels::DockPanel;
 use crate::input::core::coordinator::InputCoordinator;
+use crate::layout::LayoutManager;
 use crate::types::Rect;
 
 /// All per-dropdown instance state.
@@ -194,13 +196,8 @@ impl DropdownState {
 
     /// Sync the hovered-item id from the coordinator's hovered widget.
     ///
-    /// `widget_id_prefix` — the `"{dropdown_widget_id}:item:"` prefix used at
-    /// registration time. When the coord's hovered widget id starts with this
-    /// prefix, the suffix becomes the new `hovered_id`. Otherwise `hovered_id`
-    /// is cleared.
-    ///
-    /// Composite registration helpers call this automatically — apps don't
-    /// need to forward `coord.hovered_widget()` by hand.
+    /// **Deprecated** — use `sync_hover_from_layout` when a `LayoutManager`
+    /// is available.  Kept for back-compat with L3 callers.
     pub fn sync_hover_from(&mut self, coord: &InputCoordinator, widget_id_prefix: &str) {
         if !self.open {
             return;
@@ -212,15 +209,39 @@ impl DropdownState {
             .map(|s| s[widget_id_prefix.len()..].to_owned());
     }
 
+    /// Sync hover state for a Flat dropdown via the `LayoutManager`.
+    ///
+    /// Preferred over `sync_flat_hover` — reads from `LayoutManager::hovered_widget()`
+    /// which is kept current by `on_pointer_move` and not reset by `begin_frame`.
+    pub fn sync_flat_hover_from_layout<P: DockPanel>(
+        &mut self,
+        layout: &LayoutManager<P>,
+        dropdown_id: &str,
+    ) {
+        if !self.open {
+            return;
+        }
+        let hovered = layout.hovered_widget().map(|w| w.0.clone());
+        self.apply_flat_hover(hovered, dropdown_id);
+    }
+
     /// Sync hover state for a Flat dropdown that has both a main panel
     /// and a submenu panel.  Recognises four child-id prefixes:
     /// `:item:`, `:submenu:`, `:submenu-chevron:`, `:sub-item:`.
     /// Updates `hovered_id` (main panel) and `submenu_hovered_id`
     /// (submenu panel).
+    ///
+    /// **Deprecated** — use `sync_flat_hover_from_layout` when a
+    /// `LayoutManager` is available.
     pub fn sync_flat_hover(&mut self, coord: &InputCoordinator, dropdown_id: &str) {
         if !self.open {
             return;
         }
+        let hovered = coord.hovered_widget().map(|w| w.0.clone());
+        self.apply_flat_hover(hovered, dropdown_id);
+    }
+
+    fn apply_flat_hover(&mut self, hovered: Option<String>, dropdown_id: &str) {
         let main_pref = format!("{}:item:", dropdown_id);
         let sm_pref   = format!("{}:submenu:", dropdown_id);
         // Sticky chevron registers as `{parent}:chev:submenu:{row_id}`.
@@ -231,7 +252,7 @@ impl DropdownState {
         self.submenu_hovered_id = None;
         self.submenu_chevron_hovered_id = None;
 
-        if let Some(id) = coord.hovered_widget().map(|w| w.0.clone()) {
+        if let Some(id) = hovered {
             if let Some(rest) = id.strip_prefix(&main_pref) {
                 self.hovered_id = Some(rest.to_string());
             } else if let Some(rest) = id.strip_prefix(&sm_pref) {

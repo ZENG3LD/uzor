@@ -144,9 +144,9 @@ pub fn register_layout_manager_toolbar<P: DockPanel>(
         );
     }
 
-    // Auto-forward hovered_item_id from the coordinator into toolbar state.
+    // Auto-forward hovered_item_id from the layout manager (L3 authoritative hover source).
     let prefix = format!("{}:", id.0);
-    state.sync_hover_from(&layout.ctx_mut().input, &prefix);
+    state.sync_hover_from_layout(layout, &prefix);
 
     register_context_manager_toolbar(
         layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,
