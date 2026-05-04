@@ -508,10 +508,13 @@ pub fn draw_body_overflow_chevrons(
 ) {
     // Chevrons appear in two cases:
     //   1. caller asked for them (`OverflowMode::Chevrons`), or
-    //   2. caller picked `Clip` (or any non-scrollbar mode) but the actual
-    //      body content no longer fits (post-resize fallback).
-    // Scrollbar mode owns its own track and is left untouched.
-    if matches!(view.overflow, crate::types::OverflowMode::Scrollbar) { return; }
+    //   2. caller picked `Clip` and the actual content no longer fits
+    //      (post-resize fallback).
+    // Scrollbar owns its own track. Compress already squeezed the content
+    // to fit and never falls back to chevrons.
+    if matches!(view.overflow,
+        crate::types::OverflowMode::Scrollbar | crate::types::OverflowMode::Compress
+    ) { return; }
     let frame = resolve_frame(rect, state, kind);
     let body  = body_rect(frame, view, settings, kind);
     if body.width <= 0.0 || body.height <= 0.0 { return; }
