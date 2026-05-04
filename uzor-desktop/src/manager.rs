@@ -138,45 +138,46 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
     /// Construct a `Manager` from a pre-built [`BuiltApp`].
     ///
     /// This is the primary entry point used by [`crate::AppRun::run`].
+    ///
+    /// **Autodetect** is the default:
+    /// - Neither backend nor factory set → `RenderHub::autodetect()` probes the
+    ///   GPU and selects the best available backend + factory.
+    /// - Backend set, factory not set → `RenderHub::fixed(backend)` + factory
+    ///   from the hub's pool.
+    /// - Both set → use the caller-supplied backend + factory; wrap backend in
+    ///   `RenderHub::fixed` for metrics bookkeeping.
     pub fn from_built(built: BuiltApp<A, P>) -> Self {
-        // Downcast opaque RenderHub to the concrete uzor_render_hub::RenderHub.
-        let hub: Option<RenderHub> = built.hub.and_then(|opaque| {
-            opaque.into_inner()
-                .downcast::<RenderHub>()
-                .ok()
-                .map(|b| *b)
-        });
-
-        let mut mgr = Self::new(built.app, built.config, built.backend, hub);
-        if let Some(any_factory) = built.factory {
-            let any_box = any_factory.into_any();
-            match any_box.downcast::<uzor_render_hub::VelloGpuSurfaceFactory>() {
-                Ok(f) => { mgr.factory = Some(f as Box<dyn RenderSurfaceFactory>); }
-                Err(any_box) => {
-                    match any_box.downcast::<uzor_render_hub::VelloHybridSurfaceFactory>() {
-                        Ok(f) => { mgr.factory = Some(f as Box<dyn RenderSurfaceFactory>); }
-                        Err(any_box) => {
-                            match any_box.downcast::<uzor_render_hub::WgpuInstancedSurfaceFactory>() {
-                                Ok(f) => { mgr.factory = Some(f as Box<dyn RenderSurfaceFactory>); }
-                                Err(any_box) => {
-                                    match any_box.downcast::<uzor_render_hub::TinySkiaSurfaceFactory>() {
-                                        Ok(f) => { mgr.factory = Some(f as Box<dyn RenderSurfaceFactory>); }
-                                        Err(any_box) => {
-                                            match any_box.downcast::<uzor_render_hub::VelloCpuSurfaceFactory>() {
-                                                Ok(f) => { mgr.factory = Some(f as Box<dyn RenderSurfaceFactory>); }
-                                                Err(_) => {
-                                                    eprintln!("[uzor-desktop] from_built: unknown factory type — use Manager::set_surface_factory() directly");
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        // ── Phase 1: resolve hub, backend, factory ────────────────────────────
+        let hub = match (built.backend, built.factory.is_some()) {
+            (None, false) => RenderHub::autodetect(),
+            (Some(b), _) => RenderHub::fixed(b),
+            (None, true) => {
+                eprintln!(
+                    "[uzor-desktop] from_built: factory supplied without backend — \
+                     running autodetect; factory may mismatch active backend"
+                );
+                RenderHub::autodetect()
             }
+        };
+
+        let active_backend = hub.active();
+
+        // ── Phase 2: resolve factory ──────────────────────────────────────────
+        let factory: Option<Box<dyn RenderSurfaceFactory>> = if let Some(any_factory) = built.factory {
+            // Caller explicitly supplied a factory — downcast it.
+            downcast_any_factory(any_factory)
+        } else {
+            // Let the hub produce a fresh factory for the active backend.
+            hub.factory_for(active_backend)
+        };
+
+        // ── Phase 3: build manager ────────────────────────────────────────────
+        let mut mgr = Self::new(built.app, built.config, active_backend, Some(hub));
+
+        if let Some(f) = factory {
+            mgr.factory = Some(f);
         }
+
         if let Some(tray) = built.tray {
             #[cfg(not(target_arch = "wasm32"))]
             mgr.set_tray_spec(tray);
@@ -672,6 +673,46 @@ where
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Downcast an opaque `Box<dyn AnyFactory>` to `Box<dyn RenderSurfaceFactory>`.
+///
+/// Tries each known concrete factory type in turn.  Returns `None` and prints a
+/// warning if the concrete type is unrecognised.
+fn downcast_any_factory(any_factory: Box<dyn AnyFactory>) -> Option<Box<dyn RenderSurfaceFactory>> {
+    let any_box = any_factory.into_any();
+    macro_rules! try_downcast {
+        ($box:expr, $($T:ty),+) => {{
+            let mut b = $box;
+            $(
+                b = match b.downcast::<$T>() {
+                    Ok(f) => return Some(f as Box<dyn RenderSurfaceFactory>),
+                    Err(b) => b,
+                };
+            )+
+            eprintln!(
+                "[uzor-desktop] from_built: unknown factory type — \
+                 use Manager::set_surface_factory() directly"
+            );
+            None
+        }};
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        try_downcast!(
+            any_box,
+            uzor_render_hub::VelloGpuSurfaceFactory,
+            uzor_render_hub::VelloHybridSurfaceFactory,
+            uzor_render_hub::WgpuInstancedSurfaceFactory,
+            uzor_render_hub::TinySkiaSurfaceFactory,
+            uzor_render_hub::VelloCpuSurfaceFactory,
+            uzor_render_hub::Canvas2dSurfaceFactory
+        )
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        try_downcast!(any_box, uzor_render_hub::Canvas2dSurfaceFactory)
+    }
+}
 
 fn argb_to_alpha_color(argb: u32) -> vello::peniko::color::AlphaColor<vello::peniko::color::Srgb> {
     let a = ((argb >> 24) & 0xFF) as f32 / 255.0;

@@ -6,11 +6,10 @@
 //! use uzor::framework::AppBuilder;
 //! use uzor_desktop::AppRun as _;
 //!
+//! // Backend autodetected — no .backend() or .surface_factory() needed.
 //! AppBuilder::new(MyApp::new())
 //!     .title("my app")
 //!     .size(1280, 720)
-//!     .surface_factory(Box::new(uzor_render_hub::VelloGpuSurfaceFactory::new()))
-//!     .backend(uzor_render_hub::RenderBackend::VelloGpu)
 //!     .run()
 //!     .expect("runtime error");
 //! ```

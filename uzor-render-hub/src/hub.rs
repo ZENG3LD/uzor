@@ -293,6 +293,42 @@ impl RenderHub {
     pub fn update_metrics(&mut self, m: RenderMetrics) {
         self.metrics = m;
     }
+
+    // ── Factory ───────────────────────────────────────────────────────────────
+
+    /// Return a fresh `Box<dyn RenderSurfaceFactory>` for `backend`.
+    ///
+    /// Returns `None` if `backend` is not in the pool or has no factory
+    /// implementation available on this platform.
+    ///
+    /// Called by the platform runtime when no explicit factory was supplied via
+    /// [`AppBuilder::surface_factory`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn factory_for(&self, backend: RenderBackend) -> Option<Box<dyn crate::surface::RenderSurfaceFactory>> {
+        use crate::factories::{
+            VelloGpuSurfaceFactory, VelloHybridSurfaceFactory,
+            WgpuInstancedSurfaceFactory, TinySkiaSurfaceFactory, VelloCpuSurfaceFactory,
+        };
+        if !self.pool.initialized.contains(&backend) {
+            return None;
+        }
+        let factory: Box<dyn crate::surface::RenderSurfaceFactory> = match backend {
+            RenderBackend::VelloGpu      => Box::new(VelloGpuSurfaceFactory::new()),
+            RenderBackend::VelloHybrid   => Box::new(VelloHybridSurfaceFactory::new(1.0)),
+            RenderBackend::InstancedWgpu => Box::new(WgpuInstancedSurfaceFactory::new()),
+            RenderBackend::TinySkia      => Box::new(TinySkiaSurfaceFactory::new()),
+            RenderBackend::VelloCpu      => Box::new(VelloCpuSurfaceFactory::new(1.0)),
+            _                            => return None,
+        };
+        Some(factory)
+    }
+
+    /// wasm32 stub — Canvas2d is the only backend, canvas factory needs the
+    /// element which isn't available at hub construction time.
+    #[cfg(target_arch = "wasm32")]
+    pub fn factory_for(&self, _backend: RenderBackend) -> Option<Box<dyn crate::surface::RenderSurfaceFactory>> {
+        None
+    }
 }
 
 // ── Adapter probe (desktop only) ──────────────────────────────────────────────

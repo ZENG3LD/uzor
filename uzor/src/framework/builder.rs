@@ -40,56 +40,11 @@ impl<T: Send + Sync + 'static> AnyFactory for T {
     }
 }
 
-// ── RenderHubSettings ─────────────────────────────────────────────────────────
-
-/// Settings subset of a render hub (extracted to avoid the circular dep).
-#[derive(Debug, Clone, Copy)]
-pub struct RenderHubSettings {
-    pub fps_limit:    u32,
-    pub msaa_samples: u8,
-    pub vsync:        bool,
-}
-
-/// Opaque render hub handle — concrete type lives in `uzor-render-hub`.
-///
-/// Stored as a `Box<dyn Any + Send>` so the builder can hold it without
-/// depending on `uzor-render-hub`.  The consuming platform crate downcasts
-/// back to the concrete `uzor_render_hub::RenderHub`.
-pub struct RenderHub {
-    inner:    Box<dyn std::any::Any + Send>,
-    settings: RenderHubSettings,
-    active:   RenderBackend,
-}
-
-impl RenderHub {
-    /// Wrap a concrete render hub (called by `uzor-render-hub` / `uzor-desktop`).
-    pub fn new_opaque(
-        inner: Box<dyn std::any::Any + Send>,
-        settings: RenderHubSettings,
-        active: RenderBackend,
-    ) -> Self {
-        Self { inner, settings, active }
-    }
-
-    pub fn settings(&self) -> RenderHubSettings { self.settings }
-    pub fn active(&self) -> RenderBackend { self.active }
-
-    pub fn set_fps_limit(&mut self, fps: u32)    { self.settings.fps_limit = fps; }
-    pub fn set_msaa(&mut self, samples: u8)      { self.settings.msaa_samples = samples; }
-    pub fn set_vsync(&mut self, on: bool)        { self.settings.vsync = on; }
-
-    /// Consume the hub and return the inner opaque value.
-    pub fn into_inner(self) -> Box<dyn std::any::Any + Send> { self.inner }
-}
-
 // ── BuildError ────────────────────────────────────────────────────────────────
 
 /// Errors that can occur when calling [`AppBuilder::build`] or icon helpers.
 #[derive(Debug)]
 pub enum BuildError {
-    /// No render backend was supplied via [`AppBuilder::backend`] or
-    /// [`AppBuilder::render_hub`].
-    MissingBackend,
     /// PNG icon bytes could not be decoded or converted to RGBA8.
     IconDecode(String),
 }
@@ -97,9 +52,6 @@ pub enum BuildError {
 impl std::fmt::Display for BuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            BuildError::MissingBackend => {
-                f.write_str("no render backend supplied — call .backend(...) or .render_hub(...)")
-            }
             BuildError::IconDecode(msg) => {
                 write!(f, "icon PNG decode failed: {msg}")
             }
@@ -132,12 +84,11 @@ pub struct BuiltApp<A: App<P>, P: DockPanel> {
     pub app:     A,
     #[doc(hidden)]
     pub config:  AppConfig,
+    /// `None` means "let the platform runtime autodetect".
     #[doc(hidden)]
-    pub backend: RenderBackend,
+    pub backend: Option<RenderBackend>,
     #[doc(hidden)]
     pub factory: Option<Box<dyn AnyFactory>>,
-    #[doc(hidden)]
-    pub hub:     Option<RenderHub>,
     #[doc(hidden)]
     pub tray:    Option<TraySpec>,
     #[doc(hidden)]
@@ -163,7 +114,6 @@ where
     config: AppConfig,
     backend: Option<RenderBackend>,
     factory: Option<Box<dyn AnyFactory>>,
-    hub: Option<RenderHub>,
     tray: Option<TraySpec>,
     windows: Vec<WindowSpec>,
     _phantom: std::marker::PhantomData<P>,
@@ -181,7 +131,6 @@ where
             config: AppConfig::default(),
             backend: None,
             factory: None,
-            hub: None,
             tray: None,
             windows: Vec::new(),
             _phantom: std::marker::PhantomData,
@@ -260,27 +209,18 @@ where
     /// Set the FPS limit (`0` = unlimited).
     pub fn fps_limit(mut self, fps: u32) -> Self {
         self.config.fps_limit = fps;
-        if let Some(ref mut h) = self.hub {
-            h.set_fps_limit(fps);
-        }
         self
     }
 
     /// Set the MSAA sample count.
     pub fn msaa(mut self, samples: u8) -> Self {
         self.config.msaa_samples = samples;
-        if let Some(ref mut h) = self.hub {
-            h.set_msaa(samples);
-        }
         self
     }
 
     /// Enable or disable VSync.
     pub fn vsync(mut self, on: bool) -> Self {
         self.config.vsync = on;
-        if let Some(ref mut h) = self.hub {
-            h.set_vsync(on);
-        }
         self
     }
 
@@ -322,14 +262,16 @@ where
 
     // ── Infrastructure setters ────────────────────────────────────────────────
 
-    /// Select the rendering backend (Mode A — fixed, no live switching).
+    /// Select the rendering backend (override — skips autodetect).
+    ///
+    /// When omitted, `uzor-desktop` will call `RenderHub::autodetect()` at
+    /// startup and pick the best available backend automatically.
     pub fn backend(mut self, backend: RenderBackend) -> Self {
         self.backend = Some(backend);
-        self.hub = None;
         self
     }
 
-    /// Supply a surface factory.
+    /// Supply a surface factory (override — skips the hub's built-in factory).
     ///
     /// Pass any concrete factory (e.g. `VelloGpuSurfaceFactory`) boxed as
     /// `Box<T>` where `T: Send + Sync + 'static`.  Platform crates (e.g.
@@ -340,27 +282,16 @@ where
         self
     }
 
-    /// Attach a [`RenderHub`] (Mode B — autodetect + live switching + metrics).
-    pub fn render_hub(mut self, hub: RenderHub) -> Self {
-        self.config.fps_limit    = hub.settings().fps_limit;
-        self.config.msaa_samples = hub.settings().msaa_samples;
-        self.config.vsync        = hub.settings().vsync;
-        self.backend = Some(hub.active());
-        self.hub = Some(hub);
-        self
-    }
-
     // ── Terminal method ───────────────────────────────────────────────────────
 
     /// Consume the builder and produce a [`BuiltApp`] ready for a platform
     /// runtime (e.g. `uzor-desktop`) to consume.
     ///
-    /// # Errors
-    ///
-    /// Returns [`BuildError::MissingBackend`] if no backend was supplied.
+    /// When neither `.backend(...)` nor `.surface_factory(...)` was called, the
+    /// platform runtime (e.g. `uzor-desktop`) will call
+    /// `RenderHub::autodetect()` automatically — no explicit backend selection
+    /// is required.
     pub fn build(mut self) -> Result<BuiltApp<A, P>, BuildError> {
-        let backend = self.backend.ok_or(BuildError::MissingBackend)?;
-
         // Synthesise a default window spec from AppConfig if the caller
         // didn't queue any explicit windows.
         if self.windows.is_empty() {
@@ -383,9 +314,8 @@ where
         Ok(BuiltApp {
             app:     self.app,
             config:  self.config,
-            backend,
+            backend: self.backend,
             factory: self.factory,
-            hub:     self.hub,
             tray:    self.tray,
             windows: self.windows,
             _phantom: std::marker::PhantomData,

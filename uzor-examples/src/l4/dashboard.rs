@@ -17,7 +17,6 @@ use uzor::framework::builder::AppBuilder;
 use uzor::framework::multi_window::{WindowCtx, WindowKey, WindowSpec};
 use uzor_desktop::AppRun as _;
 use uzor_framework_macros::view;
-use uzor_render_hub::{RenderBackend, VelloGpuSurfaceFactory};
 
 struct DashboardApp;
 
@@ -76,8 +75,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .tray("uzor — L4 dashboard")
         .tray_item("show",  "Show window")
         .tray_item("quit",  "Quit")
-        .backend(RenderBackend::VelloGpu)
-        .surface_factory(Box::new(VelloGpuSurfaceFactory::new()))
         .run()?;
     Ok(())
 }
