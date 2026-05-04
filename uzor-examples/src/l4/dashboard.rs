@@ -141,6 +141,13 @@ impl App<NoPanel> for DashboardApp {
             let layout = &mut *win.layout;
             let render = &mut *win.render;
 
+            // Panel background.
+            {
+                let bg = layout.styles().color_or_owned("surface_raised", "#1C1D23");
+                render.set_fill_color(bg.as_str());
+                render.fill_rect(settings_rect.x, settings_rect.y, settings_rect.width, settings_rect.height);
+            }
+
             let row_h = 32.0_f64;
             let gap   = 6.0_f64;
             let pad   = 10.0_f64;
@@ -313,6 +320,13 @@ impl App<NoPanel> for DashboardApp {
         {
             let layout = &mut *win.layout;
             let render = &mut *win.render;
+
+            // Panel background.
+            {
+                let bg = layout.styles().color_or_owned("surface", "#0E0E11");
+                render.set_fill_color(bg.as_str());
+                render.fill_rect(paint_rect.x, paint_rect.y, paint_rect.width, paint_rect.height);
+            }
 
             let pad   = 16.0_f64;
             let row_h = 24.0_f64;
