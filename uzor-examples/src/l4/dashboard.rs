@@ -22,12 +22,8 @@ use uzor::framework::app::{App, NoPanel};
 use uzor::framework::builder::AppBuilder;
 use uzor::framework::multi_window::{WindowCtx, WindowKey, WindowSpec};
 use uzor::layout::{MirageDarkPreset, MirageLightPreset};
-use uzor::layout::LayoutNodeId;
 use uzor::platform::types::CornerStyle;
 use uzor::types::unsafe_widget_id;
-use uzor::ui::widgets::atomic::button::input::register_layout_manager_button;
-use uzor::ui::widgets::atomic::button::render::ButtonView;
-use uzor::ui::widgets::atomic::button::settings::ButtonSettings;
 use uzor_desktop::AppRun as _;
 use uzor_framework_macros::view;
 
@@ -203,10 +199,10 @@ impl App<NoPanel> for DashboardApp {
                 let is_active = backend == active_backend;
                 let label = backend.label();
                 let id_str = format!("settings:backend_btn:{}", i);
-                let id = unsafe_widget_id(id_str.as_str());
-                let ws = layout.ctx().input.widget_state(&id);
-                let view = ButtonView { text: Some(label), icon: None, active: is_active, disabled: false, active_border: None, hover_chevron: None };
-                register_layout_manager_button(layout, render, LayoutNodeId::ROOT, id, r, ws, &view, &ButtonSettings::default());
+                uzor::framework::widgets::lm::button(unsafe_widget_id(id_str.as_str()), r)
+                    .text(label)
+                    .active(is_active)
+                    .build(layout, render);
             }
 
             // Sep
@@ -220,17 +216,21 @@ impl App<NoPanel> for DashboardApp {
             uzor::framework::widgets::lm::text(unsafe_widget_id("settings:vsync_lbl"), r, "VSync").build(layout, render);
 
             let vsync_btn_w = (settings_rect.width - 2.0*pad - gap) / 2.0;
-            let id = unsafe_widget_id("settings:vsync_on");
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: vsync_btn_w, height: row_h };
-            let ws = layout.ctx().input.widget_state(&id);
-            let view = ButtonView { text: Some("VSync ON"), icon: None, active: vsync_on, disabled: false, active_border: None, hover_chevron: None };
-            register_layout_manager_button(layout, render, LayoutNodeId::ROOT, id, r, ws, &view, &ButtonSettings::default());
+            uzor::framework::widgets::lm::button(
+                unsafe_widget_id("settings:vsync_on"),
+                Rect { x: settings_rect.x + pad, y: cy, width: vsync_btn_w, height: row_h },
+            )
+            .text("VSync ON")
+            .active(vsync_on)
+            .build(layout, render);
 
-            let id = unsafe_widget_id("settings:vsync_off");
-            let r = Rect { x: settings_rect.x + pad + vsync_btn_w + gap, y: cy, width: vsync_btn_w, height: row_h };
-            let ws = layout.ctx().input.widget_state(&id);
-            let view = ButtonView { text: Some("VSync OFF"), icon: None, active: !vsync_on, disabled: false, active_border: None, hover_chevron: None };
-            register_layout_manager_button(layout, render, LayoutNodeId::ROOT, id, r, ws, &view, &ButtonSettings::default());
+            uzor::framework::widgets::lm::button(
+                unsafe_widget_id("settings:vsync_off"),
+                Rect { x: settings_rect.x + pad + vsync_btn_w + gap, y: cy, width: vsync_btn_w, height: row_h },
+            )
+            .text("VSync OFF")
+            .active(!vsync_on)
+            .build(layout, render);
             cy += row_h + gap;
 
             // Sep
@@ -246,13 +246,13 @@ impl App<NoPanel> for DashboardApp {
             let msaa_options: &[(&str, u8)] = &[("Off", 0), ("4x", 4), ("8x", 8)];
             let n_msaa = msaa_options.len() as f64;
             let msaa_btn_w = (settings_rect.width - 2.0*pad - gap * (n_msaa - 1.0)) / n_msaa;
-            for (i, &(label, n)) in msaa_options.iter().enumerate() {
-                let r = Rect { x: settings_rect.x + pad + (msaa_btn_w + gap) * i as f64, y: cy, width: msaa_btn_w, height: row_h };
+            for (_i, &(label, n)) in msaa_options.iter().enumerate() {
+                let r = Rect { x: settings_rect.x + pad + (msaa_btn_w + gap) * (_i as f64), y: cy, width: msaa_btn_w, height: row_h };
                 let id_str = format!("settings:msaa_{}", n);
-                let id = unsafe_widget_id(id_str.as_str());
-                let ws = layout.ctx().input.widget_state(&id);
-                let view = ButtonView { text: Some(label), icon: None, active: msaa == n, disabled: false, active_border: None, hover_chevron: None };
-                register_layout_manager_button(layout, render, LayoutNodeId::ROOT, id, r, ws, &view, &ButtonSettings::default());
+                uzor::framework::widgets::lm::button(unsafe_widget_id(id_str.as_str()), r)
+                    .text(label)
+                    .active(msaa == n)
+                    .build(layout, render);
             }
             cy += row_h + gap;
 
@@ -301,10 +301,10 @@ impl App<NoPanel> for DashboardApp {
             for (i, &(label, limit)) in fps_options.iter().enumerate() {
                 let r = Rect { x: settings_rect.x + pad + (fps_btn_w + gap) * i as f64, y: cy, width: fps_btn_w, height: row_h };
                 let id_str = format!("settings:fps_{}", limit);
-                let id = unsafe_widget_id(id_str.as_str());
-                let ws = layout.ctx().input.widget_state(&id);
-                let view = ButtonView { text: Some(label), icon: None, active: fps == limit, disabled: false, active_border: None, hover_chevron: None };
-                register_layout_manager_button(layout, render, LayoutNodeId::ROOT, id, r, ws, &view, &ButtonSettings::default());
+                uzor::framework::widgets::lm::button(unsafe_widget_id(id_str.as_str()), r)
+                    .text(label)
+                    .active(fps == limit)
+                    .build(layout, render);
             }
             let _ = cy;
         }
