@@ -560,6 +560,12 @@ where
                 self.runtime.shutdown();
                 event_loop.exit();
             }
+            WindowEvent::Resized(size) => {
+                if size.width > 0 && size.height > 0 {
+                    self.runtime.on_window_resized(size.width, size.height);
+                }
+                provider.request_redraw();
+            }
             WindowEvent::RedrawRequested => {
                 if let Err(e) = self.runtime.tick(provider, event_loop) {
                     eprintln!("[uzor-framework] tick error: {e}");

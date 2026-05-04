@@ -248,6 +248,17 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             .unwrap_or(self.config.msaa_samples)
     }
 
+    /// Notify the runtime that the OS window was resized.  Forwards to the
+    /// active `WindowRenderState` so the swapchain / software buffer matches
+    /// the new physical size; otherwise the GPU stretches the old surface
+    /// over the new window and the next frames jitter.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn on_window_resized(&mut self, width: u32, height: u32) {
+        if let Some(ref mut rs) = self.render_state {
+            rs.resize_surface(width, height);
+        }
+    }
+
     /// Process one raw winit `WindowEvent`.  Mirrors the L3 example's
     /// `window_event` handler:
     ///

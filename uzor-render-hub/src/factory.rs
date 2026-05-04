@@ -465,6 +465,36 @@ impl WindowRenderState {
         }
     }
 
+    // ── Surface lifecycle ─────────────────────────────────────────────────────
+
+    /// Resize the underlying surface to match the window's new physical size.
+    ///
+    /// For GPU surfaces this re-creates the wgpu swapchain. For software
+    /// surfaces it forwards to `SoftwarePresenter::resize` and updates the
+    /// stored `width`/`height`.  Caller is responsible for ensuring no GPU
+    /// frame is in flight when this is called.
+    pub fn resize_surface(&mut self, width: u32, height: u32) {
+        if width == 0 || height == 0 {
+            return;
+        }
+        match &mut self.surface {
+            SurfaceMode::Gpu { gpu_pool, surface, .. } => {
+                gpu_pool.resize_surface(surface, width, height);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            SurfaceMode::Software { presenter, width: w, height: h } => {
+                presenter.resize(width, height);
+                *w = width;
+                *h = height;
+            }
+            #[cfg(target_arch = "wasm32")]
+            SurfaceMode::Canvas2d { .. } => {
+                // The canvas element resize is handled by the DOM layout —
+                // nothing to do here.
+            }
+        }
+    }
+
     // ── Frame lifecycle ───────────────────────────────────────────────────────
 
     /// Reset per-frame artifacts.  Call at the top of each frame.
