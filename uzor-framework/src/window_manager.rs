@@ -359,8 +359,19 @@ impl<A: App<P>, P: DockPanel + Default + 'static> WindowManager<A, P> {
                         pw.window.set_maximized(!pw.window.is_maximized());
                         return;
                     }
-                    ChromeAction::CloseApp | ChromeAction::CloseWindow => {
+                    ChromeAction::CloseWindow => {
+                        // Close just this window; if it's the last one the
+                        // about_to_wait loop will exit the app naturally.
                         pw.close_requested = true;
+                        return;
+                    }
+                    ChromeAction::CloseApp => {
+                        // Close ALL windows — full app exit. Drop pw borrow
+                        // first, then mark every window in the map.
+                        drop(pw);
+                        for p in self.windows.values_mut() {
+                            p.close_requested = true;
+                        }
                         return;
                     }
                     ChromeAction::NewWindow => {

@@ -29,7 +29,9 @@
 use crate::app_context::ContextManager;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
+use crate::core::render::draw_svg_icon;
 use crate::render::{RenderContext, TextAlign, TextBaseline};
+use crate::ui::assets::icons::ui::{ICON_CLOSE, ICON_NEW_WINDOW};
 use crate::types::{Rect, WidgetId, CompositeId};
 
 use super::settings::ChromeSettings;
@@ -453,7 +455,7 @@ fn draw_chrome_internal(
         let icon_normal  = theme.icon_normal();
         let icon_hover   = theme.tab_text_hover();
 
-        // --- 5. New-window icon (two overlapping rectangles) ---
+        // --- 5. New-window icon (uzor SVG ICON_NEW_WINDOW) ---
         if show_tabs {
             if let Some(left) = bp.new_window_left {
                 let bx = rect.x + left;
@@ -464,25 +466,10 @@ fn draw_chrome_internal(
                     ctx.fill_rect(bx, by, NEW_WINDOW_BTN_WIDTH, h);
                 }
                 let color = if hovered { icon_hover } else { icon_normal };
-                let s = icon_sz * 0.78;
-                let cx = bx + NEW_WINDOW_BTN_WIDTH / 2.0;
-                let cy = by + h / 2.0;
-                ctx.set_stroke_color(color);
-                ctx.set_stroke_width(1.2);
-                ctx.set_line_dash(&[]);
-                let bx0 = cx - s / 2.0 + 2.0;
-                let by0 = cy - s / 2.0 + 2.0;
-                ctx.move_to(bx0, by0); ctx.line_to(bx0 + s, by0);
-                ctx.line_to(bx0 + s, by0 + s); ctx.line_to(bx0, by0 + s);
-                ctx.line_to(bx0, by0); ctx.stroke();
-                ctx.set_fill_color(theme.background());
-                ctx.fill_rect(cx - s / 2.0 - 2.0, cy - s / 2.0 - 2.0, s, s);
-                ctx.set_stroke_color(color);
-                let fx0 = cx - s / 2.0 - 2.0;
-                let fy0 = cy - s / 2.0 - 2.0;
-                ctx.move_to(fx0, fy0); ctx.line_to(fx0 + s, fy0);
-                ctx.line_to(fx0 + s, fy0 + s); ctx.line_to(fx0, fy0 + s);
-                ctx.line_to(fx0, fy0); ctx.stroke();
+                let s = icon_sz + 2.0;
+                let ix = bx + (NEW_WINDOW_BTN_WIDTH - s) / 2.0;
+                let iy = by + (h - s) / 2.0;
+                draw_svg_icon(ctx, ICON_NEW_WINDOW, ix, iy, s, s, color);
             }
         }
 
@@ -506,13 +493,21 @@ fn draw_chrome_internal(
             ctx.fill_rect(rect.x + bp.minimize_x - 1.0, rect.y + 6.0, 1.0, h - 12.0);
         }
 
-        // --- 8. Close-window icon ---
+        // --- 8. Close-window icon (uzor SVG ICON_CLOSE) ---
         if show_tabs {
             if let Some(left) = bp.close_window_left {
-                let cw_cx = rect.x + left + CLOSE_WINDOW_BTN_WIDTH / 2.0;
-                let cw_cy = rect.y + h / 2.0;
-                let arm = 3.5_f64;
-                draw_cross(ctx, cw_cx - arm, cw_cy - arm, arm * 2.0, theme.icon_normal(), 1.0);
+                let bx = rect.x + left;
+                let by = rect.y;
+                let hovered = state.hovered == ChromeHit::CloseWindowBtn;
+                if hovered {
+                    ctx.set_fill_color(hover_bg);
+                    ctx.fill_rect(bx, by, CLOSE_WINDOW_BTN_WIDTH, h);
+                }
+                let color = if hovered { icon_hover } else { icon_normal };
+                let s = icon_sz;
+                let ix = bx + (CLOSE_WINDOW_BTN_WIDTH - s) / 2.0;
+                let iy = by + (h - s) / 2.0;
+                draw_svg_icon(ctx, ICON_CLOSE, ix, iy, s, s, color);
             }
         }
 
