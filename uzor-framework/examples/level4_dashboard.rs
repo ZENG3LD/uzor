@@ -68,7 +68,7 @@ impl App<NoPanel> for DashboardApp {
                 render_state.with_render_context(|render| {
                     view! {
                         <col rect={body}>
-                            <chrome />
+                            <chrome show_new_window=true />
                             <col gap=12 pad=24>
                                 <text   text="L4 Dashboard" color={tokens::colors::fg::fg_0} />
                                 <button text="Save"
@@ -97,7 +97,7 @@ impl App<NoPanel> for DashboardApp {
                 render_state.with_render_context(|render| {
                     view! {
                         <col rect={body}>
-                            <chrome />
+                            <chrome show_new_window=true />
                             <col gap=12 pad=24>
                                 <text text="Settings"        color={tokens::colors::fg::fg_0} />
                                 <text text="(separate window, shared state)"
@@ -120,13 +120,18 @@ impl App<NoPanel> for DashboardApp {
     fn take_pending_spawn(&mut self) -> Option<WindowSpec> {
         if std::mem::take(&mut self.spawn_settings) {
             self.settings_open = true;
-            Some(
-                WindowSpec::new(WindowKey::new("settings"), "uzor — Settings")
-                    .size(560, 420)
-                    .min_size(420, 320)
-                    .decorations(false)
-                    .background(0xFF_F7_F7_F4),
-            )
+            Some(make_settings_spec())
+        } else {
+            None
+        }
+    }
+
+    fn on_chrome_new_window(&mut self, source: &WindowKey) -> Option<WindowSpec> {
+        // Chrome "+" / new-window button on the main window opens settings;
+        // ignore on other windows.
+        if source.as_str() == "main" && !self.settings_open {
+            self.settings_open = true;
+            Some(make_settings_spec())
         } else {
             None
         }
@@ -140,6 +145,14 @@ impl App<NoPanel> for DashboardApp {
             None
         }
     }
+}
+
+fn make_settings_spec() -> WindowSpec {
+    WindowSpec::new(WindowKey::new("settings"), "uzor — Settings")
+        .size(560, 420)
+        .min_size(420, 320)
+        .decorations(false)
+        .background(0xFF_F7_F7_F4)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

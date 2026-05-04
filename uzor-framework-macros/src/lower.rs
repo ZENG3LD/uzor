@@ -184,6 +184,7 @@ fn lower_chrome(el: &Element) -> TokenStream {
     let time_ms    = find_prop(el, "time_ms").map(|p| p.value_tokens());
     let new_tab    = find_prop(el, "show_new_tab").map(|p| p.value_tokens());
     let menu_btn   = find_prop(el, "show_menu").map(|p| p.value_tokens());
+    let new_win    = find_prop(el, "show_new_window").map(|p| p.value_tokens());
 
     let mut chain = quote!(::uzor_framework::lm::chrome());
     if let Some(t)  = tabs       { chain = quote!(#chain.tabs(#t)); }
@@ -192,6 +193,7 @@ fn lower_chrome(el: &Element) -> TokenStream {
     if let Some(tm) = time_ms    { chain = quote!(#chain.time_ms(#tm)); }
     if let Some(n)  = new_tab    { chain = quote!(#chain.show_new_tab_btn(#n)); }
     if let Some(m)  = menu_btn   { chain = quote!(#chain.show_menu_btn(#m)); }
+    if let Some(w)  = new_win    { chain = quote!(#chain.show_new_window_btn(#w)); }
 
     if !el.children.is_empty() {
         return syn::Error::new(

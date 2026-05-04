@@ -325,7 +325,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> WindowManager<A, P> {
                     active_tab_id: None,
                     show_new_tab_btn: false,
                     show_menu_btn: false,
-                    show_new_window_btn: false,
+                    show_new_window_btn: true, // hit-test must agree with render
                     show_close_window_btn: true,
                     is_maximized: pw.window.is_maximized(),
                     cursor_x: mx,
@@ -353,6 +353,13 @@ impl<A: App<P>, P: DockPanel + Default + 'static> WindowManager<A, P> {
                     }
                     ChromeAction::CloseApp | ChromeAction::CloseWindow => {
                         pw.close_requested = true;
+                        return;
+                    }
+                    ChromeAction::NewWindow => {
+                        let src = pw.key.clone();
+                        if let Some(spec) = self.app.on_chrome_new_window(&src) {
+                            self.pending_spawns.push(spec);
+                        }
                         return;
                     }
                     ChromeAction::BeginResize(h) => {

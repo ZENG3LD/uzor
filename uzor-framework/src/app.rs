@@ -93,6 +93,13 @@ pub trait App<P: DockPanel = NoPanel>: Sized + 'static {
     /// other windows continue running.
     fn take_window_to_close(&mut self) -> Option<WindowKey> { None }
 
+    /// Called when the user clicked the chrome's "+" / new-window button
+    /// inside `_source_window`.  Return `Some(spec)` to spawn the new
+    /// window, or `None` to ignore.  Default ignores the click.
+    fn on_chrome_new_window(&mut self, _source_window: &WindowKey) -> Option<WindowSpec> {
+        None
+    }
+
     /// Called for each [`PlatformEvent`] before default input processing.
     ///
     /// Return `true` to consume the event (preventing the runtime's default
