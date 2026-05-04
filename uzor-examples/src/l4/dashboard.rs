@@ -15,6 +15,7 @@ use uzor::core::types::Rect;
 use uzor::framework::app::{App, NoPanel};
 use uzor::framework::builder::AppBuilder;
 use uzor::framework::multi_window::{WindowCtx, WindowKey, WindowSpec};
+use uzor::platform::types::CornerStyle;
 use uzor_desktop::AppRun as _;
 use uzor_framework_macros::view;
 
@@ -69,7 +70,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .size(1400, 900)
                 .min_size(900, 600)
                 .decorations(false)
-                .background(0xFF_F7_F7_F4),
+                .background(0xFF_F7_F7_F4)
+                // Mirage-accent rounded corners + border on Windows 11.
+                .corner_style(CornerStyle::Rounded)
+                .border_color(0x00_FB_B2_6A),
         )
         .icon_from_png(include_bytes!("../../assets/icon.png"))?
         .tray("uzor — L4 dashboard")

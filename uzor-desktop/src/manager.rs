@@ -19,7 +19,7 @@ use uzor_render_hub::{
     RenderBackend, RenderHub, RenderSurfaceFactory, SurfaceSize, WindowRenderState,
     submit_frame, SubmitParams,
 };
-use uzor_window_hub::lifecycle::WindowProvider;
+use uzor_window_hub::lifecycle::{WindowDecorations, WindowProvider};
 
 #[cfg(not(target_arch = "wasm32"))]
 use uzor_window_desktop::WinitWindowProvider;
@@ -342,7 +342,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 .map_err(|e| ManagerError::Window(e.to_string()))?
         );
 
-        let provider = WinitWindowProvider::new(std::sync::Arc::clone(&window));
+        let mut provider = WinitWindowProvider::new(std::sync::Arc::clone(&window));
         let raw_handle = provider.raw_window_handle()
             .ok_or_else(|| ManagerError::Window("no raw handle available".into()))?;
         let rect = provider.window_rect();
@@ -358,6 +358,30 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             .map_err(|e| ManagerError::Backend(e.to_string()))?;
 
         window.set_visible(true);
+
+        // Apply OS window decorations (corner rounding, border colour, shadow).
+        // Spec values win over AppConfig defaults. Non-Windows targets no-op silently.
+        {
+            let style = if spec.corner_style != uzor::platform::types::CornerStyle::Default {
+                spec.corner_style
+            } else {
+                self.config.corner_style
+            };
+            if style != uzor::platform::types::CornerStyle::Default {
+                provider.set_corner_style(style);
+            }
+
+            let color = spec.border_color.or(self.config.border_color);
+            if color.is_some() {
+                provider.set_border_color(color);
+            }
+
+            let shadow = spec.shadow.or(self.config.shadow);
+            if let Some(s) = shadow {
+                provider.set_shadow(s);
+            }
+        }
+
         let id = window.id();
         let pw = PerWindow::<P> {
             key:             spec.key.clone(),

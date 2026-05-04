@@ -5,10 +5,10 @@ use crate::docking::panels::DockPanel;
 use super::app::{App, AppConfig, NoPanel};
 use super::multi_window::{WindowSpec, WindowKey};
 
-// RgbaIcon and RenderBackend canonical definitions live in uzor::platform::types.
+// RgbaIcon, RenderBackend, and CornerStyle canonical definitions live in uzor::platform::types.
 // Re-exported here so existing callers of `uzor::framework::builder::{RgbaIcon,RenderBackend}`
 // keep working without changes.
-pub use crate::platform::types::{RgbaIcon, RenderBackend};
+pub use crate::platform::types::{CornerStyle, RgbaIcon, RenderBackend};
 
 // ── AnyFactory ───────────────────────────────────────────────────────────────
 //
@@ -236,9 +236,27 @@ where
         self
     }
 
-    /// Set the Windows 11 DWM border colour (`"#RRGGBB"`).
-    pub fn dwm_border_color(mut self, color: Option<impl Into<String>>) -> Self {
-        self.config.dwm_border_color = color.map(Into::into);
+    /// Set the app-level border accent colour (`0x00RRGGBB` ARGB). `None` = OS default.
+    ///
+    /// Per-window [`WindowSpec::border_color`] overrides this value.
+    pub fn border_color(mut self, color: Option<u32>) -> Self {
+        self.config.border_color = color;
+        self
+    }
+
+    /// Set the app-level corner-rounding preference.
+    ///
+    /// Per-window [`WindowSpec::corner_style`] overrides this value.
+    pub fn corner_style(mut self, style: CornerStyle) -> Self {
+        self.config.corner_style = style;
+        self
+    }
+
+    /// Set the app-level drop-shadow override. `None` = OS default.
+    ///
+    /// Per-window [`WindowSpec::shadow`] overrides this value.
+    pub fn shadow(mut self, on: bool) -> Self {
+        self.config.shadow = Some(on);
         self
     }
 

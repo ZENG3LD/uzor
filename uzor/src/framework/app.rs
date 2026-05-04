@@ -5,6 +5,7 @@ use crate::layout::LayoutManager;
 use crate::input::core::event_processor::PlatformEvent;
 use super::builder::RgbaIcon;
 use super::multi_window::{WindowCtx, WindowKey, WindowSpec};
+use crate::platform::types::CornerStyle;
 
 // ── NoPanel ───────────────────────────────────────────────────────────────────
 
@@ -146,37 +147,45 @@ pub trait App<P: DockPanel = NoPanel>: Sized + 'static {
 /// Per-app runtime configuration.
 #[derive(Clone, Debug)]
 pub struct AppConfig {
-    pub title:            String,
-    pub initial_size:     (u32, u32),
-    pub min_size:         Option<(u32, u32)>,
-    pub decorations:      bool,
-    pub vsync:            bool,
-    pub background:       u32,
-    pub multi_window:     bool,
-    pub fps_limit:        u32,
-    pub msaa_samples:     u8,
-    pub single_instance:  Option<String>,
-    pub dwm_border_color: Option<String>,
-    pub start_visible:    bool,
-    pub icon:             Option<RgbaIcon>,
+    pub title:           String,
+    pub initial_size:    (u32, u32),
+    pub min_size:        Option<(u32, u32)>,
+    pub decorations:     bool,
+    pub vsync:           bool,
+    pub background:      u32,
+    pub multi_window:    bool,
+    pub fps_limit:       u32,
+    pub msaa_samples:    u8,
+    pub single_instance: Option<String>,
+    /// App-level default border accent colour (`0x00RRGGBB`). Overridden per-window by
+    /// [`WindowSpec::border_color`]. `None` = OS default.
+    pub border_color:    Option<u32>,
+    /// App-level default corner-rounding preference. Overridden per-window.
+    pub corner_style:    CornerStyle,
+    /// App-level default drop-shadow override. Overridden per-window. `None` = OS default.
+    pub shadow:          Option<bool>,
+    pub start_visible:   bool,
+    pub icon:            Option<RgbaIcon>,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            title:            "uzor app".to_string(),
-            initial_size:     (1280, 720),
-            min_size:         Some((400, 300)),
-            decorations:      false,
-            vsync:            true,
-            background:       0xFF181820,
-            multi_window:     false,
-            fps_limit:        0,
-            msaa_samples:     1,
-            single_instance:  None,
-            dwm_border_color: None,
-            start_visible:    false,
-            icon:             None,
+            title:           "uzor app".to_string(),
+            initial_size:    (1280, 720),
+            min_size:        Some((400, 300)),
+            decorations:     false,
+            vsync:           true,
+            background:      0xFF181820,
+            multi_window:    false,
+            fps_limit:       0,
+            msaa_samples:    1,
+            single_instance: None,
+            border_color:    None,
+            corner_style:    CornerStyle::Default,
+            shadow:          None,
+            start_visible:   false,
+            icon:            None,
         }
     }
 }

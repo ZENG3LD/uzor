@@ -55,9 +55,9 @@ pub enum RawHandle {
     CALayer(Box<dyn std::any::Any + Send + Sync>),
 }
 
-// ── RgbaIcon, ResizeDirection (canonical definitions in uzor::platform::types) ─
+// ── RgbaIcon, ResizeDirection, CornerStyle (canonical definitions in uzor::platform::types) ─
 
-pub use uzor::platform::types::{RgbaIcon, ResizeDirection};
+pub use uzor::platform::types::{CornerStyle, RgbaIcon, ResizeDirection};
 
 // ── WindowProvider trait ──────────────────────────────────────────────────────
 
@@ -171,4 +171,36 @@ pub trait WindowProvider {
     fn create_software_presenter(&self) -> Option<Box<dyn SoftwarePresenter>> {
         None
     }
+}
+
+// ── WindowDecorations trait ───────────────────────────────────────────────────
+
+/// Optional OS-level window decoration controls.
+///
+/// Implemented by window providers that can influence the OS-drawn chrome
+/// (corner rounding, border accent colour, drop shadow). Platforms that
+/// cannot honour a setting silently no-op — the trait method defaults already
+/// provide the no-op fallback, so unimplemented platforms work without any
+/// per-OS `#[cfg]` guards in the caller.
+///
+/// Call these immediately after window creation; on Windows the DWM applies
+/// the setting asynchronously so the visual change may appear on the next
+/// frame.
+pub trait WindowDecorations {
+    /// Request a native corner-rounding style.
+    ///
+    /// Default: no-op. Windows 11 maps this via `DWMWA_WINDOW_CORNER_PREFERENCE`.
+    fn set_corner_style(&mut self, _style: CornerStyle) {}
+
+    /// Request a native window border colour (OS-managed title-bar outline).
+    ///
+    /// `color` is `0x00BBGGRR` (COLORREF) or any `u32` that makes sense on
+    /// the target platform. `None` clears the override and lets the OS choose.
+    /// Default: no-op.
+    fn set_border_color(&mut self, _color: Option<u32>) {}
+
+    /// Toggle the OS-drawn drop shadow.
+    ///
+    /// Default: no-op.
+    fn set_shadow(&mut self, _on: bool) {}
 }

@@ -28,6 +28,7 @@ pub mod event_mapper;
 pub mod application;
 pub mod winit_provider;
 pub mod input_bridge;
+pub mod win_dwm;
 
 pub use input_bridge::{WinitInputBridge, BridgeOutput, ModifierState};
 

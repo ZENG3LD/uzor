@@ -26,7 +26,10 @@ use winit::window::Window;
 use uzor::core::types::Rect;
 use uzor::platform::PlatformEvent;
 
-use uzor_window_hub::lifecycle::{RawHandle, ResizeDirection, RgbaIcon, SoftwarePresenter, WindowProvider};
+use uzor_window_hub::lifecycle::{
+    CornerStyle, RawHandle, ResizeDirection, RgbaIcon, SoftwarePresenter,
+    WindowDecorations, WindowProvider,
+};
 
 // ─── SendSyncHandlePair ───────────────────────────────────────────────────────
 
@@ -230,6 +233,50 @@ impl WindowProvider for WinitWindowProvider {
             }
         }
     }
+}
+
+// ── WindowDecorations for WinitWindowProvider ─────────────────────────────────
+
+impl WindowDecorations for WinitWindowProvider {
+    /// Set the native corner-rounding style.
+    ///
+    /// On Windows 11+ calls `DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE)`.
+    /// On macOS prints a one-time stub notice. On Linux silently no-ops.
+    fn set_corner_style(&mut self, style: CornerStyle) {
+        #[cfg(target_os = "windows")]
+        if let Some(hwnd) = crate::win_dwm::extract_hwnd(&self.window) {
+            crate::win_dwm::set_dwm_corner_preference(hwnd, style);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = style;
+            eprintln!(
+                "[uzor-window-desktop] macOS corner/border decorations not yet implemented"
+            );
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+        {
+            let _ = style;
+        }
+    }
+
+    /// Set the native window border accent colour.
+    ///
+    /// On Windows 11+ calls `DwmSetWindowAttribute(DWMWA_BORDER_COLOR)`.
+    /// `None` resets to the OS default. On other platforms silently no-ops.
+    fn set_border_color(&mut self, color: Option<u32>) {
+        #[cfg(target_os = "windows")]
+        if let Some(hwnd) = crate::win_dwm::extract_hwnd(&self.window) {
+            crate::win_dwm::set_dwm_border_color(hwnd, color);
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = color;
+        }
+    }
+
+    /// Toggle the OS drop shadow. Silently no-ops on all platforms for now.
+    fn set_shadow(&mut self, _on: bool) {}
 }
 
 // ── WinitSoftbufferPresenter ──────────────────────────────────────────────────

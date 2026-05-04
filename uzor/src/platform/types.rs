@@ -144,3 +144,26 @@ pub enum EventResult {
     Redraw,
     Exit,
 }
+
+// ── CornerStyle ───────────────────────────────────────────────────────────────
+
+/// Platform-agnostic window corner-rounding preference.
+///
+/// Passed to [`uzor_window_hub::WindowDecorations::set_corner_style`]. Platforms
+/// that cannot honour a value silently no-op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CornerStyle {
+    /// Let the OS pick the default rounding (default behaviour).
+    Default,
+    /// Square corners — disable any rounding.
+    Sharp,
+    /// Rounded corners (maximum radius the OS provides).
+    Rounded,
+    /// Slightly rounded corners (smaller radius). Windows 11 maps this to
+    /// `DWMWCP_ROUNDSMALL`.
+    RoundedSmall,
+}
+
+impl Default for CornerStyle {
+    fn default() -> Self { CornerStyle::Default }
+}

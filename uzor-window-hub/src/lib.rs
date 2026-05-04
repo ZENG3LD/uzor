@@ -19,6 +19,9 @@ pub use uzor::platform::PlatformWindowEvent;
 
 // ── Public surface ────────────────────────────────────────────────────────────
 
-pub use lifecycle::{RawHandle, ResizeDirection, RgbaIcon, SoftwarePresenter, WindowProvider};
+pub use lifecycle::{
+    CornerStyle, RawHandle, ResizeDirection, RgbaIcon, SoftwarePresenter,
+    WindowDecorations, WindowProvider,
+};
 pub use events::PlatformEvent;
 pub use input::{EventProcessor, InputState};
