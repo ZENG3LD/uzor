@@ -83,9 +83,11 @@ impl WindowSpec {
 
 /// Per-window context handed to `App::ui` for each open window in turn.
 pub struct WindowCtx<'a, P: DockPanel> {
-    pub key:    &'a WindowKey,
-    pub layout: &'a mut LayoutManager<P>,
-    pub render: &'a mut dyn crate::render::RenderContext,
+    pub key:            &'a WindowKey,
+    pub layout:         &'a mut LayoutManager<P>,
+    pub render:         &'a mut dyn crate::render::RenderContext,
     /// Window content rect in window-local coordinates.
-    pub rect:   Rect,
+    pub rect:           Rect,
+    /// Runtime render-backend / performance control.
+    pub render_control: &'a mut dyn super::render_control::RenderControl,
 }

@@ -31,6 +31,44 @@ use winit::window::Window;
 use uzor::framework::app::{App, AppConfig};
 use uzor::framework::builder::{AnyFactory, BuildError, BuiltApp, TraySpec};
 use uzor::framework::multi_window::{WindowCtx, WindowKey};
+use uzor::framework::render_control::RenderControl;
+
+// ── HubControl ────────────────────────────────────────────────────────────────
+
+/// Thin adapter that implements `RenderControl` by delegating to `&mut RenderHub`.
+struct HubControl<'a> {
+    hub: &'a mut RenderHub,
+}
+
+impl<'a> RenderControl for HubControl<'a> {
+    fn active_backend(&self) -> uzor::platform::types::RenderBackend {
+        self.hub.active()
+    }
+    fn available_backends(&self) -> Vec<uzor::platform::types::RenderBackend> {
+        self.hub.available_backends()
+    }
+    fn set_backend(&mut self, b: uzor::platform::types::RenderBackend) {
+        let _ = self.hub.set_active(b); // silent no-op if not in pool
+    }
+    fn fps_limit(&self) -> u32 {
+        self.hub.settings().fps_limit
+    }
+    fn set_fps_limit(&mut self, fps: u32) {
+        self.hub.set_fps_limit(fps);
+    }
+    fn msaa_samples(&self) -> u8 {
+        self.hub.settings().msaa_samples
+    }
+    fn set_msaa_samples(&mut self, n: u8) {
+        self.hub.set_msaa(n);
+    }
+    fn vsync(&self) -> bool {
+        self.hub.settings().vsync
+    }
+    fn set_vsync(&mut self, on: bool) {
+        self.hub.set_vsync(on);
+    }
+}
 
 // ── ManagerError ──────────────────────────────────────────────────────────────
 
@@ -611,12 +649,15 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 let layout = &mut pw.layout;
                 let render_state = &mut pw.render_state;
                 let app = &mut self.app;
+                let hub = self.hub.as_mut().expect("hub initialised");
+                let mut hub_ctrl = HubControl { hub };
                 render_state.with_render_context(|render_ctx| {
                     let mut ctx = WindowCtx::<P> {
                         key,
                         layout,
                         render: render_ctx,
                         rect,
+                        render_control: &mut hub_ctrl,
                     };
                     app.ui(&mut ctx);
                 });

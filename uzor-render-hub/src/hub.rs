@@ -242,6 +242,14 @@ impl RenderHub {
         self.pool.initialized.contains(&backend)
     }
 
+    /// Returns all backends available in the pool as a sorted Vec.
+    pub fn available_backends(&self) -> Vec<RenderBackend> {
+        let mut v: Vec<RenderBackend> = self.pool.initialized.iter().copied().collect();
+        // Stable sort so the list order is deterministic in the UI.
+        v.sort_by_key(|b| b.as_str());
+        v
+    }
+
     /// Switch the active backend.
     ///
     /// # Errors

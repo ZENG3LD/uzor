@@ -36,6 +36,7 @@ pub use assets::icons as icons;
 pub use self::core as engine;
 
 pub mod framework;
+pub use framework::render_control::RenderControl;
 
 // Re-export key types
 pub use app_context::ContextManager;
