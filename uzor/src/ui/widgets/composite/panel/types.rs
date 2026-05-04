@@ -200,10 +200,21 @@ pub struct PanelView<'a> {
     pub columns: &'a [ColumnDef<'a>],
 
     /// Whether to render a scrollbar on the body right edge.
+    ///
+    /// **Deprecated** in favour of `overflow = OverflowMode::Scrollbar`.
+    /// When `overflow != Clip` this field is ignored.
     pub show_scrollbar: bool,
 
     /// Total content height in pixels (for scrollbar thumb ratio).
     pub content_height: f64,
+
+    /// Total content width in pixels — used by chevrons / compress.
+    /// Defaults to `0.0` (no horizontal overflow).
+    pub content_width: f64,
+
+    /// Body overflow strategy. Default `Clip` (with automatic chevron
+    /// fallback when content > body, mirroring modal behaviour).
+    pub overflow: crate::types::OverflowMode,
 }
 
 // ---------------------------------------------------------------------------

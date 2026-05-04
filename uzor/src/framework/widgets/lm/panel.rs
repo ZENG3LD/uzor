@@ -86,6 +86,8 @@ pub struct PanelBuilder<'a> {
     columns:        &'a [ColumnDef<'a>],
     show_scrollbar: bool,
     content_height: f64,
+    content_width:  f64,
+    overflow:       crate::types::OverflowMode,
     settings:       Option<PanelSettings>,
     kind:           PanelRenderKind,
 }
@@ -107,6 +109,8 @@ impl<'a> PanelBuilder<'a> {
             columns:        &[],
             show_scrollbar: false,
             content_height: 0.0,
+            content_width:  0.0,
+            overflow:       crate::types::OverflowMode::Clip,
             settings:       None,
             kind:           PanelRenderKind::Plain,
         }
@@ -124,6 +128,8 @@ impl<'a> PanelBuilder<'a> {
     pub fn columns(mut self, cs: &'a [ColumnDef<'a>]) -> Self { self.columns = cs; self }
     pub fn show_scrollbar(mut self, on: bool) -> Self { self.show_scrollbar = on; self }
     pub fn content_height(mut self, h: f64) -> Self { self.content_height = h; self }
+    pub fn content_width(mut self, w: f64) -> Self { self.content_width = w; self }
+    pub fn overflow(mut self, m: crate::types::OverflowMode) -> Self { self.overflow = m; self }
 
     pub fn settings(mut self, s: PanelSettings) -> Self { self.settings = Some(s); self }
     pub fn kind(mut self, k: PanelRenderKind) -> Self { self.kind = k; self }
@@ -143,6 +149,8 @@ impl<'a> PanelBuilder<'a> {
             columns:        self.columns,
             show_scrollbar: self.show_scrollbar,
             content_height: self.content_height,
+            content_width:  self.content_width,
+            overflow:       self.overflow,
         };
 
         let settings = self.settings.unwrap_or_else(|| panel_settings_from_styles(layout.styles()));

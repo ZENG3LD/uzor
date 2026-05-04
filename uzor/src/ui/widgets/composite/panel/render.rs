@@ -148,7 +148,31 @@ pub fn register_input_coordinator_panel(
         Sense::SCROLL | Sense::HOVER,
     );
 
-    // --- Scrollbar handle + track ---
+    // --- Body overflow handling (chevrons / scrollbar via shared helpers) ---
+    {
+        let scroll = crate::ui::widgets::composite::overflow::BodyScrollState {
+            offset_x:  0.0,
+            offset_y:  state.scroll.offset,
+            content_w: view.content_width,
+            content_h: view.content_height,
+        };
+        let overflowing = scroll.overflows(layout.body.width, layout.body.height).any();
+        let effective = match view.overflow {
+            crate::types::OverflowMode::Scrollbar => crate::types::OverflowMode::Scrollbar,
+            crate::types::OverflowMode::Chevrons  => crate::types::OverflowMode::Chevrons,
+            // Clip + content overflows → fall back to chevrons so the user
+            // can still page through hidden rows after a parent resize.
+            _ if overflowing => crate::types::OverflowMode::Chevrons,
+            other             => other,
+        };
+        if matches!(effective, crate::types::OverflowMode::Chevrons) {
+            crate::ui::widgets::composite::overflow::register_chevrons_helper(
+                coord, &panel_id, layout.body, &scroll, layer,
+            );
+        }
+    }
+
+    // --- Legacy explicit scrollbar handle + track (kept for show_scrollbar callers) ---
     if view.show_scrollbar && layout.scrollbar.width > 0.0 {
         let scroll_offset  = state.scroll.offset;
         let viewport_h     = layout.body.height;
@@ -427,6 +451,24 @@ fn draw_panel_with_coord(
             scb_state,
             None,
         );
+    }
+
+    // --- 7. Body chevrons (Chevrons mode or Clip-fallback when overflowing) -
+    {
+        let scroll = crate::ui::widgets::composite::overflow::BodyScrollState {
+            offset_x:  0.0,
+            offset_y:  state.scroll.offset,
+            content_w: view.content_width,
+            content_h: view.content_height,
+        };
+        let overflowing = scroll.overflows(layout.body.width, layout.body.height).any();
+        let want_chevrons = matches!(view.overflow, crate::types::OverflowMode::Chevrons)
+            || (matches!(view.overflow, crate::types::OverflowMode::Clip | crate::types::OverflowMode::Compress) && overflowing);
+        if want_chevrons {
+            crate::ui::widgets::composite::overflow::draw_chevrons_helper(
+                ctx, layout.body, &scroll, theme.bg(), theme.bg(),
+            );
+        }
     }
 }
 
