@@ -163,14 +163,27 @@ impl ChromeState {
     /// `chrome_id` — the stable id passed to `register_layout_manager_chrome`
     ///               (e.g. `"chrome-widget"`).
     pub fn sync_hover_from_coordinator(&mut self, coord: &InputCoordinator, chrome_id: &str) {
-        let hovered = coord.hovered_widget().map(|w| w.0.as_str());
+        use super::types::ChromeHit;
+        let hovered = coord.hovered_widget().map(|w| w.0.clone());
         let tab_prefix      = format!("{chrome_id}:tab:");
         let close_prefix    = format!("{chrome_id}:tab_close:");
 
         for (i, ts) in self.tabs_state.iter_mut().enumerate() {
             let idx_str = i.to_string();
-            ts.hovered       = hovered.map(|h| h == format!("{}{}", tab_prefix, idx_str)).unwrap_or(false);
-            ts.close_hovered = hovered.map(|h| h == format!("{}{}", close_prefix, idx_str)).unwrap_or(false);
+            ts.hovered       = hovered.as_deref().map(|h| h == format!("{}{}", tab_prefix, idx_str)).unwrap_or(false);
+            ts.close_hovered = hovered.as_deref().map(|h| h == format!("{}{}", close_prefix, idx_str)).unwrap_or(false);
         }
+
+        // Right-side action buttons: update the coarse `hovered: ChromeHit`
+        // field so render can highlight the focused button.
+        self.hovered = match hovered.as_deref() {
+            Some(h) if h == format!("{chrome_id}:new_win")    => ChromeHit::NewWindowBtn,
+            Some(h) if h == format!("{chrome_id}:menu")       => ChromeHit::Menu,
+            Some(h) if h == format!("{chrome_id}:close_win")  => ChromeHit::CloseWindowBtn,
+            Some(h) if h == format!("{chrome_id}:min")        => ChromeHit::MinBtn,
+            Some(h) if h == format!("{chrome_id}:max")        => ChromeHit::MaxBtn,
+            Some(h) if h == format!("{chrome_id}:close")      => ChromeHit::CloseBtn,
+            _ => ChromeHit::None,
+        };
     }
 }

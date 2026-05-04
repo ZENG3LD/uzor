@@ -320,13 +320,18 @@ impl<A: App<P>, P: DockPanel + Default + 'static> WindowManager<A, P> {
 
             // Chrome zone (drag, min/max/close, in-strip resize edges).
             if let Some(chrome_rect) = pw.layout.rect_for_chrome() {
+                // Hit-test view must mirror what the chrome composite was
+                // actually drawn with. The L4 example uses default flags
+                // except for show_new_window via the macro prop, so reflect
+                // that here.  TODO: have the manager read chrome_state /
+                // composite_registry instead of re-declaring flags.
                 let view = ChromeView {
                     tabs: &[],
                     active_tab_id: None,
                     show_new_tab_btn: false,
                     show_menu_btn: false,
-                    show_new_window_btn: true, // hit-test must agree with render
-                    show_close_window_btn: true,
+                    show_new_window_btn: true,
+                    show_close_window_btn: false,
                     is_maximized: pw.window.is_maximized(),
                     cursor_x: mx,
                     cursor_y: my,

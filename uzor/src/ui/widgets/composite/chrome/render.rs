@@ -408,20 +408,44 @@ fn draw_chrome_internal(
 
     // --- Right-side action buttons ---
     if show_controls {
+        use super::types::ChromeHit;
         let icon_sz = style.action_icon_size();
+        let hover_bg     = theme.tab_bg_hover();
+        let icon_normal  = theme.icon_normal();
+        let icon_hover   = theme.tab_text_hover();
 
-        // --- 5. New-window icon ---
+        // --- 5. New-window icon (two overlapping rectangles) ---
         if show_tabs && view.show_new_window_btn {
-            let nw_cx = rect.x + bp.new_window_left + NEW_WINDOW_BTN_WIDTH / 2.0;
-            let nw_cy = rect.y + h / 2.0;
-            ctx.set_fill_color(theme.icon_normal());
-            // Simple rectangle icon (placeholder for SVG)
-            ctx.fill_rect(
-                nw_cx - icon_sz / 2.0,
-                nw_cy - icon_sz / 2.0,
-                icon_sz,
-                icon_sz,
-            );
+            let bx = rect.x + bp.new_window_left;
+            let by = rect.y;
+            let hovered = state.hovered == ChromeHit::NewWindowBtn;
+            if hovered {
+                ctx.set_fill_color(hover_bg);
+                ctx.fill_rect(bx, by, NEW_WINDOW_BTN_WIDTH, h);
+            }
+            let color = if hovered { icon_hover } else { icon_normal };
+            // Background square (offset down-left)
+            let s = icon_sz * 0.78;
+            let cx = bx + NEW_WINDOW_BTN_WIDTH / 2.0;
+            let cy = by + h / 2.0;
+            // back square
+            ctx.set_stroke_color(color);
+            ctx.set_stroke_width(1.2);
+            ctx.set_line_dash(&[]);
+            let bx0 = cx - s / 2.0 + 2.0;
+            let by0 = cy - s / 2.0 + 2.0;
+            ctx.move_to(bx0, by0); ctx.line_to(bx0 + s, by0);
+            ctx.line_to(bx0 + s, by0 + s); ctx.line_to(bx0, by0 + s);
+            ctx.line_to(bx0, by0); ctx.stroke();
+            // front square (overlap top-left), filled background to mask back
+            ctx.set_fill_color(theme.background());
+            ctx.fill_rect(cx - s / 2.0 - 2.0, cy - s / 2.0 - 2.0, s, s);
+            ctx.set_stroke_color(color);
+            let fx0 = cx - s / 2.0 - 2.0;
+            let fy0 = cy - s / 2.0 - 2.0;
+            ctx.move_to(fx0, fy0); ctx.line_to(fx0 + s, fy0);
+            ctx.line_to(fx0 + s, fy0 + s); ctx.line_to(fx0, fy0 + s);
+            ctx.line_to(fx0, fy0); ctx.stroke();
         }
 
         // --- 6. Menu icon ---

@@ -14,23 +14,19 @@
 //! Opens an 800 × 600 chromeless window and renders a solid dark-blue
 //! background frame in a continuous loop. Close the window to exit.
 
-use uzor::layout::LayoutManager;
 use uzor_framework::app::{App, NoPanel};
 use uzor_framework::builder::AppBuilder;
-use uzor_render_hub::{RenderBackend, VelloGpuSurfaceFactory, WindowRenderState};
+use uzor_framework::multi_window::WindowCtx;
+use uzor_render_hub::{RenderBackend, VelloGpuSurfaceFactory};
 
 // ─── Hello app ────────────────────────────────────────────────────────────────
 
 struct Hello;
 
 impl App<NoPanel> for Hello {
-    fn ui(
-        &mut self,
-        _layout: &mut LayoutManager<NoPanel>,
-        _state: &mut WindowRenderState,
-    ) {
-        // No widgets yet — the clear colour from AppConfig is enough to verify
-        // that the frame loop runs and the GPU surface is alive.
+    fn ui(&mut self, _win: &mut WindowCtx<'_, NoPanel>) {
+        // No widgets — the per-window background colour from WindowSpec is
+        // enough to verify the frame loop runs and the GPU surface is alive.
     }
 }
 

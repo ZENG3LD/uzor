@@ -56,6 +56,11 @@ pub fn register_layout_manager_chrome<P: DockPanel>(
         d.on_exact(format!("{}:close",     id.0), EventBuilder::ChromeControl(CC::CloseApp));
     }
 
+    // Sync hover flags from the input coordinator (which observes the
+    // previous frame's widget registrations).  Dropdown does the same —
+    // see `state.sync_flat_hover(...)` in its register_layout_manager_*.
+    state.sync_hover_from_coordinator(&layout.ctx_mut().input, id.0.as_str());
+
     register_context_manager_chrome(
         layout.ctx_mut(), render, id.clone(), rect, &mut state, view, settings, kind, &layer,
     );
