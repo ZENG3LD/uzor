@@ -1902,12 +1902,8 @@ impl AppState {
                 ModalKind::Tags         => (520.0, 320.0),
                 ModalKind::PlainDemo    => (360.0, 120.0),
                 ModalKind::HeaderDemo   => (420.0, 180.0),
-                // TopTabs gets extra vertical content so the Scrollbar
-                // demo actually has something to scroll.
-                ModalKind::TopTabsDemo  => (420.0, 800.0),
-                // SideTabs gets oversized content on both axes so Compress
-                // has plenty to squeeze.
-                ModalKind::SideTabsDemo => (900.0, 600.0),
+                ModalKind::TopTabsDemo  => (420.0, 220.0),
+                ModalKind::SideTabsDemo => (480.0, 280.0),
                 ModalKind::WizardDemo   => (480.0, 240.0),
             };
             {
