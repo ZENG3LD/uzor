@@ -7,11 +7,10 @@ members = [
     # Platform
     "uzor-window-desktop",
     "uzor-desktop",
-    "uzor-framework",
     "uzor-framework-macros",
     "uzor-window-web",
     "uzor-window-mobile",
-    "uzor-tui-framework",
+    "uzor-tui",
     # Backends
     "uzor-render-vello-gpu",
     "uzor-render-vello-cpu",
