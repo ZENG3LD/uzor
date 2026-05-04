@@ -11,7 +11,6 @@
 
 use uzor::core::types::Rect;
 use uzor::layout::{LayoutManager, ModalHandle};
-use uzor::ui::widgets::composite::chrome::types::ChromeTabConfig;
 use uzor_framework::tokens;
 use uzor_framework::{view, App, AppBuilder, NoPanel};
 use uzor_render_hub::{RenderBackend, VelloGpuSurfaceFactory, WindowRenderState};
@@ -50,16 +49,12 @@ impl App<NoPanel> for DashboardApp {
             height: (dock.height - chrome_h).max(0.0),
         };
 
-        let tabs = [
-            ChromeTabConfig { id: "dashboard", label: "Dashboard", icon: None, color_tag: None, closable: false, active: true },
-            ChromeTabConfig { id: "logs",      label: "Logs",      icon: None, color_tag: None, closable: true,  active: false },
-        ];
         let modal_handle = self.settings.as_ref().expect("init() ran");
 
         render_state.with_render_context(|render| {
             view! {
                 <col rect={body}>
-                    <chrome tabs={&tabs} active_tab="dashboard" />
+                    <chrome />
                     <col gap=12 pad=24>
                         <text   text="L4 Dashboard" color={tokens::colors::fg::fg_0} />
                         <button text="Save"

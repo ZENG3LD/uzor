@@ -579,6 +579,13 @@ where
                 if let Some(ref window) = self.window {
                     self.runtime.handle_winit_event(ev, window.as_ref());
                 }
+                // Chrome close button → graceful exit.
+                if self.runtime.take_close_requested() {
+                    provider.mark_close();
+                    self.runtime.shutdown();
+                    event_loop.exit();
+                    return;
+                }
                 // Also keep the platform-event queue so apps that override
                 // `App::on_event` for high-level events (theme/file-drop)
                 // still receive them.

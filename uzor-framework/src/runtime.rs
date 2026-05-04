@@ -115,6 +115,10 @@ pub struct Runtime<A: App<P>, P: DockPanel> {
     /// can react to (left_down/left_up/wheel/cursor_moved).
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) bridge: WinitInputBridge,
+    /// Set when the chrome's close button was clicked.  `UzorHandler` reads
+    /// this between events and exits the event loop.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) close_requested: bool,
     /// Per-frame input snapshot built from `bridge.last_mouse_pos` at the top
     /// of `tick_inner` and copied into `coord.begin_frame(input)` so widgets
     /// see the current cursor.
@@ -148,6 +152,8 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             layout: LayoutManager::new(),
             #[cfg(not(target_arch = "wasm32"))]
             bridge: WinitInputBridge::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            close_requested: false,
             input: InputState::new(),
             start: std::time::Instant::now(),
             initialised: false,
@@ -248,6 +254,16 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             .unwrap_or(self.config.msaa_samples)
     }
 
+    /// `true` if the chrome's close button was clicked since the last
+    /// `take_close_requested()` call.  `UzorHandler` polls this and exits
+    /// the event loop when set.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn take_close_requested(&mut self) -> bool {
+        let v = self.close_requested;
+        self.close_requested = false;
+        v
+    }
+
     /// Notify the runtime that the OS window was resized.  Forwards to the
     /// active `WindowRenderState` so the swapchain / software buffer matches
     /// the new physical size; otherwise the GPU stretches the old surface
@@ -329,8 +345,8 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
                         return;
                     }
                     ChromeAction::CloseApp | ChromeAction::CloseWindow => {
-                        // Bridge's left_up will arrive next; user-side close
-                        // routing happens via App::on_event.
+                        self.close_requested = true;
+                        return;
                     }
                     ChromeAction::BeginResize(h) => {
                         use uzor::ui::widgets::composite::chrome::types::{ChromeHit, ResizeCorner};
