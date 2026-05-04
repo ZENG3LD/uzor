@@ -392,7 +392,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         // backend that was active when from_built ran, which breaks
         // backends switched at runtime via render_control.set_backend.
         let active = self.hub.as_ref().map(|h| h.active()).unwrap_or(self.backend);
-        let factory: Box<dyn RenderSurfaceFactory> = if let Some(hub) = self.hub.as_ref() {
+        let mut factory: Box<dyn RenderSurfaceFactory> = if let Some(hub) = self.hub.as_ref() {
             hub.factory_for(active)
                 .ok_or_else(|| ManagerError::Backend(
                     format!("hub has no factory for backend {:?}", active)
@@ -400,6 +400,25 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         } else {
             return Err(ManagerError::Backend("no hub initialised".into()));
         };
+
+        // CPU backends (TinySkia, VelloCpu) need a per-window
+        // SoftwarePresenter — the hub's factory comes empty and accepts
+        // a fresh presenter via its .with_presenter() ctor. Build a new
+        // factory per window using the provider's softbuffer impl.
+        if matches!(active, RenderBackend::TinySkia | RenderBackend::VelloCpu) {
+            if let Some(presenter) = provider.create_software_presenter() {
+                factory = match active {
+                    RenderBackend::TinySkia => {
+                        Box::new(uzor_render_hub::TinySkiaSurfaceFactory::with_presenter(presenter))
+                    }
+                    RenderBackend::VelloCpu => {
+                        Box::new(uzor_render_hub::VelloCpuSurfaceFactory::with_presenter(1.0, presenter))
+                    }
+                    _ => unreachable!(),
+                };
+            }
+        }
+
         let render_state = factory
             .create_render_state(&raw_handle, active, size)
             .map_err(|e| ManagerError::Backend(format!("create_render_state({:?}): {}", active, e)))?;
