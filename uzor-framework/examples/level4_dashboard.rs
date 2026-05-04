@@ -13,7 +13,7 @@
 
 use uzor::core::types::Rect;
 use uzor_framework::{
-    view, App, AppBuilder, NoPanel, WindowCtx, WindowKey, WindowSpec,
+    view, App, AppBuilder, AppRun as _, NoPanel, WindowCtx, WindowKey, WindowSpec,
 };
 use uzor_render_hub::{RenderBackend, VelloGpuSurfaceFactory};
 
@@ -29,15 +29,13 @@ impl App<NoPanel> for DashboardApp {
             .map(|s| s.dock_area)
             .unwrap_or(Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 });
 
-        let layout       = &mut *win.layout;
-        let render_state = &mut *win.render;
-        render_state.with_render_context(|render| {
-            view! {
-                <col rect={dock}>
-                    <chrome show_new_window=true />
-                </col>
-            }
-        });
+        let layout = &mut *win.layout;
+        let render = &mut *win.render;
+        view! {
+            <col rect={dock}>
+                <chrome show_new_window=true />
+            </col>
+        }
         let _ = layout;
     }
 

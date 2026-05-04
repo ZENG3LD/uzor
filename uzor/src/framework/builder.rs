@@ -10,13 +10,35 @@ use super::multi_window::{WindowSpec, WindowKey};
 // keep working without changes.
 pub use crate::platform::types::{RgbaIcon, RenderBackend};
 
-// ── RenderSurfaceFactory (trait defined in uzor) ───────────────────────────────
+// ── AnyFactory ───────────────────────────────────────────────────────────────
+//
+// The factory is stored as `Box<dyn AnyFactory>` in `BuiltApp` so that
+// platform crates (e.g. `uzor-desktop`) can downcast it back to the concrete
+// type (e.g. `uzor_render_hub::VelloGpuSurfaceFactory`) and call the actual
+// surface-creation methods without `uzor` needing to depend on `uzor-render-hub`.
 
-/// Converts a raw window handle + backend into a per-window render state.
+/// Opaque factory wrapper stored in [`BuiltApp`].
 ///
-/// Implemented by `uzor-render-hub` / `uzor-window-desktop` etc.
-/// Stored as `Box<dyn RenderSurfaceFactory>` in [`BuiltApp`].
-pub trait RenderSurfaceFactory: Send + Sync {}
+/// Platform crates downcast this to their concrete factory type via
+/// [`AnyFactory::into_any`] followed by `downcast::<ConcreteFactory>()`.
+pub trait AnyFactory: Send + Sync + 'static {
+    fn into_any(self: Box<Self>) -> Box<dyn std::any::Any + Send + Sync>;
+}
+
+/// Convenience alias used in [`AppBuilder::surface_factory`].
+///
+/// Any type that is `Send + Sync + 'static` can be wrapped in the builder.
+/// Platform crates (e.g. `uzor-desktop`) recover the concrete type via
+/// `built.factory.unwrap().into_any().downcast::<T>()`.
+pub type RenderSurfaceFactory = dyn AnyFactory;
+
+/// Blanket implementation — every `Send + Sync + 'static` type is an
+/// [`AnyFactory`] automatically.
+impl<T: Send + Sync + 'static> AnyFactory for T {
+    fn into_any(self: Box<Self>) -> Box<dyn std::any::Any + Send + Sync> {
+        self
+    }
+}
 
 // ── RenderHubSettings ─────────────────────────────────────────────────────────
 
@@ -113,7 +135,7 @@ pub struct BuiltApp<A: App<P>, P: DockPanel> {
     #[doc(hidden)]
     pub backend: RenderBackend,
     #[doc(hidden)]
-    pub factory: Option<Box<dyn RenderSurfaceFactory>>,
+    pub factory: Option<Box<dyn AnyFactory>>,
     #[doc(hidden)]
     pub hub:     Option<RenderHub>,
     #[doc(hidden)]
@@ -140,7 +162,7 @@ where
     app: A,
     config: AppConfig,
     backend: Option<RenderBackend>,
-    factory: Option<Box<dyn RenderSurfaceFactory>>,
+    factory: Option<Box<dyn AnyFactory>>,
     hub: Option<RenderHub>,
     tray: Option<TraySpec>,
     windows: Vec<WindowSpec>,
@@ -307,9 +329,14 @@ where
         self
     }
 
-    /// Supply a [`RenderSurfaceFactory`].
-    pub fn surface_factory(mut self, factory: Box<dyn RenderSurfaceFactory>) -> Self {
-        self.factory = Some(factory);
+    /// Supply a surface factory.
+    ///
+    /// Pass any concrete factory (e.g. `VelloGpuSurfaceFactory`) boxed as
+    /// `Box<T>` where `T: Send + Sync + 'static`.  Platform crates (e.g.
+    /// `uzor-desktop`) recover the concrete type via
+    /// `built.factory.unwrap().into_any().downcast::<T>()`.
+    pub fn surface_factory<T: Send + Sync + 'static>(mut self, factory: Box<T>) -> Self {
+        self.factory = Some(factory as Box<dyn AnyFactory>);
         self
     }
 

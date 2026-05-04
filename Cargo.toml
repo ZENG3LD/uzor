@@ -6,6 +6,7 @@ members = [
     "uzor",
     # Platform
     "uzor-window-desktop",
+    "uzor-desktop",
     "uzor-framework",
     "uzor-framework-macros",
     "uzor-window-web",
@@ -51,5 +52,6 @@ uzor-icon = { version = "1.1.8", path = "./uzor-icon" }
 uzor-window-web = { version = "1.1.8", path = "./uzor-window-web" }
 uzor-window-mobile = { version = "1.1.8", path = "./uzor-window-mobile" }
 uzor-framework-macros = { version = "1.1.8", path = "./uzor-framework-macros" }
+uzor-desktop = { version = "1.1.8", path = "./uzor-desktop" }
 serde = { version = "1.0", features = ["derive"] }
 

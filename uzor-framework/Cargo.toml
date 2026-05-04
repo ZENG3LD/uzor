@@ -7,35 +7,17 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "uzor-framework: end-to-end app runner — owns winit, windows, chrome, GPU pipeline, screenshot, backend autodetect. Apps register widgets and business logic; framework handles everything else."
+description = "uzor-framework: thin re-export shim — L4 App API from uzor + desktop runtime from uzor-desktop."
 
 [dependencies]
 uzor = { workspace = true }
+uzor-desktop = { workspace = true }
 uzor-render-hub = { workspace = true }
 uzor-window-hub = { workspace = true }
 uzor-framework-macros = { workspace = true }
-vello = "0.8"
-wgpu = "28"
-winit = "0.30"
-pollster = "0.4"
-png = "0.17"
-image = { version = "0.25", default-features = false, features = ["png"] }
-tray-icon = ">=0.19,<0.21"
 
 [build-dependencies]
 toml = "0.8"
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-uzor-window-desktop = { workspace = true }
-
-[target.'cfg(windows)'.dependencies]
-winresource = "0.1"
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Window"] }
-js-sys = "0.3"
-uzor-window-web = { workspace = true }
 
 [dev-dependencies]
 uzor-window-hub = { workspace = true }

@@ -1,0 +1,24 @@
+[package]
+name = "uzor-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "uzor-desktop: winit-based desktop runtime for uzor apps. Implements AppBuilder::run() for native desktop targets."
+
+[dependencies]
+uzor = { workspace = true }
+uzor-render-hub = { workspace = true }
+uzor-window-hub = { workspace = true }
+uzor-window-desktop = { workspace = true }
+vello = "0.8"
+wgpu = "28"
+winit = "0.30"
+pollster = "0.4"
+png = "0.17"
+image = { version = "0.25", default-features = false, features = ["png"] }
+tray-icon = ">=0.19,<0.21"
+
+[target.'cfg(windows)'.dependencies]
+winresource = "0.1"
