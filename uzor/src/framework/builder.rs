@@ -1,0 +1,401 @@
+//! Fluent builder for constructing an uzor app.
+
+use crate::docking::panels::DockPanel;
+
+use super::app::{App, AppConfig, NoPanel};
+use super::multi_window::{WindowSpec, WindowKey};
+
+// RgbaIcon and RenderBackend canonical definitions live in uzor::platform::types.
+// Re-exported here so existing callers of `uzor::framework::builder::{RgbaIcon,RenderBackend}`
+// keep working without changes.
+pub use crate::platform::types::{RgbaIcon, RenderBackend};
+
+// ── RenderSurfaceFactory (trait defined in uzor) ───────────────────────────────
+
+/// Converts a raw window handle + backend into a per-window render state.
+///
+/// Implemented by `uzor-render-hub` / `uzor-window-desktop` etc.
+/// Stored as `Box<dyn RenderSurfaceFactory>` in [`BuiltApp`].
+pub trait RenderSurfaceFactory: Send + Sync {}
+
+// ── RenderHubSettings ─────────────────────────────────────────────────────────
+
+/// Settings subset of a render hub (extracted to avoid the circular dep).
+#[derive(Debug, Clone, Copy)]
+pub struct RenderHubSettings {
+    pub fps_limit:    u32,
+    pub msaa_samples: u8,
+    pub vsync:        bool,
+}
+
+/// Opaque render hub handle — concrete type lives in `uzor-render-hub`.
+///
+/// Stored as a `Box<dyn Any + Send>` so the builder can hold it without
+/// depending on `uzor-render-hub`.  The consuming platform crate downcasts
+/// back to the concrete `uzor_render_hub::RenderHub`.
+pub struct RenderHub {
+    inner:    Box<dyn std::any::Any + Send>,
+    settings: RenderHubSettings,
+    active:   RenderBackend,
+}
+
+impl RenderHub {
+    /// Wrap a concrete render hub (called by `uzor-render-hub` / `uzor-desktop`).
+    pub fn new_opaque(
+        inner: Box<dyn std::any::Any + Send>,
+        settings: RenderHubSettings,
+        active: RenderBackend,
+    ) -> Self {
+        Self { inner, settings, active }
+    }
+
+    pub fn settings(&self) -> RenderHubSettings { self.settings }
+    pub fn active(&self) -> RenderBackend { self.active }
+
+    pub fn set_fps_limit(&mut self, fps: u32)    { self.settings.fps_limit = fps; }
+    pub fn set_msaa(&mut self, samples: u8)      { self.settings.msaa_samples = samples; }
+    pub fn set_vsync(&mut self, on: bool)        { self.settings.vsync = on; }
+
+    /// Consume the hub and return the inner opaque value.
+    pub fn into_inner(self) -> Box<dyn std::any::Any + Send> { self.inner }
+}
+
+// ── BuildError ────────────────────────────────────────────────────────────────
+
+/// Errors that can occur when calling [`AppBuilder::build`] or icon helpers.
+#[derive(Debug)]
+pub enum BuildError {
+    /// No render backend was supplied via [`AppBuilder::backend`] or
+    /// [`AppBuilder::render_hub`].
+    MissingBackend,
+    /// PNG icon bytes could not be decoded or converted to RGBA8.
+    IconDecode(String),
+}
+
+impl std::fmt::Display for BuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BuildError::MissingBackend => {
+                f.write_str("no render backend supplied — call .backend(...) or .render_hub(...)")
+            }
+            BuildError::IconDecode(msg) => {
+                write!(f, "icon PNG decode failed: {msg}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for BuildError {}
+
+// ── TraySpec ──────────────────────────────────────────────────────────────────
+
+/// Spec for a system-tray icon spawned automatically by the builder.
+pub struct TraySpec {
+    pub tooltip: Option<String>,
+    pub items:   Vec<(String, String, bool)>, // (id, label, enabled)
+}
+
+// ── BuiltApp ──────────────────────────────────────────────────────────────────
+
+/// The result of [`AppBuilder::build`].
+///
+/// Bundles all data needed to start the runtime.  Consumed by `uzor-desktop`
+/// (or another platform crate) to create the event loop, window(s), and GPU
+/// pipeline.
+///
+/// Fields are `pub` so that external platform crates (e.g. `uzor-desktop`)
+/// can destructure them without reflection.
+pub struct BuiltApp<A: App<P>, P: DockPanel> {
+    #[doc(hidden)]
+    pub app:     A,
+    #[doc(hidden)]
+    pub config:  AppConfig,
+    #[doc(hidden)]
+    pub backend: RenderBackend,
+    #[doc(hidden)]
+    pub factory: Option<Box<dyn RenderSurfaceFactory>>,
+    #[doc(hidden)]
+    pub hub:     Option<RenderHub>,
+    #[doc(hidden)]
+    pub tray:    Option<TraySpec>,
+    #[doc(hidden)]
+    pub windows: Vec<WindowSpec>,
+    #[doc(hidden)]
+    pub _phantom: std::marker::PhantomData<P>,
+}
+
+// ── AppBuilder ────────────────────────────────────────────────────────────────
+
+/// Fluent builder for configuring an uzor app.
+///
+/// # Generic parameters
+///
+/// - `A` — the app struct that implements [`App<P>`].
+/// - `P` — the dock-panel type.  Defaults to [`NoPanel`].
+pub struct AppBuilder<A, P = NoPanel>
+where
+    A: App<P>,
+    P: DockPanel,
+{
+    app: A,
+    config: AppConfig,
+    backend: Option<RenderBackend>,
+    factory: Option<Box<dyn RenderSurfaceFactory>>,
+    hub: Option<RenderHub>,
+    tray: Option<TraySpec>,
+    windows: Vec<WindowSpec>,
+    _phantom: std::marker::PhantomData<P>,
+}
+
+impl<A, P> AppBuilder<A, P>
+where
+    A: App<P>,
+    P: DockPanel + Default + Clone + 'static,
+{
+    /// Create a builder wrapping `app`.
+    pub fn new(app: A) -> Self {
+        Self {
+            app,
+            config: AppConfig::default(),
+            backend: None,
+            factory: None,
+            hub: None,
+            tray: None,
+            windows: Vec::new(),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Queue a window for the manager to create at startup.
+    pub fn window(mut self, spec: WindowSpec) -> Self {
+        self.windows.push(spec);
+        self
+    }
+
+    /// Spawn a system-tray icon when the runtime starts.
+    pub fn tray(mut self, tooltip: impl Into<String>) -> Self {
+        self.tray = Some(TraySpec {
+            tooltip: Some(tooltip.into()),
+            items:   Vec::new(),
+        });
+        self
+    }
+
+    /// Add a tray-menu item.  Requires `.tray(tooltip)` called first.
+    pub fn tray_item(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
+        if let Some(ref mut t) = self.tray {
+            t.items.push((id.into(), label.into(), true));
+        }
+        self
+    }
+
+    /// Add a disabled (greyed-out) tray-menu item.  Requires `.tray` first.
+    pub fn tray_item_disabled(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
+        if let Some(ref mut t) = self.tray {
+            t.items.push((id.into(), label.into(), false));
+        }
+        self
+    }
+
+    // ── Configuration setters ─────────────────────────────────────────────────
+
+    /// Replace the entire [`AppConfig`] at once.
+    pub fn config(mut self, config: AppConfig) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Set the window title.
+    pub fn title(mut self, t: impl Into<String>) -> Self {
+        self.config.title = t.into();
+        self
+    }
+
+    /// Set the initial logical window size.
+    pub fn size(mut self, w: u32, h: u32) -> Self {
+        self.config.initial_size = (w, h);
+        self
+    }
+
+    /// Set the minimum logical window size.
+    pub fn min_size(mut self, min: Option<(u32, u32)>) -> Self {
+        self.config.min_size = min;
+        self
+    }
+
+    /// Enable or disable OS-native window decorations.
+    pub fn decorations(mut self, on: bool) -> Self {
+        self.config.decorations = on;
+        self
+    }
+
+    /// Enable or disable multi-window support.
+    pub fn multi_window(mut self, on: bool) -> Self {
+        self.config.multi_window = on;
+        self
+    }
+
+    /// Set the FPS limit (`0` = unlimited).
+    pub fn fps_limit(mut self, fps: u32) -> Self {
+        self.config.fps_limit = fps;
+        if let Some(ref mut h) = self.hub {
+            h.set_fps_limit(fps);
+        }
+        self
+    }
+
+    /// Set the MSAA sample count.
+    pub fn msaa(mut self, samples: u8) -> Self {
+        self.config.msaa_samples = samples;
+        if let Some(ref mut h) = self.hub {
+            h.set_msaa(samples);
+        }
+        self
+    }
+
+    /// Enable or disable VSync.
+    pub fn vsync(mut self, on: bool) -> Self {
+        self.config.vsync = on;
+        if let Some(ref mut h) = self.hub {
+            h.set_vsync(on);
+        }
+        self
+    }
+
+    /// Set the clear colour as `0xAARRGGBB`.
+    pub fn background(mut self, argb: u32) -> Self {
+        self.config.background = argb;
+        self
+    }
+
+    /// Enforce single-instance via a Win32 named mutex.
+    pub fn single_instance(mut self, name: Option<impl Into<String>>) -> Self {
+        self.config.single_instance = name.map(Into::into);
+        self
+    }
+
+    /// Set the Windows 11 DWM border colour (`"#RRGGBB"`).
+    pub fn dwm_border_color(mut self, color: Option<impl Into<String>>) -> Self {
+        self.config.dwm_border_color = color.map(Into::into);
+        self
+    }
+
+    /// Set the window icon from a pre-built [`RgbaIcon`].
+    pub fn icon(mut self, icon: RgbaIcon) -> Self {
+        self.config.icon = Some(icon);
+        self
+    }
+
+    /// Set the window icon by decoding a PNG byte slice.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(BuildError::IconDecode)` if the bytes are not valid PNG.
+    pub fn icon_from_png(mut self, png_bytes: &[u8]) -> Result<Self, BuildError> {
+        let icon = decode_png_to_rgba(png_bytes)
+            .map_err(|e| BuildError::IconDecode(e))?;
+        self.config.icon = Some(icon);
+        Ok(self)
+    }
+
+    // ── Infrastructure setters ────────────────────────────────────────────────
+
+    /// Select the rendering backend (Mode A — fixed, no live switching).
+    pub fn backend(mut self, backend: RenderBackend) -> Self {
+        self.backend = Some(backend);
+        self.hub = None;
+        self
+    }
+
+    /// Supply a [`RenderSurfaceFactory`].
+    pub fn surface_factory(mut self, factory: Box<dyn RenderSurfaceFactory>) -> Self {
+        self.factory = Some(factory);
+        self
+    }
+
+    /// Attach a [`RenderHub`] (Mode B — autodetect + live switching + metrics).
+    pub fn render_hub(mut self, hub: RenderHub) -> Self {
+        self.config.fps_limit    = hub.settings().fps_limit;
+        self.config.msaa_samples = hub.settings().msaa_samples;
+        self.config.vsync        = hub.settings().vsync;
+        self.backend = Some(hub.active());
+        self.hub = Some(hub);
+        self
+    }
+
+    // ── Terminal method ───────────────────────────────────────────────────────
+
+    /// Consume the builder and produce a [`BuiltApp`] ready for a platform
+    /// runtime (e.g. `uzor-desktop`) to consume.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BuildError::MissingBackend`] if no backend was supplied.
+    pub fn build(mut self) -> Result<BuiltApp<A, P>, BuildError> {
+        let backend = self.backend.ok_or(BuildError::MissingBackend)?;
+
+        // Synthesise a default window spec from AppConfig if the caller
+        // didn't queue any explicit windows.
+        if self.windows.is_empty() {
+            let default = WindowSpec::new(
+                WindowKey::new("main"),
+                if self.config.title.is_empty() { "uzor".to_string() }
+                else { self.config.title.clone() },
+            )
+            .size(self.config.initial_size.0, self.config.initial_size.1)
+            .decorations(self.config.decorations)
+            .background(self.config.background);
+            let default = if let Some((mw, mh)) = self.config.min_size {
+                default.min_size(mw, mh)
+            } else {
+                default
+            };
+            self.windows.push(default);
+        }
+
+        Ok(BuiltApp {
+            app:     self.app,
+            config:  self.config,
+            backend,
+            factory: self.factory,
+            hub:     self.hub,
+            tray:    self.tray,
+            windows: self.windows,
+            _phantom: std::marker::PhantomData,
+        })
+    }
+}
+
+// ── PNG decode helper (no uzor-render-hub dep) ────────────────────────────────
+
+#[cfg(feature = "framework-png")]
+fn decode_png_to_rgba(png_bytes: &[u8]) -> Result<RgbaIcon, String> {
+    use image::ImageDecoder;
+    use std::io::Cursor;
+
+    let decoder = image::codecs::png::PngDecoder::new(Cursor::new(png_bytes))
+        .map_err(|e| e.to_string())?;
+
+    let (width, height) = decoder.dimensions();
+    let total_bytes = decoder.total_bytes() as usize;
+
+    let mut raw = vec![0u8; total_bytes];
+    decoder
+        .read_image(&mut raw)
+        .map_err(|e| e.to_string())?;
+
+    let rgba: Vec<u8> = if total_bytes == (width * height * 4) as usize {
+        raw
+    } else {
+        let img = image::load_from_memory_with_format(png_bytes, image::ImageFormat::Png)
+            .map_err(|e| e.to_string())?;
+        img.into_rgba8().into_raw()
+    };
+
+    Ok(RgbaIcon::from_rgba(width, height, rgba))
+}
+
+#[cfg(not(feature = "framework-png"))]
+fn decode_png_to_rgba(_png_bytes: &[u8]) -> Result<RgbaIcon, String> {
+    Err("PNG icon decoding requires the 'framework-png' feature".to_string())
+}

@@ -35,6 +35,8 @@ pub use assets::icons as icons;
 // Compat shim — old `engine` path
 pub use self::core as engine;
 
+pub mod framework;
+
 // Re-export key types
 pub use app_context::ContextManager;
 pub use i18n::{Language, current_language, set_language, Translatable, TextKey, MonthKey, TooltipKey, month_names_short, t_tooltip};
@@ -50,6 +52,8 @@ pub use widgets::{
 };
 
 pub use ui::assets::cursors::CursorIcon;
+
+pub use platform::types::{RgbaIcon, RenderBackend, ResizeDirection};
 
 // Note: tier-organised registration shortcuts (`coord`, `ctx`, `lm`) live in
 // `uzor-framework::widgets` — this core crate exposes only the long-form

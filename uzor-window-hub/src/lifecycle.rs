@@ -55,47 +55,9 @@ pub enum RawHandle {
     CALayer(Box<dyn std::any::Any + Send + Sync>),
 }
 
-// ── RgbaIcon ──────────────────────────────────────────────────────────────────
+// ── RgbaIcon, ResizeDirection (canonical definitions in uzor::platform::types) ─
 
-/// RGBA image used to set the OS window or system-tray icon.
-///
-/// `pixels` must be exactly `width * height * 4` bytes in row-major RGBA order.
-#[derive(Debug, Clone)]
-pub struct RgbaIcon {
-    /// Width in pixels.
-    pub width: u32,
-    /// Height in pixels.
-    pub height: u32,
-    /// Raw RGBA pixel data: `width * height * 4` bytes.
-    pub pixels: Vec<u8>,
-}
-
-impl RgbaIcon {
-    /// Construct from an RGBA pixel buffer.
-    ///
-    /// # Panics (debug only)
-    ///
-    /// Asserts that `pixels.len() == width * height * 4` in debug builds.
-    pub fn from_rgba(width: u32, height: u32, pixels: Vec<u8>) -> Self {
-        debug_assert_eq!(
-            pixels.len(),
-            (width * height * 4) as usize,
-            "RgbaIcon: pixel buffer length must equal width*height*4"
-        );
-        Self { width, height, pixels }
-    }
-}
-
-// ── Resize direction ─────────────────────────────────────────────────────────
-
-/// Direction of a borderless-window resize drag, started via
-/// [`WindowProvider::drag_resize_window`].  Mirrors winit's `ResizeDirection`
-/// without forcing every consumer to depend on winit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResizeDirection {
-    North, South, East, West,
-    NorthEast, NorthWest, SouthEast, SouthWest,
-}
+pub use uzor::platform::types::{RgbaIcon, ResizeDirection};
 
 // ── WindowProvider trait ──────────────────────────────────────────────────────
 
