@@ -120,6 +120,23 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
         EventBuilder::DropdownSubmenuToggleFromSuffix { handle: handle.clone() },
     );
 
+    // Body-overflow chevron pager (Chevrons mode or Clip when content > frame).
+    {
+        use crate::layout::ChevronStepDirection;
+        for (suffix, dir) in [
+            ("chevron_up",    ChevronStepDirection::Up),
+            ("chevron_down",  ChevronStepDirection::Down),
+            ("chevron_left",  ChevronStepDirection::Left),
+            ("chevron_right", ChevronStepDirection::Right),
+        ] {
+            let cid = WidgetId(format!("{}:{}", id.0, suffix));
+            layout.dispatcher_mut().on_exact(
+                format!("{}:{}", id.0, suffix),
+                EventBuilder::ChevronStep { chevron_id: cid, direction: dir },
+            );
+        }
+    }
+
     // Auto-forward hovered_id (main panel) and submenu_hovered_id
     // (submenu panel) from the layout manager (L3 authoritative hover source).
     state.sync_flat_hover_from_layout(layout, &id.0);

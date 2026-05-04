@@ -164,6 +164,29 @@ pub fn register_input_coordinator_dropdown(
                         register_flat_hits(coord, &dd_id, sub_layout.content, sub_items, settings, "sub-item");
                     }
                 }
+
+                // Overflow guard — dropdown supports chevrons only.
+                // Whenever the natural item-list height exceeds the visible
+                // content rect (window squeezed the dropdown), register
+                // chevron strips so the user can page through the rest.
+                let (_, natural_h) = measure_flat(items, settings);
+                let body_scroll = crate::ui::widgets::composite::overflow::BodyScrollState {
+                    offset_x:  0.0,
+                    offset_y:  0.0,
+                    content_w: 0.0,
+                    content_h: natural_h,
+                };
+                let want_chevrons = match view.overflow {
+                    crate::types::OverflowMode::Chevrons => true,
+                    crate::types::OverflowMode::Clip
+                        if body_scroll.overflows(layout.content.width, layout.content.height).any() => true,
+                    _ => false,
+                };
+                if want_chevrons {
+                    crate::ui::widgets::composite::overflow::register_chevrons_helper(
+                        coord, &dd_id, layout.content, &body_scroll, layer,
+                    );
+                }
             }
         }
         DropdownRenderKind::Custom => {}
@@ -236,6 +259,29 @@ fn draw_dropdown_panels(
             } = &view.kind
             {
                 draw_flat_list(ctx, layout.content, items, *hovered_id, state, settings);
+
+                // Overflow guard paint — draw chevron strips on top of the
+                // item list when natural content height exceeds the visible
+                // content rect.
+                let (_, natural_h) = measure_flat(items, settings);
+                let body_scroll = crate::ui::widgets::composite::overflow::BodyScrollState {
+                    offset_x:  0.0,
+                    offset_y:  0.0,
+                    content_w: 0.0,
+                    content_h: natural_h,
+                };
+                let want_chevrons = match view.overflow {
+                    crate::types::OverflowMode::Chevrons => true,
+                    crate::types::OverflowMode::Clip
+                        if body_scroll.overflows(layout.content.width, layout.content.height).any() => true,
+                    _ => false,
+                };
+                if want_chevrons {
+                    let theme = settings.theme.as_ref();
+                    crate::ui::widgets::composite::overflow::draw_chevrons_helper(
+                        ctx, layout.content, &body_scroll, theme.bg(), theme.bg(),
+                    );
+                }
 
                 // Submenu sibling panel
                 if let Some((trigger_id, sub_items)) = submenu_items {
