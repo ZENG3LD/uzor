@@ -115,10 +115,10 @@ fn lower_overlay(el: &Element, path: &str, kind: OverlayKind) -> TokenStream {
     let dir_prop = find_prop(el, "dir").map(|p| p.value_tokens());
 
     let entry = match kind {
-        OverlayKind::Modal       => quote!(::uzor_framework::lm::modal),
-        OverlayKind::Popup       => quote!(::uzor_framework::lm::popup),
-        OverlayKind::Dropdown    => quote!(::uzor_framework::lm::dropdown),
-        OverlayKind::ContextMenu => quote!(::uzor_framework::lm::context_menu),
+        OverlayKind::Modal       => quote!(::uzor::framework::widgets::lm::modal),
+        OverlayKind::Popup       => quote!(::uzor::framework::widgets::lm::popup),
+        OverlayKind::Dropdown    => quote!(::uzor::framework::widgets::lm::dropdown),
+        OverlayKind::ContextMenu => quote!(::uzor::framework::widgets::lm::context_menu),
     };
 
     let body_rect_call = match kind {
@@ -144,7 +144,7 @@ fn lower_overlay(el: &Element, path: &str, kind: OverlayKind) -> TokenStream {
                 let weight = find_prop(ce, "flex").map(|p| p.value_tokens()).unwrap_or_else(|| quote!(1.0_f64));
                 let basis  = find_prop(ce, "size").map(|p| p.value_tokens()).unwrap_or_else(|| quote!(0.0_f64));
                 child_specs.push(quote! {
-                    ::uzor_framework::layout::FlexChild { basis: #basis, flex: #weight }
+                    ::uzor::framework::layout::FlexChild { basis: #basis, flex: #weight }
                 });
                 let i = element_idx;
                 let body = lower_element(ce, path, i);
@@ -157,7 +157,7 @@ fn lower_overlay(el: &Element, path: &str, kind: OverlayKind) -> TokenStream {
 
     let dir_tok = match dir_prop {
         Some(t) => quote!(#t),
-        None    => quote!(::uzor_framework::layout::FlexDir::Col),
+        None    => quote!(::uzor::framework::layout::FlexDir::Col),
     };
 
     quote! {
@@ -165,9 +165,9 @@ fn lower_overlay(el: &Element, path: &str, kind: OverlayKind) -> TokenStream {
             let __ok = #chain.build(layout, render).is_some();
             if __ok {
                 if let Some(__body_rect) = #body_rect_call {
-                    let __children: &[::uzor_framework::layout::FlexChild] = &[ #(#child_specs),* ];
+                    let __children: &[::uzor::framework::layout::FlexChild] = &[ #(#child_specs),* ];
                     let __rects: ::std::vec::Vec<::uzor::core::types::Rect> =
-                        ::uzor_framework::layout::flex_solve(__body_rect, #dir_tok, #gap as f64, #pad as f64, __children);
+                        ::uzor::framework::layout::flex_solve(__body_rect, #dir_tok, #gap as f64, #pad as f64, __children);
                     #(#child_lowers)*
                 }
             }
@@ -186,7 +186,7 @@ fn lower_chrome(el: &Element) -> TokenStream {
     let menu_btn   = find_prop(el, "show_menu").map(|p| p.value_tokens());
     let new_win    = find_prop(el, "show_new_window").map(|p| p.value_tokens());
 
-    let mut chain = quote!(::uzor_framework::lm::chrome());
+    let mut chain = quote!(::uzor::framework::widgets::lm::chrome());
     if let Some(t)  = tabs       { chain = quote!(#chain.tabs(#t)); }
     if let Some(a)  = active_tab { chain = quote!(#chain.active_tab(#a)); }
     if let Some(c)  = cursor     { chain = quote!(#chain.cursor(#c)); }
@@ -242,7 +242,7 @@ fn lower_flex(el: &Element, path: &str, dir: FlexDir) -> TokenStream {
                     .map(|p| p.value_tokens())
                     .unwrap_or_else(|| quote!(0.0_f64));
                 child_specs.push(quote! {
-                    ::uzor_framework::layout::FlexChild { basis: #basis, flex: #weight }
+                    ::uzor::framework::layout::FlexChild { basis: #basis, flex: #weight }
                 });
                 let i = element_idx;
                 let body = lower_element(ce, path, i);
@@ -261,15 +261,15 @@ fn lower_flex(el: &Element, path: &str, dir: FlexDir) -> TokenStream {
     }
 
     let dir_token = match dir {
-        FlexDir::Row => quote!(::uzor_framework::layout::FlexDir::Row),
-        FlexDir::Col => quote!(::uzor_framework::layout::FlexDir::Col),
+        FlexDir::Row => quote!(::uzor::framework::layout::FlexDir::Row),
+        FlexDir::Col => quote!(::uzor::framework::layout::FlexDir::Col),
     };
 
     quote! {
         {
-            let __children: &[::uzor_framework::layout::FlexChild] = &[ #(#child_specs),* ];
+            let __children: &[::uzor::framework::layout::FlexChild] = &[ #(#child_specs),* ];
             let __rects: ::std::vec::Vec<::uzor::core::types::Rect> =
-                ::uzor_framework::layout::flex_solve(__rect, #dir_token, #gap as f64, #pad as f64, __children);
+                ::uzor::framework::layout::flex_solve(__rect, #dir_token, #gap as f64, #pad as f64, __children);
             #(#child_lowers)*
         }
     }
@@ -299,7 +299,7 @@ fn lower_atom(el: &Element, path: &str, kind: AtomKind) -> TokenStream {
             let active = find_prop(el, "active").map(|p| p.value_tokens());
             let disabled = find_prop(el, "disabled").map(|p| p.value_tokens());
 
-            let mut chain = quote!(::uzor_framework::lm::button(#id_make, __rect));
+            let mut chain = quote!(::uzor::framework::widgets::lm::button(#id_make, __rect));
             if let Some(t) = text     { chain = quote!(#chain.text(#t)); }
             if let Some(a) = active   { chain = quote!(#chain.active(#a)); }
             if let Some(d) = disabled { chain = quote!(#chain.disabled(#d)); }
@@ -318,7 +318,7 @@ fn lower_atom(el: &Element, path: &str, kind: AtomKind) -> TokenStream {
                 .map(|p| p.value_tokens())
                 .unwrap_or_else(|| quote!(""));
             let color = find_prop(el, "color").map(|p| p.value_tokens());
-            let mut chain = quote!(::uzor_framework::lm::text(#id_make, __rect, #text));
+            let mut chain = quote!(::uzor::framework::widgets::lm::text(#id_make, __rect, #text));
             if let Some(c) = color { chain = quote!(#chain.color(#c)); }
             quote!({ #chain.build(layout, render); })
         }
@@ -327,7 +327,7 @@ fn lower_atom(el: &Element, path: &str, kind: AtomKind) -> TokenStream {
             let bind  = find_prop(el, "bind").map(|p| p.value_tokens());
             let label = find_prop(el, "label").map(|p| p.value_tokens());
             let checked = find_prop(el, "checked").map(|p| p.value_tokens());
-            let mut chain = quote!(::uzor_framework::lm::checkbox(#id_make, __rect));
+            let mut chain = quote!(::uzor::framework::widgets::lm::checkbox(#id_make, __rect));
             if let Some(b) = bind    { chain = quote!(#chain.bind(#b)); }
             if let Some(l) = label   { chain = quote!(#chain.label(#l)); }
             if let Some(c) = checked { chain = quote!(#chain.checked(#c)); }
@@ -337,14 +337,14 @@ fn lower_atom(el: &Element, path: &str, kind: AtomKind) -> TokenStream {
         AtomKind::Toggle => {
             let bind  = find_prop(el, "bind").map(|p| p.value_tokens());
             let label = find_prop(el, "label").map(|p| p.value_tokens());
-            let mut chain = quote!(::uzor_framework::lm::toggle(#id_make, __rect));
+            let mut chain = quote!(::uzor::framework::widgets::lm::toggle(#id_make, __rect));
             if let Some(b) = bind  { chain = quote!(#chain.bind(#b)); }
             if let Some(l) = label { chain = quote!(#chain.label(#l)); }
             quote!({ #chain.build(layout, render); })
         }
 
         AtomKind::Separator => {
-            let chain = quote!(::uzor_framework::lm::separator(#id_make, __rect));
+            let chain = quote!(::uzor::framework::widgets::lm::separator(#id_make, __rect));
             quote!({ #chain.build(layout, render); })
         }
     }

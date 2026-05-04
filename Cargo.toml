@@ -24,6 +24,8 @@ members = [
     "uzor-window-hub",
     # Icon utilities
     "uzor-icon",
+    # Layered demos
+    "uzor-examples",
 ]
 resolver = "2"
 
