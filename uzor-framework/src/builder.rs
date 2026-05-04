@@ -20,6 +20,18 @@ use uzor_window_hub::WindowProvider;
 
 use uzor_window_hub::RgbaIcon;
 
+/// Embedded default 32×32 RGBA PNG (amber square with "U").  Used when the
+/// app calls `.default_icon()` and as the fallback in `.run()` when no icon
+/// was supplied at all.
+const DEFAULT_ICON_PNG: &[u8] = include_bytes!("../assets/default_icon.png");
+
+/// Public accessor for the framework's bundled default icon bytes — handy
+/// for tests and downstream consumers that want to compose their own
+/// `RgbaIcon` from the same source.
+pub fn default_icon_bytes() -> &'static [u8] {
+    DEFAULT_ICON_PNG
+}
+
 use crate::app::{App, AppConfig, ClosureApp, NoPanel};
 use crate::runtime::{Runtime, RuntimeError};
 
@@ -280,10 +292,24 @@ where
     /// Set the window icon from a pre-built [`RgbaIcon`].
     ///
     /// The icon is applied to the OS window at creation time (taskbar,
-    /// Alt-Tab, window caption).
+    /// Alt-Tab, window caption) and is reused by the system tray when
+    /// `.tray(...)` is configured.
     pub fn icon(mut self, icon: RgbaIcon) -> Self {
         self.config.icon = Some(icon);
         self
+    }
+
+    /// Use the bundled default uzor icon (32×32 amber square with "U").
+    ///
+    /// Equivalent to calling `.icon_from_png(...)` with the framework's
+    /// embedded `assets/default_icon.png` bytes.  Useful for prototype apps
+    /// that don't yet have their own branding asset.
+    pub fn default_icon(self) -> Self {
+        // SAFETY: bundled byte slice is a known-good PNG; decoding cannot
+        // fail under normal conditions.
+        self.icon_from_png(default_icon_bytes()).unwrap_or_else(|_| {
+            unreachable!("bundled default_icon.png is malformed")
+        })
     }
 
     /// Set the window icon by decoding a PNG byte slice.
@@ -399,6 +425,12 @@ where
     /// [`RuntimeError::Window`] variant if window or event-loop creation fails,
     /// or [`RuntimeError::Backend`] on GPU initialisation failure.
     pub fn run(mut self) -> Result<(), RuntimeError> {
+        // Auto-apply the bundled default icon when the app didn't set one.
+        // Window taskbar, Alt-Tab, and tray all reuse this RgbaIcon.
+        if self.config.icon.is_none() {
+            self = self.default_icon();
+        }
+
         #[cfg(target_arch = "wasm32")]
         {
             return self.run_wasm();
