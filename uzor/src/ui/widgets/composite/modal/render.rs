@@ -1002,7 +1002,12 @@ pub fn register_body_overflow(
     state.body_viewport_h = body.height;
     state.body_viewport_w = body.width;
 
-    let scroll = crate::ui::widgets::composite::overflow::BodyScrollState {
+    use crate::ui::widgets::composite::overflow::{
+        compute_compress_factor, register_chevrons_helper, register_scrollbar_helper,
+        BodyScrollState, CompressFactor, ScrollAxis,
+    };
+
+    let scroll = BodyScrollState {
         offset_x:  state.body_scroll_x,
         offset_y:  state.scroll.offset,
         content_w: state.body_content_w,
@@ -1010,30 +1015,52 @@ pub fn register_body_overflow(
     };
     let layer = crate::input::core::coordinator::LayerId::main();
 
-    // Resolve effective overflow mode. `Clip` upgrades to `Chevrons` when
-    // the actual content no longer fits — post-resize fallback.
+    // Reset per-frame compress factor before resolving — Clip / Chevrons /
+    // Scrollbar all imply identity (no compression).
+    state.body_compress_factor = CompressFactor::one();
+
+    // Compress mode: derive scale factor first. If content still overflows
+    // even at the minimum factor, fall back to chevrons so the user can
+    // page through what didn't fit.
     let overflowing = scroll.overflows(body.width, body.height).any();
-    let effective = match view.overflow {
+    let mut effective = match view.overflow {
         crate::types::OverflowMode::Scrollbar => crate::types::OverflowMode::Scrollbar,
         crate::types::OverflowMode::Chevrons  => crate::types::OverflowMode::Chevrons,
+        crate::types::OverflowMode::Compress  => {
+            let factor = compute_compress_factor(
+                state.body_content_w, state.body_content_h, body, 0.6,
+            );
+            state.body_compress_factor = factor;
+            // After applying factor, does content still overflow?
+            let post_w = state.body_content_w * factor.sx;
+            let post_h = state.body_content_h * factor.sy;
+            if post_w > body.width + 0.5 || post_h > body.height + 0.5 {
+                crate::types::OverflowMode::Chevrons
+            } else {
+                crate::types::OverflowMode::Compress
+            }
+        }
+        // Clip upgrades to Chevrons when the actual content overflows
+        // (post-resize fallback).
         _ if overflowing => crate::types::OverflowMode::Chevrons,
         other             => other,
     };
+    // Compress doesn't register any input-overlay; it only set state.
+    // Treat as Clip from the registration point of view.
+    if matches!(effective, crate::types::OverflowMode::Compress) {
+        effective = crate::types::OverflowMode::Clip;
+    }
 
     match effective {
         crate::types::OverflowMode::Scrollbar => {
-            if let Some(track) = crate::ui::widgets::composite::overflow::register_scrollbar_helper(
-                coord, modal_id, body, &scroll,
-                crate::ui::widgets::composite::overflow::ScrollAxis::Vertical,
-                &layer,
+            if let Some(track) = register_scrollbar_helper(
+                coord, modal_id, body, &scroll, ScrollAxis::Vertical, &layer,
             ) {
                 state.body_scroll_track = Some(track);
             }
         }
         crate::types::OverflowMode::Chevrons => {
-            crate::ui::widgets::composite::overflow::register_chevrons_helper(
-                coord, modal_id, body, &scroll, &layer,
-            );
+            register_chevrons_helper(coord, modal_id, body, &scroll, &layer);
         }
         _ => {}
     }

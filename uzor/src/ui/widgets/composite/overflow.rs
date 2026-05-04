@@ -305,10 +305,17 @@ pub fn draw_scrollbar_helper(
 
 /// Per-axis scale factors (0.0..1.0) for compressing children when content
 /// is wider/taller than the available rect.
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// `Default` is identity (`1.0, 1.0`) so composites and callers can keep
+/// the field around even when not in Compress mode.
+#[derive(Debug, Clone, Copy)]
 pub struct CompressFactor {
     pub sx: f64,
     pub sy: f64,
+}
+
+impl Default for CompressFactor {
+    fn default() -> Self { Self { sx: 1.0, sy: 1.0 } }
 }
 
 impl CompressFactor {

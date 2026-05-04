@@ -78,9 +78,22 @@ pub struct ModalState {
     /// Horizontal scroll offset (Chevrons / Scrollbar overflow). Vertical
     /// offset lives on `scroll.offset` (legacy).
     pub body_scroll_x: f64,
+
+    /// Per-axis scale factor (1.0 = no compression) computed by the
+    /// composite when `view.overflow == Compress`. Caller-driven body
+    /// content reads this via `compress_factor()` and multiplies its own
+    /// font sizes / paddings / child rects by the factor. Stays at 1.0
+    /// for Clip / Chevrons / Scrollbar modes.
+    pub body_compress_factor: super::super::overflow::CompressFactor,
 }
 
 impl ModalState {
+    /// Per-axis compression factor for caller-driven body content. Returns
+    /// identity `(1.0, 1.0)` outside Compress mode.
+    pub fn compress_factor(&self) -> super::super::overflow::CompressFactor {
+        self.body_compress_factor
+    }
+
     /// Begin a drag gesture at `cursor_pos` with the modal currently at `modal_origin`.
     pub fn start_drag(&mut self, cursor_pos: (f64, f64), modal_origin: (f64, f64)) {
         self.dragging = true;

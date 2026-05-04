@@ -2176,21 +2176,35 @@ impl AppState {
                         );
                     }
                     ModalKind::SideTabsDemo => {
+                        // Read the composite-computed compress factor and
+                        // apply it to font sizes + offsets.  Identity (1.0)
+                        // outside Compress mode so this code is safe to keep
+                        // unconditionally.
+                        let factor = self.layout.modal(&self.modal_h).compress_factor();
+                        let scale = factor.sx.min(factor.sy);
+                        let pad   = 16.0 * factor.sx;
+                        let font_a = (13.0 * scale).max(8.0);
+                        let font_b = (12.0 * scale).max(8.0);
                         render.set_fill_color("#d1d4dc");
-                        render.set_font("13px sans-serif");
+                        render.set_font(&format!("{}px sans-serif", font_a as i32));
                         render.set_text_align(TextAlign::Left);
                         render.set_text_baseline(TextBaseline::Top);
                         render.fill_text(
-                            "SideTabs — vertical icon sidebar inside the modal.",
-                            body_rect.x + 16.0,
-                            body_rect.y + 16.0,
+                            "SideTabs (Compress) — resize the modal smaller; the body text scales down.",
+                            body_rect.x + pad,
+                            body_rect.y + pad,
                         );
                         render.set_fill_color("#7080a0");
-                        render.set_font("12px sans-serif");
+                        render.set_font(&format!("{}px sans-serif", font_b as i32));
                         render.fill_text(
                             "Sidebar tabs (decorative): Profile / Account / Privacy / Notifications.",
-                            body_rect.x + 16.0,
-                            body_rect.y + 40.0,
+                            body_rect.x + pad,
+                            body_rect.y + pad + 24.0 * factor.sy,
+                        );
+                        render.fill_text(
+                            &format!("compress factor: ({:.2}, {:.2})", factor.sx, factor.sy),
+                            body_rect.x + pad,
+                            body_rect.y + pad + 48.0 * factor.sy,
                         );
                     }
                     ModalKind::WizardDemo => {
