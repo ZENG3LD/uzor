@@ -287,8 +287,39 @@ impl<'a> ButtonBuilder<'a> {
 
 use crate::ui::widgets::atomic::text::input::register_layout_manager_text;
 use crate::ui::widgets::atomic::text::settings::TextSettings;
+use crate::ui::widgets::atomic::text::style::DefaultTextStyle;
+use crate::ui::widgets::atomic::text::theme::{DefaultTextTheme, TextTheme};
 use crate::ui::widgets::atomic::text::types::{TextOverflow, TextView};
 use crate::render::{TextAlign, TextBaseline};
+
+struct StyledTextTheme {
+    color:       String,
+    color_hover: String,
+}
+
+impl StyledTextTheme {
+    fn from_styles(s: &StyleManager) -> Self {
+        Self {
+            color:       s.color_or_owned("fg_1", "#d1d4dc"),
+            color_hover: s.color_or_owned("fg_0", "#ffffff"),
+        }
+    }
+}
+
+impl TextTheme for StyledTextTheme {
+    fn text_color(&self)       -> &str { &self.color }
+    fn text_color_hover(&self) -> &str { &self.color_hover }
+}
+
+fn text_settings_from_styles(s: &StyleManager) -> TextSettings {
+    TextSettings {
+        theme: Box::new(StyledTextTheme::from_styles(s)),
+        style: Box::new(DefaultTextStyle),
+    }
+}
+
+#[allow(dead_code)]
+fn _suppress_default_text_theme_unused(_t: &DefaultTextTheme) {}
 
 /// Chainable builder for a text label.
 pub struct TextBuilder<'a> {
@@ -340,7 +371,7 @@ impl<'a> TextBuilder<'a> {
             overflow: self.overflow,
             hovered:  false,
         };
-        let settings = self.settings.unwrap_or_default();
+        let settings = self.settings.unwrap_or_else(|| text_settings_from_styles(layout.styles()));
         register_layout_manager_text(
             layout, render, self.parent, self.id, self.rect,
             WidgetState::Normal, &view, &settings,

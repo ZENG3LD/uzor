@@ -123,6 +123,13 @@ pub fn chrome_hit_test(
     let ty = rect.y;
     let by = rect.y + h;
 
+    // Outside chrome strip vertically — bail before any resize-edge match,
+    // otherwise body clicks fall into ResizeBottom because `py > by - bw`
+    // is true for the entire window body below the chrome strip.
+    if py < rect.y || py > rect.y + h {
+        return ChromeHit::None;
+    }
+
     // --- Corners (take precedence over edges) ---
     if px < lx + bw && py < ty + bw {
         return ChromeHit::ResizeCorner(ResizeCorner::TopLeft);
@@ -137,16 +144,11 @@ pub fn chrome_hit_test(
         return ChromeHit::ResizeCorner(ResizeCorner::BottomRight);
     }
 
-    // --- Edges ---
+    // --- Edges (only inside the chrome strip) ---
     if py < ty + bw  { return ChromeHit::ResizeTop;    }
     if py > by - bw  { return ChromeHit::ResizeBottom; }
     if px < lx + bw  { return ChromeHit::ResizeLeft;   }
     if px > rx - bw  { return ChromeHit::ResizeRight;  }
-
-    // Outside chrome strip vertically
-    if py < rect.y || py > rect.y + h {
-        return ChromeHit::None;
-    }
 
     // Not a Custom kind — proceed with slot hit-testing
     if matches!(kind, ChromeRenderKind::Custom(_)) {
