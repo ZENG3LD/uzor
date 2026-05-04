@@ -515,77 +515,16 @@ pub fn draw_body_overflow_chevrons(
     let frame = resolve_frame(rect, state, kind);
     let body  = body_rect(frame, view, settings, kind);
     if body.width <= 0.0 || body.height <= 0.0 { return; }
-
-    use crate::ui::widgets::atomic::chevron::{
-        draw_chevron,
-        settings::ChevronSettings,
-        types::{ChevronDirection, ChevronUseCase, ChevronView, ChevronVisualKind,
-                HitAreaPolicy, PlacementPolicy, VisibilityPolicy},
-    };
-    let strip = 26.0_f64;
     let theme = settings.theme.as_ref();
-    let chev_settings = ChevronSettings::default();
-
-    if state.body_content_h > body.height + 0.5 {
-        let up = Rect::new(body.x, body.y, body.width, strip);
-        let dn = Rect::new(body.x, body.y + body.height - strip, body.width, strip);
-        let max_v = (state.body_content_h - body.height).max(0.0);
-        let has_back = state.scroll.offset > 0.5;
-        let has_fwd  = state.scroll.offset < max_v - 0.5;
-        ctx.set_fill_color(theme.bg());
-        ctx.fill_rect(up.x, up.y, up.width, up.height);
-        ctx.fill_rect(dn.x, dn.y, dn.width, dn.height);
-        let v_up = ChevronView {
-            direction:   ChevronDirection::Up,
-            use_case:    ChevronUseCase::PixelScrollStep,
-            visibility:  VisibilityPolicy::WhenOverflow { has_more: has_back },
-            placement:   PlacementPolicy::Overlay,
-            hit_area:    HitAreaPolicy::Visual,
-            visual_kind: ChevronVisualKind::Stroked,
-            ..Default::default()
-        };
-        let v_dn = ChevronView {
-            direction:   ChevronDirection::Down,
-            use_case:    ChevronUseCase::PixelScrollStep,
-            visibility:  VisibilityPolicy::WhenOverflow { has_more: has_fwd },
-            placement:   PlacementPolicy::Overlay,
-            hit_area:    HitAreaPolicy::Visual,
-            visual_kind: ChevronVisualKind::Stroked,
-            ..Default::default()
-        };
-        draw_chevron(ctx, up, &v_up, &chev_settings);
-        draw_chevron(ctx, dn, &v_dn, &chev_settings);
-    }
-    if state.body_content_w > body.width + 0.5 {
-        let lf = Rect::new(body.x, body.y, strip, body.height);
-        let rt = Rect::new(body.x + body.width - strip, body.y, strip, body.height);
-        let max_h = (state.body_content_w - body.width).max(0.0);
-        let has_back = state.body_scroll_x > 0.5;
-        let has_fwd  = state.body_scroll_x < max_h - 0.5;
-        ctx.set_fill_color(theme.bg());
-        ctx.fill_rect(lf.x, lf.y, lf.width, lf.height);
-        ctx.fill_rect(rt.x, rt.y, rt.width, rt.height);
-        let v_lf = ChevronView {
-            direction:   ChevronDirection::Left,
-            use_case:    ChevronUseCase::PixelScrollStep,
-            visibility:  VisibilityPolicy::WhenOverflow { has_more: has_back },
-            placement:   PlacementPolicy::Overlay,
-            hit_area:    HitAreaPolicy::Visual,
-            visual_kind: ChevronVisualKind::Stroked,
-            ..Default::default()
-        };
-        let v_rt = ChevronView {
-            direction:   ChevronDirection::Right,
-            use_case:    ChevronUseCase::PixelScrollStep,
-            visibility:  VisibilityPolicy::WhenOverflow { has_more: has_fwd },
-            placement:   PlacementPolicy::Overlay,
-            hit_area:    HitAreaPolicy::Visual,
-            visual_kind: ChevronVisualKind::Stroked,
-            ..Default::default()
-        };
-        draw_chevron(ctx, lf, &v_lf, &chev_settings);
-        draw_chevron(ctx, rt, &v_rt, &chev_settings);
-    }
+    let scroll = crate::ui::widgets::composite::overflow::BodyScrollState {
+        offset_x:  state.body_scroll_x,
+        offset_y:  state.scroll.offset,
+        content_w: state.body_content_w,
+        content_h: state.body_content_h,
+    };
+    crate::ui::widgets::composite::overflow::draw_chevrons_helper(
+        ctx, body, &scroll, theme.bg(), theme.bg(),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1060,61 +999,41 @@ pub fn register_body_overflow(
     if body.width <= 0.0 || body.height <= 0.0 {
         return;
     }
-    // Cache body geometry on state so input helpers can drive scroll math
-    // without the host having to remember anything.
     state.body_viewport_h = body.height;
     state.body_viewport_w = body.width;
 
-    // Non-Scrollbar modes share the chevron registration path. `Clip` only
-    // registers chevrons when the body actually overflows (e.g. user shrank
-    // the modal past content size); otherwise it stays an empty body.
-    let v_overflow_now = state.body_content_h > body.height + 0.5;
-    let h_overflow_now = state.body_content_w > body.width  + 0.5;
-    let chevron_path = match view.overflow {
-        crate::types::OverflowMode::Scrollbar => false,
-        crate::types::OverflowMode::Chevrons  => true,
-        // Clip + content overflows → fall back to chevrons so the user can
-        // page through what got hidden by the resize.
-        _ => v_overflow_now || h_overflow_now,
+    let scroll = crate::ui::widgets::composite::overflow::BodyScrollState {
+        offset_x:  state.body_scroll_x,
+        offset_y:  state.scroll.offset,
+        content_w: state.body_content_w,
+        content_h: state.body_content_h,
     };
-    match (view.overflow, chevron_path) {
-        (crate::types::OverflowMode::Scrollbar, _) => {
-            let track_w = 8.0_f64;
-            let track = Rect::new(body.x + body.width - track_w, body.y, track_w, body.height);
-            state.body_scroll_track = Some(track);
-            coord.register_child(modal_id, format!("{}:scrollbar_track", modal_id.0.0),
-                WidgetKind::ScrollbarTrack, track, Sense::CLICK);
-            coord.register_child(modal_id, format!("{}:scrollbar_handle", modal_id.0.0),
-                WidgetKind::ScrollbarHandle, track, Sense::DRAG | Sense::HOVER);
+    let layer = crate::input::core::coordinator::LayerId::main();
+
+    // Resolve effective overflow mode. `Clip` upgrades to `Chevrons` when
+    // the actual content no longer fits — post-resize fallback.
+    let overflowing = scroll.overflows(body.width, body.height).any();
+    let effective = match view.overflow {
+        crate::types::OverflowMode::Scrollbar => crate::types::OverflowMode::Scrollbar,
+        crate::types::OverflowMode::Chevrons  => crate::types::OverflowMode::Chevrons,
+        _ if overflowing => crate::types::OverflowMode::Chevrons,
+        other             => other,
+    };
+
+    match effective {
+        crate::types::OverflowMode::Scrollbar => {
+            if let Some(track) = crate::ui::widgets::composite::overflow::register_scrollbar_helper(
+                coord, modal_id, body, &scroll,
+                crate::ui::widgets::composite::overflow::ScrollAxis::Vertical,
+                &layer,
+            ) {
+                state.body_scroll_track = Some(track);
+            }
         }
-        (_, true) => {
-            let strip = 26.0_f64;
-            let v_overflow = v_overflow_now;
-            let h_overflow = h_overflow_now;
-            // Carve corners off the vertical strips when horizontal
-            // strips are also present, so the four hit-zones don't
-            // overlap (last-registered wins would otherwise eat the
-            // corners of the vertical strips).
-            let inset_x = if h_overflow { strip } else { 0.0 };
-            let inset_y = if v_overflow { strip } else { 0.0 };
-            if v_overflow {
-                let up_w = (body.width - inset_x * 2.0).max(0.0);
-                let up = Rect::new(body.x + inset_x, body.y, up_w, strip);
-                let dn = Rect::new(body.x + inset_x, body.y + body.height - strip, up_w, strip);
-                coord.register_child(modal_id, format!("{}:chevron_up", modal_id.0.0),
-                    WidgetKind::Button, up, Sense::CLICK | Sense::HOVER);
-                coord.register_child(modal_id, format!("{}:chevron_down", modal_id.0.0),
-                    WidgetKind::Button, dn, Sense::CLICK | Sense::HOVER);
-            }
-            if h_overflow {
-                let lf_h = (body.height - inset_y * 2.0).max(0.0);
-                let lf = Rect::new(body.x, body.y + inset_y, strip, lf_h);
-                let rt = Rect::new(body.x + body.width - strip, body.y + inset_y, strip, lf_h);
-                coord.register_child(modal_id, format!("{}:chevron_left", modal_id.0.0),
-                    WidgetKind::Button, lf, Sense::CLICK | Sense::HOVER);
-                coord.register_child(modal_id, format!("{}:chevron_right", modal_id.0.0),
-                    WidgetKind::Button, rt, Sense::CLICK | Sense::HOVER);
-            }
+        crate::types::OverflowMode::Chevrons => {
+            crate::ui::widgets::composite::overflow::register_chevrons_helper(
+                coord, modal_id, body, &scroll, &layer,
+            );
         }
         _ => {}
     }
