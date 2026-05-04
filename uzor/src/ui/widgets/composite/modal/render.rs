@@ -492,12 +492,14 @@ fn draw_modal_with_coord(
     // `draw_body_overflow_chevrons`.
 }
 
-/// Paint the body chevron overlays (top / bottom / left / right strips
-/// with a `▲▼◀▶` paging chevron). Call AFTER drawing body content so
-/// the chevrons sit on top of every body widget.
+/// Paint the active overflow guard (one of: chevrons, scrollbar, compress).
+/// Call AFTER drawing body content so guards sit on top.
 ///
-/// No-op when `view.overflow != OverflowMode::Chevrons` or no overflow
-/// on the corresponding axis.
+/// Picks exactly one of the three reactions based on `view.overflow`:
+/// - `Chevrons`  → paging arrows on overflowing edges
+/// - `Scrollbar` → already drawn by the composite (step 10), nothing here
+/// - `Compress`  → already applied factor, nothing to overlay
+/// - `Clip`      → falls back to `Chevrons` when content exceeds body
 pub fn draw_body_overflow_chevrons(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
@@ -506,25 +508,23 @@ pub fn draw_body_overflow_chevrons(
     settings: &ModalSettings,
     kind:     &ModalRenderKind,
 ) {
-    // Chevrons appear in two cases:
-    //   1. caller asked for them (`OverflowMode::Chevrons`), or
-    //   2. caller picked `Clip` and the actual content no longer fits
-    //      (post-resize fallback).
-    // Scrollbar owns its own track. Compress already squeezed the content
-    // to fit and never falls back to chevrons.
-    if matches!(view.overflow,
-        crate::types::OverflowMode::Scrollbar | crate::types::OverflowMode::Compress
-    ) { return; }
     let frame = resolve_frame(rect, state, kind);
     let body  = body_rect(frame, view, settings, kind);
     if body.width <= 0.0 || body.height <= 0.0 { return; }
-    let theme = settings.theme.as_ref();
     let scroll = crate::ui::widgets::composite::overflow::BodyScrollState {
         offset_x:  state.body_scroll_x,
         offset_y:  state.scroll.offset,
         content_w: state.body_content_w,
         content_h: state.body_content_h,
     };
+    let overflowing = scroll.overflows(body.width, body.height).any();
+    let want_chevrons = match view.overflow {
+        crate::types::OverflowMode::Chevrons             => true,
+        crate::types::OverflowMode::Clip if overflowing  => true,
+        _ => false,
+    };
+    if !want_chevrons { return; }
+    let theme = settings.theme.as_ref();
     crate::ui::widgets::composite::overflow::draw_chevrons_helper(
         ctx, body, &scroll, theme.bg(), theme.bg(),
     );

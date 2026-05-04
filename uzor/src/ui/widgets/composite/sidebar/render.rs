@@ -64,7 +64,7 @@ pub fn register_input_coordinator_sidebar(
     coord:    &mut InputCoordinator,
     id:       impl Into<WidgetId>,
     rect:     Rect,
-    state:    &SidebarState,
+    state:    &mut SidebarState,
     view:     &SidebarView<'_>,
     settings: &SidebarSettings,
     kind:     &SidebarRenderKind,
@@ -182,14 +182,28 @@ pub fn register_input_coordinator_sidebar(
         Sense::SCROLL,
     );
 
-    // --- Chevron pager hit zones (OverflowMode::Chevrons) -------------------
-    // Two 16-px overlay strips at the top and bottom of the body region.
-    // Visible only when content overflows; each chevron pages the body
-    // scroll offset by one viewport.
-    if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
-        let content_h  = view.content_height;
-        let viewport_h = layout.body.height;
-        if content_h > viewport_h && viewport_h > 0.0 {
+    // --- Body overflow guard — exactly one of Chevrons / Scrollbar /
+    //     Compress is active per frame.  Scrollbar is registered elsewhere
+    //     in this composite's input pipeline; here we handle Chevrons
+    //     (with Clip-fallback) and write the Compress factor to state.
+    let content_h  = view.content_height;
+    let viewport_h = layout.body.height;
+    let overflowing = content_h > viewport_h && viewport_h > 0.0;
+
+    let effective = match view.overflow {
+        crate::types::OverflowMode::Chevrons             => crate::types::OverflowMode::Chevrons,
+        crate::types::OverflowMode::Scrollbar            => crate::types::OverflowMode::Scrollbar,
+        crate::types::OverflowMode::Compress             => crate::types::OverflowMode::Compress,
+        crate::types::OverflowMode::Clip if overflowing  => crate::types::OverflowMode::Chevrons,
+        other                                            => other,
+    };
+
+    match effective {
+        crate::types::OverflowMode::Chevrons => {
+            // Sidebar's bespoke chevron-strip layout (top + bottom only,
+            // shown conditionally on scroll bounds — distinct from the
+            // generic register_chevrons_helper because it uses
+            // ScrollChevron WidgetKind for legacy ScrollChevronStep events).
             let panel_key   = view.active_tab.unwrap_or("default");
             let cur_offset  = state.scroll_per_panel.get(panel_key).map(|s| s.offset).unwrap_or(0.0);
             let max_offset  = (content_h - viewport_h).max(0.0);
@@ -212,6 +226,23 @@ pub fn register_input_coordinator_sidebar(
                     Sense::CLICK | Sense::HOVER,
                 );
             }
+        }
+        crate::types::OverflowMode::Compress => {
+            // Compute factor — caller squeezes body content by this scale.
+            let body_for_factor = crate::types::Rect::new(
+                layout.body.x, layout.body.y, layout.body.width, layout.body.height,
+            );
+            let factor = crate::ui::widgets::composite::overflow::compute_compress_factor(
+                view.content_height,  // treat content as 1D height for sidebar
+                view.content_height,
+                body_for_factor, 0.4,
+            );
+            state.body_compress_factor = factor;
+        }
+        // Scrollbar registered separately upstream; Clip without overflow = no-op.
+        _ => {
+            state.body_compress_factor =
+                crate::ui::widgets::composite::overflow::CompressFactor::one();
         }
     }
 

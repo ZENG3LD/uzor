@@ -453,7 +453,11 @@ fn draw_panel_with_coord(
         );
     }
 
-    // --- 7. Body chevrons (Chevrons mode or Clip-fallback when overflowing) -
+    // --- 7. Body overflow guard — exactly one of Chevrons / Scrollbar /
+    //         Compress is active. Scrollbar already painted via the legacy
+    //         show_scrollbar branch (step 6); Compress applied factor in
+    //         input registration. Chevrons paint here, with Clip falling
+    //         back to Chevrons only when content actually overflows.
     {
         let scroll = crate::ui::widgets::composite::overflow::BodyScrollState {
             offset_x:  0.0,
@@ -462,8 +466,11 @@ fn draw_panel_with_coord(
             content_h: view.content_height,
         };
         let overflowing = scroll.overflows(layout.body.width, layout.body.height).any();
-        let want_chevrons = matches!(view.overflow, crate::types::OverflowMode::Chevrons)
-            || (matches!(view.overflow, crate::types::OverflowMode::Clip | crate::types::OverflowMode::Compress) && overflowing);
+        let want_chevrons = match view.overflow {
+            crate::types::OverflowMode::Chevrons             => true,
+            crate::types::OverflowMode::Clip if overflowing  => true,
+            _ => false,
+        };
         if want_chevrons {
             crate::ui::widgets::composite::overflow::draw_chevrons_helper(
                 ctx, layout.body, &scroll, theme.bg(), theme.bg(),

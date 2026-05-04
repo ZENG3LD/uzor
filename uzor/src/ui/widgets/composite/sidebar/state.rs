@@ -67,6 +67,12 @@ pub struct SidebarState {
 
     /// Id of the header action button the pointer is currently hovering over.
     pub header_action_hovered: Option<String>,
+
+    /// Per-axis compression factor written by the composite when
+    /// `view.overflow == Compress` — caller multiplies its body content
+    /// by `body_compress_factor.sx / .sy`.  Identity `(1.0, 1.0)` outside
+    /// Compress mode.
+    pub body_compress_factor: super::super::overflow::CompressFactor,
 }
 
 impl Default for SidebarState {
@@ -82,11 +88,18 @@ impl Default for SidebarState {
             scroll_per_panel: HashMap::new(),
             resize_drag: None,
             header_action_hovered: None,
+            body_compress_factor: super::super::overflow::CompressFactor::one(),
         }
     }
 }
 
 impl SidebarState {
+    /// Per-axis compression factor for caller-driven body content.
+    /// Returns identity outside Compress mode.
+    pub fn compress_factor(&self) -> super::super::overflow::CompressFactor {
+        self.body_compress_factor
+    }
+
     // -------------------------------------------------------------------------
     // Default sizing
     // -------------------------------------------------------------------------

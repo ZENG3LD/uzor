@@ -55,7 +55,9 @@ pub fn register_input_coordinator_popup(
     popup_id
 }
 
-/// Body overflow hit-rects (Scrollbar / Chevrons / fallback when Clip overflows).
+/// Body overflow hit-rects (Chevrons only — popup is auto-sized so neither
+/// Scrollbar nor Compress make sense).  Clip falls back to Chevrons when
+/// dynamic content exceeds the body.
 fn register_popup_body_overflow(
     coord:    &mut InputCoordinator,
     popup_id: &CompositeId,
@@ -74,28 +76,15 @@ fn register_popup_body_overflow(
     };
     let layer = crate::input::core::coordinator::LayerId::main();
     let overflowing = scroll.overflows(body.width, body.height).any();
-    let effective = match view.overflow {
-        crate::types::OverflowMode::Scrollbar => crate::types::OverflowMode::Scrollbar,
-        crate::types::OverflowMode::Chevrons  => crate::types::OverflowMode::Chevrons,
-        _ if overflowing => crate::types::OverflowMode::Chevrons,
-        other             => other,
+    let want_chevrons = match view.overflow {
+        crate::types::OverflowMode::Chevrons             => true,
+        crate::types::OverflowMode::Clip if overflowing  => true,
+        _ => false,
     };
-    match effective {
-        crate::types::OverflowMode::Scrollbar => {
-            if let Some(track) = crate::ui::widgets::composite::overflow::register_scrollbar_helper(
-                coord, popup_id, body, &scroll,
-                crate::ui::widgets::composite::overflow::ScrollAxis::Vertical,
-                &layer,
-            ) {
-                state.body_scroll_track = Some(track);
-            }
-        }
-        crate::types::OverflowMode::Chevrons => {
-            crate::ui::widgets::composite::overflow::register_chevrons_helper(
-                coord, popup_id, body, &scroll, &layer,
-            );
-        }
-        _ => {}
+    if want_chevrons {
+        crate::ui::widgets::composite::overflow::register_chevrons_helper(
+            coord, popup_id, body, &scroll, &layer,
+        );
     }
 }
 
@@ -166,31 +155,26 @@ fn draw_popup(
 
     // 4. Body — caller draws after this returns inside `body_rect(frame)`.
 
-    // 5. Body scrollbar (Scrollbar overflow only).
-    if matches!(view.overflow, crate::types::OverflowMode::Scrollbar) {
-        if let Some(track) = state.body_scroll_track {
-            use crate::ui::widgets::atomic::scrollbar::{
-                render::{draw_scrollbar, ScrollbarView, ScrollbarVisualState},
-                style::StandardScrollbarStyle,
-                theme::DefaultScrollbarTheme,
-            };
-            let sb_style = StandardScrollbarStyle::default();
-            let sb_theme = DefaultScrollbarTheme::default();
-            let visual_state = if state.scroll.is_dragging {
-                ScrollbarVisualState::Dragging
-            } else {
-                ScrollbarVisualState::Active
-            };
-            let sv = ScrollbarView {
-                content_height:  state.body_content_h,
-                viewport_height: state.body_viewport_h,
-                scroll_offset:   state.scroll.offset,
-                state:           visual_state,
-                drag_pos_y:      None,
-                style:           &sb_style,
-                theme:           &sb_theme,
-            };
-            let _ = draw_scrollbar(ctx, track, &sv);
+    // 5. Body chevrons — popup only supports paging arrows. Scrollbar /
+    //    Compress are non-applicable (popup auto-sizes itself, doesn't resize).
+    let body = body_rect(frame, settings);
+    if body.width > 0.0 && body.height > 0.0 {
+        let scroll = crate::ui::widgets::composite::overflow::BodyScrollState {
+            offset_x:  0.0,
+            offset_y:  state.scroll.offset,
+            content_w: 0.0,
+            content_h: state.body_content_h,
+        };
+        let overflowing = scroll.overflows(body.width, body.height).any();
+        let want_chevrons = match view.overflow {
+            crate::types::OverflowMode::Chevrons             => true,
+            crate::types::OverflowMode::Clip if overflowing  => true,
+            _ => false,
+        };
+        if want_chevrons {
+            crate::ui::widgets::composite::overflow::draw_chevrons_helper(
+                ctx, body, &scroll, theme.bg(), theme.bg(),
+            );
         }
     }
 }

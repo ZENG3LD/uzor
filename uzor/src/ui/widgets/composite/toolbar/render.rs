@@ -52,7 +52,14 @@ pub fn register_input_coordinator_toolbar(
         }
         ToolbarRenderKind::Horizontal | ToolbarRenderKind::Inline => {
             register_horizontal_items(coord, &toolbar_id, rect, view, settings, state);
-            if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
+            // Chevron registration: explicit Chevrons OR Clip-fallback when
+            // content actually overflows the bar (post window-resize).
+            let bar_extent = rect.width;
+            let total = content_extent(view, settings, false);
+            let overflowing = total > bar_extent + 0.5;
+            let want_chevrons = matches!(view.overflow, crate::types::OverflowMode::Chevrons)
+                || (matches!(view.overflow, crate::types::OverflowMode::Clip) && overflowing);
+            if want_chevrons {
                 register_overflow_chevrons(coord, &toolbar_id, rect, view, settings, false, layer);
             }
             if let Some(edge) = view.resize_edge {
@@ -61,7 +68,12 @@ pub fn register_input_coordinator_toolbar(
         }
         ToolbarRenderKind::Vertical => {
             register_vertical_items(coord, &toolbar_id, rect, view, settings, state);
-            if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
+            let bar_extent = rect.height;
+            let total = content_extent(view, settings, true);
+            let overflowing = total > bar_extent + 0.5;
+            let want_chevrons = matches!(view.overflow, crate::types::OverflowMode::Chevrons)
+                || (matches!(view.overflow, crate::types::OverflowMode::Clip) && overflowing);
+            if want_chevrons {
                 register_overflow_chevrons(coord, &toolbar_id, rect, view, settings, true, layer);
             }
             if let Some(edge) = view.resize_edge {
@@ -179,8 +191,18 @@ fn draw_toolbar_internal(
         }
     }
 
-    // 6. Overflow chevrons — only when policy is Chevrons and content overflows.
-    if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
+    // 6. Overflow chevrons — toolbar's only overflow guard.  Paint when
+    //    policy is Chevrons OR when Clip content overflowed the bar after
+    //    a window resize.
+    let bar_extent = if is_vertical { rect.height } else { rect.width };
+    let total = content_extent(view, settings, is_vertical);
+    let overflowing = total > bar_extent + 0.5;
+    let want_chevrons = match view.overflow {
+        crate::types::OverflowMode::Chevrons             => true,
+        crate::types::OverflowMode::Clip if overflowing  => true,
+        _ => false,
+    };
+    if want_chevrons {
         draw_overflow_chevrons(ctx, rect, view, settings, state, is_vertical);
     }
 }
