@@ -39,6 +39,7 @@
 use winit::event_loop::{ActiveEventLoop, ControlFlow};
 
 use uzor::docking::panels::DockPanel;
+use uzor::input::core::event_processor::EventProcessor;
 use uzor::input::InputState;
 use uzor::layout::LayoutManager;
 use uzor_render_hub::{
@@ -47,8 +48,6 @@ use uzor_render_hub::{
 };
 use uzor_window_hub::lifecycle::WindowProvider;
 
-#[cfg(not(target_arch = "wasm32"))]
-use uzor_window_desktop::WinitInputBridge;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::event::WindowEvent;
 #[cfg(not(target_arch = "wasm32"))]
@@ -110,13 +109,18 @@ pub struct Runtime<A: App<P>, P: DockPanel> {
     pub(crate) factory: Option<Box<dyn RenderSurfaceFactory>>,
     /// Layout manager.
     pub(crate) layout: LayoutManager<P>,
-    /// Desktop input bridge — forwards winit events to `InputCoordinator`.
-    /// `None` on wasm where winit is absent.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) bridge: WinitInputBridge,
-    /// Accumulated per-frame input snapshot — built from bridge state at
-    /// `tick_inner`'s top.
+    /// Platform-event processor — converts `PlatformEvent`s into the per-frame
+    /// `InputState`. Used by the main click/drag/scroll path; the chrome
+    /// press handler in `handle_winit_event` runs in parallel for OS-level
+    /// drag/resize that must execute synchronously while the button is held.
+    pub(crate) events: EventProcessor,
+    /// Accumulated per-frame input snapshot — populated by `events`.
     pub(crate) input: InputState,
+    /// Last cursor position seen by `handle_winit_event`. Used by the chrome
+    /// press handler which has to know where the click landed without
+    /// waiting for the next `tick_inner`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) last_mouse_pos: (f64, f64),
     /// Monotonic start instant for `InputState::time` tracking.
     pub(crate) start: std::time::Instant,
     /// Whether `app.init` has been called.
@@ -144,9 +148,10 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             hub,
             factory: None,
             layout: LayoutManager::new(),
-            #[cfg(not(target_arch = "wasm32"))]
-            bridge: WinitInputBridge::new(),
+            events: EventProcessor::new(),
             input: InputState::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            last_mouse_pos: (0.0, 0.0),
             start: std::time::Instant::now(),
             initialised: false,
             render_state: None,
@@ -246,42 +251,43 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             .unwrap_or(self.config.msaa_samples)
     }
 
-    /// Forward a raw winit `WindowEvent` to the input pipeline.
+    /// Inspect a raw winit `WindowEvent` for OS-level window operations
+    /// (chrome drag, minimize/maximize, edge resize).
     ///
-    /// Called from `UzorHandler::window_event` for every event that isn't
-    /// `RedrawRequested`/`CloseRequested`.  The runtime:
+    /// Runs *before* the event is queued for the regular `tick_inner` flow:
+    /// winit requires `drag_window()` / `drag_resize_window()` to be called
+    /// synchronously inside the press handler, while the mouse button is
+    /// still held — we cannot defer to the next frame.
     ///
-    /// 1. On left-button press, runs the chrome hit-test.  If the press lands
-    ///    on a chrome drag/min/max/close zone, calls the matching
-    ///    `Window::*` method directly (winit requires this to happen *during*
-    ///    the press handler, while the button is still held — so we cannot
-    ///    defer it to the next `tick`).
-    /// 2. Otherwise delegates to `WinitInputBridge::handle_event`, which
-    ///    routes the event into the L1 `InputCoordinator`.  Click / drag /
-    ///    text-field state lives in coord state from there on.
-    /// 3. Mirrors `clicked`/`button_down` flags into `Runtime::input` so the
-    ///    next `tick_inner` can route the click via `App::route_click`.
+    /// All other input (clicks, scrolls, keys, drag) flows through the
+    /// normal `EventProcessor` → `InputState` → `LayoutManager::handle_click`
+    /// pipeline driven by `tick_inner` and `App::route_click`.
     ///
     /// Returns `true` when the event was consumed by chrome (caller should
-    /// stop further processing for this event).
+    /// stop forwarding it further).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn handle_winit_event(&mut self, event: &WindowEvent, window: &Window) -> bool {
         use uzor::ui::widgets::composite::chrome::{
             chrome_hit_test, handle_chrome_action, ChromeAction, ChromeRenderKind,
             ChromeSettings, ChromeView,
         };
-        use uzor::input::pointer::state::MouseButton;
         use winit::event::{ElementState, MouseButton as WMouseButton};
 
-        // 1. Chrome press handler (must run BEFORE bridge so drag_window()
-        //    is called while the button is still pressed).
+        // Track cursor for the chrome press handler — winit's MouseInput
+        // event doesn't carry the position, so we cache it from CursorMoved.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            let scale = window.scale_factor();
+            self.last_mouse_pos = (position.x / scale, position.y / scale);
+        }
+
+        // Chrome press handler runs only on left-button press.
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: WMouseButton::Left,
             ..
         } = event
         {
-            let (mx, my) = self.bridge.last_mouse_pos;
+            let (mx, my) = self.last_mouse_pos;
             // Chrome only does something useful if it has been registered
             // this frame — `rect_for_chrome()` returns None otherwise.
             if let Some(chrome_rect) = self.layout.rect_for_chrome() {
@@ -387,33 +393,6 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             }
         }
 
-        // 2. Forward to the L1 bridge (drives InputCoordinator).
-        let focused = self.layout.ctx_mut().input.focused_widget().cloned();
-        let coord = &mut self.layout.ctx_mut().input;
-        let out = self.bridge.handle_event(coord, focused.as_ref(), event);
-
-        // 3. Mirror click flags into the per-frame InputState so route_click
-        //    fires in tick_inner.
-        if let Some(((x, y), _)) = out.left_up {
-            self.input.pointer.pos = Some((x, y));
-            self.input.pointer.clicked = Some(MouseButton::Left);
-        }
-        if let Some(((x, y), _)) = out.left_down {
-            self.input.pointer.pos = Some((x, y));
-            self.input.pointer.button_down = Some(MouseButton::Left);
-        }
-        if let Some(((x, y), _)) = out.wheel {
-            self.input.pointer.pos = Some((x, y));
-        }
-        if let Some(((x, y), (dx, dy))) = out.wheel {
-            let _ = (x, y);
-            self.input.scroll_delta.0 += dx;
-            self.input.scroll_delta.1 += dy;
-        }
-        if let Some((x, y)) = out.cursor_moved {
-            self.input.pointer.pos = Some((x, y));
-        }
-
         false
     }
 
@@ -474,24 +453,17 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Runtime<A, P> {
             return Ok(());
         }
 
-        // 1. Build per-frame InputState snapshot from the bridge's accumulated
-        //    state. Raw winit events are routed into InputCoordinator on
-        //    arrival via `Runtime::handle_winit_event`; here we just freeze
-        //    the cursor / time for the frame.
+        // 1. Drain platform events into InputState via EventProcessor.
+        //    The chrome / resize press handler in `handle_winit_event` ran
+        //    earlier (synchronously, while the button was held) and may have
+        //    short-circuited drag/resize before the event reached the
+        //    provider's queue.
         let now_secs = self.start.elapsed().as_secs_f64();
         self.input.time = now_secs;
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let (mx, my) = self.bridge.last_mouse_pos;
-            self.input.pointer.pos = Some((mx, my));
-        }
-
-        // Drain whatever the provider has buffered; we don't pipeline them
-        // further — the bridge has already updated coord state. We still
-        // forward to `App::on_event` for apps that watch for window-level
-        // events (theme change, file drops, etc.).
         for ev in window.poll_events() {
-            let _ = self.app.on_event(&ev);
+            if !self.app.on_event(&ev) {
+                self.events.process(&ev, &mut self.input, now_secs);
+            }
         }
 
         // 2. Solve macro layout with the current window rect.
