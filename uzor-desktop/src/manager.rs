@@ -387,11 +387,22 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             width:  (rect.width  * dpr).max(1.0) as u32,
             height: (rect.height * dpr).max(1.0) as u32,
         };
-        let factory = self.factory.as_ref()
-            .ok_or_else(|| ManagerError::Backend("no surface factory supplied".into()))?;
+        // Each window gets a fresh factory for the hub's CURRENT active
+        // backend. Reusing self.factory ties every spawned window to the
+        // backend that was active when from_built ran, which breaks
+        // backends switched at runtime via render_control.set_backend.
+        let active = self.hub.as_ref().map(|h| h.active()).unwrap_or(self.backend);
+        let factory: Box<dyn RenderSurfaceFactory> = if let Some(hub) = self.hub.as_ref() {
+            hub.factory_for(active)
+                .ok_or_else(|| ManagerError::Backend(
+                    format!("hub has no factory for backend {:?}", active)
+                ))?
+        } else {
+            return Err(ManagerError::Backend("no hub initialised".into()));
+        };
         let render_state = factory
-            .create_render_state(&raw_handle, self.backend, size)
-            .map_err(|e| ManagerError::Backend(e.to_string()))?;
+            .create_render_state(&raw_handle, active, size)
+            .map_err(|e| ManagerError::Backend(format!("create_render_state({:?}): {}", active, e)))?;
 
         window.set_visible(true);
 
