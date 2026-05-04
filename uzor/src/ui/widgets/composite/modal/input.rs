@@ -197,7 +197,10 @@ pub fn register_layout_manager_modal<P: DockPanel>(
             EventBuilder::ScrollbarThumb { thumb_id: WidgetId::new(format!("{}:scrollbar_handle", id.0)) },
         );
     }
-    if matches!(view.overflow, crate::types::OverflowMode::Chevrons) {
+    // Chevron routing must mirror register_body_overflow: any non-Scrollbar
+    // mode can produce chevrons (Chevrons explicitly, or Clip/Compress when
+    // content overflows the body — post-resize fallback).
+    if !matches!(view.overflow, crate::types::OverflowMode::Scrollbar) {
         use crate::layout::ChevronStepDirection;
         for (suffix, dir) in [
             ("chevron_up",    ChevronStepDirection::Up),
