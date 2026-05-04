@@ -20,23 +20,40 @@ pub fn lower_root(node: &Node) -> TokenStream {
     let path = String::from("v");
     match node {
         Node::Element(el) => {
-            // Root must carry a `rect={...}` prop — that's the parent rect for
-            // the whole tree.
-            let rect = match find_prop(el, "rect") {
-                Some(p) => p.value_tokens(),
-                None => {
-                    return syn::Error::new(
+            let tag = el.tag.to_string();
+            // Flex containers (`<row>`/`<col>`) need a parent rect — they
+            // distribute it to children. Overlays/chrome/atomics establish
+            // their own rect (handle, body lookup, anchor) and don't need
+            // one from the macro's outside.
+            let needs_rect = matches!(tag.as_str(), "row" | "col");
+            if needs_rect {
+                let rect = match find_prop(el, "rect") {
+                    Some(p) => p.value_tokens(),
+                    None => return syn::Error::new(
                         el.span,
-                        "root <view!> element must have a `rect={...}` prop",
-                    )
-                    .to_compile_error()
+                        "root <row>/<col> needs a `rect={...}` prop",
+                    ).to_compile_error(),
+                };
+                let inner = lower_element_body(el, &path, 0);
+                quote! {
+                    {
+                        let __rect: ::uzor::core::types::Rect = #rect;
+                        #inner
+                    }
                 }
-            };
-            let inner = lower_element_body(el, &path, 0);
-            quote! {
-                {
-                    let __rect: ::uzor::core::types::Rect = #rect;
-                    #inner
+            } else {
+                // Atomic / composite at the root: no parent rect needed.
+                // Provide a dummy `__rect` so atomic builders that read it
+                // (e.g. `<text>`, `<button>`) still compile — but in
+                // practice the root is usually `<modal>`/`<chrome>` etc.
+                let inner = lower_element_body(el, &path, 0);
+                quote! {
+                    {
+                        let __rect: ::uzor::core::types::Rect =
+                            ::uzor::core::types::Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 };
+                        let _ = __rect;
+                        #inner
+                    }
                 }
             }
         }
@@ -61,11 +78,137 @@ fn lower_element_body(el: &Element, path: &str, idx: usize) -> TokenStream {
         "checkbox"  => lower_atom(el, &child_path, AtomKind::Checkbox),
         "toggle"    => lower_atom(el, &child_path, AtomKind::Toggle),
         "separator" => lower_atom(el, &child_path, AtomKind::Separator),
+        "modal"        => lower_overlay(el, &child_path, OverlayKind::Modal),
+        "popup"        => lower_overlay(el, &child_path, OverlayKind::Popup),
+        "dropdown"     => lower_overlay(el, &child_path, OverlayKind::Dropdown),
+        "context_menu" => lower_overlay(el, &child_path, OverlayKind::ContextMenu),
+        "chrome"       => lower_chrome(el),
         _ => syn::Error::new(
             el.tag.span(),
-            format!("unknown view tag `<{}>` (v1 supports: row, col, button, text, checkbox, toggle, separator)", tag_str),
+            format!("unknown view tag `<{}>` (B2 supports: row, col, button, text, checkbox, toggle, separator, modal, popup, dropdown, context_menu)", tag_str),
         )
         .to_compile_error(),
+    }
+}
+
+#[derive(Copy, Clone)]
+enum OverlayKind { Modal, Popup, Dropdown, ContextMenu }
+
+/// Lower an overlay composite (`<modal>`, `<popup>`, `<dropdown>`,
+/// `<context_menu>`).  Children render inside the overlay's body rect as if
+/// wrapped in `<col>` (default direction; override with `dir="row"`).
+fn lower_overlay(el: &Element, path: &str, kind: OverlayKind) -> TokenStream {
+    let handle = match find_prop(el, "handle") {
+        Some(p) => p.value_tokens(),
+        None    => return syn::Error::new(
+            el.tag.span(),
+            format!("<{:?}> requires a `handle={{&...}}` prop", kind_str(kind)),
+        ).to_compile_error(),
+    };
+
+    let title    = find_prop(el, "title").map(|p| p.value_tokens());
+    let rect_pp  = find_prop(el, "rect").map(|p| p.value_tokens());
+    let resizable = find_prop(el, "resizable").map(|p| p.value_tokens());
+    let anchor_to = find_prop(el, "anchor_to").map(|p| p.value_tokens());
+    let gap      = find_prop(el, "gap").map(|p| p.value_tokens()).unwrap_or_else(|| quote!(0.0_f64));
+    let pad      = find_prop(el, "pad").map(|p| p.value_tokens()).unwrap_or_else(|| quote!(0.0_f64));
+    let dir_prop = find_prop(el, "dir").map(|p| p.value_tokens());
+
+    let entry = match kind {
+        OverlayKind::Modal       => quote!(::uzor_framework::lm::modal),
+        OverlayKind::Popup       => quote!(::uzor_framework::lm::popup),
+        OverlayKind::Dropdown    => quote!(::uzor_framework::lm::dropdown),
+        OverlayKind::ContextMenu => quote!(::uzor_framework::lm::context_menu),
+    };
+
+    let body_rect_call = match kind {
+        OverlayKind::Modal       => quote!(layout.modal_body_rect(#handle)),
+        OverlayKind::Popup       => quote!(layout.popup_body_rect(#handle)),
+        OverlayKind::Dropdown    => quote!(layout.dropdown_rect(#handle)),
+        OverlayKind::ContextMenu => quote!(layout.context_menu_rect(#handle)),
+    };
+
+    let mut chain = quote!(#entry(#handle));
+    if let Some(t) = title     { chain = quote!(#chain.title(#t)); }
+    if let Some(r) = rect_pp   { chain = quote!(#chain.rect(#r)); }
+    if let Some(rz) = resizable { chain = quote!(#chain.resizable(#rz)); }
+    if let Some(a)  = anchor_to { chain = quote!(#chain.anchor_to(#a)); }
+
+    // Children — wrap in a flex container using overlay body rect.
+    let mut child_specs: Vec<TokenStream> = Vec::new();
+    let mut child_lowers: Vec<TokenStream> = Vec::new();
+    let mut element_idx: usize = 0;
+    for child in &el.children {
+        match child {
+            Node::Element(ce) => {
+                let weight = find_prop(ce, "flex").map(|p| p.value_tokens()).unwrap_or_else(|| quote!(1.0_f64));
+                let basis  = find_prop(ce, "size").map(|p| p.value_tokens()).unwrap_or_else(|| quote!(0.0_f64));
+                child_specs.push(quote! {
+                    ::uzor_framework::layout::FlexChild { basis: #basis, flex: #weight }
+                });
+                let i = element_idx;
+                let body = lower_element(ce, path, i);
+                child_lowers.push(quote! { { let __rect = __rects[#i]; #body } });
+                element_idx += 1;
+            }
+            Node::Expr(e) => child_lowers.push(quote!({ #e })),
+        }
+    }
+
+    let dir_tok = match dir_prop {
+        Some(t) => quote!(#t),
+        None    => quote!(::uzor_framework::layout::FlexDir::Col),
+    };
+
+    quote! {
+        {
+            let __ok = #chain.build(layout, render).is_some();
+            if __ok {
+                if let Some(__body_rect) = #body_rect_call {
+                    let __children: &[::uzor_framework::layout::FlexChild] = &[ #(#child_specs),* ];
+                    let __rects: ::std::vec::Vec<::uzor::core::types::Rect> =
+                        ::uzor_framework::layout::flex_solve(__body_rect, #dir_tok, #gap as f64, #pad as f64, __children);
+                    #(#child_lowers)*
+                }
+            }
+        }
+    }
+}
+
+/// `<chrome>` — singleton window chrome strip.  Props: `tabs={&[...]}`,
+/// `active_tab="id"`, `cursor={(x,y)}`, `time_ms={ms}`.  No children.
+fn lower_chrome(el: &Element) -> TokenStream {
+    let tabs       = find_prop(el, "tabs").map(|p| p.value_tokens());
+    let active_tab = find_prop(el, "active_tab").map(|p| p.value_tokens());
+    let cursor     = find_prop(el, "cursor").map(|p| p.value_tokens());
+    let time_ms    = find_prop(el, "time_ms").map(|p| p.value_tokens());
+    let new_tab    = find_prop(el, "show_new_tab").map(|p| p.value_tokens());
+    let menu_btn   = find_prop(el, "show_menu").map(|p| p.value_tokens());
+
+    let mut chain = quote!(::uzor_framework::lm::chrome());
+    if let Some(t)  = tabs       { chain = quote!(#chain.tabs(#t)); }
+    if let Some(a)  = active_tab { chain = quote!(#chain.active_tab(#a)); }
+    if let Some(c)  = cursor     { chain = quote!(#chain.cursor(#c)); }
+    if let Some(tm) = time_ms    { chain = quote!(#chain.time_ms(#tm)); }
+    if let Some(n)  = new_tab    { chain = quote!(#chain.show_new_tab_btn(#n)); }
+    if let Some(m)  = menu_btn   { chain = quote!(#chain.show_menu_btn(#m)); }
+
+    if !el.children.is_empty() {
+        return syn::Error::new(
+            el.tag.span(),
+            "<chrome> does not accept children — use `tabs={&[...]}` instead",
+        ).to_compile_error();
+    }
+
+    quote!({ #chain.build(layout, render); })
+}
+
+fn kind_str(k: OverlayKind) -> &'static str {
+    match k {
+        OverlayKind::Modal => "modal",
+        OverlayKind::Popup => "popup",
+        OverlayKind::Dropdown => "dropdown",
+        OverlayKind::ContextMenu => "context_menu",
     }
 }
 
