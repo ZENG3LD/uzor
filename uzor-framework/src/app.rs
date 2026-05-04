@@ -5,6 +5,8 @@ use uzor::layout::LayoutManager;
 use uzor::input::core::event_processor::PlatformEvent;
 use uzor_window_hub::RgbaIcon;
 
+use crate::multi_window::{WindowCtx, WindowKey, WindowSpec};
+
 // ── NoPanel ───────────────────────────────────────────────────────────────────
 
 /// Empty dock-panel type for apps that do not use dockable panels.
@@ -61,25 +63,35 @@ impl DockPanel for NoPanel {
 /// }
 /// ```
 pub trait App<P: DockPanel = NoPanel>: Sized + 'static {
-    /// Called once after the runtime initialises, before the first frame.
+    /// Called once for each window the moment its render state is ready,
+    /// before the first frame for that window.
     ///
-    /// Use to configure chrome height, add edge slots, push initial overlays,
-    /// or register any one-time layout configuration.
-    fn init(&mut self, _layout: &mut LayoutManager<P>) {}
+    /// `key` identifies which window is initialising — apps with multiple
+    /// windows match on `key.as_str()` to route per-window setup (chrome
+    /// height, edge slots, modals, …).  Single-window apps can ignore the
+    /// argument.
+    fn init(&mut self, _key: &WindowKey, _layout: &mut LayoutManager<P>) {}
 
-    /// Called every frame after layout solve and before GPU submission.
+    /// Called every frame for each open window in turn.
     ///
-    /// Register widgets via `layout.ctx_mut()` helpers. Build the vello scene
-    /// or instanced draw calls via `render_state`.
+    /// Register widgets via `win.layout.ctx_mut()` helpers; build the vello
+    /// scene or instanced draw calls via `win.render`.  Multi-window apps
+    /// branch on `win.key.as_str()` to draw different content per window.
     ///
-    /// `render_state` is the [`uzor_render_hub::WindowRenderState`] for the
-    /// current window. `begin_frame()` has already been called on it before
-    /// this method is invoked; `submit_frame()` is called after it returns.
-    fn ui(
-        &mut self,
-        layout: &mut LayoutManager<P>,
-        render_state: &mut uzor_render_hub::WindowRenderState,
-    );
+    /// `begin_frame()` has already been called on `win.render`; the runtime
+    /// calls `submit_frame()` after this method returns.
+    fn ui(&mut self, win: &mut WindowCtx<'_, P>);
+
+    /// Drained by the runtime in `about_to_wait` after every event batch.
+    /// Returning `Some(spec)` makes the runtime spawn an additional window
+    /// on the next loop tick.  Apps that only need the windows registered
+    /// at startup can ignore this hook.
+    fn take_pending_spawn(&mut self) -> Option<WindowSpec> { None }
+
+    /// Drained by the runtime to close a window without exiting the app.
+    /// Returning `Some(key)` makes the runtime destroy the matching window;
+    /// other windows continue running.
+    fn take_window_to_close(&mut self) -> Option<WindowKey> { None }
 
     /// Called for each [`PlatformEvent`] before default input processing.
     ///
@@ -93,7 +105,7 @@ pub trait App<P: DockPanel = NoPanel>: Sized + 'static {
     /// Called once when the runtime is about to exit after all windows close.
     ///
     /// Use for cleanup: flush pending I/O, save state, etc.
-    fn shutdown(&mut self, _layout: &mut LayoutManager<P>) {}
+    fn shutdown(&mut self) {}
 
     // ─── L4 typed dispatch hooks ──────────────────────────────────────────
     //
@@ -346,11 +358,7 @@ where
     P: DockPanel + Default + 'static,
     F: FnMut(&mut LayoutManager<P>, &mut uzor_render_hub::WindowRenderState) + 'static,
 {
-    fn ui(
-        &mut self,
-        layout: &mut LayoutManager<P>,
-        render_state: &mut uzor_render_hub::WindowRenderState,
-    ) {
-        (self.ui_fn)(layout, render_state);
+    fn ui(&mut self, win: &mut WindowCtx<'_, P>) {
+        (self.ui_fn)(win.layout, win.render);
     }
 }

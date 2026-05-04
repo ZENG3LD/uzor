@@ -14,9 +14,13 @@
 pub mod app;
 pub mod builder;
 pub mod layout;
-pub mod runtime;
+pub mod multi_window;
+pub mod window_manager;
 pub mod utils;
 pub mod widgets;
+
+/// Backward-compatibility alias: the manager used to be called `runtime`.
+pub use window_manager as runtime;
 
 /// Mirage-derived design tokens (palette, type scale, spacing, radii).
 ///
@@ -39,7 +43,12 @@ pub mod platform;
 
 pub use app::{App, AppConfig, ClosureApp, NoPanel};
 pub use builder::{AppBuilder, BuildError, run_closure};
-pub use runtime::{Runtime, RuntimeError};
+pub use multi_window::{WindowCtx, WindowKey, WindowSpec};
+pub use window_manager::{WindowManager, WindowManagerError};
+
+/// Back-compat aliases for the previous (single-window) names.
+pub use window_manager::WindowManager as Runtime;
+pub use window_manager::WindowManagerError as RuntimeError;
 
 // ── Utility re-exports (desktop only) ────────────────────────────────────────
 

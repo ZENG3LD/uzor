@@ -1,27 +1,17 @@
 //! Fluent builder for constructing and launching an uzor app runtime.
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::Arc;
-
-#[cfg(not(target_arch = "wasm32"))]
-use winit::application::ApplicationHandler;
-#[cfg(not(target_arch = "wasm32"))]
-use winit::event::WindowEvent;
-#[cfg(not(target_arch = "wasm32"))]
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-#[cfg(not(target_arch = "wasm32"))]
-use winit::window::{Window, WindowId};
-
 use uzor::docking::panels::DockPanel;
 use uzor_render_hub::{RenderBackend, RenderHub, RenderSurfaceFactory};
-#[cfg(not(target_arch = "wasm32"))]
-use uzor_window_desktop::WinitWindowProvider;
-use uzor_window_hub::WindowProvider;
 
 use uzor_window_hub::RgbaIcon;
 
 use crate::app::{App, AppConfig, ClosureApp, NoPanel};
-use crate::runtime::{Runtime, RuntimeError};
+use crate::multi_window::{WindowSpec, WindowKey};
+use crate::window_manager::{WindowManager, WindowManagerError};
+
+/// Compatibility alias — old name retained for users who imported the
+/// previous types.  Prefer `WindowManagerError` going forward.
+pub type RuntimeError = WindowManagerError;
 
 // ── BuildError ────────────────────────────────────────────────────────────────
 
@@ -50,9 +40,9 @@ impl std::fmt::Display for BuildError {
 
 impl std::error::Error for BuildError {}
 
-impl From<BuildError> for RuntimeError {
+impl From<BuildError> for WindowManagerError {
     fn from(e: BuildError) -> Self {
-        RuntimeError::Build(e)
+        WindowManagerError::Build(e)
     }
 }
 
@@ -121,13 +111,18 @@ where
     /// Optional tray spec — if set, the builder spawns a system-tray icon
     /// using the same RGBA icon as the window.
     tray: Option<TraySpec>,
+    /// Window specs queued by `.window(...)` — at least one is required.
+    /// If the builder is started via the legacy single-window API
+    /// (`.title(...).size(...).run()`), a default spec is synthesised
+    /// from `config` at run-time.
+    windows: Vec<WindowSpec>,
     _phantom: std::marker::PhantomData<P>,
 }
 
 /// Spec for a system-tray icon spawned automatically by the builder.
-struct TraySpec {
-    tooltip: Option<String>,
-    items:   Vec<(String, String, bool)>, // (id, label, enabled)
+pub(crate) struct TraySpec {
+    pub(crate) tooltip: Option<String>,
+    pub(crate) items:   Vec<(String, String, bool)>, // (id, label, enabled)
 }
 
 impl<A, P> AppBuilder<A, P>
@@ -147,8 +142,20 @@ where
             factory: None,
             hub: None,
             tray: None,
+            windows: Vec::new(),
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    /// Queue a window for the manager to create at startup.
+    ///
+    /// Multi-window apps queue several specs.  Single-window apps can use
+    /// `.title(...).size(...)` plus a single implicit window — if no
+    /// `.window(...)` calls are made, the builder synthesises a default
+    /// spec from `AppConfig` at run-time.
+    pub fn window(mut self, spec: WindowSpec) -> Self {
+        self.windows.push(spec);
+        self
     }
 
     /// Spawn a system-tray icon (with the window icon) when the runtime starts.
@@ -371,18 +378,51 @@ where
 
     // ── Terminal methods ──────────────────────────────────────────────────────
 
-    /// Consume the builder and produce a [`Runtime`] ready to run.
+    /// Consume the builder and produce a fully-configured [`WindowManager`].
     ///
     /// # Errors
     ///
     /// Returns [`BuildError::MissingBackend`] if no backend was supplied.
-    pub fn build(self) -> Result<Runtime<A, P>, BuildError> {
+    pub fn build(mut self) -> Result<WindowManager<A, P>, BuildError> {
         let backend = self.backend.ok_or(BuildError::MissingBackend)?;
-        let mut runtime = Runtime::new(self.app, self.config, backend, self.hub);
-        if let Some(factory) = self.factory {
-            runtime.set_surface_factory(factory);
+
+        // Synthesise a default window spec from AppConfig if the caller
+        // didn't queue any explicit windows — keeps the single-window
+        // builder API working unchanged.
+        if self.windows.is_empty() {
+            let default = WindowSpec::new(
+                WindowKey::new("main"),
+                if self.config.title.is_empty() { "uzor".to_string() }
+                else { self.config.title.clone() },
+            )
+            .size(self.config.initial_size.0, self.config.initial_size.1)
+            .decorations(self.config.decorations)
+            .background(self.config.background);
+            let default = if let Some((mw, mh)) = self.config.min_size {
+                default.min_size(mw, mh)
+            } else {
+                default
+            };
+            self.windows.push(default);
         }
-        Ok(runtime)
+
+        let mut wm = WindowManager::new(self.app, self.config, backend, self.hub);
+        if let Some(factory) = self.factory {
+            wm.set_surface_factory(factory);
+        }
+        if let Some(tray) = self.tray {
+            #[cfg(not(target_arch = "wasm32"))]
+            wm.set_tray_spec(tray);
+            #[cfg(target_arch = "wasm32")]
+            { let _ = tray; }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        for spec in self.windows {
+            wm.queue_window_spec(spec);
+        }
+        #[cfg(target_arch = "wasm32")]
+        { let _ = self.windows; }
+        Ok(wm)
     }
 
     /// Consume the builder and run the application.
@@ -400,8 +440,7 @@ where
     /// Returns [`RuntimeError::Build`] if a required parameter is missing, a
     /// [`RuntimeError::Window`] variant if window or event-loop creation fails,
     /// or [`RuntimeError::Backend`] on GPU initialisation failure.
-    pub fn run(mut self) -> Result<(), RuntimeError> {
-
+    pub fn run(self) -> Result<(), WindowManagerError> {
         #[cfg(target_arch = "wasm32")]
         {
             return self.run_wasm();
@@ -409,35 +448,12 @@ where
 
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let config = self.config.clone();
-            let tray_spec = self.tray.take();
-            let runtime = self.build()?;
-
-            // ── Single-instance guard ─────────────────────────────────────────
-            let _single_instance_guard = runtime
-                .config
-                .single_instance
-                .as_deref()
+            let wm = self.build()?;
+            // Single-instance guard lives for the duration of the event loop.
+            let _single_instance_guard = wm
+                .config.single_instance.as_deref()
                 .map(crate::utils::single_instance::single_instance);
-
-            let event_loop = EventLoop::new()
-                .map_err(|e| RuntimeError::Window(e.to_string()))?;
-            event_loop.set_control_flow(ControlFlow::Poll);
-
-            let mut handler = UzorHandler {
-                runtime,
-                config,
-                provider: None,
-                window: None,
-                tray_spec,
-                tray: None,
-            };
-
-            event_loop
-                .run_app(&mut handler)
-                .map_err(|e| RuntimeError::Window(e.to_string()))?;
-
-            Ok(())
+            wm.run()
         }
     }
 
@@ -511,161 +527,6 @@ where
         std::mem::forget(raf_handle);
 
         Ok(())
-    }
-}
-
-// ── Internal ApplicationHandler (desktop only) ────────────────────────────────
-
-/// Winit `ApplicationHandler` that drives the uzor runtime.
-///
-/// Created inside [`AppBuilder::run`] and not part of the public API.
-#[cfg(not(target_arch = "wasm32"))]
-struct UzorHandler<A: App<P>, P: DockPanel + Default + 'static> {
-    runtime: Runtime<A, P>,
-    config: AppConfig,
-    provider: Option<WinitWindowProvider>,
-    /// Strong handle to the winit `Window` for `Runtime::handle_winit_event`
-    /// — needed to call `drag_window()` etc. while the press is still held.
-    window: Option<Arc<Window>>,
-    /// Pending tray spec (consumed once after `resumed`).
-    tray_spec: Option<TraySpec>,
-    /// Live tray-icon handle, kept alive for the runtime's lifetime.
-    tray: Option<crate::tray::TrayHandle>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl<A, P> ApplicationHandler for UzorHandler<A, P>
-where
-    A: App<P>,
-    P: DockPanel + Default + 'static,
-{
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.provider.is_some() {
-            // Already have a window; nothing to do on subsequent resumes.
-            return;
-        }
-
-        let (w, h) = self.config.initial_size;
-        let mut attrs = Window::default_attributes()
-            .with_title(&self.config.title)
-            .with_inner_size(winit::dpi::LogicalSize::new(w, h))
-            .with_decorations(self.config.decorations)
-            .with_visible(false); // revealed after first GPU frame
-
-        // Apply window icon at creation time when one is configured.
-        if let Some(ref rgba) = self.config.icon {
-            if let Ok(ic) = winit::window::Icon::from_rgba(
-                rgba.pixels.clone(),
-                rgba.width,
-                rgba.height,
-            ) {
-                attrs = attrs.with_window_icon(Some(ic));
-            }
-        }
-
-        if let Some((mw, mh)) = self.config.min_size {
-            attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(mw, mh));
-        }
-
-        let window = match event_loop.create_window(attrs) {
-            Ok(w) => Arc::new(w),
-            Err(e) => {
-                eprintln!("[uzor-framework] window creation failed: {e}");
-                event_loop.exit();
-                return;
-            }
-        };
-
-        let mut provider = WinitWindowProvider::new(Arc::clone(&window));
-
-        // Initialise GPU surface immediately while we have the handle.
-        if let Err(e) = self.runtime.init_render_state(&provider) {
-            eprintln!("[uzor-framework] render state init failed: {e}");
-            event_loop.exit();
-            return;
-        }
-
-        // Show the window after the first render state is ready.
-        window.set_visible(true);
-
-        // Schedule the first redraw.
-        provider.request_redraw();
-
-        self.provider = Some(provider);
-        self.window   = Some(window);
-
-        // Spawn the system-tray icon if `.tray(...)` was configured on the
-        // builder.  Reuses the window icon (or system default if none).
-        if let Some(spec) = self.tray_spec.take() {
-            let mut tb = crate::tray::TrayBuilder::new();
-            if let Some(ref icon) = self.config.icon {
-                tb = tb.icon(icon.clone());
-            }
-            if let Some(t) = spec.tooltip {
-                tb = tb.tooltip(t);
-            }
-            for (id, label, enabled) in spec.items {
-                tb = if enabled {
-                    tb.menu_item(id, label)
-                } else {
-                    tb.menu_item_disabled(id, label)
-                };
-            }
-            match tb.build() {
-                Ok(handle) => self.tray = Some(handle),
-                Err(e) => eprintln!("[uzor-framework] tray init failed: {e}"),
-            }
-        }
-    }
-
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
-        let Some(ref mut provider) = self.provider else {
-            return;
-        };
-
-        match event {
-            WindowEvent::CloseRequested => {
-                provider.mark_close();
-                self.runtime.shutdown();
-                event_loop.exit();
-            }
-            WindowEvent::Resized(size) => {
-                if size.width > 0 && size.height > 0 {
-                    self.runtime.on_window_resized(size.width, size.height);
-                }
-                provider.request_redraw();
-            }
-            WindowEvent::RedrawRequested => {
-                if let Err(e) = self.runtime.tick(provider, event_loop) {
-                    eprintln!("[uzor-framework] tick error: {e}");
-                    self.runtime.shutdown();
-                    event_loop.exit();
-                }
-            }
-            ref ev => {
-                // Route raw winit events through the runtime's L1 bridge
-                // (this also runs chrome press handling for drag/min/max).
-                if let Some(ref window) = self.window {
-                    self.runtime.handle_winit_event(ev, window.as_ref());
-                }
-                // Chrome close button → graceful exit.
-                if self.runtime.take_close_requested() {
-                    provider.mark_close();
-                    self.runtime.shutdown();
-                    event_loop.exit();
-                    return;
-                }
-                // Also keep the platform-event queue so apps that override
-                // `App::on_event` for high-level events (theme/file-drop)
-                // still receive them.
-                provider.push_winit_event(ev);
-            }
-        }
     }
 }
 
