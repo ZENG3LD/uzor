@@ -29,6 +29,21 @@
 //!   They typically wrap an `LmAgent` and forward the calls it can
 //!   answer, then add their own.
 
+//! Agent control surface for `LayoutManager`.
+//!
+//! See `uzor-agent-api/README.md` for the full route catalogue,
+//! snapshot / log shapes, blackbox recipe, and threading notes.
+//!
+//! Quick start: enable a server with
+//! `AppBuilder::new(...).agent_api(17480).run()` then `curl
+//! http://127.0.0.1:17480/state/tree`.
+//!
+//! Anyone holding `&mut LayoutManager` may push merged-log
+//! breadcrumbs via [`crate::layout::LayoutManager::agent_log_push`].
+//! Blackbox panels implement [`BlackboxAgentSurface`] and register
+//! themselves via
+//! [`crate::layout::LayoutManager::register_blackbox_agent`].
+
 mod blackbox;
 mod command;
 mod control;
