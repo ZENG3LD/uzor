@@ -18,7 +18,9 @@
 //! ```
 
 use uzor::core::types::Rect;
-use uzor::framework::app::{App, NoPanel};
+use uzor::docking::panels::DockPanel;
+use uzor::framework::app::App;
+use uzor::layout::{EdgeSide, EdgeSlot};
 use uzor::framework::builder::AppBuilder;
 use uzor::framework::multi_window::{WindowCtx, WindowKey, WindowSpec};
 use uzor::layout::{MirageDarkPreset, MirageLightPreset};
@@ -26,6 +28,27 @@ use uzor::platform::types::CornerStyle;
 use uzor::types::unsafe_widget_id;
 use uzor_desktop::AppRun as _;
 use uzor_framework_macros::view;
+
+/// Custom DockPanel for the Painting page — one leaf per cadence.
+#[derive(Debug, Clone)]
+struct PaintPanel {
+    id:        &'static str,
+    title:     &'static str,
+    target_fps: u32,
+}
+
+impl Default for PaintPanel {
+    fn default() -> Self {
+        Self { id: "paint:default", title: "", target_fps: 0 }
+    }
+}
+
+impl DockPanel for PaintPanel {
+    fn title(&self) -> &str { self.title }
+    fn type_id(&self) -> &'static str { self.id }
+    fn min_size(&self) -> (f32, f32) { (120.0, 80.0) }
+    fn closable(&self) -> bool { false }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ThemeMode {
@@ -36,19 +59,100 @@ enum ThemeMode {
 struct DashboardApp {
     current_theme: ThemeMode,
     tick_counter:  u64,
+    /// Per-cell rebuild counters (incremented every time the runtime calls
+    /// draw_region for that cell). Demonstrates that cells with different
+    /// target_fps values rebuild at different rates.
+    cell_counts: [u64; 4],
+    /// Per-cell composite panel state — each painting cell is a real
+    /// `PanelState`, not just a `fill_rect` background.
+    cell_panel_states: [uzor::ui::widgets::composite::panel::state::PanelState; 4],
 }
 
 impl DashboardApp {
     fn new() -> Self {
+        use uzor::ui::widgets::composite::panel::state::PanelState;
         Self {
             current_theme: ThemeMode::Dark,
             tick_counter:  0,
+            cell_counts:   [0; 4],
+            cell_panel_states: [
+                PanelState::default(),
+                PanelState::default(),
+                PanelState::default(),
+                PanelState::default(),
+            ],
         }
     }
 }
 
-impl App<NoPanel> for DashboardApp {
-    fn ui(&mut self, win: &mut WindowCtx<'_, NoPanel>) {
+impl App<PaintPanel> for DashboardApp {
+    fn init(&mut self, _key: &WindowKey, layout: &mut uzor::layout::LayoutManager<PaintPanel>) {
+        use uzor::docking::panels::SplitKind;
+        // Build a 2×2 dock tree once: dirty | 30 fps    on top,
+        //                              120 fps | uncap on bottom.
+        let tree = layout.panels_mut().tree_mut();
+        let leaf0 = tree.add_leaf(PaintPanel {
+            id: "paint:r0_dirty",
+            title: "fps = 0 (dirty)",
+            target_fps: 0,
+        });
+        let right_ids = tree.split_leaf(leaf0, SplitKind::SplitRight, 0.0, 0.0);
+        if let Some(&right) = right_ids.last() {
+            if let Some(l) = tree.leaf_mut(right) {
+                l.panels.clear();
+                l.panels.push(PaintPanel {
+                    id: "paint:r1_30fps",
+                    title: "fps = 30",
+                    target_fps: 30,
+                });
+            }
+            // Bottom row of the right column.
+            let bot = tree.split_leaf(right, SplitKind::SplitBottom, 0.0, 0.0);
+            if let Some(&b) = bot.last() {
+                if let Some(l) = tree.leaf_mut(b) {
+                    l.panels.clear();
+                    l.panels.push(PaintPanel {
+                        id: "paint:r3_uncap",
+                        title: "uncapped",
+                        target_fps: uzor::render::UNCAPPED_FPS,
+                    });
+                }
+            }
+        }
+        // Bottom row of the left column.
+        let bot_l = tree.split_leaf(leaf0, SplitKind::SplitBottom, 0.0, 0.0);
+        if let Some(&b) = bot_l.last() {
+            if let Some(l) = tree.leaf_mut(b) {
+                l.panels.clear();
+                l.panels.push(PaintPanel {
+                    id: "paint:r2_120fps",
+                    title: "fps = 120",
+                    target_fps: 120,
+                });
+            }
+        }
+    }
+
+    fn ui(&mut self, win: &mut WindowCtx<'_, PaintPanel>) {
+        // ── Edge slot: settings panel reserves 280 px on the left so the
+        //    dock area shrinks to whatever is left for the painting grid.
+        win.layout.edges_mut().clear();
+        win.layout.edges_mut().add(EdgeSlot {
+            id:        "settings".to_string(),
+            side:      EdgeSide::Left,
+            thickness: 280.0,
+            visible:   true,
+            order:     0,
+            ..Default::default()
+        });
+        // Re-solve so the freshly-declared edge slot is reflected in
+        // dock_area + edge rects (which the docking panels then layout
+        // themselves into).
+        let win_rect = win.layout.last_window().unwrap_or(uzor::types::Rect::new(0.0, 0.0, 0.0, 0.0));
+        if win_rect.width > 0.0 && win_rect.height > 0.0 {
+            win.layout.solve(win_rect);
+        }
+
         // ── Apply theme if it changed ────────────────────────────────────────
         {
             let theme_dark_id  = unsafe_widget_id("settings:theme_dark");
@@ -87,20 +191,14 @@ impl App<NoPanel> for DashboardApp {
             }
         }
 
-        // ── Compute below-chrome body rect ────────────────────────────────────
-        // dock_area уже compressed по chrome — используем напрямую.
-        let body = win.layout.last_solved()
+        // ── Settings rect: edge slot the docking engine reserved earlier.
+        //    Painting rect: the remaining dock_area (already shrunk by the
+        //    edge slot + chrome compression in solve()).
+        let settings_rect = win.layout.rect_for_edge_slot("settings")
+            .unwrap_or(Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 });
+        let paint_rect = win.layout.last_solved()
             .map(|s| s.dock_area)
             .unwrap_or(Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 });
-
-        let settings_w    = 280.0_f64;
-        let settings_rect = Rect { x: body.x, y: body.y, width: settings_w, height: body.height };
-        let paint_rect    = Rect {
-            x:      body.x + settings_w,
-            y:      body.y,
-            width:  (body.width - settings_w).max(0.0),
-            height: body.height,
-        };
 
         // ── Process click events BEFORE painting (needs was_clicked) ──────────
         // Check backend button clicks.
@@ -310,93 +408,75 @@ impl App<NoPanel> for DashboardApp {
             let _ = cy;
         }
 
-        // ── Painting panel (right, flex=1): 4 regions × different cadences ───
-        // Split horizontally into a 2×2 grid:
-        //   ┌──────────────┬──────────────┐
-        //   │ R0  fps=0    │ R1  fps=30   │
-        //   │ (dirty)      │              │
-        //   ├──────────────┼──────────────┤
-        //   │ R2  fps=120  │ R3  uncapped │
-        //   │              │              │
-        //   └──────────────┴──────────────┘
-        // Each region paints its own counter + measured-fps so the user can
-        // see how the per-region scheduler behaves vs. the legacy whole-window
-        // event-driven path.
+        // Painting panel: register dock separators + paint them for the
+        // 4-leaf grid.  Per-cell composite content is drawn by per-region
+        // draw_region() callbacks below at their own cadences.
         {
             let layout = &mut *win.layout;
             let render = &mut *win.render;
-            let bg = layout.styles().color_or_owned("surface", "#0E0E11");
-            render.set_fill_color(bg.as_str());
-            render.fill_rect(paint_rect.x, paint_rect.y, paint_rect.width, paint_rect.height);
+            uzor::framework::widgets::lm::dock_area()
+                .build(layout, render, |_layout, _render, _info| {
+                    // No body: each leaf is painted by its own RenderRegion.
+                });
         }
-        // Increment per-region tick counters every time this app.ui() runs.
-        // (One ui call covers the whole window; per-region cadence governs
-        // how often the *window* redraws, which is what we measure.)
-        self.tick_counter = self.tick_counter.wrapping_add(1);
-
-        let cell_w = paint_rect.width  / 2.0;
-        let cell_h = paint_rect.height / 2.0;
-        let cells: [(&str, u32, Rect); 4] = [
-            ("paint:r0_dirty",   0,             Rect { x: paint_rect.x,            y: paint_rect.y,           width: cell_w, height: cell_h }),
-            ("paint:r1_30fps",   30,            Rect { x: paint_rect.x + cell_w,   y: paint_rect.y,           width: cell_w, height: cell_h }),
-            ("paint:r2_120fps",  120,           Rect { x: paint_rect.x,            y: paint_rect.y + cell_h,  width: cell_w, height: cell_h }),
-            ("paint:r3_uncap",   uzor::render::UNCAPPED_FPS, Rect { x: paint_rect.x + cell_w, y: paint_rect.y + cell_h, width: cell_w, height: cell_h }),
-        ];
-        for (id_str, fps, rect) in cells.iter() {
-            let layout = &mut *win.layout;
-            let render = &mut *win.render;
-            // Cell border so the grid is visible on top of the panel bg.
-            let border = layout.styles().color_or_owned("border", "rgba(255,255,255,0.10)");
-            render.set_fill_color(border.as_str());
-            render.fill_rect(rect.x, rect.y, rect.width, 1.0);
-            render.fill_rect(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0);
-            render.fill_rect(rect.x, rect.y, 1.0, rect.height);
-            render.fill_rect(rect.x + rect.width - 1.0, rect.y, 1.0, rect.height);
-
-            let pad = 12.0_f64;
-            let row_h = 22.0_f64;
-            let mut cy = rect.y + pad;
-            let lr = |cy: f64, h: f64| Rect { x: rect.x + pad, y: cy, width: rect.width - 2.0*pad, height: h };
-
-            let header = match *fps {
-                0                          => format!("R: target_fps = 0 (dirty-driven)"),
-                uzor::render::UNCAPPED_FPS => format!("R: uncapped"),
-                f                          => format!("R: target_fps = {}", f),
-            };
-            uzor::framework::widgets::lm::text(
-                unsafe_widget_id(format!("{}:hdr", id_str).as_str()),
-                lr(cy, row_h), header.as_str(),
-            ).build(layout, render);
-            cy += row_h + 4.0;
-
-            let counter = format!("ui ticks since start: {}", self.tick_counter);
-            uzor::framework::widgets::lm::text(
-                unsafe_widget_id(format!("{}:counter", id_str).as_str()),
-                lr(cy, row_h), counter.as_str(),
-            ).build(layout, render);
-            cy += row_h + 4.0;
-
-            let measured = format!("window FPS: {:.1}", measured_fps);
-            uzor::framework::widgets::lm::text(
-                unsafe_widget_id(format!("{}:meas", id_str).as_str()),
-                lr(cy, row_h), measured.as_str(),
-            ).build(layout, render);
-
-            let _ = cy;
-        }
+        let _ = paint_rect;
     }
 
     fn regions(&mut self) -> Vec<uzor::render::RenderRegion> {
-        // Region rects below are placeholders (the scheduler ignores them
-        // for now and uses target_fps only). When per-region rebuild lands
-        // these will gate sub-scene caching.
+        // Each region builds its own vello sub-scene at its own cadence.
+        // The runtime composites them every frame on the GPU.
         let zero = Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 };
         vec![
-            uzor::render::RenderRegion::dirty_driven("paint:r0_dirty", zero),
-            uzor::render::RenderRegion::capped("paint:r1_30fps",  zero, 30),
-            uzor::render::RenderRegion::capped("paint:r2_120fps", zero, 120),
-            uzor::render::RenderRegion::uncapped("paint:r3_uncap", zero),
+            // Chrome strip + Settings panel: dirty-driven (rebuilds only on events).
+            uzor::render::RenderRegion::dirty_driven("dashboard:chrome_settings", zero),
+            // Painting cells, each at its own cadence.
+            uzor::render::RenderRegion::dirty_driven("paint:r0_dirty",   zero),
+            uzor::render::RenderRegion::capped     ("paint:r1_30fps",   zero, 30),
+            uzor::render::RenderRegion::capped     ("paint:r2_120fps",  zero, 120),
+            uzor::render::RenderRegion::uncapped   ("paint:r3_uncap",   zero),
         ]
+    }
+
+    fn draw_region(&mut self, region_id: &str, win: &mut WindowCtx<'_, PaintPanel>) {
+        match region_id {
+            "dashboard:chrome_settings" => self.draw_chrome_settings(win, Rect::new(0.0, 0.0, 0.0, 0.0), Rect::new(0.0, 0.0, 0.0, 0.0)),
+            "paint:r0_dirty"  |
+            "paint:r1_30fps"  |
+            "paint:r2_120fps" |
+            "paint:r3_uncap"  => {
+                // Find the leaf whose panel.id matches this region and
+                // grab its rect from the docking engine.  Falls back to
+                // an empty rect when the leaf isn't in the tree (the
+                // first paint frames of a freshly opened window).
+                let rect_opt = win.layout.panels()
+                    .panel_rects()
+                    .iter()
+                    .find_map(|(leaf_id, panel_rect)| {
+                        let leaf = win.layout.panels().tree().leaf(*leaf_id)?;
+                        let panel = leaf.panels.first()?;
+                        if panel.id == region_id {
+                            Some(Rect::new(
+                                panel_rect.x      as f64,
+                                panel_rect.y      as f64,
+                                panel_rect.width  as f64,
+                                panel_rect.height as f64,
+                            ))
+                        } else {
+                            None
+                        }
+                    });
+                if let Some(rect) = rect_opt {
+                    let target_fps = match region_id {
+                        "paint:r0_dirty"  => 0,
+                        "paint:r1_30fps"  => 30,
+                        "paint:r2_120fps" => 120,
+                        _                 => uzor::render::UNCAPPED_FPS,
+                    };
+                    self.draw_paint_cell(win, region_id, rect, target_fps);
+                }
+            }
+            _ => {}
+        }
     }
 
     fn on_chrome_new_window(&mut self, _source: &WindowKey) -> Option<WindowSpec> {
@@ -410,6 +490,107 @@ impl App<NoPanel> for DashboardApp {
             .decorations(false)
             .background(0xFF_F7_F7_F4),
         )
+    }
+}
+
+impl DashboardApp {
+    /// Build chrome strip + Settings panel. The full ui() body already does
+    /// this (plus paints the painting bg) — delegate to it.  When the
+    /// per-region scheduler decides this region is due, the runtime calls
+    /// us with the chrome+settings region's dedicated scene.
+    fn draw_chrome_settings(
+        &mut self,
+        win: &mut WindowCtx<'_, PaintPanel>,
+        _dock: Rect,
+        _settings_rect: Rect,
+    ) {
+        self.ui(win);
+    }
+
+    /// Build one painting-grid cell as a real composite Panel.
+    /// Increments a per-cell counter every rebuild so the user can see
+    /// different cadences side-by-side.
+    fn draw_paint_cell(
+        &mut self,
+        win: &mut WindowCtx<'_, PaintPanel>,
+        cell_id: &str,
+        rect: Rect,
+        target_fps: u32,
+    ) {
+        use uzor::ui::widgets::composite::panel::render::register_context_manager_panel;
+        use uzor::ui::widgets::composite::panel::settings::PanelSettings;
+        use uzor::ui::widgets::composite::panel::types::{PanelRenderKind, PanelView};
+        use uzor::input::core::coordinator::LayerId;
+
+        let idx = match cell_id {
+            "paint:r0_dirty"  => 0,
+            "paint:r1_30fps"  => 1,
+            "paint:r2_120fps" => 2,
+            "paint:r3_uncap"  => 3,
+            _ => return,
+        };
+        self.cell_counts[idx] = self.cell_counts[idx].wrapping_add(1);
+        let count = self.cell_counts[idx];
+        let measured_fps = win.render_control.measured_fps();
+
+        let header = match target_fps {
+            0                          => format!("Region target_fps = 0 (dirty-driven)"),
+            uzor::render::UNCAPPED_FPS => format!("Region uncapped"),
+            f                          => format!("Region target_fps = {}", f),
+        };
+        let panel_id_str = format!("paint_panel:{}", cell_id);
+
+        // Build the composite panel for this cell — full PanelRenderKind::WithHeader
+        // composite, real PanelState, real header bar with title.
+        {
+            let layout = &mut *win.layout;
+            let render = &mut *win.render;
+            let mut view = PanelView {
+                header: Some(uzor::ui::widgets::composite::panel::types::PanelHeader {
+                    title:   header.as_str(),
+                    actions: &[],
+                }),
+                columns:        &[],
+                show_scrollbar: false,
+                content_height: 0.0,
+                content_width:  0.0,
+                overflow:       uzor::types::OverflowMode::Clip,
+            };
+            let settings = PanelSettings::default();
+            let layer = LayerId::main();
+            register_context_manager_panel(
+                layout.ctx_mut(),
+                render,
+                uzor::types::unsafe_widget_id(panel_id_str.as_str()),
+                rect,
+                &mut self.cell_panel_states[idx],
+                &mut view,
+                &settings,
+                &PanelRenderKind::WithHeader,
+                &layer,
+            );
+        }
+
+        // Body content (counters) painted on top of the panel body.
+        let layout = &mut *win.layout;
+        let render = &mut *win.render;
+        let pad   = 12.0_f64;
+        let row_h = 22.0_f64;
+        let header_h = 28.0_f64;
+        let body_y = rect.y + header_h + pad;
+        let lr = |cy: f64, h: f64| Rect { x: rect.x + pad, y: cy, width: rect.width - 2.0*pad, height: h };
+
+        let counter_line = format!("rebuilds: {}", count);
+        uzor::framework::widgets::lm::text(
+            unsafe_widget_id(format!("{}:counter", cell_id).as_str()),
+            lr(body_y, row_h), counter_line.as_str(),
+        ).build(layout, render);
+
+        let measured_line = format!("window FPS: {:.1}", measured_fps);
+        uzor::framework::widgets::lm::text(
+            unsafe_widget_id(format!("{}:meas", cell_id).as_str()),
+            lr(body_y + row_h + 4.0, row_h), measured_line.as_str(),
+        ).build(layout, render);
     }
 }
 

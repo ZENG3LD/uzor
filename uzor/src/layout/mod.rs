@@ -15,6 +15,7 @@
 mod chrome_slot;
 mod consume_chain;
 mod dispatcher;
+pub mod dock_state;
 mod edge_panels;
 mod handles;
 pub mod host;
@@ -45,3 +46,4 @@ pub use tree::{LayoutNode, LayoutNodeId, LayoutTree, LayoutTreeEntry, SystemNode
 pub use types::{DragOutcome, EdgeRects, EdgeSide, LayoutSolved, OverlayKind, OverlayRect, SlotId};
 pub use styles::{MirageDarkPreset, MirageLightPreset, Preset, StyleManager, TextureKind};
 pub use z_layers::ZLayerTable;
+pub use dock_state::{DockFrame, DockState};

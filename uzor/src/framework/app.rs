@@ -42,6 +42,17 @@ pub trait App<P: DockPanel = NoPanel>: Sized + 'static {
         Vec::new()
     }
 
+    /// Per-region paint callback. The runtime calls this only for regions
+    /// whose `RegionScheduleState` is "due" on the current event-loop
+    /// wake-up.  The provided `WindowCtx::render` writes into a scene
+    /// dedicated to `region_id`; non-due regions are appended from cache.
+    ///
+    /// Default: forwards to `ui()` so apps that don't split per region
+    /// keep working unchanged.
+    fn draw_region(&mut self, _region_id: &str, win: &mut WindowCtx<'_, P>) {
+        self.ui(win);
+    }
+
     fn take_pending_spawn(&mut self) -> Option<WindowSpec> { None }
 
     fn take_window_to_close(&mut self) -> Option<WindowKey> { None }

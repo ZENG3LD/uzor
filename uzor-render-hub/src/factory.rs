@@ -440,6 +440,41 @@ impl WindowRenderState {
     /// Returns `None` only when the active backend is `InstancedWgpu` (which
     /// does not expose a `RenderContext`-compatible draw API) or when the
     /// corresponding context slot is uninitialised.
+    /// Like [`with_render_context`] but writes into a caller-supplied
+    /// `vello::Scene` rather than the per-window main scene.  Used by the
+    /// per-region paint scheduler so each region can build into its own
+    /// cached scene and the runtime then composites them.
+    ///
+    /// VelloGpu / VelloHybrid only — returns `None` on backends that don't
+    /// expose a vello-style `Scene` (Canvas2d / TinySkia / VelloCpu).
+    pub fn with_scene_render_context<R>(
+        &mut self,
+        scene: &mut Scene,
+        f: impl FnOnce(&mut dyn uzor::render::RenderContext) -> R,
+    ) -> Option<R> {
+        match self.active {
+            RenderBackend::VelloGpu => {
+                let mut ctx = VelloGpuRenderContext::new(scene, 0.0, 0.0);
+                Some(f(&mut ctx))
+            }
+            RenderBackend::VelloHybrid => {
+                // VelloHybrid uses its own context type backed by vello-hybrid::Scene,
+                // not vello::Scene. Per-region caching for hybrid is a future patch;
+                // for now fall through and let the caller use with_render_context.
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Append a previously-built region scene into the main per-window
+    /// scene.  No-op on non-vello backends.
+    pub fn append_region_scene(&mut self, region_scene: &Scene) {
+        if matches!(self.active, RenderBackend::VelloGpu | RenderBackend::VelloHybrid) {
+            self.scene.append(region_scene, None);
+        }
+    }
+
     pub fn with_render_context<R>(
         &mut self,
         f: impl FnOnce(&mut dyn uzor::render::RenderContext) -> R,

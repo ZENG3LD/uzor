@@ -524,6 +524,11 @@ impl<P: DockPanel> LayoutManager<P> {
         self.last_pressed.as_ref() == Some(id)
     }
 
+    /// Widget id from the most recent `on_pointer_down` hit-test, if any.
+    pub fn last_pressed_widget(&self) -> Option<&WidgetId> {
+        self.last_pressed.as_ref()
+    }
+
     /// Last known pointer position (persists across frames).
     pub fn pointer_pos(&self) -> Option<(f64, f64)> {
         self.last_pointer_pos

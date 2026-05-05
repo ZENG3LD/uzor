@@ -125,6 +125,28 @@ pub(crate) struct PerWindow<P: DockPanel> {
     /// Populated each frame from `App::regions()`. Empty when the app
     /// uses the legacy single-region (event-driven) path.
     pub region_states: std::collections::HashMap<&'static str, uzor::render::RegionScheduleState>,
+
+    /// Per-region cached `vello::Scene`s. On a region's "due" frame we
+    /// clear and rebuild the scene; on a non-due frame we reuse the
+    /// cached geometry. Composite step appends all of them into the
+    /// main `render_state.scene` before GPU submit so a single draw
+    /// call covers the full window.
+    pub region_scenes: std::collections::HashMap<&'static str, vello::Scene>,
+
+    /// Active dock-separator drag, if any. Set when the user clicks on a
+    /// `dock-sep-N` hit-zone, cleared on mouse-up. Stores the cursor
+    /// origin and the separator index so per-frame mouse-moves can call
+    /// `panels_mut().drag_separator(idx, delta, w, h)`.
+    pub dock_separator_drag: Option<DockSeparatorDrag>,
+}
+
+/// In-flight dock-separator drag state owned by the manager.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DockSeparatorDrag {
+    pub sep_idx: usize,
+    pub last_x:  f64,
+    pub last_y:  f64,
 }
 
 // ── PerWindowHost ─────────────────────────────────────────────────────────────
@@ -486,6 +508,8 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             initialised:     false,
             close_requested: false,
             region_states:   std::collections::HashMap::new(),
+            region_scenes:   std::collections::HashMap::new(),
+            dock_separator_drag: None,
         };
         self.windows.insert(id, pw);
 
@@ -544,6 +568,33 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 let ly = position.y / dpr;
                 pw.last_mouse_pos = (lx, ly);
                 pw.layout.on_pointer_move(lx, ly);
+
+                // Drive an in-flight dock-separator drag.  panels_mut()
+                // applies the per-pixel delta to the underlying split
+                // ratio — the next frame's solve picks up the new sizes.
+                if let Some(drag) = pw.dock_separator_drag.as_mut() {
+                    use uzor::docking::panels::SeparatorOrientation as SO;
+                    let orient = pw.layout.panels()
+                        .separators()
+                        .get(drag.sep_idx)
+                        .map(|s| s.orientation);
+                    if let Some(orient) = orient {
+                        let win = pw.layout.last_window().unwrap_or(uzor::types::Rect::new(0.0, 0.0, 1.0, 1.0));
+                        let delta = match orient {
+                            SO::Vertical   => (lx - drag.last_x) as f32,
+                            SO::Horizontal => (ly - drag.last_y) as f32,
+                        };
+                        pw.layout.panels_mut().drag_separator(
+                            drag.sep_idx,
+                            delta,
+                            win.width  as f32,
+                            win.height as f32,
+                        );
+                    }
+                    drag.last_x = lx;
+                    drag.last_y = ly;
+                }
+
                 // Force a redraw so the next frame paints the hover state.
                 pw.window.request_redraw();
             }
@@ -557,6 +608,22 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 let Some(pw) = self.windows.get_mut(&id) else { return };
                 let (mx, my) = pw.last_mouse_pos;
                 pw.layout.on_pointer_down(mx, my);
+
+                // Dock-separator drag start.  on_pointer_down already
+                // wrote `last_pressed` via process_drag_press; check it
+                // for the `dock-sep-N` id pattern.
+                if let Some(pressed) = pw.layout.last_pressed_widget() {
+                    if let Some(suffix) = pressed.as_str().strip_prefix("dock-sep-") {
+                        if let Ok(idx) = suffix.parse::<usize>() {
+                            pw.dock_separator_drag = Some(DockSeparatorDrag {
+                                sep_idx: idx,
+                                last_x:  mx,
+                                last_y:  my,
+                            });
+                            return;
+                        }
+                    }
+                }
 
                 // Try chrome / bezel resize via L3. If consumed — done.
                 // For NewWindow we need App, so we handle that case here.
@@ -632,6 +699,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             } => {
                 let Some(pw) = self.windows.get_mut(&id) else { return };
                 let (mx, my) = pw.last_mouse_pos;
+                pw.dock_separator_drag = None;
                 // L3 records the click in last_click; no pw.input write needed.
                 let _outcome = pw.layout.on_pointer_up(mx, my);
                 pw.window.request_redraw();
@@ -713,26 +781,72 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
 
             let bg_color = argb_to_alpha_color(pw.spec.background);
             pw.render_state.begin_frame();
+
+            let regions = self.app.regions();
+            let now_inst = std::time::Instant::now();
+
+            // Pick path: per-region rebuild + composite (VelloGpu only for now)
+            // OR legacy whole-window single-pass.
+            let backend_supports_regions =
+                matches!(pw.render_state.backend(), uzor::platform::types::RenderBackend::VelloGpu);
+            let use_regions = !regions.is_empty() && backend_supports_regions;
+
             {
                 let key = &pw.key;
                 let layout = &mut pw.layout;
                 let render_state = &mut pw.render_state;
+                let region_states = &mut pw.region_states;
+                let region_scenes = &mut pw.region_scenes;
                 let app = &mut self.app;
                 let fps_ema = self.fps_ema;
                 let last_frame_time_ms = self.last_frame_time_ms;
                 let frame_count = self.frame_count;
                 let hub = self.hub.as_mut().expect("hub initialised");
                 let mut hub_ctrl = HubControl { hub, fps_ema, last_frame_time_ms, frame_count };
-                render_state.with_render_context(|render_ctx| {
-                    let mut ctx = WindowCtx::<P> {
-                        key,
-                        layout,
-                        render: render_ctx,
-                        rect,
-                        render_control: &mut hub_ctrl,
-                    };
-                    app.ui(&mut ctx);
-                });
+
+                if use_regions {
+                    // 1. Rebuild only the regions whose schedule is due.
+                    for region in &regions {
+                        let state = region_states
+                            .entry(region.id)
+                            .or_insert_with(uzor::render::RegionScheduleState::default);
+                        if !state.due(region, now_inst) { continue; }
+                        let scene = region_scenes
+                            .entry(region.id)
+                            .or_insert_with(vello::Scene::new);
+                        scene.reset();
+                        render_state.with_scene_render_context(scene, |render_ctx| {
+                            let mut ctx = WindowCtx::<P> {
+                                key,
+                                layout,
+                                render: render_ctx,
+                                rect,
+                                render_control: &mut hub_ctrl,
+                            };
+                            app.draw_region(region.id, &mut ctx);
+                        });
+                        state.last_painted = Some(now_inst);
+                    }
+                    // 2. Composite all cached region scenes into the main scene
+                    //    in declaration order — first-declared paints first
+                    //    (under), last-declared on top.
+                    for region in &regions {
+                        if let Some(rs) = region_scenes.get(region.id) {
+                            render_state.append_region_scene(rs);
+                        }
+                    }
+                } else {
+                    render_state.with_render_context(|render_ctx| {
+                        let mut ctx = WindowCtx::<P> {
+                            key,
+                            layout,
+                            render: render_ctx,
+                            rect,
+                            render_control: &mut hub_ctrl,
+                        };
+                        app.ui(&mut ctx);
+                    });
+                }
             }
             let _responses = pw.layout.ctx_mut().end_frame();
             // Clear one-shot input flags AFTER app.ui consumed them.
