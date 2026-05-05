@@ -1470,6 +1470,27 @@ impl<P: DockPanel> LayoutManager<P> {
         );
     }
 
+    /// Map a `ResizeHandleDragStarted { host_id, edge }` event onto a dock
+    /// separator index that a `drag_separator(idx, delta, ...)` call will
+    /// move.  `host_id` is the panel's slot id (the same string passed to
+    /// `lm::panel(slot_id, ...)`) — we look up the leaf via its panel's
+    /// `type_id()` and walk the tree to find the separator that owns the
+    /// requested edge.
+    ///
+    /// Returns `None` when the panel is not in the dock tree (e.g. floating
+    /// overlay) or when the edge sits against the window / a chrome strip
+    /// rather than a sibling panel — in either case there is no separator
+    /// to drag.
+    pub fn resize_handle_to_separator(
+        &self,
+        host_id: &str,
+        edge:    super::ResizeEdge,
+    ) -> Option<usize> {
+        let dock = &self.cur_branch().dock;
+        let leaf = dock.leaf_for_panel_id(host_id)?;
+        dock.separator_for_edge(leaf, edge)
+    }
+
     // ------------------------------------------------------------------
     // Unified click entry point
     // ------------------------------------------------------------------

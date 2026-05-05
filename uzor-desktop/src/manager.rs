@@ -902,6 +902,36 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                             return;
                         }
                     }
+
+                    // Panel-edge drag start.  Each `lm::panel` composite
+                    // registers up to 4 edge handles named
+                    // `<panel_id>:edge_{top,bottom,left,right}`.  The LM
+                    // resolves a (host_id, edge) pair onto an existing dock
+                    // separator and we reuse the same per-frame
+                    // `drag_separator(...)` math — sibling panels move
+                    // together for free because the separator is shared.
+                    let pid = pressed.as_str();
+                    let parsed = if pid.ends_with(":edge_top") {
+                        Some((&pid[..pid.len() - ":edge_top".len()], uzor::layout::ResizeEdge::N))
+                    } else if pid.ends_with(":edge_bottom") {
+                        Some((&pid[..pid.len() - ":edge_bottom".len()], uzor::layout::ResizeEdge::S))
+                    } else if pid.ends_with(":edge_left") {
+                        Some((&pid[..pid.len() - ":edge_left".len()], uzor::layout::ResizeEdge::W))
+                    } else if pid.ends_with(":edge_right") {
+                        Some((&pid[..pid.len() - ":edge_right".len()], uzor::layout::ResizeEdge::E))
+                    } else {
+                        None
+                    };
+                    if let Some((host_id, edge)) = parsed {
+                        if let Some(sep_idx) = self.layout.resize_handle_to_separator(host_id, edge) {
+                            pw.dock_separator_drag = Some(DockSeparatorDrag {
+                                sep_idx,
+                                last_x:  mx,
+                                last_y:  my,
+                            });
+                            return;
+                        }
+                    }
                 }
 
                 // Try chrome / bezel resize via L3. If consumed — done.
@@ -1490,6 +1520,9 @@ fn command_window_key(cmd: &uzor::layout::agent::Command) -> Option<String> {
         C::BlackboxClickWidget { window, .. } => Some(window.clone()),
         C::LogPush { window, .. } => window.clone(),
         C::SetTickRate { window, .. } => Some(window.clone()),
+        C::ResizePanelEdge { window, .. }
+        | C::DragDockSeparator { window, .. }
+        | C::SetPanelRect { window, .. } => Some(window.clone()),
         C::SetSyncMode { .. } | C::ApplyStylePreset { .. } => None,
     }
 }

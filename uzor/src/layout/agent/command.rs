@@ -78,6 +78,43 @@ pub enum Command {
         #[serde(default)]
         fps: Option<u32>,
     },
+
+    // ── Resize / move ────────────────────────────────────────────────
+    /// Drag a single edge of a panel.  The LM resolves
+    /// `(panel_id, edge)` onto the dock separator that owns that edge
+    /// and applies `delta_px` along the separator's axis.  No-op for
+    /// edges that touch the window / a chrome strip rather than a
+    /// sibling panel.  `edge` is one of `"n" / "s" / "e" / "w"`.
+    ResizePanelEdge {
+        window:    String,
+        panel_id:  String,
+        edge:      String,
+        delta_px:  f64,
+    },
+
+    /// Drag a dock separator by index.  `sep_idx` matches
+    /// `LayoutManager::panels().separators()[sep_idx]`; `delta_px` is
+    /// pixel movement along the separator's axis (positive = right /
+    /// down).  Equivalent to a low-level scripted version of grabbing
+    /// the divider visual.
+    DragDockSeparator {
+        window:   String,
+        sep_idx:  usize,
+        delta_px: f64,
+    },
+
+    /// Set an explicit rect on a panel.  For free-floating panels
+    /// only — panels managed by the dock tree / edge slots ignore the
+    /// call and return `ok: false`.  Hooked up alongside the
+    /// free-floating panel API in a follow-up step.
+    SetPanelRect {
+        window:    String,
+        panel_id:  String,
+        x:         f64,
+        y:         f64,
+        width:     f64,
+        height:    f64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]

@@ -301,7 +301,7 @@ pub fn register_context_manager_panel(
     let coord = &mut ctx_mgr.input;
     let panel_id =
         register_input_coordinator_panel(coord, id, rect, state, view, settings, kind, layer);
-    draw_panel_with_coord(render, rect, coord, state, view, settings, kind);
+    draw_panel_with_coord(render, rect, coord, &panel_id, state, view, settings, kind);
     panel_id
 }
 
@@ -312,7 +312,8 @@ pub fn register_context_manager_panel(
 fn draw_panel_with_coord(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
-    _coord:    &mut InputCoordinator,
+    coord:    &mut InputCoordinator,
+    panel_id: &CompositeId,
     state:    &mut PanelState,
     view:     &mut PanelView<'_>,
     settings: &PanelSettings,
@@ -564,6 +565,47 @@ fn draw_panel_with_coord(
             crate::ui::widgets::composite::overflow::draw_chevrons_helper(
                 ctx, layout.body, &scroll, theme.bg(), theme.bg(),
             );
+        }
+    }
+
+    // --- 8. Edge resize handles (visual highlight on hover / drag) ---------
+    // The hit zones themselves are registered in
+    // `register_input_coordinator_panel`; here we draw a highlight strip
+    // on top of the panel's edge **only while the matching child is
+    // hovered or pressed**.  The strip uses an accent-leaning colour so
+    // it stands out against the panel border at rest.
+    {
+        let handles = style.edge_handles();
+        if handles.top || handles.bottom || handles.left || handles.right {
+            let f       = layout.frame;
+            let strip_t = 3.0_f64; // visible thickness when hovered / pressed
+            // Pick a foreground-ish colour: theme.divider() is too quiet,
+            // theme.border() blends with panel chrome; reuse the column
+            // header text colour as a high-contrast accent that already
+            // lives in the PanelTheme contract.
+            let active_color = theme.column_header_text();
+
+            let mut maybe_strip = |suffix: &str, on: bool, x: f64, y: f64, w: f64, h: f64| {
+                if !on { return; }
+                let id = WidgetId::new(format!("{}:{}", panel_id.0.0, suffix));
+                let st = coord.widget_state(&id);
+                if !(st.is_hovered() || st.is_pressed()) { return; }
+                ctx.set_fill_color(active_color);
+                ctx.fill_rect(x, y, w, h);
+            };
+
+            // Top strip — sits on the inside of the top edge.
+            maybe_strip("edge_top", handles.top,
+                f.x, f.y, f.width, strip_t);
+            // Bottom strip — inside of bottom edge.
+            maybe_strip("edge_bottom", handles.bottom,
+                f.x, f.y + f.height - strip_t, f.width, strip_t);
+            // Left strip — inside of left edge.
+            maybe_strip("edge_left", handles.left,
+                f.x, f.y, strip_t, f.height);
+            // Right strip — inside of right edge.
+            maybe_strip("edge_right", handles.right,
+                f.x + f.width - strip_t, f.y, strip_t, f.height);
         }
     }
 }

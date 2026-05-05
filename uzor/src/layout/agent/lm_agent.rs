@@ -169,6 +169,9 @@ impl<P: DockPanel> LmAgent<P> {
             Command::BlackboxClickWidget { window, .. } => Some(window.clone()),
             Command::LogPush { window, .. } => window.clone(),
             Command::SetTickRate { window, .. } => Some(window.clone()),
+            Command::ResizePanelEdge { window, .. }
+            | Command::DragDockSeparator { window, .. }
+            | Command::SetPanelRect { window, .. } => Some(window.clone()),
             Command::SetSyncMode { .. } | Command::ApplyStylePreset { .. } => None,
         };
         let ts = layout.frame_time_ms;
@@ -405,6 +408,72 @@ impl<P: DockPanel> LmAgent<P> {
                     return Some(CommandReply::err(format!("unknown preset {:?}", name)));
                 }
                 Some(CommandReply::ok())
+            }
+
+            // ── resize / drag ───────────────────────────────────────
+            Command::ResizePanelEdge { window, panel_id, edge, delta_px } => {
+                let key = WindowKey::new(window.clone());
+                if !layout.window_keys().any(|k| k == &key) {
+                    return Some(CommandReply::err(format!("unknown window {:?}", window)));
+                }
+                let parsed = match edge.as_str() {
+                    "n" | "N" => crate::layout::ResizeEdge::N,
+                    "s" | "S" => crate::layout::ResizeEdge::S,
+                    "e" | "E" => crate::layout::ResizeEdge::E,
+                    "w" | "W" => crate::layout::ResizeEdge::W,
+                    other => return Some(CommandReply::err(format!(
+                        "edge must be n/s/e/w, got {:?}", other,
+                    ))),
+                };
+                layout.set_current_window(key);
+                let sep_idx = match layout.resize_handle_to_separator(panel_id, parsed) {
+                    Some(i) => i,
+                    None => return Some(CommandReply::err(format!(
+                        "panel {:?} has no resizable {:?} edge (window border or unknown panel)",
+                        panel_id, edge,
+                    ))),
+                };
+                let win_rect = layout.last_window().unwrap_or(crate::types::Rect::new(0.0,0.0,1.0,1.0));
+                let ok = layout.panels_mut().drag_separator(
+                    sep_idx,
+                    *delta_px as f32,
+                    win_rect.width  as f32,
+                    win_rect.height as f32,
+                );
+                if !ok {
+                    return Some(CommandReply::err("drag_separator returned false"));
+                }
+                Some(CommandReply::ok())
+            }
+
+            Command::DragDockSeparator { window, sep_idx, delta_px } => {
+                let key = WindowKey::new(window.clone());
+                if !layout.window_keys().any(|k| k == &key) {
+                    return Some(CommandReply::err(format!("unknown window {:?}", window)));
+                }
+                layout.set_current_window(key);
+                let win_rect = layout.last_window().unwrap_or(crate::types::Rect::new(0.0,0.0,1.0,1.0));
+                let ok = layout.panels_mut().drag_separator(
+                    *sep_idx,
+                    *delta_px as f32,
+                    win_rect.width  as f32,
+                    win_rect.height as f32,
+                );
+                if !ok {
+                    return Some(CommandReply::err(format!(
+                        "no separator at index {}", sep_idx,
+                    )));
+                }
+                Some(CommandReply::ok())
+            }
+
+            Command::SetPanelRect { window, panel_id, .. } => {
+                // Free-floating panels not implemented yet — placeholder
+                // returning a clear error so callers know it's pending.
+                let _ = (window, panel_id);
+                Some(CommandReply::err(
+                    "SetPanelRect is reserved for free-floating panels — not implemented yet",
+                ))
             }
         }
     }

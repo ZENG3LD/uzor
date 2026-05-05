@@ -134,6 +134,9 @@ pub fn spawn_server(
                     .route("/lm/sync_mode",          post(post_set_sync_mode))
                     .route("/lm/style_preset",       post(post_apply_style_preset))
                     .route("/lm/window/tick_rate",   post(post_set_tick_rate))
+                    .route("/lm/panel/resize_edge",  post(post_resize_panel_edge))
+                    .route("/lm/panel/drag_separator", post(post_drag_dock_separator))
+                    .route("/lm/panel/set_rect",     post(post_set_panel_rect))
                     // Blackbox routing — slot-id keyed.
                     .route("/blackboxes",                       get(blackbox_slots))
                     .route("/blackbox/:slot/widgets",           get(blackbox_widgets))
@@ -361,6 +364,46 @@ async fn post_set_tick_rate(
     Json(b): Json<TickRateBody>,
 ) -> impl IntoResponse {
     forward(s, Command::SetTickRate { window: b.window, mode: b.mode, fps: b.fps }).await
+}
+
+#[derive(Deserialize)]
+struct ResizePanelEdgeBody { window: String, panel_id: String, edge: String, delta_px: f64 }
+
+async fn post_resize_panel_edge(
+    State(s): State<AppState>,
+    Json(b): Json<ResizePanelEdgeBody>,
+) -> impl IntoResponse {
+    forward(s, Command::ResizePanelEdge {
+        window: b.window, panel_id: b.panel_id, edge: b.edge, delta_px: b.delta_px,
+    }).await
+}
+
+#[derive(Deserialize)]
+struct DragDockSeparatorBody { window: String, sep_idx: usize, delta_px: f64 }
+
+async fn post_drag_dock_separator(
+    State(s): State<AppState>,
+    Json(b): Json<DragDockSeparatorBody>,
+) -> impl IntoResponse {
+    forward(s, Command::DragDockSeparator {
+        window: b.window, sep_idx: b.sep_idx, delta_px: b.delta_px,
+    }).await
+}
+
+#[derive(Deserialize)]
+struct SetPanelRectBody {
+    window: String, panel_id: String,
+    x: f64, y: f64, width: f64, height: f64,
+}
+
+async fn post_set_panel_rect(
+    State(s): State<AppState>,
+    Json(b): Json<SetPanelRectBody>,
+) -> impl IntoResponse {
+    forward(s, Command::SetPanelRect {
+        window: b.window, panel_id: b.panel_id,
+        x: b.x, y: b.y, width: b.width, height: b.height,
+    }).await
 }
 
 // ── Blackbox endpoints ──────────────────────────────────────────────

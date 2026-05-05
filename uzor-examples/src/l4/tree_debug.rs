@@ -143,6 +143,11 @@ pub fn render_layout_tree<P: DockPanel>(
     layout: &LayoutManager<P>,
     render: &mut dyn RenderContext,
 ) {
+    // Clip everything to our cell rect — neighbour cells must not bleed
+    // through after a dock-separator drag shrinks us.
+    render.save();
+    render.clip_rect(rect.x, rect.y, rect.width, rect.height);
+
     // Background
     let bg = layout.styles().color_or_owned("surface", "#16171D");
     render.set_fill_color(bg.as_str());
@@ -255,6 +260,8 @@ pub fn render_layout_tree<P: DockPanel>(
         render.fill_text(label, lx + 18.0, legend_y + 10.0);
         lx += render.measure_text(label) + 44.0;
     }
+
+    render.restore();
 }
 
 // ── Construction helpers ────────────────────────────────────────────

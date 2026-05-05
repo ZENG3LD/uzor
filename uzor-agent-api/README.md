@@ -57,6 +57,9 @@ keeps running.
 | POST   | `/window/close`              | `{key}`                                   | `CommandReply`           |
 | POST   | `/lm/sync_mode`              | `{node_id, mode, group_id?}`              | `CommandReply`           |
 | POST   | `/lm/style_preset`           | `{name}`                                  | `CommandReply`           |
+| POST   | `/lm/panel/resize_edge`      | `{window, panel_id, edge, delta_px}`      | `CommandReply`           |
+| POST   | `/lm/panel/drag_separator`   | `{window, sep_idx, delta_px}`             | `CommandReply`           |
+| POST   | `/lm/panel/set_rect`         | `{window, panel_id, x, y, width, height}` | `CommandReply`           |
 | GET    | `/blackboxes`                | —                                         | `Vec<String>`            |
 | GET    | `/blackbox/:slot/widgets`    | —                                         | `Vec<AgentWidget>`       |
 | GET    | `/blackbox/:slot/state`      | —                                         | free-form JSON           |

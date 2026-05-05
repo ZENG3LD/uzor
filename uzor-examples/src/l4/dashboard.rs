@@ -424,39 +424,9 @@ impl App<PaintPanel> for DashboardApp {
             let _ = settings_rect;
         }
 
-        // Dock-leaf separators (drag-to-resize hit zones + visual strips).
-        // Per-cell composite content is drawn by per-region draw_region()
-        // callbacks below at their own cadences.  TODO(panel-edges): when
-        // every panel composite owns its own 4 edge handles, this manual
-        // call goes away.
-        {
-            use uzor::layout::docking::SeparatorOrientation as SO;
-            let layout = &mut *win.layout;
-            let render = &mut *win.render;
-            layout.register_dock_separators(&uzor::input::LayerId::main());
-            let bg = layout.styles().color_or_owned("border_strong", "rgba(255,255,255,0.18)");
-            let strips: Vec<Rect> = layout.panels().separators().iter().map(|s| {
-                let thickness = s.thickness_for_state() as f64;
-                match s.orientation {
-                    SO::Vertical => Rect {
-                        x: s.position as f64 - thickness / 2.0,
-                        y: s.start    as f64,
-                        width:  thickness,
-                        height: s.length as f64,
-                    },
-                    SO::Horizontal => Rect {
-                        x: s.start    as f64,
-                        y: s.position as f64 - thickness / 2.0,
-                        width:  s.length as f64,
-                        height: thickness,
-                    },
-                }
-            }).collect();
-            render.set_fill_color(bg.as_str());
-            for r in &strips {
-                render.fill_rect(r.x, r.y, r.width, r.height);
-            }
-        }
+        // Edge handles are now owned by each `lm::panel(...)` cell —
+        // hit zones registered in the composite, visual highlight on
+        // hover / drag.  No more manual `register_dock_separators` here.
         let _ = paint_rect;
     }
 
@@ -603,6 +573,10 @@ impl DashboardApp {
             .header_title(header.as_str())
             .kind(PanelRenderKind::WithHeader)
             .overflow(uzor::types::OverflowMode::Clip)
+            // Drag any edge of the cell to resize the dock split.  The LM
+            // resolves (host_id, edge) onto the shared dock separator, so
+            // the neighbouring cell moves with it.
+            .edge_handles(uzor::ui::widgets::composite::panel::style::EdgeHandlesConfig::all())
             .build_with_body(layout, render, |layout, render, body_rect| {
                 let lr = |cy: f64, h: f64| Rect {
                     x: body_rect.x + pad, y: cy,

@@ -1333,6 +1333,92 @@ impl<P: DockPanel> DockState<P> {
         None
     }
 
+    /// Look up the `LeafId` whose active panel's `type_id()` matches
+    /// `panel_id`.  Companion to [`Self::rect_for_panel_id`] used by
+    /// resize-handle dispatch — the composite knows the panel by its
+    /// builder slot id, the docking math knows it by `LeafId`.
+    pub fn leaf_for_panel_id(&self, panel_id: &str) -> Option<LeafId> {
+        for leaf_id in self.panel_rects.keys() {
+            if let Some(leaf) = self.tree.leaf(*leaf_id) {
+                if let Some(p) = leaf.panels.first() {
+                    if p.type_id() == panel_id {
+                        return Some(*leaf_id);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Find the index in `separators()` for the separator that should move
+    /// when the user drags `edge` on the panel at `leaf`.
+    ///
+    /// - `E` / `W` map to vertical separators (axis = X).
+    /// - `S` / `N` map to horizontal separators (axis = Y).
+    /// - For `E` / `S` the leaf is on the **start** side (child_a side); the
+    ///   separator that owns the trailing edge has `child_a` containing leaf.
+    /// - For `W` / `N` the leaf is on the **end** side (child_b side).
+    ///
+    /// Returns `None` if no separator on the matching axis lives between the
+    /// leaf and a sibling — typically because the panel's edge sits against
+    /// the window / a chrome strip rather than a sibling panel.
+    pub fn separator_for_edge(
+        &self,
+        leaf:  LeafId,
+        edge:  super::ResizeEdge,
+    ) -> Option<usize> {
+        use super::ResizeEdge as E;
+
+        let (orientation, leaf_is_a) = match edge {
+            E::E => (SeparatorOrientation::Vertical,   true),
+            E::W => (SeparatorOrientation::Vertical,   false),
+            E::S => (SeparatorOrientation::Horizontal, true),
+            E::N => (SeparatorOrientation::Horizontal, false),
+            // Corner drags are out of scope for now; ignored.
+            _    => return None,
+        };
+
+        for (idx, sep) in self.separators.iter().enumerate() {
+            if sep.orientation != orientation { continue; }
+            let SeparatorLevel::Node { child_a, child_b, .. } = sep.level;
+            let target_side = if leaf_is_a { child_a } else { child_b };
+            if self.node_contains_target_leaf(target_side, leaf) {
+                return Some(idx);
+            }
+        }
+        None
+    }
+
+    /// True if the subtree rooted at `node_raw` contains `target`.  Used
+    /// by [`Self::separator_for_edge`] to walk through nested branches —
+    /// a leaf-targeted edge drag may map to a separator whose child is
+    /// an ancestor branch of the leaf.
+    fn node_contains_target_leaf(&self, node_raw: u64, target: LeafId) -> bool {
+        if node_raw == target.0 { return true; }
+        if let Some(branch) = self.tree.find_branch(BranchId(node_raw)) {
+            return self.branch_subtree_contains(branch, target);
+        }
+        false
+    }
+
+    fn branch_subtree_contains(
+        &self,
+        branch: &Branch<P>,
+        target: LeafId,
+    ) -> bool {
+        for child in &branch.children {
+            match child {
+                PanelNode::Leaf(l) => {
+                    if l.id == target { return true; }
+                }
+                PanelNode::Branch(b) => {
+                    if self.branch_subtree_contains(b, target) { return true; }
+                }
+            }
+        }
+        false
+    }
+
     pub fn panel_headers(&self) -> &HashMap<LeafId, PanelRect> {
         &self.panel_headers
     }
