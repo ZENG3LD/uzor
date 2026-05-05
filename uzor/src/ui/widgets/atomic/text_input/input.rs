@@ -72,8 +72,26 @@ pub fn register_context_manager_text_input(
 ) -> InputResult {
     let id: WidgetId = id.into();
     let state = ctx.registry.get_or_insert_with(id.clone(), TextFieldStore::default);
-    register_input_coordinator_text_input(&mut ctx.input, id, rect, layer, settings, state);
-    draw_input(render, rect, widget_state, view, settings)
+    register_input_coordinator_text_input(&mut ctx.input, id.clone(), rect, layer, settings, state);
+    let result = draw_input(render, rect, widget_state, view, settings);
+    // Push the screen rect + char-x boundaries into the canonical
+    // TextFieldStore so on_drag_start can hit-test and focus this field
+    // when the user clicks inside it.
+    ctx.input.text_fields_mut().update_field(
+        &id,
+        (rect.x, rect.y, rect.width, rect.height),
+        result.char_x_positions.clone(),
+    );
+    // Mirror the text-field focus into the coordinator's widget-focus so
+    // bridge-driven keyboard input reaches the right field.  Without this
+    // step `coord.focused_widget()` stays `None` and KeyboardInput is
+    // never routed to TextFieldStore::on_char.
+    if ctx.input.text_fields().is_focused(&id)
+        && ctx.input.focused_widget() != Some(&id)
+    {
+        ctx.input.set_focus(id.clone());
+    }
+    result
 }
 
 /// Level 3 — register a text input via `LayoutManager`, forwarding to L2.

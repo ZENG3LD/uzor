@@ -1250,6 +1250,9 @@ impl AppState {
         );
 
         let time_ms = self.time_ms();
+        // Push frame time into LayoutManager so atomics with animations
+        // (text_input caret blink etc.) can read it.
+        self.layout.set_frame_time_ms(time_ms as f64);
         let clock = self.clock_str.clone();
 
         let mut render = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
