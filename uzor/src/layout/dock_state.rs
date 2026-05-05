@@ -288,10 +288,6 @@ impl<P: DockPanel> DockState<P> {
         crate::docking::panels::lib::compute_leaf_rects(&self.tree, area)
     }
 
-    /// Compute child rects for a branch (layout algorithm)
-    fn compute_child_rects(&self, branch: &Branch<P>, area: PanelRect) -> Vec<PanelRect> {
-        DockingTree::<P>::compute_child_rects(branch, area)
-    }
 
     /// Create tab bar for multi-tab leaf
     fn create_tab_bar(&self, leaf_id: LeafId, leaf: &Leaf<P>, rect: PanelRect) -> TabBarInfo {
@@ -342,112 +338,18 @@ impl<P: DockPanel> DockState<P> {
         }
     }
 
-    /// Generate separators recursively through the tree
+    /// Generate separators recursively through the tree (delegates to lib).
+    ///
+    /// Field-level split borrow: separate `&self.tree` (shared) from
+    /// `&mut self.separators` (exclusive) so the free fn can read tree
+    /// while writing the separator list.
     fn generate_separators_recursive(&mut self, branch: &Branch<P>, branch_rect: PanelRect) {
-        let child_rects = self.compute_child_rects(branch, branch_rect);
-
-        if child_rects.len() < 2 {
-            // Single or no children — no separators at this level
-            // But still recurse into child branches
-            for (child, rect) in branch.children.iter().zip(child_rects.iter()) {
-                if let PanelNode::Branch(b) = child {
-                    self.generate_separators_recursive(b, *rect);
-                }
-            }
-            return;
-        }
-
-        // Convert to rects for adjacency detection (include both leaves and branches)
-        let child_panel_rects: Vec<(u64, PanelRect)> = branch.children.iter()
-            .zip(child_rects.iter())
-            .filter(|(node, _)| !node.is_hidden())
-            .map(|(node, wr)| (node.raw_id(), *wr))
-            .collect();
-
-        // Generate separators between adjacent children
-        for i in 0..child_panel_rects.len() {
-            for j in (i + 1)..child_panel_rects.len() {
-                let (_, r1) = child_panel_rects[i];
-                let (_, r2) = child_panel_rects[j];
-
-                let h_overlap = r1.y.max(r2.y) < (r1.y + r1.height).min(r2.y + r2.height) - 1.0;
-                let v_overlap = r1.x.max(r2.x) < (r1.x + r1.width).min(r2.x + r2.width) - 1.0;
-
-                if h_overlap {
-                    // Horizontal overlap — vertical separator
-                    let left = if r1.x < r2.x { r1 } else { r2 };
-                    let right = if r1.x < r2.x { r2 } else { r1 };
-                    let gap = right.x - (left.x + left.width);
-
-                    if gap <= 15.0 {
-                        let sep_x = left.x + left.width + gap / 2.0;
-                        let sep_y = r1.y.max(r2.y);
-                        let sep_h = (r1.y + r1.height).min(r2.y + r2.height) - sep_y;
-                        let (ca, cb) = if child_panel_rects[i].1.x < child_panel_rects[j].1.x {
-                            (child_panel_rects[i].0, child_panel_rects[j].0)
-                        } else {
-                            (child_panel_rects[j].0, child_panel_rects[i].0)
-                        };
-
-                        self.separators.push(Separator::new(
-                            SeparatorOrientation::Vertical,
-                            sep_x, sep_y, sep_h,
-                            SeparatorLevel::Node { parent_id: branch.id, child_a: ca, child_b: cb },
-                        ));
-                    }
-                } else if v_overlap {
-                    // Vertical overlap — horizontal separator
-                    let top = if r1.y < r2.y { r1 } else { r2 };
-                    let bottom = if r1.y < r2.y { r2 } else { r1 };
-                    let gap = bottom.y - (top.y + top.height);
-
-                    if gap <= 15.0 {
-                        let sep_y = top.y + top.height + gap / 2.0;
-                        let sep_x = r1.x.max(r2.x);
-                        let sep_w = (r1.x + r1.width).min(r2.x + r2.width) - sep_x;
-                        let (ca, cb) = if child_panel_rects[i].1.y < child_panel_rects[j].1.y {
-                            (child_panel_rects[i].0, child_panel_rects[j].0)
-                        } else {
-                            (child_panel_rects[j].0, child_panel_rects[i].0)
-                        };
-
-                        self.separators.push(Separator::new(
-                            SeparatorOrientation::Horizontal,
-                            sep_y, sep_x, sep_w,
-                            SeparatorLevel::Node { parent_id: branch.id, child_a: ca, child_b: cb },
-                        ));
-                    }
-                }
-            }
-        }
-
-        // Recurse into child branches
-        for (child, rect) in branch.children.iter().zip(child_rects.iter()) {
-            if let PanelNode::Branch(b) = child {
-                self.generate_separators_recursive(b, *rect);
-            }
-        }
+        crate::docking::panels::lib::generate_separators(branch, branch_rect, &mut self.separators);
     }
 
-    /// Detect corners at separator intersections
+    /// Detect corners at separator intersections.
     fn detect_corners(&mut self) {
-        self.corners.clear();
-        for (vi, v_sep) in self.separators.iter().enumerate() {
-            if v_sep.orientation != SeparatorOrientation::Vertical {
-                continue;
-            }
-            for (hi, h_sep) in self.separators.iter().enumerate() {
-                if h_sep.orientation != SeparatorOrientation::Horizontal {
-                    continue;
-                }
-                self.corners.push(CornerHandle {
-                    v_separator_idx: vi,
-                    h_separator_idx: hi,
-                    x: v_sep.position,
-                    y: h_sep.position,
-                });
-            }
-        }
+        self.corners = crate::docking::panels::lib::detect_corners(&self.separators);
     }
 
     // =============================================================================
