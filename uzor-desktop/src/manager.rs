@@ -114,7 +114,6 @@ pub(crate) struct PerWindow<P: DockPanel> {
     pub window:          std::sync::Arc<Window>,
     pub provider:        WinitWindowProvider,
     pub render_state:    WindowRenderState,
-    pub layout:          LayoutManager<P>,
     /// Last known cursor position in logical pixels.
     pub last_mouse_pos:  (f64, f64),
     pub last_frame:      std::time::Instant,
@@ -138,6 +137,8 @@ pub(crate) struct PerWindow<P: DockPanel> {
     /// origin and the separator index so per-frame mouse-moves can call
     /// `panels_mut().drag_separator(idx, delta, w, h)`.
     pub dock_separator_drag: Option<DockSeparatorDrag>,
+
+    pub _phantom: std::marker::PhantomData<P>,
 }
 
 /// In-flight dock-separator drag state owned by the manager.
@@ -218,8 +219,13 @@ impl<'a> WindowHost for PerWindowHost<'a> {
 
 // ── Manager ───────────────────────────────────────────────────────────────────
 
-/// L4 window manager — owns the app, drives the event loop, manages every
-/// open window.
+/// L4 window manager — thin winit→LayoutManager event pump.
+///
+/// Owns the App, the wgpu render hub, and a winit→WindowKey routing map.
+/// The single `LayoutManager<P>` lives here too — all window-level state
+/// (rect, provider, dock-tree, drag, init flag) is its responsibility,
+/// addressed by `WindowKey`.  Render state stays in the per-window slot
+/// because it's GPU-tied.
 pub struct Manager<A: App<P>, P: DockPanel> {
     pub(crate) app:     A,
     pub(crate) config:  AppConfig,
@@ -227,6 +233,11 @@ pub struct Manager<A: App<P>, P: DockPanel> {
     pub(crate) hub:     Option<RenderHub>,
     pub(crate) factory: Option<Box<dyn RenderSurfaceFactory>>,
     pub(crate) start:   std::time::Instant,
+
+    /// The one and only LayoutManager. Holds dock tree, separators,
+    /// overlays, edges, AND the registered windows (`layout.attach_window`).
+    pub(crate) layout: LayoutManager<P>,
+
     /// Per-window state, keyed by `winit::WindowId` for fast event routing.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) windows: HashMap<winit::window::WindowId, PerWindow<P>>,
@@ -265,6 +276,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             hub,
             factory: None,
             start: std::time::Instant::now(),
+            layout: LayoutManager::<P>::new(),
             #[cfg(not(target_arch = "wasm32"))]
             windows: HashMap::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -502,7 +514,6 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             window,
             provider,
             render_state,
-            layout:          LayoutManager::new(),
             last_mouse_pos:  (0.0, 0.0),
             last_frame:      std::time::Instant::now(),
             initialised:     false,
@@ -510,6 +521,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             region_states:   std::collections::HashMap::new(),
             region_scenes:   std::collections::HashMap::new(),
             dock_separator_drag: None,
+            _phantom:        std::marker::PhantomData,
         };
         self.windows.insert(id, pw);
 
@@ -567,24 +579,24 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 let lx = position.x / dpr;
                 let ly = position.y / dpr;
                 pw.last_mouse_pos = (lx, ly);
-                pw.layout.on_pointer_move(lx, ly);
+                self.layout.on_pointer_move(lx, ly);
 
                 // Drive an in-flight dock-separator drag.  panels_mut()
                 // applies the per-pixel delta to the underlying split
                 // ratio — the next frame's solve picks up the new sizes.
                 if let Some(drag) = pw.dock_separator_drag.as_mut() {
                     use uzor::docking::panels::SeparatorOrientation as SO;
-                    let orient = pw.layout.panels()
+                    let orient = self.layout.panels()
                         .separators()
                         .get(drag.sep_idx)
                         .map(|s| s.orientation);
                     if let Some(orient) = orient {
-                        let win = pw.layout.last_window().unwrap_or(uzor::types::Rect::new(0.0, 0.0, 1.0, 1.0));
+                        let win = self.layout.last_window().unwrap_or(uzor::types::Rect::new(0.0, 0.0, 1.0, 1.0));
                         let delta = match orient {
                             SO::Vertical   => (lx - drag.last_x) as f32,
                             SO::Horizontal => (ly - drag.last_y) as f32,
                         };
-                        pw.layout.panels_mut().drag_separator(
+                        self.layout.panels_mut().drag_separator(
                             drag.sep_idx,
                             delta,
                             win.width  as f32,
@@ -607,12 +619,12 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             } => {
                 let Some(pw) = self.windows.get_mut(&id) else { return };
                 let (mx, my) = pw.last_mouse_pos;
-                pw.layout.on_pointer_down(mx, my);
+                self.layout.on_pointer_down(mx, my);
 
                 // Dock-separator drag start.  on_pointer_down already
                 // wrote `last_pressed` via process_drag_press; check it
                 // for the `dock-sep-N` id pattern.
-                if let Some(pressed) = pw.layout.last_pressed_widget() {
+                if let Some(pressed) = self.layout.last_pressed_widget() {
                     if let Some(suffix) = pressed.as_str().strip_prefix("dock-sep-") {
                         if let Ok(idx) = suffix.parse::<usize>() {
                             pw.dock_separator_drag = Some(DockSeparatorDrag {
@@ -634,7 +646,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                     pending_spawns:  &mut self.pending_spawns,
                     close_app:       false,
                 };
-                let consumed = pw.layout.handle_chrome_press(mx, my, &mut host, now_ms);
+                let consumed = self.layout.handle_chrome_press(mx, my, &mut host, now_ms);
 
                 // If NewWindow was signalled (handle_chrome_press returns false for it),
                 // let the App resolve it.
@@ -654,7 +666,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 // Not consumed by chrome — check if it's a NewWindow hit.
                 // We do this by calling chrome_hit_test again only if chrome is present.
                 let pw2 = match self.windows.get_mut(&id) { Some(p) => p, None => return };
-                if let Some(chrome_rect) = pw2.layout.rect_for_chrome() {
+                if let Some(chrome_rect) = self.layout.rect_for_chrome() {
                     use uzor::ui::widgets::composite::chrome::{
                         chrome_hit_test, handle_chrome_action, ChromeAction,
                         ChromeRenderKind, ChromeSettings, ChromeView,
@@ -674,7 +686,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                     let settings = ChromeSettings::default();
                     let kind = ChromeRenderKind::Default;
                     let hit = chrome_hit_test(
-                        pw2.layout.chrome_state(), &view, &settings, &kind,
+                        self.layout.chrome_state(), &view, &settings, &kind,
                         chrome_rect, (mx, my),
                     );
                     let action = handle_chrome_action(hit);
@@ -701,7 +713,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 let (mx, my) = pw.last_mouse_pos;
                 pw.dock_separator_drag = None;
                 // L3 records the click in last_click; no pw.input write needed.
-                let _outcome = pw.layout.on_pointer_up(mx, my);
+                let _outcome = self.layout.on_pointer_up(mx, my);
                 pw.window.request_redraw();
                 // App hooks on DispatchEvent / DismissedOverlay are called by
                 // App::ui each frame via consume_event — no immediate callback here.
@@ -756,7 +768,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         if let Some(pw) = self.windows.get_mut(&id) {
             if !pw.initialised {
                 let key = pw.key.clone();
-                self.app.init(&key, &mut pw.layout);
+                self.app.init(&key, &mut self.layout);
                 pw.initialised = true;
             }
         }
@@ -772,12 +784,12 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             }
 
             let rect = pw.provider.window_rect();
-            pw.layout.solve(rect);
-            let viewport = pw.layout.rect_for_dock_area().unwrap_or(rect);
+            self.layout.solve(rect);
+            let viewport = self.layout.rect_for_dock_area().unwrap_or(rect);
             // begin_frame clears one-shot input flags and refreshes widget registrations
             // WITHOUT overwriting the pointer state that on_pointer_* already set.
-            pw.layout.begin_frame(now_ms, viewport);
-            pw.layout.set_frame_time_ms(now_ms);
+            self.layout.begin_frame(now_ms, viewport);
+            self.layout.set_frame_time_ms(now_ms);
 
             let bg_color = argb_to_alpha_color(pw.spec.background);
             pw.render_state.begin_frame();
@@ -793,7 +805,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
 
             {
                 let key = &pw.key;
-                let layout = &mut pw.layout;
+                let layout = &mut self.layout;
                 let render_state = &mut pw.render_state;
                 let region_states = &mut pw.region_states;
                 let region_scenes = &mut pw.region_scenes;
@@ -848,9 +860,9 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                     });
                 }
             }
-            let _responses = pw.layout.ctx_mut().end_frame();
+            let _responses = self.layout.ctx_mut().end_frame();
             // Clear one-shot input flags AFTER app.ui consumed them.
-            pw.layout.end_frame_inputs();
+            self.layout.end_frame_inputs();
 
             let outcome = submit_frame(
                 &mut pw.render_state,
