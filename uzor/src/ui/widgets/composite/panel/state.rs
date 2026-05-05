@@ -37,6 +37,13 @@ pub struct PanelState {
 
     /// Id of the column-header cell the pointer is currently hovering over.
     pub hovered_column: Option<String>,
+
+    /// Per-axis scale factor (1.0 = no compression) computed by the
+    /// composite when `view.overflow == Compress`. Caller-driven body
+    /// content reads this via `compress_factor()` and multiplies its own
+    /// font sizes / paddings / row heights by the factor. Stays at 1.0
+    /// for Clip / Chevrons / Scrollbar modes.
+    pub body_compress_factor: super::super::overflow::CompressFactor,
 }
 
 impl Default for PanelState {
@@ -48,11 +55,18 @@ impl Default for PanelState {
             active_filter: None,
             hovered_action: None,
             hovered_column: None,
+            body_compress_factor: super::super::overflow::CompressFactor::one(),
         }
     }
 }
 
 impl PanelState {
+    /// Per-axis compression factor for caller-driven body content.
+    /// Returns identity `(1.0, 1.0)` outside Compress mode.
+    pub fn compress_factor(&self) -> super::super::overflow::CompressFactor {
+        self.body_compress_factor
+    }
+
     // -------------------------------------------------------------------------
     // Sort helpers
     // -------------------------------------------------------------------------

@@ -63,7 +63,7 @@ pub fn register_input_coordinator_panel(
     coord:    &mut InputCoordinator,
     id:       impl Into<WidgetId>,
     rect:     Rect,
-    state:    &PanelState,
+    state:    &mut PanelState,
     view:     &PanelView<'_>,
     settings: &PanelSettings,
     kind:     &PanelRenderKind,
@@ -156,10 +156,20 @@ pub fn register_input_coordinator_panel(
             content_w: view.content_width,
             content_h: view.content_height,
         };
+        // Reset compress factor each frame; only Compress mode writes a
+        // sub-1.0 value into it.
+        state.body_compress_factor = crate::ui::widgets::composite::overflow::CompressFactor::one();
         let overflowing = scroll.overflows(layout.body.width, layout.body.height).any();
         let effective = match view.overflow {
             crate::types::OverflowMode::Scrollbar => crate::types::OverflowMode::Scrollbar,
             crate::types::OverflowMode::Chevrons  => crate::types::OverflowMode::Chevrons,
+            crate::types::OverflowMode::Compress  => {
+                state.body_compress_factor =
+                    crate::ui::widgets::composite::overflow::compute_compress_factor(
+                        view.content_width, view.content_height, layout.body, 0.4,
+                    );
+                crate::types::OverflowMode::Compress
+            }
             // Clip + content overflows → fall back to chevrons so the user
             // can still page through hidden rows after a parent resize.
             _ if overflowing => crate::types::OverflowMode::Chevrons,
