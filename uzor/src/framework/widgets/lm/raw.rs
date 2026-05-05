@@ -19,7 +19,6 @@ pub use crate::ui::widgets::atomic::radio::input::register_layout_manager_radio 
 pub use crate::ui::widgets::atomic::scroll_chevron::input::register_layout_manager_scroll_chevron as build_scroll_chevron;
 pub use crate::ui::widgets::atomic::scrollbar::input::register_layout_manager_scrollbar as build_scrollbar;
 pub use crate::ui::widgets::atomic::separator::input::register_layout_manager_separator as build_separator;
-pub use crate::ui::widgets::atomic::shape_selector::input::register_layout_manager_shape_selector as build_shape_selector;
 pub use crate::ui::widgets::atomic::slider::input::register_layout_manager_slider as build_slider;
 pub use crate::ui::widgets::atomic::tab::input::register_layout_manager_tab as build_tab;
 pub use crate::ui::widgets::atomic::text::input::register_layout_manager_text as build_text;

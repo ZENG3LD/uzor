@@ -5,9 +5,8 @@
 //! Most atomics need only an id, a rect, and a label; defaults handle the
 //! rest.
 //!
-//! For atomics not covered here (rare ones — `chevron`, `tooltip`,
-//! `shape_selector`, etc.) call the raw `register_layout_manager_*` re-export
-//! via [`super::raw`] directly.
+//! For atomics not covered here call the raw `register_layout_manager_*`
+//! re-export via [`super::raw`] directly.
 
 use crate::core::types::Rect;
 use crate::layout::docking::DockPanel;
@@ -734,6 +733,247 @@ impl SeparatorBuilder {
         if let Some(s) = self.style_override { settings.style = s; }
         register_layout_manager_separator(
             layout, render, self.parent, self.id, self.rect, self.kind, &view, &settings,
+        );
+    }
+}
+
+// =============================================================================
+// Chevron
+// =============================================================================
+
+use crate::ui::widgets::atomic::chevron::input::register_layout_manager_chevron;
+use crate::ui::widgets::atomic::chevron::settings::ChevronSettings;
+use crate::ui::widgets::atomic::chevron::style::ChevronStyle;
+use crate::ui::widgets::atomic::chevron::theme::ChevronTheme;
+use crate::ui::widgets::atomic::chevron::types::{
+    ChevronDirection, ChevronUseCase, ChevronView, ChevronVisualKind,
+    HitAreaPolicy, PlacementPolicy, VisibilityPolicy,
+};
+
+/// Chainable builder for an atomic chevron.
+///
+/// Reactive: pass `.on_click(|| ...)` to handle click without writing an
+/// `App::on_*` callback.  Hit area / visibility policy / direction are all
+/// override-able; defaults match `ChevronUseCase::PureButton`.
+pub struct ChevronBuilder<'a> {
+    id:             WidgetId,
+    rect:           Rect,
+    parent:         LayoutNodeId,
+    direction:      ChevronDirection,
+    use_case:       ChevronUseCase,
+    visibility:     VisibilityPolicy,
+    placement:      PlacementPolicy,
+    hit_area:       HitAreaPolicy,
+    visual_kind:    ChevronVisualKind,
+    hovered:        bool,
+    pressed:        bool,
+    disabled:       bool,
+    active:         bool,
+    glyph_override: Option<&'static str>,
+    settings:       Option<ChevronSettings>,
+    theme_override: Option<Box<dyn ChevronTheme>>,
+    style_override: Option<Box<dyn ChevronStyle>>,
+    on_click:       Option<Box<dyn FnOnce() + 'a>>,
+}
+
+/// Entry point: build a chevron at the given id + rect.
+pub fn chevron<'a>(id: impl Into<WidgetId>, rect: Rect) -> ChevronBuilder<'a> {
+    ChevronBuilder {
+        id: id.into(),
+        rect,
+        parent:         LayoutNodeId::ROOT,
+        direction:      ChevronDirection::Down,
+        use_case:       ChevronUseCase::PureButton,
+        visibility:     VisibilityPolicy::Always,
+        placement:      PlacementPolicy::Standalone,
+        hit_area:       HitAreaPolicy::Visual,
+        visual_kind:    ChevronVisualKind::Stroked,
+        hovered:        false,
+        pressed:        false,
+        disabled:       false,
+        active:         false,
+        glyph_override: None,
+        settings:       None,
+        theme_override: None,
+        style_override: None,
+        on_click:       None,
+    }
+}
+
+impl<'a> ChevronBuilder<'a> {
+    pub fn parent(mut self, p: LayoutNodeId) -> Self { self.parent = p; self }
+    pub fn direction(mut self, d: ChevronDirection) -> Self { self.direction = d; self }
+    pub fn use_case(mut self, u: ChevronUseCase) -> Self { self.use_case = u; self }
+    pub fn visibility(mut self, v: VisibilityPolicy) -> Self { self.visibility = v; self }
+    pub fn placement(mut self, p: PlacementPolicy) -> Self { self.placement = p; self }
+    pub fn hit_area(mut self, h: HitAreaPolicy) -> Self { self.hit_area = h; self }
+    pub fn visual_kind(mut self, k: ChevronVisualKind) -> Self { self.visual_kind = k; self }
+    pub fn hovered(mut self, on: bool) -> Self { self.hovered = on; self }
+    pub fn pressed(mut self, on: bool) -> Self { self.pressed = on; self }
+    pub fn disabled(mut self, on: bool) -> Self { self.disabled = on; self }
+    pub fn active(mut self, on: bool) -> Self { self.active = on; self }
+
+    /// Override the glyph string when `visual_kind == Glyph`.  `None` defers
+    /// to the per-direction default (▲▼◀▶).
+    pub fn glyph_override(mut self, g: &'static str) -> Self {
+        self.glyph_override = Some(g);
+        self
+    }
+
+    pub fn settings(mut self, s: ChevronSettings) -> Self { self.settings = Some(s); self }
+
+    /// Override only the chevron theme (colour tokens).
+    pub fn theme(mut self, t: Box<dyn ChevronTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the chevron style (geometry — stroke width, glyph font …).
+    pub fn style(mut self, s: Box<dyn ChevronStyle>) -> Self {
+        self.style_override = Some(s);
+        self
+    }
+
+    /// Reactive on-click closure — invoked at `.build()` if the chevron was
+    /// clicked this frame and is not disabled.
+    pub fn on_click(mut self, f: impl FnOnce() + 'a) -> Self {
+        self.on_click = Some(Box::new(f));
+        self
+    }
+
+    pub fn build<P: DockPanel>(
+        self,
+        layout: &mut LayoutManager<P>,
+        render: &mut dyn RenderContext,
+    ) {
+        if !self.disabled && layout.was_clicked(&self.id) {
+            if let Some(cb) = self.on_click {
+                cb();
+            }
+        }
+
+        let view = ChevronView {
+            direction:      self.direction,
+            use_case:       self.use_case,
+            visibility:     self.visibility,
+            placement:      self.placement,
+            hit_area:       self.hit_area,
+            visual_kind:    self.visual_kind,
+            hovered:        self.hovered,
+            pressed:        self.pressed,
+            disabled:       self.disabled,
+            active:         self.active,
+            glyph_override: self.glyph_override,
+        };
+        let mut settings = self.settings.unwrap_or_default();
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
+        register_layout_manager_chevron(
+            layout, render, self.parent, self.id, self.rect, &view, &settings,
+        );
+    }
+}
+
+// =============================================================================
+// Tooltip
+// =============================================================================
+
+use crate::ui::widgets::atomic::tooltip::input::register_layout_manager_tooltip;
+use crate::ui::widgets::atomic::tooltip::settings::TooltipSettings;
+use crate::ui::widgets::atomic::tooltip::style::TooltipStyle;
+use crate::ui::widgets::atomic::tooltip::theme::TooltipTheme;
+use crate::ui::widgets::atomic::tooltip::types::{TooltipConfig, TooltipPosition};
+
+/// Chainable builder for an atomic tooltip overlay.
+///
+/// `text` is the primary single-line label.  `lines` enables the multi-line
+/// crosshair variant.  `anchor` is the rect of the widget that triggered the
+/// tooltip (screen coords); `position` picks placement relative to it.
+pub struct TooltipBuilder<'a> {
+    id:       WidgetId,
+    rect:     Rect,
+    parent:   LayoutNodeId,
+    text:     String,
+    lines:    Option<Vec<String>>,
+    anchor:   Rect,
+    position: TooltipPosition,
+    alpha:    f64,
+    settings: Option<TooltipSettings>,
+    theme_override: Option<Box<dyn TooltipTheme>>,
+    style_override: Option<Box<dyn TooltipStyle>>,
+    /// Borrow-marker so the builder lifetime stays consistent with sibling
+    /// atomics even though no `&'a` field is currently exposed.
+    _phantom: std::marker::PhantomData<&'a ()>,
+}
+
+/// Entry point: build a tooltip at the given id + rect.
+pub fn tooltip<'a>(id: impl Into<WidgetId>, rect: Rect) -> TooltipBuilder<'a> {
+    TooltipBuilder {
+        id: id.into(),
+        rect,
+        parent:   LayoutNodeId::ROOT,
+        text:     String::new(),
+        lines:    None,
+        anchor:   Rect::new(0.0, 0.0, 0.0, 0.0),
+        position: TooltipPosition::Above,
+        alpha:    1.0,
+        settings: None,
+        theme_override: None,
+        style_override: None,
+        _phantom: std::marker::PhantomData,
+    }
+}
+
+impl<'a> TooltipBuilder<'a> {
+    pub fn parent(mut self, p: LayoutNodeId) -> Self { self.parent = p; self }
+
+    /// Primary label.  For the multi-line crosshair variant set `text` to the
+    /// first line and pass remaining lines through `.lines(...)`.
+    pub fn text(mut self, t: impl Into<String>) -> Self { self.text = t.into(); self }
+
+    /// Additional lines for the crosshair variant.
+    pub fn lines(mut self, ls: Vec<String>) -> Self { self.lines = Some(ls); self }
+
+    /// Rect of the widget that triggered the tooltip (screen coords) — used
+    /// to position the bubble.
+    pub fn anchor(mut self, r: Rect) -> Self { self.anchor = r; self }
+
+    /// Preferred placement relative to the anchor.
+    pub fn position(mut self, p: TooltipPosition) -> Self { self.position = p; self }
+
+    /// Fade-in / fade-out alpha (0.0..=1.0).  Caller animates over time.
+    pub fn alpha(mut self, a: f64) -> Self { self.alpha = a; self }
+
+    pub fn settings(mut self, s: TooltipSettings) -> Self { self.settings = Some(s); self }
+
+    /// Override only the tooltip theme (colour tokens).
+    pub fn theme(mut self, t: Box<dyn TooltipTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the tooltip style (geometry — padding, radius, font …).
+    pub fn style(mut self, s: Box<dyn TooltipStyle>) -> Self {
+        self.style_override = Some(s);
+        self
+    }
+
+    pub fn build<P: DockPanel>(
+        self,
+        layout: &mut LayoutManager<P>,
+        render: &mut dyn RenderContext,
+    ) {
+        let cfg = TooltipConfig {
+            text:     self.text,
+            lines:    self.lines,
+            anchor:   self.anchor,
+            position: self.position,
+        };
+        let mut settings = self.settings.unwrap_or_default();
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
+        register_layout_manager_tooltip(
+            layout, render, self.parent, self.id, self.rect, &cfg, self.alpha, &settings,
         );
     }
 }

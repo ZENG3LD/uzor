@@ -30,7 +30,6 @@ pub use crate::ui::widgets::atomic::radio::input::register_input_coordinator_rad
 pub use crate::ui::widgets::atomic::scroll_chevron::input::register_input_coordinator_scroll_chevron as register_scroll_chevron;
 pub use crate::ui::widgets::atomic::scrollbar::input::register_input_coordinator_scrollbar as register_scrollbar;
 pub use crate::ui::widgets::atomic::separator::input::register_input_coordinator_separator as register_separator;
-pub use crate::ui::widgets::atomic::shape_selector::input::register_input_coordinator_shape_selector as register_shape_selector;
 pub use crate::ui::widgets::atomic::slider::input::register_input_coordinator_slider as register_slider;
 pub use crate::ui::widgets::atomic::tab::input::register_input_coordinator_tab as register_tab;
 pub use crate::ui::widgets::atomic::text::input::register_input_coordinator_text as register_text;

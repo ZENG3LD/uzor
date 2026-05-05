@@ -18,7 +18,6 @@ pub mod radio;
 pub mod scrollbar;
 pub mod scroll_chevron;
 pub mod separator;
-pub mod shape_selector;
 pub mod sticky_chevron;
 pub mod slider;
 pub mod tab;

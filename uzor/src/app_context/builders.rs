@@ -28,7 +28,6 @@ pub use crate::ui::widgets::atomic::radio::input::register_context_manager_radio
 pub use crate::ui::widgets::atomic::scroll_chevron::input::register_context_manager_scroll_chevron as draw_scroll_chevron;
 pub use crate::ui::widgets::atomic::scrollbar::input::register_context_manager_scrollbar as draw_scrollbar;
 pub use crate::ui::widgets::atomic::separator::input::register_context_manager_separator as draw_separator;
-pub use crate::ui::widgets::atomic::shape_selector::input::register_context_manager_shape_selector as draw_shape_selector;
 pub use crate::ui::widgets::atomic::slider::input::register_context_manager_slider as draw_slider;
 pub use crate::ui::widgets::atomic::tab::input::register_context_manager_tab as draw_tab;
 pub use crate::ui::widgets::atomic::text::input::register_context_manager_text as draw_text;

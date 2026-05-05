@@ -55,8 +55,6 @@ pub enum WidgetKind {
     ScrollChevron,
     /// Non-interactive visual divider.
     Separator,
-    /// Selector button for shape/theme/UI-style choices (atomic leaf).
-    ShapeSelector,
     /// Draggable slider thumb.
     Slider,
     /// iOS-style on/off toggle switch.

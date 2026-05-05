@@ -43,8 +43,9 @@ pub use toolbar::{toolbar, ToolbarBuilder};
 // ── Atomic entry-point re-exports ────────────────────────────────────────────
 
 pub use atomics::{
-    button, checkbox, separator, text, toggle,
-    ButtonBuilder, CheckboxBuilder, SeparatorBuilder, TextBuilder, ToggleBuilder,
+    button, checkbox, chevron, separator, text, toggle, tooltip,
+    ButtonBuilder, CheckboxBuilder, ChevronBuilder, SeparatorBuilder,
+    TextBuilder, ToggleBuilder, TooltipBuilder,
 };
 
 // ── Raw escape-hatch ─────────────────────────────────────────────────────────

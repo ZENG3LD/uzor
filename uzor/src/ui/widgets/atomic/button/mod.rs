@@ -7,7 +7,6 @@
 //!
 //! ColorSwatch + FillToggle extracted to `atomic::color_swatch`.
 //! DropdownTrigger (Split + Field) extracted to `atomic::dropdown_trigger`.
-//! ShapeSelector (Shape, ThemePreset, UIStyle) extracted to `atomic::shape_selector`.
 //! CloseButton extracted to `atomic::close_button`.
 //! ScrollChevron extracted to `atomic::scroll_chevron`.
 //! Clock (draw_toolbar_clock) extracted to `atomic::clock`.
@@ -118,11 +117,6 @@ pub use super::dropdown_trigger::{
     SplitDropdownStyle, DefaultSplitDropdownStyle,
     DropdownFieldStyle, DefaultDropdownFieldStyle,
     draw_split_dropdown, draw_dropdown_field,
-};
-pub use super::shape_selector::{
-    ShapeSelectorView, ThemePresetView, UIStyleView,
-    SelectorButtonStyle, ShapeSelectorStyle, ThemePresetButtonStyle, UIStyleSelectorStyle,
-    draw_shape_selector_button, draw_theme_preset_button, draw_ui_style_button,
 };
 
 // Re-exports from extracted atomic modules (backward-compat surface).
