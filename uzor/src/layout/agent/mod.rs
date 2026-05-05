@@ -57,6 +57,6 @@ pub use control::{AgentControl, AgentControlObj};
 pub use lm_agent::LmAgent;
 pub use log::{AgentLog, AgentLogEntry, DEFAULT_LOG_CAPACITY};
 pub use snapshot::{
-    AgentSnapshot, BranchSnapshot, ClickSnap, NodeSyncSnapshot, RectSnap, RootSnapshot,
-    WidgetSnapshot,
+    AgentSnapshot, BranchSnapshot, ClickSnap, DockNodeSnap, NodeSyncSnapshot, RectSnap,
+    RootSnapshot, WidgetSnapshot,
 };

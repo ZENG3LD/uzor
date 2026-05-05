@@ -201,12 +201,20 @@ impl<P: DockPanel> DockingTree<P> {
             let is_vertical = matches!(branch.layout, WindowLayout::SplitVertical | WindowLayout::ThreeRows);
             let total_gap = if n > 1 { (n - 1) as f32 * gap } else { 0.0 };
 
+            // Normalise proportions on read.  `drag_separator` preserves
+            // the sum but doesn't force it to 1.0, and callers can write
+            // arbitrary weights via `set_branch_proportions`.  Without
+            // this we'd get either a gap (sum < 1.0 — the white-bg leak
+            // visible on resize) or overlap (sum > 1.0).
+            let sum: f64 = branch.proportions.iter().sum();
+            let inv_sum: f32 = if sum > f64::EPSILON { (1.0 / sum) as f32 } else { 1.0 / n as f32 };
+
             if is_vertical {
                 let available = (parent_rect.height - total_gap).max(0.0);
                 let mut result = Vec::with_capacity(n);
                 let mut y = parent_rect.y;
                 for i in 0..n {
-                    let h = available * branch.proportions[i] as f32;
+                    let h = available * (branch.proportions[i] as f32 * inv_sum);
                     result.push(PanelRect::new(parent_rect.x, y, parent_rect.width, h));
                     y += h + gap;
                 }
@@ -216,7 +224,7 @@ impl<P: DockPanel> DockingTree<P> {
                 let mut result = Vec::with_capacity(n);
                 let mut x = parent_rect.x;
                 for i in 0..n {
-                    let w = available * branch.proportions[i] as f32;
+                    let w = available * (branch.proportions[i] as f32 * inv_sum);
                     result.push(PanelRect::new(x, parent_rect.y, w, parent_rect.height));
                     x += w + gap;
                 }

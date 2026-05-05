@@ -18,7 +18,7 @@ use crate::types::WidgetId;
 
 use super::command::{Command, CommandReply};
 use super::snapshot::{
-    AgentSnapshot, BranchSnapshot, ClickSnap, NodeSyncSnapshot, RectSnap, RootSnapshot,
+    AgentSnapshot, BranchSnapshot, ClickSnap, DockNodeSnap, NodeSyncSnapshot, RectSnap, RootSnapshot,
     WidgetSnapshot,
 };
 
@@ -64,6 +64,7 @@ impl<P: DockPanel> LmAgent<P> {
                         pos: [*x, *y],
                     }),
                     pointer_pos: b.last_pointer_pos.map(|(x, y)| [x, y]),
+                    dock_tree: build_dock_tree_snap(b),
                 })
             })
             .collect();
@@ -508,4 +509,61 @@ impl<P: DockPanel> LmAgent<P> {
 
 fn rect_to_snap(r: Rect) -> RectSnap {
     RectSnap { x: r.x, y: r.y, w: r.width, h: r.height }
+}
+
+fn build_dock_tree_snap<P: DockPanel>(
+    b: &crate::layout::branch::WindowBranch<P>,
+) -> DockNodeSnap {
+    let dock = &b.dock;
+    let win  = b.rect;
+    snap_node(
+        &crate::layout::docking::PanelNode::Branch(dock.tree().root().clone()),
+        Rect::new(0.0, 0.0, win.width, win.height),
+        b,
+    )
+}
+
+fn snap_node<P: DockPanel>(
+    node:   &crate::layout::docking::PanelNode<P>,
+    parent: Rect,
+    b:      &crate::layout::branch::WindowBranch<P>,
+) -> DockNodeSnap {
+    use crate::layout::docking::PanelNode;
+    match node {
+        PanelNode::Leaf(l) => {
+            // Resolve actual rect via dock state's solved map; falls
+            // back to parent if not solved this frame.
+            let rect = b.dock.panel_rects().get(&l.id)
+                .map(|pr| Rect::new(pr.x as f64, pr.y as f64, pr.width as f64, pr.height as f64))
+                .unwrap_or(parent);
+            DockNodeSnap::Leaf {
+                leaf_id:  l.id.0,
+                panel_id: l.panels.first().map(|p| p.type_id().to_string()),
+                rect:     rect_to_snap(rect),
+            }
+        }
+        PanelNode::Branch(br) => {
+            // Compute child rects so each child gets its real rect (the
+            // top-level call passes the window rect; the recursion pipes
+            // each computed child rect down).
+            let child_rects = crate::layout::docking::DockingTree::<P>
+                ::compute_child_rects(br, crate::layout::docking::PanelRect::new(
+                    parent.x as f32, parent.y as f32,
+                    parent.width as f32, parent.height as f32,
+                ));
+            let children: Vec<DockNodeSnap> = br.children.iter()
+                .zip(child_rects.iter())
+                .map(|(c, cr)| {
+                    let cr = Rect::new(cr.x as f64, cr.y as f64, cr.width as f64, cr.height as f64);
+                    snap_node(c, cr, b)
+                })
+                .collect();
+            DockNodeSnap::Branch {
+                branch_id:   br.id.0,
+                layout:      format!("{:?}", br.layout).to_lowercase(),
+                proportions: br.proportions.clone(),
+                children,
+            }
+        }
+    }
 }

@@ -45,6 +45,35 @@ pub struct BranchSnapshot {
     pub pressed_widget: Option<String>,
     pub last_click: Option<ClickSnap>,
     pub pointer_pos: Option<[f64; 2]>,
+
+    /// Full docking tree: hierarchical split / leaf nodes with layout
+    /// kind, raw proportions, and (for leaves) the active panel
+    /// `type_id`.  Lets agents see the actual structure instead of
+    /// guessing from `dock_leaves` count.
+    pub dock_tree: DockNodeSnap,
+}
+
+/// One node of the docking tree as exposed via the agent snapshot.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DockNodeSnap {
+    /// A panel-bearing leaf.  `panel_id` is the active panel's
+    /// `type_id()` — same string `lm::panel(slot_id, ...)` resolves on.
+    Leaf {
+        leaf_id:  u64,
+        panel_id: Option<String>,
+        rect:     RectSnap,
+    },
+    /// A split / grid container.  `layout` is the lowercase debug
+    /// label of `WindowLayout` (e.g. `"split_horizontal"`).
+    /// `proportions` are the raw weights as stored — solver
+    /// normalises them on read.
+    Branch {
+        branch_id:   u64,
+        layout:      String,
+        proportions: Vec<f64>,
+        children:    Vec<DockNodeSnap>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]

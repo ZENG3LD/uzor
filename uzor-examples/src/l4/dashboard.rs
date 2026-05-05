@@ -505,7 +505,7 @@ impl App<PaintPanel> for DashboardApp {
             .size(560, 420)
             .min_size(420, 320)
             .decorations(false)
-            .background(0xFF_F7_F7_F4),
+            .background(0xFF_0d_11_17),
         )
     }
 }
@@ -611,7 +611,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .size(1400, 900)
                 .min_size(900, 600)
                 .decorations(false)
-                .background(0xFF_F7_F7_F4)
+                .background(0xFF_0d_11_17)
                 .corner_style(CornerStyle::Rounded)
                 .border_color(0x00_FB_B2_6A),
         )
