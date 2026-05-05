@@ -39,7 +39,3 @@ path = "src/l4/hello.rs"
 [[bin]]
 name = "l4-dashboard"
 path = "src/l4/dashboard.rs"
-
-[[bin]]
-name = "l4-tree-debug"
-path = "src/l4/tree_debug.rs"

@@ -1,0 +1,15 @@
+[package]
+name = "uzor-agent-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Local HTTP control plane for uzor apps. Read live LayoutManager state, inject input, and drive direct LM operations from external agents (LLMs, QA tools, scripts)."
+
+[dependencies]
+uzor = { workspace = true }
+axum = { version = "0.7", default-features = false, features = ["tokio", "http1", "json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

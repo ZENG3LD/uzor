@@ -224,6 +224,15 @@ where
         self
     }
 
+    /// Enable the local agent control-plane HTTP server on
+    /// `127.0.0.1:port`.  External agents (LLMs, QA tooling, scripts)
+    /// read live LM state and inject input through it.  See
+    /// `uzor-agent-api` for the route catalogue.
+    pub fn agent_api(mut self, port: u16) -> Self {
+        self.config.agent_api_port = Some(port);
+        self
+    }
+
     /// Set the clear colour as `0xAARRGGBB`.
     pub fn background(mut self, argb: u32) -> Self {
         self.config.background = argb;

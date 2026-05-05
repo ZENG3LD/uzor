@@ -22,6 +22,8 @@ members = [
     "uzor-render-hub",
     # Icon utilities
     "uzor-icon",
+    # Agent control plane (local HTTP API)
+    "uzor-agent-api",
     # Layered demos
     "uzor-examples",
 ]
@@ -52,5 +54,6 @@ uzor-window-web = { version = "1.2.0", path = "./uzor-window-web" }
 uzor-window-mobile = { version = "1.2.0", path = "./uzor-window-mobile" }
 uzor-framework-macros = { version = "1.2.0", path = "./uzor-framework-macros" }
 uzor-desktop = { version = "1.2.0", path = "./uzor-desktop" }
+uzor-agent-api = { version = "1.2.0", path = "./uzor-agent-api" }
 serde = { version = "1.0", features = ["derive"] }
 

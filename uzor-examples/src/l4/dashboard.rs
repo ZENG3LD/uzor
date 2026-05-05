@@ -29,6 +29,9 @@ use uzor::types::unsafe_widget_id;
 use uzor_desktop::AppRun as _;
 use uzor_framework_macros::view;
 
+#[path = "tree_debug.rs"]
+mod tree_debug;
+
 /// Custom DockPanel for the Painting page — one leaf per cadence.
 #[derive(Debug, Clone)]
 struct PaintPanel {
@@ -466,13 +469,19 @@ impl App<PaintPanel> for DashboardApp {
                         }
                     });
                 if let Some(rect) = rect_opt {
-                    let target_fps = match region_id {
-                        "paint:r0_dirty"  => 0,
-                        "paint:r1_30fps"  => 30,
-                        "paint:r2_120fps" => 120,
-                        _                 => uzor::render::UNCAPPED_FPS,
-                    };
-                    self.draw_paint_cell(win, region_id, rect, target_fps);
+                    if region_id == "paint:r0_dirty" {
+                        // Replace the dirty-driven cell with the live
+                        // LayoutManager tree debug panel.  Reads from
+                        // `win.layout` directly, no extra state.
+                        tree_debug::render_layout_tree(rect, &*win.layout, &mut *win.render);
+                    } else {
+                        let target_fps = match region_id {
+                            "paint:r1_30fps"  => 30,
+                            "paint:r2_120fps" => 120,
+                            _                 => uzor::render::UNCAPPED_FPS,
+                        };
+                        self.draw_paint_cell(win, region_id, rect, target_fps);
+                    }
                 }
             }
             _ => {}
@@ -601,6 +610,7 @@ fn random_suffix() -> u64 {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     AppBuilder::new(DashboardApp::new())
+        .agent_api(17480)
         .window(
             WindowSpec::new(WindowKey::new("main"), "uzor — L4 Dashboard")
                 .size(1400, 900)

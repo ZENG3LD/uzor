@@ -191,6 +191,11 @@ pub struct AppConfig {
     pub shadow:          Option<bool>,
     pub start_visible:   bool,
     pub icon:            Option<RgbaIcon>,
+    /// If `Some(port)`, the platform window manager spawns a local
+    /// HTTP control plane (uzor-agent-api) on `127.0.0.1:port`.  Used
+    /// by external agents (LLMs, QA tooling, scripts) to read live
+    /// LayoutManager state and inject input.
+    pub agent_api_port:  Option<u16>,
 }
 
 impl Default for AppConfig {
@@ -211,6 +216,7 @@ impl Default for AppConfig {
             shadow:          None,
             start_visible:   false,
             icon:            None,
+            agent_api_port:  None,
         }
     }
 }

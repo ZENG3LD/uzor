@@ -1,123 +1,128 @@
-//! # L4 — Layout-tree debug visualiser
+//! Layout-tree debug panel (rendered inside a host app's blackbox/dock leaf).
 //!
-//! Spawns two windows.  Each window draws the *live* state of the
-//! [`LayoutManager`] as a tree, with a coloured pill on every row
-//! showing that node's [`SyncMode`]:
+//! Call [`render_layout_tree`] from inside any L4 panel body.  It draws
+//! the live state of the [`LayoutManager`] as a tree:
 //!
-//! - **green** — Synced (single instance on the LM root)
-//! - **amber** — Sometimes(None)        — opt-in shareable, currently alone
-//! - **blue**  — Sometimes(Some(group)) — opt-in shareable, in a group
-//! - **red**   — Standalone             — never shareable
-//!
-//! Both windows render the same data, so the two visualisers reading
-//! the same `LayoutManager` are themselves the proof that branches are
-//! isolated: only the *current* window's `pointer_state` row updates as
-//! the cursor moves.
-//!
-//! ```sh
-//! cargo run -p uzor-examples --bin l4-tree-debug
+//! ```text
+//! synced root
+//! ├─[synced]    styles
+//! ├─[synced]    z_layers
+//! └─…
+//! windows (n)
+//! ├── window: main
+//! │   ├─[sometimes] chrome_cfg   (visible=true)
+//! │   ├─[sometimes] dock_tree    (3 leaves)
+//! │   └─[standalone] pointer_state (hover=… at=…)
+//! └── window: side …
 //! ```
+//!
+//! Each row carries a coloured pill matching the node's [`SyncMode`]:
+//! - **green** — Synced
+//! - **amber** — Sometimes(None)
+//! - **blue**  — Sometimes(Some(group))
+//! - **red**   — Standalone
 
-use uzor::framework::app::{App, NoPanel};
-use uzor::framework::builder::AppBuilder;
-use uzor::framework::multi_window::{WindowCtx, WindowKey, WindowSpec};
+use uzor::core::types::Rect;
+use uzor::engine::render::RenderContext;
+use uzor::framework::multi_window::WindowKey;
+use uzor::layout::docking::DockPanel;
 use uzor::layout::sync::{node_ids, SyncMode};
 use uzor::layout::LayoutManager;
-use uzor_desktop::AppRun as _;
 
-// ── App ──────────────────────────────────────────────────────────────────────
+/// Draw the layout tree panel inside `rect` using `render`.  Works for any
+/// `LayoutManager<P>` because it only reads the parts of the branch that
+/// are panel-type-agnostic.
+pub fn render_layout_tree<P: DockPanel>(
+    rect: Rect,
+    layout: &LayoutManager<P>,
+    render: &mut dyn RenderContext,
+) {
+    // Background
+    let bg = layout.styles().color_or_owned("surface", "#16171D");
+    render.set_fill_color(bg.as_str());
+    render.fill_rect(rect.x, rect.y, rect.width, rect.height);
 
-struct TreeDebugApp;
+    // Title
+    render.set_fill_color("#E6E6EA");
+    render.set_font("bold 14px sans-serif");
+    render.fill_text("LayoutManager — live tree", rect.x + 12.0, rect.y + 18.0);
 
-impl App<NoPanel> for TreeDebugApp {
-    fn ui(&mut self, win: &mut WindowCtx<'_, NoPanel>) {
-        let rect   = win.rect;
-        let render = &mut *win.render;
-        let layout = &mut *win.layout;
+    let mut cy = rect.y + 38.0;
+    let line_h = 18.0_f64;
+    let indent = 16.0_f64;
 
-        // Background
-        let bg = layout.styles().color_or_owned("surface", "#16171D");
-        render.set_fill_color(bg.as_str());
-        render.fill_rect(rect.x, rect.y, rect.width, rect.height);
+    // ── synced root ─────────────────────────────────────────────────
+    draw_label(render, rect.x + 12.0, &mut cy, line_h, "synced root", "#9AA0AC");
+    for id in [
+        node_ids::STYLES,
+        node_ids::Z_LAYERS,
+        node_ids::FRAME_TIME,
+        node_ids::PANEL_TYPES,
+    ] {
+        let mode = layout.sync_registry().get(id);
+        draw_node(render, rect.x + 12.0 + indent, &mut cy, line_h, id, mode, None);
+    }
 
-        // Title
-        render.set_fill_color("#E6E6EA");
-        render.set_font("bold 16px sans-serif");
-        render.fill_text("LayoutManager — live tree", rect.x + 12.0, rect.y + 24.0);
+    cy += 6.0;
 
-        let mut cy = rect.y + 48.0;
-        let line_h = 18.0_f64;
-        let indent = 16.0_f64;
+    // ── windows ─────────────────────────────────────────────────────
+    let keys: Vec<WindowKey> = layout.window_keys().cloned().collect();
+    let current = layout.current_window().cloned();
 
-        // ── synced root ─────────────────────────────────────────────────
-        draw_label(render, rect.x + 12.0, &mut cy, line_h, "synced root", "#9AA0AC");
-        for id in [
-            node_ids::STYLES,
-            node_ids::Z_LAYERS,
-            node_ids::FRAME_TIME,
-            node_ids::PANEL_TYPES,
-        ] {
-            let mode = layout.sync_registry().get(id);
-            draw_node(render, rect.x + 12.0 + indent, &mut cy, line_h, id, mode, None);
-        }
+    draw_label(
+        render,
+        rect.x + 12.0,
+        &mut cy,
+        line_h,
+        &format!("windows ({})", keys.len()),
+        "#9AA0AC",
+    );
 
-        cy += 8.0;
-
-        // ── windows ─────────────────────────────────────────────────────
-        let keys: Vec<WindowKey> = layout.window_keys().cloned().collect();
-        let current = layout.current_window().cloned();
-
+    for key in &keys {
+        let prefix = if Some(key) == current.as_ref() { "▶ " } else { "  " };
         draw_label(
             render,
-            rect.x + 12.0,
+            rect.x + 12.0 + indent,
             &mut cy,
             line_h,
-            &format!("windows ({})", keys.len()),
-            "#9AA0AC",
+            &format!("{prefix}window: {}", key.as_str()),
+            "#C9CDD8",
         );
 
-        for key in &keys {
-            let prefix = if Some(key) == current.as_ref() { "▶ " } else { "  " };
-            draw_label(
+        for (id, hint) in window_branch_rows(layout, key) {
+            let mode = layout.sync_registry().get(id);
+            draw_node(
                 render,
-                rect.x + 12.0 + indent,
+                rect.x + 12.0 + indent * 2.0,
                 &mut cy,
                 line_h,
-                &format!("{prefix}window: {}", key.as_str()),
-                "#C9CDD8",
+                id,
+                mode,
+                hint.as_deref(),
             );
-
-            for (id, hint) in window_branch_rows(layout, key) {
-                let mode = layout.sync_registry().get(id);
-                draw_node(
-                    render,
-                    rect.x + 12.0 + indent * 2.0,
-                    &mut cy,
-                    line_h,
-                    id,
-                    mode,
-                    hint.as_deref(),
-                );
+            // Stop drawing if we run out of vertical room.
+            if cy > rect.y + rect.height - 28.0 {
+                return;
             }
-            cy += 4.0;
         }
+        cy += 4.0;
+    }
 
-        // Legend
-        let legend_y = rect.y + rect.height - 24.0;
-        let mut lx = rect.x + 12.0;
-        for (label, mode) in [
-            ("synced",          SyncMode::Synced),
-            ("sometimes·alone", SyncMode::Sometimes(None)),
-            ("standalone",      SyncMode::Standalone),
-        ] {
-            let css = rgba_css(mode.color());
-            render.set_fill_color(&css);
-            render.fill_rounded_rect(lx, legend_y, 14.0, 14.0, 3.0);
-            render.set_fill_color("#C9CDD8");
-            render.set_font("11px sans-serif");
-            render.fill_text(label, lx + 20.0, legend_y + 11.0);
-            lx += render.measure_text(label) + 50.0;
-        }
+    // Legend (bottom strip)
+    let legend_y = rect.y + rect.height - 22.0;
+    let mut lx = rect.x + 12.0;
+    for (label, mode) in [
+        ("synced",          SyncMode::Synced),
+        ("sometimes·alone", SyncMode::Sometimes(None)),
+        ("standalone",      SyncMode::Standalone),
+    ] {
+        let css = rgba_css(mode.color());
+        render.set_fill_color(&css);
+        render.fill_rounded_rect(lx, legend_y, 12.0, 12.0, 3.0);
+        render.set_fill_color("#C9CDD8");
+        render.set_font("11px sans-serif");
+        render.fill_text(label, lx + 18.0, legend_y + 10.0);
+        lx += render.measure_text(label) + 44.0;
     }
 }
 
@@ -134,7 +139,7 @@ fn rgba_css(c: [f32; 4]) -> String {
 }
 
 fn draw_label(
-    render: &mut dyn uzor::engine::render::RenderContext,
+    render: &mut dyn RenderContext,
     x: f64,
     cy: &mut f64,
     line_h: f64,
@@ -148,7 +153,7 @@ fn draw_label(
 }
 
 fn draw_node(
-    render: &mut dyn uzor::engine::render::RenderContext,
+    render: &mut dyn RenderContext,
     x: f64,
     cy: &mut f64,
     line_h: f64,
@@ -177,8 +182,8 @@ fn draw_node(
     *cy += line_h;
 }
 
-fn window_branch_rows(
-    layout: &LayoutManager<NoPanel>,
+fn window_branch_rows<P: DockPanel>(
+    layout: &LayoutManager<P>,
     key: &WindowKey,
 ) -> Vec<(&'static str, Option<String>)> {
     let Some(branch) = layout.window(key) else { return Vec::new() };
@@ -213,22 +218,4 @@ fn window_branch_rows(
         (node_ids::SIDEBARS,      Some(format!("{sidebar_count}"))),
         (node_ids::CONTEXT_MENUS, Some(format!("{context_menu_count}"))),
     ]
-}
-
-// ── main ─────────────────────────────────────────────────────────────────────
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    AppBuilder::new(TreeDebugApp)
-        .title("uzor tree-debug · main")
-        .size(820, 640)
-        .decorations(true)
-        .background(0xFF16171D)
-        .window(
-            WindowSpec::new(WindowKey::new("side"), "uzor tree-debug · side")
-                .size(820, 640)
-                .background(0xFF16171D),
-        )
-        .run()?;
-
-    Ok(())
 }

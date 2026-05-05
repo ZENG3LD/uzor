@@ -259,6 +259,20 @@ pub struct Manager<A: App<P>, P: DockPanel> {
     /// Live tray handle kept alive for the manager's lifetime.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) tray: Option<crate::tray::TrayHandle>,
+
+    // ── Agent API plumbing ──
+    /// Snapshot + command-channel pair.  `None` until
+    /// `enable_agent_api(port)` is called.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) agent_bus: Option<crate::agent::AgentBus>,
+    /// Live agent control trait object — kept on the manager so
+    /// `widget_list` writes go through `Arc` shared with the server.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) agent_control: Option<std::sync::Arc<crate::agent::AgentControlImpl>>,
+    /// Owned axum-server handle.  Dropped at shutdown.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) agent_handle: Option<uzor_agent_api::AgentApiHandle>,
+
     // ── Frame metrics (EMA, mlc pattern) ──
     pub(crate) fps_ema:           f32,
     pub(crate) last_frame_time_ms: f32,
@@ -292,6 +306,12 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             tray_spec: None,
             #[cfg(not(target_arch = "wasm32"))]
             tray: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            agent_bus: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            agent_control: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            agent_handle: None,
             fps_ema: 60.0,
             last_frame_time_ms: 16.0,
             frame_count: 0,
@@ -368,6 +388,165 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
     pub fn hub(&self) -> Option<&RenderHub> { self.hub.as_ref() }
     pub fn hub_mut(&mut self) -> Option<&mut RenderHub> { self.hub.as_mut() }
 
+    /// Enable the local agent-API HTTP server on `127.0.0.1:port`.
+    ///
+    /// Spawns a tokio runtime in a dedicated thread and binds axum.
+    /// The server stays alive for the manager's lifetime; dropping the
+    /// manager closes it.  Errors only on bind failure (port taken).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn enable_agent_api(&mut self, port: u16) -> std::io::Result<()> {
+        let bus = crate::agent::AgentBus::new();
+        let control = bus.control();
+        let handle = uzor_agent_api::spawn_server(
+            control.clone() as std::sync::Arc<dyn uzor_agent_api::AgentControl>,
+            port,
+        )?;
+        self.agent_bus = Some(bus);
+        self.agent_control = Some(control);
+        self.agent_handle = Some(handle);
+        Ok(())
+    }
+
+    /// Drain queued agent commands and apply them.  Called from
+    /// `about_to_wait` so all writes land on the winit thread and on
+    /// the same tick they were submitted.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn drain_agent_commands(&mut self) {
+        // Pull every pending command into a local Vec first to release
+        // the borrow on `self.agent_bus` before calling
+        // `apply_agent_command(&mut self, ...)`.
+        let mut batch = Vec::new();
+        if let Some(bus) = self.agent_bus.as_mut() {
+            loop {
+                match bus.cmd_rx.try_recv() {
+                    Ok(item) => batch.push(item),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break,
+                }
+            }
+        }
+        for (cmd, reply) in batch {
+            let result = self.apply_agent_command(cmd);
+            let _ = reply.send(result);
+        }
+    }
+
+    /// Apply one agent command and return a reply.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn apply_agent_command(
+        &mut self,
+        cmd: uzor_agent_api::Command,
+    ) -> uzor_agent_api::CommandReply {
+        use uzor_agent_api::{Command, CommandReply, MouseButton};
+
+        match cmd {
+            Command::InjectHover { window, x, y } => {
+                let key = uzor::framework::multi_window::WindowKey::new(window);
+                if !self.layout.window_keys().any(|k| k == &key) {
+                    return CommandReply::err(format!("unknown window {:?}", key.as_str()));
+                }
+                self.layout.set_current_window(key);
+                self.layout.on_pointer_move(x, y);
+                CommandReply::ok()
+            }
+            Command::InjectClick { window, x, y, button: _ } => {
+                let key = uzor::framework::multi_window::WindowKey::new(window);
+                if !self.layout.window_keys().any(|k| k == &key) {
+                    return CommandReply::err(format!("unknown window {:?}", key.as_str()));
+                }
+                self.layout.set_current_window(key.clone());
+                self.layout.on_pointer_move(x, y);
+                self.layout.on_pointer_down(x, y);
+                let _ = self.layout.on_pointer_up(x, y);
+                if let Some(id) = self.window_id_for(&key) {
+                    if let Some(pw) = self.windows.get(&id) {
+                        pw.window.request_redraw();
+                    }
+                }
+                CommandReply::ok()
+            }
+            Command::InjectScroll { window, dx, dy } => {
+                let key = uzor::framework::multi_window::WindowKey::new(window);
+                if !self.layout.window_keys().any(|k| k == &key) {
+                    return CommandReply::err(format!("unknown window {:?}", key.as_str()));
+                }
+                self.layout.set_current_window(key);
+                self.layout.on_scroll(dx, dy);
+                CommandReply::ok()
+            }
+            Command::SpawnWindow { key, title, width, height, background, decorations } => {
+                let mut spec = uzor::framework::multi_window::WindowSpec::new(
+                    uzor::framework::multi_window::WindowKey::new(key),
+                    &title,
+                )
+                .size(width, height);
+                if let Some(bg) = background { spec = spec.background(bg); }
+                if let Some(dec) = decorations { spec = spec.decorations(dec); }
+                self.pending_spawns.push(spec);
+                CommandReply::ok()
+            }
+            Command::CloseWindow { key } => {
+                let target = uzor::framework::multi_window::WindowKey::new(key);
+                if let Some(id) = self.window_id_for(&target) {
+                    if let Some(pw) = self.windows.get_mut(&id) {
+                        pw.close_requested = true;
+                    }
+                    CommandReply::ok()
+                } else {
+                    CommandReply::err("unknown window")
+                }
+            }
+            Command::SetSyncMode { node_id, mode, group_id } => {
+                use uzor::layout::sync::{SyncGroupId, SyncMode};
+                let target = match mode.as_str() {
+                    "synced" => SyncMode::Synced,
+                    "sometimes_alone" => SyncMode::Sometimes(None),
+                    "sometimes_group" => match group_id {
+                        Some(g) => SyncMode::Sometimes(Some(SyncGroupId(g))),
+                        None => return CommandReply::err("sometimes_group requires group_id"),
+                    },
+                    "standalone" => SyncMode::Standalone,
+                    other => return CommandReply::err(format!("unknown sync mode {other:?}")),
+                };
+                // The registry keys are &'static str — we have to leak
+                // user input here.  Future: maintain an interner.
+                let leaked: &'static str = Box::leak(node_id.into_boxed_str());
+                self.layout.sync_registry_mut().set(leaked, target);
+                CommandReply::ok()
+            }
+            Command::ApplyStylePreset { name } => {
+                use uzor::layout::{MirageDarkPreset, MirageLightPreset};
+                match name.as_str() {
+                    "mirage_dark"  => { self.layout.styles_mut().apply(&MirageDarkPreset);  CommandReply::ok() }
+                    "mirage_light" => { self.layout.styles_mut().apply(&MirageLightPreset); CommandReply::ok() }
+                    other => CommandReply::err(format!("unknown preset {other:?}")),
+                }
+            }
+        }
+    }
+
+    /// Rebuild the snapshot the HTTP server's `GET` endpoints read.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn rebuild_agent_snapshot(&mut self) {
+        let Some(bus) = self.agent_bus.as_ref() else { return };
+        let snap = crate::agent::build_snapshot(
+            &self.layout,
+            self.fps_ema,
+            self.frame_count,
+            self.start.elapsed().as_secs_f64() * 1000.0,
+        );
+        if let Ok(mut w) = bus.snapshot.write() {
+            *w = snap;
+        }
+
+        if let Some(ctrl) = self.agent_control.as_ref() {
+            let widgets = crate::agent::build_widget_list(&self.layout);
+            if let Ok(mut w) = ctrl.widgets.write() {
+                *w = widgets;
+            }
+        }
+    }
+
     fn fps_limit(&self) -> u32 {
         self.hub.as_ref()
             .map(|h| h.settings().fps_limit)
@@ -395,6 +574,13 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         // the event loop runs (rare, but cheap to do).
         while let Some(s) = self.app.take_pending_spawn() {
             self.pending_spawns.push(s);
+        }
+
+        // Activate the agent control plane if the AppConfig requested it.
+        if let Some(port) = self.config.agent_api_port {
+            if let Err(e) = self.enable_agent_api(port) {
+                eprintln!("[uzor-desktop] agent-api bind on :{port} failed: {e}");
+            }
         }
 
         let event_loop = EventLoop::new()
@@ -1019,6 +1205,12 @@ where
             return;
         }
 
+        // 2.5. Drain agent-API write commands and apply them on this
+        //      thread before any spawn / paint work picks up the new
+        //      state.  Each command resolves a oneshot the HTTP handler
+        //      is awaiting.
+        self.drain_agent_commands();
+
         // 3. Drain spawn requests.
         while let Some(s) = self.app.take_pending_spawn() {
             self.pending_spawns.push(s);
@@ -1029,6 +1221,10 @@ where
                 eprintln!("[uzor-desktop] window spawn failed: {e}");
             }
         }
+
+        // 3.5. Rebuild the agent snapshot after spawn/close so HTTP
+        //      readers see the current window list and per-branch state.
+        self.rebuild_agent_snapshot();
 
         // 4. Per-region paint scheduler (mlc-pattern).
         //    Ask the app what regions it wants painted at what cadence.

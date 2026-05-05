@@ -21,6 +21,8 @@ pub mod window;
 pub mod chrome;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tray;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod agent;
 
 // ── Primary re-exports ────────────────────────────────────────────────────────
 
