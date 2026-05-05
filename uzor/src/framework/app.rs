@@ -28,6 +28,20 @@ pub trait App<P: DockPanel = NoPanel>: Sized + 'static {
 
     fn ui(&mut self, win: &mut WindowCtx<'_, P>);
 
+    /// Optional per-region paint schedule.
+    ///
+    /// Return one or more [`RenderRegion`]s describing sub-rects of the
+    /// window with their own paint cadence (`target_fps = 0` for
+    /// dirty-driven, `>0` for FPS-capped, `UNCAPPED_FPS` for continuous).
+    /// The runtime collects these once per `ui()` call and uses them to
+    /// schedule wake-ups via `ControlFlow::WaitUntil`.
+    ///
+    /// Default: empty — the whole window paints on every wake-up
+    /// (mouse / event-driven, current behaviour).
+    fn regions(&mut self) -> Vec<crate::render::RenderRegion> {
+        Vec::new()
+    }
+
     fn take_pending_spawn(&mut self) -> Option<WindowSpec> { None }
 
     fn take_window_to_close(&mut self) -> Option<WindowKey> { None }

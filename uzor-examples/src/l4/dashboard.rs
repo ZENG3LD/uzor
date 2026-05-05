@@ -35,12 +35,14 @@ enum ThemeMode {
 
 struct DashboardApp {
     current_theme: ThemeMode,
+    tick_counter:  u64,
 }
 
 impl DashboardApp {
     fn new() -> Self {
         Self {
             current_theme: ThemeMode::Dark,
+            tick_counter:  0,
         }
     }
 }
@@ -308,50 +310,93 @@ impl App<NoPanel> for DashboardApp {
             let _ = cy;
         }
 
-        // ── Stub painting panel (right, flex=1) ───────────────────────────────
+        // ── Painting panel (right, flex=1): 4 regions × different cadences ───
+        // Split horizontally into a 2×2 grid:
+        //   ┌──────────────┬──────────────┐
+        //   │ R0  fps=0    │ R1  fps=30   │
+        //   │ (dirty)      │              │
+        //   ├──────────────┼──────────────┤
+        //   │ R2  fps=120  │ R3  uncapped │
+        //   │              │              │
+        //   └──────────────┴──────────────┘
+        // Each region paints its own counter + measured-fps so the user can
+        // see how the per-region scheduler behaves vs. the legacy whole-window
+        // event-driven path.
         {
             let layout = &mut *win.layout;
             let render = &mut *win.render;
+            let bg = layout.styles().color_or_owned("surface", "#0E0E11");
+            render.set_fill_color(bg.as_str());
+            render.fill_rect(paint_rect.x, paint_rect.y, paint_rect.width, paint_rect.height);
+        }
+        // Increment per-region tick counters every time this app.ui() runs.
+        // (One ui call covers the whole window; per-region cadence governs
+        // how often the *window* redraws, which is what we measure.)
+        self.tick_counter = self.tick_counter.wrapping_add(1);
 
-            // Panel background.
-            {
-                let bg = layout.styles().color_or_owned("surface", "#0E0E11");
-                render.set_fill_color(bg.as_str());
-                render.fill_rect(paint_rect.x, paint_rect.y, paint_rect.width, paint_rect.height);
-            }
+        let cell_w = paint_rect.width  / 2.0;
+        let cell_h = paint_rect.height / 2.0;
+        let cells: [(&str, u32, Rect); 4] = [
+            ("paint:r0_dirty",   0,             Rect { x: paint_rect.x,            y: paint_rect.y,           width: cell_w, height: cell_h }),
+            ("paint:r1_30fps",   30,            Rect { x: paint_rect.x + cell_w,   y: paint_rect.y,           width: cell_w, height: cell_h }),
+            ("paint:r2_120fps",  120,           Rect { x: paint_rect.x,            y: paint_rect.y + cell_h,  width: cell_w, height: cell_h }),
+            ("paint:r3_uncap",   uzor::render::UNCAPPED_FPS, Rect { x: paint_rect.x + cell_w, y: paint_rect.y + cell_h, width: cell_w, height: cell_h }),
+        ];
+        for (id_str, fps, rect) in cells.iter() {
+            let layout = &mut *win.layout;
+            let render = &mut *win.render;
+            // Cell border so the grid is visible on top of the panel bg.
+            let border = layout.styles().color_or_owned("border", "rgba(255,255,255,0.10)");
+            render.set_fill_color(border.as_str());
+            render.fill_rect(rect.x, rect.y, rect.width, 1.0);
+            render.fill_rect(rect.x, rect.y + rect.height - 1.0, rect.width, 1.0);
+            render.fill_rect(rect.x, rect.y, 1.0, rect.height);
+            render.fill_rect(rect.x + rect.width - 1.0, rect.y, 1.0, rect.height);
 
-            let pad   = 16.0_f64;
-            let row_h = 24.0_f64;
-            let gap   = 8.0_f64;
-            let mut cy = paint_rect.y + pad;
-            let w = (paint_rect.width - 2.0*pad).max(0.0);
+            let pad = 12.0_f64;
+            let row_h = 22.0_f64;
+            let mut cy = rect.y + pad;
+            let lr = |cy: f64, h: f64| Rect { x: rect.x + pad, y: cy, width: rect.width - 2.0*pad, height: h };
 
-            let lr = |cy: f64| Rect { x: paint_rect.x + pad, y: cy, width: w, height: row_h };
+            let header = match *fps {
+                0                          => format!("R: target_fps = 0 (dirty-driven)"),
+                uzor::render::UNCAPPED_FPS => format!("R: uncapped"),
+                f                          => format!("R: target_fps = {}", f),
+            };
+            uzor::framework::widgets::lm::text(
+                unsafe_widget_id(format!("{}:hdr", id_str).as_str()),
+                lr(cy, row_h), header.as_str(),
+            ).build(layout, render);
+            cy += row_h + 4.0;
 
-            uzor::framework::widgets::lm::text(unsafe_widget_id("paint:title"), lr(cy), "Painting panel").build(layout, render);
-            cy += row_h + gap;
+            let counter = format!("ui ticks since start: {}", self.tick_counter);
+            uzor::framework::widgets::lm::text(
+                unsafe_widget_id(format!("{}:counter", id_str).as_str()),
+                lr(cy, row_h), counter.as_str(),
+            ).build(layout, render);
+            cy += row_h + 4.0;
 
-            let r = Rect { x: paint_rect.x + pad, y: cy, width: w, height: 1.0 };
-            cy += 1.0 + gap;
-            uzor::framework::widgets::lm::separator(unsafe_widget_id("paint:sep0"), r).build(layout, render);
-
-            uzor::framework::widgets::lm::text(unsafe_widget_id("paint:line1"), lr(cy), "Chart / canvas area").build(layout, render);
-            cy += row_h + gap;
-            uzor::framework::widgets::lm::text(unsafe_widget_id("paint:line2"), lr(cy), "(stub — content goes here)").build(layout, render);
-            cy += row_h + gap;
-
-            let r = Rect { x: paint_rect.x + pad, y: cy, width: w, height: 1.0 };
-            cy += 1.0 + gap;
-            uzor::framework::widgets::lm::separator(unsafe_widget_id("paint:sep1"), r).build(layout, render);
-
-            let btn_r = Rect { x: paint_rect.x + pad, y: cy, width: 160.0, height: 32.0 };
-            // This button uses lm::button which auto-reads from StyleManager.
-            uzor::framework::widgets::lm::button(unsafe_widget_id("paint:open_settings"), btn_r)
-                .text("Open settings…")
-                .build(layout, render);
+            let measured = format!("window FPS: {:.1}", measured_fps);
+            uzor::framework::widgets::lm::text(
+                unsafe_widget_id(format!("{}:meas", id_str).as_str()),
+                lr(cy, row_h), measured.as_str(),
+            ).build(layout, render);
 
             let _ = cy;
         }
+    }
+
+    fn regions(&mut self) -> Vec<uzor::render::RenderRegion> {
+        // Region rects below are placeholders (the scheduler ignores them
+        // for now and uses target_fps only). When per-region rebuild lands
+        // these will gate sub-scene caching.
+        let zero = Rect { x: 0.0, y: 0.0, width: 0.0, height: 0.0 };
+        vec![
+            uzor::render::RenderRegion::dirty_driven("paint:r0_dirty", zero),
+            uzor::render::RenderRegion::capped("paint:r1_30fps",  zero, 30),
+            uzor::render::RenderRegion::capped("paint:r2_120fps", zero, 120),
+            uzor::render::RenderRegion::uncapped("paint:r3_uncap", zero),
+        ]
     }
 
     fn on_chrome_new_window(&mut self, _source: &WindowKey) -> Option<WindowSpec> {

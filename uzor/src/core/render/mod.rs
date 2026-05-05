@@ -6,6 +6,7 @@ mod helpers;
 mod ops;
 mod svg;
 mod color;
+mod region;
 
 pub use crate::ui::assets::icons;
 
@@ -15,3 +16,4 @@ pub use helpers::{crisp, crisp_rect};
 pub use ops::{RenderOp, RenderOps, execute_ops};
 pub use svg::{draw_svg_icon, draw_svg_icon_rotated, draw_svg_multicolor};
 pub use color::parse_color;
+pub use region::{RenderRegion, RegionScheduleState, UNCAPPED_FPS};

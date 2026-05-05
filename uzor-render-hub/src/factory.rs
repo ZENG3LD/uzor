@@ -445,9 +445,15 @@ impl WindowRenderState {
         f: impl FnOnce(&mut dyn uzor::render::RenderContext) -> R,
     ) -> Option<R> {
         match self.active {
-            RenderBackend::VelloGpu | RenderBackend::VelloHybrid => {
+            RenderBackend::VelloGpu => {
                 let mut ctx = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
                 Some(f(&mut ctx))
+            }
+            RenderBackend::VelloHybrid => {
+                // Route through the dedicated hybrid context; submit_vello_hybrid
+                // reads from the same context. Routing through VelloGpuRenderContext
+                // would write to the wrong scene and the swapchain stays blank.
+                Some(f(&mut self.vello_hybrid_ctx))
             }
             RenderBackend::VelloCpu => {
                 self.vello_cpu_ctx.as_mut().map(|c| f(c))
@@ -480,12 +486,29 @@ impl WindowRenderState {
         match &mut self.surface {
             SurfaceMode::Gpu { gpu_pool, surface, .. } => {
                 gpu_pool.resize_surface(surface, width, height);
+                // VelloHybrid renderer caches the target dimensions when it
+                // was first created. After a swapchain resize we must drop
+                // it so the next submit re-creates it with the new size —
+                // otherwise the GPU draws into a stale render target and
+                // the swapchain shows blank / stretched content.
+                if matches!(self.active, RenderBackend::VelloHybrid) {
+                    self.vello_hybrid_renderer = None;
+                }
             }
             #[cfg(not(target_arch = "wasm32"))]
             SurfaceMode::Software { presenter, width: w, height: h } => {
                 presenter.resize(width, height);
                 *w = width;
                 *h = height;
+                // Resize the CPU pixmap / vello-cpu render context so the
+                // submit path's `cw == width` check succeeds and present()
+                // sends a non-empty frame.
+                if let Some(ref mut ts) = self.tiny_skia_ctx {
+                    ts.resize(width, height);
+                }
+                // VelloCpuRenderContext's pixmap is rebuilt on each
+                // render_to_pixmap_rgba8 call from the buffer the submit
+                // path provides — no explicit resize needed here.
             }
             #[cfg(target_arch = "wasm32")]
             SurfaceMode::Canvas2d { .. } => {
@@ -502,7 +525,13 @@ impl WindowRenderState {
         match self.active {
             RenderBackend::VelloGpu => self.scene.reset(),
             RenderBackend::VelloHybrid => {
-                // vello_hybrid_ctx is rebuilt by the caller filling it each frame.
+                // Re-create / reset the hybrid scene with the current swapchain
+                // size so the caller can paint into it.  Without this the
+                // hybrid scene stays None and the swapchain stays blank.
+                if let SurfaceMode::Gpu { ref surface, .. } = self.surface {
+                    self.vello_hybrid_ctx
+                        .begin_frame(surface.config.width, surface.config.height);
+                }
             }
             RenderBackend::VelloCpu
             | RenderBackend::TinySkia

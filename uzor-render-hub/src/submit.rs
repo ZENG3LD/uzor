@@ -384,7 +384,6 @@ fn submit_cpu_tinyskia(state: &mut WindowRenderState, metrics: &mut RenderMetric
                 let pix = tiny_ctx.pixels();
                 let cw  = tiny_ctx.width();
                 let ch  = tiny_ctx.height();
-
                 if !pix.is_empty() && cw > 0 && ch > 0 && cw == width && ch == height {
                     presenter.present(pix, cw, ch);
                 }

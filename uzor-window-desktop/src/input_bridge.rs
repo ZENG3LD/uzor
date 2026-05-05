@@ -10,7 +10,7 @@
 //! plumbing that's identical across all desktop apps.
 
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent, MouseButton as WMouseButton};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
 
 use uzor::input::core::coordinator::InputCoordinator;
 use uzor::input::keyboard::keyboard::KeyPress;
@@ -184,7 +184,7 @@ impl WinitInputBridge {
                 if ke.state == ElementState::Pressed =>
             {
                 if let Some(id) = focused_text_field {
-                    let consumed = self.handle_text_key(coord, id, &ke.logical_key);
+                    let consumed = self.handle_text_key(coord, id, &ke.logical_key, &ke.physical_key);
                     if consumed {
                         out.text_changed = true;
                     } else if let Key::Named(NamedKey::Escape) = ke.logical_key {
@@ -210,20 +210,21 @@ impl WinitInputBridge {
         coord: &mut InputCoordinator,
         _id: &WidgetId,
         key: &Key,
+        physical: &PhysicalKey,
     ) -> bool {
         let m = self.modifiers;
 
         // ── Ctrl shortcuts ────────────────────────────────────────────────────
+        // Resolve via physical key (KeyCode) so Cyrillic / other layouts hit
+        // the same shortcuts as QWERTY without the user having to switch.
         if m.ctrl {
-            if let Key::Character(s) = key {
-                let ch = s.chars().next().map(|c| c.to_ascii_lowercase());
-                match ch {
-                    Some('a') => {
+            if let PhysicalKey::Code(code) = physical {
+                match code {
+                    KeyCode::KeyA => {
                         coord.text_fields_mut().on_key(KeyPress::SelectAll);
                         return true;
                     }
-                    Some('c') => {
-                        // Copy selection to clipboard.
+                    KeyCode::KeyC => {
                         if let Some(sel) = coord.text_fields().copy_selection() {
                             if let Some(cb) = self.clipboard() {
                                 let _ = cb.set_text(sel);
@@ -231,7 +232,7 @@ impl WinitInputBridge {
                         }
                         return true;
                     }
-                    Some('v') => {
+                    KeyCode::KeyV => {
                         let text = self
                             .clipboard()
                             .and_then(|cb| cb.get_text().ok())
@@ -241,8 +242,7 @@ impl WinitInputBridge {
                         }
                         return true;
                     }
-                    Some('x') => {
-                        // Cut: copy then delete selection.
+                    KeyCode::KeyX => {
                         if let Some(sel) = coord.text_fields().copy_selection() {
                             if let Some(cb) = self.clipboard() {
                                 let _ = cb.set_text(sel);

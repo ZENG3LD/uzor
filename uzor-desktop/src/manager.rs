@@ -120,6 +120,11 @@ pub(crate) struct PerWindow<P: DockPanel> {
     pub last_frame:      std::time::Instant,
     pub initialised:     bool,
     pub close_requested: bool,
+
+    /// Per-region paint schedule state keyed by `RenderRegion::id`.
+    /// Populated each frame from `App::regions()`. Empty when the app
+    /// uses the legacy single-region (event-driven) path.
+    pub region_states: std::collections::HashMap<&'static str, uzor::render::RegionScheduleState>,
 }
 
 // ── PerWindowHost ─────────────────────────────────────────────────────────────
@@ -434,11 +439,16 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             }
         }
 
-        let render_state = factory
+        let mut render_state = factory
             .create_render_state(&raw_handle, active, size)
             .map_err(|e| ManagerError::Backend(format!("create_render_state({:?}): {}", active, e)))?;
 
         window.set_visible(true);
+
+        // Push the initial size into the render state so software presenters
+        // and CPU pixmaps are sized for the very first frame — winit only
+        // sends a `Resized` event later, after the first paint.
+        render_state.resize_surface(size.width, size.height);
 
         // Apply OS window decorations (corner rounding, border colour, shadow).
         // Spec values win over AppConfig defaults. Non-Windows targets no-op silently.
@@ -475,8 +485,17 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             last_frame:      std::time::Instant::now(),
             initialised:     false,
             close_requested: false,
+            region_states:   std::collections::HashMap::new(),
         };
         self.windows.insert(id, pw);
+
+        // Kick off the first paint: winit only sends Resized/RedrawRequested
+        // events to *future* state changes; without an explicit request the
+        // freshly-spawned second window never ticks until the user moves the
+        // mouse over it.
+        if let Some(pw) = self.windows.get(&id) {
+            pw.window.request_redraw();
+        }
 
         // Apply tray spec on first window creation only.
         if self.tray.is_none() {
@@ -724,8 +743,21 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 SubmitParams { base_color: bg_color, msaa_samples: msaa },
             );
 
-            pw.last_frame = std::time::Instant::now();
-            pw.window.request_redraw();
+            let now_inst = std::time::Instant::now();
+            pw.last_frame = now_inst;
+
+            // Mark all currently-known regions as painted at this instant.
+            // Dirty-driven regions are kept dirty=true until cleared by app.
+            // FPS-capped regions use last_painted to schedule next wake-up.
+            for state in pw.region_states.values_mut() {
+                state.last_painted = Some(now_inst);
+            }
+
+            // Legacy event-driven path: when the app declares no regions,
+            // fall back to the always-redraw loop (mouse/event driven).
+            if pw.region_states.is_empty() {
+                pw.window.request_redraw();
+            }
 
             outcome
         };
@@ -833,6 +865,45 @@ where
         for spec in queued {
             if let Err(e) = self.create_window_from_spec(event_loop, spec) {
                 eprintln!("[uzor-desktop] window spawn failed: {e}");
+            }
+        }
+
+        // 4. Per-region paint scheduler (mlc-pattern).
+        //    Ask the app what regions it wants painted at what cadence.
+        //    For each region whose schedule is due now, request a redraw
+        //    on its window; otherwise compute the soonest next-due moment
+        //    across all windows and ask winit to wake up exactly then.
+        //    Apps that don't override `App::regions()` return an empty
+        //    vec — control flow stays at `Wait` and the legacy
+        //    event-driven (mouse / explicit `request_redraw`) path
+        //    continues unchanged.
+        let regions = self.app.regions();
+        if !regions.is_empty() {
+            let now = std::time::Instant::now();
+            let mut next_due: Option<std::time::Instant> = None;
+            // Build a map id → region for state lookup.
+            for pw in self.windows.values_mut() {
+                let mut any_due_now = false;
+                for region in &regions {
+                    let state = pw.region_states
+                        .entry(region.id)
+                        .or_insert_with(uzor::render::RegionScheduleState::default);
+                    if state.due(region, now) {
+                        any_due_now = true;
+                    } else if let Some(nd) = state.next_due(region, now) {
+                        next_due = Some(match next_due {
+                            None => nd,
+                            Some(cur) => cur.min(nd),
+                        });
+                    }
+                }
+                if any_due_now {
+                    pw.window.request_redraw();
+                }
+            }
+            match next_due {
+                Some(t) if t > now => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
+                _                   => event_loop.set_control_flow(ControlFlow::Poll),
             }
         }
     }
