@@ -32,7 +32,7 @@ use uzor_render_vello_gpu::VelloGpuRenderContext;
 use uzor_render_vello_hybrid::VelloHybridRenderContext;
 use uzor_render_wgpu_instanced::{InstancedRenderContext, InstancedRenderer};
 #[cfg(not(target_arch = "wasm32"))]
-use uzor_window_hub::lifecycle::SoftwarePresenter;
+use uzor::layout::window::SoftwarePresenter;
 use vello::util::{RenderContext as VelloRenderContext, RenderSurface};
 use vello::{Renderer as VelloRenderer, Scene};
 
@@ -253,7 +253,7 @@ impl WindowRenderState {
     /// Build a CPU-only (tiny-skia) state with a software presenter.
     ///
     /// `presenter` is the [`SoftwarePresenter`] obtained from
-    /// [`WindowProvider::create_software_presenter`](uzor_window_hub::lifecycle::WindowProvider::create_software_presenter).
+    /// [`WindowProvider::create_software_presenter`](uzor::layout::window::WindowProvider::create_software_presenter).
     /// It is called once per frame to blit the CPU-rasterized pixels to the OS window.
     ///
     /// Available on native targets only — use the Canvas 2D path on wasm32.
@@ -275,7 +275,7 @@ impl WindowRenderState {
     /// Build a CPU-only (vello-cpu) state with a software presenter.
     ///
     /// `presenter` is the [`SoftwarePresenter`] obtained from
-    /// [`WindowProvider::create_software_presenter`](uzor_window_hub::lifecycle::WindowProvider::create_software_presenter).
+    /// [`WindowProvider::create_software_presenter`](uzor::layout::window::WindowProvider::create_software_presenter).
     /// It is called once per frame to blit the CPU-rasterized pixels to the OS window.
     ///
     /// Available on native targets only — use the Canvas 2D path on wasm32.

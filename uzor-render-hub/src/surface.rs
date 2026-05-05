@@ -9,7 +9,7 @@
 //! factory chooses the right surface initialization path based on the
 //! [`RenderBackend`] variant.
 
-use uzor_window_hub::RawHandle;
+use uzor::layout::window::RawHandle;
 
 use crate::{RenderBackend, WindowRenderState};
 

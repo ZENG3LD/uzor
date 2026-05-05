@@ -11,7 +11,7 @@
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
 
-use uzor_window_hub::lifecycle::CornerStyle;
+use uzor::layout::window::CornerStyle;
 
 // ── Win32 bindings ────────────────────────────────────────────────────────────
 

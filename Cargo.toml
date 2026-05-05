@@ -20,7 +20,6 @@ members = [
     "uzor-render-wgpu-instanced",
     # Utils
     "uzor-render-hub",
-    "uzor-window-hub",
     # Icon utilities
     "uzor-icon",
     # Layered demos
@@ -47,7 +46,6 @@ uzor-render-vello-cpu = { version = "1.2.0", path = "./uzor-render-vello-cpu" }
 uzor-render-tiny-skia = { version = "1.2.0", path = "./uzor-render-tiny-skia" }
 uzor-render-wgpu-instanced = { version = "1.2.0", path = "./uzor-render-wgpu-instanced" }
 uzor-render-canvas2d = { version = "1.2.0", path = "./uzor-render-canvas2d" }
-uzor-window-hub = { version = "1.2.0", path = "./uzor-window-hub" }
 uzor-window-desktop = { version = "1.2.0", path = "./uzor-window-desktop" }
 uzor-icon = { version = "1.2.0", path = "./uzor-icon" }
 uzor-window-web = { version = "1.2.0", path = "./uzor-window-web" }

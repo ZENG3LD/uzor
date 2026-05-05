@@ -28,7 +28,7 @@ pub use hub::{BackendPool, HubError, PerfSettings, RenderHub};
 pub use metrics::RenderMetrics;
 pub use factory::{BackendContext, GpuDevicePool, WindowRenderState};
 pub use submit::{submit_frame, SubmitOutcome, SubmitParams};
-pub use uzor_window_hub::lifecycle::SoftwarePresenter;
+pub use uzor::layout::window::SoftwarePresenter;
 pub use runtime::RuntimeBackend;
 pub use surface::{RenderSurfaceFactory, SurfaceError, SurfaceSize};
 pub use factories::Canvas2dSurfaceFactory;

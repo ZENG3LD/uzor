@@ -14,7 +14,6 @@ uzor-desktop          = { workspace = true }
 uzor-framework-macros = { workspace = true }
 uzor-render-hub       = { workspace = true }
 uzor-render-vello-gpu = { workspace = true }
-uzor-window-hub       = { workspace = true }
 uzor-window-desktop   = { workspace = true }
 vello                 = "0.8"
 pollster              = "0.4"

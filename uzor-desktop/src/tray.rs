@@ -7,7 +7,7 @@
 //!
 //! ```no_run
 //! use uzor_desktop::tray::{TrayBuilder, TrayEvent};
-//! use uzor_window_hub::RgbaIcon;
+//! use uzor::layout::window::RgbaIcon;
 //!
 //! let rgba = vec![0u8; 32 * 32 * 4]; // your icon pixels
 //! let icon = RgbaIcon::from_rgba(32, 32, rgba);
@@ -35,7 +35,7 @@ use std::collections::HashMap;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-use uzor_window_hub::RgbaIcon;
+use uzor::layout::window::RgbaIcon;
 
 // ── TrayError ─────────────────────────────────────────────────────────────────
 

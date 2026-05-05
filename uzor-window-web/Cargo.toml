@@ -10,7 +10,6 @@ readme = "../README.md"
 
 [dependencies]
 uzor = { workspace = true, features = ["serde"] }
-uzor-window-hub = { workspace = true }
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = [
     "Document",

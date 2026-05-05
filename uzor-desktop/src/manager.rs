@@ -18,7 +18,7 @@ use uzor_render_hub::{
     RenderBackend, RenderHub, RenderSurfaceFactory, SurfaceSize, WindowRenderState,
     submit_frame, SubmitParams,
 };
-use uzor_window_hub::lifecycle::{WindowDecorations, WindowProvider};
+use uzor::layout::window::{WindowDecorations, WindowProvider};
 
 #[cfg(not(target_arch = "wasm32"))]
 use uzor_window_desktop::WinitWindowProvider;

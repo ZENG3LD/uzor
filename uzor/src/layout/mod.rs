@@ -21,6 +21,7 @@ pub mod panel_api;
 mod edge_panels;
 mod handles;
 pub mod host;
+pub mod window;
 mod manager;
 mod overlay_stack;
 mod solve;

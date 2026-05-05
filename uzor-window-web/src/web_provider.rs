@@ -32,7 +32,7 @@ use uzor::input::core::event_processor::PlatformEvent;
 use uzor::input::keyboard::events::KeyCode;
 use uzor::input::pointer::state::{ModifierKeys, MouseButton};
 
-use uzor_window_hub::lifecycle::{RawHandle, WindowProvider};
+use uzor::layout::window::{RawHandle, WindowProvider};
 
 // ── SendSyncCanvas ────────────────────────────────────────────────────────────
 

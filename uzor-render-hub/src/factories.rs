@@ -16,7 +16,7 @@
 //! | [`WgpuInstancedSurfaceFactory`] | `InstancedWgpu` | Functional — GPU init deferred to first submit |
 //! | [`Canvas2dSurfaceFactory`] | web canvas | wasm32 full impl, native stub |
 
-use uzor_window_hub::lifecycle::RawHandle;
+use uzor::layout::window::RawHandle;
 
 use crate::{RenderBackend, RenderSurfaceFactory, SurfaceError, SurfaceSize, WindowRenderState};
 
@@ -31,7 +31,7 @@ use vello::wgpu::PresentMode;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::raw_window_handle::{RawWindowHandle, RawDisplayHandle};
 #[cfg(not(target_arch = "wasm32"))]
-use uzor_window_hub::lifecycle::SoftwarePresenter;
+use uzor::layout::window::SoftwarePresenter;
 #[cfg(not(target_arch = "wasm32"))]
 use uzor_window_desktop::SendSyncHandlePair;
 
@@ -243,7 +243,7 @@ impl TinySkiaSurfaceFactory {
     /// Create the factory with a pre-built software presenter.
     ///
     /// Obtain the presenter from
-    /// [`WindowProvider::create_software_presenter`](uzor_window_hub::lifecycle::WindowProvider::create_software_presenter).
+    /// [`WindowProvider::create_software_presenter`](uzor::layout::window::WindowProvider::create_software_presenter).
     /// The presenter is moved into the factory and transferred to the
     /// [`WindowRenderState`] on the first call to [`create_render_state`].
     pub fn with_presenter(presenter: Box<dyn SoftwarePresenter>) -> Self {
@@ -314,7 +314,7 @@ impl VelloCpuSurfaceFactory {
     /// Create the factory with a device pixel ratio and a software presenter.
     ///
     /// Obtain the presenter from
-    /// [`WindowProvider::create_software_presenter`](uzor_window_hub::lifecycle::WindowProvider::create_software_presenter).
+    /// [`WindowProvider::create_software_presenter`](uzor::layout::window::WindowProvider::create_software_presenter).
     pub fn with_presenter(dpr: f64, presenter: Box<dyn SoftwarePresenter>) -> Self {
         Self { dpr, presenter: Mutex::new(Some(presenter)) }
     }

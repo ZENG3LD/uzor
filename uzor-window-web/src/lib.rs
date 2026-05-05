@@ -6,7 +6,7 @@
 //! # Primary API
 //!
 //! Use [`WebWindowProvider`] (implements
-//! `uzor_window_hub::lifecycle::WindowProvider`) for new code.  The legacy
+//! `uzor::layout::window::WindowProvider`) for new code.  The legacy
 //! [`WebPlatform`] (implements the old `PlatformBackend` trait) is retained for
 //! backward compatibility.
 

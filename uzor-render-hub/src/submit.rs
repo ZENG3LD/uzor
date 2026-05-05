@@ -446,7 +446,7 @@ fn aa_for(msaa: u8) -> AaConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uzor_window_hub::SoftwarePresenter;
+    use uzor::layout::window::SoftwarePresenter;
 
     // ── MockPresenter ────────────────────────────────────────────────────────
 

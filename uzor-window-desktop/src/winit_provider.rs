@@ -1,4 +1,4 @@
-//! [`WinitWindowProvider`] — implements [`uzor_window_hub::lifecycle::WindowProvider`]
+//! [`WinitWindowProvider`] — implements [`uzor::layout::window::WindowProvider`]
 //! over an [`Arc<winit::window::Window>`].
 //!
 //! # Ownership model
@@ -26,7 +26,7 @@ use winit::window::Window;
 use uzor::core::types::Rect;
 use uzor::platform::PlatformEvent;
 
-use uzor_window_hub::lifecycle::{
+use uzor::layout::window::{
     CornerStyle, RawHandle, ResizeDirection, RgbaIcon, SoftwarePresenter,
     WindowDecorations, WindowProvider,
 };

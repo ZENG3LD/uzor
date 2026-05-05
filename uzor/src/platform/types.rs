@@ -149,7 +149,7 @@ pub enum EventResult {
 
 /// Platform-agnostic window corner-rounding preference.
 ///
-/// Passed to [`uzor_window_hub::WindowDecorations::set_corner_style`]. Platforms
+/// Passed to [`uzor::layout::window::WindowDecorations::set_corner_style`]. Platforms
 /// that cannot honour a value silently no-op.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CornerStyle {
