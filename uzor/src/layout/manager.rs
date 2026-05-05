@@ -1376,6 +1376,12 @@ impl<P: DockPanel> LayoutManager<P> {
         if let Some(pr) = self.cur_branch().dock.rect_for_leaf_str(slot_id) {
             return Some(panel_rect_to_rect(pr));
         }
+        // Last resort: treat slot_id as a panel `type_id()` and walk the
+        // dock tree.  Lets callers say `lm::panel("paint:r1_30fps", ...)`
+        // instead of `Leaf(<n>)`.
+        if let Some(pr) = self.cur_branch().dock.rect_for_panel_id(slot_id) {
+            return Some(panel_rect_to_rect(pr));
+        }
         None
     }
 

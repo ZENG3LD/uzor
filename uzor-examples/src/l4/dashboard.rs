@@ -107,15 +107,69 @@ impl App<PaintPanel> for DashboardApp {
         self.tree_debug_state = Some(tree_debug::register(layout, "tree-debug"));
         // Build a 2×2 dock tree once: dirty | 30 fps    on top,
         //                              120 fps | uncap on bottom.
+        //
+        // NOTE: `split_leaf` REPLACES the original leaf with N new leaves
+        // (it does NOT keep the original as one of the children).  So
+        // after `split_leaf(leaf0, SplitRight)` the id `leaf0` is gone
+        // and the two children carry copies of its panel — we override
+        // each child explicitly via `leaf_mut(...).panels`.
         let tree = layout.panels_mut().tree_mut();
         let leaf0 = tree.add_leaf(PaintPanel {
             id: "paint:r0_dirty",
             title: "fps = 0 (dirty)",
             target_fps: 0,
         });
-        let right_ids = tree.split_leaf(leaf0, SplitKind::SplitRight, 0.0, 0.0);
-        if let Some(&right) = right_ids.last() {
-            if let Some(l) = tree.leaf_mut(right) {
+        // Step 1 — split horizontally: left column | right column.
+        let cols = tree.split_leaf(leaf0, SplitKind::SplitRight, 0.0, 0.0);
+        let (left_col, right_col) = match (cols.first(), cols.last()) {
+            (Some(&l), Some(&r)) if l != r => (l, r),
+            _ => return,
+        };
+
+        // Step 2 — assign top panels to both columns; we then split each
+        // column vertically to add a bottom panel.
+        if let Some(l) = tree.leaf_mut(left_col) {
+            l.panels.clear();
+            l.panels.push(PaintPanel {
+                id: "paint:r0_dirty",
+                title: "fps = 0 (dirty)",
+                target_fps: 0,
+            });
+        }
+        if let Some(l) = tree.leaf_mut(right_col) {
+            l.panels.clear();
+            l.panels.push(PaintPanel {
+                id: "paint:r1_30fps",
+                title: "fps = 30",
+                target_fps: 30,
+            });
+        }
+
+        // Step 3 — split LEFT column into top (r0_dirty) + bottom (r2_120fps).
+        let left_rows = tree.split_leaf(left_col, SplitKind::SplitBottom, 0.0, 0.0);
+        if let (Some(&top), Some(&bot)) = (left_rows.first(), left_rows.last()) {
+            if let Some(l) = tree.leaf_mut(top) {
+                l.panels.clear();
+                l.panels.push(PaintPanel {
+                    id: "paint:r0_dirty",
+                    title: "fps = 0 (dirty)",
+                    target_fps: 0,
+                });
+            }
+            if let Some(l) = tree.leaf_mut(bot) {
+                l.panels.clear();
+                l.panels.push(PaintPanel {
+                    id: "paint:r2_120fps",
+                    title: "fps = 120",
+                    target_fps: 120,
+                });
+            }
+        }
+
+        // Step 4 — split RIGHT column into top (r1_30fps) + bottom (r3_uncap).
+        let right_rows = tree.split_leaf(right_col, SplitKind::SplitBottom, 0.0, 0.0);
+        if let (Some(&top), Some(&bot)) = (right_rows.first(), right_rows.last()) {
+            if let Some(l) = tree.leaf_mut(top) {
                 l.panels.clear();
                 l.panels.push(PaintPanel {
                     id: "paint:r1_30fps",
@@ -123,28 +177,12 @@ impl App<PaintPanel> for DashboardApp {
                     target_fps: 30,
                 });
             }
-            // Bottom row of the right column.
-            let bot = tree.split_leaf(right, SplitKind::SplitBottom, 0.0, 0.0);
-            if let Some(&b) = bot.last() {
-                if let Some(l) = tree.leaf_mut(b) {
-                    l.panels.clear();
-                    l.panels.push(PaintPanel {
-                        id: "paint:r3_uncap",
-                        title: "uncapped",
-                        target_fps: uzor::render::UNCAPPED_FPS,
-                    });
-                }
-            }
-        }
-        // Bottom row of the left column.
-        let bot_l = tree.split_leaf(leaf0, SplitKind::SplitBottom, 0.0, 0.0);
-        if let Some(&b) = bot_l.last() {
-            if let Some(l) = tree.leaf_mut(b) {
+            if let Some(l) = tree.leaf_mut(bot) {
                 l.panels.clear();
                 l.panels.push(PaintPanel {
-                    id: "paint:r2_120fps",
-                    title: "fps = 120",
-                    target_fps: 120,
+                    id: "paint:r3_uncap",
+                    title: "uncapped",
+                    target_fps: uzor::render::UNCAPPED_FPS,
                 });
             }
         }
@@ -587,7 +625,7 @@ impl DashboardApp {
             let row_h = 22.0_f64;
             let cell_id_owned = cell_id.to_string();
             uzor::framework::widgets::lm::panel(
-                panel_id_str.as_str(),
+                cell_id,
                 panel_id_str.as_str(),
             )
             .state(&mut self.cell_panel_states[idx])

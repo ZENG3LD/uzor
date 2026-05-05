@@ -1313,6 +1313,26 @@ impl<P: DockPanel> DockState<P> {
         self.panel_rects.get(&LeafId(n)).copied()
     }
 
+    /// Look up a leaf rect by the active panel's `type_id()`.  Walks the
+    /// dock tree, returns the rect of the first leaf whose first panel's
+    /// `type_id()` matches `panel_id`.
+    ///
+    /// This lets callers address dock leaves by user-meaningful panel
+    /// identifiers (e.g. `"paint:r1_30fps"`) instead of opaque
+    /// `Leaf(<n>)` strings — useful for `lm::panel(panel_id, ...)`.
+    pub fn rect_for_panel_id(&self, panel_id: &str) -> Option<PanelRect> {
+        for (leaf_id, rect) in &self.panel_rects {
+            if let Some(leaf) = self.tree.leaf(*leaf_id) {
+                if let Some(p) = leaf.panels.first() {
+                    if p.type_id() == panel_id {
+                        return Some(*rect);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub fn panel_headers(&self) -> &HashMap<LeafId, PanelRect> {
         &self.panel_headers
     }
