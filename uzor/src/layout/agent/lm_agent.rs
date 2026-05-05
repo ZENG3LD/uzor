@@ -88,7 +88,7 @@ impl<P: DockPanel> LmAgent<P> {
             root: RootSnapshot {
                 current_window,
                 window_count,
-                style_preset: None,
+                style_preset: layout.styles().active_preset().map(|s| s.to_owned()),
             },
             windows,
             sync_nodes,
@@ -140,12 +140,58 @@ impl<P: DockPanel> LmAgent<P> {
 
     // ── command application (those LM can answer alone) ─────────────
 
+    /// Push an `AgentCommand` log entry recording that the WM passed
+    /// us a write command and whether it succeeded.
+    pub fn log_command(
+        layout: &mut LayoutManager<P>,
+        cmd: &Command,
+        reply: &CommandReply,
+    ) {
+        let window = match cmd {
+            Command::InjectHover { window, .. }
+            | Command::InjectClick { window, .. }
+            | Command::InjectScroll { window, .. }
+            | Command::ClickWidget { window, .. }
+            | Command::HoverWidget { window, .. }
+            | Command::OpenModal { window, .. }
+            | Command::CloseModal { window, .. }
+            | Command::OpenPopup { window, .. }
+            | Command::ClosePopup { window, .. }
+            | Command::OpenDropdown { window, .. }
+            | Command::CloseDropdown { window, .. }
+            | Command::ToggleSidebar { window, .. } => Some(window.clone()),
+            Command::SpawnWindow { key, .. } | Command::CloseWindow { key } => {
+                Some(key.clone())
+            }
+            Command::SetSyncMode { .. } | Command::ApplyStylePreset { .. } => None,
+        };
+        let ts = layout.frame_time_ms;
+        layout.agent_log.push(
+            ts,
+            window,
+            "lm.agent_command",
+            serde_json::json!({
+                "command": format!("{:?}", cmd),
+                "ok": reply.ok,
+                "message": reply.message,
+            }),
+        );
+    }
+
     /// Apply a command that LM understands.  Returns:
     /// - `Some(reply)` — command was handled (success or LM-level error).
     /// - `None`        — command needs platform-side handling
     ///                   (screenshot, real OS spawn, real input event).
     ///                   The WM should look at it and apply itself.
     pub fn try_apply(layout: &mut LayoutManager<P>, cmd: &Command) -> Option<CommandReply> {
+        let result = Self::try_apply_inner(layout, cmd);
+        if let Some(reply) = result.as_ref() {
+            Self::log_command(layout, cmd, reply);
+        }
+        result
+    }
+
+    fn try_apply_inner(layout: &mut LayoutManager<P>, cmd: &Command) -> Option<CommandReply> {
         use crate::layout::window::WindowKey;
         match cmd {
             // ── pure read-from-snapshot inputs (still on WM side) ───
@@ -192,49 +238,50 @@ impl<P: DockPanel> LmAgent<P> {
                 if let Some(reply) = Self::route(layout, window) { return Some(reply); }
                 let h = layout.add_modal(modal_id);
                 let _ = layout.modal_mut(&h);
-                // `add_modal` ensures the state slot exists; rendering
-                // is what makes it visible — apps drive that themselves.
-                // For now we simply ensure the slot exists.
+                Self::log_overlay(layout, window, "modal", modal_id, true);
                 Some(CommandReply::ok())
             }
             Command::CloseModal { window, modal_id } => {
                 if let Some(reply) = Self::route(layout, window) { return Some(reply); }
-                // We can't directly "close" without app cooperation.
-                // Mark the entry by removing its frame from the dispatch
-                // registry next frame.  Simplest correct behaviour:
-                // remove the persistent state map entry.
                 let id = WidgetId::new(modal_id.clone());
                 layout.modals_map_mut().remove(&id);
+                Self::log_overlay(layout, window, "modal", modal_id, false);
                 Some(CommandReply::ok())
             }
             Command::OpenPopup { window, popup_id } => {
                 if let Some(reply) = Self::route(layout, window) { return Some(reply); }
                 let h = layout.add_popup(popup_id);
                 let _ = layout.popup_mut(&h);
+                Self::log_overlay(layout, window, "popup", popup_id, true);
                 Some(CommandReply::ok())
             }
             Command::ClosePopup { window, popup_id } => {
                 if let Some(reply) = Self::route(layout, window) { return Some(reply); }
                 let id = WidgetId::new(popup_id.clone());
                 layout.popups_map_mut().remove(&id);
+                Self::log_overlay(layout, window, "popup", popup_id, false);
                 Some(CommandReply::ok())
             }
             Command::OpenDropdown { window, dropdown_id } => {
                 if let Some(reply) = Self::route(layout, window) { return Some(reply); }
                 let h = layout.add_dropdown(dropdown_id);
                 layout.dropdown_mut(&h).open = true;
+                Self::log_overlay(layout, window, "dropdown", dropdown_id, true);
                 Some(CommandReply::ok())
             }
             Command::CloseDropdown { window, dropdown_id } => {
                 if let Some(reply) = Self::route(layout, window) { return Some(reply); }
                 let h = layout.add_dropdown(dropdown_id);
                 layout.dropdown_mut(&h).close();
+                Self::log_overlay(layout, window, "dropdown", dropdown_id, false);
                 Some(CommandReply::ok())
             }
             Command::ToggleSidebar { window, sidebar_id } => {
                 if let Some(reply) = Self::route(layout, window) { return Some(reply); }
                 let h = layout.add_sidebar(sidebar_id);
                 layout.sidebar_mut(&h).toggle_collapse();
+                let open_now = !layout.sidebar(&h).is_collapsed;
+                Self::log_overlay(layout, window, "sidebar", sidebar_id, open_now);
                 Some(CommandReply::ok())
             }
 
@@ -256,14 +303,47 @@ impl<P: DockPanel> LmAgent<P> {
                 };
                 let leaked: &'static str = Box::leak(node_id.clone().into_boxed_str());
                 layout.sync_registry_mut().set(leaked, target);
+                let ts = layout.frame_time_ms;
+                layout.agent_log.push(
+                    ts,
+                    None,
+                    "lm.sync_mode",
+                    serde_json::json!({
+                        "node_id": node_id,
+                        "mode": mode,
+                        "group_id": group_id,
+                    }),
+                );
                 Some(CommandReply::ok())
             }
-            Command::ApplyStylePreset { name } => match name.as_str() {
-                "mirage_dark"  => { layout.styles_mut().apply(&MirageDarkPreset);  Some(CommandReply::ok()) }
-                "mirage_light" => { layout.styles_mut().apply(&MirageLightPreset); Some(CommandReply::ok()) }
-                other => Some(CommandReply::err(format!("unknown preset {:?}", other))),
-            },
+            Command::ApplyStylePreset { name } => {
+                let ok = match name.as_str() {
+                    "mirage_dark"  => { layout.apply_style_preset(&MirageDarkPreset,  "mirage_dark");  true }
+                    "mirage_light" => { layout.apply_style_preset(&MirageLightPreset, "mirage_light"); true }
+                    _ => false,
+                };
+                if !ok {
+                    return Some(CommandReply::err(format!("unknown preset {:?}", name)));
+                }
+                Some(CommandReply::ok())
+            }
         }
+    }
+
+    fn log_overlay(
+        layout: &mut LayoutManager<P>,
+        window: &str,
+        slot: &'static str,
+        id: &str,
+        open: bool,
+    ) {
+        let ts = layout.frame_time_ms;
+        layout.agent_log.push(
+            ts,
+            Some(window.to_owned()),
+            format!("lm.overlay.{}", slot),
+            serde_json::json!({ "id": id, "open": open }),
+        );
     }
 
     /// Common helper: validate window key and route LM to it.  Returns

@@ -21,7 +21,8 @@ use uzor::docking::panels::DockPanel;
 use uzor::layout::LayoutManager;
 
 use uzor::layout::agent::{
-    AgentControl, AgentSnapshot, Command, CommandReply, LmAgent, WidgetSnapshot,
+    AgentControl, AgentLogEntry, AgentSnapshot, Command, CommandReply, LmAgent,
+    WidgetSnapshot,
 };
 
 /// Internal-only "command" the manager handles outside of the public
@@ -39,6 +40,7 @@ pub(crate) type PendingCmd = (Command, Sender<CommandReply>);
 pub(crate) struct AgentBus {
     pub snapshot: Arc<RwLock<AgentSnapshot>>,
     pub widgets:  Arc<RwLock<Vec<WidgetSnapshot>>>,
+    pub log:      Arc<RwLock<Vec<AgentLogEntry>>>,
     pub cmd_tx:   Sender<PendingCmd>,
     pub cmd_rx:   Receiver<PendingCmd>,
     pub shot_tx:  Sender<ScreenshotRequest>,
@@ -52,6 +54,7 @@ impl AgentBus {
         Self {
             snapshot: Arc::new(RwLock::new(empty_snapshot())),
             widgets:  Arc::new(RwLock::new(Vec::new())),
+            log:      Arc::new(RwLock::new(Vec::new())),
             cmd_tx: tx,
             cmd_rx: rx,
             shot_tx: stx,
@@ -63,6 +66,7 @@ impl AgentBus {
         Arc::new(DesktopAgentControl {
             snapshot: Arc::clone(&self.snapshot),
             widgets:  Arc::clone(&self.widgets),
+            log:      Arc::clone(&self.log),
             cmd_tx:   self.cmd_tx.clone(),
             shot_tx:  self.shot_tx.clone(),
         })
@@ -73,6 +77,7 @@ impl AgentBus {
 pub struct DesktopAgentControl {
     snapshot: Arc<RwLock<AgentSnapshot>>,
     widgets:  Arc<RwLock<Vec<WidgetSnapshot>>>,
+    log:      Arc<RwLock<Vec<AgentLogEntry>>>,
     cmd_tx:   Sender<PendingCmd>,
     shot_tx:  Sender<ScreenshotRequest>,
 }
@@ -103,6 +108,22 @@ impl AgentControl for DesktopAgentControl {
         if self.shot_tx.send(req).is_err() { return None; }
         // Block on the manager's reply (drained in `about_to_wait`).
         rx.recv().ok().flatten()
+    }
+
+    fn log_since(&self, since: u64, limit: usize) -> Vec<AgentLogEntry> {
+        let guard = self.log.read().expect("agent log lock");
+        guard.iter()
+            .filter(|e| e.seq > since)
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
+    fn log_tail(&self, n: usize) -> Vec<AgentLogEntry> {
+        let guard = self.log.read().expect("agent log lock");
+        let len = guard.len();
+        let start = len.saturating_sub(n);
+        guard.iter().skip(start).cloned().collect()
     }
 }
 

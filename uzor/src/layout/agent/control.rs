@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use super::command::{Command, CommandReply};
+use super::log::AgentLogEntry;
 use super::snapshot::{AgentSnapshot, WidgetSnapshot};
 
 pub trait AgentControl: Send + Sync + 'static {
@@ -31,6 +32,18 @@ pub trait AgentControl: Send + Sync + 'static {
     /// override it.
     fn screenshot_png(&self, _window: &str) -> Option<Vec<u8>> {
         None
+    }
+
+    /// Drain agent-log entries with `seq > since`, capped at `limit`.
+    /// Default returns empty so transports without a log surface
+    /// (TUI, mobile) keep working.
+    fn log_since(&self, _since: u64, _limit: usize) -> Vec<AgentLogEntry> {
+        Vec::new()
+    }
+
+    /// Last `n` log entries.  Default returns empty.
+    fn log_tail(&self, _n: usize) -> Vec<AgentLogEntry> {
+        Vec::new()
     }
 }
 

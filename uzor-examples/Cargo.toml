@@ -19,6 +19,7 @@ vello                 = "0.8"
 pollster              = "0.4"
 winit                 = "0.30"
 arboard               = "3"
+serde_json            = "1"
 
 [[bin]]
 name = "l1-coord"

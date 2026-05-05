@@ -98,6 +98,12 @@ pub struct LayoutManager<P: DockPanel> {
     /// promote/demote operations) which LM nodes are global, opt-in
     /// shared, or always per-window.  See [`super::sync::SyncRegistry`].
     pub(crate) sync_registry: super::sync::SyncRegistry,
+
+    /// Append-only ring buffer of agent-visible state transitions.
+    /// HTTP shims expose it via `GET /log?since=<seq>` so external
+    /// agents can replay everything that happened without resorting
+    /// to screenshots.  See [`super::agent::log`].
+    pub(crate) agent_log: super::agent::AgentLog,
 }
 
 impl<P: DockPanel> LayoutManager<P> {
@@ -114,7 +120,52 @@ impl<P: DockPanel> LayoutManager<P> {
             frame_time_ms: 0.0,
             styles: StyleManager::default(),
             sync_registry: super::sync::SyncRegistry::defaults(),
+            agent_log: super::agent::AgentLog::default(),
         }
+    }
+
+    /// Read-only access to the agent log.
+    pub fn agent_log(&self) -> &super::agent::AgentLog {
+        &self.agent_log
+    }
+
+    /// Push one entry into the shared agent log.  Anyone holding
+    /// `&mut LayoutManager` (LM internals, app code, blackbox-panel
+    /// handlers) calls this to add a breadcrumb.  Convention:
+    /// dotted-lowercase category like `"app.theme.changed"`,
+    /// `"chart.crosshair"`, `"lm.click"`.
+    pub fn agent_log_push(
+        &mut self,
+        category: impl Into<String>,
+        payload: serde_json::Value,
+    ) -> u64 {
+        let ts = self.frame_time_ms;
+        let win = self.current_window.as_ref().map(|k| k.as_str().to_owned());
+        self.agent_log.push(ts, win, category, payload)
+    }
+
+    /// Convenience: push a `note` (free-form message string) into the
+    /// log under category `"note"`.
+    pub fn agent_log_note(&mut self, message: impl Into<String>) -> u64 {
+        let payload = serde_json::json!({ "message": message.into() });
+        self.agent_log_push("note", payload)
+    }
+
+    /// Apply a named style preset and write a `lm.style.preset` entry
+    /// to the agent log.  Apps should call this instead of
+    /// `styles_mut().apply(...)` so external agents see the
+    /// transition without polling.
+    pub fn apply_style_preset<Pr: super::styles::Preset + ?Sized>(
+        &mut self,
+        preset: &Pr,
+        name: impl Into<String>,
+    ) {
+        let name_string = name.into();
+        self.styles.apply_named(preset, name_string.clone());
+        self.agent_log_push(
+            "lm.style.preset",
+            serde_json::json!({ "name": name_string }),
+        );
     }
 
     /// Read-only access to the sync-mode registry.
@@ -256,6 +307,27 @@ impl<P: DockPanel> LayoutManager<P> {
         self.cur_branch().dispatcher
             .dispatch(id)
             .unwrap_or_else(|| super::DispatchEvent::Unhandled(id.clone()))
+    }
+
+    /// Same as `dispatch_widget` but also writes the resolved event
+    /// to the agent log.  Use from runtime call sites that want the
+    /// dispatch to show up in `GET /log`.
+    pub fn dispatch_widget_logged(&mut self, id: &crate::types::WidgetId) -> super::DispatchEvent {
+        let event = self.cur_branch().dispatcher
+            .dispatch(id)
+            .unwrap_or_else(|| super::DispatchEvent::Unhandled(id.clone()));
+        let window = self.current_window.as_ref().map(|k| k.as_str().to_owned());
+        let ts = self.frame_time_ms;
+        self.agent_log.push(
+            ts,
+            window,
+            "lm.dispatch",
+            serde_json::json!({
+                "widget_id": id.as_str(),
+                "event": format!("{:?}", event),
+            }),
+        );
+        event
     }
 
     /// Clear the dispatch table, the overlay dismiss registry, and the
@@ -721,13 +793,29 @@ impl<P: DockPanel> LayoutManager<P> {
         provider: Box<dyn WindowProvider>,
     ) {
         let rect = provider.window_rect();
+        let key_str = key.as_str().to_owned();
         self.windows.insert(key, WindowSlot::new(provider, rect));
+        self.agent_log.push(
+            self.frame_time_ms,
+            Some(key_str.clone()),
+            "lm.window.attach",
+            serde_json::json!({ "window": key_str }),
+        );
     }
 
     /// Drop a window from the registry.  Called by the platform layer on
     /// `WindowEvent::CloseRequested` (or equivalent) after teardown.
     pub fn detach_window(&mut self, key: &crate::layout::window::WindowKey) -> Option<WindowSlot<P>> {
-        self.windows.remove(key)
+        let removed = self.windows.remove(key);
+        if removed.is_some() {
+            self.agent_log.push(
+                self.frame_time_ms,
+                Some(key.as_str().to_owned()),
+                "lm.window.detach",
+                serde_json::json!({ "window": key.as_str() }),
+            );
+        }
+        removed
     }
 
     /// Read-only access to a registered window's slot, by key.
@@ -1335,7 +1423,7 @@ impl<P: DockPanel> LayoutManager<P> {
         let clicked = self.cur_branch_mut().ctx.input.process_click(pos.0, pos.1);
         match clicked {
             Some(id) => {
-                let event = self.dispatch_widget(&id);
+                let event = self.dispatch_widget_logged(&id);
                 ClickOutcome::DispatchEvent(event)
             }
             None => ClickOutcome::Unhandled { pos },
@@ -1417,6 +1505,8 @@ impl<P: DockPanel> LayoutManager<P> {
     }
 
     pub fn on_pointer_up(&mut self, x: f64, y: f64) -> PointerUpOutcome {
+        let mut clicked_id: Option<String> = None;
+        let window_key: Option<String> = self.current_window.as_ref().map(|k| k.as_str().to_owned());
         {
             let b = self.cur_branch_mut();
             b.ctx.input.set_cursor_pos(x, y);
@@ -1424,7 +1514,17 @@ impl<P: DockPanel> LayoutManager<P> {
             let hit = b.ctx.input.process_click(x, y);
             if let Some(ref id) = hit {
                 b.last_click = Some((id.clone(), (x, y)));
+                clicked_id = Some(id.as_str().to_owned());
             }
+        }
+        if let Some(id) = clicked_id {
+            let ts = self.frame_time_ms;
+            self.agent_log.push(
+                ts,
+                window_key,
+                "lm.click",
+                serde_json::json!({ "widget_id": id, "x": x, "y": y }),
+            );
         }
         match self.handle_click((x, y)) {
             ClickOutcome::DismissOverlay(h) => PointerUpOutcome::DismissedOverlay(h),

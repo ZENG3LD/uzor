@@ -9,7 +9,7 @@ description = "Local HTTP control plane for uzor apps. Read live LayoutManager s
 
 [dependencies]
 uzor = { workspace = true }
-axum = { version = "0.7", default-features = false, features = ["tokio", "http1", "json"] }
+axum = { version = "0.7", default-features = false, features = ["tokio", "http1", "json", "query"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "net"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

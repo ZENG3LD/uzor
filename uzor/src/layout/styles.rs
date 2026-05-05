@@ -27,6 +27,12 @@ pub struct StyleManager {
     colors:   HashMap<String, String>,
     sizes:    HashMap<String, f64>,
     textures: HashMap<String, TextureKind>,
+    /// Name passed to the most recent `apply_named` call (or `None`
+    /// when only `apply` was used or the style is at default).  Apps
+    /// compare against this string to know which preset is active —
+    /// see `lm::button(...).active(layout.styles().active_preset() ==
+    /// Some("mirage_dark"))`.
+    active_preset: Option<String>,
 }
 
 impl Default for StyleManager {
@@ -35,6 +41,7 @@ impl Default for StyleManager {
             colors:   HashMap::new(),
             sizes:    HashMap::new(),
             textures: HashMap::new(),
+            active_preset: None,
         };
         // Mirage default palette (mirrors tokens.toml in uzor-framework).
         sm.set_color("surface_0",      "#08090B");
@@ -125,6 +132,21 @@ impl StyleManager {
 
     pub fn apply<P: Preset + ?Sized>(&mut self, preset: &P) {
         preset.apply_to(self);
+        self.active_preset = None;
+    }
+
+    /// Apply a preset and tag it with a name so apps can detect the
+    /// currently active preset by string compare.  Triggers no log
+    /// write itself — callers (LM/app) push to the agent log.
+    pub fn apply_named<P: Preset + ?Sized>(&mut self, preset: &P, name: impl Into<String>) {
+        preset.apply_to(self);
+        self.active_preset = Some(name.into());
+    }
+
+    /// Name of the currently active preset, or `None` when apps used
+    /// the unnamed [`apply`] / set state by hand.
+    pub fn active_preset(&self) -> Option<&str> {
+        self.active_preset.as_deref()
     }
 }
 

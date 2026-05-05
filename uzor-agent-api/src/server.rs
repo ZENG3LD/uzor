@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Json, Response},
     routing::{get, post},
@@ -113,6 +113,8 @@ pub fn spawn_server(
                     .route("/health",                get(health))
                     .route("/state/tree",            get(state_tree))
                     .route("/state/widgets",         get(state_widgets))
+                    .route("/log",                   get(log_since))
+                    .route("/log/tail",              get(log_tail))
                     .route("/screenshot/:window",    get(screenshot_window))
                     .route("/cmd",                   post(post_cmd))
                     .route("/input/click",           post(post_input_click))
@@ -164,6 +166,52 @@ async fn state_tree(State(s): State<AppState>) -> impl IntoResponse {
 
 async fn state_widgets(State(s): State<AppState>) -> impl IntoResponse {
     Json(s.control.widgets())
+}
+
+#[derive(Deserialize)]
+struct LogQuery {
+    /// Return entries with `seq > since`.  Default 0.
+    #[serde(default)]
+    since: u64,
+    /// Cap the response.  Default 500.
+    #[serde(default = "default_log_limit")]
+    limit: usize,
+    /// Optional category prefix filter (e.g. `lm.`, `app.theme.`).
+    #[serde(default)]
+    prefix: Option<String>,
+}
+
+fn default_log_limit() -> usize { 500 }
+
+async fn log_since(
+    State(s): State<AppState>,
+    Query(q): Query<LogQuery>,
+) -> impl IntoResponse {
+    let entries = s.control.log_since(q.since, q.limit);
+    if let Some(p) = q.prefix.as_deref() {
+        let filtered: Vec<_> = entries.into_iter()
+            .filter(|e| e.category.starts_with(p))
+            .collect();
+        Json(filtered)
+    } else {
+        Json(entries)
+    }
+}
+
+#[derive(Deserialize)]
+struct LogTailQuery {
+    /// Number of trailing entries.  Default 50.
+    #[serde(default = "default_tail_n")]
+    n: usize,
+}
+
+fn default_tail_n() -> usize { 50 }
+
+async fn log_tail(
+    State(s): State<AppState>,
+    Query(q): Query<LogTailQuery>,
+) -> impl IntoResponse {
+    Json(s.control.log_tail(q.n))
 }
 
 async fn screenshot_window(

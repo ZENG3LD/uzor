@@ -32,11 +32,13 @@
 mod command;
 mod control;
 mod lm_agent;
+mod log;
 mod snapshot;
 
 pub use command::{Command, CommandReply, MouseButton};
 pub use control::{AgentControl, AgentControlObj};
 pub use lm_agent::LmAgent;
+pub use log::{AgentLog, AgentLogEntry, DEFAULT_LOG_CAPACITY};
 pub use snapshot::{
     AgentSnapshot, BranchSnapshot, ClickSnap, NodeSyncSnapshot, RectSnap, RootSnapshot,
     WidgetSnapshot,

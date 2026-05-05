@@ -162,11 +162,22 @@ impl App<PaintPanel> for DashboardApp {
             let theme_light_id = unsafe_widget_id("settings:theme_light");
             if win.layout.was_clicked(&theme_dark_id) && self.current_theme != ThemeMode::Dark {
                 self.current_theme = ThemeMode::Dark;
-                win.layout.styles_mut().apply(&MirageDarkPreset);
+                // Use the LM helper so the agent log records both the
+                // preset apply and a complementary `app.theme.changed`
+                // breadcrumb the agent can grep on.
+                win.layout.apply_style_preset(&MirageDarkPreset, "mirage_dark");
+                win.layout.agent_log_push(
+                    "app.theme.changed",
+                    serde_json::json!({ "theme": "dark", "preset": "mirage_dark" }),
+                );
             }
             if win.layout.was_clicked(&theme_light_id) && self.current_theme != ThemeMode::Light {
                 self.current_theme = ThemeMode::Light;
-                win.layout.styles_mut().apply(&MirageLightPreset);
+                win.layout.apply_style_preset(&MirageLightPreset, "mirage_light");
+                win.layout.agent_log_push(
+                    "app.theme.changed",
+                    serde_json::json!({ "theme": "light", "preset": "mirage_light" }),
+                );
             }
         }
 

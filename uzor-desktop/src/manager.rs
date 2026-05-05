@@ -444,7 +444,11 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             return reply;
         }
 
-        match cmd {
+        // WM-side commands (synthetic input that needs redraw, OS
+        // window lifecycle).  We compute the reply, then log a
+        // matching `AgentCommand` entry so the agent log mirrors what
+        // the LM-side side already records via `LmAgent::log_command`.
+        let reply = match cmd.clone() {
             Command::InjectHover { window, x, y } => {
                 let key = uzor::framework::multi_window::WindowKey::new(window);
                 if !self.layout.window_keys().any(|k| k == &key) {
@@ -506,7 +510,10 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             // Anything else is one of the LM-routable commands handled
             // above by `try_apply`, so we shouldn't reach here.
             _ => CommandReply::err("internal: unhandled command"),
-        }
+        };
+
+        uzor::layout::agent::LmAgent::<P>::log_command(&mut self.layout, &cmd, &reply);
+        reply
     }
 
     /// Rebuild the snapshot the HTTP server's `GET` endpoints read.
@@ -522,6 +529,9 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         if let Ok(mut w) = bus.snapshot.write() { *w = snap; }
         let widgets = crate::agent::build_widget_list(&self.layout);
         if let Ok(mut w) = bus.widgets.write() { *w = widgets; }
+        // Publish agent-log mirror.  Cheap: ring buffer is bounded.
+        let log_entries = self.layout.agent_log().snapshot();
+        if let Ok(mut w) = bus.log.write() { *w = log_entries; }
     }
 
     /// Drain queued screenshot requests and produce PNG bytes from
