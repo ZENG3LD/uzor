@@ -257,196 +257,184 @@ impl App<PaintPanel> for DashboardApp {
         }
 
         // ── Settings panel (left 280px) ───────────────────────────────────────
-        // Wrap as a real composite Panel so the framework's overflow
-        // guard (Scrollbar) clips body content to the slot rect.  On
-        // tall windows you don't see a scrollbar; on short windows
-        // the bottom rows scroll instead of bleeding past the pixmap
-        // and panicking the CPU rasteriser.
+        // Single `build_with_body` call: panel chrome + scrollbar guard +
+        // body content all wired through one builder.  The renderer is
+        // already clipped to the body rect and translated by the active
+        // scroll offset by the time `body(...)` runs, so child widgets
+        // draw in body-local coordinates without manual scroll math.
         {
             use uzor::ui::widgets::composite::panel::types::PanelRenderKind;
             use uzor::types::OverflowMode;
             let layout = &mut *win.layout;
             let render = &mut *win.render;
-            let content_h = 600.0_f64;
+            let content_h    = 600.0_f64;
+            let current_theme = self.current_theme;
             uzor::framework::widgets::lm::panel("settings-panel", "settings:panel")
                 .state(&mut self.settings_panel_state)
                 .kind(PanelRenderKind::Plain)
                 .overflow(OverflowMode::Scrollbar)
                 .show_scrollbar(true)
                 .content_height(content_h)
-                .build(layout, render);
-        }
-        {
-            let layout = &mut *win.layout;
-            let render = &mut *win.render;
+                .build_with_body(layout, render, |layout, render, body_rect| {
+                    let row_h = 32.0_f64;
+                    let gap   = 6.0_f64;
+                    let pad   = 10.0_f64;
+                    let mut cy = body_rect.y + pad;
+                    let inner_w = body_rect.width - 2.0 * pad;
 
-            let row_h = 32.0_f64;
-            let gap   = 6.0_f64;
-            let pad   = 10.0_f64;
-            let scroll_off = self.settings_panel_state.scroll.offset;
-            let mut cy = settings_rect.y + pad - scroll_off;
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: row_h };
+                    cy += row_h + gap;
+                    uzor::framework::widgets::lm::text(unsafe_widget_id("settings:title"), r, "Settings")
+                        .build(layout, render);
 
-            // Title
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: row_h };
-            cy += row_h + gap;
-            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:title"), r, "Settings")
-                .build(layout, render);
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 1.0 };
+                    cy += 1.0 + gap;
+                    uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep0"), r).build(layout, render);
 
-            // Sep
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 1.0 };
-            cy += 1.0 + gap;
-            uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep0"), r).build(layout, render);
+                    // Theme section
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 20.0 };
+                    cy += 20.0 + 4.0;
+                    uzor::framework::widgets::lm::text(unsafe_widget_id("settings:theme_lbl"), r, "Theme").build(layout, render);
 
-            // Theme section
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 20.0 };
-            cy += 20.0 + 4.0;
-            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:theme_lbl"), r, "Theme").build(layout, render);
-
-            let theme_btn_w = (settings_rect.width - 2.0*pad - gap) / 2.0;
-            // "Mirage Dark" button — uses lm::button which reads from StyleManager automatically
-            uzor::framework::widgets::lm::button(
-                unsafe_widget_id("settings:theme_dark"),
-                Rect { x: settings_rect.x + pad, y: cy, width: theme_btn_w, height: row_h },
-            )
-            .text("Mirage Dark")
-            .active(self.current_theme == ThemeMode::Dark)
-            .build(layout, render);
-
-            // "Mirage Light" button
-            uzor::framework::widgets::lm::button(
-                unsafe_widget_id("settings:theme_light"),
-                Rect { x: settings_rect.x + pad + theme_btn_w + gap, y: cy, width: theme_btn_w, height: row_h },
-            )
-            .text("Mirage Light")
-            .active(self.current_theme == ThemeMode::Light)
-            .build(layout, render);
-            cy += row_h + gap;
-
-            // Sep
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 1.0 };
-            cy += 1.0 + gap;
-            uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep_theme"), r).build(layout, render);
-
-            // Backend section label
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 20.0 };
-            cy += 20.0 + 4.0;
-            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:backend_lbl"), r, "Backend").build(layout, render);
-
-            // Backend buttons
-            for (i, &backend) in available.iter().enumerate() {
-                let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: row_h };
-                cy += row_h + gap;
-                let is_active = backend == active_backend;
-                let label = backend.label();
-                let id_str = format!("settings:backend_btn:{}", i);
-                uzor::framework::widgets::lm::button(unsafe_widget_id(id_str.as_str()), r)
-                    .text(label)
-                    .active(is_active)
+                    let theme_btn_w = (inner_w - gap) / 2.0;
+                    uzor::framework::widgets::lm::button(
+                        unsafe_widget_id("settings:theme_dark"),
+                        Rect { x: body_rect.x + pad, y: cy, width: theme_btn_w, height: row_h },
+                    )
+                    .text("Mirage Dark")
+                    .active(current_theme == ThemeMode::Dark)
                     .build(layout, render);
-            }
 
-            // Sep
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 1.0 };
-            cy += 1.0 + gap;
-            uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep1"), r).build(layout, render);
-
-            // VSync
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 20.0 };
-            cy += 20.0 + 4.0;
-            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:vsync_lbl"), r, "VSync").build(layout, render);
-
-            let vsync_btn_w = (settings_rect.width - 2.0*pad - gap) / 2.0;
-            uzor::framework::widgets::lm::button(
-                unsafe_widget_id("settings:vsync_on"),
-                Rect { x: settings_rect.x + pad, y: cy, width: vsync_btn_w, height: row_h },
-            )
-            .text("VSync ON")
-            .active(vsync_on)
-            .build(layout, render);
-
-            uzor::framework::widgets::lm::button(
-                unsafe_widget_id("settings:vsync_off"),
-                Rect { x: settings_rect.x + pad + vsync_btn_w + gap, y: cy, width: vsync_btn_w, height: row_h },
-            )
-            .text("VSync OFF")
-            .active(!vsync_on)
-            .build(layout, render);
-            cy += row_h + gap;
-
-            // Sep
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 1.0 };
-            cy += 1.0 + gap;
-            uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep2"), r).build(layout, render);
-
-            // MSAA
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 20.0 };
-            cy += 20.0 + 4.0;
-            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:msaa_lbl"), r, "MSAA").build(layout, render);
-
-            let msaa_options: &[(&str, u8)] = &[("Off", 0), ("4x", 4), ("8x", 8)];
-            let n_msaa = msaa_options.len() as f64;
-            let msaa_btn_w = (settings_rect.width - 2.0*pad - gap * (n_msaa - 1.0)) / n_msaa;
-            for (_i, &(label, n)) in msaa_options.iter().enumerate() {
-                let r = Rect { x: settings_rect.x + pad + (msaa_btn_w + gap) * (_i as f64), y: cy, width: msaa_btn_w, height: row_h };
-                let id_str = format!("settings:msaa_{}", n);
-                uzor::framework::widgets::lm::button(unsafe_widget_id(id_str.as_str()), r)
-                    .text(label)
-                    .active(msaa == n)
+                    uzor::framework::widgets::lm::button(
+                        unsafe_widget_id("settings:theme_light"),
+                        Rect { x: body_rect.x + pad + theme_btn_w + gap, y: cy, width: theme_btn_w, height: row_h },
+                    )
+                    .text("Mirage Light")
+                    .active(current_theme == ThemeMode::Light)
                     .build(layout, render);
-            }
-            cy += row_h + gap;
+                    cy += row_h + gap;
 
-            // Sep
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 1.0 };
-            cy += 1.0 + gap;
-            uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep3"), r).build(layout, render);
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 1.0 };
+                    cy += 1.0 + gap;
+                    uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep_theme"), r).build(layout, render);
 
-            // ── Metrics block (live) ────────────────────────────────────
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 20.0 };
-            cy += 20.0 + 2.0;
-            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:metrics_lbl"), r, "Metrics")
-                .build(layout, render);
+                    // Backend section
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 20.0 };
+                    cy += 20.0 + 4.0;
+                    uzor::framework::widgets::lm::text(unsafe_widget_id("settings:backend_lbl"), r, "Backend").build(layout, render);
 
-            let backend_line = format!("Backend: {}", active_backend.label());
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 18.0 };
-            cy += 18.0 + 2.0;
-            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:metrics_backend"), r, backend_line.as_str())
-                .build(layout, render);
+                    for (i, &backend) in available.iter().enumerate() {
+                        let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: row_h };
+                        cy += row_h + gap;
+                        let is_active = backend == active_backend;
+                        let label = backend.label();
+                        let id_str = format!("settings:backend_btn:{}", i);
+                        uzor::framework::widgets::lm::button(unsafe_widget_id(id_str.as_str()), r)
+                            .text(label)
+                            .active(is_active)
+                            .build(layout, render);
+                    }
 
-            let fps_line = format!("FPS: {:.1}  ({:.2} ms)", measured_fps, frame_time_ms);
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 18.0 };
-            cy += 18.0 + 2.0;
-            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:metrics_fps"), r, fps_line.as_str())
-                .build(layout, render);
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 1.0 };
+                    cy += 1.0 + gap;
+                    uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep1"), r).build(layout, render);
 
-            let count_line = format!("Frames: {}", frame_count);
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 18.0 };
-            cy += 18.0 + gap;
-            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:metrics_count"), r, count_line.as_str())
-                .build(layout, render);
+                    // VSync
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 20.0 };
+                    cy += 20.0 + 4.0;
+                    uzor::framework::widgets::lm::text(unsafe_widget_id("settings:vsync_lbl"), r, "VSync").build(layout, render);
 
-            // Sep
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 1.0 };
-            cy += 1.0 + gap;
-            uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep_metrics"), r).build(layout, render);
-
-            // FPS
-            let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: 20.0 };
-            cy += 20.0 + 4.0;
-            uzor::framework::widgets::lm::text(unsafe_widget_id("settings:fps_lbl"), r, "FPS Limit").build(layout, render);
-
-            let fps_options: &[(&str, u32)] = &[("30", 30), ("60", 60), ("120", 120), ("Unlim", 0)];
-            let n_fps = fps_options.len() as f64;
-            let fps_btn_w = (settings_rect.width - 2.0*pad - gap * (n_fps - 1.0)) / n_fps;
-            for (i, &(label, limit)) in fps_options.iter().enumerate() {
-                let r = Rect { x: settings_rect.x + pad + (fps_btn_w + gap) * i as f64, y: cy, width: fps_btn_w, height: row_h };
-                let id_str = format!("settings:fps_{}", limit);
-                uzor::framework::widgets::lm::button(unsafe_widget_id(id_str.as_str()), r)
-                    .text(label)
-                    .active(fps == limit)
+                    let vsync_btn_w = (inner_w - gap) / 2.0;
+                    uzor::framework::widgets::lm::button(
+                        unsafe_widget_id("settings:vsync_on"),
+                        Rect { x: body_rect.x + pad, y: cy, width: vsync_btn_w, height: row_h },
+                    )
+                    .text("VSync ON")
+                    .active(vsync_on)
                     .build(layout, render);
-            }
-            let _ = cy;
+
+                    uzor::framework::widgets::lm::button(
+                        unsafe_widget_id("settings:vsync_off"),
+                        Rect { x: body_rect.x + pad + vsync_btn_w + gap, y: cy, width: vsync_btn_w, height: row_h },
+                    )
+                    .text("VSync OFF")
+                    .active(!vsync_on)
+                    .build(layout, render);
+                    cy += row_h + gap;
+
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 1.0 };
+                    cy += 1.0 + gap;
+                    uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep2"), r).build(layout, render);
+
+                    // MSAA
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 20.0 };
+                    cy += 20.0 + 4.0;
+                    uzor::framework::widgets::lm::text(unsafe_widget_id("settings:msaa_lbl"), r, "MSAA").build(layout, render);
+
+                    let msaa_options: &[(&str, u8)] = &[("Off", 0), ("4x", 4), ("8x", 8)];
+                    let n_msaa = msaa_options.len() as f64;
+                    let msaa_btn_w = (inner_w - gap * (n_msaa - 1.0)) / n_msaa;
+                    for (_i, &(label, n)) in msaa_options.iter().enumerate() {
+                        let r = Rect { x: body_rect.x + pad + (msaa_btn_w + gap) * (_i as f64), y: cy, width: msaa_btn_w, height: row_h };
+                        let id_str = format!("settings:msaa_{}", n);
+                        uzor::framework::widgets::lm::button(unsafe_widget_id(id_str.as_str()), r)
+                            .text(label)
+                            .active(msaa == n)
+                            .build(layout, render);
+                    }
+                    cy += row_h + gap;
+
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 1.0 };
+                    cy += 1.0 + gap;
+                    uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep3"), r).build(layout, render);
+
+                    // Metrics
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 20.0 };
+                    cy += 20.0 + 2.0;
+                    uzor::framework::widgets::lm::text(unsafe_widget_id("settings:metrics_lbl"), r, "Metrics")
+                        .build(layout, render);
+
+                    let backend_line = format!("Backend: {}", active_backend.label());
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 18.0 };
+                    cy += 18.0 + 2.0;
+                    uzor::framework::widgets::lm::text(unsafe_widget_id("settings:metrics_backend"), r, backend_line.as_str())
+                        .build(layout, render);
+
+                    let fps_line = format!("FPS: {:.1}  ({:.2} ms)", measured_fps, frame_time_ms);
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 18.0 };
+                    cy += 18.0 + 2.0;
+                    uzor::framework::widgets::lm::text(unsafe_widget_id("settings:metrics_fps"), r, fps_line.as_str())
+                        .build(layout, render);
+
+                    let count_line = format!("Frames: {}", frame_count);
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 18.0 };
+                    cy += 18.0 + gap;
+                    uzor::framework::widgets::lm::text(unsafe_widget_id("settings:metrics_count"), r, count_line.as_str())
+                        .build(layout, render);
+
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 1.0 };
+                    cy += 1.0 + gap;
+                    uzor::framework::widgets::lm::separator(unsafe_widget_id("settings:sep_metrics"), r).build(layout, render);
+
+                    // FPS
+                    let r = Rect { x: body_rect.x + pad, y: cy, width: inner_w, height: 20.0 };
+                    cy += 20.0 + 4.0;
+                    uzor::framework::widgets::lm::text(unsafe_widget_id("settings:fps_lbl"), r, "FPS Limit").build(layout, render);
+
+                    let fps_options: &[(&str, u32)] = &[("30", 30), ("60", 60), ("120", 120), ("Unlim", 0)];
+                    let n_fps = fps_options.len() as f64;
+                    let fps_btn_w = (inner_w - gap * (n_fps - 1.0)) / n_fps;
+                    for (i, &(label, limit)) in fps_options.iter().enumerate() {
+                        let r = Rect { x: body_rect.x + pad + (fps_btn_w + gap) * i as f64, y: cy, width: fps_btn_w, height: row_h };
+                        let id_str = format!("settings:fps_{}", limit);
+                        uzor::framework::widgets::lm::button(unsafe_widget_id(id_str.as_str()), r)
+                            .text(label)
+                            .active(fps == limit)
+                            .build(layout, render);
+                    }
+                    let _ = cy;
+                });
+            let _ = settings_rect;
         }
 
         // Painting panel: register dock separators + paint them for the
