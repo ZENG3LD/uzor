@@ -154,7 +154,7 @@ pub fn register_layout_manager_sidebar<P: DockPanel>(
         state.ensure_sized(win.width, win.height, is_horizontal_kind);
     }
 
-    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Sidebar, rect, sense: Sense::CLICK });
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Sidebar, rect, sense: Sense::CLICK, label: None });
 
     // Resize handle dispatcher pattern. Composite already registers a child
     // `:resize` Sense::DRAG zone on the appropriate edge; install the pattern

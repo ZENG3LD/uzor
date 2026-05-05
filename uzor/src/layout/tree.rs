@@ -44,6 +44,13 @@ pub struct WidgetNode {
     pub rect: Rect,
     /// Sense flags for this widget.
     pub sense: Sense,
+    /// Human-readable text the L3 builder passed in (button text,
+    /// label content, tab title).  Plumbed into the agent widget
+    /// snapshot so external tooling can address widgets by what the
+    /// user actually sees, not just by id.  `None` for widgets
+    /// without a meaningful textual label (separators, icon-only
+    /// chips).
+    pub label: Option<String>,
 }
 
 /// Discriminated union for a tree node — either a fixed system node or a

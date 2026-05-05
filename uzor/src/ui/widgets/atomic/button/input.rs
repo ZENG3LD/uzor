@@ -77,6 +77,7 @@ pub fn register_layout_manager_button<P: DockPanel>(
         kind: WidgetKind::Button,
         rect,
         sense: Sense::CLICK,
+        label: view.text.map(|s| s.to_owned()),
     });
     register_context_manager_button(layout.ctx_mut(), render, id, rect, &layer, widget_state, view, settings);
 }

@@ -233,6 +233,15 @@ where
         self
     }
 
+    /// Default baseline repaint cadence for every window that doesn't
+    /// override it via [`WindowSpec::tick_rate`].  `Capped(60)` by
+    /// default.  Use [`crate::render::TickRate::Dirty`] for the
+    /// legacy event-driven path.
+    pub fn default_tick_rate(mut self, rate: crate::render::TickRate) -> Self {
+        self.config.default_tick_rate = rate;
+        self
+    }
+
     /// Set the clear colour as `0xAARRGGBB`.
     pub fn background(mut self, argb: u32) -> Self {
         self.config.background = argb;

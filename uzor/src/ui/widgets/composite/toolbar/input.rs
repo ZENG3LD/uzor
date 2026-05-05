@@ -102,7 +102,7 @@ pub fn register_layout_manager_toolbar<P: DockPanel>(
     let mut state = layout.toolbars_map_mut().remove(&id).unwrap_or_default();
 
     let layer = layout.compute_layer_for(parent);
-    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Toolbar, rect, sense: Sense::CLICK });
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Toolbar, rect, sense: Sense::CLICK, label: None });
 
     // Toolbar item ids land as "{toolbar-widget-id}:tb-foo" in the coordinator;
     // register a prefix pattern so any item click surfaces as

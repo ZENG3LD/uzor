@@ -348,7 +348,7 @@ pub fn register_layout_manager_slider<P: DockPanel>(
 ) {
     let id: WidgetId = id.into();
     let layer = layout.compute_layer_for(parent);
-    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Slider, rect, sense: Sense::CLICK_AND_DRAG });
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Slider, rect, sense: Sense::CLICK_AND_DRAG, label: None });
     register_context_manager_slider(
         layout.ctx_mut(), render, id, rect, &layer, widget_state, view, settings,
     );

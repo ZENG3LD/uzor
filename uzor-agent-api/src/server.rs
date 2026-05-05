@@ -133,6 +133,7 @@ pub fn spawn_server(
                     .route("/window/close",          post(post_window_close))
                     .route("/lm/sync_mode",          post(post_set_sync_mode))
                     .route("/lm/style_preset",       post(post_apply_style_preset))
+                    .route("/lm/window/tick_rate",   post(post_set_tick_rate))
                     // Blackbox routing — slot-id keyed.
                     .route("/blackboxes",                       get(blackbox_slots))
                     .route("/blackbox/:slot/widgets",           get(blackbox_widgets))
@@ -350,6 +351,16 @@ struct PresetBody { name: String }
 
 async fn post_apply_style_preset(State(s): State<AppState>, Json(b): Json<PresetBody>) -> impl IntoResponse {
     forward(s, Command::ApplyStylePreset { name: b.name }).await
+}
+
+#[derive(Deserialize)]
+struct TickRateBody { window: String, mode: String, fps: Option<u32> }
+
+async fn post_set_tick_rate(
+    State(s): State<AppState>,
+    Json(b): Json<TickRateBody>,
+) -> impl IntoResponse {
+    forward(s, Command::SetTickRate { window: b.window, mode: b.mode, fps: b.fps }).await
 }
 
 // ── Blackbox endpoints ──────────────────────────────────────────────

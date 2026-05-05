@@ -63,7 +63,7 @@ pub fn register_layout_manager_context_menu<P: DockPanel>(
     // Context menu blocks lower layers — push the layer into the coordinator.
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
     // Context menu positions itself from state.x/state.y; use a zero rect for tree metadata.
-    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::ContextMenu, rect: Rect::new(state.x, state.y, 0.0, 0.0), sense: Sense::CLICK });
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::ContextMenu, rect: Rect::new(state.x, state.y, 0.0, 0.0), sense: Sense::CLICK, label: None });
 
     // Item ids are "{menu-id}:item:N" — surface as
     // DispatchEvent::ContextMenuItemClicked { menu, item_index }.

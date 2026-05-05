@@ -84,7 +84,7 @@ pub fn register_layout_manager_item<'a, P: DockPanel>(
 ) {
     let id: WidgetId = id.into();
     let layer = layout.compute_layer_for(parent);
-    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Item, rect, sense: Sense::NONE });
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Item, rect, sense: Sense::NONE, label: None });
     register_context_manager_item(
         layout.ctx_mut(), render, id, rect, &layer, widget_state, view, settings, kind,
     );

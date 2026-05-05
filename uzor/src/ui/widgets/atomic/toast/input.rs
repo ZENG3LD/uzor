@@ -72,7 +72,7 @@ pub fn register_layout_manager_toast<P: DockPanel>(
 ) {
     let id: WidgetId = id.into();
     let layer = layout.compute_layer_for(parent);
-    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Tooltip, rect, sense: Sense::HOVER });
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Tooltip, rect, sense: Sense::HOVER, label: None });
     register_context_manager_toast(
         layout.ctx_mut(), render, id, rect, &layer, entry, settings, now_ms,
     );

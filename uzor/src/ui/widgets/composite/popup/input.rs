@@ -124,7 +124,7 @@ pub fn register_layout_manager_popup<P: DockPanel>(
     // Popup blocks lower layers when open — push the layer so the coordinator
     // can apply the modal-blocking hit-test rule.
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
-    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Popup, rect, sense: Sense::CLICK });
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Popup, rect, sense: Sense::CLICK, label: None });
 
     // Popup overflow guard — chevrons only (popup auto-sizes; scrollbar /
     // compress are non-applicable). Chevron routing is unconditional so

@@ -68,7 +68,7 @@ pub fn register_layout_manager_dropdown_trigger<P: DockPanel>(
 ) {
     let id: WidgetId = id.into();
     let layer = layout.compute_layer_for(parent);
-    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::DropdownTrigger, rect, sense: Sense::CLICK });
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::DropdownTrigger, rect, sense: Sense::CLICK, label: None });
     register_context_manager_dropdown_trigger(
         layout.ctx_mut(), render, id, rect, &layer, widget_state, settings, kind,
     );

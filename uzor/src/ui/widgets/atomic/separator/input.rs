@@ -215,7 +215,7 @@ pub fn register_layout_manager_separator<P: DockPanel>(
     let id: WidgetId = id.into();
     let sense = match kind { SeparatorKind::Divider => Sense::NONE, SeparatorKind::ResizeHandle => Sense::DRAG };
     let layer = layout.compute_layer_for(parent);
-    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Separator, rect, sense });
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Separator, rect, sense, label: None });
     register_context_manager_separator(
         layout.ctx_mut(), render, id, rect, kind, &layer, view, settings,
     );

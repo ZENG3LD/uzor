@@ -35,7 +35,7 @@ pub fn register_layout_manager_panel<P: DockPanel>(
     let id: WidgetId = id.into();
     let rect = layout.rect_for(slot_id)?;
     let layer = layout.compute_layer_for(parent);
-    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Panel, rect, sense: Sense::CLICK });
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Panel, rect, sense: Sense::CLICK, label: None });
 
     // Body overflow dispatcher routing.  Each composite registers BOTH
     // chevron and scrollbar routes unconditionally — the active guard is

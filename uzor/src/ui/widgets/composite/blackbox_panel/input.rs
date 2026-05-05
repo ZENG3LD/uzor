@@ -38,7 +38,7 @@ pub fn register_layout_manager_blackbox_panel<P: DockPanel>(
     let rect = layout.rect_for(slot_id)?;
     let layer = layout.compute_layer_for(parent);
     let sense = view.sense;
-    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::BlackboxPanel, rect, sense });
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::BlackboxPanel, rect, sense, label: None });
 
     // Auto-forward pointer events into the blackbox view ONLY when this
     // blackbox is the top-most widget under the cursor. Higher layers

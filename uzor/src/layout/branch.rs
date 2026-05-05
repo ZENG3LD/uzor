@@ -53,6 +53,17 @@ pub struct WindowBranch<P: DockPanel> {
     /// Has the runtime fired the per-window `App::init` hook yet?
     pub initialised: bool,
 
+    /// Per-window tick counter — incremented every time the platform
+    /// runtime runs a paint pass for this window.  `0` after attach
+    /// means the window has never ticked (a strong "black-window"
+    /// smell).  Mirrored into `BranchSnapshot.tick_count` so agents
+    /// can sniff for stuck windows over the HTTP shim.
+    pub tick_count: u64,
+
+    /// Baseline repaint cadence — set by the platform layer from the
+    /// resolved `WindowSpec::tick_rate` / `AppConfig::default_tick_rate`.
+    pub tick_rate: crate::render::TickRate,
+
     // ── chrome / edges / dock subtree ────────────────────────────────────
     /// Per-window chrome strip configuration (visible/height/etc).
     pub chrome: ChromeSlot,
@@ -122,6 +133,8 @@ impl<P: DockPanel> WindowBranch<P> {
             provider,
             rect,
             initialised: false,
+            tick_count: 0,
+            tick_rate: crate::render::TickRate::Capped(60),
             chrome: ChromeSlot::default(),
             edges:  EdgePanels::new(),
             dock:   DockState::new(),

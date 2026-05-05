@@ -196,6 +196,11 @@ pub struct AppConfig {
     /// by external agents (LLMs, QA tooling, scripts) to read live
     /// LayoutManager state and inject input.
     pub agent_api_port:  Option<u16>,
+    /// Baseline repaint cadence for windows that don't override it
+    /// via [`crate::framework::multi_window::WindowSpec::tick_rate`].
+    /// `Capped(60)` by default — every window gets a heartbeat so
+    /// agent-driven state changes show up immediately.
+    pub default_tick_rate: crate::render::TickRate,
 }
 
 impl Default for AppConfig {
@@ -217,6 +222,7 @@ impl Default for AppConfig {
             start_visible:   false,
             icon:            None,
             agent_api_port:  None,
+            default_tick_rate: crate::render::TickRate::Capped(60),
         }
     }
 }

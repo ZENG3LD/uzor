@@ -108,7 +108,7 @@ pub fn register_layout_manager_text_input<P: DockPanel>(
     let id: WidgetId = id.into();
     let layer = layout.compute_layer_for(parent);
     let sense = Sense::CLICK.with_focus().with_text();
-    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Custom, rect, sense });
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Custom, rect, sense, label: None });
     let now_ms = layout.frame_time_ms() as u64;
     let result = register_context_manager_text_input(
         layout.ctx_mut(), render, id.clone(), rect, &layer, widget_state, view, settings,

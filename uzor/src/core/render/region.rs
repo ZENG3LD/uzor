@@ -58,6 +58,63 @@ impl RenderRegion {
     }
 }
 
+// =============================================================================
+// TickRate — per-window baseline repaint cadence
+// =============================================================================
+
+/// How often a window wakes up to repaint, *independent of input events*.
+///
+/// Without a baseline tick the runtime only repaints when winit fires
+/// an event (mouse move, key press, resize).  That breaks UI that
+/// changes without user input — fps counters, animations, agent-driven
+/// state flips that don't go through the OS input path.  A baseline
+/// tick puts every window on a heartbeat.
+///
+/// Conventions:
+/// - `Dirty`        — no baseline; only paint when something explicitly
+///                     marks a region dirty or winit fires an event.
+/// - `Capped(fps)`  — wake every `1/fps` second.
+/// - `Uncapped`     — paint as fast as the OS lets us (`ControlFlow::Poll`).
+///
+/// Spawned windows inherit the parent's tick rate unless `WindowSpec`
+/// explicitly overrides it.  A sane app default is `Capped(60)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TickRate {
+    Dirty,
+    Capped(u32),
+    Uncapped,
+}
+
+impl TickRate {
+    /// Convert to `target_fps` matching the [`RenderRegion`] scheme:
+    /// `0` for dirty, `UNCAPPED_FPS` for uncapped, otherwise the cap.
+    pub fn target_fps(self) -> u32 {
+        match self {
+            TickRate::Dirty       => 0,
+            TickRate::Uncapped    => UNCAPPED_FPS,
+            TickRate::Capped(fps) => fps,
+        }
+    }
+
+    /// Short label for logs / agent snapshots.  `"dirty"`, `"60"`,
+    /// `"uncapped"`.
+    pub fn label(self) -> String {
+        match self {
+            TickRate::Dirty       => "dirty".into(),
+            TickRate::Uncapped    => "uncapped".into(),
+            TickRate::Capped(fps) => fps.to_string(),
+        }
+    }
+}
+
+impl Default for TickRate {
+    /// `Capped(60)` — sane heartbeat that keeps animations / metrics
+    /// live without burning CPU.
+    fn default() -> Self {
+        TickRate::Capped(60)
+    }
+}
+
 /// Per-region scheduler state — owned by the runtime, not the app.
 ///
 /// The runtime keeps one of these per `RenderRegion::id` per window and

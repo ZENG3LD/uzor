@@ -168,7 +168,7 @@ pub fn register_layout_manager_tab<P: DockPanel>(
 ) -> CompositeId {
     let tab_id: WidgetId = tab_id.into();
     let layer = layout.compute_layer_for(parent);
-    layout.tree_mut().add_widget(parent, WidgetNode { id: tab_id.clone(), kind: WidgetKind::ChromeTab, rect, sense: Sense::CLICK | Sense::HOVER });
+    layout.tree_mut().add_widget(parent, WidgetNode { id: tab_id.clone(), kind: WidgetKind::ChromeTab, rect, sense: Sense::CLICK | Sense::HOVER, label: None });
     register_context_manager_tab(
         layout.ctx_mut(), render, tab_id, rect, close_btn_rect, &layer, view, settings,
     )

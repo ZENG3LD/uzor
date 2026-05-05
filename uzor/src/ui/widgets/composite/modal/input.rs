@@ -159,7 +159,7 @@ pub fn register_layout_manager_modal<P: DockPanel>(
     });
     // Push the modal layer so that the coordinator's hit-test blocks lower layers.
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
-    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Modal, rect, sense: Sense::CLICK });
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Modal, rect, sense: Sense::CLICK, label: None });
 
     // Register dispatcher patterns so the app gets semantic events instead of
     // raw "modal-widget:close" string matching.

@@ -65,6 +65,7 @@ pub fn register_layout_manager_text<P: DockPanel>(
         kind: WidgetKind::Custom,
         rect,
         sense: Sense::HOVER,
+        label: Some(view.text.to_owned()),
     });
     register_context_manager_text(layout.ctx_mut(), render, id, rect, &layer, state, view, settings);
 }

@@ -124,6 +124,9 @@ pub(crate) struct PerWindow<P: DockPanel> {
     pub last_frame:      std::time::Instant,
     pub initialised:     bool,
     pub close_requested: bool,
+    /// Baseline repaint cadence for this window (resolved from
+    /// `WindowSpec::tick_rate` or `AppConfig::default_tick_rate`).
+    pub tick_rate:       uzor::render::TickRate,
 
     /// Per-region paint schedule state keyed by `RenderRegion::id`.
     /// Populated each frame from `App::regions()`. Empty when the app
@@ -414,6 +417,20 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         for (cmd, reply) in batch {
             let result = self.apply_agent_command(cmd);
             let _ = reply.send(result);
+        }
+        // Pull tick_rate from LM branch into PerWindow so the
+        // scheduler in `about_to_wait` honours `SetTickRate`
+        // updates that landed this tick.
+        let updates: Vec<(winit::window::WindowId, uzor::render::TickRate)> = self.windows
+            .iter()
+            .filter_map(|(id, pw)| {
+                self.layout.window(&pw.key).map(|s| (*id, s.tick_rate))
+            })
+            .collect();
+        for (id, rate) in updates {
+            if let Some(pw) = self.windows.get_mut(&id) {
+                pw.tick_rate = rate;
+            }
         }
     }
 
@@ -750,6 +767,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         }
 
         let id = window.id();
+        let tick_rate = spec.tick_rate.unwrap_or(self.config.default_tick_rate);
         let pw = PerWindow::<P> {
             key:             spec.key.clone(),
             spec:            spec.clone(),
@@ -759,6 +777,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             last_frame:      std::time::Instant::now(),
             initialised:     false,
             close_requested: false,
+            tick_rate,
             region_states:   std::collections::HashMap::new(),
             region_scenes:   std::collections::HashMap::new(),
             dock_separator_drag: None,
@@ -770,6 +789,9 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         // object and routes everything (resize, redraw, drag, decorations,
         // platform-event queue) through the trait.
         self.layout.attach_window(spec.key.clone(), Box::new(provider));
+        if let Some(slot) = self.layout.window_mut(&spec.key) {
+            slot.tick_rate = tick_rate;
+        }
 
         // Kick off the first paint: winit only sends Resized/RedrawRequested
         // events to *future* state changes; without an explicit request the
@@ -1032,6 +1054,20 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 let key = pw.key.clone();
                 self.app.init(&key, &mut self.layout);
                 pw.initialised = true;
+                if let Some(slot) = self.layout.window_mut(&key) {
+                    slot.initialised = true;
+                }
+                self.layout.agent_log_push(
+                    "lm.window.first_tick",
+                    serde_json::json!({ "window": key.as_str() }),
+                );
+            }
+        }
+        // Bump LM-side tick counter so /state/tree reflects ticks.
+        if let Some(pw) = self.windows.get(&id) {
+            let key = pw.key.clone();
+            if let Some(slot) = self.layout.window_mut(&key) {
+                slot.tick_count = slot.tick_count.wrapping_add(1);
             }
         }
 
@@ -1054,6 +1090,11 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 .unwrap_or_default();
             self.layout.solve(rect);
             let viewport = self.layout.rect_for_dock_area().unwrap_or(rect);
+            // Clear last frame's widget nodes BEFORE the app re-registers
+            // them.  Without this the retained tree grows unbounded (one
+            // dup per tick × per widget) — snapshot ends up with stale
+            // labels at the front and current ones at the back.
+            self.layout.begin_frame_widgets();
             // begin_frame clears one-shot input flags and refreshes widget registrations
             // WITHOUT overwriting the pointer state that on_pointer_* already set.
             self.layout.begin_frame(now_ms, viewport);
@@ -1278,44 +1319,81 @@ where
         //      readers see the current window list and per-branch state.
         self.rebuild_agent_snapshot();
 
-        // 4. Per-region paint scheduler (mlc-pattern).
-        //    Ask the app what regions it wants painted at what cadence.
-        //    For each region whose schedule is due now, request a redraw
-        //    on its window; otherwise compute the soonest next-due moment
-        //    across all windows and ask winit to wake up exactly then.
-        //    Apps that don't override `App::regions()` return an empty
-        //    vec — control flow stays at `Wait` and the legacy
-        //    event-driven (mouse / explicit `request_redraw`) path
-        //    continues unchanged.
+        // 4. Paint scheduler.
+        //    a) Per-region cadence (mlc pattern) — drives intra-window
+        //       sub-region rebuilds when the app declares them.
+        //    b) Per-window baseline `TickRate` — guarantees every
+        //       window keeps painting at its declared heartbeat even
+        //       when no winit events fire.  Without this the agent API
+        //       can mutate state but the user never sees it because
+        //       `was_clicked` etc only fire while the window paints.
         let regions = self.app.regions();
-        if !regions.is_empty() {
-            let now = std::time::Instant::now();
-            let mut next_due: Option<std::time::Instant> = None;
-            // Build a map id → region for state lookup.
-            for pw in self.windows.values_mut() {
-                let mut any_due_now = false;
-                for region in &regions {
-                    let state = pw.region_states
-                        .entry(region.id)
-                        .or_insert_with(uzor::render::RegionScheduleState::default);
-                    if state.due(region, now) {
+        let now = std::time::Instant::now();
+        let mut next_due: Option<std::time::Instant> = None;
+
+        for pw in self.windows.values_mut() {
+            let mut any_due_now = false;
+
+            // (a) intra-window region cadence.
+            for region in &regions {
+                let state = pw.region_states
+                    .entry(region.id)
+                    .or_insert_with(uzor::render::RegionScheduleState::default);
+                if state.due(region, now) {
+                    any_due_now = true;
+                } else if let Some(nd) = state.next_due(region, now) {
+                    next_due = Some(match next_due {
+                        None => nd,
+                        Some(cur) => cur.min(nd),
+                    });
+                }
+            }
+
+            // (b) per-window baseline tick.
+            match pw.tick_rate {
+                uzor::render::TickRate::Dirty => {}
+                uzor::render::TickRate::Uncapped => {
+                    any_due_now = true;
+                }
+                uzor::render::TickRate::Capped(fps) if fps > 0 => {
+                    let target = std::time::Duration::from_secs_f64(1.0 / fps as f64);
+                    let elapsed = now.saturating_duration_since(pw.last_frame);
+                    if elapsed >= target {
                         any_due_now = true;
-                    } else if let Some(nd) = state.next_due(region, now) {
+                    } else {
+                        let nd = pw.last_frame + target;
                         next_due = Some(match next_due {
                             None => nd,
                             Some(cur) => cur.min(nd),
                         });
                     }
                 }
-                if any_due_now {
-                    pw.window.request_redraw();
-                }
+                uzor::render::TickRate::Capped(_) => {} // fps == 0 acts like Dirty
             }
-            match next_due {
-                Some(t) if t > now => event_loop.set_control_flow(ControlFlow::WaitUntil(t)),
-                _                   => event_loop.set_control_flow(ControlFlow::Poll),
+
+            if any_due_now {
+                pw.window.request_redraw();
             }
         }
+
+        // Decide control-flow: if anyone is uncapped or already due,
+        // poll continuously; otherwise sleep until the soonest next-due.
+        let any_uncapped = self.windows.values().any(|p|
+            matches!(p.tick_rate, uzor::render::TickRate::Uncapped)
+        );
+        if any_uncapped {
+            event_loop.set_control_flow(ControlFlow::Poll);
+        } else if let Some(t) = next_due {
+            if t > now {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(t));
+            } else {
+                event_loop.set_control_flow(ControlFlow::Poll);
+            }
+        } else if !regions.is_empty() {
+            event_loop.set_control_flow(ControlFlow::Poll);
+        }
+        // No change otherwise — ControlFlow::Wait remains for the
+        // pure event-driven (Dirty) case.
     }
 }
 
@@ -1383,6 +1461,7 @@ fn command_window_key(cmd: &uzor::layout::agent::Command) -> Option<String> {
         C::SpawnWindow { key, .. } | C::CloseWindow { key } => Some(key.clone()),
         C::BlackboxClickWidget { window, .. } => Some(window.clone()),
         C::LogPush { window, .. } => window.clone(),
+        C::SetTickRate { window, .. } => Some(window.clone()),
         C::SetSyncMode { .. } | C::ApplyStylePreset { .. } => None,
     }
 }

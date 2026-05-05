@@ -70,7 +70,7 @@ pub fn register_layout_manager_drag_handle<P: DockPanel>(
 ) {
     let id: WidgetId = id.into();
     let layer = layout.compute_layer_for(parent);
-    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::DragHandle, rect, sense: Sense::DRAG });
+    layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::DragHandle, rect, sense: Sense::DRAG, label: None });
     register_context_manager_drag_handle(
         layout.ctx_mut(), render, id, rect, &layer, view, settings, kind,
     );

@@ -24,6 +24,10 @@ pub struct BranchSnapshot {
     pub key: String,
     pub rect: RectSnap,
     pub initialised: bool,
+    pub tick_count: u64,
+    /// Resolved baseline `TickRate` as a short label
+    /// (`"dirty"`, `"60"`, `"uncapped"`).
+    pub tick_rate: String,
 
     pub chrome_visible: bool,
     pub edge_count: usize,
@@ -73,4 +77,8 @@ pub struct WidgetSnapshot {
     /// Layer name resolved through `LM::compute_layer_for`.  Empty for
     /// widgets whose layer cannot be determined from the tree alone.
     pub layer:  String,
+    /// Human-readable text the L3 builder attached (button text, label
+    /// content).  Lets agents address widgets by visible label
+    /// instead of having to know their stable id.
+    pub label:  Option<String>,
 }

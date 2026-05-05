@@ -102,7 +102,7 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
     });
     // Dropdown blocks lower layers — push the layer into the coordinator.
     layout.ctx_mut().input.push_layer(layer.clone(), z_order, true);
-    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Dropdown, rect, sense: Sense::CLICK });
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Dropdown, rect, sense: Sense::CLICK, label: None });
 
     // Register dispatch patterns: clicks on items + sub-items both surface
     // as DispatchEvent::DropdownItemClicked { dropdown, item_id }.

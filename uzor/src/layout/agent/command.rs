@@ -68,6 +68,16 @@ pub enum Command {
         #[serde(default)]
         window: Option<String>,
     },
+
+    /// Change the baseline tick rate of a window.  `mode` is
+    /// `"dirty"`, `"capped"`, or `"uncapped"`.  When `mode == "capped"`,
+    /// `fps` is required.
+    SetTickRate {
+        window: String,
+        mode: String,
+        #[serde(default)]
+        fps: Option<u32>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]

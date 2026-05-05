@@ -71,8 +71,7 @@ pub fn register_layout_manager_chevron<P: DockPanel>(
             id: id.clone(),
             kind: WidgetKind::ScrollChevron,
             rect,
-            sense: Sense::CLICK | Sense::HOVER,
-        });
+            sense: Sense::CLICK | Sense::HOVER, label: None });
     }
     register_context_manager_chevron(layout.ctx_mut(), render, id, rect, view, settings, &layer);
 }

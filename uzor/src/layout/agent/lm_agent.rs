@@ -45,6 +45,8 @@ impl<P: DockPanel> LmAgent<P> {
                     key: key.as_str().to_owned(),
                     rect: rect_to_snap(b.rect),
                     initialised: b.initialised,
+                    tick_count: b.tick_count,
+                    tick_rate: b.tick_rate.label(),
                     chrome_visible: b.chrome.visible,
                     edge_count: b.edges.iter().count(),
                     dock_leaves: b.dock.tree().leaves().len(),
@@ -112,6 +114,7 @@ impl<P: DockPanel> LmAgent<P> {
                         kind: format!("{:?}", w.kind),
                         rect: rect_to_snap(entry.rect),
                         layer: String::new(),
+                        label: w.label.clone(),
                     });
                 }
             }
@@ -165,6 +168,7 @@ impl<P: DockPanel> LmAgent<P> {
             }
             Command::BlackboxClickWidget { window, .. } => Some(window.clone()),
             Command::LogPush { window, .. } => window.clone(),
+            Command::SetTickRate { window, .. } => Some(window.clone()),
             Command::SetSyncMode { .. } | Command::ApplyStylePreset { .. } => None,
         };
         let ts = layout.frame_time_ms;
@@ -206,6 +210,35 @@ impl<P: DockPanel> LmAgent<P> {
             Command::LogPush { category, payload, window } => {
                 let ts = layout.frame_time_ms;
                 layout.agent_log.push(ts, window.clone(), category.clone(), payload.clone());
+                Some(CommandReply::ok())
+            }
+
+            Command::SetTickRate { window, mode, fps } => {
+                let key = WindowKey::new(window.clone());
+                let new_rate = match mode.as_str() {
+                    "dirty"    => crate::render::TickRate::Dirty,
+                    "uncapped" => crate::render::TickRate::Uncapped,
+                    "capped"   => match fps {
+                        Some(f) if *f > 0 => crate::render::TickRate::Capped(*f),
+                        _ => return Some(CommandReply::err(
+                            "capped requires `fps` > 0",
+                        )),
+                    },
+                    other => return Some(CommandReply::err(format!(
+                        "unknown tick mode {:?}", other,
+                    ))),
+                };
+                let Some(slot) = layout.window_mut(&key) else {
+                    return Some(CommandReply::err(format!("unknown window {:?}", window)));
+                };
+                slot.tick_rate = new_rate;
+                let ts = layout.frame_time_ms;
+                layout.agent_log.push(
+                    ts,
+                    Some(window.clone()),
+                    "lm.tick_rate",
+                    serde_json::json!({ "mode": mode, "fps": fps }),
+                );
                 Some(CommandReply::ok())
             }
 

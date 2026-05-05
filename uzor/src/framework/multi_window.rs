@@ -27,6 +27,11 @@ pub struct WindowSpec {
     pub border_color: Option<u32>,
     /// Override the OS drop-shadow. `None` = OS default.
     pub shadow:       Option<bool>,
+    /// Baseline repaint cadence — independent of input events.  See
+    /// [`crate::render::TickRate`].  `None` = inherit from
+    /// `AppConfig::default_tick_rate` (or the parent window when
+    /// spawned via `on_chrome_new_window`).
+    pub tick_rate:    Option<crate::render::TickRate>,
 }
 
 impl WindowSpec {
@@ -42,7 +47,16 @@ impl WindowSpec {
             corner_style: CornerStyle::Default,
             border_color: None,
             shadow:       None,
+            tick_rate:    None,
         }
+    }
+
+    /// Set the baseline repaint cadence for this window.  Pass
+    /// [`crate::render::TickRate::Dirty`] to opt out of the default
+    /// heartbeat.
+    pub fn tick_rate(mut self, rate: crate::render::TickRate) -> Self {
+        self.tick_rate = Some(rate);
+        self
     }
 
     pub fn size(mut self, w: u32, h: u32) -> Self { self.size = (w, h); self }

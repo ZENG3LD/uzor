@@ -39,7 +39,7 @@ pub fn register_layout_manager_chrome<P: DockPanel>(
     let mut state = std::mem::take(layout.chrome_widget_state_mut());
 
     let layer = layout.compute_layer_for(parent);
-    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Chrome, rect, sense: Sense::NONE });
+    let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Chrome, rect, sense: Sense::NONE, label: None });
 
     // Dispatcher patterns — translate child hits into semantic chrome events.
     {
