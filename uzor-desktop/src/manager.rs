@@ -1105,11 +1105,19 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             let regions = self.app.regions();
             let now_inst = std::time::Instant::now();
 
-            // Pick path: per-region rebuild + composite (VelloGpu only for now)
-            // OR legacy whole-window single-pass.
-            let backend_supports_regions =
-                matches!(pw.render_state.backend(), uzor::platform::types::RenderBackend::VelloGpu);
-            let use_regions = !regions.is_empty() && backend_supports_regions;
+            // Pick path:
+            // - VelloGpu: per-region scene + composite (mlc pattern).
+            // - CPU rasterisers (VelloCpu, TinySkia) and others:
+            //   render every region into the SAME context in
+            //   declaration order — pixmap accumulates, no scene
+            //   compositing.  Without this dock leaves and other
+            //   region-only widgets stay invisible on CPU backends.
+            let active_backend = pw.render_state.backend();
+            let supports_scene_compose = matches!(
+                active_backend, uzor::platform::types::RenderBackend::VelloGpu,
+            );
+            let use_regions_compose = !regions.is_empty() && supports_scene_compose;
+            let use_regions_inline  = !regions.is_empty() && !supports_scene_compose;
 
             {
                 let key = &pw.key;
@@ -1124,8 +1132,8 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 let hub = self.hub.as_mut().expect("hub initialised");
                 let mut hub_ctrl = HubControl { hub, fps_ema, last_frame_time_ms, frame_count };
 
-                if use_regions {
-                    // 1. Rebuild only the regions whose schedule is due.
+                if use_regions_compose {
+                    // GPU path: per-region scene + composite.
                     for region in &regions {
                         let state = region_states
                             .entry(region.id)
@@ -1147,13 +1155,34 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                         });
                         state.last_painted = Some(now_inst);
                     }
-                    // 2. Composite all cached region scenes into the main scene
-                    //    in declaration order — first-declared paints first
-                    //    (under), last-declared on top.
                     for region in &regions {
                         if let Some(rs) = region_scenes.get(region.id) {
                             render_state.append_region_scene(rs);
                         }
+                    }
+                } else if use_regions_inline {
+                    // CPU path: paint every region into the shared
+                    // pixmap in declaration order.  Each region
+                    // handler is expected to know its own rect (from
+                    // `WindowCtx.layout`), since CPU rasterisers
+                    // don't support per-region scene compositing.
+                    render_state.with_render_context(|render_ctx| {
+                        let mut ctx = WindowCtx::<P> {
+                            key,
+                            layout,
+                            render: render_ctx,
+                            rect,
+                            render_control: &mut hub_ctrl,
+                        };
+                        for region in &regions {
+                            app.draw_region(region.id, &mut ctx);
+                        }
+                    });
+                    for region in &regions {
+                        let state = region_states
+                            .entry(region.id)
+                            .or_insert_with(uzor::render::RegionScheduleState::default);
+                        state.last_painted = Some(now_inst);
                     }
                 } else {
                     render_state.with_render_context(|render_ctx| {
