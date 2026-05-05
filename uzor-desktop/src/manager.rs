@@ -892,7 +892,8 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 // wrote `last_pressed` via process_drag_press; check it
                 // for the `dock-sep-N` id pattern.
                 if let Some(pressed) = self.layout.last_pressed_widget() {
-                    if let Some(suffix) = pressed.as_str().strip_prefix("dock-sep-") {
+                    let pressed_str = pressed.as_str().to_string();
+                    if let Some(suffix) = pressed_str.strip_prefix("dock-sep-") {
                         if let Ok(idx) = suffix.parse::<usize>() {
                             pw.dock_separator_drag = Some(DockSeparatorDrag {
                                 sep_idx: idx,
@@ -910,7 +911,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                     // separator and we reuse the same per-frame
                     // `drag_separator(...)` math — sibling panels move
                     // together for free because the separator is shared.
-                    let pid = pressed.as_str();
+                    let pid = pressed_str.as_str();
                     let parsed = if pid.ends_with(":edge_top") {
                         Some((&pid[..pid.len() - ":edge_top".len()], uzor::layout::ResizeEdge::N))
                     } else if pid.ends_with(":edge_bottom") {

@@ -124,6 +124,15 @@ pub struct WindowBranch<P: DockPanel> {
     pub sidebars:      HashMap<WidgetId, SidebarState>,
     pub context_menus: HashMap<WidgetId, ContextMenuState>,
     pub chrome_widget_state: ChromeState,
+
+    /// Map from a slot-bearing widget's `WidgetId` (panel / blackbox /
+    /// future widgets that anchor to a layout slot) to the slot id
+    /// (`lm::panel(slot_id, widget_id)` first arg).  Lets resize / drag
+    /// dispatch resolve a widget hit back to the slot the layout
+    /// manager actually knows about, without the caller having to make
+    /// `widget_id == slot_id`.  Re-populated each frame the composite
+    /// registers; entries for stale ids stay valid until overwritten.
+    pub widget_to_slot: HashMap<WidgetId, String>,
 }
 
 impl<P: DockPanel> WindowBranch<P> {
@@ -159,6 +168,7 @@ impl<P: DockPanel> WindowBranch<P> {
             sidebars:      HashMap::new(),
             context_menus: HashMap::new(),
             chrome_widget_state: ChromeState::default(),
+            widget_to_slot: HashMap::new(),
         }
     }
 }

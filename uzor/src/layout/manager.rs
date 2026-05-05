@@ -1481,13 +1481,36 @@ impl<P: DockPanel> LayoutManager<P> {
     /// overlay) or when the edge sits against the window / a chrome strip
     /// rather than a sibling panel — in either case there is no separator
     /// to drag.
+    /// Record `widget_id → slot_id` for the current window.  Composites
+    /// that anchor to a layout slot (panel / blackbox / future widgets)
+    /// call this every frame so resize / drag dispatch can resolve a
+    /// `WidgetId` hit back to the slot the layout manager knows.
+    pub fn register_widget_slot(&mut self, widget_id: &WidgetId, slot_id: &str) {
+        self.cur_branch_mut().widget_to_slot.insert(widget_id.clone(), slot_id.to_string());
+    }
+
     pub fn resize_handle_to_separator(
         &self,
         host_id: &str,
         edge:    super::ResizeEdge,
     ) -> Option<usize> {
-        let dock = &self.cur_branch().dock;
-        let leaf = dock.leaf_for_panel_id(host_id)?;
+        let branch = self.cur_branch();
+        let dock   = &branch.dock;
+        // 1. Resolve via widget_id → slot_id mapping populated by the
+        //    panel composite when it registers each frame.  This is the
+        //    canonical path: callers like the resize-drag dispatcher
+        //    pass the WidgetId they got from the input coordinator.
+        let slot = branch
+            .widget_to_slot
+            .get(&WidgetId::new(host_id))
+            .cloned();
+        let leaf = if let Some(slot) = slot.as_deref() {
+            dock.leaf_for_panel_id(slot)
+        } else {
+            // 2. Fallback: treat host_id as a panel `type_id()` directly.
+            //    Useful for agent-API calls that already know the slot id.
+            dock.leaf_for_panel_id(host_id)
+        }?;
         dock.separator_for_edge(leaf, edge)
     }
 
