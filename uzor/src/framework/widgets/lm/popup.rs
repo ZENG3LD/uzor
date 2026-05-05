@@ -16,7 +16,7 @@ use crate::render::RenderContext;
 use crate::types::{OverflowMode, SizeMode};
 use crate::ui::widgets::composite::popup::input::register_layout_manager_popup;
 use crate::ui::widgets::composite::popup::settings::PopupSettings;
-use crate::ui::widgets::composite::popup::style::DefaultPopupStyle;
+use crate::ui::widgets::composite::popup::style::{DefaultPopupStyle, PopupStyle};
 use crate::ui::widgets::composite::popup::theme::{DefaultPopupTheme, PopupTheme};
 use crate::ui::widgets::composite::popup::types::{
     BackdropKind, PopupRenderKind, PopupView, PopupViewKind,
@@ -95,6 +95,13 @@ pub struct PopupBuilder<'a> {
     size_mode:        SizeMode,
     overflow:         OverflowMode,
     settings:         Option<PopupSettings>,
+    /// Override only the colour-token bundle.  Wins over the
+    /// `StyleManager`-derived default but loses to a full
+    /// `.settings(...)` call.
+    theme_override:   Option<Box<dyn PopupTheme>>,
+    /// Override only the geometry bundle.  Same precedence rules as
+    /// `theme_override`.
+    style_override:   Option<Box<dyn PopupStyle>>,
     kind:             PopupRenderKind,
 }
 
@@ -118,6 +125,8 @@ impl<'a> PopupBuilder<'a> {
             size_mode:        SizeMode::default(),
             overflow:         OverflowMode::Clip,
             settings:         None,
+            theme_override:   None,
+            style_override:   None,
             kind:             PopupRenderKind::Plain,
         }
     }
@@ -161,12 +170,40 @@ impl<'a> PopupBuilder<'a> {
     /// Override render kind (default `PopupRenderKind::Plain`).
     pub fn kind(mut self, k: PopupRenderKind) -> Self { self.kind = k; self }
 
+    /// Override only the popup theme (colour tokens).
+    pub fn theme(mut self, t: Box<dyn PopupTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the popup style (geometry).
+    pub fn style(mut self, s: Box<dyn PopupStyle>) -> Self {
+        self.style_override = Some(s);
+        self
+    }
+
     /// Terminal call — register and draw the popup frame.
     pub fn build<P: DockPanel>(
         self,
         layout: &mut LayoutManager<P>,
         render: &mut dyn RenderContext,
     ) -> Option<PopupNode> {
+        self.build_with_body(layout, render, |_, _, _: Rect| {})
+    }
+
+    /// Same as [`build`] but lets the caller paint the popup body
+    /// inside the composite's body rect.  Renderer is already clipped
+    /// to the body rect when `body` runs.
+    pub fn build_with_body<P, F>(
+        self,
+        layout: &mut LayoutManager<P>,
+        render: &mut dyn RenderContext,
+        body: F,
+    ) -> Option<PopupNode>
+    where
+        P: DockPanel,
+        F: FnOnce(&mut LayoutManager<P>, &mut dyn RenderContext, Rect),
+    {
         let slot_id = self.slot_id
             .map(str::to_owned)
             .unwrap_or_else(|| self.handle.id_str().to_string());
@@ -205,19 +242,38 @@ impl<'a> PopupBuilder<'a> {
             overflow:  self.overflow,
         };
 
-        let settings = self.settings.unwrap_or_else(|| popup_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| popup_settings_from_styles(layout.styles()));
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
 
-        register_layout_manager_popup(
+        let kind = self.kind;
+        let parent = self.parent;
+        let handle = self.handle;
+
+        let node = register_layout_manager_popup(
             layout,
             render,
-            self.parent,
+            parent,
             &slot_id,
-            self.handle,
+            handle,
             overlay_rect,
             resolved_anchor,
             &mut view,
             &settings,
-            self.kind,
-        )
+            kind,
+        );
+
+        let frame = layout
+            .rect_for_overlay(&slot_id)
+            .unwrap_or(overlay_rect);
+        if frame.width > 0.0 && frame.height > 0.0 {
+            let body_rect = crate::ui::widgets::composite::popup::render::body_rect(frame, &settings);
+            render.save();
+            render.clip_rect(body_rect.x, body_rect.y, body_rect.width, body_rect.height);
+            body(layout, render, body_rect);
+            render.restore();
+        }
+
+        node
     }
 }

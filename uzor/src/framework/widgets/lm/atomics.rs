@@ -186,7 +186,7 @@ fn button_settings_from_styles(s: &StyleManager) -> ButtonSettings {
 // =============================================================================
 
 use crate::ui::widgets::atomic::button::input::register_layout_manager_button;
-use crate::ui::widgets::atomic::button::render::ButtonView;
+use crate::ui::widgets::atomic::button::render::{ButtonView, HoverChevronSpec};
 use crate::types::IconId;
 
 /// Chainable builder for an atomic button.
@@ -197,17 +197,23 @@ use crate::types::IconId;
 /// - `.bind_count(&mut u32)` — increments a counter per click (for "increment"
 ///   style demos).
 pub struct ButtonBuilder<'a> {
-    id:            WidgetId,
-    rect:          Rect,
-    parent:        LayoutNodeId,
-    text:          Option<&'a str>,
-    icon:          Option<&'a IconId>,
-    active:        bool,
-    disabled:      bool,
-    widget_state:  Option<WidgetState>,
-    settings:      Option<ButtonSettings>,
-    on_click:      Option<Box<dyn FnOnce() + 'a>>,
-    bind_count:    Option<&'a mut u32>,
+    id:             WidgetId,
+    rect:           Rect,
+    parent:         LayoutNodeId,
+    text:           Option<&'a str>,
+    icon:           Option<&'a IconId>,
+    active:         bool,
+    disabled:       bool,
+    active_border:  Option<bool>,
+    hover_chevron:  Option<HoverChevronSpec>,
+    widget_state:   Option<WidgetState>,
+    settings:       Option<ButtonSettings>,
+    /// Override only the colour-token bundle.
+    theme_override: Option<Box<dyn ButtonTheme>>,
+    /// Override only the geometry bundle.
+    style_override: Option<Box<dyn ButtonStyle>>,
+    on_click:       Option<Box<dyn FnOnce() + 'a>>,
+    bind_count:     Option<&'a mut u32>,
 }
 
 /// Entry point: build a button at the given id + rect.
@@ -215,15 +221,19 @@ pub fn button<'a>(id: impl Into<WidgetId>, rect: Rect) -> ButtonBuilder<'a> {
     ButtonBuilder {
         id: id.into(),
         rect,
-        parent:       LayoutNodeId::ROOT,
-        text:         None,
-        icon:         None,
-        active:       false,
-        disabled:     false,
-        widget_state: None,
-        settings:     None,
-        on_click:     None,
-        bind_count:   None,
+        parent:         LayoutNodeId::ROOT,
+        text:           None,
+        icon:           None,
+        active:         false,
+        disabled:       false,
+        active_border:  None,
+        hover_chevron:  None,
+        widget_state:   None,
+        settings:       None,
+        theme_override: None,
+        style_override: None,
+        on_click:       None,
+        bind_count:     None,
     }
 }
 
@@ -233,8 +243,33 @@ impl<'a> ButtonBuilder<'a> {
     pub fn icon(mut self, i: &'a IconId) -> Self { self.icon = Some(i); self }
     pub fn active(mut self, on: bool) -> Self { self.active = on; self }
     pub fn disabled(mut self, on: bool) -> Self { self.disabled = on; self }
+
+    /// Per-instance override for the active-border stroke.
+    /// `Some(true)` forces the border on, `Some(false)` suppresses it,
+    /// `None` defers to the style-level default.
+    pub fn active_border(mut self, b: Option<bool>) -> Self { self.active_border = b; self }
+
+    /// Hover-revealed chevron — paints in the trailing corner only while the
+    /// button is hovered.  Used as a "this opens a dropdown" hint.
+    pub fn hover_chevron(mut self, c: HoverChevronSpec) -> Self {
+        self.hover_chevron = Some(c);
+        self
+    }
+
     pub fn state(mut self, s: WidgetState) -> Self { self.widget_state = Some(s); self }
     pub fn settings(mut self, s: ButtonSettings) -> Self { self.settings = Some(s); self }
+
+    /// Override only the button theme (colour tokens).
+    pub fn theme(mut self, t: Box<dyn ButtonTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the button style (geometry — radius, padding, font size …).
+    pub fn style(mut self, s: Box<dyn ButtonStyle>) -> Self {
+        self.style_override = Some(s);
+        self
+    }
 
     /// Reactive on-click closure.  Invoked at `.build()` if the widget was
     /// clicked this frame.  Replaces the need for an `App::on_*` callback.
@@ -267,10 +302,12 @@ impl<'a> ButtonBuilder<'a> {
             text: self.text,
             active: self.active,
             disabled: self.disabled,
-            active_border: None,
-            hover_chevron: None,
+            active_border: self.active_border,
+            hover_chevron: self.hover_chevron,
         };
-        let settings = self.settings.unwrap_or_else(|| button_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| button_settings_from_styles(layout.styles()));
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
         let ws = self.widget_state.unwrap_or_else(|| {
             // Pull live state from coordinator if available.
             layout.ctx().input.widget_state(&self.id)
@@ -287,7 +324,7 @@ impl<'a> ButtonBuilder<'a> {
 
 use crate::ui::widgets::atomic::text::input::register_layout_manager_text;
 use crate::ui::widgets::atomic::text::settings::TextSettings;
-use crate::ui::widgets::atomic::text::style::DefaultTextStyle;
+use crate::ui::widgets::atomic::text::style::{DefaultTextStyle, TextStyle};
 use crate::ui::widgets::atomic::text::theme::{DefaultTextTheme, TextTheme};
 use crate::ui::widgets::atomic::text::types::{TextOverflow, TextView};
 use crate::render::{TextAlign, TextBaseline};
@@ -330,8 +367,14 @@ pub struct TextBuilder<'a> {
     color:    Option<&'a str>,
     align:    TextAlign,
     baseline: TextBaseline,
+    font:     Option<&'a str>,
     overflow: TextOverflow,
+    hovered:  bool,
     settings: Option<TextSettings>,
+    /// Override only the colour-token bundle.
+    theme_override: Option<Box<dyn TextTheme>>,
+    /// Override only the geometry bundle.
+    style_override: Option<Box<dyn TextStyle>>,
 }
 
 /// Entry point: build a text label at the given id + rect.
@@ -344,8 +387,12 @@ pub fn text<'a>(id: impl Into<WidgetId>, rect: Rect, text: &'a str) -> TextBuild
         color:    None,
         align:    TextAlign::Left,
         baseline: TextBaseline::Middle,
+        font:     None,
         overflow: TextOverflow::Clip,
+        hovered:  false,
         settings: None,
+        theme_override: None,
+        style_override: None,
     }
 }
 
@@ -354,8 +401,26 @@ impl<'a> TextBuilder<'a> {
     pub fn color(mut self, c: &'a str) -> Self { self.color = Some(c); self }
     pub fn align(mut self, a: TextAlign) -> Self { self.align = a; self }
     pub fn baseline(mut self, b: TextBaseline) -> Self { self.baseline = b; self }
+
+    /// Optional font CSS-shorthand override (e.g. `"13px Roboto"`).
+    /// `None` defers to `style.font()`.
+    pub fn font(mut self, f: &'a str) -> Self { self.font = Some(f); self }
+
     pub fn overflow(mut self, o: TextOverflow) -> Self { self.overflow = o; self }
+    pub fn hovered(mut self, on: bool) -> Self { self.hovered = on; self }
     pub fn settings(mut self, s: TextSettings) -> Self { self.settings = Some(s); self }
+
+    /// Override only the text theme (colour tokens).
+    pub fn theme(mut self, t: Box<dyn TextTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the text style (geometry — font shorthand).
+    pub fn style(mut self, s: Box<dyn TextStyle>) -> Self {
+        self.style_override = Some(s);
+        self
+    }
 
     pub fn build<P: DockPanel>(
         self,
@@ -367,11 +432,13 @@ impl<'a> TextBuilder<'a> {
             color:    self.color,
             align:    self.align,
             baseline: self.baseline,
-            font:     None,
+            font:     self.font,
             overflow: self.overflow,
-            hovered:  false,
+            hovered:  self.hovered,
         };
-        let settings = self.settings.unwrap_or_else(|| text_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| text_settings_from_styles(layout.styles()));
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
         register_layout_manager_text(
             layout, render, self.parent, self.id, self.rect,
             WidgetState::Normal, &view, &settings,
@@ -385,6 +452,8 @@ impl<'a> TextBuilder<'a> {
 
 use crate::ui::widgets::atomic::checkbox::input::register_layout_manager_checkbox;
 use crate::ui::widgets::atomic::checkbox::settings::CheckboxSettings;
+use crate::ui::widgets::atomic::checkbox::style::CheckboxStyle;
+use crate::ui::widgets::atomic::checkbox::theme::CheckboxTheme;
 use crate::ui::widgets::atomic::checkbox::types::{CheckboxRenderKind, CheckboxView};
 
 /// Chainable builder for a checkbox.
@@ -402,6 +471,10 @@ pub struct CheckboxBuilder<'a> {
     bind:     Option<&'a mut bool>,
     label:    Option<&'a str>,
     settings: Option<CheckboxSettings>,
+    /// Override only the colour-token bundle.
+    theme_override: Option<Box<dyn CheckboxTheme>>,
+    /// Override only the geometry bundle.
+    style_override: Option<Box<dyn CheckboxStyle>>,
     kind:     Option<CheckboxRenderKind<'a>>,
     font:     &'a str,
 }
@@ -415,6 +488,8 @@ pub fn checkbox<'a>(id: impl Into<WidgetId>, rect: Rect) -> CheckboxBuilder<'a> 
         bind:     None,
         label:    None,
         settings: None,
+        theme_override: None,
+        style_override: None,
         kind:     None,
         font:     "13px sans-serif",
     }
@@ -433,6 +508,18 @@ impl<'a> CheckboxBuilder<'a> {
     pub fn settings(mut self, s: CheckboxSettings) -> Self { self.settings = Some(s); self }
     pub fn kind(mut self, k: CheckboxRenderKind<'a>) -> Self { self.kind = Some(k); self }
     pub fn font(mut self, f: &'a str) -> Self { self.font = f; self }
+
+    /// Override only the checkbox theme (colour tokens).
+    pub fn theme(mut self, t: Box<dyn CheckboxTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the checkbox style (geometry — size, radius, label gap …).
+    pub fn style(mut self, s: Box<dyn CheckboxStyle>) -> Self {
+        self.style_override = Some(s);
+        self
+    }
 
     pub fn build<P: DockPanel>(
         self,
@@ -453,7 +540,9 @@ impl<'a> CheckboxBuilder<'a> {
             checked,
             label:   self.label,
         };
-        let settings = self.settings.unwrap_or_default();
+        let mut settings = self.settings.unwrap_or_default();
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
         let kind     = self.kind.unwrap_or(CheckboxRenderKind::Standard);
         let ws = layout.ctx().input.widget_state(&self.id);
         register_layout_manager_checkbox(
@@ -468,6 +557,8 @@ impl<'a> CheckboxBuilder<'a> {
 
 use crate::ui::widgets::atomic::toggle::input::register_layout_manager_toggle;
 use crate::ui::widgets::atomic::toggle::settings::ToggleSettings;
+use crate::ui::widgets::atomic::toggle::style::{ToggleIconStyle, ToggleSwitchStyle};
+use crate::ui::widgets::atomic::toggle::theme::ToggleTheme;
 use crate::ui::widgets::atomic::toggle::types::{ToggleRenderKind, ToggleView};
 
 pub struct ToggleBuilder<'a> {
@@ -479,6 +570,12 @@ pub struct ToggleBuilder<'a> {
     label:    Option<&'a str>,
     disabled: bool,
     settings: Option<ToggleSettings>,
+    /// Override only the colour-token bundle.
+    theme_override:        Option<Box<dyn ToggleTheme>>,
+    /// Override only the switch-track/thumb geometry.
+    switch_style_override: Option<Box<dyn ToggleSwitchStyle>>,
+    /// Override only the icon-swap geometry.
+    icon_style_override:   Option<Box<dyn ToggleIconStyle>>,
     kind:     Option<ToggleRenderKind<'a>>,
 }
 
@@ -492,6 +589,9 @@ pub fn toggle<'a>(id: impl Into<WidgetId>, rect: Rect) -> ToggleBuilder<'a> {
         label:    None,
         disabled: false,
         settings: None,
+        theme_override:        None,
+        switch_style_override: None,
+        icon_style_override:   None,
         kind:     None,
     }
 }
@@ -507,6 +607,24 @@ impl<'a> ToggleBuilder<'a> {
     pub fn disabled(mut self, on: bool) -> Self { self.disabled = on; self }
     pub fn settings(mut self, s: ToggleSettings) -> Self { self.settings = Some(s); self }
     pub fn kind(mut self, k: ToggleRenderKind<'a>) -> Self { self.kind = Some(k); self }
+
+    /// Override only the toggle theme (colour tokens).
+    pub fn theme(mut self, t: Box<dyn ToggleTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the switch-track / thumb geometry (`Switch` / `SwitchWide`).
+    pub fn switch_style(mut self, s: Box<dyn ToggleSwitchStyle>) -> Self {
+        self.switch_style_override = Some(s);
+        self
+    }
+
+    /// Override only the icon-swap geometry (`IconSwap`).
+    pub fn icon_style(mut self, s: Box<dyn ToggleIconStyle>) -> Self {
+        self.icon_style_override = Some(s);
+        self
+    }
 
     pub fn build<P: DockPanel>(
         self,
@@ -527,7 +645,10 @@ impl<'a> ToggleBuilder<'a> {
             label:    self.label,
             disabled: self.disabled,
         };
-        let settings = self.settings.unwrap_or_default();
+        let mut settings = self.settings.unwrap_or_default();
+        if let Some(t) = self.theme_override         { settings.theme = t; }
+        if let Some(s) = self.switch_style_override  { settings.switch_style = s; }
+        if let Some(s) = self.icon_style_override    { settings.icon_style = s; }
         let kind     = self.kind.unwrap_or(ToggleRenderKind::Switch);
         let ws = layout.ctx().input.widget_state(&self.id);
         register_layout_manager_toggle(
@@ -543,6 +664,8 @@ impl<'a> ToggleBuilder<'a> {
 use crate::ui::widgets::atomic::separator::input::register_layout_manager_separator;
 use crate::ui::widgets::atomic::separator::settings::SeparatorSettings;
 use crate::ui::widgets::atomic::separator::input::SeparatorKind;
+use crate::ui::widgets::atomic::separator::style::SeparatorStyle;
+use crate::ui::widgets::atomic::separator::theme::SeparatorTheme;
 use crate::ui::widgets::atomic::separator::types::{SeparatorOrientation, SeparatorType};
 use crate::ui::widgets::atomic::separator::render::SeparatorView;
 
@@ -555,6 +678,10 @@ pub struct SeparatorBuilder {
     hovered:     bool,
     dragging:    bool,
     settings:    Option<SeparatorSettings>,
+    /// Override only the colour-token bundle.
+    theme_override: Option<Box<dyn SeparatorTheme>>,
+    /// Override only the geometry bundle.
+    style_override: Option<Box<dyn SeparatorStyle>>,
 }
 
 pub fn separator(id: impl Into<WidgetId>, rect: Rect) -> SeparatorBuilder {
@@ -567,6 +694,8 @@ pub fn separator(id: impl Into<WidgetId>, rect: Rect) -> SeparatorBuilder {
         hovered:  false,
         dragging: false,
         settings: None,
+        theme_override: None,
+        style_override: None,
     }
 }
 
@@ -578,6 +707,18 @@ impl SeparatorBuilder {
     pub fn dragging(mut self, on: bool) -> Self { self.dragging = on; self }
     pub fn settings(mut self, s: SeparatorSettings) -> Self { self.settings = Some(s); self }
 
+    /// Override only the separator theme (colour tokens).
+    pub fn theme(mut self, t: Box<dyn SeparatorTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the separator style (geometry).
+    pub fn style(mut self, s: Box<dyn SeparatorStyle>) -> Self {
+        self.style_override = Some(s);
+        self
+    }
+
     pub fn build<P: DockPanel>(
         self,
         layout: &mut LayoutManager<P>,
@@ -588,7 +729,9 @@ impl SeparatorBuilder {
             hovered:  self.hovered,
             dragging: self.dragging,
         };
-        let settings = self.settings.unwrap_or_default();
+        let mut settings = self.settings.unwrap_or_default();
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
         register_layout_manager_separator(
             layout, render, self.parent, self.id, self.rect, self.kind, &view, &settings,
         );

@@ -12,13 +12,14 @@
 //!     .build(&mut layout, &mut render);
 //! ```
 
+use crate::core::types::Rect;
 use crate::layout::docking::DockPanel;
 use crate::layout::{LayoutManager, LayoutNodeId, SidebarHandle, SidebarNode, StyleManager};
 use crate::render::RenderContext;
 use crate::types::OverflowMode;
 use crate::ui::widgets::composite::sidebar::input::register_layout_manager_sidebar;
 use crate::ui::widgets::composite::sidebar::settings::SidebarSettings;
-use crate::ui::widgets::composite::sidebar::style::DefaultSidebarStyle;
+use crate::ui::widgets::composite::sidebar::style::{DefaultSidebarStyle, SidebarStyle};
 use crate::ui::widgets::composite::sidebar::theme::{DefaultSidebarTheme, SidebarTheme};
 use crate::ui::widgets::composite::sidebar::types::{
     HeaderAction, SidebarHeader, SidebarHeaderMode, SidebarRenderKind, SidebarTab, SidebarView,
@@ -92,6 +93,13 @@ pub struct SidebarBuilder<'a> {
     content_height: f64,
     overflow:       OverflowMode,
     settings:       Option<SidebarSettings>,
+    /// Override only the colour-token bundle.  Wins over the
+    /// `StyleManager`-derived default but loses to a full
+    /// `.settings(...)` call.
+    theme_override: Option<Box<dyn SidebarTheme>>,
+    /// Override only the geometry bundle.  Same precedence rules as
+    /// `theme_override`.
+    style_override: Option<Box<dyn SidebarStyle>>,
     kind:           SidebarRenderKind,
 }
 
@@ -116,6 +124,8 @@ impl<'a> SidebarBuilder<'a> {
             content_height: 0.0,
             overflow:       OverflowMode::Clip,
             settings:       None,
+            theme_override: None,
+            style_override: None,
             kind:           SidebarRenderKind::Left,
         }
     }
@@ -142,11 +152,54 @@ impl<'a> SidebarBuilder<'a> {
     pub fn settings(mut self, s: SidebarSettings) -> Self { self.settings = Some(s); self }
     pub fn kind(mut self, k: SidebarRenderKind) -> Self { self.kind = k; self }
 
+    /// Override only the sidebar theme (colour tokens).  Useful for
+    /// per-sidebar accents without forking the whole `SidebarSettings`.
+    pub fn theme(mut self, t: Box<dyn SidebarTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the sidebar style (geometry — header height, default
+    /// width, scrollbar width, padding …).
+    pub fn style(mut self, s: Box<dyn SidebarStyle>) -> Self {
+        self.style_override = Some(s);
+        self
+    }
+
     pub fn build<P: DockPanel>(
         self,
         layout: &mut LayoutManager<P>,
         render: &mut dyn RenderContext,
     ) -> Option<SidebarNode> {
+        self.build_with_body(layout, render, |_, _, _: Rect| {})
+    }
+
+    /// Same as [`build`] but lets the caller paint the sidebar body
+    /// inside the composite's body rect.
+    ///
+    /// `body` runs *after* the sidebar chrome (background, header,
+    /// tab strip, scrollbar) is drawn, with the renderer already
+    /// clipped to the body rect and the overflow transform applied:
+    ///
+    /// - [`OverflowMode::Scrollbar`] — body is translated by
+    ///   `-scroll.offset` for the active tab; caller draws as if
+    ///   scrolled to top.
+    /// - [`OverflowMode::Compress`] — body is uniformly scaled so
+    ///   `content_height` fits the body rect height.
+    /// - [`OverflowMode::Clip`] / `Chevrons` — only the clip is applied.
+    ///
+    /// `body` receives `(&mut LayoutManager<P>, &mut dyn RenderContext, body_rect)`
+    /// so nested `lm::*` widgets work normally.
+    pub fn build_with_body<P, F>(
+        self,
+        layout: &mut LayoutManager<P>,
+        render: &mut dyn RenderContext,
+        body: F,
+    ) -> Option<SidebarNode>
+    where
+        P: DockPanel,
+        F: FnOnce(&mut LayoutManager<P>, &mut dyn RenderContext, Rect),
+    {
         let mut view = SidebarView {
             header: SidebarHeader {
                 icon:    self.header_icon,
@@ -161,9 +214,24 @@ impl<'a> SidebarBuilder<'a> {
             overflow:       self.overflow,
         };
 
-        let settings = self.settings.unwrap_or_else(|| sidebar_settings_from_styles(layout.styles()));
+        // Resolve settings: explicit `.settings(...)` wins outright,
+        // otherwise build from StyleManager and then patch in any
+        // `.theme(...)` / `.style(...)` overrides.
+        let mut settings = self.settings.unwrap_or_else(|| sidebar_settings_from_styles(layout.styles()));
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
 
-        register_layout_manager_sidebar(
+        // Snapshot scroll offset for the active tab before `state` is
+        // moved into the composite registration call.
+        let panel_key = self.active_tab.unwrap_or("default").to_string();
+        let scroll_off = layout
+            .sidebars_map_mut()
+            .get(&self.handle.id)
+            .and_then(|s| s.scroll_per_panel.get(panel_key.as_str()))
+            .map(|s| s.offset)
+            .unwrap_or(0.0);
+
+        let node = register_layout_manager_sidebar(
             layout,
             render,
             self.parent,
@@ -172,6 +240,45 @@ impl<'a> SidebarBuilder<'a> {
             &mut view,
             &settings,
             &self.kind,
-        )
+        );
+
+        // Resolve the sidebar's frame rect from the edge slot map and
+        // paint the body.
+        let frame = layout
+            .rect_for_edge_slot(self.slot_id)
+            .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+        if frame.width > 0.0 && frame.height > 0.0 {
+            // Reuse composite's body_viewport — header/tab/scrollbar excluded.
+            // We need a SidebarState reference for the call; fetch read-only.
+            let body_rect = if let Some(state) = layout.sidebars_map_mut().get(&self.handle.id) {
+                let vp = crate::ui::widgets::composite::sidebar::render::body_viewport(
+                    frame, state, &view, &settings, &self.kind,
+                );
+                vp.clip_rect
+            } else {
+                frame
+            };
+
+            render.save();
+            render.clip_rect(body_rect.x, body_rect.y, body_rect.width, body_rect.height);
+            match self.overflow {
+                OverflowMode::Scrollbar => {
+                    render.translate(0.0, -scroll_off);
+                }
+                OverflowMode::Compress => {
+                    if self.content_height > body_rect.height && self.content_height > 0.0 {
+                        let s = body_rect.height / self.content_height;
+                        render.translate(body_rect.x, body_rect.y);
+                        render.scale(s, s);
+                        render.translate(-body_rect.x, -body_rect.y);
+                    }
+                }
+                _ => {}
+            }
+            body(layout, render, body_rect);
+            render.restore();
+        }
+
+        node
     }
 }

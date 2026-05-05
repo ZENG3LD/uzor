@@ -19,7 +19,7 @@ use crate::layout::{ChromeNode, LayoutManager, LayoutNodeId, StyleManager};
 use crate::render::RenderContext;
 use crate::ui::widgets::composite::chrome::input::register_layout_manager_chrome;
 use crate::ui::widgets::composite::chrome::settings::ChromeSettings;
-use crate::ui::widgets::composite::chrome::style::DefaultChromeStyle;
+use crate::ui::widgets::composite::chrome::style::{ChromeStyle, DefaultChromeStyle};
 use crate::ui::widgets::composite::chrome::theme::{ChromeTheme, DefaultChromeTheme};
 use crate::ui::widgets::composite::chrome::types::{
     ChromeRenderKind, ChromeTabConfig, ChromeView,
@@ -92,6 +92,10 @@ pub struct ChromeBuilder<'a> {
     cursor_y:             f64,
     time_ms:              f64,
     settings:             Option<ChromeSettings>,
+    /// Override only the colour-token bundle.
+    theme_override:       Option<Box<dyn ChromeTheme>>,
+    /// Override only the geometry bundle.
+    style_override:       Option<Box<dyn ChromeStyle>>,
     kind:                 ChromeRenderKind,
 }
 
@@ -116,6 +120,8 @@ impl<'a> ChromeBuilder<'a> {
             cursor_y:              0.0,
             time_ms:               0.0,
             settings:              None,
+            theme_override:        None,
+            style_override:        None,
             kind:                  ChromeRenderKind::Default,
         }
     }
@@ -140,6 +146,19 @@ impl<'a> ChromeBuilder<'a> {
 
     pub fn settings(mut self, s: ChromeSettings) -> Self { self.settings = Some(s); self }
     pub fn kind(mut self, k: ChromeRenderKind) -> Self { self.kind = k; self }
+
+    /// Override only the chrome theme (colour tokens).
+    pub fn theme(mut self, t: Box<dyn ChromeTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the chrome style (geometry — strip height, button size,
+    /// drag-zone offset …).
+    pub fn style(mut self, s: Box<dyn ChromeStyle>) -> Self {
+        self.style_override = Some(s);
+        self
+    }
 
     pub fn build<P: DockPanel>(
         self,
@@ -172,7 +191,9 @@ impl<'a> ChromeBuilder<'a> {
             time_ms,
         };
 
-        let settings = self.settings.unwrap_or_else(|| chrome_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| chrome_settings_from_styles(layout.styles()));
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
 
         register_layout_manager_chrome(
             layout,

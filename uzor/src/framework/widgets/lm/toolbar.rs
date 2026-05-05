@@ -20,7 +20,7 @@ use crate::render::RenderContext;
 use crate::types::OverflowMode;
 use crate::ui::widgets::composite::toolbar::input::register_layout_manager_toolbar;
 use crate::ui::widgets::composite::toolbar::settings::ToolbarSettings;
-use crate::ui::widgets::composite::toolbar::style::DefaultToolbarStyle;
+use crate::ui::widgets::composite::toolbar::style::{DefaultToolbarStyle, ToolbarStyle};
 use crate::ui::widgets::composite::toolbar::theme::{DefaultToolbarTheme, ToolbarTheme};
 use crate::ui::widgets::composite::toolbar::types::{
     ChromeStripView, ToolbarItem, ToolbarRenderKind, ToolbarSection, ToolbarView,
@@ -104,6 +104,10 @@ pub struct ToolbarBuilder<'a> {
     overflow:    OverflowMode,
     resize_edge: Option<ResizeEdge>,
     settings:    Option<ToolbarSettings>,
+    /// Override only the colour-token bundle.
+    theme_override: Option<Box<dyn ToolbarTheme>>,
+    /// Override only the geometry bundle.
+    style_override: Option<Box<dyn ToolbarStyle>>,
     kind:        ToolbarRenderKind,
 }
 
@@ -125,6 +129,8 @@ impl<'a> ToolbarBuilder<'a> {
             overflow:    OverflowMode::Clip,
             resize_edge: None,
             settings:    None,
+            theme_override: None,
+            style_override: None,
             kind:        ToolbarRenderKind::Horizontal,
         }
     }
@@ -150,6 +156,18 @@ impl<'a> ToolbarBuilder<'a> {
     pub fn settings(mut self, s: ToolbarSettings) -> Self { self.settings = Some(s); self }
     pub fn kind(mut self, k: ToolbarRenderKind) -> Self { self.kind = k; self }
 
+    /// Override only the toolbar theme (colour tokens).
+    pub fn theme(mut self, t: Box<dyn ToolbarTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the toolbar style (geometry — height, gaps, padding …).
+    pub fn style(mut self, s: Box<dyn ToolbarStyle>) -> Self {
+        self.style_override = Some(s);
+        self
+    }
+
     pub fn build<P: DockPanel>(
         self,
         layout: &mut LayoutManager<P>,
@@ -164,7 +182,9 @@ impl<'a> ToolbarBuilder<'a> {
             resize_edge: self.resize_edge,
         };
 
-        let settings = self.settings.unwrap_or_else(|| toolbar_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| toolbar_settings_from_styles(layout.styles()));
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
 
         register_layout_manager_toolbar(
             layout,

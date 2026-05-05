@@ -26,7 +26,7 @@ use crate::ui::widgets::composite::blackbox_panel::input::{
 };
 use crate::ui::widgets::composite::blackbox_panel::settings::BlackboxPanelSettings;
 use crate::ui::widgets::composite::blackbox_panel::state::BlackboxState;
-use crate::ui::widgets::composite::blackbox_panel::style::DefaultBlackboxStyle;
+use crate::ui::widgets::composite::blackbox_panel::style::{BlackboxStyle, DefaultBlackboxStyle};
 use crate::ui::widgets::composite::blackbox_panel::theme::BlackboxTheme;
 use crate::ui::widgets::composite::blackbox_panel::types::{BlackboxRenderKind, BlackboxView};
 
@@ -75,6 +75,10 @@ pub struct BlackboxBuilder<'a> {
     state:      Option<&'a mut BlackboxState>,
     view:       Option<&'a mut BlackboxView<'a>>,
     settings:   Option<BlackboxPanelSettings>,
+    /// Override only the colour-token bundle.
+    theme_override: Option<Box<dyn BlackboxTheme>>,
+    /// Override only the geometry bundle.
+    style_override: Option<Box<dyn BlackboxStyle>>,
     kind:       BlackboxRenderKind,
 }
 
@@ -92,6 +96,8 @@ impl<'a> BlackboxBuilder<'a> {
             state:    None,
             view:     None,
             settings: None,
+            theme_override: None,
+            style_override: None,
             kind:     BlackboxRenderKind::Default,
         }
     }
@@ -107,6 +113,18 @@ impl<'a> BlackboxBuilder<'a> {
     pub fn settings(mut self, s: BlackboxPanelSettings) -> Self { self.settings = Some(s); self }
     pub fn kind(mut self, k: BlackboxRenderKind) -> Self { self.kind = k; self }
 
+    /// Override only the blackbox theme (colour tokens).
+    pub fn theme(mut self, t: Box<dyn BlackboxTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the blackbox style (geometry).
+    pub fn style(mut self, s: Box<dyn BlackboxStyle>) -> Self {
+        self.style_override = Some(s);
+        self
+    }
+
     pub fn build<P: DockPanel>(
         self,
         layout: &mut LayoutManager<P>,
@@ -114,7 +132,9 @@ impl<'a> BlackboxBuilder<'a> {
     ) -> Option<BlackboxPanelNode> {
         let state    = self.state.expect("BlackboxBuilder: .state(...) is required");
         let view     = self.view.expect("BlackboxBuilder: .view(...) is required");
-        let settings = self.settings.unwrap_or_else(|| blackbox_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| blackbox_settings_from_styles(layout.styles()));
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
 
         register_layout_manager_blackbox_panel(
             layout,

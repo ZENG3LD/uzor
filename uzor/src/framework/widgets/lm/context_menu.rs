@@ -16,7 +16,7 @@ use crate::layout::{ContextMenuHandle, ContextMenuNode, LayoutManager, LayoutNod
 use crate::render::RenderContext;
 use crate::ui::widgets::composite::context_menu::input::register_layout_manager_context_menu;
 use crate::ui::widgets::composite::context_menu::settings::ContextMenuSettings;
-use crate::ui::widgets::composite::context_menu::style::DefaultContextMenuStyle;
+use crate::ui::widgets::composite::context_menu::style::{ContextMenuStyle, DefaultContextMenuStyle};
 use crate::ui::widgets::composite::context_menu::theme::{ContextMenuTheme, DefaultContextMenuTheme};
 use crate::ui::widgets::composite::context_menu::types::{
     ContextMenuItem, ContextMenuRenderKind, ContextMenuView,
@@ -80,6 +80,10 @@ pub struct ContextMenuBuilder<'a> {
     target_id:        Option<&'a str>,
     title:            Option<&'a str>,
     settings:         Option<ContextMenuSettings>,
+    /// Override only the colour-token bundle.
+    theme_override:   Option<Box<dyn ContextMenuTheme>>,
+    /// Override only the geometry bundle.
+    style_override:   Option<Box<dyn ContextMenuStyle>>,
     kind:             ContextMenuRenderKind<'a>,
 }
 
@@ -102,6 +106,8 @@ impl<'a> ContextMenuBuilder<'a> {
             target_id:        None,
             title:            None,
             settings:         None,
+            theme_override:   None,
+            style_override:   None,
             kind:             ContextMenuRenderKind::Default,
         }
     }
@@ -123,6 +129,19 @@ impl<'a> ContextMenuBuilder<'a> {
     pub fn title(mut self, t: &'a str) -> Self { self.title = Some(t); self }
     pub fn settings(mut self, s: ContextMenuSettings) -> Self { self.settings = Some(s); self }
     pub fn kind(mut self, k: ContextMenuRenderKind<'a>) -> Self { self.kind = k; self }
+
+    /// Override only the context-menu theme (colour tokens).
+    pub fn theme(mut self, t: Box<dyn ContextMenuTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the context-menu style (geometry — row height, padding,
+    /// separator inset …).
+    pub fn style(mut self, s: Box<dyn ContextMenuStyle>) -> Self {
+        self.style_override = Some(s);
+        self
+    }
 
     pub fn build<P: DockPanel>(
         self,
@@ -158,7 +177,9 @@ impl<'a> ContextMenuBuilder<'a> {
             title:     self.title,
         };
 
-        let settings = self.settings.unwrap_or_else(|| context_menu_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| context_menu_settings_from_styles(layout.styles()));
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
 
         register_layout_manager_context_menu(
             layout,

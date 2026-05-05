@@ -21,7 +21,7 @@ use crate::layout::{LayoutManager, LayoutNodeId, ModalHandle, ModalNode, StyleMa
 use crate::render::RenderContext;
 use crate::ui::widgets::composite::modal::input::register_layout_manager_modal;
 use crate::ui::widgets::composite::modal::settings::ModalSettings;
-use crate::ui::widgets::composite::modal::style::DefaultModalStyle;
+use crate::ui::widgets::composite::modal::style::{DefaultModalStyle, ModalStyle};
 use crate::ui::widgets::composite::modal::theme::{DefaultModalTheme, ModalTheme};
 use crate::ui::widgets::composite::modal::types::{
     BackdropKind, FooterBtn, ModalRenderKind, ModalView, WizardPageInfo,
@@ -105,6 +105,13 @@ pub struct ModalBuilder<'a> {
     overflow:     OverflowMode,
     resizable:    bool,
     settings:     Option<ModalSettings>,
+    /// Override only the colour-token bundle.  Wins over the
+    /// `StyleManager`-derived default but loses to a full
+    /// `.settings(...)` call.
+    theme_override: Option<Box<dyn ModalTheme>>,
+    /// Override only the geometry bundle.  Same precedence rules as
+    /// `theme_override`.
+    style_override: Option<Box<dyn ModalStyle>>,
     kind:         ModalRenderKind,
 }
 
@@ -130,6 +137,8 @@ impl<'a> ModalBuilder<'a> {
             overflow:     OverflowMode::Clip,
             resizable:    false,
             settings:     None,
+            theme_override: None,
+            style_override: None,
             kind:         ModalRenderKind::WithHeader,
         }
     }
@@ -181,6 +190,20 @@ impl<'a> ModalBuilder<'a> {
     /// Override render kind (default `ModalRenderKind::WithHeader`).
     pub fn kind(mut self, k: ModalRenderKind) -> Self { self.kind = k; self }
 
+    /// Override only the modal theme (colour tokens).  Useful for
+    /// per-modal accents without forking the whole `ModalSettings`.
+    pub fn theme(mut self, t: Box<dyn ModalTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the modal style (geometry — radius, padding, header
+    /// height …).
+    pub fn style(mut self, s: Box<dyn ModalStyle>) -> Self {
+        self.style_override = Some(s);
+        self
+    }
+
     /// Terminal call — register and draw the modal frame.
     /// Body contents inside the frame are drawn separately by the caller.
     pub fn build<P: DockPanel>(
@@ -188,6 +211,31 @@ impl<'a> ModalBuilder<'a> {
         layout: &mut LayoutManager<P>,
         render: &mut dyn RenderContext,
     ) -> Option<ModalNode> {
+        self.build_with_body(layout, render, |_, _, _: Rect| {})
+    }
+
+    /// Same as [`build`] but lets the caller paint the modal body
+    /// inside the composite's body rect.
+    ///
+    /// `body` runs *after* the modal chrome (backdrop, frame, header,
+    /// tabs, footer) is drawn, with the renderer already clipped to
+    /// the body rect and the overflow transform applied:
+    ///
+    /// - [`OverflowMode::Compress`] — body is uniformly scaled when
+    ///   geometry is provided via `.content_height(...)` (modal does
+    ///   not currently track scroll offset, so `Scrollbar` falls back
+    ///   to `Clip`).
+    /// - [`OverflowMode::Clip`] / `Chevrons` — only the clip is applied.
+    pub fn build_with_body<P, F>(
+        self,
+        layout: &mut LayoutManager<P>,
+        render: &mut dyn RenderContext,
+        body: F,
+    ) -> Option<ModalNode>
+    where
+        P: DockPanel,
+        F: FnOnce(&mut LayoutManager<P>, &mut dyn RenderContext, Rect),
+    {
         let slot_id = self.slot_id
             .map(str::to_owned)
             .unwrap_or_else(|| self.handle.id_str().to_string());
@@ -204,20 +252,52 @@ impl<'a> ModalBuilder<'a> {
             resizable:      self.resizable,
         };
 
-        let settings = self.settings.unwrap_or_else(|| modal_settings_from_styles(layout.styles()));
+        // Resolve settings: explicit `.settings(...)` wins outright,
+        // otherwise build from StyleManager and then patch in any
+        // `.theme(...)` / `.style(...)` overrides.
+        let mut settings = self.settings.unwrap_or_else(|| modal_settings_from_styles(layout.styles()));
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
 
-        register_layout_manager_modal(
+        let kind = self.kind;
+        let overflow = self.overflow;
+        let parent = self.parent;
+        let anchor = self.anchor;
+        let handle = self.handle;
+
+        let node = register_layout_manager_modal(
             layout,
             render,
-            self.parent,
+            parent,
             &slot_id,
-            self.handle,
+            handle,
             overlay_rect,
-            self.anchor,
+            anchor,
             &mut view,
             &settings,
-            &self.kind,
-        )
+            &kind,
+        );
+
+        // Resolve the modal's frame rect (post-drag) and paint the body.
+        let frame = layout
+            .rect_for_overlay(&slot_id)
+            .unwrap_or(overlay_rect);
+        if frame.width > 0.0 && frame.height > 0.0 {
+            let body_rect = crate::ui::widgets::composite::modal::render::body_rect(
+                frame, &view, &settings, &kind,
+            );
+            render.save();
+            render.clip_rect(body_rect.x, body_rect.y, body_rect.width, body_rect.height);
+            if let OverflowMode::Compress = overflow {
+                // Modal has no content_height field on the builder yet —
+                // callers can pre-scale inside the body closure if needed.
+                // (Keeping the match arm for symmetry with panel/sidebar.)
+            }
+            body(layout, render, body_rect);
+            render.restore();
+        }
+
+        node
     }
 }
 

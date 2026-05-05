@@ -17,7 +17,7 @@ use crate::render::RenderContext;
 use crate::types::{OverflowMode, SizeMode};
 use crate::ui::widgets::composite::dropdown::input::register_layout_manager_dropdown;
 use crate::ui::widgets::composite::dropdown::settings::DropdownSettings;
-use crate::ui::widgets::composite::dropdown::style::DefaultDropdownStyle;
+use crate::ui::widgets::composite::dropdown::style::{DefaultDropdownStyle, DropdownStyle};
 use crate::ui::widgets::composite::dropdown::theme::{DefaultDropdownTheme, DropdownTheme};
 use crate::ui::widgets::composite::dropdown::types::{
     DropdownItem, DropdownRenderKind, DropdownView, DropdownViewKind, SubmenuWidth,
@@ -110,6 +110,12 @@ pub struct DropdownBuilder<'a> {
     size_mode:        SizeMode,
     overflow:         OverflowMode,
     settings:         Option<DropdownSettings>,
+    /// Override only the colour-token bundle.  Wins over the
+    /// `StyleManager`-derived default but loses to a full
+    /// `.settings(...)` call.
+    theme_override:   Option<Box<dyn DropdownTheme>>,
+    /// Override only the geometry bundle.
+    style_override:   Option<Box<dyn DropdownStyle>>,
     kind:             DropdownRenderKind,
 }
 
@@ -138,6 +144,8 @@ impl<'a> DropdownBuilder<'a> {
             size_mode:         SizeMode::default(),
             overflow:          OverflowMode::Clip,
             settings:          None,
+            theme_override:    None,
+            style_override:    None,
             kind:              DropdownRenderKind::Flat,
         }
     }
@@ -199,6 +207,19 @@ impl<'a> DropdownBuilder<'a> {
     /// Override render kind (default `DropdownRenderKind::Flat`).
     pub fn kind(mut self, k: DropdownRenderKind) -> Self { self.kind = k; self }
 
+    /// Override only the dropdown theme (colour tokens).
+    pub fn theme(mut self, t: Box<dyn DropdownTheme>) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the dropdown style (geometry — row height, padding,
+    /// shortcut gap …).
+    pub fn style(mut self, s: Box<dyn DropdownStyle>) -> Self {
+        self.style_override = Some(s);
+        self
+    }
+
     /// Terminal call — register and draw the dropdown panel.
     pub fn build<P: DockPanel>(
         self,
@@ -243,7 +264,9 @@ impl<'a> DropdownBuilder<'a> {
             submenu_width:self.submenu_width,
         };
 
-        let settings = self.settings.unwrap_or_else(|| dropdown_settings_from_styles(layout.styles()));
+        let mut settings = self.settings.unwrap_or_else(|| dropdown_settings_from_styles(layout.styles()));
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
 
         register_layout_manager_dropdown(
             layout,
