@@ -2,6 +2,42 @@ use std::collections::HashMap;
 
 use crate::layout::docking::{PanelRect, DockPanel};
 use super::dock_state::DockState;
+use super::window::WindowProvider;
+
+// =============================================================================
+// WindowSlot — per-window state owned by `LayoutManager`
+// =============================================================================
+
+/// Everything the layout manager needs to track for one OS window.
+///
+/// The provider is an opaque trait object so LM stays platform-agnostic.
+/// Concrete kinds live in their crates (`uzor-window-desktop` for winit,
+/// `uzor-window-web` for DOM canvas, …).
+pub struct WindowSlot<P: DockPanel> {
+    /// Platform window handle wrapped in the trait LM talks to.
+    pub provider: Box<dyn WindowProvider>,
+
+    /// Cached logical rect captured at the last `solve_window`.
+    pub rect: Rect,
+
+    /// Has the runtime fired the per-window `App::init` hook yet?
+    pub initialised: bool,
+
+    /// Phantom for the panel type parameter (per-window dock-tree state
+    /// will move here in the next pass; right now docking is shared).
+    _phantom: std::marker::PhantomData<P>,
+}
+
+impl<P: DockPanel> WindowSlot<P> {
+    fn new(provider: Box<dyn WindowProvider>, rect: Rect) -> Self {
+        Self {
+            provider,
+            rect,
+            initialised: false,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
 use crate::core::types::Rect;
 use crate::app_context::{ContextManager, layout::types::LayoutNode};
 use crate::input::core::coordinator::LayerId;
@@ -147,6 +183,15 @@ pub struct LayoutManager<P: DockPanel> {
     /// previously on DM now live on `LayoutManager` and read/write
     /// `self.dock` directly.
     pub(crate) dock: DockState<P>,
+    /// All windows the layout manager owns. The platform layer (winit-driven
+    /// `uzor_desktop::Manager`, web `WebWindowProvider`, mobile, …) creates
+    /// each `Box<dyn WindowProvider>` and `attach_window`s it; LM addresses
+    /// the window through its `WindowKey` from then on. Insertion order is
+    /// preserved (oldest first) so deterministic iteration is possible.
+    pub(crate) windows: std::collections::HashMap<
+        crate::layout::window::WindowKey,
+        WindowSlot<P>,
+    >,
     overlays: OverlayStack,
     z_layers: ZLayerTable,
     tree: LayoutTree,
@@ -228,6 +273,7 @@ impl<P: DockPanel> LayoutManager<P> {
             chrome: ChromeSlot::default(),
             edges: EdgePanels::new(),
             dock: DockState::new(),
+            windows: HashMap::new(),
             overlays: OverlayStack::new(),
             z_layers: ZLayerTable::default(),
             tree: LayoutTree::new(),
@@ -914,6 +960,51 @@ impl<P: DockPanel> LayoutManager<P> {
     #[doc(hidden)]
     pub fn panels_mut(&mut self) -> &mut DockState<P> {
         &mut self.dock
+    }
+
+    // ------------------------------------------------------------------
+    // Window registry — LM is the application root
+    // ------------------------------------------------------------------
+
+    /// Register a new OS window with the layout manager.
+    ///
+    /// The platform layer (winit, web, mobile) wraps its native handle in a
+    /// `Box<dyn WindowProvider>` and hands it over.  From this point on LM
+    /// addresses the window through `key`; the platform layer only forwards
+    /// raw OS events.
+    pub fn attach_window(
+        &mut self,
+        key:      crate::layout::window::WindowKey,
+        provider: Box<dyn WindowProvider>,
+    ) {
+        let rect = provider.window_rect();
+        self.windows.insert(key, WindowSlot::new(provider, rect));
+    }
+
+    /// Drop a window from the registry.  Called by the platform layer on
+    /// `WindowEvent::CloseRequested` (or equivalent) after teardown.
+    pub fn detach_window(&mut self, key: &crate::layout::window::WindowKey) -> Option<WindowSlot<P>> {
+        self.windows.remove(key)
+    }
+
+    /// Read-only access to a registered window's slot, by key.
+    pub fn window(&self, key: &crate::layout::window::WindowKey) -> Option<&WindowSlot<P>> {
+        self.windows.get(key)
+    }
+
+    /// Mutable access to a registered window's slot.
+    pub fn window_mut(&mut self, key: &crate::layout::window::WindowKey) -> Option<&mut WindowSlot<P>> {
+        self.windows.get_mut(key)
+    }
+
+    /// `true` when at least one window is currently attached.
+    pub fn has_windows(&self) -> bool {
+        !self.windows.is_empty()
+    }
+
+    /// Iterate registered window keys in arbitrary order.
+    pub fn window_keys(&self) -> impl Iterator<Item = &crate::layout::window::WindowKey> {
+        self.windows.keys()
     }
 
     // ------------------------------------------------------------------

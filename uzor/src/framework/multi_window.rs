@@ -6,21 +6,10 @@ use crate::layout::docking::DockPanel;
 use super::builder::RgbaIcon;
 use crate::platform::types::CornerStyle;
 
-/// Stable, app-supplied tag identifying a window across sessions.
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct WindowKey(pub String);
-
-impl WindowKey {
-    pub fn new(s: impl Into<String>) -> Self { Self(s.into()) }
-    pub fn as_str(&self) -> &str { &self.0 }
-}
-
-impl From<&str> for WindowKey {
-    fn from(s: &str) -> Self { Self(s.to_string()) }
-}
-impl From<String> for WindowKey {
-    fn from(s: String) -> Self { Self(s) }
-}
+// `WindowKey` lives in `uzor::layout::window` — the layout manager owns
+// the window registry, so its key type is the canonical one.  Re-exported
+// here for back-compat with framework callers.
+pub use crate::layout::window::WindowKey;
 
 /// Declarative description of a window the runtime should create.
 #[derive(Debug, Clone)]
