@@ -72,6 +72,11 @@ struct DashboardApp {
     /// Live state for the tree-debug blackbox.  Registered with LM
     /// in `init` so HTTP `/blackbox/tree-debug/...` routes resolve.
     tree_debug_state: Option<std::sync::Arc<std::sync::Mutex<tree_debug::TreeDebugState>>>,
+    /// State for the Settings composite Panel (scroll offset, hover
+    /// flags).  Wrapping the edge-slot content in a Panel gives us a
+    /// proper overflow guard, so the bottom rows clip / scroll
+    /// instead of spilling past the pixmap on small windows.
+    settings_panel_state: uzor::ui::widgets::composite::panel::state::PanelState,
 }
 
 impl DashboardApp {
@@ -88,6 +93,7 @@ impl DashboardApp {
                 PanelState::default(),
             ],
             tree_debug_state: None,
+            settings_panel_state: PanelState::default(),
         }
     }
 }
@@ -251,21 +257,34 @@ impl App<PaintPanel> for DashboardApp {
         }
 
         // ── Settings panel (left 280px) ───────────────────────────────────────
+        // Wrap as a real composite Panel so the framework's overflow
+        // guard (Scrollbar) clips body content to the slot rect.  On
+        // tall windows you don't see a scrollbar; on short windows
+        // the bottom rows scroll instead of bleeding past the pixmap
+        // and panicking the CPU rasteriser.
+        {
+            use uzor::ui::widgets::composite::panel::types::PanelRenderKind;
+            use uzor::types::OverflowMode;
+            let layout = &mut *win.layout;
+            let render = &mut *win.render;
+            let content_h = 600.0_f64;
+            uzor::framework::widgets::lm::panel("settings-panel", "settings:panel")
+                .state(&mut self.settings_panel_state)
+                .kind(PanelRenderKind::Plain)
+                .overflow(OverflowMode::Scrollbar)
+                .show_scrollbar(true)
+                .content_height(content_h)
+                .build(layout, render);
+        }
         {
             let layout = &mut *win.layout;
             let render = &mut *win.render;
 
-            // Panel background.
-            {
-                let bg = layout.styles().color_or_owned("surface_raised", "#1C1D23");
-                render.set_fill_color(bg.as_str());
-                render.fill_rect(settings_rect.x, settings_rect.y, settings_rect.width, settings_rect.height);
-            }
-
             let row_h = 32.0_f64;
             let gap   = 6.0_f64;
             let pad   = 10.0_f64;
-            let mut cy = settings_rect.y + pad;
+            let scroll_off = self.settings_panel_state.scroll.offset;
+            let mut cy = settings_rect.y + pad - scroll_off;
 
             // Title
             let r = Rect { x: settings_rect.x + pad, y: cy, width: settings_rect.width - 2.0*pad, height: row_h };
@@ -548,10 +567,7 @@ impl DashboardApp {
         rect: Rect,
         target_fps: u32,
     ) {
-        use uzor::ui::widgets::composite::panel::render::register_context_manager_panel;
-        use uzor::ui::widgets::composite::panel::settings::PanelSettings;
-        use uzor::ui::widgets::composite::panel::types::{PanelRenderKind, PanelView};
-        use uzor::input::core::coordinator::LayerId;
+        use uzor::ui::widgets::composite::panel::types::PanelRenderKind;
 
         let idx = match cell_id {
             "paint:r0_dirty"  => 0,
@@ -571,57 +587,43 @@ impl DashboardApp {
         };
         let panel_id_str = format!("paint_panel:{}", cell_id);
 
-        // Build the composite panel for this cell — full PanelRenderKind::WithHeader
-        // composite, real PanelState, real header bar with title.
+        // L3-only: lm::panel composite owns the chrome (background +
+        // header) and clips the body callback to the panel's body
+        // rect.  Counter / fps text widgets register inside the
+        // body closure so they live on the same LayoutManager as
+        // the panel itself.
         {
             let layout = &mut *win.layout;
             let render = &mut *win.render;
-            let mut view = PanelView {
-                header: Some(uzor::ui::widgets::composite::panel::types::PanelHeader {
-                    title:   header.as_str(),
-                    actions: &[],
-                }),
-                columns:        &[],
-                show_scrollbar: false,
-                content_height: 0.0,
-                content_width:  0.0,
-                overflow:       uzor::types::OverflowMode::Clip,
-            };
-            let settings = PanelSettings::default();
-            let layer = LayerId::main();
-            register_context_manager_panel(
-                layout.ctx_mut(),
-                render,
-                uzor::types::unsafe_widget_id(panel_id_str.as_str()),
-                rect,
-                &mut self.cell_panel_states[idx],
-                &mut view,
-                &settings,
-                &PanelRenderKind::WithHeader,
-                &layer,
-            );
+            let pad   = 12.0_f64;
+            let row_h = 22.0_f64;
+            let cell_id_owned = cell_id.to_string();
+            uzor::framework::widgets::lm::panel(
+                panel_id_str.as_str(),
+                panel_id_str.as_str(),
+            )
+            .state(&mut self.cell_panel_states[idx])
+            .header_title(header.as_str())
+            .kind(PanelRenderKind::WithHeader)
+            .overflow(uzor::types::OverflowMode::Clip)
+            .build_with_body(layout, render, |layout, render, body_rect| {
+                let lr = |cy: f64, h: f64| Rect {
+                    x: body_rect.x + pad, y: cy,
+                    width: body_rect.width - 2.0 * pad, height: h,
+                };
+                let counter_line = format!("rebuilds: {}", count);
+                uzor::framework::widgets::lm::text(
+                    unsafe_widget_id(format!("{}:counter", cell_id_owned).as_str()),
+                    lr(body_rect.y + pad, row_h), counter_line.as_str(),
+                ).build(layout, render);
+
+                let measured_line = format!("window FPS: {:.1}", measured_fps);
+                uzor::framework::widgets::lm::text(
+                    unsafe_widget_id(format!("{}:meas", cell_id_owned).as_str()),
+                    lr(body_rect.y + pad + row_h + 4.0, row_h), measured_line.as_str(),
+                ).build(layout, render);
+            });
         }
-
-        // Body content (counters) painted on top of the panel body.
-        let layout = &mut *win.layout;
-        let render = &mut *win.render;
-        let pad   = 12.0_f64;
-        let row_h = 22.0_f64;
-        let header_h = 28.0_f64;
-        let body_y = rect.y + header_h + pad;
-        let lr = |cy: f64, h: f64| Rect { x: rect.x + pad, y: cy, width: rect.width - 2.0*pad, height: h };
-
-        let counter_line = format!("rebuilds: {}", count);
-        uzor::framework::widgets::lm::text(
-            unsafe_widget_id(format!("{}:counter", cell_id).as_str()),
-            lr(body_y, row_h), counter_line.as_str(),
-        ).build(layout, render);
-
-        let measured_line = format!("window FPS: {:.1}", measured_fps);
-        uzor::framework::widgets::lm::text(
-            unsafe_widget_id(format!("{}:meas", cell_id).as_str()),
-            lr(body_y + row_h + 4.0, row_h), measured_line.as_str(),
-        ).build(layout, render);
     }
 }
 

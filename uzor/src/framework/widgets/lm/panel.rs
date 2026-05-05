@@ -89,6 +89,13 @@ pub struct PanelBuilder<'a> {
     content_width:  f64,
     overflow:       crate::types::OverflowMode,
     settings:       Option<PanelSettings>,
+    /// Override just the colour-token bundle.  Wins over the
+    /// `StyleManager`-derived default but loses to a full
+    /// `.settings(...)` call.
+    theme_override: Option<Box<dyn crate::ui::widgets::composite::panel::theme::PanelTheme>>,
+    /// Override just the geometry bundle.  Same precedence rules as
+    /// `theme_override`.
+    style_override: Option<Box<dyn crate::ui::widgets::composite::panel::style::PanelStyle>>,
     kind:           PanelRenderKind,
 }
 
@@ -112,6 +119,8 @@ impl<'a> PanelBuilder<'a> {
             content_width:  0.0,
             overflow:       crate::types::OverflowMode::Clip,
             settings:       None,
+            theme_override: None,
+            style_override: None,
             kind:           PanelRenderKind::Plain,
         }
     }
@@ -134,11 +143,60 @@ impl<'a> PanelBuilder<'a> {
     pub fn settings(mut self, s: PanelSettings) -> Self { self.settings = Some(s); self }
     pub fn kind(mut self, k: PanelRenderKind) -> Self { self.kind = k; self }
 
+    /// Override only the panel theme (colour tokens).  Useful for
+    /// per-panel highlights without forking the whole `PanelSettings`.
+    pub fn theme(
+        mut self,
+        t: Box<dyn crate::ui::widgets::composite::panel::theme::PanelTheme>,
+    ) -> Self {
+        self.theme_override = Some(t);
+        self
+    }
+
+    /// Override only the panel style (geometry — radius, padding,
+    /// header height …).
+    pub fn style(
+        mut self,
+        s: Box<dyn crate::ui::widgets::composite::panel::style::PanelStyle>,
+    ) -> Self {
+        self.style_override = Some(s);
+        self
+    }
+
+
     pub fn build<P: DockPanel>(
         self,
         layout: &mut LayoutManager<P>,
         render: &mut dyn RenderContext,
     ) -> Option<PanelNode> {
+        self.build_with_body(layout, render, |_, _, _: Rect| {})
+    }
+
+    /// Same as [`build`] but lets the caller paint the panel body
+    /// inside the composite's body rect.
+    ///
+    /// `body` runs *after* the panel chrome (background, header,
+    /// scrollbar, footer) is drawn, with the renderer already
+    /// clipped to the body rect and the overflow transform applied:
+    ///
+    /// - [`OverflowMode::Scrollbar`] — body is translated by
+    ///   `-state.scroll.offset`; caller draws as if scrolled to top.
+    /// - [`OverflowMode::Compress`] — body is uniformly scaled so
+    ///   `content_height` fits the body rect height.
+    /// - [`OverflowMode::Clip`] / `Chevrons` — only the clip is applied.
+    ///
+    /// `body` receives `(&mut LayoutManager<P>, &mut dyn RenderContext, body_rect)`
+    /// so nested `lm::*` widgets work normally.
+    pub fn build_with_body<P, F>(
+        self,
+        layout: &mut LayoutManager<P>,
+        render: &mut dyn RenderContext,
+        body: F,
+    ) -> Option<PanelNode>
+    where
+        P: DockPanel,
+        F: FnOnce(&mut LayoutManager<P>, &mut dyn RenderContext, Rect),
+    {
         let state = self.state.expect("PanelBuilder: .state(...) is required");
 
         let mut view = PanelView {
@@ -153,9 +211,18 @@ impl<'a> PanelBuilder<'a> {
             overflow:       self.overflow,
         };
 
-        let settings = self.settings.unwrap_or_else(|| panel_settings_from_styles(layout.styles()));
+        // Resolve settings: explicit `.settings(...)` wins outright,
+        // otherwise build from StyleManager and then patch in any
+        // `.theme(...)` / `.style(...)` overrides.
+        let mut settings = self.settings.unwrap_or_else(|| panel_settings_from_styles(layout.styles()));
+        if let Some(t) = self.theme_override { settings.theme = t; }
+        if let Some(s) = self.style_override { settings.style = s; }
 
-        register_layout_manager_panel(
+        // Snapshot scroll offset before `state` is moved into the
+        // composite registration call.
+        let scroll_off = state.scroll.offset;
+
+        let node = register_layout_manager_panel(
             layout,
             render,
             self.parent,
@@ -165,7 +232,39 @@ impl<'a> PanelBuilder<'a> {
             &mut view,
             &settings,
             &self.kind,
-        )
+        );
+
+        // Resolve the panel's frame rect (from either the dock-leaf
+        // map or an overlay registration) and paint the body.
+        let frame = layout
+            .rect_for(self.slot_id)
+            .or_else(|| layout.rect_for_overlay(self.slot_id))
+            .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+        if frame.width > 0.0 && frame.height > 0.0 {
+            let body_rect = crate::ui::widgets::composite::panel::render::body_rect(
+                frame, &view, &settings, &self.kind,
+            );
+            render.save();
+            render.clip_rect(body_rect.x, body_rect.y, body_rect.width, body_rect.height);
+            match self.overflow {
+                crate::types::OverflowMode::Scrollbar => {
+                    render.translate(0.0, -scroll_off);
+                }
+                crate::types::OverflowMode::Compress => {
+                    if self.content_height > body_rect.height && self.content_height > 0.0 {
+                        let s = body_rect.height / self.content_height;
+                        render.translate(body_rect.x, body_rect.y);
+                        render.scale(s, s);
+                        render.translate(-body_rect.x, -body_rect.y);
+                    }
+                }
+                _ => {}
+            }
+            body(layout, render, body_rect);
+            render.restore();
+        }
+
+        node
     }
 }
 

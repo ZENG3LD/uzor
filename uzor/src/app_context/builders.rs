@@ -1,9 +1,17 @@
-//! L2 — `ContextManager` paint+register.  Registers the widget with the
-//! embedded coordinator AND draws it in one call.
+//! L2 — `ContextManager` paint+register shortcuts (legacy).
 //!
-//! `draw_X(ctx, render, ...)` is the L2 convenience wrapper — useful inside
-//! blackbox handler bodies that want widgets registered on the manager
-//! provided by the host but paint within their own owned rect.
+//! `draw_X(ctx, render, ...)` registers a widget with the embedded
+//! input coordinator AND draws it in one call.
+//!
+//! ## Status: legacy / low-level
+//!
+//! L4 framework apps should drive the UI through
+//! [`crate::framework::widgets::lm`] (the L3 builder surface).
+//! These shortcuts exist for the L2 example
+//! (`uzor-examples/src/l2/launcher.rs`) and for low-level tooling
+//! that registers widgets on a raw `ContextManager`.  They live
+//! under `app_context::` rather than `framework::widgets::` so app
+//! authors aren't tempted to reach for them.
 
 // Atomics
 pub use crate::ui::widgets::atomic::button::input::register_context_manager_button as draw_button;

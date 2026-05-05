@@ -50,6 +50,19 @@ struct PanelLayout {
     scrollbar: Rect,
 }
 
+/// Compute the body rect for a panel given its outer frame, view,
+/// settings, and render kind.  Public so the L4 `lm::panel(...).body(...)`
+/// builder can clip + scroll/compress the caller-supplied body
+/// closure to the right area without duplicating the layout maths.
+pub fn body_rect(
+    rect:     Rect,
+    view:     &PanelView<'_>,
+    settings: &PanelSettings,
+    kind:     &PanelRenderKind,
+) -> Rect {
+    compute_layout(rect, view, settings, kind).body
+}
+
 // ---------------------------------------------------------------------------
 // Public API — register (InputCoordinator)
 // ---------------------------------------------------------------------------

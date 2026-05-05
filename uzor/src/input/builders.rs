@@ -1,8 +1,19 @@
-//! L1 — direct `InputCoordinator` registration. No drawing.
+//! L1 — direct `InputCoordinator` registration shortcuts (legacy).
 //!
-//! `register_X(coord, ...)` registers the widget hit-zone with the coordinator
-//! and returns a `WidgetId` (or composite/atomic typed id).  The caller paints
-//! the widget separately.
+//! `register_X(coord, ...)` registers a widget hit-zone with the
+//! coordinator and returns a `WidgetId` (or a composite / atomic
+//! typed id).  The caller paints the widget separately through its
+//! `*::render` module.
+//!
+//! ## Status: legacy / low-level
+//!
+//! L4 framework apps should drive the UI through
+//! [`crate::framework::widgets::lm`] (the L3 builder surface).
+//! These shortcuts exist for the L1 example
+//! (`uzor-examples/src/l1/coord.rs`) and for low-level tooling that
+//! talks to `InputCoordinator` directly.  They live under `input::`
+//! rather than `framework::widgets::` so app authors aren't tempted
+//! to reach for them.
 
 // Atomics
 pub use crate::ui::widgets::atomic::button::input::register_input_coordinator_button as register_button;

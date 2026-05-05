@@ -8,6 +8,7 @@ pub mod text;
 pub mod keyboard;
 pub mod pointer;
 pub mod handlers;
+pub mod builders;
 
 pub use self::core::{PlatformEvent, ImeEvent, SystemTheme};
 
