@@ -294,6 +294,97 @@ impl WindowRenderState {
         }
     }
 
+    // (helper above the constructor)
+}
+
+/// Recreate `surface.target_texture` with the usage flags CPU
+/// backends and the screenshot path require: `COPY_SRC | COPY_DST |
+/// RENDER_ATTACHMENT` on top of the vello defaults.
+///
+/// Same shape as the `add_copy_src_to_target_texture` helper used by
+/// the screenshot endpoint — kept here so the swapchain comes up
+/// with the right usage from the very first frame, not lazily.
+#[cfg(not(target_arch = "wasm32"))]
+fn recreate_target_with_cpu_usage(
+    surface: &mut RenderSurface<'static>,
+    device: &wgpu::Device,
+) {
+    let old = &surface.target_texture;
+    let size = old.size();
+    let new_texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("target_texture_cpu_swapchain"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let new_view = new_texture.create_view(&wgpu::TextureViewDescriptor::default());
+    surface.target_texture = new_texture;
+    surface.target_view = new_view;
+}
+
+impl WindowRenderState {
+    /// Build a GPU-mode state for tiny-skia (CPU rasteriser, GPU
+    /// swapchain).  Each frame the tiny-skia pixmap is uploaded to
+    /// `surface.target_texture` via `queue.write_texture` and blitted
+    /// to the swapchain — same path mlc uses.
+    pub fn new_tiny_skia_gpu(
+        gpu_pool: GpuDevicePool,
+        mut surface: RenderSurface<'static>,
+        dev_id: usize,
+    ) -> Self {
+        let (w, h) = (surface.config.width.max(1), surface.config.height.max(1));
+        // Vello creates `target_texture` with TEXTURE_BINDING | STORAGE_BINDING
+        // only; CPU upload needs COPY_DST and the screenshot path needs
+        // COPY_SRC.  Recreate the texture with the right usage flags
+        // BEFORE handing the surface to the new state.
+        recreate_target_with_cpu_usage(&mut surface, &gpu_pool.devices[dev_id].device);
+        Self {
+            surface: SurfaceMode::Gpu { gpu_pool, surface, dev_id },
+            vello_gpu_renderer: None,
+            vello_hybrid_renderer: None,
+            instanced_renderer: None,
+            vello_cpu_ctx: None,
+            tiny_skia_ctx: Some(TinySkiaCpuRenderContext::new(w, h, 1.0)),
+            #[cfg(target_arch = "wasm32")]
+            canvas2d_ctx: None,
+            scene: Scene::new(),
+            vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
+            active: RenderBackend::TinySkia,
+        }
+    }
+
+    /// Build a GPU-mode state for vello-cpu (CPU rasteriser, GPU
+    /// swapchain).  Mirror of `new_tiny_skia_gpu`.
+    pub fn new_vello_cpu_gpu(
+        gpu_pool: GpuDevicePool,
+        mut surface: RenderSurface<'static>,
+        dev_id: usize,
+        dpr: f64,
+    ) -> Self {
+        recreate_target_with_cpu_usage(&mut surface, &gpu_pool.devices[dev_id].device);
+        Self {
+            surface: SurfaceMode::Gpu { gpu_pool, surface, dev_id },
+            vello_gpu_renderer: None,
+            vello_hybrid_renderer: None,
+            instanced_renderer: None,
+            vello_cpu_ctx: Some(VelloCpuRenderContext::new(dpr)),
+            tiny_skia_ctx: None,
+            #[cfg(target_arch = "wasm32")]
+            canvas2d_ctx: None,
+            scene: Scene::new(),
+            vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
+            active: RenderBackend::VelloCpu,
+        }
+    }
+
     /// Build a GPU-mode state for vello-hybrid (renderer lazy-init).
     pub fn new_vello_hybrid(
         gpu_pool: GpuDevicePool,
@@ -555,7 +646,7 @@ impl WindowRenderState {
             return;
         }
         match &mut self.surface {
-            SurfaceMode::Gpu { gpu_pool, surface, .. } => {
+            SurfaceMode::Gpu { gpu_pool, surface, dev_id } => {
                 gpu_pool.resize_surface(surface, width, height);
                 // VelloHybrid renderer caches the target dimensions when it
                 // was first created. After a swapchain resize we must drop
@@ -564,6 +655,14 @@ impl WindowRenderState {
                 // the swapchain shows blank / stretched content.
                 if matches!(self.active, RenderBackend::VelloHybrid) {
                     self.vello_hybrid_renderer = None;
+                }
+                // CPU rasterisers + screenshot read-back need
+                // COPY_DST / COPY_SRC; vello always recreates the
+                // target with TEXTURE | STORAGE only on resize, so we
+                // re-patch it here.
+                if matches!(self.active, RenderBackend::VelloCpu | RenderBackend::TinySkia) {
+                    let device = &gpu_pool.devices[*dev_id].device;
+                    recreate_target_with_cpu_usage(surface, device);
                 }
             }
             #[cfg(not(target_arch = "wasm32"))]

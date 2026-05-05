@@ -704,8 +704,16 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         // backend. Reusing self.factory ties every spawned window to the
         // backend that was active when from_built ran, which breaks
         // backends switched at runtime via render_control.set_backend.
+        // mlc-aligned policy: every window gets a wgpu swapchain.  Even
+        // CPU backends (TinySkia, VelloCpu) render into a pixmap and
+        // then upload it as a texture for blit + present through the
+        // GPU.  This used to fork into a softbuffer-backed
+        // `SurfaceMode::Software` path for CPU, which works for the
+        // first window but loses pixels on subsequent spawns
+        // (windows came up black).  The unified GPU swapchain path
+        // also makes the screenshot endpoint usable on every backend.
         let active = self.hub.as_ref().map(|h| h.active()).unwrap_or(self.backend);
-        let mut factory: Box<dyn RenderSurfaceFactory> = if let Some(hub) = self.hub.as_ref() {
+        let factory: Box<dyn RenderSurfaceFactory> = if let Some(hub) = self.hub.as_ref() {
             hub.factory_for(active)
                 .ok_or_else(|| ManagerError::Backend(
                     format!("hub has no factory for backend {:?}", active)
@@ -713,24 +721,6 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         } else {
             return Err(ManagerError::Backend("no hub initialised".into()));
         };
-
-        // CPU backends (TinySkia, VelloCpu) need a per-window
-        // SoftwarePresenter — the hub's factory comes empty and accepts
-        // a fresh presenter via its .with_presenter() ctor. Build a new
-        // factory per window using the provider's softbuffer impl.
-        if matches!(active, RenderBackend::TinySkia | RenderBackend::VelloCpu) {
-            if let Some(presenter) = provider.create_software_presenter() {
-                factory = match active {
-                    RenderBackend::TinySkia => {
-                        Box::new(uzor_render_hub::TinySkiaSurfaceFactory::with_presenter(presenter))
-                    }
-                    RenderBackend::VelloCpu => {
-                        Box::new(uzor_render_hub::VelloCpuSurfaceFactory::with_presenter(1.0, presenter))
-                    }
-                    _ => unreachable!(),
-                };
-            }
-        }
 
         let mut render_state = factory
             .create_render_state(&raw_handle, active, size)

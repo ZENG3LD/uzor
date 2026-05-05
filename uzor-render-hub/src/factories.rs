@@ -262,7 +262,7 @@ impl Default for TinySkiaSurfaceFactory {
 impl RenderSurfaceFactory for TinySkiaSurfaceFactory {
     fn create_render_state(
         &self,
-        _handle: &RawHandle,
+        handle: &RawHandle,
         backend: RenderBackend,
         size: SurfaceSize,
     ) -> Result<WindowRenderState, SurfaceError> {
@@ -270,14 +270,22 @@ impl RenderSurfaceFactory for TinySkiaSurfaceFactory {
             return Err(SurfaceError::UnsupportedBackend(backend));
         }
 
-        let presenter = self
+        // Software-presenter path (legacy / headless tests).
+        if let Some(presenter) = self
             .presenter
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take()
-            .ok_or(SurfaceError::HandleUnavailable)?;
+        {
+            return Ok(WindowRenderState::new_cpu(size.width, size.height, presenter));
+        }
 
-        Ok(WindowRenderState::new_cpu(size.width, size.height, presenter))
+        // Default path: render into a tiny-skia pixmap, upload as a
+        // texture, blit through the wgpu swapchain.  Mirrors the
+        // proven mlc submit path; identical for every spawned window.
+        let pair = extract_handle_pair(handle, backend)?;
+        let (gpu_pool, surface, dev_id) = init_gpu_surface(pair, size, backend)?;
+        Ok(WindowRenderState::new_tiny_skia_gpu(gpu_pool, surface, dev_id))
     }
 
     fn supports(&self, _handle: &RawHandle, backend: RenderBackend) -> bool {
@@ -331,22 +339,29 @@ impl Default for VelloCpuSurfaceFactory {
 impl RenderSurfaceFactory for VelloCpuSurfaceFactory {
     fn create_render_state(
         &self,
-        _handle: &RawHandle,
+        handle: &RawHandle,
         backend: RenderBackend,
-        _size: SurfaceSize,
+        size: SurfaceSize,
     ) -> Result<WindowRenderState, SurfaceError> {
         if !matches!(backend, RenderBackend::VelloCpu) {
             return Err(SurfaceError::UnsupportedBackend(backend));
         }
 
-        let presenter = self
+        // Software-presenter path (kept for headless tests).
+        if let Some(presenter) = self
             .presenter
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .take()
-            .ok_or(SurfaceError::HandleUnavailable)?;
+        {
+            return Ok(WindowRenderState::new_vello_cpu(self.dpr, presenter));
+        }
 
-        Ok(WindowRenderState::new_vello_cpu(self.dpr, presenter))
+        // Default path: render into a vello-cpu pixmap, upload as a
+        // texture, blit through the wgpu swapchain.
+        let pair = extract_handle_pair(handle, backend)?;
+        let (gpu_pool, surface, dev_id) = init_gpu_surface(pair, size, backend)?;
+        Ok(WindowRenderState::new_vello_cpu_gpu(gpu_pool, surface, dev_id, self.dpr))
     }
 
     fn supports(&self, _handle: &RawHandle, backend: RenderBackend) -> bool {
