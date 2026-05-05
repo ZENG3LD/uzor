@@ -368,7 +368,74 @@ impl<P: DockPanel> DockingTree<P> {
 
     // --- Split Operations ---
 
-    pub fn split_leaf(&mut self, leaf_id: LeafId, split: SplitKind, _width: f32, _height: f32) -> Vec<LeafId> {
+    /// Split `leaf_id` into two leaves with the original kept in-place.
+    ///
+    /// `dir` selects how the leaf is bisected:
+    /// - [`SplitKind::SplitRight`]   — original ends up **left**,  new neighbour **right**
+    /// - [`SplitKind::SplitBottom`]  — original ends up **top**,   new neighbour **bottom**
+    /// (other split kinds are not in-place — use [`Self::split_leaf_with_children`].)
+    ///
+    /// The original leaf id stays valid and points to the same panels.
+    /// The returned id is the freshly created neighbour leaf, populated
+    /// with `new_panel` as its sole panel.
+    ///
+    /// Returns `None` if `leaf_id` is not in the tree, or if `dir` is
+    /// not one of the two binary splits.
+    pub fn split_leaf(
+        &mut self,
+        leaf_id:   LeafId,
+        dir:       SplitKind,
+        new_panel: P,
+    ) -> Option<LeafId> {
+        // Reject non-binary splits — `split_leaf_with_children` handles those.
+        if !matches!(dir, SplitKind::SplitRight | SplitKind::SplitBottom) {
+            return None;
+        }
+
+        // Snapshot the original leaf so we can rebuild it under the new branch.
+        let leaf_clone = self.find_leaf(leaf_id)?.clone();
+
+        let new_id = self.next_leaf_id();
+        // Original leaf preserved verbatim (id, panels, active_tab, color_tag …)
+        let original_node = PanelNode::Leaf(leaf_clone);
+        let new_node = PanelNode::Leaf(Leaf::new(new_id, new_panel));
+
+        // SplitRight  → [original | new]
+        // SplitBottom → [original ; new]
+        let children = vec![original_node, new_node];
+
+        let branch_id = self.next_branch_id();
+        let new_branch = PanelNode::Branch(Branch {
+            id: branch_id,
+            children,
+            layout: Self::split_kind_to_layout(dir),
+            custom_rects: Vec::new(),
+            proportions: Vec::new(),
+            cross_ratio: None,
+        });
+
+        // Replace the original leaf-node in its parent with the new branch
+        // (the original leaf is one of the branch's children, so the leaf id
+        // remains valid).
+        self.replace_node_leaf(leaf_id, new_branch);
+
+        Some(new_id)
+    }
+
+    /// Replace `leaf_id` with N freshly created leaves, all carrying clones
+    /// of the original's panel set.
+    ///
+    /// Use for compound splits (Grid2x2 / OneBig3Small / 3-column / 3-row …)
+    /// where there is no single "original" position — every child is new.
+    /// The original `leaf_id` becomes invalid after this call; `new_ids` are
+    /// the only valid handles.
+    pub fn split_leaf_with_children(
+        &mut self,
+        leaf_id: LeafId,
+        split:   SplitKind,
+        _width:  f32,
+        _height: f32,
+    ) -> Vec<LeafId> {
         // 1. Get leaf data before removing it
         let leaf = match self.find_leaf(leaf_id) {
             Some(l) => l.clone(),

@@ -2870,7 +2870,7 @@ impl AppState {
                         let active = self.layout.panels().active_leaf();
                         if let Some(active_leaf) = active {
                             let new_ids = self.layout.panels_mut().tree_mut()
-                                .split_leaf(active_leaf, split_kind, 0.0, 0.0);
+                                .split_leaf_with_children(active_leaf, split_kind, 0.0, 0.0);
                             if let Some(&new_id) = new_ids.last() {
                                 if let Some(leaf) = self.layout.panels_mut().tree_mut().leaf_mut(new_id) {
                                     leaf.panels.clear();
@@ -3218,13 +3218,7 @@ fn build_initial_trees() -> [uzor::docking::panels::DockingTree<DemoPanel>; 3] {
     // Tab 0: Watchlist | Notes side-by-side
     let mut tree0: DockingTree<DemoPanel> = DockingTree::new();
     let leaf_a = tree0.add_leaf(DemoPanel { title: "Watchlist".into(), kind: PanelKind::Watchlist });
-    let ids = tree0.split_leaf(leaf_a, SplitKind::SplitRight, 0.0, 0.0);
-    if let Some(&new_id) = ids.last() {
-        if let Some(leaf) = tree0.leaf_mut(new_id) {
-            leaf.panels.clear();
-            leaf.panels.push(DemoPanel { title: "Notes".into(), kind: PanelKind::Notes });
-        }
-    }
+    tree0.split_leaf(leaf_a, SplitKind::SplitRight, DemoPanel { title: "Notes".into(), kind: PanelKind::Notes });
 
     // Tab 1: single Spreadsheet leaf
     let mut tree1: DockingTree<DemoPanel> = DockingTree::new();
