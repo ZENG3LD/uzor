@@ -8,9 +8,11 @@
 
 use std::sync::Arc;
 
+use super::blackbox::{AgentAction, AgentActionReply, AgentWidget};
 use super::command::{Command, CommandReply};
 use super::log::AgentLogEntry;
 use super::snapshot::{AgentSnapshot, WidgetSnapshot};
+use serde_json::Value;
 
 pub trait AgentControl: Send + Sync + 'static {
     /// Latest snapshot of LM state.  Cheap clone — backed by an
@@ -44,6 +46,35 @@ pub trait AgentControl: Send + Sync + 'static {
     /// Last `n` log entries.  Default returns empty.
     fn log_tail(&self, _n: usize) -> Vec<AgentLogEntry> {
         Vec::new()
+    }
+
+    // ── Blackbox routing ─────────────────────────────────────────────
+    //
+    // LM keeps a routing table from `slot_id` to the corresponding
+    // `BlackboxAgentSurface` trait object.  These methods expose that
+    // table to the HTTP shim.  Default impls return empty so
+    // platforms without blackbox panels (TUI) keep working.
+
+    /// All blackbox `slot_id`s currently registered.
+    fn blackbox_slots(&self) -> Vec<String> { Vec::new() }
+
+    /// Mini-widget list published by the named blackbox.  `None` if
+    /// the slot isn't registered.
+    fn blackbox_widgets(&self, _slot_id: &str) -> Option<Vec<AgentWidget>> { None }
+
+    /// Internal-state snapshot from the named blackbox.
+    fn blackbox_state(&self, _slot_id: &str) -> Option<Value> { None }
+
+    /// Forward a typed action to the named blackbox.
+    fn blackbox_action(&self, _slot_id: &str, _action: AgentAction) -> Option<AgentActionReply> {
+        None
+    }
+
+    /// Synthetic click on a published mini-widget.  Returns the
+    /// rect's centre that was clicked, or `None` if the widget /
+    /// slot isn't found.
+    fn blackbox_click_widget(&self, _slot_id: &str, _sub_id: &str) -> Option<CommandReply> {
+        None
     }
 }
 

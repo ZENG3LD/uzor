@@ -52,6 +52,22 @@ pub enum Command {
         group_id: Option<u64>,
     },
     ApplyStylePreset { name: String },
+
+    // ── blackbox routing ────────────────────────────────────────────
+    /// Synthetic click on a mini-widget published by a blackbox.
+    BlackboxClickWidget { window: String, slot_id: String, sub_id: String },
+
+    /// Free-form agent-log push.  Used by the HTTP shim to record
+    /// `<slot>.<action>` entries after a blackbox action returns
+    /// with `log_payload`, and by external tooling that wants to
+    /// drop breadcrumbs into the merged feed.
+    LogPush {
+        category: String,
+        #[serde(default)]
+        payload: serde_json::Value,
+        #[serde(default)]
+        window: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]

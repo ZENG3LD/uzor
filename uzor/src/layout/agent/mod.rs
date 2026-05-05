@@ -29,12 +29,14 @@
 //!   They typically wrap an `LmAgent` and forward the calls it can
 //!   answer, then add their own.
 
+mod blackbox;
 mod command;
 mod control;
 mod lm_agent;
 mod log;
 mod snapshot;
 
+pub use blackbox::{AgentAction, AgentActionReply, AgentWidget, BlackboxAgentSurface};
 pub use command::{Command, CommandReply, MouseButton};
 pub use control::{AgentControl, AgentControlObj};
 pub use lm_agent::LmAgent;

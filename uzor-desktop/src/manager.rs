@@ -532,6 +532,15 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         // Publish agent-log mirror.  Cheap: ring buffer is bounded.
         let log_entries = self.layout.agent_log().snapshot();
         if let Ok(mut w) = bus.log.write() { *w = log_entries; }
+        // Publish blackbox registry mirror.  Each entry is just an
+        // `Arc` clone — cheap, no lock contention with the surface.
+        let bb_clone: std::collections::HashMap<_, _> = self.layout.blackbox_slots()
+            .into_iter()
+            .filter_map(|slot| {
+                self.layout.find_blackbox_agent(&slot).map(|s| (slot, s))
+            })
+            .collect();
+        if let Ok(mut w) = bus.blackboxes.write() { *w = bb_clone; }
     }
 
     /// Drain queued screenshot requests and produce PNG bytes from
@@ -1372,6 +1381,8 @@ fn command_window_key(cmd: &uzor::layout::agent::Command) -> Option<String> {
         | C::CloseDropdown { window, .. }
         | C::ToggleSidebar { window, .. } => Some(window.clone()),
         C::SpawnWindow { key, .. } | C::CloseWindow { key } => Some(key.clone()),
+        C::BlackboxClickWidget { window, .. } => Some(window.clone()),
+        C::LogPush { window, .. } => window.clone(),
         C::SetSyncMode { .. } | C::ApplyStylePreset { .. } => None,
     }
 }

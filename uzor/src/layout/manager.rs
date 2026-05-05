@@ -104,6 +104,15 @@ pub struct LayoutManager<P: DockPanel> {
     /// agents can replay everything that happened without resorting
     /// to screenshots.  See [`super::agent::log`].
     pub(crate) agent_log: super::agent::AgentLog,
+
+    /// Routing table from blackbox `slot_id` to its agent surface.
+    /// LM treats every entry as opaque — it never reads or writes
+    /// blackbox internals, just hands the trait object to the HTTP
+    /// shim so `/blackbox/<slot>/...` calls reach the right place.
+    pub(crate) blackbox_agents: std::collections::HashMap<
+        String,
+        std::sync::Arc<std::sync::Mutex<dyn super::agent::BlackboxAgentSurface>>,
+    >,
 }
 
 impl<P: DockPanel> LayoutManager<P> {
@@ -121,7 +130,63 @@ impl<P: DockPanel> LayoutManager<P> {
             styles: StyleManager::default(),
             sync_registry: super::sync::SyncRegistry::defaults(),
             agent_log: super::agent::AgentLog::default(),
+            blackbox_agents: std::collections::HashMap::new(),
         }
+    }
+
+    /// Register a blackbox panel's agent surface.  Idempotent — calling
+    /// twice with the same `slot_id` overwrites the previous entry,
+    /// which apps do every frame is they construct a fresh
+    /// `Arc<Mutex<...>>` (cheap pointer write, no allocation in the
+    /// HashMap once the key exists).
+    pub fn register_blackbox_agent(
+        &mut self,
+        slot_id: impl Into<String>,
+        surface: std::sync::Arc<std::sync::Mutex<dyn super::agent::BlackboxAgentSurface>>,
+    ) {
+        let id = slot_id.into();
+        let existed = self.blackbox_agents.contains_key(&id);
+        self.blackbox_agents.insert(id.clone(), surface);
+        if !existed {
+            let win = self.current_window.as_ref().map(|k| k.as_str().to_owned());
+            self.agent_log.push(
+                self.frame_time_ms,
+                win,
+                "lm.blackbox.register",
+                serde_json::json!({ "slot_id": id }),
+            );
+        }
+    }
+
+    /// Drop a blackbox surface from the registry.  Call this when the
+    /// blackbox is destroyed so HTTP `/blackbox/<slot>/...` calls
+    /// stop reaching a stale handler.
+    pub fn unregister_blackbox_agent(&mut self, slot_id: &str) {
+        if self.blackbox_agents.remove(slot_id).is_some() {
+            let win = self.current_window.as_ref().map(|k| k.as_str().to_owned());
+            self.agent_log.push(
+                self.frame_time_ms,
+                win,
+                "lm.blackbox.unregister",
+                serde_json::json!({ "slot_id": slot_id }),
+            );
+        }
+    }
+
+    /// List every registered blackbox slot id.
+    pub fn blackbox_slots(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.blackbox_agents.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    /// Look up a blackbox surface by slot id.  Returns a clone of the
+    /// `Arc` so callers can lock the inner `Mutex` independently.
+    pub fn find_blackbox_agent(
+        &self,
+        slot_id: &str,
+    ) -> Option<std::sync::Arc<std::sync::Mutex<dyn super::agent::BlackboxAgentSurface>>> {
+        self.blackbox_agents.get(slot_id).cloned()
     }
 
     /// Read-only access to the agent log.

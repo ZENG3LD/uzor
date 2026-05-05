@@ -163,6 +163,8 @@ impl<P: DockPanel> LmAgent<P> {
             Command::SpawnWindow { key, .. } | Command::CloseWindow { key } => {
                 Some(key.clone())
             }
+            Command::BlackboxClickWidget { window, .. } => Some(window.clone()),
+            Command::LogPush { window, .. } => window.clone(),
             Command::SetSyncMode { .. } | Command::ApplyStylePreset { .. } => None,
         };
         let ts = layout.frame_time_ms;
@@ -200,6 +202,50 @@ impl<P: DockPanel> LmAgent<P> {
             | Command::InjectScroll { .. }
             | Command::SpawnWindow { .. }
             | Command::CloseWindow { .. } => None,
+
+            Command::LogPush { category, payload, window } => {
+                let ts = layout.frame_time_ms;
+                layout.agent_log.push(ts, window.clone(), category.clone(), payload.clone());
+                Some(CommandReply::ok())
+            }
+
+            // ── blackbox sub-widget click ───────────────────────────
+            Command::BlackboxClickWidget { window, slot_id, sub_id } => {
+                let key = WindowKey::new(window.clone());
+                if !layout.window_keys().any(|k| k == &key) {
+                    return Some(CommandReply::err(format!("unknown window {:?}", window)));
+                }
+                let surface = match layout.find_blackbox_agent(slot_id) {
+                    Some(s) => s,
+                    None => return Some(CommandReply::err(format!(
+                        "no blackbox registered with slot_id {:?}", slot_id
+                    ))),
+                };
+                let rect = match surface.lock() {
+                    Ok(g) => g.resolve_click_widget(sub_id),
+                    Err(_) => return Some(CommandReply::err("blackbox lock poisoned")),
+                };
+                let rect = match rect {
+                    Some(r) => r,
+                    None => return Some(CommandReply::err(format!(
+                        "blackbox {:?} has no widget {:?}", slot_id, sub_id
+                    ))),
+                };
+                let cx = rect.x + rect.width / 2.0;
+                let cy = rect.y + rect.height / 2.0;
+                layout.set_current_window(key);
+                layout.on_pointer_move(cx, cy);
+                layout.on_pointer_down(cx, cy);
+                let _ = layout.on_pointer_up(cx, cy);
+                let ts = layout.frame_time_ms;
+                layout.agent_log.push(
+                    ts,
+                    Some(window.clone()),
+                    format!("{}.click_widget", slot_id),
+                    serde_json::json!({ "sub_id": sub_id, "x": cx, "y": cy }),
+                );
+                Some(CommandReply::ok())
+            }
 
             // ── semantic widget hits ────────────────────────────────
             Command::ClickWidget { window, widget_id } => {

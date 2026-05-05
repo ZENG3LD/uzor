@@ -43,7 +43,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tokio::runtime::Builder;
 
-use uzor::layout::agent::{AgentControlObj, Command, CommandReply, MouseButton};
+use uzor::layout::agent::{AgentAction, AgentControlObj, Command, CommandReply, MouseButton};
 
 // ── Shared state ─────────────────────────────────────────────────────
 
@@ -133,6 +133,12 @@ pub fn spawn_server(
                     .route("/window/close",          post(post_window_close))
                     .route("/lm/sync_mode",          post(post_set_sync_mode))
                     .route("/lm/style_preset",       post(post_apply_style_preset))
+                    // Blackbox routing — slot-id keyed.
+                    .route("/blackboxes",                       get(blackbox_slots))
+                    .route("/blackbox/:slot/widgets",           get(blackbox_widgets))
+                    .route("/blackbox/:slot/state",             get(blackbox_state))
+                    .route("/blackbox/:slot/action",            post(blackbox_action))
+                    .route("/blackbox/:slot/click_widget",      post(blackbox_click_widget))
                     .with_state(state);
 
                 let mut shutdown_rx = shutdown_rx.clone();
@@ -344,6 +350,96 @@ struct PresetBody { name: String }
 
 async fn post_apply_style_preset(State(s): State<AppState>, Json(b): Json<PresetBody>) -> impl IntoResponse {
     forward(s, Command::ApplyStylePreset { name: b.name }).await
+}
+
+// ── Blackbox endpoints ──────────────────────────────────────────────
+
+async fn blackbox_slots(State(s): State<AppState>) -> impl IntoResponse {
+    Json(s.control.blackbox_slots())
+}
+
+async fn blackbox_widgets(
+    State(s): State<AppState>,
+    Path(slot): Path<String>,
+) -> Response {
+    match s.control.blackbox_widgets(&slot) {
+        Some(w) => (StatusCode::OK, Json(w)).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(CommandReply::err("unknown slot"))).into_response(),
+    }
+}
+
+async fn blackbox_state(
+    State(s): State<AppState>,
+    Path(slot): Path<String>,
+) -> Response {
+    match s.control.blackbox_state(&slot) {
+        Some(v) => (StatusCode::OK, Json(v)).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(CommandReply::err("unknown slot"))).into_response(),
+    }
+}
+
+async fn blackbox_action(
+    State(s): State<AppState>,
+    Path(slot): Path<String>,
+    Json(action): Json<AgentAction>,
+) -> Response {
+    let s_clone = s.clone();
+    let slot_clone = slot.clone();
+    let action_name = action.name.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        s_clone.control.blackbox_action(&slot_clone, action)
+    }).await;
+    let reply = match result {
+        Ok(Some(r)) => r,
+        Ok(None) => return (
+            StatusCode::NOT_FOUND,
+            Json(CommandReply::err("unknown slot")),
+        ).into_response(),
+        Err(_) => return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(CommandReply::err("blackbox action panicked")),
+        ).into_response(),
+    };
+    // If the action returned a `log_payload`, push it into the
+    // merged agent log under category `<slot>.<action_name>`.
+    if reply.ok {
+        if let Some(payload) = reply.log_payload.clone() {
+            let category = format!("{}.{}", slot, action_name);
+            let window = s.control.snapshot().root.current_window;
+            let _ = s.control.dispatch(Command::LogPush { category, payload, window });
+        }
+    }
+    (StatusCode::OK, Json(reply)).into_response()
+}
+
+#[derive(Deserialize)]
+struct ClickBlackboxWidgetBody {
+    /// Optional override; defaults to whatever LM marks as
+    /// `current_window`.
+    window: Option<String>,
+    sub_id: String,
+}
+
+async fn blackbox_click_widget(
+    State(s): State<AppState>,
+    Path(slot): Path<String>,
+    Json(b): Json<ClickBlackboxWidgetBody>,
+) -> Response {
+    let window = match b.window {
+        Some(w) => w,
+        None => match s.control.snapshot().root.current_window {
+            Some(w) => w,
+            None => return (
+                StatusCode::BAD_REQUEST,
+                Json(CommandReply::err("no current window — pass `window` in body")),
+            ).into_response(),
+        },
+    };
+    forward(s, Command::BlackboxClickWidget {
+        window,
+        slot_id: slot,
+        sub_id: b.sub_id,
+    }).await
 }
 
 // ── shared forwarder ────────────────────────────────────────────────

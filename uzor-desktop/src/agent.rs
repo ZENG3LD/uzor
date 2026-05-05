@@ -14,14 +14,16 @@
 //! Every other command is forwarded to
 //! [`uzor::layout::agent::LmAgent::try_apply`].
 
-use std::sync::{Arc, RwLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, RwLock};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use uzor::docking::panels::DockPanel;
 use uzor::layout::LayoutManager;
 
 use uzor::layout::agent::{
-    AgentControl, AgentLogEntry, AgentSnapshot, Command, CommandReply, LmAgent,
+    AgentAction, AgentActionReply, AgentControl, AgentLogEntry, AgentSnapshot,
+    AgentWidget, BlackboxAgentSurface, Command, CommandReply, LmAgent,
     WidgetSnapshot,
 };
 
@@ -36,11 +38,17 @@ pub(crate) struct ScreenshotRequest {
 /// One pending command + the channel its caller is blocking on.
 pub(crate) type PendingCmd = (Command, Sender<CommandReply>);
 
+type BlackboxRegistry = HashMap<String, Arc<Mutex<dyn BlackboxAgentSurface>>>;
+
 /// Plumbing the manager owns; cloned (Arc-wrapped) into the HTTP server.
 pub(crate) struct AgentBus {
     pub snapshot: Arc<RwLock<AgentSnapshot>>,
     pub widgets:  Arc<RwLock<Vec<WidgetSnapshot>>>,
     pub log:      Arc<RwLock<Vec<AgentLogEntry>>>,
+    /// Mirror of `LayoutManager::blackbox_agents` so HTTP handlers
+    /// running on the agent-api thread can lock blackbox surfaces
+    /// directly without bouncing every read through the cmd channel.
+    pub blackboxes: Arc<RwLock<BlackboxRegistry>>,
     pub cmd_tx:   Sender<PendingCmd>,
     pub cmd_rx:   Receiver<PendingCmd>,
     pub shot_tx:  Sender<ScreenshotRequest>,
@@ -55,6 +63,7 @@ impl AgentBus {
             snapshot: Arc::new(RwLock::new(empty_snapshot())),
             widgets:  Arc::new(RwLock::new(Vec::new())),
             log:      Arc::new(RwLock::new(Vec::new())),
+            blackboxes: Arc::new(RwLock::new(HashMap::new())),
             cmd_tx: tx,
             cmd_rx: rx,
             shot_tx: stx,
@@ -64,22 +73,24 @@ impl AgentBus {
 
     pub fn control(&self) -> Arc<DesktopAgentControl> {
         Arc::new(DesktopAgentControl {
-            snapshot: Arc::clone(&self.snapshot),
-            widgets:  Arc::clone(&self.widgets),
-            log:      Arc::clone(&self.log),
-            cmd_tx:   self.cmd_tx.clone(),
-            shot_tx:  self.shot_tx.clone(),
+            snapshot:   Arc::clone(&self.snapshot),
+            widgets:    Arc::clone(&self.widgets),
+            log:        Arc::clone(&self.log),
+            blackboxes: Arc::clone(&self.blackboxes),
+            cmd_tx:     self.cmd_tx.clone(),
+            shot_tx:    self.shot_tx.clone(),
         })
     }
 }
 
 /// Desktop trait-object wired into [`uzor_agent_api::spawn_server`].
 pub struct DesktopAgentControl {
-    snapshot: Arc<RwLock<AgentSnapshot>>,
-    widgets:  Arc<RwLock<Vec<WidgetSnapshot>>>,
-    log:      Arc<RwLock<Vec<AgentLogEntry>>>,
-    cmd_tx:   Sender<PendingCmd>,
-    shot_tx:  Sender<ScreenshotRequest>,
+    snapshot:   Arc<RwLock<AgentSnapshot>>,
+    widgets:    Arc<RwLock<Vec<WidgetSnapshot>>>,
+    log:        Arc<RwLock<Vec<AgentLogEntry>>>,
+    blackboxes: Arc<RwLock<BlackboxRegistry>>,
+    cmd_tx:     Sender<PendingCmd>,
+    shot_tx:    Sender<ScreenshotRequest>,
 }
 
 impl AgentControl for DesktopAgentControl {
@@ -124,6 +135,56 @@ impl AgentControl for DesktopAgentControl {
         let len = guard.len();
         let start = len.saturating_sub(n);
         guard.iter().skip(start).cloned().collect()
+    }
+
+    fn blackbox_slots(&self) -> Vec<String> {
+        let guard = self.blackboxes.read().expect("blackbox registry lock");
+        let mut v: Vec<String> = guard.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
+    fn blackbox_widgets(&self, slot_id: &str) -> Option<Vec<AgentWidget>> {
+        let registry = self.blackboxes.read().expect("blackbox registry lock");
+        let surface = registry.get(slot_id)?.clone();
+        drop(registry); // release before locking the surface
+        let guard = surface.lock().ok()?;
+        Some(guard.list_agent_widgets())
+    }
+
+    fn blackbox_state(&self, slot_id: &str) -> Option<serde_json::Value> {
+        let registry = self.blackboxes.read().expect("blackbox registry lock");
+        let surface = registry.get(slot_id)?.clone();
+        drop(registry);
+        let guard = surface.lock().ok()?;
+        Some(guard.agent_state())
+    }
+
+    fn blackbox_action(&self, slot_id: &str, action: AgentAction) -> Option<AgentActionReply> {
+        let registry = self.blackboxes.read().expect("blackbox registry lock");
+        let surface = registry.get(slot_id)?.clone();
+        drop(registry);
+        let mut guard = surface.lock().ok()?;
+        Some(guard.apply_agent_action(action))
+    }
+
+    fn blackbox_click_widget(
+        &self,
+        slot_id: &str,
+        sub_id: &str,
+    ) -> Option<CommandReply> {
+        // Click goes through the command channel so the synthetic
+        // pointer events land on the winit thread.  We need the
+        // window key — fish it out of the latest snapshot's
+        // current_window.  Caller can override via `window` param
+        // in the HTTP layer.
+        let window = self.snapshot.read().ok()?.root.current_window.clone()?;
+        let cmd = Command::BlackboxClickWidget {
+            window,
+            slot_id: slot_id.to_owned(),
+            sub_id: sub_id.to_owned(),
+        };
+        Some(self.dispatch(cmd))
     }
 }
 

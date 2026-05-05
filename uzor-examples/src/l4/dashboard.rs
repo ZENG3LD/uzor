@@ -69,6 +69,9 @@ struct DashboardApp {
     /// Per-cell composite panel state — each painting cell is a real
     /// `PanelState`, not just a `fill_rect` background.
     cell_panel_states: [uzor::ui::widgets::composite::panel::state::PanelState; 4],
+    /// Live state for the tree-debug blackbox.  Registered with LM
+    /// in `init` so HTTP `/blackbox/tree-debug/...` routes resolve.
+    tree_debug_state: Option<std::sync::Arc<std::sync::Mutex<tree_debug::TreeDebugState>>>,
 }
 
 impl DashboardApp {
@@ -84,6 +87,7 @@ impl DashboardApp {
                 PanelState::default(),
                 PanelState::default(),
             ],
+            tree_debug_state: None,
         }
     }
 }
@@ -91,6 +95,10 @@ impl DashboardApp {
 impl App<PaintPanel> for DashboardApp {
     fn init(&mut self, _key: &WindowKey, layout: &mut uzor::layout::LayoutManager<PaintPanel>) {
         use uzor::docking::panels::SplitKind;
+
+        // Register the tree-debug blackbox with LM so the agent API
+        // routes `/blackbox/tree-debug/...` reach it.
+        self.tree_debug_state = Some(tree_debug::register(layout, "tree-debug"));
         // Build a 2×2 dock tree once: dirty | 30 fps    on top,
         //                              120 fps | uncap on bottom.
         let tree = layout.panels_mut().tree_mut();
@@ -481,10 +489,13 @@ impl App<PaintPanel> for DashboardApp {
                     });
                 if let Some(rect) = rect_opt {
                     if region_id == "paint:r0_dirty" {
-                        // Replace the dirty-driven cell with the live
-                        // LayoutManager tree debug panel.  Reads from
-                        // `win.layout` directly, no extra state.
-                        tree_debug::render_layout_tree(rect, &*win.layout, &mut *win.render);
+                        if let Some(state_arc) = self.tree_debug_state.as_ref() {
+                            if let Ok(mut state) = state_arc.lock() {
+                                tree_debug::render_layout_tree(
+                                    rect, &mut *state, &*win.layout, &mut *win.render,
+                                );
+                            }
+                        }
                     } else {
                         let target_fps = match region_id {
                             "paint:r1_30fps"  => 30,

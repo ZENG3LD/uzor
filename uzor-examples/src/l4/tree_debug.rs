@@ -1,39 +1,145 @@
-//! Layout-tree debug panel (rendered inside a host app's blackbox/dock leaf).
+//! Layout-tree debug panel — a full blackbox with agent control.
 //!
-//! Call [`render_layout_tree`] from inside any L4 panel body.  It draws
-//! the live state of the [`LayoutManager`] as a tree:
+//! Lives inside the dashboard as a dock leaf.  Renders the live LM
+//! tree (synced root + every attached branch) with sync-mode pills.
+//! Two toggles in the top-right corner let the user filter what to
+//! show:
 //!
-//! ```text
-//! synced root
-//! ├─[synced]    styles
-//! ├─[synced]    z_layers
-//! └─…
-//! windows (n)
-//! ├── window: main
-//! │   ├─[sometimes] chrome_cfg   (visible=true)
-//! │   ├─[sometimes] dock_tree    (3 leaves)
-//! │   └─[standalone] pointer_state (hover=… at=…)
-//! └── window: side …
-//! ```
+//! - `show_synced_root` — hides the green "synced root" section.
+//! - `show_standalone`  — hides red Standalone rows.
 //!
-//! Each row carries a coloured pill matching the node's [`SyncMode`]:
-//! - **green** — Synced
-//! - **amber** — Sometimes(None)
-//! - **blue**  — Sometimes(Some(group))
-//! - **red**   — Standalone
+//! Both are controllable from the agent via:
+//!
+//! - `POST /blackbox/tree-debug/click_widget {sub_id:"toggle:synced_root"}`
+//! - `POST /blackbox/tree-debug/action {name:"set_filter", args:{...}}`
+//!
+//! The agent reads internal state via
+//! `GET /blackbox/tree-debug/state` and the published mini-widget list
+//! via `GET /blackbox/tree-debug/widgets`.
+
+use std::sync::{Arc, Mutex};
+
+use serde_json::json;
 
 use uzor::core::types::Rect;
 use uzor::engine::render::RenderContext;
 use uzor::framework::multi_window::WindowKey;
+use uzor::layout::agent::{
+    AgentAction, AgentActionReply, AgentWidget, BlackboxAgentSurface,
+};
 use uzor::layout::docking::DockPanel;
 use uzor::layout::sync::{node_ids, SyncMode};
 use uzor::layout::LayoutManager;
 
-/// Draw the layout tree panel inside `rect` using `render`.  Works for any
-/// `LayoutManager<P>` because it only reads the parts of the branch that
-/// are panel-type-agnostic.
+// ── State ────────────────────────────────────────────────────────────
+
+/// Long-lived state for the tree-debug blackbox.  Owned by the host
+/// app and shared with LM through `Arc<Mutex<TreeDebugState>>` so the
+/// agent surface can be locked from any thread.
+#[derive(Debug, Clone)]
+pub struct TreeDebugState {
+    pub show_synced_root: bool,
+    pub show_standalone:  bool,
+    /// Slot id this instance was registered with.  Used by
+    /// `BlackboxAgentSurface::agent_slot_id`.
+    pub slot_id: String,
+    /// Cached toggle rects (filled in by the renderer each frame).
+    pub toggle_rects: Vec<(String, Rect)>,
+}
+
+impl Default for TreeDebugState {
+    fn default() -> Self {
+        Self {
+            show_synced_root: true,
+            show_standalone:  true,
+            slot_id: "tree-debug".to_owned(),
+            toggle_rects: Vec::new(),
+        }
+    }
+}
+
+// ── BlackboxAgentSurface impl ───────────────────────────────────────
+
+impl BlackboxAgentSurface for TreeDebugState {
+    fn agent_slot_id(&self) -> &str {
+        &self.slot_id
+    }
+
+    fn agent_kind(&self) -> &str {
+        "tree-debug"
+    }
+
+    fn list_agent_widgets(&self) -> Vec<AgentWidget> {
+        let mut out = Vec::with_capacity(self.toggle_rects.len());
+        for (sub_id, rect) in &self.toggle_rects {
+            let (label, checked) = match sub_id.as_str() {
+                "toggle:synced_root" => ("Show synced root", self.show_synced_root),
+                "toggle:standalone"  => ("Show standalone",  self.show_standalone),
+                _ => ("?", false),
+            };
+            out.push(AgentWidget {
+                sub_id: sub_id.clone(),
+                kind: "toggle".to_owned(),
+                rect: *rect,
+                label: Some(label.to_owned()),
+                meta: json!({ "checked": checked }),
+            });
+        }
+        out
+    }
+
+    fn agent_state(&self) -> serde_json::Value {
+        json!({
+            "show_synced_root": self.show_synced_root,
+            "show_standalone":  self.show_standalone,
+        })
+    }
+
+    fn apply_agent_action(&mut self, action: AgentAction) -> AgentActionReply {
+        match action.name.as_str() {
+            "toggle_synced_root" => {
+                self.show_synced_root = !self.show_synced_root;
+                AgentActionReply::ok_with_log(json!({
+                    "show_synced_root": self.show_synced_root
+                }))
+            }
+            "toggle_standalone" => {
+                self.show_standalone = !self.show_standalone;
+                AgentActionReply::ok_with_log(json!({
+                    "show_standalone": self.show_standalone
+                }))
+            }
+            "set_filter" => {
+                if let Some(v) = action.args.get("show_synced_root").and_then(|v| v.as_bool()) {
+                    self.show_synced_root = v;
+                }
+                if let Some(v) = action.args.get("show_standalone").and_then(|v| v.as_bool()) {
+                    self.show_standalone = v;
+                }
+                AgentActionReply::ok_with_log(json!({
+                    "show_synced_root": self.show_synced_root,
+                    "show_standalone":  self.show_standalone,
+                }))
+            }
+            other => AgentActionReply::err(format!("unknown action {:?}", other)),
+        }
+    }
+}
+
+// ── Per-frame render entry-point ────────────────────────────────────
+
+/// Render the panel inside `rect`.  Updates `state.toggle_rects` so
+/// `BlackboxAgentSurface::list_agent_widgets` returns current rects.
+///
+/// Click handling is done by the host (l4-dashboard) — it polls
+/// `layout.was_clicked(...)` for synthetic widget ids registered by
+/// this renderer (`tree-debug:toggle:synced_root` / `:standalone`)
+/// and forwards into [`TreeDebugState::apply_agent_action`].  This
+/// means *both* a human click and an agent click come through the
+/// same code path.
 pub fn render_layout_tree<P: DockPanel>(
-    rect: Rect,
+    rect:   Rect,
+    state:  &mut TreeDebugState,
     layout: &LayoutManager<P>,
     render: &mut dyn RenderContext,
 ) {
@@ -47,25 +153,48 @@ pub fn render_layout_tree<P: DockPanel>(
     render.set_font("bold 14px sans-serif");
     render.fill_text("LayoutManager — live tree", rect.x + 12.0, rect.y + 18.0);
 
+    // ── Toggles in the top-right corner ─────────────────────────────
+    let toggle_w = 28.0_f64;
+    let toggle_h = 16.0_f64;
+    let toggle_gap = 8.0_f64;
+
+    let synced_x = rect.x + rect.width - 12.0 - toggle_w;
+    let synced_y = rect.y + 8.0;
+    draw_toggle(render, synced_x, synced_y, toggle_w, toggle_h, state.show_synced_root, "synced");
+
+    let standalone_x = rect.x + rect.width - 12.0 - toggle_w * 2.0 - toggle_gap;
+    let standalone_y = synced_y;
+    draw_toggle(render, standalone_x, standalone_y, toggle_w, toggle_h, state.show_standalone, "alone");
+
+    // Publish toggle rects so `list_agent_widgets` can hand them to the agent.
+    state.toggle_rects.clear();
+    state.toggle_rects.push((
+        "toggle:synced_root".to_owned(),
+        Rect::new(synced_x, synced_y, toggle_w, toggle_h),
+    ));
+    state.toggle_rects.push((
+        "toggle:standalone".to_owned(),
+        Rect::new(standalone_x, standalone_y, toggle_w, toggle_h),
+    ));
+
     let mut cy = rect.y + 38.0;
     let line_h = 18.0_f64;
     let indent = 16.0_f64;
 
-    // ── synced root ─────────────────────────────────────────────────
-    draw_label(render, rect.x + 12.0, &mut cy, line_h, "synced root", "#9AA0AC");
-    for id in [
-        node_ids::STYLES,
-        node_ids::Z_LAYERS,
-        node_ids::FRAME_TIME,
-        node_ids::PANEL_TYPES,
-    ] {
-        let mode = layout.sync_registry().get(id);
-        draw_node(render, rect.x + 12.0 + indent, &mut cy, line_h, id, mode, None);
+    if state.show_synced_root {
+        draw_label(render, rect.x + 12.0, &mut cy, line_h, "synced root", "#9AA0AC");
+        for id in [
+            node_ids::STYLES,
+            node_ids::Z_LAYERS,
+            node_ids::FRAME_TIME,
+            node_ids::PANEL_TYPES,
+        ] {
+            let mode = layout.sync_registry().get(id);
+            draw_node(render, rect.x + 12.0 + indent, &mut cy, line_h, id, mode, None);
+        }
+        cy += 6.0;
     }
 
-    cy += 6.0;
-
-    // ── windows ─────────────────────────────────────────────────────
     let keys: Vec<WindowKey> = layout.window_keys().cloned().collect();
     let current = layout.current_window().cloned();
 
@@ -91,6 +220,9 @@ pub fn render_layout_tree<P: DockPanel>(
 
         for (id, hint) in window_branch_rows(layout, key) {
             let mode = layout.sync_registry().get(id);
+            if !state.show_standalone && matches!(mode, SyncMode::Standalone) {
+                continue;
+            }
             draw_node(
                 render,
                 rect.x + 12.0 + indent * 2.0,
@@ -100,7 +232,6 @@ pub fn render_layout_tree<P: DockPanel>(
                 mode,
                 hint.as_deref(),
             );
-            // Stop drawing if we run out of vertical room.
             if cy > rect.y + rect.height - 28.0 {
                 return;
             }
@@ -108,7 +239,7 @@ pub fn render_layout_tree<P: DockPanel>(
         cy += 4.0;
     }
 
-    // Legend (bottom strip)
+    // Legend
     let legend_y = rect.y + rect.height - 22.0;
     let mut lx = rect.x + 12.0;
     for (label, mode) in [
@@ -126,7 +257,46 @@ pub fn render_layout_tree<P: DockPanel>(
     }
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
+// ── Construction helpers ────────────────────────────────────────────
+
+/// Build a fresh shared state for the panel and register it as a
+/// blackbox agent surface so HTTP `/blackbox/tree-debug/...` routes
+/// resolve.
+pub fn register<P: DockPanel>(
+    layout: &mut LayoutManager<P>,
+    slot_id: impl Into<String>,
+) -> Arc<Mutex<TreeDebugState>> {
+    let mut state = TreeDebugState::default();
+    state.slot_id = slot_id.into();
+    let id = state.slot_id.clone();
+    let arc = Arc::new(Mutex::new(state));
+    layout.register_blackbox_agent(id, arc.clone());
+    arc
+}
+
+// ── small drawing helpers ───────────────────────────────────────────
+
+fn draw_toggle(
+    render: &mut dyn RenderContext,
+    x: f64, y: f64, w: f64, h: f64,
+    on: bool,
+    short_label: &str,
+) {
+    let track_bg = if on { "#5CB87A" } else { "#3A3D45" };
+    render.set_fill_color(track_bg);
+    render.fill_rounded_rect(x, y, w, h, h / 2.0);
+
+    let knob_size = h - 4.0;
+    let knob_x = if on { x + w - knob_size - 2.0 } else { x + 2.0 };
+    let knob_y = y + 2.0;
+    render.set_fill_color("#E6E6EA");
+    render.fill_rounded_rect(knob_x, knob_y, knob_size, knob_size, knob_size / 2.0);
+
+    // Tiny label below
+    render.set_fill_color("#9AA0AC");
+    render.set_font("9px sans-serif");
+    render.fill_text(short_label, x, y + h + 9.0);
+}
 
 fn rgba_css(c: [f32; 4]) -> String {
     format!(
