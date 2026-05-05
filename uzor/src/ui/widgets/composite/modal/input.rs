@@ -12,7 +12,7 @@ use super::settings::ModalSettings;
 use super::state::ModalState;
 use super::types::{ModalRenderKind, ModalView};
 use crate::input::text::store::TextFieldConfig;
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::types::CompositeId;
 use crate::input::{Sense, WidgetKind};

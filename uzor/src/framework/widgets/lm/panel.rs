@@ -14,7 +14,7 @@
 //! ```
 
 use crate::core::types::Rect;
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::layout::{LayoutManager, LayoutNodeId, PanelNode, StyleManager};
 use crate::render::RenderContext;
 use crate::ui::widgets::composite::panel::input::register_layout_manager_panel;

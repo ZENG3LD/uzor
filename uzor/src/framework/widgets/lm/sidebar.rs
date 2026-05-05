@@ -12,7 +12,7 @@
 //!     .build(&mut layout, &mut render);
 //! ```
 
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::layout::{LayoutManager, LayoutNodeId, SidebarHandle, SidebarNode, StyleManager};
 use crate::render::RenderContext;
 use crate::types::OverflowMode;

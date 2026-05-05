@@ -10,7 +10,7 @@ use super::render::register_context_manager_context_menu;
 use super::settings::ContextMenuSettings;
 use super::state::ContextMenuState;
 use super::types::{ContextMenuRenderKind, ContextMenuView};
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
 use crate::layout::{CompositeKind, CompositeRegistration, ContextMenuHandle, ContextMenuNode, DismissFrame, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, WidgetNode};

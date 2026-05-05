@@ -16,7 +16,7 @@
 //! sensible defaults; chainable methods expose them when overrides are needed.
 
 use crate::core::types::Rect;
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::layout::{LayoutManager, LayoutNodeId, ModalHandle, ModalNode, StyleManager};
 use crate::render::RenderContext;
 use crate::ui::widgets::composite::modal::input::register_layout_manager_modal;

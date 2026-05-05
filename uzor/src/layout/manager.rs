@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::docking::panels::{PanelRect, DockPanel};
+use crate::layout::docking::{PanelRect, DockPanel};
 use super::dock_state::DockState;
 use crate::core::types::Rect;
 use crate::app_context::{ContextManager, layout::types::LayoutNode};
@@ -595,7 +595,7 @@ impl<P: DockPanel> LayoutManager<P> {
     ///
     /// Use to drive per-leaf body rendering (`for (id, rect) in
     /// layout.dock_leaves()`) without reaching into `panels()`.
-    pub fn dock_leaves(&self) -> impl Iterator<Item = (crate::docking::panels::LeafId, Rect)> + '_ {
+    pub fn dock_leaves(&self) -> impl Iterator<Item = (crate::layout::docking::LeafId, Rect)> + '_ {
         self.dock.panel_rects().iter().map(|(&id, &pr)| {
             (id, panel_rect_to_rect(pr))
         })
@@ -1124,7 +1124,7 @@ impl<P: DockPanel> LayoutManager<P> {
     /// installed so a hit translates to
     /// [`super::DispatchEvent::DockSeparatorDragStarted`].
     pub fn register_dock_separators(&mut self, layer: &LayerId) {
-        use crate::docking::panels::SeparatorOrientation as SepOrient;
+        use crate::layout::docking::SeparatorOrientation as SepOrient;
         let sep_rects: Vec<(usize, Rect)> = self
             .dock
             .separators()

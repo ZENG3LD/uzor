@@ -1,7 +1,7 @@
 //! Tooltip input-coordinator registration helpers.
 
 use crate::app_context::ContextManager;
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::{InputCoordinator, LayerId};
 use crate::input::core::sense::Sense;
 use crate::input::core::widget_kind::WidgetKind;

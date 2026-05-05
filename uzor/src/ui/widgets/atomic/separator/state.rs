@@ -91,5 +91,5 @@ impl SeparatorHoverState {
 //
 // Decision: keep `SeparatorController` in `uzor::docking` where it lives.
 // It is NOT used by or re-exported from this widget module. If a future caller
-// needs snap-back, use `crate::docking::panels::separator::SeparatorController`
+// needs snap-back, use `crate::layout::docking::separator::SeparatorController`
 // directly.

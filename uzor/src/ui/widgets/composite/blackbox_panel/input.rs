@@ -11,7 +11,7 @@ use super::render::register_context_manager_blackbox_panel;
 use super::settings::BlackboxPanelSettings;
 use super::state::BlackboxState;
 use super::types::{BlackboxEvent, BlackboxEventResult, BlackboxHandler, BlackboxRenderKind, BlackboxView};
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
 use crate::layout::{BlackboxPanelNode, LayoutManager, LayoutNodeId, WidgetNode};

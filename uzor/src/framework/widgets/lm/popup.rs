@@ -10,7 +10,7 @@
 //! ```
 
 use crate::core::types::Rect;
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::layout::{LayoutManager, LayoutNodeId, PopupHandle, PopupNode, StyleManager};
 use crate::render::RenderContext;
 use crate::types::{OverflowMode, SizeMode};

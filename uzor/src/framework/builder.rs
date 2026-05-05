@@ -1,6 +1,6 @@
 //! Fluent builder for constructing an uzor app.
 
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 
 use super::app::{App, AppConfig, NoPanel};
 use super::multi_window::{WindowSpec, WindowKey};

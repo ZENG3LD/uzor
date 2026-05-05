@@ -8,7 +8,7 @@ use super::render::register_context_manager_toolbar;
 use super::settings::ToolbarSettings;
 use super::state::ToolbarState;
 use super::types::{ToolbarRenderKind, ToolbarView};
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::{Sense, WidgetKind};
 use crate::layout::{ChevronStepDirection, CompositeKind, CompositeRegistration, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, ToolbarHandle, ToolbarNode, WidgetNode};
 use crate::render::RenderContext;

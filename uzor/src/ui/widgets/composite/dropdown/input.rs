@@ -10,7 +10,7 @@ use super::render::{measure_flat, register_context_manager_dropdown};
 use super::settings::DropdownSettings;
 use super::state::DropdownState;
 use super::types::{DropdownItem, DropdownRenderKind, DropdownView, DropdownViewKind, SubmenuWidth};
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
 use crate::layout::{CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, DropdownHandle, DropdownNode, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, WidgetNode};

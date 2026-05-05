@@ -16,7 +16,7 @@
 //! ```
 
 use crate::core::types::Rect;
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::layout::{BlackboxPanelNode, LayoutManager, LayoutNodeId, StyleManager};
 use crate::render::RenderContext;

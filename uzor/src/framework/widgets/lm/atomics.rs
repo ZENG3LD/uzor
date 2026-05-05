@@ -10,7 +10,7 @@
 //! via [`super::raw`] directly.
 
 use crate::core::types::Rect;
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::layout::{LayoutManager, LayoutNodeId, StyleManager};
 use crate::render::RenderContext;
 use crate::types::{WidgetId, WidgetState};

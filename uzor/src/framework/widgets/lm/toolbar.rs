@@ -14,7 +14,7 @@
 //!     .build(&mut layout, &mut render);
 //! ```
 
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::layout::{LayoutManager, LayoutNodeId, ResizeEdge, StyleManager, ToolbarHandle, ToolbarNode};
 use crate::render::RenderContext;
 use crate::types::OverflowMode;

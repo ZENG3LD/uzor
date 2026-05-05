@@ -5,7 +5,7 @@
 //! keyboard PgUp/PgDn handling (mlc routes those to PTY only).
 
 use crate::app_context::ContextManager;
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};

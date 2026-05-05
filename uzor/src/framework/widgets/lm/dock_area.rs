@@ -16,7 +16,7 @@
 //! same hit-zone infrastructure in subsequent helpers.
 
 use crate::core::types::Rect;
-use crate::docking::panels::{DockPanel, LeafId};
+use crate::layout::docking::{DockPanel, LeafId};
 use crate::input::core::coordinator::LayerId;
 use crate::layout::LayoutManager;
 use crate::render::RenderContext;
@@ -74,7 +74,7 @@ impl DockArea {
 
         // 2. Paint separator strips.
         if self.paint_separators {
-            use crate::docking::panels::SeparatorOrientation as SO;
+            use crate::layout::docking::SeparatorOrientation as SO;
             let bg = layout.styles().color_or_owned("border_strong", "rgba(255,255,255,0.18)");
             let separators: Vec<_> = layout.panels().separators().iter().map(|s| {
                 let thickness = s.thickness_for_state() as f64;

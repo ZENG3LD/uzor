@@ -1,7 +1,6 @@
 //! uzor - Platform-agnostic headless UI engine
 
 pub mod core;
-pub mod docking;
 pub mod input;
 pub mod layout;
 pub mod platform;
@@ -17,8 +16,11 @@ pub use self::core::window;
 
 // Compat shims — old names
 pub use app_context as context;
-pub use docking::panels;
-pub use docking::panel_api;
+// `docking` was absorbed into `layout`. Keep the old paths as aliases for now.
+pub use layout::docking as docking_panels;
+pub use layout::docking as panels;
+pub use layout::panel_api;
+pub mod docking { pub use crate::layout::docking::*; pub use crate::layout::docking as panels; pub use crate::layout::panel_api; }
 /// CSS-flex micro-layout engine (widget subtrees). Macro layout lives in `crate::layout`.
 pub use app_context::layout as app_layout;
 pub use app_context::state;

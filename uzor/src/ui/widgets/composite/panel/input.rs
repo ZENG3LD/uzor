@@ -10,7 +10,7 @@ use super::render::register_context_manager_panel;
 use super::settings::PanelSettings;
 use super::state::PanelState;
 use super::types::{PanelRenderKind, PanelView};
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::{Sense, WidgetKind};
 use crate::layout::{LayoutManager, LayoutNodeId, PanelNode, WidgetNode};
 use crate::render::RenderContext;

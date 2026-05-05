@@ -3,7 +3,7 @@
 //! L2 — `register_context_manager_modal`   (ContextManager)
 //! L3 — `register_layout_manager_modal`    (LayoutManager)
 
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::{InputCoordinator, WidgetKind};
 use crate::input::core::coordinator::LayerId;
 use crate::layout::{LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind};

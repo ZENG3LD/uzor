@@ -3,7 +3,7 @@
 //! Unlike Dropdown, ContextMenu positions at raw cursor coordinates with
 //! smart screen-edge clamping (`open_smart`). There is no anchor widget.
 
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::InputCoordinator;
 use crate::layout::LayoutManager;
 

@@ -1,6 +1,6 @@
 //! Toolbar persistent state.
 
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::InputCoordinator;
 use crate::layout::LayoutManager;
 use crate::types::Rect;

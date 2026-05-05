@@ -1,6 +1,6 @@
 //! Application lifecycle trait, configuration, and the `NoPanel` default type.
 
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::layout::LayoutManager;
 use crate::input::core::event_processor::PlatformEvent;
 use super::builder::RgbaIcon;

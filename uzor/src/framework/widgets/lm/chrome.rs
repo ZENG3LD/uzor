@@ -14,7 +14,7 @@
 //!     .build(&mut layout, &mut render);
 //! ```
 
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::layout::{ChromeNode, LayoutManager, LayoutNodeId, StyleManager};
 use crate::render::RenderContext;
 use crate::ui::widgets::composite::chrome::input::register_layout_manager_chrome;

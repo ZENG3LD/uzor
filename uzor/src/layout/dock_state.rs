@@ -41,7 +41,7 @@
 //! }
 //! ```
 
-use crate::docking::panels::{
+use crate::layout::docking::{
     DockPanel, DockingTree, Leaf, Branch, PanelNode, LeafId, BranchId, PanelRect,
     Separator, SeparatorOrientation, SeparatorState, SeparatorLevel,
     SnapBackAnimation, TabBarInfo, TabItem, TabReorderState,
@@ -285,7 +285,7 @@ impl<P: DockPanel> DockState<P> {
 
     /// Compute leaf rects from tree layout (delegates to the pure-fn lib).
     fn compute_leaf_rects(&self, area: PanelRect) -> HashMap<LeafId, PanelRect> {
-        crate::docking::panels::lib::compute_leaf_rects(&self.tree, area)
+        crate::layout::docking::lib::compute_leaf_rects(&self.tree, area)
     }
 
 
@@ -344,12 +344,12 @@ impl<P: DockPanel> DockState<P> {
     /// `&mut self.separators` (exclusive) so the free fn can read tree
     /// while writing the separator list.
     fn generate_separators_recursive(&mut self, branch: &Branch<P>, branch_rect: PanelRect) {
-        crate::docking::panels::lib::generate_separators(branch, branch_rect, &mut self.separators);
+        crate::layout::docking::lib::generate_separators(branch, branch_rect, &mut self.separators);
     }
 
     /// Detect corners at separator intersections.
     fn detect_corners(&mut self) {
-        self.corners = crate::docking::panels::lib::detect_corners(&self.separators);
+        self.corners = crate::layout::docking::lib::detect_corners(&self.separators);
     }
 
     // =============================================================================
@@ -946,7 +946,7 @@ impl<P: DockPanel> DockState<P> {
 
     /// Detect drop zone using improved algorithm with smaller center zone
     fn detect_drop_zone(x: f32, y: f32, width: f32, height: f32) -> DropZone {
-        crate::docking::panels::lib::detect_drop_zone(x, y, width, height)
+        crate::layout::docking::lib::detect_drop_zone(x, y, width, height)
     }
 
     /// Apply panel drop - restructure the tree based on drop zone

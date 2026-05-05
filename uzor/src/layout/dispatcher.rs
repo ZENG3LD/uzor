@@ -26,7 +26,7 @@
 //! override a composite's default handler by registering its own pattern
 //! after `register_layout_manager_*`.
 
-use crate::docking::panels::LeafId;
+use crate::layout::docking::LeafId;
 use crate::types::WidgetId;
 use super::handles::{
     ModalHandle, DropdownHandle,

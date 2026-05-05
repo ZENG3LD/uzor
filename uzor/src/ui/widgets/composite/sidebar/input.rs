@@ -10,7 +10,7 @@ use super::render::register_context_manager_sidebar;
 use super::settings::SidebarSettings;
 use super::state::{SidebarState, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH};
 use super::types::{SidebarRenderKind, SidebarView};
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
 use crate::layout::{ChevronStepDirection, CompositeKind, CompositeRegistration, DispatchEvent, LayoutManager, LayoutNodeId, SidebarHandle, SidebarNode, WidgetNode};

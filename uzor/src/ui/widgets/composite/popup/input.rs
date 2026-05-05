@@ -7,7 +7,7 @@ use super::render::register_context_manager_popup;
 use super::settings::PopupSettings;
 use super::state::PopupState;
 use super::types::{PopupRenderKind, PopupView};
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{Sense, WidgetKind};
 use crate::layout::{CompositeKind, CompositeRegistration, DismissFrame, DispatchEvent, EventBuilder, LayoutManager, LayoutNodeId, OverlayEntry, OverlayKind, PopupHandle, PopupNode, WidgetNode};

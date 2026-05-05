@@ -2,7 +2,7 @@
 
 use crate::core::types::Rect;
 use crate::layout::LayoutManager;
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use super::builder::RgbaIcon;
 use crate::platform::types::CornerStyle;
 

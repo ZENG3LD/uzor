@@ -11,7 +11,7 @@
 //! ```
 
 use crate::core::types::Rect;
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::layout::{ContextMenuHandle, ContextMenuNode, LayoutManager, LayoutNodeId, StyleManager};
 use crate::render::RenderContext;
 use crate::ui::widgets::composite::context_menu::input::register_layout_manager_context_menu;

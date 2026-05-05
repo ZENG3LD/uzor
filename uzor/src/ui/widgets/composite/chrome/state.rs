@@ -4,7 +4,7 @@
 //! regardless of which `ChromeRenderKind` is active.
 
 use crate::input::core::coordinator::InputCoordinator;
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::layout::LayoutManager;
 use crate::ui::widgets::atomic::tooltip::TooltipState;
 use crate::ui::widgets::composite::context_menu::ContextMenuState;

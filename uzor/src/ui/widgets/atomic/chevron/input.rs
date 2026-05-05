@@ -2,7 +2,7 @@
 //! the rest of the atomic widgets.
 
 use crate::app_context::ContextManager;
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::LayerId;
 use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};

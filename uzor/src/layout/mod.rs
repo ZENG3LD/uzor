@@ -16,6 +16,8 @@ mod chrome_slot;
 mod consume_chain;
 mod dispatcher;
 pub mod dock_state;
+pub mod docking;
+pub mod panel_api;
 mod edge_panels;
 mod handles;
 pub mod host;

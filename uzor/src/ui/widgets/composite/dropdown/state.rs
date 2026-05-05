@@ -3,7 +3,7 @@
 //! `DropdownState` is a flat struct — fields irrelevant to the active
 //! `DropdownRenderKind` are never touched.
 
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::core::coordinator::InputCoordinator;
 use crate::layout::LayoutManager;
 use crate::types::Rect;

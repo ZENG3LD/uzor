@@ -6,7 +6,7 @@ use crate::input::{InputCoordinator, Sense, WidgetKind};
 use crate::layout::{LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
 use crate::types::{Rect, WidgetId, WidgetState};
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 
 use super::render::{draw_button, ButtonView};
 use super::settings::ButtonSettings;

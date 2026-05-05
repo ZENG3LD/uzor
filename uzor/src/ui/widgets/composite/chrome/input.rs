@@ -12,7 +12,7 @@ use super::settings::ChromeSettings;
 use super::state::ChromeState;
 use super::types::{ChromeAction, ChromeHit, ChromeRenderKind, ChromeView, ResizeCorner};
 use crate::core::types::Rect;
-use crate::docking::panels::DockPanel;
+use crate::layout::docking::DockPanel;
 use crate::input::{Sense, WidgetKind};
 use crate::layout::{ChromeNode, CompositeKind, CompositeRegistration, LayoutManager, LayoutNodeId, WidgetNode};
 use crate::render::RenderContext;
