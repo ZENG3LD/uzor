@@ -344,6 +344,42 @@ impl WindowRenderState {
         self.active
     }
 
+    /// Borrow the wgpu device + queue + render surface tuple, if this
+    /// window is GPU-backed.  Returns `None` for software-presented
+    /// windows (TinySkia / VelloCpu in headless GPU mode) and on web.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn gpu_handles(&self) -> Option<(&wgpu::Device, &wgpu::Queue, &vello::util::RenderSurface<'static>)> {
+        match &self.surface {
+            SurfaceMode::Gpu { gpu_pool, surface, dev_id } => {
+                let dh = gpu_pool.devices.get(*dev_id)?;
+                Some((&dh.device, &dh.queue, surface))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            SurfaceMode::Software { .. } => None,
+            #[cfg(target_arch = "wasm32")]
+            SurfaceMode::Canvas2d { .. } => None,
+        }
+    }
+
+    /// Mutable variant of [`gpu_handles`] — returns the surface as
+    /// `&mut` so callers can patch its texture (e.g. add COPY_SRC for
+    /// screenshots).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn gpu_handles_mut(
+        &mut self,
+    ) -> Option<(&wgpu::Device, &wgpu::Queue, &mut vello::util::RenderSurface<'static>)> {
+        match &mut self.surface {
+            SurfaceMode::Gpu { gpu_pool, surface, dev_id } => {
+                let dh = gpu_pool.devices.get(*dev_id)?;
+                Some((&dh.device, &dh.queue, surface))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            SurfaceMode::Software { .. } => None,
+            #[cfg(target_arch = "wasm32")]
+            SurfaceMode::Canvas2d { .. } => None,
+        }
+    }
+
     /// Set the active backend (live switching).
     ///
     /// The caller is responsible for ensuring the corresponding renderer slot

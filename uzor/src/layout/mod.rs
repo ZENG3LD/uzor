@@ -12,6 +12,7 @@
 //!
 //! `docs/uzor-widget-research/layout-manager-deep.md` for the full design doc.
 
+pub mod agent;
 mod branch;
 mod chrome_slot;
 mod consume_chain;
