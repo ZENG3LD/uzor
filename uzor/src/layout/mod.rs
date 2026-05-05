@@ -12,6 +12,7 @@
 //!
 //! `docs/uzor-widget-research/layout-manager-deep.md` for the full design doc.
 
+mod branch;
 mod chrome_slot;
 mod consume_chain;
 mod dispatcher;
@@ -24,8 +25,10 @@ pub mod host;
 pub mod window;
 mod manager;
 mod overlay_stack;
+mod registry;
 mod solve;
 pub mod styles;
+pub mod sync;
 mod tree;
 mod types;
 mod z_layers;
@@ -35,7 +38,10 @@ pub use host::WindowHost;
 pub use consume_chain::consume_event_chain;
 pub use dispatcher::{ChevronStepDirection, ChromeWindowControl, ClickDispatcher, DispatchEvent, EventBuilder, ResizeEdge};
 pub use edge_panels::{EdgePanels, EdgePlacement, EdgeSlot};
-pub use manager::{ClickOutcome, CompositeKind, CompositeRegistration, DismissFrame, LayoutManager, PointerUpOutcome};
+pub use branch::{WindowBranch, WindowSlot};
+pub use registry::{CompositeKind, CompositeRegistration, DismissFrame};
+pub use manager::{ClickOutcome, LayoutManager, PointerUpOutcome};
+pub use sync::{SyncGroupId, SyncMode, SyncRegistry};
 pub use overlay_stack::{OverlayEntry, OverlayStack};
 pub use solve::solve_layout;
 pub use handles::{

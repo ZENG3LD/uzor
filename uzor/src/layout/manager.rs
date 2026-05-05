@@ -2,9 +2,8 @@ use std::collections::HashMap;
 
 use crate::layout::docking::{PanelRect, DockPanel};
 use super::dock_state::DockState;
-use super::window::{WindowProvider, WindowKey};
+use super::window::{WindowKey, WindowProvider};
 use crate::core::types::Rect;
-use crate::app_context::{ContextManager, layout::types::LayoutNode};
 use crate::input::core::coordinator::LayerId;
 use crate::input::WidgetKind;
 use crate::types::WidgetId;
@@ -15,6 +14,7 @@ use crate::ui::widgets::composite::toolbar::state::ToolbarState;
 use crate::ui::widgets::composite::sidebar::state::SidebarState;
 use crate::ui::widgets::composite::context_menu::state::ContextMenuState;
 use crate::ui::widgets::composite::chrome::state::ChromeState;
+use crate::app_context::ContextManager;
 use super::chrome_slot::ChromeSlot;
 use super::edge_panels::EdgePanels;
 use super::handles::{
@@ -27,215 +27,11 @@ use super::z_layers::ZLayerTable;
 use super::types::{OverlayKind, LayoutSolved};
 use super::solve::solve_layout;
 use super::styles::StyleManager;
-
-// =============================================================================
-// WindowBranch — fat per-window state owned by `LayoutManager`
-// =============================================================================
-
-/// Everything the layout manager needs to track for one OS window.
-///
-/// LM is the application root.  Each attached window becomes a fat
-/// branch in the LM tree holding *all* per-window state — provider,
-/// rect, chrome, edges, layout tree, solved rects, pointer state, the
-/// per-window `ContextManager` (with input coordinator + retained tree),
-/// dispatcher, dismiss-frame registry, composite registry, overlays,
-/// and persistent composite-instance state maps.
-///
-/// Synced state (styles, z_layers, panel-type registry) stays on the LM
-/// root.  Everything else lives here, addressed by `WindowKey`.
-///
-/// The provider is an opaque trait object so LM stays platform-agnostic.
-/// Concrete kinds live in their crates (`uzor-window-desktop` for winit,
-/// `uzor-window-web` for DOM canvas, …).
-pub struct WindowBranch<P: DockPanel> {
-    // ── platform handle ──────────────────────────────────────────────────
-    /// Platform window handle wrapped in the trait LM talks to.
-    pub provider: Box<dyn WindowProvider>,
-
-    /// Cached logical rect captured at the last `solve_window`.
-    pub rect: Rect,
-
-    /// Has the runtime fired the per-window `App::init` hook yet?
-    pub initialised: bool,
-
-    // ── chrome / edges / dock subtree ────────────────────────────────────
-    /// Per-window chrome strip configuration (visible/height/etc).
-    pub chrome: ChromeSlot,
-
-    /// Per-window edge panel registry (left/right/top/bottom toolbars +
-    /// sidebars).
-    pub edges: EdgePanels,
-
-    /// Per-window docking state — tree, separators, panel rects, floating
-    /// panels, drag state.  Each window has its own dock tree so panels
-    /// torn off into another window keep their identity per-window.
-    pub dock: DockState<P>,
-
-    // ── solved layout ────────────────────────────────────────────────────
-    /// Macro layout tree (chrome + edges + dock + overlay nodes) solved
-    /// against the window rect each frame.
-    pub tree: LayoutTree,
-
-    /// Result of the most recent `solve_window`.
-    pub last_solved: Option<LayoutSolved>,
-
-    /// Window rect passed to the most recent `solve_window`.
-    pub last_window: Option<Rect>,
-
-    // ── input / dispatch / retained context ──────────────────────────────
-    /// Retained-mode context manager (holds the input coordinator and the
-    /// per-frame retained tree).  One per window so two windows don't
-    /// share hover / focus / capture.
-    pub ctx: ContextManager,
-
-    /// Per-window click dispatch table — composites push patterns at
-    /// register time; populated each frame by composite registration.
-    pub dispatcher: super::ClickDispatcher,
-
-    /// Per-frame composite registry — cleared at the top of each frame
-    /// by `dispatcher_begin_frame`.
-    pub composite_registry: Vec<CompositeRegistration>,
-
-    /// Per-frame overlay dismiss registry.
-    pub dismiss_frames: Vec<DismissFrame>,
-
-    /// Overlay stack (modals, popups, dropdowns, context menus, tooltips).
-    pub overlays: OverlayStack,
-
-    // ── pointer state (one frame back) ───────────────────────────────────
-    pub last_hovered:      Option<WidgetId>,
-    pub last_click:        Option<(WidgetId, (f64, f64))>,
-    pub last_right_click:  Option<(WidgetId, (f64, f64))>,
-    pub last_pointer_pos:  Option<(f64, f64)>,
-    pub last_scroll:       (f64, f64),
-    pub last_pressed:      Option<WidgetId>,
-
-    // ── persistent composite-instance state maps ─────────────────────────
-    pub modals:        HashMap<WidgetId, ModalState>,
-    pub popups:        HashMap<WidgetId, PopupState>,
-    pub dropdowns:     HashMap<WidgetId, DropdownState>,
-    pub toolbars:      HashMap<WidgetId, ToolbarState>,
-    pub sidebars:      HashMap<WidgetId, SidebarState>,
-    pub context_menus: HashMap<WidgetId, ContextMenuState>,
-    pub chrome_widget_state: ChromeState,
-}
-
-impl<P: DockPanel> WindowBranch<P> {
-    fn new(provider: Box<dyn WindowProvider>, rect: Rect) -> Self {
-        Self {
-            provider,
-            rect,
-            initialised: false,
-            chrome: ChromeSlot::default(),
-            edges:  EdgePanels::new(),
-            dock:   DockState::new(),
-            tree:   LayoutTree::new(),
-            last_solved: None,
-            last_window: None,
-            ctx: ContextManager::new(LayoutNode::new("__layout_root__")),
-            dispatcher: super::ClickDispatcher::new(),
-            composite_registry: Vec::new(),
-            dismiss_frames: Vec::new(),
-            overlays: OverlayStack::new(),
-            last_hovered: None,
-            last_click: None,
-            last_right_click: None,
-            last_pointer_pos: None,
-            last_scroll: (0.0, 0.0),
-            last_pressed: None,
-            modals:        HashMap::new(),
-            popups:        HashMap::new(),
-            dropdowns:     HashMap::new(),
-            toolbars:      HashMap::new(),
-            sidebars:      HashMap::new(),
-            context_menus: HashMap::new(),
-            chrome_widget_state: ChromeState::default(),
-        }
-    }
-}
-
-/// Backwards-compat alias.  Old `WindowSlot<P>` was a thin holder; it has
-/// been promoted to the fat `WindowBranch<P>` above.  Callers that imported
-/// `WindowSlot` keep working.
-pub type WindowSlot<P> = WindowBranch<P>;
-
-// ---------------------------------------------------------------------------
-// Per-frame composite registry — used by consume_event
-// ---------------------------------------------------------------------------
-
-/// The kind of a registered composite, used for event routing in
-/// [`LayoutManager::consume_event`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompositeKind {
-    Modal,
-    Popup,
-    Dropdown,
-    Toolbar,
-    Sidebar,
-    ContextMenu,
-    Chrome,
-}
-
-/// One entry in the per-frame composite registry.
-///
-/// Composites push one entry in their `register_layout_manager_*` helper.
-/// [`LayoutManager::consume_event`] walks these in overlay-first order
-/// (Modal → Popup → Dropdown → ContextMenu → Toolbar → Sidebar) to route
-/// [`DispatchEvent`]s without the app spelling out the chain manually.
-#[derive(Debug, Clone)]
-pub struct CompositeRegistration {
-    pub kind:       CompositeKind,
-    /// The stable overlay or edge slot id (e.g. `"modal-overlay"`, `"top-toolbar"`).
-    pub slot_id:    String,
-    /// The widget id used when registering the composite with the coordinator
-    /// (e.g. `"modal-widget"`, `"top-toolbar-widget"`).
-    pub widget_id:  WidgetId,
-    /// Frame rect of the composite (overlay rect or edge slot rect).
-    pub frame_rect: Rect,
-}
-
-// ---------------------------------------------------------------------------
-// Overlay dismiss registry
-// ---------------------------------------------------------------------------
-
-/// A single entry in the per-frame overlay dismiss registry.
-///
-/// Composites push one entry when they call their `register_layout_manager_*`
-/// helper. The LayoutManager uses these entries to implement
-/// [`LayoutManager::dismiss_topmost_at`].
-#[derive(Clone)]
-pub struct DismissFrame {
-    /// Z-order priority. Higher = on top. The topmost open overlay is
-    /// the one with the highest z value.  Ties are broken by insertion
-    /// order: the most-recently-pushed entry wins.
-    ///
-    /// Recommended values:
-    /// - 100 for context menu / popup
-    /// - 50  for dropdown
-    /// - 10  for modal
-    pub z: u32,
-    /// Screen-space rect of the overlay this frame.
-    pub rect: Rect,
-    /// Overlay slot id (e.g. `"modal-overlay"`, `"dd-file-overlay"`).
-    ///
-    /// This is the id the app matched in its dispatch block before the
-    /// registry was introduced — the same strings still work, just with
-    /// a single `match` in one place.
-    pub overlay_id: WidgetId,
-}
-
-/// Map a composite `WidgetKind` to its coordinator `LayerId`, or `None` for atomics.
-fn layer_for_widget_kind(kind: WidgetKind) -> Option<LayerId> {
-    match kind {
-        WidgetKind::Modal        => Some(LayerId::modal()),
-        WidgetKind::ContextMenu  => Some(LayerId::new("context_menu")),
-        WidgetKind::Popup        => Some(LayerId::popup()),
-        WidgetKind::Dropdown     => Some(LayerId::new("dropdown")),
-        WidgetKind::Tooltip      => Some(LayerId::tooltip()),
-        WidgetKind::Chrome       => Some(LayerId::new("chrome")),
-        _                        => None,
-    }
-}
+use super::branch::{WindowBranch, WindowSlot};
+use super::registry::{
+    CompositeKind, CompositeRegistration, DismissFrame,
+    layer_for_widget_kind,
+};
 
 /// Convert a `Rect` (f64) to a `PanelRect` (f32) for the dock layout pass.
 fn panel_rect_from_rect(r: Rect) -> PanelRect {
@@ -297,6 +93,11 @@ pub struct LayoutManager<P: DockPanel> {
     /// Centralised style/colour/size/texture registry.  Synced root —
     /// every window reads from the same palette.
     styles: StyleManager,
+
+    /// Per-node sync classification.  Tells the visualiser (and future
+    /// promote/demote operations) which LM nodes are global, opt-in
+    /// shared, or always per-window.  See [`super::sync::SyncRegistry`].
+    pub(crate) sync_registry: super::sync::SyncRegistry,
 }
 
 impl<P: DockPanel> LayoutManager<P> {
@@ -312,7 +113,18 @@ impl<P: DockPanel> LayoutManager<P> {
             z_layers: ZLayerTable::default(),
             frame_time_ms: 0.0,
             styles: StyleManager::default(),
+            sync_registry: super::sync::SyncRegistry::defaults(),
         }
+    }
+
+    /// Read-only access to the sync-mode registry.
+    pub fn sync_registry(&self) -> &super::sync::SyncRegistry {
+        &self.sync_registry
+    }
+
+    /// Mutable access to the sync-mode registry.
+    pub fn sync_registry_mut(&mut self) -> &mut super::sync::SyncRegistry {
+        &mut self.sync_registry
     }
 
     /// Set the window the flat-API methods route to.  Platform layer
