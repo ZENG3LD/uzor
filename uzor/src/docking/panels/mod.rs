@@ -19,6 +19,7 @@ pub mod hit_test;
 pub mod presets;
 pub mod grid;
 pub mod layout;
+pub mod lib;
 pub mod serialize;
 // `manager` module dissolved — its impl moved to `uzor::layout::dock_state`
 // (`DockState<P>`).  This module now only exports panel-tree primitives.

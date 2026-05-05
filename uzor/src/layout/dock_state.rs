@@ -283,34 +283,9 @@ impl<P: DockPanel> DockState<P> {
         }
     }
 
-    /// Compute leaf rects from tree layout
+    /// Compute leaf rects from tree layout (delegates to the pure-fn lib).
     fn compute_leaf_rects(&self, area: PanelRect) -> HashMap<LeafId, PanelRect> {
-        let mut rects = HashMap::new();
-        self.collect_leaf_rects_from_branch(self.tree.root(), area, &mut rects);
-        rects
-    }
-
-    /// Recursively collect leaf rects from branch
-    fn collect_leaf_rects_from_branch(
-        &self,
-        branch: &Branch<P>,
-        branch_rect: PanelRect,
-        out: &mut HashMap<LeafId, PanelRect>,
-    ) {
-        let child_rects = self.compute_child_rects(branch, branch_rect);
-
-        for (child, rect) in branch.children.iter().zip(child_rects.iter()) {
-            match child {
-                PanelNode::Leaf(leaf) => {
-                    if !leaf.hidden {
-                        out.insert(leaf.id, *rect);
-                    }
-                }
-                PanelNode::Branch(b) => {
-                    self.collect_leaf_rects_from_branch(b, *rect, out);
-                }
-            }
-        }
+        crate::docking::panels::lib::compute_leaf_rects(&self.tree, area)
     }
 
     /// Compute child rects for a branch (layout algorithm)
@@ -1069,32 +1044,7 @@ impl<P: DockPanel> DockState<P> {
 
     /// Detect drop zone using improved algorithm with smaller center zone
     fn detect_drop_zone(x: f32, y: f32, width: f32, height: f32) -> DropZone {
-        let center_margin = 0.20;
-        let cx = width * center_margin;
-        let cy = height * center_margin;
-
-        // Center zone — only if clearly in the middle
-        if x > cx && x < width - cx && y > cy && y < height - cy {
-            return DropZone::Center;
-        }
-
-        // Determine direction based on which edge is closest
-        let dist_left = x;
-        let dist_right = width - x;
-        let dist_top = y;
-        let dist_bottom = height - y;
-
-        let min_dist = dist_left.min(dist_right).min(dist_top).min(dist_bottom);
-
-        if min_dist == dist_left {
-            DropZone::Left
-        } else if min_dist == dist_right {
-            DropZone::Right
-        } else if min_dist == dist_top {
-            DropZone::Up
-        } else {
-            DropZone::Down
-        }
+        crate::docking::panels::lib::detect_drop_zone(x, y, width, height)
     }
 
     /// Apply panel drop - restructure the tree based on drop zone

@@ -890,8 +890,8 @@ impl<P: DockPanel> LayoutManager<P> {
     // ------------------------------------------------------------------
 
     /// Read-only access to the docking state (tree, separators, panel rects,
-    /// floating windows, drag state). Replaces the old `panels()` accessor.
-    pub fn panels(&self) -> &DockState<P> {
+    /// floating windows, drag state).
+    pub fn dock(&self) -> &DockState<P> {
         &self.dock
     }
 
@@ -899,6 +899,19 @@ impl<P: DockPanel> LayoutManager<P> {
     ///
     /// App developers use this to add/remove panels, perform drag operations,
     /// and query panel rects.
+    pub fn dock_mut(&mut self) -> &mut DockState<P> {
+        &mut self.dock
+    }
+
+    /// **Deprecated** alias for [`dock`] — kept while in-tree callers
+    /// migrate.  TODO: remove after l3/l4 examples are updated.
+    #[doc(hidden)]
+    pub fn panels(&self) -> &DockState<P> {
+        &self.dock
+    }
+
+    /// **Deprecated** alias for [`dock_mut`].
+    #[doc(hidden)]
     pub fn panels_mut(&mut self) -> &mut DockState<P> {
         &mut self.dock
     }
