@@ -19,8 +19,9 @@ pub mod hit_test;
 pub mod presets;
 pub mod grid;
 pub mod layout;
-pub mod manager;
 pub mod serialize;
+// `manager` module dissolved — its impl moved to `uzor::layout::dock_state`
+// (`DockState<P>`).  This module now only exports panel-tree primitives.
 
 // Re-exports
 pub use id::{LeafId, BranchId, NodeId};
@@ -36,7 +37,6 @@ pub use hit_test::{HitResult, CornerHandle};
 pub use presets::{WindowLayout, SplitKind, PANEL_GAP};
 pub use grid::{DockingTree, Leaf, Branch, PanelNode};
 pub use serialize::{LayoutSnapshot, SerializedNode, SerializedNodeType};
-pub use manager::PanelDockingManager;
 
 /// Trait for panel types stored in the docking tree.
 ///

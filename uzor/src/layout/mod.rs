@@ -46,4 +46,4 @@ pub use tree::{LayoutNode, LayoutNodeId, LayoutTree, LayoutTreeEntry, SystemNode
 pub use types::{DragOutcome, EdgeRects, EdgeSide, LayoutSolved, OverlayKind, OverlayRect, SlotId};
 pub use styles::{MirageDarkPreset, MirageLightPreset, Preset, StyleManager, TextureKind};
 pub use z_layers::ZLayerTable;
-pub use dock_state::{DockFrame, DockState};
+pub use dock_state::DockState;

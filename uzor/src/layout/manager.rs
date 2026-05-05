@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use crate::docking::panels::{PanelDockingManager, PanelRect, DockPanel};
+use crate::docking::panels::{PanelRect, DockPanel};
+use super::dock_state::DockState;
 use crate::core::types::Rect;
 use crate::app_context::{ContextManager, layout::types::LayoutNode};
 use crate::input::core::coordinator::LayerId;
@@ -141,7 +142,11 @@ fn panel_rect_to_rect(pr: PanelRect) -> Rect {
 pub struct LayoutManager<P: DockPanel> {
     chrome: ChromeSlot,
     edges: EdgePanels,
-    panels: PanelDockingManager<P>,
+    /// All docking state — tree, separators, panel rects, floating windows,
+    /// drag state. Replaces the old `PanelDockingManager` field; methods
+    /// previously on DM now live on `LayoutManager` and read/write
+    /// `self.dock` directly.
+    pub(crate) dock: DockState<P>,
     overlays: OverlayStack,
     z_layers: ZLayerTable,
     tree: LayoutTree,
@@ -222,7 +227,7 @@ impl<P: DockPanel> LayoutManager<P> {
         Self {
             chrome: ChromeSlot::default(),
             edges: EdgePanels::new(),
-            panels: PanelDockingManager::new(),
+            dock: DockState::new(),
             overlays: OverlayStack::new(),
             z_layers: ZLayerTable::default(),
             tree: LayoutTree::new(),
@@ -591,7 +596,7 @@ impl<P: DockPanel> LayoutManager<P> {
     /// Use to drive per-leaf body rendering (`for (id, rect) in
     /// layout.dock_leaves()`) without reaching into `panels()`.
     pub fn dock_leaves(&self) -> impl Iterator<Item = (crate::docking::panels::LeafId, Rect)> + '_ {
-        self.panels.panel_rects().iter().map(|(&id, &pr)| {
+        self.dock.panel_rects().iter().map(|(&id, &pr)| {
             (id, panel_rect_to_rect(pr))
         })
     }
@@ -884,17 +889,18 @@ impl<P: DockPanel> LayoutManager<P> {
     // User-facing dock + floating panels
     // ------------------------------------------------------------------
 
-    /// Read-only access to the panel docking manager.
-    pub fn panels(&self) -> &PanelDockingManager<P> {
-        &self.panels
+    /// Read-only access to the docking state (tree, separators, panel rects,
+    /// floating windows, drag state). Replaces the old `panels()` accessor.
+    pub fn panels(&self) -> &DockState<P> {
+        &self.dock
     }
 
-    /// Mutable access to the panel docking manager.
+    /// Mutable access to the docking state.
     ///
     /// App developers use this to add/remove panels, perform drag operations,
     /// and query panel rects.
-    pub fn panels_mut(&mut self) -> &mut PanelDockingManager<P> {
-        &mut self.panels
+    pub fn panels_mut(&mut self) -> &mut DockState<P> {
+        &mut self.dock
     }
 
     // ------------------------------------------------------------------
@@ -910,7 +916,7 @@ impl<P: DockPanel> LayoutManager<P> {
 
         // Drive the dock layout pass with the computed dock area.
         let dock_pr = panel_rect_from_rect(solved.dock_area);
-        self.panels.layout(dock_pr);
+        self.dock.layout(dock_pr);
 
         self.last_solved = Some(solved);
         self.last_window = Some(window);
@@ -1055,7 +1061,7 @@ impl<P: DockPanel> LayoutManager<P> {
         if let Some(r) = self.rect_for_overlay(slot_id) {
             return Some(r);
         }
-        if let Some(pr) = self.panels.rect_for_leaf_str(slot_id) {
+        if let Some(pr) = self.dock.rect_for_leaf_str(slot_id) {
             return Some(panel_rect_to_rect(pr));
         }
         None
@@ -1107,7 +1113,7 @@ impl<P: DockPanel> LayoutManager<P> {
     pub fn register_dock_separators(&mut self, layer: &LayerId) {
         use crate::docking::panels::SeparatorOrientation as SepOrient;
         let sep_rects: Vec<(usize, Rect)> = self
-            .panels
+            .dock
             .separators()
             .iter()
             .enumerate()
