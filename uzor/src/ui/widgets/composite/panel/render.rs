@@ -233,6 +233,50 @@ pub fn register_input_coordinator_panel(
         }
     }
 
+    // --- Edge resize handles -------------------------------------------------
+    // Each enabled side gets a thin `Sense::DRAG` rect on the panel's outer
+    // edge.  The handles are the panel's own resize affordance — independent
+    // of any visual border stroke (`PanelStyle::borders()`).  The composite
+    // does not move the panel itself; it dispatches drag events through
+    // `EventBuilder::ResizeHandle` and lets the layout owner update the
+    // panel rect (or, for free-floating panels, the panel's own rect).
+    {
+        let style       = settings.style.as_ref();
+        let handles     = style.edge_handles();
+        let handle_w    = style.edge_handle_width();
+        let half        = handle_w / 2.0;
+        let f           = layout.frame;
+
+        let mut emit = |suffix: &str, r: Rect| {
+            if r.width > 0.0 && r.height > 0.0 {
+                coord.register_child(
+                    &panel_id,
+                    format!("{}:{}", panel_id.0.0, suffix),
+                    WidgetKind::Separator,
+                    r,
+                    Sense::DRAG | Sense::HOVER,
+                );
+            }
+        };
+
+        if handles.top {
+            emit("edge_top",
+                 Rect::new(f.x, f.y - half, f.width, handle_w));
+        }
+        if handles.bottom {
+            emit("edge_bottom",
+                 Rect::new(f.x, f.y + f.height - half, f.width, handle_w));
+        }
+        if handles.left {
+            emit("edge_left",
+                 Rect::new(f.x - half, f.y, handle_w, f.height));
+        }
+        if handles.right {
+            emit("edge_right",
+                 Rect::new(f.x + f.width - half, f.y, handle_w, f.height));
+        }
+    }
+
     panel_id
 }
 
@@ -294,6 +338,28 @@ fn draw_panel_with_coord(
             ctx.set_fill_color(theme.bg());
             ctx.fill_rect(layout.frame.x, layout.frame.y, layout.frame.width, layout.frame.height);
         }
+    }
+
+    // --- 1b. Frame borders ---------------------------------------------------
+    // Optional per-side strokes.  Default `BorderConfig::none()` → no draws.
+    {
+        let borders = style.borders();
+        let f       = layout.frame;
+        let theme_border = theme.border();
+        let mut stroke = |x: f64, y: f64, w: f64, h: f64, s: super::style::BorderStroke| {
+            if w <= 0.0 || h <= 0.0 || s.width <= 0.0 || s.opacity <= 0.0 {
+                return;
+            }
+            ctx.save();
+            ctx.set_global_alpha(s.opacity);
+            ctx.set_fill_color(theme_border);
+            ctx.fill_rect(x, y, w, h);
+            ctx.restore();
+        };
+        if let Some(s) = borders.top    { stroke(f.x, f.y,                       f.width, s.width, s); }
+        if let Some(s) = borders.bottom { stroke(f.x, f.y + f.height - s.width,  f.width, s.width, s); }
+        if let Some(s) = borders.left   { stroke(f.x, f.y, s.width, f.height, s); }
+        if let Some(s) = borders.right  { stroke(f.x + f.width - s.width, f.y, s.width, f.height, s); }
     }
 
     // --- 2. Header strip -----------------------------------------------------

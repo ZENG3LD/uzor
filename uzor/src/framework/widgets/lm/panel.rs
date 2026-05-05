@@ -20,7 +20,9 @@ use crate::render::RenderContext;
 use crate::ui::widgets::composite::panel::input::register_layout_manager_panel;
 use crate::ui::widgets::composite::panel::settings::PanelSettings;
 use crate::ui::widgets::composite::panel::state::PanelState;
-use crate::ui::widgets::composite::panel::style::DefaultPanelStyle;
+use crate::ui::widgets::composite::panel::style::{
+    BackgroundFill, BorderConfig, DefaultPanelStyle, EdgeHandlesConfig, PanelStyle,
+};
 use crate::ui::widgets::composite::panel::theme::{DefaultPanelTheme, PanelTheme};
 use crate::ui::widgets::composite::panel::types::{
     ColumnDef, HeaderAction, PanelHeader, PanelRenderKind, PanelView,
@@ -75,6 +77,35 @@ fn panel_settings_from_styles(s: &StyleManager) -> PanelSettings {
     }
 }
 
+// =============================================================================
+// PartialPanelStyle — thin wrapper that lets the builder override only
+// `borders()` / `edge_handles()` without forking the whole `PanelStyle` impl.
+// =============================================================================
+
+struct PartialPanelStyle {
+    inner:        Box<dyn PanelStyle>,
+    borders:      Option<BorderConfig>,
+    edge_handles: Option<EdgeHandlesConfig>,
+}
+
+impl PanelStyle for PartialPanelStyle {
+    fn header_height(&self)        -> f64 { self.inner.header_height() }
+    fn column_header_height(&self) -> f64 { self.inner.column_header_height() }
+    fn row_height(&self)           -> f64 { self.inner.row_height() }
+    fn footer_height(&self)        -> f64 { self.inner.footer_height() }
+    fn padding(&self)              -> f64 { self.inner.padding() }
+    fn border_width(&self)         -> f64 { self.inner.border_width() }
+    fn scrollbar_width(&self)      -> f64 { self.inner.scrollbar_width() }
+    fn background_fill(&self)      -> BackgroundFill { self.inner.background_fill() }
+    fn borders(&self)              -> BorderConfig {
+        self.borders.unwrap_or_else(|| self.inner.borders())
+    }
+    fn edge_handles(&self)         -> EdgeHandlesConfig {
+        self.edge_handles.unwrap_or_else(|| self.inner.edge_handles())
+    }
+    fn edge_handle_width(&self)    -> f64 { self.inner.edge_handle_width() }
+}
+
 /// Chainable builder for a docked content panel.
 pub struct PanelBuilder<'a> {
     slot_id:        &'a str,
@@ -96,6 +127,11 @@ pub struct PanelBuilder<'a> {
     /// Override just the geometry bundle.  Same precedence rules as
     /// `theme_override`.
     style_override: Option<Box<dyn crate::ui::widgets::composite::panel::style::PanelStyle>>,
+    /// Per-side border-stroke override.  Wraps the resolved style without
+    /// forking the whole `PanelStyle` impl.  `None` defers to `style.borders()`.
+    borders_override:       Option<crate::ui::widgets::composite::panel::style::BorderConfig>,
+    /// Per-side resize-handle override.  Same precedence as `borders_override`.
+    edge_handles_override:  Option<crate::ui::widgets::composite::panel::style::EdgeHandlesConfig>,
     kind:           PanelRenderKind,
 }
 
@@ -121,6 +157,8 @@ impl<'a> PanelBuilder<'a> {
             settings:       None,
             theme_override: None,
             style_override: None,
+            borders_override:      None,
+            edge_handles_override: None,
             kind:           PanelRenderKind::Plain,
         }
     }
@@ -160,6 +198,30 @@ impl<'a> PanelBuilder<'a> {
         s: Box<dyn crate::ui::widgets::composite::panel::style::PanelStyle>,
     ) -> Self {
         self.style_override = Some(s);
+        self
+    }
+
+    /// Per-side border-stroke override.  `BorderConfig::all()` for full
+    /// rectangular frame, `BorderConfig::none()` for no strokes (default),
+    /// or a partial config (e.g. `{ left: Some(stroke), ..none() }`) for
+    /// just one side.  Independent from `.edge_handles(...)`.
+    pub fn borders(
+        mut self,
+        b: crate::ui::widgets::composite::panel::style::BorderConfig,
+    ) -> Self {
+        self.borders_override = Some(b);
+        self
+    }
+
+    /// Per-side resize-handle hit-zone override.  `EdgeHandlesConfig::all()`
+    /// makes the panel resizable by all four sides; `none()` (default) leaves
+    /// it pinned.  Independent from `.borders(...)` — drag zones don't
+    /// require visible strokes.
+    pub fn edge_handles(
+        mut self,
+        h: crate::ui::widgets::composite::panel::style::EdgeHandlesConfig,
+    ) -> Self {
+        self.edge_handles_override = Some(h);
         self
     }
 
@@ -217,6 +279,20 @@ impl<'a> PanelBuilder<'a> {
         let mut settings = self.settings.unwrap_or_else(|| panel_settings_from_styles(layout.styles()));
         if let Some(t) = self.theme_override { settings.theme = t; }
         if let Some(s) = self.style_override { settings.style = s; }
+        // Wrap the resolved style with `borders()` / `edge_handles()`
+        // overrides if any were set on the builder.  Done after `.style(...)`
+        // so explicit style still composes with the partial overrides.
+        if self.borders_override.is_some() || self.edge_handles_override.is_some() {
+            let inner = std::mem::replace(
+                &mut settings.style,
+                Box::<DefaultPanelStyle>::default(),
+            );
+            settings.style = Box::new(PartialPanelStyle {
+                inner,
+                borders:      self.borders_override,
+                edge_handles: self.edge_handles_override,
+            });
+        }
 
         // Snapshot scroll offset before `state` is moved into the
         // composite registration call.

@@ -3,6 +3,73 @@
 //! Values ported from mlc panel audit (`panel-deep.md` §5).
 
 // ---------------------------------------------------------------------------
+// Border + edge-handle configuration
+// ---------------------------------------------------------------------------
+
+/// Per-side stroke for a panel frame border.
+#[derive(Clone, Copy, Debug)]
+pub struct BorderStroke {
+    /// Line thickness in pixels.
+    pub width: f64,
+    /// Opacity multiplier `[0.0, 1.0]` applied to the theme border colour.
+    pub opacity: f64,
+}
+
+impl Default for BorderStroke {
+    fn default() -> Self {
+        Self { width: 1.0, opacity: 1.0 }
+    }
+}
+
+/// Per-edge visibility for the panel frame border.
+///
+/// Each side independently picks visibility / width / opacity.  `None`
+/// means "no visual on that side" (the default for `BorderConfig::none()`).
+/// The edge-handle hit zone (`EdgeHandlesConfig`) is independent — a
+/// panel can have a drag handle without painting a visible stroke and
+/// vice versa.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BorderConfig {
+    pub top:    Option<BorderStroke>,
+    pub right:  Option<BorderStroke>,
+    pub bottom: Option<BorderStroke>,
+    pub left:   Option<BorderStroke>,
+}
+
+impl BorderConfig {
+    /// All sides off (default).
+    pub fn none() -> Self { Self::default() }
+
+    /// All four sides at the default stroke.
+    pub fn all() -> Self {
+        let s = Some(BorderStroke::default());
+        Self { top: s, right: s, bottom: s, left: s }
+    }
+}
+
+/// Per-edge resize-handle hit zones.  `true` enables a drag zone on
+/// that side — the composite registers a `Sense::DRAG` rect dispatched
+/// to `EventBuilder::ResizeHandle`.  Independent from `BorderConfig` —
+/// the visual stroke lives in `BorderConfig`, the hit zone here.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EdgeHandlesConfig {
+    pub top:    bool,
+    pub right:  bool,
+    pub bottom: bool,
+    pub left:   bool,
+}
+
+impl EdgeHandlesConfig {
+    /// All four sides off (no resize hit zones).
+    pub fn none() -> Self { Self::default() }
+
+    /// All four sides have a drag hit zone.
+    pub fn all() -> Self {
+        Self { top: true, right: true, bottom: true, left: true }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // BackgroundFill
 // ---------------------------------------------------------------------------
 
@@ -55,6 +122,22 @@ pub trait PanelStyle {
     fn background_fill(&self) -> BackgroundFill {
         BackgroundFill::Solid
     }
+
+    /// Per-side border-stroke visibility.  Default: all four sides off
+    /// (the panel paints no frame strokes — matches legacy behaviour).
+    fn borders(&self) -> BorderConfig {
+        BorderConfig::none()
+    }
+
+    /// Per-side resize-handle hit zones.  Default: all four sides off
+    /// (the panel is non-resizable until a higher layer enables it).
+    fn edge_handles(&self) -> EdgeHandlesConfig {
+        EdgeHandlesConfig::none()
+    }
+
+    /// Hit-zone thickness for the resize handles in pixels.  Default
+    /// `8.0` matches the sidebar resize zone for visual consistency.
+    fn edge_handle_width(&self) -> f64 { 8.0 }
 }
 
 // ---------------------------------------------------------------------------

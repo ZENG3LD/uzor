@@ -66,6 +66,23 @@ pub fn register_layout_manager_panel<P: DockPanel>(
                 thumb_id: WidgetId::new(format!("{}:scrollbar_handle", id.0)),
             },
         );
+
+        // Per-edge resize-handle drag → ResizeHandleDragStarted with the
+        // matching `ResizeEdge`.  The composite registers the hit zone
+        // only when `PanelStyle::edge_handles()` enables the side, so
+        // dispatcher routes that don't fire are inert.
+        use crate::layout::ResizeEdge;
+        for (suffix, edge) in [
+            ("edge_top",    ResizeEdge::N),
+            ("edge_bottom", ResizeEdge::S),
+            ("edge_left",   ResizeEdge::W),
+            ("edge_right",  ResizeEdge::E),
+        ] {
+            layout.dispatcher_mut().on_exact(
+                format!("{}:{}", id.0, suffix),
+                EventBuilder::ResizeHandle { host_id: id.clone(), edge },
+            );
+        }
     }
 
     register_context_manager_panel(
