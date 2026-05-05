@@ -83,7 +83,7 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
 
     // Take state out of the map (or create default), work with it, then
     // re-insert — avoids borrow conflicts with the rest of `layout`.
-    let mut state = layout.dropdowns.remove(&id).unwrap_or_default();
+    let mut state = layout.dropdowns_map_mut().remove(&id).unwrap_or_default();
 
     layout.push_overlay(OverlayEntry {
         id:   slot_id.to_string(),
@@ -268,7 +268,7 @@ pub fn register_layout_manager_dropdown<P: DockPanel>(
     });
 
     // Return state to the map.
-    layout.dropdowns.insert(id, state);
+    layout.dropdowns_map_mut().insert(id, state);
 
     Some(DropdownNode(node_id))
 }
@@ -306,7 +306,7 @@ pub fn open_dropdown_flat<'items, P: DockPanel>(
     // Peek at state to decide whether to open (do not take it out yet —
     // register_layout_manager_dropdown will do the remove/insert dance).
     let (open, hovered_id, origin, anchor_rect, position_override) = {
-        let st = layout.dropdowns.get(widget_id).map(|s| (
+        let st = layout.dropdowns_map_mut().get(widget_id).map(|s| (
             s.open,
             s.hovered_id.clone(),
             s.effective_origin(),

@@ -233,6 +233,10 @@ impl WindowProvider for WinitWindowProvider {
             }
         }
     }
+
+    fn push_platform_event(&mut self, ev: PlatformEvent) {
+        self.pending_events.push(ev);
+    }
 }
 
 // ── WindowDecorations for WinitWindowProvider ─────────────────────────────────

@@ -93,6 +93,14 @@ pub trait WindowProvider {
     fn create_software_presenter(&self) -> Option<Box<dyn SoftwarePresenter>> {
         None
     }
+
+    /// Push a pre-translated platform event into the provider's queue.
+    ///
+    /// LM's window manager (`uzor-desktop::Manager` etc) maps native
+    /// events to `PlatformEvent` and forwards them through the trait.
+    /// `poll_events()` drains the queue once per frame.  Default no-op
+    /// for providers that don't buffer (e.g. web).
+    fn push_platform_event(&mut self, _ev: PlatformEvent) {}
 }
 
 // =============================================================================

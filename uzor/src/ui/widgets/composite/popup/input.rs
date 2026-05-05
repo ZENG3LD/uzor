@@ -104,7 +104,7 @@ pub fn register_layout_manager_popup<P: DockPanel>(
 
     // Take state out of the map (or create default), work with it, then
     // re-insert — avoids borrow conflicts with the rest of `layout`.
-    let mut state = layout.popups.remove(&id).unwrap_or_default();
+    let mut state = layout.popups_map_mut().remove(&id).unwrap_or_default();
 
     layout.push_overlay(OverlayEntry {
         id:   slot_id.to_string(),
@@ -159,7 +159,7 @@ pub fn register_layout_manager_popup<P: DockPanel>(
     });
 
     // Return state to the map.
-    layout.popups.insert(id, state);
+    layout.popups_map_mut().insert(id, state);
 
     Some(PopupNode(node_id))
 }

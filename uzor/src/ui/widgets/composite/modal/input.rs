@@ -139,7 +139,7 @@ pub fn register_layout_manager_modal<P: DockPanel>(
 
     // Take state out of the map (or create default), work with it, then
     // re-insert — avoids borrow conflicts with the rest of `layout`.
-    let mut state = layout.modals.remove(&id).unwrap_or_default();
+    let mut state = layout.modals_map_mut().remove(&id).unwrap_or_default();
 
     // Push the overlay entry so rect_for_overlay and dismiss resolution work.
     layout.push_overlay(OverlayEntry {
@@ -247,7 +247,7 @@ pub fn register_layout_manager_modal<P: DockPanel>(
     });
 
     // Return state to the map.
-    layout.modals.insert(id, state);
+    layout.modals_map_mut().insert(id, state);
 
     Some(ModalNode(node_id))
 }

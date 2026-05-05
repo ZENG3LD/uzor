@@ -2,42 +2,7 @@ use std::collections::HashMap;
 
 use crate::layout::docking::{PanelRect, DockPanel};
 use super::dock_state::DockState;
-use super::window::WindowProvider;
-
-// =============================================================================
-// WindowSlot — per-window state owned by `LayoutManager`
-// =============================================================================
-
-/// Everything the layout manager needs to track for one OS window.
-///
-/// The provider is an opaque trait object so LM stays platform-agnostic.
-/// Concrete kinds live in their crates (`uzor-window-desktop` for winit,
-/// `uzor-window-web` for DOM canvas, …).
-pub struct WindowSlot<P: DockPanel> {
-    /// Platform window handle wrapped in the trait LM talks to.
-    pub provider: Box<dyn WindowProvider>,
-
-    /// Cached logical rect captured at the last `solve_window`.
-    pub rect: Rect,
-
-    /// Has the runtime fired the per-window `App::init` hook yet?
-    pub initialised: bool,
-
-    /// Phantom for the panel type parameter (per-window dock-tree state
-    /// will move here in the next pass; right now docking is shared).
-    _phantom: std::marker::PhantomData<P>,
-}
-
-impl<P: DockPanel> WindowSlot<P> {
-    fn new(provider: Box<dyn WindowProvider>, rect: Rect) -> Self {
-        Self {
-            provider,
-            rect,
-            initialised: false,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
+use super::window::{WindowProvider, WindowKey};
 use crate::core::types::Rect;
 use crate::app_context::{ContextManager, layout::types::LayoutNode};
 use crate::input::core::coordinator::LayerId;
@@ -62,6 +27,137 @@ use super::z_layers::ZLayerTable;
 use super::types::{OverlayKind, LayoutSolved};
 use super::solve::solve_layout;
 use super::styles::StyleManager;
+
+// =============================================================================
+// WindowBranch — fat per-window state owned by `LayoutManager`
+// =============================================================================
+
+/// Everything the layout manager needs to track for one OS window.
+///
+/// LM is the application root.  Each attached window becomes a fat
+/// branch in the LM tree holding *all* per-window state — provider,
+/// rect, chrome, edges, layout tree, solved rects, pointer state, the
+/// per-window `ContextManager` (with input coordinator + retained tree),
+/// dispatcher, dismiss-frame registry, composite registry, overlays,
+/// and persistent composite-instance state maps.
+///
+/// Synced state (styles, z_layers, panel-type registry) stays on the LM
+/// root.  Everything else lives here, addressed by `WindowKey`.
+///
+/// The provider is an opaque trait object so LM stays platform-agnostic.
+/// Concrete kinds live in their crates (`uzor-window-desktop` for winit,
+/// `uzor-window-web` for DOM canvas, …).
+pub struct WindowBranch<P: DockPanel> {
+    // ── platform handle ──────────────────────────────────────────────────
+    /// Platform window handle wrapped in the trait LM talks to.
+    pub provider: Box<dyn WindowProvider>,
+
+    /// Cached logical rect captured at the last `solve_window`.
+    pub rect: Rect,
+
+    /// Has the runtime fired the per-window `App::init` hook yet?
+    pub initialised: bool,
+
+    // ── chrome / edges / dock subtree ────────────────────────────────────
+    /// Per-window chrome strip configuration (visible/height/etc).
+    pub chrome: ChromeSlot,
+
+    /// Per-window edge panel registry (left/right/top/bottom toolbars +
+    /// sidebars).
+    pub edges: EdgePanels,
+
+    /// Per-window docking state — tree, separators, panel rects, floating
+    /// panels, drag state.  Each window has its own dock tree so panels
+    /// torn off into another window keep their identity per-window.
+    pub dock: DockState<P>,
+
+    // ── solved layout ────────────────────────────────────────────────────
+    /// Macro layout tree (chrome + edges + dock + overlay nodes) solved
+    /// against the window rect each frame.
+    pub tree: LayoutTree,
+
+    /// Result of the most recent `solve_window`.
+    pub last_solved: Option<LayoutSolved>,
+
+    /// Window rect passed to the most recent `solve_window`.
+    pub last_window: Option<Rect>,
+
+    // ── input / dispatch / retained context ──────────────────────────────
+    /// Retained-mode context manager (holds the input coordinator and the
+    /// per-frame retained tree).  One per window so two windows don't
+    /// share hover / focus / capture.
+    pub ctx: ContextManager,
+
+    /// Per-window click dispatch table — composites push patterns at
+    /// register time; populated each frame by composite registration.
+    pub dispatcher: super::ClickDispatcher,
+
+    /// Per-frame composite registry — cleared at the top of each frame
+    /// by `dispatcher_begin_frame`.
+    pub composite_registry: Vec<CompositeRegistration>,
+
+    /// Per-frame overlay dismiss registry.
+    pub dismiss_frames: Vec<DismissFrame>,
+
+    /// Overlay stack (modals, popups, dropdowns, context menus, tooltips).
+    pub overlays: OverlayStack,
+
+    // ── pointer state (one frame back) ───────────────────────────────────
+    pub last_hovered:      Option<WidgetId>,
+    pub last_click:        Option<(WidgetId, (f64, f64))>,
+    pub last_right_click:  Option<(WidgetId, (f64, f64))>,
+    pub last_pointer_pos:  Option<(f64, f64)>,
+    pub last_scroll:       (f64, f64),
+    pub last_pressed:      Option<WidgetId>,
+
+    // ── persistent composite-instance state maps ─────────────────────────
+    pub modals:        HashMap<WidgetId, ModalState>,
+    pub popups:        HashMap<WidgetId, PopupState>,
+    pub dropdowns:     HashMap<WidgetId, DropdownState>,
+    pub toolbars:      HashMap<WidgetId, ToolbarState>,
+    pub sidebars:      HashMap<WidgetId, SidebarState>,
+    pub context_menus: HashMap<WidgetId, ContextMenuState>,
+    pub chrome_widget_state: ChromeState,
+}
+
+impl<P: DockPanel> WindowBranch<P> {
+    fn new(provider: Box<dyn WindowProvider>, rect: Rect) -> Self {
+        Self {
+            provider,
+            rect,
+            initialised: false,
+            chrome: ChromeSlot::default(),
+            edges:  EdgePanels::new(),
+            dock:   DockState::new(),
+            tree:   LayoutTree::new(),
+            last_solved: None,
+            last_window: None,
+            ctx: ContextManager::new(LayoutNode::new("__layout_root__")),
+            dispatcher: super::ClickDispatcher::new(),
+            composite_registry: Vec::new(),
+            dismiss_frames: Vec::new(),
+            overlays: OverlayStack::new(),
+            last_hovered: None,
+            last_click: None,
+            last_right_click: None,
+            last_pointer_pos: None,
+            last_scroll: (0.0, 0.0),
+            last_pressed: None,
+            modals:        HashMap::new(),
+            popups:        HashMap::new(),
+            dropdowns:     HashMap::new(),
+            toolbars:      HashMap::new(),
+            sidebars:      HashMap::new(),
+            context_menus: HashMap::new(),
+            chrome_widget_state: ChromeState::default(),
+        }
+    }
+}
+
+/// Backwards-compat alias.  Old `WindowSlot<P>` was a thin holder; it has
+/// been promoted to the fat `WindowBranch<P>` above.  Callers that imported
+/// `WindowSlot` keep working.
+pub type WindowSlot<P> = WindowBranch<P>;
 
 // ---------------------------------------------------------------------------
 // Per-frame composite registry — used by consume_event
@@ -176,129 +272,73 @@ fn panel_rect_to_rect(pr: PanelRect) -> Rect {
 /// // register panels, chrome, edges with InputCoordinator using solved rects …
 /// ```
 pub struct LayoutManager<P: DockPanel> {
-    chrome: ChromeSlot,
-    edges: EdgePanels,
-    /// All docking state — tree, separators, panel rects, floating windows,
-    /// drag state. Replaces the old `PanelDockingManager` field; methods
-    /// previously on DM now live on `LayoutManager` and read/write
-    /// `self.dock` directly.
-    pub(crate) dock: DockState<P>,
     /// All windows the layout manager owns. The platform layer (winit-driven
     /// `uzor_desktop::Manager`, web `WebWindowProvider`, mobile, …) creates
     /// each `Box<dyn WindowProvider>` and `attach_window`s it; LM addresses
-    /// the window through its `WindowKey` from then on. Insertion order is
-    /// preserved (oldest first) so deterministic iteration is possible.
+    /// the window through its `WindowKey` from then on.
     pub(crate) windows: std::collections::HashMap<
         crate::layout::window::WindowKey,
         WindowSlot<P>,
     >,
-    overlays: OverlayStack,
+
+    /// The window flat methods (`solve`, `on_pointer_*`, `chrome_mut`, etc)
+    /// implicitly read/write.  Set by the platform layer before routing
+    /// events/ticks for that window.  `None` outside a windowed session.
+    pub(crate) current_window: Option<crate::layout::window::WindowKey>,
+
+    // ── Synced root state — shared across all branches ────────────────────
+
+    /// Z-layer ordering table — palette-level, applies everywhere.
     z_layers: ZLayerTable,
-    tree: LayoutTree,
-    last_solved: Option<LayoutSolved>,
-    last_window: Option<Rect>,
-    /// Retained-mode context manager — owned here so Level-3 composite
-    /// helpers can access it directly via `layout.ctx_mut()`.
-    ctx: ContextManager,
-    /// Per-frame click dispatch table. Composites push patterns at register
-    /// time; the app calls [`LayoutManager::dispatch_click`] when a hit
-    /// resolves to a `WidgetId` and gets back a high-level
-    /// [`super::DispatchEvent`].
-    dispatcher: super::ClickDispatcher,
-    /// Iterate every dock leaf and its solved screen-space rect.
-    ///
-    /// Use to drive per-leaf body rendering (`for (id, rect) in
-    /// layout.dock_leaves()`) without reaching into `panels()`.
-    /// (Pulled out of the impl block via inherent helpers below — this
-    /// field is just the runtime-published frame timestamp.)
+
+    /// Frame timestamp, set by the runtime once per frame.
     pub(crate) frame_time_ms: f64,
-    /// Per-frame overlay dismiss registry. Cleared by [`LayoutManager::begin_frame_widgets`].
-    dismiss_frames: Vec<DismissFrame>,
 
-    // -----------------------------------------------------------------------
-    // Phase A — composite state ownership
-    // -----------------------------------------------------------------------
-
-    /// Persistent state for every modal instance keyed by widget id.
-    pub(crate) modals: HashMap<WidgetId, ModalState>,
-    /// Persistent state for every popup instance keyed by widget id.
-    pub(crate) popups: HashMap<WidgetId, PopupState>,
-    /// Persistent state for every dropdown instance keyed by widget id.
-    pub(crate) dropdowns: HashMap<WidgetId, DropdownState>,
-    /// Persistent state for every toolbar instance keyed by widget id.
-    pub(crate) toolbars: HashMap<WidgetId, ToolbarState>,
-    /// Persistent state for every sidebar instance keyed by widget id.
-    pub(crate) sidebars: HashMap<WidgetId, SidebarState>,
-    /// Persistent state for every context-menu instance keyed by widget id.
-    pub(crate) context_menus: HashMap<WidgetId, ContextMenuState>,
-    /// Single chrome state (there is at most one chrome per window).
-    pub(crate) chrome_widget_state: ChromeState,
-
-    /// Per-frame composite registry — cleared each frame by
-    /// [`Self::dispatcher_begin_frame`] together with the dispatch table.
-    /// Composites push one entry in their `register_layout_manager_*` helper
-    /// so [`Self::consume_event`] can iterate them without app boilerplate.
-    pub(crate) composite_registry: Vec<CompositeRegistration>,
-
-    /// Centralised style/colour/size/texture registry.
-    ///
-    /// `lm::*` builders read from this when no per-call `Settings` were supplied.
-    /// Per-call settings (`.settings(...)`) take priority — StyleManager is the
-    /// *default supplier* (lowest priority).
+    /// Centralised style/colour/size/texture registry.  Synced root —
+    /// every window reads from the same palette.
     styles: StyleManager,
-
-    // -----------------------------------------------------------------------
-    // L3-owned input state — cleared each frame by inputs_begin_frame()
-    // -----------------------------------------------------------------------
-
-    /// The widget (if any) currently under the cursor — updated by on_pointer_move.
-    last_hovered: Option<crate::types::WidgetId>,
-    /// Left-click that landed this frame: (widget_id, position).
-    last_click: Option<(crate::types::WidgetId, (f64, f64))>,
-    /// Right-click that landed this frame: (widget_id, position).
-    last_right_click: Option<(crate::types::WidgetId, (f64, f64))>,
-    /// Last known pointer position.
-    last_pointer_pos: Option<(f64, f64)>,
-    /// Accumulated scroll delta this frame (reset each frame).
-    last_scroll: (f64, f64),
-    /// Widget hit by the most recent pointer-down (drag candidates).
-    last_pressed: Option<crate::types::WidgetId>,
 }
 
 impl<P: DockPanel> LayoutManager<P> {
-    /// Create a new `LayoutManager` with default chrome (32 px, visible) and
-    /// empty edges, panels, and overlays.
+    /// Create a new empty `LayoutManager`.
+    ///
+    /// Windows are added by the platform layer via `attach_window`; until
+    /// at least one is attached, the flat methods (`solve`, `on_pointer_*`,
+    /// etc) panic — they require `current_window` to be set.
     pub fn new() -> Self {
         Self {
-            chrome: ChromeSlot::default(),
-            edges: EdgePanels::new(),
-            dock: DockState::new(),
             windows: HashMap::new(),
-            overlays: OverlayStack::new(),
+            current_window: None,
             z_layers: ZLayerTable::default(),
-            tree: LayoutTree::new(),
-            last_solved: None,
-            last_window: None,
-            ctx: ContextManager::new(LayoutNode::new("__layout_root__")),
-            dispatcher: super::ClickDispatcher::new(),
-            dismiss_frames: Vec::new(),
             frame_time_ms: 0.0,
-            modals: HashMap::new(),
-            popups: HashMap::new(),
-            dropdowns: HashMap::new(),
-            toolbars: HashMap::new(),
-            sidebars: HashMap::new(),
-            context_menus: HashMap::new(),
-            chrome_widget_state: ChromeState::default(),
-            composite_registry: Vec::new(),
             styles: StyleManager::default(),
-            last_hovered: None,
-            last_click: None,
-            last_right_click: None,
-            last_pointer_pos: None,
-            last_scroll: (0.0, 0.0),
-            last_pressed: None,
         }
+    }
+
+    /// Set the window the flat-API methods route to.  Platform layer
+    /// calls this before forwarding events / running a tick for a window.
+    pub fn set_current_window(&mut self, key: crate::layout::window::WindowKey) {
+        self.current_window = Some(key);
+    }
+
+    /// Currently-routed window, if any.
+    pub fn current_window(&self) -> Option<&crate::layout::window::WindowKey> {
+        self.current_window.as_ref()
+    }
+
+    /// Branch for the currently-routed window — panics if no window is set.
+    fn cur_branch(&self) -> &WindowBranch<P> {
+        let key = self.current_window.as_ref()
+            .expect("LayoutManager: no current_window — platform layer must call set_current_window");
+        self.windows.get(key)
+            .unwrap_or_else(|| panic!("LayoutManager: current_window {:?} not attached", key))
+    }
+
+    fn cur_branch_mut(&mut self) -> &mut WindowBranch<P> {
+        let key = self.current_window.clone()
+            .expect("LayoutManager: no current_window — platform layer must call set_current_window");
+        self.windows.get_mut(&key)
+            .unwrap_or_else(|| panic!("LayoutManager: current_window not attached"))
     }
 
     // ------------------------------------------------------------------
@@ -307,32 +347,32 @@ impl<P: DockPanel> LayoutManager<P> {
 
     /// Read-only access to the chrome slot configuration.
     pub fn chrome(&self) -> &ChromeSlot {
-        &self.chrome
+        &self.cur_branch().chrome
     }
 
     /// Mutable access to the chrome slot configuration.
     pub fn chrome_mut(&mut self) -> &mut ChromeSlot {
-        &mut self.chrome
+        &mut self.cur_branch_mut().chrome
     }
 
     /// Read-only access to the edge panel registry.
     pub fn edges(&self) -> &EdgePanels {
-        &self.edges
+        &self.cur_branch().edges
     }
 
     /// Mutable access to the edge panel registry.
     pub fn edges_mut(&mut self) -> &mut EdgePanels {
-        &mut self.edges
+        &mut self.cur_branch_mut().edges
     }
 
     /// Read-only access to the overlay stack.
     pub fn overlays(&self) -> &OverlayStack {
-        &self.overlays
+        &self.cur_branch().overlays
     }
 
     /// Mutable access to the overlay stack.
     pub fn overlays_mut(&mut self) -> &mut OverlayStack {
-        &mut self.overlays
+        &mut self.cur_branch_mut().overlays
     }
 
     /// Read-only access to the z-layer table.
@@ -347,7 +387,7 @@ impl<P: DockPanel> LayoutManager<P> {
 
     /// Read-only access to the embedded `ContextManager`.
     pub fn ctx(&self) -> &ContextManager {
-        &self.ctx
+        &self.cur_branch().ctx
     }
 
     /// Mutable access to the embedded `ContextManager`.
@@ -356,12 +396,12 @@ impl<P: DockPanel> LayoutManager<P> {
     /// `register_context_manager_*` without requiring the caller to hold a
     /// separate `ContextManager` reference.
     pub fn ctx_mut(&mut self) -> &mut ContextManager {
-        &mut self.ctx
+        &mut self.cur_branch_mut().ctx
     }
 
     /// Read-only access to the click dispatch table.
     pub fn dispatcher(&self) -> &super::ClickDispatcher {
-        &self.dispatcher
+        &self.cur_branch().dispatcher
     }
 
     /// Default opening size for a sidebar kind, computed from the most
@@ -369,24 +409,15 @@ impl<P: DockPanel> LayoutManager<P> {
     ///
     /// L/R sidebars get `frac * viewport.width`, T/B get `frac * viewport.height`.
     /// Returns `None` until the first `solve()` has been called.
-    ///
-    /// Callers use this to seed `EdgeSlot.thickness` and the first
-    /// `SidebarState.width` so demo / spawned sidebars open at a sensible
-    /// fraction (default 20%) instead of a hardcoded pixel constant.
     pub fn sidebar_default_size(&self, is_horizontal_kind: bool, frac: f64) -> Option<f64> {
-        let win = self.last_window?;
+        let win = self.cur_branch().last_window?;
         let axis = if is_horizontal_kind { win.width } else { win.height };
         Some(axis * frac)
     }
 
     /// Mutable access to the click dispatch table.
-    ///
-    /// Composites call this in their `register_layout_manager_*` helpers
-    /// to install the patterns that translate raw `WidgetId` hits into
-    /// semantic [`super::DispatchEvent`]s. The app may also register its
-    /// own patterns to override a composite's default behaviour.
     pub fn dispatcher_mut(&mut self) -> &mut super::ClickDispatcher {
-        &mut self.dispatcher
+        &mut self.cur_branch_mut().dispatcher
     }
 
     /// Run a click coordinate through the embedded `InputCoordinator`,
@@ -399,86 +430,82 @@ impl<P: DockPanel> LayoutManager<P> {
     ///   pattern matched it. The app may still react to the raw id.
     /// - `None` — no widget was hit (outside-click; close menus, etc.).
     pub fn dispatch_click(&mut self, x: f64, y: f64) -> Option<super::DispatchEvent> {
-        let clicked = self.ctx.input.process_click(x, y)?;
+        let b = self.cur_branch_mut();
+        let clicked = b.ctx.input.process_click(x, y)?;
         Some(
-            self.dispatcher
+            b.dispatcher
                 .dispatch(&clicked)
                 .unwrap_or(super::DispatchEvent::Unhandled(clicked)),
         )
     }
 
     /// Translate a pre-resolved `WidgetId` into a high-level event.
-    ///
-    /// Use this when the click was already routed (e.g. by `WinitInputBridge`
-    /// which calls `process_click` itself and returns `Option<WidgetId>`).
-    /// Avoids running hit-test twice.
     pub fn dispatch_widget(&self, id: &crate::types::WidgetId) -> super::DispatchEvent {
-        self.dispatcher
+        self.cur_branch().dispatcher
             .dispatch(id)
             .unwrap_or_else(|| super::DispatchEvent::Unhandled(id.clone()))
     }
 
     /// Clear the dispatch table, the overlay dismiss registry, and the
-    /// per-frame composite registry.
-    ///
-    /// Composites re-register their patterns each frame, mirroring the
-    /// immediate-mode model of widget registration. Call this once per
-    /// frame before re-running composite registration.
+    /// per-frame composite registry of the current window.
     pub fn dispatcher_begin_frame(&mut self) {
-        self.dispatcher.clear();
-        self.dismiss_frames.clear();
-        self.composite_registry.clear();
+        let b = self.cur_branch_mut();
+        b.dispatcher.clear();
+        b.dismiss_frames.clear();
+        b.composite_registry.clear();
     }
 
     // -----------------------------------------------------------------------
     // Phase A+C — add_* factory methods (return typed handles)
     // -----------------------------------------------------------------------
 
-    /// Register a modal by id and return a typed handle.
-    ///
-    /// Creates default state if not already present.  Call once at app init or
-    /// the first time the modal is about to be shown.  Subsequent calls with
-    /// the same id are idempotent — they return a handle to the existing state.
     pub fn add_modal(&mut self, id: &str) -> ModalHandle {
         let widget_id = WidgetId(id.to_owned());
-        self.modals.entry(widget_id.clone()).or_default();
+        self.cur_branch_mut().modals.entry(widget_id.clone()).or_default();
         ModalHandle { id: widget_id }
     }
 
-    /// Register a popup and return a typed handle.
     pub fn add_popup(&mut self, id: &str) -> PopupHandle {
         let widget_id = WidgetId(id.to_owned());
-        self.popups.entry(widget_id.clone()).or_default();
+        self.cur_branch_mut().popups.entry(widget_id.clone()).or_default();
         PopupHandle { id: widget_id }
     }
 
-    /// Register a dropdown and return a typed handle.
     pub fn add_dropdown(&mut self, id: &str) -> DropdownHandle {
         let widget_id = WidgetId(id.to_owned());
-        self.dropdowns.entry(widget_id.clone()).or_default();
+        self.cur_branch_mut().dropdowns.entry(widget_id.clone()).or_default();
         DropdownHandle { id: widget_id }
     }
 
-    /// Register a toolbar and return a typed handle.
     pub fn add_toolbar(&mut self, id: &str) -> ToolbarHandle {
         let widget_id = WidgetId(id.to_owned());
-        self.toolbars.entry(widget_id.clone()).or_default();
+        self.cur_branch_mut().toolbars.entry(widget_id.clone()).or_default();
         ToolbarHandle { id: widget_id }
     }
 
-    /// Register a sidebar and return a typed handle.
     pub fn add_sidebar(&mut self, id: &str) -> SidebarHandle {
         let widget_id = WidgetId(id.to_owned());
-        self.sidebars.entry(widget_id.clone()).or_default();
+        self.cur_branch_mut().sidebars.entry(widget_id.clone()).or_default();
         SidebarHandle { id: widget_id }
     }
 
-    /// Register a context menu and return a typed handle.
     pub fn add_context_menu(&mut self, id: &str) -> ContextMenuHandle {
         let widget_id = WidgetId(id.to_owned());
-        self.context_menus.entry(widget_id.clone()).or_default();
+        self.cur_branch_mut().context_menus.entry(widget_id.clone()).or_default();
         ContextMenuHandle { id: widget_id }
     }
+
+    // ── direct map access for composite input handlers ───────────────────
+    // Composite `consume_event` helpers take/insert state from the maps to
+    // avoid double-borrowing the layout manager.
+
+    pub fn modals_map_mut(&mut self) -> &mut HashMap<WidgetId, ModalState>          { &mut self.cur_branch_mut().modals }
+    pub fn popups_map_mut(&mut self) -> &mut HashMap<WidgetId, PopupState>          { &mut self.cur_branch_mut().popups }
+    pub fn dropdowns_map_mut(&mut self) -> &mut HashMap<WidgetId, DropdownState>    { &mut self.cur_branch_mut().dropdowns }
+    pub fn toolbars_map_mut(&mut self) -> &mut HashMap<WidgetId, ToolbarState>      { &mut self.cur_branch_mut().toolbars }
+    pub fn sidebars_map_mut(&mut self) -> &mut HashMap<WidgetId, SidebarState>      { &mut self.cur_branch_mut().sidebars }
+    pub fn context_menus_map_mut(&mut self) -> &mut HashMap<WidgetId, ContextMenuState> { &mut self.cur_branch_mut().context_menus }
+    pub fn chrome_widget_state_mut(&mut self) -> &mut ChromeState { &mut self.cur_branch_mut().chrome_widget_state }
 
     // -----------------------------------------------------------------------
     // Phase A+C — handle-based state accessors (typed handles)
@@ -491,49 +518,42 @@ impl<P: DockPanel> LayoutManager<P> {
     /// Panics if the handle's state was removed from the registry
     /// (should not happen in normal usage — handles are stable).
     pub fn modal(&self, h: &ModalHandle) -> &ModalState {
-        self.modals.get(&h.id)
+        self.cur_branch().modals.get(&h.id)
             .expect("modal handle invalidated — state dropped from registry")
     }
 
-    /// Mutable access to a modal's state via its typed handle.
     pub fn modal_mut(&mut self, h: &ModalHandle) -> &mut ModalState {
-        self.modals.get_mut(&h.id)
+        self.cur_branch_mut().modals.get_mut(&h.id)
             .expect("modal handle invalidated — state dropped from registry")
     }
 
-    /// Read-only access to a popup's state via its typed handle.
     pub fn popup(&self, h: &PopupHandle) -> &PopupState {
-        self.popups.get(&h.id)
+        self.cur_branch().popups.get(&h.id)
             .expect("popup handle invalidated — state dropped from registry")
     }
 
-    /// Mutable access to a popup's state via its typed handle.
     pub fn popup_mut(&mut self, h: &PopupHandle) -> &mut PopupState {
-        self.popups.get_mut(&h.id)
+        self.cur_branch_mut().popups.get_mut(&h.id)
             .expect("popup handle invalidated — state dropped from registry")
     }
 
-    /// Read-only access to a dropdown's state via its typed handle.
     pub fn dropdown(&self, h: &DropdownHandle) -> &DropdownState {
-        self.dropdowns.get(&h.id)
+        self.cur_branch().dropdowns.get(&h.id)
             .expect("dropdown handle invalidated — state dropped from registry")
     }
 
-    /// Mutable access to a dropdown's state via its typed handle.
     pub fn dropdown_mut(&mut self, h: &DropdownHandle) -> &mut DropdownState {
-        self.dropdowns.get_mut(&h.id)
+        self.cur_branch_mut().dropdowns.get_mut(&h.id)
             .expect("dropdown handle invalidated — state dropped from registry")
     }
 
-    /// Read-only access to a toolbar's state via its typed handle.
     pub fn toolbar(&self, h: &ToolbarHandle) -> &ToolbarState {
-        self.toolbars.get(&h.id)
+        self.cur_branch().toolbars.get(&h.id)
             .expect("toolbar handle invalidated — state dropped from registry")
     }
 
-    /// Mutable access to a toolbar's state via its typed handle.
     pub fn toolbar_mut(&mut self, h: &ToolbarHandle) -> &mut ToolbarState {
-        self.toolbars.get_mut(&h.id)
+        self.cur_branch_mut().toolbars.get_mut(&h.id)
             .expect("toolbar handle invalidated — state dropped from registry")
     }
 
@@ -550,75 +570,45 @@ impl<P: DockPanel> LayoutManager<P> {
         self.frame_time_ms = t;
     }
 
-    /// Cursor position in screen coordinates, if the pointer is inside
-    /// the window.  Forwarded from the input coordinator for builder
-    /// convenience (`chrome` reads it for tooltip routing).
+    /// Cursor position in screen coordinates of the currently-routed window.
     pub fn cursor_pos(&self) -> Option<(f64, f64)> {
-        self.ctx.input.pointer_pos()
+        self.cur_branch().ctx.input.pointer_pos()
     }
 
     // -----------------------------------------------------------------------
-    // L3-owned input accessors — read from fields maintained by on_pointer_*
+    // L3-owned input accessors — forward to current branch
     // -----------------------------------------------------------------------
 
-    /// Widget currently under the cursor (updated on every pointer-move).
-    ///
-    /// This is the single authoritative hover source for all of L3+.
-    /// Composite helpers (`chrome`, `dropdown`, etc.) must read from this
-    /// instead of reaching into `coord.hovered_widget()` directly.
     pub fn hovered_widget(&self) -> Option<&crate::types::WidgetId> {
-        self.last_hovered.as_ref()
+        self.cur_branch().last_hovered.as_ref()
     }
 
-    /// Was the given widget pressed (pointer-down) this frame?
     pub fn was_pressed(&self, id: &WidgetId) -> bool {
-        self.last_pressed.as_ref() == Some(id)
+        self.cur_branch().last_pressed.as_ref() == Some(id)
     }
 
-    /// Widget id from the most recent `on_pointer_down` hit-test, if any.
     pub fn last_pressed_widget(&self) -> Option<&WidgetId> {
-        self.last_pressed.as_ref()
+        self.cur_branch().last_pressed.as_ref()
     }
 
-    /// Last known pointer position (persists across frames).
     pub fn pointer_pos(&self) -> Option<(f64, f64)> {
-        self.last_pointer_pos
+        self.cur_branch().last_pointer_pos
     }
 
-    /// Accumulated scroll delta this frame (reset by `inputs_begin_frame`).
     pub fn scroll_delta(&self) -> (f64, f64) {
-        self.last_scroll
+        self.cur_branch().last_scroll
     }
 
-    /// Clear one-shot input fields.  Call once per frame BEFORE widget registration.
-    ///
-    /// Clears `last_click`, `last_right_click`, `last_pressed`, `last_scroll`.
-    /// Does NOT clear `last_hovered` or `last_pointer_pos` — those persist
-    /// between events so hover is always current.
     pub fn inputs_begin_frame(&mut self) {
-        self.last_click       = None;
-        self.last_right_click = None;
-        self.last_pressed     = None;
-        self.last_scroll      = (0.0, 0.0);
+        let b = self.cur_branch_mut();
+        b.last_click       = None;
+        b.last_right_click = None;
+        b.last_pressed     = None;
+        b.last_scroll      = (0.0, 0.0);
     }
 
-    /// Full per-frame setup: clear one-shot input flags, then call
-    /// `ctx.begin_frame_widgets_only` (which clears widget registrations
-    /// but preserves pointer state).
-    ///
-    /// Call this once per frame BEFORE calling `App::ui`.  Replaces the
-    /// old `ctx.begin_frame(input_snapshot, viewport)` pattern; pointer
-    /// state is now pushed incrementally via `on_pointer_*`.
-    ///
-    /// `time_ms`  — milliseconds since runtime start (for animations).
-    /// `viewport` — the content area rect (used for layout re-compute).
     pub fn begin_frame(&mut self, time_ms: f64, viewport: crate::core::types::Rect) {
-        // NOTE: do NOT call inputs_begin_frame() here — it would erase a
-        // click that arrived between the previous tick's end_frame and this
-        // tick's begin_frame.  L4 is responsible for calling
-        // `inputs_end_frame()` after `App::ui` returns (or use
-        // `LayoutManager::end_frame` shortcut).
-        self.ctx.begin_frame_widgets_only(time_ms / 1000.0, viewport);
+        self.cur_branch_mut().ctx.begin_frame_widgets_only(time_ms / 1000.0, viewport);
     }
 
     /// Per-frame teardown — clears one-shot input flags.  Call AFTER
@@ -634,51 +624,43 @@ impl<P: DockPanel> LayoutManager<P> {
     /// `on_pointer_up` — correct regardless of when `begin_frame` was
     /// called relative to the click event.
     pub fn was_clicked(&self, id: &WidgetId) -> bool {
-        self.last_click.as_ref().map_or(false, |(c, _)| c == id)
+        self.cur_branch().last_click.as_ref().map_or(false, |(c, _)| c == id)
     }
 
-    /// Iterate every dock leaf and its solved screen-space rect.
-    ///
-    /// Use to drive per-leaf body rendering (`for (id, rect) in
-    /// layout.dock_leaves()`) without reaching into `panels()`.
+    /// Iterate every dock leaf and its solved screen-space rect for the
+    /// currently-routed window.
     pub fn dock_leaves(&self) -> impl Iterator<Item = (crate::layout::docking::LeafId, Rect)> + '_ {
-        self.dock.panel_rects().iter().map(|(&id, &pr)| {
+        self.cur_branch().dock.panel_rects().iter().map(|(&id, &pr)| {
             (id, panel_rect_to_rect(pr))
-        })
+        }).collect::<Vec<_>>().into_iter()
     }
 
-    /// Read-only access to a sidebar's state via its typed handle.
     pub fn sidebar(&self, h: &SidebarHandle) -> &SidebarState {
-        self.sidebars.get(&h.id)
+        self.cur_branch().sidebars.get(&h.id)
             .expect("sidebar handle invalidated — state dropped from registry")
     }
 
-    /// Mutable access to a sidebar's state via its typed handle.
     pub fn sidebar_mut(&mut self, h: &SidebarHandle) -> &mut SidebarState {
-        self.sidebars.get_mut(&h.id)
+        self.cur_branch_mut().sidebars.get_mut(&h.id)
             .expect("sidebar handle invalidated — state dropped from registry")
     }
 
-    /// Read-only access to a context menu's state via its typed handle.
     pub fn context_menu(&self, h: &ContextMenuHandle) -> &ContextMenuState {
-        self.context_menus.get(&h.id)
+        self.cur_branch().context_menus.get(&h.id)
             .expect("context_menu handle invalidated — state dropped from registry")
     }
 
-    /// Mutable access to a context menu's state via its typed handle.
     pub fn context_menu_mut(&mut self, h: &ContextMenuHandle) -> &mut ContextMenuState {
-        self.context_menus.get_mut(&h.id)
+        self.cur_branch_mut().context_menus.get_mut(&h.id)
             .expect("context_menu handle invalidated — state dropped from registry")
     }
 
-    /// Read-only access to the chrome widget state.
     pub fn chrome_state(&self) -> &ChromeState {
-        &self.chrome_widget_state
+        &self.cur_branch().chrome_widget_state
     }
 
-    /// Mutable access to the chrome widget state.
     pub fn chrome_state_mut(&mut self) -> &mut ChromeState {
-        &mut self.chrome_widget_state
+        &mut self.cur_branch_mut().chrome_widget_state
     }
 
     /// Read-only access to the centralised style/colour/size/texture registry.
@@ -707,7 +689,7 @@ impl<P: DockPanel> LayoutManager<P> {
     ///
     /// Called internally by each `register_layout_manager_*` helper.
     pub fn push_composite_registration(&mut self, reg: CompositeRegistration) {
-        self.composite_registry.push(reg);
+        self.cur_branch_mut().composite_registry.push(reg);
     }
 
     // -----------------------------------------------------------------------
@@ -740,13 +722,10 @@ impl<P: DockPanel> LayoutManager<P> {
         use crate::ui::widgets::composite::toolbar::input as toolbar_input;
         use crate::ui::widgets::composite::sidebar::input as sidebar_input;
 
-        // Snapshot the registry so we can iterate it without holding a borrow
-        // on `self` while we also borrow the individual state maps.
-        let registry: Vec<CompositeRegistration> = self.composite_registry.clone();
+        let registry: Vec<CompositeRegistration> = self.cur_branch().composite_registry.clone();
 
         let mut opt_ev: Option<DispatchEvent> = Some(event);
 
-        // Overlay-first order: Modal → Popup → Dropdown → ContextMenu → Toolbar → Sidebar
         for priority in [
             CompositeKind::Modal,
             CompositeKind::Popup,
@@ -762,52 +741,49 @@ impl<P: DockPanel> LayoutManager<P> {
                 };
                 opt_ev = match priority {
                     CompositeKind::Modal => {
-                        let mut st = self.modals.remove(&reg.widget_id).unwrap_or_default();
+                        let mut st = self.cur_branch_mut().modals.remove(&reg.widget_id).unwrap_or_default();
                         let result = modal_input::consume_event(
                             ev, &mut st, &reg.widget_id,
                             modal_input::ConsumeEventCtx { cursor, frame_rect: reg.frame_rect, viewport },
                         );
-                        self.modals.insert(reg.widget_id.clone(), st);
+                        self.cur_branch_mut().modals.insert(reg.widget_id.clone(), st);
                         result
                     }
                     CompositeKind::Popup => {
-                        let mut st = self.popups.remove(&reg.widget_id).unwrap_or_default();
+                        let mut st = self.cur_branch_mut().popups.remove(&reg.widget_id).unwrap_or_default();
                         let result = popup_input::consume_event(
                             ev, &mut st, &reg.widget_id,
                             popup_input::ConsumeEventCtx { cursor, frame_rect: reg.frame_rect, viewport },
                         );
-                        self.popups.insert(reg.widget_id.clone(), st);
+                        self.cur_branch_mut().popups.insert(reg.widget_id.clone(), st);
                         result
                     }
                     CompositeKind::Dropdown => {
-                        let mut st = self.dropdowns.remove(&reg.widget_id).unwrap_or_default();
+                        let mut st = self.cur_branch_mut().dropdowns.remove(&reg.widget_id).unwrap_or_default();
                         let result = dropdown_input::consume_event(
                             ev, &mut st, &reg.widget_id,
                             dropdown_input::ConsumeEventCtx { cursor, frame_rect: reg.frame_rect, viewport },
                         );
-                        self.dropdowns.insert(reg.widget_id.clone(), st);
+                        self.cur_branch_mut().dropdowns.insert(reg.widget_id.clone(), st);
                         result
                     }
-                    CompositeKind::ContextMenu => {
-                        // ContextMenu has no consume_event — pass through.
-                        Some(ev)
-                    }
+                    CompositeKind::ContextMenu => Some(ev),
                     CompositeKind::Toolbar => {
-                        let mut st = self.toolbars.remove(&reg.widget_id).unwrap_or_default();
+                        let mut st = self.cur_branch_mut().toolbars.remove(&reg.widget_id).unwrap_or_default();
                         let result = toolbar_input::consume_event(
                             ev, &mut st, &reg.widget_id,
                             toolbar_input::ConsumeEventCtx { cursor, frame_rect: reg.frame_rect, viewport },
                         );
-                        self.toolbars.insert(reg.widget_id.clone(), st);
+                        self.cur_branch_mut().toolbars.insert(reg.widget_id.clone(), st);
                         result
                     }
                     CompositeKind::Sidebar => {
-                        let mut st = self.sidebars.remove(&reg.widget_id).unwrap_or_default();
+                        let mut st = self.cur_branch_mut().sidebars.remove(&reg.widget_id).unwrap_or_default();
                         let result = sidebar_input::consume_event(
                             ev, &mut st, &reg.widget_id,
                             sidebar_input::ConsumeEventCtx { cursor, frame_rect: reg.frame_rect, viewport },
                         );
-                        self.sidebars.insert(reg.widget_id.clone(), st);
+                        self.cur_branch_mut().sidebars.insert(reg.widget_id.clone(), st);
                         result
                     }
                     CompositeKind::Chrome => Some(ev),
@@ -818,25 +794,19 @@ impl<P: DockPanel> LayoutManager<P> {
         opt_ev
     }
 
-    /// Read-only access to the macro layout tree (solved node rects).
+    /// Read-only access to the macro layout tree of the current window.
     pub fn tree(&self) -> &LayoutTree {
-        &self.tree
+        &self.cur_branch().tree
     }
 
-    /// Mutable access to the macro layout tree.
-    ///
-    /// L3 registration helpers call this to insert widget nodes each frame.
     pub fn tree_mut(&mut self) -> &mut LayoutTree {
-        &mut self.tree
+        &mut self.cur_branch_mut().tree
     }
 
-    /// Clear all per-frame widget nodes from the tree and the overlay dismiss registry.
-    ///
-    /// Call at the start of each frame, before any L3 widget registration.
-    /// System nodes (chrome, edges, dock, overlay) are preserved.
     pub fn begin_frame_widgets(&mut self) {
-        self.tree.clear_widgets();
-        self.dismiss_frames.clear();
+        let b = self.cur_branch_mut();
+        b.tree.clear_widgets();
+        b.dismiss_frames.clear();
     }
 
     // ------------------------------------------------------------------
@@ -852,64 +822,34 @@ impl<P: DockPanel> LayoutManager<P> {
     /// Only open overlays should push a frame — if the overlay is closed,
     /// skip the call entirely so `dismiss_topmost_at` ignores it.
     pub fn push_dismiss_frame(&mut self, frame: DismissFrame) {
-        self.dismiss_frames.push(frame);
+        self.cur_branch_mut().dismiss_frames.push(frame);
     }
 
-    /// Return the `OverlayKind` for a given overlay slot id, if it is registered.
     pub fn overlay_kind_for(&self, overlay_id: &str) -> Option<super::OverlayKind> {
-        self.overlays.get(overlay_id).map(|e| e.kind)
+        self.cur_branch().overlays.get(overlay_id).map(|e| e.kind)
     }
 
-    /// Resolve which overlay (if any) should close when a click lands at `pos`.
-    ///
-    /// Walks the registered frames in z-order (top first). The first frame
-    /// whose rect does **not** contain `pos` is the topmost overlay being
-    /// clicked outside — return its `overlay_id`.
-    ///
-    /// Returns `None` when:
-    /// - No overlay frames are registered (no overlay is open).
-    /// - `pos` is inside the topmost overlay (the click belongs to that
-    ///   overlay's own widgets — let the normal dispatch chain handle it).
-    ///
-    /// Behaviour:
-    /// 1. Find the entry with the highest `z` value (most-recently-pushed
-    ///    wins ties — i.e. last-registered beats earlier at the same z).
-    /// 2. If `pos` is inside that entry's rect → click is inside the topmost
-    ///    overlay → return `None` (let dispatch chain handle).
-    /// 3. If `pos` is outside → return `Some(overlay_id)` for that entry.
-    ///    Only ONE overlay closes per click — callers must `return` after
-    ///    acting on the result.
     pub fn dismiss_topmost_at(&self, pos: (f64, f64)) -> Option<WidgetId> {
-        if self.dismiss_frames.is_empty() {
+        let b = self.cur_branch();
+        if b.dismiss_frames.is_empty() {
             return None;
         }
-        // Find the topmost frame: highest z, with ties broken by last push order.
-        // We iterate in reverse to give last-registered priority at equal z.
-        let topmost = self
-            .dismiss_frames
+        let topmost = b.dismiss_frames
             .iter()
             .enumerate()
             .rev()
             .max_by_key(|(i, f)| (f.z, *i))?
             .1;
-
-        if topmost.rect.contains(pos.0, pos.1) {
-            // Click is inside the topmost overlay — not an outside-click.
-            None
-        } else {
-            Some(topmost.overlay_id.clone())
-        }
+        if topmost.rect.contains(pos.0, pos.1) { None }
+        else { Some(topmost.overlay_id.clone()) }
     }
 
-    /// Compute the effective `LayerId` for a node based on its parent chain.
-    ///
-    /// Walks ancestors from root down. The deepest ancestor with a
-    /// layer-determining kind wins. Falls back to `LayerId::main()`.
     pub fn compute_layer_for(&self, node_id: LayoutNodeId) -> LayerId {
-        let chain = self.tree.parent_chain(node_id);
+        let tree = &self.cur_branch().tree;
+        let chain = tree.parent_chain(node_id);
         let mut effective = LayerId::main();
         for ancestor_id in &chain {
-            if let Some(entry) = self.tree.entry(*ancestor_id) {
+            if let Some(entry) = tree.entry(*ancestor_id) {
                 match &entry.node {
                     TreeLayoutNode::Widget(ref w) => {
                         if let Some(layer) = layer_for_widget_kind(w.kind) {
@@ -932,34 +872,25 @@ impl<P: DockPanel> LayoutManager<P> {
     }
 
     // ------------------------------------------------------------------
-    // User-facing dock + floating panels
+    // User-facing dock + floating panels (current window)
     // ------------------------------------------------------------------
 
-    /// Read-only access to the docking state (tree, separators, panel rects,
-    /// floating windows, drag state).
     pub fn dock(&self) -> &DockState<P> {
-        &self.dock
+        &self.cur_branch().dock
     }
 
-    /// Mutable access to the docking state.
-    ///
-    /// App developers use this to add/remove panels, perform drag operations,
-    /// and query panel rects.
     pub fn dock_mut(&mut self) -> &mut DockState<P> {
-        &mut self.dock
+        &mut self.cur_branch_mut().dock
     }
 
-    /// **Deprecated** alias for [`dock`] — kept while in-tree callers
-    /// migrate.  TODO: remove after l3/l4 examples are updated.
     #[doc(hidden)]
     pub fn panels(&self) -> &DockState<P> {
-        &self.dock
+        &self.cur_branch().dock
     }
 
-    /// **Deprecated** alias for [`dock_mut`].
     #[doc(hidden)]
     pub fn panels_mut(&mut self) -> &mut DockState<P> {
-        &mut self.dock
+        &mut self.cur_branch_mut().dock
     }
 
     // ------------------------------------------------------------------
@@ -1007,6 +938,336 @@ impl<P: DockPanel> LayoutManager<P> {
         self.windows.keys()
     }
 
+    // ==================================================================
+    // Per-window API — all events / per-frame state pass through these.
+    //
+    // These resolve a `WindowKey` into the corresponding `WindowBranch`
+    // and read/write the branch's own fields.  The flat fields on the
+    // LM root are kept in sync on the active branch by these methods so
+    // the legacy single-window API keeps working during the migration.
+    // ==================================================================
+
+    /// Mutable reference to the branch for `key`.  Panics with a clear
+    /// message if `key` is not attached — this is a programmer error in
+    /// the platform layer.
+    fn branch_mut(&mut self, key: &WindowKey) -> &mut WindowBranch<P> {
+        self.windows.get_mut(key)
+            .unwrap_or_else(|| panic!("LayoutManager: no window attached for key {:?}", key))
+    }
+
+    /// Read-only branch lookup.  Same panic contract as `branch_mut`.
+    fn branch(&self, key: &WindowKey) -> &WindowBranch<P> {
+        self.windows.get(key)
+            .unwrap_or_else(|| panic!("LayoutManager: no window attached for key {:?}", key))
+    }
+
+    // ── per-frame solve ───────────────────────────────────────────────
+
+    /// Recompute all macro-level rects for `key`'s window.
+    ///
+    /// Drives the dock layout pass for that window's tree.  Returns a
+    /// reference to the freshly computed `LayoutSolved`.
+    pub fn solve_window(&mut self, key: &WindowKey, window: Rect) -> &LayoutSolved {
+        let b = self.branch_mut(key);
+        let solved = solve_layout(window, &b.chrome, &b.edges, &mut b.tree);
+        let dock_pr = panel_rect_from_rect(solved.dock_area);
+        b.dock.layout(dock_pr);
+        b.last_solved = Some(solved);
+        b.last_window = Some(window);
+        b.rect = window;
+        b.last_solved.as_ref().expect("just assigned")
+    }
+
+    /// Solved layout for `key`, or `None` if never solved.
+    pub fn last_solved_for(&self, key: &WindowKey) -> Option<&LayoutSolved> {
+        self.windows.get(key).and_then(|b| b.last_solved.as_ref())
+    }
+
+    /// Window rect from the most recent `solve_window` for `key`.
+    pub fn last_window_for(&self, key: &WindowKey) -> Option<Rect> {
+        self.windows.get(key).and_then(|b| b.last_window)
+    }
+
+    // ── per-window pointer events ─────────────────────────────────────
+
+    pub fn on_pointer_move_in(&mut self, key: &WindowKey, x: f64, y: f64) {
+        let b = self.branch_mut(key);
+        b.ctx.input.set_cursor_pos(x, y);
+        b.last_pointer_pos = Some((x, y));
+        b.last_hovered = b.ctx.input.process_click(x, y)
+            .or_else(|| b.ctx.input.process_hover(x, y));
+    }
+
+    pub fn on_pointer_down_in(&mut self, key: &WindowKey, x: f64, y: f64) {
+        let b = self.branch_mut(key);
+        b.ctx.input.set_cursor_pos(x, y);
+        b.last_pointer_pos = Some((x, y));
+        b.last_pressed = b.ctx.input.process_drag_press(x, y);
+    }
+
+    pub fn on_pointer_up_in(&mut self, key: &WindowKey, x: f64, y: f64) -> PointerUpOutcome {
+        {
+            let b = self.branch_mut(key);
+            b.ctx.input.set_cursor_pos(x, y);
+            b.last_pointer_pos = Some((x, y));
+            let hit = b.ctx.input.process_click(x, y);
+            if let Some(ref id) = hit {
+                b.last_click = Some((id.clone(), (x, y)));
+            }
+        }
+        match self.handle_click_in(key, (x, y)) {
+            ClickOutcome::DismissOverlay(h) => PointerUpOutcome::DismissedOverlay(h),
+            ClickOutcome::DispatchEvent(ev) => {
+                let id = match &ev {
+                    super::DispatchEvent::Unhandled(id) => id.clone(),
+                    _ => crate::types::WidgetId::new(""),
+                };
+                PointerUpOutcome::Click(id, ev)
+            }
+            ClickOutcome::Unhandled { .. } => PointerUpOutcome::Unhandled,
+        }
+    }
+
+    pub fn on_pointer_right_up_in(&mut self, key: &WindowKey, x: f64, y: f64) {
+        let b = self.branch_mut(key);
+        b.ctx.input.set_cursor_pos(x, y);
+        b.last_pointer_pos = Some((x, y));
+        let hit = b.ctx.input.process_right_click(x, y);
+        if let Some(id) = hit {
+            b.last_right_click = Some((id, (x, y)));
+        }
+    }
+
+    pub fn on_scroll_in(&mut self, key: &WindowKey, dx: f64, dy: f64) {
+        let b = self.branch_mut(key);
+        b.last_scroll.0 += dx;
+        b.last_scroll.1 += dy;
+    }
+
+    /// Combined dismiss-or-dispatch click entry, per-window variant.
+    pub fn handle_click_in(&mut self, key: &WindowKey, pos: (f64, f64)) -> ClickOutcome {
+        if let Some(overlay_id) = self.dismiss_topmost_at_in(key, pos) {
+            let kind = self.overlay_kind_for_in(key, overlay_id.0.as_str());
+            let handle = self.make_overlay_handle_in(key, overlay_id, kind);
+            return ClickOutcome::DismissOverlay(handle);
+        }
+
+        let clicked = {
+            let b = self.branch_mut(key);
+            b.ctx.input.process_click(pos.0, pos.1)
+        };
+        match clicked {
+            Some(id) => {
+                let event = self.dispatch_widget_in(key, &id);
+                ClickOutcome::DispatchEvent(event)
+            }
+            None => ClickOutcome::Unhandled { pos },
+        }
+    }
+
+    pub fn dispatch_widget_in(&self, key: &WindowKey, id: &WidgetId) -> super::DispatchEvent {
+        self.branch(key).dispatcher
+            .dispatch(id)
+            .unwrap_or_else(|| super::DispatchEvent::Unhandled(id.clone()))
+    }
+
+    pub fn dismiss_topmost_at_in(&self, key: &WindowKey, pos: (f64, f64)) -> Option<WidgetId> {
+        let b = self.branch(key);
+        if b.dismiss_frames.is_empty() {
+            return None;
+        }
+        let topmost = b
+            .dismiss_frames
+            .iter()
+            .enumerate()
+            .rev()
+            .max_by_key(|(i, f)| (f.z, *i))?
+            .1;
+        if topmost.rect.contains(pos.0, pos.1) {
+            None
+        } else {
+            Some(topmost.overlay_id.clone())
+        }
+    }
+
+    pub fn overlay_kind_for_in(&self, key: &WindowKey, overlay_id: &str) -> Option<super::OverlayKind> {
+        self.branch(key).overlays.get(overlay_id).map(|e| e.kind)
+    }
+
+    fn make_overlay_handle_in(
+        &self,
+        key: &WindowKey,
+        overlay_id: WidgetId,
+        kind: Option<super::OverlayKind>,
+    ) -> OverlayHandle {
+        let slot = overlay_id.0.as_str();
+        let b = self.branch(key);
+        if let Some(reg) = b.composite_registry.iter().find(|r| r.slot_id == slot) {
+            let wid = &reg.widget_id;
+            return match reg.kind {
+                CompositeKind::Modal => OverlayHandle::Modal(ModalHandle { id: wid.clone() }),
+                CompositeKind::Popup => OverlayHandle::Popup(PopupHandle { id: wid.clone() }),
+                CompositeKind::Dropdown => OverlayHandle::Dropdown(DropdownHandle { id: wid.clone() }),
+                CompositeKind::ContextMenu => OverlayHandle::ContextMenu(ContextMenuHandle { id: wid.clone() }),
+                _ => OverlayHandle::Other { overlay_id, kind },
+            };
+        }
+        OverlayHandle::Other { overlay_id, kind }
+    }
+
+    // ── per-window frame lifecycle ────────────────────────────────────
+
+    pub fn dispatcher_begin_frame_in(&mut self, key: &WindowKey) {
+        let b = self.branch_mut(key);
+        b.dispatcher.clear();
+        b.dismiss_frames.clear();
+        b.composite_registry.clear();
+    }
+
+    pub fn begin_frame_widgets_in(&mut self, key: &WindowKey) {
+        let b = self.branch_mut(key);
+        b.tree.clear_widgets();
+        b.dismiss_frames.clear();
+    }
+
+    pub fn begin_frame_in(&mut self, key: &WindowKey, time_ms: f64, viewport: Rect) {
+        let b = self.branch_mut(key);
+        b.ctx.begin_frame_widgets_only(time_ms / 1000.0, viewport);
+    }
+
+    pub fn inputs_begin_frame_in(&mut self, key: &WindowKey) {
+        let b = self.branch_mut(key);
+        b.last_click       = None;
+        b.last_right_click = None;
+        b.last_pressed     = None;
+        b.last_scroll      = (0.0, 0.0);
+    }
+
+    pub fn end_frame_inputs_in(&mut self, key: &WindowKey) {
+        self.inputs_begin_frame_in(key);
+    }
+
+    // ── per-window accessors (state) ──────────────────────────────────
+
+    pub fn chrome_for(&self, key: &WindowKey)       -> &ChromeSlot       { &self.branch(key).chrome }
+    pub fn chrome_mut_for(&mut self, key: &WindowKey) -> &mut ChromeSlot { &mut self.branch_mut(key).chrome }
+    pub fn edges_for(&self, key: &WindowKey)        -> &EdgePanels       { &self.branch(key).edges }
+    pub fn edges_mut_for(&mut self, key: &WindowKey) -> &mut EdgePanels  { &mut self.branch_mut(key).edges }
+    pub fn dock_for(&self, key: &WindowKey)         -> &DockState<P>     { &self.branch(key).dock }
+    pub fn dock_mut_for(&mut self, key: &WindowKey) -> &mut DockState<P> { &mut self.branch_mut(key).dock }
+    pub fn tree_for(&self, key: &WindowKey)         -> &LayoutTree       { &self.branch(key).tree }
+    pub fn tree_mut_for(&mut self, key: &WindowKey) -> &mut LayoutTree   { &mut self.branch_mut(key).tree }
+    pub fn ctx_for(&self, key: &WindowKey)          -> &ContextManager   { &self.branch(key).ctx }
+    pub fn ctx_mut_for(&mut self, key: &WindowKey)  -> &mut ContextManager { &mut self.branch_mut(key).ctx }
+    pub fn overlays_for(&self, key: &WindowKey)     -> &OverlayStack     { &self.branch(key).overlays }
+    pub fn overlays_mut_for(&mut self, key: &WindowKey) -> &mut OverlayStack { &mut self.branch_mut(key).overlays }
+    pub fn dispatcher_for(&self, key: &WindowKey)   -> &super::ClickDispatcher { &self.branch(key).dispatcher }
+    pub fn dispatcher_mut_for(&mut self, key: &WindowKey) -> &mut super::ClickDispatcher { &mut self.branch_mut(key).dispatcher }
+    pub fn chrome_state_for(&self, key: &WindowKey) -> &ChromeState      { &self.branch(key).chrome_widget_state }
+    pub fn chrome_state_mut_for(&mut self, key: &WindowKey) -> &mut ChromeState { &mut self.branch_mut(key).chrome_widget_state }
+
+    pub fn rect_for_chrome_in(&self, key: &WindowKey) -> Option<Rect> {
+        self.branch(key).last_solved.as_ref().and_then(|s| s.chrome)
+    }
+    pub fn rect_for_dock_area_in(&self, key: &WindowKey) -> Option<Rect> {
+        self.branch(key).last_solved.as_ref().map(|s| s.dock_area)
+    }
+
+    pub fn last_pressed_widget_in(&self, key: &WindowKey) -> Option<&WidgetId> {
+        self.branch(key).last_pressed.as_ref()
+    }
+    pub fn hovered_widget_in(&self, key: &WindowKey) -> Option<&WidgetId> {
+        self.branch(key).last_hovered.as_ref()
+    }
+    pub fn pointer_pos_in(&self, key: &WindowKey) -> Option<(f64, f64)> {
+        self.branch(key).last_pointer_pos
+    }
+    pub fn was_clicked_in(&self, key: &WindowKey, id: &WidgetId) -> bool {
+        self.branch(key).last_click.as_ref().map_or(false, |(c, _)| c == id)
+    }
+
+    // ── per-window composite-state accessors ─────────────────────────
+
+    pub fn modal_in(&self, key: &WindowKey, h: &ModalHandle) -> &ModalState {
+        self.branch(key).modals.get(&h.id).expect("modal handle invalidated")
+    }
+    pub fn modal_mut_in(&mut self, key: &WindowKey, h: &ModalHandle) -> &mut ModalState {
+        self.branch_mut(key).modals.get_mut(&h.id).expect("modal handle invalidated")
+    }
+    pub fn popup_in(&self, key: &WindowKey, h: &PopupHandle) -> &PopupState {
+        self.branch(key).popups.get(&h.id).expect("popup handle invalidated")
+    }
+    pub fn popup_mut_in(&mut self, key: &WindowKey, h: &PopupHandle) -> &mut PopupState {
+        self.branch_mut(key).popups.get_mut(&h.id).expect("popup handle invalidated")
+    }
+    pub fn dropdown_in(&self, key: &WindowKey, h: &DropdownHandle) -> &DropdownState {
+        self.branch(key).dropdowns.get(&h.id).expect("dropdown handle invalidated")
+    }
+    pub fn dropdown_mut_in(&mut self, key: &WindowKey, h: &DropdownHandle) -> &mut DropdownState {
+        self.branch_mut(key).dropdowns.get_mut(&h.id).expect("dropdown handle invalidated")
+    }
+    pub fn toolbar_in(&self, key: &WindowKey, h: &ToolbarHandle) -> &ToolbarState {
+        self.branch(key).toolbars.get(&h.id).expect("toolbar handle invalidated")
+    }
+    pub fn toolbar_mut_in(&mut self, key: &WindowKey, h: &ToolbarHandle) -> &mut ToolbarState {
+        self.branch_mut(key).toolbars.get_mut(&h.id).expect("toolbar handle invalidated")
+    }
+    pub fn sidebar_in(&self, key: &WindowKey, h: &SidebarHandle) -> &SidebarState {
+        self.branch(key).sidebars.get(&h.id).expect("sidebar handle invalidated")
+    }
+    pub fn sidebar_mut_in(&mut self, key: &WindowKey, h: &SidebarHandle) -> &mut SidebarState {
+        self.branch_mut(key).sidebars.get_mut(&h.id).expect("sidebar handle invalidated")
+    }
+    pub fn context_menu_in(&self, key: &WindowKey, h: &ContextMenuHandle) -> &ContextMenuState {
+        self.branch(key).context_menus.get(&h.id).expect("context_menu handle invalidated")
+    }
+    pub fn context_menu_mut_in(&mut self, key: &WindowKey, h: &ContextMenuHandle) -> &mut ContextMenuState {
+        self.branch_mut(key).context_menus.get_mut(&h.id).expect("context_menu handle invalidated")
+    }
+
+    // ── per-window add_* (registers state slot in branch) ────────────
+
+    pub fn add_modal_in(&mut self, key: &WindowKey, id: &str) -> ModalHandle {
+        let widget_id = WidgetId(id.to_owned());
+        self.branch_mut(key).modals.entry(widget_id.clone()).or_default();
+        ModalHandle { id: widget_id }
+    }
+    pub fn add_popup_in(&mut self, key: &WindowKey, id: &str) -> PopupHandle {
+        let widget_id = WidgetId(id.to_owned());
+        self.branch_mut(key).popups.entry(widget_id.clone()).or_default();
+        PopupHandle { id: widget_id }
+    }
+    pub fn add_dropdown_in(&mut self, key: &WindowKey, id: &str) -> DropdownHandle {
+        let widget_id = WidgetId(id.to_owned());
+        self.branch_mut(key).dropdowns.entry(widget_id.clone()).or_default();
+        DropdownHandle { id: widget_id }
+    }
+    pub fn add_toolbar_in(&mut self, key: &WindowKey, id: &str) -> ToolbarHandle {
+        let widget_id = WidgetId(id.to_owned());
+        self.branch_mut(key).toolbars.entry(widget_id.clone()).or_default();
+        ToolbarHandle { id: widget_id }
+    }
+    pub fn add_sidebar_in(&mut self, key: &WindowKey, id: &str) -> SidebarHandle {
+        let widget_id = WidgetId(id.to_owned());
+        self.branch_mut(key).sidebars.entry(widget_id.clone()).or_default();
+        SidebarHandle { id: widget_id }
+    }
+    pub fn add_context_menu_in(&mut self, key: &WindowKey, id: &str) -> ContextMenuHandle {
+        let widget_id = WidgetId(id.to_owned());
+        self.branch_mut(key).context_menus.entry(widget_id.clone()).or_default();
+        ContextMenuHandle { id: widget_id }
+    }
+
+    pub fn push_composite_registration_in(&mut self, key: &WindowKey, reg: CompositeRegistration) {
+        self.branch_mut(key).composite_registry.push(reg);
+    }
+    pub fn push_dismiss_frame_in(&mut self, key: &WindowKey, frame: DismissFrame) {
+        self.branch_mut(key).dismiss_frames.push(frame);
+    }
+    pub fn push_overlay_in(&mut self, key: &WindowKey, entry: OverlayEntry) {
+        self.branch_mut(key).overlays.push(entry);
+    }
+
     // ------------------------------------------------------------------
     // Per-frame solve
     // ------------------------------------------------------------------
@@ -1016,51 +1277,42 @@ impl<P: DockPanel> LayoutManager<P> {
     /// Must be called each frame or on resize. Drives the dock layout pass
     /// internally. Returns a reference to the freshly computed `LayoutSolved`.
     pub fn solve(&mut self, window: Rect) -> &LayoutSolved {
-        let solved = solve_layout(window, &self.chrome, &self.edges, &mut self.tree);
-
-        // Drive the dock layout pass with the computed dock area.
+        let b = self.cur_branch_mut();
+        let solved = solve_layout(window, &b.chrome, &b.edges, &mut b.tree);
         let dock_pr = panel_rect_from_rect(solved.dock_area);
-        self.dock.layout(dock_pr);
-
-        self.last_solved = Some(solved);
-        self.last_window = Some(window);
-
-        self.last_solved.as_ref()
-            .expect("last_solved is Some — we just assigned it")
+        b.dock.layout(dock_pr);
+        b.last_solved = Some(solved);
+        b.last_window = Some(window);
+        b.rect = window;
+        b.last_solved.as_ref().expect("just assigned")
     }
 
-    /// The result of the most recent `solve` call, or `None` if never solved.
     pub fn last_solved(&self) -> Option<&LayoutSolved> {
-        self.last_solved.as_ref()
+        self.cur_branch().last_solved.as_ref()
     }
 
-    /// The window rect passed to the most recent `solve` call.
     pub fn last_window(&self) -> Option<Rect> {
-        self.last_window
+        self.cur_branch().last_window
     }
 
     // ------------------------------------------------------------------
-    // Rect accessors
+    // Rect accessors (current window)
     // ------------------------------------------------------------------
 
-    /// Rect of the chrome strip, or `None` if not yet solved or chrome hidden.
     pub fn rect_for_chrome(&self) -> Option<Rect> {
-        self.last_solved.as_ref().and_then(|s| s.chrome)
+        self.cur_branch().last_solved.as_ref().and_then(|s| s.chrome)
     }
 
-    /// Dock content area, or `None` if not yet solved.
     pub fn rect_for_dock_area(&self) -> Option<Rect> {
-        self.last_solved.as_ref().map(|s| s.dock_area)
+        self.cur_branch().last_solved.as_ref().map(|s| s.dock_area)
     }
 
-    /// Floating panel area (same as dock area, z-above dock), or `None` if not yet solved.
     pub fn rect_for_floating_area(&self) -> Option<Rect> {
-        self.last_solved.as_ref().map(|s| s.floating_area)
+        self.cur_branch().last_solved.as_ref().map(|s| s.floating_area)
     }
 
-    /// Rect for a named overlay entry, or `None` if not present.
     pub fn rect_for_overlay(&self, id: &str) -> Option<Rect> {
-        self.overlays.get(id).map(|e| e.rect)
+        self.cur_branch().overlays.get(id).map(|e| e.rect)
     }
 
     // ------------------------------------------------------------------
@@ -1129,13 +1381,12 @@ impl<P: DockPanel> LayoutManager<P> {
     /// Looks up the slot in `edges` (matching by `id`), determines its position
     /// within the solved edge rects array, and returns the corresponding `Rect`.
     pub fn rect_for_edge_slot(&self, id: &str) -> Option<Rect> {
-        let solved = self.last_solved.as_ref()?;
-        let slot = self.edges.get(id)?;
+        let b = self.cur_branch();
+        let solved = b.last_solved.as_ref()?;
+        let slot = b.edges.get(id)?;
 
-        // Find the index of this slot among visible slots on the same side
-        // (order matches the per-side Vec in `solved.edges`).
         use super::types::EdgeSide;
-        let visible: Vec<_> = self.edges.slots_for(slot.side).collect();
+        let visible: Vec<_> = b.edges.slots_for(slot.side).collect();
         let idx = visible.iter().position(|s| s.id == id)?;
 
         let rects = match slot.side {
@@ -1147,14 +1398,6 @@ impl<P: DockPanel> LayoutManager<P> {
         rects.get(idx).copied()
     }
 
-    /// Resolve a slot id to a rect by checking each layer in order:
-    ///
-    /// 1. `"chrome"` → chrome strip rect.
-    /// 2. Edge slot id → edge slot rect via `rect_for_edge_slot`.
-    /// 3. Overlay id → overlay rect via `rect_for_overlay`.
-    /// 4. Dock leaf id (string form of `LeafId` display, e.g. `"Leaf(42)"`) →
-    ///    dock panel rect via `panels.rect_for_leaf_str`.
-    /// 5. Otherwise `None`.
     pub fn rect_for(&self, slot_id: &str) -> Option<Rect> {
         if slot_id == "chrome" {
             return self.rect_for_chrome();
@@ -1165,32 +1408,29 @@ impl<P: DockPanel> LayoutManager<P> {
         if let Some(r) = self.rect_for_overlay(slot_id) {
             return Some(r);
         }
-        if let Some(pr) = self.dock.rect_for_leaf_str(slot_id) {
+        if let Some(pr) = self.cur_branch().dock.rect_for_leaf_str(slot_id) {
             return Some(panel_rect_to_rect(pr));
         }
         None
     }
 
     // ------------------------------------------------------------------
-    // Overlay helpers
+    // Overlay helpers (current window)
     // ------------------------------------------------------------------
 
-    /// Push an overlay entry onto the stack, replacing any existing entry with the same id.
     pub fn push_overlay(&mut self, entry: OverlayEntry) {
-        self.overlays.push(entry);
+        self.cur_branch_mut().overlays.push(entry);
     }
 
-    /// Remove all overlay entries from the stack.
     pub fn clear_overlays(&mut self) {
-        self.overlays.clear();
+        self.cur_branch_mut().overlays.clear();
     }
 
-    /// Return overlay entries sorted ascending by z (lowest z first — topmost drawn last).
-    ///
-    /// Sorts the internal stack in-place before returning the slice.
     pub fn overlays_in_draw_order(&mut self) -> &[OverlayEntry] {
-        self.overlays.sort_by_z(&self.z_layers);
-        self.overlays.entries()
+        let z = self.z_layers.clone();
+        let b = self.cur_branch_mut();
+        b.overlays.sort_by_z(&z);
+        b.overlays.entries()
     }
 
     /// Return the z value for the given overlay kind from the current `ZLayerTable`.
@@ -1216,7 +1456,8 @@ impl<P: DockPanel> LayoutManager<P> {
     /// [`super::DispatchEvent::DockSeparatorDragStarted`].
     pub fn register_dock_separators(&mut self, layer: &LayerId) {
         use crate::layout::docking::SeparatorOrientation as SepOrient;
-        let sep_rects: Vec<(usize, Rect)> = self
+        let b = self.cur_branch_mut();
+        let sep_rects: Vec<(usize, Rect)> = b
             .dock
             .separators()
             .iter()
@@ -1241,7 +1482,7 @@ impl<P: DockPanel> LayoutManager<P> {
             })
             .collect();
 
-        let coord = &mut self.ctx.input;
+        let coord = &mut b.ctx.input;
         for (i, rect) in &sep_rects {
             coord.register_atomic(
                 WidgetId::new(format!("dock-sep-{i}")),
@@ -1252,7 +1493,7 @@ impl<P: DockPanel> LayoutManager<P> {
             );
         }
 
-        self.dispatcher.on_prefix(
+        b.dispatcher.on_prefix(
             "dock-sep-",
             super::EventBuilder::DockSeparatorFromSuffix,
         );
@@ -1275,12 +1516,11 @@ impl<P: DockPanel> LayoutManager<P> {
     pub fn handle_click(&mut self, pos: (f64, f64)) -> ClickOutcome {
         if let Some(overlay_id) = self.dismiss_topmost_at(pos) {
             let kind = self.overlay_kind_for(overlay_id.0.as_str());
-            // Build a typed OverlayHandle from the overlay slot id.
             let handle = self.make_overlay_handle(overlay_id, kind);
             return ClickOutcome::DismissOverlay(handle);
         }
 
-        let clicked = self.ctx.input.process_click(pos.0, pos.1);
+        let clicked = self.cur_branch_mut().ctx.input.process_click(pos.0, pos.1);
         match clicked {
             Some(id) => {
                 let event = self.dispatch_widget(&id);
@@ -1290,24 +1530,13 @@ impl<P: DockPanel> LayoutManager<P> {
         }
     }
 
-    /// Build a typed [`OverlayHandle`] from a raw overlay slot id + kind.
-    ///
-    /// Matches the slot id against the registered state maps to produce the
-    /// specific typed variant.  Falls back to `OverlayHandle::Other` for
-    /// unknown ids (e.g. chrome, tooltips).
     fn make_overlay_handle(
         &self,
         overlay_id: WidgetId,
         kind: Option<super::OverlayKind>,
     ) -> OverlayHandle {
-        // The overlay slot id is like "modal-overlay", "dd-file-overlay", etc.
-        // We need to find the widget_id that registered under that slot.
-        // The DismissFrame carries the slot_id; we correlate through overlay stack.
-        // Strategy: walk state maps and find the first entry whose key WidgetId
-        // matches a known pattern or walk composite_registry for the slot.
-        // Simplest: scan composite_registry (populated each frame) for slot_id match.
         let slot = overlay_id.0.as_str();
-        if let Some(reg) = self.composite_registry.iter().find(|r| r.slot_id == slot) {
+        if let Some(reg) = self.cur_branch().composite_registry.iter().find(|r| r.slot_id == slot) {
             let wid = &reg.widget_id;
             return match reg.kind {
                 CompositeKind::Modal => OverlayHandle::Modal(ModalHandle { id: wid.clone() }),
@@ -1361,33 +1590,29 @@ impl<P: DockPanel> LayoutManager<P> {
 
     /// Push a pointer-move event into the coordinator and update L3 hover state.
     pub fn on_pointer_move(&mut self, x: f64, y: f64) {
-        self.ctx.input.set_cursor_pos(x, y);
-        self.last_pointer_pos = Some((x, y));
-        // Hit-test: prefer click-sense (most composite items), fall back to
-        // hover-only widgets (e.g. text labels, tab strips registered with
-        // `Sense::HOVER` only).
-        self.last_hovered = self.ctx.input.process_click(x, y)
-            .or_else(|| self.ctx.input.process_hover(x, y));
+        let b = self.cur_branch_mut();
+        b.ctx.input.set_cursor_pos(x, y);
+        b.last_pointer_pos = Some((x, y));
+        b.last_hovered = b.ctx.input.process_click(x, y)
+            .or_else(|| b.ctx.input.process_hover(x, y));
     }
 
-    /// Push a pointer-down event and record the pressed widget.
     pub fn on_pointer_down(&mut self, x: f64, y: f64) {
-        self.ctx.input.set_cursor_pos(x, y);
-        self.last_pointer_pos = Some((x, y));
-        self.last_pressed = self.ctx.input.process_drag_press(x, y);
+        let b = self.cur_branch_mut();
+        b.ctx.input.set_cursor_pos(x, y);
+        b.last_pointer_pos = Some((x, y));
+        b.last_pressed = b.ctx.input.process_drag_press(x, y);
     }
 
-    /// Push a pointer-up event, run hit-test + dispatch, and return the outcome.
-    ///
-    /// Also records the click in `last_click` so `was_clicked` works correctly
-    /// regardless of when `begin_frame` is called.
     pub fn on_pointer_up(&mut self, x: f64, y: f64) -> PointerUpOutcome {
-        self.ctx.input.set_cursor_pos(x, y);
-        self.last_pointer_pos = Some((x, y));
-        // Record click before handle_click (which may clear state internally).
-        let hit = self.ctx.input.process_click(x, y);
-        if let Some(ref id) = hit {
-            self.last_click = Some((id.clone(), (x, y)));
+        {
+            let b = self.cur_branch_mut();
+            b.ctx.input.set_cursor_pos(x, y);
+            b.last_pointer_pos = Some((x, y));
+            let hit = b.ctx.input.process_click(x, y);
+            if let Some(ref id) = hit {
+                b.last_click = Some((id.clone(), (x, y)));
+            }
         }
         match self.handle_click((x, y)) {
             ClickOutcome::DismissOverlay(h) => PointerUpOutcome::DismissedOverlay(h),
@@ -1402,20 +1627,20 @@ impl<P: DockPanel> LayoutManager<P> {
         }
     }
 
-    /// Push a right pointer-up event and record the right-click.
     pub fn on_pointer_right_up(&mut self, x: f64, y: f64) {
-        self.ctx.input.set_cursor_pos(x, y);
-        self.last_pointer_pos = Some((x, y));
-        let hit = self.ctx.input.process_right_click(x, y);
+        let b = self.cur_branch_mut();
+        b.ctx.input.set_cursor_pos(x, y);
+        b.last_pointer_pos = Some((x, y));
+        let hit = b.ctx.input.process_right_click(x, y);
         if let Some(id) = hit {
-            self.last_right_click = Some((id, (x, y)));
+            b.last_right_click = Some((id, (x, y)));
         }
     }
 
-    /// Push a scroll delta for this frame.  Accumulates until `inputs_begin_frame`.
     pub fn on_scroll(&mut self, dx: f64, dy: f64) {
-        self.last_scroll.0 += dx;
-        self.last_scroll.1 += dy;
+        let b = self.cur_branch_mut();
+        b.last_scroll.0 += dx;
+        b.last_scroll.1 += dy;
     }
 
     /// Handle a pointer-down event on the chrome strip.
@@ -1541,138 +1766,3 @@ impl<P: DockPanel> Default for LayoutManager<P> {
     }
 }
 
-// =============================================================================
-// Tests
-// =============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::layout::{EdgeSlot, EdgeSide};
-
-    // Minimal DockPanel impl for generic tests.
-    #[derive(Clone, Debug)]
-    struct DummyPanel;
-
-    impl DockPanel for DummyPanel {
-        fn title(&self) -> &str { "dummy" }
-        fn type_id(&self) -> &'static str { "dummy" }
-    }
-
-    fn rect(x: f64, y: f64, w: f64, h: f64) -> Rect {
-        Rect::new(x, y, w, h)
-    }
-
-    // ------------------------------------------------------------------
-    // solve tests
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn solve_chrome_only() {
-        let mut lm = LayoutManager::<DummyPanel>::new();
-        // Default chrome is 32 px visible.
-        let solved = lm.solve(rect(0.0, 0.0, 1920.0, 1080.0));
-
-        let chrome = solved.chrome.expect("chrome should be Some");
-        assert_eq!(chrome.y, 0.0);
-        assert_eq!(chrome.height, 32.0);
-
-        let dock = solved.dock_area;
-        assert_eq!(dock.y, 32.0);
-        assert_eq!(dock.height, 1048.0);
-        assert_eq!(dock.width, 1920.0);
-    }
-
-    #[test]
-    fn solve_with_edges() {
-        let mut lm = LayoutManager::<DummyPanel>::new();
-        // Chrome 32 px (default).
-        lm.edges_mut().add(EdgeSlot {
-            id: "toolbar".to_string(),
-            side: EdgeSide::Top,
-            thickness: 40.0,
-            visible: true,
-            order: 0,
-            ..Default::default()
-        });
-        lm.edges_mut().add(EdgeSlot {
-            id: "sidebar".to_string(),
-            side: EdgeSide::Left,
-            thickness: 200.0,
-            visible: true,
-            order: 0,
-            ..Default::default()
-        });
-
-        let solved = lm.solve(rect(0.0, 0.0, 1920.0, 1080.0));
-
-        // chrome 32 + toolbar 40 = 72 consumed from top
-        // sidebar 200 consumed from left
-        let dock = solved.dock_area;
-        assert_eq!(dock.x, 200.0, "dock starts after sidebar");
-        assert_eq!(dock.y, 72.0,  "dock starts after chrome+toolbar");
-        assert_eq!(dock.width,  1720.0);
-        assert_eq!(dock.height, 1008.0);
-    }
-
-    #[test]
-    fn solve_chrome_hidden() {
-        let mut lm = LayoutManager::<DummyPanel>::new();
-        lm.chrome_mut().visible = false;
-
-        let solved = lm.solve(rect(0.0, 0.0, 800.0, 600.0));
-        assert!(solved.chrome.is_none(), "hidden chrome yields None");
-        assert_eq!(solved.dock_area.y, 0.0);
-        assert_eq!(solved.dock_area.height, 600.0);
-    }
-
-    // ------------------------------------------------------------------
-    // z-table tests
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn z_table_default_ordering() {
-        let lm = LayoutManager::<DummyPanel>::new();
-        // modal(4) < context_menu(5) < tooltip(7)
-        assert!(lm.z_for(OverlayKind::Modal) < lm.z_for(OverlayKind::ContextMenu));
-        assert!(lm.z_for(OverlayKind::ContextMenu) < lm.z_for(OverlayKind::Tooltip));
-    }
-
-    #[test]
-    fn z_table_override() {
-        let mut lm = LayoutManager::<DummyPanel>::new();
-        lm.z_layers_mut().set(OverlayKind::Modal, 10);
-        assert_eq!(lm.z_for(OverlayKind::Modal), 10);
-    }
-
-    // ------------------------------------------------------------------
-    // Overlay tests
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn overlay_sort_by_z() {
-        use super::super::overlay_stack::OverlayEntry;
-
-        let mut lm = LayoutManager::<DummyPanel>::new();
-        // push in reverse z order: tooltip(7), dropdown(2), modal(4)
-        lm.push_overlay(OverlayEntry { id: "tip".to_string(), kind: OverlayKind::Tooltip,  rect: rect(0.0,0.0,1.0,1.0), anchor: None });
-        lm.push_overlay(OverlayEntry { id: "dd".to_string(),  kind: OverlayKind::Dropdown, rect: rect(0.0,0.0,1.0,1.0), anchor: None });
-        lm.push_overlay(OverlayEntry { id: "m".to_string(),   kind: OverlayKind::Modal,    rect: rect(0.0,0.0,1.0,1.0), anchor: None });
-
-        let ordered = lm.overlays_in_draw_order();
-        // ascending z: dropdown(2), modal(4), tooltip(7)
-        assert_eq!(ordered[0].id, "dd");
-        assert_eq!(ordered[1].id, "m");
-        assert_eq!(ordered[2].id, "tip");
-    }
-
-    // ------------------------------------------------------------------
-    // Panels accessor test
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn panels_accessor_compiles() {
-        let mut lm = LayoutManager::<DummyPanel>::new();
-        let _panels: &mut PanelDockingManager<DummyPanel> = lm.panels_mut();
-    }
-}

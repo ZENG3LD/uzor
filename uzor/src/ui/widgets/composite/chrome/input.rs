@@ -36,7 +36,7 @@ pub fn register_layout_manager_chrome<P: DockPanel>(
     let rect = layout.rect_for_chrome()?;
 
     // Take state out of the layout (or use default), work with it, then put back.
-    let mut state = std::mem::take(&mut layout.chrome_widget_state);
+    let mut state = std::mem::take(layout.chrome_widget_state_mut());
 
     let layer = layout.compute_layer_for(parent);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Chrome, rect, sense: Sense::NONE });
@@ -74,7 +74,7 @@ pub fn register_layout_manager_chrome<P: DockPanel>(
     });
 
     // Return state to the layout.
-    layout.chrome_widget_state = state;
+    *layout.chrome_widget_state_mut() = state;
 
     Some(ChromeNode(node_id))
 }

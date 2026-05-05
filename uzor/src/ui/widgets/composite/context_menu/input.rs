@@ -43,7 +43,7 @@ pub fn register_layout_manager_context_menu<P: DockPanel>(
 
     // Take state out of the map (or create default), work with it, then
     // re-insert — avoids borrow conflicts with the rest of `layout`.
-    let mut state = layout.context_menus.remove(&id).unwrap_or_default();
+    let mut state = layout.context_menus_map_mut().remove(&id).unwrap_or_default();
 
     layout.push_overlay(OverlayEntry {
         id:   slot_id.to_string(),
@@ -89,7 +89,7 @@ pub fn register_layout_manager_context_menu<P: DockPanel>(
     });
 
     // Return state to the map.
-    layout.context_menus.insert(id, state);
+    layout.context_menus_map_mut().insert(id, state);
 
     Some(ContextMenuNode(node_id))
 }

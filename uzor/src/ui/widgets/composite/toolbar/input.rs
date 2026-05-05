@@ -99,7 +99,7 @@ pub fn register_layout_manager_toolbar<P: DockPanel>(
 
     // Take state out of the map (or create default), work with it, then
     // re-insert — avoids borrow conflicts with the rest of `layout`.
-    let mut state = layout.toolbars.remove(&id).unwrap_or_default();
+    let mut state = layout.toolbars_map_mut().remove(&id).unwrap_or_default();
 
     let layer = layout.compute_layer_for(parent);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Toolbar, rect, sense: Sense::CLICK });
@@ -161,7 +161,7 @@ pub fn register_layout_manager_toolbar<P: DockPanel>(
     });
 
     // Return state to the map.
-    layout.toolbars.insert(id, state);
+    layout.toolbars_map_mut().insert(id, state);
 
     Some(ToolbarNode(node_id))
 }

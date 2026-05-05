@@ -107,12 +107,17 @@ impl std::error::Error for ManagerError {
 // ── PerWindow ─────────────────────────────────────────────────────────────────
 
 /// Per-window state owned by the manager.
+///
+/// LM owns the logical state (provider, chrome, dock-tree, modals,
+/// pointer state).  This struct holds only what stays on the platform
+/// side: the raw winit handle (for `request_redraw` and surface
+/// re-creation) and the GPU render state (because `WindowRenderState`
+/// is wgpu-bound and LM stays platform-agnostic).
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct PerWindow<P: DockPanel> {
     pub key:             WindowKey,
     pub spec:            WindowSpec,
     pub window:          std::sync::Arc<Window>,
-    pub provider:        WinitWindowProvider,
     pub render_state:    WindowRenderState,
     /// Last known cursor position in logical pixels.
     pub last_mouse_pos:  (f64, f64),
@@ -511,8 +516,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         let pw = PerWindow::<P> {
             key:             spec.key.clone(),
             spec:            spec.clone(),
-            window,
-            provider,
+            window:          std::sync::Arc::clone(&window),
             render_state,
             last_mouse_pos:  (0.0, 0.0),
             last_frame:      std::time::Instant::now(),
@@ -524,6 +528,11 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             _phantom:        std::marker::PhantomData,
         };
         self.windows.insert(id, pw);
+
+        // Hand the provider over to LM — from now on LM owns the trait
+        // object and routes everything (resize, redraw, drag, decorations,
+        // platform-event queue) through the trait.
+        self.layout.attach_window(spec.key.clone(), Box::new(provider));
 
         // Kick off the first paint: winit only sends Resized/RedrawRequested
         // events to *future* state changes; without an explicit request the
@@ -569,13 +578,22 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
     fn handle_window_winit_event(&mut self, id: winit::window::WindowId, event: &WindowEvent) {
         let now_ms = self.start.elapsed().as_secs_f64() * 1000.0;
 
+        // Route LM to this window before any per-window state mutations.
+        let key = match self.windows.get(&id) {
+            Some(pw) => pw.key.clone(),
+            None => return,
+        };
+        self.layout.set_current_window(key.clone());
+
         use winit::event::{ElementState, MouseButton as WMouseButton};
 
         match event {
             // ── Cursor moved ─────────────────────────────────────────────────
             WindowEvent::CursorMoved { position, .. } => {
                 let Some(pw) = self.windows.get_mut(&id) else { return };
-                let dpr = pw.provider.scale_factor();
+                let dpr = self.layout.window(&key)
+                    .map(|s| s.provider.scale_factor())
+                    .unwrap_or(1.0);
                 let lx = position.x / dpr;
                 let ly = position.y / dpr;
                 pw.last_mouse_pos = (lx, ly);
@@ -752,6 +770,13 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         let now_ms   = now_secs * 1000.0;
         let msaa     = self.msaa_samples();
 
+        // Route LM to this window for the duration of the tick.
+        if let Some(pw) = self.windows.get(&id) {
+            self.layout.set_current_window(pw.key.clone());
+        } else {
+            return Ok(());
+        }
+
         // ── Frame metrics (EMA, mlc pattern: α = 0.1) ──
         let now_inst = std::time::Instant::now();
         let dt = now_inst.duration_since(self.last_frame_instant);
@@ -779,11 +804,17 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 None    => return Ok(()),
             };
 
-            for ev in pw.provider.poll_events() {
+            let key = pw.key.clone();
+            let events = self.layout.window_mut(&key)
+                .map(|s| s.provider.poll_events())
+                .unwrap_or_default();
+            for ev in events {
                 let _ = self.app.on_event(&ev);
             }
 
-            let rect = pw.provider.window_rect();
+            let rect = self.layout.window(&key)
+                .map(|s| s.provider.window_rect())
+                .unwrap_or_default();
             self.layout.solve(rect);
             let viewport = self.layout.rect_for_dock_area().unwrap_or(rect);
             // begin_frame clears one-shot input flags and refreshes widget registrations
@@ -953,8 +984,13 @@ where
             }
             ref ev => {
                 self.handle_window_winit_event(id, ev);
-                if let Some(pw) = self.windows.get_mut(&id) {
-                    pw.provider.push_winit_event(ev);
+                let key = self.windows.get(&id).map(|pw| pw.key.clone());
+                if let Some(key) = key {
+                    if let Some(platform_ev) = uzor_window_desktop::map_winit_event(ev, 1.0) {
+                        if let Some(slot) = self.layout.window_mut(&key) {
+                            slot.provider.push_platform_event(platform_ev);
+                        }
+                    }
                 }
             }
         }

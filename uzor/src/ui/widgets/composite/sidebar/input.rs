@@ -142,7 +142,7 @@ pub fn register_layout_manager_sidebar<P: DockPanel>(
 
     // Take state out of the map (or create default), work with it, then
     // re-insert — avoids borrow conflicts with the rest of `layout`.
-    let mut state = layout.sidebars.remove(&id).unwrap_or_default();
+    let mut state = layout.sidebars_map_mut().remove(&id).unwrap_or_default();
 
     let layer = layout.compute_layer_for(parent);
 
@@ -217,7 +217,7 @@ pub fn register_layout_manager_sidebar<P: DockPanel>(
     });
 
     // Return state to the map.
-    layout.sidebars.insert(id, state);
+    layout.sidebars_map_mut().insert(id, state);
 
     Some(SidebarNode(node_id))
 }
