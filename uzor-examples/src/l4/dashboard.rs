@@ -424,16 +424,38 @@ impl App<PaintPanel> for DashboardApp {
             let _ = settings_rect;
         }
 
-        // Painting panel: register dock separators + paint them for the
-        // 4-leaf grid.  Per-cell composite content is drawn by per-region
-        // draw_region() callbacks below at their own cadences.
+        // Dock-leaf separators (drag-to-resize hit zones + visual strips).
+        // Per-cell composite content is drawn by per-region draw_region()
+        // callbacks below at their own cadences.  TODO(panel-edges): when
+        // every panel composite owns its own 4 edge handles, this manual
+        // call goes away.
         {
+            use uzor::layout::docking::SeparatorOrientation as SO;
             let layout = &mut *win.layout;
             let render = &mut *win.render;
-            uzor::framework::widgets::lm::dock_area()
-                .build(layout, render, |_layout, _render, _info| {
-                    // No body: each leaf is painted by its own RenderRegion.
-                });
+            layout.register_dock_separators(&uzor::input::LayerId::main());
+            let bg = layout.styles().color_or_owned("border_strong", "rgba(255,255,255,0.18)");
+            let strips: Vec<Rect> = layout.panels().separators().iter().map(|s| {
+                let thickness = s.thickness_for_state() as f64;
+                match s.orientation {
+                    SO::Vertical => Rect {
+                        x: s.position as f64 - thickness / 2.0,
+                        y: s.start    as f64,
+                        width:  thickness,
+                        height: s.length as f64,
+                    },
+                    SO::Horizontal => Rect {
+                        x: s.start    as f64,
+                        y: s.position as f64 - thickness / 2.0,
+                        width:  s.length as f64,
+                        height: thickness,
+                    },
+                }
+            }).collect();
+            render.set_fill_color(bg.as_str());
+            for r in &strips {
+                render.fill_rect(r.x, r.y, r.width, r.height);
+            }
         }
         let _ = paint_rect;
     }
