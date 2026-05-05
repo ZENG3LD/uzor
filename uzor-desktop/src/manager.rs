@@ -1020,7 +1020,16 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         let msaa     = self.msaa_samples();
 
         // Route LM to this window for the duration of the tick.
-        if let Some(pw) = self.windows.get(&id) {
+        let active_backend = self.hub.as_ref().map(|h| h.active()).unwrap_or(self.backend);
+        if let Some(pw) = self.windows.get_mut(&id) {
+            // Sync per-window active backend with the global hub
+            // setting and lazily build the matching renderer / CPU
+            // context if the user just switched backends.
+            if pw.render_state.backend() != active_backend {
+                pw.render_state.set_active(active_backend);
+            } else {
+                pw.render_state.ensure_backend_slot(active_backend);
+            }
             self.layout.set_current_window(pw.key.clone());
         } else {
             return Ok(());

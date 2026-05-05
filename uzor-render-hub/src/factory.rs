@@ -473,10 +473,59 @@ impl WindowRenderState {
 
     /// Set the active backend (live switching).
     ///
-    /// The caller is responsible for ensuring the corresponding renderer slot
-    /// is initialized before the next frame.
+    /// Calls [`ensure_backend_slot`] internally so the matching
+    /// renderer / context is ready before the next frame.
     pub fn set_active(&mut self, backend: RenderBackend) {
         self.active = backend;
+        self.ensure_backend_slot(backend);
+    }
+
+    /// Lazily create whatever renderer / CPU context the given
+    /// backend needs.  No-op if the slot is already populated or if
+    /// the backend's slot is created on first submit anyway
+    /// (`VelloHybrid`, `InstancedWgpu`).  Used after live backend
+    /// switching to wake up a previously-cold path on this window.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn ensure_backend_slot(&mut self, backend: RenderBackend) {
+        match backend {
+            RenderBackend::VelloGpu => {
+                if self.vello_gpu_renderer.is_none() {
+                    if let Some((device, _, _)) = self.gpu_handles() {
+                        match vello::Renderer::new(
+                            device,
+                            vello::RendererOptions {
+                                use_cpu: false,
+                                antialiasing_support: vello::AaSupport::all(),
+                                num_init_threads: std::num::NonZeroUsize::new(1),
+                                pipeline_cache: None,
+                            },
+                        ) {
+                            Ok(r) => self.vello_gpu_renderer = Some(r),
+                            Err(e) => eprintln!("[render-hub] VelloGpu renderer init failed: {e}"),
+                        }
+                    }
+                }
+            }
+            RenderBackend::VelloCpu => {
+                if self.vello_cpu_ctx.is_none() {
+                    self.vello_cpu_ctx = Some(VelloCpuRenderContext::new(1.0));
+                }
+            }
+            RenderBackend::TinySkia => {
+                if self.tiny_skia_ctx.is_none() {
+                    let (w, h) = self.gpu_handles()
+                        .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
+                        .unwrap_or((1, 1));
+                    self.tiny_skia_ctx = Some(TinySkiaCpuRenderContext::new(w, h, 1.0));
+                }
+            }
+            // Lazy on first submit.
+            RenderBackend::VelloHybrid | RenderBackend::InstancedWgpu => {}
+            #[cfg(target_arch = "wasm32")]
+            RenderBackend::Canvas2d => {}
+            #[cfg(not(target_arch = "wasm32"))]
+            RenderBackend::Canvas2d => {}
+        }
     }
 
     /// Mutable reference to the vello `Scene` (used by VelloGpu / VelloHybrid).
@@ -618,10 +667,24 @@ impl WindowRenderState {
                 Some(f(&mut self.vello_hybrid_ctx))
             }
             RenderBackend::VelloCpu => {
-                self.vello_cpu_ctx.as_mut().map(|c| f(c))
+                let (w, h) = self.gpu_handles()
+                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
+                    .unwrap_or((1, 1));
+                self.vello_cpu_ctx.as_mut().map(|c| {
+                    c.begin_frame(w, h);
+                    f(c)
+                })
             }
             RenderBackend::TinySkia => {
-                self.tiny_skia_ctx.as_mut().map(|c| f(c))
+                let (w, h) = self.gpu_handles()
+                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
+                    .unwrap_or((1, 1));
+                self.tiny_skia_ctx.as_mut().map(|c| {
+                    if c.width() != w || c.height() != h {
+                        c.resize(w, h);
+                    }
+                    f(c)
+                })
             }
             RenderBackend::InstancedWgpu => None,
             #[cfg(target_arch = "wasm32")]
@@ -656,14 +719,14 @@ impl WindowRenderState {
                 if matches!(self.active, RenderBackend::VelloHybrid) {
                     self.vello_hybrid_renderer = None;
                 }
-                // CPU rasterisers + screenshot read-back need
-                // COPY_DST / COPY_SRC; vello always recreates the
-                // target with TEXTURE | STORAGE only on resize, so we
-                // re-patch it here.
-                if matches!(self.active, RenderBackend::VelloCpu | RenderBackend::TinySkia) {
-                    let device = &gpu_pool.devices[*dev_id].device;
-                    recreate_target_with_cpu_usage(surface, device);
-                }
+                // Vello always recreates the target with
+                // STORAGE_BINDING | TEXTURE_BINDING only on resize.
+                // We need COPY_SRC (screenshot) and COPY_DST (live
+                // backend swap into a CPU rasteriser) on every
+                // GPU-backed surface regardless of which renderer is
+                // currently active — the user can flip at runtime.
+                let device = &gpu_pool.devices[*dev_id].device;
+                recreate_target_with_cpu_usage(surface, device);
             }
             #[cfg(not(target_arch = "wasm32"))]
             SurfaceMode::Software { presenter, width: w, height: h } => {

@@ -118,8 +118,38 @@ fn init_gpu_surface(
     // `WinitWindowProvider`, which lives alongside (and outlives) this
     // `WindowRenderState` inside the runtime.  Erasing the lifetime to
     // `'static` is safe in this specific ownership topology.
-    let surface: vello::util::RenderSurface<'static> =
+    let mut surface: vello::util::RenderSurface<'static> =
         unsafe { std::mem::transmute(surface_with_lifetime) };
+
+    // Force usage flags every backend may need over the window's
+    // lifetime (`COPY_SRC` for screenshot read-back, `COPY_DST` for
+    // CPU rasteriser uploads, `RENDER_ATTACHMENT` for instanced).
+    // Vello defaults to `STORAGE_BINDING | TEXTURE_BINDING` which
+    // breaks live backend swapping — once you go GPU→CPU on the
+    // same window the next frame panics with
+    // `Validation Error … COPY_DST`.
+    {
+        let device = &gpu_pool.devices[dev_id].device;
+        let old = &surface.target_texture;
+        let extent = old.size();
+        let new_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("uzor_target_texture"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let new_view = new_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        surface.target_texture = new_texture;
+        surface.target_view = new_view;
+    }
 
     Ok((gpu_pool, surface, dev_id))
 }
