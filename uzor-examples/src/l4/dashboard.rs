@@ -269,7 +269,7 @@ impl App<PaintPanel> for DashboardApp {
             let render = &mut *win.render;
             let content_h    = 600.0_f64;
             let current_theme = self.current_theme;
-            uzor::framework::widgets::lm::panel("settings-panel", "settings:panel")
+            uzor::framework::widgets::lm::panel("settings", "settings:panel")
                 .state(&mut self.settings_panel_state)
                 .kind(PanelRenderKind::Plain)
                 .overflow(OverflowMode::Scrollbar)
