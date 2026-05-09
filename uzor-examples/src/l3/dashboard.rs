@@ -96,6 +96,8 @@ use uzor::layout::{
     ContextMenuHandle, DropdownHandle, EdgeSide, EdgeSlot, LayoutManager, LayoutNodeId,
     ModalHandle, OverlayHandle, PopupHandle, SidebarHandle, ToolbarHandle,
 };
+use uzor::layout::window::WindowKey;
+use uzor_window_desktop::WinitWindowProvider;
 use uzor::types::{Rect, WidgetId, WidgetState, unsafe_widget_id};
 
 // ── composite widgets ─────────────────────────────────────────────────────────
@@ -3268,6 +3270,17 @@ impl ApplicationHandler for Handler {
         ).expect("renderer creation should succeed");
 
         let mut layout = LayoutManager::<DemoPanel>::new();
+
+        // Multi-window LM needs an explicit current_window before any
+        // flat-API call.  l3-dashboard owns its own winit handler so it
+        // does the wiring uzor-desktop::Manager would otherwise do.
+        let win_key = WindowKey::new("main");
+        layout.attach_window(
+            win_key.clone(),
+            Box::new(WinitWindowProvider::new(Arc::clone(&window))),
+        );
+        layout.set_current_window(win_key.clone());
+
         let mut tab_trees = build_initial_trees();
         setup_dock(&mut layout, &mut tab_trees);
 
