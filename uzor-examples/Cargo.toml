@@ -6,7 +6,6 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Layered demos for uzor — L1 (raw input coordinator), L2 (context manager + widgets), L3 (layout manager + composites), L4 (App + WindowManager builder)."
-publish = false
 
 [dependencies]
 uzor                  = { workspace = true }
