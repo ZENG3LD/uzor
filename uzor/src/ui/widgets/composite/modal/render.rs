@@ -276,21 +276,19 @@ pub fn register_context_manager_modal(
 ) {
     let coord = &mut ctx_mgr.input;
     let modal_id = register_input_coordinator_modal(coord, id, rect, state, view, settings, kind, layer);
-    draw_modal_with_coord(render, rect, coord, &modal_id, state, view, settings, kind);
+    let _ = (coord, modal_id);
+    draw_modal(render, rect, state, view, settings, kind);
 }
 
 // ---------------------------------------------------------------------------
-// Internal draw helpers (with coord — used by the convenience wrapper)
+// Pure paint — `uzor::l0::modal::draw_modal`
 // ---------------------------------------------------------------------------
 
-/// Full draw pipeline with `InputCoordinator` passed through to the body closure.
-///
-/// This is the version called by the `modal` convenience wrapper.
-fn draw_modal_with_coord(
+/// Full draw pipeline.  Pure paint — no L1 / L2 / L3 / WM dependency.
+/// Embedders that drive their own input pipeline call this directly.
+pub fn draw_modal(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
-    _coord:    &mut InputCoordinator,
-    _modal_id: &CompositeId,
     state:    &ModalState,
     view:     &mut ModalView<'_>,
     settings: &ModalSettings,

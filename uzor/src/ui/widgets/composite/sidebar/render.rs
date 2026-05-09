@@ -281,18 +281,20 @@ pub fn register_context_manager_sidebar(
     let coord = &mut ctx_mgr.input;
     let sidebar_id =
         register_input_coordinator_sidebar(coord, id, rect, state, view, settings, kind, layer);
-    draw_sidebar_with_coord(render, rect, coord, state, view, settings, kind);
+    let _ = coord;
+    draw_sidebar(render, rect, state, view, settings, kind);
     sidebar_id
 }
 
 // ---------------------------------------------------------------------------
-// Internal draw pipeline
+// Pure paint — `uzor::l0::sidebar::draw_sidebar`
 // ---------------------------------------------------------------------------
 
-fn draw_sidebar_with_coord(
+/// Pure paint — no L1 / L2 / L3 / WM dependency.  Embedders that
+/// drive their own input pipeline call this directly.
+pub fn draw_sidebar(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
-    _coord:    &mut InputCoordinator,
     state:    &mut SidebarState,
     view:     &mut SidebarView<'_>,
     settings: &SidebarSettings,

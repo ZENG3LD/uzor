@@ -196,7 +196,7 @@ pub fn register_context_manager_dropdown(
         register_input_coordinator_dropdown(coord, id, rect, state, view, settings, kind, layer);
 
     if view.open {
-        draw_dropdown_panels(render, rect, state, view, settings, kind);
+        draw_dropdown(render, rect, state, view, settings, kind);
     }
 
     dd_id
@@ -206,7 +206,8 @@ pub fn register_context_manager_dropdown(
 // Internal draw pipeline
 // ---------------------------------------------------------------------------
 
-fn draw_dropdown_panels(
+/// Pure paint — `uzor::l0::dropdown::draw_dropdown`.  No L1 / L2 / L3 dep.
+pub fn draw_dropdown(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
     state:    &DropdownState,

@@ -4,6 +4,12 @@ pub mod core;
 pub mod input;
 pub mod layout;
 pub mod platform;
+/// Pure agnostic surface across composites — paint + measure +
+/// hit-test + data types, no L1 / L2 / L3 wrappers.  Embedders that
+/// drive their own input pipeline (custom L0 apps, parallel runtimes)
+/// call into `l0::chrome::draw_chrome`, `l0::modal::draw_modal`, etc.
+/// directly.
+pub mod l0;
 pub use input as input_coordinator;
 pub mod ui;
 pub mod app_context;

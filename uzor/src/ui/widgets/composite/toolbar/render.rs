@@ -133,7 +133,7 @@ pub fn register_context_manager_toolbar(
 ) -> CompositeId {
     let coord = &mut ctx_mgr.input;
     let toolbar_id = register_input_coordinator_toolbar(coord, id, rect, state, view, settings, kind, layer);
-    draw_toolbar_internal(render, rect, state, view, settings, kind);
+    draw_toolbar(render, rect, state, view, settings, kind);
     toolbar_id
 }
 
@@ -141,7 +141,8 @@ pub fn register_context_manager_toolbar(
 // Internal draw dispatcher
 // ---------------------------------------------------------------------------
 
-fn draw_toolbar_internal(
+/// Pure paint — `uzor::l0::toolbar::draw_toolbar`.  No L1 / L2 / L3 dep.
+pub fn draw_toolbar(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
     state:    &ToolbarState,

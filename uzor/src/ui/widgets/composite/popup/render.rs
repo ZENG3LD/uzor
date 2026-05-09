@@ -114,7 +114,8 @@ pub fn register_context_manager_popup(
 // Internal draw pipeline
 // ---------------------------------------------------------------------------
 
-fn draw_popup(
+/// Pure paint — `uzor::l0::popup::draw_popup`.  No L1 / L2 / L3 dep.
+pub fn draw_popup(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
     state:    &mut PopupState,

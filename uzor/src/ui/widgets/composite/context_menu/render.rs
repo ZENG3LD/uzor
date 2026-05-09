@@ -88,7 +88,7 @@ pub fn register_context_manager_context_menu(
     );
 
     if state.is_open {
-        draw_context_menu_panel(render, state, view, settings, kind);
+        draw_context_menu(render, state, view, settings, kind);
     }
 
     cm_id
@@ -98,7 +98,8 @@ pub fn register_context_manager_context_menu(
 // Internal draw pipeline
 // ---------------------------------------------------------------------------
 
-fn draw_context_menu_panel(
+/// Pure paint — `uzor::l0::context_menu::draw_context_menu`.  No L1 / L2 / L3 dep.
+pub fn draw_context_menu(
     ctx:      &mut dyn RenderContext,
     state:    &ContextMenuState,
     view:     &ContextMenuView<'_>,

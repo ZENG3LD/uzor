@@ -112,7 +112,8 @@ pub fn register_context_manager_blackbox_panel(
 // Internal draw pipeline
 // ---------------------------------------------------------------------------
 
-fn draw_blackbox(
+/// Pure paint — `uzor::l0::blackbox_panel::draw_blackbox`.  No L1 / L2 / L3 dep.
+pub fn draw_blackbox(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
     view:     &mut BlackboxView<'_>,

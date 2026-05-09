@@ -321,7 +321,7 @@ pub fn register_context_manager_chrome(
     let coord = &mut ctx_mgr.input;
     let chrome_id =
         register_input_coordinator_chrome(coord, id, rect, state, view, settings, kind, layer);
-    draw_chrome_internal(render, rect, state, view, settings, kind);
+    draw_chrome(render, rect, state, view, settings, kind);
     chrome_id
 }
 
@@ -329,7 +329,14 @@ pub fn register_context_manager_chrome(
 // Internal draw pipeline
 // ---------------------------------------------------------------------------
 
-fn draw_chrome_internal(
+/// Pure paint — `uzor::l0::chrome::draw_chrome`.
+///
+/// Renders the entire chrome strip into `ctx` based on the given
+/// state + view + settings.  Self-contained: no L1 / L2 / L3 / WM
+/// dependency.  Promoted from a private `draw_chrome_internal` so
+/// embedders can drive their own input pipeline without touching
+/// `LayoutManager` or `InputCoordinator`.
+pub fn draw_chrome(
     ctx:      &mut dyn RenderContext,
     rect:     Rect,
     state:    &ChromeState,
