@@ -34,9 +34,5 @@ name = "l3-dashboard"
 path = "src/l3/dashboard.rs"
 
 [[bin]]
-name = "l4-hello"
-path = "src/l4/hello.rs"
-
-[[bin]]
 name = "l4-dashboard"
 path = "src/l4/dashboard.rs"
