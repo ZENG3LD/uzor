@@ -4,7 +4,7 @@
 //! `TextInputTheme` legacy slots that were really geometry not colour.
 
 /// Geometry trait — overridable by callers via custom `impl`.
-pub trait TextInputStyle {
+pub trait TextInputStyle: Send + Sync {
     /// Total input height in logical pixels (`mlc` default 30.0).
     fn height(&self) -> f64;
     /// Inner padding from the rect edges before the text starts (mlc 8.0).

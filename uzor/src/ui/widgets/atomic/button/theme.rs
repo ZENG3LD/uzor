@@ -29,7 +29,7 @@
 //! ```
 
 /// Theme trait for button colors - Contract between system themes and factory rendering
-pub trait ButtonTheme {
+pub trait ButtonTheme: Send + Sync {
     // =========================================================================
     // Background colors
     // =========================================================================

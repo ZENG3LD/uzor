@@ -3,7 +3,7 @@
 //! Geometry lives in `style.rs`; this trait is colour-only.
 
 /// Colour trait — overridable by callers via custom `impl`.
-pub trait TextInputTheme {
+pub trait TextInputTheme: Send + Sync {
     fn bg_normal(&self)        -> [u8; 4];
     fn bg_disabled(&self)      -> [u8; 4];
     fn border_normal(&self)    -> [u8; 4];

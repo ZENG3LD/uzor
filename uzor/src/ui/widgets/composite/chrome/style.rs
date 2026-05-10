@@ -29,7 +29,7 @@ pub enum BackgroundFill {
 // ---------------------------------------------------------------------------
 
 /// Geometry parameters for the Chrome composite.
-pub trait ChromeStyle {
+pub trait ChromeStyle: Send + Sync {
     /// Height of the titlebar strip in pixels.  Default: `32.0`.
     fn chrome_height(&self) -> f64 { 32.0 }
 

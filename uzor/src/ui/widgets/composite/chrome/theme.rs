@@ -10,7 +10,7 @@
 /// Colour tokens for the Chrome composite.
 ///
 /// Implement this on your app theme struct to plug in custom colours.
-pub trait ChromeTheme {
+pub trait ChromeTheme: Send + Sync {
     // --- Background ---
 
     /// Titlebar strip background.  Default: `"#131722"`.

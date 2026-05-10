@@ -18,6 +18,7 @@
 //! | `Custom`            | caller manages everything            |
 
 pub mod input;
+pub mod layout;
 pub mod render;
 pub mod settings;
 pub mod state;

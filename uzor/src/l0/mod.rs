@@ -40,6 +40,21 @@ pub mod chrome {
         style::ChromeStyle,
         theme::{ChromeTheme, DefaultChromeTheme},
     };
+
+    /// Slot-driven chrome (alternative to `draw_chrome` —
+    /// configurator + per-slot pure paint).  Embedders supply a
+    /// `ChromeLayout` and own interaction state outside.
+    pub mod layout {
+        pub use crate::ui::widgets::composite::chrome::layout::{
+            // entry points
+            draw_chrome_layout, chrome_layout_hit_test,
+            // configurator
+            ChromeLayout, Slot,
+            TabsConfig, SearchConfig, ToolbarSlotConfig,
+            // hit-test result
+            ChromeHitPath, ChromeZone, ChromeHitKind,
+        };
+    }
 }
 
 pub mod modal {
@@ -112,4 +127,73 @@ pub mod blackbox_panel {
         types::{BlackboxEvent, BlackboxEventResult, BlackboxView, BlackboxRenderKind, BlackboxHandler},
         settings::BlackboxPanelSettings,
     };
+}
+
+/// Style manager — pure-stdlib service that maps token names to
+/// colours / sizes / textures, plus the built-in mirage palettes.
+/// No L1 / L2 / L3 / WM dependency — backed by `HashMap<String, _>`.
+pub mod style {
+    pub use crate::layout::styles::{
+        StyleManager,
+        TextureKind,
+        Preset,
+        MirageDarkPreset,
+        MirageLightPreset,
+    };
+}
+
+/// Atomic widget paint surface — pure render functions for the
+/// building blocks of composites.  No event handlers, no L1 / L2 /
+/// L3 dependencies.  Tessera consumes these with its own
+/// interaction-state map and dispatch.
+pub mod atomic {
+    pub mod button {
+        pub use crate::ui::widgets::atomic::button::{
+            // pure paint
+            render::draw_button,
+            // data types
+            settings::ButtonSettings,
+            state::{ButtonState, SplitButtonHoverZone},
+            style::{
+                ButtonStyle,
+                DefaultButtonStyle, CompactButtonStyle, FlatButtonStyle,
+                ToolbarButtonStyle, ToolbarLabelStyle,
+                PrimaryButtonStyle, PrimaryRoundedButtonStyle,
+                GhostOutlineButtonStyle, GhostOutlineRoundedButtonStyle,
+                DangerButtonStyle, SidebarTabStyle, HorizontalTabStyle,
+                UtilityButtonStyle,
+                DropdownMenuRowStyle,
+                RoundedDropdownMenuRowStyle, FlatDropdownMenuRowStyle,
+            },
+            theme::{ButtonTheme, DefaultButtonTheme},
+            types::{
+                ButtonType, ActionVariant, ButtonStyle as ButtonStyleEnum,
+                ButtonContent,
+            },
+        };
+        // Re-export ButtonView / ButtonResult — they live alongside
+        // draw_button in render.rs.
+        pub use crate::ui::widgets::atomic::button::render::{
+            ButtonView, ButtonResult,
+        };
+    }
+
+    pub mod text_input {
+        pub use crate::ui::widgets::atomic::text_input::{
+            // pure paint
+            render::{draw_input, draw_input_cursor, cursor_from_char_positions},
+            // data types
+            settings::TextInputSettings,
+            state::{
+                InputCapability, TextFieldState, TextFieldStore,
+                TextAction,
+            },
+            style::{TextInputStyle, DefaultTextInputStyle},
+            theme::{TextInputTheme, DefaultTextInputTheme},
+            types::{InputType, TextInputType},
+        };
+        // The behavior.rs layer is L1/L2-flavoured (event mapping,
+        // confirm/cancel semantics) — kept out of l0.  Embedders
+        // build their own dispatch on top of TextFieldStore.
+    }
 }

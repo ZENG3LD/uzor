@@ -6,7 +6,7 @@
 //! footer buttons (Primary/Cancel).
 
 /// Geometry trait — overridable by callers via custom `impl`.
-pub trait ButtonStyle {
+pub trait ButtonStyle: Send + Sync {
     /// Corner radius (mlc default 4.0).
     fn radius(&self)         -> f64;
     /// Horizontal padding (mlc 8.0).
@@ -243,7 +243,7 @@ impl ButtonStyle for UtilityButtonStyle {
 /// Geometry for `draw_dropdown_menu_row` (section 38).
 ///
 /// One item inside an open dropdown menu.
-pub trait DropdownMenuRowStyle {
+pub trait DropdownMenuRowStyle: Send + Sync {
     /// Corner radius for the hover/selected highlight rect.
     /// chart_settings variant: 3.0.  alert_settings variant: 0.0 (sharp).
     fn radius(&self) -> f64;
