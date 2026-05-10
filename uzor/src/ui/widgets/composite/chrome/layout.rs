@@ -12,9 +12,11 @@
 //! …) own interaction state keyed by the [`ChromeHitPath`] this
 //! module returns from [`chrome_layout_hit_test`].
 
+use crate::core::render::draw_svg_icon;
 use crate::core::types::Rect;
 use crate::core::types::state::WidgetState;
 use crate::render::{RenderContext, TextAlign, TextBaseline};
+use crate::ui::assets::icons::ui::{ICON_CLOSE, ICON_NEW_WINDOW};
 
 use super::settings::ChromeSettings;
 use super::state::ChromeState;
@@ -191,7 +193,10 @@ fn walk(rect: Rect, layout: &ChromeLayout<'_>, settings: &ChromeSettings) -> Vec
         left_cursor += w;
     }
 
-    for (i, slot) in layout.right.iter().enumerate() {
+    // Walk `right` in reverse so the **last** item in the list ends
+    // up on the rightmost edge — apps read the list left-to-right
+    // like normal text.
+    for (i, slot) in layout.right.iter().enumerate().rev() {
         let w = slot_width(slot, rect.height, settings);
         right_cursor -= w;
         let r = Rect { x: right_cursor, y: rect.y, width: w, height: rect.height };
@@ -409,10 +414,11 @@ fn draw_window_controls(
 ) {
     let theme = settings.theme.as_ref();
     let bw    = rect.width / 3.0;
+    let h     = rect.height;
 
-    let min_r   = Rect { x: rect.x,            y: rect.y, width: bw, height: rect.height };
-    let max_r   = Rect { x: rect.x + bw,       y: rect.y, width: bw, height: rect.height };
-    let close_r = Rect { x: rect.x + bw * 2.0, y: rect.y, width: bw, height: rect.height };
+    let min_r   = Rect { x: rect.x,            y: rect.y, width: bw, height: h };
+    let max_r   = Rect { x: rect.x + bw,       y: rect.y, width: bw, height: h };
+    let close_r = Rect { x: rect.x + bw * 2.0, y: rect.y, width: bw, height: h };
 
     use super::types::ChromeHit;
     let min_hover   = matches!(state.hovered, ChromeHit::MinBtn);
@@ -432,23 +438,40 @@ fn draw_window_controls(
         ctx.fill_rect(close_r.x, close_r.y, close_r.width, close_r.height);
     }
 
-    ctx.set_text_align(TextAlign::Center);
-    ctx.set_text_baseline(TextBaseline::Middle);
-    ctx.set_font("12px sans-serif");
+    // Min: 10×1 filled rectangle, exactly centred — same primitive
+    // the legacy draw_chrome uses.  Sharp pixels, no font metrics.
+    {
+        let mid_x = min_r.x + min_r.width / 2.0;
+        let mid_y = min_r.y + h / 2.0;
+        ctx.set_fill_color(theme.icon_normal());
+        ctx.fill_rect(mid_x - 5.0, mid_y - 0.5, 10.0, 1.0);
+    }
 
-    // Min: "—"
-    ctx.set_fill_color(theme.icon_normal());
-    ctx.fill_text("—", min_r.x + min_r.width / 2.0, min_r.y + min_r.height / 2.0);
+    // Max / restore: 10×10 stroked square (Max) or two overlapping
+    // 8×8 squares (Restore).
+    {
+        let mid_x = max_r.x + max_r.width / 2.0;
+        let mid_y = max_r.y + h / 2.0;
+        ctx.set_stroke_color(theme.icon_normal());
+        ctx.set_stroke_width(1.0);
+        ctx.set_line_dash(&[]);
+        if state.is_maximized {
+            ctx.stroke_rect(mid_x - 3.0, mid_y - 5.0, 8.0, 8.0);
+            ctx.stroke_rect(mid_x - 5.0, mid_y - 3.0, 8.0, 8.0);
+        } else {
+            ctx.stroke_rect(mid_x - 5.0, mid_y - 5.0, 10.0, 10.0);
+        }
+    }
 
-    // Max / restore: "□" / "❐"
-    let max_glyph = if state.is_maximized { "❐" } else { "□" };
-    ctx.fill_text(max_glyph, max_r.x + max_r.width / 2.0, max_r.y + max_r.height / 2.0);
-
-    // Close: "×"
-    ctx.set_font("14px sans-serif");
-    let close_color = if close_hover { theme.icon_hover() } else { theme.icon_normal() };
-    ctx.set_fill_color(close_color);
-    ctx.fill_text("×", close_r.x + close_r.width / 2.0, close_r.y + close_r.height / 2.0);
+    // Close: ICON_CLOSE — same SVG and size as the legacy
+    // draw_chrome uses (action_icon_size = 18).
+    {
+        let s  = settings.style.action_icon_size();
+        let ix = close_r.x + (close_r.width - s) / 2.0;
+        let iy = close_r.y + (h - s) / 2.0;
+        let color = if close_hover { theme.icon_hover() } else { theme.icon_normal() };
+        draw_svg_icon(ctx, ICON_CLOSE, ix, iy, s, s, color);
+    }
 }
 
 fn draw_multi_window(
@@ -457,16 +480,48 @@ fn draw_multi_window(
     state:    &ChromeState,
     settings: &ChromeSettings,
 ) {
-    let bw  = rect.width / 2.0;
-    let new_r   = Rect { x: rect.x,      y: rect.y, width: bw, height: rect.height };
-    let close_r = Rect { x: rect.x + bw, y: rect.y, width: bw, height: rect.height };
+    let theme = settings.theme.as_ref();
+    let bw    = rect.width / 2.0;
+    let h     = rect.height;
+
+    let new_r   = Rect { x: rect.x,      y: rect.y, width: bw, height: h };
+    let close_r = Rect { x: rect.x + bw, y: rect.y, width: bw, height: h };
 
     use super::types::ChromeHit;
     let new_hov   = matches!(state.hovered, ChromeHit::NewWindowBtn);
     let close_hov = matches!(state.hovered, ChromeHit::CloseWindowBtn);
 
-    draw_icon_btn(ctx, new_r,   "⊞", new_hov,   settings);
-    draw_icon_btn(ctx, close_r, "⊠", close_hov, settings);
+    if new_hov   {
+        ctx.set_fill_color(theme.button_hover());
+        ctx.fill_rect(new_r.x, new_r.y, new_r.width, new_r.height);
+    }
+    if close_hov {
+        ctx.set_fill_color(theme.button_hover());
+        ctx.fill_rect(close_r.x, close_r.y, close_r.width, close_r.height);
+    }
+
+    // New-window: ICON_NEW_WINDOW — same SVG and size as the
+    // legacy draw_chrome uses (action_icon_size = 18).
+    {
+        let s  = settings.style.action_icon_size();
+        let ix = new_r.x + (new_r.width - s) / 2.0;
+        let iy = new_r.y + (h - s) / 2.0;
+        let color = if new_hov { theme.icon_hover() } else { theme.icon_normal() };
+        draw_svg_icon(ctx, ICON_NEW_WINDOW, ix, iy, s, s, color);
+    }
+
+    // Close-this: ICON_CLOSE — same SVG and size as the legacy
+    // draw_chrome uses.  Visually identical to close-app; what
+    // distinguishes them is the red hover-bg on close-app vs
+    // neutral hover-bg here, plus the spatial pairing with
+    // new-window.
+    {
+        let s  = settings.style.action_icon_size();
+        let ix = close_r.x + (close_r.width - s) / 2.0;
+        let iy = close_r.y + (h - s) / 2.0;
+        let color = if close_hov { theme.icon_hover() } else { theme.icon_normal() };
+        draw_svg_icon(ctx, ICON_CLOSE, ix, iy, s, s, color);
+    }
 }
 
 fn draw_undo_redo(
@@ -544,7 +599,16 @@ pub fn chrome_layout_hit_test(
             });
         }
     }
-    None
+
+    // Click landed inside the chrome rect but missed every slot —
+    // this is the OS drag zone.  The embedder's dispatcher maps
+    // `Drag` to a window-drag command (winit `window.drag_window()`).
+    Some(ChromeHitPath {
+        zone:       ChromeZone::Center,
+        slot_index: 0,
+        atomic_id:  String::from("drag_zone"),
+        kind:       ChromeHitKind::Drag,
+    })
 }
 
 fn slot_hit(
