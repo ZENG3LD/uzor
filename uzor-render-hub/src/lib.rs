@@ -40,4 +40,10 @@ pub use factories::{
     VelloGpuSurfaceFactory,
     VelloHybridSurfaceFactory,
     WgpuInstancedSurfaceFactory,
+    GpuPrewarm,
+    prewarm_vello_gpu,
+    GpuDeviceReady,
+    prewarm_device,
+    build_renderer,
+    build_surface_from_device,
 };

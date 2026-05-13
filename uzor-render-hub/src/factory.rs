@@ -224,6 +224,49 @@ impl WindowRenderState {
         }
     }
 
+    /// Build a GPU-mode state with the swapchain ready but no vello
+    /// renderer yet.  Used by the cold-start skeleton path: the
+    /// `WindowRenderState` is built when the device is ready (~600ms),
+    /// and the renderer is slotted in later via
+    /// [`Self::attach_vello_renderer`] once `vello::Renderer::new`
+    /// finishes on the background thread.
+    pub fn new_gpu_skeleton(
+        gpu_pool: GpuDevicePool,
+        surface: RenderSurface<'static>,
+        dev_id: usize,
+    ) -> Self {
+        Self {
+            surface: SurfaceMode::Gpu { gpu_pool, surface, dev_id },
+            vello_gpu_renderer: None,
+            vello_hybrid_renderer: None,
+            instanced_renderer: None,
+            vello_cpu_ctx: None,
+            tiny_skia_ctx: None,
+            #[cfg(target_arch = "wasm32")]
+            canvas2d_ctx: None,
+            scene: Scene::new(),
+            vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
+            active: RenderBackend::VelloGpu,
+        }
+    }
+
+    /// Slot a freshly-built vello `Renderer` into a skeleton state.
+    pub fn attach_vello_renderer(&mut self, renderer: VelloRenderer) {
+        self.vello_gpu_renderer = Some(renderer);
+    }
+
+    /// Borrow the underlying `SurfaceMode` mutably so the skeleton
+    /// painter can reach `gpu_pool` / `surface` directly.  This is
+    /// the only public hook into the private `surface` field.
+    pub fn surface_mut_for_skeleton(&mut self) -> &mut SurfaceMode {
+        &mut self.surface
+    }
+
+    /// `true` if the vello GPU renderer is wired up and ready to submit.
+    pub fn has_vello_gpu_renderer(&self) -> bool {
+        self.vello_gpu_renderer.is_some()
+    }
+
     /// Build a GPU-mode state without a vello GPU renderer.
     ///
     /// Used for `VelloHybrid` and `WgpuInstanced` where the renderer is

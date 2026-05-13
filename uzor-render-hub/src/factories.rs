@@ -85,6 +85,284 @@ impl winit::raw_window_handle::HasDisplayHandle for WinitSurfaceTarget {
     }
 }
 
+// ─── GPU pre-warm (run before HWND exists) ───────────────────────────────────
+
+/// Heavy GPU init state that can be built ahead of the window handle.
+///
+/// `Renderer::new` (vello pipeline compilation, ~2.7s on a 4060 Ti)
+/// only needs a `Device` — no `Surface`, no HWND.  By running this on
+/// a background thread *during* winit's HWND construction, we overlap
+/// ~3s of startup latency.  The remaining work after the HWND is
+/// available (`Instance::create_surface` + `surface.configure` +
+/// target_texture) is only ~50ms.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct GpuPrewarm {
+    pub gpu_pool: GpuDevicePool,
+    pub dev_id:   usize,
+    pub renderer: vello::Renderer,
+}
+
+/// Device-only pre-warm: Instance + Adapter + Device.  ~600ms on a
+/// 4060 Ti — fast enough that the HWND is barely ready by the time
+/// it lands.  Hands off to the caller, who can spin a lightweight
+/// wgpu skeleton (CPU-rasterised frame uploaded each tick) on the
+/// surface while [`Renderer::new`] continues compiling pipelines on
+/// another thread.  See `start_renderer_in_background`.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct GpuDeviceReady {
+    pub gpu_pool: GpuDevicePool,
+    pub dev_id:   usize,
+}
+
+/// Build a wgpu device pool — Instance + Adapter + Device only.
+/// Safe to call before `winit::Window` exists.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn prewarm_device() -> Result<GpuDeviceReady, SurfaceError> {
+    let t_total = std::time::Instant::now();
+    let mut gpu_pool = GpuDevicePool::new();
+    gpu_pool.instance = build_dcomp_instance();
+    eprintln!("[render-hub] prewarm_device: instance: {:?}", t_total.elapsed());
+
+    let t_dev = std::time::Instant::now();
+    let dev_id = pollster::block_on(gpu_pool.device(None))
+        .ok_or_else(|| SurfaceError::InitFailed("prewarm: no compatible device".into()))?;
+    eprintln!("[render-hub] prewarm_device: adapter + device: {:?}", t_dev.elapsed());
+    eprintln!("[render-hub] prewarm_device: TOTAL: {:?}", t_total.elapsed());
+
+    Ok(GpuDeviceReady { gpu_pool, dev_id })
+}
+
+/// Build a vello `Renderer` against a pre-warmed device.  ~2.7s on a
+/// 4060 Ti.  Run this on a background thread alongside skeleton
+/// rendering on the main thread.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn build_renderer(device: &wgpu::Device) -> Result<vello::Renderer, SurfaceError> {
+    let t_renderer = std::time::Instant::now();
+    let n_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let aa = vello::AaSupport { area: true, msaa8: false, msaa16: false };
+    let renderer = vello::Renderer::new(
+        device,
+        vello::RendererOptions {
+            use_cpu: false,
+            antialiasing_support: aa,
+            num_init_threads: std::num::NonZeroUsize::new(n_threads),
+            pipeline_cache: None,
+        },
+    )
+    .map_err(|e| SurfaceError::InitFailed(format!("build_renderer: {e}")))?;
+    eprintln!("[render-hub] build_renderer: {:?}", t_renderer.elapsed());
+    Ok(renderer)
+}
+
+/// Combined helper: device prewarm + renderer build, all-in-one.
+/// Used when no skeleton is wanted (legacy path).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn prewarm_vello_gpu() -> Result<GpuPrewarm, SurfaceError> {
+    let ready = prewarm_device()?;
+    let renderer = build_renderer(&ready.gpu_pool.devices[ready.dev_id].device)?;
+    Ok(GpuPrewarm {
+        gpu_pool: ready.gpu_pool,
+        dev_id:   ready.dev_id,
+        renderer,
+    })
+}
+
+/// Build a `RenderSurface` from a device-ready pre-warm WITHOUT a
+/// `vello::Renderer`.  Used so the caller can paint a CPU-rasterised
+/// skeleton through the swapchain while vello compiles its pipelines
+/// on a background thread.  When the renderer arrives, call
+/// [`attach_renderer_to_render_state`] to slot it into the existing
+/// `WindowRenderState`.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn build_surface_from_device(
+    ready: GpuDeviceReady,
+    handle: &RawHandle,
+    size: SurfaceSize,
+) -> Result<(GpuDevicePool, vello::util::RenderSurface<'static>, usize), SurfaceError> {
+    let pair = extract_handle_pair(handle, RenderBackend::VelloGpu)?;
+    let t_total = std::time::Instant::now();
+    let GpuDeviceReady { gpu_pool, dev_id } = ready;
+    let target = WinitSurfaceTarget { window: pair.0, display: pair.1 };
+    use vello::util::RenderSurface;
+
+    let surface_raw: wgpu::Surface<'_> = gpu_pool
+        .instance
+        .create_surface(wgpu::SurfaceTarget::from(target))
+        .map_err(|e| SurfaceError::InitFailed(format!("build_surface: create_surface: {e}")))?;
+
+    {
+        let dh = &gpu_pool.devices[dev_id];
+        if !dh.adapter().is_surface_supported(&surface_raw) {
+            return Err(SurfaceError::InitFailed(
+                "build_surface: pre-warmed adapter does not support this HWND".into(),
+            ));
+        }
+    }
+
+    let (alpha_mode, swap_format) = {
+        let dh = &gpu_pool.devices[dev_id];
+        let caps = surface_raw.get_capabilities(dh.adapter());
+        let am = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+            wgpu::CompositeAlphaMode::PreMultiplied
+        } else {
+            wgpu::CompositeAlphaMode::Auto
+        };
+        let fmt = caps.formats.iter()
+            .find(|f| matches!(f, wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm))
+            .copied().unwrap_or(caps.formats[0]);
+        (am, fmt)
+    };
+
+    let config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: swap_format,
+        width: size.width.max(1),
+        height: size.height.max(1),
+        present_mode: PresentMode::Fifo,
+        desired_maximum_frame_latency: 2,
+        alpha_mode,
+        view_formats: vec![],
+    };
+    {
+        let device = &gpu_pool.devices[dev_id].device;
+        surface_raw.configure(device, &config);
+    }
+
+    let (target_texture, target_view) = {
+        let device = &gpu_pool.devices[dev_id].device;
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("uzor_target_texture"),
+            size: wgpu::Extent3d {
+                width: config.width, height: config.height, depth_or_array_layers: 1,
+            },
+            mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        (tex, view)
+    };
+    let blitter = {
+        let device = &gpu_pool.devices[dev_id].device;
+        wgpu::util::TextureBlitter::new(device, swap_format)
+    };
+
+    let surface_with_lifetime: RenderSurface<'_> = RenderSurface {
+        surface: surface_raw, config, dev_id,
+        format: swap_format, target_texture, target_view, blitter,
+    };
+    let surface: RenderSurface<'static> = unsafe { std::mem::transmute(surface_with_lifetime) };
+
+    eprintln!("[render-hub] build_surface_from_device: {:?}", t_total.elapsed());
+    Ok((gpu_pool, surface, dev_id))
+}
+
+/// Build a `RenderSurface` on top of a `GpuPrewarm` using the supplied
+/// window handle.  Only the surface-bound work runs here (typically
+/// 30–80ms): `instance.create_surface`, alpha-mode probe + configure,
+/// target_texture + blitter.
+#[cfg(not(target_arch = "wasm32"))]
+fn finalize_gpu_surface(
+    prewarm: GpuPrewarm,
+    pair: &SendSyncHandlePair,
+    size: SurfaceSize,
+) -> Result<(GpuDevicePool, vello::util::RenderSurface<'static>, usize, vello::Renderer), SurfaceError> {
+    let t_total = std::time::Instant::now();
+    let GpuPrewarm { gpu_pool, dev_id, renderer } = prewarm;
+
+    let target = WinitSurfaceTarget { window: pair.0, display: pair.1 };
+
+    use vello::util::RenderSurface;
+
+    let surface_raw: wgpu::Surface<'_> = gpu_pool
+        .instance
+        .create_surface(wgpu::SurfaceTarget::from(target))
+        .map_err(|e| SurfaceError::InitFailed(format!("finalize: create_surface: {e}")))?;
+
+    // The pre-warmed adapter may not be compatible with this HWND
+    // (multi-GPU edge case).  Verify; if mismatched, fall back to
+    // synchronous init — we lose the pre-warm savings but stay correct.
+    {
+        let dh = &gpu_pool.devices[dev_id];
+        if !dh.adapter().is_surface_supported(&surface_raw) {
+            return Err(SurfaceError::InitFailed(
+                "finalize: pre-warmed adapter does not support this HWND surface — fallback path needed".into()
+            ));
+        }
+    }
+
+    let (alpha_mode, swap_format) = {
+        let dh = &gpu_pool.devices[dev_id];
+        let caps = surface_raw.get_capabilities(dh.adapter());
+        let am = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+            wgpu::CompositeAlphaMode::PreMultiplied
+        } else {
+            wgpu::CompositeAlphaMode::Auto
+        };
+        let fmt = caps.formats.iter()
+            .find(|f| matches!(f, wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm))
+            .copied().unwrap_or(caps.formats[0]);
+        (am, fmt)
+    };
+
+    let config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: swap_format,
+        width: size.width.max(1),
+        height: size.height.max(1),
+        present_mode: PresentMode::Fifo,
+        desired_maximum_frame_latency: 2,
+        alpha_mode,
+        view_formats: vec![],
+    };
+    {
+        let device = &gpu_pool.devices[dev_id].device;
+        surface_raw.configure(device, &config);
+    }
+
+    let (target_texture, target_view) = {
+        let device = &gpu_pool.devices[dev_id].device;
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("uzor_target_texture"),
+            size: wgpu::Extent3d {
+                width: config.width, height: config.height, depth_or_array_layers: 1,
+            },
+            mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        (tex, view)
+    };
+    let blitter = {
+        let device = &gpu_pool.devices[dev_id].device;
+        wgpu::util::TextureBlitter::new(device, swap_format)
+    };
+
+    let surface_with_lifetime: RenderSurface<'_> = RenderSurface {
+        surface: surface_raw, config, dev_id,
+        format: swap_format, target_texture, target_view, blitter,
+    };
+    let surface: RenderSurface<'static> = unsafe { std::mem::transmute(surface_with_lifetime) };
+
+    eprintln!("[render-hub] finalize_gpu_surface: {:?}", t_total.elapsed());
+    Ok((gpu_pool, surface, dev_id, renderer))
+}
+
 // ─── Shared GPU init helper (desktop only) ───────────────────────────────────
 
 /// Build a wgpu `Instance` wired for DirectComposition on Windows.
@@ -321,6 +599,25 @@ impl VelloGpuSurfaceFactory {
     /// Create a new factory.
     pub fn new() -> Self {
         Self
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl VelloGpuSurfaceFactory {
+    /// Fast path: build the per-window `WindowRenderState` from a
+    /// pre-warmed `GpuPrewarm` (Instance + Adapter + Device + vello
+    /// Renderer already ready).  Only the surface-bound steps run
+    /// here.  Caller produces the prewarm on a background thread
+    /// during winit HWND creation; see `prewarm_vello_gpu`.
+    pub fn create_render_state_with_prewarm(
+        &self,
+        prewarm: GpuPrewarm,
+        handle: &RawHandle,
+        size: SurfaceSize,
+    ) -> Result<WindowRenderState, SurfaceError> {
+        let pair = extract_handle_pair(handle, RenderBackend::VelloGpu)?;
+        let (gpu_pool, surface, dev_id, renderer) = finalize_gpu_surface(prewarm, pair, size)?;
+        Ok(WindowRenderState::new_gpu(gpu_pool, surface, renderer, dev_id))
     }
 }
 
