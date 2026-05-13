@@ -357,17 +357,23 @@ impl RenderSurfaceFactory for VelloGpuSurfaceFactory {
         let n_threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
+        // AaSupport::all() compiles three antialiasing variants (Area
+        // + MSAA8 + MSAA16) which roughly triples vello's pipeline
+        // count.  Most workloads use only `Area`; MSAA is opt-in per
+        // submit and we currently never request it from the dashboard.
+        // Restricting to `area_only` cuts the cold start by ~2/3.
+        let aa = AaSupport { area: true, msaa8: false, msaa16: false };
         let renderer = Renderer::new(
             device,
             RendererOptions {
                 use_cpu: false,
-                antialiasing_support: AaSupport::all(),
+                antialiasing_support: aa,
                 num_init_threads: std::num::NonZeroUsize::new(n_threads),
                 pipeline_cache: None,
             },
         )
         .map_err(|e| SurfaceError::InitFailed(e.to_string()))?;
-        eprintln!("[render-hub] vello Renderer::new ({} threads): {:?}", n_threads, t_renderer.elapsed());
+        eprintln!("[render-hub] vello Renderer::new ({} threads, area-only AA): {:?}", n_threads, t_renderer.elapsed());
 
         Ok(WindowRenderState::new_gpu(gpu_pool, surface, renderer, dev_id))
     }
