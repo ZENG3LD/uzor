@@ -152,8 +152,10 @@ fn init_gpu_surface(
     // a public field and `devices` is empty until the first
     // `create_surface` call — so swapping the instance pre-surface is
     // safe and does not require a vello fork.
+    let t_init = std::time::Instant::now();
     let mut gpu_pool = GpuDevicePool::new();
     gpu_pool.instance = build_dcomp_instance();
+    eprintln!("[render-hub] build_dcomp_instance: {:?}", t_init.elapsed());
 
     // We DON'T call `gpu_pool.create_surface` here — that helper calls
     // `surface.configure(..., alpha_mode: Auto)` first, then we would
@@ -167,16 +169,20 @@ fn init_gpu_surface(
     use vello::util::RenderSurface;
 
     // Step 1: raw wgpu surface from the HWND.
+    let t_surf = std::time::Instant::now();
     let surface_raw: wgpu::Surface<'_> = gpu_pool
         .instance
         .create_surface(wgpu::SurfaceTarget::from(target))
         .map_err(|e| SurfaceError::InitFailed(format!("{backend:?}: create_surface: {e}")))?;
+    eprintln!("[render-hub] instance.create_surface: {:?}", t_surf.elapsed());
 
     // Step 2: acquire a compatible device through vello's helper so the
     // `gpu_pool.devices` Vec gets populated (vello uses dev_id to index
     // it elsewhere).
+    let t_dev = std::time::Instant::now();
     let dev_id = pollster::block_on(gpu_pool.device(Some(&surface_raw)))
         .ok_or_else(|| SurfaceError::InitFailed(format!("{backend:?}: no compatible device")))?;
+    eprintln!("[render-hub] request_adapter + device: {:?}", t_dev.elapsed());
 
     let (alpha_mode, swap_format, alpha_modes_log, formats_log, adapter_name) = {
         let dh = &gpu_pool.devices[dev_id];
@@ -218,6 +224,9 @@ fn init_gpu_surface(
         surface_raw.configure(device, &config);
     }
     eprintln!("[render-hub] surface configured ONCE with alpha_mode={:?}", alpha_mode);
+    use std::io::Write;
+    let _ = std::io::stderr().flush();
+    let t_blitter = std::time::Instant::now();
 
     // Step 4: build the vello target_texture + blitter with our usage flags
     // (so we don't have to pay for a second create+drop).
@@ -248,6 +257,8 @@ fn init_gpu_surface(
         let device = &gpu_pool.devices[dev_id].device;
         wgpu::util::TextureBlitter::new(device, swap_format)
     };
+    eprintln!("[render-hub] target_texture + blitter: {:?}", t_blitter.elapsed());
+    let _ = std::io::stderr().flush();
 
     // Step 5: assemble the `RenderSurface` from public fields.
     let surface_with_lifetime: RenderSurface<'_> = RenderSurface {
@@ -337,16 +348,26 @@ impl RenderSurfaceFactory for VelloGpuSurfaceFactory {
 
         let device = &gpu_pool.devices[dev_id].device;
 
+        let t_renderer = std::time::Instant::now();
+        // Use all available cores to parallelise vello pipeline init —
+        // the default of 1 takes ~14 s on a 4060 Ti, the parallel
+        // path drops it to under 2 s.  AaSupport::all() compiles three
+        // antialiasing variants (Area + MSAA8 + MSAA16); restrict to
+        // just `area` if we ever want to cut it further.
+        let n_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
         let renderer = Renderer::new(
             device,
             RendererOptions {
                 use_cpu: false,
                 antialiasing_support: AaSupport::all(),
-                num_init_threads: std::num::NonZeroUsize::new(1),
+                num_init_threads: std::num::NonZeroUsize::new(n_threads),
                 pipeline_cache: None,
             },
         )
         .map_err(|e| SurfaceError::InitFailed(e.to_string()))?;
+        eprintln!("[render-hub] vello Renderer::new ({} threads): {:?}", n_threads, t_renderer.elapsed());
 
         Ok(WindowRenderState::new_gpu(gpu_pool, surface, renderer, dev_id))
     }
