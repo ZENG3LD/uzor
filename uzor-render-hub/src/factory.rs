@@ -308,9 +308,14 @@ impl WindowRenderState {
 fn recreate_target_with_cpu_usage(
     surface: &mut RenderSurface<'static>,
     device: &wgpu::Device,
+    width: u32,
+    height: u32,
 ) {
-    let old = &surface.target_texture;
-    let size = old.size();
+    let size = wgpu::Extent3d {
+        width: width.max(1),
+        height: height.max(1),
+        depth_or_array_layers: 1,
+    };
     let new_texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("target_texture_cpu_swapchain"),
         size,
@@ -345,7 +350,7 @@ impl WindowRenderState {
         // only; CPU upload needs COPY_DST and the screenshot path needs
         // COPY_SRC.  Recreate the texture with the right usage flags
         // BEFORE handing the surface to the new state.
-        recreate_target_with_cpu_usage(&mut surface, &gpu_pool.devices[dev_id].device);
+        recreate_target_with_cpu_usage(&mut surface, &gpu_pool.devices[dev_id].device, w, h);
         Self {
             surface: SurfaceMode::Gpu { gpu_pool, surface, dev_id },
             vello_gpu_renderer: None,
@@ -369,7 +374,8 @@ impl WindowRenderState {
         dev_id: usize,
         dpr: f64,
     ) -> Self {
-        recreate_target_with_cpu_usage(&mut surface, &gpu_pool.devices[dev_id].device);
+        let (cw, ch) = (surface.config.width.max(1), surface.config.height.max(1));
+        recreate_target_with_cpu_usage(&mut surface, &gpu_pool.devices[dev_id].device, cw, ch);
         Self {
             surface: SurfaceMode::Gpu { gpu_pool, surface, dev_id },
             vello_gpu_renderer: None,
@@ -698,6 +704,20 @@ impl WindowRenderState {
 
     // ── Surface lifecycle ─────────────────────────────────────────────────────
 
+    /// Block the CPU until every GPU submission on this surface's
+    /// device has completed.  Used by animations that want to be
+    /// certain a freshly-presented frame is *on the screen* before
+    /// they touch the OS window (e.g. atomic SetWindowPos right
+    /// after the corresponding swapchain present — without the
+    /// wait DWM may composite a stale backbuffer onto the new
+    /// outer rect for one vblank).  No-op on non-GPU backends.
+    pub fn wait_gpu_idle(&self) {
+        if let SurfaceMode::Gpu { gpu_pool, dev_id, .. } = &self.surface {
+            let device = &gpu_pool.devices[*dev_id].device;
+            let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+        }
+    }
+
     /// Resize the underlying surface to match the window's new physical size.
     ///
     /// For GPU surfaces this re-creates the wgpu swapchain. For software
@@ -725,8 +745,13 @@ impl WindowRenderState {
                 // backend swap into a CPU rasteriser) on every
                 // GPU-backed surface regardless of which renderer is
                 // currently active — the user can flip at runtime.
+                // Pass the NEW size — `old.size()` would re-create
+                // the texture at the previous swapchain dimensions
+                // and the next frame's blit would scale / clip
+                // (visibly anchoring the scene to one corner when
+                // the swapchain grew).
                 let device = &gpu_pool.devices[*dev_id].device;
-                recreate_target_with_cpu_usage(surface, device);
+                recreate_target_with_cpu_usage(surface, device, width, height);
             }
             #[cfg(not(target_arch = "wasm32"))]
             SurfaceMode::Software { presenter, width: w, height: h } => {

@@ -87,6 +87,52 @@ impl winit::raw_window_handle::HasDisplayHandle for WinitSurfaceTarget {
 
 // ─── Shared GPU init helper (desktop only) ───────────────────────────────────
 
+/// Build a wgpu `Instance` wired for DirectComposition on Windows.
+///
+/// `Dx12SwapchainKind::DxgiFromVisual` is the only path that makes
+/// the DX12 backend report `CompositeAlphaMode::PreMultiplied` in
+/// `Surface::get_capabilities()` — a plain HWND swapchain reports
+/// `Opaque` only, so the swapchain discards the alpha channel even
+/// if the HWND has `WS_EX_NOREDIRECTIONBITMAP` and vello renders
+/// alpha=0 pixels.  See `docs/research/transparency-dcomp-research.md`.
+///
+/// On non-Windows platforms returns a plain default `Instance`.
+#[cfg(not(target_arch = "wasm32"))]
+fn build_dcomp_instance() -> wgpu::Instance {
+    #[cfg(target_os = "windows")]
+    {
+        let backends = wgpu::Backends::DX12;
+        let flags = wgpu::InstanceFlags::from_build_config().with_env();
+        let memory_budget_thresholds = wgpu::MemoryBudgetThresholds::default();
+        let backend_options = wgpu::BackendOptions {
+            dx12: wgpu::Dx12BackendOptions {
+                presentation_system: wgpu::Dx12SwapchainKind::DxgiFromVisual,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        return wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends,
+            flags,
+            memory_budget_thresholds,
+            backend_options,
+        });
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let backends = wgpu::Backends::from_env().unwrap_or_default();
+        let flags = wgpu::InstanceFlags::from_build_config().with_env();
+        let memory_budget_thresholds = wgpu::MemoryBudgetThresholds::default();
+        let backend_options = wgpu::BackendOptions::from_env_or_default();
+        wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends,
+            flags,
+            memory_budget_thresholds,
+            backend_options,
+        })
+    }
+}
+
 /// Create a `GpuDevicePool` + `RenderSurface` from a `SendSyncHandlePair`.
 ///
 /// Shared by all GPU-backed factories (VelloGpu, VelloHybrid, WgpuInstanced).
@@ -101,40 +147,89 @@ fn init_gpu_surface(
         display: pair.1,
     };
 
+    // Replace vello's default `wgpu::Instance` with one configured for
+    // DirectComposition.  vello's `RenderContext` exposes `instance` as
+    // a public field and `devices` is empty until the first
+    // `create_surface` call — so swapping the instance pre-surface is
+    // safe and does not require a vello fork.
     let mut gpu_pool = GpuDevicePool::new();
+    gpu_pool.instance = build_dcomp_instance();
 
-    let surface_with_lifetime = pollster::block_on(gpu_pool.create_surface(
-        target,
-        size.width,
-        size.height,
-        PresentMode::AutoNoVsync,
-    ))
-    .map_err(|e| SurfaceError::InitFailed(format!("{backend:?}: {e}")))?;
+    // We DON'T call `gpu_pool.create_surface` here — that helper calls
+    // `surface.configure(..., alpha_mode: Auto)` first, then we would
+    // re-configure with PreMultiplied.  On DComp DX12 swapchains the
+    // first configure latches the visual into Opaque mode and the
+    // second configure does not flip it back, so the final swapchain
+    // composites as Opaque even though `surface.config.alpha_mode` says
+    // PreMultiplied.  Instead we build the `RenderSurface` manually
+    // and configure exactly once with the right alpha mode.
 
-    let dev_id = surface_with_lifetime.dev_id;
+    use vello::util::RenderSurface;
 
-    // SAFETY: The surface's implicit lifetime is tied to the window handle
-    // passed to `create_surface`.  That window is an `Arc<Window>` owned by
-    // `WinitWindowProvider`, which lives alongside (and outlives) this
-    // `WindowRenderState` inside the runtime.  Erasing the lifetime to
-    // `'static` is safe in this specific ownership topology.
-    let mut surface: vello::util::RenderSurface<'static> =
-        unsafe { std::mem::transmute(surface_with_lifetime) };
+    // Step 1: raw wgpu surface from the HWND.
+    let surface_raw: wgpu::Surface<'_> = gpu_pool
+        .instance
+        .create_surface(wgpu::SurfaceTarget::from(target))
+        .map_err(|e| SurfaceError::InitFailed(format!("{backend:?}: create_surface: {e}")))?;
 
-    // Force usage flags every backend may need over the window's
-    // lifetime (`COPY_SRC` for screenshot read-back, `COPY_DST` for
-    // CPU rasteriser uploads, `RENDER_ATTACHMENT` for instanced).
-    // Vello defaults to `STORAGE_BINDING | TEXTURE_BINDING` which
-    // breaks live backend swapping — once you go GPU→CPU on the
-    // same window the next frame panics with
-    // `Validation Error … COPY_DST`.
+    // Step 2: acquire a compatible device through vello's helper so the
+    // `gpu_pool.devices` Vec gets populated (vello uses dev_id to index
+    // it elsewhere).
+    let dev_id = pollster::block_on(gpu_pool.device(Some(&surface_raw)))
+        .ok_or_else(|| SurfaceError::InitFailed(format!("{backend:?}: no compatible device")))?;
+
+    let (alpha_mode, swap_format, alpha_modes_log, formats_log, adapter_name) = {
+        let dh = &gpu_pool.devices[dev_id];
+        let caps = surface_raw.get_capabilities(dh.adapter());
+        let am = if caps.alpha_modes.contains(&wgpu::CompositeAlphaMode::PreMultiplied) {
+            wgpu::CompositeAlphaMode::PreMultiplied
+        } else {
+            wgpu::CompositeAlphaMode::Auto
+        };
+        // Match vello's selection — first Rgba8Unorm / Bgra8Unorm.
+        let fmt = caps
+            .formats
+            .iter()
+            .find(|f| matches!(f, wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Bgra8Unorm))
+            .copied()
+            .unwrap_or(caps.formats[0]);
+        (am, fmt, caps.alpha_modes.clone(), caps.formats.clone(), dh.adapter().get_info().name.clone())
+    };
+
+    eprintln!(
+        "[render-hub] alpha_modes={:?}  formats={:?}  adapter={:?}  picked alpha_mode={:?}  picked format={:?}",
+        alpha_modes_log, formats_log, adapter_name, alpha_mode, swap_format,
+    );
+
+    // Step 3: build SurfaceConfiguration with the chosen alpha mode and
+    // configure exactly once.
+    let config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: swap_format,
+        width: size.width.max(1),
+        height: size.height.max(1),
+        present_mode: PresentMode::Fifo,
+        desired_maximum_frame_latency: 2,
+        alpha_mode,
+        view_formats: vec![],
+    };
     {
         let device = &gpu_pool.devices[dev_id].device;
-        let old = &surface.target_texture;
-        let extent = old.size();
-        let new_texture = device.create_texture(&wgpu::TextureDescriptor {
+        surface_raw.configure(device, &config);
+    }
+    eprintln!("[render-hub] surface configured ONCE with alpha_mode={:?}", alpha_mode);
+
+    // Step 4: build the vello target_texture + blitter with our usage flags
+    // (so we don't have to pay for a second create+drop).
+    let (target_texture, target_view) = {
+        let device = &gpu_pool.devices[dev_id].device;
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("uzor_target_texture"),
-            size: extent,
+            size: wgpu::Extent3d {
+                width: config.width,
+                height: config.height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -146,10 +241,29 @@ fn init_gpu_surface(
                 | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
-        let new_view = new_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        surface.target_texture = new_texture;
-        surface.target_view = new_view;
-    }
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        (tex, view)
+    };
+    let blitter = {
+        let device = &gpu_pool.devices[dev_id].device;
+        wgpu::util::TextureBlitter::new(device, swap_format)
+    };
+
+    // Step 5: assemble the `RenderSurface` from public fields.
+    let surface_with_lifetime: RenderSurface<'_> = RenderSurface {
+        surface: surface_raw,
+        config,
+        dev_id,
+        format: swap_format,
+        target_texture,
+        target_view,
+        blitter,
+    };
+
+    // SAFETY: see the lifetime note above — the underlying winit Window
+    // outlives every consumer of this surface.
+    let surface: RenderSurface<'static> =
+        unsafe { std::mem::transmute(surface_with_lifetime) };
 
     Ok((gpu_pool, surface, dev_id))
 }
