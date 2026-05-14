@@ -140,6 +140,39 @@ pub trait RenderContext {
         }
     }
 
+    /// Fill the current path with a radial gradient.
+    ///
+    /// `cx`/`cy` is the gradient centre in user-space coordinates.
+    /// `r` is the gradient radius — colours are sampled along `[0, r]`.
+    /// `stops` is a list of `(offset, color_hex)` pairs sorted ascending by
+    /// offset (`0.0..=1.0`).
+    ///
+    /// Backends without native radial-gradient support fall back to a solid
+    /// fill using the **first** stop colour (matching `fill_linear_gradient`
+    /// fallback semantics).  If `stops` is empty no drawing is performed.
+    ///
+    /// The bounding rectangle `x`/`y`/`w`/`h` is used by the default
+    /// implementation to issue `fill_rect`; native backends use the path that
+    /// was built before this call (via `begin_path` + shape primitives).
+    #[allow(clippy::too_many_arguments)]
+    fn fill_radial_gradient(
+        &mut self,
+        cx: f64,
+        cy: f64,
+        r: f64,
+        stops: &[(f32, &str)],
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    ) {
+        let _ = (cx, cy, r);
+        if let Some((_, color)) = stops.first() {
+            self.set_fill_color(color);
+            self.fill_rect(x, y, w, h);
+        }
+    }
+
     /// Clip to the current path
     fn clip(&mut self);
 
@@ -173,6 +206,79 @@ pub trait RenderContext {
     fn stroke_rounded_rect(&mut self, x: f64, y: f64, w: f64, h: f64, radius: f64) {
         self.begin_path();
         self.rounded_rect(x, y, w, h, radius);
+        self.stroke();
+    }
+
+    /// Add a rounded rectangle path with per-corner radii to the current path.
+    ///
+    /// Corner order: `tl` (top-left), `tr` (top-right), `br` (bottom-right),
+    /// `bl` (bottom-left).  Each radius is clamped to `min(w, h) / 2` so the
+    /// path is always geometrically valid.  A radius of `0` produces a sharp
+    /// corner.
+    ///
+    /// No stroke or fill is performed — call [`fill`] or [`stroke`] afterwards.
+    ///
+    /// Default implementation falls back to a uniform-radius
+    /// [`rounded_rect`] using `min(tl, tr, br, bl)` so we under-round rather
+    /// than over-round on backends that lack native per-corner support.
+    #[allow(clippy::too_many_arguments)]
+    fn rounded_rect_corners(
+        &mut self,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        tl: f64,
+        tr: f64,
+        br: f64,
+        bl: f64,
+    ) {
+        let max_r = (w / 2.0).min(h / 2.0).max(0.0);
+        let tl = tl.clamp(0.0, max_r);
+        let tr = tr.clamp(0.0, max_r);
+        let br = br.clamp(0.0, max_r);
+        let bl = bl.clamp(0.0, max_r);
+        let r = tl.min(tr).min(br).min(bl);
+        self.rounded_rect(x, y, w, h, r);
+    }
+
+    /// Fill a rounded rectangle with per-corner radii.
+    ///
+    /// Convenience wrapper: `begin_path` + [`rounded_rect_corners`] + [`fill`].
+    #[allow(clippy::too_many_arguments)]
+    fn fill_rounded_rect_corners(
+        &mut self,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        tl: f64,
+        tr: f64,
+        br: f64,
+        bl: f64,
+    ) {
+        self.begin_path();
+        self.rounded_rect_corners(x, y, w, h, tl, tr, br, bl);
+        self.fill();
+    }
+
+    /// Stroke a rounded rectangle with per-corner radii.
+    ///
+    /// Convenience wrapper: `begin_path` + [`rounded_rect_corners`] + [`stroke`].
+    #[allow(clippy::too_many_arguments)]
+    fn stroke_rounded_rect_corners(
+        &mut self,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        tl: f64,
+        tr: f64,
+        br: f64,
+        bl: f64,
+    ) {
+        self.begin_path();
+        self.rounded_rect_corners(x, y, w, h, tl, tr, br, bl);
         self.stroke();
     }
 

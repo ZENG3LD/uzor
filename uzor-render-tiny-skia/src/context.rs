@@ -18,7 +18,8 @@ use std::sync::OnceLock;
 
 use tiny_skia::{
     Color, FillRule, GradientStop, LineCap, LinearGradient, LineJoin, Mask, Paint, Path,
-    PathBuilder, Pixmap, Point, Rect, Shader, SpreadMode, Stroke, StrokeDash, Transform,
+    PathBuilder, Pixmap, Point, RadialGradient, Rect, Shader, SpreadMode, Stroke, StrokeDash,
+    Transform,
 };
 
 use uzor::render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlign, TextBaseline};
@@ -711,6 +712,74 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
         self.pixmap.fill_path(&path, &paint, FillRule::Winding, transform, clip.as_ref());
     }
 
+    fn fill_radial_gradient(
+        &mut self,
+        cx: f64,
+        cy: f64,
+        r: f64,
+        stops: &[(f32, &str)],
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    ) {
+        // Discard the bounding rect — we paint whatever path was built before
+        // this call, matching how fill_linear_gradient works.
+        let _ = (x, y, w, h);
+        let Some(path) = self.take_path() else { return };
+
+        if stops.is_empty() {
+            return;
+        }
+
+        // Build tiny-skia GradientStop list.
+        let gradient_stops: Vec<GradientStop> = stops
+            .iter()
+            .map(|&(pos, color_str)| {
+                let color = parse_css_color(color_str);
+                let color = if self.global_alpha < 1.0 {
+                    with_alpha(color, self.global_alpha)
+                } else {
+                    color
+                };
+                GradientStop::new(pos.clamp(0.0, 1.0), color)
+            })
+            .collect();
+
+        // For a simple radial gradient start == end (same centre point).
+        // tiny-skia `RadialGradient::new(start, end, radius, ...)` with
+        // start == end implements the standard "SkRadialGradient" behaviour.
+        let center = Point::from_xy(cx as f32, cy as f32);
+
+        let shader = RadialGradient::new(
+            center,
+            center,
+            r as f32,
+            gradient_stops,
+            SpreadMode::Pad,
+            Transform::identity(),
+        )
+        .unwrap_or_else(|| {
+            // Degenerate (r ≤ 0 or no stops) — solid fallback with first stop.
+            let color = parse_css_color(stops[0].1);
+            let color = if self.global_alpha < 1.0 {
+                with_alpha(color, self.global_alpha)
+            } else {
+                color
+            };
+            Shader::SolidColor(color)
+        });
+
+        let paint = Paint {
+            shader,
+            anti_alias: true,
+            ..Paint::default()
+        };
+        let transform = self.transform;
+        let clip      = self.current_clip.clone();
+        self.pixmap.fill_path(&path, &paint, FillRule::Winding, transform, clip.as_ref());
+    }
+
     fn stroke(&mut self) {
         let Some(path) = self.take_path() else { return };
         let paint     = self.stroke_paint();
@@ -756,6 +825,65 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
         let transform = self.transform;
         let clip      = self.current_clip.clone();
         self.pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-corner rounded rectangle
+    // -----------------------------------------------------------------------
+
+    fn rounded_rect_corners(
+        &mut self,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        tl: f64,
+        tr: f64,
+        br: f64,
+        bl: f64,
+    ) {
+        let max_r = (w / 2.0).min(h / 2.0).max(0.0);
+        let tl = (tl as f32).min(max_r as f32).max(0.0);
+        let tr = (tr as f32).min(max_r as f32).max(0.0);
+        let br = (br as f32).min(max_r as f32).max(0.0);
+        let bl = (bl as f32).min(max_r as f32).max(0.0);
+
+        let x  = x as f32;
+        let y  = y as f32;
+        let w  = w as f32;
+        let h  = h as f32;
+
+        // Build the path directly into path_builder (mirrors rounded_rect geometry).
+        // Start at the top edge, just right of the top-left corner arc.
+        let pb = self.builder();
+        pb.move_to(x + tl, y);
+
+        // Top edge → top-right arc
+        pb.line_to(x + w - tr, y);
+        if tr > 0.0 {
+            arc_to_cubics(pb, x + w - tr, y + tr, tr, -PI / 2.0, 0.0, true);
+        }
+
+        // Right edge → bottom-right arc
+        pb.line_to(x + w, y + h - br);
+        if br > 0.0 {
+            arc_to_cubics(pb, x + w - br, y + h - br, br, 0.0, PI / 2.0, true);
+        }
+
+        // Bottom edge → bottom-left arc
+        pb.line_to(x + bl, y + h);
+        if bl > 0.0 {
+            arc_to_cubics(pb, x + bl, y + h - bl, bl, PI / 2.0, PI, true);
+        }
+
+        // Left edge → top-left arc
+        pb.line_to(x, y + tl);
+        if tl > 0.0 {
+            arc_to_cubics(pb, x + tl, y + tl, tl, PI, PI * 1.5, true);
+        }
+
+        pb.close();
+        self.path_has_point = true;
     }
 
     // -----------------------------------------------------------------------

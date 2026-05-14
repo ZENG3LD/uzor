@@ -748,6 +748,72 @@ impl UzorRenderContext for VelloHybridRenderContext {
         }
     }
 
+    fn fill_radial_gradient(
+        &mut self,
+        cx: f64,
+        cy: f64,
+        r: f64,
+        stops: &[(f32, &str)],
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    ) {
+        let _ = (x, y, w, h);
+        let Some(path) = self.path.clone() else { return };
+        use vello_common::peniko::{ColorStop, Gradient};
+
+        let center = kurbo::Point::new(cx, cy);
+        let color_stops: Vec<ColorStop> = stops
+            .iter()
+            .map(|(offset, hex)| {
+                let color = parse_color(hex);
+                ColorStop::from((*offset, color))
+            })
+            .collect();
+
+        let gradient = Gradient::new_radial(center, r as f32)
+            .with_stops(color_stops.as_slice());
+
+        let transform = self.transform;
+        if let Some(ref mut s) = self.scene {
+            s.set_transform(transform);
+            s.set_fill_rule(Fill::NonZero);
+            s.set_paint(gradient);
+            s.fill_path(&path);
+        }
+    }
+
+    fn rounded_rect_corners(
+        &mut self,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        tl: f64,
+        tr: f64,
+        br: f64,
+        bl: f64,
+    ) {
+        let max_r = (w / 2.0).min(h / 2.0).max(0.0);
+        let tl = tl.clamp(0.0, max_r);
+        let tr = tr.clamp(0.0, max_r);
+        let br = br.clamp(0.0, max_r);
+        let bl = bl.clamp(0.0, max_r);
+
+        self.begin_path();
+        self.move_to(x + tl, y);
+        self.line_to(x + w - tr, y);
+        self.arc(x + w - tr, y + tr, tr, -std::f64::consts::FRAC_PI_2, 0.0);
+        self.line_to(x + w, y + h - br);
+        self.arc(x + w - br, y + h - br, br, 0.0, std::f64::consts::FRAC_PI_2);
+        self.line_to(x + bl, y + h);
+        self.arc(x + bl, y + h - bl, bl, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+        self.line_to(x, y + tl);
+        self.arc(x + tl, y + tl, tl, std::f64::consts::PI, std::f64::consts::PI * 1.5);
+        self.close_path();
+    }
+
     fn stroke(&mut self) {
         let Some(path) = self.path.clone() else { return };
         let transform  = self.transform;
