@@ -512,7 +512,7 @@ mod tests {
         // Paint the entire pixmap with a known solid color using the public API.
         // TinySkiaCpuRenderContext implements uzor's RenderContext so fill_rect works.
         {
-            use uzor::render::RenderContext as _;
+            use uzor::render::{Painter as _, ShapeHelpers as _};
             tiny_ctx.set_fill_color("#deadbe");
             tiny_ctx.fill_rect(0.0, 0.0, width as f64, height as f64);
         }

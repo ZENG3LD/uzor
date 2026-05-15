@@ -1986,49 +1986,54 @@ mod tests {
         }
     }
 
-    impl crate::render::context::RenderContext for MockContext {
-        fn dpr(&self) -> f64 { 1.0 }
-
-        fn begin_path(&mut self) { self.ops.push("begin_path".to_string()); }
-        fn move_to(&mut self, x: f64, y: f64) { self.ops.push(format!("move_to({:.1},{:.1})", x, y)); }
-        fn line_to(&mut self, x: f64, y: f64) { self.ops.push(format!("line_to({:.1},{:.1})", x, y)); }
-        fn close_path(&mut self) { self.ops.push("close_path".to_string()); }
-        fn fill(&mut self) { self.ops.push("fill".to_string()); }
-        fn stroke(&mut self) { self.ops.push("stroke".to_string()); }
-
-        fn set_fill_color(&mut self, _color: &str) { self.ops.push("set_fill_color".to_string()); }
-        fn set_stroke_color(&mut self, _color: &str) { self.ops.push("set_stroke_color".to_string()); }
-        fn set_stroke_width(&mut self, _w: f64) { self.ops.push("set_stroke_width".to_string()); }
-        fn set_line_cap(&mut self, _cap: &str) { self.ops.push("set_line_cap".to_string()); }
-        fn set_line_join(&mut self, _join: &str) { self.ops.push("set_line_join".to_string()); }
-        fn set_line_dash(&mut self, _pattern: &[f64]) { self.ops.push("set_line_dash".to_string()); }
-        fn set_global_alpha(&mut self, _alpha: f64) { self.ops.push("set_global_alpha".to_string()); }
-
-        fn rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) { self.ops.push("rect".to_string()); }
-        fn fill_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) { self.ops.push("fill_rect".to_string()); }
-        fn stroke_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) { self.ops.push("stroke_rect".to_string()); }
-        fn fill_rounded_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64, _r: f64) { self.ops.push("fill_rounded_rect".to_string()); }
-        fn stroke_rounded_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64, _r: f64) { self.ops.push("stroke_rounded_rect".to_string()); }
-
-        fn arc(&mut self, _x: f64, _y: f64, _r: f64, _start: f64, _end: f64) { self.ops.push("arc".to_string()); }
-        fn ellipse(&mut self, _cx: f64, _cy: f64, _rx: f64, _ry: f64, _rot: f64, _start: f64, _end: f64) { self.ops.push("ellipse".to_string()); }
-        fn bezier_curve_to(&mut self, _c1x: f64, _c1y: f64, _c2x: f64, _c2y: f64, _x: f64, _y: f64) { self.ops.push("bezier_curve_to".to_string()); }
-        fn quadratic_curve_to(&mut self, _cx: f64, _cy: f64, _x: f64, _y: f64) { self.ops.push("quadratic_curve_to".to_string()); }
-        fn clip(&mut self) { self.ops.push("clip".to_string()); }
-
-        fn set_font(&mut self, _font: &str) { self.ops.push("set_font".to_string()); }
-        fn set_text_align(&mut self, _align: crate::render::types::TextAlign) { self.ops.push("set_text_align".to_string()); }
-        fn set_text_baseline(&mut self, _baseline: crate::render::types::TextBaseline) { self.ops.push("set_text_baseline".to_string()); }
-        fn fill_text(&mut self, _text: &str, _x: f64, _y: f64) { self.ops.push("fill_text".to_string()); }
-        fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) { self.ops.push("stroke_text".to_string()); }
-        fn measure_text(&self, _text: &str) -> f64 { 0.0 }
-
+    impl crate::render::Painter for MockContext {
         fn save(&mut self) { self.ops.push("save".to_string()); }
         fn restore(&mut self) { self.ops.push("restore".to_string()); }
         fn translate(&mut self, _x: f64, _y: f64) { self.ops.push("translate".to_string()); }
         fn rotate(&mut self, _angle: f64) { self.ops.push("rotate".to_string()); }
         fn scale(&mut self, _x: f64, _y: f64) { self.ops.push("scale".to_string()); }
+        fn set_fill_color(&mut self, _color: &str) { self.ops.push("set_fill_color".to_string()); }
+        fn set_global_alpha(&mut self, _alpha: f64) { self.ops.push("set_global_alpha".to_string()); }
+        fn set_stroke_color(&mut self, _color: &str) { self.ops.push("set_stroke_color".to_string()); }
+        fn set_stroke_width(&mut self, _w: f64) { self.ops.push("set_stroke_width".to_string()); }
+        fn set_line_cap(&mut self, _cap: &str) { self.ops.push("set_line_cap".to_string()); }
+        fn set_line_join(&mut self, _join: &str) { self.ops.push("set_line_join".to_string()); }
+        fn set_line_dash(&mut self, _pattern: &[f64]) { self.ops.push("set_line_dash".to_string()); }
+        fn begin_path(&mut self) { self.ops.push("begin_path".to_string()); }
+        fn move_to(&mut self, x: f64, y: f64) { self.ops.push(format!("move_to({:.1},{:.1})", x, y)); }
+        fn line_to(&mut self, x: f64, y: f64) { self.ops.push(format!("line_to({:.1},{:.1})", x, y)); }
+        fn close_path(&mut self) { self.ops.push("close_path".to_string()); }
+        fn rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) { self.ops.push("rect".to_string()); }
+        fn arc(&mut self, _x: f64, _y: f64, _r: f64, _start: f64, _end: f64) { self.ops.push("arc".to_string()); }
+        fn ellipse(&mut self, _cx: f64, _cy: f64, _rx: f64, _ry: f64, _rot: f64, _start: f64, _end: f64) { self.ops.push("ellipse".to_string()); }
+        fn bezier_curve_to(&mut self, _c1x: f64, _c1y: f64, _c2x: f64, _c2y: f64, _x: f64, _y: f64) { self.ops.push("bezier_curve_to".to_string()); }
+        fn quadratic_curve_to(&mut self, _cx: f64, _cy: f64, _x: f64, _y: f64) { self.ops.push("quadratic_curve_to".to_string()); }
+        fn stroke(&mut self) { self.ops.push("stroke".to_string()); }
+        fn fill(&mut self) { self.ops.push("fill".to_string()); }
     }
+    impl crate::render::TextRenderer for MockContext {
+        fn set_font(&mut self, _font: &str) { self.ops.push("set_font".to_string()); }
+        fn set_text_align(&mut self, _align: crate::render::types::TextAlign) { self.ops.push("set_text_align".to_string()); }
+        fn set_text_baseline(&mut self, _baseline: crate::render::types::TextBaseline) { self.ops.push("set_text_baseline".to_string()); }
+        fn fill_text(&mut self, _text: &str, _x: f64, _y: f64) { self.ops.push("fill_text".to_string()); }
+        fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) { self.ops.push("stroke_text".to_string()); }
+    }
+    impl crate::render::TextMetrics for MockContext {
+        fn measure_text(&self, _text: &str) -> f64 { 0.0 }
+    }
+    impl crate::render::Masking for MockContext {
+        fn clip(&mut self) { self.ops.push("clip".to_string()); }
+    }
+    impl crate::render::Effects for MockContext {}
+    impl crate::render::ShapeHelpers for MockContext {
+        fn fill_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) { self.ops.push("fill_rect".to_string()); }
+        fn stroke_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) { self.ops.push("stroke_rect".to_string()); }
+        fn fill_rounded_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64, _r: f64) { self.ops.push("fill_rounded_rect".to_string()); }
+        fn stroke_rounded_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64, _r: f64) { self.ops.push("stroke_rounded_rect".to_string()); }
+    }
+    impl crate::render::GradientPainter for MockContext {}
+    impl crate::render::UiEffectHelpers for MockContext {}
+    impl crate::render::context::RenderContext for MockContext { fn dpr(&self) -> f64 { 1.0 } }
 
     #[test]
     fn test_draw_jet_icon_produces_fill_ops() {

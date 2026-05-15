@@ -175,7 +175,10 @@ use uzor::ui::widgets::atomic::checkbox::settings::CheckboxSettings;
 use uzor::ui::widgets::atomic::checkbox::theme::CheckboxTheme;
 use uzor::ui::widgets::atomic::checkbox::types::{CheckboxRenderKind, CheckboxView};
 
-use uzor::render::RenderContext;
+use uzor::render::{
+    RenderContext,
+    Masking as _, Painter as _, ShapeHelpers as _, TextRenderer as _,
+};
 use uzor::ui::widgets::atomic::text::{draw_text, TextSettings};
 use uzor::ui::widgets::atomic::text::types::{TextOverflow, TextView};
 use uzor::render::{TextAlign, TextBaseline};
