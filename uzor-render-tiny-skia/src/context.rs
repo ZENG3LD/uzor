@@ -17,12 +17,15 @@ use std::f32::consts::PI;
 use std::sync::OnceLock;
 
 use tiny_skia::{
-    Color, FillRule, GradientStop, LineCap, LinearGradient, LineJoin, Mask, Paint, Path,
-    PathBuilder, Pixmap, Point, RadialGradient, Rect, Shader, SpreadMode, Stroke, StrokeDash,
-    Transform,
+    BlendMode as TsBlendMode, Color, FillRule, GradientStop, LineCap, LinearGradient, LineJoin,
+    Mask, Paint, Path, PathBuilder, Pixmap, Point, RadialGradient, Rect, Shader, SpreadMode,
+    Stroke, StrokeDash, Transform,
 };
 
-use uzor::render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlign, TextBaseline};
+use uzor::render::{
+    BlendMode as UzorBlendMode, RenderContext as UzorRenderContext, RenderContextExt, TextAlign,
+    TextBaseline,
+};
 
 // ---------------------------------------------------------------------------
 // Centralized font bytes (sourced from uzor::fonts)
@@ -278,6 +281,113 @@ fn ellipse_to_cubics(
 }
 
 // ---------------------------------------------------------------------------
+// Shadow helpers (M6-P1)
+// ---------------------------------------------------------------------------
+
+/// Separable box-blur on an RGBA8 pixmap.
+///
+/// Applies a horizontal pass then a vertical pass, each with a kernel of
+/// width `2*radius+1`.  This approximates a Gaussian blur well enough for
+/// drop-shadow purposes at small radii.
+fn box_blur_pixmap(pm: &mut Pixmap, radius: u32) {
+    if radius == 0 {
+        return;
+    }
+    let w = pm.width() as usize;
+    let h = pm.height() as usize;
+    let r = radius as usize;
+    let klen = 2 * r + 1;
+
+    let data = pm.data_mut();
+
+    // Horizontal pass — operate channel-by-channel (RGBA = 4 channels)
+    for row in 0..h {
+        for ch in 0..4usize {
+            let base = row * w;
+            // Sliding window sum
+            let mut sum = 0u32;
+            // Prime the window for first pixel
+            for k in 0..klen {
+                let col = k.saturating_sub(r).min(w.saturating_sub(1));
+                sum += data[(base + col) * 4 + ch] as u32;
+            }
+            // Left side: window not yet full on the left
+            for col in 0..w {
+                let add_col = (col + r).min(w.saturating_sub(1));
+                let sub_col = col.saturating_sub(r + 1).min(w.saturating_sub(1));
+                if col > 0 {
+                    sum = sum + data[(base + add_col) * 4 + ch] as u32
+                        - data[(base + sub_col) * 4 + ch] as u32;
+                }
+                data[(base + col) * 4 + ch] = (sum / klen as u32) as u8;
+            }
+        }
+    }
+
+    // Vertical pass
+    for col in 0..w {
+        for ch in 0..4usize {
+            let mut sum = 0u32;
+            for k in 0..klen {
+                let row = k.saturating_sub(r).min(h.saturating_sub(1));
+                sum += data[(row * w + col) * 4 + ch] as u32;
+            }
+            for row in 0..h {
+                let add_row = (row + r).min(h.saturating_sub(1));
+                let sub_row = row.saturating_sub(r + 1).min(h.saturating_sub(1));
+                if row > 0 {
+                    sum = sum + data[(add_row * w + col) * 4 + ch] as u32
+                        - data[(sub_row * w + col) * 4 + ch] as u32;
+                }
+                data[(row * w + col) * 4 + ch] = (sum / klen as u32) as u8;
+            }
+        }
+    }
+}
+
+/// Composite `src` over `dst` using pre-multiplied alpha blending.
+///
+/// This is a simple software SourceOver: for each pixel,
+/// `out = src_alpha * src + (1 - src_alpha) * dst`.
+fn draw_pixmap_over(dst: &mut Pixmap, src: &Pixmap) {
+    let len = (dst.width() * dst.height()) as usize;
+    let dst_data = dst.data_mut();
+    let src_data = src.data();
+    for i in 0..len {
+        let base = i * 4;
+        let sa = src_data[base + 3] as u32;
+        if sa == 0 {
+            continue;
+        }
+        if sa == 255 {
+            dst_data[base]     = src_data[base];
+            dst_data[base + 1] = src_data[base + 1];
+            dst_data[base + 2] = src_data[base + 2];
+            dst_data[base + 3] = src_data[base + 3];
+        } else {
+            let inv_sa = 255 - sa;
+            dst_data[base]     = ((src_data[base]     as u32 * sa + dst_data[base]     as u32 * inv_sa) / 255) as u8;
+            dst_data[base + 1] = ((src_data[base + 1] as u32 * sa + dst_data[base + 1] as u32 * inv_sa) / 255) as u8;
+            dst_data[base + 2] = ((src_data[base + 2] as u32 * sa + dst_data[base + 2] as u32 * inv_sa) / 255) as u8;
+            dst_data[base + 3] = (sa + dst_data[base + 3] as u32 * inv_sa / 255) as u8;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shadow state (M6-P1)
+// ---------------------------------------------------------------------------
+
+/// Active drop shadow parameters.  `None` means no shadow.
+#[derive(Clone)]
+struct ShadowState {
+    dx:    f32,
+    dy:    f32,
+    blur:  f32,
+    color: Color,
+}
+
+// ---------------------------------------------------------------------------
 // Save/restore state
 // ---------------------------------------------------------------------------
 
@@ -326,6 +436,10 @@ pub struct TinySkiaCpuRenderContext {
     // Save/restore
     state_stack:   Vec<SavedState>,
     current_clip:  Option<Mask>,
+    // M6-P1: Drop shadow
+    shadow:        Option<ShadowState>,
+    // M6-P3: Blend mode
+    blend_mode:    TsBlendMode,
     // Device pixel ratio
     dpr:           f64,
 }
@@ -352,6 +466,8 @@ impl TinySkiaCpuRenderContext {
             path_has_point: false,
             state_stack:   Vec::new(),
             current_clip:  None,
+            shadow:        None,
+            blend_mode:    TsBlendMode::SourceOver,
             dpr,
         }
     }
@@ -412,6 +528,7 @@ impl TinySkiaCpuRenderContext {
     fn fill_paint(&self) -> Paint<'static> {
         Paint {
             shader: Shader::SolidColor(self.effective_fill_color()),
+            blend_mode: self.blend_mode,
             anti_alias: true,
             ..Paint::default()
         }
@@ -420,8 +537,73 @@ impl TinySkiaCpuRenderContext {
     fn stroke_paint(&self) -> Paint<'static> {
         Paint {
             shader: Shader::SolidColor(self.effective_stroke_color()),
+            blend_mode: self.blend_mode,
             anti_alias: true,
             ..Paint::default()
+        }
+    }
+
+    /// Build a paint for the shadow pass: solid shadow colour, SourceOver blend.
+    fn shadow_paint(color: Color) -> Paint<'static> {
+        Paint {
+            shader: Shader::SolidColor(color),
+            blend_mode: TsBlendMode::SourceOver,
+            anti_alias: true,
+            ..Paint::default()
+        }
+    }
+
+    /// If a shadow is active, draw `path` translated by the shadow offset onto
+    /// a temporary pixmap that is blurred and then composited into `self.pixmap`.
+    ///
+    /// The blur radius is clamped to [0, 32] to keep the scratch pixmap bounded.
+    fn draw_shadow_for_path(&mut self, path: &Path) {
+        let Some(ref sh) = self.shadow.clone() else { return };
+
+        let w = self.pixmap.width();
+        let h = self.pixmap.height();
+        let Some(mut shadow_pm) = Pixmap::new(w, h) else { return };
+
+        // Draw the path shifted by (dx, dy) onto the scratch pixmap.
+        let shadow_transform = self.transform.pre_translate(sh.dx, sh.dy);
+        shadow_pm.fill_path(
+            path,
+            &Self::shadow_paint(sh.color),
+            FillRule::Winding,
+            shadow_transform,
+            None,
+        );
+
+        // Box-blur the scratch pixmap to simulate Gaussian blur.
+        // We apply a horizontal then vertical pass using an integer radius
+        // derived from the blur parameter.
+        let radius = (sh.blur.round() as u32).clamp(1, 32);
+        box_blur_pixmap(&mut shadow_pm, radius);
+
+        // Composite the blurred shadow onto the main pixmap (SourceOver).
+        let shadow_data = shadow_pm.data().to_vec();
+        if let Some(shadow_src) = Pixmap::from_vec(shadow_data, tiny_skia::IntSize::from_wh(w, h).expect("valid size")) {
+            draw_pixmap_over(&mut self.pixmap, &shadow_src);
+        }
+    }
+
+    /// Same as [`draw_shadow_for_path`] but for a filled rectangle (no path).
+    fn draw_shadow_for_rect(&mut self, rect: Rect) {
+        let Some(ref sh) = self.shadow.clone() else { return };
+
+        let w = self.pixmap.width();
+        let h = self.pixmap.height();
+        let Some(mut shadow_pm) = Pixmap::new(w, h) else { return };
+
+        let shadow_transform = self.transform.pre_translate(sh.dx, sh.dy);
+        shadow_pm.fill_rect(rect, &Self::shadow_paint(sh.color), shadow_transform, None);
+
+        let radius = (sh.blur.round() as u32).clamp(1, 32);
+        box_blur_pixmap(&mut shadow_pm, radius);
+
+        let shadow_data = shadow_pm.data().to_vec();
+        if let Some(shadow_src) = Pixmap::from_vec(shadow_data, tiny_skia::IntSize::from_wh(w, h).expect("valid size")) {
+            draw_pixmap_over(&mut self.pixmap, &shadow_src);
         }
     }
 
@@ -639,6 +821,10 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
 
     fn fill(&mut self) {
         let Some(path) = self.take_path() else { return };
+        // M6-P1: draw shadow before the actual fill
+        if self.shadow.is_some() {
+            self.draw_shadow_for_path(&path);
+        }
         let paint     = self.fill_paint();
         let transform = self.transform;
         let clip      = self.current_clip.clone();
@@ -782,6 +968,10 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
 
     fn stroke(&mut self) {
         let Some(path) = self.take_path() else { return };
+        // M6-P1: draw shadow before the actual stroke
+        if self.shadow.is_some() {
+            self.draw_shadow_for_path(&path);
+        }
         let paint     = self.stroke_paint();
         let stroke    = self.current_stroke();
         let transform = self.transform;
@@ -807,6 +997,10 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
         let Some(rect) = Rect::from_xywh(x as f32, y as f32, w as f32, h as f32) else {
             return;
         };
+        // M6-P1: draw shadow before the actual fill
+        if self.shadow.is_some() {
+            self.draw_shadow_for_rect(rect);
+        }
         let paint     = self.fill_paint();
         let transform = self.transform;
         let clip      = self.current_clip.clone();
@@ -1073,6 +1267,59 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
 
     fn scale(&mut self, x: f64, y: f64) {
         self.transform = self.transform.pre_scale(x as f32, y as f32);
+    }
+
+    // -----------------------------------------------------------------------
+    // M6-P1: Drop shadow
+    // -----------------------------------------------------------------------
+
+    fn set_shadow(&mut self, dx: f64, dy: f64, blur: f64, color: &str) {
+        let parsed = parse_css_color(color);
+        let color = if self.global_alpha < 1.0 {
+            with_alpha(parsed, self.global_alpha)
+        } else {
+            parsed
+        };
+        self.shadow = Some(ShadowState {
+            dx:   dx as f32,
+            dy:   dy as f32,
+            blur: blur.max(0.0) as f32,
+            color,
+        });
+    }
+
+    fn clear_shadow(&mut self) {
+        self.shadow = None;
+    }
+
+    // -----------------------------------------------------------------------
+    // M6-P2: Mask layers
+    //
+    // Default impl (save + clip) is correct for tiny-skia: the clip() impl
+    // writes into current_clip (a tiny_skia::Mask) and save/restore snapshots
+    // it.  No override needed.
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // M6-P3: Blend mode
+    // -----------------------------------------------------------------------
+
+    fn set_blend_mode(&mut self, mode: UzorBlendMode) {
+        self.blend_mode = match mode {
+            UzorBlendMode::Normal     => TsBlendMode::SourceOver,
+            UzorBlendMode::Multiply   => TsBlendMode::Multiply,
+            UzorBlendMode::Screen     => TsBlendMode::Screen,
+            UzorBlendMode::Overlay    => TsBlendMode::Overlay,
+            UzorBlendMode::Darken     => TsBlendMode::Darken,
+            UzorBlendMode::Lighten    => TsBlendMode::Lighten,
+            UzorBlendMode::ColorDodge => TsBlendMode::ColorDodge,
+            UzorBlendMode::ColorBurn  => TsBlendMode::ColorBurn,
+            UzorBlendMode::HardLight  => TsBlendMode::HardLight,
+            UzorBlendMode::SoftLight  => TsBlendMode::SoftLight,
+            UzorBlendMode::Difference => TsBlendMode::Difference,
+            UzorBlendMode::Exclusion  => TsBlendMode::Exclusion,
+            UzorBlendMode::Plus       => TsBlendMode::Plus,
+        };
     }
 }
 

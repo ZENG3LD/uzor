@@ -10,7 +10,7 @@ mod region;
 
 pub use crate::ui::assets::icons;
 
-pub use context::{RenderContext, RenderContextExt};
+pub use context::{RenderContext, RenderContextExt, BlendMode};
 pub use types::{TextAlign, TextBaseline};
 pub use helpers::{crisp, crisp_rect};
 pub use ops::{RenderOp, RenderOps, execute_ops};

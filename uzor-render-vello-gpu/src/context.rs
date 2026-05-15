@@ -8,7 +8,10 @@ use std::sync::{Arc, OnceLock};
 use vello::kurbo::{self, Affine, BezPath, Cap, Join, Stroke, Shape};
 use vello::peniko::{Blob, Brush, Fill, FontData, color::palette};
 use vello::{Glyph, Scene};
-use uzor::render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlign, TextBaseline};
+use uzor::render::{
+    BlendMode as UzorBlendMode, RenderContext as UzorRenderContext, RenderContextExt, TextAlign,
+    TextBaseline,
+};
 
 // Use skrifa for font metrics
 use skrifa::{MetadataProvider, raw::{FileRef, FontRef}};
@@ -263,6 +266,19 @@ fn draw_resolved_glyphs(
     }
 }
 
+/// Active drop shadow for the vello-gpu backend.
+///
+/// Vello has no native blur/shadow API.  We approximate by drawing an
+/// offset, semi-transparent copy of each shape before the real fill/stroke.
+/// The `alpha` field encodes the shadow colour's built-in transparency.
+#[derive(Clone)]
+struct ShadowState {
+    dx:    f64,
+    dy:    f64,
+    /// Shadow colour (alpha pre-extracted into the color's alpha channel).
+    color: Color,
+}
+
 /// Saved context state for save/restore
 #[derive(Clone)]
 struct SavedState {
@@ -321,6 +337,11 @@ pub struct VelloGpuRenderContext<'a> {
     screen_height: u32,
     // Use 3D convex glass button style (vs flat)
     use_convex_glass_buttons: bool,
+
+    // M6-P1: Drop shadow (approximated by offset+alpha copy, no blur)
+    shadow: Option<ShadowState>,
+    // M6-P3: Blend mode (applied via push_layer when non-Normal)
+    blend_mode: UzorBlendMode,
 }
 
 impl<'a> VelloGpuRenderContext<'a> {
@@ -356,6 +377,8 @@ impl<'a> VelloGpuRenderContext<'a> {
             screen_width: 0,
             screen_height: 0,
             use_convex_glass_buttons: false,
+            shadow: None,
+            blend_mode: UzorBlendMode::Normal,
         }
     }
 
@@ -408,6 +431,74 @@ impl<'a> VelloGpuRenderContext<'a> {
     fn parse_color_to_rgba(&self, color: &str) -> [f32; 4] {
         let (r, g, b, a) = uzor::render::parse_color(color);
         [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0]
+    }
+
+    /// Map a `UzorBlendMode` to a vello `peniko::BlendMode`.
+    ///
+    /// Most modes map to `peniko::Mix`; `Plus` maps to `peniko::Compose::Plus`
+    /// (additive compositing rather than colour blending).
+    fn blend_to_vello_blend(mode: UzorBlendMode) -> vello::peniko::BlendMode {
+        use vello::peniko::{Compose, Mix};
+        match mode {
+            UzorBlendMode::Normal     => Mix::Normal.into(),
+            UzorBlendMode::Multiply   => Mix::Multiply.into(),
+            UzorBlendMode::Screen     => Mix::Screen.into(),
+            UzorBlendMode::Overlay    => Mix::Overlay.into(),
+            UzorBlendMode::Darken     => Mix::Darken.into(),
+            UzorBlendMode::Lighten    => Mix::Lighten.into(),
+            UzorBlendMode::ColorDodge => Mix::ColorDodge.into(),
+            UzorBlendMode::ColorBurn  => Mix::ColorBurn.into(),
+            UzorBlendMode::HardLight  => Mix::HardLight.into(),
+            UzorBlendMode::SoftLight  => Mix::SoftLight.into(),
+            UzorBlendMode::Difference => Mix::Difference.into(),
+            UzorBlendMode::Exclusion  => Mix::Exclusion.into(),
+            // Plus is an additive compositing operation, not a mix mode.
+            UzorBlendMode::Plus       => Compose::Plus.into(),
+        }
+    }
+
+    /// If a shadow is active, emit a shadow pass for `shape` before the caller
+    /// draws the real shape.  Shadow is approximated as an offset, pre-alpha
+    /// copy of the shape — vello has no native blur API.
+    fn emit_shadow_for_shape<S: kurbo::Shape>(&mut self, shape: &S) {
+        let Some(ref sh) = self.shadow.clone() else { return };
+        let shadow_transform = self.transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
+        self.scene.fill(
+            Fill::NonZero,
+            shadow_transform,
+            sh.color,
+            None,
+            shape,
+        );
+    }
+
+    /// If blend mode is non-Normal, emit a `push_layer` with the correct blend
+    /// mode, run `draw_fn`, then `pop_layer`.  When blend mode is Normal, call
+    /// `draw_fn` directly (no extra layer overhead).
+    fn with_blend_layer<F: FnOnce(&mut Scene)>(
+        scene: &mut Scene,
+        mode: UzorBlendMode,
+        clip_shape: Option<&kurbo::Rect>,
+        draw_fn: F,
+    ) {
+        if mode == UzorBlendMode::Normal {
+            draw_fn(scene);
+            return;
+        }
+        let blend = Self::blend_to_vello_blend(mode);
+        // Use provided clip rect or an oversized fallback.
+        let bounds = clip_shape
+            .copied()
+            .unwrap_or_else(|| kurbo::Rect::new(-1e6, -1e6, 1e6, 1e6));
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            blend,
+            1.0,
+            Affine::IDENTITY,
+            &bounds,
+        );
+        draw_fn(scene);
+        scene.pop_layer();
     }
 
 }
@@ -553,16 +644,32 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
 
     fn stroke(&mut self) {
         if let Some(path) = self.path_builder.take() {
+            // M6-P1: shadow pass (offset copy before real stroke)
+            self.emit_shadow_for_shape(&path);
+
             let color = self.effective_stroke_color();
             let stroke = self.make_stroke();
-            self.scene.stroke(&stroke, self.transform, color, None, &path);
+            let transform = self.transform;
+            let mode = self.blend_mode;
+            // M6-P3: blend layer wrapper
+            Self::with_blend_layer(self.scene, mode, None, |scene| {
+                scene.stroke(&stroke, transform, color, None, &path);
+            });
         }
     }
 
     fn fill(&mut self) {
         if let Some(path) = self.path_builder.take() {
+            // M6-P1: shadow pass (offset copy before real fill)
+            self.emit_shadow_for_shape(&path);
+
             let color = self.effective_fill_color();
-            self.scene.fill(Fill::NonZero, self.transform, color, None, &path);
+            let transform = self.transform;
+            let mode = self.blend_mode;
+            // M6-P3: blend layer wrapper
+            Self::with_blend_layer(self.scene, mode, None, |scene| {
+                scene.fill(Fill::NonZero, transform, color, None, &path);
+            });
         }
     }
 
@@ -670,8 +777,16 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
 
     fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
         let rect = kurbo::Rect::new(x, y, x + w, y + h);
+        // M6-P1: shadow pass
+        self.emit_shadow_for_shape(&rect);
+
         let color = self.effective_fill_color();
-        self.scene.fill(Fill::NonZero, self.transform, color, None, &rect);
+        let transform = self.transform;
+        let mode = self.blend_mode;
+        // M6-P3: blend layer wrapper
+        Self::with_blend_layer(self.scene, mode, Some(&rect), |scene| {
+            scene.fill(Fill::NonZero, transform, color, None, &rect);
+        });
     }
 
     fn set_font(&mut self, font: &str) {
@@ -1163,6 +1278,38 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
             let highlight_color = Color::from_rgba8(hl_r, hl_g, hl_b, if is_active { 30 } else { 50 });
             self.scene.stroke(&inner_stroke, Affine::IDENTITY, highlight_color, None, &inner_rect);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // M6-P1: Drop shadow
+    // -----------------------------------------------------------------------
+
+    fn set_shadow(&mut self, dx: f64, dy: f64, _blur: f64, color: &str) {
+        // Vello has no native blur API.  We approximate shadow as an offset,
+        // pre-alpha copy of each shape.  The `_blur` parameter is accepted for
+        // API compatibility but not applied.
+        let shadow_color = parse_color(color);
+        self.shadow = Some(ShadowState { dx, dy, color: shadow_color });
+    }
+
+    fn clear_shadow(&mut self) {
+        self.shadow = None;
+    }
+
+    // -----------------------------------------------------------------------
+    // M6-P2: Mask layers
+    //
+    // Vello-gpu uses `push_clip_layer` for clip() already; the default
+    // `push_mask` = save+clip and `pop_mask` = restore therefore work
+    // correctly here without an override.
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // M6-P3: Blend mode
+    // -----------------------------------------------------------------------
+
+    fn set_blend_mode(&mut self, mode: UzorBlendMode) {
+        self.blend_mode = mode;
     }
 }
 

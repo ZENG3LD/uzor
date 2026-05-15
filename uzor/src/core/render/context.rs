@@ -7,6 +7,46 @@
 
 use super::types::{TextAlign, TextBaseline};
 
+// =========================================================================
+// Blend mode enum
+// =========================================================================
+
+/// Compositing blend mode for subsequent fill/stroke operations.
+///
+/// Matches CSS `mix-blend-mode` and Canvas2D `globalCompositeOperation`
+/// semantics.  Backends that cannot apply a mode natively fall back to
+/// `Normal` (standard alpha compositing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BlendMode {
+    /// Standard alpha compositing (source-over). Default.
+    #[default]
+    Normal,
+    /// Multiply the source and destination colours.
+    Multiply,
+    /// Invert both colours, multiply them, then invert the result.
+    Screen,
+    /// Multiply or screen depending on which is darker.
+    Overlay,
+    /// Keep the darkest of source and destination.
+    Darken,
+    /// Keep the lightest of source and destination.
+    Lighten,
+    /// Brighten the destination to reflect the source.
+    ColorDodge,
+    /// Darken the destination to reflect the source.
+    ColorBurn,
+    /// Multiply or screen depending on the source value.
+    HardLight,
+    /// Like `HardLight` but softer.
+    SoftLight,
+    /// Subtract the darker of the two colours from the lighter.
+    Difference,
+    /// Difference but with lower contrast.
+    Exclusion,
+    /// Add source and destination (clamped to 1.0).
+    Plus,
+}
+
 /// Platform-agnostic rendering context
 ///
 /// Applications implement this trait to provide rendering capabilities
@@ -676,6 +716,85 @@ pub trait RenderContext {
         self.draw_blur_background(x, y, width, height);
         self.set_fill_color(color);
         self.fill_rounded_rect(x, y, width, height, radius);
+    }
+
+    // =========================================================================
+    // M6-P1: Drop shadow
+    // =========================================================================
+
+    /// Set a drop shadow that applies to subsequent fill/stroke calls.
+    ///
+    /// `dx`/`dy` is the shadow offset in canvas-space pixels.
+    /// `blur` is the Gaussian blur radius (0 = hard shadow).
+    /// `color` is a CSS color string (typically with alpha, e.g. `"#000000aa"`).
+    ///
+    /// The shadow is drawn behind the shape, offset by `(dx, dy)`.
+    /// Setting a new shadow replaces the current one; call [`clear_shadow`] to
+    /// remove it.
+    ///
+    /// Backends without native shadow support provide a no-op default.
+    fn set_shadow(&mut self, dx: f64, dy: f64, blur: f64, color: &str) {
+        // default impl: no-op
+        let _ = (dx, dy, blur, color);
+    }
+
+    /// Clear the active shadow, restoring plain (no-shadow) rendering.
+    ///
+    /// No-op default for backends without native shadow support.
+    fn clear_shadow(&mut self) {
+        // default impl: no-op
+    }
+
+    // =========================================================================
+    // M6-P2: Mask layers
+    // =========================================================================
+
+    /// Push an alpha mask layer.
+    ///
+    /// After calling this, draw content into the mask region, then call
+    /// [`pop_mask`] to restore the previous compositing state.  Content drawn
+    /// between `push_mask` and `pop_mask` is clipped to the mask shape.
+    ///
+    /// Pattern:
+    /// ```text
+    /// ctx.begin_path();
+    /// ctx.rounded_rect(x, y, w, h, r);
+    /// ctx.push_mask();   // use current path as the mask
+    /// // draw content ...
+    /// ctx.pop_mask();
+    /// ```
+    ///
+    /// On backends that support alpha masks (vello) the mask may carry
+    /// gradient-alpha transparency; on others it degrades to a binary clip.
+    ///
+    /// Default implementation: `save` + `clip` (binary path clip fallback).
+    fn push_mask(&mut self) {
+        self.save();
+        self.clip();
+    }
+
+    /// Pop the most recently pushed mask layer.
+    ///
+    /// Default implementation: `restore` (matches `push_mask` default).
+    fn pop_mask(&mut self) {
+        self.restore();
+    }
+
+    // =========================================================================
+    // M6-P3: Blend modes
+    // =========================================================================
+
+    /// Set the blend mode for subsequent fill/stroke calls.
+    ///
+    /// The mode is applied until another `set_blend_mode` call or a
+    /// [`restore`] that crosses a [`save`] boundary (backend-dependent;
+    /// wrap in `save`/`restore` for scoped blending).
+    ///
+    /// Backends without native blend mode support silently ignore the call
+    /// (equivalent to keeping `BlendMode::Normal`).
+    fn set_blend_mode(&mut self, mode: BlendMode) {
+        // default impl: no-op
+        let _ = mode;
     }
 
 }

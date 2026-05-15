@@ -1,5 +1,5 @@
 use js_sys::Array;
-use uzor::render::{RenderContext, RenderContextExt, TextAlign, TextBaseline};
+use uzor::render::{BlendMode as UzorBlendMode, RenderContext, RenderContextExt, TextAlign, TextBaseline};
 use wasm_bindgen::JsValue;
 use web_sys::{CanvasGradient, CanvasRenderingContext2d};
 
@@ -294,6 +294,52 @@ impl RenderContext for Canvas2dRenderContext {
 
     fn scale(&mut self, x: f64, y: f64) {
         let _ = self.ctx.scale(x, y);
+    }
+
+    // -----------------------------------------------------------------------
+    // M6-P1: Drop shadow — native Canvas2D shadow API
+    // -----------------------------------------------------------------------
+
+    fn set_shadow(&mut self, dx: f64, dy: f64, blur: f64, color: &str) {
+        self.ctx.set_shadow_offset_x(dx);
+        self.ctx.set_shadow_offset_y(dy);
+        self.ctx.set_shadow_blur(blur);
+        self.ctx.set_shadow_color(color);
+    }
+
+    fn clear_shadow(&mut self) {
+        self.ctx.set_shadow_offset_x(0.0);
+        self.ctx.set_shadow_offset_y(0.0);
+        self.ctx.set_shadow_blur(0.0);
+        self.ctx.set_shadow_color("transparent");
+    }
+
+    // -----------------------------------------------------------------------
+    // M6-P2: Mask layers — default impl (save + clip) is correct for canvas2d.
+    // Canvas2D save/restore includes shadow state, so mask pushes/pops cleanly.
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // M6-P3: Blend mode — native Canvas2D globalCompositeOperation
+    // -----------------------------------------------------------------------
+
+    fn set_blend_mode(&mut self, mode: UzorBlendMode) {
+        let op = match mode {
+            UzorBlendMode::Normal     => "source-over",
+            UzorBlendMode::Multiply   => "multiply",
+            UzorBlendMode::Screen     => "screen",
+            UzorBlendMode::Overlay    => "overlay",
+            UzorBlendMode::Darken     => "darken",
+            UzorBlendMode::Lighten    => "lighten",
+            UzorBlendMode::ColorDodge => "color-dodge",
+            UzorBlendMode::ColorBurn  => "color-burn",
+            UzorBlendMode::HardLight  => "hard-light",
+            UzorBlendMode::SoftLight  => "soft-light",
+            UzorBlendMode::Difference => "difference",
+            UzorBlendMode::Exclusion  => "exclusion",
+            UzorBlendMode::Plus       => "lighter",
+        };
+        let _ = self.ctx.set_global_composite_operation(op);
     }
 }
 

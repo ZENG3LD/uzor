@@ -45,7 +45,7 @@ use std::sync::{Arc, OnceLock};
 
 use vello_common::glyph::Glyph;
 use vello_common::kurbo::{self, Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
-use vello_common::peniko::{Blob, Fill, FontData};
+use vello_common::peniko::{Blob, Compose, Fill, FontData, Mix};
 
 // ---------------------------------------------------------------------------
 // skrifa — font metrics for text measurement
@@ -73,7 +73,10 @@ use wgpu::{CommandEncoder, Device, Queue, TextureView};
 // ---------------------------------------------------------------------------
 
 use uzor::fonts::{self, FontFamily};
-use uzor::render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlign, TextBaseline};
+use uzor::render::{
+    BlendMode as UzorBlendMode, RenderContext as UzorRenderContext, RenderContextExt, TextAlign,
+    TextBaseline,
+};
 
 // ---------------------------------------------------------------------------
 // Cached vello_hybrid FontData (one per process)
@@ -272,6 +275,14 @@ fn measure_text_width(text: &str, font_info: &FontInfo) -> f64 {
 // Save/restore state
 // ---------------------------------------------------------------------------
 
+/// Drop shadow state for the hybrid backend (offset-copy approximation).
+#[derive(Clone)]
+struct ShadowState {
+    dx:    f64,
+    dy:    f64,
+    color: Color,
+}
+
 #[derive(Clone)]
 struct SavedState {
     transform:     Affine,
@@ -286,6 +297,8 @@ struct SavedState {
     text_baseline: TextBaseline,
     /// Whether `clip()` was called at this save level (so we pop it on restore).
     has_clip:      bool,
+    /// Blend mode at this save level.
+    blend_mode:    UzorBlendMode,
 }
 
 // ---------------------------------------------------------------------------
@@ -346,6 +359,11 @@ pub struct VelloHybridRenderContext {
 
     /// Save/restore stack.
     state_stack:   Vec<SavedState>,
+
+    /// M6-P1: Drop shadow (approximated as offset copy).
+    shadow:        Option<ShadowState>,
+    /// M6-P3: Blend mode.
+    blend_mode:    UzorBlendMode,
 }
 
 impl VelloHybridRenderContext {
@@ -374,6 +392,8 @@ impl VelloHybridRenderContext {
             path:          None,
             clip_active:   false,
             state_stack:   Vec::new(),
+            shadow:        None,
+            blend_mode:    UzorBlendMode::Normal,
         }
     }
 
@@ -472,14 +492,18 @@ impl VelloHybridRenderContext {
 
     fn apply_fill_paint(&mut self) {
         let color = self.effective_fill_color();
+        let blend = Self::blend_to_hybrid(self.blend_mode);
         if let Some(ref mut s) = self.scene {
+            s.set_blend_mode(blend);
             s.set_paint(color);
         }
     }
 
     fn apply_stroke_paint(&mut self) {
         let color = self.effective_stroke_color();
+        let blend = Self::blend_to_hybrid(self.blend_mode);
         if let Some(ref mut s) = self.scene {
+            s.set_blend_mode(blend);
             s.set_paint(color);
         }
     }
@@ -497,6 +521,7 @@ impl VelloHybridRenderContext {
             text_align:    self.text_align,
             text_baseline: self.text_baseline,
             has_clip,
+            blend_mode:    self.blend_mode,
         });
     }
 
@@ -512,7 +537,27 @@ impl VelloHybridRenderContext {
         self.font_info     = s.font_info.clone();
         self.text_align    = s.text_align;
         self.text_baseline = s.text_baseline;
+        self.blend_mode    = s.blend_mode;
         Some(s)
+    }
+
+    /// Map a `UzorBlendMode` to a `vello_common::peniko::BlendMode`.
+    fn blend_to_hybrid(mode: UzorBlendMode) -> vello_common::peniko::BlendMode {
+        match mode {
+            UzorBlendMode::Normal     => Mix::Normal.into(),
+            UzorBlendMode::Multiply   => Mix::Multiply.into(),
+            UzorBlendMode::Screen     => Mix::Screen.into(),
+            UzorBlendMode::Overlay    => Mix::Overlay.into(),
+            UzorBlendMode::Darken     => Mix::Darken.into(),
+            UzorBlendMode::Lighten    => Mix::Lighten.into(),
+            UzorBlendMode::ColorDodge => Mix::ColorDodge.into(),
+            UzorBlendMode::ColorBurn  => Mix::ColorBurn.into(),
+            UzorBlendMode::HardLight  => Mix::HardLight.into(),
+            UzorBlendMode::SoftLight  => Mix::SoftLight.into(),
+            UzorBlendMode::Difference => Mix::Difference.into(),
+            UzorBlendMode::Exclusion  => Mix::Exclusion.into(),
+            UzorBlendMode::Plus       => Compose::Plus.into(),
+        }
     }
 }
 
@@ -713,6 +758,17 @@ impl UzorRenderContext for VelloHybridRenderContext {
     fn fill(&mut self) {
         let Some(path) = self.path.clone() else { return };
         let transform  = self.transform;
+        // M6-P1: shadow pass
+        if let Some(ref sh) = self.shadow.clone() {
+            let shadow_transform = transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
+            if let Some(ref mut s) = self.scene {
+                s.set_blend_mode(vello_common::peniko::BlendMode::default());
+                s.set_transform(shadow_transform);
+                s.set_fill_rule(Fill::NonZero);
+                s.set_paint(sh.color);
+                s.fill_path(&path);
+            }
+        }
         self.apply_fill_paint();
         if let Some(ref mut s) = self.scene {
             s.set_transform(transform);
@@ -818,6 +874,17 @@ impl UzorRenderContext for VelloHybridRenderContext {
         let Some(path) = self.path.clone() else { return };
         let transform  = self.transform;
         let stroke_val = self.current_stroke();
+        // M6-P1: shadow pass
+        if let Some(ref sh) = self.shadow.clone() {
+            let shadow_transform = transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
+            if let Some(ref mut s) = self.scene {
+                s.set_blend_mode(vello_common::peniko::BlendMode::default());
+                s.set_transform(shadow_transform);
+                s.set_paint(sh.color);
+                s.set_stroke(stroke_val.clone());
+                s.stroke_path(&path);
+            }
+        }
         self.apply_stroke_paint();
         if let Some(ref mut s) = self.scene {
             s.set_transform(transform);
@@ -843,6 +910,16 @@ impl UzorRenderContext for VelloHybridRenderContext {
     fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
         let r         = Rect::new(x, y, x + w, y + h);
         let transform = self.transform;
+        // M6-P1: shadow pass
+        if let Some(ref sh) = self.shadow.clone() {
+            let shadow_transform = transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
+            if let Some(ref mut s) = self.scene {
+                s.set_blend_mode(vello_common::peniko::BlendMode::default());
+                s.set_transform(shadow_transform);
+                s.set_paint(sh.color);
+                s.fill_rect(&r);
+            }
+        }
         self.apply_fill_paint();
         if let Some(ref mut s) = self.scene {
             s.set_transform(transform);
@@ -995,6 +1072,40 @@ impl UzorRenderContext for VelloHybridRenderContext {
 
     fn scale(&mut self, x: f64, y: f64) {
         self.transform = self.transform.then_scale_non_uniform(x, y);
+    }
+
+    // -----------------------------------------------------------------------
+    // M6-P1: Drop shadow
+    // -----------------------------------------------------------------------
+
+    fn set_shadow(&mut self, dx: f64, dy: f64, _blur: f64, color: &str) {
+        // Hybrid backend has `push_filter_layer(Filter)` but the filter types
+        // are not public.  Use the same offset-copy approximation as other backends.
+        let shadow_color = parse_color(color);
+        self.shadow = Some(ShadowState { dx, dy, color: shadow_color });
+    }
+
+    fn clear_shadow(&mut self) {
+        self.shadow = None;
+    }
+
+    // -----------------------------------------------------------------------
+    // M6-P2: Mask layers
+    //
+    // Default impl (save + clip) works: clip() calls push_clip_path on Scene;
+    // restore() calls pop_clip_path.  No override needed.
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // M6-P3: Blend mode
+    // -----------------------------------------------------------------------
+
+    fn set_blend_mode(&mut self, mode: UzorBlendMode) {
+        self.blend_mode = mode;
+        let blend = Self::blend_to_hybrid(mode);
+        if let Some(ref mut s) = self.scene {
+            s.set_blend_mode(blend);
+        }
     }
 }
 

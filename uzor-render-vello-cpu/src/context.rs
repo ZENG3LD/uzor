@@ -14,7 +14,8 @@ use std::sync::{Arc, OnceLock};
 
 use vello_cpu::kurbo::{self, Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
 use vello_cpu::peniko::{
-    Blob, ColorStop, ColorStops, Extend, Fill, FontData, Gradient, LinearGradientPosition,
+    Blob, ColorStop, ColorStops, Extend, Fill, FontData, Gradient, LinearGradientPosition, Mix,
+    Compose,
 };
 use vello_cpu::{Glyph, RenderContext as VelloCpuCtx, RenderMode, RenderSettings};
 
@@ -24,7 +25,10 @@ use skrifa::{
 };
 
 use uzor::fonts;
-use uzor::render::{RenderContext as UzorRenderContext, RenderContextExt, TextAlign, TextBaseline};
+use uzor::render::{
+    BlendMode as UzorBlendMode, RenderContext as UzorRenderContext, RenderContextExt, TextAlign,
+    TextBaseline,
+};
 
 // ---------------------------------------------------------------------------
 // Cached vello_cpu FontData (one per process)
@@ -222,6 +226,18 @@ fn measure_text_width(text: &str, font_info: &FontInfo) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
+// Shadow state (M6-P1)
+// ---------------------------------------------------------------------------
+
+/// Active drop shadow for vello-cpu.  Approximated as an offset, alpha copy.
+#[derive(Clone)]
+struct ShadowState {
+    dx:    f64,
+    dy:    f64,
+    color: Color,
+}
+
+// ---------------------------------------------------------------------------
 // Save/restore state
 // ---------------------------------------------------------------------------
 
@@ -239,6 +255,8 @@ struct SavedState {
     text_baseline: TextBaseline,
     /// Whether `clip()` was called at this save level (so we pop it on restore).
     has_clip:     bool,
+    /// Blend mode at this save level.
+    blend_mode:   UzorBlendMode,
 }
 
 // ---------------------------------------------------------------------------
@@ -286,6 +304,11 @@ pub struct VelloCpuRenderContext {
 
     // Save/restore stack
     state_stack:  Vec<SavedState>,
+
+    // M6-P1: Drop shadow (approximated as offset copy, blur not native)
+    shadow:       Option<ShadowState>,
+    // M6-P3: Blend mode
+    blend_mode:   UzorBlendMode,
 }
 
 impl VelloCpuRenderContext {
@@ -314,6 +337,8 @@ impl VelloCpuRenderContext {
             path:         None,
             clip_active:  false,
             state_stack:  Vec::new(),
+            shadow:       None,
+            blend_mode:   UzorBlendMode::Normal,
         }
     }
 
@@ -410,7 +435,9 @@ impl VelloCpuRenderContext {
     /// Apply fill paint (fill color × global alpha) to the vello_cpu context.
     fn apply_fill_paint(&mut self) {
         let color = self.effective_fill_color();
+        let blend = Self::blend_to_vello_cpu(self.blend_mode);
         if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_blend_mode(blend);
             ctx.set_paint(color);
         }
     }
@@ -418,7 +445,9 @@ impl VelloCpuRenderContext {
     /// Apply stroke paint (stroke color × global alpha) to the vello_cpu context.
     fn apply_stroke_paint(&mut self) {
         let color = self.effective_stroke_color();
+        let blend = Self::blend_to_vello_cpu(self.blend_mode);
         if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_blend_mode(blend);
             ctx.set_paint(color);
         }
     }
@@ -452,6 +481,7 @@ impl VelloCpuRenderContext {
             text_align:   self.text_align,
             text_baseline: self.text_baseline,
             has_clip,
+            blend_mode:   self.blend_mode,
         });
     }
 
@@ -467,7 +497,27 @@ impl VelloCpuRenderContext {
         self.font_info    = s.font_info.clone();
         self.text_align   = s.text_align;
         self.text_baseline = s.text_baseline;
+        self.blend_mode   = s.blend_mode;
         Some(s)
+    }
+
+    /// Convert a `UzorBlendMode` to a `vello_cpu::peniko::BlendMode`.
+    fn blend_to_vello_cpu(mode: UzorBlendMode) -> vello_cpu::peniko::BlendMode {
+        match mode {
+            UzorBlendMode::Normal     => Mix::Normal.into(),
+            UzorBlendMode::Multiply   => Mix::Multiply.into(),
+            UzorBlendMode::Screen     => Mix::Screen.into(),
+            UzorBlendMode::Overlay    => Mix::Overlay.into(),
+            UzorBlendMode::Darken     => Mix::Darken.into(),
+            UzorBlendMode::Lighten    => Mix::Lighten.into(),
+            UzorBlendMode::ColorDodge => Mix::ColorDodge.into(),
+            UzorBlendMode::ColorBurn  => Mix::ColorBurn.into(),
+            UzorBlendMode::HardLight  => Mix::HardLight.into(),
+            UzorBlendMode::SoftLight  => Mix::SoftLight.into(),
+            UzorBlendMode::Difference => Mix::Difference.into(),
+            UzorBlendMode::Exclusion  => Mix::Exclusion.into(),
+            UzorBlendMode::Plus       => Compose::Plus.into(),
+        }
     }
 }
 
@@ -669,6 +719,17 @@ impl UzorRenderContext for VelloCpuRenderContext {
     fn fill(&mut self) {
         let Some(path) = self.path.clone() else { return };
         let transform = self.transform;
+        // M6-P1: shadow pass
+        if let Some(ref sh) = self.shadow.clone() {
+            let shadow_transform = transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
+            if let Some(ref mut ctx) = self.render_ctx {
+                ctx.set_transform(shadow_transform);
+                ctx.set_fill_rule(Fill::NonZero);
+                ctx.set_blend_mode(vello_cpu::peniko::BlendMode::default());
+                ctx.set_paint(sh.color);
+                ctx.fill_path(&path);
+            }
+        }
         self.apply_fill_paint();
         if let Some(ref mut ctx) = self.render_ctx {
             ctx.set_transform(transform);
@@ -784,6 +845,17 @@ impl UzorRenderContext for VelloCpuRenderContext {
         let Some(path) = self.path.clone() else { return };
         let transform = self.transform;
         let stroke = self.current_stroke();
+        // M6-P1: shadow pass
+        if let Some(ref sh) = self.shadow.clone() {
+            let shadow_transform = transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
+            if let Some(ref mut ctx) = self.render_ctx {
+                ctx.set_transform(shadow_transform);
+                ctx.set_blend_mode(vello_cpu::peniko::BlendMode::default());
+                ctx.set_paint(sh.color);
+                ctx.set_stroke(stroke.clone());
+                ctx.stroke_path(&path);
+            }
+        }
         self.apply_stroke_paint();
         if let Some(ref mut ctx) = self.render_ctx {
             ctx.set_transform(transform);
@@ -809,6 +881,16 @@ impl UzorRenderContext for VelloCpuRenderContext {
     fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
         let r = Rect::new(x, y, x + w, y + h);
         let transform = self.transform;
+        // M6-P1: shadow pass
+        if let Some(ref sh) = self.shadow.clone() {
+            let shadow_transform = transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
+            if let Some(ref mut ctx) = self.render_ctx {
+                ctx.set_transform(shadow_transform);
+                ctx.set_blend_mode(vello_cpu::peniko::BlendMode::default());
+                ctx.set_paint(sh.color);
+                ctx.fill_rect(&r);
+            }
+        }
         self.apply_fill_paint();
         if let Some(ref mut ctx) = self.render_ctx {
             ctx.set_transform(transform);
@@ -962,6 +1044,42 @@ impl UzorRenderContext for VelloCpuRenderContext {
 
     fn scale(&mut self, x: f64, y: f64) {
         self.transform = self.transform.then_scale_non_uniform(x, y);
+    }
+
+    // -----------------------------------------------------------------------
+    // M6-P1: Drop shadow
+    // -----------------------------------------------------------------------
+
+    fn set_shadow(&mut self, dx: f64, dy: f64, _blur: f64, color: &str) {
+        // Vello CPU has a DropShadow filter internally (pub(crate) only).
+        // We approximate shadow as an offset, pre-alpha copy — matches
+        // vello-gpu behaviour for cross-backend consistency.
+        let shadow_color = parse_color(color);
+        self.shadow = Some(ShadowState { dx, dy, color: shadow_color });
+    }
+
+    fn clear_shadow(&mut self) {
+        self.shadow = None;
+    }
+
+    // -----------------------------------------------------------------------
+    // M6-P2: Mask layers
+    //
+    // Default impl (save + clip) works: clip() calls push_clip_path on
+    // VelloCpuCtx; restore() calls pop_clip_path.  No override needed.
+    // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // M6-P3: Blend mode
+    // -----------------------------------------------------------------------
+
+    fn set_blend_mode(&mut self, mode: UzorBlendMode) {
+        self.blend_mode = mode;
+        // Eagerly sync to vello_cpu so the next draw sees the right mode.
+        let blend = Self::blend_to_vello_cpu(mode);
+        if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_blend_mode(blend);
+        }
     }
 }
 
