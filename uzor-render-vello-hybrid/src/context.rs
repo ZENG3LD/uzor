@@ -74,8 +74,10 @@ use wgpu::{CommandEncoder, Device, Queue, TextureView};
 
 use uzor::fonts::{self, FontFamily};
 use uzor::render::{
-    BlendMode as UzorBlendMode, RenderContext as UzorRenderContext, RenderContextExt, TextAlign,
-    TextBaseline,
+    BlendMode as UzorBlendMode,
+    Effects, GradientPainter, Masking, Painter, RenderContext as UzorRenderContext,
+    RenderContextExt, ShapeHelpers, TextMetrics, TextRenderer,
+    TextAlign, TextBaseline,
 };
 
 // ---------------------------------------------------------------------------
@@ -562,67 +564,42 @@ impl VelloHybridRenderContext {
 }
 
 // ---------------------------------------------------------------------------
-// RenderContext trait implementation
+// Painter
 // ---------------------------------------------------------------------------
 
-impl UzorRenderContext for VelloHybridRenderContext {
-    // -----------------------------------------------------------------------
-    // Dimensions
-    // -----------------------------------------------------------------------
-
-    fn dpr(&self) -> f64 {
-        self.dpr
+impl Painter for VelloHybridRenderContext {
+    fn save(&mut self) {
+        let has_clip = self.clip_active;
+        self.push_save_state(has_clip);
+        self.clip_active = false;
     }
 
-    // -----------------------------------------------------------------------
-    // Stroke style
-    // -----------------------------------------------------------------------
-
-    fn set_stroke_color(&mut self, color: &str) {
-        self.stroke_color = parse_color(color);
-    }
-
-    fn set_stroke_width(&mut self, width: f64) {
-        self.stroke_width = width;
-        let stroke = self.current_stroke();
-        if let Some(ref mut s) = self.scene {
-            s.set_stroke(stroke);
+    fn restore(&mut self) {
+        if let Some(saved) = self.pop_save_state() {
+            if self.clip_active {
+                if let Some(ref mut s) = self.scene {
+                    s.pop_clip_path();
+                }
+            }
+            self.clip_active = saved.has_clip;
+            let transform = self.transform;
+            if let Some(ref mut s) = self.scene {
+                s.set_transform(transform);
+            }
         }
     }
 
-    fn set_line_dash(&mut self, _pattern: &[f64]) {
-        // vello_hybrid's Stroke has a dash_pattern field, but constructing
-        // dashed strokes requires the Stroke builder pattern.  Calls are
-        // silently accepted for API compat; dash support is deferred.
+    fn translate(&mut self, x: f64, y: f64) {
+        self.transform = self.transform.then_translate((x, y).into());
     }
 
-    fn set_line_cap(&mut self, cap: &str) {
-        self.line_cap = match cap {
-            "round"  => Cap::Round,
-            "square" => Cap::Square,
-            _        => Cap::Butt,
-        };
-        let stroke = self.current_stroke();
-        if let Some(ref mut s) = self.scene {
-            s.set_stroke(stroke);
-        }
+    fn rotate(&mut self, angle: f64) {
+        self.transform = self.transform.then_rotate(angle);
     }
 
-    fn set_line_join(&mut self, join: &str) {
-        self.line_join = match join {
-            "round" => Join::Round,
-            "bevel" => Join::Bevel,
-            _       => Join::Miter,
-        };
-        let stroke = self.current_stroke();
-        if let Some(ref mut s) = self.scene {
-            s.set_stroke(stroke);
-        }
+    fn scale(&mut self, x: f64, y: f64) {
+        self.transform = self.transform.then_scale_non_uniform(x, y);
     }
-
-    // -----------------------------------------------------------------------
-    // Fill style
-    // -----------------------------------------------------------------------
 
     fn set_fill_color(&mut self, color: &str) {
         self.fill_color = parse_color(color);
@@ -632,30 +609,44 @@ impl UzorRenderContext for VelloHybridRenderContext {
         self.global_alpha = alpha.clamp(0.0, 1.0);
     }
 
-    // -----------------------------------------------------------------------
-    // Path operations
-    // -----------------------------------------------------------------------
-
-    fn begin_path(&mut self) {
-        self.path = Some(BezPath::new());
+    fn set_stroke_color(&mut self, color: &str) {
+        self.stroke_color = parse_color(color);
     }
 
+    fn set_stroke_width(&mut self, width: f64) {
+        self.stroke_width = width;
+        let stroke = self.current_stroke();
+        if let Some(ref mut s) = self.scene { s.set_stroke(stroke); }
+    }
+
+    fn set_line_dash(&mut self, _pattern: &[f64]) {
+        // Dash support deferred — calls silently accepted for API compat.
+    }
+
+    fn set_line_cap(&mut self, cap: &str) {
+        self.line_cap = match cap { "round" => Cap::Round, "square" => Cap::Square, _ => Cap::Butt };
+        let stroke = self.current_stroke();
+        if let Some(ref mut s) = self.scene { s.set_stroke(stroke); }
+    }
+
+    fn set_line_join(&mut self, join: &str) {
+        self.line_join = match join { "round" => Join::Round, "bevel" => Join::Bevel, _ => Join::Miter };
+        let stroke = self.current_stroke();
+        if let Some(ref mut s) = self.scene { s.set_stroke(stroke); }
+    }
+
+    fn begin_path(&mut self) { self.path = Some(BezPath::new()); }
+
     fn move_to(&mut self, x: f64, y: f64) {
-        if let Some(ref mut p) = self.path {
-            p.move_to(kurbo::Point::new(x, y));
-        }
+        if let Some(ref mut p) = self.path { p.move_to(kurbo::Point::new(x, y)); }
     }
 
     fn line_to(&mut self, x: f64, y: f64) {
-        if let Some(ref mut p) = self.path {
-            p.line_to(kurbo::Point::new(x, y));
-        }
+        if let Some(ref mut p) = self.path { p.line_to(kurbo::Point::new(x, y)); }
     }
 
     fn close_path(&mut self) {
-        if let Some(ref mut p) = self.path {
-            p.close_path();
-        }
+        if let Some(ref mut p) = self.path { p.close_path(); }
     }
 
     fn rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
@@ -671,51 +662,29 @@ impl UzorRenderContext for VelloHybridRenderContext {
     fn arc(&mut self, cx: f64, cy: f64, radius: f64, start_angle: f64, end_angle: f64) {
         if let Some(ref mut p) = self.path {
             let arc = kurbo::Arc::new(
-                kurbo::Point::new(cx, cy),
-                kurbo::Vec2::new(radius, radius),
-                start_angle,
-                end_angle - start_angle,
-                0.0,
+                kurbo::Point::new(cx, cy), kurbo::Vec2::new(radius, radius),
+                start_angle, end_angle - start_angle, 0.0,
             );
             let path_has_elements = !p.elements().is_empty();
             let mut is_first = true;
             arc.to_path(0.1).into_iter().for_each(|el| match el {
                 kurbo::PathEl::MoveTo(pt) => {
-                    if is_first && path_has_elements {
-                        p.line_to(pt);
-                    } else {
-                        p.move_to(pt);
-                    }
+                    if is_first && path_has_elements { p.line_to(pt); } else { p.move_to(pt); }
                     is_first = false;
                 }
                 kurbo::PathEl::LineTo(pt) => { p.line_to(pt); is_first = false; }
                 kurbo::PathEl::QuadTo(c, pt) => { p.quad_to(c, pt); is_first = false; }
-                kurbo::PathEl::CurveTo(c1, c2, pt) => {
-                    p.curve_to(c1, c2, pt);
-                    is_first = false;
-                }
+                kurbo::PathEl::CurveTo(c1, c2, pt) => { p.curve_to(c1, c2, pt); is_first = false; }
                 kurbo::PathEl::ClosePath => p.close_path(),
             });
         }
     }
 
-    fn ellipse(
-        &mut self,
-        cx: f64,
-        cy: f64,
-        rx: f64,
-        ry: f64,
-        _rotation: f64,
-        start: f64,
-        end: f64,
-    ) {
+    fn ellipse(&mut self, cx: f64, cy: f64, rx: f64, ry: f64, _rotation: f64, start: f64, end: f64) {
         if let Some(ref mut p) = self.path {
             let arc = kurbo::Arc::new(
-                kurbo::Point::new(cx, cy),
-                kurbo::Vec2::new(rx, ry),
-                start,
-                end - start,
-                0.0,
+                kurbo::Point::new(cx, cy), kurbo::Vec2::new(rx, ry),
+                start, end - start, 0.0,
             );
             arc.to_path(0.1).into_iter().for_each(|el| match el {
                 kurbo::PathEl::MoveTo(pt)          => p.move_to(pt),
@@ -733,148 +702,16 @@ impl UzorRenderContext for VelloHybridRenderContext {
         }
     }
 
-    fn bezier_curve_to(
-        &mut self,
-        cp1x: f64,
-        cp1y: f64,
-        cp2x: f64,
-        cp2y: f64,
-        x: f64,
-        y: f64,
-    ) {
+    fn bezier_curve_to(&mut self, cp1x: f64, cp1y: f64, cp2x: f64, cp2y: f64, x: f64, y: f64) {
         if let Some(ref mut p) = self.path {
-            p.curve_to(
-                kurbo::Point::new(cp1x, cp1y),
-                kurbo::Point::new(cp2x, cp2y),
-                kurbo::Point::new(x, y),
-            );
+            p.curve_to(kurbo::Point::new(cp1x, cp1y), kurbo::Point::new(cp2x, cp2y), kurbo::Point::new(x, y));
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // Stroke / fill the current path
-    // -----------------------------------------------------------------------
-
-    fn fill(&mut self) {
-        let Some(path) = self.path.clone() else { return };
-        let transform  = self.transform;
-        // M6-P1: shadow pass
-        if let Some(ref sh) = self.shadow.clone() {
-            let shadow_transform = transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
-            if let Some(ref mut s) = self.scene {
-                s.set_blend_mode(vello_common::peniko::BlendMode::default());
-                s.set_transform(shadow_transform);
-                s.set_fill_rule(Fill::NonZero);
-                s.set_paint(sh.color);
-                s.fill_path(&path);
-            }
-        }
-        self.apply_fill_paint();
-        if let Some(ref mut s) = self.scene {
-            s.set_transform(transform);
-            s.set_fill_rule(Fill::NonZero);
-            s.fill_path(&path);
-        }
-    }
-
-    fn fill_linear_gradient(&mut self, stops: &[(f32, &str)], x1: f64, y1: f64, x2: f64, y2: f64) {
-        let Some(path) = self.path.clone() else { return };
-        use vello_common::peniko::{ColorStop, Gradient};
-
-        let start = kurbo::Point::new(x1, y1);
-        let end   = kurbo::Point::new(x2, y2);
-
-        let color_stops: Vec<ColorStop> = stops
-            .iter()
-            .map(|(offset, hex)| {
-                let color = parse_color(hex);
-                ColorStop::from((*offset, color))
-            })
-            .collect();
-
-        let gradient = Gradient::new_linear(start, end)
-            .with_stops(color_stops.as_slice());
-
-        let transform = self.transform;
-        if let Some(ref mut s) = self.scene {
-            s.set_transform(transform);
-            s.set_fill_rule(Fill::NonZero);
-            s.set_paint(gradient);
-            s.fill_path(&path);
-        }
-    }
-
-    fn fill_radial_gradient(
-        &mut self,
-        cx: f64,
-        cy: f64,
-        r: f64,
-        stops: &[(f32, &str)],
-        x: f64,
-        y: f64,
-        w: f64,
-        h: f64,
-    ) {
-        let _ = (x, y, w, h);
-        let Some(path) = self.path.clone() else { return };
-        use vello_common::peniko::{ColorStop, Gradient};
-
-        let center = kurbo::Point::new(cx, cy);
-        let color_stops: Vec<ColorStop> = stops
-            .iter()
-            .map(|(offset, hex)| {
-                let color = parse_color(hex);
-                ColorStop::from((*offset, color))
-            })
-            .collect();
-
-        let gradient = Gradient::new_radial(center, r as f32)
-            .with_stops(color_stops.as_slice());
-
-        let transform = self.transform;
-        if let Some(ref mut s) = self.scene {
-            s.set_transform(transform);
-            s.set_fill_rule(Fill::NonZero);
-            s.set_paint(gradient);
-            s.fill_path(&path);
-        }
-    }
-
-    fn rounded_rect_corners(
-        &mut self,
-        x: f64,
-        y: f64,
-        w: f64,
-        h: f64,
-        tl: f64,
-        tr: f64,
-        br: f64,
-        bl: f64,
-    ) {
-        let max_r = (w / 2.0).min(h / 2.0).max(0.0);
-        let tl = tl.clamp(0.0, max_r);
-        let tr = tr.clamp(0.0, max_r);
-        let br = br.clamp(0.0, max_r);
-        let bl = bl.clamp(0.0, max_r);
-
-        self.begin_path();
-        self.move_to(x + tl, y);
-        self.line_to(x + w - tr, y);
-        self.arc(x + w - tr, y + tr, tr, -std::f64::consts::FRAC_PI_2, 0.0);
-        self.line_to(x + w, y + h - br);
-        self.arc(x + w - br, y + h - br, br, 0.0, std::f64::consts::FRAC_PI_2);
-        self.line_to(x + bl, y + h);
-        self.arc(x + bl, y + h - bl, bl, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
-        self.line_to(x, y + tl);
-        self.arc(x + tl, y + tl, tl, std::f64::consts::PI, std::f64::consts::PI * 1.5);
-        self.close_path();
     }
 
     fn stroke(&mut self) {
         let Some(path) = self.path.clone() else { return };
         let transform  = self.transform;
         let stroke_val = self.current_stroke();
-        // M6-P1: shadow pass
         if let Some(ref sh) = self.shadow.clone() {
             let shadow_transform = transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
             if let Some(ref mut s) = self.scene {
@@ -893,6 +730,110 @@ impl UzorRenderContext for VelloHybridRenderContext {
         }
     }
 
+    fn fill(&mut self) {
+        let Some(path) = self.path.clone() else { return };
+        let transform  = self.transform;
+        if let Some(ref sh) = self.shadow.clone() {
+            let shadow_transform = transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
+            if let Some(ref mut s) = self.scene {
+                s.set_blend_mode(vello_common::peniko::BlendMode::default());
+                s.set_transform(shadow_transform);
+                s.set_fill_rule(Fill::NonZero);
+                s.set_paint(sh.color);
+                s.fill_path(&path);
+            }
+        }
+        self.apply_fill_paint();
+        if let Some(ref mut s) = self.scene {
+            s.set_transform(transform);
+            s.set_fill_rule(Fill::NonZero);
+            s.fill_path(&path);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TextRenderer
+// ---------------------------------------------------------------------------
+
+impl TextRenderer for VelloHybridRenderContext {
+    fn set_font(&mut self, font: &str) { self.font_info = parse_css_font(font); }
+    fn set_text_align(&mut self, align: TextAlign) { self.text_align = align; }
+    fn set_text_baseline(&mut self, baseline: TextBaseline) { self.text_baseline = baseline; }
+
+    fn fill_text(&mut self, text: &str, x: f64, y: f64) {
+        if text.is_empty() { return; }
+
+        let font_info    = self.font_info.clone();
+        let primary_font = get_font(font_info.family, font_info.bold, font_info.italic);
+        let font_size    = font_info.size as f32;
+
+        let text_width = measure_text_width(text, &font_info);
+        let x_off = match self.text_align {
+            TextAlign::Center => -text_width / 2.0,
+            TextAlign::Right  => -text_width,
+            _                 => 0.0,
+        };
+        let y_off = match self.text_baseline {
+            TextBaseline::Top    => font_info.size * 0.8,
+            TextBaseline::Middle => font_info.size * 0.35,
+            TextBaseline::Bottom => 0.0,
+            _                    => font_info.size * 0.35,
+        };
+
+        let Some(primary_ref) = to_font_ref(primary_font) else { return };
+        let resolved = resolve_glyphs_with_fallback(text, &primary_ref, font_size);
+        let fallbacks = get_fallback_fonts();
+
+        let text_transform = Affine::translate((x + x_off, y + y_off));
+        let combined       = self.transform * text_transform;
+
+        const COLOR_EMOJI_FALLBACK_IDX: usize = 2;
+        let fill_color = self.effective_fill_color();
+        let white = Color::from_rgba8(255, 255, 255, 255);
+
+        if let Some(ref mut s) = self.scene {
+            s.set_transform(combined);
+            let mut i = 0;
+            while i < resolved.len() {
+                let run_font_index = resolved[i].font_index;
+                let run_start = i;
+                while i < resolved.len() && resolved[i].font_index == run_font_index { i += 1; }
+                let run = &resolved[run_start..i];
+                let is_color_emoji = run_font_index == Some(COLOR_EMOJI_FALLBACK_IDX);
+                let font = match run_font_index {
+                    None => primary_font,
+                    Some(idx) if idx < fallbacks.len() => &fallbacks[idx],
+                    _ => primary_font,
+                };
+                s.set_paint(if is_color_emoji { white } else { fill_color });
+                let glyphs = run.iter().map(|g| Glyph { id: g.glyph_id, x: g.x, y: 0.0 });
+                s.glyph_run(font).font_size(font_size).hint(false).normalized_coords(&[]).fill_glyphs(glyphs);
+            }
+            s.set_transform(self.transform);
+        }
+    }
+
+    fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {
+        // Deferred — callers can overlay stroke on top of fill_text if needed.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TextMetrics
+// ---------------------------------------------------------------------------
+
+impl TextMetrics for VelloHybridRenderContext {
+    fn measure_text(&self, text: &str) -> f64 {
+        measure_text_width(text, &self.font_info)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Masking
+// ---------------------------------------------------------------------------
+
+impl Masking for VelloHybridRenderContext {
     fn clip(&mut self) {
         let Some(path) = self.path.clone() else { return };
         let transform  = self.transform;
@@ -902,15 +843,37 @@ impl UzorRenderContext for VelloHybridRenderContext {
             s.push_clip_path(&path);
         }
     }
+}
 
-    // -----------------------------------------------------------------------
-    // Shape helpers
-    // -----------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Effects
+// ---------------------------------------------------------------------------
 
+impl Effects for VelloHybridRenderContext {
+    fn set_shadow(&mut self, dx: f64, dy: f64, _blur: f64, color: &str) {
+        let shadow_color = parse_color(color);
+        self.shadow = Some(ShadowState { dx, dy, color: shadow_color });
+    }
+
+    fn clear_shadow(&mut self) {
+        self.shadow = None;
+    }
+
+    fn set_blend_mode(&mut self, mode: UzorBlendMode) {
+        self.blend_mode = mode;
+        let blend = Self::blend_to_hybrid(mode);
+        if let Some(ref mut s) = self.scene { s.set_blend_mode(blend); }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ShapeHelpers
+// ---------------------------------------------------------------------------
+
+impl ShapeHelpers for VelloHybridRenderContext {
     fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
         let r         = Rect::new(x, y, x + w, y + h);
         let transform = self.transform;
-        // M6-P1: shadow pass
         if let Some(ref sh) = self.shadow.clone() {
             let shadow_transform = transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
             if let Some(ref mut s) = self.scene {
@@ -939,174 +902,79 @@ impl UzorRenderContext for VelloHybridRenderContext {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Text rendering
-    // -----------------------------------------------------------------------
-
-    fn set_font(&mut self, font: &str) {
-        self.font_info = parse_css_font(font);
+    fn rounded_rect_corners(&mut self, x: f64, y: f64, w: f64, h: f64, tl: f64, tr: f64, br: f64, bl: f64) {
+        let max_r = (w / 2.0).min(h / 2.0).max(0.0);
+        let tl = tl.clamp(0.0, max_r);
+        let tr = tr.clamp(0.0, max_r);
+        let br = br.clamp(0.0, max_r);
+        let bl = bl.clamp(0.0, max_r);
+        self.begin_path();
+        self.move_to(x + tl, y);
+        self.line_to(x + w - tr, y);
+        self.arc(x + w - tr, y + tr, tr, -std::f64::consts::FRAC_PI_2, 0.0);
+        self.line_to(x + w, y + h - br);
+        self.arc(x + w - br, y + h - br, br, 0.0, std::f64::consts::FRAC_PI_2);
+        self.line_to(x + bl, y + h);
+        self.arc(x + bl, y + h - bl, bl, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+        self.line_to(x, y + tl);
+        self.arc(x + tl, y + tl, tl, std::f64::consts::PI, std::f64::consts::PI * 1.5);
+        self.close_path();
     }
+}
 
-    fn set_text_align(&mut self, align: TextAlign) {
-        self.text_align = align;
-    }
+// ---------------------------------------------------------------------------
+// GradientPainter
+// ---------------------------------------------------------------------------
 
-    fn set_text_baseline(&mut self, baseline: TextBaseline) {
-        self.text_baseline = baseline;
-    }
-
-    fn fill_text(&mut self, text: &str, x: f64, y: f64) {
-        if text.is_empty() { return; }
-
-        let font_info    = self.font_info.clone();
-        let primary_font = get_font(font_info.family, font_info.bold, font_info.italic);
-        let font_size    = font_info.size as f32;
-
-        // Alignment / baseline offsets
-        let text_width = measure_text_width(text, &font_info);
-        let x_off = match self.text_align {
-            TextAlign::Center => -text_width / 2.0,
-            TextAlign::Right  => -text_width,
-            _                 => 0.0,
-        };
-        let y_off = match self.text_baseline {
-            TextBaseline::Top    => font_info.size * 0.8,
-            TextBaseline::Middle => font_info.size * 0.35,
-            TextBaseline::Bottom => 0.0,
-            _                    => font_info.size * 0.35,
-        };
-
-        // Resolve glyphs with fallback
-        let Some(primary_ref) = to_font_ref(primary_font) else { return };
-        let resolved = resolve_glyphs_with_fallback(text, &primary_ref, font_size);
-        let fallbacks = get_fallback_fonts();
-
-        // Compose final transform: context transform + text position offset
-        let text_transform = Affine::translate((x + x_off, y + y_off));
-        let combined       = self.transform * text_transform;
-
-        // Fallback index 2 = NotoColorEmoji (COLR font).  vello_hybrid requires the
-        // paint to be WHITE for COLR runs so the embedded palette is used directly;
-        // a non-white paint tints / masks the palette colors.
-        const COLOR_EMOJI_FALLBACK_IDX: usize = 2;
-        let fill_color = self.effective_fill_color();
-        let white = Color::from_rgba8(255, 255, 255, 255);
-
+impl GradientPainter for VelloHybridRenderContext {
+    fn fill_linear_gradient(&mut self, stops: &[(f32, &str)], x1: f64, y1: f64, x2: f64, y2: f64) {
+        let Some(path) = self.path.clone() else { return };
+        use vello_common::peniko::{ColorStop, Gradient};
+        let color_stops: Vec<ColorStop> = stops.iter()
+            .map(|(offset, hex)| ColorStop::from((*offset, parse_color(hex))))
+            .collect();
+        let gradient = Gradient::new_linear(kurbo::Point::new(x1, y1), kurbo::Point::new(x2, y2))
+            .with_stops(color_stops.as_slice());
+        let transform = self.transform;
         if let Some(ref mut s) = self.scene {
-            s.set_transform(combined);
-
-            // Emit one glyph_run per contiguous same-font run
-            let mut i = 0;
-            while i < resolved.len() {
-                let run_font_index = resolved[i].font_index;
-                let run_start = i;
-                while i < resolved.len() && resolved[i].font_index == run_font_index {
-                    i += 1;
-                }
-                let run = &resolved[run_start..i];
-                let is_color_emoji = run_font_index == Some(COLOR_EMOJI_FALLBACK_IDX);
-                let font = match run_font_index {
-                    None => primary_font,
-                    Some(idx) if idx < fallbacks.len() => &fallbacks[idx],
-                    _ => primary_font,
-                };
-                // Set paint per-run: WHITE for COLR emoji font, foreground otherwise.
-                s.set_paint(if is_color_emoji { white } else { fill_color });
-                let glyphs = run.iter().map(|g| Glyph { id: g.glyph_id, x: g.x, y: 0.0 });
-                s.glyph_run(font)
-                    .font_size(font_size)
-                    .hint(false)
-                    .normalized_coords(&[])
-                    .fill_glyphs(glyphs);
-            }
-
-            // Restore the scene's transform to the context transform
-            s.set_transform(self.transform);
+            s.set_transform(transform);
+            s.set_fill_rule(Fill::NonZero);
+            s.set_paint(gradient);
+            s.fill_path(&path);
         }
     }
 
-    fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {
-        // vello_hybrid's glyph_run supports stroke_glyphs, but the path
-        // requires a separate code path.  Deferred for now — callers can
-        // overlay stroke on top of fill_text if needed.
-    }
-
-    fn measure_text(&self, text: &str) -> f64 {
-        measure_text_width(text, &self.font_info)
-    }
-
-    // -----------------------------------------------------------------------
-    // Transform operations
-    // -----------------------------------------------------------------------
-
-    fn save(&mut self) {
-        let has_clip = self.clip_active;
-        self.push_save_state(has_clip);
-        self.clip_active = false;
-    }
-
-    fn restore(&mut self) {
-        if let Some(saved) = self.pop_save_state() {
-            // Pop clip path if one was pushed during this save level
-            if self.clip_active {
-                if let Some(ref mut s) = self.scene {
-                    s.pop_clip_path();
-                }
-            }
-            self.clip_active = saved.has_clip;
-            // Re-sync the scene's transform to the restored value
-            let transform = self.transform;
-            if let Some(ref mut s) = self.scene {
-                s.set_transform(transform);
-            }
-        }
-    }
-
-    fn translate(&mut self, x: f64, y: f64) {
-        self.transform = self.transform.then_translate((x, y).into());
-    }
-
-    fn rotate(&mut self, angle: f64) {
-        self.transform = self.transform.then_rotate(angle);
-    }
-
-    fn scale(&mut self, x: f64, y: f64) {
-        self.transform = self.transform.then_scale_non_uniform(x, y);
-    }
-
-    // -----------------------------------------------------------------------
-    // M6-P1: Drop shadow
-    // -----------------------------------------------------------------------
-
-    fn set_shadow(&mut self, dx: f64, dy: f64, _blur: f64, color: &str) {
-        // Hybrid backend has `push_filter_layer(Filter)` but the filter types
-        // are not public.  Use the same offset-copy approximation as other backends.
-        let shadow_color = parse_color(color);
-        self.shadow = Some(ShadowState { dx, dy, color: shadow_color });
-    }
-
-    fn clear_shadow(&mut self) {
-        self.shadow = None;
-    }
-
-    // -----------------------------------------------------------------------
-    // M6-P2: Mask layers
-    //
-    // Default impl (save + clip) works: clip() calls push_clip_path on Scene;
-    // restore() calls pop_clip_path.  No override needed.
-    // -----------------------------------------------------------------------
-
-    // -----------------------------------------------------------------------
-    // M6-P3: Blend mode
-    // -----------------------------------------------------------------------
-
-    fn set_blend_mode(&mut self, mode: UzorBlendMode) {
-        self.blend_mode = mode;
-        let blend = Self::blend_to_hybrid(mode);
+    fn fill_radial_gradient(&mut self, cx: f64, cy: f64, r: f64, stops: &[(f32, &str)], x: f64, y: f64, w: f64, h: f64) {
+        let _ = (x, y, w, h);
+        let Some(path) = self.path.clone() else { return };
+        use vello_common::peniko::{ColorStop, Gradient};
+        let color_stops: Vec<ColorStop> = stops.iter()
+            .map(|(offset, hex)| ColorStop::from((*offset, parse_color(hex))))
+            .collect();
+        let gradient = Gradient::new_radial(kurbo::Point::new(cx, cy), r as f32)
+            .with_stops(color_stops.as_slice());
+        let transform = self.transform;
         if let Some(ref mut s) = self.scene {
-            s.set_blend_mode(blend);
+            s.set_transform(transform);
+            s.set_fill_rule(Fill::NonZero);
+            s.set_paint(gradient);
+            s.fill_path(&path);
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// UiEffectHelpers — all defaults (no blur support)
+// ---------------------------------------------------------------------------
+
+impl uzor::render::UiEffectHelpers for VelloHybridRenderContext {}
+
+// ---------------------------------------------------------------------------
+// RenderContext (dpr only)
+// ---------------------------------------------------------------------------
+
+impl UzorRenderContext for VelloHybridRenderContext {
+    fn dpr(&self) -> f64 { self.dpr }
 }
 
 // ---------------------------------------------------------------------------

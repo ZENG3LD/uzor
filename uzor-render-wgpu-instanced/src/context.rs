@@ -12,7 +12,11 @@ use lyon_tessellation::{
 };
 use lyon_path::math::point;
 use skrifa::MetadataProvider;
-use uzor::render::{RenderContext, RenderContextExt, TextAlign, TextBaseline};
+use uzor::render::{
+    Effects, GradientPainter, Masking, Painter, RenderContext, RenderContextExt,
+    ShapeHelpers, TextMetrics, TextRenderer,
+    TextAlign, TextBaseline,
+};
 
 use uzor::fonts::{self, FontFamily};
 
@@ -708,238 +712,9 @@ impl InstancedRenderContext {
     }
 }
 
-// ── RenderContext impl ─────────────────────────────────────────────────────
+// ── Painter ────────────────────────────────────────────────────────────────
 
-impl RenderContext for InstancedRenderContext {
-    fn dpr(&self) -> f64 { 1.0 }
-
-    // ── Stroke style ────────────────────────────────────────────────────
-    fn set_stroke_color(&mut self, color: &str) {
-        self.stroke_color = parse_color(color);
-    }
-    fn set_stroke_width(&mut self, width: f64) {
-        self.stroke_width = width as f32;
-    }
-    fn set_line_dash(&mut self, _pattern: &[f64]) {
-        // Dash patterns are not supported in this backend (SDF lines are solid).
-    }
-    fn set_line_cap(&mut self, cap: &str) {
-        self.line_cap = cap.to_owned();
-    }
-    fn set_line_join(&mut self, join: &str) {
-        self.line_join = join.to_owned();
-    }
-
-    // ── Fill style ──────────────────────────────────────────────────────
-    fn set_fill_color(&mut self, color: &str) {
-        self.fill_color = parse_color(color);
-    }
-    fn set_global_alpha(&mut self, alpha: f64) {
-        self.global_alpha = alpha.clamp(0.0, 1.0);
-    }
-
-    // ── Path operations ─────────────────────────────────────────────────
-    fn begin_path(&mut self) {
-        self.path.clear();
-    }
-    fn move_to(&mut self, x: f64, y: f64) {
-        self.path.push(PathCmd::MoveTo(x as f32, y as f32));
-    }
-    fn line_to(&mut self, x: f64, y: f64) {
-        self.path.push(PathCmd::LineTo(x as f32, y as f32));
-    }
-    fn close_path(&mut self) {
-        self.path.push(PathCmd::Close);
-    }
-    fn rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
-        self.path.push(PathCmd::Rect(x as f32, y as f32, w as f32, h as f32));
-    }
-    fn arc(&mut self, cx: f64, cy: f64, radius: f64, start_angle: f64, end_angle: f64) {
-        self.path.push(PathCmd::Arc {
-            cx: cx as f32,
-            cy: cy as f32,
-            r: radius as f32,
-            start: start_angle as f32,
-            end: end_angle as f32,
-        });
-    }
-    fn ellipse(&mut self, cx: f64, cy: f64, rx: f64, ry: f64, rotation: f64, start: f64, end: f64) {
-        if (rx - ry).abs() < 0.001 && rotation.abs() < 0.001 {
-            // Circle — delegate to arc
-            self.arc(cx, cy, rx, start, end);
-            return;
-        }
-        // Tessellate ellipse into line segments using parametric form.
-        // First point uses MoveTo (matches arc() behavior via PathCmd::Arc),
-        // rest use LineTo.
-        let sweep = end - start;
-        let steps = ((sweep.abs() * rx.max(ry)).max(sweep.abs() * 5.0)).max(16.0) as usize;
-        let (sin_rot, cos_rot) = rotation.sin_cos();
-        for i in 0..=steps {
-            let t = start + sweep * (i as f64 / steps as f64);
-            let ex = rx * t.cos();
-            let ey = ry * t.sin();
-            let px = cx + ex * cos_rot - ey * sin_rot;
-            let py = cy + ex * sin_rot + ey * cos_rot;
-            if i == 0 {
-                // Use LineTo if we're already in a subpath, MoveTo otherwise
-                if self.path.is_empty() || matches!(self.path.last(), Some(PathCmd::Close)) {
-                    self.path.push(PathCmd::MoveTo(px as f32, py as f32));
-                } else {
-                    self.path.push(PathCmd::LineTo(px as f32, py as f32));
-                }
-            } else {
-                self.path.push(PathCmd::LineTo(px as f32, py as f32));
-            }
-        }
-    }
-    fn quadratic_curve_to(&mut self, cpx: f64, cpy: f64, x: f64, y: f64) {
-        // Tessellate quadratic bezier into line segments.
-        let (p0x, p0y) = self.last_path_point();
-        let (cpx, cpy, ex, ey) = (cpx as f32, cpy as f32, x as f32, y as f32);
-        const N: usize = 8;
-        for i in 1..=N {
-            let t = i as f32 / N as f32;
-            let u = 1.0 - t;
-            let px = u * u * p0x + 2.0 * u * t * cpx + t * t * ex;
-            let py = u * u * p0y + 2.0 * u * t * cpy + t * t * ey;
-            self.path.push(PathCmd::LineTo(px, py));
-        }
-    }
-    fn bezier_curve_to(
-        &mut self, cp1x: f64, cp1y: f64, cp2x: f64, cp2y: f64, x: f64, y: f64,
-    ) {
-        // Tessellate cubic bezier into line segments.
-        let (p0x, p0y) = self.last_path_point();
-        let (c1x, c1y) = (cp1x as f32, cp1y as f32);
-        let (c2x, c2y) = (cp2x as f32, cp2y as f32);
-        let (ex, ey) = (x as f32, y as f32);
-        const N: usize = 8;
-        for i in 1..=N {
-            let t = i as f32 / N as f32;
-            let u = 1.0 - t;
-            let px = u*u*u*p0x + 3.0*u*u*t*c1x + 3.0*u*t*t*c2x + t*t*t*ex;
-            let py = u*u*u*p0y + 3.0*u*u*t*c1y + 3.0*u*t*t*c2y + t*t*t*ey;
-            self.path.push(PathCmd::LineTo(px, py));
-        }
-    }
-
-    // ── Stroke / fill / clip ────────────────────────────────────────────
-    fn stroke(&mut self) {
-        self.tessellate_stroke();
-    }
-    fn fill(&mut self) {
-        self.tessellate_fill();
-    }
-
-    fn fill_linear_gradient(
-        &mut self,
-        stops: &[(f32, &str)],
-        x1: f64,
-        y1: f64,
-        x2: f64,
-        y2: f64,
-    ) {
-        if stops.is_empty() {
-            return;
-        }
-
-        // Parse stop colors once.
-        let parsed: Vec<(f32, [f32; 4])> = stops
-            .iter()
-            .map(|(t, color)| (*t, parse_color(color)))
-            .collect();
-
-        self.tessellate_fill_gradient(
-            &parsed,
-            x1 as f32,
-            y1 as f32,
-            x2 as f32,
-            y2 as f32,
-        );
-    }
-
-    fn clip(&mut self) {
-        let bb = self.path_bounding_box();
-        let new_clip = self.intersect_clip(bb);
-        self.clip_stack.push(new_clip);
-        self.path.clear();
-    }
-
-    // ── Shape helpers ───────────────────────────────────────────────────
-    fn stroke_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
-        // Delegate to stroke_rounded_rect with r=0: emits a single SDF quad
-        // with border_width, which has no corner-joint dot artifacts.
-        self.stroke_rounded_rect(x, y, w, h, 0.0);
-    }
-
-    fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
-        let (x, y, w, h) = (x as f32, y as f32, w as f32, h as f32);
-        let color = self.apply_alpha(self.fill_color);
-        let clip = self.current_clip();
-        let (px1, py1) = apply(&self.transform, x,     y);
-        let (px2, py2) = apply(&self.transform, x + w, y + h);
-        self.draw_commands.push(DrawCmd::Quad(QuadInstance {
-            pos: [px1.min(px2), py1.min(py2)],
-            size: [(px2 - px1).abs(), (py2 - py1).abs()],
-            color,
-            corner_radius: 0.0,
-            border_width: 0.0,
-            _pad0: [0.0; 2],
-            border_color: [0.0; 4],
-            clip_rect: clip,
-        }));
-    }
-
-    // ── Text ─────────────────────────────────────────────────────────────
-    fn set_font(&mut self, font: &str) {
-        let parsed = fonts::parse_css_font(font);
-        self.font_size = parsed.size;
-        self.font_bold = parsed.bold;
-        self.font_italic = parsed.italic;
-        self.font_family = parsed.family;
-    }
-    fn set_text_align(&mut self, align: TextAlign) {
-        self.text_align = align;
-    }
-    fn set_text_baseline(&mut self, baseline: TextBaseline) {
-        self.text_baseline = baseline;
-    }
-
-    fn fill_text(&mut self, text: &str, x: f64, y: f64) {
-        if text.is_empty() { return; }
-        let (px, py) = apply(&self.transform, x as f32, y as f32);
-        let estimated_width  = self.measure_text_internal(text);
-        let estimated_height = self.font_size;
-        let clip = self.current_clip();
-        let color = self.apply_alpha(self.fill_color);
-
-        self.draw_commands.push(DrawCmd::Text(TextAreaData {
-            text: text.to_owned(),
-            x: px,
-            y: py,
-            font_size: self.font_size,
-            color,
-            family: self.font_family,
-            bold: self.font_bold,
-            italic: self.font_italic,
-            align: self.text_align,
-            baseline: self.text_baseline,
-            clip,
-            estimated_width,
-            estimated_height,
-        }));
-    }
-
-    fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {
-        // Not supported; text stroking is rarely needed.
-    }
-
-    fn measure_text(&self, text: &str) -> f64 {
-        self.measure_text_internal(text) as f64
-    }
-
-    // ── Transform ────────────────────────────────────────────────────────
+impl Painter for InstancedRenderContext {
     fn save(&mut self) {
         let state = SavedState {
             transform: self.transform,
@@ -975,7 +750,6 @@ impl RenderContext for InstancedRenderContext {
             self.text_baseline = state.text_baseline;
             self.line_cap      = state.line_cap;
             self.line_join     = state.line_join;
-            // Restore clip stack to the depth at save time
             self.clip_stack.truncate(state.clip_depth);
         }
     }
@@ -990,7 +764,174 @@ impl RenderContext for InstancedRenderContext {
         self.transform = scale_transform(&self.transform, x as f32, y as f32);
     }
 
-    // ── Rounded rect fill (direct quad with corner_radius) ───────────────
+    fn set_fill_color(&mut self, color: &str) { self.fill_color = parse_color(color); }
+    fn set_global_alpha(&mut self, alpha: f64) { self.global_alpha = alpha.clamp(0.0, 1.0); }
+    fn set_stroke_color(&mut self, color: &str) { self.stroke_color = parse_color(color); }
+    fn set_stroke_width(&mut self, width: f64) { self.stroke_width = width as f32; }
+    fn set_line_dash(&mut self, _pattern: &[f64]) {
+        // Dash patterns not supported (SDF lines are solid).
+    }
+    fn set_line_cap(&mut self, cap: &str) { self.line_cap = cap.to_owned(); }
+    fn set_line_join(&mut self, join: &str) { self.line_join = join.to_owned(); }
+
+    fn begin_path(&mut self) { self.path.clear(); }
+    fn move_to(&mut self, x: f64, y: f64) { self.path.push(PathCmd::MoveTo(x as f32, y as f32)); }
+    fn line_to(&mut self, x: f64, y: f64) { self.path.push(PathCmd::LineTo(x as f32, y as f32)); }
+    fn close_path(&mut self) { self.path.push(PathCmd::Close); }
+    fn rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
+        self.path.push(PathCmd::Rect(x as f32, y as f32, w as f32, h as f32));
+    }
+    fn arc(&mut self, cx: f64, cy: f64, radius: f64, start_angle: f64, end_angle: f64) {
+        self.path.push(PathCmd::Arc {
+            cx: cx as f32, cy: cy as f32, r: radius as f32,
+            start: start_angle as f32, end: end_angle as f32,
+        });
+    }
+    fn ellipse(&mut self, cx: f64, cy: f64, rx: f64, ry: f64, rotation: f64, start: f64, end: f64) {
+        if (rx - ry).abs() < 0.001 && rotation.abs() < 0.001 {
+            self.arc(cx, cy, rx, start, end);
+            return;
+        }
+        let sweep = end - start;
+        let steps = ((sweep.abs() * rx.max(ry)).max(sweep.abs() * 5.0)).max(16.0) as usize;
+        let (sin_rot, cos_rot) = rotation.sin_cos();
+        for i in 0..=steps {
+            let t = start + sweep * (i as f64 / steps as f64);
+            let ex = rx * t.cos();
+            let ey = ry * t.sin();
+            let px = cx + ex * cos_rot - ey * sin_rot;
+            let py = cy + ex * sin_rot + ey * cos_rot;
+            if i == 0 {
+                if self.path.is_empty() || matches!(self.path.last(), Some(PathCmd::Close)) {
+                    self.path.push(PathCmd::MoveTo(px as f32, py as f32));
+                } else {
+                    self.path.push(PathCmd::LineTo(px as f32, py as f32));
+                }
+            } else {
+                self.path.push(PathCmd::LineTo(px as f32, py as f32));
+            }
+        }
+    }
+    fn quadratic_curve_to(&mut self, cpx: f64, cpy: f64, x: f64, y: f64) {
+        let (p0x, p0y) = self.last_path_point();
+        let (cpx, cpy, ex, ey) = (cpx as f32, cpy as f32, x as f32, y as f32);
+        const N: usize = 8;
+        for i in 1..=N {
+            let t = i as f32 / N as f32;
+            let u = 1.0 - t;
+            let px = u * u * p0x + 2.0 * u * t * cpx + t * t * ex;
+            let py = u * u * p0y + 2.0 * u * t * cpy + t * t * ey;
+            self.path.push(PathCmd::LineTo(px, py));
+        }
+    }
+    fn bezier_curve_to(&mut self, cp1x: f64, cp1y: f64, cp2x: f64, cp2y: f64, x: f64, y: f64) {
+        let (p0x, p0y) = self.last_path_point();
+        let (c1x, c1y) = (cp1x as f32, cp1y as f32);
+        let (c2x, c2y) = (cp2x as f32, cp2y as f32);
+        let (ex, ey) = (x as f32, y as f32);
+        const N: usize = 8;
+        for i in 1..=N {
+            let t = i as f32 / N as f32;
+            let u = 1.0 - t;
+            let px = u*u*u*p0x + 3.0*u*u*t*c1x + 3.0*u*t*t*c2x + t*t*t*ex;
+            let py = u*u*u*p0y + 3.0*u*u*t*c1y + 3.0*u*t*t*c2y + t*t*t*ey;
+            self.path.push(PathCmd::LineTo(px, py));
+        }
+    }
+    fn stroke(&mut self) { self.tessellate_stroke(); }
+    fn fill(&mut self) { self.tessellate_fill(); }
+}
+
+// ── TextRenderer ───────────────────────────────────────────────────────────
+
+impl TextRenderer for InstancedRenderContext {
+    fn set_font(&mut self, font: &str) {
+        let parsed = fonts::parse_css_font(font);
+        self.font_size   = parsed.size;
+        self.font_bold   = parsed.bold;
+        self.font_italic = parsed.italic;
+        self.font_family = parsed.family;
+    }
+    fn set_text_align(&mut self, align: TextAlign) { self.text_align = align; }
+    fn set_text_baseline(&mut self, baseline: TextBaseline) { self.text_baseline = baseline; }
+
+    fn fill_text(&mut self, text: &str, x: f64, y: f64) {
+        if text.is_empty() { return; }
+        let (px, py) = apply(&self.transform, x as f32, y as f32);
+        let estimated_width  = self.measure_text_internal(text);
+        let estimated_height = self.font_size;
+        let clip = self.current_clip();
+        let color = self.apply_alpha(self.fill_color);
+        self.draw_commands.push(DrawCmd::Text(TextAreaData {
+            text: text.to_owned(),
+            x: px, y: py,
+            font_size: self.font_size,
+            color,
+            family: self.font_family,
+            bold: self.font_bold,
+            italic: self.font_italic,
+            align: self.text_align,
+            baseline: self.text_baseline,
+            clip,
+            estimated_width,
+            estimated_height,
+        }));
+    }
+
+    fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {
+        // Not supported in this backend.
+    }
+}
+
+// ── TextMetrics ────────────────────────────────────────────────────────────
+
+impl TextMetrics for InstancedRenderContext {
+    fn measure_text(&self, text: &str) -> f64 {
+        self.measure_text_internal(text) as f64
+    }
+}
+
+// ── Masking ────────────────────────────────────────────────────────────────
+
+impl Masking for InstancedRenderContext {
+    fn clip(&mut self) {
+        let bb = self.path_bounding_box();
+        let new_clip = self.intersect_clip(bb);
+        self.clip_stack.push(new_clip);
+        self.path.clear();
+    }
+}
+
+// ── Effects ────────────────────────────────────────────────────────────────
+
+impl Effects for InstancedRenderContext {}
+
+// ── ShapeHelpers ───────────────────────────────────────────────────────────
+
+impl ShapeHelpers for InstancedRenderContext {
+    fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
+        let (x, y, w, h) = (x as f32, y as f32, w as f32, h as f32);
+        let color = self.apply_alpha(self.fill_color);
+        let clip = self.current_clip();
+        let (px1, py1) = apply(&self.transform, x,     y);
+        let (px2, py2) = apply(&self.transform, x + w, y + h);
+        self.draw_commands.push(DrawCmd::Quad(QuadInstance {
+            pos: [px1.min(px2), py1.min(py2)],
+            size: [(px2 - px1).abs(), (py2 - py1).abs()],
+            color,
+            corner_radius: 0.0,
+            border_width: 0.0,
+            _pad0: [0.0; 2],
+            border_color: [0.0; 4],
+            clip_rect: clip,
+        }));
+    }
+
+    fn stroke_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
+        // Delegate to stroke_rounded_rect with r=0 for SDF quad without corner artifacts.
+        self.stroke_rounded_rect(x, y, w, h, 0.0);
+    }
+
     fn fill_rounded_rect(&mut self, x: f64, y: f64, w: f64, h: f64, radius: f64) {
         let (x, y, w, h) = (x as f32, y as f32, w as f32, h as f32);
         let r = (radius as f32).min(w / 2.0).min(h / 2.0).max(0.0);
@@ -998,7 +939,6 @@ impl RenderContext for InstancedRenderContext {
         let clip = self.current_clip();
         let (px1, py1) = apply(&self.transform, x,     y);
         let (px2, py2) = apply(&self.transform, x + w, y + h);
-        // Corner radius in screen space (assumes uniform scale)
         let scale = ((self.transform[0].abs() + self.transform[3].abs()) * 0.5).max(0.001);
         self.draw_commands.push(DrawCmd::Quad(QuadInstance {
             pos: [px1.min(px2), py1.min(py2)],
@@ -1013,21 +953,16 @@ impl RenderContext for InstancedRenderContext {
     }
 
     fn stroke_rounded_rect(&mut self, x: f64, y: f64, w: f64, h: f64, radius: f64) {
-        // Bug 3 fix: emit a direct QuadInstance with border_width instead of using
-        // the path-based fallback. This avoids the zero-radius arc artifacts entirely
-        // for the common case and is GPU-efficient (single SDF quad vs many line segments).
         let (x, y, w, h) = (x as f32, y as f32, w as f32, h as f32);
         let r = (radius as f32).min(w / 2.0).min(h / 2.0).max(0.0);
         let border_color = self.apply_alpha(self.stroke_color);
         let clip = self.current_clip();
         let (px1, py1) = apply(&self.transform, x,     y);
         let (px2, py2) = apply(&self.transform, x + w, y + h);
-        // Scale logical radius and stroke width to screen pixels (assumes uniform scale).
         let scale = ((self.transform[0].abs() + self.transform[3].abs()) * 0.5).max(0.001);
         self.draw_commands.push(DrawCmd::Quad(QuadInstance {
             pos: [px1.min(px2), py1.min(py2)],
             size: [(px2 - px1).abs(), (py2 - py1).abs()],
-            // Transparent fill — only the border is visible.
             color: [0.0, 0.0, 0.0, 0.0],
             corner_radius: r * scale,
             border_width: self.stroke_width,
@@ -1036,6 +971,29 @@ impl RenderContext for InstancedRenderContext {
             clip_rect: clip,
         }));
     }
+}
+
+// ── GradientPainter ────────────────────────────────────────────────────────
+
+impl GradientPainter for InstancedRenderContext {
+    fn fill_linear_gradient(&mut self, stops: &[(f32, &str)], x1: f64, y1: f64, x2: f64, y2: f64) {
+        if stops.is_empty() { return; }
+        let parsed: Vec<(f32, [f32; 4])> = stops
+            .iter()
+            .map(|(t, color)| (*t, parse_color(color)))
+            .collect();
+        self.tessellate_fill_gradient(&parsed, x1 as f32, y1 as f32, x2 as f32, y2 as f32);
+    }
+}
+
+// ── UiEffectHelpers — all defaults ─────────────────────────────────────────
+
+impl uzor::render::UiEffectHelpers for InstancedRenderContext {}
+
+// ── RenderContext (dpr only) ───────────────────────────────────────────────
+
+impl RenderContext for InstancedRenderContext {
+    fn dpr(&self) -> f64 { 1.0 }
 }
 
 impl RenderContextExt for InstancedRenderContext {

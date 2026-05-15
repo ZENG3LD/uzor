@@ -1,5 +1,10 @@
 use js_sys::Array;
-use uzor::render::{BlendMode as UzorBlendMode, RenderContext, RenderContextExt, TextAlign, TextBaseline};
+use uzor::render::{
+    BlendMode as UzorBlendMode,
+    Effects, GradientPainter, Masking, Painter, RenderContext, RenderContextExt,
+    ShapeHelpers, TextMetrics, TextRenderer,
+    TextAlign, TextBaseline,
+};
 use wasm_bindgen::JsValue;
 use web_sys::{CanvasGradient, CanvasRenderingContext2d};
 
@@ -27,279 +32,102 @@ impl Canvas2dRenderContext {
     }
 }
 
-impl RenderContext for Canvas2dRenderContext {
-    // -------------------------------------------------------------------------
-    // Dimensions
-    // -------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Painter
+// ---------------------------------------------------------------------------
 
-    fn dpr(&self) -> f64 {
-        self.dpr
-    }
-
-    // -------------------------------------------------------------------------
-    // Stroke style
-    // -------------------------------------------------------------------------
-
-    fn set_stroke_color(&mut self, color: &str) {
-        self.ctx.set_stroke_style_str(color);
-    }
-
-    fn set_stroke_width(&mut self, width: f64) {
-        self.ctx.set_line_width(width);
-    }
-
+impl Painter for Canvas2dRenderContext {
+    fn save(&mut self) { self.ctx.save(); }
+    fn restore(&mut self) { self.ctx.restore(); }
+    fn translate(&mut self, x: f64, y: f64) { let _ = self.ctx.translate(x, y); }
+    fn rotate(&mut self, angle: f64) { let _ = self.ctx.rotate(angle); }
+    fn scale(&mut self, x: f64, y: f64) { let _ = self.ctx.scale(x, y); }
+    fn set_fill_color(&mut self, color: &str) { self.ctx.set_fill_style_str(color); }
+    fn set_global_alpha(&mut self, alpha: f64) { self.ctx.set_global_alpha(alpha); }
+    fn set_stroke_color(&mut self, color: &str) { self.ctx.set_stroke_style_str(color); }
+    fn set_stroke_width(&mut self, width: f64) { self.ctx.set_line_width(width); }
     fn set_line_dash(&mut self, pattern: &[f64]) {
         let arr = Array::new();
-        for &v in pattern {
-            arr.push(&JsValue::from_f64(v));
-        }
+        for &v in pattern { arr.push(&JsValue::from_f64(v)); }
         let _ = self.ctx.set_line_dash(&arr);
     }
-
-    fn set_line_cap(&mut self, cap: &str) {
-        self.ctx.set_line_cap(cap);
-    }
-
-    fn set_line_join(&mut self, join: &str) {
-        self.ctx.set_line_join(join);
-    }
-
-    // -------------------------------------------------------------------------
-    // Fill style
-    // -------------------------------------------------------------------------
-
-    fn set_fill_color(&mut self, color: &str) {
-        self.ctx.set_fill_style_str(color);
-    }
-
-    fn set_global_alpha(&mut self, alpha: f64) {
-        self.ctx.set_global_alpha(alpha);
-    }
-
-    // -------------------------------------------------------------------------
-    // Path operations
-    // -------------------------------------------------------------------------
-
-    fn begin_path(&mut self) {
-        self.ctx.begin_path();
-    }
-
-    fn move_to(&mut self, x: f64, y: f64) {
-        self.ctx.move_to(x, y);
-    }
-
-    fn line_to(&mut self, x: f64, y: f64) {
-        self.ctx.line_to(x, y);
-    }
-
-    fn close_path(&mut self) {
-        self.ctx.close_path();
-    }
-
-    fn rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
-        self.ctx.rect(x, y, w, h);
-    }
-
+    fn set_line_cap(&mut self, cap: &str) { self.ctx.set_line_cap(cap); }
+    fn set_line_join(&mut self, join: &str) { self.ctx.set_line_join(join); }
+    fn begin_path(&mut self) { self.ctx.begin_path(); }
+    fn move_to(&mut self, x: f64, y: f64) { self.ctx.move_to(x, y); }
+    fn line_to(&mut self, x: f64, y: f64) { self.ctx.line_to(x, y); }
+    fn close_path(&mut self) { self.ctx.close_path(); }
+    fn rect(&mut self, x: f64, y: f64, w: f64, h: f64) { self.ctx.rect(x, y, w, h); }
     fn arc(&mut self, cx: f64, cy: f64, radius: f64, start_angle: f64, end_angle: f64) {
         let _ = self.ctx.arc(cx, cy, radius, start_angle, end_angle);
     }
-
-    fn ellipse(
-        &mut self,
-        cx: f64,
-        cy: f64,
-        rx: f64,
-        ry: f64,
-        rotation: f64,
-        start: f64,
-        end: f64,
-    ) {
+    fn ellipse(&mut self, cx: f64, cy: f64, rx: f64, ry: f64, rotation: f64, start: f64, end: f64) {
         let _ = self.ctx.ellipse(cx, cy, rx, ry, rotation, start, end);
     }
-
     fn quadratic_curve_to(&mut self, cpx: f64, cpy: f64, x: f64, y: f64) {
         self.ctx.quadratic_curve_to(cpx, cpy, x, y);
     }
-
-    fn bezier_curve_to(
-        &mut self,
-        cp1x: f64,
-        cp1y: f64,
-        cp2x: f64,
-        cp2y: f64,
-        x: f64,
-        y: f64,
-    ) {
+    fn bezier_curve_to(&mut self, cp1x: f64, cp1y: f64, cp2x: f64, cp2y: f64, x: f64, y: f64) {
         self.ctx.bezier_curve_to(cp1x, cp1y, cp2x, cp2y, x, y);
     }
+    fn stroke(&mut self) { self.ctx.stroke(); }
+    fn fill(&mut self) { self.ctx.fill(); }
+}
 
-    // -------------------------------------------------------------------------
-    // Stroke / fill operations
-    // -------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// TextRenderer
+// ---------------------------------------------------------------------------
 
-    fn stroke(&mut self) {
-        self.ctx.stroke();
-    }
-
-    fn fill(&mut self) {
-        self.ctx.fill();
-    }
-
-    fn fill_linear_gradient(
-        &mut self,
-        stops: &[(f32, &str)],
-        x1: f64,
-        y1: f64,
-        x2: f64,
-        y2: f64,
-    ) {
-        let gradient: CanvasGradient = self.ctx.create_linear_gradient(x1, y1, x2, y2);
-        for &(offset, color) in stops {
-            // `add_color_stop` can only fail if `offset` is outside [0.0, 1.0] or
-            // if `color` is not a valid CSS color.  Both are caller contracts, so
-            // we silently drop any error rather than panicking in the renderer.
-            let _ = gradient.add_color_stop(offset, color);
-        }
-        self.ctx.set_fill_style_canvas_gradient(&gradient);
-        self.ctx.fill();
-    }
-
-    fn fill_radial_gradient(
-        &mut self,
-        cx: f64,
-        cy: f64,
-        r: f64,
-        stops: &[(f32, &str)],
-        x: f64,
-        y: f64,
-        w: f64,
-        h: f64,
-    ) {
-        let _ = (x, y, w, h);
-        // Canvas2D `createRadialGradient(x0,y0,r0, x1,y1,r1)`:
-        // Set inner circle at center with r0=0 (point source) and outer circle at
-        // same center with r1=r to get a standard radial gradient.
-        if let Ok(gradient) = self.ctx.create_radial_gradient(cx, cy, 0.0, cx, cy, r) {
-            for &(offset, color) in stops {
-                let _ = gradient.add_color_stop(offset, color);
-            }
-            self.ctx.set_fill_style_canvas_gradient(&gradient);
-        }
-        self.ctx.fill();
-    }
-
-    fn rounded_rect_corners(
-        &mut self,
-        x: f64,
-        y: f64,
-        w: f64,
-        h: f64,
-        tl: f64,
-        tr: f64,
-        br: f64,
-        bl: f64,
-    ) {
-        let max_r = (w / 2.0).min(h / 2.0).max(0.0);
-        let tl = tl.clamp(0.0, max_r);
-        let tr = tr.clamp(0.0, max_r);
-        let br = br.clamp(0.0, max_r);
-        let bl = bl.clamp(0.0, max_r);
-
-        self.begin_path();
-        self.move_to(x + tl, y);
-        self.line_to(x + w - tr, y);
-        self.arc(x + w - tr, y + tr, tr, -std::f64::consts::FRAC_PI_2, 0.0);
-        self.line_to(x + w, y + h - br);
-        self.arc(x + w - br, y + h - br, br, 0.0, std::f64::consts::FRAC_PI_2);
-        self.line_to(x + bl, y + h);
-        self.arc(x + bl, y + h - bl, bl, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
-        self.line_to(x, y + tl);
-        self.arc(x + tl, y + tl, tl, std::f64::consts::PI, std::f64::consts::PI * 1.5);
-        self.close_path();
-    }
-
-    fn clip(&mut self) {
-        self.ctx.clip();
-    }
-
-    fn stroke_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
-        self.ctx.stroke_rect(x, y, w, h);
-    }
-
-    fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
-        self.ctx.fill_rect(x, y, w, h);
-    }
-
-    // -------------------------------------------------------------------------
-    // Text rendering
-    // -------------------------------------------------------------------------
-
-    fn set_font(&mut self, font: &str) {
-        self.ctx.set_font(font);
-    }
-
+impl TextRenderer for Canvas2dRenderContext {
+    fn set_font(&mut self, font: &str) { self.ctx.set_font(font); }
     fn set_text_align(&mut self, align: TextAlign) {
         let value = match align {
-            TextAlign::Left => "left",
+            TextAlign::Left   => "left",
             TextAlign::Center => "center",
-            TextAlign::Right => "right",
+            TextAlign::Right  => "right",
         };
         self.ctx.set_text_align(value);
     }
-
     fn set_text_baseline(&mut self, baseline: TextBaseline) {
         let value = match baseline {
-            TextBaseline::Top => "top",
-            TextBaseline::Middle => "middle",
-            TextBaseline::Bottom => "bottom",
+            TextBaseline::Top        => "top",
+            TextBaseline::Middle     => "middle",
+            TextBaseline::Bottom     => "bottom",
             TextBaseline::Alphabetic => "alphabetic",
         };
         self.ctx.set_text_baseline(value);
     }
-
     fn fill_text(&mut self, text: &str, x: f64, y: f64) {
         let _ = self.ctx.fill_text(text, x, y);
     }
-
     fn stroke_text(&mut self, text: &str, x: f64, y: f64) {
         let _ = self.ctx.stroke_text(text, x, y);
     }
+}
 
+// ---------------------------------------------------------------------------
+// TextMetrics
+// ---------------------------------------------------------------------------
+
+impl TextMetrics for Canvas2dRenderContext {
     fn measure_text(&self, text: &str) -> f64 {
-        self.ctx
-            .measure_text(text)
-            .map(|m| m.width())
-            .unwrap_or(0.0)
+        self.ctx.measure_text(text).map(|m| m.width()).unwrap_or(0.0)
     }
+}
 
-    // -------------------------------------------------------------------------
-    // Transform operations
-    // -------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Masking — Canvas2D clip(); default push_mask/pop_mask via save+clip work fine
+// ---------------------------------------------------------------------------
 
-    fn save(&mut self) {
-        self.ctx.save();
-    }
+impl Masking for Canvas2dRenderContext {
+    fn clip(&mut self) { self.ctx.clip(); }
+}
 
-    fn restore(&mut self) {
-        self.ctx.restore();
-    }
+// ---------------------------------------------------------------------------
+// Effects
+// ---------------------------------------------------------------------------
 
-    fn translate(&mut self, x: f64, y: f64) {
-        let _ = self.ctx.translate(x, y);
-    }
-
-    fn rotate(&mut self, angle: f64) {
-        let _ = self.ctx.rotate(angle);
-    }
-
-    fn scale(&mut self, x: f64, y: f64) {
-        let _ = self.ctx.scale(x, y);
-    }
-
-    // -----------------------------------------------------------------------
-    // M6-P1: Drop shadow — native Canvas2D shadow API
-    // -----------------------------------------------------------------------
-
+impl Effects for Canvas2dRenderContext {
     fn set_shadow(&mut self, dx: f64, dy: f64, blur: f64, color: &str) {
         self.ctx.set_shadow_offset_x(dx);
         self.ctx.set_shadow_offset_y(dy);
@@ -313,15 +141,6 @@ impl RenderContext for Canvas2dRenderContext {
         self.ctx.set_shadow_blur(0.0);
         self.ctx.set_shadow_color("transparent");
     }
-
-    // -----------------------------------------------------------------------
-    // M6-P2: Mask layers — default impl (save + clip) is correct for canvas2d.
-    // Canvas2D save/restore includes shadow state, so mask pushes/pops cleanly.
-    // -----------------------------------------------------------------------
-
-    // -----------------------------------------------------------------------
-    // M6-P3: Blend mode — native Canvas2D globalCompositeOperation
-    // -----------------------------------------------------------------------
 
     fn set_blend_mode(&mut self, mode: UzorBlendMode) {
         let op = match mode {
@@ -341,6 +160,74 @@ impl RenderContext for Canvas2dRenderContext {
         };
         let _ = self.ctx.set_global_composite_operation(op);
     }
+}
+
+// ---------------------------------------------------------------------------
+// ShapeHelpers — fill_rect and stroke_rect native; rounded_rect_corners override
+// ---------------------------------------------------------------------------
+
+impl ShapeHelpers for Canvas2dRenderContext {
+    fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) { self.ctx.fill_rect(x, y, w, h); }
+    fn stroke_rect(&mut self, x: f64, y: f64, w: f64, h: f64) { self.ctx.stroke_rect(x, y, w, h); }
+
+    fn rounded_rect_corners(&mut self, x: f64, y: f64, w: f64, h: f64, tl: f64, tr: f64, br: f64, bl: f64) {
+        let max_r = (w / 2.0).min(h / 2.0).max(0.0);
+        let tl = tl.clamp(0.0, max_r);
+        let tr = tr.clamp(0.0, max_r);
+        let br = br.clamp(0.0, max_r);
+        let bl = bl.clamp(0.0, max_r);
+        self.begin_path();
+        self.move_to(x + tl, y);
+        self.line_to(x + w - tr, y);
+        self.arc(x + w - tr, y + tr, tr, -std::f64::consts::FRAC_PI_2, 0.0);
+        self.line_to(x + w, y + h - br);
+        self.arc(x + w - br, y + h - br, br, 0.0, std::f64::consts::FRAC_PI_2);
+        self.line_to(x + bl, y + h);
+        self.arc(x + bl, y + h - bl, bl, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+        self.line_to(x, y + tl);
+        self.arc(x + tl, y + tl, tl, std::f64::consts::PI, std::f64::consts::PI * 1.5);
+        self.close_path();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GradientPainter
+// ---------------------------------------------------------------------------
+
+impl GradientPainter for Canvas2dRenderContext {
+    fn fill_linear_gradient(&mut self, stops: &[(f32, &str)], x1: f64, y1: f64, x2: f64, y2: f64) {
+        let gradient: CanvasGradient = self.ctx.create_linear_gradient(x1, y1, x2, y2);
+        for &(offset, color) in stops {
+            let _ = gradient.add_color_stop(offset, color);
+        }
+        self.ctx.set_fill_style_canvas_gradient(&gradient);
+        self.ctx.fill();
+    }
+
+    fn fill_radial_gradient(&mut self, cx: f64, cy: f64, r: f64, stops: &[(f32, &str)], x: f64, y: f64, w: f64, h: f64) {
+        let _ = (x, y, w, h);
+        if let Ok(gradient) = self.ctx.create_radial_gradient(cx, cy, 0.0, cx, cy, r) {
+            for &(offset, color) in stops {
+                let _ = gradient.add_color_stop(offset, color);
+            }
+            self.ctx.set_fill_style_canvas_gradient(&gradient);
+        }
+        self.ctx.fill();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UiEffectHelpers — all defaults (no blur support)
+// ---------------------------------------------------------------------------
+
+impl uzor::render::UiEffectHelpers for Canvas2dRenderContext {}
+
+// ---------------------------------------------------------------------------
+// RenderContext (dpr only)
+// ---------------------------------------------------------------------------
+
+impl RenderContext for Canvas2dRenderContext {
+    fn dpr(&self) -> f64 { self.dpr }
 }
 
 impl RenderContextExt for Canvas2dRenderContext {
