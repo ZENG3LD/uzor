@@ -375,6 +375,67 @@ fn draw_pixmap_over(dst: &mut Pixmap, src: &Pixmap) {
 }
 
 // ---------------------------------------------------------------------------
+// Backdrop blur helper (draw_blur_background)
+// ---------------------------------------------------------------------------
+
+/// Copy a rectangular region `(src_x, src_y, w, h)` from `src` into a new
+/// `Pixmap` of size `(w, h)`.  Coordinates are clamped to pixmap bounds;
+/// out-of-bounds pixels are filled with transparent black.
+///
+/// Returns `None` only if `Pixmap::new` fails (zero-sized rect).
+fn copy_pixmap_region(src: &Pixmap, src_x: i32, src_y: i32, w: u32, h: u32) -> Option<Pixmap> {
+    let mut dst = Pixmap::new(w, h)?;
+    let sw = src.width()  as i32;
+    let sh = src.height() as i32;
+    let src_data = src.data();
+    let dst_data = dst.data_mut();
+    for dy in 0..h as i32 {
+        for dx in 0..w as i32 {
+            let sx = src_x + dx;
+            let sy = src_y + dy;
+            let d_base = (dy as usize * w as usize + dx as usize) * 4;
+            if sx >= 0 && sy >= 0 && sx < sw && sy < sh {
+                let s_base = (sy as usize * sw as usize + sx as usize) * 4;
+                dst_data[d_base]     = src_data[s_base];
+                dst_data[d_base + 1] = src_data[s_base + 1];
+                dst_data[d_base + 2] = src_data[s_base + 2];
+                dst_data[d_base + 3] = src_data[s_base + 3];
+            }
+            // else: pixel stays zero (transparent black — only at frame edges)
+        }
+    }
+    Some(dst)
+}
+
+/// Copy blurred pixels from `scratch` (with `margin` leading border on each
+/// side) back into `dst` pixmap at `(dst_x, dst_y)` covering `(w × h)` pixels.
+///
+/// Pixels outside `dst` bounds are silently skipped.
+fn blit_region(dst: &mut Pixmap, scratch: &Pixmap, dst_x: i32, dst_y: i32, w: u32, h: u32, margin: i32) {
+    let dw = dst.width()  as i32;
+    let dh = dst.height() as i32;
+    let sw = scratch.width() as i32;
+    let src_data = scratch.data();
+    let dst_data = dst.data_mut();
+    for row in 0..h as i32 {
+        for col in 0..w as i32 {
+            let dx = dst_x + col;
+            let dy = dst_y + row;
+            if dx < 0 || dy < 0 || dx >= dw || dy >= dh { continue; }
+            let sx = margin + col;
+            let sy = margin + row;
+            if sx < 0 || sy < 0 || sx >= sw || sy >= scratch.height() as i32 { continue; }
+            let d_base = (dy as usize * dw as usize + dx as usize) * 4;
+            let s_base = (sy as usize * sw as usize + sx as usize) * 4;
+            dst_data[d_base]     = src_data[s_base];
+            dst_data[d_base + 1] = src_data[s_base + 1];
+            dst_data[d_base + 2] = src_data[s_base + 2];
+            dst_data[d_base + 3] = src_data[s_base + 3];
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shadow state (M6-P1)
 // ---------------------------------------------------------------------------
 
@@ -442,6 +503,9 @@ pub struct TinySkiaCpuRenderContext {
     blend_mode:    TsBlendMode,
     // Device pixel ratio
     dpr:           f64,
+    // Backdrop blur radius (px) used by draw_blur_background.
+    // Default 12.  Set via set_backdrop_blur_radius().
+    blur_radius:   f32,
 }
 
 impl TinySkiaCpuRenderContext {
@@ -469,6 +533,7 @@ impl TinySkiaCpuRenderContext {
             shadow:        None,
             blend_mode:    TsBlendMode::SourceOver,
             dpr,
+            blur_radius:   12.0,
         }
     }
 
@@ -478,6 +543,14 @@ impl TinySkiaCpuRenderContext {
             self.pixmap      = pm;
             self.current_clip = None;
         }
+    }
+
+    /// Set the backdrop blur radius (pixels) used by [`draw_blur_background`].
+    ///
+    /// Typical values: 8–20 px.  Values below 1 are clamped to 1.
+    /// Default is 12 px.
+    pub fn set_backdrop_blur_radius(&mut self, radius: f32) {
+        self.blur_radius = radius.max(1.0);
     }
 
     /// Clear the entire pixmap with a solid color.
@@ -1290,6 +1363,53 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
 
     fn clear_shadow(&mut self) {
         self.shadow = None;
+    }
+
+    // -----------------------------------------------------------------------
+    // Backdrop blur (draw_blur_background) — 3-pass separable box-blur
+    //
+    // Samples the current framebuffer in an expanded region (margin = radius*3),
+    // applies three horizontal+vertical box-blur passes (Gaussian approximation:
+    // σ ≈ radius * √3 / √12 ≈ radius * 0.866), then blits the centre crop back.
+    // -----------------------------------------------------------------------
+
+    fn has_blur_background(&self) -> bool {
+        true
+    }
+
+    fn draw_blur_background(&mut self, x: f64, y: f64, width: f64, height: f64) {
+        let radius = self.blur_radius;
+        if radius < 1.0 || width < 1.0 || height < 1.0 {
+            return;
+        }
+
+        let margin = (radius * 3.0).round() as i32;
+        let w = width.round()  as u32;
+        let h = height.round() as u32;
+        let sw = w.saturating_add((2 * margin as u32).min(u32::MAX - w));
+        let sh = h.saturating_add((2 * margin as u32).min(u32::MAX - h));
+
+        if sw == 0 || sh == 0 { return; }
+
+        let src_x = x.round() as i32 - margin;
+        let src_y = y.round() as i32 - margin;
+
+        // Copy expanded region from current framebuffer
+        let mut scratch = match copy_pixmap_region(&self.pixmap, src_x, src_y, sw, sh) {
+            Some(p) => p,
+            None    => return,
+        };
+
+        // 3 passes of separable box-blur approximate a Gaussian
+        let r = (radius.round() as u32).clamp(1, 128);
+        for _ in 0..3 {
+            box_blur_pixmap(&mut scratch, r);
+        }
+
+        // Blit the centre crop (margin offset inside scratch) back to framebuffer
+        let dst_x = x.round() as i32;
+        let dst_y = y.round() as i32;
+        blit_region(&mut self.pixmap, &scratch, dst_x, dst_y, w, h, margin);
     }
 
     // -----------------------------------------------------------------------
