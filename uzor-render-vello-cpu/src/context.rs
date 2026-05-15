@@ -28,7 +28,7 @@ use uzor::fonts;
 use uzor::render::{
     BlendMode as UzorBlendMode,
     Effects, GradientPainter, Masking, Painter, RenderContext as UzorRenderContext,
-    RenderContextExt, ShapeHelpers, TextMetrics, TextRenderer,
+    RenderContextExt, ShapeHelpers, TextBounds, TextMetrics, TextRenderer,
     TextAlign, TextBaseline,
 };
 
@@ -867,6 +867,33 @@ impl TextRenderer for VelloCpuRenderContext {
 impl TextMetrics for VelloCpuRenderContext {
     fn measure_text(&self, text: &str) -> f64 {
         measure_text_width(text, &self.font_info)
+    }
+
+    fn text_bounds(&self, text: &str, font: &str) -> TextBounds {
+        let info = parse_css_font(font);
+        let font_size = info.size as f32;
+        let primary_font = get_font(info.family, info.bold, info.italic);
+        let Some(font_ref) = to_font_ref(primary_font) else {
+            let w = text.chars().count() as f64 * info.size * 0.6;
+            let ascent  = info.size * 0.9;
+            let descent = info.size * 0.3;
+            return TextBounds { x: 0.0, y: -ascent, w, h: ascent + descent, ascent, descent };
+        };
+        let size = skrifa::instance::Size::new(font_size);
+        let var_loc = skrifa::instance::LocationRef::default();
+        let metrics = font_ref.metrics(size, var_loc);
+        let ascent  = metrics.ascent  as f64;
+        let descent = (-metrics.descent) as f64;
+        let glyphs = resolve_glyphs_with_fallback(text, &font_ref, font_size);
+        let w = resolved_total_width(&glyphs) as f64;
+        TextBounds {
+            x: 0.0,
+            y: -ascent,
+            w,
+            h: ascent + descent,
+            ascent,
+            descent,
+        }
     }
 }
 

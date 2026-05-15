@@ -2020,6 +2020,9 @@ mod tests {
     }
     impl crate::render::TextMetrics for MockContext {
         fn measure_text(&self, _text: &str) -> f64 { 0.0 }
+        fn text_bounds(&self, _text: &str, _font: &str) -> crate::render::TextBounds {
+            crate::render::TextBounds { x: 0.0, y: 0.0, w: 0.0, h: 0.0, ascent: 0.0, descent: 0.0 }
+        }
     }
     impl crate::render::Masking for MockContext {
         fn clip(&mut self) { self.ops.push("clip".to_string()); }

@@ -25,7 +25,7 @@ use tiny_skia::{
 use uzor::render::{
     BackdropBlur, BlendMode as UzorBlendMode, Effects, GradientPainter, ImagePainter,
     Masking, Painter, RenderContext as UzorRenderContext, RenderContextExt, ShapeHelpers,
-    TextAlign, TextBaseline, TextMetrics, TextRenderer, UiEffectHelpers,
+    TextAlign, TextBaseline, TextBounds, TextMetrics, TextRenderer, UiEffectHelpers,
 };
 
 // ---------------------------------------------------------------------------
@@ -1066,6 +1066,26 @@ impl TextRenderer for TinySkiaCpuRenderContext {
 impl TextMetrics for TinySkiaCpuRenderContext {
     fn measure_text(&self, text: &str) -> f64 {
         measure_text_width(text, &self.font_info)
+    }
+
+    fn text_bounds(&self, text: &str, font: &str) -> TextBounds {
+        let font_info = parse_css_font(font);
+        let px = font_info.size;
+        let w = measure_text_width(text, &font_info);
+        let fontdue_font = get_font(font_info.family, font_info.bold, font_info.italic);
+        let (ascent, descent) = fontdue_font
+            .horizontal_line_metrics(px)
+            .map(|m| (m.ascent as f64, (-m.descent) as f64))
+            .unwrap_or_else(|| (px as f64 * 0.9, px as f64 * 0.3));
+        let h = ascent + descent;
+        TextBounds {
+            x: 0.0,
+            y: -ascent,
+            w,
+            h,
+            ascent,
+            descent,
+        }
     }
 }
 

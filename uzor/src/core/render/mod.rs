@@ -48,7 +48,7 @@ pub use effects::BlendMode;
 // Capability traits — required
 pub use painter::Painter;
 pub use text_renderer::TextRenderer;
-pub use text_metrics::TextMetrics;
+pub use text_metrics::{TextMetrics, TextBounds, GlyphMetric};
 pub use masking::Masking;
 pub use effects::Effects;
 pub use shape_helpers::ShapeHelpers;

@@ -11,7 +11,7 @@ use vello::{Glyph, Scene};
 use uzor::render::{
     BackdropBlur, BlendMode as UzorBlendMode, Effects, GradientPainter, ImagePainter,
     Masking, Painter, RenderContext as UzorRenderContext, RenderContextExt, ShapeHelpers,
-    TextAlign, TextBaseline, TextMetrics, TextRenderer, UiEffectHelpers,
+    TextAlign, TextBaseline, TextBounds, TextMetrics, TextRenderer, UiEffectHelpers,
 };
 
 // Use skrifa for font metrics
@@ -888,6 +888,33 @@ impl<'a> TextMetrics for VelloGpuRenderContext<'a> {
         };
         let glyphs = resolve_glyphs_with_fallback(text, &font_ref, font_size);
         resolved_glyphs_total_width(&glyphs) as f64
+    }
+
+    fn text_bounds(&self, text: &str, font: &str) -> TextBounds {
+        let parsed = fonts::parse_css_font(font);
+        let font_size = parsed.size;
+        let primary_font = get_cached_font(parsed.family, parsed.bold, parsed.italic);
+        let Some(font_ref) = to_font_ref(primary_font) else {
+            let w = text.chars().count() as f64 * font_size as f64 * 0.6;
+            let ascent  = font_size as f64 * 0.9;
+            let descent = font_size as f64 * 0.3;
+            return TextBounds { x: 0.0, y: -ascent, w, h: ascent + descent, ascent, descent };
+        };
+        let size = skrifa::instance::Size::new(font_size);
+        let var_loc = skrifa::instance::LocationRef::default();
+        let metrics = font_ref.metrics(size, var_loc);
+        let ascent  = metrics.ascent  as f64;
+        let descent = (-metrics.descent) as f64;
+        let glyphs = resolve_glyphs_with_fallback(text, &font_ref, font_size);
+        let w = resolved_glyphs_total_width(&glyphs) as f64;
+        TextBounds {
+            x: 0.0,
+            y: -ascent,
+            w,
+            h: ascent + descent,
+            ascent,
+            descent,
+        }
     }
 }
 

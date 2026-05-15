@@ -2,7 +2,7 @@ use js_sys::Array;
 use uzor::render::{
     BlendMode as UzorBlendMode,
     Effects, GradientPainter, Masking, Painter, RenderContext, RenderContextExt,
-    ShapeHelpers, TextMetrics, TextRenderer,
+    ShapeHelpers, TextBounds, TextMetrics, TextRenderer,
     TextAlign, TextBaseline,
 };
 use wasm_bindgen::JsValue;
@@ -112,6 +112,26 @@ impl TextRenderer for Canvas2dRenderContext {
 impl TextMetrics for Canvas2dRenderContext {
     fn measure_text(&self, text: &str) -> f64 {
         self.ctx.measure_text(text).map(|m| m.width()).unwrap_or(0.0)
+    }
+
+    // TODO(phase-4): wire real font parsing via uzor::fonts for canvas2d backend.
+    // Canvas2D exposes TextMetrics.actualBoundingBoxAscent/Descent but only after
+    // a measureText() call; for now we use approximation constants.
+    fn text_bounds(&self, text: &str, font: &str) -> TextBounds {
+        let font_size = uzor::fonts::parse_css_font(font).size as f64;
+        let w = self.ctx.measure_text(text).map(|m| m.width()).unwrap_or_else(|_| {
+            text.chars().count() as f64 * font_size * 0.6
+        });
+        let ascent  = font_size * 0.9;
+        let descent = font_size * 0.3;
+        TextBounds {
+            x: 0.0,
+            y: -ascent,
+            w,
+            h: ascent + descent,
+            ascent,
+            descent,
+        }
     }
 }
 

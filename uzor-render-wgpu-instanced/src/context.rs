@@ -14,7 +14,7 @@ use lyon_path::math::point;
 use skrifa::MetadataProvider;
 use uzor::render::{
     Effects, GradientPainter, Masking, Painter, RenderContext, RenderContextExt,
-    ShapeHelpers, TextMetrics, TextRenderer,
+    ShapeHelpers, TextBounds, TextMetrics, TextRenderer,
     TextAlign, TextBaseline,
 };
 
@@ -888,6 +888,53 @@ impl TextRenderer for InstancedRenderContext {
 impl TextMetrics for InstancedRenderContext {
     fn measure_text(&self, text: &str) -> f64 {
         self.measure_text_internal(text) as f64
+    }
+
+    fn text_bounds(&self, text: &str, font: &str) -> TextBounds {
+        let parsed = fonts::parse_css_font(font);
+        let font_size = parsed.size;
+        let Some(font_ref) = get_font_ref(parsed.family, parsed.bold, parsed.italic) else {
+            let w = text.chars().count() as f64 * font_size as f64 * 0.6;
+            let ascent  = font_size as f64 * 0.9;
+            let descent = font_size as f64 * 0.3;
+            return TextBounds { x: 0.0, y: -ascent, w, h: ascent + descent, ascent, descent };
+        };
+        let size = skrifa::instance::Size::new(font_size);
+        let var_loc = skrifa::instance::LocationRef::default();
+        let metrics = font_ref.metrics(size, var_loc);
+        let ascent  = metrics.ascent  as f64;
+        let descent = (-metrics.descent) as f64;
+        // Reuse measure_text_internal by temporarily constructing with parsed font state.
+        // We can't mutate self, so compute width directly from skrifa glyph_metrics.
+        let glyph_metrics = font_ref.glyph_metrics(size, var_loc);
+        let charmap = font_ref.charmap();
+        let fallbacks = get_fallback_font_refs();
+        let w: f32 = text.chars().map(|ch| {
+            let gid = charmap.map(ch).unwrap_or_default();
+            if gid.to_u32() != 0 {
+                return glyph_metrics.advance_width(gid).unwrap_or_default();
+            }
+            for fb in &fallbacks {
+                if let Some(fb_ref) = fb {
+                    let fb_gid = fb_ref.charmap().map(ch).unwrap_or_default();
+                    if fb_gid.to_u32() != 0 {
+                        let fb_size = skrifa::instance::Size::new(font_size);
+                        let fb_var = skrifa::instance::LocationRef::default();
+                        return fb_ref.glyph_metrics(fb_size, fb_var)
+                            .advance_width(fb_gid).unwrap_or_default();
+                    }
+                }
+            }
+            font_size * 0.6
+        }).sum();
+        TextBounds {
+            x: 0.0,
+            y: -ascent,
+            w: w as f64,
+            h: ascent + descent,
+            ascent,
+            descent,
+        }
     }
 }
 
