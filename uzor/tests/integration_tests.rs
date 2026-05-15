@@ -7,7 +7,7 @@
 use uzor::input::{InputState, MouseButton, ModifierKeys, PointerState};
 use uzor::input::state::DragState as InputDragState;
 use uzor::types::{
-    ScrollState, WidgetId, WidgetInputState, WidgetInteraction, WidgetRect, WidgetState,
+    ScrollState, WidgetInputState, WidgetInteraction, WidgetRect, WidgetState,
     unsafe_widget_id,
 };
 

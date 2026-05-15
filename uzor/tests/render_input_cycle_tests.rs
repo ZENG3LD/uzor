@@ -7,7 +7,7 @@
 
 use uzor::input::{
     handle_button_input, handle_checkbox_input,
-    handle_slider_input, FocusState, WidgetId, WidgetInputState,
+    handle_slider_input, FocusState, WidgetInputState,
     WidgetInteraction,
 };
 use uzor::types::unsafe_widget_id;
