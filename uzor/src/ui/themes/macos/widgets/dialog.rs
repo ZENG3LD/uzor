@@ -114,45 +114,38 @@ mod tests {
         }
     }
 
-    impl RenderContext for MockContext {
-        fn dpr(&self) -> f64 { 1.0 }
-
-        fn measure_text(&self, _text: &str) -> f64 {
-            self.text_width
-        }
-
-        fn set_fill_color(&mut self, _color: &str) {}
-        fn set_stroke_color(&mut self, _color: &str) {}
-        fn set_stroke_width(&mut self, _width: f64) {}
-        fn set_line_dash(&mut self, _pattern: &[f64]) {}
-        fn set_line_cap(&mut self, _cap: &str) {}
-        fn set_line_join(&mut self, _join: &str) {}
-        fn set_global_alpha(&mut self, _alpha: f64) {}
-        fn begin_path(&mut self) {}
-        fn move_to(&mut self, _x: f64, _y: f64) {}
-        fn line_to(&mut self, _x: f64, _y: f64) {}
-        fn close_path(&mut self) {}
+    impl crate::render::Painter for MockContext {
+        fn save(&mut self) {} fn restore(&mut self) {}
+        fn translate(&mut self, _x: f64, _y: f64) {} fn rotate(&mut self, _angle: f64) {} fn scale(&mut self, _x: f64, _y: f64) {}
+        fn set_fill_color(&mut self, _color: &str) {} fn set_global_alpha(&mut self, _alpha: f64) {}
+        fn set_stroke_color(&mut self, _color: &str) {} fn set_stroke_width(&mut self, _width: f64) {}
+        fn set_line_dash(&mut self, _pattern: &[f64]) {} fn set_line_cap(&mut self, _cap: &str) {} fn set_line_join(&mut self, _join: &str) {}
+        fn begin_path(&mut self) {} fn move_to(&mut self, _x: f64, _y: f64) {} fn line_to(&mut self, _x: f64, _y: f64) {} fn close_path(&mut self) {}
         fn rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
-        fn arc(&mut self, _cx: f64, _cy: f64, _radius: f64, _start_angle: f64, _end_angle: f64) {}
-        fn ellipse(&mut self, _cx: f64, _cy: f64, _rx: f64, _ry: f64, _rotation: f64, _start: f64, _end: f64) {}
+        fn arc(&mut self, _cx: f64, _cy: f64, _r: f64, _s: f64, _e: f64) {}
+        fn ellipse(&mut self, _cx: f64, _cy: f64, _rx: f64, _ry: f64, _rot: f64, _s: f64, _e: f64) {}
         fn quadratic_curve_to(&mut self, _cpx: f64, _cpy: f64, _x: f64, _y: f64) {}
         fn bezier_curve_to(&mut self, _cp1x: f64, _cp1y: f64, _cp2x: f64, _cp2y: f64, _x: f64, _y: f64) {}
-        fn stroke(&mut self) {}
-        fn fill(&mut self) {}
-        fn clip(&mut self) {}
-        fn stroke_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
-        fn fill_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+        fn stroke(&mut self) {} fn fill(&mut self) {}
+    }
+    impl crate::render::TextRenderer for MockContext {
         fn set_font(&mut self, _font: &str) {}
         fn set_text_align(&mut self, _align: TextAlign) {}
         fn set_text_baseline(&mut self, _baseline: TextBaseline) {}
         fn fill_text(&mut self, _text: &str, _x: f64, _y: f64) {}
-        fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {}
-        fn save(&mut self) {}
-        fn restore(&mut self) {}
-        fn translate(&mut self, _x: f64, _y: f64) {}
-        fn rotate(&mut self, _angle: f64) {}
-        fn scale(&mut self, _x: f64, _y: f64) {}
     }
+    impl crate::render::TextMetrics for MockContext {
+        fn measure_text(&self, _text: &str) -> f64 { self.text_width }
+    }
+    impl crate::render::Masking for MockContext { fn clip(&mut self) {} }
+    impl crate::render::Effects for MockContext {}
+    impl crate::render::ShapeHelpers for MockContext {
+        fn fill_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+        fn stroke_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+    }
+    impl crate::render::GradientPainter for MockContext {}
+    impl crate::render::UiEffectHelpers for MockContext {}
+    impl RenderContext for MockContext { fn dpr(&self) -> f64 { 1.0 } }
 
     #[test]
     fn test_render_dialog_dimensions() {
