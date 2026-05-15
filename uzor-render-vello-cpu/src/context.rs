@@ -26,8 +26,10 @@ use skrifa::{
 
 use uzor::fonts;
 use uzor::render::{
-    BlendMode as UzorBlendMode, RenderContext as UzorRenderContext, RenderContextExt, TextAlign,
-    TextBaseline,
+    BlendMode as UzorBlendMode,
+    Effects, GradientPainter, Masking, Painter, RenderContext as UzorRenderContext,
+    RenderContextExt, ShapeHelpers, TextMetrics, TextRenderer,
+    TextAlign, TextBaseline,
 };
 
 // ---------------------------------------------------------------------------
@@ -522,21 +524,51 @@ impl VelloCpuRenderContext {
 }
 
 // ---------------------------------------------------------------------------
-// RenderContext trait implementation
+// Painter
 // ---------------------------------------------------------------------------
 
-impl UzorRenderContext for VelloCpuRenderContext {
-    // -----------------------------------------------------------------------
-    // Dimensions
-    // -----------------------------------------------------------------------
-
-    fn dpr(&self) -> f64 {
-        self.dpr
+impl Painter for VelloCpuRenderContext {
+    fn save(&mut self) {
+        let has_clip = self.clip_active;
+        self.push_save_state(has_clip);
+        self.clip_active = false;
     }
 
-    // -----------------------------------------------------------------------
-    // Stroke style
-    // -----------------------------------------------------------------------
+    fn restore(&mut self) {
+        if let Some(saved) = self.pop_save_state() {
+            // Pop clip path if one was pushed during this save level
+            if self.clip_active {
+                if let Some(ref mut ctx) = self.render_ctx {
+                    ctx.pop_clip_path();
+                }
+            }
+            self.clip_active = saved.has_clip;
+            let transform = self.transform;
+            if let Some(ref mut ctx) = self.render_ctx {
+                ctx.set_transform(transform);
+            }
+        }
+    }
+
+    fn translate(&mut self, x: f64, y: f64) {
+        self.transform = self.transform.then_translate((x, y).into());
+    }
+
+    fn rotate(&mut self, angle: f64) {
+        self.transform = self.transform.then_rotate(angle);
+    }
+
+    fn scale(&mut self, x: f64, y: f64) {
+        self.transform = self.transform.then_scale_non_uniform(x, y);
+    }
+
+    fn set_fill_color(&mut self, color: &str) {
+        self.fill_color = parse_color(color);
+    }
+
+    fn set_global_alpha(&mut self, alpha: f64) {
+        self.global_alpha = alpha.clamp(0.0, 1.0);
+    }
 
     fn set_stroke_color(&mut self, color: &str) {
         self.stroke_color = parse_color(color);
@@ -580,22 +612,6 @@ impl UzorRenderContext for VelloCpuRenderContext {
             ctx.set_stroke(stroke);
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Fill style
-    // -----------------------------------------------------------------------
-
-    fn set_fill_color(&mut self, color: &str) {
-        self.fill_color = parse_color(color);
-    }
-
-    fn set_global_alpha(&mut self, alpha: f64) {
-        self.global_alpha = alpha.clamp(0.0, 1.0);
-    }
-
-    // -----------------------------------------------------------------------
-    // Path operations
-    // -----------------------------------------------------------------------
 
     fn begin_path(&mut self) {
         self.path = Some(BezPath::new());
@@ -712,9 +728,28 @@ impl UzorRenderContext for VelloCpuRenderContext {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Stroke / fill the current path
-    // -----------------------------------------------------------------------
+    fn stroke(&mut self) {
+        let Some(path) = self.path.clone() else { return };
+        let transform = self.transform;
+        let stroke = self.current_stroke();
+        // M6-P1: shadow pass
+        if let Some(ref sh) = self.shadow.clone() {
+            let shadow_transform = transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
+            if let Some(ref mut ctx) = self.render_ctx {
+                ctx.set_transform(shadow_transform);
+                ctx.set_blend_mode(vello_cpu::peniko::BlendMode::default());
+                ctx.set_paint(sh.color);
+                ctx.set_stroke(stroke.clone());
+                ctx.stroke_path(&path);
+            }
+        }
+        self.apply_stroke_paint();
+        if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_transform(transform);
+            ctx.set_stroke(stroke);
+            ctx.stroke_path(&path);
+        }
+    }
 
     fn fill(&mut self) {
         let Some(path) = self.path.clone() else { return };
@@ -737,7 +772,218 @@ impl UzorRenderContext for VelloCpuRenderContext {
             ctx.fill_path(&path);
         }
     }
+}
 
+// ---------------------------------------------------------------------------
+// TextRenderer
+// ---------------------------------------------------------------------------
+
+impl TextRenderer for VelloCpuRenderContext {
+    fn set_font(&mut self, font: &str) {
+        self.font_info = parse_css_font(font);
+    }
+
+    fn set_text_align(&mut self, align: TextAlign) {
+        self.text_align = align;
+    }
+
+    fn set_text_baseline(&mut self, baseline: TextBaseline) {
+        self.text_baseline = baseline;
+    }
+
+    fn fill_text(&mut self, text: &str, x: f64, y: f64) {
+        if text.is_empty() { return; }
+
+        let font_info = self.font_info.clone();
+        let primary_font = get_font(font_info.family, font_info.bold, font_info.italic);
+        let font_size    = font_info.size as f32;
+
+        let text_width = measure_text_width(text, &font_info);
+        let x_off = match self.text_align {
+            TextAlign::Center => -text_width / 2.0,
+            TextAlign::Right  => -text_width,
+            _                 => 0.0,
+        };
+        let y_off = match self.text_baseline {
+            TextBaseline::Top    => font_info.size * 0.8,
+            TextBaseline::Middle => font_info.size * 0.35,
+            TextBaseline::Bottom => 0.0,
+            _                    => font_info.size * 0.35,
+        };
+
+        let Some(primary_ref) = to_font_ref(primary_font) else { return };
+        let resolved = resolve_glyphs_with_fallback(text, &primary_ref, font_size);
+        let fallbacks = get_fallback_fonts();
+
+        let text_transform = Affine::translate((x + x_off, y + y_off));
+        let combined = self.transform * text_transform;
+
+        // Fallback index 2 = NotoColorEmoji (COLR font).  vello_cpu requires
+        // WHITE paint for COLR runs so the embedded palette is used directly.
+        const COLOR_EMOJI_FALLBACK_IDX: usize = 2;
+        let fill_color = self.effective_fill_color();
+        let white = Color::from_rgba8(255, 255, 255, 255);
+
+        if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_transform(combined);
+
+            let mut i = 0;
+            while i < resolved.len() {
+                let run_font_index = resolved[i].font_index;
+                let run_start = i;
+                while i < resolved.len() && resolved[i].font_index == run_font_index {
+                    i += 1;
+                }
+                let run = &resolved[run_start..i];
+                let is_color_emoji = run_font_index == Some(COLOR_EMOJI_FALLBACK_IDX);
+                let font = match run_font_index {
+                    None => primary_font,
+                    Some(idx) if idx < fallbacks.len() => &fallbacks[idx],
+                    _ => primary_font,
+                };
+                ctx.set_paint(if is_color_emoji { white } else { fill_color });
+                let glyphs = run.iter().map(|g| Glyph { id: g.glyph_id, x: g.x, y: 0.0 });
+                ctx.glyph_run(font)
+                    .font_size(font_size)
+                    .hint(false)
+                    .normalized_coords(&[])
+                    .fill_glyphs(glyphs);
+            }
+
+            ctx.set_transform(self.transform);
+        }
+    }
+
+    fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {
+        // vello_cpu glyph_run() draws filled glyphs only; stroke_glyphs
+        // requires a different code path.  Deliberate no-op.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TextMetrics
+// ---------------------------------------------------------------------------
+
+impl TextMetrics for VelloCpuRenderContext {
+    fn measure_text(&self, text: &str) -> f64 {
+        measure_text_width(text, &self.font_info)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Masking — clip() overridden; clip_rect/push_mask/pop_mask use defaults
+// ---------------------------------------------------------------------------
+
+impl Masking for VelloCpuRenderContext {
+    fn clip(&mut self) {
+        let Some(path) = self.path.clone() else { return };
+        let transform = self.transform;
+        self.clip_active = true;
+        if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_transform(transform);
+            ctx.push_clip_path(&path);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Effects
+// ---------------------------------------------------------------------------
+
+impl Effects for VelloCpuRenderContext {
+    fn set_shadow(&mut self, dx: f64, dy: f64, _blur: f64, color: &str) {
+        // Vello CPU has a DropShadow filter (pub(crate) only).
+        // Approximated as an offset, pre-alpha copy — matches vello-gpu.
+        let shadow_color = parse_color(color);
+        self.shadow = Some(ShadowState { dx, dy, color: shadow_color });
+    }
+
+    fn clear_shadow(&mut self) {
+        self.shadow = None;
+    }
+
+    fn set_blend_mode(&mut self, mode: UzorBlendMode) {
+        self.blend_mode = mode;
+        let blend = Self::blend_to_vello_cpu(mode);
+        if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_blend_mode(blend);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ShapeHelpers — fill_rect and stroke_rect overridden; rounded uses defaults
+// ---------------------------------------------------------------------------
+
+impl ShapeHelpers for VelloCpuRenderContext {
+    fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
+        let r = Rect::new(x, y, x + w, y + h);
+        let transform = self.transform;
+        // M6-P1: shadow pass
+        if let Some(ref sh) = self.shadow.clone() {
+            let shadow_transform = transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
+            if let Some(ref mut ctx) = self.render_ctx {
+                ctx.set_transform(shadow_transform);
+                ctx.set_blend_mode(vello_cpu::peniko::BlendMode::default());
+                ctx.set_paint(sh.color);
+                ctx.fill_rect(&r);
+            }
+        }
+        self.apply_fill_paint();
+        if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_transform(transform);
+            ctx.fill_rect(&r);
+        }
+    }
+
+    fn stroke_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
+        let r = Rect::new(x, y, x + w, y + h);
+        let transform = self.transform;
+        let stroke = self.current_stroke();
+        self.apply_stroke_paint();
+        if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_transform(transform);
+            ctx.set_stroke(stroke);
+            ctx.stroke_rect(&r);
+        }
+    }
+
+    fn rounded_rect_corners(
+        &mut self,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        tl: f64,
+        tr: f64,
+        br: f64,
+        bl: f64,
+    ) {
+        let max_r = (w / 2.0).min(h / 2.0).max(0.0);
+        let tl = tl.clamp(0.0, max_r);
+        let tr = tr.clamp(0.0, max_r);
+        let br = br.clamp(0.0, max_r);
+        let bl = bl.clamp(0.0, max_r);
+
+        self.begin_path();
+        self.move_to(x + tl, y);
+        self.line_to(x + w - tr, y);
+        self.arc(x + w - tr, y + tr, tr, -std::f64::consts::FRAC_PI_2, 0.0);
+        self.line_to(x + w, y + h - br);
+        self.arc(x + w - br, y + h - br, br, 0.0, std::f64::consts::FRAC_PI_2);
+        self.line_to(x + bl, y + h);
+        self.arc(x + bl, y + h - bl, bl, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+        self.line_to(x, y + tl);
+        self.arc(x + tl, y + tl, tl, std::f64::consts::PI, std::f64::consts::PI * 1.5);
+        self.close_path();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GradientPainter
+// ---------------------------------------------------------------------------
+
+impl GradientPainter for VelloCpuRenderContext {
     fn fill_linear_gradient(
         &mut self,
         stops: &[(f32, &str)],
@@ -810,276 +1056,21 @@ impl UzorRenderContext for VelloCpuRenderContext {
             ctx.fill_path(&path);
         }
     }
+}
 
-    fn rounded_rect_corners(
-        &mut self,
-        x: f64,
-        y: f64,
-        w: f64,
-        h: f64,
-        tl: f64,
-        tr: f64,
-        br: f64,
-        bl: f64,
-    ) {
-        let max_r = (w / 2.0).min(h / 2.0).max(0.0);
-        let tl = tl.clamp(0.0, max_r);
-        let tr = tr.clamp(0.0, max_r);
-        let br = br.clamp(0.0, max_r);
-        let bl = bl.clamp(0.0, max_r);
+// ---------------------------------------------------------------------------
+// UiEffectHelpers — all defaults (no blur support on vello-cpu)
+// ---------------------------------------------------------------------------
 
-        self.begin_path();
-        self.move_to(x + tl, y);
-        self.line_to(x + w - tr, y);
-        self.arc(x + w - tr, y + tr, tr, -std::f64::consts::FRAC_PI_2, 0.0);
-        self.line_to(x + w, y + h - br);
-        self.arc(x + w - br, y + h - br, br, 0.0, std::f64::consts::FRAC_PI_2);
-        self.line_to(x + bl, y + h);
-        self.arc(x + bl, y + h - bl, bl, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
-        self.line_to(x, y + tl);
-        self.arc(x + tl, y + tl, tl, std::f64::consts::PI, std::f64::consts::PI * 1.5);
-        self.close_path();
-    }
+impl uzor::render::UiEffectHelpers for VelloCpuRenderContext {}
 
-    fn stroke(&mut self) {
-        let Some(path) = self.path.clone() else { return };
-        let transform = self.transform;
-        let stroke = self.current_stroke();
-        // M6-P1: shadow pass
-        if let Some(ref sh) = self.shadow.clone() {
-            let shadow_transform = transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
-            if let Some(ref mut ctx) = self.render_ctx {
-                ctx.set_transform(shadow_transform);
-                ctx.set_blend_mode(vello_cpu::peniko::BlendMode::default());
-                ctx.set_paint(sh.color);
-                ctx.set_stroke(stroke.clone());
-                ctx.stroke_path(&path);
-            }
-        }
-        self.apply_stroke_paint();
-        if let Some(ref mut ctx) = self.render_ctx {
-            ctx.set_transform(transform);
-            ctx.set_stroke(stroke);
-            ctx.stroke_path(&path);
-        }
-    }
+// ---------------------------------------------------------------------------
+// RenderContext (dpr only)
+// ---------------------------------------------------------------------------
 
-    fn clip(&mut self) {
-        let Some(path) = self.path.clone() else { return };
-        let transform = self.transform;
-        self.clip_active = true;
-        if let Some(ref mut ctx) = self.render_ctx {
-            ctx.set_transform(transform);
-            ctx.push_clip_path(&path);
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Shape helpers
-    // -----------------------------------------------------------------------
-
-    fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
-        let r = Rect::new(x, y, x + w, y + h);
-        let transform = self.transform;
-        // M6-P1: shadow pass
-        if let Some(ref sh) = self.shadow.clone() {
-            let shadow_transform = transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
-            if let Some(ref mut ctx) = self.render_ctx {
-                ctx.set_transform(shadow_transform);
-                ctx.set_blend_mode(vello_cpu::peniko::BlendMode::default());
-                ctx.set_paint(sh.color);
-                ctx.fill_rect(&r);
-            }
-        }
-        self.apply_fill_paint();
-        if let Some(ref mut ctx) = self.render_ctx {
-            ctx.set_transform(transform);
-            ctx.fill_rect(&r);
-        }
-    }
-
-    fn stroke_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
-        let r = Rect::new(x, y, x + w, y + h);
-        let transform = self.transform;
-        let stroke = self.current_stroke();
-        self.apply_stroke_paint();
-        if let Some(ref mut ctx) = self.render_ctx {
-            ctx.set_transform(transform);
-            ctx.set_stroke(stroke);
-            ctx.stroke_rect(&r);
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Text rendering
-    // -----------------------------------------------------------------------
-
-    fn set_font(&mut self, font: &str) {
-        self.font_info = parse_css_font(font);
-    }
-
-    fn set_text_align(&mut self, align: TextAlign) {
-        self.text_align = align;
-    }
-
-    fn set_text_baseline(&mut self, baseline: TextBaseline) {
-        self.text_baseline = baseline;
-    }
-
-    fn fill_text(&mut self, text: &str, x: f64, y: f64) {
-        if text.is_empty() { return; }
-
-        let font_info = self.font_info.clone();
-        let primary_font = get_font(font_info.family, font_info.bold, font_info.italic);
-        let font_size    = font_info.size as f32;
-
-        // Alignment / baseline offsets
-        let text_width = measure_text_width(text, &font_info);
-        let x_off = match self.text_align {
-            TextAlign::Center => -text_width / 2.0,
-            TextAlign::Right  => -text_width,
-            _                 => 0.0,
-        };
-        let y_off = match self.text_baseline {
-            TextBaseline::Top    => font_info.size * 0.8,
-            TextBaseline::Middle => font_info.size * 0.35,
-            TextBaseline::Bottom => 0.0,
-            _                    => font_info.size * 0.35,
-        };
-
-        // Resolve glyphs with fallback
-        let Some(primary_ref) = to_font_ref(primary_font) else { return };
-        let resolved = resolve_glyphs_with_fallback(text, &primary_ref, font_size);
-        let fallbacks = get_fallback_fonts();
-
-        // Compose final transform: context transform + text position offset
-        let text_transform = Affine::translate((x + x_off, y + y_off));
-        let combined = self.transform * text_transform;
-
-        // Fallback index 2 = NotoColorEmoji (COLR font).  vello_cpu requires the
-        // paint to be WHITE for COLR runs so the embedded palette is used directly;
-        // a non-white paint tints / masks the palette colors.
-        const COLOR_EMOJI_FALLBACK_IDX: usize = 2;
-        let fill_color = self.effective_fill_color();
-        let white = Color::from_rgba8(255, 255, 255, 255);
-
-        if let Some(ref mut ctx) = self.render_ctx {
-            ctx.set_transform(combined);
-
-            // Emit one glyph_run per contiguous same-font run
-            let mut i = 0;
-            while i < resolved.len() {
-                let run_font_index = resolved[i].font_index;
-                let run_start = i;
-                while i < resolved.len() && resolved[i].font_index == run_font_index {
-                    i += 1;
-                }
-                let run = &resolved[run_start..i];
-                let is_color_emoji = run_font_index == Some(COLOR_EMOJI_FALLBACK_IDX);
-                let font = match run_font_index {
-                    None => primary_font,
-                    Some(idx) if idx < fallbacks.len() => &fallbacks[idx],
-                    _ => primary_font,
-                };
-                // Set paint per-run: WHITE for COLR emoji font, foreground otherwise.
-                ctx.set_paint(if is_color_emoji { white } else { fill_color });
-                let glyphs = run.iter().map(|g| Glyph { id: g.glyph_id, x: g.x, y: 0.0 });
-                ctx.glyph_run(font)
-                    .font_size(font_size)
-                    .hint(false)
-                    .normalized_coords(&[])
-                    .fill_glyphs(glyphs);
-            }
-
-            // Restore the context transform (set_transform is absolute)
-            ctx.set_transform(self.transform);
-        }
-    }
-
-    fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {
-        // vello_cpu glyph_run() draws filled glyphs only (fill_glyphs /
-        // stroke_glyphs exist but stroke_glyphs requires a different path).
-        // For now this is a deliberate no-op; callers can overlay stroke on
-        // top of fill_text if needed.
-    }
-
-    fn measure_text(&self, text: &str) -> f64 {
-        measure_text_width(text, &self.font_info)
-    }
-
-    // -----------------------------------------------------------------------
-    // Transform operations
-    // -----------------------------------------------------------------------
-
-    fn save(&mut self) {
-        let has_clip = self.clip_active;
-        self.push_save_state(has_clip);
-        self.clip_active = false;
-    }
-
-    fn restore(&mut self) {
-        if let Some(saved) = self.pop_save_state() {
-            // Pop clip path if one was pushed during this save level
-            if self.clip_active {
-                if let Some(ref mut ctx) = self.render_ctx {
-                    ctx.pop_clip_path();
-                }
-            }
-            self.clip_active = saved.has_clip;
-            // Sync vello_cpu's transform to the restored value
-            let transform = self.transform;
-            if let Some(ref mut ctx) = self.render_ctx {
-                ctx.set_transform(transform);
-            }
-        }
-    }
-
-    fn translate(&mut self, x: f64, y: f64) {
-        self.transform = self.transform.then_translate((x, y).into());
-    }
-
-    fn rotate(&mut self, angle: f64) {
-        self.transform = self.transform.then_rotate(angle);
-    }
-
-    fn scale(&mut self, x: f64, y: f64) {
-        self.transform = self.transform.then_scale_non_uniform(x, y);
-    }
-
-    // -----------------------------------------------------------------------
-    // M6-P1: Drop shadow
-    // -----------------------------------------------------------------------
-
-    fn set_shadow(&mut self, dx: f64, dy: f64, _blur: f64, color: &str) {
-        // Vello CPU has a DropShadow filter internally (pub(crate) only).
-        // We approximate shadow as an offset, pre-alpha copy — matches
-        // vello-gpu behaviour for cross-backend consistency.
-        let shadow_color = parse_color(color);
-        self.shadow = Some(ShadowState { dx, dy, color: shadow_color });
-    }
-
-    fn clear_shadow(&mut self) {
-        self.shadow = None;
-    }
-
-    // -----------------------------------------------------------------------
-    // M6-P2: Mask layers
-    //
-    // Default impl (save + clip) works: clip() calls push_clip_path on
-    // VelloCpuCtx; restore() calls pop_clip_path.  No override needed.
-    // -----------------------------------------------------------------------
-
-    // -----------------------------------------------------------------------
-    // M6-P3: Blend mode
-    // -----------------------------------------------------------------------
-
-    fn set_blend_mode(&mut self, mode: UzorBlendMode) {
-        self.blend_mode = mode;
-        // Eagerly sync to vello_cpu so the next draw sees the right mode.
-        let blend = Self::blend_to_vello_cpu(mode);
-        if let Some(ref mut ctx) = self.render_ctx {
-            ctx.set_blend_mode(blend);
-        }
+impl UzorRenderContext for VelloCpuRenderContext {
+    fn dpr(&self) -> f64 {
+        self.dpr
     }
 }
 

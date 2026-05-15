@@ -23,8 +23,9 @@ use tiny_skia::{
 };
 
 use uzor::render::{
-    BlendMode as UzorBlendMode, RenderContext as UzorRenderContext, RenderContextExt, TextAlign,
-    TextBaseline,
+    BackdropBlur, BlendMode as UzorBlendMode, Effects, GradientPainter, ImagePainter,
+    Masking, Painter, RenderContext as UzorRenderContext, RenderContextExt, ShapeHelpers,
+    TextAlign, TextBaseline, TextMetrics, TextRenderer, UiEffectHelpers,
 };
 
 // ---------------------------------------------------------------------------
@@ -715,21 +716,67 @@ impl TinySkiaCpuRenderContext {
 }
 
 // ---------------------------------------------------------------------------
-// RenderContext trait implementation
+// Painter trait implementation
 // ---------------------------------------------------------------------------
 
-impl UzorRenderContext for TinySkiaCpuRenderContext {
-    // -----------------------------------------------------------------------
-    // Dimensions
-    // -----------------------------------------------------------------------
-
-    fn dpr(&self) -> f64 {
-        self.dpr
+impl Painter for TinySkiaCpuRenderContext {
+    fn save(&mut self) {
+        self.state_stack.push(SavedState {
+            fill_color:    self.fill_color,
+            stroke_color:  self.stroke_color,
+            stroke_width:  self.stroke_width,
+            line_cap:      self.line_cap,
+            line_join:     self.line_join,
+            global_alpha:  self.global_alpha,
+            font_info:     self.font_info.clone(),
+            text_align:    self.text_align,
+            text_baseline: self.text_baseline,
+            transform:     self.transform,
+            clip:          self.current_clip.clone(),
+        });
     }
 
-    // -----------------------------------------------------------------------
-    // Stroke style
-    // -----------------------------------------------------------------------
+    fn restore(&mut self) {
+        if let Some(s) = self.state_stack.pop() {
+            self.fill_color    = s.fill_color;
+            self.stroke_color  = s.stroke_color;
+            self.stroke_width  = s.stroke_width;
+            self.line_cap      = s.line_cap;
+            self.line_join     = s.line_join;
+            self.global_alpha  = s.global_alpha;
+            self.font_info     = s.font_info;
+            self.text_align    = s.text_align;
+            self.text_baseline = s.text_baseline;
+            self.transform     = s.transform;
+            self.current_clip  = s.clip;
+        }
+    }
+
+    fn translate(&mut self, x: f64, y: f64) {
+        self.transform = self.transform.pre_translate(x as f32, y as f32);
+    }
+
+    fn rotate(&mut self, angle: f64) {
+        self.transform = self.transform.pre_rotate(angle.to_degrees() as f32);
+    }
+
+    fn scale(&mut self, x: f64, y: f64) {
+        self.transform = self.transform.pre_scale(x as f32, y as f32);
+    }
+
+    fn set_fill_color(&mut self, color: &str) {
+        self.fill_color = parse_css_color(color);
+    }
+
+    fn set_global_alpha(&mut self, alpha: f64) {
+        self.global_alpha = (alpha as f32).clamp(0.0, 1.0);
+    }
+
+    fn set_fill_color_alpha(&mut self, color: &str, alpha: f64) {
+        let base = parse_css_color(color);
+        let a = (alpha as f32).clamp(0.0, 1.0);
+        self.fill_color = with_alpha(base, a);
+    }
 
     fn set_stroke_color(&mut self, color: &str) {
         self.stroke_color = parse_css_color(color);
@@ -764,28 +811,6 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
         };
     }
 
-    // -----------------------------------------------------------------------
-    // Fill style
-    // -----------------------------------------------------------------------
-
-    fn set_fill_color(&mut self, color: &str) {
-        self.fill_color = parse_css_color(color);
-    }
-
-    fn set_fill_color_alpha(&mut self, color: &str, alpha: f64) {
-        let base = parse_css_color(color);
-        let a = (alpha as f32).clamp(0.0, 1.0);
-        self.fill_color = with_alpha(base, a);
-    }
-
-    fn set_global_alpha(&mut self, alpha: f64) {
-        self.global_alpha = (alpha as f32).clamp(0.0, 1.0);
-    }
-
-    // -----------------------------------------------------------------------
-    // Path operations
-    // -----------------------------------------------------------------------
-
     fn begin_path(&mut self) {
         self.path_builder = Some(PathBuilder::new());
         self.path_has_point = false;
@@ -813,7 +838,6 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
 
     fn arc(&mut self, cx: f64, cy: f64, radius: f64, start_angle: f64, end_angle: f64) {
         let sweep = (end_angle - start_angle).abs();
-        // Full circle — use native push_circle for perfect results
         if sweep >= std::f64::consts::TAU - 0.001 {
             let r = radius as f32;
             if let Some(rect) = Rect::from_xywh(
@@ -848,7 +872,6 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
         end: f64,
     ) {
         let sweep = (end - start).abs();
-        // Full ellipse — use native push_oval
         if sweep >= std::f64::consts::TAU - 0.001 {
             if let Some(rect) = Rect::from_xywh(
                 (cx - rx) as f32,
@@ -888,13 +911,20 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Stroke / fill the current path
-    // -----------------------------------------------------------------------
+    fn stroke(&mut self) {
+        let Some(path) = self.take_path() else { return };
+        if self.shadow.is_some() {
+            self.draw_shadow_for_path(&path);
+        }
+        let paint     = self.stroke_paint();
+        let stroke    = self.current_stroke();
+        let transform = self.transform;
+        let clip      = self.current_clip.clone();
+        self.pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+    }
 
     fn fill(&mut self) {
         let Some(path) = self.take_path() else { return };
-        // M6-P1: draw shadow before the actual fill
         if self.shadow.is_some() {
             self.draw_shadow_for_path(&path);
         }
@@ -903,7 +933,289 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
         let clip      = self.current_clip.clone();
         self.pixmap.fill_path(&path, &paint, FillRule::Winding, transform, clip.as_ref());
     }
+}
 
+// ---------------------------------------------------------------------------
+// TextRenderer
+// ---------------------------------------------------------------------------
+
+impl TextRenderer for TinySkiaCpuRenderContext {
+    fn set_font(&mut self, font: &str) {
+        self.font_info = parse_css_font(font);
+    }
+
+    fn set_text_align(&mut self, align: TextAlign) {
+        self.text_align = align;
+    }
+
+    fn set_text_baseline(&mut self, baseline: TextBaseline) {
+        self.text_baseline = baseline;
+    }
+
+    fn fill_text(&mut self, text: &str, x: f64, y: f64) {
+        if text.is_empty() { return; }
+
+        let font_info = self.font_info.clone();
+        let font      = get_font(font_info.family, font_info.bold, font_info.italic);
+        let px        = font_info.size;
+
+        let total_w = measure_text_width(text, &font_info) as f32;
+        let x_off   = match self.text_align {
+            TextAlign::Center => -(total_w / 2.0),
+            TextAlign::Right  => -total_w,
+            TextAlign::Left   => 0.0,
+        };
+
+        let ascent = font.horizontal_line_metrics(px)
+            .map(|m| m.ascent)
+            .unwrap_or(px * 0.75);
+        let y_off = match self.text_baseline {
+            TextBaseline::Top        => ascent,
+            TextBaseline::Middle     => ascent / 2.0,
+            TextBaseline::Bottom     => 0.0,
+            TextBaseline::Alphabetic => 0.0,
+        };
+
+        let color = self.effective_fill_color();
+        let cr = (color.red()   * 255.0) as u8;
+        let cg = (color.green() * 255.0) as u8;
+        let cb = (color.blue()  * 255.0) as u8;
+        let ca = (color.alpha() * 255.0) as u8;
+
+        let pw = self.pixmap.width()  as i32;
+        let ph = self.pixmap.height() as i32;
+        let stride = self.pixmap.width() as usize;
+
+        let tx = self.transform.tx;
+        let ty = self.transform.ty;
+        let sx = self.transform.sx;
+        let sy = self.transform.sy;
+
+        let mut pen_x = (x as f32 + x_off) * sx + tx;
+        let     pen_y = (y as f32 + y_off) * sy + ty;
+
+        for ch in text.chars() {
+            let render_px = px * sx.max(sy).max(1.0);
+            let (primary_metrics, primary_bitmap) = font.rasterize(ch, render_px);
+
+            let (metrics, bitmap) = if primary_metrics.width == 0 && !ch.is_whitespace() {
+                let (nf_metrics, nf_bitmap) = get_nerd_font().rasterize(ch, render_px);
+                if nf_metrics.width > 0 {
+                    (nf_metrics, nf_bitmap)
+                } else {
+                    let (sym_metrics, sym_bitmap) = get_symbols_font().rasterize(ch, render_px);
+                    if sym_metrics.width > 0 {
+                        (sym_metrics, sym_bitmap)
+                    } else {
+                        let (cv_metrics, cv_bitmap) = get_color_emoji_font().rasterize(ch, render_px);
+                        if cv_metrics.width > 0 {
+                            (cv_metrics, cv_bitmap)
+                        } else {
+                            let (em_metrics, em_bitmap) = get_emoji_font().rasterize(ch, render_px);
+                            if em_metrics.width > 0 {
+                                (em_metrics, em_bitmap)
+                            } else {
+                                (primary_metrics, primary_bitmap)
+                            }
+                        }
+                    }
+                }
+            } else {
+                (primary_metrics, primary_bitmap)
+            };
+
+            let gw = metrics.width  as i32;
+            let gh = metrics.height as i32;
+
+            let gx0 = (pen_x + metrics.xmin as f32).round() as i32;
+            let gy0 = (pen_y - metrics.ymin as f32 - gh as f32).round() as i32;
+
+            for row in 0..gh {
+                let py_coord = gy0 + row;
+                if py_coord < 0 || py_coord >= ph { continue; }
+                for col in 0..gw {
+                    let px_coord = gx0 + col;
+                    if px_coord < 0 || px_coord >= pw { continue; }
+                    let coverage = bitmap[(row * gw + col) as usize];
+                    if coverage == 0 { continue; }
+
+                    let dst_idx = py_coord as usize * stride + px_coord as usize;
+                    let dst_off = dst_idx * 4;
+                    let data    = self.pixmap.data_mut();
+                    let dst     = &mut data[dst_off..dst_off + 4];
+                    Self::composite_glyph_pixel(dst, cr, cg, cb, ca, coverage);
+                }
+            }
+
+            pen_x += metrics.advance_width * sx;
+        }
+    }
+
+    fn stroke_text(&mut self, text: &str, x: f64, y: f64) {
+        let saved_fill = self.fill_color;
+        self.fill_color = self.stroke_color;
+        self.fill_text(text, x, y);
+        self.fill_color = saved_fill;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TextMetrics
+// ---------------------------------------------------------------------------
+
+impl TextMetrics for TinySkiaCpuRenderContext {
+    fn measure_text(&self, text: &str) -> f64 {
+        measure_text_width(text, &self.font_info)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Masking
+// ---------------------------------------------------------------------------
+
+impl Masking for TinySkiaCpuRenderContext {
+    fn clip(&mut self) {
+        let Some(path) = self.take_path() else { return };
+        let w = self.pixmap.width();
+        let h = self.pixmap.height();
+        if let Some(mut mask) = Mask::new(w, h) {
+            mask.fill_path(&path, FillRule::Winding, true, self.transform);
+            self.current_clip = Some(mask);
+        }
+    }
+    // push_mask / pop_mask / clip_rect: use default impls (save+clip / restore)
+}
+
+// ---------------------------------------------------------------------------
+// Effects
+// ---------------------------------------------------------------------------
+
+impl Effects for TinySkiaCpuRenderContext {
+    fn set_shadow(&mut self, dx: f64, dy: f64, blur: f64, color: &str) {
+        let parsed = parse_css_color(color);
+        let color = if self.global_alpha < 1.0 {
+            with_alpha(parsed, self.global_alpha)
+        } else {
+            parsed
+        };
+        self.shadow = Some(ShadowState {
+            dx:   dx as f32,
+            dy:   dy as f32,
+            blur: blur.max(0.0) as f32,
+            color,
+        });
+    }
+
+    fn clear_shadow(&mut self) {
+        self.shadow = None;
+    }
+
+    fn set_blend_mode(&mut self, mode: UzorBlendMode) {
+        self.blend_mode = match mode {
+            UzorBlendMode::Normal     => TsBlendMode::SourceOver,
+            UzorBlendMode::Multiply   => TsBlendMode::Multiply,
+            UzorBlendMode::Screen     => TsBlendMode::Screen,
+            UzorBlendMode::Overlay    => TsBlendMode::Overlay,
+            UzorBlendMode::Darken     => TsBlendMode::Darken,
+            UzorBlendMode::Lighten    => TsBlendMode::Lighten,
+            UzorBlendMode::ColorDodge => TsBlendMode::ColorDodge,
+            UzorBlendMode::ColorBurn  => TsBlendMode::ColorBurn,
+            UzorBlendMode::HardLight  => TsBlendMode::HardLight,
+            UzorBlendMode::SoftLight  => TsBlendMode::SoftLight,
+            UzorBlendMode::Difference => TsBlendMode::Difference,
+            UzorBlendMode::Exclusion  => TsBlendMode::Exclusion,
+            UzorBlendMode::Plus       => TsBlendMode::Plus,
+        };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ShapeHelpers
+// ---------------------------------------------------------------------------
+
+impl ShapeHelpers for TinySkiaCpuRenderContext {
+    fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
+        let Some(rect) = Rect::from_xywh(x as f32, y as f32, w as f32, h as f32) else {
+            return;
+        };
+        if self.shadow.is_some() {
+            self.draw_shadow_for_rect(rect);
+        }
+        let paint     = self.fill_paint();
+        let transform = self.transform;
+        let clip      = self.current_clip.clone();
+        self.pixmap.fill_rect(rect, &paint, transform, clip.as_ref());
+    }
+
+    fn stroke_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
+        let Some(rect) = Rect::from_xywh(x as f32, y as f32, w as f32, h as f32) else {
+            return;
+        };
+        let mut pb = PathBuilder::new();
+        pb.push_rect(rect);
+        let Some(path) = pb.finish() else { return };
+        let paint     = self.stroke_paint();
+        let stroke    = self.current_stroke();
+        let transform = self.transform;
+        let clip      = self.current_clip.clone();
+        self.pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+    }
+
+    fn rounded_rect_corners(
+        &mut self,
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+        tl: f64,
+        tr: f64,
+        br: f64,
+        bl: f64,
+    ) {
+        let max_r = (w / 2.0).min(h / 2.0).max(0.0);
+        let tl = (tl as f32).min(max_r as f32).max(0.0);
+        let tr = (tr as f32).min(max_r as f32).max(0.0);
+        let br = (br as f32).min(max_r as f32).max(0.0);
+        let bl = (bl as f32).min(max_r as f32).max(0.0);
+
+        let x  = x as f32;
+        let y  = y as f32;
+        let w  = w as f32;
+        let h  = h as f32;
+
+        let pb = self.builder();
+        pb.move_to(x + tl, y);
+
+        pb.line_to(x + w - tr, y);
+        if tr > 0.0 {
+            arc_to_cubics(pb, x + w - tr, y + tr, tr, -PI / 2.0, 0.0, true);
+        }
+
+        pb.line_to(x + w, y + h - br);
+        if br > 0.0 {
+            arc_to_cubics(pb, x + w - br, y + h - br, br, 0.0, PI / 2.0, true);
+        }
+
+        pb.line_to(x + bl, y + h);
+        if bl > 0.0 {
+            arc_to_cubics(pb, x + bl, y + h - bl, bl, PI / 2.0, PI, true);
+        }
+
+        pb.line_to(x, y + tl);
+        if tl > 0.0 {
+            arc_to_cubics(pb, x + tl, y + tl, tl, PI, PI * 1.5, true);
+        }
+
+        pb.close();
+        self.path_has_point = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GradientPainter
+// ---------------------------------------------------------------------------
+
+impl GradientPainter for TinySkiaCpuRenderContext {
     fn fill_linear_gradient(
         &mut self,
         stops: &[(f32, &str)],
@@ -914,17 +1226,14 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
     ) {
         let Some(path) = self.take_path() else { return };
 
-        // Need at least one stop to draw anything.
         if stops.is_empty() {
             return;
         }
 
-        // Build tiny-skia GradientStop list from (offset, color_hex) pairs.
         let gradient_stops: Vec<GradientStop> = stops
             .iter()
             .map(|&(pos, color_str)| {
                 let color = parse_css_color(color_str);
-                // Apply global alpha to each stop's color.
                 let color = if self.global_alpha < 1.0 {
                     with_alpha(color, self.global_alpha)
                 } else {
@@ -934,15 +1243,9 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
             })
             .collect();
 
-        // tiny-skia requires the start and end points to differ; if they are
-        // identical the gradient is degenerate — fall back to a solid fill with
-        // the first stop color so rendering is always correct.
         let start = Point::from_xy(x1 as f32, y1 as f32);
         let end   = Point::from_xy(x2 as f32, y2 as f32);
 
-        // LinearGradient::new() already returns Option<Shader<'static>>.
-        // It returns Shader::SolidColor when start == end (degenerate) or
-        // when only one stop is given.
         let shader = LinearGradient::new(
             start,
             end,
@@ -951,7 +1254,6 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
             Transform::identity(),
         )
         .unwrap_or_else(|| {
-            // Fallback: solid fill with first stop color.
             let color = parse_css_color(stops[0].1);
             let color = if self.global_alpha < 1.0 {
                 with_alpha(color, self.global_alpha)
@@ -982,8 +1284,6 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
         w: f64,
         h: f64,
     ) {
-        // Discard the bounding rect — we paint whatever path was built before
-        // this call, matching how fill_linear_gradient works.
         let _ = (x, y, w, h);
         let Some(path) = self.take_path() else { return };
 
@@ -991,7 +1291,6 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
             return;
         }
 
-        // Build tiny-skia GradientStop list.
         let gradient_stops: Vec<GradientStop> = stops
             .iter()
             .map(|&(pos, color_str)| {
@@ -1005,9 +1304,6 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
             })
             .collect();
 
-        // For a simple radial gradient start == end (same centre point).
-        // tiny-skia `RadialGradient::new(start, end, radius, ...)` with
-        // start == end implements the standard "SkRadialGradient" behaviour.
         let center = Point::from_xy(cx as f32, cy as f32);
 
         let shader = RadialGradient::new(
@@ -1019,7 +1315,6 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
             Transform::identity(),
         )
         .unwrap_or_else(|| {
-            // Degenerate (r ≤ 0 or no stops) — solid fallback with first stop.
             let color = parse_css_color(stops[0].1);
             let color = if self.global_alpha < 1.0 {
                 with_alpha(color, self.global_alpha)
@@ -1038,341 +1333,13 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
         let clip      = self.current_clip.clone();
         self.pixmap.fill_path(&path, &paint, FillRule::Winding, transform, clip.as_ref());
     }
+}
 
-    fn stroke(&mut self) {
-        let Some(path) = self.take_path() else { return };
-        // M6-P1: draw shadow before the actual stroke
-        if self.shadow.is_some() {
-            self.draw_shadow_for_path(&path);
-        }
-        let paint     = self.stroke_paint();
-        let stroke    = self.current_stroke();
-        let transform = self.transform;
-        let clip      = self.current_clip.clone();
-        self.pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
-    }
+// ---------------------------------------------------------------------------
+// UiEffectHelpers — override blur methods (tiny-skia has native box-blur)
+// ---------------------------------------------------------------------------
 
-    fn clip(&mut self) {
-        let Some(path) = self.take_path() else { return };
-        let w = self.pixmap.width();
-        let h = self.pixmap.height();
-        if let Some(mut mask) = Mask::new(w, h) {
-            mask.fill_path(&path, FillRule::Winding, true, self.transform);
-            self.current_clip = Some(mask);
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Shape helpers
-    // -----------------------------------------------------------------------
-
-    fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
-        let Some(rect) = Rect::from_xywh(x as f32, y as f32, w as f32, h as f32) else {
-            return;
-        };
-        // M6-P1: draw shadow before the actual fill
-        if self.shadow.is_some() {
-            self.draw_shadow_for_rect(rect);
-        }
-        let paint     = self.fill_paint();
-        let transform = self.transform;
-        let clip      = self.current_clip.clone();
-        self.pixmap.fill_rect(rect, &paint, transform, clip.as_ref());
-    }
-
-    fn stroke_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
-        let Some(rect) = Rect::from_xywh(x as f32, y as f32, w as f32, h as f32) else {
-            return;
-        };
-        let mut pb = PathBuilder::new();
-        pb.push_rect(rect);
-        let Some(path) = pb.finish() else { return };
-        let paint     = self.stroke_paint();
-        let stroke    = self.current_stroke();
-        let transform = self.transform;
-        let clip      = self.current_clip.clone();
-        self.pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
-    }
-
-    // -----------------------------------------------------------------------
-    // Per-corner rounded rectangle
-    // -----------------------------------------------------------------------
-
-    fn rounded_rect_corners(
-        &mut self,
-        x: f64,
-        y: f64,
-        w: f64,
-        h: f64,
-        tl: f64,
-        tr: f64,
-        br: f64,
-        bl: f64,
-    ) {
-        let max_r = (w / 2.0).min(h / 2.0).max(0.0);
-        let tl = (tl as f32).min(max_r as f32).max(0.0);
-        let tr = (tr as f32).min(max_r as f32).max(0.0);
-        let br = (br as f32).min(max_r as f32).max(0.0);
-        let bl = (bl as f32).min(max_r as f32).max(0.0);
-
-        let x  = x as f32;
-        let y  = y as f32;
-        let w  = w as f32;
-        let h  = h as f32;
-
-        // Build the path directly into path_builder (mirrors rounded_rect geometry).
-        // Start at the top edge, just right of the top-left corner arc.
-        let pb = self.builder();
-        pb.move_to(x + tl, y);
-
-        // Top edge → top-right arc
-        pb.line_to(x + w - tr, y);
-        if tr > 0.0 {
-            arc_to_cubics(pb, x + w - tr, y + tr, tr, -PI / 2.0, 0.0, true);
-        }
-
-        // Right edge → bottom-right arc
-        pb.line_to(x + w, y + h - br);
-        if br > 0.0 {
-            arc_to_cubics(pb, x + w - br, y + h - br, br, 0.0, PI / 2.0, true);
-        }
-
-        // Bottom edge → bottom-left arc
-        pb.line_to(x + bl, y + h);
-        if bl > 0.0 {
-            arc_to_cubics(pb, x + bl, y + h - bl, bl, PI / 2.0, PI, true);
-        }
-
-        // Left edge → top-left arc
-        pb.line_to(x, y + tl);
-        if tl > 0.0 {
-            arc_to_cubics(pb, x + tl, y + tl, tl, PI, PI * 1.5, true);
-        }
-
-        pb.close();
-        self.path_has_point = true;
-    }
-
-    // -----------------------------------------------------------------------
-    // Text rendering
-    // -----------------------------------------------------------------------
-
-    fn set_font(&mut self, font: &str) {
-        self.font_info = parse_css_font(font);
-    }
-
-    fn set_text_align(&mut self, align: TextAlign) {
-        self.text_align = align;
-    }
-
-    fn set_text_baseline(&mut self, baseline: TextBaseline) {
-        self.text_baseline = baseline;
-    }
-
-    fn fill_text(&mut self, text: &str, x: f64, y: f64) {
-        if text.is_empty() { return; }
-
-        let font_info = self.font_info.clone();
-        let font      = get_font(font_info.family, font_info.bold, font_info.italic);
-        let px        = font_info.size;
-
-        // Measure total advance width for alignment offset
-        let total_w = measure_text_width(text, &font_info) as f32;
-        let x_off   = match self.text_align {
-            TextAlign::Center => -(total_w / 2.0),
-            TextAlign::Right  => -total_w,
-            TextAlign::Left   => 0.0,
-        };
-
-        // Use real font metrics for vertical alignment
-        let ascent = font.horizontal_line_metrics(px)
-            .map(|m| m.ascent)
-            .unwrap_or(px * 0.75);
-        let y_off = match self.text_baseline {
-            TextBaseline::Top        => ascent,
-            TextBaseline::Middle     => ascent / 2.0,
-            TextBaseline::Bottom     => 0.0,
-            TextBaseline::Alphabetic => 0.0,
-        };
-
-        // Effective fill color components
-        let color = self.effective_fill_color();
-        let cr = (color.red()   * 255.0) as u8;
-        let cg = (color.green() * 255.0) as u8;
-        let cb = (color.blue()  * 255.0) as u8;
-        let ca = (color.alpha() * 255.0) as u8;
-
-        let pw = self.pixmap.width()  as i32;
-        let ph = self.pixmap.height() as i32;
-        let stride = self.pixmap.width() as usize;
-
-        // Extract translation and uniform scale from the current transform
-        let tx = self.transform.tx;
-        let ty = self.transform.ty;
-        let sx = self.transform.sx;
-        let sy = self.transform.sy;
-
-        // Starting pen position in pixmap space
-        let mut pen_x = (x as f32 + x_off) * sx + tx;
-        let     pen_y = (y as f32 + y_off) * sy + ty;
-
-        for ch in text.chars() {
-            let render_px = px * sx.max(sy).max(1.0);
-            let (primary_metrics, primary_bitmap) = font.rasterize(ch, render_px);
-
-            // Select which font's rasterization result to use.  If the primary
-            // font returns a zero-width glyph for a non-whitespace character it
-            // means the codepoint is not covered — try the fallback fonts in order.
-            let (metrics, bitmap) = if primary_metrics.width == 0 && !ch.is_whitespace() {
-                let (nf_metrics, nf_bitmap) = get_nerd_font().rasterize(ch, render_px);
-                if nf_metrics.width > 0 {
-                    (nf_metrics, nf_bitmap)
-                } else {
-                    let (sym_metrics, sym_bitmap) = get_symbols_font().rasterize(ch, render_px);
-                    if sym_metrics.width > 0 {
-                        (sym_metrics, sym_bitmap)
-                    } else {
-                        let (cv_metrics, cv_bitmap) = get_color_emoji_font().rasterize(ch, render_px);
-                        if cv_metrics.width > 0 {
-                            (cv_metrics, cv_bitmap)
-                        } else {
-                            let (em_metrics, em_bitmap) = get_emoji_font().rasterize(ch, render_px);
-                            if em_metrics.width > 0 {
-                                (em_metrics, em_bitmap)
-                            } else {
-                                // No font covers this codepoint — use primary result
-                                // (advance_width may still be non-zero for spacing).
-                                (primary_metrics, primary_bitmap)
-                            }
-                        }
-                    }
-                }
-            } else {
-                (primary_metrics, primary_bitmap)
-            };
-
-            let gw = metrics.width  as i32;
-            let gh = metrics.height as i32;
-
-            // Glyph top-left corner in pixmap coordinates.
-            // fontdue's ymin is the offset from the baseline to the bottom of the glyph.
-            let gx0 = (pen_x + metrics.xmin as f32).round() as i32;
-            let gy0 = (pen_y - metrics.ymin as f32 - gh as f32).round() as i32;
-
-            for row in 0..gh {
-                let py_coord = gy0 + row;
-                if py_coord < 0 || py_coord >= ph { continue; }
-                for col in 0..gw {
-                    let px_coord = gx0 + col;
-                    if px_coord < 0 || px_coord >= pw { continue; }
-                    let coverage = bitmap[(row * gw + col) as usize];
-                    if coverage == 0 { continue; }
-
-                    let dst_idx = py_coord as usize * stride + px_coord as usize;
-                    let dst_off = dst_idx * 4;
-                    let data    = self.pixmap.data_mut();
-                    let dst     = &mut data[dst_off..dst_off + 4];
-                    Self::composite_glyph_pixel(dst, cr, cg, cb, ca, coverage);
-                }
-            }
-
-            pen_x += metrics.advance_width * sx;
-        }
-    }
-
-    fn stroke_text(&mut self, text: &str, x: f64, y: f64) {
-        // tiny-skia has no native text stroke path API.
-        // Render with fill using the stroke color so callers get visible output.
-        let saved_fill = self.fill_color;
-        self.fill_color = self.stroke_color;
-        self.fill_text(text, x, y);
-        self.fill_color = saved_fill;
-    }
-
-    fn measure_text(&self, text: &str) -> f64 {
-        measure_text_width(text, &self.font_info)
-    }
-
-    // -----------------------------------------------------------------------
-    // Transform operations
-    // -----------------------------------------------------------------------
-
-    fn save(&mut self) {
-        self.state_stack.push(SavedState {
-            fill_color:    self.fill_color,
-            stroke_color:  self.stroke_color,
-            stroke_width:  self.stroke_width,
-            line_cap:      self.line_cap,
-            line_join:     self.line_join,
-            global_alpha:  self.global_alpha,
-            font_info:     self.font_info.clone(),
-            text_align:    self.text_align,
-            text_baseline: self.text_baseline,
-            transform:     self.transform,
-            clip:          self.current_clip.clone(),
-        });
-    }
-
-    fn restore(&mut self) {
-        if let Some(s) = self.state_stack.pop() {
-            self.fill_color    = s.fill_color;
-            self.stroke_color  = s.stroke_color;
-            self.stroke_width  = s.stroke_width;
-            self.line_cap      = s.line_cap;
-            self.line_join     = s.line_join;
-            self.global_alpha  = s.global_alpha;
-            self.font_info     = s.font_info;
-            self.text_align    = s.text_align;
-            self.text_baseline = s.text_baseline;
-            self.transform     = s.transform;
-            self.current_clip  = s.clip;
-        }
-    }
-
-    fn translate(&mut self, x: f64, y: f64) {
-        self.transform = self.transform.pre_translate(x as f32, y as f32);
-    }
-
-    fn rotate(&mut self, angle: f64) {
-        // `pre_rotate` expects degrees
-        self.transform = self.transform.pre_rotate(angle.to_degrees() as f32);
-    }
-
-    fn scale(&mut self, x: f64, y: f64) {
-        self.transform = self.transform.pre_scale(x as f32, y as f32);
-    }
-
-    // -----------------------------------------------------------------------
-    // M6-P1: Drop shadow
-    // -----------------------------------------------------------------------
-
-    fn set_shadow(&mut self, dx: f64, dy: f64, blur: f64, color: &str) {
-        let parsed = parse_css_color(color);
-        let color = if self.global_alpha < 1.0 {
-            with_alpha(parsed, self.global_alpha)
-        } else {
-            parsed
-        };
-        self.shadow = Some(ShadowState {
-            dx:   dx as f32,
-            dy:   dy as f32,
-            blur: blur.max(0.0) as f32,
-            color,
-        });
-    }
-
-    fn clear_shadow(&mut self) {
-        self.shadow = None;
-    }
-
-    // -----------------------------------------------------------------------
-    // Backdrop blur (draw_blur_background) — 3-pass separable box-blur
-    //
-    // Samples the current framebuffer in an expanded region (margin = radius*3),
-    // applies three horizontal+vertical box-blur passes (Gaussian approximation:
-    // σ ≈ radius * √3 / √12 ≈ radius * 0.866), then blits the centre crop back.
-    // -----------------------------------------------------------------------
-
+impl UiEffectHelpers for TinySkiaCpuRenderContext {
     fn has_blur_background(&self) -> bool {
         true
     }
@@ -1394,52 +1361,94 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
         let src_x = x.round() as i32 - margin;
         let src_y = y.round() as i32 - margin;
 
-        // Copy expanded region from current framebuffer
         let mut scratch = match copy_pixmap_region(&self.pixmap, src_x, src_y, sw, sh) {
             Some(p) => p,
             None    => return,
         };
 
-        // 3 passes of separable box-blur approximate a Gaussian
         let r = (radius.round() as u32).clamp(1, 128);
         for _ in 0..3 {
             box_blur_pixmap(&mut scratch, r);
         }
 
-        // Blit the centre crop (margin offset inside scratch) back to framebuffer
         let dst_x = x.round() as i32;
         let dst_y = y.round() as i32;
         blit_region(&mut self.pixmap, &scratch, dst_x, dst_y, w, h, margin);
     }
+}
 
-    // -----------------------------------------------------------------------
-    // M6-P2: Mask layers
-    //
-    // Default impl (save + clip) is correct for tiny-skia: the clip() impl
-    // writes into current_clip (a tiny_skia::Mask) and save/restore snapshots
-    // it.  No override needed.
-    // -----------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// BackdropBlur — tiny-skia implements native box-blur
+// ---------------------------------------------------------------------------
 
-    // -----------------------------------------------------------------------
-    // M6-P3: Blend mode
-    // -----------------------------------------------------------------------
+impl BackdropBlur for TinySkiaCpuRenderContext {
+    fn draw_blur_background(&mut self, x: f64, y: f64, width: f64, height: f64) {
+        UiEffectHelpers::draw_blur_background(self, x, y, width, height);
+    }
 
-    fn set_blend_mode(&mut self, mode: UzorBlendMode) {
-        self.blend_mode = match mode {
-            UzorBlendMode::Normal     => TsBlendMode::SourceOver,
-            UzorBlendMode::Multiply   => TsBlendMode::Multiply,
-            UzorBlendMode::Screen     => TsBlendMode::Screen,
-            UzorBlendMode::Overlay    => TsBlendMode::Overlay,
-            UzorBlendMode::Darken     => TsBlendMode::Darken,
-            UzorBlendMode::Lighten    => TsBlendMode::Lighten,
-            UzorBlendMode::ColorDodge => TsBlendMode::ColorDodge,
-            UzorBlendMode::ColorBurn  => TsBlendMode::ColorBurn,
-            UzorBlendMode::HardLight  => TsBlendMode::HardLight,
-            UzorBlendMode::SoftLight  => TsBlendMode::SoftLight,
-            UzorBlendMode::Difference => TsBlendMode::Difference,
-            UzorBlendMode::Exclusion  => TsBlendMode::Exclusion,
-            UzorBlendMode::Plus       => TsBlendMode::Plus,
-        };
+    fn has_blur_background(&self) -> bool {
+        true
+    }
+
+    fn use_convex_glass_buttons(&self) -> bool {
+        false
+    }
+
+    fn draw_glass_button_3d(
+        &mut self,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+        radius: f64,
+        _is_active: bool,
+        color: &str,
+    ) {
+        UiEffectHelpers::draw_blur_background(self, x, y, width, height);
+        self.set_fill_color(color);
+        self.fill_rounded_rect(x, y, width, height, radius);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ImagePainter — tiny-skia does not load URL-based images; draw_image_rgba
+// is a no-op (no wgpu texture support in the CPU path).
+// ---------------------------------------------------------------------------
+
+impl ImagePainter for TinySkiaCpuRenderContext {
+    fn draw_image(
+        &mut self,
+        _image_id: &str,
+        _x: f64,
+        _y: f64,
+        _width: f64,
+        _height: f64,
+    ) -> bool {
+        false
+    }
+
+    fn draw_image_rgba(
+        &mut self,
+        _data: &[u8],
+        _img_width: u32,
+        _img_height: u32,
+        _x: f64,
+        _y: f64,
+        _width: f64,
+        _height: f64,
+    ) {
+        // No-op: tiny-skia CPU backend does not support raw RGBA image blitting
+        // via the ImagePainter interface (use draw_pixmap_over internally instead).
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RenderContext compound trait
+// ---------------------------------------------------------------------------
+
+impl UzorRenderContext for TinySkiaCpuRenderContext {
+    fn dpr(&self) -> f64 {
+        self.dpr
     }
 }
 
