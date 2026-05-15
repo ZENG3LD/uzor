@@ -4,6 +4,11 @@ use super::painter::Painter;
 
 /// Clipping and mask layers.
 pub trait Masking: Painter {
+    // All implementors are also `Painter` via the supertrait bound, so the
+    // default impl of `push_clip_svg_path` can pass `self` directly to
+    // `emit_svg_path` which takes `&mut dyn Painter`.  No `where Self: Painter`
+    // clause is needed — the bound is already guaranteed — keeping this method
+    // dyn-safe and usable through `&mut dyn Masking` / `&mut dyn RenderContext`.
     /// Clip subsequent draws to the current path (binary clip).
     fn clip(&mut self);
 
@@ -40,5 +45,26 @@ pub trait Masking: Painter {
     /// Default: `restore` (matches [`push_mask`](Self::push_mask) default).
     fn pop_mask(&mut self) {
         self.restore();
+    }
+
+    /// Push a clip region defined by an SVG path `d` string.
+    ///
+    /// Parses `d`, emits the path commands, then calls [`push_mask`](Self::push_mask)
+    /// to make it the active clip region.  Pop the clip with [`pop_mask`](Self::pop_mask)
+    /// — there is **no** separate `pop_clip_svg_path`; the mask stack is shared.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// ctx.push_clip_svg_path("M 10 10 L 90 10 L 90 90 L 10 90 Z");
+    /// // draw clipped content …
+    /// ctx.pop_mask();
+    /// ```
+    ///
+    /// Backends with native SVG-clip support (e.g. vello-gpu via
+    /// `scene.push_clip_path`) may override this method for better performance.
+    fn push_clip_svg_path(&mut self, d: &str) {
+        crate::core::render::path::emit_svg_path_generic(self, d);
+        self.push_mask();
     }
 }
