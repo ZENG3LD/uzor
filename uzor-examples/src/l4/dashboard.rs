@@ -35,14 +35,13 @@ mod tree_debug;
 /// Custom DockPanel for the Painting page — one leaf per cadence.
 #[derive(Debug, Clone)]
 struct PaintPanel {
-    id:        &'static str,
-    title:     &'static str,
-    target_fps: u32,
+    id:    &'static str,
+    title: &'static str,
 }
 
 impl Default for PaintPanel {
     fn default() -> Self {
-        Self { id: "paint:default", title: "", target_fps: 0 }
+        Self { id: "paint:default", title: "" }
     }
 }
 
@@ -61,10 +60,9 @@ enum ThemeMode {
 
 struct DashboardApp {
     current_theme: ThemeMode,
-    tick_counter:  u64,
     /// Per-cell rebuild counters (incremented every time the runtime calls
     /// draw_region for that cell). Demonstrates that cells with different
-    /// target_fps values rebuild at different rates.
+    /// cadences rebuild at different rates.
     cell_counts: [u64; 4],
     /// Per-cell composite panel state — each painting cell is a real
     /// `PanelState`, not just a `fill_rect` background.
@@ -84,7 +82,6 @@ impl DashboardApp {
         use uzor::ui::widgets::composite::panel::state::PanelState;
         Self {
             current_theme: ThemeMode::Dark,
-            tick_counter:  0,
             cell_counts:   [0; 4],
             cell_panel_states: [
                 PanelState::default(),
@@ -113,26 +110,22 @@ impl App<PaintPanel> for DashboardApp {
         let l0 = tree.add_leaf(PaintPanel {
             id: "paint:r0_dirty",
             title: "fps = 0 (dirty)",
-            target_fps: 0,
         });
         // l0 (left column)  → r0_dirty,  l1 (right column) → r1_30fps
         let l1 = tree.split_leaf(l0, SplitKind::SplitRight, PaintPanel {
             id: "paint:r1_30fps",
             title: "fps = 30",
-            target_fps: 30,
         });
         // bottom of left column → r2_120fps
         tree.split_leaf(l0, SplitKind::SplitBottom, PaintPanel {
             id: "paint:r2_120fps",
             title: "fps = 120",
-            target_fps: 120,
         });
         // bottom of right column → r3_uncap
         if let Some(l1) = l1 {
             tree.split_leaf(l1, SplitKind::SplitBottom, PaintPanel {
                 id: "paint:r3_uncap",
                 title: "uncapped",
-                target_fps: uzor::render::UNCAPPED_FPS,
             });
         }
     }
@@ -531,7 +524,7 @@ impl DashboardApp {
         &mut self,
         win: &mut WindowCtx<'_, PaintPanel>,
         cell_id: &str,
-        rect: Rect,
+        _rect: Rect,
         target_fps: u32,
     ) {
         use uzor::ui::widgets::composite::panel::types::PanelRenderKind;

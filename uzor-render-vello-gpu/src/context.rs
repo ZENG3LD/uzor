@@ -299,6 +299,15 @@ struct SavedState {
     has_clip: bool,
 }
 
+/// Controls whether `emit_shadow_for_shape` draws the shadow as a fill or a stroke.
+///
+/// Stroke intent uses the same width as the upcoming real stroke so the shadow
+/// produces a glow *around the outline* rather than flooding the shape interior.
+enum ShapeIntent {
+    Fill,
+    Stroke { width: f64 },
+}
+
 /// Vello-specific render context wrapping vello::Scene
 pub struct VelloGpuRenderContext<'a> {
     scene: &'a mut Scene,
@@ -416,7 +425,11 @@ impl<'a> VelloGpuRenderContext<'a> {
     }
 
     fn make_stroke(&self) -> Stroke {
-        let mut stroke = Stroke::new(self.stroke_width);
+        self.make_stroke_with_width(self.stroke_width)
+    }
+
+    fn make_stroke_with_width(&self, width: f64) -> Stroke {
+        let mut stroke = Stroke::new(width);
         stroke.join = self.line_join;
         stroke.start_cap = self.line_cap;
         stroke.end_cap = self.line_cap;
@@ -460,16 +473,36 @@ impl<'a> VelloGpuRenderContext<'a> {
     /// If a shadow is active, emit a shadow pass for `shape` before the caller
     /// draws the real shape.  Shadow is approximated as an offset, pre-alpha
     /// copy of the shape — vello has no native blur API.
-    fn emit_shadow_for_shape<S: kurbo::Shape>(&mut self, shape: &S) {
+    ///
+    /// `intent` controls whether the shadow shape is filled or stroked:
+    /// - `ShapeIntent::Fill` reproduces the fill pass (existing behaviour).
+    /// - `ShapeIntent::Stroke { width }` strokes the shadow outline so a
+    ///   stroke+shadow rect gets a glow *around* the outline, not a filled
+    ///   interior (fix for uzor-tessera-paint handoff #2, issue #16).
+    fn emit_shadow_for_shape<S: kurbo::Shape>(&mut self, shape: &S, intent: ShapeIntent) {
         let Some(ref sh) = self.shadow.clone() else { return };
         let shadow_transform = self.transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
-        self.scene.fill(
-            Fill::NonZero,
-            shadow_transform,
-            sh.color,
-            None,
-            shape,
-        );
+        match intent {
+            ShapeIntent::Fill => {
+                self.scene.fill(
+                    Fill::NonZero,
+                    shadow_transform,
+                    sh.color,
+                    None,
+                    shape,
+                );
+            }
+            ShapeIntent::Stroke { width } => {
+                let shadow_stroke = self.make_stroke_with_width(width);
+                self.scene.stroke(
+                    &shadow_stroke,
+                    shadow_transform,
+                    sh.color,
+                    None,
+                    shape,
+                );
+            }
+        }
     }
 
     /// If blend mode is non-Normal, emit a `push_layer` with the correct blend
@@ -644,8 +677,9 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
 
     fn stroke(&mut self) {
         if let Some(path) = self.path_builder.take() {
-            // M6-P1: shadow pass (offset copy before real stroke)
-            self.emit_shadow_for_shape(&path);
+            // M6-P1: shadow pass — stroke intent so shadow glows around outline
+            let width = self.stroke_width;
+            self.emit_shadow_for_shape(&path, ShapeIntent::Stroke { width });
 
             let color = self.effective_stroke_color();
             let stroke = self.make_stroke();
@@ -660,8 +694,8 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
 
     fn fill(&mut self) {
         if let Some(path) = self.path_builder.take() {
-            // M6-P1: shadow pass (offset copy before real fill)
-            self.emit_shadow_for_shape(&path);
+            // M6-P1: shadow pass — fill intent preserves existing behaviour
+            self.emit_shadow_for_shape(&path, ShapeIntent::Fill);
 
             let color = self.effective_fill_color();
             let transform = self.transform;
@@ -770,6 +804,9 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
 
     fn stroke_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
         let rect = kurbo::Rect::new(x, y, x + w, y + h);
+        // M6-P1: shadow pass — stroke intent so shadow glows around outline
+        let width = self.stroke_width;
+        self.emit_shadow_for_shape(&rect, ShapeIntent::Stroke { width });
         let color = self.effective_stroke_color();
         let stroke = self.make_stroke();
         self.scene.stroke(&stroke, self.transform, color, None, &rect);
@@ -777,8 +814,8 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
 
     fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
         let rect = kurbo::Rect::new(x, y, x + w, y + h);
-        // M6-P1: shadow pass
-        self.emit_shadow_for_shape(&rect);
+        // M6-P1: shadow pass — fill intent preserves existing behaviour
+        self.emit_shadow_for_shape(&rect, ShapeIntent::Fill);
 
         let color = self.effective_fill_color();
         let transform = self.transform;
