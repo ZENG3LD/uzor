@@ -74,10 +74,16 @@ pub trait TextMetrics {
 
     /// Per-cluster shaping metrics for `text` in `font`. **Stateless**.
     ///
-    /// **Phase 3 stub**: returns one entry per Rust `char` with per-char
-    /// advance derived from `text_bounds`. Does not correctly handle ligatures,
-    /// kerning, emoji ZWJ sequences, or RTL scripts. Phase 4 replaces this
-    /// with cosmic-text/parley shaping.
+    /// Returns one [`GlyphMetric`] per Unicode cluster in visual left-to-right
+    /// order. Backends with the `shaper` feature enabled (tiny-skia,
+    /// vello-gpu/cpu/hybrid) override this with a real cosmic-text shaper that
+    /// handles grapheme clusters, emoji ZWJ sequences, kerning, and ligatures.
+    ///
+    /// **Default impl** (canvas2d, wgpu-instanced): per-`char` approximation
+    /// using `text_bounds` for advance width. Does not handle multi-codepoint
+    /// graphemes, ligatures, kerning, or RTL scripts.
+    ///
+    /// # TODO(phase-?): canvas2d / wgpu-instanced — replace with cosmic-text
     fn measure_text_glyphs(&self, text: &str, font: &str) -> Vec<GlyphMetric> {
         let mut cumulative = 0.0f64;
         text.chars()

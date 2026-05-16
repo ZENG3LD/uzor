@@ -46,6 +46,10 @@ pub use self::core as engine;
 pub mod framework;
 pub use framework::render_control::RenderControl;
 
+/// Per-cluster text shaper (requires feature `shaper` / cosmic-text).
+#[cfg(feature = "shaper")]
+pub mod shaper;
+
 // Re-export key types
 pub use app_context::ContextManager;
 pub use i18n::{Language, current_language, set_language, Translatable, TextKey, MonthKey, TooltipKey, month_names_short, t_tooltip};
