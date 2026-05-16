@@ -13,6 +13,7 @@ use super::text_metrics::TextMetrics;
 use super::masking::Masking;
 use super::effects::Effects;
 use super::shape_helpers::ShapeHelpers;
+use super::batch_painter::BatchPainter;
 use super::gradient::GradientPainter;
 use super::ui_effects::UiEffectHelpers;
 
@@ -31,6 +32,7 @@ pub trait RenderContext:
     + Masking
     + Effects
     + ShapeHelpers
+    + BatchPainter
     + GradientPainter
     + UiEffectHelpers
 {

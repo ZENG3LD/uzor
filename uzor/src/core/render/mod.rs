@@ -12,6 +12,7 @@
 //! - [`Masking`] — clip and mask layers
 //! - [`Effects`] — shadow and blend mode
 //! - [`ShapeHelpers`] — rect, rounded-rect helpers
+//! - [`BatchPainter`] — batch line/circle/polyline drawing
 //! - [`GradientPainter`] — linear and radial gradient fills
 //! - [`UiEffectHelpers`] — hover/active/glass UI patterns
 //!
@@ -26,6 +27,7 @@ mod text_metrics;
 mod masking;
 mod effects;
 mod shape_helpers;
+mod batch_painter;
 mod gradient;
 mod ui_effects;
 mod backdrop_blur;
@@ -53,6 +55,7 @@ pub use text_metrics::{TextMetrics, TextBounds, GlyphMetric};
 pub use masking::Masking;
 pub use effects::Effects;
 pub use shape_helpers::ShapeHelpers;
+pub use batch_painter::{BatchPainter, LineSegment, CircleBatch};
 pub use gradient::GradientPainter;
 pub use ui_effects::UiEffectHelpers;
 
