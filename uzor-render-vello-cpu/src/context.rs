@@ -26,10 +26,10 @@ use skrifa::{
 
 use uzor::fonts;
 use uzor::render::{
-    BlendMode as UzorBlendMode,
-    Effects, GradientPainter, Masking, Painter, RenderContext as UzorRenderContext,
-    RenderContextExt, ShapeHelpers, TextBounds, TextMetrics, TextRenderer,
-    TextAlign, TextBaseline,
+    BatchPainter, BlendMode as UzorBlendMode, CircleBatch,
+    Effects, GradientPainter, LineSegment, Masking, Painter,
+    RenderContext as UzorRenderContext, RenderContextExt, ShapeHelpers,
+    TextBounds, TextMetrics, TextRenderer, TextAlign, TextBaseline,
 };
 
 // ---------------------------------------------------------------------------
@@ -1003,6 +1003,73 @@ impl ShapeHelpers for VelloCpuRenderContext {
         self.line_to(x, y + tl);
         self.arc(x + tl, y + tl, tl, std::f64::consts::PI, std::f64::consts::PI * 1.5);
         self.close_path();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BatchPainter — optimized: single merged BezPath per call
+// ---------------------------------------------------------------------------
+
+impl BatchPainter for VelloCpuRenderContext {
+    fn draw_line_batch(&mut self, lines: &[LineSegment], color: &str, width: f64) {
+        if lines.is_empty() {
+            return;
+        }
+        self.set_stroke_color(color);
+        self.set_stroke_width(width);
+        let mut path = BezPath::new();
+        for l in lines {
+            path.move_to(kurbo::Point::new(l.x1, l.y1));
+            path.line_to(kurbo::Point::new(l.x2, l.y2));
+        }
+        let transform = self.transform;
+        let stroke = self.current_stroke();
+        self.apply_stroke_paint();
+        if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_transform(transform);
+            ctx.set_stroke(stroke);
+            ctx.stroke_path(&path);
+        }
+    }
+
+    fn draw_circle_batch(&mut self, circles: &[CircleBatch], color: &str) {
+        if circles.is_empty() {
+            return;
+        }
+        self.set_fill_color(color);
+        let mut path = BezPath::new();
+        for c in circles {
+            let circle = kurbo::Circle::new(kurbo::Point::new(c.cx, c.cy), c.r);
+            path.extend(circle.path_elements(0.1));
+        }
+        let transform = self.transform;
+        self.apply_fill_paint();
+        if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_transform(transform);
+            ctx.set_fill_rule(Fill::NonZero);
+            ctx.fill_path(&path);
+        }
+    }
+
+    fn stroke_polyline(&mut self, pts: &[(f64, f64)], color: &str, width: f64) {
+        if pts.is_empty() {
+            return;
+        }
+        self.set_stroke_color(color);
+        self.set_stroke_width(width);
+        let mut path = BezPath::new();
+        path.move_to(kurbo::Point::new(pts[0].0, pts[0].1));
+        for &(x, y) in &pts[1..] {
+            path.line_to(kurbo::Point::new(x, y));
+        }
+        let transform = self.transform;
+        let stroke = self.current_stroke();
+        self.apply_stroke_paint();
+        if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_transform(transform);
+            ctx.set_stroke(stroke);
+            ctx.stroke_path(&path);
+        }
     }
 }
 

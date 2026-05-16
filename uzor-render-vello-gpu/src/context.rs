@@ -9,8 +9,9 @@ use vello::kurbo::{self, Affine, BezPath, Cap, Join, Stroke, Shape};
 use vello::peniko::{Blob, Brush, Fill, FontData, color::palette};
 use vello::{Glyph, Scene};
 use uzor::render::{
-    BackdropBlur, BlendMode as UzorBlendMode, Effects, GradientPainter, ImagePainter,
-    Masking, Painter, RenderContext as UzorRenderContext, RenderContextExt, ShapeHelpers,
+    BackdropBlur, BatchPainter, BlendMode as UzorBlendMode, CircleBatch, Effects,
+    GradientPainter, ImagePainter, LineSegment, Masking, Painter,
+    RenderContext as UzorRenderContext, RenderContextExt, ShapeHelpers,
     TextAlign, TextBaseline, TextBounds, TextMetrics, TextRenderer, UiEffectHelpers,
 };
 
@@ -1007,6 +1008,75 @@ impl<'a> ShapeHelpers for VelloGpuRenderContext<'a> {
         self.line_to(x, y + tl);
         self.arc(x + tl, y + tl, tl, std::f64::consts::PI, std::f64::consts::PI * 1.5);
         self.close_path();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BatchPainter — optimized: single BezPath per call, one scene encode
+// ---------------------------------------------------------------------------
+
+impl<'a> BatchPainter for VelloGpuRenderContext<'a> {
+    fn draw_line_batch(&mut self, lines: &[LineSegment], color: &str, width: f64) {
+        if lines.is_empty() {
+            return;
+        }
+        self.set_stroke_color(color);
+        self.set_stroke_width(width);
+        let mut path = BezPath::new();
+        for l in lines {
+            path.move_to(kurbo::Point::new(l.x1, l.y1));
+            path.line_to(kurbo::Point::new(l.x2, l.y2));
+        }
+        let w = self.stroke_width;
+        self.emit_shadow_for_shape(&path, ShapeIntent::Stroke { width: w });
+        let color = self.effective_stroke_color();
+        let stroke = self.make_stroke();
+        let transform = self.transform;
+        let mode = self.blend_mode;
+        Self::with_blend_layer(self.scene, mode, None, |scene| {
+            scene.stroke(&stroke, transform, color, None, &path);
+        });
+    }
+
+    fn draw_circle_batch(&mut self, circles: &[CircleBatch], color: &str) {
+        if circles.is_empty() {
+            return;
+        }
+        self.set_fill_color(color);
+        let mut path = BezPath::new();
+        for c in circles {
+            let circle = kurbo::Circle::new(kurbo::Point::new(c.cx, c.cy), c.r);
+            path.extend(circle.path_elements(0.1));
+        }
+        self.emit_shadow_for_shape(&path, ShapeIntent::Fill);
+        let color = self.effective_fill_color();
+        let transform = self.transform;
+        let mode = self.blend_mode;
+        Self::with_blend_layer(self.scene, mode, None, |scene| {
+            scene.fill(Fill::NonZero, transform, color, None, &path);
+        });
+    }
+
+    fn stroke_polyline(&mut self, pts: &[(f64, f64)], color: &str, width: f64) {
+        if pts.is_empty() {
+            return;
+        }
+        self.set_stroke_color(color);
+        self.set_stroke_width(width);
+        let mut path = BezPath::new();
+        path.move_to(kurbo::Point::new(pts[0].0, pts[0].1));
+        for &(x, y) in &pts[1..] {
+            path.line_to(kurbo::Point::new(x, y));
+        }
+        let w = self.stroke_width;
+        self.emit_shadow_for_shape(&path, ShapeIntent::Stroke { width: w });
+        let color = self.effective_stroke_color();
+        let stroke = self.make_stroke();
+        let transform = self.transform;
+        let mode = self.blend_mode;
+        Self::with_blend_layer(self.scene, mode, None, |scene| {
+            scene.stroke(&stroke, transform, color, None, &path);
+        });
     }
 }
 
