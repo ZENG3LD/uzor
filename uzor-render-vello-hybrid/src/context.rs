@@ -863,6 +863,10 @@ impl TextMetrics for VelloHybridRenderContext {
     fn measure_text_glyphs(&self, text: &str, font: &str) -> Vec<uzor::render::GlyphMetric> {
         uzor::shaper::measure_glyphs(text, font)
     }
+
+    fn text_to_path(&self, text: &str, font: &str) -> String {
+        uzor::shaper::text_to_path(text, font)
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -1097,6 +1097,14 @@ impl TextMetrics for TinySkiaCpuRenderContext {
     fn measure_text_glyphs(&self, text: &str, font: &str) -> Vec<uzor::render::GlyphMetric> {
         uzor::shaper::measure_glyphs(text, font)
     }
+
+    /// Glyph outlines as an SVG path `d` string via cosmic-text + swash.
+    ///
+    /// Delegates to [`uzor::shaper::text_to_path`] which uses a
+    /// process-wide [`cosmic_text::SwashCache`] for outline scaling.
+    fn text_to_path(&self, text: &str, font: &str) -> String {
+        uzor::shaper::text_to_path(text, font)
+    }
 }
 
 // ---------------------------------------------------------------------------
