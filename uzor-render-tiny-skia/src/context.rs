@@ -1114,6 +1114,21 @@ impl Masking for TinySkiaCpuRenderContext {
         }
     }
     // push_mask / pop_mask / clip_rect: use default impls (save+clip / restore)
+
+    /// Even-odd fill rule override: builds a mask with `FillRule::EvenOdd`
+    /// so two-subpath paths (outer rect + inner shape) produce a ring-shaped clip.
+    fn push_clip_svg_path_even_odd(&mut self, d: &str) {
+        // emit_svg_path calls begin_path + emits all path commands onto self.
+        uzor::render::emit_svg_path(self, d);
+        let Some(path) = self.take_path() else { return };
+        let w = self.pixmap.width();
+        let h = self.pixmap.height();
+        if let Some(mut mask) = Mask::new(w, h) {
+            mask.fill_path(&path, FillRule::EvenOdd, true, self.transform);
+            self.save();
+            self.current_clip = Some(mask);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

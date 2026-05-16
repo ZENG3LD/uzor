@@ -920,6 +920,22 @@ impl Masking for VelloCpuRenderContext {
             ctx.push_clip_path(&path);
         }
     }
+
+    /// Even-odd fill rule override: clips using `Fill::EvenOdd` so two-subpath
+    /// paths (outer rect CW + inner shape CCW) produce a ring-shaped clip.
+    fn push_clip_svg_path_even_odd(&mut self, d: &str) {
+        uzor::render::emit_svg_path(self, d);
+        let Some(path) = self.path.clone() else { return };
+        let transform = self.transform;
+        self.clip_active = true;
+        if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_transform(transform);
+            ctx.set_fill_rule(Fill::EvenOdd);
+            ctx.push_clip_path(&path);
+            ctx.set_fill_rule(Fill::NonZero);
+        }
+        self.save();
+    }
 }
 
 // ---------------------------------------------------------------------------

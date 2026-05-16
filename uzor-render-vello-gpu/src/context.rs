@@ -944,6 +944,22 @@ impl<'a> Masking for VelloGpuRenderContext<'a> {
         }
     }
     // push_mask / pop_mask / clip_rect: use default impls (save+clip / restore)
+
+    /// Even-odd fill rule override: clips using `Fill::EvenOdd` so two-subpath
+    /// paths (outer rect CW + inner shape CCW) produce a ring-shaped clip.
+    fn push_clip_svg_path_even_odd(&mut self, d: &str) {
+        // emit_svg_path calls begin_path (resets path_builder) then path cmds.
+        uzor::render::emit_svg_path(self, d);
+        if let Some(path) = self.path_builder.take() {
+            self.scene.push_clip_layer(
+                vello::peniko::Fill::EvenOdd,
+                self.transform,
+                &path,
+            );
+            self.save();
+            self.pending_clip = Some(path);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
