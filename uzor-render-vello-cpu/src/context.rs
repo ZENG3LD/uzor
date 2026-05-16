@@ -895,6 +895,15 @@ impl TextMetrics for VelloCpuRenderContext {
             descent,
         }
     }
+
+    /// Real cluster shaping via cosmic-text.
+    ///
+    /// Correctly handles Unicode grapheme clusters (`é` as one cluster),
+    /// emoji ZWJ sequences, and returns visual left-to-right order for LTR text.
+    /// Results are cached per `(font, text)` pair (unbounded cache for Phase 4).
+    fn measure_text_glyphs(&self, text: &str, font: &str) -> Vec<uzor::render::GlyphMetric> {
+        uzor::shaper::measure_glyphs(text, font)
+    }
 }
 
 // ---------------------------------------------------------------------------
