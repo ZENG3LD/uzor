@@ -72,6 +72,34 @@ pub trait TextMetrics {
     /// - `h` = `ascent + descent`
     fn text_bounds(&self, text: &str, font: &str) -> TextBounds;
 
+    /// Rasterize `text` in `font` to an SVG path `d` string covering the
+    /// glyph outlines. **Stateless**.
+    ///
+    /// The returned `d` string is the union of all glyph outlines, positioned
+    /// at the implicit origin `(0, 0)`. Caller translates via `save()` +
+    /// `translate(x, y)` before calling
+    /// [`push_clip_svg_path`](super::Masking::push_clip_svg_path) on the result:
+    ///
+    /// ```text
+    /// let d = ctx.text_to_path("HELLO", "bold 48px Inter");
+    /// ctx.save();
+    /// ctx.translate(x, y);
+    /// ctx.push_clip_svg_path(&d);
+    /// // draw inside-glyphs content
+    /// ctx.pop_mask();
+    /// ctx.restore();
+    /// ```
+    ///
+    /// Coordinate system: SVG y-down.  Coordinates are rounded to integer pixels.
+    ///
+    /// **Default impl**: returns empty string.  Backends with the `shaper`
+    /// feature (tiny-skia, vello-gpu/cpu/hybrid) override with a real
+    /// cosmic-text + swash outline implementation.
+    fn text_to_path(&self, text: &str, font: &str) -> String {
+        let _ = (text, font);
+        String::new()
+    }
+
     /// Per-cluster shaping metrics for `text` in `font`. **Stateless**.
     ///
     /// Returns one [`GlyphMetric`] per Unicode cluster in visual left-to-right
