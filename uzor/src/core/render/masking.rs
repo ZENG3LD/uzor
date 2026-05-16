@@ -67,4 +67,31 @@ pub trait Masking: Painter {
         crate::core::render::path::emit_svg_path_generic(self, d);
         self.push_mask();
     }
+
+    /// Push a clip region defined by an SVG path `d` string using the
+    /// **even-odd** fill rule.
+    ///
+    /// Effective for "all except shape" patterns where you draw an outer rect
+    /// (CW) then an inner shape (CCW) — or any two subpaths with opposite
+    /// winding — and the XOR result becomes the clip region.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Outer rect CW, inner circle CCW → ring-shaped clip.
+    /// ctx.push_clip_svg_path_even_odd(
+    ///     "M 0 0 L 200 0 L 200 200 L 0 200 Z \
+    ///      M 100 100 m -40 0 a 40 40 0 1 0 80 0 a 40 40 0 1 0 -80 0 Z"
+    /// );
+    /// ctx.fill_rect(0.0, 0.0, 200.0, 200.0); // fills only the ring
+    /// ctx.pop_mask();
+    /// ```
+    ///
+    /// Pop with [`pop_mask`](Self::pop_mask) — shared mask stack.
+    ///
+    /// **Default impl**: delegates to [`push_clip_svg_path`](Self::push_clip_svg_path)
+    /// (non-zero winding).  Backends override to honour even-odd properly.
+    fn push_clip_svg_path_even_odd(&mut self, d: &str) {
+        self.push_clip_svg_path(d);
+    }
 }
