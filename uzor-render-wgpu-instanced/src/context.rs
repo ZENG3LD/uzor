@@ -13,7 +13,7 @@ use lyon_tessellation::{
 use lyon_path::math::point;
 use skrifa::MetadataProvider;
 use uzor::render::{
-    Effects, GradientPainter, Masking, Painter, RenderContext, RenderContextExt,
+    BatchPainter, Effects, GradientPainter, Masking, Painter, RenderContext, RenderContextExt,
     ShapeHelpers, TextBounds, TextMetrics, TextRenderer,
     TextAlign, TextBaseline,
 };
@@ -1036,6 +1036,10 @@ impl GradientPainter for InstancedRenderContext {
 // ── UiEffectHelpers — all defaults ─────────────────────────────────────────
 
 impl uzor::render::UiEffectHelpers for InstancedRenderContext {}
+
+// ── BatchPainter — default impl ────────────────────────────────────────────
+
+impl BatchPainter for InstancedRenderContext {}
 
 // ── RenderContext (dpr only) ───────────────────────────────────────────────
 

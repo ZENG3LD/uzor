@@ -23,8 +23,9 @@ use tiny_skia::{
 };
 
 use uzor::render::{
-    BackdropBlur, BlendMode as UzorBlendMode, Effects, GradientPainter, ImagePainter,
-    Masking, Painter, RenderContext as UzorRenderContext, RenderContextExt, ShapeHelpers,
+    BackdropBlur, BatchPainter, BlendMode as UzorBlendMode, CircleBatch, Effects,
+    GradientPainter, ImagePainter, LineSegment, Masking, Painter,
+    RenderContext as UzorRenderContext, RenderContextExt, ShapeHelpers,
     TextAlign, TextBaseline, TextBounds, TextMetrics, TextRenderer, UiEffectHelpers,
 };
 
@@ -1228,6 +1229,83 @@ impl ShapeHelpers for TinySkiaCpuRenderContext {
 
         pb.close();
         self.path_has_point = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BatchPainter — optimized: single merged Path per call, one stroke/fill
+// ---------------------------------------------------------------------------
+
+impl BatchPainter for TinySkiaCpuRenderContext {
+    fn draw_line_batch(&mut self, lines: &[LineSegment], color: &str, width: f64) {
+        if lines.is_empty() {
+            return;
+        }
+        self.set_stroke_color(color);
+        self.set_stroke_width(width);
+        let mut pb = PathBuilder::new();
+        for l in lines {
+            pb.move_to(l.x1 as f32, l.y1 as f32);
+            pb.line_to(l.x2 as f32, l.y2 as f32);
+        }
+        let Some(path) = pb.finish() else { return };
+        if self.shadow.is_some() {
+            self.draw_shadow_for_path(&path);
+        }
+        let paint     = self.stroke_paint();
+        let stroke    = self.current_stroke();
+        let transform = self.transform;
+        let clip      = self.current_clip.clone();
+        self.pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
+    }
+
+    fn draw_circle_batch(&mut self, circles: &[CircleBatch], color: &str) {
+        if circles.is_empty() {
+            return;
+        }
+        self.set_fill_color(color);
+        let mut pb = PathBuilder::new();
+        for c in circles {
+            let r = c.r as f32;
+            if let Some(rect) = Rect::from_xywh(
+                (c.cx - c.r) as f32,
+                (c.cy - c.r) as f32,
+                r * 2.0,
+                r * 2.0,
+            ) {
+                pb.push_oval(rect);
+            }
+        }
+        let Some(path) = pb.finish() else { return };
+        if self.shadow.is_some() {
+            self.draw_shadow_for_path(&path);
+        }
+        let paint     = self.fill_paint();
+        let transform = self.transform;
+        let clip      = self.current_clip.clone();
+        self.pixmap.fill_path(&path, &paint, FillRule::Winding, transform, clip.as_ref());
+    }
+
+    fn stroke_polyline(&mut self, pts: &[(f64, f64)], color: &str, width: f64) {
+        if pts.is_empty() {
+            return;
+        }
+        self.set_stroke_color(color);
+        self.set_stroke_width(width);
+        let mut pb = PathBuilder::new();
+        pb.move_to(pts[0].0 as f32, pts[0].1 as f32);
+        for &(x, y) in &pts[1..] {
+            pb.line_to(x as f32, y as f32);
+        }
+        let Some(path) = pb.finish() else { return };
+        if self.shadow.is_some() {
+            self.draw_shadow_for_path(&path);
+        }
+        let paint     = self.stroke_paint();
+        let stroke    = self.current_stroke();
+        let transform = self.transform;
+        let clip      = self.current_clip.clone();
+        self.pixmap.stroke_path(&path, &paint, &stroke, transform, clip.as_ref());
     }
 }
 

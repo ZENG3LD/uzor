@@ -63,6 +63,7 @@ impl crate::render::ShapeHelpers for NoopRender {
 }
 impl crate::render::GradientPainter for NoopRender {}
 impl crate::render::UiEffectHelpers for NoopRender {}
+impl crate::render::BatchPainter for NoopRender {}
 impl RenderContext for NoopRender { fn dpr(&self) -> f64 { 1.0 } }
 
 /// Minimal DockPanel for LayoutManager<P>.

@@ -1,6 +1,6 @@
 use js_sys::Array;
 use uzor::render::{
-    BlendMode as UzorBlendMode,
+    BatchPainter, BlendMode as UzorBlendMode,
     Effects, GradientPainter, Masking, Painter, RenderContext, RenderContextExt,
     ShapeHelpers, TextBounds, TextMetrics, TextRenderer,
     TextAlign, TextBaseline,
@@ -241,6 +241,12 @@ impl GradientPainter for Canvas2dRenderContext {
 // ---------------------------------------------------------------------------
 
 impl uzor::render::UiEffectHelpers for Canvas2dRenderContext {}
+
+// ---------------------------------------------------------------------------
+// BatchPainter — default impl (JS bridge call cost dominates; no batching win)
+// ---------------------------------------------------------------------------
+
+impl BatchPainter for Canvas2dRenderContext {}
 
 // ---------------------------------------------------------------------------
 // RenderContext (dpr only)

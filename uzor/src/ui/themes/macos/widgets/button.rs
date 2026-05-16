@@ -221,6 +221,7 @@ mod tests {
     }
     impl crate::render::GradientPainter for MockContext {}
     impl crate::render::UiEffectHelpers for MockContext {}
+    impl crate::render::BatchPainter for MockContext {}
     impl RenderContext for MockContext {
         fn dpr(&self) -> f64 { 1.0 }
     }
