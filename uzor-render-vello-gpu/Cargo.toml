@@ -9,6 +9,6 @@ description = "GPU rendering backend using vello + wgpu"
 readme = "../README.md"
 
 [dependencies]
-uzor = { workspace = true }
+uzor = { workspace = true, features = ["shaper"] }
 vello = "0.8"
 skrifa = "0.40"

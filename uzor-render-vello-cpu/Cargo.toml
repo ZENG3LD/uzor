@@ -9,7 +9,7 @@ description = "CPU-only rendering backend using vello_cpu"
 readme = "../README.md"
 
 [dependencies]
-uzor = { workspace = true }
+uzor = { workspace = true, features = ["shaper"] }
 # vello_cpu 0.0.6 uses its own kurbo/peniko (via vello_common 0.0.6).
 # These differ from vello 0.6's kurbo/peniko, so we do NOT depend on
 # uzor-backend-vello-common (which ties to vello 0.6 types).

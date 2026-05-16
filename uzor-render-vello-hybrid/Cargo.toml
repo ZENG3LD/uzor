@@ -9,7 +9,7 @@ description = "Hybrid CPU/GPU rendering backend using vello_hybrid"
 readme = "../README.md"
 
 [dependencies]
-uzor = { workspace = true }
+uzor = { workspace = true, features = ["shaper"] }
 # vello_hybrid 0.0.7: CPU strip encoding + GPU fine rasterization.
 # Uses wgpu 28 — now unified with vello 0.8 stack, no version conflict.
 vello_hybrid = { version = "0.0.7", features = ["wgpu"] }

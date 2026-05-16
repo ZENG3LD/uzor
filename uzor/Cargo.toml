@@ -11,6 +11,7 @@ readme = "../README.md"
 [dependencies]
 uzor-fonts = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+cosmic-text = { version = "0.12", optional = true }
 serde = { workspace = true }
 serde_json = "1.0"
 log = "0.4"
@@ -30,6 +31,9 @@ animation = []
 # PNG icon decoding for AppBuilder::icon_from_png. On by default; turn off
 # if you don't ship `image` (e.g. minimal embedded builds).
 framework-png = ["dep:image"]
+# Real per-cluster text shaping via cosmic-text. Enabled by backends that
+# need cluster-correct measure_text_glyphs (tiny-skia, vello-gpu/cpu/hybrid).
+shaper = ["dep:cosmic-text"]
 
 [dev-dependencies]
 env_logger = "0.10"
