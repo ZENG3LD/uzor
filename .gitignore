@@ -9,6 +9,8 @@ _author_rights/
 ARCHITECTURE_LEVELS.md
 AGENT_README.md
 DRAG_SCROLL_MIGRATION_SPEC.md
+CLAUDE.md
+.claude/
 
 # IDE
 .idea/
