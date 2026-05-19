@@ -70,8 +70,19 @@ pub fn parse_color(color: &str) -> (u8, u8, u8, u8) {
         _ => {}
     }
 
-    // Handle hex formats (#RRGGBB, #RRGGBBAA, #RGB, bare RRGGBB)
+    // Handle hex formats (#RRGGBB, #RRGGBBAA, #RGB, bare RRGGBB).
+    //
+    // Strict: every character in the hex tail must be a valid ASCII
+    // hex digit.  Without this guard a string like `"$bg"` (3 chars)
+    // or `"unknown"` (any length we happen to match) used to parse
+    // through the radix path, with each non-hex char silently
+    // becoming 0 via `unwrap_or(0)`, producing an arbitrary colour
+    // (e.g. `"$bg"` → `(0, 187, 0)` green).  Now any unrecognised
+    // input falls through to opaque black per the docstring.
     let hex = color.trim_start_matches('#');
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return (0, 0, 0, 255);
+    }
     match hex.len() {
         6 => {
             let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
@@ -93,5 +104,45 @@ pub fn parse_color(color: &str) -> (u8, u8, u8, u8) {
             (r, g, b, 255)
         }
         _ => (0, 0, 0, 255), // Default: opaque black
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unrecognized_strings_fall_back_to_opaque_black() {
+        // 3-char non-hex tokens used to map to arbitrary colours
+        // because each non-hex char silently became 0 in the 3-digit
+        // hex shorthand path.
+        assert_eq!(parse_color("$bg"),  (0, 0, 0, 255));
+        assert_eq!(parse_color("$fg"),  (0, 0, 0, 255));
+        assert_eq!(parse_color("foo"),  (0, 0, 0, 255));
+        assert_eq!(parse_color("unknown"),  (0, 0, 0, 255));
+        // 6-char with invalid characters also falls through now.
+        assert_eq!(parse_color("zzzzzz"), (0, 0, 0, 255));
+        // 8-char with invalid characters falls through.
+        assert_eq!(parse_color("not_hex!"), (0, 0, 0, 255));
+    }
+
+    #[test]
+    fn valid_hex_still_parses() {
+        assert_eq!(parse_color("#1a1a1f"), (0x1a, 0x1a, 0x1f, 0xff));
+        assert_eq!(parse_color("1a1a1f"),  (0x1a, 0x1a, 0x1f, 0xff));
+        assert_eq!(parse_color("#abc"),    (0xaa, 0xbb, 0xcc, 0xff));
+        assert_eq!(parse_color("#11223344"), (0x11, 0x22, 0x33, 0x44));
+    }
+
+    #[test]
+    fn named_colors_still_work() {
+        assert_eq!(parse_color("red"),         (255, 0, 0, 255));
+        assert_eq!(parse_color("transparent"), (0, 0, 0, 0));
+    }
+
+    #[test]
+    fn rgb_and_rgba_still_work() {
+        assert_eq!(parse_color("rgb(10, 20, 30)"),       (10, 20, 30, 255));
+        assert_eq!(parse_color("rgba(10, 20, 30, 0.5)"), (10, 20, 30, 127));
     }
 }
