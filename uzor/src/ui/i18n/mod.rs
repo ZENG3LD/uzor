@@ -23,67 +23,22 @@
 //!
 //! # Adding New Languages
 //!
-//! 1. Add variant to `Language` enum
-//! 2. Add match arm in each key's `get()` implementation
-//! 3. Add translations for all keys
+//! 1. Increment `N_LANG` in `lang.rs`
+//! 2. Add variant to `Language` enum in `lang.rs`
+//! 3. Add row to `LANG_META` in `lang.rs`
+//! 4. Add element to `Language::all()` in `lang.rs`
+//! 5. Add column to every row in `tables.rs`
 
+mod lang;
 mod keys;
+mod tables;
 mod translations;
 
+pub use lang::{Language, N_LANG};
 pub use keys::{TextKey, MonthKey, TooltipKey, month_names_short};
 pub use translations::Translatable;
 
 use std::sync::atomic::{AtomicU8, Ordering};
-
-/// Supported languages
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[repr(u8)]
-pub enum Language {
-    /// English (default)
-    #[default]
-    En = 0,
-    /// Russian
-    Ru = 1,
-}
-
-impl Language {
-    /// Get language from u8 value
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            1 => Language::Ru,
-            _ => Language::En,
-        }
-    }
-
-    /// Get language code (ISO 639-1)
-    pub fn code(&self) -> &'static str {
-        match self {
-            Language::En => "en",
-            Language::Ru => "ru",
-        }
-    }
-
-    /// Get language name in English
-    pub fn name(&self) -> &'static str {
-        match self {
-            Language::En => "English",
-            Language::Ru => "Russian",
-        }
-    }
-
-    /// Get language name in native language
-    pub fn native_name(&self) -> &'static str {
-        match self {
-            Language::En => "English",
-            Language::Ru => "Русский",
-        }
-    }
-
-    /// Get all available languages
-    pub fn all() -> &'static [Language] {
-        &[Language::En, Language::Ru]
-    }
-}
 
 // Global language setting (atomic for thread safety)
 static CURRENT_LANGUAGE: AtomicU8 = AtomicU8::new(0);
@@ -125,6 +80,8 @@ mod tests {
     fn test_language_codes() {
         assert_eq!(Language::En.code(), "en");
         assert_eq!(Language::Ru.code(), "ru");
+        assert_eq!(Language::Es.code(), "es");
+        assert_eq!(Language::Hi.code(), "hi");
     }
 
     #[test]
@@ -132,6 +89,22 @@ mod tests {
         assert_eq!(Language::En.name(), "English");
         assert_eq!(Language::Ru.name(), "Russian");
         assert_eq!(Language::Ru.native_name(), "Русский");
+    }
+
+    #[test]
+    fn test_language_from_code() {
+        assert_eq!(Language::from_code("en"), Some(Language::En));
+        assert_eq!(Language::from_code("ru"), Some(Language::Ru));
+        assert_eq!(Language::from_code("xx"), None);
+    }
+
+    #[test]
+    fn test_language_all() {
+        let all = Language::all();
+        assert_eq!(all.len(), N_LANG);
+        assert_eq!(all[0], Language::En);
+        assert_eq!(all[1], Language::Ru);
+        assert_eq!(all[14], Language::Hi);
     }
 
     #[test]

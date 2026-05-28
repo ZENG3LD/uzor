@@ -1,144 +1,75 @@
 //! Translation keys
 //!
 //! All translatable text has a typed key for compile-time safety.
+//! Translations live in `tables.rs` — table-driven, zero-alloc.
 
-use super::Language;
+use super::lang::Language;
+use super::tables::{MONTH_TABLE_FULL, MONTH_TABLE_SHORT, TEXT_KEY_TABLE, TOOLTIP_KEY_TABLE};
 
 // =============================================================================
 // General Text Keys
 // =============================================================================
 
-/// General text keys used across the application
+/// General text keys used across the application.
+///
+/// Variant order is **frozen** — discriminant == row index in `TEXT_KEY_TABLE`.
+/// New variants must be appended at the end; `COUNT` must be updated accordingly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(usize)]
 pub enum TextKey {
     // Common actions
-    Delete,
-    Clone,
-    Copy,
-    Cancel,
-    Apply,
-    Save,
-    Reset,
-    Close,
-    Ok,
-    Yes,
-    No,
+    Delete     = 0,
+    Clone      = 1,
+    Copy       = 2,
+    Cancel     = 3,
+    Apply      = 4,
+    Save       = 5,
+    Reset      = 6,
+    Close      = 7,
+    Ok         = 8,
+    Yes        = 9,
+    No         = 10,
 
     // Visibility/state
-    Show,
-    Hide,
-    Lock,
-    Unlock,
-    Enable,
-    Disable,
+    Show       = 11,
+    Hide       = 12,
+    Lock       = 13,
+    Unlock     = 14,
+    Enable     = 15,
+    Disable    = 16,
 
     // Common labels
-    Settings,
-    Properties,
-    Color,
-    Style,
-    Width,
-    Opacity,
-    Background,
-    Foreground,
-    Border,
-    Text,
-    Font,
-    Size,
+    Settings   = 17,
+    Properties = 18,
+    Color      = 19,
+    Style      = 20,
+    Width      = 21,
+    Opacity    = 22,
+    Background = 23,
+    Foreground = 24,
+    Border     = 25,
+    Text       = 26,
+    Font       = 27,
+    Size       = 28,
 
     // Position
-    Left,
-    Right,
-    Top,
-    Bottom,
-    Center,
+    Left       = 29,
+    Right      = 30,
+    Top        = 31,
+    Bottom     = 32,
+    Center     = 33,
 }
 
 impl TextKey {
-    /// Get translation for this key
+    /// Number of variants. Must equal the number of rows in `TEXT_KEY_TABLE`.
+    pub const COUNT: usize = 34;
+
+    /// Get translation for this key, with En fallback for empty cells.
+    #[inline]
     pub fn get(self, lang: Language) -> &'static str {
-        match lang {
-            Language::En => self.en(),
-            Language::Ru => self.ru(),
-        }
-    }
-
-    fn en(self) -> &'static str {
-        match self {
-            Self::Delete => "Delete",
-            Self::Clone => "Clone",
-            Self::Copy => "Copy",
-            Self::Cancel => "Cancel",
-            Self::Apply => "Apply",
-            Self::Save => "Save",
-            Self::Reset => "Reset",
-            Self::Close => "Close",
-            Self::Ok => "OK",
-            Self::Yes => "Yes",
-            Self::No => "No",
-            Self::Show => "Show",
-            Self::Hide => "Hide",
-            Self::Lock => "Lock",
-            Self::Unlock => "Unlock",
-            Self::Enable => "Enable",
-            Self::Disable => "Disable",
-            Self::Settings => "Settings",
-            Self::Properties => "Properties",
-            Self::Color => "Color",
-            Self::Style => "Style",
-            Self::Width => "Width",
-            Self::Opacity => "Opacity",
-            Self::Background => "Background",
-            Self::Foreground => "Foreground",
-            Self::Border => "Border",
-            Self::Text => "Text",
-            Self::Font => "Font",
-            Self::Size => "Size",
-            Self::Left => "Left",
-            Self::Right => "Right",
-            Self::Top => "Top",
-            Self::Bottom => "Bottom",
-            Self::Center => "Center",
-        }
-    }
-
-    fn ru(self) -> &'static str {
-        match self {
-            Self::Delete => "Удалить",
-            Self::Clone => "Клонировать",
-            Self::Copy => "Копировать",
-            Self::Cancel => "Отмена",
-            Self::Apply => "Применить",
-            Self::Save => "Сохранить",
-            Self::Reset => "Сбросить",
-            Self::Close => "Закрыть",
-            Self::Ok => "ОК",
-            Self::Yes => "Да",
-            Self::No => "Нет",
-            Self::Show => "Показать",
-            Self::Hide => "Скрыть",
-            Self::Lock => "Заблокировать",
-            Self::Unlock => "Разблокировать",
-            Self::Enable => "Включить",
-            Self::Disable => "Отключить",
-            Self::Settings => "Настройки",
-            Self::Properties => "Свойства",
-            Self::Color => "Цвет",
-            Self::Style => "Стиль",
-            Self::Width => "Ширина",
-            Self::Opacity => "Прозрачность",
-            Self::Background => "Фон",
-            Self::Foreground => "Передний план",
-            Self::Border => "Граница",
-            Self::Text => "Текст",
-            Self::Font => "Шрифт",
-            Self::Size => "Размер",
-            Self::Left => "Слева",
-            Self::Right => "Справа",
-            Self::Top => "Сверху",
-            Self::Bottom => "Снизу",
-            Self::Center => "По центру",
-        }
+        let row = &TEXT_KEY_TABLE[self as usize];
+        let s = row[lang as usize];
+        if !s.is_empty() { s } else { row[Language::En as usize] }
     }
 }
 
@@ -146,144 +77,70 @@ impl TextKey {
 // Month Names (for TimeScale)
 // =============================================================================
 
-/// Month name keys for time axis
+/// Month name keys for time axis.
+///
+/// Variant order is **frozen** (January=0 .. December=11).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(usize)]
 pub enum MonthKey {
-    January,
-    February,
-    March,
-    April,
-    May,
-    June,
-    July,
-    August,
-    September,
-    October,
-    November,
-    December,
+    January   = 0,
+    February  = 1,
+    March     = 2,
+    April     = 3,
+    May       = 4,
+    June      = 5,
+    July      = 6,
+    August    = 7,
+    September = 8,
+    October   = 9,
+    November  = 10,
+    December  = 11,
 }
 
 impl MonthKey {
-    /// Get short month name (3 letters)
+    /// Get short month name (3 letters), En fallback for empty cells.
+    #[inline]
     pub fn short(self, lang: Language) -> &'static str {
-        match lang {
-            Language::En => self.short_en(),
-            Language::Ru => self.short_ru(),
-        }
+        let row = &MONTH_TABLE_SHORT[self as usize];
+        let s = row[lang as usize];
+        if !s.is_empty() { s } else { row[Language::En as usize] }
     }
 
-    /// Get full month name
+    /// Get full month name, En fallback for empty cells.
+    #[inline]
     pub fn full(self, lang: Language) -> &'static str {
-        match lang {
-            Language::En => self.full_en(),
-            Language::Ru => self.full_ru(),
-        }
+        let row = &MONTH_TABLE_FULL[self as usize];
+        let s = row[lang as usize];
+        if !s.is_empty() { s } else { row[Language::En as usize] }
     }
 
-    fn short_en(self) -> &'static str {
-        match self {
-            Self::January => "Jan",
-            Self::February => "Feb",
-            Self::March => "Mar",
-            Self::April => "Apr",
-            Self::May => "May",
-            Self::June => "Jun",
-            Self::July => "Jul",
-            Self::August => "Aug",
-            Self::September => "Sep",
-            Self::October => "Oct",
-            Self::November => "Nov",
-            Self::December => "Dec",
-        }
-    }
-
-    fn short_ru(self) -> &'static str {
-        match self {
-            Self::January => "Янв",
-            Self::February => "Фев",
-            Self::March => "Мар",
-            Self::April => "Апр",
-            Self::May => "Май",
-            Self::June => "Июн",
-            Self::July => "Июл",
-            Self::August => "Авг",
-            Self::September => "Сен",
-            Self::October => "Окт",
-            Self::November => "Ноя",
-            Self::December => "Дек",
-        }
-    }
-
-    fn full_en(self) -> &'static str {
-        match self {
-            Self::January => "January",
-            Self::February => "February",
-            Self::March => "March",
-            Self::April => "April",
-            Self::May => "May",
-            Self::June => "June",
-            Self::July => "July",
-            Self::August => "August",
-            Self::September => "September",
-            Self::October => "October",
-            Self::November => "November",
-            Self::December => "December",
-        }
-    }
-
-    fn full_ru(self) -> &'static str {
-        match self {
-            Self::January => "Январь",
-            Self::February => "Февраль",
-            Self::March => "Март",
-            Self::April => "Апрель",
-            Self::May => "Май",
-            Self::June => "Июнь",
-            Self::July => "Июль",
-            Self::August => "Август",
-            Self::September => "Сентябрь",
-            Self::October => "Октябрь",
-            Self::November => "Ноябрь",
-            Self::December => "Декабрь",
-        }
-    }
-
-    /// Get MonthKey from month number (1-12)
+    /// Get MonthKey from month number (1-12). Returns `January` for out-of-range.
     pub fn from_month(month: u32) -> Self {
         match month {
-            1 => Self::January,
-            2 => Self::February,
-            3 => Self::March,
-            4 => Self::April,
-            5 => Self::May,
-            6 => Self::June,
-            7 => Self::July,
-            8 => Self::August,
-            9 => Self::September,
+            1  => Self::January,
+            2  => Self::February,
+            3  => Self::March,
+            4  => Self::April,
+            5  => Self::May,
+            6  => Self::June,
+            7  => Self::July,
+            8  => Self::August,
+            9  => Self::September,
             10 => Self::October,
             11 => Self::November,
             12 => Self::December,
-            _ => Self::January, // fallback
+            _  => Self::January,
         }
     }
 }
 
-/// Get localized short month names array
+/// Get localized short month names array.
 pub fn month_names_short(lang: Language) -> [&'static str; 12] {
-    [
-        MonthKey::January.short(lang),
-        MonthKey::February.short(lang),
-        MonthKey::March.short(lang),
-        MonthKey::April.short(lang),
-        MonthKey::May.short(lang),
-        MonthKey::June.short(lang),
-        MonthKey::July.short(lang),
-        MonthKey::August.short(lang),
-        MonthKey::September.short(lang),
-        MonthKey::October.short(lang),
-        MonthKey::November.short(lang),
-        MonthKey::December.short(lang),
-    ]
+    std::array::from_fn(|i| {
+        let row = &MONTH_TABLE_SHORT[i];
+        let s = row[lang as usize];
+        if !s.is_empty() { s } else { row[Language::En as usize] }
+    })
 }
 
 // =============================================================================
@@ -294,67 +151,43 @@ pub fn month_names_short(lang: Language) -> [&'static str; 12] {
 ///
 /// App-specific tooltip keys (toolbar buttons, sidebar panels, etc.)
 /// should be defined in the application's own i18n module.
+///
+/// Variant order is **frozen** — discriminant == row index in `TOOLTIP_KEY_TABLE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(usize)]
 pub enum TooltipKey {
     /// "Close window" / "Закрыть окно"
-    CloseWindow,
+    CloseWindow = 0,
     /// "Quit application" / "Закрыть приложение"
-    CloseApp,
+    CloseApp    = 1,
     /// "Minimize" / "Свернуть"
-    Minimize,
+    Minimize    = 2,
     /// "Maximize" / "Развернуть"
-    Maximize,
+    Maximize    = 3,
     /// "Restore" / "Восстановить"
-    Restore,
+    Restore     = 4,
     /// "New window" / "Новое окно"
-    NewWindow,
+    NewWindow   = 5,
     /// "Menu" / "Меню"
-    Menu,
+    Menu        = 6,
     /// "New tab" / "Новая вкладка"
-    NewTab,
+    NewTab      = 7,
     /// "Close tab" / "Закрыть вкладку"
-    CloseTab,
+    CloseTab    = 8,
     /// "Undo" / "Отменить"
-    Undo,
+    Undo        = 9,
 }
 
 impl TooltipKey {
-    /// Get translation for this key
+    /// Number of variants. Must equal the number of rows in `TOOLTIP_KEY_TABLE`.
+    pub const COUNT: usize = 10;
+
+    /// Get translation for this key, with En fallback for empty cells.
+    #[inline]
     pub fn get(self, lang: Language) -> &'static str {
-        match lang {
-            Language::En => self.en(),
-            Language::Ru => self.ru(),
-        }
-    }
-
-    fn en(self) -> &'static str {
-        match self {
-            Self::CloseWindow => "Close window",
-            Self::CloseApp => "Quit application",
-            Self::Minimize => "Minimize",
-            Self::Maximize => "Maximize",
-            Self::Restore => "Restore",
-            Self::NewWindow => "New window",
-            Self::Menu => "Menu",
-            Self::NewTab => "New tab",
-            Self::CloseTab => "Close tab",
-            Self::Undo => "Undo",
-        }
-    }
-
-    fn ru(self) -> &'static str {
-        match self {
-            Self::CloseWindow => "Закрыть окно",
-            Self::CloseApp => "Закрыть приложение",
-            Self::Minimize => "Свернуть",
-            Self::Maximize => "Развернуть",
-            Self::Restore => "Восстановить",
-            Self::NewWindow => "Новое окно",
-            Self::Menu => "Меню",
-            Self::NewTab => "Новая вкладка",
-            Self::CloseTab => "Закрыть вкладку",
-            Self::Undo => "Отменить",
-        }
+        let row = &TOOLTIP_KEY_TABLE[self as usize];
+        let s = row[lang as usize];
+        if !s.is_empty() { s } else { row[Language::En as usize] }
     }
 }
 
@@ -399,5 +232,29 @@ mod tests {
         assert_eq!(TooltipKey::CloseWindow.get(Language::Ru), "Закрыть окно");
         assert_eq!(TooltipKey::Menu.get(Language::En), "Menu");
         assert_eq!(TooltipKey::Menu.get(Language::Ru), "Меню");
+    }
+
+    #[test]
+    fn test_fallback_to_en_for_new_languages() {
+        // Es (index 2) is stub → must return En value
+        assert_eq!(TextKey::Delete.get(Language::Es), "Delete");
+        assert_eq!(MonthKey::January.short(Language::De), "Jan");
+        assert_eq!(TooltipKey::Undo.get(Language::Fr), "Undo");
+    }
+
+    #[test]
+    fn test_all_en_cells_non_empty() {
+        for row in TEXT_KEY_TABLE.iter() {
+            assert!(!row[0].is_empty(), "En cell must not be empty in TEXT_KEY_TABLE");
+        }
+        for row in TOOLTIP_KEY_TABLE.iter() {
+            assert!(!row[0].is_empty(), "En cell must not be empty in TOOLTIP_KEY_TABLE");
+        }
+        for row in MONTH_TABLE_SHORT.iter() {
+            assert!(!row[0].is_empty(), "En cell must not be empty in MONTH_TABLE_SHORT");
+        }
+        for row in MONTH_TABLE_FULL.iter() {
+            assert!(!row[0].is_empty(), "En cell must not be empty in MONTH_TABLE_FULL");
+        }
     }
 }

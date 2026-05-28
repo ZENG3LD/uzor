@@ -3,7 +3,8 @@
 //! This module provides additional translation utilities and documentation
 //! for extending the i18n system.
 
-use super::{Language, TextKey, MonthKey, TooltipKey};
+use super::lang::Language;
+use super::keys::{TextKey, MonthKey, TooltipKey};
 
 /// Trait for types that can be translated
 pub trait Translatable {
