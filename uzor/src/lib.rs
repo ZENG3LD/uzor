@@ -52,7 +52,7 @@ pub mod shaper;
 
 // Re-export key types
 pub use app_context::ContextManager;
-pub use i18n::{Language, current_language, set_language, Translatable, TextKey, MonthKey, TooltipKey, month_names_short, t_tooltip};
+pub use i18n::{Translate, current_lang_index, set_lang_index, t};
 pub use ui::animation::AnimationCoordinator;
 pub use types::{IconId, Rect, WidgetId, WidgetState, CompositeId, AtomicId, unsafe_widget_id};
 pub use input::{InputState, InputCoordinator, LayerId, ScopedRegion};
