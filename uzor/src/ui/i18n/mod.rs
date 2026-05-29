@@ -33,6 +33,23 @@ pub fn t<K: Translate>(key: K) -> &'static str {
     key.translate(current_lang_index())
 }
 
+/// Inline helper for static table row lookup with En-fallback.
+///
+/// Usage: `uzor::table_lookup!(&TABLE[row_index], lang_index)`
+///
+/// Returns `row[lang_index]` if non-empty, otherwise `row[0]` (En fallback).
+/// Clamps `lang_index` to the row length so callers never panic on out-of-range.
+#[macro_export]
+macro_rules! table_lookup {
+    ($row:expr, $idx:expr) => {{
+        let row: &[&str] = $row;
+        let idx = $idx;
+        let i = if idx < row.len() { idx } else { 0 };
+        let s = row[i];
+        if s.is_empty() { row[0] } else { s }
+    }};
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
