@@ -45,10 +45,13 @@ static FONT_PT_ROOT_UI:       OnceLock<FontData> = OnceLock::new();
 static FONT_JB_MONO_REGULAR:  OnceLock<FontData> = OnceLock::new();
 static FONT_JB_MONO_BOLD:     OnceLock<FontData> = OnceLock::new();
 
-static FONT_FALLBACK_NERD_FONT: OnceLock<FontData> = OnceLock::new();
-static FONT_FALLBACK_SYMBOLS2:  OnceLock<FontData> = OnceLock::new();
-static FONT_FALLBACK_COLOR_EMOJI: OnceLock<FontData> = OnceLock::new();
-static FONT_FALLBACK_EMOJI:     OnceLock<FontData> = OnceLock::new();
+static FONT_FALLBACK_NERD_FONT:    OnceLock<FontData> = OnceLock::new();
+static FONT_FALLBACK_SYMBOLS2:     OnceLock<FontData> = OnceLock::new();
+static FONT_FALLBACK_COLOR_EMOJI:  OnceLock<FontData> = OnceLock::new();
+static FONT_FALLBACK_EMOJI:        OnceLock<FontData> = OnceLock::new();
+static FONT_FALLBACK_CJK_SC:       OnceLock<FontData> = OnceLock::new();
+static FONT_FALLBACK_ARABIC:       OnceLock<FontData> = OnceLock::new();
+static FONT_FALLBACK_DEVANAGARI:   OnceLock<FontData> = OnceLock::new();
 
 use uzor::fonts::FontFamily;
 
@@ -82,11 +85,21 @@ fn get_font(family: FontFamily, bold: bool, italic: bool) -> &'static FontData {
 fn get_fallback_fonts() -> &'static [FontData] {
     static FALLBACK_LIST: OnceLock<Vec<FontData>> = OnceLock::new();
     FALLBACK_LIST.get_or_init(|| {
-        let nf = FONT_FALLBACK_NERD_FONT.get_or_init(|| make_font(fonts::SYMBOLS_NERD_FONT_MONO));
-        let s2 = FONT_FALLBACK_SYMBOLS2.get_or_init(|| make_font(fonts::NOTO_SANS_SYMBOLS2));
-        let cv = FONT_FALLBACK_COLOR_EMOJI.get_or_init(|| make_font(fonts::NOTO_COLOR_EMOJI));
-        let em = FONT_FALLBACK_EMOJI.get_or_init(|| make_font(fonts::NOTO_EMOJI));
-        vec![nf.clone(), s2.clone(), cv.clone(), em.clone()]
+        let nf   = FONT_FALLBACK_NERD_FONT.get_or_init(|| make_font(fonts::SYMBOLS_NERD_FONT_MONO));
+        let s2   = FONT_FALLBACK_SYMBOLS2.get_or_init(|| make_font(fonts::NOTO_SANS_SYMBOLS2));
+        let cjk  = FONT_FALLBACK_CJK_SC.get_or_init(|| make_font(fonts::NOTO_SANS_CJK_SC));
+        let ar   = FONT_FALLBACK_ARABIC.get_or_init(|| make_font(fonts::NOTO_SANS_ARABIC));
+        let deva = FONT_FALLBACK_DEVANAGARI.get_or_init(|| make_font(fonts::NOTO_SANS_DEVANAGARI));
+        let cv   = FONT_FALLBACK_COLOR_EMOJI.get_or_init(|| make_font(fonts::NOTO_COLOR_EMOJI));
+        let em   = FONT_FALLBACK_EMOJI.get_or_init(|| make_font(fonts::NOTO_EMOJI));
+        // Order: [0]=NerdFont, [1]=Symbols2, [2]=CjkSc, [3]=Arabic, [4]=Devanagari,
+        //        [5]=NotoColorEmoji, [6]=NotoEmoji
+        // Text script fonts (CJK/Arabic/Devanagari) placed BEFORE emoji so ordinary
+        // script codepoints resolve to text outlines rather than emoji glyphs.
+        vec![
+            nf.clone(), s2.clone(), cjk.clone(), ar.clone(), deva.clone(),
+            cv.clone(), em.clone(),
+        ]
     })
 }
 
@@ -818,9 +831,11 @@ impl TextRenderer for VelloCpuRenderContext {
         let text_transform = Affine::translate((x + x_off, y + y_off));
         let combined = self.transform * text_transform;
 
-        // Fallback index 2 = NotoColorEmoji (COLR font).  vello_cpu requires
-        // WHITE paint for COLR runs so the embedded palette is used directly.
-        const COLOR_EMOJI_FALLBACK_IDX: usize = 2;
+        // Fallback index 5 = NotoColorEmoji (COLR font) in chain:
+        // [0]=NerdFont, [1]=Symbols2, [2]=CjkSc, [3]=Arabic, [4]=Devanagari,
+        // [5]=NotoColorEmoji, [6]=NotoEmoji.
+        // vello_cpu requires WHITE paint for COLR runs so the embedded palette is used directly.
+        const COLOR_EMOJI_FALLBACK_IDX: usize = 5;
         let fill_color = self.effective_fill_color();
         let white = Color::from_rgba8(255, 255, 255, 255);
 

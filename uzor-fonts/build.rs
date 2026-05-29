@@ -12,6 +12,21 @@ fn main() {
             "https://github.com/ZENG3LD/uzor/releases/download/fonts-v1/NotoColorEmoji.ttf",
             1_000_000,
         ),
+        (
+            "NotoSansCJKsc-Regular.otf",
+            "https://github.com/ZENG3LD/uzor/releases/download/fonts-v1/NotoSansCJKsc-Regular.otf",
+            15_000_000,
+        ),
+        (
+            "NotoSansArabic-Regular.ttf",
+            "https://github.com/ZENG3LD/uzor/releases/download/fonts-v1/NotoSansArabic-Regular.ttf",
+            100_000,
+        ),
+        (
+            "NotoSansDevanagari-Regular.ttf",
+            "https://github.com/ZENG3LD/uzor/releases/download/fonts-v1/NotoSansDevanagari-Regular.ttf",
+            100_000,
+        ),
     ];
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR must be set by cargo");

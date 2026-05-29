@@ -46,10 +46,13 @@ static FONT_BOLD_ITALIC: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_PT_ROOT_UI: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_JB_MONO_REGULAR: OnceLock<fontdue::Font> = OnceLock::new();
 static FONT_JB_MONO_BOLD: OnceLock<fontdue::Font> = OnceLock::new();
-static FONT_NERD_FONT: OnceLock<fontdue::Font> = OnceLock::new();
-static FONT_SYMBOLS: OnceLock<fontdue::Font> = OnceLock::new();
-static FONT_COLOR_EMOJI: OnceLock<fontdue::Font> = OnceLock::new();
-static FONT_EMOJI: OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_NERD_FONT:    OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_SYMBOLS:      OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_COLOR_EMOJI:  OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_EMOJI:        OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_CJK_SC:       OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_ARABIC:       OnceLock<fontdue::Font> = OnceLock::new();
+static FONT_DEVANAGARI:   OnceLock<fontdue::Font> = OnceLock::new();
 
 /// Re-export of the backend-agnostic family enum from core uzor. All family
 /// detection lives in `uzor::fonts` — this backend only caches the loaded
@@ -111,6 +114,18 @@ fn get_emoji_font() -> &'static fontdue::Font {
     FONT_EMOJI.get_or_init(|| make_font(fonts::NOTO_EMOJI))
 }
 
+fn get_cjk_sc_font() -> &'static fontdue::Font {
+    FONT_CJK_SC.get_or_init(|| make_font(fonts::NOTO_SANS_CJK_SC))
+}
+
+fn get_arabic_font() -> &'static fontdue::Font {
+    FONT_ARABIC.get_or_init(|| make_font(fonts::NOTO_SANS_ARABIC))
+}
+
+fn get_devanagari_font() -> &'static fontdue::Font {
+    FONT_DEVANAGARI.get_or_init(|| make_font(fonts::NOTO_SANS_DEVANAGARI))
+}
+
 // ---------------------------------------------------------------------------
 // CSS color parsing
 // ---------------------------------------------------------------------------
@@ -159,12 +174,27 @@ fn measure_text_width(text: &str, font_info: &FontInfo) -> f64 {
                 if fb_metrics.width > 0 {
                     fb_metrics.advance_width
                 } else {
-                    let (cv_metrics, _) = get_color_emoji_font().rasterize(ch, font_info.size);
-                    if cv_metrics.width > 0 {
-                        cv_metrics.advance_width
+                    let (cjk_metrics, _) = get_cjk_sc_font().rasterize(ch, font_info.size);
+                    if cjk_metrics.width > 0 {
+                        cjk_metrics.advance_width
                     } else {
-                        let (em_metrics, _) = get_emoji_font().rasterize(ch, font_info.size);
-                        em_metrics.advance_width
+                        let (ar_metrics, _) = get_arabic_font().rasterize(ch, font_info.size);
+                        if ar_metrics.width > 0 {
+                            ar_metrics.advance_width
+                        } else {
+                            let (deva_metrics, _) = get_devanagari_font().rasterize(ch, font_info.size);
+                            if deva_metrics.width > 0 {
+                                deva_metrics.advance_width
+                            } else {
+                                let (cv_metrics, _) = get_color_emoji_font().rasterize(ch, font_info.size);
+                                if cv_metrics.width > 0 {
+                                    cv_metrics.advance_width
+                                } else {
+                                    let (em_metrics, _) = get_emoji_font().rasterize(ch, font_info.size);
+                                    em_metrics.advance_width
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -999,6 +1029,10 @@ impl TextRenderer for TinySkiaCpuRenderContext {
             let render_px = px * sx.max(sy).max(1.0);
             let (primary_metrics, primary_bitmap) = font.rasterize(ch, render_px);
 
+            // Fallback chain: NerdFont → Symbols2 → CJK SC → Arabic → Devanagari
+            //                 → NotoColorEmoji → NotoEmoji → primary (tofu)
+            // Text script fonts (CJK/Arabic/Devanagari) are placed BEFORE emoji so
+            // ordinary script codepoints resolve to text outlines rather than emoji.
             let (metrics, bitmap) = if primary_metrics.width == 0 && !ch.is_whitespace() {
                 let (nf_metrics, nf_bitmap) = get_nerd_font().rasterize(ch, render_px);
                 if nf_metrics.width > 0 {
@@ -1008,15 +1042,30 @@ impl TextRenderer for TinySkiaCpuRenderContext {
                     if sym_metrics.width > 0 {
                         (sym_metrics, sym_bitmap)
                     } else {
-                        let (cv_metrics, cv_bitmap) = get_color_emoji_font().rasterize(ch, render_px);
-                        if cv_metrics.width > 0 {
-                            (cv_metrics, cv_bitmap)
+                        let (cjk_metrics, cjk_bitmap) = get_cjk_sc_font().rasterize(ch, render_px);
+                        if cjk_metrics.width > 0 {
+                            (cjk_metrics, cjk_bitmap)
                         } else {
-                            let (em_metrics, em_bitmap) = get_emoji_font().rasterize(ch, render_px);
-                            if em_metrics.width > 0 {
-                                (em_metrics, em_bitmap)
+                            let (ar_metrics, ar_bitmap) = get_arabic_font().rasterize(ch, render_px);
+                            if ar_metrics.width > 0 {
+                                (ar_metrics, ar_bitmap)
                             } else {
-                                (primary_metrics, primary_bitmap)
+                                let (deva_metrics, deva_bitmap) = get_devanagari_font().rasterize(ch, render_px);
+                                if deva_metrics.width > 0 {
+                                    (deva_metrics, deva_bitmap)
+                                } else {
+                                    let (cv_metrics, cv_bitmap) = get_color_emoji_font().rasterize(ch, render_px);
+                                    if cv_metrics.width > 0 {
+                                        (cv_metrics, cv_bitmap)
+                                    } else {
+                                        let (em_metrics, em_bitmap) = get_emoji_font().rasterize(ch, render_px);
+                                        if em_metrics.width > 0 {
+                                            (em_metrics, em_bitmap)
+                                        } else {
+                                            (primary_metrics, primary_bitmap)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

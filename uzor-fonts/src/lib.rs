@@ -12,6 +12,9 @@
 //! - **Noto Sans Symbols 2** — wide symbol / mathematical coverage
 //! - **Noto Color Emoji** — color emoji (COLRv1/v0 + CBDT bitmaps)
 //! - **Noto Emoji** — color-neutral emoji fallback (legacy, all backends)
+//! - **Noto Sans CJK SC** — CJK Simplified Chinese + kana + Hangul (downloaded)
+//! - **Noto Sans Arabic** — Arabic script (downloaded)
+//! - **Noto Sans Devanagari** — Devanagari / Hindi script (downloaded)
 
 // ── Roboto ────────────────────────────────────────────────────────────────────
 
@@ -62,6 +65,25 @@ pub static NOTO_SANS_SYMBOLS2: &[u8] =
 /// Supported natively by vello-gpu (skrifa 0.40+); other backends fall through
 /// to the monochrome outline or skip to the next fallback.
 pub static NOTO_COLOR_EMOJI: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/NotoColorEmoji.ttf"));
+
+// ── i18n script fonts ─────────────────────────────────────────────────────────
+//
+// Heavy script fonts are not bundled (crates.io 10 MB limit). They are
+// downloaded by build.rs from GitHub release `fonts-v1` into OUT_DIR, then
+// referenced here via include_bytes!.
+
+/// Noto Sans CJK SC Regular — covers Simplified Chinese (zh), Japanese kana
+/// (ja), and Korean Hangul (ko). ~16 MB; downloaded by build.rs.
+pub static NOTO_SANS_CJK_SC: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/NotoSansCJKsc-Regular.otf"));
+
+/// Noto Sans Arabic Regular — covers Arabic script (ar). ~170 KB; downloaded by build.rs.
+pub static NOTO_SANS_ARABIC: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/NotoSansArabic-Regular.ttf"));
+
+/// Noto Sans Devanagari Regular — covers Devanagari script (hi). ~157 KB; downloaded by build.rs.
+pub static NOTO_SANS_DEVANAGARI: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/NotoSansDevanagari-Regular.ttf"));
 
 /// DejaVu Sans Regular — broad BMP coverage. Fills the gap left by subsetted
 /// Roboto (no arrows / dingbats / geometric shapes) and NotoSansSymbols2

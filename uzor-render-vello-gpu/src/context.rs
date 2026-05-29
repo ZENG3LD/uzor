@@ -35,6 +35,9 @@ static CACHED_FALLBACK_SYMBOLS2: OnceLock<FontData> = OnceLock::new();
 static CACHED_FALLBACK_COLOR_EMOJI: OnceLock<FontData> = OnceLock::new();
 static CACHED_FALLBACK_EMOJI: OnceLock<FontData> = OnceLock::new();
 static CACHED_FALLBACK_DEJAVU: OnceLock<FontData> = OnceLock::new();
+static CACHED_FALLBACK_CJK_SC: OnceLock<FontData> = OnceLock::new();
+static CACHED_FALLBACK_ARABIC: OnceLock<FontData> = OnceLock::new();
+static CACHED_FALLBACK_DEVANAGARI: OnceLock<FontData> = OnceLock::new();
 
 fn make_font(bytes: &'static [u8]) -> FontData {
     FontData::new(Blob::new(Arc::new(bytes.to_vec())), 0)
@@ -69,7 +72,8 @@ pub(crate) fn get_cached_font(family: FontFamily, bold: bool, italic: bool) -> &
 }
 
 /// Return the static fallback font list in priority order:
-/// [DejaVuSans, NotoSansSymbols2, NotoEmoji, NotoColorEmoji, SymbolsNerdFontMono].
+/// [DejaVuSans, NotoSansSymbols2, NotoSansCjkSc, NotoSansArabic, NotoSansDevanagari,
+///  NotoEmoji, NotoColorEmoji, SymbolsNerdFontMono].
 ///
 /// Order rationale:
 /// - DejaVuSans first — broad BMP coverage with REAL glyph data (Arrows
@@ -77,24 +81,38 @@ pub(crate) fn get_cached_font(family: FontFamily, bold: bool, italic: bool) -> &
 ///   Letterlike, Dingbats partial). Catches the common gaps that subsetted
 ///   Roboto leaves (U+2192 →, U+2605 ★, U+2713 ✓, U+2630 ☰, ...).
 /// - NotoSansSymbols2 — supplementary symbols (U+1xxxx and edge BMP blocks).
+/// - NotoSansCjkSc — Simplified Chinese, Japanese kana, Korean Hangul.
+/// - NotoSansArabic — Arabic script (ar).
+/// - NotoSansDevanagari — Devanagari / Hindi script (hi).
 /// - NotoEmoji / NotoColorEmoji — emoji ranges (U+1F000+, sparkles ✨, etc.).
+///   Text script fonts placed BEFORE emoji so ordinary script codepoints resolve
+///   to text outlines rather than emoji glyphs.
 /// - NerdFontMono last — it's a patcher that advertises many code points but
 ///   ships empty / invisible glyphs for non-PUA symbols. Putting it last
 ///   avoids the trap where it wins charmap.map() and then renders nothing.
 pub(crate) fn get_fallback_fonts() -> &'static [FontData] {
     static FALLBACK_LIST: OnceLock<Vec<FontData>> = OnceLock::new();
     FALLBACK_LIST.get_or_init(|| {
-        let dv = CACHED_FALLBACK_DEJAVU
+        let dv   = CACHED_FALLBACK_DEJAVU
             .get_or_init(|| make_font(fonts::DEJAVU_SANS));
-        let s2 = CACHED_FALLBACK_SYMBOLS2
+        let s2   = CACHED_FALLBACK_SYMBOLS2
             .get_or_init(|| make_font(fonts::NOTO_SANS_SYMBOLS2));
-        let em = CACHED_FALLBACK_EMOJI
+        let cjk  = CACHED_FALLBACK_CJK_SC
+            .get_or_init(|| make_font(fonts::NOTO_SANS_CJK_SC));
+        let ar   = CACHED_FALLBACK_ARABIC
+            .get_or_init(|| make_font(fonts::NOTO_SANS_ARABIC));
+        let deva = CACHED_FALLBACK_DEVANAGARI
+            .get_or_init(|| make_font(fonts::NOTO_SANS_DEVANAGARI));
+        let em   = CACHED_FALLBACK_EMOJI
             .get_or_init(|| make_font(fonts::NOTO_EMOJI));
-        let cv = CACHED_FALLBACK_COLOR_EMOJI
+        let cv   = CACHED_FALLBACK_COLOR_EMOJI
             .get_or_init(|| make_font(fonts::NOTO_COLOR_EMOJI));
-        let nf = CACHED_FALLBACK_NERD_FONT
+        let nf   = CACHED_FALLBACK_NERD_FONT
             .get_or_init(|| make_font(fonts::SYMBOLS_NERD_FONT_MONO));
-        vec![dv.clone(), s2.clone(), em.clone(), cv.clone(), nf.clone()]
+        vec![
+            dv.clone(), s2.clone(), cjk.clone(), ar.clone(), deva.clone(),
+            em.clone(), cv.clone(), nf.clone(),
+        ]
     })
 }
 
@@ -202,10 +220,11 @@ pub fn parse_color(color: &str) -> Color {
 /// font use the corresponding entry in `fallbacks`.
 /// Fallback index of NotoColorEmoji in the fallback chain.
 ///
-/// [0]=NotoSans, [1]=NotoSansSymbols2, [2]=NotoEmoji, [3]=NotoColorEmoji, [4]=SymbolsNerdFontMono.
+/// [0]=DejaVuSans, [1]=NotoSansSymbols2, [2]=NotoSansCjkSc, [3]=NotoSansArabic,
+/// [4]=NotoSansDevanagari, [5]=NotoEmoji, [6]=NotoColorEmoji, [7]=SymbolsNerdFontMono.
 /// For COLR fonts vello requires the brush to be WHITE so it uses the font's embedded
 /// palette directly; a non-white brush tints/masks the palette colors and causes tofu.
-const COLOR_EMOJI_FALLBACK_IDX: usize = 3;
+const COLOR_EMOJI_FALLBACK_IDX: usize = 6;
 
 fn draw_resolved_glyphs(
     scene: &mut Scene,

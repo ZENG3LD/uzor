@@ -35,6 +35,9 @@ static FONT_NERD_FONT:   OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::
 static FONT_SYMBOLS:     OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
 static FONT_COLOR_EMOJI: OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
 static FONT_EMOJI:       OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+static FONT_CJK_SC:      OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+static FONT_ARABIC:      OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
+static FONT_DEVANAGARI:  OnceLock<Option<skrifa::FontRef<'static>>> = OnceLock::new();
 
 fn make_font_ref(data: &'static [u8]) -> Option<skrifa::FontRef<'static>> {
     use skrifa::raw::FileRef;
@@ -72,11 +75,19 @@ fn get_font_ref(family: FontFamily, bold: bool, italic: bool) -> Option<&'static
 }
 
 /// Fallback font refs tried in order when the primary font returns GlyphId(0).
-/// Chain: SymbolsNerdFontMono → NotoSansSymbols2 → NotoColorEmoji → NotoEmoji.
-fn get_fallback_font_refs() -> [Option<&'static skrifa::FontRef<'static>>; 4] {
+///
+/// Chain: SymbolsNerdFontMono → NotoSansSymbols2 → NotoSansCjkSc → NotoSansArabic
+///        → NotoSansDevanagari → NotoColorEmoji → NotoEmoji.
+///
+/// Text script fonts (CJK/Arabic/Devanagari) are placed BEFORE emoji so ordinary
+/// script codepoints resolve to text outlines rather than emoji glyphs.
+fn get_fallback_font_refs() -> [Option<&'static skrifa::FontRef<'static>>; 7] {
     [
         FONT_NERD_FONT.get_or_init(|| make_font_ref(fonts::SYMBOLS_NERD_FONT_MONO)).as_ref(),
         FONT_SYMBOLS.get_or_init(|| make_font_ref(fonts::NOTO_SANS_SYMBOLS2)).as_ref(),
+        FONT_CJK_SC.get_or_init(|| make_font_ref(fonts::NOTO_SANS_CJK_SC)).as_ref(),
+        FONT_ARABIC.get_or_init(|| make_font_ref(fonts::NOTO_SANS_ARABIC)).as_ref(),
+        FONT_DEVANAGARI.get_or_init(|| make_font_ref(fonts::NOTO_SANS_DEVANAGARI)).as_ref(),
         FONT_COLOR_EMOJI.get_or_init(|| make_font_ref(fonts::NOTO_COLOR_EMOJI)).as_ref(),
         FONT_EMOJI.get_or_init(|| make_font_ref(fonts::NOTO_EMOJI)).as_ref(),
     ]
