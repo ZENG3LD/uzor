@@ -736,6 +736,40 @@ impl InputCoordinator {
         }
     }
 
+    /// Hit-test the CURRENTLY registered widgets at `(x, y)` and return the
+    /// topmost widget id (Z-order + modal-blocking aware, scoped-region aware),
+    /// regardless of `Sense`.
+    ///
+    /// Unlike [`hovered_widget`], this is a LIVE query: it runs the hit-test
+    /// against the current `widgets`/`layers` accumulation instead of returning
+    /// the snapshot baked by the last [`end_frame`]. Pure read — it does not
+    /// mutate hover state or dispatch responses. Call it on a pointer event to
+    /// resolve hover synchronously with the cursor, without the one-frame lag of
+    /// the `end_frame` snapshot.
+    pub fn hit_test_now(&self, x: f64, y: f64) -> Option<WidgetId> {
+        self.hit_test_with_sense(x, y, &|_| true)
+    }
+
+    /// Live equivalent of [`is_over_ui`]: returns `true` if `(x, y)` is over any
+    /// registered non-blackbox UI widget, hit-tested against the current
+    /// `widgets` accumulation (not the `end_frame` snapshot). Use on a pointer
+    /// event so the cursor-type resolver reflects the true topmost layer under
+    /// the pointer with zero frame lag.
+    pub fn is_over_ui_now(&self, x: f64, y: f64) -> bool {
+        match self.hit_test_now(x, y) {
+            Some(id) => {
+                let kind = self.widgets.iter().rev()
+                    .find(|w| w.id == id)
+                    .map(|w| w.kind);
+                match kind {
+                    Some(k) => !k.is_blackbox(),
+                    None => true,
+                }
+            }
+            None => false,
+        }
+    }
+
     /// Get focused widget
     pub fn focused_widget(&self) -> Option<&WidgetId> {
         self.widget_state.focus.focused.as_ref()
