@@ -267,6 +267,17 @@ impl WindowRenderState {
         self.vello_gpu_renderer.is_some()
     }
 
+    /// Current configured surface dimensions `(width, height)` in physical
+    /// pixels — the size the swapchain / software target is sized at, which is
+    /// also what `submit_frame`'s `render_to_texture` uses. Lets the driver
+    /// detect a surface-vs-window size desync (diagnostics + self-heal).
+    pub fn surface_config_size(&self) -> (u32, u32) {
+        match &self.surface {
+            SurfaceMode::Gpu { surface, .. } => (surface.config.width, surface.config.height),
+            SurfaceMode::Software { width, height, .. } => (*width, *height),
+        }
+    }
+
     /// Build a GPU-mode state without a vello GPU renderer.
     ///
     /// Used for `VelloHybrid` and `WgpuInstanced` where the renderer is
