@@ -28,6 +28,19 @@ impl<P: DockPanel> Leaf<P> {
         }
     }
 
+    /// Create an empty leaf (no panels).  Used by compound split when
+    /// freshly-allocated sibling slots must not alias the original leaf's
+    /// panel identities — caller is expected to populate `panels` afterwards.
+    pub fn new_empty(id: LeafId) -> Self {
+        Self {
+            id,
+            panels: Vec::new(),
+            active_tab: 0,
+            hidden: false,
+            color_tag: None,
+        }
+    }
+
     /// Get the color group tag for this leaf.
     pub fn color_tag(&self) -> Option<u8> {
         self.color_tag
@@ -422,13 +435,24 @@ impl<P: DockPanel> DockingTree<P> {
         Some(new_id)
     }
 
-    /// Replace `leaf_id` with N freshly created leaves, all carrying clones
-    /// of the original's panel set.
+    /// Replace `leaf_id` with N freshly created leaves.
+    ///
+    /// The first new leaf inherits the original's panel set (preserving
+    /// existing content in slot 0).  All subsequent leaves are spawned EMPTY
+    /// — the caller is expected to populate them with freshly-allocated
+    /// panels.
     ///
     /// Use for compound splits (Grid2x2 / OneBig3Small / 3-column / 3-row …)
-    /// where there is no single "original" position — every child is new.
+    /// where there is no single "original" position — every sibling is new.
     /// The original `leaf_id` becomes invalid after this call; `new_ids` are
     /// the only valid handles.
+    ///
+    /// **Why empty siblings, not clones:** consumers key state by panel id
+    /// (e.g. `HashMap<PanelId, _>`).  Duplicating the same `P` value into N
+    /// new leaves would alias one identity across N positions — removing
+    /// state for that id wipes content in every position simultaneously.
+    /// Empty siblings let the caller pair each fresh leaf with a freshly
+    /// allocated panel id.
     pub fn split_leaf_with_children(
         &mut self,
         leaf_id: LeafId,
@@ -451,14 +475,27 @@ impl<P: DockPanel> DockingTree<P> {
             | SplitKind::ThreeColumns | SplitKind::ThreeRows => 3,
         };
 
-        // 3. Create N new leaf nodes
+        // 3. Create N new leaf nodes.
+        //
+        // The first new leaf inherits the original's panel set (so existing
+        // content lives on at that position).  The rest are spawned EMPTY so
+        // callers can populate them with their own freshly-allocated panels
+        // without colliding with the original's panel ids.
+        //
+        // (Earlier behavior cloned the original's panels into EVERY new leaf,
+        // which produced N leaves all holding the same panel identity — a
+        // catastrophic id-aliasing bug for consumers that key state by panel
+        // id, e.g. mylittlechart's panels_store HashMap<PanelId, _>.)
         let new_ids: Vec<LeafId> = (0..sub_rect_count).map(|_| self.next_leaf_id()).collect();
-        let new_leaves: Vec<PanelNode<P>> = new_ids.iter().map(|&id| {
-            let mut leaf_node = Leaf::new(id, leaf.panels.first().cloned().unwrap());
-            // Copy all panels from original
-            if !leaf.panels.is_empty() {
-                leaf_node.panels = leaf.panels.clone();
-            }
+        let new_leaves: Vec<PanelNode<P>> = new_ids.iter().enumerate().map(|(i, &id)| {
+            let leaf_node = if i == 0 && !leaf.panels.is_empty() {
+                let mut node = Leaf::new(id, leaf.panels[0].clone());
+                node.panels = leaf.panels.clone();
+                node.active_tab = leaf.active_tab.min(leaf.panels.len().saturating_sub(1));
+                node
+            } else {
+                Leaf::new_empty(id)
+            };
             PanelNode::Leaf(leaf_node)
         }).collect();
 
