@@ -25,6 +25,9 @@ struct Uniforms {
 // and lives in slot0..slot3 already, so assign treats Path bboxes like
 // any other kind. The binding is declared here to keep the shared BGL.
 @group(0) @binding(7) var<storage, read> path_points: array<vec2<f32>>;
+// Binding 8: image_atlas (rgba8unorm sampled texture) — unused in assign,
+// declared to satisfy shared BGL.
+@group(0) @binding(8) var image_atlas: texture_2d<f32>;
 
 const TILE_SIZE: u32 = 16u;
 

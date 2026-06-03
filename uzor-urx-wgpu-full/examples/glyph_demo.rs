@@ -75,7 +75,8 @@ fn run() -> i32 {
         let mut enc = device.create_command_encoder(
             &wgpu::CommandEncoderDescriptor { label: Some("glyph-demo") },
         );
-        pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &[], &output_view, &atlas_view);
+        let (_dum_img, dummy_img_view) = TilePipeline::dummy_image_atlas(&device);
+        pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &[], &output_view, &atlas_view, &dummy_img_view);
         queue.submit(Some(enc.finish()));
         let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
     }

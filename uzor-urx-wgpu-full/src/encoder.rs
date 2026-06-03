@@ -145,7 +145,19 @@ pub fn encode_scene_with_paths(
                         }
                     },
                     Brush::Image(_) => {
-                        // Image brushes not yet encoded.
+                        // Emit Image cmd sampling the full bound atlas
+                        // at the rect. Consumers that want sub-rect UVs
+                        // or tinting construct `SceneCmd::image` directly.
+                        // The peniko Image's blob/format/size are ignored
+                        // here — the actual texture lives in the
+                        // `image_atlas_view` bound at dispatch time;
+                        // ImageId-to-atlas resolution belongs to a
+                        // future atlas-manager layer.
+                        out.push(SceneCmd::image(
+                            x0, y0, x1, y1,
+                            [255, 255, 255, 255], // no tint
+                            [0.0, 0.0, 1.0, 1.0], // full atlas
+                        ));
                     }
                 }
             }

@@ -194,7 +194,8 @@ fn glyph_alpha_modulated_by_colour() {
     let pipeline = TilePipeline::new(&device);
 
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &[], &output_view, &atlas_view);
+    let (_dum_img, dummy_img_view) = TilePipeline::dummy_image_atlas(&device);
+    pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &[], &output_view, &atlas_view, &dummy_img_view);
     queue.submit(Some(enc.finish()));
     let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
 
@@ -260,7 +261,8 @@ fn glyph_skipped_outside_uv_rect() {
     let pipeline = TilePipeline::new(&device);
 
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &[], &output_view, &atlas_view);
+    let (_dum_img, dummy_img_view) = TilePipeline::dummy_image_atlas(&device);
+    pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &[], &output_view, &atlas_view, &dummy_img_view);
     queue.submit(Some(enc.finish()));
     let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
 

@@ -84,6 +84,20 @@ pub enum CmdKind {
     /// Stops MUST be sorted by position ascending; positions are
     /// clamped to `[0, 1]` at sample time.
     MultiLinGradient = 8,
+    /// Image / texture brush. Samples an RGBA8 atlas (binding 8) at
+    /// the cmd's UV rect, modulated by an RGBA tint colour.
+    ///
+    /// slot[0..4] = bbox xyxy (screen-space rect to fill).
+    /// slot[4]    = packed_rgba u32 (tint — `[255, 255, 255, 255]` for
+    ///              the unmodulated image).
+    /// slot[5]    = atlas UV packed: low16 = u0_q, high16 = v0_q
+    ///              (quantised × 65535).
+    /// slot[6]    = atlas UV packed: low16 = u1_q, high16 = v1_q.
+    ///
+    /// Same UV packing as Glyph (kind=4); the only difference is the
+    /// atlas binding (RGBA8 vs R8Unorm) and that Image multiplies the
+    /// sampled rgba × tint instead of using the texel as alpha mask.
+    Image = 9,
 }
 
 /// One flat scene command. 32 bytes total, repr(C) for stable layout.
@@ -406,6 +420,50 @@ impl SceneCmd {
     }
 }
 
+impl SceneCmd {
+    /// Create an Image command sampling from the bound RGBA8 atlas.
+    ///
+    /// - `bbox`    = screen-space rect to fill.
+    /// - `tint`    = RGBA modulation (multiplied with the atlas texel).
+    ///   Pass `[255, 255, 255, 255]` for the unmodulated image.
+    /// - `uv_rect` = `[u0, v0, u1, v1]` in normalised atlas coords
+    ///   `[0.0, 1.0]`. Internally quantised to u16 per component.
+    pub fn image(
+        x0: f32, y0: f32, x1: f32, y1: f32,
+        tint: [u8; 4],
+        uv_rect: [f32; 4],
+    ) -> Self {
+        let quant = |v: f32| -> u32 { (v.clamp(0.0, 1.0) * 65535.0).round() as u32 };
+        let u0q = quant(uv_rect[0]);
+        let v0q = quant(uv_rect[1]);
+        let u1q = quant(uv_rect[2]);
+        let v1q = quant(uv_rect[3]);
+        Self {
+            kind: CmdKind::Image as u32,
+            slot0: x0, slot1: y0, slot2: x1, slot3: y1,
+            slot4: pack_rgba(tint),
+            slot5: u0q | (v0q << 16),
+            slot6: u1q | (v1q << 16),
+        }
+    }
+
+    /// Dequantise atlas UV rect from an Image command.
+    ///
+    /// Returns `Some([u0, v0, u1, v1])` if `kind == Image`, `None` otherwise.
+    pub fn image_uv(&self) -> Option<[f32; 4]> {
+        if self.kind != CmdKind::Image as u32 {
+            return None;
+        }
+        let dequant = |q: u32| -> f32 { (q & 0xffff) as f32 / 65535.0 };
+        Some([
+            dequant(self.slot5),
+            dequant(self.slot5 >> 16),
+            dequant(self.slot6),
+            dequant(self.slot6 >> 16),
+        ])
+    }
+}
+
 /// Pack a `(position, [r, g, b, a])` stop into the `[f32; 2]` form the
 /// `path_points` buffer expects for `MultiLinGradient`.
 ///
@@ -529,6 +587,30 @@ mod tests {
         assert_eq!(dir,  lin_dir::HORIZONTAL);
         assert_eq!(off,  7);
         assert_eq!(n,    5);
+    }
+
+    #[test]
+    fn image_uv_round_trips_within_quantisation_error() {
+        let img = SceneCmd::image(
+            10.0, 20.0, 100.0, 80.0,
+            [255, 200, 100, 255],
+            [0.0, 0.0, 1.0, 1.0],
+        );
+        assert_eq!(img.kind, CmdKind::Image as u32);
+        assert_eq!(img.bbox(), [10.0, 20.0, 100.0, 80.0]);
+        let uv = img.image_uv().unwrap();
+        assert!((uv[0] - 0.0).abs() < 1e-4);
+        assert!((uv[1] - 0.0).abs() < 1e-4);
+        assert!((uv[2] - 1.0).abs() < 1e-4);
+        assert!((uv[3] - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn image_uv_returns_none_for_other_kinds() {
+        let r = SceneCmd::rect(0.0, 0.0, 10.0, 10.0, [0, 0, 0, 255]);
+        assert!(r.image_uv().is_none());
+        let g = SceneCmd::glyph(0.0, 0.0, 10.0, 10.0, [0; 4], [0.0; 4]);
+        assert!(g.image_uv().is_none());
     }
 
     #[test]

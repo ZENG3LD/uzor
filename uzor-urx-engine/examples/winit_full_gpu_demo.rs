@@ -35,6 +35,7 @@
 //! | `POST`  | `/scene/spawn_bezier`      | `{p0, c0, c1, p1, width, color}`     | cubic Bézier — kurbo flattens into a Path cmd |
 //! | `POST`  | `/scene/spawn_fill_path`   | `{points: [[x,y],…], color}`         | filled polygon (non-zero winding) |
 //! | `POST`  | `/scene/spawn_multi_grad`  | `{bbox, stops: [[pos,r,g,b,a],…], direction}` | N-stop linear gradient rect |
+//! | `POST`  | `/scene/spawn_image`       | `{bbox, uv?, tint?}`                 | sample the 64×64 checkerboard atlas into rect |
 //! | `POST`  | `/scene/preset/dashboard`  | —                                    | replace scene with grid + sparkline preset |
 //! | `DELETE`| `/scene/region/:id`        | —                                    | remove region by id |
 //! | `POST`  | `/scene/clear`             | —                                    | remove every rect/region |
@@ -141,6 +142,13 @@ struct PolylineModel {
 /// demo packs them into a kurbo `BezPath` and pushes a `DrawCommand::
 /// StrokePath` — the encoder will flatten via kurbo at upload time.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+struct ImageModel {
+    id:   u64,
+    /// Screen-space rect to fill `[x0, y0, x1, y1]`.
+    bbox: [f32; 4],
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct MultiGradModel {
     id:        u64,
     /// Rect bbox `[x0, y0, x1, y1]`.
@@ -181,6 +189,7 @@ struct SharedScene {
     beziers:      Vec<BezierModel>,
     fills:        Vec<FillPathModel>,
     multigrads:   Vec<MultiGradModel>,
+    images:       Vec<ImageModel>,
     next_id:      u64,
     paused:       bool,
     /// L3: rects queued by `/scene/spawn_rect`. Drained by main thread.
@@ -190,6 +199,7 @@ struct SharedScene {
     pending_beziers:    Vec<BezierModel>,
     pending_fills:      Vec<FillPathModel>,
     pending_multigrads: Vec<MultiGradModel>,
+    pending_images:     Vec<ImageModel>,
     /// L3: clear-all flag.
     pending_clear: bool,
     /// L3: load dashboard preset flag.
@@ -295,6 +305,8 @@ fn spawn_agent_server(state: AgentState) -> std::thread::JoinHandle<()> {
         stops:     Vec<[f32; 5]>,
         direction: Option<u32>,
     }
+    #[derive(Deserialize)]
+    struct SpawnImageBody { bbox: [f32; 4] }
     #[derive(Serialize)]
     struct OkReply { ok: bool, msg: String }
     fn ok(msg: impl Into<String>) -> Json<OkReply> {
@@ -456,6 +468,14 @@ fn spawn_agent_server(state: AgentState) -> std::thread::JoinHandle<()> {
                             (StatusCode::OK, ok(format!("multi_grad queued, id={id}"))).into_response()
                         },
                     ))
+                    .route("/scene/spawn_image", post(
+                        |AxState(s): AxState<AgentState>, Json(b): Json<SpawnImageBody>| async move {
+                            let mut sc = s.scene.lock().unwrap();
+                            let id = sc.next_id; sc.next_id += 1;
+                            sc.pending_images.push(ImageModel { id, bbox: b.bbox });
+                            ok(format!("image queued, id={id}"))
+                        },
+                    ))
                     .route("/scene/preset/dashboard", post(
                         |AxState(s): AxState<AgentState>| async move {
                             s.scene.lock().unwrap().pending_preset_dashboard = true;
@@ -499,8 +519,12 @@ struct GpuState {
     pipeline:      TilePipeline,
     blit:          BlitPipeline,
     bufs:          TileBuffers,
-    storage_view:  wgpu::TextureView,
-    dummy_glyph:   wgpu::TextureView,
+    storage_view:     wgpu::TextureView,
+    dummy_glyph:      wgpu::TextureView,
+    /// Procedural 64×64 checkerboard atlas — exposed via L3
+    /// `/scene/spawn_image` (id=0 = full atlas).
+    image_atlas_view: wgpu::TextureView,
+    _image_atlas_tex: wgpu::Texture,
     _dummy_tex:    wgpu::Texture,
     _storage_tex:  wgpu::Texture,
     tex_w:         u32,
@@ -570,6 +594,58 @@ impl GpuState {
         let tex_h = bufs.tile_count_y * TILE_SIZE;
         let (dummy_tex, dummy_glyph) = TilePipeline::dummy_glyph_atlas(&device);
 
+        // Build a procedural 64×64 RGBA8 atlas: 8×8 checkerboard with
+        // a contrasting alternating colour palette. Exposed to the
+        // agentic API via `/scene/spawn_image` — the whole atlas is
+        // mapped to the rect's UV `[0..1, 0..1]`.
+        const ATLAS_PX: u32 = 64;
+        let mut atlas_pixels = Vec::with_capacity((ATLAS_PX * ATLAS_PX * 4) as usize);
+        for y in 0..ATLAS_PX {
+            for x in 0..ATLAS_PX {
+                let cell_x = x / 8;
+                let cell_y = y / 8;
+                let dark = (cell_x ^ cell_y) & 1 == 0;
+                // Diagonal hue stripe so the texture has actual content
+                // (not just two-tone) — easier to see when sampled UV is
+                // misaligned.
+                let hue_t = (x as f32 + y as f32) / (2.0 * ATLAS_PX as f32);
+                let base_r = (255.0 * hue_t) as u8;
+                let base_b = (255.0 * (1.0 - hue_t)) as u8;
+                if dark {
+                    atlas_pixels.extend_from_slice(&[40, 40, 60, 255]);
+                } else {
+                    atlas_pixels.extend_from_slice(&[base_r, 200, base_b, 255]);
+                }
+            }
+        }
+        let image_atlas_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label:           Some("urx-fullgpu-demo-image-atlas"),
+            size:            wgpu::Extent3d { width: ATLAS_PX, height: ATLAS_PX, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          wgpu::TextureFormat::Rgba8Unorm,
+            usage:           wgpu::TextureUsages::TEXTURE_BINDING
+                           | wgpu::TextureUsages::COPY_DST,
+            view_formats:    &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture:  &image_atlas_tex,
+                mip_level: 0,
+                origin:   wgpu::Origin3d::ZERO,
+                aspect:   wgpu::TextureAspect::All,
+            },
+            &atlas_pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset:         0,
+                bytes_per_row:  Some(ATLAS_PX * 4),
+                rows_per_image: Some(ATLAS_PX),
+            },
+            wgpu::Extent3d { width: ATLAS_PX, height: ATLAS_PX, depth_or_array_layers: 1 },
+        );
+        let image_atlas_view = image_atlas_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
         let engine = UrxEngine::new_full_gpu(w, h);
 
         // Initial scene = DEFAULT_N rects.
@@ -583,6 +659,7 @@ impl GpuState {
         Self {
             window, surface, device, queue, config,
             pipeline, blit, bufs, storage_view, dummy_glyph,
+            image_atlas_view, _image_atlas_tex: image_atlas_tex,
             _dummy_tex: dummy_tex, _storage_tex: storage_tex,
             tex_w, tex_h, engine,
             last_tick: Instant::now(),
@@ -633,12 +710,14 @@ impl GpuState {
             for b in sc.beziers.iter()   { self.engine.remove_region(RegionId(b.id)); }
             for f in sc.fills.iter()     { self.engine.remove_region(RegionId(f.id)); }
             for mg in sc.multigrads.iter() { self.engine.remove_region(RegionId(mg.id)); }
+            for im in sc.images.iter()     { self.engine.remove_region(RegionId(im.id)); }
             sc.rects.clear();
             sc.strokes.clear();
             sc.polylines.clear();
             sc.beziers.clear();
             sc.fills.clear();
             sc.multigrads.clear();
+            sc.images.clear();
         }
 
         // ─ L3: dashboard preset (clear + populate grid + sparkline) ──
@@ -650,12 +729,14 @@ impl GpuState {
             for b in sc.beziers.iter()   { self.engine.remove_region(RegionId(b.id)); }
             for f in sc.fills.iter()     { self.engine.remove_region(RegionId(f.id)); }
             for mg in sc.multigrads.iter() { self.engine.remove_region(RegionId(mg.id)); }
+            for im in sc.images.iter()     { self.engine.remove_region(RegionId(im.id)); }
             sc.rects.clear();
             sc.strokes.clear();
             sc.polylines.clear();
             sc.beziers.clear();
             sc.fills.clear();
             sc.multigrads.clear();
+            sc.images.clear();
             sc.paused = false;
 
             // 1. background rect (whole window dark slate)
@@ -738,6 +819,9 @@ impl GpuState {
                 } else if let Some(pos) = sc.multigrads.iter().position(|mg| mg.id == id) {
                     sc.multigrads.remove(pos);
                     self.engine.remove_region(RegionId(id));
+                } else if let Some(pos) = sc.images.iter().position(|im| im.id == id) {
+                    sc.images.remove(pos);
+                    self.engine.remove_region(RegionId(id));
                 }
             }
         }
@@ -788,6 +872,14 @@ impl GpuState {
             for mg_in in queued {
                 if sc.multigrads.len() < MAX_N {
                     sc.multigrads.push(mg_in);
+                }
+            }
+        }
+        if !sc.pending_images.is_empty() {
+            let queued = std::mem::take(&mut sc.pending_images);
+            for im_in in queued {
+                if sc.images.len() < MAX_N {
+                    sc.images.push(im_in);
                 }
             }
         }
@@ -1019,6 +1111,34 @@ impl GpuState {
             );
         }
 
+        // ─ Push to engine: image rects via DrawCommand::FillRect + Brush::Image ──
+        // The encoder routes Brush::Image to SceneCmd::image with full
+        // atlas UV and unmodulated tint. The dummy peniko::Image's data
+        // is ignored — the actual texture is the demo's procedural
+        // checkerboard, bound through image_atlas_view.
+        for im in sc.images.iter() {
+            let dummy_img = peniko::Image::new(
+                peniko::Blob::new(std::sync::Arc::new(Vec::<u8>::new())),
+                peniko::Format::Rgba8,
+                1, 1,
+            );
+            let mut scene = Scene::new();
+            scene.commands.push(DrawCommand::FillRect {
+                rect: UxRect::new(im.bbox[0] as f64, im.bbox[1] as f64,
+                                   im.bbox[2] as f64, im.bbox[3] as f64),
+                radii: None,
+                brush: Brush::Image(dummy_img),
+                transform: Affine::IDENTITY,
+            });
+            self.engine.upsert_region(
+                RegionId(im.id),
+                scene,
+                UxRect::new(im.bbox[0] as f64, im.bbox[1] as f64,
+                             im.bbox[2] as f64, im.bbox[3] as f64),
+                RenderCadence::Static,
+            );
+        }
+
         // ─ Push to engine: multi-stop linear gradients ───────────────
         // We construct a peniko Gradient with N stops and push it as
         // DrawCommand::FillRect; the encoder routes >2 stops to
@@ -1078,7 +1198,7 @@ impl GpuState {
         let paused  = sc.paused;
         let regions = (sc.rects.len() + sc.strokes.len() + sc.polylines.len()
                         + sc.beziers.len() + sc.fills.len()
-                        + sc.multigrads.len()) as u32;
+                        + sc.multigrads.len() + sc.images.len()) as u32;
         drop(sc);
 
         // Publish to metrics for L1 /state polling.
@@ -1112,6 +1232,7 @@ impl GpuState {
             storage_view:     &self.storage_view,
             target_view:      &view,
             glyph_atlas_view: &self.dummy_glyph,
+            image_atlas_view: &self.image_atlas_view,
             src_w:            self.tex_w,
             src_h:            self.tex_h,
         });

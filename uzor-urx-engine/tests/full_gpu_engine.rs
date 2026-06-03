@@ -140,6 +140,7 @@ fn full_gpu_engine_renders_single_red_region() {
     });
     let surface_view = surface_tex.create_view(&wgpu::TextureViewDescriptor::default());
     let (_dummy_tex, dummy_atlas_view) = TilePipeline::dummy_glyph_atlas(&device);
+    let (_dum_img, dummy_img_view)     = TilePipeline::dummy_image_atlas(&device);
 
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let stats = engine.render(RenderTarget::FullGpu {
@@ -152,6 +153,7 @@ fn full_gpu_engine_renders_single_red_region() {
         storage_view:     &storage_view,
         target_view:      &surface_view,
         glyph_atlas_view: &dummy_atlas_view,
+        image_atlas_view: &dummy_img_view,
         src_w:            tex_w,
         src_h:            tex_h,
     }).expect("engine render OK");
@@ -222,6 +224,7 @@ fn full_gpu_engine_returns_too_small_buf_error() {
     });
     let surface_view = surface_tex.create_view(&wgpu::TextureViewDescriptor::default());
     let (_dummy_tex, dummy_atlas_view) = TilePipeline::dummy_glyph_atlas(&device);
+    let (_dum_img, dummy_img_view)     = TilePipeline::dummy_image_atlas(&device);
 
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     let res = engine.render(RenderTarget::FullGpu {
@@ -234,6 +237,7 @@ fn full_gpu_engine_returns_too_small_buf_error() {
         storage_view:     &storage_view,
         target_view:      &surface_view,
         glyph_atlas_view: &dummy_atlas_view,
+        image_atlas_view: &dummy_img_view,
         src_w:            tex_w,
         src_h:            tex_h,
     });

@@ -24,6 +24,8 @@ struct SceneCmd {
 @group(0) @binding(6) var glyph_smp:   sampler;
 // Binding 7: path_points — unused in sort, declared to satisfy shared BGL.
 @group(0) @binding(7) var<storage, read> path_points: array<vec2<f32>>;
+// Binding 8: image_atlas — unused in sort, declared to satisfy shared BGL.
+@group(0) @binding(8) var image_atlas: texture_2d<f32>;
 
 @compute @workgroup_size(64)
 fn sort(@builtin(global_invocation_id) gid: vec3<u32>) {

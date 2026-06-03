@@ -130,6 +130,7 @@ fn bench_full_gpu(c: &mut Criterion) {
 
     let pipeline = TilePipeline::new(&device);
     let (_dummy_tex_d, dummy_atlas_view_d) = TilePipeline::dummy_glyph_atlas(&device);
+    let (_dummy_img_d, dummy_img_view_d)   = TilePipeline::dummy_image_atlas(&device);
     let mut g_dispatch = c.benchmark_group("full_gpu_dispatch_only");
     g_dispatch.sample_size(50);
 
@@ -143,7 +144,7 @@ fn bench_full_gpu(c: &mut Criterion) {
                 let mut enc = device.create_command_encoder(
                     &wgpu::CommandEncoderDescriptor { label: Some("bench-enc") },
                 );
-                pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &[], &output_view, &dummy_atlas_view_d);
+                pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &[], &output_view, &dummy_atlas_view_d, &dummy_img_view_d);
                 queue.submit(Some(enc.finish()));
                 let _ = device.poll(wgpu::PollType::Wait {
                     submission_index: None, timeout: None,
@@ -177,7 +178,7 @@ fn bench_full_gpu(c: &mut Criterion) {
                 let mut enc = device.create_command_encoder(
                     &wgpu::CommandEncoderDescriptor { label: Some("bench-enc-rb") },
                 );
-                pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &[], &output_view, &dummy_atlas_view_rb);
+                pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &[], &output_view, &dummy_atlas_view_rb, &dummy_img_view_d);
                 enc.copy_texture_to_buffer(
                     wgpu::TexelCopyTextureInfo {
                         texture:   &output_tex,
@@ -315,7 +316,7 @@ fn bench_full_gpu_mixed(c: &mut Criterion) {
                 let mut enc = device.create_command_encoder(
                     &wgpu::CommandEncoderDescriptor { label: Some("mixed-bench-enc") },
                 );
-                pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &output_view, &atlas_view);
+                pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &[], &output_view, &atlas_view, &dummy_img_view_d);
                 queue.submit(Some(enc.finish()));
                 let _ = device.poll(wgpu::PollType::Wait {
                     submission_index: None, timeout: None,

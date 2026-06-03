@@ -17,6 +17,7 @@
 //                        cmd carries bbox + (point_offset, point_count) + colour
 //   8u = MultiLinGrad  — N-stop linear gradient; stops packed two-per-vec2 in
 //                        path_points (position, bitcast<f32>(packed_rgba))
+//   9u = Image         — RGBA8 atlas sample, bbox-local UV, modulated by tint
 
 struct SceneCmd {
     kind:  u32,
@@ -48,6 +49,9 @@ struct Uniforms {
 // Binding 7: polyline vertex storage. Path cmds reference a contiguous
 // (offset, count) range here; each consecutive pair forms one segment.
 @group(0) @binding(7) var<storage, read> path_points: array<vec2<f32>>;
+// Binding 8: image atlas (rgba8unorm). Image cmds sample this directly,
+// modulating the texel by their tint colour.
+@group(0) @binding(8) var image_atlas: texture_2d<f32>;
 
 const TILE_SIZE: u32 = 16u;
 
@@ -240,6 +244,34 @@ fn fine(
             let coverage = 1.0 - smoothstep(phw - 0.5, phw + 0.5, min_d);
             let pcol = unpack_rgba(c.slot4);
             src = vec4<f32>(pcol.r, pcol.g, pcol.b, pcol.a * coverage);
+
+        } else if (c.kind == 9u) {
+            // ── Image: RGBA8 atlas texel × tint colour ──────────────────
+            // slot4 = tint rgba (packed)
+            // slot5 = atlas UV (u0_q, v0_q) packed u16x2
+            // slot6 = atlas UV (u1_q, v1_q) packed u16x2
+            let img_w_loc = x1 - x0;
+            let img_h_loc = y1 - y0;
+            var local_x: f32 = 0.0;
+            var local_y: f32 = 0.0;
+            if (img_w_loc > 0.0) { local_x = (fpx - x0) / img_w_loc; }
+            if (img_h_loc > 0.0) { local_y = (fpy - y0) / img_h_loc; }
+            let u0 = f32( c.slot5        & 0xffffu) / 65535.0;
+            let v0 = f32((c.slot5 >> 16u) & 0xffffu) / 65535.0;
+            let u1 = f32( c.slot6        & 0xffffu) / 65535.0;
+            let v1 = f32((c.slot6 >> 16u) & 0xffffu) / 65535.0;
+            let u = u0 + local_x * (u1 - u0);
+            let v = v0 + local_y * (v1 - v0);
+            let texel = textureSampleLevel(image_atlas, glyph_smp, vec2<f32>(u, v), 0.0);
+            let tint  = unpack_rgba(c.slot4);
+            // Component-wise multiply — tint of (1,1,1,1) gives the
+            // atlas colour unchanged.
+            src = vec4<f32>(
+                texel.r * tint.r,
+                texel.g * tint.g,
+                texel.b * tint.b,
+                texel.a * tint.a,
+            );
 
         } else if (c.kind == 8u) {
             // ── MultiLinGradient: N-stop linear gradient ───────────────

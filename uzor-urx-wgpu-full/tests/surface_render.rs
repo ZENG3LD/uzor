@@ -134,6 +134,7 @@ fn run_blit_pipeline(
     let blit_pipeline = BlitPipeline::new(device, SURFACE_FORMAT);
 
     let (_dummy_tex, dummy_atlas_view) = TilePipeline::dummy_glyph_atlas(device);
+    let (_dum_img, dummy_img_view)     = TilePipeline::dummy_image_atlas(device);
 
     // ONE encoder, ONE submit — same as real consumer path.
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
@@ -142,7 +143,7 @@ fn run_blit_pipeline(
         &bufs, cmds, &[],
         &storage_view, &blit_pipeline, &surface_view,
         tex_w, tex_h,
-        &dummy_atlas_view,
+        &dummy_atlas_view, &dummy_img_view,
     );
     queue.submit(Some(enc.finish()));
     let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });

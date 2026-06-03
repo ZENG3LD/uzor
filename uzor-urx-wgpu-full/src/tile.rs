@@ -294,6 +294,18 @@ impl TilePipeline {
                     },
                     count: None,
                 },
+                // binding 8 — image_atlas (rgba8unorm sampled texture):
+                // texture brush source for CmdKind::Image. Read-only.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type:    wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled:   false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -385,6 +397,27 @@ impl TilePipeline {
         (texture, view)
     }
 
+    /// Create a 1×1 fully-transparent RGBA8 texture to use as a dummy
+    /// image atlas when the scene contains no `Image` commands.
+    ///
+    /// Pass the returned `TextureView` to `dispatch` / `dispatch_full` /
+    /// `render_to_target` when no images are in use.
+    pub fn dummy_image_atlas(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label:               Some("urx-fullgpu-dummy-image-atlas"),
+            size:                wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count:     1,
+            sample_count:        1,
+            dimension:           wgpu::TextureDimension::D2,
+            format:              wgpu::TextureFormat::Rgba8Unorm,
+            usage:               wgpu::TextureUsages::TEXTURE_BINDING
+                               | wgpu::TextureUsages::COPY_DST,
+            view_formats:        &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
     /// Upload cmds, dispatch tile_assign, then tile_sort.
     ///
     /// `tile_counts_buf` is cleared to zero before the assign dispatch
@@ -421,7 +454,11 @@ impl TilePipeline {
             view_formats:    &[],
         });
         let dummy_view = dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        self.dispatch_full(device, queue, encoder, bufs, cmds, &[], &dummy_view, glyph_atlas_view);
+        let (_dummy_img, dummy_img_view) = Self::dummy_image_atlas(device);
+        self.dispatch_full(
+            device, queue, encoder, bufs, cmds, &[],
+            &dummy_view, glyph_atlas_view, &dummy_img_view,
+        );
     }
 
     /// Full three-stage dispatch: tile_assign → tile_sort → fine raster.
@@ -437,6 +474,10 @@ impl TilePipeline {
     /// `path_points` is a flat `[x0, y0, x1, y1, ...]` slice referenced
     /// by `CmdKind::Path` cmds via `(point_offset, point_count)`. Pass
     /// `&[]` when the scene contains no Path cmds.
+    ///
+    /// `image_atlas_view` is an RGBA8 sampled-texture view for
+    /// `CmdKind::Image` cmds. Pass the view from
+    /// `TilePipeline::dummy_image_atlas` when no Image cmds present.
     pub fn dispatch_full(
         &self,
         device:           &wgpu::Device,
@@ -447,6 +488,7 @@ impl TilePipeline {
         path_points:      &[[f32; 2]],
         output_view:      &wgpu::TextureView,
         glyph_atlas_view: &wgpu::TextureView,
+        image_atlas_view: &wgpu::TextureView,
     ) {
         // 1. Upload cmd bytes.
         if !cmds.is_empty() {
@@ -509,6 +551,10 @@ impl TilePipeline {
                     binding: 7,
                     resource: bufs.path_points_buf.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(image_atlas_view),
+                },
             ],
         });
 
@@ -570,10 +616,11 @@ impl TilePipeline {
         src_w:            u32,
         src_h:            u32,
         glyph_atlas_view: &wgpu::TextureView,
+        image_atlas_view: &wgpu::TextureView,
     ) {
         self.dispatch_full(
             device, queue, encoder, bufs, cmds, path_points,
-            src_view, glyph_atlas_view,
+            src_view, glyph_atlas_view, image_atlas_view,
         );
         blit.blit(device, encoder, src_view, target_view, src_w, src_h, queue);
     }

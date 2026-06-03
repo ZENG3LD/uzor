@@ -166,6 +166,8 @@ pub enum RenderTarget<'a> {
     /// - `target_view` — final render-attachment-compatible view
     /// - `glyph_atlas_view` — R8Unorm view; pass the value from
     ///                `TilePipeline::dummy_glyph_atlas` when no glyphs
+    /// - `image_atlas_view` — RGBA8 view; pass the value from
+    ///                `TilePipeline::dummy_image_atlas` when no images
     /// - `src_w`/`src_h` — padded tile-aligned dims (`tile_count_x*16`)
     #[cfg(feature = "full-gpu-backend")]
     FullGpu {
@@ -178,6 +180,7 @@ pub enum RenderTarget<'a> {
         storage_view:     &'a wgpu::TextureView,
         target_view:      &'a wgpu::TextureView,
         glyph_atlas_view: &'a wgpu::TextureView,
+        image_atlas_view: &'a wgpu::TextureView,
         src_w:            u32,
         src_h:            u32,
     },
@@ -526,6 +529,7 @@ impl UrxEngine {
             (RenderTarget::FullGpu {
                 pipeline, blit, bufs, device, queue, encoder,
                 storage_view, target_view, glyph_atlas_view,
+                image_atlas_view,
                 src_w, src_h,
             }, Backend::FullGpu) => {
                 // FullGpu is a write-only-into-storage path: we walk ALL
@@ -566,7 +570,7 @@ impl UrxEngine {
                 pipeline.render_to_target(
                     device, queue, encoder, bufs, &all_cmds, &all_points,
                     storage_view, blit, target_view,
-                    src_w, src_h, glyph_atlas_view,
+                    src_w, src_h, glyph_atlas_view, image_atlas_view,
                 );
                 cache_misses = self.regions.len() as u32;
             }
