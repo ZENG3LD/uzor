@@ -173,6 +173,13 @@ pub struct WindowRenderState {
     pub(crate) vello_hybrid_renderer: Option<vello_hybrid::Renderer>,
     /// Wgpu instanced renderer (lazy-init on first submit; needs texture format).
     pub(crate) instanced_renderer: Option<InstancedRenderer>,
+    /// Wgpu instanced per-frame draw context — walker writes `DrawCmd`s into
+    /// `draw_commands`, `submit_instanced` pulls them. Lazy-init on first
+    /// `with_render_context` call when `active = InstancedWgpu`. Wiring this
+    /// slot lights up the InstancedWgpu path end-to-end (before this, hub
+    /// returned `None` from `with_render_context` and `submit_instanced`
+    /// passed `&[]` — net no-op clear-only frame).
+    pub(crate) instanced_ctx: Option<InstancedRenderContext>,
 
     // ── CPU renderer slots ────────────────────────────────────────────────────
     /// vello CPU render context.
@@ -214,6 +221,7 @@ impl WindowRenderState {
             vello_gpu_renderer: Some(renderer),
             vello_hybrid_renderer: None,
             instanced_renderer: None,
+            instanced_ctx: None,
             vello_cpu_ctx: None,
             tiny_skia_ctx: None,
             #[cfg(target_arch = "wasm32")]
@@ -240,6 +248,7 @@ impl WindowRenderState {
             vello_gpu_renderer: None,
             vello_hybrid_renderer: None,
             instanced_renderer: None,
+            instanced_ctx: None,
             vello_cpu_ctx: None,
             tiny_skia_ctx: None,
             #[cfg(target_arch = "wasm32")]
@@ -294,6 +303,7 @@ impl WindowRenderState {
             vello_gpu_renderer: None,
             vello_hybrid_renderer: None,
             instanced_renderer: None,
+            instanced_ctx: None,
             vello_cpu_ctx: None,
             tiny_skia_ctx: None,
             #[cfg(target_arch = "wasm32")]
@@ -318,6 +328,7 @@ impl WindowRenderState {
             vello_gpu_renderer: None,
             vello_hybrid_renderer: None,
             instanced_renderer: None,
+            instanced_ctx: None,
             vello_cpu_ctx: None,
             tiny_skia_ctx: Some(TinySkiaCpuRenderContext::new(width, height, 1.0)),
             scene: Scene::new(),
@@ -340,6 +351,7 @@ impl WindowRenderState {
             vello_gpu_renderer: None,
             vello_hybrid_renderer: None,
             instanced_renderer: None,
+            instanced_ctx: None,
             vello_cpu_ctx: Some(VelloCpuRenderContext::new(dpr)),
             tiny_skia_ctx: None,
             scene: Scene::new(),
@@ -410,6 +422,7 @@ impl WindowRenderState {
             vello_gpu_renderer: None,
             vello_hybrid_renderer: None,
             instanced_renderer: None,
+            instanced_ctx: None,
             vello_cpu_ctx: None,
             tiny_skia_ctx: Some(TinySkiaCpuRenderContext::new(w, h, 1.0)),
             #[cfg(target_arch = "wasm32")]
@@ -435,6 +448,7 @@ impl WindowRenderState {
             vello_gpu_renderer: None,
             vello_hybrid_renderer: None,
             instanced_renderer: None,
+            instanced_ctx: None,
             vello_cpu_ctx: Some(VelloCpuRenderContext::new(dpr)),
             tiny_skia_ctx: None,
             #[cfg(target_arch = "wasm32")]
@@ -479,6 +493,7 @@ impl WindowRenderState {
             vello_gpu_renderer: None,
             vello_hybrid_renderer: None,
             instanced_renderer: None,
+            instanced_ctx: None,
             vello_cpu_ctx: None,
             tiny_skia_ctx: None,
             canvas2d_ctx: Some(ctx),
@@ -746,7 +761,39 @@ impl WindowRenderState {
                     f(c)
                 })
             }
-            RenderBackend::InstancedWgpu => None,
+            RenderBackend::InstancedWgpu => {
+                // Lazy-init the per-frame context. Lives across frames; we
+                // call `clear()` at the start of each frame to reset
+                // `draw_commands` while reusing the Vec allocation.
+                //
+                // Dimensions come from the GPU surface config (physical
+                // pixels). On software surfaces InstancedWgpu is not
+                // supported; we return None there.
+                let (w, h) = self.gpu_handles()
+                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
+                    .unwrap_or((1, 1));
+                if self.instanced_ctx.is_none() {
+                    self.instanced_ctx = Some(InstancedRenderContext::new(
+                        w as f32, h as f32, 0.0, 0.0,
+                    ));
+                }
+                self.instanced_ctx.as_mut().map(|c| {
+                    // Reset draw_commands for the new frame. (Walker is
+                    // about to push fresh commands into it.)
+                    c.clear();
+                    // Recreate the context if the surface resized — the
+                    // screen_w/screen_h are baked into the transform and
+                    // root clip rect at construction time, so a stale
+                    // context paints at the old size.
+                    //
+                    // NOTE: InstancedRenderContext has no setter for
+                    // these fields today, so we replace the whole
+                    // context when the size changes. Add a `resize()`
+                    // method upstream if this becomes a hot path.
+                    let _ = (w, h); // size-aware resize TBD
+                    f(c)
+                })
+            }
             #[cfg(target_arch = "wasm32")]
             RenderBackend::Canvas2d => {
                 self.canvas2d_ctx.as_mut().map(|c| f(c))

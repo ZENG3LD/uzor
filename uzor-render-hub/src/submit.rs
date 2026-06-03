@@ -247,9 +247,37 @@ fn submit_instanced(
         a: params.base_color.components[3] as f64,
     };
 
+    // Pull this frame's draw commands from the context the walker
+    // populated via `with_render_context`. Before this wiring the
+    // hub passed `&[]` and the renderer rendered nothing — a
+    // clear-only no-op pipeline.
+    //
+    // Take the commands out so the next frame's `with_render_context`
+    // call sees a fresh empty Vec (the `clear()` there is now a
+    // no-op anyway, but keeping it preserves the contract).
+    let r2t_t0 = std::time::Instant::now();
+    let commands_taken: Vec<uzor_render_wgpu_instanced::DrawCmd> =
+        state.instanced_ctx.as_mut()
+            .map(|c| std::mem::take(&mut c.draw_commands))
+            .unwrap_or_default();
+    let cmd_count = commands_taken.len();
     if let Some(ref mut inst) = state.instanced_renderer {
-        inst.render(device, queue, &surface_view, width, height, &[], Some(clear), None);
+        inst.render(
+            device, queue, &surface_view, width, height,
+            &commands_taken,
+            Some(clear),
+            None,
+        );
     }
+    metrics.render_to_texture_us = r2t_t0.elapsed().as_micros() as u64;
+    // Hand the Vec back so its capacity is reused across frames
+    // (the walker pushes into the same allocation next frame).
+    if let Some(ctx) = state.instanced_ctx.as_mut() {
+        let mut taken = commands_taken;
+        taken.clear();
+        ctx.draw_commands = taken;
+    }
+    let _ = cmd_count;
 
     surface_texture.present();
     metrics.present_us = present_t0.elapsed().as_micros() as u64;
