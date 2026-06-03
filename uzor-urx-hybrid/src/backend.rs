@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 
 use uzor_urx_core::region::RegionId;
+use uzor_urx_core::config::{DirtyStrategy, UrxConfig};
 use uzor_urx_cpu::Pixmap;
 
 use crate::composite::{QuadInstance, ScreenUniform, COMPOSITE_SHADER};
@@ -25,6 +26,8 @@ pub struct HybridBackend {
     region_textures: BTreeMap<RegionId, RegionTexture>,
     /// Lazy-init compositor pipeline. Created on first composite().
     pipeline:        Option<CompositorPipeline>,
+    /// Dirty-skip + atlas tuning policy.
+    config:          UrxConfig,
 }
 
 struct CompositorPipeline {
@@ -39,8 +42,26 @@ struct CompositorPipeline {
 
 impl HybridBackend {
     pub fn new() -> Self {
-        Self { region_textures: BTreeMap::new(), pipeline: None }
+        Self {
+            region_textures: BTreeMap::new(),
+            pipeline: None,
+            config: UrxConfig::default(),
+        }
     }
+
+    /// Construct with consumer-tuned [`UrxConfig`]. The
+    /// `hybrid_dirty_strategy` + `hybrid_atlas_*` fields are the ones
+    /// hybrid actually reads.
+    pub fn with_config(cfg: UrxConfig) -> Self {
+        cfg.validate().expect("invalid UrxConfig");
+        Self {
+            region_textures: BTreeMap::new(),
+            pipeline: None,
+            config: cfg,
+        }
+    }
+
+    pub fn config(&self) -> &UrxConfig { &self.config }
 
     pub fn region_count(&self) -> usize { self.region_textures.len() }
     pub fn region_bytes(&self) -> u64 {
@@ -50,6 +71,15 @@ impl HybridBackend {
     /// Upload (or reuse) a region texture. If the existing texture's
     /// dimensions match, reuses it (cheap write_texture); otherwise
     /// drops + creates new.
+    ///
+    /// Honours `UrxConfig::hybrid_dirty_strategy`:
+    /// - `GenerationOnly`: never hashes; uploads every call (caller
+    ///   should use `upsert_region_with_generation`)
+    /// - `HashBytes`: always hashes; skips upload if hash matches
+    /// - `Both` (default): hashes and skips if equal
+    ///
+    /// For the generation-tracked path, see
+    /// [`Self::upsert_region_with_generation`].
     pub fn upsert_region_pixmap(
         &mut self,
         device:    &wgpu::Device,
@@ -57,16 +87,68 @@ impl HybridBackend {
         region_id: RegionId,
         pixmap:    &Pixmap,
     ) {
+        use uzor_urx_core::metrics_keys::{
+            KEY_HYBRID_UPLOAD_BYTES, KEY_HYBRID_UPLOAD_SKIPPED,
+            KEY_HYBRID_UPLOAD_SKIPPED_BYTES,
+        };
         if let Some(existing) = self.region_textures.get_mut(&region_id) {
+            // Hash-based skip — strategy may opt-out.
+            let do_hash = matches!(
+                self.config.hybrid_dirty_strategy,
+                DirtyStrategy::HashBytes | DirtyStrategy::Both,
+            );
+            if do_hash && !existing.is_dirty_by_hash(pixmap) {
+                metrics::counter!(KEY_HYBRID_UPLOAD_SKIPPED).increment(1);
+                metrics::counter!(KEY_HYBRID_UPLOAD_SKIPPED_BYTES)
+                    .increment(existing.bytes);
+                return;
+            }
             match existing.replace_contents(queue, pixmap) {
-                Ok(()) => return,
+                Ok(()) => {
+                    metrics::counter!(KEY_HYBRID_UPLOAD_BYTES)
+                        .increment(existing.bytes);
+                    return;
+                }
                 Err(ResizeNeeded) => {
                     // Fall through — drop + recreate below.
                 }
             }
         }
         let tex = RegionTexture::new(device, queue, region_id, pixmap);
+        metrics::counter!(KEY_HYBRID_UPLOAD_BYTES).increment(tex.bytes);
         self.region_textures.insert(region_id, tex);
+    }
+
+    /// Upsert with a caller-supplied generation counter. When the
+    /// generation matches the cached one, skips the upload AND the
+    /// byte hash (cheapest path). Mismatch falls through to the
+    /// `upsert_region_pixmap` logic (hash check, then upload).
+    ///
+    /// Use this when the consumer already tracks region dirtiness in
+    /// its own data model — saves the per-byte fnv pass.
+    pub fn upsert_region_with_generation(
+        &mut self,
+        device:     &wgpu::Device,
+        queue:      &wgpu::Queue,
+        region_id:  RegionId,
+        pixmap:     &Pixmap,
+        generation: u64,
+    ) {
+        use uzor_urx_core::metrics_keys::{
+            KEY_HYBRID_UPLOAD_SKIPPED, KEY_HYBRID_UPLOAD_SKIPPED_BYTES,
+        };
+        if let Some(existing) = self.region_textures.get_mut(&region_id) {
+            if existing.generation == Some(generation) {
+                metrics::counter!(KEY_HYBRID_UPLOAD_SKIPPED).increment(1);
+                metrics::counter!(KEY_HYBRID_UPLOAD_SKIPPED_BYTES)
+                    .increment(existing.bytes);
+                return;
+            }
+        }
+        self.upsert_region_pixmap(device, queue, region_id, pixmap);
+        if let Some(tex) = self.region_textures.get_mut(&region_id) {
+            tex.set_generation(Some(generation));
+        }
     }
 
     pub fn remove_region(&mut self, region_id: RegionId) {

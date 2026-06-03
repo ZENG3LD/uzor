@@ -80,6 +80,13 @@ pub const KEY_HYBRID_COMPOSITE_DRAWS: &str = "urx.hybrid.composite.draws";
 pub const KEY_HYBRID_COMPOSITE_CALLS: &str = "urx.hybrid.composite.calls";
 pub const KEY_HYBRID_COMPOSITE_US:    &str = "urx.hybrid.composite.us";
 pub const KEY_HYBRID_UPLOAD_BYTES:    &str = "urx.hybrid.upload.bytes";
+/// Counter — upsert calls that DIDN'T actually upload because the
+/// dirty-skip path matched (hash equal OR generation equal). Read
+/// against `urx.hybrid.upload.bytes` to estimate bandwidth saved.
+pub const KEY_HYBRID_UPLOAD_SKIPPED:        &str = "urx.hybrid.upload.skipped";
+/// Counter — total bytes that would have been uploaded but were
+/// skipped via the dirty-skip path.
+pub const KEY_HYBRID_UPLOAD_SKIPPED_BYTES:  &str = "urx.hybrid.upload.skipped_bytes";
 
 // ── Skeleton ────────────────────────────────────────────────────────────────
 
@@ -139,6 +146,8 @@ pub static METRIC_CATALOG: &[&str] = &[
     KEY_HYBRID_COMPOSITE_CALLS,
     KEY_HYBRID_COMPOSITE_US,
     KEY_HYBRID_UPLOAD_BYTES,
+    KEY_HYBRID_UPLOAD_SKIPPED,
+    KEY_HYBRID_UPLOAD_SKIPPED_BYTES,
     KEY_RENDER_SKIPPED_NONFINITE,
     KEY_RENDER_SKIPPED_DEGENERATE,
     KEY_SKELETON_FRAMES,

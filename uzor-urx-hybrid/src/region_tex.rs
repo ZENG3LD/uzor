@@ -8,13 +8,40 @@ use uzor_urx_core::region::RegionId;
 /// A region's pre-rasterised pixmap uploaded as a `wgpu::Texture`.
 /// Lives in the hybrid backend's region-texture map keyed by
 /// `RegionId`. Recreated when the source pixmap dimensions change.
+///
+/// Tracks two dirty-skip signals:
+/// - `content_hash`: 64-bit fnv-1a over the pixel bytes at last upload
+/// - `generation`:  caller-supplied counter (None = backend hashes
+///                  bytes; Some(u64) = caller promises monotonic-bump
+///                  on every mutation)
 pub struct RegionTexture {
-    pub region_id:   RegionId,
-    pub width:       u32,
-    pub height:      u32,
-    pub texture:     wgpu::Texture,
-    pub view:        wgpu::TextureView,
-    pub bytes:       u64,
+    pub region_id:    RegionId,
+    pub width:        u32,
+    pub height:       u32,
+    pub texture:      wgpu::Texture,
+    pub view:         wgpu::TextureView,
+    pub bytes:        u64,
+    /// fnv-1a hash of the pixel bytes uploaded last; used by
+    /// `DirtyStrategy::HashBytes` / `Both` (see `UrxConfig`).
+    pub content_hash: u64,
+    /// Caller-supplied generation number; `None` if caller doesn't
+    /// track. `Some(g)` lets `DirtyStrategy::GenerationOnly` skip the
+    /// hash + upload entirely when `g == cached`.
+    pub generation:   Option<u64>,
+}
+
+/// fnv-1a 64-bit over a byte slice. Ours, no extra dep. Fast enough
+/// (~1 GB/s) to be a viable per-frame dirty check on small regions.
+#[inline]
+pub fn fnv1a_64(bytes: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME:  u64 = 0x100000001b3;
+    let mut h = FNV_OFFSET;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
 }
 
 impl RegionTexture {
@@ -74,7 +101,21 @@ impl RegionTexture {
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        Self { region_id, width, height, texture, view, bytes }
+        let content_hash = fnv1a_64(pixmap.pixels());
+        Self {
+            region_id, width, height, texture, view, bytes,
+            content_hash, generation: None,
+        }
+    }
+
+    /// Set the consumer-supplied generation counter for this region.
+    pub fn set_generation(&mut self, gen: Option<u64>) { self.generation = gen; }
+
+    /// Check whether `new_pixmap` differs from what's already uploaded,
+    /// using the byte hash. Returns `false` if identical (skip upload).
+    pub fn is_dirty_by_hash(&self, new_pixmap: &Pixmap) -> bool {
+        let h = fnv1a_64(new_pixmap.pixels());
+        h != self.content_hash
     }
 
     /// Replace the texture's contents from a new pixmap. If dimensions
@@ -108,6 +149,7 @@ impl RegionTexture {
                 depth_or_array_layers: 1,
             },
         );
+        self.content_hash = fnv1a_64(pixmap.pixels());
         Ok(())
     }
 }
