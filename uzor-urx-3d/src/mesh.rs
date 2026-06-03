@@ -1,0 +1,107 @@
+//! Mesh — vertex/index buffers + a couple of built-in primitives.
+
+use bytemuck::{Pod, Zeroable};
+use glam::Vec3;
+
+/// Vertex format for Wave 1: position + vertex color. Wave 3+ will add
+/// normals + UV in a separate VertexLit struct; keeping this one
+/// minimal so the unlit pipeline can stay simple.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct Vertex {
+    pub pos: [f32; 3],
+    pub _pad0: f32, // align to 16B for tidy std140-ish layout
+    pub color: [f32; 4],
+}
+
+impl Vertex {
+    pub fn new(pos: Vec3, color: [f32; 4]) -> Self {
+        Self { pos: pos.to_array(), _pad0: 0.0, color }
+    }
+
+    pub fn vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 16,
+                    shader_location: 1,
+                },
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Mesh {
+    pub vertices: Vec<Vertex>,
+    pub indices: Vec<u32>,
+}
+
+impl Mesh {
+    pub fn new(vertices: Vec<Vertex>, indices: Vec<u32>) -> Self {
+        Self { vertices, indices }
+    }
+
+    /// Unit cube centered at origin, side length 2 (extent ±1 on every
+    /// axis). Each face gets its own 4 vertices so face colors are
+    /// not shared across faces.
+    ///
+    /// Color convention (matches handoff §3 acceptance — 6 distinct face
+    /// colors so the depth test can be verified visually + by readback):
+    ///   +X red, -X cyan, +Y green, -Y magenta, +Z blue, -Z yellow.
+    pub fn cube_rgb_faces() -> Self {
+        let faces: [([[f32; 3]; 4], [f32; 4]); 6] = [
+            // +X (right)
+            (
+                [[1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [1.0, -1.0, 1.0]],
+                [1.0, 0.0, 0.0, 1.0],
+            ),
+            // -X (left)
+            (
+                [[-1.0, -1.0, 1.0], [-1.0, 1.0, 1.0], [-1.0, 1.0, -1.0], [-1.0, -1.0, -1.0]],
+                [0.0, 1.0, 1.0, 1.0],
+            ),
+            // +Y (top)
+            (
+                [[-1.0, 1.0, -1.0], [-1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, -1.0]],
+                [0.0, 1.0, 0.0, 1.0],
+            ),
+            // -Y (bottom)
+            (
+                [[-1.0, -1.0, 1.0], [-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, -1.0, 1.0]],
+                [1.0, 0.0, 1.0, 1.0],
+            ),
+            // +Z (front, facing viewer)
+            (
+                [[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]],
+                [0.0, 0.0, 1.0, 1.0],
+            ),
+            // -Z (back)
+            (
+                [[1.0, -1.0, -1.0], [-1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [1.0, 1.0, -1.0]],
+                [1.0, 1.0, 0.0, 1.0],
+            ),
+        ];
+
+        let mut vertices = Vec::with_capacity(24);
+        let mut indices = Vec::with_capacity(36);
+        for (i, (corners, color)) in faces.iter().enumerate() {
+            let base = (i * 4) as u32;
+            for c in corners {
+                vertices.push(Vertex::new(Vec3::from_array(*c), *color));
+            }
+            // CCW winding seen from outside (cull mode = back-face).
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+
+        Self { vertices, indices }
+    }
+}

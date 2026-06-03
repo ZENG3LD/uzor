@@ -27,6 +27,8 @@ members = [
     "uzor-urx-glyph",
     # URX full-GPU compute pipeline backend (v1.6 scaffold)
     "uzor-urx-wgpu-full",
+    # URX 3D backend (native XYZ, perspective camera, depth pipeline — Wave 1+)
+    "uzor-urx-3d",
     # Utils
     "uzor-render-hub",
     # Icon utilities
@@ -71,5 +73,6 @@ uzor-urx-engine = { version = "1.4.4", path = "./uzor-urx-engine" }
 uzor-urx-hybrid = { version = "1.4.4", path = "./uzor-urx-hybrid" }
 uzor-urx-glyph = { version = "1.4.4", path = "./uzor-urx-glyph" }
 uzor-urx-wgpu-full = { version = "1.4.4", path = "./uzor-urx-wgpu-full" }
+uzor-urx-3d = { version = "1.4.4", path = "./uzor-urx-3d" }
 serde = { version = "1.0", features = ["derive"] }
 

@@ -1,0 +1,26 @@
+[package]
+name        = "uzor-urx-3d"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "URX 3D rendering backend — native XYZ coordinate system, vertex/index buffers, perspective camera, depth-tested raster pipeline. Sibling to URX 2D (urx-wgpu-full); they coexist via off-screen render-to-texture bridges."
+keywords    = ["graphics", "rendering", "3d", "wgpu"]
+categories  = ["graphics", "rendering"]
+
+[dependencies]
+wgpu = "28"
+bytemuck = { version = "1", features = ["derive"] }
+glam = { version = "0.29", features = ["bytemuck"] }
+
+[dev-dependencies]
+pollster   = "0.4"
+winit      = "0.30"
+axum       = { version = "0.7", default-features = false, features = ["tokio", "http1", "json", "query"] }
+tokio      = { version = "1", features = ["rt-multi-thread", "sync", "macros", "net"] }
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[example]]
+name = "spinning_cube_demo"
