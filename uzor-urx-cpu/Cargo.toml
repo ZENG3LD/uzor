@@ -1,0 +1,17 @@
+[package]
+name        = "uzor-urx-cpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "URX CPU backend — own scanline rasteriser. Consumes urx-core DrawCommand, outputs premultiplied RGBA8 Pixmap. No tiny_skia/vello_cpu dep (math too buggy, write own)."
+keywords    = ["graphics", "rendering", "ui", "cpu", "rasterizer"]
+categories  = ["graphics", "rendering"]
+
+[dependencies]
+uzor-urx-core = { workspace = true }
+# `metrics` 0.24 facade so the CPU backend emits its sub-spans into
+# the same recorder URX-WGPU uses — apples-to-apples comparison
+# requires identical telemetry on both sides.
+metrics = "0.24"
