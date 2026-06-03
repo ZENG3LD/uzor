@@ -21,9 +21,18 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 
 [dev-dependencies]
 criterion = "0.5"
+# Apples-to-apples reference baseline. vello_cpu is the "industry"
+# software rasteriser; URX exists explicitly to replace it. The
+# compare bench feeds both the same scene of fill rects.
+vello_cpu  = { version = "0.0.7", features = ["std"] }
+tiny-skia  = "0.11"
 
 [[bench]]
 name = "render"
+harness = false
+
+[[bench]]
+name = "compare_baselines"
 harness = false
 
 [features]
