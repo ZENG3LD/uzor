@@ -117,6 +117,46 @@ pub struct UrxConfig {
     pub hybrid_atlas_h: u32,
     /// How to decide a region is dirty in hybrid mode.
     pub hybrid_dirty_strategy: DirtyStrategy,
+    /// Enable atlas-packed region textures (Hybrid-P1). When `true`,
+    /// small regions (each side ≤ `hybrid_atlas_w/2`) are packed into
+    /// a shared atlas via the shelf allocator, eliminating per-region
+    /// bind group switches. Default `false` — opt-in until rolled out
+    /// across consumers (per 16-research configurability directive).
+    pub hybrid_atlas_enabled: bool,
+    /// Enable single instanced composite draw (Hybrid-P2). Requires
+    /// `hybrid_atlas_enabled` to actually batch — without atlas the
+    /// per-region texture switches still happen. Default `false`.
+    pub hybrid_instanced_composite: bool,
+    /// Enable wgpu::PipelineCache disk persistence at backend
+    /// construction. The app_id is the consumer's choice; default
+    /// "urx" works for single-consumer apps. Default `true` — the
+    /// path-key + driver-string-keying means a stale blob silently
+    /// falls back to cold compile (fallback: true in create_pipeline_cache).
+    pub wgpu_pipeline_cache_enabled: bool,
+    /// Pack RGBA into u32 in GPU vertex format (WGPU-P4). When `true`,
+    /// the wgpu-instanced backend's vertex shaders consume `u32`
+    /// colour fields via `unpack4x8unorm`, saving ~30% of per-instance
+    /// upload bandwidth. Default `false` — opt-in because the vertex
+    /// format change requires shader recompilation + caller
+    /// awareness of the new wire format.
+    pub wgpu_packed_color: bool,
+    /// Use `var<immediate>` (push constants) for the projection matrix
+    /// instead of a uniform buffer (WGPU-P4 partial). Eliminates one
+    /// per-frame `write_buffer` + `set_bind_group` call. Default
+    /// `false` — opt-in pending verification that the host backend
+    /// supports `Features::PUSH_CONSTANTS`.
+    pub wgpu_use_immediates_for_projection: bool,
+    /// Sort accumulated draw commands by pipeline type before
+    /// flushing the encoder (WGPU-P5). Reduces pipeline switch count
+    /// from O(N_commands) to O(N_pipeline_types). Default `false` —
+    /// behaviour change for painter's order; requires audit that
+    /// no cross-type overdraw depends on draw order.
+    pub wgpu_sort_by_pipeline: bool,
+    /// Use a `wgpu::util::StagingBelt` ring-buffer for per-frame
+    /// uploads instead of individual `Queue::write_buffer` calls.
+    /// Eliminates the periodic ~25 ms allocation spike (wgpu issue
+    /// #1242). Default `false` until belt sizing is calibrated.
+    pub wgpu_staging_belt_enabled: bool,
 }
 
 impl Default for UrxConfig {
@@ -135,6 +175,16 @@ impl Default for UrxConfig {
             hybrid_atlas_w: 2048,
             hybrid_atlas_h: 2048,
             hybrid_dirty_strategy: DirtyStrategy::Both,
+            // B-tier optimisation knobs — default OFF for byte-exact
+            // 1.4.x behaviour. Consumers opt in per `16-research
+            // compendium`'s 'configurable variant' directive.
+            hybrid_atlas_enabled: false,
+            hybrid_instanced_composite: false,
+            wgpu_pipeline_cache_enabled: true,
+            wgpu_packed_color: false,
+            wgpu_use_immediates_for_projection: false,
+            wgpu_sort_by_pipeline: false,
+            wgpu_staging_belt_enabled: false,
         }
     }
 }
@@ -222,6 +272,13 @@ impl UrxConfigBuilder {
     setter!(hybrid_atlas_w, u32);
     setter!(hybrid_atlas_h, u32);
     setter!(hybrid_dirty_strategy, DirtyStrategy);
+    setter!(hybrid_atlas_enabled, bool);
+    setter!(hybrid_instanced_composite, bool);
+    setter!(wgpu_pipeline_cache_enabled, bool);
+    setter!(wgpu_packed_color, bool);
+    setter!(wgpu_use_immediates_for_projection, bool);
+    setter!(wgpu_sort_by_pipeline, bool);
+    setter!(wgpu_staging_belt_enabled, bool);
 
     /// Finalise + validate.
     pub fn build(self) -> Result<UrxConfig, ConfigError> {
@@ -253,7 +310,34 @@ mod tests {
         assert_eq!(c.hybrid_atlas_w, 2048);
         assert_eq!(c.hybrid_atlas_h, 2048);
         assert_eq!(c.hybrid_dirty_strategy, DirtyStrategy::Both);
+        // B-tier opt-in flags — default OFF for byte-exact 1.4.x behaviour.
+        assert!(!c.hybrid_atlas_enabled);
+        assert!(!c.hybrid_instanced_composite);
+        assert!( c.wgpu_pipeline_cache_enabled); // safe default ON — fallback:true
+        assert!(!c.wgpu_packed_color);
+        assert!(!c.wgpu_use_immediates_for_projection);
+        assert!(!c.wgpu_sort_by_pipeline);
+        assert!(!c.wgpu_staging_belt_enabled);
         c.validate().unwrap();
+    }
+
+    #[test]
+    fn b_tier_flags_can_be_toggled_via_builder() {
+        let c = UrxConfig::builder()
+            .hybrid_atlas_enabled(true)
+            .hybrid_instanced_composite(true)
+            .wgpu_packed_color(true)
+            .wgpu_use_immediates_for_projection(true)
+            .wgpu_sort_by_pipeline(true)
+            .wgpu_staging_belt_enabled(true)
+            .build()
+            .unwrap();
+        assert!(c.hybrid_atlas_enabled);
+        assert!(c.hybrid_instanced_composite);
+        assert!(c.wgpu_packed_color);
+        assert!(c.wgpu_use_immediates_for_projection);
+        assert!(c.wgpu_sort_by_pipeline);
+        assert!(c.wgpu_staging_belt_enabled);
     }
 
     #[test]
