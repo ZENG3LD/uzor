@@ -9,7 +9,7 @@ use uzor_urx_core::math::{Brush, Color};
 /// Convert a `peniko::Color` to premultiplied `[r, g, b, a]` bytes.
 /// Rounding: round-half-up (`+127 / 255` is correct for u8).
 #[inline]
-pub fn color_to_premul(c: Color) -> [u8; 4] {
+pub(crate) fn color_to_premul(c: Color) -> [u8; 4] {
     let a = c.a as u32;
     [
         ((c.r as u32 * a + 127) / 255) as u8,

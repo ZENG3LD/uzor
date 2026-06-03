@@ -29,6 +29,11 @@ pub mod fill;
 pub mod stroke;
 pub mod clip;
 pub mod color;
+#[cfg(feature = "parallel")]
+pub mod parallel;
 
 pub use backend::{CpuBackend, RenderError};
 pub use pixmap::Pixmap;
+
+#[cfg(feature = "parallel")]
+pub use parallel::render_parallel;

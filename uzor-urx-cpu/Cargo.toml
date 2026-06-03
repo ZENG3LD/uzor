@@ -15,3 +15,11 @@ uzor-urx-core = { workspace = true }
 # the same recorder URX-WGPU uses — apples-to-apples comparison
 # requires identical telemetry on both sides.
 metrics = "0.24"
+rayon = { version = "1", optional = true }
+
+[features]
+default = []
+# Per-strip parallel rasterisation. Splits the pixmap into horizontal
+# strips, runs the scene walker on each in parallel via rayon. Wins
+# scale with strip count (≤ core count) and pixel area.
+parallel = ["dep:rayon"]

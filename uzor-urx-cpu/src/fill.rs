@@ -73,7 +73,7 @@ pub(crate) fn fill_rect_aa(
 /// the float interval `[lo, hi]`. Used per-axis; final per-pixel
 /// coverage = (h * v + 127) / 255.
 #[inline]
-pub(crate) fn axis_coverage(pi: f64, pi1: f64, lo: f64, hi: f64) -> u8 {
+pub fn axis_coverage(pi: f64, pi1: f64, lo: f64, hi: f64) -> u8 {
     let a = pi.max(lo);
     let b = pi1.min(hi);
     if b <= a { 0 } else { ((b - a) * 255.0 + 0.5).clamp(0.0, 255.0) as u8 }

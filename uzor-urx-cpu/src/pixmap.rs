@@ -89,3 +89,64 @@ impl Pixmap {
         }
     }
 }
+
+/// Mutable view over a horizontal strip of a pixmap — a contiguous
+/// slice of rows. Used by the `parallel` feature to give each rayon
+/// worker exclusive access to its strip's bytes.
+pub struct PixmapStripMut<'a> {
+    pub(crate) pixels: &'a mut [u8],
+    pub(crate) width:  u32,
+    pub(crate) y0:     u32,    // strip's first row in the parent pixmap
+    pub(crate) rows:   u32,
+}
+
+impl<'a> PixmapStripMut<'a> {
+    pub fn width(&self)  -> u32 { self.width }
+    pub fn rows(&self)   -> u32 { self.rows  }
+    pub fn y0(&self)     -> u32 { self.y0    }
+
+    /// `set_pixel`/`blend_pixel` with PARENT pixmap coordinates (not
+    /// strip-local). Out-of-strip rows are silently skipped.
+    #[inline]
+    pub fn blend_pixel_parent(&mut self, x: u32, y: u32, src: [u8; 4]) {
+        if y < self.y0 || y >= self.y0 + self.rows { return; }
+        if x >= self.width { return; }
+        let local_y = y - self.y0;
+        let i = ((local_y as usize) * (self.width as usize) + (x as usize)) * 4;
+        let inv_a = 255 - src[3] as u32;
+        for c in 0..4 {
+            let d = self.pixels[i + c] as u32;
+            let s = src[c] as u32;
+            self.pixels[i + c] = (s + (d * inv_a + 127) / 255).min(255) as u8;
+        }
+    }
+}
+
+impl Pixmap {
+    /// Split this pixmap into N horizontal strips of (roughly) equal
+    /// height. The total rows are distributed; if `count > height`
+    /// the trailing strips get zero rows (still valid).
+    ///
+    /// Strips are returned in top-to-bottom order. Each strip owns
+    /// its own row range exclusively — pass strips to threads.
+    pub fn split_strips_mut(&mut self, count: usize) -> Vec<PixmapStripMut<'_>> {
+        let count = count.max(1).min(self.height as usize);
+        let stride_bytes = self.stride();
+        let rows_per = (self.height as usize) / count;
+        let extra    = (self.height as usize) % count;
+        let mut out: Vec<PixmapStripMut<'_>> = Vec::with_capacity(count);
+        let mut remaining: &mut [u8] = &mut self.pixels;
+        let mut y0: u32 = 0;
+        for i in 0..count {
+            let rows = (rows_per + if i < extra { 1 } else { 0 }) as u32;
+            let byte_len = (rows as usize) * stride_bytes;
+            let (head, tail) = remaining.split_at_mut(byte_len);
+            out.push(PixmapStripMut {
+                pixels: head, width: self.width, y0, rows,
+            });
+            y0 += rows;
+            remaining = tail;
+        }
+        out
+    }
+}
