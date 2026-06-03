@@ -74,6 +74,13 @@ pub const KEY_CACHE_BYTES: &str = "urx.cache.bytes";
 pub const KEY_CACHE_EVICT: &str = "urx.cache.evict";
 pub const KEY_CACHE_COUNT: &str = "urx.cache.count";
 
+// ── Hybrid composite (urx-hybrid backend) ──────────────────────────────────
+
+pub const KEY_HYBRID_COMPOSITE_DRAWS: &str = "urx.hybrid.composite.draws";
+pub const KEY_HYBRID_COMPOSITE_CALLS: &str = "urx.hybrid.composite.calls";
+pub const KEY_HYBRID_COMPOSITE_US:    &str = "urx.hybrid.composite.us";
+pub const KEY_HYBRID_UPLOAD_BYTES:    &str = "urx.hybrid.upload.bytes";
+
 // ── Skeleton ────────────────────────────────────────────────────────────────
 
 pub const KEY_SKELETON_FRAMES: &str = "urx.skeleton.frames";
@@ -117,6 +124,10 @@ pub static METRIC_CATALOG: &[&str] = &[
     KEY_CACHE_BYTES,
     KEY_CACHE_EVICT,
     KEY_CACHE_COUNT,
+    KEY_HYBRID_COMPOSITE_DRAWS,
+    KEY_HYBRID_COMPOSITE_CALLS,
+    KEY_HYBRID_COMPOSITE_US,
+    KEY_HYBRID_UPLOAD_BYTES,
     KEY_SKELETON_FRAMES,
     KEY_SKELETON_RENDER_US,
     KEY_TEXT_SHAPE_US,

@@ -36,6 +36,33 @@ pub fn render_parallel(
     };
 
     let t0 = Instant::now();
+
+    // Fail-fast on unsupported primitives. Strip-rendered paths/glyphs/
+    // images / gradient brushes would either need shared per-scene
+    // state (edge table, atlas refs) or per-pixel gradient eval which
+    // is currently linked through pixmap not strip. Silently skipping
+    // them as the prior code did produced invisible bugs in consumer
+    // output. Surface the limitation explicitly.
+    for (i, cmd) in scene.commands.iter().enumerate() {
+        match cmd {
+            DrawCommand::FillPath { .. }
+            | DrawCommand::StrokePath { .. }
+            | DrawCommand::GlyphRun { .. }
+            | DrawCommand::Image { .. } => {
+                return Err(RenderError::ParallelUnsupported(i));
+            }
+            DrawCommand::FillRect { brush, .. }
+            | DrawCommand::StrokeRect { brush, .. }
+            | DrawCommand::Line { brush, .. } => {
+                if matches!(brush, uzor_urx_core::math::Brush::Gradient(_)
+                                  | uzor_urx_core::math::Brush::Image(_)) {
+                    return Err(RenderError::ParallelUnsupported(i));
+                }
+            }
+            _ => {}
+        }
+    }
+
     let strip_count = if strips == 0 {
         rayon::current_num_threads().max(1)
     } else {

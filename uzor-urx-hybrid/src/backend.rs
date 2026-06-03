@@ -181,8 +181,10 @@ impl HybridBackend {
             rp.draw(0 .. 6, (i as u32) .. (i as u32 + 1));
         }
 
-        metrics::counter!("urx.hybrid.composite.draws").increment(instances.len() as u64);
-        metrics::counter!("urx.hybrid.composite.calls").increment(1);
+        metrics::counter!(uzor_urx_core::metrics_keys::KEY_HYBRID_COMPOSITE_DRAWS)
+            .increment(instances.len() as u64);
+        metrics::counter!(uzor_urx_core::metrics_keys::KEY_HYBRID_COMPOSITE_CALLS)
+            .increment(1);
     }
 }
 

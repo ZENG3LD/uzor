@@ -166,7 +166,8 @@ impl UrxEngine {
     pub fn render(&mut self, target: RenderTarget<'_>) -> Result<RenderStats, RenderError> {
         use uzor_urx_core::metrics_keys::{
             KEY_REGION_DIRTY_COUNT, KEY_REGION_CLEAN_COUNT, KEY_REGION_TRANSFORM_ONLY,
-            KEY_TICK_REGION_PASSES_US,
+            KEY_TICK_REGION_PASSES_US, KEY_TICK_TOTAL_US, KEY_TICK_FRAMES,
+            KEY_TICK_WINDOWS_PAINTED,
         };
 
         let t_total = std::time::Instant::now();
@@ -278,6 +279,11 @@ impl UrxEngine {
         self.last_cache_misses = cache_misses;
         self.dirty.reset();
         metrics::histogram!(KEY_TICK_REGION_PASSES_US).record(stats.elapsed_us as f64);
+        metrics::histogram!(KEY_TICK_TOTAL_US).record(stats.elapsed_us as f64);
+        metrics::counter!(KEY_TICK_FRAMES).increment(1);
+        if dirty_n > 0 || xform_n > 0 {
+            metrics::counter!(KEY_TICK_WINDOWS_PAINTED).increment(1);
+        }
         Ok(stats)
     }
 }
@@ -323,12 +329,10 @@ fn shift_scene_origin(scene: &mut Scene, dx: f64, dy: f64) {
                 let r = rect.rect();
                 *rect = RoundedRect::new(r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy, rect.radii());
             }
-            DrawCommand::GlyphRun { .. } | DrawCommand::Image { .. } | DrawCommand::PopClip => {
-                // GlyphRun + Image have their own translate inside Affine
-                // transforms; we don't reshape them here. The Affine in
-                // each command should be premultiplied by the shift —
-                // future patch when text/image land on the CPU path.
+            DrawCommand::GlyphRun { transform, .. } | DrawCommand::Image { transform, .. } => {
+                *transform = shift * *transform;
             }
+            DrawCommand::PopClip => {}
         }
     }
 }

@@ -5,10 +5,12 @@
 //! per-pixel SDF (`sdRoundedBox` from Inigo Quilez). Pixel parity
 //! with GPU shader via identical `smoothstep(-0.5, 0.5, d)` math.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, RwLock};
 
 use uzor_urx_core::math::{Affine, Rect, RoundedRect};
+
+const MAX_MASK_DIM: u32 = 4096;
+const MASK_CACHE_CAP: usize = 256;
 
 /// Cache key — quantise to 0.5px so visually-identical rounded rects
 /// at slightly different sub-pixel positions hit the same cache slot.
@@ -20,7 +22,7 @@ struct MaskKey {
 }
 
 /// One cached A8 alpha mask. Same layout as Pixmap but 1 byte/pixel.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct AlphaMask {
     pub width:  u32,
     pub height: u32,
@@ -36,25 +38,56 @@ impl AlphaMask {
     }
 }
 
-/// Process-global mask cache. Tiny by default; rounded rects with the
-/// same radii+dims are extremely common in UI (every button).
-static MASK_CACHE: Mutex<Option<HashMap<MaskKey, AlphaMask>>> = Mutex::new(None);
+pub(crate) type AlphaMaskArc = Arc<AlphaMask>;
+
+#[derive(Default)]
+struct MaskCache {
+    entries: Vec<(MaskKey, AlphaMaskArc, u64)>, // key, mask, last_used_tick
+    tick:    u64,
+}
+
+impl MaskCache {
+    fn get(&mut self, key: MaskKey) -> Option<AlphaMaskArc> {
+        self.tick = self.tick.wrapping_add(1);
+        for entry in self.entries.iter_mut() {
+            if entry.0 == key {
+                entry.2 = self.tick;
+                return Some(entry.1.clone());
+            }
+        }
+        None
+    }
+
+    fn insert(&mut self, key: MaskKey, mask: AlphaMaskArc) {
+        self.tick = self.tick.wrapping_add(1);
+        if self.entries.len() >= MASK_CACHE_CAP {
+            if let Some((idx, _)) = self.entries
+                .iter().enumerate()
+                .min_by_key(|(_, e)| e.2)
+            {
+                self.entries.swap_remove(idx);
+            }
+        }
+        self.entries.push((key, mask, self.tick));
+    }
+}
+
+static MASK_CACHE: RwLock<Option<MaskCache>> = RwLock::new(None);
 
 fn quantise(v: f64) -> u32 {
-    (v * 2.0).round().max(0.0) as u32
-}
-fn quantise_f32(v: f32) -> u32 {
-    (v * 2.0).round().max(0.0) as u32
+    if !v.is_finite() { return 0; }
+    (v * 2.0).round().max(0.0).min(u32::MAX as f64) as u32
 }
 
 /// Get-or-build an A8 mask for a rounded rect of given dimensions.
 /// `radii` order matches kurbo: top-left, top-right, bottom-right,
-/// bottom-left. Width/height in pixel units.
+/// bottom-left. Width/height in pixel units. Caller-supplied dims
+/// are clamped to `MAX_MASK_DIM` to avoid runaway allocations.
 pub(crate) fn get_or_build_mask(
     width:  f64,
     height: f64,
     radii:  [f64; 4],
-) -> AlphaMask {
+) -> AlphaMaskArc {
     let key = MaskKey {
         width_2x:  quantise(width),
         height_2x: quantise(height),
@@ -64,26 +97,23 @@ pub(crate) fn get_or_build_mask(
         ],
     };
     {
-        let guard = MASK_CACHE.lock().unwrap();
-        if let Some(cache) = guard.as_ref() {
-            if let Some(m) = cache.get(&key) {
-                return m.clone();
-            }
+        let mut guard = MASK_CACHE.write().unwrap();
+        let cache = guard.get_or_insert_with(MaskCache::default);
+        if let Some(m) = cache.get(key) {
+            return m;
         }
+        let mask = Arc::new(build_mask_sdf(width, height, radii));
+        cache.insert(key, mask.clone());
+        mask
     }
-    let mask = build_mask_sdf(width, height, radii);
-    let mut guard = MASK_CACHE.lock().unwrap();
-    let cache = guard.get_or_insert_with(HashMap::new);
-    cache.insert(key, mask.clone());
-    mask
 }
 
 /// Per-pixel SDF mask generator. The Inigo Quilez 4-corner rounded box
 /// SDF: pick corner radius by quadrant, eval distance, smoothstep
 /// over 1 pixel for AA coverage.
 fn build_mask_sdf(width: f64, height: f64, radii: [f64; 4]) -> AlphaMask {
-    let w_u = width.ceil().max(1.0) as u32;
-    let h_u = height.ceil().max(1.0) as u32;
+    let w_u = width.ceil().max(1.0).min(MAX_MASK_DIM as f64) as u32;
+    let h_u = height.ceil().max(1.0).min(MAX_MASK_DIM as f64) as u32;
     let mut alpha = vec![0u8; (w_u as usize) * (h_u as usize)];
     let hw = width as f32 * 0.5;
     let hh = height as f32 * 0.5;
@@ -130,18 +160,30 @@ fn build_mask_sdf(width: f64, height: f64, radii: [f64; 4]) -> AlphaMask {
     AlphaMask { width: w_u, height: h_u, alpha }
 }
 
-/// Helper for engine ClipStack — produce a screen-space (mask, origin)
-/// pair for a RoundedRect clip given its transform.
+/// Helper for engine ClipStack — produce a screen-space `(mask, origin,
+/// screen_rect)` triple for a RoundedRect clip given its transform.
+///
+/// **Scope (Phase 1)**: translation+scale only. Shear/rotation collapse
+/// to AABB silently and a `KEY_RENDER_PRIMITIVES{kind=rounded_clip_rotated_degraded}`
+/// counter is bumped so dashboards see the lossy path. Proper rotated
+/// rrect clip needs a tessellated tri-strip alpha mask — deferred to
+/// Phase 9c+ when a consumer needs it.
 pub(crate) fn rounded_clip_to_mask(
     rect:      RoundedRect,
     transform: &Affine,
-) -> (AlphaMask, (i64, i64), Rect) {
+) -> (AlphaMaskArc, (i64, i64), Rect) {
     let r = rect.rect();
     let radii = rect.radii();
     let coeffs = transform.as_coeffs();
-    // Phase 1: translation-only transforms.
     let (sx, sy) = (coeffs[0], coeffs[3]);
+    let (shear_a, shear_b) = (coeffs[1], coeffs[2]);
     let (tx, ty) = (coeffs[4], coeffs[5]);
+    if shear_a.abs() > 1e-6 || shear_b.abs() > 1e-6 {
+        metrics::counter!(
+            uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+            "kind" => "rounded_clip_rotated_degraded"
+        ).increment(1);
+    }
     let w = (r.width() * sx.abs()).max(1.0);
     let h = (r.height() * sy.abs()).max(1.0);
     let x0 = r.x0 * sx + tx;
@@ -156,31 +198,9 @@ pub(crate) fn rounded_clip_to_mask(
     (mask, (x0.round() as i64, y0.round() as i64), screen_rect)
 }
 
-/// Compose a source pixel through a clip-mask coverage. Multiplies
-/// the source's premultiplied alpha by the mask coverage.
-/// (Currently unused — ClipStack::pixel_coverage handles composition.
-/// Kept as a public helper for future direct-blend use cases.)
-#[allow(dead_code)]
-#[inline]
-pub(crate) fn apply_mask(src: [u8; 4], mask_a: u8) -> [u8; 4] {
-    if mask_a == 255 { return src; }
-    if mask_a == 0 { return [0; 4]; }
-    let m = mask_a as u32;
-    [
-        ((src[0] as u32 * m + 127) / 255) as u8,
-        ((src[1] as u32 * m + 127) / 255) as u8,
-        ((src[2] as u32 * m + 127) / 255) as u8,
-        ((src[3] as u32 * m + 127) / 255) as u8,
-    ]
-}
-
 /// Test-only helper: flush the mask cache.
 #[doc(hidden)]
 pub fn _clear_cache_for_tests() {
-    let mut g = MASK_CACHE.lock().unwrap();
-    if let Some(c) = g.as_mut() { c.clear(); }
+    let mut g = MASK_CACHE.write().unwrap();
+    if let Some(c) = g.as_mut() { c.entries.clear(); c.tick = 0; }
 }
-
-// Silence unused-import warnings.
-#[allow(dead_code)]
-fn _u() { let _ = quantise_f32(0.0); }

@@ -184,8 +184,4 @@ impl Scene {
         });
     }
 
-    /// Path bezier — REJECTED for the minimal vocabulary. Add when a
-    /// consumer (mlc charts most likely) needs arbitrary paths and we
-    /// have a tessellation strategy across all 3 backends.
-    pub fn _path_not_yet_implemented(&mut self, _path: BezPath) {}
 }

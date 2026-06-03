@@ -36,14 +36,20 @@ pub fn adapt_scene_into(scene: &Scene, ctx: &mut InstancedRenderContext) {
 
     for cmd in &scene.commands {
         match cmd {
-            DrawCommand::FillRect { rect, radii: _radii, brush, transform } => {
+            DrawCommand::FillRect { rect, radii, brush, transform } => {
+                degrade_brush(brush, "wgpu_fill_rect_gradient_degraded", "wgpu_fill_rect_image_degraded");
+                degrade_radii(radii, "wgpu_fill_rect_radii_dropped");
+                degrade_shear(transform, "wgpu_fill_rect_shear_dropped");
                 let color = brush_to_color(brush);
                 ctx.set_fill_color(&color_to_css(color));
                 apply_transform(ctx, transform);
                 ctx.fill_rect(rect.x0, rect.y0, rect.width(), rect.height());
                 unapply_transform(ctx, transform);
             }
-            DrawCommand::StrokeRect { rect, radii: _radii, stroke, brush, transform } => {
+            DrawCommand::StrokeRect { rect, radii, stroke, brush, transform } => {
+                degrade_brush(brush, "wgpu_stroke_rect_gradient_degraded", "wgpu_stroke_rect_image_degraded");
+                degrade_radii(radii, "wgpu_stroke_rect_radii_dropped");
+                degrade_shear(transform, "wgpu_stroke_rect_shear_dropped");
                 let color = brush_to_color(brush);
                 ctx.set_stroke_color(&color_to_css(color));
                 ctx.set_stroke_width(stroke.width as f64);
@@ -90,20 +96,29 @@ pub fn adapt_scene_into(scene: &Scene, ctx: &mut InstancedRenderContext) {
                 unapply_transform(ctx, transform);
             }
             DrawCommand::GlyphRun { .. } => {
-                // Glyph adapter routes through cosmic-text → atlas.
-                // The InstancedRenderContext API expects `fill_text`
-                // with a string; we don't have one here (Scene carries
-                // pre-shaped glyphs). Adapter for pre-shaped glyphs
-                // needs an extra method on InstancedRenderContext
-                // (e.g. `fill_glyphs(&[Glyph], font_id, size)`) which
-                // doesn't exist yet. Defer to follow-up — currently
-                // GlyphRun is silently dropped here on the WGPU path.
+                metrics::counter!(
+                    uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+                    "kind" => "wgpu_glyphrun_dropped",
+                ).increment(1);
             }
             DrawCommand::Image { .. } => {
-                // Same story as GlyphRun — needs an extension to the
-                // underlying context. Deferred.
+                metrics::counter!(
+                    uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+                    "kind" => "wgpu_image_dropped",
+                ).increment(1);
             }
-            DrawCommand::PushClipRect { .. } | DrawCommand::PushClipRoundedRect { .. } => {
+            DrawCommand::PushClipRect { .. } => {
+                ctx.save();
+                clip_depth += 1;
+                // Don't degrade — true scissor lands when we own the
+                // wgpu pass; until then save/restore approximates.
+                continue;
+            }
+            DrawCommand::PushClipRoundedRect { .. } => {
+                metrics::counter!(
+                    uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+                    "kind" => "wgpu_rounded_clip_degraded",
+                ).increment(1);
                 // Underlying context has its own clip stack via
                 // axis-aligned rects in fragment-discard. Without
                 // extending the API we approximate by saving state;
@@ -130,6 +145,43 @@ pub fn adapt_scene_into(scene: &Scene, ctx: &mut InstancedRenderContext) {
     let elapsed_us = t0.elapsed().as_micros() as u64;
     metrics::histogram!(render_submit_count_key("urx_wgpu_adapt")).record(elapsed_us as f64);
     metrics::counter!(KEY_RENDER_PRIMITIVES).increment(scene.commands.len() as u64);
+}
+
+#[inline]
+fn degrade_brush(brush: &Brush, grad_label: &'static str, image_label: &'static str) {
+    use uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES;
+    match brush {
+        Brush::Gradient(_) => {
+            metrics::counter!(KEY_RENDER_PRIMITIVES, "kind" => grad_label).increment(1);
+        }
+        Brush::Image(_) => {
+            metrics::counter!(KEY_RENDER_PRIMITIVES, "kind" => image_label).increment(1);
+        }
+        _ => {}
+    }
+}
+
+#[inline]
+fn degrade_radii(radii: &Option<[f32; 4]>, label: &'static str) {
+    if let Some(r) = radii {
+        if r.iter().any(|v| *v > 0.0) {
+            metrics::counter!(
+                uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+                "kind" => label,
+            ).increment(1);
+        }
+    }
+}
+
+#[inline]
+fn degrade_shear(transform: &Affine, label: &'static str) {
+    let c = transform.as_coeffs();
+    if c[1].abs() > 1e-6 || c[2].abs() > 1e-6 {
+        metrics::counter!(
+            uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+            "kind" => label,
+        ).increment(1);
+    }
 }
 
 /// Emit a kurbo `BezPath` into an `InstancedRenderContext` via the

@@ -7,7 +7,7 @@
 
 use uzor_urx_core::math::{Affine, Rect, RoundedRect};
 
-use crate::rounded::{rounded_clip_to_mask, AlphaMask};
+use crate::rounded::{rounded_clip_to_mask, AlphaMaskArc};
 
 #[derive(Debug, Clone)]
 pub(crate) enum ClipEntry {
@@ -17,7 +17,7 @@ pub(crate) enum ClipEntry {
         bounds: Rect,
         /// Top-left of the mask in screen coords.
         origin: (i64, i64),
-        mask:   AlphaMask,
+        mask:   AlphaMaskArc,
     },
 }
 
@@ -125,13 +125,19 @@ impl ClipStack {
     }
 }
 
-/// Apply transform to a rect and snap to axis-aligned bounding box.
+/// Apply a full 2x3 affine to a rect and snap to axis-aligned bounding
+/// box. Handles shear/rotation correctly by transforming all 4 corners.
 pub(crate) fn transform_axis_aligned(t: Affine, r: Rect) -> Rect {
     let c = t.as_coeffs();
-    let (sx, sy, tx, ty) = (c[0], c[3], c[4], c[5]);
-    let x0 = r.x0 * sx + tx;
-    let y0 = r.y0 * sy + ty;
-    let x1 = r.x1 * sx + tx;
-    let y1 = r.y1 * sy + ty;
-    Rect::new(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1))
+    let (a, b, e, d, tx, ty) = (c[0], c[1], c[2], c[3], c[4], c[5]);
+    let map = |x: f64, y: f64| (a * x + e * y + tx, b * x + d * y + ty);
+    let (x00, y00) = map(r.x0, r.y0);
+    let (x10, y10) = map(r.x1, r.y0);
+    let (x11, y11) = map(r.x1, r.y1);
+    let (x01, y01) = map(r.x0, r.y1);
+    let min_x = x00.min(x10).min(x11).min(x01);
+    let max_x = x00.max(x10).max(x11).max(x01);
+    let min_y = y00.min(y10).min(y11).min(y01);
+    let max_y = y00.max(y10).max(y11).max(y01);
+    Rect::new(min_x, min_y, max_x, max_y)
 }

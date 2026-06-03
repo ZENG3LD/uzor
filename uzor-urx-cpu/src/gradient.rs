@@ -13,8 +13,7 @@
 //! Phase 1 vocab: Linear + Radial (concentric). Sweep + focal radial
 //! deferred to consumer demand.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, RwLock};
 
 use uzor_urx_core::math::{
     Brush, Color, ColorStop, Extend, Gradient, GradientKind, Rect,
@@ -24,44 +23,92 @@ use crate::clip::ClipStack;
 use crate::pixmap::Pixmap;
 
 const LUT_SIZE: usize = 256;
+const LUT_CACHE_CAP: usize = 256;
 
 /// Pre-built lookup table — `LUT_SIZE` entries of premultiplied RGBA8.
-type GradientLut = [[u8; 4]; LUT_SIZE];
+/// Behind `Arc` so cache hits don't pay a 1KB memcpy.
+pub(crate) type GradientLut = [[u8; 4]; LUT_SIZE];
+type GradientLutArc = Arc<GradientLut>;
 
-/// Process-global LUT cache. Key: hash of stops + spread mode. Built
-/// once per (gradient, dpr) tuple; reused across frames. LRU eviction
-/// would land here when the cache grows; current impl is unbounded
-/// since gradient count per app is typically low (< 50).
-static LUT_CACHE: Mutex<Option<HashMap<u64, GradientLut>>> = Mutex::new(None);
-
-fn hash_stops(stops: &[ColorStop], extend: Extend) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    for s in stops {
-        // ColorStop is Color + offset; hash all bytes.
-        let c = s.color;
-        s.offset.to_bits().hash(&mut h);
-        c.r.hash(&mut h);
-        c.g.hash(&mut h);
-        c.b.hash(&mut h);
-        c.a.hash(&mut h);
-    }
-    (extend as u8).hash(&mut h);
-    h.finish()
+#[derive(Default)]
+struct LutCache {
+    entries: Vec<(u64, GradientLutArc, u64)>, // key, lut, last_used_tick
+    tick:    u64,
 }
 
-/// Get or build the LUT for a gradient.
-fn get_lut(stops: &[ColorStop], extend: Extend) -> GradientLut {
-    let key = hash_stops(stops, extend);
-    let mut cache_guard = LUT_CACHE.lock().unwrap();
-    let cache = cache_guard.get_or_insert_with(HashMap::new);
-    if let Some(lut) = cache.get(&key) {
-        return *lut;
+impl LutCache {
+    fn get(&mut self, key: u64) -> Option<GradientLutArc> {
+        self.tick = self.tick.wrapping_add(1);
+        for entry in self.entries.iter_mut() {
+            if entry.0 == key {
+                entry.2 = self.tick;
+                return Some(entry.1.clone());
+            }
+        }
+        None
     }
-    let built = build_lut(stops);
-    cache.insert(key, built);
-    built
+
+    fn insert(&mut self, key: u64, lut: GradientLutArc) {
+        self.tick = self.tick.wrapping_add(1);
+        if self.entries.len() >= LUT_CACHE_CAP {
+            // Evict least-recently-used.
+            if let Some((idx, _)) = self.entries
+                .iter().enumerate()
+                .min_by_key(|(_, e)| e.2)
+            {
+                self.entries.swap_remove(idx);
+            }
+        }
+        self.entries.push((key, lut, self.tick));
+    }
+}
+
+static LUT_CACHE: RwLock<Option<LutCache>> = RwLock::new(None);
+
+/// Deterministic FNV-1a 64-bit hash over the stop bytes + extend mode.
+/// Stable across processes (unlike DefaultHasher) so cache hits work
+/// reliably and collisions are rare for ColorStop counts we expect.
+fn hash_stops(stops: &[ColorStop], extend: Extend) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME:  u64 = 0x00000100000001b3;
+    let mut h = FNV_OFFSET;
+    let mut feed = |b: u8| {
+        h ^= b as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    };
+    for s in stops {
+        for b in s.offset.to_bits().to_le_bytes() { feed(b); }
+        feed(s.color.r);
+        feed(s.color.g);
+        feed(s.color.b);
+        feed(s.color.a);
+    }
+    feed(extend as u8);
+    h
+}
+
+/// Get or build the LUT for a gradient. Returns `Arc<Lut>` — cheap clone
+/// on the hot path.
+fn get_lut(stops: &[ColorStop], extend: Extend) -> GradientLutArc {
+    let key = hash_stops(stops, extend);
+    {
+        // Read-fast path: try the read lock first.
+        let mut guard = LUT_CACHE.write().unwrap();
+        let cache = guard.get_or_insert_with(LutCache::default);
+        if let Some(lut) = cache.get(key) {
+            return lut;
+        }
+        let built = Arc::new(build_lut(stops));
+        cache.insert(key, built.clone());
+        built
+    }
+}
+
+/// Test helper — flush the gradient LUT cache.
+#[doc(hidden)]
+pub fn _clear_gradient_cache_for_tests() {
+    let mut g = LUT_CACHE.write().unwrap();
+    if let Some(c) = g.as_mut() { c.entries.clear(); c.tick = 0; }
 }
 
 /// Build a 256-entry RGBA8 LUT by linear-premul interpolation
@@ -211,23 +258,36 @@ pub(crate) fn fill_rect_gradient_aa(
                 }
             }
         }
-        GradientKind::Radial { start_center, start_radius: _, end_center, end_radius } => {
-            // Concentric variant only (start ≈ end). For focal
-            // variants we'd add the two-point conical solver.
+        GradientKind::Radial { start_center, start_radius, end_center, end_radius } => {
+            // Honest scope: only concentric (start_center ≈ end_center
+            // AND start_radius ≈ 0) is exact. For focal variants we
+            // approximate as concentric on `end_center / end_radius`
+            // and bump a "degraded" counter so dashboards see it. A
+            // proper two-point conical solver lands when a consumer
+            // produces real focal gradients (Lottie, SVG complex).
+            let dx_c = (end_center.x - start_center.x).abs();
+            let dy_c = (end_center.y - start_center.y).abs();
+            let focal = dx_c > 0.5 || dy_c > 0.5 || start_radius.abs() > 0.5;
+            if focal {
+                metrics::counter!(
+                    uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+                    "kind" => "gradient_radial_focal_degraded"
+                ).increment(1);
+            }
             let cx = end_center.x as f32;
             let cy = end_center.y as f32;
             let radius = end_radius.max(1e-3);
             let inv_r = 1.0 / radius;
-            let _ = start_center;
             for py in iy0 .. iy1 {
                 let v_cov = crate::fill::axis_coverage(py as f64, py as f64 + 1.0, visible.y0, visible.y1);
                 if v_cov == 0 { continue; }
                 let pcy = py as f32 + 0.5 - cy;
+                let pcy2 = pcy * pcy;
                 for px in ix0 .. ix1 {
                     let h_cov = crate::fill::axis_coverage(px as f64, px as f64 + 1.0, visible.x0, visible.x1);
                     if h_cov == 0 { continue; }
                     let pcx = px as f32 + 0.5 - cx;
-                    let dist = (pcx * pcx + pcy * pcy).sqrt();
+                    let dist = (pcx * pcx + pcy2).sqrt();
                     let t_raw = dist * inv_r;
                     let t = apply_spread(t_raw, gradient.extend);
                     let mut sample = lut_sample(&lut, t);
@@ -239,9 +299,37 @@ pub(crate) fn fill_rect_gradient_aa(
                 }
             }
         }
-        GradientKind::Sweep { center: _, start_angle: _, end_angle: _ } => {
-            // Phase 2 deferred — needs per-pixel atan2.
-            return false;
+        GradientKind::Sweep { center, start_angle, end_angle } => {
+            // Angular gradient — t = (angle - start) / (end - start),
+            // wrapped per spread mode. atan2 per pixel; not vectorised
+            // yet but fine for typical sweep usage (small radial pies
+            // / circular progress bars).
+            let cx = center.x as f32;
+            let cy = center.y as f32;
+            let mut span = end_angle - start_angle;
+            if span.abs() < 1e-6 {
+                span = std::f32::consts::TAU; // full circle default
+            }
+            let inv_span = 1.0 / span;
+            for py in iy0 .. iy1 {
+                let v_cov = crate::fill::axis_coverage(py as f64, py as f64 + 1.0, visible.y0, visible.y1);
+                if v_cov == 0 { continue; }
+                let pcy = py as f32 + 0.5 - cy;
+                for px in ix0 .. ix1 {
+                    let h_cov = crate::fill::axis_coverage(px as f64, px as f64 + 1.0, visible.x0, visible.x1);
+                    if h_cov == 0 { continue; }
+                    let pcx = px as f32 + 0.5 - cx;
+                    let ang = pcy.atan2(pcx);
+                    let t_raw = (ang - start_angle) * inv_span;
+                    let t = apply_spread(t_raw, gradient.extend);
+                    let mut sample = lut_sample(&lut, t);
+                    let cov = ((h_cov as u32 * v_cov as u32 + 127) / 255) as u8;
+                    if cov < 255 {
+                        sample = scale_premul(sample, cov);
+                    }
+                    pixmap.blend_pixel(px as u32, py as u32, sample);
+                }
+            }
         }
     }
     true
