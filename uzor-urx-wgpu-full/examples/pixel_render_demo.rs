@@ -55,12 +55,14 @@ fn run() -> i32 {
         bufs.tile_count_x, bufs.tile_count_y,
         bufs.tile_count_x * bufs.tile_count_y);
 
+    let (_dummy_tex, dummy_atlas_view) = TilePipeline::dummy_glyph_atlas(&device);
+
     let t = std::time::Instant::now();
     {
         let mut enc = device.create_command_encoder(
             &wgpu::CommandEncoderDescriptor { label: Some("pixel-render-demo") },
         );
-        pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &output_view);
+        pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &output_view, &dummy_atlas_view);
         queue.submit(Some(enc.finish()));
         let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
     }

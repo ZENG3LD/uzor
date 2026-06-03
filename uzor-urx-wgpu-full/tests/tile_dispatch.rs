@@ -90,8 +90,9 @@ fn tile_assign_buckets_three_rects_into_centre_tile() {
     let bufs     = TileBuffers::allocate(&device, cmds.len() as u32, W, H);
     let pipeline = TilePipeline::new(&device);
 
+    let (_dummy_tex, dummy_atlas_view) = TilePipeline::dummy_glyph_atlas(&device);
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    pipeline.dispatch(&device, &queue, &mut enc, &bufs, &cmds);
+    pipeline.dispatch(&device, &queue, &mut enc, &bufs, &cmds, &dummy_atlas_view);
     queue.submit(Some(enc.finish()));
 
     // --- readback tile_counts ---

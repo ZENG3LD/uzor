@@ -23,6 +23,12 @@ pub enum CmdKind {
     /// slot[0..4] = bbox xyxy, slot[4] = inner_color packed rgba8, slot[5] = outer_color packed rgba8,
     /// slot[6] = reserved (center + radius derived from bbox at shader time).
     RadGradient = 3,
+    /// Pre-rasterised glyph from atlas.
+    /// slot[0..4] = bbox xyxy (screen-space rect to draw into),
+    /// slot[4]    = packed RGBA u32 (colour modulation),
+    /// slot[5]    = atlas UV packed: low16 = u0_q, high16 = v0_q (quantised to [0,65535]),
+    /// slot[6]    = atlas UV packed: low16 = u1_q, high16 = v1_q.
+    Glyph = 4,
 }
 
 /// One flat scene command. 32 bytes total, repr(C) for stable layout.
@@ -33,6 +39,9 @@ pub enum CmdKind {
 ///                slot[6] = direction (0=L→R, 1=T→B, 2=TL→BR, 3=BL→TR)
 ///   RadGradient: slot[0..4] = bbox xyxy (f32), slot[4] = inner_color, slot[5] = outer_color,
 ///                slot[6] = reserved
+///   Glyph:       slot[0..4] = bbox xyxy (f32), slot[4] = packed_rgba colour modulation,
+///                slot[5] = u16x2(u0_q, v0_q), slot[6] = u16x2(u1_q, v1_q)
+///                where u/v_q = normalised UV × 65535 packed as lo16/hi16
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct SceneCmd {
@@ -114,6 +123,42 @@ impl SceneCmd {
             slot5: pack_rgba(outer_rgba),
             slot6: 0,
         }
+    }
+
+    /// Create a glyph command from pre-rasterised atlas.
+    ///
+    /// - `rgba`: colour modulation (multiplied with the atlas alpha channel).
+    /// - `uv_rect`: `[u0, v0, u1, v1]` in normalised atlas coordinates [0.0, 1.0].
+    ///   Internally quantised to u16 per component (× 65535).
+    pub fn glyph(x0: f32, y0: f32, x1: f32, y1: f32, rgba: [u8; 4], uv_rect: [f32; 4]) -> Self {
+        let quant = |v: f32| -> u32 { (v.clamp(0.0, 1.0) * 65535.0).round() as u32 };
+        let u0q = quant(uv_rect[0]);
+        let v0q = quant(uv_rect[1]);
+        let u1q = quant(uv_rect[2]);
+        let v1q = quant(uv_rect[3]);
+        Self {
+            kind: CmdKind::Glyph as u32,
+            slot0: x0, slot1: y0, slot2: x1, slot3: y1,
+            slot4: pack_rgba(rgba),
+            slot5: u0q | (v0q << 16),
+            slot6: u1q | (v1q << 16),
+        }
+    }
+
+    /// Dequantise atlas UV rect from a Glyph command.
+    ///
+    /// Returns `Some([u0, v0, u1, v1])` if `kind == Glyph`, `None` otherwise.
+    pub fn glyph_uv(&self) -> Option<[f32; 4]> {
+        if self.kind != CmdKind::Glyph as u32 {
+            return None;
+        }
+        let dequant = |q: u32| -> f32 { (q & 0xffff) as f32 / 65535.0 };
+        Some([
+            dequant(self.slot5),
+            dequant(self.slot5 >> 16),
+            dequant(self.slot6),
+            dequant(self.slot6 >> 16),
+        ])
     }
 
     /// Returns the bounding box `[x0, y0, x1, y1]` for any cmd kind.

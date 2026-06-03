@@ -9,6 +9,7 @@
 //   0u = Rect          — solid colour fill
 //   2u = LinGradient   — two-colour linear gradient, 4 axis-aligned/diagonal directions
 //   3u = RadGradient   — two-colour radial gradient, center+radius from bbox
+//   4u = Glyph         — pre-rasterised glyph from R8Unorm atlas, colour-modulated
 
 struct SceneCmd {
     kind:  u32,
@@ -32,6 +33,11 @@ struct Uniforms {
 @group(0) @binding(2) var<storage, read_write>  tile_counts: array<u32>;
 @group(0) @binding(3) var<storage, read_write>  tile_lists:  array<u32>;
 @group(0) @binding(4) var                       output_tex:  texture_storage_2d<rgba8unorm, write>;
+// Glyph atlas: r8unorm single-channel alpha mask.
+// Use textureSampleLevel (not textureSample) because compute shaders have
+// no implicit derivatives — LOD must be specified explicitly.
+@group(0) @binding(5) var glyph_atlas: texture_2d<f32>;
+@group(0) @binding(6) var glyph_smp:   sampler;
 
 const TILE_SIZE: u32 = 16u;
 
@@ -157,6 +163,28 @@ fn fine(
             let c0 = unpack_rgba(c.slot4); // inner color
             let c1 = unpack_rgba(c.slot5); // outer color
             src = mix(c0, c1, t);
+
+        } else if (c.kind == 4u) {
+            // ── Glyph: alpha from R8Unorm atlas, modulated by colour ─────
+            // Compute normalised local coords inside bbox.
+            let w = x1 - x0;
+            let h = y1 - y0;
+            var local_x: f32 = 0.0;
+            var local_y: f32 = 0.0;
+            if (w > 0.0) { local_x = (fpx - x0) / w; }
+            if (h > 0.0) { local_y = (fpy - y0) / h; }
+            // Dequantise atlas UV rect from slot5/slot6 (u16 pairs).
+            let u0 = f32( c.slot5        & 0xffffu) / 65535.0;
+            let v0 = f32((c.slot5 >> 16u) & 0xffffu) / 65535.0;
+            let u1 = f32( c.slot6        & 0xffffu) / 65535.0;
+            let v1 = f32((c.slot6 >> 16u) & 0xffffu) / 65535.0;
+            // Interpolate UV across bbox local coords.
+            let u = u0 + local_x * (u1 - u0);
+            let v = v0 + local_y * (v1 - v0);
+            // Sample atlas alpha.  textureSampleLevel required in compute shaders.
+            let alpha = textureSampleLevel(glyph_atlas, glyph_smp, vec2<f32>(u, v), 0.0).r;
+            let base = unpack_rgba(c.slot4);
+            src = vec4<f32>(base.r, base.g, base.b, base.a * alpha);
 
         } else {
             // Unknown kind — skip.

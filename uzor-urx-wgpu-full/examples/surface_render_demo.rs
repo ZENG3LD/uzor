@@ -73,13 +73,15 @@ fn run() -> i32 {
     let tile_pipeline = TilePipeline::new(&device);
     let blit_pipeline = BlitPipeline::new(&device, SURFACE_FORMAT);
 
+    let (_dummy_tex, dummy_atlas_view) = TilePipeline::dummy_glyph_atlas(&device);
+
     // — Timing: dispatch+fine pass only —
     let t_dispatch = std::time::Instant::now();
     {
         let mut enc = device.create_command_encoder(
             &wgpu::CommandEncoderDescriptor { label: Some("surface-render-demo-dispatch-timing") },
         );
-        tile_pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &storage_view);
+        tile_pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &storage_view, &dummy_atlas_view);
         queue.submit(Some(enc.finish()));
         let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
     }
@@ -112,6 +114,7 @@ fn run() -> i32 {
             &bufs, &cmds,
             &storage_view, &blit_pipeline, &surface_view,
             tex_w, tex_h,
+            &dummy_atlas_view,
         );
         queue.submit(Some(enc.finish()));
         let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });

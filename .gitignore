@@ -29,3 +29,4 @@ screenshot*.png
 out/
 pixel_render_output.ppm
 gradient_demo_output.ppm
+glyph_demo_output.ppm

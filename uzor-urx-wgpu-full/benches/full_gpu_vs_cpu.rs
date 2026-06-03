@@ -129,6 +129,7 @@ fn bench_full_gpu(c: &mut Criterion) {
     };
 
     let pipeline = TilePipeline::new(&device);
+    let (_dummy_tex_d, dummy_atlas_view_d) = TilePipeline::dummy_glyph_atlas(&device);
     let mut g_dispatch = c.benchmark_group("full_gpu_dispatch_only");
     g_dispatch.sample_size(50);
 
@@ -142,7 +143,7 @@ fn bench_full_gpu(c: &mut Criterion) {
                 let mut enc = device.create_command_encoder(
                     &wgpu::CommandEncoderDescriptor { label: Some("bench-enc") },
                 );
-                pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &output_view);
+                pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &output_view, &dummy_atlas_view_d);
                 queue.submit(Some(enc.finish()));
                 let _ = device.poll(wgpu::PollType::Wait {
                     submission_index: None, timeout: None,
@@ -170,12 +171,13 @@ fn bench_full_gpu(c: &mut Criterion) {
             mapped_at_creation: false,
         });
 
+        let (_dummy_tex_rb, dummy_atlas_view_rb) = TilePipeline::dummy_glyph_atlas(&device);
         g_readback.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
                 let mut enc = device.create_command_encoder(
                     &wgpu::CommandEncoderDescriptor { label: Some("bench-enc-rb") },
                 );
-                pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &output_view);
+                pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &output_view, &dummy_atlas_view_rb);
                 enc.copy_texture_to_buffer(
                     wgpu::TexelCopyTextureInfo {
                         texture:   &output_tex,

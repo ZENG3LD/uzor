@@ -17,6 +17,9 @@ struct Uniforms {
 @group(0) @binding(3) var<storage, read_write> tile_lists: array<u32>;
 // Binding 4: output texture — unused in assign, declared to satisfy shared BGL.
 @group(0) @binding(4) var output_tex: texture_storage_2d<rgba8unorm, write>;
+// Bindings 5+6: glyph atlas + sampler — unused in assign, declared to satisfy shared BGL.
+@group(0) @binding(5) var glyph_atlas: texture_2d<f32>;
+@group(0) @binding(6) var glyph_smp:   sampler;
 
 const TILE_SIZE: u32 = 16u;
 

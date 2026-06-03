@@ -160,6 +160,7 @@ pub struct TilePipeline {
     pub fine_pipeline:   wgpu::ComputePipeline,
     pub bgl:             wgpu::BindGroupLayout,
     pub uniforms_buf:    wgpu::Buffer,
+    glyph_sampler:       wgpu::Sampler,
 }
 
 impl TilePipeline {
@@ -229,6 +230,26 @@ impl TilePipeline {
                     },
                     count: None,
                 },
+                // binding 5 — glyph atlas (r8unorm sampled texture).
+                // Declared in fine.wgsl; declared as dummy in tile_assign + tile_sort
+                // to keep a single shared BGL across all three passes.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type:    wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled:   false,
+                    },
+                    count: None,
+                },
+                // binding 6 — glyph atlas sampler.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
 
@@ -283,7 +304,41 @@ impl TilePipeline {
             mapped_at_creation: false,
         });
 
-        Self { assign_pipeline, sort_pipeline, fine_pipeline, bgl, uniforms_buf }
+        let glyph_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label:          Some("urx-fullgpu-glyph-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter:     wgpu::FilterMode::Linear,
+            min_filter:     wgpu::FilterMode::Linear,
+            mipmap_filter:  wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        Self { assign_pipeline, sort_pipeline, fine_pipeline, bgl, uniforms_buf, glyph_sampler }
+    }
+
+    /// Create a 1×1 fully-transparent R8Unorm texture to use as a dummy
+    /// glyph atlas when no real atlas is available.
+    ///
+    /// Pass the returned `TextureView` to `dispatch` / `dispatch_full` /
+    /// `render_to_target` when the scene contains no `Glyph` commands.
+    pub fn dummy_glyph_atlas(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label:               Some("urx-fullgpu-dummy-glyph-atlas"),
+            size:                wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count:     1,
+            sample_count:        1,
+            dimension:           wgpu::TextureDimension::D2,
+            format:              wgpu::TextureFormat::R8Unorm,
+            usage:               wgpu::TextureUsages::TEXTURE_BINDING
+                               | wgpu::TextureUsages::COPY_DST,
+            view_formats:        &[],
+        });
+        // The 1×1 texel defaults to zero (transparent) on the GPU side.
+        // No queue upload needed — GPU-side storage is zero-initialised on creation.
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
     }
 
     /// Upload cmds, dispatch tile_assign, then tile_sort.
@@ -291,17 +346,23 @@ impl TilePipeline {
     /// `tile_counts_buf` is cleared to zero before the assign dispatch
     /// so this method is safe to call every frame.
     ///
+    /// `glyph_atlas_view` must be an R8Unorm `TextureView`.  When the scene
+    /// contains no `Glyph` commands, pass the view from
+    /// `TilePipeline::dummy_glyph_atlas` — binding 5 must always be
+    /// satisfied.
+    ///
     /// No output texture is written — use `dispatch_full` for pixel output.
     pub fn dispatch(
         &self,
-        device:  &wgpu::Device,
-        queue:   &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        bufs:    &TileBuffers,
-        cmds:    &[SceneCmd],
+        device:           &wgpu::Device,
+        queue:            &wgpu::Queue,
+        encoder:          &mut wgpu::CommandEncoder,
+        bufs:             &TileBuffers,
+        cmds:             &[SceneCmd],
+        glyph_atlas_view: &wgpu::TextureView,
     ) {
-        // Build a dummy 1×1 texture so binding 4 is satisfied when
-        // callers use dispatch() without a real output texture.
+        // Build a dummy 1×1 rgba8unorm storage texture so binding 4 is
+        // satisfied when callers use dispatch() without a real output texture.
         let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("urx-fullgpu-dummy-output"),
             size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
@@ -313,7 +374,7 @@ impl TilePipeline {
             view_formats:    &[],
         });
         let dummy_view = dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        self.dispatch_full(device, queue, encoder, bufs, cmds, &dummy_view);
+        self.dispatch_full(device, queue, encoder, bufs, cmds, &dummy_view, glyph_atlas_view);
     }
 
     /// Full three-stage dispatch: tile_assign → tile_sort → fine raster.
@@ -321,14 +382,19 @@ impl TilePipeline {
     /// `output_view` must be a `Rgba8Unorm` storage texture view created
     /// via `TileBuffers::with_output_texture` (or any compatible view).
     /// After submission, the texture contains the composited pixel output.
+    ///
+    /// `glyph_atlas_view` must be an R8Unorm `TextureView` that the fine
+    /// shader samples for `Glyph` commands.  When no glyph commands are
+    /// present, pass the view from `TilePipeline::dummy_glyph_atlas`.
     pub fn dispatch_full(
         &self,
-        device:  &wgpu::Device,
-        queue:   &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        bufs:    &TileBuffers,
-        cmds:    &[SceneCmd],
-        output_view: &wgpu::TextureView,
+        device:           &wgpu::Device,
+        queue:            &wgpu::Queue,
+        encoder:          &mut wgpu::CommandEncoder,
+        bufs:             &TileBuffers,
+        cmds:             &[SceneCmd],
+        output_view:      &wgpu::TextureView,
+        glyph_atlas_view: &wgpu::TextureView,
     ) {
         // 1. Upload cmd bytes.
         if !cmds.is_empty() {
@@ -347,7 +413,7 @@ impl TilePipeline {
         // 3. Zero tile_counts every frame before assign.
         encoder.clear_buffer(&bufs.tile_counts_buf, 0, None);
 
-        // 4. Build bind group (includes output_view at slot 4).
+        // 4. Build bind group (bindings 0..6).
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("urx-fullgpu-bg"),
             layout:  &self.bgl,
@@ -359,6 +425,14 @@ impl TilePipeline {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(output_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(glyph_atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&self.glyph_sampler),
                 },
             ],
         });
@@ -403,22 +477,25 @@ impl TilePipeline {
     /// `target_view` is any render-attachment-compatible `TextureView`
     /// (e.g. a swapchain surface texture).
     ///
+    /// `glyph_atlas_view` — same contract as `dispatch_full`.
+    ///
     /// Call `queue.submit` once after this method returns — both passes are
     /// recorded in the same encoder.
     pub fn render_to_target(
         &self,
-        device:      &wgpu::Device,
-        queue:       &wgpu::Queue,
-        encoder:     &mut wgpu::CommandEncoder,
-        bufs:        &TileBuffers,
-        cmds:        &[SceneCmd],
-        src_view:    &wgpu::TextureView,
-        blit:        &BlitPipeline,
-        target_view: &wgpu::TextureView,
-        src_w:       u32,
-        src_h:       u32,
+        device:           &wgpu::Device,
+        queue:            &wgpu::Queue,
+        encoder:          &mut wgpu::CommandEncoder,
+        bufs:             &TileBuffers,
+        cmds:             &[SceneCmd],
+        src_view:         &wgpu::TextureView,
+        blit:             &BlitPipeline,
+        target_view:      &wgpu::TextureView,
+        src_w:            u32,
+        src_h:            u32,
+        glyph_atlas_view: &wgpu::TextureView,
     ) {
-        self.dispatch_full(device, queue, encoder, bufs, cmds, src_view);
+        self.dispatch_full(device, queue, encoder, bufs, cmds, src_view, glyph_atlas_view);
         blit.blit(device, encoder, src_view, target_view, src_w, src_h, queue);
     }
 }

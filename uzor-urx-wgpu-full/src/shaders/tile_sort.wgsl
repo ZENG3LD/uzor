@@ -19,6 +19,9 @@ struct SceneCmd {
 @group(0) @binding(1) var<storage, read> cmds: array<SceneCmd>;
 // Binding 4: output texture — unused in sort, declared to satisfy shared BGL.
 @group(0) @binding(4) var output_tex: texture_storage_2d<rgba8unorm, write>;
+// Bindings 5+6: glyph atlas + sampler — unused in sort, declared to satisfy shared BGL.
+@group(0) @binding(5) var glyph_atlas: texture_2d<f32>;
+@group(0) @binding(6) var glyph_smp:   sampler;
 
 @compute @workgroup_size(64)
 fn sort(@builtin(global_invocation_id) gid: vec3<u32>) {
