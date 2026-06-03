@@ -22,6 +22,88 @@ pub enum Backend {
     Hybrid,
 }
 
+/// Hint about the consumer's expected workload — feeds [`Backend::auto`].
+///
+/// All fields are best-effort estimates; the heuristic stays robust
+/// even when callers pass approximations. Construct with
+/// `WorkloadHint::default()` + `..` updates; extending the struct
+/// later means consumers using `..Default::default()` keep compiling.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WorkloadHint {
+    /// Number of regions the engine will hold steady state. Many small
+    /// regions (>32) lean toward hybrid; few large ones (<8) lean
+    /// toward whichever backend renders the region fastest.
+    pub region_count:     u32,
+    /// Total pixel count across all regions (sum of `w × h`). Larger
+    /// totals lean toward GPU.
+    pub total_pixels:     u64,
+    /// True if the consumer expects most regions to be re-painted every
+    /// frame (high-frequency animation). High-Hz reads-from-GPU lean
+    /// toward CPU + small-region cache or full hybrid.
+    pub high_hz:          bool,
+    /// True if the consumer expects rendering to be retained-mode
+    /// (most regions are static or low-Hz). Retained mode is the
+    /// ideal case for hybrid (upload once, composite many times).
+    pub retained:         bool,
+    /// True if the running process has wgpu adapter available. Without
+    /// this, GPU/hybrid paths are off-limits. Defaults `false`.
+    pub gpu_available:    bool,
+    /// True if the host is on Apple Silicon / unified memory. Lowers
+    /// the cost of CPU↔GPU transfer so hybrid wins more workloads.
+    pub unified_memory:   bool,
+}
+
+impl Backend {
+    /// Heuristic chooser. Pure function (no GPU init, no IO); callers
+    /// pass a [`WorkloadHint`] and get back a recommended backend.
+    ///
+    /// Algorithm (from `13-arch-plan-2026-06-03.md` §"Decision rules"):
+    ///
+    /// 1. No GPU → `Cpu`.
+    /// 2. <500 draws + LowPower hint → `Cpu` (overhead-bound).
+    /// 3. Many regions retained-mode + GPU → `Hybrid` (cache once,
+    ///    composite N).
+    /// 4. High-Hz huge area + GPU → `Wgpu`.
+    /// 5. Anything else with GPU → `Hybrid` (the safe default — CPU
+    ///    raster + GPU composite handles every primitive type with
+    ///    bounded cost on either side).
+    ///
+    /// Returns the same value when feature gating disables a path
+    /// (e.g. `hybrid-backend` off → falls through to `Wgpu`/`Cpu`).
+    pub fn auto(hint: WorkloadHint) -> Self {
+        if !hint.gpu_available {
+            return Backend::Cpu;
+        }
+        // Small workloads: GPU overhead dominates. Stay on CPU.
+        if hint.region_count < 4 && hint.total_pixels < 100_000 {
+            return Backend::Cpu;
+        }
+        // Retained-mode + GPU = hybrid sweet spot.
+        #[cfg(feature = "hybrid-backend")]
+        if hint.retained && !hint.high_hz {
+            return Backend::Hybrid;
+        }
+        // Apple-Silicon-style unified memory: hybrid wins everywhere
+        // (zero-copy upload makes it dominate even high-Hz scenes).
+        #[cfg(feature = "hybrid-backend")]
+        if hint.unified_memory {
+            return Backend::Hybrid;
+        }
+        // Heavy high-Hz GPU-direct = wgpu instanced.
+        #[cfg(feature = "wgpu-backend")]
+        if hint.high_hz && hint.total_pixels > 1_000_000 {
+            return Backend::Wgpu;
+        }
+        // Default with GPU available: hybrid (safest general-purpose).
+        #[cfg(feature = "hybrid-backend")]
+        { return Backend::Hybrid; }
+        #[cfg(all(feature = "wgpu-backend", not(feature = "hybrid-backend")))]
+        { return Backend::Wgpu; }
+        #[cfg(not(any(feature = "wgpu-backend", feature = "hybrid-backend")))]
+        { Backend::Cpu }
+    }
+}
+
 /// Caller-supplied render target. Backend-specific — caller picks
 /// which one matches the engine's `Backend`.
 pub enum RenderTarget<'a> {
