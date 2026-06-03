@@ -16,3 +16,6 @@ bytemuck = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 pollster = "0.4"
+
+[[example]]
+name = "tile_bin_demo"
