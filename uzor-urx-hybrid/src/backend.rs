@@ -393,6 +393,32 @@ impl HybridBackend {
         self.atlas.as_ref().is_some_and(|a| a.slot(id).is_some())
     }
 
+    /// Auto-resize the atlas if eviction pressure crossed threshold this
+    /// frame. Call this from the consumer's frame loop AFTER `composite()`
+    /// — it reads the eviction counter set by composite()'s reset+evict
+    /// path, drops all current atlas slots (next-frame upserts re-populate),
+    /// and re-creates the atlas texture at 2× dims (clamped to MAX_ATLAS_DIM).
+    ///
+    /// Returns `Some((new_w, new_h))` if a resize happened, `None` otherwise.
+    ///
+    /// The atlas is recreated empty — all existing slots are dropped. The
+    /// consumer's next-frame upserts repopulate naturally; for one frame the
+    /// fallback (standalone region textures) covers regions that haven't
+    /// re-uploaded yet. Acceptable trade-off for the "atlas was too small
+    /// for this workload" case.
+    pub fn maybe_resize_atlas(&mut self, device: &wgpu::Device) -> Option<(u32, u32)> {
+        let (new_w, new_h) = self.atlas.as_ref()?.should_resize()?;
+        // Drop the old atlas and rebuild fresh at the new size. Slots
+        // (and their GPU memory residency) are gone; consumer must
+        // re-upload.
+        self.atlas = Some(crate::atlas::RegionAtlas::new(device, new_w, new_h));
+        // Update config so future logic (fits() checks etc.) sees the
+        // new dimensions consistently.
+        self.config.hybrid_atlas_w = new_w;
+        self.config.hybrid_atlas_h = new_h;
+        Some((new_w, new_h))
+    }
+
     fn ensure_pipeline(
         &mut self,
         device:        &wgpu::Device,
@@ -423,6 +449,12 @@ impl HybridBackend {
         instances: &[(RegionId, QuadInstance)],
     ) {
         if instances.is_empty() { return; }
+
+        // Reset per-frame counters on the atlas so should_resize() only
+        // sees this frame's eviction pressure.
+        if let Some(atlas) = self.atlas.as_mut() {
+            atlas.reset_frame_counters();
+        }
 
         // Pre-resolve per-instance texture view + UV remap. Atlas-resident
         // regions get the atlas view + remapped UV from their slot;

@@ -91,7 +91,23 @@ pub struct RegionAtlas {
     /// LRU queue. `lru_order[0]` = least-recently-used (head); push
     /// to back on every touch. Eviction pops the head.
     lru_order:      std::collections::VecDeque<RegionId>,
+    /// Eviction counter for the current frame — reset by
+    /// [`Self::reset_frame_counters`] (called from composite()).
+    /// When this exceeds [`AUTO_RESIZE_EVICT_THRESHOLD`] in one frame
+    /// the consumer reads `should_resize()` and rebuilds the atlas at
+    /// 2× dimensions (clamped to [`MAX_ATLAS_DIM`]).
+    evictions_this_frame: u32,
 }
+
+/// If atlas-evictions/frame exceeds this, [`RegionAtlas::should_resize`]
+/// recommends doubling the atlas. Tuned heuristic — large enough that
+/// occasional eviction (3-4) doesn't trigger resize, small enough that
+/// sustained pressure does.
+pub const AUTO_RESIZE_EVICT_THRESHOLD: u32 = 8;
+
+/// Hard cap on atlas dimensions; matches wgpu's `max_texture_dimension_2d`
+/// minimum guarantee across all backends.
+pub const MAX_ATLAS_DIM: u32 = 8192;
 
 impl RegionAtlas {
     /// Create the atlas texture + view + allocator. `format` is the
@@ -119,7 +135,34 @@ impl RegionAtlas {
             texture, view, width, height, allocator,
             slots: HashMap::new(),
             lru_order: std::collections::VecDeque::new(),
+            evictions_this_frame: 0,
         }
+    }
+
+    /// Per-frame counter reset. Call from the consumer's composite loop
+    /// at the start of each frame so [`Self::should_resize`] only sees
+    /// the current frame's eviction pressure.
+    pub fn reset_frame_counters(&mut self) {
+        self.evictions_this_frame = 0;
+    }
+
+    /// Recommend new atlas dimensions if eviction pressure crosses the
+    /// auto-resize threshold this frame. Returns `Some((new_w, new_h))`
+    /// at 2× current size (clamped to [`MAX_ATLAS_DIM`]) when sustained
+    /// pressure suggests the atlas is too small for the workload.
+    ///
+    /// Returns `None` when pressure is below threshold OR the atlas is
+    /// already at the cap on both axes (can't grow further).
+    pub fn should_resize(&self) -> Option<(u32, u32)> {
+        if self.evictions_this_frame < AUTO_RESIZE_EVICT_THRESHOLD {
+            return None;
+        }
+        let new_w = (self.width  * 2).min(MAX_ATLAS_DIM);
+        let new_h = (self.height * 2).min(MAX_ATLAS_DIM);
+        if new_w == self.width && new_h == self.height {
+            return None;
+        }
+        Some((new_w, new_h))
     }
 
     /// Promote `id` to most-recently-used position in the LRU queue.
@@ -142,6 +185,8 @@ impl RegionAtlas {
                 metrics::counter!(
                     uzor_urx_core::metrics_keys::KEY_HYBRID_ATLAS_EVICTIONS
                 ).increment(1);
+                self.evictions_this_frame =
+                    self.evictions_this_frame.saturating_add(1);
                 return Some(victim);
             }
             // Stale entry in LRU queue (slot already gone) — keep popping.
