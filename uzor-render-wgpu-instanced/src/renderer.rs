@@ -187,6 +187,62 @@ fn make_instance_buffer(device: &wgpu::Device, capacity: usize, elem_size: usize
     })
 }
 
+// ── StagingBeltManager ───────────────────────────────────────────────────
+
+/// Wraps `wgpu::util::StagingBelt` to eliminate per-frame allocation spikes
+/// from `queue.write_buffer` (wgpu issue #1242).
+///
+/// When enabled via [`InstancedRenderer::enable_staging_belt`], all instance
+/// and uniform uploads are routed through a pre-allocated staging buffer
+/// instead of triggering implicit allocations in the wgpu backend.
+struct StagingBeltManager {
+    belt: wgpu::util::StagingBelt,
+}
+
+impl StagingBeltManager {
+    fn new(device: &wgpu::Device, chunk_size: u64) -> Self {
+        // wgpu 28: StagingBelt::new takes (Device, chunk_size) by value —
+        // Device is an Arc-backed handle so clone is cheap.
+        Self { belt: wgpu::util::StagingBelt::new(device.clone(), chunk_size) }
+    }
+
+    /// Copy `bytes` into `target` at `offset` via the staging belt.
+    ///
+    /// Returns immediately (no-op) when `bytes` is empty, protecting the
+    /// `BufferSize::new(size).unwrap()` call below from a zero-size panic.
+    fn write_into_buffer(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &wgpu::Buffer,
+        offset: u64,
+        bytes: &[u8],
+    ) {
+        let size = bytes.len() as u64;
+        if size == 0 {
+            return;
+        }
+        // SAFETY: size > 0, guaranteed by the early return above.
+        // wgpu 28: write_buffer(encoder, target, offset, size) — no device arg.
+        let mut view = self.belt.write_buffer(
+            encoder,
+            target,
+            offset,
+            wgpu::BufferSize::new(size).unwrap(),
+        );
+        view.copy_from_slice(bytes);
+    }
+
+    /// Must be called after recording all copy commands but BEFORE `queue.submit`.
+    fn finish(&mut self) {
+        self.belt.finish();
+    }
+
+    /// Must be called after `queue.submit` to return chunks to the free pool.
+    fn recall(&mut self) {
+        self.belt.recall();
+    }
+}
+
 // ── InstancedRenderer ────────────────────────────────────────────────────
 
 /// Owns all GPU resources and drives rendering each frame.
@@ -221,6 +277,11 @@ pub struct InstancedRenderer {
     font_system:  FontSystem,
     swash_cache:  SwashCache,
     glyph_atlas:  GlyphAtlas,
+
+    /// Optional staging belt — enables allocation-spike-free uploads.
+    /// `None` = default behaviour (queue.write_buffer).
+    /// Set via [`Self::enable_staging_belt`] after construction.
+    staging_belt: Option<StagingBeltManager>,
 }
 
 impl InstancedRenderer {
@@ -536,16 +597,37 @@ impl InstancedRenderer {
             font_system,
             swash_cache,
             glyph_atlas,
+
+            staging_belt: None,
         }
     }
 
+    /// Enable the staging-belt upload path for this renderer.
+    ///
+    /// When enabled, per-frame uniform and instance uploads are routed through
+    /// a pre-allocated `wgpu::util::StagingBelt` instead of `queue.write_buffer`,
+    /// eliminating the ~25 ms allocation spikes reported in wgpu issue #1242.
+    ///
+    /// `chunk_size_bytes`: size of each staging-belt chunk.  Pass `0` to use
+    /// the default of 256 KiB (sufficient for up to ~4680 quad instances).
+    /// Calling this method again replaces the existing belt.
+    pub fn enable_staging_belt(&mut self, device: &wgpu::Device, chunk_size_bytes: u64) {
+        let chunk = if chunk_size_bytes == 0 { 256 * 1024 } else { chunk_size_bytes };
+        self.staging_belt = Some(StagingBeltManager::new(device, chunk));
+    }
+
     /// Upload instances to a GPU buffer, growing it if needed.
+    ///
+    /// When `belt` is `Some`, bytes are routed through the staging belt and
+    /// require `encoder`.  When `None`, the classic `queue.write_buffer` path
+    /// is used (byte-identical behaviour to the pre-belt code).
     fn upload_instances<T: bytemuck::Pod>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         buffer: &mut wgpu::Buffer,
         capacity: &mut usize,
         data: &[T],
+        belt: Option<(&mut StagingBeltManager, &mut wgpu::CommandEncoder)>,
     ) {
         if data.is_empty() {
             return;
@@ -557,7 +639,11 @@ impl InstancedRenderer {
             }
             *buffer = make_instance_buffer(device, *capacity, std::mem::size_of::<T>());
         }
-        queue.write_buffer(buffer, 0, cast_slice(data));
+        let bytes: &[u8] = cast_slice(data);
+        match belt {
+            Some((belt, encoder)) => belt.write_into_buffer(encoder, buffer, 0, bytes),
+            None => queue.write_buffer(buffer, 0, bytes),
+        }
     }
 
     /// Shape `text_areas` into `GlyphInstance`s via cosmic-text + swash atlas.
@@ -669,13 +755,6 @@ impl InstancedRenderer {
         clear_color: Option<wgpu::Color>,
         scissor: Option<(u32, u32, u32, u32)>,
     ) {
-        // ── Update uniforms ───────────────────────────────────────────────
-        let uniforms = Uniforms {
-            screen_size: [width as f32, height as f32],
-            _pad: [0.0; 2],
-        };
-        queue.write_buffer(&self.uniform_buffer, 0, cast_slice(&[uniforms]));
-
         // ── Phase 1: Split commands into typed vecs, record batch boundaries ──
         //
         // We scan `commands` once and:
@@ -768,52 +847,136 @@ impl InstancedRenderer {
             }
         }
 
-        // ── Phase 2: Upload all typed buffers to GPU ──────────────────────
-
-        Self::upload_instances(
-            device, queue,
-            &mut self.quad_buffer, &mut self.quad_capacity,
-            &quads,
-        );
-        Self::upload_instances(
-            device, queue,
-            &mut self.triangle_buffer, &mut self.triangle_capacity,
-            &triangles,
-        );
-        Self::upload_instances(
-            device, queue,
-            &mut self.line_buffer, &mut self.line_capacity,
-            &lines,
-        );
-
-        // Rebuild atlas bind group after glyph atlas uploads.
-        let atlas_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label:   Some("atlas_bg"),
-            layout:  &self.atlas_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding:  0,
-                    resource: wgpu::BindingResource::TextureView(self.glyph_atlas.texture_view()),
-                },
-                wgpu::BindGroupEntry {
-                    binding:  1,
-                    resource: wgpu::BindingResource::Sampler(&self.glyph_atlas.sampler),
-                },
-            ],
-        });
-        self.atlas_bind_group = atlas_bind_group;
-
-        Self::upload_instances(
-            device, queue,
-            &mut self.glyph_buffer, &mut self.glyph_capacity,
-            &glyphs,
-        );
-
-        // ── Phase 3: Command encoder + render pass with ordered batches ────
+        // ── Phase 2: Command encoder (created early for staging-belt path) ─
+        //
+        // The encoder must exist before any staging-belt writes because
+        // `StagingBelt::write_buffer` records GPU copies into the encoder.
+        // When staging belt is disabled the encoder is used only for the render
+        // pass, matching the original code structure exactly.
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("instanced_encoder"),
         });
 
+        // ── Phase 3: Upload uniforms ──────────────────────────────────────
+        let uniforms = Uniforms {
+            screen_size: [width as f32, height as f32],
+            _pad: [0.0; 2],
+        };
+        let uniforms_arr = [uniforms];
+        let uniform_bytes: &[u8] = cast_slice(&uniforms_arr);
+        if let Some(belt) = self.staging_belt.as_mut() {
+            belt.write_into_buffer(&mut encoder, &self.uniform_buffer, 0, uniform_bytes);
+        } else {
+            queue.write_buffer(&self.uniform_buffer, 0, uniform_bytes);
+        }
+
+        // ── Phase 4: Upload all typed instance buffers to GPU ─────────────
+        //
+        // For the belt path we pass (&mut belt, &mut encoder); for the fallback
+        // path we pass None and the classic queue.write_buffer is used.
+
+        // Split borrows: we need &mut self.staging_belt separately from
+        // &mut self.quad_buffer etc.  Extract the belt pointer first.
+        let belt_opt = self.staging_belt.as_mut();
+
+        // We need to thread the optional (belt, encoder) pair through four calls.
+        // Rust borrow rules require us to reborrow carefully — do it by matching
+        // once and branching into two identical-structure code paths.
+        if let Some(belt) = belt_opt {
+            Self::upload_instances(
+                device, queue,
+                &mut self.quad_buffer, &mut self.quad_capacity,
+                &quads,
+                Some((belt, &mut encoder)),
+            );
+            Self::upload_instances(
+                device, queue,
+                &mut self.triangle_buffer, &mut self.triangle_capacity,
+                &triangles,
+                Some((belt, &mut encoder)),
+            );
+            Self::upload_instances(
+                device, queue,
+                &mut self.line_buffer, &mut self.line_capacity,
+                &lines,
+                Some((belt, &mut encoder)),
+            );
+
+            // Rebuild atlas bind group after glyph atlas uploads (queue path — atlas
+            // texture writes always go through queue regardless of belt setting).
+            let atlas_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label:   Some("atlas_bg"),
+                layout:  &self.atlas_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding:  0,
+                        resource: wgpu::BindingResource::TextureView(self.glyph_atlas.texture_view()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding:  1,
+                        resource: wgpu::BindingResource::Sampler(&self.glyph_atlas.sampler),
+                    },
+                ],
+            });
+            self.atlas_bind_group = atlas_bind_group;
+
+            Self::upload_instances(
+                device, queue,
+                &mut self.glyph_buffer, &mut self.glyph_capacity,
+                &glyphs,
+                Some((belt, &mut encoder)),
+            );
+        } else {
+            Self::upload_instances(
+                device, queue,
+                &mut self.quad_buffer, &mut self.quad_capacity,
+                &quads,
+                None,
+            );
+            Self::upload_instances(
+                device, queue,
+                &mut self.triangle_buffer, &mut self.triangle_capacity,
+                &triangles,
+                None,
+            );
+            Self::upload_instances(
+                device, queue,
+                &mut self.line_buffer, &mut self.line_capacity,
+                &lines,
+                None,
+            );
+
+            // Rebuild atlas bind group after glyph atlas uploads.
+            let atlas_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label:   Some("atlas_bg"),
+                layout:  &self.atlas_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding:  0,
+                        resource: wgpu::BindingResource::TextureView(self.glyph_atlas.texture_view()),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding:  1,
+                        resource: wgpu::BindingResource::Sampler(&self.glyph_atlas.sampler),
+                    },
+                ],
+            });
+            self.atlas_bind_group = atlas_bind_group;
+
+            Self::upload_instances(
+                device, queue,
+                &mut self.glyph_buffer, &mut self.glyph_capacity,
+                &glyphs,
+                None,
+            );
+        }
+
+        // ── Phase 5: Finalize belt before submit (if enabled) ─────────────
+        if let Some(belt) = self.staging_belt.as_mut() {
+            belt.finish();
+        }
+
+        // ── Phase 6: Render pass with ordered batches ─────────────────────
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("instanced_pass"),
@@ -898,6 +1061,12 @@ impl InstancedRenderer {
             }
         }
 
+        // ── Phase 7: Submit + belt recall ─────────────────────────────────
         queue.submit(std::iter::once(encoder.finish()));
+
+        // Recall must happen AFTER submit — returns staging chunks to the free pool.
+        if let Some(belt) = self.staging_belt.as_mut() {
+            belt.recall();
+        }
     }
 }
