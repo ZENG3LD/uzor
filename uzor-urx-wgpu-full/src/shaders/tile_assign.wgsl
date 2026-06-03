@@ -15,6 +15,8 @@ struct Uniforms {
 @group(0) @binding(1) var<storage, read> cmds: array<SceneCmd>;
 @group(0) @binding(2) var<storage, read_write> tile_counts: array<atomic<u32>>;
 @group(0) @binding(3) var<storage, read_write> tile_lists: array<u32>;
+// Binding 4: output texture — unused in assign, declared to satisfy shared BGL.
+@group(0) @binding(4) var output_tex: texture_storage_2d<rgba8unorm, write>;
 
 const TILE_SIZE: u32 = 16u;
 

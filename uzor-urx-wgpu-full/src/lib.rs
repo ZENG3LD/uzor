@@ -3,17 +3,17 @@
 //! # Architecture
 //!
 //! Six-stage compute pipeline:
-//!   encode → tile_assign → tile_sort → coarse → fine → blit
+//!   encode → tile_assign → tile_sort → (coarse folded) → fine → blit
 //!
-//! This crate ships the first two dispatches: SceneCmd encoding and
-//! tile_assign + tile_sort. The remaining stages (coarse / fine / blit)
-//! land in subsequent development stages.
+//! Coarse pass note (v1.6.0 rect-only): no separate coarse stage.
+//! The sorted `tile_lists` buffer IS the PTCL — `fine.wgsl` reads it
+//! directly. Add `coarse.wgsl` when implementing gradient/glyph variants.
 //!
 //! # Crate layout
 //!
 //! - [`cmd`]     — flat `SceneCmd` struct (32 bytes, GPU-uploadable)
 //! - [`encoder`] — CPU encoder: `Scene` → `Vec<SceneCmd>`
-//! - [`tile`]    — `TileBuffers` + `TilePipeline` compute dispatch
+//! - [`tile`]    — `TileBuffers` + `TilePipeline` (assign + sort + fine)
 
 pub mod cmd;
 pub mod encoder;

@@ -27,3 +27,4 @@ Thumbs.db
 uzor-framework/src/tokens_generated.rs
 screenshot*.png
 out/
+pixel_render_output.ppm

@@ -15,7 +15,16 @@ wgpu = "28"
 bytemuck = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
-pollster = "0.4"
+pollster  = "0.4"
+uzor-urx-cpu = { workspace = true }
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [[example]]
 name = "tile_bin_demo"
+
+[[example]]
+name = "pixel_render_demo"
+
+[[bench]]
+name    = "full_gpu_vs_cpu"
+harness = false

@@ -21,6 +21,12 @@ pub enum Backend {
     Wgpu,
     #[cfg(feature = "hybrid-backend")]
     Hybrid,
+    /// Experimental full-GPU compute pipeline (URX 1.6 encode→tile→fine).
+    /// Not wired into `render()` yet — access via `uzor-urx-wgpu-full`
+    /// crate directly. Present here for API completeness; excluded from
+    /// `Backend::auto` until stable.
+    #[cfg(feature = "full-gpu-backend")]
+    FullGpu,
 }
 
 /// Hint about the consumer's expected workload — feeds [`Backend::auto`].

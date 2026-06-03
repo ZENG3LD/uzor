@@ -17,6 +17,8 @@ struct SceneCmd {
     slot4: u32, slot5: u32, slot6: u32,
 };
 @group(0) @binding(1) var<storage, read> cmds: array<SceneCmd>;
+// Binding 4: output texture — unused in sort, declared to satisfy shared BGL.
+@group(0) @binding(4) var output_tex: texture_storage_2d<rgba8unorm, write>;
 
 @compute @workgroup_size(64)
 fn sort(@builtin(global_invocation_id) gid: vec3<u32>) {

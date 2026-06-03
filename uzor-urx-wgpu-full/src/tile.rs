@@ -1,5 +1,5 @@
-//! GPU-side tile assignment + per-tile sort, as the first compute
-//! dispatch in URX 1.6's full-GPU pipeline.
+//! GPU-side tile assignment + per-tile sort + fine raster, as the compute
+//! dispatches in URX 1.6's full-GPU pipeline.
 //!
 //! ## Layout
 //!
@@ -13,6 +13,13 @@
 //! - `cmds`:        StorageBuffer<SceneCmd>     — input, read-only
 //! - `tile_counts`: StorageBuffer<atomic<u32>>  — one u32 per tile, init 0
 //! - `tile_lists`:  StorageBuffer<u32>          — tile_count × CAP slots
+//! - `output_tex`:  StorageTexture<rgba8unorm>  — per-pixel RGBA output
+//!
+//! ## Coarse pass (v1.6.0 rect-only)
+//!
+//! No separate coarse.wgsl for rect-only v1.6.0. The sorted `tile_lists`
+//! buffer IS the PTCL — fine.wgsl reads it directly. Add coarse.wgsl
+//! when implementing gradient/glyph variants.
 //!
 //! ## Dispatch
 //!
@@ -23,6 +30,19 @@
 //! `tile_sort.wgsl`: workgroup size 64; one invocation per tile. Sorts
 //! that tile's list (small list, insertion sort) so painter-order is
 //! preserved after the unordered atomic-append.
+//!
+//! `fine.wgsl`: workgroup size (16, 16, 1) = 256 per workgroup; one
+//! workgroup per tile; one invocation per pixel. Walks the tile's sorted
+//! cmd list, composites rect coverage, writes rgba8unorm output texture.
+//!
+//! ## Workgroup size note
+//!
+//! 16×16 = 256 invocations per workgroup — exactly at the wgpu default
+//! limit (`Limits::max_compute_invocations_per_workgroup = 256`). This
+//! is valid on all modern GPU tiers. If a device reports a lower limit
+//! the pipeline creation will surface a wgpu validation error; in that
+//! case fall back to 8×8 workgroups with each invocation covering a 2×2
+//! pixel block.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -35,6 +55,7 @@ pub const TILE_CMD_CAP: u32 = 64;
 
 const TILE_ASSIGN_WGSL: &str = include_str!("shaders/tile_assign.wgsl");
 const TILE_SORT_WGSL:   &str = include_str!("shaders/tile_sort.wgsl");
+const FINE_WGSL:        &str = include_str!("shaders/fine.wgsl");
 
 /// GPU buffers for the tile binning pipeline.
 pub struct TileBuffers {
@@ -86,9 +107,39 @@ impl TileBuffers {
             tile_count_y: ty,
         }
     }
+
+    /// Create tile buffers AND an rgba8unorm storage+copy_src output texture.
+    ///
+    /// Returns `(TileBuffers, Texture, TextureView)`. The texture is sized
+    /// to `(tile_count_x * TILE_SIZE, tile_count_y * TILE_SIZE)` — always
+    /// a multiple of 16 that covers the full viewport.
+    pub fn with_output_texture(
+        device:   &wgpu::Device,
+        cmds_n:   u32,
+        screen_w: u32,
+        screen_h: u32,
+    ) -> (Self, wgpu::Texture, wgpu::TextureView) {
+        let bufs = Self::allocate(device, cmds_n, screen_w, screen_h);
+        let tex_w = bufs.tile_count_x * TILE_SIZE;
+        let tex_h = bufs.tile_count_y * TILE_SIZE;
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("urx-fullgpu-output"),
+            size: wgpu::Extent3d { width: tex_w, height: tex_h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          wgpu::TextureFormat::Rgba8Unorm,
+            usage:           wgpu::TextureUsages::STORAGE_BINDING
+                           | wgpu::TextureUsages::COPY_SRC,
+            view_formats:    &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (bufs, texture, view)
+    }
 }
 
-/// Uniform block fed to both compute shaders.
+/// Uniform block fed to all compute shaders.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct DispatchUniforms {
@@ -98,22 +149,29 @@ pub struct DispatchUniforms {
     pub tile_cmd_cap: u32,
 }
 
-/// Compiled compute pipelines for tile-assign + tile-sort.
+/// Compiled compute pipelines for tile-assign, tile-sort, and fine raster.
 pub struct TilePipeline {
     pub assign_pipeline: wgpu::ComputePipeline,
     pub sort_pipeline:   wgpu::ComputePipeline,
+    pub fine_pipeline:   wgpu::ComputePipeline,
     pub bgl:             wgpu::BindGroupLayout,
     pub uniforms_buf:    wgpu::Buffer,
 }
 
 impl TilePipeline {
-    /// Compile both WGSL shaders and build the bind group layout.
+    /// Compile all three WGSL shaders and build the shared bind group layout.
     pub fn new(device: &wgpu::Device) -> Self {
-        // Bind group layout: 4 entries shared by both shaders.
+        // Shared BGL: 5 bindings used by at least one of the three shaders.
         //   0 — uniform  (DispatchUniforms)
-        //   1 — storage read-only (cmds)
+        //   1 — storage read-only  (cmds)
         //   2 — storage read-write (tile_counts, atomic<u32>)
         //   3 — storage read-write (tile_lists)
+        //   4 — storage texture rgba8unorm WriteOnly (output pixel buffer)
+        //
+        // tile_assign + tile_sort declare binding 4 as a write-only storage
+        // texture to keep the BGL single. fine declares bindings 2+3 as
+        // read-only (non-atomic); wgpu validates storage access mode against
+        // the BGL's declared type, not the shader's sub-access.
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("urx-fullgpu-bgl"),
             entries: &[
@@ -157,6 +215,16 @@ impl TilePipeline {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access:        wgpu::StorageTextureAccess::WriteOnly,
+                        format:        wgpu::TextureFormat::Rgba8Unorm,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -173,6 +241,10 @@ impl TilePipeline {
         let sort_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label:  Some("tile_sort"),
             source: wgpu::ShaderSource::Wgsl(TILE_SORT_WGSL.into()),
+        });
+        let fine_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("fine"),
+            source: wgpu::ShaderSource::Wgsl(FINE_WGSL.into()),
         });
 
         let assign_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -191,6 +263,14 @@ impl TilePipeline {
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
+        let fine_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label:  Some("urx-fullgpu-fine"),
+            layout: Some(&pipeline_layout),
+            module: &fine_module,
+            entry_point: Some("fine"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
 
         let uniforms_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("urx-fullgpu-uniforms"),
@@ -199,13 +279,15 @@ impl TilePipeline {
             mapped_at_creation: false,
         });
 
-        Self { assign_pipeline, sort_pipeline, bgl, uniforms_buf }
+        Self { assign_pipeline, sort_pipeline, fine_pipeline, bgl, uniforms_buf }
     }
 
     /// Upload cmds, dispatch tile_assign, then tile_sort.
     ///
     /// `tile_counts_buf` is cleared to zero before the assign dispatch
     /// so this method is safe to call every frame.
+    ///
+    /// No output texture is written — use `dispatch_full` for pixel output.
     pub fn dispatch(
         &self,
         device:  &wgpu::Device,
@@ -213,6 +295,36 @@ impl TilePipeline {
         encoder: &mut wgpu::CommandEncoder,
         bufs:    &TileBuffers,
         cmds:    &[SceneCmd],
+    ) {
+        // Build a dummy 1×1 texture so binding 4 is satisfied when
+        // callers use dispatch() without a real output texture.
+        let dummy_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("urx-fullgpu-dummy-output"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count:    1,
+            dimension:       wgpu::TextureDimension::D2,
+            format:          wgpu::TextureFormat::Rgba8Unorm,
+            usage:           wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats:    &[],
+        });
+        let dummy_view = dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        self.dispatch_full(device, queue, encoder, bufs, cmds, &dummy_view);
+    }
+
+    /// Full three-stage dispatch: tile_assign → tile_sort → fine raster.
+    ///
+    /// `output_view` must be a `Rgba8Unorm` storage texture view created
+    /// via `TileBuffers::with_output_texture` (or any compatible view).
+    /// After submission, the texture contains the composited pixel output.
+    pub fn dispatch_full(
+        &self,
+        device:  &wgpu::Device,
+        queue:   &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        bufs:    &TileBuffers,
+        cmds:    &[SceneCmd],
+        output_view: &wgpu::TextureView,
     ) {
         // 1. Upload cmd bytes.
         if !cmds.is_empty() {
@@ -231,7 +343,7 @@ impl TilePipeline {
         // 3. Zero tile_counts every frame before assign.
         encoder.clear_buffer(&bufs.tile_counts_buf, 0, None);
 
-        // 4. Build bind group.
+        // 4. Build bind group (includes output_view at slot 4).
         let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label:   Some("urx-fullgpu-bg"),
             layout:  &self.bgl,
@@ -240,10 +352,14 @@ impl TilePipeline {
                 wgpu::BindGroupEntry { binding: 1, resource: bufs.cmds_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: bufs.tile_counts_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: bufs.tile_lists_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(output_view),
+                },
             ],
         });
 
-        // 5. Compute pass: assign then sort.
+        // 5. Compute pass: assign → sort → fine.
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("urx-fullgpu-pass"),
@@ -262,6 +378,14 @@ impl TilePipeline {
             pass.set_pipeline(&self.sort_pipeline);
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(tile_groups, 1, 1);
+
+            // fine: one workgroup (16×16 = 256 threads) per tile.
+            // dispatch_workgroups(tile_count_x, tile_count_y, 1)
+            // → total invocations = tile_count_x * tile_count_y * 256
+            // → covers every pixel of the padded viewport.
+            pass.set_pipeline(&self.fine_pipeline);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(bufs.tile_count_x, bufs.tile_count_y, 1);
         }
     }
 }
