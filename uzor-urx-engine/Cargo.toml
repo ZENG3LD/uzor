@@ -31,9 +31,14 @@ hybrid-backend = ["dep:uzor-urx-hybrid", "dep:wgpu"]
 full-gpu-backend = ["dep:uzor-urx-wgpu-full", "dep:wgpu"]
 
 [dev-dependencies]
-pollster = "0.4"
-wgpu     = "28"
-winit    = "0.30"
+pollster   = "0.4"
+wgpu       = "28"
+winit      = "0.30"
+# Agentic control plane (3-level HTTP) for winit_full_gpu_demo.
+axum       = { version = "0.7", default-features = false, features = ["tokio", "http1", "json", "query"] }
+tokio      = { version = "1", features = ["rt-multi-thread", "sync", "macros", "net"] }
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [[example]]
 name = "backend_auto_demo"
