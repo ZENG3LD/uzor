@@ -31,3 +31,6 @@ full-gpu-backend = ["dep:uzor-urx-wgpu-full"]
 
 [[example]]
 name = "backend_auto_demo"
+
+[[example]]
+name = "runtime_backend_switch"
