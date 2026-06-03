@@ -98,6 +98,13 @@ pub const KEY_HYBRID_UPLOAD_SKIPPED_BYTES:  &str = "urx.hybrid.upload.skipped_by
 pub const KEY_HYBRID_COMPOSITE_TRANSFORM_ONLY_FRAMES: &str =
     "urx.hybrid.composite.transform_only_frames";
 
+/// Counter — actual `pass.draw()` calls emitted per composite frame.
+/// With `hybrid_instanced_composite` disabled (default), this equals
+/// `urx.hybrid.composite.draws` (one draw per region). With the flag
+/// enabled + atlas-packed regions, contiguous atlas runs coalesce
+/// into a single draw — the ratio reveals the actual batching win.
+pub const KEY_HYBRID_COMPOSITE_PASS_DRAWS:    &str = "urx.hybrid.composite.pass_draws";
+
 // ── Skeleton ────────────────────────────────────────────────────────────────
 
 pub const KEY_SKELETON_FRAMES: &str = "urx.skeleton.frames";
@@ -159,6 +166,7 @@ pub static METRIC_CATALOG: &[&str] = &[
     KEY_HYBRID_UPLOAD_SKIPPED,
     KEY_HYBRID_UPLOAD_SKIPPED_BYTES,
     KEY_HYBRID_COMPOSITE_TRANSFORM_ONLY_FRAMES,
+    KEY_HYBRID_COMPOSITE_PASS_DRAWS,
     KEY_RENDER_SKIPPED_NONFINITE,
     KEY_RENDER_SKIPPED_DEGENERATE,
     KEY_SKELETON_FRAMES,

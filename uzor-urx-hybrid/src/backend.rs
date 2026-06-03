@@ -428,13 +428,18 @@ impl HybridBackend {
         // regions get the atlas view + remapped UV from their slot;
         // standalone regions get their own texture view + the caller's UV.
         //
-        // This is the key dual-path branch: ONE bind group when an atlas
-        // exists (all atlas-resident regions share it), individual bind
-        // groups for standalone regions. The instance.uv field is replaced
-        // with the slot's uv_rect for atlas-resident regions so the same
-        // shader works for both paths.
+        // We also tag each instance with whether it's atlas-resident — used
+        // below (with `hybrid_instanced_composite`) to coalesce contiguous
+        // atlas runs into a single `pass.draw(start..end)` call instead of
+        // N per-instance draws. Standalone instances always get their own
+        // bind group + draw (no atlas, no shared texture).
+        //
+        // Painter's order is preserved: runs are contiguous in the input
+        // sequence, so two adjacent atlas instances batch into one draw,
+        // an interrupting standalone breaks the batch but keeps z-order.
         let mut texture_views: Vec<wgpu::TextureView> = Vec::with_capacity(instances.len());
         let mut inst_data: Vec<QuadInstance> = Vec::with_capacity(instances.len());
+        let mut atlas_mask: Vec<bool> = Vec::with_capacity(instances.len());
         for (id, qi) in instances {
             // Atlas path?
             if let Some(atlas) = self.atlas.as_ref() {
@@ -458,6 +463,7 @@ impl HybridBackend {
                         uv:   composed_uv,
                         tint: qi.tint,
                     });
+                    atlas_mask.push(true);
                     continue;
                 }
             }
@@ -466,8 +472,10 @@ impl HybridBackend {
                 .expect("region texture must be uploaded before composite");
             texture_views.push(tex.view.clone());
             inst_data.push(*qi);
+            atlas_mask.push(false);
         }
 
+        let coalesce = self.config.hybrid_instanced_composite;
         let pipeline = self.ensure_pipeline(device, surface_format);
 
         // Upload screen uniform.
@@ -489,18 +497,67 @@ impl HybridBackend {
         // Write instance data (with atlas UV remapping baked in above).
         queue.write_buffer(&pipeline.instance_buf, 0, bytemuck::cast_slice(&inst_data));
 
-        // Build per-region bind groups from the pre-resolved views.
-        let mut per_region_bgs: Vec<wgpu::BindGroup> = Vec::with_capacity(instances.len());
-        for view in &texture_views {
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("urx-hybrid-region-bg"),
-                layout: &pipeline.bind_group_layout_1,
-                entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&pipeline.sampler) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
-                ],
-            });
-            per_region_bgs.push(bg);
+        // Build the bind group list. With coalesce enabled, contiguous
+        // atlas-resident instances share one bind group (the atlas view);
+        // each standalone instance still gets its own. We compute the
+        // run boundaries here and the draw loop below walks them.
+        //
+        // Without coalesce: every instance gets its own bind group, even
+        // if many adjacent ones would share the atlas — preserves the
+        // pre-B7 byte-exact behaviour.
+        struct DrawRun {
+            bind_group: wgpu::BindGroup,
+            // [start, end) range into the instance buffer.
+            range: std::ops::Range<u32>,
+        }
+        let mut runs: Vec<DrawRun> = Vec::with_capacity(instances.len());
+        if coalesce {
+            // Walk the mask, coalesce contiguous true-runs into one
+            // DrawRun pointing at the atlas view; emit per-instance runs
+            // for standalone (false) entries.
+            let mut i = 0usize;
+            while i < instances.len() {
+                if atlas_mask[i] {
+                    // Find end of atlas run.
+                    let start = i;
+                    while i < instances.len() && atlas_mask[i] { i += 1; }
+                    let end = i;
+                    // All atlas runs share the same view (texture_views[start]).
+                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("urx-hybrid-atlas-bg"),
+                        layout: &pipeline.bind_group_layout_1,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&pipeline.sampler) },
+                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&texture_views[start]) },
+                        ],
+                    });
+                    runs.push(DrawRun { bind_group: bg, range: (start as u32)..(end as u32) });
+                } else {
+                    let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("urx-hybrid-region-bg"),
+                        layout: &pipeline.bind_group_layout_1,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&pipeline.sampler) },
+                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&texture_views[i]) },
+                        ],
+                    });
+                    runs.push(DrawRun { bind_group: bg, range: (i as u32)..((i + 1) as u32) });
+                    i += 1;
+                }
+            }
+        } else {
+            // Per-region bind group (pre-B7 behaviour).
+            for (i, view) in texture_views.iter().enumerate() {
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("urx-hybrid-region-bg"),
+                    layout: &pipeline.bind_group_layout_1,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Sampler(&pipeline.sampler) },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(view) },
+                    ],
+                });
+                runs.push(DrawRun { bind_group: bg, range: (i as u32)..((i + 1) as u32) });
+            }
         }
 
         let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -509,9 +566,6 @@ impl HybridBackend {
                 view: target_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    // Caller may have already cleared via a previous
-                    // pass; we preserve. To force clear, call
-                    // `composite_with_clear` instead.
                     load:  wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
@@ -525,20 +579,20 @@ impl HybridBackend {
         rp.set_pipeline(&pipeline.pipeline);
         rp.set_bind_group(0, &pipeline.bind_group_0, &[]);
         rp.set_vertex_buffer(0, pipeline.instance_buf.slice(..));
-        for (i, bg) in per_region_bgs.iter().enumerate() {
-            rp.set_bind_group(1, bg, &[]);
-            // 6 verts per quad, 1 instance per draw (we batch the
-            // VERTEX buffer but switch bind group per region, so 1
-            // draw per region — the per-region bind group switch IS
-            // the cost). Future: pack regions into an atlas + single
-            // bindless draw.
-            rp.draw(0 .. 6, (i as u32) .. (i as u32 + 1));
+        for run in &runs {
+            rp.set_bind_group(1, &run.bind_group, &[]);
+            // 6 verts per quad × N instances per draw. With B7 coalesce
+            // on, N can be the full atlas-resident subset → ONE draw
+            // for the entire static-panel dashboard.
+            rp.draw(0..6, run.range.clone());
         }
 
         metrics::counter!(uzor_urx_core::metrics_keys::KEY_HYBRID_COMPOSITE_DRAWS)
             .increment(instances.len() as u64);
         metrics::counter!(uzor_urx_core::metrics_keys::KEY_HYBRID_COMPOSITE_CALLS)
             .increment(1);
+        metrics::counter!(uzor_urx_core::metrics_keys::KEY_HYBRID_COMPOSITE_PASS_DRAWS)
+            .increment(runs.len() as u64);
         // Transform-only frame proxy: composite happened, zero uploads
         // since last composite. Reset the counter for the next frame.
         if self.uploads_since_last_composite == 0 {

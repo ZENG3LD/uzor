@@ -57,28 +57,28 @@ struct Uniforms {
 
 // ── Vertex buffer layout helpers ──────────────────────────────────────────
 
-/// Creates the vertex buffer layout for `QuadInstance`.
+/// Creates the vertex buffer layout for `QuadInstance` (56 bytes).
 fn quad_instance_layout() -> wgpu::VertexBufferLayout<'static> {
     use wgpu::VertexFormat::*;
 
-    // QuadInstance fields in order:
+    // QuadInstance fields in order (56 bytes, packed-colour):
     //  0: pos           [f32;2]  @ offset  0
     //  1: size          [f32;2]  @ offset  8
-    //  2: color         [f32;4]  @ offset 16
-    //  3: corner_radius  f32     @ offset 32
-    //  4: border_width   f32     @ offset 36
-    //  5: _pad0         [f32;2]  @ offset 40
-    //  6: border_color  [f32;4]  @ offset 48
-    //  7: clip_rect     [f32;4]  @ offset 64
+    //  2: color_packed   u32     @ offset 16
+    //  3: border_packed  u32     @ offset 20
+    //  4: corner_radius  f32     @ offset 24
+    //  5: border_width   f32     @ offset 28
+    //  6: _pad0         [f32;2]  @ offset 32
+    //  7: clip_rect     [f32;4]  @ offset 40
     static ATTRS: &[wgpu::VertexAttribute] = &[
         wgpu::VertexAttribute { shader_location: 0, format: Float32x2, offset:  0 },
         wgpu::VertexAttribute { shader_location: 1, format: Float32x2, offset:  8 },
-        wgpu::VertexAttribute { shader_location: 2, format: Float32x4, offset: 16 },
-        wgpu::VertexAttribute { shader_location: 3, format: Float32,   offset: 32 },
-        wgpu::VertexAttribute { shader_location: 4, format: Float32,   offset: 36 },
-        wgpu::VertexAttribute { shader_location: 5, format: Float32x2, offset: 40 },
-        wgpu::VertexAttribute { shader_location: 6, format: Float32x4, offset: 48 },
-        wgpu::VertexAttribute { shader_location: 7, format: Float32x4, offset: 64 },
+        wgpu::VertexAttribute { shader_location: 2, format: Uint32,    offset: 16 },
+        wgpu::VertexAttribute { shader_location: 3, format: Uint32,    offset: 20 },
+        wgpu::VertexAttribute { shader_location: 4, format: Float32,   offset: 24 },
+        wgpu::VertexAttribute { shader_location: 5, format: Float32,   offset: 28 },
+        wgpu::VertexAttribute { shader_location: 6, format: Float32x2, offset: 32 },
+        wgpu::VertexAttribute { shader_location: 7, format: Float32x4, offset: 40 },
     ];
 
     wgpu::VertexBufferLayout {
@@ -88,26 +88,28 @@ fn quad_instance_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-/// Creates the vertex buffer layout for `LineInstance`.
+/// Creates the vertex buffer layout for `LineInstance` (56 bytes).
 fn line_instance_layout() -> wgpu::VertexBufferLayout<'static> {
     use wgpu::VertexFormat::*;
 
-    // LineInstance fields (64 bytes):
-    //  0: start      [f32;2]  @ offset  0
-    //  1: end        [f32;2]  @ offset  8
-    //  2: color      [f32;4]  @ offset 16
-    //  3: width       f32     @ offset 32
-    //  4: cap_flags   f32     @ offset 36
-    //  5: _pad0      [f32;2]  @ offset 40
-    //  6: clip_rect  [f32;4]  @ offset 48
+    // LineInstance fields (56 bytes, packed-colour):
+    //  0: start         [f32;2]  @ offset  0
+    //  1: end           [f32;2]  @ offset  8
+    //  2: color_packed   u32     @ offset 16
+    //  3: width          f32     @ offset 20
+    //  4: cap_flags      f32     @ offset 24
+    //  5: _pad0          f32     @ offset 28
+    //  6: _pad1         [f32;2]  @ offset 32
+    //  7: clip_rect     [f32;4]  @ offset 40
     static ATTRS: &[wgpu::VertexAttribute] = &[
         wgpu::VertexAttribute { shader_location: 0, format: Float32x2, offset:  0 },
         wgpu::VertexAttribute { shader_location: 1, format: Float32x2, offset:  8 },
-        wgpu::VertexAttribute { shader_location: 2, format: Float32x4, offset: 16 },
-        wgpu::VertexAttribute { shader_location: 3, format: Float32,   offset: 32 },
-        wgpu::VertexAttribute { shader_location: 4, format: Float32,   offset: 36 },
-        wgpu::VertexAttribute { shader_location: 5, format: Float32x2, offset: 40 },
-        wgpu::VertexAttribute { shader_location: 6, format: Float32x4, offset: 48 },
+        wgpu::VertexAttribute { shader_location: 2, format: Uint32,    offset: 16 },
+        wgpu::VertexAttribute { shader_location: 3, format: Float32,   offset: 20 },
+        wgpu::VertexAttribute { shader_location: 4, format: Float32,   offset: 24 },
+        wgpu::VertexAttribute { shader_location: 5, format: Float32,   offset: 28 },
+        wgpu::VertexAttribute { shader_location: 6, format: Float32x2, offset: 32 },
+        wgpu::VertexAttribute { shader_location: 7, format: Float32x4, offset: 40 },
     ];
 
     wgpu::VertexBufferLayout {
@@ -117,15 +119,15 @@ fn line_instance_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-/// Creates the vertex buffer layout for `TriangleInstance`.
+/// Creates the vertex buffer layout for `TriangleInstance` (56 bytes).
 ///
-/// TriangleInstance fields (64 bytes):
-///  0: v0         [f32;2]  @ offset  0
-///  1: v1         [f32;2]  @ offset  8
-///  2: v2         [f32;2]  @ offset 16
-///  3: _pad0      [f32;2]  @ offset 24
-///  4: color      [f32;4]  @ offset 32
-///  5: clip_rect  [f32;4]  @ offset 48
+/// TriangleInstance fields (56 bytes, packed-colour):
+///  0: v0           [f32;2]  @ offset  0
+///  1: v1           [f32;2]  @ offset  8
+///  2: v2           [f32;2]  @ offset 16
+///  3: color_packed  u32     @ offset 24
+///  4: _pad0        [f32;3]  @ offset 28
+///  5: clip_rect    [f32;4]  @ offset 40
 fn triangle_instance_layout() -> wgpu::VertexBufferLayout<'static> {
     use wgpu::VertexFormat::*;
 
@@ -133,9 +135,9 @@ fn triangle_instance_layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexAttribute { shader_location: 0, format: Float32x2, offset:  0 },
         wgpu::VertexAttribute { shader_location: 1, format: Float32x2, offset:  8 },
         wgpu::VertexAttribute { shader_location: 2, format: Float32x2, offset: 16 },
-        wgpu::VertexAttribute { shader_location: 3, format: Float32x2, offset: 24 },
-        wgpu::VertexAttribute { shader_location: 4, format: Float32x4, offset: 32 },
-        wgpu::VertexAttribute { shader_location: 5, format: Float32x4, offset: 48 },
+        wgpu::VertexAttribute { shader_location: 3, format: Uint32,    offset: 24 },
+        wgpu::VertexAttribute { shader_location: 4, format: Float32x3, offset: 28 },
+        wgpu::VertexAttribute { shader_location: 5, format: Float32x4, offset: 40 },
     ];
 
     wgpu::VertexBufferLayout {
@@ -145,15 +147,16 @@ fn triangle_instance_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
-/// Creates the vertex buffer layout for `GlyphInstance`.
+/// Creates the vertex buffer layout for `GlyphInstance` (56 bytes).
 ///
-/// GlyphInstance fields (64 bytes):
-///  0: pos        [f32;2]  @ offset  0
-///  1: size       [f32;2]  @ offset  8
-///  2: uv_pos     [f32;2]  @ offset 16
-///  3: uv_size    [f32;2]  @ offset 24
-///  4: color      [f32;4]  @ offset 32
-///  5: clip_rect  [f32;4]  @ offset 48
+/// GlyphInstance fields (56 bytes, packed-colour):
+///  0: pos          [f32;2]  @ offset  0
+///  1: size         [f32;2]  @ offset  8
+///  2: uv_pos       [f32;2]  @ offset 16
+///  3: uv_size      [f32;2]  @ offset 24
+///  4: color_packed  u32     @ offset 32
+///  5: _pad0         f32     @ offset 36
+///  6: clip_rect    [f32;4]  @ offset 40
 fn glyph_instance_layout() -> wgpu::VertexBufferLayout<'static> {
     use wgpu::VertexFormat::*;
 
@@ -162,8 +165,9 @@ fn glyph_instance_layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexAttribute { shader_location: 1, format: Float32x2, offset:  8 },
         wgpu::VertexAttribute { shader_location: 2, format: Float32x2, offset: 16 },
         wgpu::VertexAttribute { shader_location: 3, format: Float32x2, offset: 24 },
-        wgpu::VertexAttribute { shader_location: 4, format: Float32x4, offset: 32 },
-        wgpu::VertexAttribute { shader_location: 5, format: Float32x4, offset: 48 },
+        wgpu::VertexAttribute { shader_location: 4, format: Uint32,    offset: 32 },
+        wgpu::VertexAttribute { shader_location: 5, format: Float32,   offset: 36 },
+        wgpu::VertexAttribute { shader_location: 6, format: Float32x4, offset: 40 },
     ];
 
     wgpu::VertexBufferLayout {
@@ -628,14 +632,14 @@ impl InstancedRenderer {
                     let glyph_x = base_x + physical.x as f32 + entry.placement_left as f32;
                     let glyph_y = base_y + run.line_y + physical.y as f32 - entry.placement_top as f32;
 
-                    instances.push(GlyphInstance {
-                        pos:       [glyph_x, glyph_y],
-                        size:      [entry.width as f32, entry.height as f32],
-                        uv_pos:    [entry.uv_x, entry.uv_y],
-                        uv_size:   [entry.uv_w, entry.uv_h],
-                        color:     ta.color,
-                        clip_rect: ta.clip,
-                    });
+                    instances.push(GlyphInstance::from_float_color(
+                        [glyph_x, glyph_y],
+                        [entry.width as f32, entry.height as f32],
+                        [entry.uv_x, entry.uv_y],
+                        [entry.uv_w, entry.uv_h],
+                        ta.color,
+                        ta.clip,
+                    ));
                 }
             }
         }

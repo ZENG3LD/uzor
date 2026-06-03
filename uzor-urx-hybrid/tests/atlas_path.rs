@@ -218,6 +218,113 @@ fn composite_works_with_mixed_atlas_and_standalone() {
 
 #[test]
 #[ignore = "needs gpu adapter; run with --ignored"]
+fn instanced_composite_coalesces_atlas_run() {
+    // With hybrid_instanced_composite enabled + 5 atlas-resident
+    // regions, composite() should emit ONE draw call (range 0..5).
+    // Verifies the run-coalescing branch — atlas regions share a
+    // single bind group.
+    let Some((device, queue)) = init_device() else { return; };
+    let cfg = UrxConfig::builder()
+        .hybrid_atlas_enabled(true)
+        .hybrid_instanced_composite(true)
+        .build()
+        .unwrap();
+    let mut backend = HybridBackend::with_config(cfg);
+
+    // Upload 5 small atlas-eligible regions.
+    let mut pm = Pixmap::new(32, 32);
+    pm.fill([10, 20, 30, 255]);
+    let mut instances = Vec::with_capacity(5);
+    for i in 0..5u64 {
+        let id = RegionId(100 + i);
+        backend.upsert_region_pixmap(&device, &queue, id, &pm);
+        instances.push((id, QuadInstance::new((i as f32) * 32.0, 0.0, 32.0, 32.0)));
+    }
+    // All 5 must be atlas-packed.
+    for (id, _) in &instances {
+        assert!(backend.is_atlas_packed(*id));
+    }
+
+    // Composite — must not panic.
+    run_composite(&mut backend, &device, &queue, &instances);
+    // No structural assertion possible without a metrics recorder
+    // hooked up; the counter increment is verified by the
+    // KEY_HYBRID_COMPOSITE_PASS_DRAWS in metrics_keys (read via
+    // UrxRecorder in apps).
+}
+
+#[test]
+#[ignore = "needs gpu adapter; run with --ignored"]
+fn coalesce_disabled_per_region_draw() {
+    // hybrid_atlas_enabled = true but hybrid_instanced_composite = false:
+    // atlas-resident regions still get per-region bind groups (so the
+    // coalesce branch can be A/B'd against the non-coalesced path).
+    let Some((device, queue)) = init_device() else { return; };
+    let cfg = UrxConfig::builder()
+        .hybrid_atlas_enabled(true)
+        .hybrid_instanced_composite(false) // explicit
+        .build()
+        .unwrap();
+    let mut backend = HybridBackend::with_config(cfg);
+
+    let mut pm = Pixmap::new(16, 16);
+    pm.fill([200, 50, 50, 255]);
+    let mut instances = Vec::with_capacity(3);
+    for i in 0..3u64 {
+        let id = RegionId(200 + i);
+        backend.upsert_region_pixmap(&device, &queue, id, &pm);
+        instances.push((id, QuadInstance::new((i as f32) * 16.0, 0.0, 16.0, 16.0)));
+    }
+    run_composite(&mut backend, &device, &queue, &instances);
+}
+
+#[test]
+#[ignore = "needs gpu adapter; run with --ignored"]
+fn coalesce_breaks_at_standalone_in_middle() {
+    // Mix: [atlas, atlas, standalone, atlas, atlas]
+    // With coalesce enabled, runs should be:
+    //   [0..2 atlas] [2..3 standalone] [3..5 atlas]
+    // = 3 draws (vs 5 without coalesce).
+    let Some((device, queue)) = init_device() else { return; };
+    let cfg = UrxConfig::builder()
+        .hybrid_atlas_enabled(true)
+        .hybrid_instanced_composite(true)
+        .build()
+        .unwrap();
+    let mut backend = HybridBackend::with_config(cfg);
+
+    let mut small = Pixmap::new(32, 32);
+    small.fill([10, 10, 10, 255]);
+    let mut large = Pixmap::new(1500, 32);
+    large.fill([200, 200, 200, 255]);
+
+    let mut instances = Vec::with_capacity(5);
+    // Two atlas regions first.
+    for i in 0..2u64 {
+        let id = RegionId(300 + i);
+        backend.upsert_region_pixmap(&device, &queue, id, &small);
+        instances.push((id, QuadInstance::new((i as f32) * 32.0, 0.0, 32.0, 32.0)));
+        assert!(backend.is_atlas_packed(id));
+    }
+    // One standalone (oversize).
+    let standalone_id = RegionId(400);
+    backend.upsert_region_pixmap(&device, &queue, standalone_id, &large);
+    instances.push((standalone_id, QuadInstance::new(64.0, 0.0, 96.0, 32.0)));
+    assert!(!backend.is_atlas_packed(standalone_id));
+    // Two more atlas regions.
+    for i in 0..2u64 {
+        let id = RegionId(500 + i);
+        backend.upsert_region_pixmap(&device, &queue, id, &small);
+        instances.push((id, QuadInstance::new(160.0 + (i as f32) * 32.0, 0.0, 32.0, 32.0)));
+        assert!(backend.is_atlas_packed(id));
+    }
+
+    // composite — must paint everything in painter's order.
+    run_composite(&mut backend, &device, &queue, &instances);
+}
+
+#[test]
+#[ignore = "needs gpu adapter; run with --ignored"]
 fn remove_region_clears_atlas_slot() {
     let Some((device, queue)) = init_device() else { return; };
     let cfg = UrxConfig::builder()

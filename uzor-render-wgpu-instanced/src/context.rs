@@ -419,14 +419,9 @@ impl InstancedRenderContext {
                     let v0 = geometry.vertices[tri[0] as usize];
                     let v1 = geometry.vertices[tri[1] as usize];
                     let v2 = geometry.vertices[tri[2] as usize];
-                    self.draw_commands.push(DrawCmd::Triangle(TriangleInstance {
-                        v0,
-                        v1,
-                        v2,
-                        _pad0: [0.0; 2],
-                        color,
-                        clip_rect: clip,
-                    }));
+                    self.draw_commands.push(DrawCmd::Triangle(TriangleInstance::from_float_color(
+                        v0, v1, v2, color, clip,
+                    )));
                 }
             }
         }
@@ -450,16 +445,15 @@ impl InstancedRenderContext {
                 // Scale only — use transform scale components to compute pixel size
                 // This is a simplified approach: transform x/y corners to get size
                 let (px2, py2) = apply(&self.transform, x + w, y + h);
-                self.draw_commands.push(DrawCmd::Quad(QuadInstance {
-                    pos: [px.min(px2), py.min(py2)],
-                    size: [(px2 - px).abs(), (py2 - py).abs()],
+                self.draw_commands.push(DrawCmd::Quad(QuadInstance::from_float_color(
+                    [px.min(px2), py.min(py2)],
+                    [(px2 - px).abs(), (py2 - py).abs()],
                     color,
-                    corner_radius: 0.0,
-                    border_width: 0.0,
-                    _pad0: [0.0; 2],
-                    border_color: [0.0; 4],
-                    clip_rect: clip,
-                }));
+                    0.0,
+                    0.0,
+                    [0.0; 4],
+                    clip,
+                )));
                 return;
             }
         }
@@ -491,16 +485,15 @@ impl InstancedRenderContext {
                     let max_y = y0.max(y1).max(y2).max(y3);
                     let (px1, py1) = apply(&self.transform, min_x, min_y);
                     let (px2, py2) = apply(&self.transform, max_x, max_y);
-                    self.draw_commands.push(DrawCmd::Quad(QuadInstance {
-                        pos: [px1.min(px2), py1.min(py2)],
-                        size: [(px2 - px1).abs(), (py2 - py1).abs()],
+                    self.draw_commands.push(DrawCmd::Quad(QuadInstance::from_float_color(
+                        [px1.min(px2), py1.min(py2)],
+                        [(px2 - px1).abs(), (py2 - py1).abs()],
                         color,
-                        corner_radius: 0.0,
-                        border_width: 0.0,
-                        _pad0: [0.0; 2],
-                        border_color: [0.0; 4],
-                        clip_rect: clip,
-                    }));
+                        0.0,
+                        0.0,
+                        [0.0; 4],
+                        clip,
+                    )));
                     return;
                 }
                 // Non-rect 4-point polygon: fall through to lyon tessellation below.
@@ -617,14 +610,9 @@ impl InstancedRenderContext {
                     let v0 = geometry.vertices[tri[0] as usize];
                     let v1 = geometry.vertices[tri[1] as usize];
                     let v2 = geometry.vertices[tri[2] as usize];
-                    self.draw_commands.push(DrawCmd::Triangle(TriangleInstance {
-                        v0,
-                        v1,
-                        v2,
-                        _pad0: [0.0; 2],
-                        color,
-                        clip_rect: clip,
-                    }));
+                    self.draw_commands.push(DrawCmd::Triangle(TriangleInstance::from_float_color(
+                        v0, v1, v2, color, clip,
+                    )));
                 }
             }
         }
@@ -973,16 +961,15 @@ impl ShapeHelpers for InstancedRenderContext {
         let clip = self.current_clip();
         let (px1, py1) = apply(&self.transform, x,     y);
         let (px2, py2) = apply(&self.transform, x + w, y + h);
-        self.draw_commands.push(DrawCmd::Quad(QuadInstance {
-            pos: [px1.min(px2), py1.min(py2)],
-            size: [(px2 - px1).abs(), (py2 - py1).abs()],
+        self.draw_commands.push(DrawCmd::Quad(QuadInstance::from_float_color(
+            [px1.min(px2), py1.min(py2)],
+            [(px2 - px1).abs(), (py2 - py1).abs()],
             color,
-            corner_radius: 0.0,
-            border_width: 0.0,
-            _pad0: [0.0; 2],
-            border_color: [0.0; 4],
-            clip_rect: clip,
-        }));
+            0.0,
+            0.0,
+            [0.0; 4],
+            clip,
+        )));
     }
 
     fn stroke_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
@@ -998,16 +985,15 @@ impl ShapeHelpers for InstancedRenderContext {
         let (px1, py1) = apply(&self.transform, x,     y);
         let (px2, py2) = apply(&self.transform, x + w, y + h);
         let scale = ((self.transform[0].abs() + self.transform[3].abs()) * 0.5).max(0.001);
-        self.draw_commands.push(DrawCmd::Quad(QuadInstance {
-            pos: [px1.min(px2), py1.min(py2)],
-            size: [(px2 - px1).abs(), (py2 - py1).abs()],
+        self.draw_commands.push(DrawCmd::Quad(QuadInstance::from_float_color(
+            [px1.min(px2), py1.min(py2)],
+            [(px2 - px1).abs(), (py2 - py1).abs()],
             color,
-            corner_radius: r * scale,
-            border_width: 0.0,
-            _pad0: [0.0; 2],
-            border_color: [0.0; 4],
-            clip_rect: clip,
-        }));
+            r * scale,
+            0.0,
+            [0.0; 4],
+            clip,
+        )));
     }
 
     fn stroke_rounded_rect(&mut self, x: f64, y: f64, w: f64, h: f64, radius: f64) {
@@ -1018,16 +1004,15 @@ impl ShapeHelpers for InstancedRenderContext {
         let (px1, py1) = apply(&self.transform, x,     y);
         let (px2, py2) = apply(&self.transform, x + w, y + h);
         let scale = ((self.transform[0].abs() + self.transform[3].abs()) * 0.5).max(0.001);
-        self.draw_commands.push(DrawCmd::Quad(QuadInstance {
-            pos: [px1.min(px2), py1.min(py2)],
-            size: [(px2 - px1).abs(), (py2 - py1).abs()],
-            color: [0.0, 0.0, 0.0, 0.0],
-            corner_radius: r * scale,
-            border_width: self.stroke_width,
-            _pad0: [0.0; 2],
+        self.draw_commands.push(DrawCmd::Quad(QuadInstance::from_float_color(
+            [px1.min(px2), py1.min(py2)],
+            [(px2 - px1).abs(), (py2 - py1).abs()],
+            [0.0, 0.0, 0.0, 0.0],
+            r * scale,
+            self.stroke_width,
             border_color,
-            clip_rect: clip,
-        }));
+            clip,
+        )));
     }
 }
 
@@ -1299,14 +1284,9 @@ impl InstancedRenderContext {
                     let mut color = sample_gradient(stops, t);
                     color[3] = (color[3] * global_alpha).clamp(0.0, 1.0);
 
-                    self.draw_commands.push(DrawCmd::Triangle(TriangleInstance {
-                        v0,
-                        v1,
-                        v2,
-                        _pad0: [0.0; 2],
-                        color,
-                        clip_rect: clip,
-                    }));
+                    self.draw_commands.push(DrawCmd::Triangle(TriangleInstance::from_float_color(
+                        v0, v1, v2, color, clip,
+                    )));
                 }
             }
         }
@@ -1410,19 +1390,13 @@ impl InstancedRenderContext {
         let bl = [left,  bottom];
 
         // Triangle 1: top-left, top-right, bottom-right
-        self.draw_commands.push(DrawCmd::Triangle(TriangleInstance {
-            v0: tl, v1: tr, v2: br,
-            _pad0: [0.0; 2],
-            color,
-            clip_rect: clip,
-        }));
+        self.draw_commands.push(DrawCmd::Triangle(TriangleInstance::from_float_color(
+            tl, tr, br, color, clip,
+        )));
         // Triangle 2: top-left, bottom-right, bottom-left
-        self.draw_commands.push(DrawCmd::Triangle(TriangleInstance {
-            v0: tl, v1: br, v2: bl,
-            _pad0: [0.0; 2],
-            color,
-            clip_rect: clip,
-        }));
+        self.draw_commands.push(DrawCmd::Triangle(TriangleInstance::from_float_color(
+            tl, br, bl, color, clip,
+        )));
     }
 }
 
