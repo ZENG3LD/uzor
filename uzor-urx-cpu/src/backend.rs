@@ -108,10 +108,32 @@ impl CpuBackend {
                     let color = brush_to_color(brush);
                     crate::path::stroke_path_aa(pixmap, &clip, path, stroke, color, transform);
                 }
-                DrawCommand::GlyphRun { .. } => {
-                    // Text deferred to Phase 3.5 (skrifa atlas). For now
-                    // we skip so a scene containing text renders the
-                    // non-text portion correctly instead of failing.
+                DrawCommand::GlyphRun { glyphs, font, font_size, brush, transform } => {
+                    #[cfg(feature = "glyph")]
+                    {
+                        let color = brush_to_color(brush);
+                        let coeffs = transform.as_coeffs();
+                        let (tx, ty) = (coeffs[4] as f32, coeffs[5] as f32);
+                        let pw = pixmap.width();
+                        let ph = pixmap.height();
+                        let _ = uzor_urx_glyph::draw_glyph_run(
+                            pixmap.pixels_mut(),
+                            pw, ph,
+                            tx, ty,
+                            glyphs,
+                            *font,
+                            *font_size,
+                            [color.r, color.g, color.b, color.a],
+                        );
+                    }
+                    #[cfg(not(feature = "glyph"))]
+                    {
+                        let _ = (glyphs, font, font_size, brush, transform);
+                        metrics::counter!(
+                            uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+                            "kind" => "glyph_run_skipped_no_feature",
+                        ).increment(1);
+                    }
                 }
                 DrawCommand::Image { src, src_rect, dest, transform } => {
                     let _ = crate::image_draw::draw_image_aa(

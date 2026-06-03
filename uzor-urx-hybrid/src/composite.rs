@@ -24,6 +24,17 @@ pub struct QuadInstance {
     pub tint:   [f32; 4],
 }
 
+impl QuadInstance {
+    /// Convenience constructor: whole-texture quad with neutral tint.
+    pub fn new(dst_x: f32, dst_y: f32, dst_w: f32, dst_h: f32) -> Self {
+        Self {
+            dst:  [dst_x, dst_y, dst_w, dst_h],
+            uv:   [0.0, 0.0, 1.0, 1.0],
+            tint: [1.0, 1.0, 1.0, 1.0],
+        }
+    }
+}
+
 /// Screen-size uniform. One per render pass.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]

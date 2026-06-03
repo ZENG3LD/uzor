@@ -16,8 +16,11 @@ metrics = "0.24"
 
 # uzor-urx-wgpu is opt-in via feature so consumers that only want CPU
 # (headless / CI / embedded) can skip the wgpu dep tree entirely.
-uzor-urx-wgpu = { workspace = true, optional = true }
+uzor-urx-wgpu   = { workspace = true, optional = true }
+uzor-urx-hybrid = { workspace = true, optional = true }
+wgpu = { version = "28", optional = true }
 
 [features]
-default = ["wgpu"]
-wgpu = ["dep:uzor-urx-wgpu"]
+default = ["wgpu-backend"]
+wgpu-backend = ["dep:uzor-urx-wgpu"]
+hybrid-backend = ["dep:uzor-urx-hybrid", "dep:wgpu"]

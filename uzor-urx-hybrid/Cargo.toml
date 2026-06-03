@@ -16,3 +16,6 @@ uzor-urx-wgpu = { workspace = true }
 metrics = "0.24"
 wgpu    = "28"
 bytemuck = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+pollster = "0.4"

@@ -16,8 +16,10 @@ use crate::region_state::RegionState;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Backend {
     Cpu,
-    #[cfg(feature = "wgpu")]
+    #[cfg(feature = "wgpu-backend")]
     Wgpu,
+    #[cfg(feature = "hybrid-backend")]
+    Hybrid,
 }
 
 /// Caller-supplied render target. Backend-specific — caller picks
@@ -28,8 +30,23 @@ pub enum RenderTarget<'a> {
     /// WGPU instanced render context. Engine writes draw commands
     /// into it via the urx-wgpu adapter; caller must then run
     /// `InstancedRenderer::render(commands)` + submit_frame from hub.
-    #[cfg(feature = "wgpu")]
+    #[cfg(feature = "wgpu-backend")]
     Wgpu(&'a mut uzor_urx_wgpu::InstancedRenderContext),
+    /// Hybrid: CPU rasterises every dirty region into scratch pixmaps,
+    /// uploads them to `HybridBackend` as GPU textures, then composites
+    /// them onto `target_view` via the hybrid pipeline. Caller supplies
+    /// the wgpu device/queue/encoder + the target view + screen size.
+    #[cfg(feature = "hybrid-backend")]
+    Hybrid {
+        backend:        &'a mut uzor_urx_hybrid::HybridBackend,
+        device:         &'a wgpu::Device,
+        queue:          &'a wgpu::Queue,
+        encoder:        &'a mut wgpu::CommandEncoder,
+        target_view:    &'a wgpu::TextureView,
+        surface_format: wgpu::TextureFormat,
+        screen_w:       u32,
+        screen_h:       u32,
+    },
 }
 
 /// The URX engine. ONE per window. Owns region state + dirty tracking;
@@ -84,9 +101,15 @@ impl UrxEngine {
     }
 
     /// Convenience: WGPU engine.
-    #[cfg(feature = "wgpu")]
+    #[cfg(feature = "wgpu-backend")]
     pub fn new_wgpu(width: u32, height: u32) -> Self {
         Self::new(Backend::Wgpu, width, height)
+    }
+
+    /// Convenience: Hybrid engine (CPU raster + GPU composite).
+    #[cfg(feature = "hybrid-backend")]
+    pub fn new_hybrid(width: u32, height: u32) -> Self {
+        Self::new(Backend::Hybrid, width, height)
     }
 
     pub fn backend(&self) -> Backend { self.backend }
@@ -254,12 +277,66 @@ impl UrxEngine {
                     rs.dirty = DirtyState::Clean;
                 }
             }
-            #[cfg(feature = "wgpu")]
+            #[cfg(feature = "wgpu-backend")]
             (RenderTarget::Wgpu(ctx), Backend::Wgpu) => {
                 for rs in self.regions.values_mut() {
                     if rs.dirty == DirtyState::Clean { continue; }
                     uzor_urx_wgpu::adapt_scene_into(&rs.scene, ctx);
                     rs.dirty = DirtyState::Clean;
+                }
+            }
+            #[cfg(feature = "hybrid-backend")]
+            (RenderTarget::Hybrid {
+                backend, device, queue, encoder, target_view,
+                surface_format, screen_w, screen_h,
+            }, Backend::Hybrid) => {
+                let cpu = CpuBackend::new();
+                let mut instances: Vec<(RegionId, uzor_urx_hybrid::QuadInstance)>
+                    = Vec::with_capacity(self.regions.len());
+                for (id, rs) in self.regions.iter_mut() {
+                    if rs.dirty == DirtyState::Clean {
+                        // Still need to composite previously-cached
+                        // regions, but only if their texture is up to
+                        // date. Push their QuadInstance.
+                        let (ox, oy) = decompose_translate(&rs.transform);
+                        let dst_x = rs.bounds.x0 + ox;
+                        let dst_y = rs.bounds.y0 + oy;
+                        let rw = rs.bounds.width()  as f32;
+                        let rh = rs.bounds.height() as f32;
+                        instances.push((*id, uzor_urx_hybrid::QuadInstance::new(
+                            dst_x as f32, dst_y as f32, rw, rh,
+                        )));
+                        continue;
+                    }
+                    let needs_raster = rs.dirty.needs_raster();
+                    let rw = rs.bounds.width().max(1.0).ceil() as u32;
+                    let rh = rs.bounds.height().max(1.0).ceil() as u32;
+                    if needs_raster {
+                        let mut scratch = Pixmap::new(rw, rh);
+                        let mut shifted = rs.scene.clone();
+                        shift_scene_origin(&mut shifted, -rs.bounds.x0, -rs.bounds.y0);
+                        cpu.render(&shifted, &mut scratch)
+                            .map_err(|_| RenderError::BackendFailed)?;
+                        backend.upsert_region_pixmap(device, queue, *id, &scratch);
+                        cache_misses += 1;
+                    } else {
+                        // TransformOnly: GPU texture already correct,
+                        // just composite at new offset.
+                        cache_hits += 1;
+                    }
+                    let (ox, oy) = decompose_translate(&rs.transform);
+                    let dst_x = rs.bounds.x0 + ox;
+                    let dst_y = rs.bounds.y0 + oy;
+                    instances.push((*id, uzor_urx_hybrid::QuadInstance::new(
+                        dst_x as f32, dst_y as f32, rw as f32, rh as f32,
+                    )));
+                    rs.dirty = DirtyState::Clean;
+                }
+                if !instances.is_empty() {
+                    backend.composite(
+                        device, queue, encoder, target_view,
+                        surface_format, screen_w, screen_h, &instances,
+                    );
                 }
             }
             _ => return Err(RenderError::BackendMismatch),
