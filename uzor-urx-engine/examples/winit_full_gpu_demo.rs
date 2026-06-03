@@ -32,6 +32,7 @@
 //! | `POST`  | `/scene/spawn_rect`        | `{cx, cy, half, color}`              | add one rect/region |
 //! | `POST`  | `/scene/spawn_stroke`      | `{p0, p1, width, color, cap?}`       | add one stroke line region |
 //! | `POST`  | `/scene/spawn_sparkline`   | `{points: [[x,y],…], width, color}`  | one region = a polyline |
+//! | `POST`  | `/scene/spawn_bezier`      | `{p0, c0, c1, p1, width, color}`     | cubic Bézier — kurbo flattens into a Path cmd |
 //! | `POST`  | `/scene/preset/dashboard`  | —                                    | replace scene with grid + sparkline preset |
 //! | `DELETE`| `/scene/region/:id`        | —                                    | remove region by id |
 //! | `POST`  | `/scene/clear`             | —                                    | remove every rect/region |
@@ -81,9 +82,9 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use uzor_urx_core::math::{Color, Rect as UxRect};
+use uzor_urx_core::math::{Affine, BezPath, Brush, Color, Point, Rect as UxRect};
 use uzor_urx_core::region::RegionId;
-use uzor_urx_core::scene::Scene;
+use uzor_urx_core::scene::{DrawCommand, Scene, Stroke};
 use uzor_urx_engine::cadence::RenderCadence;
 use uzor_urx_engine::engine::{RenderTarget, UrxEngine};
 use uzor_urx_wgpu_full::{BlitPipeline, TileBuffers, TilePipeline, TILE_SIZE};
@@ -134,17 +135,37 @@ struct PolylineModel {
     color:  [u8; 4],
 }
 
+/// Cubic-Bézier path: caller supplies anchor + control points. The
+/// demo packs them into a kurbo `BezPath` and pushes a `DrawCommand::
+/// StrokePath` — the encoder will flatten via kurbo at upload time.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct BezierModel {
+    id:    u64,
+    /// Start anchor.
+    p0:    [f32; 2],
+    /// First control point.
+    c0:    [f32; 2],
+    /// Second control point.
+    c1:    [f32; 2],
+    /// End anchor.
+    p1:    [f32; 2],
+    width: f32,
+    color: [u8; 4],
+}
+
 #[derive(Default)]
 struct SharedScene {
     rects:        Vec<RectModel>,
     strokes:      Vec<StrokeModel>,
     polylines:    Vec<PolylineModel>,
+    beziers:      Vec<BezierModel>,
     next_id:      u64,
     paused:       bool,
     /// L3: rects queued by `/scene/spawn_rect`. Drained by main thread.
-    pending_spawn:   Vec<RectModel>,
-    pending_strokes: Vec<StrokeModel>,
-    pending_polys:   Vec<PolylineModel>,
+    pending_spawn:    Vec<RectModel>,
+    pending_strokes:  Vec<StrokeModel>,
+    pending_polys:    Vec<PolylineModel>,
+    pending_beziers:  Vec<BezierModel>,
     /// L3: clear-all flag.
     pending_clear: bool,
     /// L3: load dashboard preset flag.
@@ -237,6 +258,11 @@ fn spawn_agent_server(state: AgentState) -> std::thread::JoinHandle<()> {
     }
     #[derive(Deserialize)]
     struct SpawnSparklineBody { points: Vec<[f32; 2]>, width: f32, color: [u8; 4] }
+    #[derive(Deserialize)]
+    struct SpawnBezierBody {
+        p0: [f32; 2], c0: [f32; 2], c1: [f32; 2], p1: [f32; 2],
+        width: f32, color: [u8; 4],
+    }
     #[derive(Serialize)]
     struct OkReply { ok: bool, msg: String }
     fn ok(msg: impl Into<String>) -> Json<OkReply> {
@@ -350,6 +376,19 @@ fn spawn_agent_server(state: AgentState) -> std::thread::JoinHandle<()> {
                                 color: b.color,
                             });
                             (StatusCode::OK, ok(format!("sparkline queued, id={id}"))).into_response()
+                        },
+                    ))
+                    .route("/scene/spawn_bezier", post(
+                        |AxState(s): AxState<AgentState>, Json(b): Json<SpawnBezierBody>| async move {
+                            let mut sc = s.scene.lock().unwrap();
+                            let id = sc.next_id; sc.next_id += 1;
+                            sc.pending_beziers.push(BezierModel {
+                                id,
+                                p0: b.p0, c0: b.c0, c1: b.c1, p1: b.p1,
+                                width: b.width.max(0.5),
+                                color: b.color,
+                            });
+                            ok(format!("bezier queued, id={id}"))
                         },
                     ))
                     .route("/scene/preset/dashboard", post(
@@ -526,9 +565,11 @@ impl GpuState {
             for r in sc.rects.iter()     { self.engine.remove_region(RegionId(r.id)); }
             for s in sc.strokes.iter()   { self.engine.remove_region(RegionId(s.id)); }
             for p in sc.polylines.iter() { self.engine.remove_region(RegionId(p.id)); }
+            for b in sc.beziers.iter()   { self.engine.remove_region(RegionId(b.id)); }
             sc.rects.clear();
             sc.strokes.clear();
             sc.polylines.clear();
+            sc.beziers.clear();
         }
 
         // ─ L3: dashboard preset (clear + populate grid + sparkline) ──
@@ -537,9 +578,11 @@ impl GpuState {
             for r in sc.rects.iter()     { self.engine.remove_region(RegionId(r.id)); }
             for s in sc.strokes.iter()   { self.engine.remove_region(RegionId(s.id)); }
             for p in sc.polylines.iter() { self.engine.remove_region(RegionId(p.id)); }
+            for b in sc.beziers.iter()   { self.engine.remove_region(RegionId(b.id)); }
             sc.rects.clear();
             sc.strokes.clear();
             sc.polylines.clear();
+            sc.beziers.clear();
             sc.paused = false;
 
             // 1. background rect (whole window dark slate)
@@ -613,6 +656,9 @@ impl GpuState {
                 } else if let Some(pos) = sc.polylines.iter().position(|p| p.id == id) {
                     sc.polylines.remove(pos);
                     self.engine.remove_region(RegionId(id));
+                } else if let Some(pos) = sc.beziers.iter().position(|b| b.id == id) {
+                    sc.beziers.remove(pos);
+                    self.engine.remove_region(RegionId(id));
                 }
             }
         }
@@ -639,6 +685,14 @@ impl GpuState {
             for p_in in queued {
                 if sc.polylines.len() < MAX_N {
                     sc.polylines.push(p_in);
+                }
+            }
+        }
+        if !sc.pending_beziers.is_empty() {
+            let queued = std::mem::take(&mut sc.pending_beziers);
+            for b_in in queued {
+                if sc.beziers.len() < MAX_N {
+                    sc.beziers.push(b_in);
                 }
             }
         }
@@ -796,8 +850,48 @@ impl GpuState {
             );
         }
 
+        // ─ Push to engine: cubic Bézier curves via DrawCommand::StrokePath ──
+        // Each Bézier = ONE engine region; the encoder runs kurbo flatten
+        // on the BezPath and emits a Path cmd.
+        for b in sc.beziers.iter() {
+            let mut path = BezPath::new();
+            path.move_to(Point::new(b.p0[0] as f64, b.p0[1] as f64));
+            path.curve_to(
+                Point::new(b.c0[0] as f64, b.c0[1] as f64),
+                Point::new(b.c1[0] as f64, b.c1[1] as f64),
+                Point::new(b.p1[0] as f64, b.p1[1] as f64),
+            );
+            let stroke = Stroke {
+                width: b.width,
+                ..Stroke::default()
+            };
+            let mut scene = Scene::new();
+            scene.commands.push(DrawCommand::StrokePath {
+                path,
+                stroke,
+                brush: Brush::Solid(Color::rgba8(b.color[0], b.color[1], b.color[2], b.color[3])),
+                transform: Affine::IDENTITY,
+            });
+
+            // AABB from 4 control points + half-width pad.
+            let hw = (b.width * 0.5).max(1.0) as f64;
+            let xs = [b.p0[0] as f64, b.c0[0] as f64, b.c1[0] as f64, b.p1[0] as f64];
+            let ys = [b.p0[1] as f64, b.c0[1] as f64, b.c1[1] as f64, b.p1[1] as f64];
+            let x0 = xs.iter().cloned().fold(f64::INFINITY, f64::min) - hw;
+            let y0 = ys.iter().cloned().fold(f64::INFINITY, f64::min) - hw;
+            let x1 = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max) + hw;
+            let y1 = ys.iter().cloned().fold(f64::NEG_INFINITY, f64::max) + hw;
+            self.engine.upsert_region(
+                RegionId(b.id),
+                scene,
+                UxRect::new(x0, y0, x1, y1),
+                RenderCadence::Static,
+            );
+        }
+
         let paused  = sc.paused;
-        let regions = (sc.rects.len() + sc.strokes.len() + sc.polylines.len()) as u32;
+        let regions = (sc.rects.len() + sc.strokes.len()
+                        + sc.polylines.len() + sc.beziers.len()) as u32;
         drop(sc);
 
         // Publish to metrics for L1 /state polling.

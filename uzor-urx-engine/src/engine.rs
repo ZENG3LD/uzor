@@ -533,12 +533,21 @@ impl UrxEngine {
                 // texture is cleared each blit. There's no per-region
                 // cache yet — total cost dominates by the encode/dispatch
                 // for the cmd list, not by tracking per-region dirty.
-                let mut all_cmds: Vec<uzor_urx_wgpu_full::SceneCmd> = Vec::new();
+                //
+                // Path cmds (kind=6) reference a per-frame `path_points`
+                // buffer; the encoder returns both lists from each
+                // region. We accumulate them with a running base offset
+                // so each Path cmd points at the right slice.
+                let mut all_cmds:   Vec<uzor_urx_wgpu_full::SceneCmd> = Vec::new();
+                let mut all_points: Vec<[f32; 2]>                     = Vec::new();
                 for rs in self.regions.values_mut() {
                     let mut shifted = rs.scene.clone();
                     shift_scene_origin(&mut shifted, rs.bounds.x0, rs.bounds.y0);
-                    let mut cmds = uzor_urx_wgpu_full::encode_scene(&shifted);
+                    let base = all_points.len() as u32;
+                    let (mut cmds, mut points) =
+                        uzor_urx_wgpu_full::encode_scene_with_paths(&shifted, base);
                     all_cmds.append(&mut cmds);
+                    all_points.append(&mut points);
                     rs.dirty = DirtyState::Clean;
                 }
 
@@ -547,9 +556,15 @@ impl UrxEngine {
                 if needed > available {
                     return Err(RenderError::CmdBufferTooSmall { needed, available });
                 }
+                if all_points.len() as u32 > bufs.path_points_cap {
+                    return Err(RenderError::PathPointsBufferTooSmall {
+                        needed:    all_points.len() as u32,
+                        available: bufs.path_points_cap,
+                    });
+                }
 
                 pipeline.render_to_target(
-                    device, queue, encoder, bufs, &all_cmds,
+                    device, queue, encoder, bufs, &all_cmds, &all_points,
                     storage_view, blit, target_view,
                     src_w, src_h, glyph_atlas_view,
                 );
@@ -649,4 +664,8 @@ pub enum RenderError {
     /// for the concatenated cmd list. Caller should re-allocate
     /// `TileBuffers` with `cmds_n >= reported size` and retry.
     CmdBufferTooSmall { needed: u32, available: u32 },
+    /// FullGpu only: the scene's flattened paths produced more vertices
+    /// than `TileBuffers::path_points_cap`. Re-allocate via
+    /// `TileBuffers::allocate_with(..., path_points_cap = N)` and retry.
+    PathPointsBufferTooSmall { needed: u32, available: u32 },
 }
