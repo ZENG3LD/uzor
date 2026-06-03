@@ -22,3 +22,16 @@ peniko = "0.2"
 # an UrxRecorder snapshot impl OR fanout into another recorder (the
 # metrics crate supports stacking).
 metrics = "0.24"
+
+# wgpu is OPTIONAL: only pulled in by the `pipeline-cache` feature.
+# urx-core itself is wgpu-agnostic; the pipeline_cache module is a
+# thin convenience that wraps wgpu's PipelineCache API + namespaced
+# disk persistence. urx-core does not depend on wgpu otherwise.
+wgpu = { version = "28", optional = true, default-features = false }
+
+[features]
+default = []
+# Enable the pipeline_cache module (wgpu::PipelineCache disk persistence
+# helpers). Adds wgpu as a direct dep — only opt-in for crates that
+# already use wgpu (urx-hybrid, urx-wgpu).
+pipeline-cache = ["dep:wgpu"]

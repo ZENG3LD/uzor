@@ -10,7 +10,7 @@ keywords    = ["graphics", "rendering", "ui", "wgpu", "hybrid"]
 categories  = ["graphics", "rendering"]
 
 [dependencies]
-uzor-urx-core = { workspace = true }
+uzor-urx-core = { workspace = true, features = ["pipeline-cache"] }
 uzor-urx-cpu  = { workspace = true }
 uzor-urx-wgpu = { workspace = true }
 metrics = "0.24"

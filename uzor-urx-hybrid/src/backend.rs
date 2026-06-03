@@ -33,6 +33,13 @@ pub struct HybridBackend {
     /// When 0 after a composite, the frame was transform-only — see
     /// `KEY_HYBRID_COMPOSITE_TRANSFORM_ONLY_FRAMES`.
     uploads_since_last_composite: u32,
+    /// Optional pipeline cache (Vulkan only — no-op elsewhere). When
+    /// set BEFORE the first `composite()` call, the compositor
+    /// pipeline is built using this cache, saving ~50-500 ms cold
+    /// start on first launch after a driver update / fresh install.
+    /// Use [`uzor_urx_core::pipeline_cache::load_or_create`] +
+    /// [`Self::set_pipeline_cache`] before first composite.
+    pipeline_cache:  Option<wgpu::PipelineCache>,
 }
 
 struct CompositorPipeline {
@@ -52,6 +59,7 @@ impl HybridBackend {
             pipeline: None,
             config: UrxConfig::default(),
             uploads_since_last_composite: 0,
+            pipeline_cache: None,
         }
     }
 
@@ -65,10 +73,30 @@ impl HybridBackend {
             pipeline: None,
             config: cfg,
             uploads_since_last_composite: 0,
+            pipeline_cache: None,
         }
     }
 
     pub fn config(&self) -> &UrxConfig { &self.config }
+
+    /// Install a `wgpu::PipelineCache` to be used when the compositor
+    /// pipeline is built (on first `composite()` call). Must be set
+    /// BEFORE the first composite — afterwards has no effect, since
+    /// the pipeline is already created.
+    ///
+    /// Construct the cache via
+    /// [`uzor_urx_core::pipeline_cache::load_or_create`] which reads
+    /// the on-disk blob (or creates an empty fallback).
+    pub fn set_pipeline_cache(&mut self, cache: Option<wgpu::PipelineCache>) {
+        self.pipeline_cache = cache;
+    }
+
+    /// Returns a reference to the installed pipeline cache, if any.
+    /// Useful for persisting back to disk on shutdown via
+    /// [`uzor_urx_core::pipeline_cache::save_to_disk`].
+    pub fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> {
+        self.pipeline_cache.as_ref()
+    }
 
     pub fn region_count(&self) -> usize { self.region_textures.len() }
     pub fn region_bytes(&self) -> u64 {
@@ -254,7 +282,9 @@ impl HybridBackend {
         surface_format: wgpu::TextureFormat,
     ) -> &mut CompositorPipeline {
         if self.pipeline.is_none() {
-            self.pipeline = Some(build_pipeline(device, surface_format));
+            self.pipeline = Some(build_pipeline(
+                device, surface_format, self.pipeline_cache.as_ref(),
+            ));
         }
         self.pipeline.as_mut().unwrap()
     }
@@ -375,7 +405,11 @@ impl HybridBackend {
     }
 }
 
-fn build_pipeline(device: &wgpu::Device, surface_format: wgpu::TextureFormat) -> CompositorPipeline {
+fn build_pipeline(
+    device: &wgpu::Device,
+    surface_format: wgpu::TextureFormat,
+    cache: Option<&wgpu::PipelineCache>,
+) -> CompositorPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("urx-hybrid-composite-shader"),
         source: wgpu::ShaderSource::Wgsl(COMPOSITE_SHADER.into()),
@@ -492,7 +526,7 @@ fn build_pipeline(device: &wgpu::Device, surface_format: wgpu::TextureFormat) ->
             })],
         }),
         multiview_mask: None,
-        cache: None,
+        cache,
     });
 
     let instance_cap = 64;

@@ -39,6 +39,14 @@ pub mod recorder;
 pub mod validate;
 pub mod config;
 
+/// wgpu::PipelineCache disk persistence helpers (opt-in feature
+/// `pipeline-cache`). Adds wgpu as a direct dep when enabled.
+#[cfg(feature = "pipeline-cache")]
+pub mod pipeline_cache;
+// Non-wgpu helpers (path key) always available, even without the feature.
+#[cfg(not(feature = "pipeline-cache"))]
+pub mod pipeline_cache;
+
 pub use math::{Affine, BezPath, Point, Rect, Size, Vec2};
 pub use scene::{DrawCommand, FillRule, Glyph, ImageId, Scene, Stroke};
 pub use dirty::{DirtyRect, DirtyState};
