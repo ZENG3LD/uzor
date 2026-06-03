@@ -27,3 +27,7 @@ criterion = "0.5"
 [[bench]]
 name = "hybrid"
 harness = false
+
+[[bench]]
+name = "atlas_ab"
+harness = false
