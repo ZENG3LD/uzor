@@ -24,3 +24,6 @@ wgpu = { version = "28", optional = true }
 default = ["wgpu-backend"]
 wgpu-backend = ["dep:uzor-urx-wgpu"]
 hybrid-backend = ["dep:uzor-urx-hybrid", "dep:wgpu"]
+
+[[example]]
+name = "backend_auto_demo"
