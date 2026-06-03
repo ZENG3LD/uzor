@@ -20,6 +20,11 @@ struct Uniforms {
 // Bindings 5+6: glyph atlas + sampler — unused in assign, declared to satisfy shared BGL.
 @group(0) @binding(5) var glyph_atlas: texture_2d<f32>;
 @group(0) @binding(6) var glyph_smp:   sampler;
+// Binding 7: path_points (array<vec2<f32>>) — referenced only by Path cmds
+// for SDF distance lookup; bbox for Path cmds is pre-computed CPU-side
+// and lives in slot0..slot3 already, so assign treats Path bboxes like
+// any other kind. The binding is declared here to keep the shared BGL.
+@group(0) @binding(7) var<storage, read> path_points: array<vec2<f32>>;
 
 const TILE_SIZE: u32 = 16u;
 

@@ -20,5 +20,8 @@ pub mod encoder;
 pub mod tile;
 
 pub use cmd::{CmdKind, SceneCmd};
-pub use encoder::encode_scene;
-pub use tile::{BlitPipeline, DispatchUniforms, TileBuffers, TilePipeline, TILE_CMD_CAP, TILE_SIZE};
+pub use encoder::{encode_scene, encode_scene_with_paths};
+pub use tile::{
+    BlitPipeline, DispatchUniforms, TileBuffers, TilePipeline,
+    DEFAULT_PATH_POINTS_CAP, TILE_CMD_CAP, TILE_SIZE,
+};

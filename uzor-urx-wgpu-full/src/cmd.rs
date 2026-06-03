@@ -41,6 +41,21 @@ pub enum CmdKind {
     /// slot[5] = f32 width (as bits via `f32::to_bits`),
     /// slot[6] = flags: cap_kind in low 8 bits (0=butt, 1=round, 2=square)
     Stroke = 5,
+    /// Multi-segment polyline (flattened path / stroked curve).
+    ///
+    /// Points live in a separate `path_points` storage buffer; this
+    /// cmd only carries the AABB + index range + style.
+    ///
+    /// slot[0..4] = bbox xyxy (pre-computed CPU-side from points + half-width).
+    /// slot[4]    = packed_rgba u32.
+    /// slot[5]    = packed (width_q × 100, point_count u16):
+    ///                low  16 bits = width × 100 (quantised, range 0..655.35 px)
+    ///                high 16 bits = point_count (range 2..65535)
+    /// slot[6]    = point_offset (u32 — first point's index in path_points).
+    ///
+    /// Cap is implicit ROUND for paths (joins between consecutive
+    /// segments are implicit; exterior ends round-cap from the SDF).
+    Path = 6,
 }
 
 /// One flat scene command. 32 bytes total, repr(C) for stable layout.
@@ -236,6 +251,53 @@ impl SceneCmd {
             self.slot6 & 0xff,
         ))
     }
+
+    /// Create a Path command from a pre-computed AABB + an index range
+    /// into the shared `path_points` storage buffer.
+    ///
+    /// `point_count` must be in `2..=65535`. `width` is quantised to
+    /// hundredths of a pixel; widths above ~655 px are clamped.
+    ///
+    /// The caller is responsible for uploading the actual points to the
+    /// `path_points` buffer at indices `[point_offset, point_offset + point_count)`.
+    pub fn path(
+        bbox: [f32; 4],
+        rgba: [u8; 4],
+        width: f32,
+        point_offset: u32,
+        point_count: u32,
+    ) -> Self {
+        debug_assert!(point_count >= 2, "Path needs at least 2 points");
+        let cnt    = point_count.min(0xffff) as u32;
+        let width_q = ((width.max(0.0) * 100.0).round() as u32).min(0xffff);
+        Self {
+            kind: CmdKind::Path as u32,
+            slot0: bbox[0], slot1: bbox[1], slot2: bbox[2], slot3: bbox[3],
+            slot4: pack_rgba(rgba),
+            slot5: width_q | (cnt << 16),
+            slot6: point_offset,
+        }
+    }
+
+    /// Dequantise Path parameters.
+    ///
+    /// Returns `Some((bbox, rgba, width, point_offset, point_count))`,
+    /// or `None` for non-Path kinds.
+    pub fn path_params(&self) -> Option<([f32; 4], u32, f32, u32, u32)> {
+        if self.kind != CmdKind::Path as u32 {
+            return None;
+        }
+        let width_q = self.slot5 & 0xffff;
+        let count   = (self.slot5 >> 16) & 0xffff;
+        let width   = width_q as f32 / 100.0;
+        Some((
+            [self.slot0, self.slot1, self.slot2, self.slot3],
+            self.slot4,
+            width,
+            self.slot6,
+            count,
+        ))
+    }
 }
 
 // Compile-time size assertion.
@@ -278,5 +340,39 @@ mod tests {
     fn stroke_params_returns_none_for_other_kinds() {
         let r = SceneCmd::rect(0.0, 0.0, 10.0, 10.0, [0, 0, 0, 255]);
         assert!(r.stroke_params().is_none());
+    }
+
+    #[test]
+    fn path_params_round_trip() {
+        let p = SceneCmd::path(
+            [10.0, 20.0, 80.0, 60.0], [255, 128, 64, 200],
+            2.5, 42, 17,
+        );
+        assert_eq!(p.kind, CmdKind::Path as u32);
+        assert_eq!(p.bbox(), [10.0, 20.0, 80.0, 60.0]);
+        let (bbox, rgba, width, offset, count) = p.path_params().unwrap();
+        assert_eq!(bbox, [10.0, 20.0, 80.0, 60.0]);
+        assert_eq!(rgba & 0xff,           255); // r
+        assert_eq!((rgba >>  8) & 0xff,   128); // g
+        assert_eq!((rgba >> 16) & 0xff,    64); // b
+        assert_eq!((rgba >> 24) & 0xff,   200); // a
+        assert!((width - 2.5).abs() < 0.01);
+        assert_eq!(offset, 42);
+        assert_eq!(count,  17);
+    }
+
+    #[test]
+    fn path_clamps_count_and_width() {
+        let p = SceneCmd::path([0.0; 4], [0; 4], 700.0, 0, 100_000);
+        let (_, _, width, _, count) = p.path_params().unwrap();
+        // Width clamped at 655.35 px (u16 / 100); count capped at 65535.
+        assert!(width >= 655.0 && width <= 656.0);
+        assert_eq!(count, 65535);
+    }
+
+    #[test]
+    fn path_params_returns_none_for_other_kinds() {
+        let r = SceneCmd::rect(0.0, 0.0, 10.0, 10.0, [0, 0, 0, 255]);
+        assert!(r.path_params().is_none());
     }
 }

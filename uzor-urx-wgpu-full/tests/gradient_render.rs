@@ -106,7 +106,7 @@ fn run_pipeline(
 
     let (_dummy_tex, dummy_atlas_view) = TilePipeline::dummy_glyph_atlas(device);
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-    pipeline.dispatch_full(device, queue, &mut enc, &bufs, cmds, &output_view, &dummy_atlas_view);
+    pipeline.dispatch_full(device, queue, &mut enc, &bufs, cmds, &[], &output_view, &dummy_atlas_view);
     queue.submit(Some(enc.finish()));
     let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
 

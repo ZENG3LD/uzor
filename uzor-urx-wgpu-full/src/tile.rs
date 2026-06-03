@@ -58,22 +58,44 @@ const TILE_SORT_WGSL:   &str = include_str!("shaders/tile_sort.wgsl");
 const FINE_WGSL:        &str = include_str!("shaders/fine.wgsl");
 const BLIT_WGSL:        &str = include_str!("shaders/blit.wgsl");
 
+/// Default capacity for the `path_points` storage buffer (16 384 vec2<f32>s
+/// = 128 KB). Override with `allocate_with` when you need more.
+pub const DEFAULT_PATH_POINTS_CAP: u32 = 16_384;
+
 /// GPU buffers for the tile binning pipeline.
 pub struct TileBuffers {
     pub cmds_buf:        wgpu::Buffer,
     pub tile_counts_buf: wgpu::Buffer,
     pub tile_lists_buf:  wgpu::Buffer,
+    /// Path-point storage: array<vec2<f32>>, indexed by Path cmds via
+    /// (point_offset, point_count). Allocated at `path_points_cap` vec2s.
+    pub path_points_buf: wgpu::Buffer,
+    pub path_points_cap: u32,
     pub tile_count_x:    u32,
     pub tile_count_y:    u32,
 }
 
 impl TileBuffers {
-    /// Allocate all three storage buffers for the given screen dimensions.
+    /// Allocate all storage buffers for the given screen dimensions
+    /// with `path_points_cap = DEFAULT_PATH_POINTS_CAP`.
     pub fn allocate(
         device:   &wgpu::Device,
         cmds_n:   u32,
         screen_w: u32,
         screen_h: u32,
+    ) -> Self {
+        Self::allocate_with(device, cmds_n, screen_w, screen_h, DEFAULT_PATH_POINTS_CAP)
+    }
+
+    /// Allocate storage buffers with an explicit `path_points_cap`.
+    /// Use this when you know up-front your scene needs more than the
+    /// default 16K vec2s (≈ 16K polyline vertices total per frame).
+    pub fn allocate_with(
+        device:          &wgpu::Device,
+        cmds_n:          u32,
+        screen_w:        u32,
+        screen_h:        u32,
+        path_points_cap: u32,
     ) -> Self {
         let tx = (screen_w + TILE_SIZE - 1) / TILE_SIZE;
         let ty = (screen_h + TILE_SIZE - 1) / TILE_SIZE;
@@ -100,10 +122,19 @@ impl TileBuffers {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
+        let pp_cap = path_points_cap.max(2);
+        let path_points_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx-fullgpu-path-points"),
+            size: (pp_cap as u64) * 8, // vec2<f32> = 8 bytes
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         Self {
             cmds_buf,
             tile_counts_buf,
             tile_lists_buf,
+            path_points_buf,
+            path_points_cap: pp_cap,
             tile_count_x: tx,
             tile_count_y: ty,
         }
@@ -250,6 +281,19 @@ impl TilePipeline {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // binding 7 — path_points (array<vec2<f32>>): polyline
+                // vertices for CmdKind::Path. Read-only in all three
+                // passes; declared once in the shared BGL.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -352,6 +396,9 @@ impl TilePipeline {
     /// satisfied.
     ///
     /// No output texture is written — use `dispatch_full` for pixel output.
+    ///
+    /// Convenience: passes an empty `path_points` slice (scenes with no
+    /// Path cmds). Use `dispatch_full` directly when paths are present.
     pub fn dispatch(
         &self,
         device:           &wgpu::Device,
@@ -374,7 +421,7 @@ impl TilePipeline {
             view_formats:    &[],
         });
         let dummy_view = dummy_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        self.dispatch_full(device, queue, encoder, bufs, cmds, &dummy_view, glyph_atlas_view);
+        self.dispatch_full(device, queue, encoder, bufs, cmds, &[], &dummy_view, glyph_atlas_view);
     }
 
     /// Full three-stage dispatch: tile_assign → tile_sort → fine raster.
@@ -386,6 +433,10 @@ impl TilePipeline {
     /// `glyph_atlas_view` must be an R8Unorm `TextureView` that the fine
     /// shader samples for `Glyph` commands.  When no glyph commands are
     /// present, pass the view from `TilePipeline::dummy_glyph_atlas`.
+    ///
+    /// `path_points` is a flat `[x0, y0, x1, y1, ...]` slice referenced
+    /// by `CmdKind::Path` cmds via `(point_offset, point_count)`. Pass
+    /// `&[]` when the scene contains no Path cmds.
     pub fn dispatch_full(
         &self,
         device:           &wgpu::Device,
@@ -393,12 +444,32 @@ impl TilePipeline {
         encoder:          &mut wgpu::CommandEncoder,
         bufs:             &TileBuffers,
         cmds:             &[SceneCmd],
+        path_points:      &[[f32; 2]],
         output_view:      &wgpu::TextureView,
         glyph_atlas_view: &wgpu::TextureView,
     ) {
         // 1. Upload cmd bytes.
         if !cmds.is_empty() {
             queue.write_buffer(&bufs.cmds_buf, 0, bytemuck::cast_slice(cmds));
+        }
+        // 1b. Upload path_points if present (caller-allocated capacity
+        // checked at TileBuffers construction; we silently truncate if
+        // someone passes more than path_points_cap — debug_assert catches
+        // it in dev builds).
+        if !path_points.is_empty() {
+            let cap = bufs.path_points_cap as usize;
+            debug_assert!(
+                path_points.len() <= cap,
+                "path_points slice ({}) exceeds path_points_cap ({}); \
+                 re-allocate TileBuffers with allocate_with(..., path_points_cap=N)",
+                path_points.len(), cap,
+            );
+            let take = path_points.len().min(cap);
+            queue.write_buffer(
+                &bufs.path_points_buf,
+                0,
+                bytemuck::cast_slice(&path_points[..take]),
+            );
         }
 
         // 2. Upload uniforms.
@@ -433,6 +504,10 @@ impl TilePipeline {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: wgpu::BindingResource::Sampler(&self.glyph_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: bufs.path_points_buf.as_entire_binding(),
                 },
             ],
         });
@@ -488,6 +563,7 @@ impl TilePipeline {
         encoder:          &mut wgpu::CommandEncoder,
         bufs:             &TileBuffers,
         cmds:             &[SceneCmd],
+        path_points:      &[[f32; 2]],
         src_view:         &wgpu::TextureView,
         blit:             &BlitPipeline,
         target_view:      &wgpu::TextureView,
@@ -495,7 +571,10 @@ impl TilePipeline {
         src_h:            u32,
         glyph_atlas_view: &wgpu::TextureView,
     ) {
-        self.dispatch_full(device, queue, encoder, bufs, cmds, src_view, glyph_atlas_view);
+        self.dispatch_full(
+            device, queue, encoder, bufs, cmds, path_points,
+            src_view, glyph_atlas_view,
+        );
         blit.blit(device, encoder, src_view, target_view, src_w, src_h, queue);
     }
 }

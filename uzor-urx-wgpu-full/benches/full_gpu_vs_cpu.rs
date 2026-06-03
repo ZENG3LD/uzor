@@ -143,7 +143,7 @@ fn bench_full_gpu(c: &mut Criterion) {
                 let mut enc = device.create_command_encoder(
                     &wgpu::CommandEncoderDescriptor { label: Some("bench-enc") },
                 );
-                pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &output_view, &dummy_atlas_view_d);
+                pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &[], &output_view, &dummy_atlas_view_d);
                 queue.submit(Some(enc.finish()));
                 let _ = device.poll(wgpu::PollType::Wait {
                     submission_index: None, timeout: None,
@@ -177,7 +177,7 @@ fn bench_full_gpu(c: &mut Criterion) {
                 let mut enc = device.create_command_encoder(
                     &wgpu::CommandEncoderDescriptor { label: Some("bench-enc-rb") },
                 );
-                pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &output_view, &dummy_atlas_view_rb);
+                pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &[], &output_view, &dummy_atlas_view_rb);
                 enc.copy_texture_to_buffer(
                     wgpu::TexelCopyTextureInfo {
                         texture:   &output_tex,

@@ -81,7 +81,7 @@ fn run() -> i32 {
         let mut enc = device.create_command_encoder(
             &wgpu::CommandEncoderDescriptor { label: Some("surface-render-demo-dispatch-timing") },
         );
-        tile_pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &storage_view, &dummy_atlas_view);
+        tile_pipeline.dispatch_full(&device, &queue, &mut enc, &bufs, &cmds, &[], &storage_view, &dummy_atlas_view);
         queue.submit(Some(enc.finish()));
         let _ = device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
     }
@@ -111,7 +111,7 @@ fn run() -> i32 {
         );
         tile_pipeline.render_to_target(
             &device, &queue, &mut enc,
-            &bufs, &cmds,
+            &bufs, &cmds, &[],
             &storage_view, &blit_pipeline, &surface_view,
             tex_w, tex_h,
             &dummy_atlas_view,

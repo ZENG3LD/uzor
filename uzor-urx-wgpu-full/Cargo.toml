@@ -13,6 +13,7 @@ categories  = ["graphics", "rendering"]
 uzor-urx-core = { workspace = true }
 wgpu = "28"
 bytemuck = { version = "1", features = ["derive"] }
+kurbo = "0.11"
 
 [dev-dependencies]
 pollster  = "0.4"

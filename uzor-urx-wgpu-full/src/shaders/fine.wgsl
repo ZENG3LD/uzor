@@ -11,6 +11,8 @@
 //   3u = RadGradient   — two-colour radial gradient, center+radius from bbox
 //   4u = Glyph         — pre-rasterised glyph from R8Unorm atlas, colour-modulated
 //   5u = Stroke        — line segment p0→p1 with scalar width + cap (butt/round/square)
+//   6u = Path          — multi-segment polyline; vertices in path_points buffer,
+//                        cmd carries bbox + (point_offset, point_count, width)
 
 struct SceneCmd {
     kind:  u32,
@@ -39,6 +41,9 @@ struct Uniforms {
 // no implicit derivatives — LOD must be specified explicitly.
 @group(0) @binding(5) var glyph_atlas: texture_2d<f32>;
 @group(0) @binding(6) var glyph_smp:   sampler;
+// Binding 7: polyline vertex storage. Path cmds reference a contiguous
+// (offset, count) range here; each consecutive pair forms one segment.
+@group(0) @binding(7) var<storage, read> path_points: array<vec2<f32>>;
 
 const TILE_SIZE: u32 = 16u;
 
@@ -196,6 +201,41 @@ fn fine(
             let alpha = textureSampleLevel(glyph_atlas, glyph_smp, vec2<f32>(u, v), 0.0).r;
             let base = unpack_rgba(c.slot4);
             src = vec4<f32>(base.r, base.g, base.b, base.a * alpha);
+
+        } else if (c.kind == 6u) {
+            // ── Path: multi-segment polyline, min-SDF over all segments ─────────
+            // slot4 = packed_rgba
+            // slot5 low16 = width × 100, high16 = point_count
+            // slot6        = point_offset (start index in path_points)
+            let width_q = c.slot5 & 0xffffu;
+            let count   = (c.slot5 >> 16u) & 0xffffu;
+            let offset  = c.slot6;
+            let pwidth  = f32(width_q) / 100.0;
+            let phw     = pwidth * 0.5;
+
+            // Walk all (count-1) segments, accumulate min distance from
+            // pixel to the closest segment. Round-cap behaviour falls out
+            // naturally from clamping t to [0, 1].
+            let pix = vec2<f32>(fpx, fpy);
+            var min_d: f32 = 1.0e9;
+            if (count >= 2u) {
+                for (var k: u32 = 0u; k < count - 1u; k = k + 1u) {
+                    let a = path_points[offset + k];
+                    let b = path_points[offset + k + 1u];
+                    let ab = b - a;
+                    let len2 = dot(ab, ab);
+                    var t: f32 = 0.0;
+                    if (len2 > 1.0e-6) {
+                        t = clamp(dot(pix - a, ab) / len2, 0.0, 1.0);
+                    }
+                    let q = a + t * ab;
+                    let d = distance(pix, q);
+                    if (d < min_d) { min_d = d; }
+                }
+            }
+            let coverage = 1.0 - smoothstep(phw - 0.5, phw + 0.5, min_d);
+            let pcol = unpack_rgba(c.slot4);
+            src = vec4<f32>(pcol.r, pcol.g, pcol.b, pcol.a * coverage);
 
         } else if (c.kind == 5u) {
             // ── Stroke: signed-distance line segment with cap-aware coverage ──

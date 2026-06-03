@@ -103,7 +103,7 @@ fn run_pipeline(
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     tile.render_to_target(
         device, queue, &mut enc,
-        &bufs, cmds,
+        &bufs, cmds, &[],
         &storage_view, &blit, &surface_view,
         tex_w, tex_h, &dummy_atlas_view,
     );
