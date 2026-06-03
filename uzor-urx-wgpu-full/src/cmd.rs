@@ -56,6 +56,19 @@ pub enum CmdKind {
     /// Cap is implicit ROUND for paths (joins between consecutive
     /// segments are implicit; exterior ends round-cap from the SDF).
     Path = 6,
+    /// Filled polygon (closed flattened path interior). Uses the same
+    /// `path_points` buffer as Path; the GPU runs a per-pixel ray-
+    /// crossing test (non-zero winding rule) over the segment list.
+    ///
+    /// slot[0..4] = bbox xyxy (CPU-side AABB of all path points).
+    /// slot[4]    = packed_rgba u32.
+    /// slot[5]    = point_count (u32 — number of path_points vertices;
+    ///              the polygon implicitly closes from last to first).
+    /// slot[6]    = point_offset (u32 — first point in path_points).
+    ///
+    /// Concave / self-intersecting paths work; holes via even-odd rule
+    /// not yet supported (current shader uses non-zero only).
+    FillPath = 7,
 }
 
 /// One flat scene command. 32 bytes total, repr(C) for stable layout.
@@ -298,6 +311,43 @@ impl SceneCmd {
             count,
         ))
     }
+
+    /// Create a FillPath command (filled closed polygon interior).
+    ///
+    /// `point_count` is the number of vertices (range 3..=u32::MAX);
+    /// the polygon implicitly closes from the last vertex back to the
+    /// first. Non-zero winding rule is applied.
+    pub fn fill_path(
+        bbox: [f32; 4],
+        rgba: [u8; 4],
+        point_offset: u32,
+        point_count: u32,
+    ) -> Self {
+        debug_assert!(point_count >= 3, "FillPath needs at least 3 vertices");
+        Self {
+            kind: CmdKind::FillPath as u32,
+            slot0: bbox[0], slot1: bbox[1], slot2: bbox[2], slot3: bbox[3],
+            slot4: pack_rgba(rgba),
+            slot5: point_count,
+            slot6: point_offset,
+        }
+    }
+
+    /// Dequantise FillPath parameters.
+    ///
+    /// Returns `Some((bbox, rgba_packed, point_offset, point_count))`,
+    /// or `None` for non-FillPath kinds.
+    pub fn fill_path_params(&self) -> Option<([f32; 4], u32, u32, u32)> {
+        if self.kind != CmdKind::FillPath as u32 {
+            return None;
+        }
+        Some((
+            [self.slot0, self.slot1, self.slot2, self.slot3],
+            self.slot4,
+            self.slot6,
+            self.slot5,
+        ))
+    }
 }
 
 // Compile-time size assertion.
@@ -374,5 +424,24 @@ mod tests {
     fn path_params_returns_none_for_other_kinds() {
         let r = SceneCmd::rect(0.0, 0.0, 10.0, 10.0, [0, 0, 0, 255]);
         assert!(r.path_params().is_none());
+    }
+
+    #[test]
+    fn fill_path_params_round_trip() {
+        let p = SceneCmd::fill_path([0.0, 0.0, 100.0, 80.0], [10, 20, 30, 255], 7, 64);
+        assert_eq!(p.kind, CmdKind::FillPath as u32);
+        let (bbox, rgba, offset, count) = p.fill_path_params().unwrap();
+        assert_eq!(bbox,   [0.0, 0.0, 100.0, 80.0]);
+        assert_eq!(rgba & 0xff, 10);
+        assert_eq!(offset, 7);
+        assert_eq!(count,  64);
+    }
+
+    #[test]
+    fn fill_path_params_returns_none_for_other_kinds() {
+        let r = SceneCmd::rect(0.0, 0.0, 10.0, 10.0, [0, 0, 0, 255]);
+        assert!(r.fill_path_params().is_none());
+        let path = SceneCmd::path([0.0; 4], [0; 4], 1.0, 0, 2);
+        assert!(path.fill_path_params().is_none());
     }
 }

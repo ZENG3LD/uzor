@@ -233,10 +233,78 @@ pub fn encode_scene_with_paths(
                 flush_sub(sub_start_local, sub_count,
                           x_min, y_min, x_max, y_max, &mut out);
             }
+            DrawCommand::FillPath { path, rule: _, brush, transform: _ } => {
+                // Non-zero winding only (rule arg ignored — even-odd
+                // not yet wired through the shader; consumers that
+                // care should split paths or pre-tessellate).
+                let color = match brush {
+                    Brush::Solid(c) => [c.r, c.g, c.b, c.a],
+                    _ => continue,
+                };
+                // Each sub-path (MoveTo-started) → one FillPath cmd.
+                let mut sub_start_local = points.len();
+                let mut sub_count = 0usize;
+                let mut x_min = f32::INFINITY;
+                let mut y_min = f32::INFINITY;
+                let mut x_max = f32::NEG_INFINITY;
+                let mut y_max = f32::NEG_INFINITY;
+
+                let flush_sub = |sub_start: usize, sub_count: usize,
+                                 x_min: f32, y_min: f32, x_max: f32, y_max: f32,
+                                 out: &mut Vec<SceneCmd>| {
+                    if sub_count < 3 { return; }
+                    let global_offset = point_offset_base + sub_start as u32;
+                    out.push(SceneCmd::fill_path(
+                        [x_min, y_min, x_max, y_max],
+                        color, global_offset, sub_count as u32,
+                    ));
+                };
+                let push_pt = |px: f32, py: f32,
+                               points: &mut Vec<[f32; 2]>,
+                               sub_count: &mut usize,
+                               x_min: &mut f32, y_min: &mut f32,
+                               x_max: &mut f32, y_max: &mut f32| {
+                    points.push([px, py]);
+                    *sub_count += 1;
+                    if px < *x_min { *x_min = px; }
+                    if py < *y_min { *y_min = py; }
+                    if px > *x_max { *x_max = px; }
+                    if py > *y_max { *y_max = py; }
+                };
+
+                kurbo::flatten(path.iter(), 0.25, |el: kurbo::PathEl| {
+                    match el {
+                        kurbo::PathEl::MoveTo(pt) => {
+                            flush_sub(sub_start_local, sub_count,
+                                      x_min, y_min, x_max, y_max, &mut out);
+                            sub_start_local = points.len();
+                            sub_count = 0;
+                            x_min = f32::INFINITY; y_min = f32::INFINITY;
+                            x_max = f32::NEG_INFINITY; y_max = f32::NEG_INFINITY;
+                            push_pt(pt.x as f32, pt.y as f32,
+                                    &mut points, &mut sub_count,
+                                    &mut x_min, &mut y_min,
+                                    &mut x_max, &mut y_max);
+                        }
+                        kurbo::PathEl::LineTo(pt) => {
+                            push_pt(pt.x as f32, pt.y as f32,
+                                    &mut points, &mut sub_count,
+                                    &mut x_min, &mut y_min,
+                                    &mut x_max, &mut y_max);
+                        }
+                        kurbo::PathEl::ClosePath => {
+                            // For FillPath the close is implicit in the
+                            // shader (last → first); don't add a redundant
+                            // vertex.
+                        }
+                        _ => {}
+                    }
+                });
+                flush_sub(sub_start_local, sub_count,
+                          x_min, y_min, x_max, y_max, &mut out);
+            }
             _ => {
-                // StrokeRect, FillPath, GlyphRun, Image, Clip — not yet
-                // encoded. FillPath needs interior fill (different SDF);
-                // it lands in a future Tier C wave.
+                // StrokeRect, GlyphRun, Image, Clip — not yet encoded.
             }
         }
     }

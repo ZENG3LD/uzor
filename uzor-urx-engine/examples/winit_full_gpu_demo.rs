@@ -33,6 +33,7 @@
 //! | `POST`  | `/scene/spawn_stroke`      | `{p0, p1, width, color, cap?}`       | add one stroke line region |
 //! | `POST`  | `/scene/spawn_sparkline`   | `{points: [[x,y],…], width, color}`  | one region = a polyline |
 //! | `POST`  | `/scene/spawn_bezier`      | `{p0, c0, c1, p1, width, color}`     | cubic Bézier — kurbo flattens into a Path cmd |
+//! | `POST`  | `/scene/spawn_fill_path`   | `{points: [[x,y],…], color}`         | filled polygon (non-zero winding) |
 //! | `POST`  | `/scene/preset/dashboard`  | —                                    | replace scene with grid + sparkline preset |
 //! | `DELETE`| `/scene/region/:id`        | —                                    | remove region by id |
 //! | `POST`  | `/scene/clear`             | —                                    | remove every rect/region |
@@ -139,6 +140,13 @@ struct PolylineModel {
 /// demo packs them into a kurbo `BezPath` and pushes a `DrawCommand::
 /// StrokePath` — the encoder will flatten via kurbo at upload time.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+struct FillPathModel {
+    id:     u64,
+    points: Vec<[f32; 2]>,
+    color:  [u8; 4],
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct BezierModel {
     id:    u64,
     /// Start anchor.
@@ -159,6 +167,7 @@ struct SharedScene {
     strokes:      Vec<StrokeModel>,
     polylines:    Vec<PolylineModel>,
     beziers:      Vec<BezierModel>,
+    fills:        Vec<FillPathModel>,
     next_id:      u64,
     paused:       bool,
     /// L3: rects queued by `/scene/spawn_rect`. Drained by main thread.
@@ -166,6 +175,7 @@ struct SharedScene {
     pending_strokes:  Vec<StrokeModel>,
     pending_polys:    Vec<PolylineModel>,
     pending_beziers:  Vec<BezierModel>,
+    pending_fills:    Vec<FillPathModel>,
     /// L3: clear-all flag.
     pending_clear: bool,
     /// L3: load dashboard preset flag.
@@ -263,6 +273,8 @@ fn spawn_agent_server(state: AgentState) -> std::thread::JoinHandle<()> {
         p0: [f32; 2], c0: [f32; 2], c1: [f32; 2], p1: [f32; 2],
         width: f32, color: [u8; 4],
     }
+    #[derive(Deserialize)]
+    struct SpawnFillPathBody { points: Vec<[f32; 2]>, color: [u8; 4] }
     #[derive(Serialize)]
     struct OkReply { ok: bool, msg: String }
     fn ok(msg: impl Into<String>) -> Json<OkReply> {
@@ -389,6 +401,22 @@ fn spawn_agent_server(state: AgentState) -> std::thread::JoinHandle<()> {
                                 color: b.color,
                             });
                             ok(format!("bezier queued, id={id}"))
+                        },
+                    ))
+                    .route("/scene/spawn_fill_path", post(
+                        |AxState(s): AxState<AgentState>, Json(b): Json<SpawnFillPathBody>| async move {
+                            if b.points.len() < 3 {
+                                return (StatusCode::BAD_REQUEST,
+                                    Json(OkReply { ok: false,
+                                        msg: "fill_path needs >= 3 points".into() }))
+                                    .into_response();
+                            }
+                            let mut sc = s.scene.lock().unwrap();
+                            let id = sc.next_id; sc.next_id += 1;
+                            sc.pending_fills.push(FillPathModel {
+                                id, points: b.points, color: b.color,
+                            });
+                            (StatusCode::OK, ok(format!("fill_path queued, id={id}"))).into_response()
                         },
                     ))
                     .route("/scene/preset/dashboard", post(
@@ -566,10 +594,12 @@ impl GpuState {
             for s in sc.strokes.iter()   { self.engine.remove_region(RegionId(s.id)); }
             for p in sc.polylines.iter() { self.engine.remove_region(RegionId(p.id)); }
             for b in sc.beziers.iter()   { self.engine.remove_region(RegionId(b.id)); }
+            for f in sc.fills.iter()     { self.engine.remove_region(RegionId(f.id)); }
             sc.rects.clear();
             sc.strokes.clear();
             sc.polylines.clear();
             sc.beziers.clear();
+            sc.fills.clear();
         }
 
         // ─ L3: dashboard preset (clear + populate grid + sparkline) ──
@@ -579,10 +609,12 @@ impl GpuState {
             for s in sc.strokes.iter()   { self.engine.remove_region(RegionId(s.id)); }
             for p in sc.polylines.iter() { self.engine.remove_region(RegionId(p.id)); }
             for b in sc.beziers.iter()   { self.engine.remove_region(RegionId(b.id)); }
+            for f in sc.fills.iter()     { self.engine.remove_region(RegionId(f.id)); }
             sc.rects.clear();
             sc.strokes.clear();
             sc.polylines.clear();
             sc.beziers.clear();
+            sc.fills.clear();
             sc.paused = false;
 
             // 1. background rect (whole window dark slate)
@@ -659,6 +691,9 @@ impl GpuState {
                 } else if let Some(pos) = sc.beziers.iter().position(|b| b.id == id) {
                     sc.beziers.remove(pos);
                     self.engine.remove_region(RegionId(id));
+                } else if let Some(pos) = sc.fills.iter().position(|f| f.id == id) {
+                    sc.fills.remove(pos);
+                    self.engine.remove_region(RegionId(id));
                 }
             }
         }
@@ -693,6 +728,14 @@ impl GpuState {
             for b_in in queued {
                 if sc.beziers.len() < MAX_N {
                     sc.beziers.push(b_in);
+                }
+            }
+        }
+        if !sc.pending_fills.is_empty() {
+            let queued = std::mem::take(&mut sc.pending_fills);
+            for f_in in queued {
+                if sc.fills.len() < MAX_N {
+                    sc.fills.push(f_in);
                 }
             }
         }
@@ -889,9 +932,44 @@ impl GpuState {
             );
         }
 
+        // ─ Push to engine: filled paths via DrawCommand::FillPath ───
+        for f_m in sc.fills.iter() {
+            if f_m.points.len() < 3 { continue; }
+            let mut path = BezPath::new();
+            path.move_to(Point::new(f_m.points[0][0] as f64, f_m.points[0][1] as f64));
+            for p in f_m.points.iter().skip(1) {
+                path.line_to(Point::new(p[0] as f64, p[1] as f64));
+            }
+            path.close_path();
+            let mut scene = Scene::new();
+            scene.commands.push(DrawCommand::FillPath {
+                path,
+                rule: uzor_urx_core::scene::FillRule::NonZero,
+                brush: Brush::Solid(Color::rgba8(
+                    f_m.color[0], f_m.color[1], f_m.color[2], f_m.color[3],
+                )),
+                transform: Affine::IDENTITY,
+            });
+
+            let (mut x0, mut y0, mut x1, mut y1) = (
+                f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY,
+            );
+            for pt in &f_m.points {
+                let (x, y) = (pt[0] as f64, pt[1] as f64);
+                if x < x0 { x0 = x; } if y < y0 { y0 = y; }
+                if x > x1 { x1 = x; } if y > y1 { y1 = y; }
+            }
+            self.engine.upsert_region(
+                RegionId(f_m.id),
+                scene,
+                UxRect::new(x0, y0, x1, y1),
+                RenderCadence::Static,
+            );
+        }
+
         let paused  = sc.paused;
-        let regions = (sc.rects.len() + sc.strokes.len()
-                        + sc.polylines.len() + sc.beziers.len()) as u32;
+        let regions = (sc.rects.len() + sc.strokes.len() + sc.polylines.len()
+                        + sc.beziers.len() + sc.fills.len()) as u32;
         drop(sc);
 
         // Publish to metrics for L1 /state polling.

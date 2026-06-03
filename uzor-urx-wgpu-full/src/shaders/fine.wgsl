@@ -13,6 +13,8 @@
 //   5u = Stroke        — line segment p0→p1 with scalar width + cap (butt/round/square)
 //   6u = Path          — multi-segment polyline; vertices in path_points buffer,
 //                        cmd carries bbox + (point_offset, point_count, width)
+//   7u = FillPath      — filled closed polygon (non-zero winding); same buffer as Path,
+//                        cmd carries bbox + (point_offset, point_count) + colour
 
 struct SceneCmd {
     kind:  u32,
@@ -236,6 +238,55 @@ fn fine(
             let coverage = 1.0 - smoothstep(phw - 0.5, phw + 0.5, min_d);
             let pcol = unpack_rgba(c.slot4);
             src = vec4<f32>(pcol.r, pcol.g, pcol.b, pcol.a * coverage);
+
+        } else if (c.kind == 7u) {
+            // ── FillPath: closed polygon interior, non-zero winding ──
+            // slot4 = packed_rgba
+            // slot5 = point_count
+            // slot6 = point_offset
+            //
+            // For each edge (v_i, v_{i+1 mod n}): if it crosses the
+            // pixel's horizontal ray (going +x), accumulate ±1 to the
+            // winding number based on segment orientation. Non-zero
+            // winding count → pixel is inside.
+            //
+            // The polygon implicitly closes: edge (v_{n-1}, v_0) is
+            // included.
+            let fp_count  = c.slot5;
+            let fp_offset = c.slot6;
+            var winding: i32 = 0;
+            if (fp_count >= 3u) {
+                for (var k: u32 = 0u; k < fp_count; k = k + 1u) {
+                    let a = path_points[fp_offset + k];
+                    let next_idx = select(k + 1u, 0u, k + 1u >= fp_count);
+                    let b = path_points[fp_offset + next_idx];
+                    // Half-open edge test: an edge is counted iff
+                    //   (a.y <= py < b.y) OR (b.y <= py < a.y)
+                    // — avoids double-counting at shared vertices.
+                    let cond_up   = (a.y <= fpy) && (b.y >  fpy);
+                    let cond_down = (b.y <= fpy) && (a.y >  fpy);
+                    if (cond_up || cond_down) {
+                        // x intersection of segment with horizontal ray y = fpy.
+                        let t  = (fpy - a.y) / (b.y - a.y);
+                        let xi = a.x + t * (b.x - a.x);
+                        if (xi > fpx) {
+                            if (cond_up)   { winding = winding + 1; }
+                            if (cond_down) { winding = winding - 1; }
+                        }
+                    }
+                }
+            }
+            let inside = winding != 0;
+            let fcol = unpack_rgba(c.slot4);
+            // Solid in/out — no AA on the polygon edge for v1. AA via
+            // sub-pixel sampling can be added later by averaging a 2×2
+            // or 4×4 sample grid; current approach prefers speed +
+            // determinism over edge smoothness.
+            if (inside) {
+                src = fcol;
+            } else {
+                continue;
+            }
 
         } else if (c.kind == 5u) {
             // ── Stroke: signed-distance line segment with cap-aware coverage ──
