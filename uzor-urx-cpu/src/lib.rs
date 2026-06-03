@@ -32,11 +32,14 @@ pub mod color;
 pub mod gradient;
 pub mod path;
 pub mod rounded;
+pub mod image_reg;
+pub mod image_draw;
 #[cfg(feature = "parallel")]
 pub mod parallel;
 
 pub use backend::{CpuBackend, RenderError};
 pub use pixmap::Pixmap;
+pub use image_reg::{ImageData, ImageError, ImageRegistry, register_image, lookup_image, unregister_image};
 
 #[cfg(feature = "parallel")]
 pub use parallel::render_parallel;

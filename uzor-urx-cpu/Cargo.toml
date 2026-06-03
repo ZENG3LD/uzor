@@ -20,10 +20,14 @@ metrics = "0.24"
 # `Affine::new(coeffs)` constructor needs the crate directly.
 kurbo = "0.11"
 rayon = { version = "1", optional = true }
+# Image decode is opt-in: image crate pulls a non-trivial dep tree and
+# consumers that pre-decode into Vec<u8> don't need it. Stays behind a
+# feature flag; the registry + draw path work either way.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
 
 [features]
 default = []
-# Per-strip parallel rasterisation. Splits the pixmap into horizontal
-# strips, runs the scene walker on each in parallel via rayon. Wins
-# scale with strip count (≤ core count) and pixel area.
 parallel = ["dep:rayon"]
+# Enable the PNG/JPEG decode helpers in `image_reg::ImageRegistry`.
+# Without this flag, consumers register raw premultiplied RGBA8 only.
+image-decode = ["dep:image"]

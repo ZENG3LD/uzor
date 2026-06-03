@@ -113,8 +113,10 @@ impl CpuBackend {
                     // we skip so a scene containing text renders the
                     // non-text portion correctly instead of failing.
                 }
-                DrawCommand::Image { .. } => {
-                    // Image deferred — needs the image-atlas plumbing.
+                DrawCommand::Image { src, src_rect, dest, transform } => {
+                    let _ = crate::image_draw::draw_image_aa(
+                        pixmap, &clip, *src, *src_rect, *dest, transform,
+                    );
                 }
                 DrawCommand::PushClipRect { rect, transform } => {
                     clip.push_rect(*rect, transform);
