@@ -62,18 +62,18 @@ pub struct SubmitOutcome {
 /// - **InstancedWgpu**: no caller setup (renderer drives itself; empty frame
 ///   clears to `base_color`).
 pub fn submit_frame(state: &mut WindowRenderState, params: SubmitParams) -> SubmitOutcome {
-    let mut metrics = RenderMetrics {
+    let mut frame_metrics = RenderMetrics {
         backend: Some(state.active),
         ..Default::default()
     };
     let total_t0 = std::time::Instant::now();
 
     let surface_lost = match state.active {
-        RenderBackend::VelloGpu      => submit_vello_gpu(state, &params, &mut metrics),
-        RenderBackend::VelloHybrid   => submit_vello_hybrid(state, &params, &mut metrics),
-        RenderBackend::InstancedWgpu => submit_instanced(state, &params, &mut metrics),
-        RenderBackend::VelloCpu      => submit_cpu_vello(state, &mut metrics),
-        RenderBackend::TinySkia      => submit_cpu_tinyskia(state, &mut metrics),
+        RenderBackend::VelloGpu      => submit_vello_gpu(state, &params, &mut frame_metrics),
+        RenderBackend::VelloHybrid   => submit_vello_hybrid(state, &params, &mut frame_metrics),
+        RenderBackend::InstancedWgpu => submit_instanced(state, &params, &mut frame_metrics),
+        RenderBackend::VelloCpu      => submit_cpu_vello(state, &mut frame_metrics),
+        RenderBackend::TinySkia      => submit_cpu_tinyskia(state, &mut frame_metrics),
         RenderBackend::Canvas2d      => {
             // DOM canvas auto-presents — all draw calls were issued synchronously
             // by the app's ui() callback via canvas2d_ctx_mut(). Nothing to flush.
@@ -81,8 +81,31 @@ pub fn submit_frame(state: &mut WindowRenderState, params: SubmitParams) -> Subm
         }
     };
 
-    metrics.submit_us = total_t0.elapsed().as_micros() as u64;
-    SubmitOutcome { metrics, surface_lost }
+    frame_metrics.submit_us = total_t0.elapsed().as_micros() as u64;
+
+    // ── URX metrics fanout ──────────────────────────────────────────────────
+    // Emit through the `metrics` crate facade so any installed
+    // recorder (UrxRecorder + downstream dashboards) sees per-frame
+    // timing. Per-backend keys so runtime backend switch produces
+    // side-by-side histograms.
+    let backend_label = state.active.as_str();
+    use uzor_urx_core::metrics_keys::{
+        render_submit_us_key, render_submit_count_key,
+        KEY_TICK_SUBMIT_US, KEY_TICK_FRAMES,
+        KEY_RENDER_R2T_US, KEY_RENDER_PRESENT_US,
+    };
+    metrics::histogram!(KEY_TICK_SUBMIT_US).record(frame_metrics.submit_us as f64);
+    metrics::counter!(KEY_TICK_FRAMES).increment(1);
+    metrics::histogram!(render_submit_us_key(backend_label)).record(frame_metrics.submit_us as f64);
+    metrics::counter!(render_submit_count_key(backend_label)).increment(1);
+    if frame_metrics.render_to_texture_us > 0 {
+        metrics::histogram!(KEY_RENDER_R2T_US).record(frame_metrics.render_to_texture_us as f64);
+    }
+    if frame_metrics.present_us > 0 {
+        metrics::histogram!(KEY_RENDER_PRESENT_US).record(frame_metrics.present_us as f64);
+    }
+
+    SubmitOutcome { metrics: frame_metrics, surface_lost }
 }
 
 // ── VelloGpu ──────────────────────────────────────────────────────────────────

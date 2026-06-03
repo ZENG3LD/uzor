@@ -11,6 +11,8 @@ description = "uzor-render-hub: unified rendering backend hub — auto-detects G
 
 [dependencies]
 uzor = { workspace = true }
+uzor-urx-core = { workspace = true }
+metrics = "0.24"
 uzor-render-vello-gpu = { workspace = true }
 uzor-render-vello-hybrid = { workspace = true }
 uzor-render-wgpu-instanced = { workspace = true }

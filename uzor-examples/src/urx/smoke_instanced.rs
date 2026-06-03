@@ -247,6 +247,42 @@ fn handle_request(req: &str, shared: &Arc<Mutex<Shared>>) -> String {
                 None => http_response(400, &format!(r#"{{"error":"unknown backend: {}"}}"#, name)),
             }
         }
+        ("POST", "/urx/metrics/reset") => {
+            uzor_urx_core::metrics_reset();
+            http_response(200, r#"{"ok":true,"action":"reset"}"#)
+        }
+        ("GET", "/urx/metrics") => {
+            let snap = uzor_urx_core::metrics_snapshot();
+            // Hand-roll JSON so we don't pull in serde_json here; format
+            // matches tessera's /tessera/metrics shape so perfwatch-style
+            // clients work unchanged.
+            let mut s = String::from("{\"counters\":{");
+            let mut first_c = true;
+            for (k, v) in &snap.counters {
+                if !first_c { s.push(','); }
+                first_c = false;
+                s.push_str(&format!("\"{}\":{}", k, v));
+            }
+            s.push_str("},\"gauges\":{");
+            let mut first_g = true;
+            for (k, v) in &snap.gauges {
+                if !first_g { s.push(','); }
+                first_g = false;
+                s.push_str(&format!("\"{}\":{}", k, v));
+            }
+            s.push_str("},\"histograms\":{");
+            let mut first_h = true;
+            for (k, h) in &snap.histograms {
+                if !first_h { s.push(','); }
+                first_h = false;
+                s.push_str(&format!(
+                    "\"{}\":{{\"count\":{},\"ring_len\":{},\"sum\":{},\"mean\":{},\"min\":{},\"max\":{},\"p50\":{},\"p90\":{},\"p99\":{}}}",
+                    k, h.count, h.ring_len, h.sum, h.mean, h.min, h.max, h.p50, h.p90, h.p99,
+                ));
+            }
+            s.push_str("}}");
+            http_response(200, &s)
+        }
         _ => http_response(404, r#"{"error":"not found"}"#),
     }
 }
@@ -274,6 +310,10 @@ fn start_http_server(port: u16, shared: Arc<Mutex<Shared>>) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Install URX metrics recorder BEFORE the render-hub fires any frame.
+    // Otherwise the first frame's submit metric writes go to the default
+    // (no-op) recorder.
+    let _ = uzor_urx_core::install_recorder();
     let shared: Arc<Mutex<Shared>> = Arc::new(Mutex::new(Shared::default()));
     start_http_server(17490, shared.clone());
 
