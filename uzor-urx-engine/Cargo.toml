@@ -33,9 +33,14 @@ full-gpu-backend = ["dep:uzor-urx-wgpu-full", "dep:wgpu"]
 [dev-dependencies]
 pollster = "0.4"
 wgpu     = "28"
+winit    = "0.30"
 
 [[example]]
 name = "backend_auto_demo"
 
 [[example]]
 name = "runtime_backend_switch"
+
+[[example]]
+name = "winit_full_gpu_demo"
+required-features = ["full-gpu-backend"]
