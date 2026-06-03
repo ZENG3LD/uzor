@@ -6,6 +6,7 @@
 //! Marked `#[ignore]` like other GPU-touching tests in this crate;
 //! run with `cargo test --test dirty_skip -- --ignored --nocapture`.
 
+use std::sync::atomic::{AtomicU32, Ordering};
 use uzor_urx_core::region::RegionId;
 use uzor_urx_core::config::{UrxConfig, DirtyStrategy};
 use uzor_urx_cpu::Pixmap;
@@ -98,4 +99,71 @@ fn dirty_skip_doesnt_corrupt_subsequent_resizes() {
     backend.upsert_region_pixmap(&device, &queue, id, &pm16);
 
     assert_eq!(backend.region_count(), 1);
+}
+
+#[test]
+#[ignore = "needs gpu adapter; run with --ignored"]
+fn last_uploaded_generation_reports_correctly() {
+    let Some((device, queue)) = init_device() else { return; };
+    let mut backend = HybridBackend::new();
+    let id = RegionId(101);
+
+    // No upload yet → None.
+    assert_eq!(backend.last_uploaded_generation(id), None);
+    assert!(!backend.is_region_clean_at(id, 0));
+
+    // First upload at gen=1.
+    let mut pm = Pixmap::new(8, 8);
+    pm.fill([100, 100, 100, 255]);
+    backend.upsert_region_with_generation(&device, &queue, id, &pm, 1);
+    assert_eq!(backend.last_uploaded_generation(id), Some(1));
+    assert!(backend.is_region_clean_at(id, 1));
+    assert!(!backend.is_region_clean_at(id, 2));
+
+    // Re-tag clean at gen=5 without uploading — no Pixmap touched.
+    assert!(backend.mark_clean_with_generation(id, 5));
+    assert_eq!(backend.last_uploaded_generation(id), Some(5));
+    assert!(backend.is_region_clean_at(id, 5));
+
+    // Marking clean on a missing region → false.
+    assert!(!backend.mark_clean_with_generation(RegionId(999), 1));
+}
+
+#[test]
+#[ignore = "needs gpu adapter; run with --ignored"]
+fn upload_if_dirty_skips_raster_fn_on_clean_path() {
+    // The critical test: when gen is unchanged, raster_fn must NEVER
+    // be invoked. This saves the consumer's CPU rasterisation cost.
+    let Some((device, queue)) = init_device() else { return; };
+    let mut backend = HybridBackend::new();
+    let id = RegionId(202);
+
+    let raster_calls = AtomicU32::new(0);
+    let make_pixmap = |seed: u8| -> Pixmap {
+        raster_calls.fetch_add(1, Ordering::SeqCst);
+        let mut pm = Pixmap::new(16, 16);
+        pm.fill([seed, seed, seed, 255]);
+        pm
+    };
+
+    // First call at gen=1 — raster_fn MUST be invoked.
+    let did_upload = backend.upload_if_dirty(&device, &queue, id, 1, || make_pixmap(50));
+    assert!(did_upload);
+    assert_eq!(raster_calls.load(Ordering::SeqCst), 1);
+
+    // Second call at gen=1 — raster_fn MUST NOT be invoked.
+    let did_upload = backend.upload_if_dirty(&device, &queue, id, 1, || make_pixmap(200));
+    assert!(!did_upload, "upload_if_dirty must skip on matching generation");
+    assert_eq!(raster_calls.load(Ordering::SeqCst), 1,
+        "raster_fn must NOT have been called on the clean path");
+
+    // gen=2 — raster_fn fires.
+    let did_upload = backend.upload_if_dirty(&device, &queue, id, 2, || make_pixmap(99));
+    assert!(did_upload);
+    assert_eq!(raster_calls.load(Ordering::SeqCst), 2);
+
+    // gen=2 again — raster_fn skipped again.
+    let did_upload = backend.upload_if_dirty(&device, &queue, id, 2, || make_pixmap(99));
+    assert!(!did_upload);
+    assert_eq!(raster_calls.load(Ordering::SeqCst), 2);
 }

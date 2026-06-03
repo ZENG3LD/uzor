@@ -119,6 +119,84 @@ impl HybridBackend {
         self.region_textures.insert(region_id, tex);
     }
 
+    /// Returns the generation counter recorded for this region's
+    /// uploaded texture (i.e. the gen of the last successful upload),
+    /// or `None` if the region isn't cached. Used for consumer-side
+    /// "do I need to rebuild the pixmap?" checks.
+    pub fn last_uploaded_generation(&self, id: RegionId) -> Option<u64> {
+        self.region_textures.get(&id).and_then(|t| t.generation)
+    }
+
+    /// Returns `true` if the cached region is up-to-date at the given
+    /// generation — caller doesn't need to re-rasterise or upload.
+    /// Equivalent to `last_uploaded_generation(id) == Some(gen)`.
+    pub fn is_region_clean_at(&self, id: RegionId, gen: u64) -> bool {
+        matches!(self.last_uploaded_generation(id), Some(g) if g == gen)
+    }
+
+    /// "Mark the region's existing upload as still current at this
+    /// generation." Bumps no counter, allocates nothing — just
+    /// updates the cached generation tag. Useful when the consumer
+    /// knows a region didn't change but wants the backend's
+    /// generation tag to advance for diagnostic alignment.
+    ///
+    /// Returns `true` if the region exists (and was tagged); `false`
+    /// if it wasn't cached yet (caller must upload first).
+    pub fn mark_clean_with_generation(
+        &mut self,
+        id:         RegionId,
+        generation: u64,
+    ) -> bool {
+        if let Some(tex) = self.region_textures.get_mut(&id) {
+            tex.set_generation(Some(generation));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Generation-first lazy upsert: if the cached texture's
+    /// generation matches `gen`, NO work happens — no CPU raster,
+    /// no hash, no upload. Otherwise the consumer's `raster_fn` is
+    /// invoked to produce the fresh pixmap, then the regular
+    /// `upsert_region_with_generation` path runs.
+    ///
+    /// This is the cheapest path the hybrid backend exposes:
+    /// up-to-date region → ~3 ns (HashMap lookup + u64 compare). It
+    /// also saves the consumer's CPU rasterisation cost on the
+    /// clean path — a 512×512 region staying unchanged at 60 Hz
+    /// stops costing 1-2 ms/frame.
+    ///
+    /// Returns `true` if the upload happened (region was stale);
+    /// `false` if it was skipped (region was clean at this gen).
+    pub fn upload_if_dirty<F>(
+        &mut self,
+        device:     &wgpu::Device,
+        queue:      &wgpu::Queue,
+        region_id:  RegionId,
+        generation: u64,
+        raster_fn:  F,
+    ) -> bool
+    where
+        F: FnOnce() -> Pixmap,
+    {
+        use uzor_urx_core::metrics_keys::{
+            KEY_HYBRID_UPLOAD_SKIPPED, KEY_HYBRID_UPLOAD_SKIPPED_BYTES,
+        };
+        if let Some(existing) = self.region_textures.get(&region_id) {
+            if existing.generation == Some(generation) {
+                metrics::counter!(KEY_HYBRID_UPLOAD_SKIPPED).increment(1);
+                metrics::counter!(KEY_HYBRID_UPLOAD_SKIPPED_BYTES)
+                    .increment(existing.bytes);
+                return false;
+            }
+        }
+        // Stale or missing — invoke raster_fn ONCE and upload.
+        let pixmap = raster_fn();
+        self.upsert_region_with_generation(device, queue, region_id, &pixmap, generation);
+        true
+    }
+
     /// Upsert with a caller-supplied generation counter. When the
     /// generation matches the cached one, skips the upload AND the
     /// byte hash (cheapest path). Mismatch falls through to the
