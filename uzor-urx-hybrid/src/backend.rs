@@ -19,6 +19,7 @@ use uzor_urx_core::region::RegionId;
 use uzor_urx_core::config::{DirtyStrategy, UrxConfig};
 use uzor_urx_cpu::Pixmap;
 
+use crate::atlas::{AtlasUpsertResult, RegionAtlas};
 use crate::composite::{QuadInstance, ScreenUniform, COMPOSITE_SHADER};
 use crate::region_tex::{RegionTexture, ResizeNeeded};
 
@@ -40,6 +41,13 @@ pub struct HybridBackend {
     /// Use [`uzor_urx_core::pipeline_cache::load_or_create`] +
     /// [`Self::set_pipeline_cache`] before first composite.
     pipeline_cache:  Option<wgpu::PipelineCache>,
+    /// Atlas for small-region packing (Hybrid-P1). Lazily created on
+    /// first eligible upsert when `config.hybrid_atlas_enabled` is
+    /// `true`. Regions ≤ `(atlas_w/2, atlas_h/2)` go into the atlas;
+    /// larger regions stay in `region_textures` as standalone
+    /// `RegionTexture`. Both paths coexist — `composite()` checks
+    /// each id and picks the right bind group.
+    atlas:           Option<RegionAtlas>,
 }
 
 struct CompositorPipeline {
@@ -60,6 +68,7 @@ impl HybridBackend {
             config: UrxConfig::default(),
             uploads_since_last_composite: 0,
             pipeline_cache: None,
+            atlas: None,
         }
     }
 
@@ -74,6 +83,7 @@ impl HybridBackend {
             config: cfg,
             uploads_since_last_composite: 0,
             pipeline_cache: None,
+            atlas: None,
         }
     }
 
@@ -126,6 +136,47 @@ impl HybridBackend {
             KEY_HYBRID_UPLOAD_BYTES, KEY_HYBRID_UPLOAD_SKIPPED,
             KEY_HYBRID_UPLOAD_SKIPPED_BYTES,
         };
+
+        // Atlas path (Hybrid-P1) — only if explicitly enabled and the
+        // region's dimensions fit. Existing standalone region for the
+        // same id (rare — happens when consumer enables atlas mid-run)
+        // is dropped so the atlas takes over.
+        if self.config.hybrid_atlas_enabled {
+            // Lazy-init atlas on first attempt.
+            if self.atlas.is_none() {
+                self.atlas = Some(RegionAtlas::new(
+                    device,
+                    self.config.hybrid_atlas_w,
+                    self.config.hybrid_atlas_h,
+                ));
+            }
+            if let Some(atlas) = self.atlas.as_mut() {
+                if atlas.fits(pixmap.width(), pixmap.height()) {
+                    // Drop any standalone version of this id first.
+                    self.region_textures.remove(&region_id);
+                    match atlas.try_upsert(queue, region_id, pixmap) {
+                        AtlasUpsertResult::Uploaded { bytes } => {
+                            metrics::counter!(KEY_HYBRID_UPLOAD_BYTES).increment(bytes);
+                            self.uploads_since_last_composite =
+                                self.uploads_since_last_composite.saturating_add(1);
+                            return;
+                        }
+                        AtlasUpsertResult::Skipped { bytes } => {
+                            metrics::counter!(KEY_HYBRID_UPLOAD_SKIPPED).increment(1);
+                            metrics::counter!(KEY_HYBRID_UPLOAD_SKIPPED_BYTES)
+                                .increment(bytes);
+                            return;
+                        }
+                        AtlasUpsertResult::Reject => {
+                            // Atlas full or region too large — fall through
+                            // to standalone path.
+                        }
+                    }
+                }
+                // Region doesn't fit atlas — fall through.
+            }
+        }
+
         if let Some(existing) = self.region_textures.get_mut(&region_id) {
             // Hash-based skip — strategy may opt-out.
             let do_hash = matches!(
@@ -162,7 +213,15 @@ impl HybridBackend {
     /// uploaded texture (i.e. the gen of the last successful upload),
     /// or `None` if the region isn't cached. Used for consumer-side
     /// "do I need to rebuild the pixmap?" checks.
+    ///
+    /// Checks both the atlas (if enabled) and the standalone-texture
+    /// map; whichever path holds the region wins.
     pub fn last_uploaded_generation(&self, id: RegionId) -> Option<u64> {
+        if let Some(atlas) = self.atlas.as_ref() {
+            if let Some(slot) = atlas.slot(id) {
+                return slot.generation;
+            }
+        }
         self.region_textures.get(&id).and_then(|t| t.generation)
     }
 
@@ -186,6 +245,11 @@ impl HybridBackend {
         id:         RegionId,
         generation: u64,
     ) -> bool {
+        if let Some(atlas) = self.atlas.as_mut() {
+            if atlas.set_slot_generation(id, Some(generation)) {
+                return true;
+            }
+        }
         if let Some(tex) = self.region_textures.get_mut(&id) {
             tex.set_generation(Some(generation));
             true
@@ -222,6 +286,17 @@ impl HybridBackend {
         use uzor_urx_core::metrics_keys::{
             KEY_HYBRID_UPLOAD_SKIPPED, KEY_HYBRID_UPLOAD_SKIPPED_BYTES,
         };
+        // Atlas slot check first (when enabled).
+        if let Some(atlas) = self.atlas.as_ref() {
+            if let Some(slot) = atlas.slot(region_id) {
+                if slot.generation == Some(generation) {
+                    let bytes = (slot.px_rect[2] as u64) * (slot.px_rect[3] as u64) * 4;
+                    metrics::counter!(KEY_HYBRID_UPLOAD_SKIPPED).increment(1);
+                    metrics::counter!(KEY_HYBRID_UPLOAD_SKIPPED_BYTES).increment(bytes);
+                    return false;
+                }
+            }
+        }
         if let Some(existing) = self.region_textures.get(&region_id) {
             if existing.generation == Some(generation) {
                 metrics::counter!(KEY_HYBRID_UPLOAD_SKIPPED).increment(1);
@@ -254,6 +329,17 @@ impl HybridBackend {
         use uzor_urx_core::metrics_keys::{
             KEY_HYBRID_UPLOAD_SKIPPED, KEY_HYBRID_UPLOAD_SKIPPED_BYTES,
         };
+        // Atlas slot generation match → cheapest skip.
+        if let Some(atlas) = self.atlas.as_ref() {
+            if let Some(slot) = atlas.slot(region_id) {
+                if slot.generation == Some(generation) {
+                    let bytes = (slot.px_rect[2] as u64) * (slot.px_rect[3] as u64) * 4;
+                    metrics::counter!(KEY_HYBRID_UPLOAD_SKIPPED).increment(1);
+                    metrics::counter!(KEY_HYBRID_UPLOAD_SKIPPED_BYTES).increment(bytes);
+                    return;
+                }
+            }
+        }
         if let Some(existing) = self.region_textures.get_mut(&region_id) {
             if existing.generation == Some(generation) {
                 metrics::counter!(KEY_HYBRID_UPLOAD_SKIPPED).increment(1);
@@ -263,6 +349,12 @@ impl HybridBackend {
             }
         }
         self.upsert_region_pixmap(device, queue, region_id, pixmap);
+        // Tag the region (whichever path took it).
+        if let Some(atlas) = self.atlas.as_mut() {
+            if atlas.set_slot_generation(region_id, Some(generation)) {
+                return;
+            }
+        }
         if let Some(tex) = self.region_textures.get_mut(&region_id) {
             tex.set_generation(Some(generation));
         }
@@ -270,10 +362,35 @@ impl HybridBackend {
 
     pub fn remove_region(&mut self, region_id: RegionId) {
         self.region_textures.remove(&region_id);
+        if let Some(atlas) = self.atlas.as_mut() {
+            atlas.remove(region_id);
+        }
     }
 
     pub fn clear(&mut self) {
         self.region_textures.clear();
+        if let Some(atlas) = self.atlas.as_mut() {
+            atlas.clear();
+        }
+    }
+
+    /// Returns the atlas slot for `id` if the region is currently
+    /// atlas-packed (UV rect + content_hash + generation). Returns
+    /// `None` if the region is standalone (or absent).
+    pub fn atlas_slot(&self, id: RegionId) -> Option<&crate::atlas::AtlasSlot> {
+        self.atlas.as_ref().and_then(|a| a.slot(id))
+    }
+
+    /// Returns the atlas backing texture view + atlas dimensions when
+    /// the atlas exists, otherwise None. Used by callers wanting to
+    /// composite directly via the atlas bind group (Hybrid-P2).
+    pub fn atlas_view(&self) -> Option<(&wgpu::TextureView, u32, u32)> {
+        self.atlas.as_ref().map(|a| (&a.view, a.width, a.height))
+    }
+
+    /// True if the region is cached in the atlas (vs standalone).
+    pub fn is_atlas_packed(&self, id: RegionId) -> bool {
+        self.atlas.as_ref().is_some_and(|a| a.slot(id).is_some())
     }
 
     fn ensure_pipeline(
@@ -307,11 +424,48 @@ impl HybridBackend {
     ) {
         if instances.is_empty() { return; }
 
-        // Pre-resolve texture views BEFORE borrowing pipeline mutably.
+        // Pre-resolve per-instance texture view + UV remap. Atlas-resident
+        // regions get the atlas view + remapped UV from their slot;
+        // standalone regions get their own texture view + the caller's UV.
+        //
+        // This is the key dual-path branch: ONE bind group when an atlas
+        // exists (all atlas-resident regions share it), individual bind
+        // groups for standalone regions. The instance.uv field is replaced
+        // with the slot's uv_rect for atlas-resident regions so the same
+        // shader works for both paths.
         let mut texture_views: Vec<wgpu::TextureView> = Vec::with_capacity(instances.len());
-        for (id, _) in instances {
-            let tex = self.region_textures.get(id).expect("region texture must be uploaded before composite");
+        let mut inst_data: Vec<QuadInstance> = Vec::with_capacity(instances.len());
+        for (id, qi) in instances {
+            // Atlas path?
+            if let Some(atlas) = self.atlas.as_ref() {
+                if let Some(slot) = atlas.slot(*id) {
+                    texture_views.push(atlas.view.clone());
+                    // Compose caller's UV (sub-rect within the region)
+                    // with the atlas slot's UV rect. For default
+                    // [0,0,1,1] UVs the result is just slot.uv_rect.
+                    let su = slot.uv_rect;
+                    let cu = qi.uv;
+                    let span_u = su[2] - su[0];
+                    let span_v = su[3] - su[1];
+                    let composed_uv = [
+                        su[0] + cu[0] * span_u,
+                        su[1] + cu[1] * span_v,
+                        su[0] + cu[2] * span_u,
+                        su[1] + cu[3] * span_v,
+                    ];
+                    inst_data.push(QuadInstance {
+                        dst:  qi.dst,
+                        uv:   composed_uv,
+                        tint: qi.tint,
+                    });
+                    continue;
+                }
+            }
+            // Standalone path.
+            let tex = self.region_textures.get(id)
+                .expect("region texture must be uploaded before composite");
             texture_views.push(tex.view.clone());
+            inst_data.push(*qi);
         }
 
         let pipeline = self.ensure_pipeline(device, surface_format);
@@ -332,8 +486,7 @@ impl HybridBackend {
             pipeline.instance_cap = new_cap;
         }
 
-        // Write instance data.
-        let inst_data: Vec<QuadInstance> = instances.iter().map(|(_, q)| *q).collect();
+        // Write instance data (with atlas UV remapping baked in above).
         queue.write_buffer(&pipeline.instance_buf, 0, bytemuck::cast_slice(&inst_data));
 
         // Build per-region bind groups from the pre-resolved views.

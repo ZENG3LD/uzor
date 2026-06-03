@@ -16,6 +16,9 @@ uzor-urx-wgpu = { workspace = true }
 metrics = "0.24"
 wgpu    = "28"
 bytemuck = { version = "1", features = ["derive"] }
+# Atlas shelf allocator — Mozilla WebRender / glyphon use it. Same
+# version + crate as uzor-render-wgpu-instanced (text atlas).
+etagere = "0.2"
 
 [dev-dependencies]
 pollster = "0.4"

@@ -24,10 +24,12 @@
 //! - Tile sub-division for very-large regions (>1024×1024) where one
 //!   atlas slot is wasteful.
 
+pub mod atlas;
 pub mod backend;
 pub mod composite;
 pub mod region_tex;
 
+pub use atlas::{AtlasSlot, AtlasUpsertResult, RegionAtlas};
 pub use backend::HybridBackend;
 pub use composite::{QuadInstance, ScreenUniform};
 pub use region_tex::RegionTexture;
