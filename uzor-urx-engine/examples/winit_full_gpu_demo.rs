@@ -29,9 +29,12 @@
 //! ### L3 — structural scene ops
 //! | Method | Path | Body | Purpose |
 //! |---|---|---|---|
-//! | `POST`  | `/scene/spawn_rect` | `{cx, cy, half, color}` | add one rect/region |
-//! | `DELETE`| `/scene/region/:id` | — | remove region by id |
-//! | `POST`  | `/scene/clear`      | — | remove every rect/region |
+//! | `POST`  | `/scene/spawn_rect`        | `{cx, cy, half, color}`              | add one rect/region |
+//! | `POST`  | `/scene/spawn_stroke`      | `{p0, p1, width, color, cap?}`       | add one stroke line region |
+//! | `POST`  | `/scene/spawn_sparkline`   | `{points: [[x,y],…], width, color}`  | one region = a polyline |
+//! | `POST`  | `/scene/preset/dashboard`  | —                                    | replace scene with grid + sparkline preset |
+//! | `DELETE`| `/scene/region/:id`        | —                                    | remove region by id |
+//! | `POST`  | `/scene/clear`             | —                                    | remove every rect/region |
 //!
 //! ## Try it
 //!
@@ -112,15 +115,40 @@ struct RectModel {
     selected: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct StrokeModel {
+    id:    u64,
+    p0:    [f32; 2],
+    p1:    [f32; 2],
+    width: f32,
+    color: [u8; 4],
+    /// 0 = butt, 1 = round, 2 = square.
+    cap:   u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct PolylineModel {
+    id:     u64,
+    points: Vec<[f32; 2]>,
+    width:  f32,
+    color:  [u8; 4],
+}
+
 #[derive(Default)]
 struct SharedScene {
     rects:        Vec<RectModel>,
+    strokes:      Vec<StrokeModel>,
+    polylines:    Vec<PolylineModel>,
     next_id:      u64,
     paused:       bool,
     /// L3: rects queued by `/scene/spawn_rect`. Drained by main thread.
-    pending_spawn: Vec<RectModel>,
+    pending_spawn:   Vec<RectModel>,
+    pending_strokes: Vec<StrokeModel>,
+    pending_polys:   Vec<PolylineModel>,
     /// L3: clear-all flag.
     pending_clear: bool,
+    /// L3: load dashboard preset flag.
+    pending_preset_dashboard: bool,
     /// L3: ids enqueued by `DELETE /scene/region/:id`.
     pending_remove: Vec<u64>,
     /// L2: re-randomise velocities flag.
@@ -201,6 +229,14 @@ fn spawn_agent_server(state: AgentState) -> std::thread::JoinHandle<()> {
     struct SetCountBody { n: usize }
     #[derive(Deserialize)]
     struct SpawnBody { cx: f32, cy: f32, half: f32, color: [u8; 4] }
+    #[derive(Deserialize)]
+    struct SpawnStrokeBody {
+        p0: [f32; 2], p1: [f32; 2], width: f32, color: [u8; 4],
+        #[serde(default)]
+        cap: Option<u32>,
+    }
+    #[derive(Deserialize)]
+    struct SpawnSparklineBody { points: Vec<[f32; 2]>, width: f32, color: [u8; 4] }
     #[derive(Serialize)]
     struct OkReply { ok: bool, msg: String }
     fn ok(msg: impl Into<String>) -> Json<OkReply> {
@@ -281,6 +317,45 @@ fn spawn_agent_server(state: AgentState) -> std::thread::JoinHandle<()> {
                             };
                             sc.pending_spawn.push(m);
                             (StatusCode::OK, ok(format!("spawn queued, id={id}"))).into_response()
+                        },
+                    ))
+                    .route("/scene/spawn_stroke", post(
+                        |AxState(s): AxState<AgentState>, Json(b): Json<SpawnStrokeBody>| async move {
+                            let mut sc = s.scene.lock().unwrap();
+                            let id = sc.next_id; sc.next_id += 1;
+                            sc.pending_strokes.push(StrokeModel {
+                                id,
+                                p0: b.p0, p1: b.p1,
+                                width: b.width.max(0.5),
+                                color: b.color,
+                                cap: b.cap.unwrap_or(1).min(2),
+                            });
+                            ok(format!("stroke queued, id={id}"))
+                        },
+                    ))
+                    .route("/scene/spawn_sparkline", post(
+                        |AxState(s): AxState<AgentState>, Json(b): Json<SpawnSparklineBody>| async move {
+                            if b.points.len() < 2 {
+                                return (StatusCode::BAD_REQUEST,
+                                    Json(OkReply { ok: false,
+                                        msg: "sparkline needs >= 2 points".into() }))
+                                    .into_response();
+                            }
+                            let mut sc = s.scene.lock().unwrap();
+                            let id = sc.next_id; sc.next_id += 1;
+                            sc.pending_polys.push(PolylineModel {
+                                id,
+                                points: b.points,
+                                width: b.width.max(0.5),
+                                color: b.color,
+                            });
+                            (StatusCode::OK, ok(format!("sparkline queued, id={id}"))).into_response()
+                        },
+                    ))
+                    .route("/scene/preset/dashboard", post(
+                        |AxState(s): AxState<AgentState>| async move {
+                            s.scene.lock().unwrap().pending_preset_dashboard = true;
+                            ok("dashboard preset queued")
                         },
                     ))
                     .route("/scene/region/:id", delete(
@@ -380,10 +455,11 @@ impl GpuState {
 
         let pipeline = TilePipeline::new(&device);
         let blit     = BlitPipeline::new(&device, format);
-        // Pool capacity: MAX_N rects, each potentially producing 2 cmds
-        // (1 fill + 1 outline frame for "selected"); also leave 1× slack
-        // for spawns mid-frame.
-        let cmd_cap = (MAX_N as u32) * 2;
+        // Pool capacity: MAX_N rects can each produce 3 cmds (body + 2
+        // selected bands), plus headroom for stroke spam and a fat
+        // polyline (e.g. 256-point sparkline = 255 line cmds). 4× MAX_N
+        // is comfortable and still bounded.
+        let cmd_cap = (MAX_N as u32) * 4;
         let (bufs, storage_tex, storage_view) =
             TileBuffers::with_output_texture(&device, cmd_cap, w, h);
         let tex_w = bufs.tile_count_x * TILE_SIZE;
@@ -447,12 +523,81 @@ impl GpuState {
         // ─ L3: clear ─────────────────────────────────────────────────
         if sc.pending_clear {
             sc.pending_clear = false;
-            // Remove all engine regions BEFORE clearing the model (we
-            // need the ids that still exist).
-            for r in sc.rects.iter() {
-                self.engine.remove_region(RegionId(r.id));
-            }
+            for r in sc.rects.iter()     { self.engine.remove_region(RegionId(r.id)); }
+            for s in sc.strokes.iter()   { self.engine.remove_region(RegionId(s.id)); }
+            for p in sc.polylines.iter() { self.engine.remove_region(RegionId(p.id)); }
             sc.rects.clear();
+            sc.strokes.clear();
+            sc.polylines.clear();
+        }
+
+        // ─ L3: dashboard preset (clear + populate grid + sparkline) ──
+        if sc.pending_preset_dashboard {
+            sc.pending_preset_dashboard = false;
+            for r in sc.rects.iter()     { self.engine.remove_region(RegionId(r.id)); }
+            for s in sc.strokes.iter()   { self.engine.remove_region(RegionId(s.id)); }
+            for p in sc.polylines.iter() { self.engine.remove_region(RegionId(p.id)); }
+            sc.rects.clear();
+            sc.strokes.clear();
+            sc.polylines.clear();
+            sc.paused = false;
+
+            // 1. background rect (whole window dark slate)
+            let id = sc.next_id; sc.next_id += 1;
+            sc.rects.push(RectModel {
+                id, cx: win_w * 0.5, cy: win_h * 0.5,
+                vx: 0.0, vy: 0.0,
+                half: (win_w.max(win_h)) * 0.5,
+                color: [18, 20, 28, 255], selected: false,
+            });
+            // 2. axis lines — bottom horizontal + left vertical
+            let axis_color = [80, 80, 100, 255];
+            let id = sc.next_id; sc.next_id += 1;
+            sc.strokes.push(StrokeModel {
+                id,
+                p0: [40.0, win_h - 60.0], p1: [win_w - 40.0, win_h - 60.0],
+                width: 1.5, color: axis_color, cap: 0,
+            });
+            let id = sc.next_id; sc.next_id += 1;
+            sc.strokes.push(StrokeModel {
+                id,
+                p0: [40.0, 60.0], p1: [40.0, win_h - 60.0],
+                width: 1.5, color: axis_color, cap: 0,
+            });
+            // 3. grid lines — 5 horizontal
+            for i in 0..5 {
+                let y = 60.0 + (win_h - 120.0) * (i as f32 / 4.0);
+                let id = sc.next_id; sc.next_id += 1;
+                sc.strokes.push(StrokeModel {
+                    id,
+                    p0: [40.0, y], p1: [win_w - 40.0, y],
+                    width: 0.5, color: [50, 52, 64, 255], cap: 0,
+                });
+            }
+            // 4. sparkline — 64-point random walk fit into the panel
+            let n = 64;
+            let mut value: f32 = 0.5;
+            let mut points = Vec::with_capacity(n);
+            for i in 0..n {
+                value += ((i * 13 % 17) as f32 / 16.0 - 0.5) * 0.05;
+                value = value.clamp(0.05, 0.95);
+                let x = 50.0 + (win_w - 90.0) * (i as f32 / (n - 1) as f32);
+                let y = 70.0 + (win_h - 140.0) * (1.0 - value);
+                points.push([x, y]);
+            }
+            let id = sc.next_id; sc.next_id += 1;
+            sc.polylines.push(PolylineModel {
+                id, points,
+                width: 2.0, color: [100, 200, 255, 255],
+            });
+            // 5. cursor crosshair (one vertical line)
+            let cursor_x = (win_w - 90.0) * 0.7 + 50.0;
+            let id = sc.next_id; sc.next_id += 1;
+            sc.strokes.push(StrokeModel {
+                id,
+                p0: [cursor_x, 60.0], p1: [cursor_x, win_h - 60.0],
+                width: 1.0, color: [255, 200, 80, 200], cap: 1,
+            });
         }
 
         // ─ L3: remove by id ──────────────────────────────────────────
@@ -461,6 +606,12 @@ impl GpuState {
             for id in ids {
                 if let Some(pos) = sc.rects.iter().position(|r| r.id == id) {
                     sc.rects.remove(pos);
+                    self.engine.remove_region(RegionId(id));
+                } else if let Some(pos) = sc.strokes.iter().position(|s| s.id == id) {
+                    sc.strokes.remove(pos);
+                    self.engine.remove_region(RegionId(id));
+                } else if let Some(pos) = sc.polylines.iter().position(|p| p.id == id) {
+                    sc.polylines.remove(pos);
                     self.engine.remove_region(RegionId(id));
                 }
             }
@@ -472,6 +623,22 @@ impl GpuState {
             for r in queued {
                 if sc.rects.len() < MAX_N {
                     sc.rects.push(r);
+                }
+            }
+        }
+        if !sc.pending_strokes.is_empty() {
+            let queued = std::mem::take(&mut sc.pending_strokes);
+            for s_in in queued {
+                if sc.strokes.len() < MAX_N {
+                    sc.strokes.push(s_in);
+                }
+            }
+        }
+        if !sc.pending_polys.is_empty() {
+            let queued = std::mem::take(&mut sc.pending_polys);
+            for p_in in queued {
+                if sc.polylines.len() < MAX_N {
+                    sc.polylines.push(p_in);
                 }
             }
         }
@@ -518,17 +685,27 @@ impl GpuState {
         }
 
         // ─ Physics tick (paused gate) ────────────────────────────────
+        //
+        // Skip pinned rects (vx==vy==0): these are static backgrounds /
+        // presets that may be wider than the window's smaller axis,
+        // which would make `clamp(half, win_w-half, ..)` go min > max
+        // and panic.
         if !sc.paused {
             for r in sc.rects.iter_mut() {
+                if r.vx == 0.0 && r.vy == 0.0 { continue; }
                 r.cx += r.vx * dt;
                 r.cy += r.vy * dt;
                 if r.cx - r.half < 0.0 || r.cx + r.half > win_w {
+                    let lo = r.half.min(win_w - r.half);
+                    let hi = r.half.max(win_w - r.half);
                     r.vx = -r.vx;
-                    r.cx = r.cx.clamp(r.half, win_w - r.half);
+                    r.cx = r.cx.clamp(lo, hi);
                 }
                 if r.cy - r.half < 0.0 || r.cy + r.half > win_h {
+                    let lo = r.half.min(win_h - r.half);
+                    let hi = r.half.max(win_h - r.half);
                     r.vy = -r.vy;
-                    r.cy = r.cy.clamp(r.half, win_h - r.half);
+                    r.cy = r.cy.clamp(lo, hi);
                 }
             }
         }
@@ -562,8 +739,65 @@ impl GpuState {
             );
         }
 
+        // ─ Push to engine: strokes ───────────────────────────────────
+        for s_m in sc.strokes.iter() {
+            let mut scene = Scene::new();
+            scene.line_solid(
+                uzor_urx_core::math::Vec2 { x: s_m.p0[0] as f64, y: s_m.p0[1] as f64 },
+                uzor_urx_core::math::Vec2 { x: s_m.p1[0] as f64, y: s_m.p1[1] as f64 },
+                s_m.width,
+                Color::rgba8(s_m.color[0], s_m.color[1], s_m.color[2], s_m.color[3]),
+            );
+            // Stroke bbox in screen space — inflate by half width.
+            let hw = (s_m.width * 0.5).max(1.0) as f64;
+            let x0 = (s_m.p0[0].min(s_m.p1[0]) as f64) - hw;
+            let y0 = (s_m.p0[1].min(s_m.p1[1]) as f64) - hw;
+            let x1 = (s_m.p0[0].max(s_m.p1[0]) as f64) + hw;
+            let y1 = (s_m.p0[1].max(s_m.p1[1]) as f64) + hw;
+            self.engine.upsert_region(
+                RegionId(s_m.id),
+                scene,
+                UxRect::new(x0, y0, x1, y1),
+                RenderCadence::Static,
+            );
+        }
+
+        // ─ Push to engine: polylines as N-1 line segments per region ──
+        // Each polyline = ONE engine region; the engine encodes its
+        // scene to (N-1) Stroke cmds. The bbox is the AABB of all
+        // points + half-width inflation.
+        for p_m in sc.polylines.iter() {
+            if p_m.points.len() < 2 { continue; }
+            let mut scene = Scene::new();
+            let color = Color::rgba8(p_m.color[0], p_m.color[1], p_m.color[2], p_m.color[3]);
+            for w in p_m.points.windows(2) {
+                let a = w[0]; let b = w[1];
+                scene.line_solid(
+                    uzor_urx_core::math::Vec2 { x: a[0] as f64, y: a[1] as f64 },
+                    uzor_urx_core::math::Vec2 { x: b[0] as f64, y: b[1] as f64 },
+                    p_m.width,
+                    color,
+                );
+            }
+            let hw = (p_m.width * 0.5).max(1.0) as f64;
+            let (mut x0, mut y0, mut x1, mut y1) = (
+                f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY,
+            );
+            for pt in &p_m.points {
+                let (x, y) = (pt[0] as f64, pt[1] as f64);
+                if x < x0 { x0 = x; } if y < y0 { y0 = y; }
+                if x > x1 { x1 = x; } if y > y1 { y1 = y; }
+            }
+            self.engine.upsert_region(
+                RegionId(p_m.id),
+                scene,
+                UxRect::new(x0 - hw, y0 - hw, x1 + hw, y1 + hw),
+                RenderCadence::Static,
+            );
+        }
+
         let paused  = sc.paused;
-        let regions = sc.rects.len() as u32;
+        let regions = (sc.rects.len() + sc.strokes.len() + sc.polylines.len()) as u32;
         drop(sc);
 
         // Publish to metrics for L1 /state polling.
