@@ -35,10 +35,12 @@
 //! }
 //! ```
 
+pub mod cache;
 pub mod cadence;
 pub mod engine;
 pub mod region_state;
 
+pub use cache::DEFAULT_CACHE_BUDGET_BYTES;
 pub use cadence::RenderCadence;
 pub use engine::{Backend, RenderTarget, UrxEngine};
 pub use region_state::RegionState;
