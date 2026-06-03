@@ -9,6 +9,44 @@ use wide::u32x4;
 use crate::fill::axis_coverage;
 use crate::pixmap::Pixmap;
 
+/// Memset a contiguous run of `u32` pixels (premultiplied RGBA8
+/// packed little-endian) with one solid color. Goes via
+/// `multiversion`-dispatched 256-bit `u32x8` (8 pixels / iteration on
+/// AVX2; 4 pixels via 2× NEON 128-bit on aarch64; etc).
+///
+/// `slice::fill` from libcore already lowers to SIMD on most release
+/// builds, but the loop-unrolled `u32x8` variant lets us guarantee
+/// the wide store regardless of LLVM's heuristics, AND it's the same
+/// kernel we'll use for AVX2 8-pixel SOLID-FILL strides in the tile
+/// pipeline (CPU-5).
+///
+/// Caller MUST ensure `dst` is u32-aligned (4-byte). The wider
+/// SIMD store falls back to `slice::fill` for the head/tail when
+/// `dst.len()` is not a multiple of 8 — bit-exact result.
+#[multiversion::multiversion(targets = "simd")]
+pub(crate) fn memset_u32_simd(dst: &mut [u32], word: u32) {
+    use wide::u32x8;
+
+    // Head: u32x8-aligned offset. dst is already u32-aligned; we just
+    // need the slice start to be 32-byte aligned for the safest store.
+    // But `wide::u32x8` stores via unaligned access so head=0 is fine.
+    let n = dst.len();
+    if n == 0 { return; }
+
+    let splat = u32x8::splat(word);
+    let chunk_count = n / 8;
+    for i in 0..chunk_count {
+        // SAFETY: slice indexing checked at len; chunk_count = n/8.
+        let off = i * 8;
+        let dst_chunk: &mut [u32; 8] = (&mut dst[off..off + 8]).try_into().unwrap();
+        *dst_chunk = splat.to_array();
+    }
+    // Scalar tail (0..7 pixels).
+    for slot in dst.iter_mut().skip(chunk_count * 8) {
+        *slot = word;
+    }
+}
+
 #[inline(always)]
 fn div255_u32(x: u32) -> u32 {
     ((x + 127).wrapping_mul(0x8081)) >> 23

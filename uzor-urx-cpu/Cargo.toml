@@ -49,6 +49,10 @@ harness = false
 name = "compare_tiled"
 harness = false
 
+[[bench]]
+name = "panned_scene"
+harness = false
+
 [features]
 default = []
 parallel = ["dep:rayon"]

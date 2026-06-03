@@ -365,7 +365,7 @@ fn memset_band(
         // Tail bytes of prefix smaller than one pixel are bug-impossible
         // here (row length is multiple of 4) — but if they occur we
         // simply leave them, since they're outside any pixel boundary.
-        middle.fill(word);
+        crate::simd::memset_u32_simd(middle, word);
         for chunk in suffix.chunks_exact_mut(4) {
             chunk.copy_from_slice(&premul);
         }

@@ -19,3 +19,8 @@ bytemuck = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 pollster = "0.4"
+criterion = "0.5"
+
+[[bench]]
+name = "hybrid"
+harness = false
