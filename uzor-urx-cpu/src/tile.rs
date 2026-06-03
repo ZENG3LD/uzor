@@ -23,22 +23,22 @@ use bumpalo::collections::Vec as BumpVec;
 
 use uzor_urx_core::math::{Brush, Color, Rect};
 use uzor_urx_core::scene::{DrawCommand, Scene};
+use uzor_urx_core::config::UrxConfig;
 
 use crate::clip::{transform_axis_aligned, ClipStack};
 use crate::color::color_to_premul;
 use crate::fill::axis_coverage;
 use crate::pixmap::Pixmap;
 
-/// Wide-tile dimensions. 32×8 is a sweet spot for typical UI: small
-/// enough that 30-px rects fully cover several adjacent tiles
-/// (triggering bg-replacement), large enough that the per-tile
-/// bookkeeping doesn't dominate.
-///
-/// vello uses 256×4. We chose 32×8 because our consumers (charts,
-/// dashboards) draw lots of small (≤50 px) opaque cells, where 256
-/// is too coarse to ever trigger full coverage.
-const TILE_W: u32 = 32;
-const TILE_H: u32 = 8;
+// Tile dimensions come from `UrxConfig::tile_w` / `tile_h`
+// (default 32×8 — see `uzor_urx_core::config::UrxConfig::default`).
+// 32×8 is a sweet spot for typical UI: small enough that 30-px rects
+// fully cover several adjacent tiles (triggering bg-replacement),
+// large enough that the per-tile bookkeeping doesn't dominate. vello
+// uses 256×4; we chose 32×8 because our consumers (charts, dashboards)
+// draw lots of small (≤50 px) opaque cells, where 256 is too coarse
+// to ever trigger full coverage. Consumers can override via
+// `CpuBackend::with_config`.
 
 #[derive(Debug, Clone, Copy)]
 enum Cmd {
@@ -62,22 +62,33 @@ impl<'a> TileBucket<'a> {
     fn new_in(arena: &'a Bump) -> Self {
         Self { bg: None, cmds: BumpVec::new_in(arena) }
     }
-    fn is_empty(&self) -> bool {
-        self.bg.is_none() && self.cmds.is_empty()
-    }
+}
+
+/// Render the scene via the tile pipeline using default tile dims.
+/// Used by tests and by older call-sites that don't have a config in
+/// hand. Equivalent to `render_tiled_with_config(scene, pm, &UrxConfig::default())`.
+pub fn render_tiled(scene: &Scene, pixmap: &mut Pixmap) {
+    let cfg = UrxConfig::default();
+    render_tiled_with_config(scene, pixmap, &cfg);
 }
 
 /// Render the scene via the tile pipeline. Falls back to scanline
 /// for any primitive the tile path doesn't yet handle (paths, glyphs,
 /// images, gradients, rounded clips, transforms with shear). Those
 /// flush the tile buffer first so painter's order is preserved.
-pub fn render_tiled(scene: &Scene, pixmap: &mut Pixmap) {
+///
+/// Tile dims + parallel threshold come from `cfg`. The config has
+/// already been validated by `CpuBackend::with_config`.
+pub fn render_tiled_with_config(scene: &Scene, pixmap: &mut Pixmap, cfg: &UrxConfig) {
     let pw = pixmap.width();
     let ph = pixmap.height();
     if pw == 0 || ph == 0 { return; }
 
-    let n_x = pw.div_ceil(TILE_W) as usize;
-    let n_y = ph.div_ceil(TILE_H) as usize;
+    let tile_w = cfg.tile_w;
+    let tile_h = cfg.tile_h;
+    let par_threshold = cfg.parallel_threshold_rows;
+    let n_x = pw.div_ceil(tile_w) as usize;
+    let n_y = ph.div_ceil(tile_h) as usize;
 
     // Per-frame arena. Initial capacity ≈ N_TILES × 8 cmds × 48 B/cmd.
     // Bumpalo grows in chunks of `Bump::with_capacity(N)`-sized slabs
@@ -103,7 +114,7 @@ pub fn render_tiled(scene: &Scene, pixmap: &mut Pixmap) {
                 let coeffs = transform.as_coeffs();
                 let has_shear = coeffs[1].abs() > 1e-6 || coeffs[2].abs() > 1e-6;
                 if has_radii || is_gradient || has_shear || !clip.all_rect() {
-                    flush_tiles(&mut tiles, pixmap, n_x, n_y);
+                    flush_tiles(&mut tiles, pixmap, n_x, n_y, tile_w, tile_h, par_threshold);
                     // Hand off to the scanline path for this one primitive.
                     fallback_one(pixmap, &clip, cmd);
                     continue;
@@ -114,29 +125,29 @@ pub fn render_tiled(scene: &Scene, pixmap: &mut Pixmap) {
                 let visible = r_screen.intersect(cur);
                 if visible.width() <= 0.0 || visible.height() <= 0.0 { continue; }
                 let opaque = color.a == 255;
-                add_rect_to_tiles(&mut tiles, n_x, n_y, pw, ph, visible, color, opaque);
+                add_rect_to_tiles(&mut tiles, n_x, n_y, pw, ph, visible, color, opaque, tile_w, tile_h);
             }
             DrawCommand::PushClipRect { rect, transform } => {
                 // Clips can change region eligibility; flush tile
                 // buffer so subsequent draws inside the clip see the
                 // already-committed pixels.
-                flush_tiles(&mut tiles, pixmap, n_x, n_y);
+                flush_tiles(&mut tiles, pixmap, n_x, n_y, tile_w, tile_h, par_threshold);
                 clip.push_rect(*rect, transform);
             }
             DrawCommand::PopClip => {
-                flush_tiles(&mut tiles, pixmap, n_x, n_y);
+                flush_tiles(&mut tiles, pixmap, n_x, n_y, tile_w, tile_h, par_threshold);
                 clip.pop();
             }
             _ => {
                 // Anything else (StrokeRect, Line, FillPath, StrokePath,
                 // GlyphRun, Image, PushClipRoundedRect) — flush + use
                 // the legacy scanline backend for that one command.
-                flush_tiles(&mut tiles, pixmap, n_x, n_y);
+                flush_tiles(&mut tiles, pixmap, n_x, n_y, tile_w, tile_h, par_threshold);
                 fallback_one(pixmap, &clip, cmd);
             }
         }
     }
-    flush_tiles(&mut tiles, pixmap, n_x, n_y);
+    flush_tiles(&mut tiles, pixmap, n_x, n_y, tile_w, tile_h, par_threshold);
 }
 
 #[inline]
@@ -148,11 +159,11 @@ fn brush_to_color(b: &Brush) -> Color {
 }
 
 #[inline]
-fn tile_rect(tx: usize, ty: usize, pw: u32, ph: u32) -> (u32, u32, u32, u32) {
-    let x0 = (tx as u32) * TILE_W;
-    let y0 = (ty as u32) * TILE_H;
-    let x1 = (x0 + TILE_W).min(pw);
-    let y1 = (y0 + TILE_H).min(ph);
+fn tile_rect(tx: usize, ty: usize, pw: u32, ph: u32, tile_w: u32, tile_h: u32) -> (u32, u32, u32, u32) {
+    let x0 = (tx as u32) * tile_w;
+    let y0 = (ty as u32) * tile_h;
+    let x1 = (x0 + tile_w).min(pw);
+    let y1 = (y0 + tile_h).min(ph);
     (x0, y0, x1, y1)
 }
 
@@ -165,16 +176,18 @@ fn add_rect_to_tiles<'a>(
     visible: Rect,
     color:   Color,
     opaque:  bool,
+    tile_w:  u32,
+    tile_h:  u32,
 ) {
     let premul = color_to_premul(color);
-    let tx_lo = (visible.x0.floor() as i64).max(0) as u32 / TILE_W;
-    let ty_lo = (visible.y0.floor() as i64).max(0) as u32 / TILE_H;
-    let tx_hi = ((visible.x1.ceil()  as i64 - 1).max(0) as u32 / TILE_W).min(n_x as u32 - 1);
-    let ty_hi = ((visible.y1.ceil()  as i64 - 1).max(0) as u32 / TILE_H).min(n_y as u32 - 1);
+    let tx_lo = (visible.x0.floor() as i64).max(0) as u32 / tile_w;
+    let ty_lo = (visible.y0.floor() as i64).max(0) as u32 / tile_h;
+    let tx_hi = ((visible.x1.ceil()  as i64 - 1).max(0) as u32 / tile_w).min(n_x as u32 - 1);
+    let ty_hi = ((visible.y1.ceil()  as i64 - 1).max(0) as u32 / tile_h).min(n_y as u32 - 1);
 
     for ty in ty_lo..=ty_hi {
         for tx in tx_lo..=tx_hi {
-            let (x0, y0, x1, y1) = tile_rect(tx as usize, ty as usize, pw, ph);
+            let (x0, y0, x1, y1) = tile_rect(tx as usize, ty as usize, pw, ph, tile_w, tile_h);
             let fully_covers = opaque
                 && visible.x0 <= x0 as f64 && visible.x1 >= x1 as f64
                 && visible.y0 <= y0 as f64 && visible.y1 >= y1 as f64;
@@ -206,19 +219,23 @@ fn flush_tiles<'a>(
     pixmap: &mut Pixmap,
     n_x:    usize,
     n_y:    usize,
+    tile_w: u32,
+    tile_h: u32,
+    par_threshold: usize,
 ) {
     let pw = pixmap.width();
     let ph = pixmap.height();
     if pw == 0 || ph == 0 { return; }
 
     let stride = pw as usize * 4;
-    let band_bytes = (TILE_H as usize) * stride;
+    let band_bytes = (tile_h as usize) * stride;
     let pixels = pixmap.pixels_mut();
+    let _ = par_threshold; // referenced only under feature parallel
 
     #[cfg(feature = "parallel")]
     {
         use rayon::prelude::*;
-        if n_y >= 16 {
+        if n_y >= par_threshold {
             // `par_chunks_mut` partitions the pixel slice into bands.
             // We pair each band with its tile-row via an index closure.
             // The bucket slice can't be split with `par_chunks_mut` AND
@@ -229,7 +246,7 @@ fn flush_tiles<'a>(
             let buckets_len = tiles.len();
             pixels.par_chunks_mut(band_bytes).enumerate()
                 .for_each(|(ty, band)| {
-                    let band_y0 = (ty as u32) * TILE_H;
+                    let band_y0 = (ty as u32) * tile_h;
                     let row_h = (band.len() / stride) as u32;
                     // SAFETY: each tile-row band is disjoint (no
                     // overlap in `tiles[]` partitioning), bucket
@@ -243,7 +260,7 @@ fn flush_tiles<'a>(
                             end - start,
                         )
                     };
-                    flush_band(band, stride, row_buckets, pw, band_y0, row_h);
+                    flush_band(band, stride, row_buckets, pw, band_y0, row_h, tile_w);
                 });
             return;
         }
@@ -255,9 +272,9 @@ fn flush_tiles<'a>(
         let band_end   = (band_start + band_bytes).min(pixels.len());
         let band = &mut pixels[band_start..band_end];
         let row_h = (band.len() / stride) as u32;
-        let band_y0 = ty as u32 * TILE_H;
+        let band_y0 = ty as u32 * tile_h;
         let row_buckets = &mut tiles[ty * n_x .. (ty + 1) * n_x];
-        flush_band(band, stride, row_buckets, pw, band_y0, row_h);
+        flush_band(band, stride, row_buckets, pw, band_y0, row_h, tile_w);
     }
 }
 
@@ -271,11 +288,12 @@ fn flush_band<'a>(
     pw:         u32,
     band_y0:    u32,
     row_h:      u32,
+    tile_w:     u32,
 ) {
     for (tx, bucket) in buckets.iter_mut().enumerate() {
         if bucket.bg.is_none() && bucket.cmds.is_empty() { continue; }
-        let x0 = (tx as u32) * TILE_W;
-        let x1 = (x0 + TILE_W).min(pw);
+        let x0 = (tx as u32) * tile_w;
+        let x1 = (x0 + tile_w).min(pw);
         if let Some(bg) = bucket.bg {
             memset_band(band, stride, x0, x1, 0, row_h, bg);
         }
@@ -297,6 +315,19 @@ fn flush_band<'a>(
     }
 }
 
+/// Memset a rectangular sub-region of a band with one premultiplied
+/// color. Hot path for bg-replacement (every opaque-cover tile flushes
+/// through here).
+///
+/// Strategy: cast the row slice to `&mut [u32]` and bulk-fill via
+/// `slice::fill` (lowered by LLVM to `rep stosq` or 256-bit aligned
+/// stores depending on target). This dominates the per-pixel byte
+/// loop the naive version was doing.
+///
+/// Verified bit-exact vs the byte-loop version (the bytes form a
+/// little-endian u32 — endianness conversion via `u32::from_le_bytes`
+/// keeps it portable across BE hosts, though all our supported targets
+/// are LE).
 #[inline]
 fn memset_band(
     band:   &mut [u8],
@@ -306,15 +337,37 @@ fn memset_band(
     premul: [u8; 4],
 ) {
     let row_w = (x1 - x0) as usize;
+    if row_w == 0 || band_row_hi <= band_row_lo { return; }
+
+    // Build the 32-bit little-endian word once. Pixmap layout is
+    // [r, g, b, a] consecutive bytes per pixel, which equals
+    // `u32::from_le_bytes([r, g, b, a])` on LE hosts.
+    let word = u32::from_le_bytes(premul);
+
     for py in band_row_lo..band_row_hi {
-        // py is already band-local (callers pass [0, band_h)).
-        let row_off = (py as usize) * stride + (x0 as usize) * 4;
-        for i in 0..row_w {
-            let p = row_off + i * 4;
-            band[p    ] = premul[0];
-            band[p + 1] = premul[1];
-            band[p + 2] = premul[2];
-            band[p + 3] = premul[3];
+        let row_byte_off = (py as usize) * stride + (x0 as usize) * 4;
+        let end = row_byte_off + row_w * 4;
+        if end > band.len() { continue; } // defensive; tile_rect clamps already
+        let row = &mut band[row_byte_off..end];
+        // SAFETY: Pixmap buffer is 32-byte aligned; offsets `row_byte_off`
+        // are multiples of 4 by construction (stride is 4-aligned and
+        // x0*4 is 4-aligned). `row` has length `row_w * 4` which is also
+        // a multiple of 4. `align_to_mut::<u32>` then can hand back a
+        // single full middle slice with empty prefix/suffix.
+        let (prefix, middle, suffix) = unsafe { row.align_to_mut::<u32>() };
+        // Defensive: on platforms where the band slice doesn't start
+        // u32-aligned (shouldn't happen with our 32-byte aligned Pixmap
+        // + 4-aligned stride/offset, but `align_to_mut` makes no
+        // statement about input alignment), byte-fill the prefix.
+        for chunk in prefix.chunks_exact_mut(4) {
+            chunk.copy_from_slice(&premul);
+        }
+        // Tail bytes of prefix smaller than one pixel are bug-impossible
+        // here (row length is multiple of 4) — but if they occur we
+        // simply leave them, since they're outside any pixel boundary.
+        middle.fill(word);
+        for chunk in suffix.chunks_exact_mut(4) {
+            chunk.copy_from_slice(&premul);
         }
     }
 }

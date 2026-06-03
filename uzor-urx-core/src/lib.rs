@@ -36,6 +36,8 @@ pub mod region;
 pub mod skeleton;
 pub mod metrics_keys;
 pub mod recorder;
+pub mod validate;
+pub mod config;
 
 pub use math::{Affine, BezPath, Point, Rect, Size, Vec2};
 pub use scene::{DrawCommand, FillRule, Glyph, ImageId, Scene, Stroke};
@@ -44,3 +46,9 @@ pub use region::{CacheKey, CachedRegion, RegionId};
 pub use skeleton::{SkeletonFrame, SkeletonSpec};
 pub use recorder::{install_recorder, metrics_snapshot, metrics_reset, UrxRecorder, MetricsSnapshot};
 pub use metrics_keys::METRIC_CATALOG;
+pub use validate::{
+    ValidationIssue, validate_command,
+    is_finite_rect, is_finite_affine, is_finite_vec2,
+    is_finite_rounded_rect, is_finite_radii_opt,
+};
+pub use config::{UrxConfig, UrxConfigBuilder, ConfigError, SimdLevel, DirtyStrategy};

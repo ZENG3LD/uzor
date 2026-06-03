@@ -86,6 +86,17 @@ pub const KEY_HYBRID_UPLOAD_BYTES:    &str = "urx.hybrid.upload.bytes";
 pub const KEY_SKELETON_FRAMES: &str = "urx.skeleton.frames";
 pub const KEY_SKELETON_RENDER_US: &str = "urx.skeleton.render.us";
 
+// ── Validation / safety counters ────────────────────────────────────────────
+
+/// Counter — primitives skipped because their rect/transform contained
+/// NaN or ±Inf. Silent skip + bump counter; consumer can monitor the
+/// counter to detect upstream bugs without crashing the renderer.
+pub const KEY_RENDER_SKIPPED_NONFINITE: &str = "urx.render.skipped.nonfinite";
+
+/// Counter — primitives skipped because their geometry was degenerate
+/// (zero area, fully clipped, oversize past safe bounds).
+pub const KEY_RENDER_SKIPPED_DEGENERATE: &str = "urx.render.skipped.degenerate";
+
 // ── Text + glyph atlas ──────────────────────────────────────────────────────
 
 pub const KEY_TEXT_SHAPE_US:        &str = "urx.text.shape.us";
@@ -128,6 +139,8 @@ pub static METRIC_CATALOG: &[&str] = &[
     KEY_HYBRID_COMPOSITE_CALLS,
     KEY_HYBRID_COMPOSITE_US,
     KEY_HYBRID_UPLOAD_BYTES,
+    KEY_RENDER_SKIPPED_NONFINITE,
+    KEY_RENDER_SKIPPED_DEGENERATE,
     KEY_SKELETON_FRAMES,
     KEY_SKELETON_RENDER_US,
     KEY_TEXT_SHAPE_US,
