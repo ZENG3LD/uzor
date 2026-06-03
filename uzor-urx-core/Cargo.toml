@@ -1,0 +1,24 @@
+[package]
+name        = "uzor-urx-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "URX render-family core types: DrawCommand scene, DirtyState, CacheKey, SkeletonFrame, metrics facade. Shared by uzor-urx-wgpu, uzor-urx-cpu, uzor-urx-hybrid."
+keywords    = ["graphics", "rendering", "ui", "metrics"]
+categories  = ["graphics", "rendering"]
+
+[dependencies]
+# Geometry + paint types — ecosystem standard, used by every Rust 2D
+# rasteriser. We re-export through urx-core::math so consumers see one
+# canonical path; if we ever swap kurbo for something else we change it
+# here without breaking anything upstream.
+kurbo  = "0.11"
+peniko = "0.2"
+
+# Industry-standard application metrics facade. Same crate Tessera uses —
+# urx emits counters/gauges/histograms through it; consumers install
+# an UrxRecorder snapshot impl OR fanout into another recorder (the
+# metrics crate supports stacking).
+metrics = "0.24"
