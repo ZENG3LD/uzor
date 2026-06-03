@@ -35,3 +35,11 @@ path = "src/l3/dashboard.rs"
 [[bin]]
 name = "l4-dashboard"
 path = "src/l4/dashboard.rs"
+
+# URX render-family profiling rigs (Phase 0+).
+# Pinned reference scene + agent HTTP backend switch + FPS readout.
+# Used to A/B every backend (vello_gpu, instanced_wgpu, vello_hybrid,
+# vello_cpu, tiny_skia) on the same workload, scriptable via curl.
+[[bin]]
+name = "urx-smoke-instanced"
+path = "src/urx/smoke_instanced.rs"

@@ -356,6 +356,18 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         // ── Phase 3: build manager ────────────────────────────────────────────
         let mut mgr = Self::new(built.app, built.config, active_backend, Some(hub));
 
+        // Propagate AppConfig perf settings (msaa, fps_limit, vsync) into
+        // the hub. Before this, `AppBuilder::msaa(0)` was a silent no-op:
+        // the value stored on AppConfig but never reached the hub, which
+        // stayed at its default `msaa_samples=8`. Symptom: any app that
+        // explicitly opted out of MSAA still crashed on the first frame
+        // when vello Renderer was compiled with area-only AA.
+        if let Some(hub) = mgr.hub.as_mut() {
+            hub.set_msaa(mgr.config.msaa_samples);
+            hub.set_fps_limit(mgr.config.fps_limit);
+            hub.set_vsync(mgr.config.vsync);
+        }
+
         if let Some(f) = factory {
             mgr.factory = Some(f);
         }
