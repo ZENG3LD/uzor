@@ -54,6 +54,15 @@ pub struct Glyph {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FontId(pub u64);
 
+/// Path winding-rule for fill operations. `NonZero` matches SVG/Canvas
+/// default; `EvenOdd` flips fill state at each edge crossing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FillRule {
+    #[default]
+    NonZero,
+    EvenOdd,
+}
+
 /// Painter's-order draw command. Every backend walks `Scene::commands`
 /// in this order and produces pixels.
 ///
@@ -85,6 +94,23 @@ pub enum DrawCommand {
         to:      Vec2,
         stroke:  Stroke,
         brush:   Brush,
+        transform: Affine,
+    },
+    /// Filled arbitrary path (curves flattened on CPU per scanline,
+    /// or via GPU tessellation on URX-WGPU). NonZero / EvenOdd
+    /// winding rule.
+    FillPath {
+        path:      BezPath,
+        rule:      FillRule,
+        brush:     Brush,
+        transform: Affine,
+    },
+    /// Stroked arbitrary path. Stroke width centered on the path;
+    /// joins / caps from `Stroke`. Backend tessellates internally.
+    StrokePath {
+        path:      BezPath,
+        stroke:    Stroke,
+        brush:     Brush,
         transform: Affine,
     },
     /// Pre-shaped glyph run. Position is the run's origin; per-glyph

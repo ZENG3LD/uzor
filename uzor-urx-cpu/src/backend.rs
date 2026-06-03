@@ -57,6 +57,14 @@ impl CpuBackend {
                     let color = brush_to_color(brush);
                     stroke_line_aa(pixmap, &clip, *from, *to, stroke.width, color, transform);
                 }
+                DrawCommand::FillPath { path, rule, brush, transform } => {
+                    let color = brush_to_color(brush);
+                    crate::path::fill_path_aa(pixmap, &clip, path, *rule, color, transform);
+                }
+                DrawCommand::StrokePath { path, stroke, brush, transform } => {
+                    let color = brush_to_color(brush);
+                    crate::path::stroke_path_aa(pixmap, &clip, path, stroke, color, transform);
+                }
                 DrawCommand::GlyphRun { .. } => {
                     // Text deferred to Phase 3.5 (skrifa atlas). For now
                     // we skip so a scene containing text renders the

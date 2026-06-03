@@ -70,6 +70,20 @@ pub fn render_parallel(
                     let color = brush_to_color(brush);
                     stroke_line_strip(strip, &clip, *from, *to, stroke.width, color, transform);
                 }
+                DrawCommand::FillPath { .. } | DrawCommand::StrokePath { .. } => {
+                    // Path raster has internal edge-table state that
+                    // is per-scene, not per-strip — running it inside
+                    // each strip would duplicate work AND each strip
+                    // only has partial vertical coverage of the path.
+                    // Phase 8 limitation: paths fall back to the
+                    // main thread. Phase 9 fix: per-strip edge table
+                    // pre-built once, used by each strip with its own
+                    // y-range filter.
+                    //
+                    // For now, the parallel path silently skips paths.
+                    // Consumers using paths heavily should stay on the
+                    // sequential render() entry point.
+                }
                 DrawCommand::GlyphRun { .. } | DrawCommand::Image { .. } => {}
                 DrawCommand::PushClipRect { rect, transform } => {
                     clip.push_rect(*rect, transform);

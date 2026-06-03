@@ -26,6 +26,10 @@ pub const DEFAULT_CACHE_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) struct CachedEntry {
+    /// Cache key used for re-validation. Read by hybrid integration
+    /// (Phase 7.5) to detect DPR / size mismatches and trigger
+    /// resize-then-recreate.
+    #[allow(dead_code)]
     pub key:          CacheKey,
     pub pixmap:       Pixmap,
     pub bytes:        u64,
@@ -49,6 +53,7 @@ impl CacheStore {
     }
 
     pub fn set_budget(&mut self, bytes: u64) { self.budget_bytes = bytes; }
+    #[allow(dead_code)]
     pub fn budget(&self) -> u64 { self.budget_bytes }
     pub fn total_bytes(&self) -> u64 { self.total_bytes }
     pub fn count(&self) -> usize { self.entries.len() }

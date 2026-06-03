@@ -15,6 +15,10 @@ uzor-urx-core = { workspace = true }
 # the same recorder URX-WGPU uses — apples-to-apples comparison
 # requires identical telemetry on both sides.
 metrics = "0.24"
+# Direct kurbo dep — needed for BezPath flatten + Affine ops in path.rs.
+# kurbo also comes in through urx-core's re-export but accessing
+# `Affine::new(coeffs)` constructor needs the crate directly.
+kurbo = "0.11"
 rayon = { version = "1", optional = true }
 
 [features]

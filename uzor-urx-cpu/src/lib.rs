@@ -29,6 +29,7 @@ pub mod fill;
 pub mod stroke;
 pub mod clip;
 pub mod color;
+pub mod path;
 #[cfg(feature = "parallel")]
 pub mod parallel;
 

@@ -298,6 +298,7 @@ fn decompose_translate(a: &Affine) -> (f64, f64) {
 fn shift_scene_origin(scene: &mut Scene, dx: f64, dy: f64) {
     use uzor_urx_core::scene::DrawCommand;
     use uzor_urx_core::math::{Rect, RoundedRect, Vec2};
+    let shift = uzor_urx_core::math::Affine::translate((dx, dy));
     for cmd in scene.commands.iter_mut() {
         match cmd {
             DrawCommand::FillRect   { rect, .. } |
@@ -307,6 +308,13 @@ fn shift_scene_origin(scene: &mut Scene, dx: f64, dy: f64) {
             DrawCommand::Line { from, to, .. } => {
                 *from = Vec2 { x: from.x + dx, y: from.y + dy };
                 *to   = Vec2 { x: to.x   + dx, y: to.y   + dy };
+            }
+            DrawCommand::FillPath { transform, .. } |
+            DrawCommand::StrokePath { transform, .. } => {
+                // Premultiply the shift into the path's transform —
+                // the path coordinates stay as the consumer wrote them,
+                // but the effective screen-position drops by (dx, dy).
+                *transform = shift * *transform;
             }
             DrawCommand::PushClipRect { rect, .. } => {
                 *rect = Rect::new(rect.x0 + dx, rect.y0 + dy, rect.x1 + dx, rect.y1 + dy);

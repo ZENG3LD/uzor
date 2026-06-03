@@ -10,8 +10,9 @@ use std::time::Instant;
 
 use uzor::render::{Painter, ShapeHelpers};
 use uzor_render_wgpu_instanced::InstancedRenderContext;
-use uzor_urx_core::math::{Affine, Brush, Color};
+use uzor_urx_core::math::{Affine, BezPath, Brush, Color};
 use uzor_urx_core::scene::{DrawCommand, Scene};
+use kurbo::PathEl;
 
 /// Zero-state marker — the adapter is stateless; future per-region
 /// caches live one layer up (Phase 5+).
@@ -61,6 +62,33 @@ pub fn adapt_scene_into(scene: &Scene, ctx: &mut InstancedRenderContext) {
                 ctx.stroke();
                 unapply_transform(ctx, transform);
             }
+            DrawCommand::FillPath { path, rule: _rule, brush, transform } => {
+                // The underlying InstancedRenderContext has its own
+                // path API via Painter's begin_path/move_to/line_to/
+                // fill. Lyon tessellator inside it produces triangle
+                // instances. Curves are pre-flattened on our side
+                // (Painter has no quadratic/cubic helper exposed).
+                let color = brush_to_color(brush);
+                ctx.set_fill_color(&color_to_css(color));
+                apply_transform(ctx, transform);
+                ctx.begin_path();
+                emit_path_into_ctx(path, ctx);
+                ctx.fill();
+                unapply_transform(ctx, transform);
+                // FillRule honoring is left to the inner ctx; current
+                // lyon impl uses NonZero by default. EvenOdd will need
+                // an extension to InstancedRenderContext.
+            }
+            DrawCommand::StrokePath { path, stroke, brush, transform } => {
+                let color = brush_to_color(brush);
+                ctx.set_stroke_color(&color_to_css(color));
+                ctx.set_stroke_width(stroke.width as f64);
+                apply_transform(ctx, transform);
+                ctx.begin_path();
+                emit_path_into_ctx(path, ctx);
+                ctx.stroke();
+                unapply_transform(ctx, transform);
+            }
             DrawCommand::GlyphRun { .. } => {
                 // Glyph adapter routes through cosmic-text → atlas.
                 // The InstancedRenderContext API expects `fill_text`
@@ -102,6 +130,21 @@ pub fn adapt_scene_into(scene: &Scene, ctx: &mut InstancedRenderContext) {
     let elapsed_us = t0.elapsed().as_micros() as u64;
     metrics::histogram!(render_submit_count_key("urx_wgpu_adapt")).record(elapsed_us as f64);
     metrics::counter!(KEY_RENDER_PRIMITIVES).increment(scene.commands.len() as u64);
+}
+
+/// Emit a kurbo `BezPath` into an `InstancedRenderContext` via the
+/// Painter trait. Quadratic/cubic curves flattened on our side
+/// (the underlying ctx only exposes move_to/line_to). Tolerance
+/// matches urx-cpu (0.25 px).
+fn emit_path_into_ctx(path: &BezPath, ctx: &mut InstancedRenderContext) {
+    kurbo::flatten(path.elements().iter().copied(), 0.25, |el| {
+        match el {
+            PathEl::MoveTo(p) => { ctx.move_to(p.x, p.y); }
+            PathEl::LineTo(p) => { ctx.line_to(p.x, p.y); }
+            PathEl::ClosePath => { ctx.close_path(); }
+            _ => {}
+        }
+    });
 }
 
 #[inline]

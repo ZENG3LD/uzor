@@ -38,7 +38,7 @@ pub mod metrics_keys;
 pub mod recorder;
 
 pub use math::{Affine, BezPath, Point, Rect, Size, Vec2};
-pub use scene::{DrawCommand, Glyph, ImageId, Scene, Stroke};
+pub use scene::{DrawCommand, FillRule, Glyph, ImageId, Scene, Stroke};
 pub use dirty::{DirtyRect, DirtyState};
 pub use region::{CacheKey, CachedRegion, RegionId};
 pub use skeleton::{SkeletonFrame, SkeletonSpec};
