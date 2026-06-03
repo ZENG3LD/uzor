@@ -21,6 +21,7 @@ members = [
     # URX render family (Phase 1+ — shared core, then siblings: wgpu/cpu/hybrid)
     "uzor-urx-core",
     "uzor-urx-cpu",
+    "uzor-urx-wgpu",
     # Utils
     "uzor-render-hub",
     # Icon utilities
@@ -60,5 +61,6 @@ uzor-desktop = { version = "1.3.7", path = "./uzor-desktop" }
 uzor-agent-api = { version = "1.3.7", path = "./uzor-agent-api" }
 uzor-urx-core = { version = "1.3.7", path = "./uzor-urx-core" }
 uzor-urx-cpu  = { version = "1.3.7", path = "./uzor-urx-cpu" }
+uzor-urx-wgpu = { version = "1.3.7", path = "./uzor-urx-wgpu" }
 serde = { version = "1.0", features = ["derive"] }
 

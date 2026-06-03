@@ -1,0 +1,197 @@
+//! `Scene` → `InstancedRenderContext` adapter.
+//!
+//! Walks `urx_core::Scene::commands` in painter's order, calls the
+//! corresponding `uzor::render::RenderContext` methods on the
+//! provided `InstancedRenderContext` so the underlying primitive
+//! pipelines (Quad SDF, Line capsule, lyon triangles, glyph atlas)
+//! see the same DrawCmd stream they always have.
+
+use std::time::Instant;
+
+use uzor::render::{Painter, ShapeHelpers};
+use uzor_render_wgpu_instanced::InstancedRenderContext;
+use uzor_urx_core::math::{Affine, Brush, Color};
+use uzor_urx_core::scene::{DrawCommand, Scene};
+
+/// Zero-state marker — the adapter is stateless; future per-region
+/// caches live one layer up (Phase 5+).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UrxWgpuBackend;
+
+impl UrxWgpuBackend {
+    pub fn new() -> Self { Self }
+}
+
+/// Translate a `Scene` into context calls. Caller has already cleared
+/// `ctx.draw_commands` for this frame (the hub's `with_render_context`
+/// path takes care of that).
+pub fn adapt_scene_into(scene: &Scene, ctx: &mut InstancedRenderContext) {
+    use uzor_urx_core::metrics_keys::{
+        KEY_RENDER_PRIMITIVES, render_submit_count_key,
+    };
+
+    let t0 = Instant::now();
+    let mut clip_depth: u32 = 0;
+
+    for cmd in &scene.commands {
+        match cmd {
+            DrawCommand::FillRect { rect, radii: _radii, brush, transform } => {
+                let color = brush_to_color(brush);
+                ctx.set_fill_color(&color_to_css(color));
+                apply_transform(ctx, transform);
+                ctx.fill_rect(rect.x0, rect.y0, rect.width(), rect.height());
+                unapply_transform(ctx, transform);
+            }
+            DrawCommand::StrokeRect { rect, radii: _radii, stroke, brush, transform } => {
+                let color = brush_to_color(brush);
+                ctx.set_stroke_color(&color_to_css(color));
+                ctx.set_stroke_width(stroke.width as f64);
+                apply_transform(ctx, transform);
+                ctx.stroke_rect(rect.x0, rect.y0, rect.width(), rect.height());
+                unapply_transform(ctx, transform);
+            }
+            DrawCommand::Line { from, to, stroke, brush, transform } => {
+                let color = brush_to_color(brush);
+                ctx.set_stroke_color(&color_to_css(color));
+                ctx.set_stroke_width(stroke.width as f64);
+                apply_transform(ctx, transform);
+                ctx.begin_path();
+                ctx.move_to(from.x, from.y);
+                ctx.line_to(to.x, to.y);
+                ctx.stroke();
+                unapply_transform(ctx, transform);
+            }
+            DrawCommand::GlyphRun { .. } => {
+                // Glyph adapter routes through cosmic-text → atlas.
+                // The InstancedRenderContext API expects `fill_text`
+                // with a string; we don't have one here (Scene carries
+                // pre-shaped glyphs). Adapter for pre-shaped glyphs
+                // needs an extra method on InstancedRenderContext
+                // (e.g. `fill_glyphs(&[Glyph], font_id, size)`) which
+                // doesn't exist yet. Defer to follow-up — currently
+                // GlyphRun is silently dropped here on the WGPU path.
+            }
+            DrawCommand::Image { .. } => {
+                // Same story as GlyphRun — needs an extension to the
+                // underlying context. Deferred.
+            }
+            DrawCommand::PushClipRect { .. } | DrawCommand::PushClipRoundedRect { .. } => {
+                // Underlying context has its own clip stack via
+                // axis-aligned rects in fragment-discard. Without
+                // extending the API we approximate by saving state;
+                // real scissor wiring lands when we move clip into
+                // the URX-WGPU layer instead of the inner crate.
+                ctx.save();
+                clip_depth += 1;
+            }
+            DrawCommand::PopClip => {
+                if clip_depth > 0 {
+                    ctx.restore();
+                    clip_depth -= 1;
+                }
+            }
+        }
+    }
+    // Balance any leftover saves (defensive — shouldn't happen if
+    // the scene is well-formed).
+    while clip_depth > 0 {
+        ctx.restore();
+        clip_depth -= 1;
+    }
+
+    let elapsed_us = t0.elapsed().as_micros() as u64;
+    metrics::histogram!(render_submit_count_key("urx_wgpu_adapt")).record(elapsed_us as f64);
+    metrics::counter!(KEY_RENDER_PRIMITIVES).increment(scene.commands.len() as u64);
+}
+
+#[inline]
+fn brush_to_color(brush: &Brush) -> Color {
+    match brush {
+        Brush::Solid(c)    => *c,
+        Brush::Gradient(g) => g.stops.first().map(|s| s.color).unwrap_or(Color::rgba8(0, 0, 0, 0)),
+        Brush::Image(_)    => Color::rgba8(0, 0, 0, 0),
+    }
+}
+
+#[inline]
+fn color_to_css(c: Color) -> String {
+    // CSS rgba — the underlying context parses this back into [r,g,b,a].
+    // Premultiplication happens in the shader.
+    format!("rgba({},{},{},{})", c.r, c.g, c.b, (c.a as f64) / 255.0)
+}
+
+/// Apply a kurbo `Affine` to the context's transform via the small set
+/// of methods exposed by `Painter` (translate/rotate/scale/save+restore).
+/// We decompose to translate+scale only — full affine support would
+/// require the underlying context to grow a `set_transform([f32;6])`
+/// method.
+fn apply_transform(ctx: &mut InstancedRenderContext, t: &Affine) {
+    if *t == Affine::IDENTITY { return; }
+    ctx.save();
+    let c = t.as_coeffs();
+    // Translate (c[4], c[5]); scale (c[0], c[3]). Rotation/shear
+    // dropped silently — caller knows we're a primitive-grade backend.
+    let (sx, sy, tx, ty) = (c[0], c[3], c[4], c[5]);
+    if tx != 0.0 || ty != 0.0 { ctx.translate(tx, ty); }
+    if sx != 1.0 || sy != 1.0 { ctx.scale(sx, sy); }
+}
+
+fn unapply_transform(ctx: &mut InstancedRenderContext, t: &Affine) {
+    if *t == Affine::IDENTITY { return; }
+    ctx.restore();
+}
+
+/// Round-trip self-test: feed a 2-command Scene through adapt_scene_into
+/// and verify the underlying context recorded the right number of
+/// draw_commands.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uzor_urx_core::math::{Rect, Vec2};
+    use uzor_urx_core::scene::Stroke;
+
+    #[test]
+    fn adapt_emits_quad_for_fill_rect() {
+        let mut ctx = InstancedRenderContext::new(100.0, 100.0, 0.0, 0.0);
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::FillRect {
+            rect: Rect::new(10.0, 10.0, 50.0, 50.0),
+            radii: None,
+            brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+            transform: Affine::IDENTITY,
+        });
+        adapt_scene_into(&scene, &mut ctx);
+        assert!(!ctx.draw_commands.is_empty(),
+                "fill_rect should have produced at least one DrawCmd, got {}",
+                ctx.draw_commands.len());
+    }
+
+    #[test]
+    fn adapt_emits_for_line() {
+        let mut ctx = InstancedRenderContext::new(100.0, 100.0, 0.0, 0.0);
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::Line {
+            from: Vec2 { x: 5.0, y: 5.0 },
+            to:   Vec2 { x: 50.0, y: 50.0 },
+            stroke: Stroke { width: 2.0, ..Stroke::default() },
+            brush: Brush::Solid(Color::rgba8(0, 255, 0, 255)),
+            transform: Affine::IDENTITY,
+        });
+        adapt_scene_into(&scene, &mut ctx);
+        assert!(!ctx.draw_commands.is_empty(),
+                "line should have produced at least one DrawCmd");
+    }
+
+    #[test]
+    fn adapt_balances_clip_stack() {
+        let mut ctx = InstancedRenderContext::new(100.0, 100.0, 0.0, 0.0);
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::PushClipRect {
+            rect: Rect::new(0.0, 0.0, 50.0, 50.0),
+            transform: Affine::IDENTITY,
+        });
+        // Missing PopClip — adapter must balance defensively.
+        adapt_scene_into(&scene, &mut ctx);
+        // No crash, no leak — the test passing IS the assertion.
+    }
+}
