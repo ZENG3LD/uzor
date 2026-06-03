@@ -10,6 +10,7 @@
 //   2u = LinGradient   — two-colour linear gradient, 4 axis-aligned/diagonal directions
 //   3u = RadGradient   — two-colour radial gradient, center+radius from bbox
 //   4u = Glyph         — pre-rasterised glyph from R8Unorm atlas, colour-modulated
+//   5u = Stroke        — line segment p0→p1 with scalar width + cap (butt/round/square)
 
 struct SceneCmd {
     kind:  u32,
@@ -101,12 +102,22 @@ fn fine(
         let cmd_idx = tile_lists[base + i];
         let c = cmds[cmd_idx];
 
-        let x0 = c.slot0;
-        let y0 = c.slot1;
-        let x1 = c.slot2;
-        let y1 = c.slot3;
+        // Resolve bbox: for Stroke kind=5, derive inflated AABB from
+        // endpoints + half-width. For everything else slots 0..3 ARE bbox.
+        var x0 = c.slot0;
+        var y0 = c.slot1;
+        var x1 = c.slot2;
+        var y1 = c.slot3;
+        var half_w: f32 = 0.0;
+        if (c.kind == 5u) {
+            half_w = bitcast<f32>(c.slot5) * 0.5;
+            x0 = min(c.slot0, c.slot2) - half_w;
+            y0 = min(c.slot1, c.slot3) - half_w;
+            x1 = max(c.slot0, c.slot2) + half_w;
+            y1 = max(c.slot1, c.slot3) + half_w;
+        }
 
-        // Bbox hit test — all cmd kinds share the same bbox slots.
+        // Bbox hit test (rejects pixels obviously outside the cmd's AABB).
         if (fpx < x0 || fpx >= x1 || fpy < y0 || fpy >= y1) {
             continue;
         }
@@ -185,6 +196,53 @@ fn fine(
             let alpha = textureSampleLevel(glyph_atlas, glyph_smp, vec2<f32>(u, v), 0.0).r;
             let base = unpack_rgba(c.slot4);
             src = vec4<f32>(base.r, base.g, base.b, base.a * alpha);
+
+        } else if (c.kind == 5u) {
+            // ── Stroke: signed-distance line segment with cap-aware coverage ──
+            // Endpoints come straight from slot0..slot3 (NOT bbox).
+            let p0  = vec2<f32>(c.slot0, c.slot1);
+            let p1  = vec2<f32>(c.slot2, c.slot3);
+            let pix = vec2<f32>(fpx, fpy);
+            let ab  = p1 - p0;
+            let len2 = dot(ab, ab);
+            let cap_kind = c.slot6 & 0xffu;
+
+            // Project pix onto the infinite line through (p0, p1).
+            // t in [0,1] = inside segment; <0 or >1 = past an endpoint.
+            var t_raw: f32 = 0.0;
+            if (len2 > 1e-6) {
+                t_raw = dot(pix - p0, ab) / len2;
+            }
+            // Capsule SDF: clamp t to segment, dist = |pix - lerp(p0,p1,t)|.
+            // Round + butt + square caps all share this clamp; the
+            // *coverage* differs at endpoints by how we widen t's domain.
+            var t: f32;
+            if (cap_kind == 2u) {
+                // SQUARE: extend the segment by half_w/length(ab) past each end.
+                let len_inv = inverseSqrt(max(len2, 1e-6));
+                let ext = half_w * len_inv;
+                t = clamp(t_raw, -ext, 1.0 + ext);
+            } else {
+                // BUTT (0) + ROUND (1): clamp t to [0, 1].
+                t = clamp(t_raw, 0.0, 1.0);
+            }
+            let q   = p0 + t * ab;
+            let d   = distance(pix, q);
+
+            // Coverage: 1 inside (d < half_w - 0.5), 0 outside (d > half_w + 0.5),
+            // linear AA across the 1-pixel transition band.
+            //
+            // BUTT cap is a special case — pixels with t_raw outside [0,1]
+            // must be fully transparent regardless of d (no perpendicular
+            // bleed past the line ends). Round (cap_kind=1) lets them
+            // through (semicircle); Square clamps the extended t above.
+            var coverage: f32 = 1.0 - smoothstep(half_w - 0.5, half_w + 0.5, d);
+            if (cap_kind == 0u && (t_raw < 0.0 || t_raw > 1.0)) {
+                coverage = 0.0;
+            }
+
+            let base_col = unpack_rgba(c.slot4);
+            src = vec4<f32>(base_col.r, base_col.g, base_col.b, base_col.a * coverage);
 
         } else {
             // Unknown kind — skip.

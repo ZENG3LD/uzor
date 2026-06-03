@@ -28,15 +28,29 @@ fn assign(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= uni.cmd_count) { return; }
     let c = cmds[i];
-    // All cmd kinds that occupy a bbox participate in tile binning:
-    //   kind 0 = Rect, 2 = LinGradient, 3 = RadGradient
-    // Unknown / reserved kinds (1) skip.
+    // Participating kinds: 0=Rect, 2=LinGrad, 3=RadGrad, 4=Glyph, 5=Stroke.
+    // Reserved kind 1 = skip.
     if (c.kind == 1u) { return; }
 
-    let x0 = max(0.0, c.slot0);
-    let y0 = max(0.0, c.slot1);
-    let x1 = max(x0, c.slot2);
-    let y1 = max(y0, c.slot3);
+    // For most kinds slots 0..3 ARE the bbox xyxy.
+    // For Stroke (kind=5) slots 0..3 are endpoints (p0, p1); derive the
+    // inflated bbox from (p0, p1, half-width).
+    var bx0 = c.slot0;
+    var by0 = c.slot1;
+    var bx1 = c.slot2;
+    var by1 = c.slot3;
+    if (c.kind == 5u) {
+        let half_w = bitcast<f32>(c.slot5) * 0.5;
+        bx0 = min(c.slot0, c.slot2) - half_w;
+        by0 = min(c.slot1, c.slot3) - half_w;
+        bx1 = max(c.slot0, c.slot2) + half_w;
+        by1 = max(c.slot1, c.slot3) + half_w;
+    }
+
+    let x0 = max(0.0, bx0);
+    let y0 = max(0.0, by0);
+    let x1 = max(x0,  bx1);
+    let y1 = max(y0,  by1);
 
     let tx_min = u32(x0) / TILE_SIZE;
     let ty_min = u32(y0) / TILE_SIZE;

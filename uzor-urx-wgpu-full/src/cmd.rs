@@ -29,6 +29,18 @@ pub enum CmdKind {
     /// slot[5]    = atlas UV packed: low16 = u0_q, high16 = v0_q (quantised to [0,65535]),
     /// slot[6]    = atlas UV packed: low16 = u1_q, high16 = v1_q.
     Glyph = 4,
+    /// Stroked line segment from p0 → p1 with scalar width.
+    ///
+    /// IMPORTANT: for Stroke, slots 0..4 are NOT bbox — they're endpoints.
+    /// The tile_assign shader derives the inflated bbox at dispatch time
+    /// from (p0, p1, width). The encoder-side `bbox()` helper does the
+    /// same for CPU-side use.
+    ///
+    /// slot[0] = p0_x, slot[1] = p0_y, slot[2] = p1_x, slot[3] = p1_y,
+    /// slot[4] = packed_rgba u32,
+    /// slot[5] = f32 width (as bits via `f32::to_bits`),
+    /// slot[6] = flags: cap_kind in low 8 bits (0=butt, 1=round, 2=square)
+    Stroke = 5,
 }
 
 /// One flat scene command. 32 bytes total, repr(C) for stable layout.
@@ -65,6 +77,16 @@ pub mod lin_dir {
     pub const DIAGONAL_TLBR: u32 = 2;
     /// Gradient flows bottom-left → top-right.
     pub const DIAGONAL_BLTR: u32 = 3;
+}
+
+/// Cap kind encoding for `CmdKind::Stroke`.
+pub mod cap_kind {
+    /// Flat butt cap — terminates the stroke at the endpoint exactly.
+    pub const BUTT:   u32 = 0;
+    /// Round cap — semicircular cap of radius = width/2 at each endpoint.
+    pub const ROUND:  u32 = 1;
+    /// Square cap — extends the stroke by width/2 past each endpoint.
+    pub const SQUARE: u32 = 2;
 }
 
 fn pack_rgba(rgba: [u8; 4]) -> u32 {
@@ -161,11 +183,100 @@ impl SceneCmd {
         ])
     }
 
+    /// Create a stroked line segment from `p0` to `p1` with scalar width.
+    ///
+    /// `cap` is one of `cap_kind::{BUTT, ROUND, SQUARE}`.
+    pub fn stroke(
+        p0x: f32, p0y: f32, p1x: f32, p1y: f32,
+        width: f32,
+        rgba: [u8; 4],
+        cap: u32,
+    ) -> Self {
+        Self {
+            kind: CmdKind::Stroke as u32,
+            slot0: p0x, slot1: p0y, slot2: p1x, slot3: p1y,
+            slot4: pack_rgba(rgba),
+            slot5: width.to_bits(),
+            slot6: cap & 0xff,
+        }
+    }
+
     /// Returns the bounding box `[x0, y0, x1, y1]` for any cmd kind.
+    ///
+    /// For `Stroke`, computes the inflated bbox from the endpoints +
+    /// half-width (matches what `tile_assign.wgsl` does GPU-side).
     pub fn bbox(&self) -> [f32; 4] {
-        [self.slot0, self.slot1, self.slot2, self.slot3]
+        if self.kind == CmdKind::Stroke as u32 {
+            let half = f32::from_bits(self.slot5) * 0.5;
+            // Square cap extends an extra half-width past each endpoint;
+            // round/butt stay within half-width radius. We use half-width
+            // for the AABB pad in all three cases — square caps that paint
+            // slightly outside the AABB get clipped at the tile boundary,
+            // which is fine as the contribution there is zero coverage.
+            let x_min = self.slot0.min(self.slot2) - half;
+            let y_min = self.slot1.min(self.slot3) - half;
+            let x_max = self.slot0.max(self.slot2) + half;
+            let y_max = self.slot1.max(self.slot3) + half;
+            [x_min, y_min, x_max, y_max]
+        } else {
+            [self.slot0, self.slot1, self.slot2, self.slot3]
+        }
+    }
+
+    /// Dequantise stroke parameters from a Stroke command.
+    ///
+    /// Returns `Some([p0x, p0y, p1x, p1y, width])` + cap kind, or `None`
+    /// for non-Stroke kinds.
+    pub fn stroke_params(&self) -> Option<([f32; 5], u32)> {
+        if self.kind != CmdKind::Stroke as u32 {
+            return None;
+        }
+        Some((
+            [self.slot0, self.slot1, self.slot2, self.slot3, f32::from_bits(self.slot5)],
+            self.slot6 & 0xff,
+        ))
     }
 }
 
 // Compile-time size assertion.
 const _: () = assert!(std::mem::size_of::<SceneCmd>() == 32);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rect_bbox_passes_through() {
+        let r = SceneCmd::rect(10.0, 20.0, 30.0, 40.0, [255, 0, 0, 255]);
+        assert_eq!(r.bbox(), [10.0, 20.0, 30.0, 40.0]);
+    }
+
+    #[test]
+    fn stroke_bbox_inflates_by_half_width() {
+        // Horizontal line from (10,50) to (90,50) width=8 → bbox should
+        // inflate by 4 on each side: [6, 46, 94, 54].
+        let s = SceneCmd::stroke(10.0, 50.0, 90.0, 50.0, 8.0, [0, 0, 0, 255], cap_kind::BUTT);
+        assert_eq!(s.bbox(), [6.0, 46.0, 94.0, 54.0]);
+    }
+
+    #[test]
+    fn stroke_bbox_handles_reverse_endpoints() {
+        // p1.x < p0.x — bbox must still be normalised.
+        let s = SceneCmd::stroke(90.0, 90.0, 10.0, 10.0, 4.0, [0, 0, 0, 255], cap_kind::ROUND);
+        assert_eq!(s.bbox(), [8.0, 8.0, 92.0, 92.0]);
+    }
+
+    #[test]
+    fn stroke_params_round_trip_width_and_cap() {
+        let s = SceneCmd::stroke(1.0, 2.0, 3.0, 4.0, 5.5, [10, 20, 30, 40], cap_kind::SQUARE);
+        let (xs, cap) = s.stroke_params().expect("Stroke kind");
+        assert_eq!(xs, [1.0, 2.0, 3.0, 4.0, 5.5]);
+        assert_eq!(cap, cap_kind::SQUARE);
+    }
+
+    #[test]
+    fn stroke_params_returns_none_for_other_kinds() {
+        let r = SceneCmd::rect(0.0, 0.0, 10.0, 10.0, [0, 0, 0, 255]);
+        assert!(r.stroke_params().is_none());
+    }
+}

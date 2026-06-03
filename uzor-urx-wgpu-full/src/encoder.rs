@@ -7,9 +7,9 @@
 //! (`bytemuck::cast_slice(&cmds[..])`).
 
 use uzor_urx_core::math::{Brush, GradientKind};
-use uzor_urx_core::scene::{DrawCommand, Scene};
+use uzor_urx_core::scene::{DrawCommand, LineCap, Scene};
 
-use crate::cmd::{lin_dir, SceneCmd};
+use crate::cmd::{cap_kind, lin_dir, SceneCmd};
 
 /// Snap a (dx, dy) direction vector to the nearest of the 4 supported
 /// linear gradient direction constants.
@@ -31,15 +31,27 @@ fn snap_direction(dx: f64, dy: f64) -> u32 {
     }
 }
 
+/// Map a [`LineCap`] enum to the GPU-side `cap_kind` constant.
+fn cap_to_gpu(c: LineCap) -> u32 {
+    match c {
+        LineCap::Butt   => cap_kind::BUTT,
+        LineCap::Round  => cap_kind::ROUND,
+        LineCap::Square => cap_kind::SQUARE,
+    }
+}
+
 /// Encode a `Scene` into a flat list of GPU-uploadable `SceneCmd`s.
 ///
-/// Supported `FillRect` brushes:
-/// - `Brush::Solid` → `SceneCmd::rect`
-/// - `Brush::Gradient` with `GradientKind::Linear` → `SceneCmd::lin_gradient`
-/// - `Brush::Gradient` with `GradientKind::Radial` → `SceneCmd::rad_gradient`
+/// Supported sources:
+/// - `DrawCommand::FillRect { Brush::Solid }`             → `SceneCmd::rect`
+/// - `DrawCommand::FillRect { Brush::Gradient(Linear) }`  → `SceneCmd::lin_gradient`
+/// - `DrawCommand::FillRect { Brush::Gradient(Radial) }`  → `SceneCmd::rad_gradient`
+/// - `DrawCommand::Line  { stroke: Stroke, brush: Solid }`→ `SceneCmd::stroke`
 ///
-/// Unsupported variants (Sweep gradients, Stroke, Path, Glyph, Image, Clip)
-/// are silently skipped.
+/// Unsupported variants (Sweep gradients, StrokeRect, StrokePath, FillPath,
+/// GlyphRun, Image, Clip) are silently skipped — they require either Path
+/// tessellation (Tier C) or glyph atlas integration that the engine consumer
+/// is expected to drive via `SceneCmd::glyph` directly.
 pub fn encode_scene(scene: &Scene) -> Vec<SceneCmd> {
     let mut out = Vec::with_capacity(scene.commands.len());
     for cmd in scene.commands.iter() {
@@ -95,8 +107,27 @@ pub fn encode_scene(scene: &Scene) -> Vec<SceneCmd> {
                     }
                 }
             }
+            DrawCommand::Line { from, to, stroke, brush, transform: _ } => {
+                // Only solid brush supported; gradient/image along a stroke
+                // are out of scope until Path / GlyphRun encoding lands.
+                let color = match brush {
+                    Brush::Solid(c) => [c.r, c.g, c.b, c.a],
+                    _ => continue,
+                };
+                if !(stroke.width > 0.0) {
+                    continue;
+                }
+                out.push(SceneCmd::stroke(
+                    from.x as f32, from.y as f32,
+                    to.x   as f32, to.y   as f32,
+                    stroke.width,
+                    color,
+                    cap_to_gpu(stroke.cap),
+                ));
+            }
             _ => {
-                // Stroke, Path, Glyph, Image, Clip — not yet encoded.
+                // StrokeRect, StrokePath, FillPath, GlyphRun, Image, Clip —
+                // not yet encoded.
             }
         }
     }
