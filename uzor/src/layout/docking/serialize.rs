@@ -237,6 +237,11 @@ impl LayoutSnapshot {
                     custom_rects: Vec::new(),
                     proportions: proportions.clone(),
                     cross_ratio: *cross_ratio,
+                    // Not part of the serialized format yet — consumer should
+                    // re-mark preserve_if_empty after restore via the (future)
+                    // tree-walk hook.  Defaulting to false matches the
+                    // pre-existing aggressive-collapse behavior.
+                    preserve_if_empty: false,
                 })
             }
             _ => Err(format!("Expected branch node, got leaf for id {}", node.id)),

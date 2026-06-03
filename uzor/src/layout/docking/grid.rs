@@ -73,6 +73,17 @@ pub struct Branch<P: DockPanel> {
     pub custom_rects: Vec<PanelRect>,
     pub proportions: Vec<f64>,
     pub cross_ratio: Option<(f64, f64)>,
+    /// When true, this branch survives `collapse_single_children_branch`
+    /// (the cleanup pass that normally inlines branches whose `children`
+    /// has shrunk to one item).  Consumers carry sidecar metadata keyed
+    /// by `BranchId` (e.g. group semantics, accept policy, container
+    /// kind); a `BranchId` that vanishes mid-frame orphans that
+    /// metadata.  Setting `preserve_if_empty = true` keeps the branch
+    /// node alive across remove/move operations.
+    ///
+    /// Default: `false` — backwards-compatible with existing callers
+    /// that expect aggressive single-child collapse.
+    pub preserve_if_empty: bool,
 }
 
 /// A node in the recursive panel tree
@@ -127,6 +138,7 @@ impl<P: DockPanel> DockingTree<P> {
                 custom_rects: Vec::new(),
                 proportions: Vec::new(),
                 cross_ratio: None,
+                preserve_if_empty: false,
             },
             active_leaf: None,
             next_id: 1,
@@ -425,6 +437,7 @@ impl<P: DockPanel> DockingTree<P> {
             custom_rects: Vec::new(),
             proportions: Vec::new(),
             cross_ratio: None,
+            preserve_if_empty: false,
         });
 
         // Replace the original leaf-node in its parent with the new branch
@@ -508,6 +521,7 @@ impl<P: DockPanel> DockingTree<P> {
             custom_rects: Vec::new(),
             proportions: Vec::new(),
             cross_ratio: None,
+            preserve_if_empty: false,
         });
 
         // 5. Replace old leaf with new branch in parent
@@ -637,10 +651,17 @@ impl<P: DockPanel> DockingTree<P> {
                 Self::collapse_single_children_branch(b);
             }
         }
-        // Then check if any branch child has exactly 1 child — replace it
+        // Then check if any branch child has exactly 1 child — replace it.
+        // Branches marked `preserve_if_empty` survive even when their child
+        // count shrinks to 1 (or 0).  Consumers attach sidecar metadata
+        // keyed by BranchId; that BranchId vanishing on a transient
+        // remove/move operation would orphan the metadata.
         let mut i = 0;
         while i < branch.children.len() {
-            let should_collapse = matches!(&branch.children[i], PanelNode::Branch(b) if b.children.len() == 1);
+            let should_collapse = matches!(
+                &branch.children[i],
+                PanelNode::Branch(b) if b.children.len() == 1 && !b.preserve_if_empty
+            );
             if should_collapse {
                 if let PanelNode::Branch(b) = branch.children.remove(i) {
                     let single_child = b.children.into_iter().next().unwrap();
@@ -807,6 +828,25 @@ impl<P: DockPanel> DockingTree<P> {
         }
     }
 
+    /// Mark a branch as `preserve_if_empty`.  Branches with this flag survive
+    /// `collapse_single_children_branch` regardless of how few children they
+    /// hold.  Useful when the consumer attaches group/container metadata
+    /// keyed by `BranchId`: the metadata must outlive transient single-leaf
+    /// states (e.g. user deletes all sub-panes leaving only the main chart).
+    ///
+    /// Returns `true` if the branch was found and the flag was applied.
+    pub fn set_branch_preserve_if_empty(&mut self, node_id: BranchId, preserve: bool) -> bool {
+        if node_id == self.root.id {
+            self.root.preserve_if_empty = preserve;
+            true
+        } else if let Some(branch) = Self::find_branch_in_mut(&mut self.root, node_id) {
+            branch.preserve_if_empty = preserve;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn set_branch_cross_ratio(&mut self, node_id: BranchId, x_ratio: f64, y_ratio: f64) {
         if node_id == self.root.id {
             self.root.cross_ratio = Some((x_ratio.clamp(0.05, 0.95), y_ratio.clamp(0.05, 0.95)));
@@ -937,6 +977,7 @@ impl<P: DockPanel> DockingTree<P> {
             custom_rects: Vec::new(),
             proportions: Vec::new(),
             cross_ratio: None,
+            preserve_if_empty: false,
         });
 
         let branch_id = self.next_branch_id();
@@ -956,6 +997,7 @@ impl<P: DockPanel> DockingTree<P> {
             custom_rects: Vec::new(),
             proportions: vec![0.5, 0.5],
             cross_ratio: None,
+            preserve_if_empty: false,
         };
     }
 
