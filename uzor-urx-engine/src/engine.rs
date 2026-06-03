@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+use uzor_urx_core::config::UrxConfig;
 use uzor_urx_core::dirty::{DirtyRect, DirtyState};
 use uzor_urx_core::math::{Affine, Rect};
 use uzor_urx_core::region::{CacheKey, RegionId};
@@ -154,44 +155,81 @@ pub struct UrxEngine {
     /// Counters surfaced via RenderStats per call.
     last_cache_hits:   u32,
     last_cache_misses: u32,
+    /// Process-wide config; stored so callers can read it back and so
+    /// the cache budget survives across `invalidate_all()` calls.
+    config:     UrxConfig,
 }
 
 impl UrxEngine {
-    /// Construct an engine bound to a window size + backend.
+    /// Construct an engine with [`UrxConfig::default`] configuration.
+    /// Cache budget is set to `config.region_cache_budget_bytes` (64 MiB).
     pub fn new(backend: Backend, width: u32, height: u32) -> Self {
+        Self::new_with_config(backend, width, height, UrxConfig::default())
+    }
+
+    /// Construct an engine with explicit configuration. The cache budget
+    /// is taken from `config.region_cache_budget_bytes` immediately.
+    pub fn new_with_config(backend: Backend, width: u32, height: u32, config: UrxConfig) -> Self {
+        let mut cache = CacheStore::new();
+        cache.set_budget(config.region_cache_budget_bytes);
         Self {
             backend,
             width,
             height,
             regions: BTreeMap::new(),
             dirty:   DirtyRect::EMPTY,
-            cache:   CacheStore::new(),
+            cache,
             started: Instant::now(),
             last_cache_hits:   0,
             last_cache_misses: 0,
+            config,
         }
     }
 
     /// Set the cache memory budget in bytes (default 64 MB).
-    pub fn set_cache_budget(&mut self, bytes: u64) { self.cache.set_budget(bytes); }
+    /// Also updates the stored config so `config()` stays in sync.
+    pub fn set_cache_budget(&mut self, bytes: u64) {
+        self.config.region_cache_budget_bytes = bytes;
+        self.cache.set_budget(bytes);
+    }
     pub fn cache_bytes(&self) -> u64 { self.cache.total_bytes() }
     pub fn cache_count(&self) -> usize { self.cache.count() }
 
-    /// Convenience: CPU engine.
+    /// Read-only access to the engine's config.
+    pub fn config(&self) -> &UrxConfig { &self.config }
+
+    /// Convenience: CPU engine with default config.
     pub fn new_cpu(width: u32, height: u32) -> Self {
         Self::new(Backend::Cpu, width, height)
     }
 
-    /// Convenience: WGPU engine.
+    /// Convenience: CPU engine with explicit config.
+    pub fn new_cpu_with_config(width: u32, height: u32, config: UrxConfig) -> Self {
+        Self::new_with_config(Backend::Cpu, width, height, config)
+    }
+
+    /// Convenience: WGPU engine with default config.
     #[cfg(feature = "wgpu-backend")]
     pub fn new_wgpu(width: u32, height: u32) -> Self {
         Self::new(Backend::Wgpu, width, height)
     }
 
-    /// Convenience: Hybrid engine (CPU raster + GPU composite).
+    /// Convenience: WGPU engine with explicit config.
+    #[cfg(feature = "wgpu-backend")]
+    pub fn new_wgpu_with_config(width: u32, height: u32, config: UrxConfig) -> Self {
+        Self::new_with_config(Backend::Wgpu, width, height, config)
+    }
+
+    /// Convenience: Hybrid engine (CPU raster + GPU composite) with default config.
     #[cfg(feature = "hybrid-backend")]
     pub fn new_hybrid(width: u32, height: u32) -> Self {
         Self::new(Backend::Hybrid, width, height)
+    }
+
+    /// Convenience: Hybrid engine with explicit config.
+    #[cfg(feature = "hybrid-backend")]
+    pub fn new_hybrid_with_config(width: u32, height: u32, config: UrxConfig) -> Self {
+        Self::new_with_config(Backend::Hybrid, width, height, config)
     }
 
     pub fn backend(&self) -> Backend { self.backend }

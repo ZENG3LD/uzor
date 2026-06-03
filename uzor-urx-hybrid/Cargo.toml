@@ -31,3 +31,6 @@ harness = false
 [[bench]]
 name = "atlas_ab"
 harness = false
+
+[[example]]
+name = "dashboard_demo"
