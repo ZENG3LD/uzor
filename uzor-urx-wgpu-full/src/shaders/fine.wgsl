@@ -5,10 +5,10 @@
 // Each invocation handles ONE pixel.
 // Each workgroup covers ONE 16×16 tile.
 //
-// Coarse pass note (v1.6.0 rect-only):
-//   The sorted tile_lists buffer IS the PTCL for rect-only scenes —
-//   no separate coarse.wgsl needed. Fine reads tile_lists directly.
-//   Add coarse.wgsl when implementing gradient/glyph variants.
+// Supported CmdKind values:
+//   0u = Rect          — solid colour fill
+//   2u = LinGradient   — two-colour linear gradient, 4 axis-aligned/diagonal directions
+//   3u = RadGradient   — two-colour radial gradient, center+radius from bbox
 
 struct SceneCmd {
     kind:  u32,
@@ -34,6 +34,32 @@ struct Uniforms {
 @group(0) @binding(4) var                       output_tex:  texture_storage_2d<rgba8unorm, write>;
 
 const TILE_SIZE: u32 = 16u;
+
+/// Unpack a little-endian RGBA8 packed u32 into a normalised vec4<f32>.
+/// Byte order: R in bits [0..8], G in [8..16], B in [16..24], A in [24..32].
+fn unpack_rgba(packed: u32) -> vec4<f32> {
+    let r = f32( packed        & 0xffu) / 255.0;
+    let g = f32((packed >>  8u) & 0xffu) / 255.0;
+    let b = f32((packed >> 16u) & 0xffu) / 255.0;
+    let a = f32((packed >> 24u) & 0xffu) / 255.0;
+    return vec4<f32>(r, g, b, a);
+}
+
+/// Over-composite src onto (acc_r, acc_g, acc_b, acc_a).
+/// src is straight (non-premultiplied) RGBA.
+fn over_blend(
+    acc_r: f32, acc_g: f32, acc_b: f32, acc_a: f32,
+    src: vec4<f32>,
+) -> vec4<f32> {
+    let sa  = src.a;
+    let inv = 1.0 - sa;
+    return vec4<f32>(
+        src.r * sa + acc_r * inv,
+        src.g * sa + acc_g * inv,
+        src.b * sa + acc_b * inv,
+        sa         + acc_a * inv,
+    );
+}
 
 @compute @workgroup_size(16, 16, 1)
 fn fine(
@@ -62,36 +88,87 @@ fn fine(
     var acc_b: f32 = 0.0;
     var acc_a: f32 = 0.0;
 
+    let fpx = f32(px);
+    let fpy = f32(py);
+
     for (var i: u32 = 0u; i < n; i = i + 1u) {
         let cmd_idx = tile_lists[base + i];
         let c = cmds[cmd_idx];
-
-        if (c.kind != 0u) { continue; } // rect only in v1.6.0
 
         let x0 = c.slot0;
         let y0 = c.slot1;
         let x1 = c.slot2;
         let y1 = c.slot3;
 
-        let fpx = f32(px);
-        let fpy = f32(py);
-
-        if (fpx >= x0 && fpx < x1 && fpy >= y0 && fpy < y1) {
-            // Unpack RGBA from slot4 (RGBA little-endian packed u32).
-            let packed = c.slot4;
-            let sr = f32( packed        & 0xffu) / 255.0;
-            let sg = f32((packed >>  8u) & 0xffu) / 255.0;
-            let sb = f32((packed >> 16u) & 0xffu) / 255.0;
-            let sa = f32((packed >> 24u) & 0xffu) / 255.0;
-
-            // Over-operator (premultiplied):
-            //   dst = src*sa + dst*(1-sa)
-            let inv = 1.0 - sa;
-            acc_r = sr * sa + acc_r * inv;
-            acc_g = sg * sa + acc_g * inv;
-            acc_b = sb * sa + acc_b * inv;
-            acc_a = sa       + acc_a * inv;
+        // Bbox hit test — all cmd kinds share the same bbox slots.
+        if (fpx < x0 || fpx >= x1 || fpy < y0 || fpy >= y1) {
+            continue;
         }
+
+        var src: vec4<f32>;
+
+        if (c.kind == 0u) {
+            // ── Rect: solid colour ──────────────────────────────────────
+            src = unpack_rgba(c.slot4);
+
+        } else if (c.kind == 2u) {
+            // ── LinGradient ─────────────────────────────────────────────
+            // Normalised local coords in [0,1] within bbox.
+            let w = x1 - x0;
+            let h = y1 - y0;
+            var local_x: f32 = 0.0;
+            var local_y: f32 = 0.0;
+            if (w > 0.0) { local_x = (fpx - x0) / w; }
+            if (h > 0.0) { local_y = (fpy - y0) / h; }
+
+            let dir = c.slot6;
+            var t: f32;
+            if (dir == 0u) {
+                // Horizontal: left → right
+                t = local_x;
+            } else if (dir == 1u) {
+                // Vertical: top → bottom
+                t = local_y;
+            } else if (dir == 2u) {
+                // Diagonal TL → BR
+                t = (local_x + local_y) * 0.5;
+            } else {
+                // Diagonal BL → TR
+                t = (local_x + (1.0 - local_y)) * 0.5;
+            }
+            t = clamp(t, 0.0, 1.0);
+
+            let c0 = unpack_rgba(c.slot4); // start color
+            let c1 = unpack_rgba(c.slot5); // end color
+            src = mix(c0, c1, t);
+
+        } else if (c.kind == 3u) {
+            // ── RadGradient ─────────────────────────────────────────────
+            let cx = (x0 + x1) * 0.5;
+            let cy = (y0 + y1) * 0.5;
+            let dx = fpx - cx;
+            let dy = fpy - cy;
+            let dist = sqrt(dx * dx + dy * dy);
+            // max_r = max of half-extents so the gradient reaches all corners.
+            let max_r = max((x1 - x0) * 0.5, (y1 - y0) * 0.5);
+            var t: f32 = 0.0;
+            if (max_r > 0.0) { t = clamp(dist / max_r, 0.0, 1.0); }
+
+            let c0 = unpack_rgba(c.slot4); // inner color
+            let c1 = unpack_rgba(c.slot5); // outer color
+            src = mix(c0, c1, t);
+
+        } else {
+            // Unknown kind — skip.
+            continue;
+        }
+
+        // Over-composite src onto accumulator.
+        let blended = over_blend(acc_r, acc_g, acc_b, acc_a, src);
+        acc_r = blended.r;
+        acc_g = blended.g;
+        acc_b = blended.b;
+        acc_a = blended.a;
     }
 
     textureStore(output_tex, vec2<i32>(i32(px), i32(py)), vec4<f32>(acc_r, acc_g, acc_b, acc_a));

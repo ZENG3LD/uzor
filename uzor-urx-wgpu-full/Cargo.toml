@@ -28,6 +28,9 @@ name = "pixel_render_demo"
 [[example]]
 name = "surface_render_demo"
 
+[[example]]
+name = "gradient_demo"
+
 [[bench]]
 name    = "full_gpu_vs_cpu"
 harness = false

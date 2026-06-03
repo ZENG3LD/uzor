@@ -25,8 +25,10 @@ fn assign(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= uni.cmd_count) { return; }
     let c = cmds[i];
-    // Only Rect (kind == 0) participates in v1.6.0 first-stage.
-    if (c.kind != 0u) { return; }
+    // All cmd kinds that occupy a bbox participate in tile binning:
+    //   kind 0 = Rect, 2 = LinGradient, 3 = RadGradient
+    // Unknown / reserved kinds (1) skip.
+    if (c.kind == 1u) { return; }
 
     let x0 = max(0.0, c.slot0);
     let y0 = max(0.0, c.slot1);
