@@ -89,8 +89,7 @@ pub fn render_parallel(
                     clip.push_rect(*rect, transform);
                 }
                 DrawCommand::PushClipRoundedRect { rect, transform } => {
-                    let aabb = Rect::new(rect.rect().x0, rect.rect().y0, rect.rect().x1, rect.rect().y1);
-                    clip.push_rect(aabb, transform);
+                    clip.push_rounded_rect(*rect, transform);
                 }
                 DrawCommand::PopClip => { clip.pop(); }
             }

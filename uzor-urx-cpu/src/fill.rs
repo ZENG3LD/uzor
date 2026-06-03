@@ -54,6 +54,7 @@ pub(crate) fn fill_rect_aa(
     if ix0 >= ix1 || iy0 >= iy1 { return; }
 
     let premul = color_to_premul(color);
+    let use_mask = !clip.all_rect();
 
     for py in iy0 .. iy1 {
         let v_cov = axis_coverage(py as f64, py as f64 + 1.0, fy0, fy1);
@@ -62,7 +63,15 @@ pub(crate) fn fill_rect_aa(
             let h_cov = axis_coverage(px as f64, px as f64 + 1.0, fx0, fx1);
             if h_cov == 0 { continue; }
             // Combined coverage = (h * v + 127) / 255 — round-half-up.
-            let cov = ((h_cov as u32 * v_cov as u32 + 127) / 255) as u8;
+            let mut cov = ((h_cov as u32 * v_cov as u32 + 127) / 255) as u8;
+            // Multiply through rounded-clip coverage if any non-rect
+            // clip is in the stack. Fast path skips this when only
+            // axis-aligned rect clips are active.
+            if use_mask {
+                let mask_cov = clip.pixel_coverage(px, py);
+                cov = ((cov as u32 * mask_cov as u32 + 127) / 255) as u8;
+                if cov == 0 { continue; }
+            }
             let src = premul_scale(premul, cov);
             pixmap.blend_pixel(px as u32, py as u32, src);
         }

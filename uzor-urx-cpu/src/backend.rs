@@ -45,7 +45,13 @@ impl CpuBackend {
         for cmd in &scene.commands {
             match cmd {
                 DrawCommand::FillRect { rect, radii: _radii, brush, transform } => {
-                    // radii ignored in Phase 3 — rounded fill lands in 3.5.
+                    // Gradient brush → scanline gradient path. Otherwise
+                    // fall through to solid fill_rect_aa.
+                    if matches!(brush, uzor_urx_core::math::Brush::Gradient(_)) {
+                        if crate::gradient::try_fill_rect_gradient(pixmap, &clip, *rect, brush, transform).is_some() {
+                            continue;
+                        }
+                    }
                     let color = brush_to_color(brush);
                     fill_rect_aa(pixmap, &clip, *rect, color, transform);
                 }
@@ -77,10 +83,7 @@ impl CpuBackend {
                     clip.push_rect(*rect, transform);
                 }
                 DrawCommand::PushClipRoundedRect { rect, transform } => {
-                    // Approximate as AABB for now — rounded-rect clip
-                    // needs a coverage mask we haven't built yet.
-                    let aabb = Rect::new(rect.rect().x0, rect.rect().y0, rect.rect().x1, rect.rect().y1);
-                    clip.push_rect(aabb, transform);
+                    clip.push_rounded_rect(*rect, transform);
                 }
                 DrawCommand::PopClip => {
                     clip.pop();
