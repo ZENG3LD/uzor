@@ -93,19 +93,39 @@ pub fn encode_scene_with_paths(
                             if g.stops.is_empty() {
                                 continue;
                             }
-                            let first = g.stops.first().map(|s| s.color).unwrap_or_default();
-                            let last  = g.stops.last().map(|s| s.color).unwrap_or_default();
-
                             let dx = end.x - start.x;
                             let dy = end.y - start.y;
                             let direction = snap_direction(dx, dy);
 
-                            out.push(SceneCmd::lin_gradient(
-                                x0, y0, x1, y1,
-                                [first.r, first.g, first.b, first.a],
-                                [last.r,  last.g,  last.b,  last.a],
-                                direction,
-                            ));
+                            if g.stops.len() <= 2 {
+                                // Fast path: 2-stop linear → kind=2 inline.
+                                let first = g.stops.first().map(|s| s.color).unwrap_or_default();
+                                let last  = g.stops.last().map(|s| s.color).unwrap_or_default();
+                                out.push(SceneCmd::lin_gradient(
+                                    x0, y0, x1, y1,
+                                    [first.r, first.g, first.b, first.a],
+                                    [last.r,  last.g,  last.b,  last.a],
+                                    direction,
+                                ));
+                            } else {
+                                // Multi-stop: emit a MultiLinGradient cmd
+                                // pointing to a stop slice we push into
+                                // the points buffer.
+                                let stop_offset = point_offset_base + points.len() as u32;
+                                let stop_count  = g.stops.len() as u32;
+                                for s in g.stops.iter() {
+                                    points.push(crate::cmd::pack_gradient_stop(
+                                        s.offset.clamp(0.0, 1.0),
+                                        [s.color.r, s.color.g, s.color.b, s.color.a],
+                                    ));
+                                }
+                                out.push(SceneCmd::multi_lin_gradient(
+                                    [x0, y0, x1, y1],
+                                    direction,
+                                    stop_offset,
+                                    stop_count,
+                                ));
+                            }
                         }
                         GradientKind::Radial { .. } => {
                             if g.stops.is_empty() {

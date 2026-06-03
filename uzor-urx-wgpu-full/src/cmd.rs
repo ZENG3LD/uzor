@@ -69,6 +69,21 @@ pub enum CmdKind {
     /// Concave / self-intersecting paths work; holes via even-odd rule
     /// not yet supported (current shader uses non-zero only).
     FillPath = 7,
+    /// N-stop linear gradient (up to 65535 stops, practical limit ~16).
+    ///
+    /// Stops are packed two-per-`path_points`-entry: a stop is encoded
+    /// as `[position: f32, bitcast<f32>(packed_rgba: u32)]`. Reusing
+    /// the existing `path_points` storage avoids adding a new BGL slot.
+    ///
+    /// slot[0..4] = bbox xyxy.
+    /// slot[4]    = direction (lin_dir::*).
+    /// slot[5]    = stop_count (u32, range 2..=65535).
+    /// slot[6]    = stop_offset (u32 — first stop in path_points; each
+    ///              stop occupies ONE vec2<f32> there).
+    ///
+    /// Stops MUST be sorted by position ascending; positions are
+    /// clamped to `[0, 1]` at sample time.
+    MultiLinGradient = 8,
 }
 
 /// One flat scene command. 32 bytes total, repr(C) for stable layout.
@@ -348,6 +363,61 @@ impl SceneCmd {
             self.slot5,
         ))
     }
+
+    /// Create a MultiLinGradient cmd from a pre-computed bbox + N stops
+    /// already uploaded into `path_points` at `stop_offset..stop_offset+count`.
+    ///
+    /// Each stop occupies one `vec2<f32>` entry: `[position, bitcast(rgba)]`.
+    /// The helper [`pack_gradient_stop`] does the bitcast for you.
+    ///
+    /// `direction` must be one of [`lin_dir::HORIZONTAL`],
+    /// [`lin_dir::VERTICAL`], [`lin_dir::DIAGONAL_TLBR`], or
+    /// [`lin_dir::DIAGONAL_BLTR`].
+    pub fn multi_lin_gradient(
+        bbox: [f32; 4],
+        direction: u32,
+        stop_offset: u32,
+        stop_count: u32,
+    ) -> Self {
+        debug_assert!(stop_count >= 2, "MultiLinGradient needs at least 2 stops");
+        Self {
+            kind: CmdKind::MultiLinGradient as u32,
+            slot0: bbox[0], slot1: bbox[1], slot2: bbox[2], slot3: bbox[3],
+            slot4: direction,
+            slot5: stop_count,
+            slot6: stop_offset,
+        }
+    }
+
+    /// Dequantise MultiLinGradient parameters.
+    ///
+    /// Returns `Some((bbox, direction, stop_offset, stop_count))`, or
+    /// `None` for non-MultiLinGradient kinds.
+    pub fn multi_lin_gradient_params(&self) -> Option<([f32; 4], u32, u32, u32)> {
+        if self.kind != CmdKind::MultiLinGradient as u32 {
+            return None;
+        }
+        Some((
+            [self.slot0, self.slot1, self.slot2, self.slot3],
+            self.slot4,
+            self.slot6,
+            self.slot5,
+        ))
+    }
+}
+
+/// Pack a `(position, [r, g, b, a])` stop into the `[f32; 2]` form the
+/// `path_points` buffer expects for `MultiLinGradient`.
+///
+/// The colour is `bytemuck::cast`-style stored in the `y` slot via
+/// `f32::from_bits(packed_rgba)`; the shader extracts it with a
+/// `bitcast<u32>(y)`.
+pub fn pack_gradient_stop(position: f32, rgba: [u8; 4]) -> [f32; 2] {
+    let packed = (rgba[0] as u32)
+        | ((rgba[1] as u32) << 8)
+        | ((rgba[2] as u32) << 16)
+        | ((rgba[3] as u32) << 24);
+    [position, f32::from_bits(packed)]
 }
 
 // Compile-time size assertion.
@@ -443,5 +513,32 @@ mod tests {
         assert!(r.fill_path_params().is_none());
         let path = SceneCmd::path([0.0; 4], [0; 4], 1.0, 0, 2);
         assert!(path.fill_path_params().is_none());
+    }
+
+    #[test]
+    fn multi_lin_gradient_params_round_trip() {
+        let g = SceneCmd::multi_lin_gradient(
+            [0.0, 0.0, 100.0, 50.0],
+            lin_dir::HORIZONTAL,
+            7,
+            5,
+        );
+        assert_eq!(g.kind, CmdKind::MultiLinGradient as u32);
+        let (bbox, dir, off, n) = g.multi_lin_gradient_params().unwrap();
+        assert_eq!(bbox, [0.0, 0.0, 100.0, 50.0]);
+        assert_eq!(dir,  lin_dir::HORIZONTAL);
+        assert_eq!(off,  7);
+        assert_eq!(n,    5);
+    }
+
+    #[test]
+    fn pack_gradient_stop_round_trips_color() {
+        let s = pack_gradient_stop(0.5, [200, 100, 50, 255]);
+        assert!((s[0] - 0.5).abs() < 1e-6);
+        let bits = s[1].to_bits();
+        assert_eq!( bits        & 0xff, 200);
+        assert_eq!((bits >>  8) & 0xff, 100);
+        assert_eq!((bits >> 16) & 0xff,  50);
+        assert_eq!((bits >> 24) & 0xff, 255);
     }
 }

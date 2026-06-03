@@ -15,6 +15,8 @@
 //                        cmd carries bbox + (point_offset, point_count, width)
 //   7u = FillPath      — filled closed polygon (non-zero winding); same buffer as Path,
 //                        cmd carries bbox + (point_offset, point_count) + colour
+//   8u = MultiLinGrad  — N-stop linear gradient; stops packed two-per-vec2 in
+//                        path_points (position, bitcast<f32>(packed_rgba))
 
 struct SceneCmd {
     kind:  u32,
@@ -238,6 +240,69 @@ fn fine(
             let coverage = 1.0 - smoothstep(phw - 0.5, phw + 0.5, min_d);
             let pcol = unpack_rgba(c.slot4);
             src = vec4<f32>(pcol.r, pcol.g, pcol.b, pcol.a * coverage);
+
+        } else if (c.kind == 8u) {
+            // ── MultiLinGradient: N-stop linear gradient ───────────────
+            // slot4 = direction (lin_dir enum)
+            // slot5 = stop_count
+            // slot6 = stop_offset (into path_points; each stop = vec2<f32>)
+            let dir         = c.slot4;
+            let stop_count  = c.slot5;
+            let stop_offset = c.slot6;
+
+            // Compute t along the gradient direction inside bbox.
+            let w = x1 - x0;
+            let h = y1 - y0;
+            var local_x: f32 = 0.0;
+            var local_y: f32 = 0.0;
+            if (w > 0.0) { local_x = (fpx - x0) / w; }
+            if (h > 0.0) { local_y = (fpy - y0) / h; }
+            var t: f32;
+            if (dir == 0u) {
+                t = local_x;
+            } else if (dir == 1u) {
+                t = local_y;
+            } else if (dir == 2u) {
+                t = (local_x + local_y) * 0.5;
+            } else {
+                t = (local_x + (1.0 - local_y)) * 0.5;
+            }
+            t = clamp(t, 0.0, 1.0);
+
+            // Walk sorted stops to find the bracketing pair, then lerp.
+            // Stop 0 fallback: t < first stop's position → flat first colour.
+            // Stop N-1 fallback: t > last stop's position → flat last colour.
+            var grad_col: vec4<f32>;
+            if (stop_count == 0u) {
+                continue;
+            } else if (stop_count == 1u) {
+                let s0 = path_points[stop_offset];
+                grad_col = unpack_rgba(bitcast<u32>(s0.y));
+            } else {
+                // Default to last stop's colour; broken out below if we
+                // find a bracket.
+                let last = path_points[stop_offset + stop_count - 1u];
+                grad_col = unpack_rgba(bitcast<u32>(last.y));
+                let first = path_points[stop_offset];
+                if (t <= first.x) {
+                    grad_col = unpack_rgba(bitcast<u32>(first.y));
+                } else {
+                    for (var k: u32 = 0u; k < stop_count - 1u; k = k + 1u) {
+                        let s_a = path_points[stop_offset + k];
+                        let s_b = path_points[stop_offset + k + 1u];
+                        if (t <= s_b.x) {
+                            let span = s_b.x - s_a.x;
+                            var u_in_span: f32 = 0.0;
+                            if (span > 0.0) { u_in_span = (t - s_a.x) / span; }
+                            let ca = unpack_rgba(bitcast<u32>(s_a.y));
+                            let cb = unpack_rgba(bitcast<u32>(s_b.y));
+                            grad_col = mix(ca, cb, clamp(u_in_span, 0.0, 1.0));
+                            break;
+                        }
+                    }
+                }
+            }
+            src = grad_col;
 
         } else if (c.kind == 7u) {
             // ── FillPath: closed polygon interior, non-zero winding ──

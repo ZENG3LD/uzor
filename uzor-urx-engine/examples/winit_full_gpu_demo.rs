@@ -34,6 +34,7 @@
 //! | `POST`  | `/scene/spawn_sparkline`   | `{points: [[x,y],…], width, color}`  | one region = a polyline |
 //! | `POST`  | `/scene/spawn_bezier`      | `{p0, c0, c1, p1, width, color}`     | cubic Bézier — kurbo flattens into a Path cmd |
 //! | `POST`  | `/scene/spawn_fill_path`   | `{points: [[x,y],…], color}`         | filled polygon (non-zero winding) |
+//! | `POST`  | `/scene/spawn_multi_grad`  | `{bbox, stops: [[pos,r,g,b,a],…], direction}` | N-stop linear gradient rect |
 //! | `POST`  | `/scene/preset/dashboard`  | —                                    | replace scene with grid + sparkline preset |
 //! | `DELETE`| `/scene/region/:id`        | —                                    | remove region by id |
 //! | `POST`  | `/scene/clear`             | —                                    | remove every rect/region |
@@ -140,6 +141,17 @@ struct PolylineModel {
 /// demo packs them into a kurbo `BezPath` and pushes a `DrawCommand::
 /// StrokePath` — the encoder will flatten via kurbo at upload time.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+struct MultiGradModel {
+    id:        u64,
+    /// Rect bbox `[x0, y0, x1, y1]`.
+    bbox:      [f32; 4],
+    /// Stops as `[position, r, g, b, a]`. `position` in `[0, 1]`.
+    stops:     Vec<[f32; 5]>,
+    /// 0=H, 1=V, 2=TLBR, 3=BLTR (matches `lin_dir::*`).
+    direction: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct FillPathModel {
     id:     u64,
     points: Vec<[f32; 2]>,
@@ -168,14 +180,16 @@ struct SharedScene {
     polylines:    Vec<PolylineModel>,
     beziers:      Vec<BezierModel>,
     fills:        Vec<FillPathModel>,
+    multigrads:   Vec<MultiGradModel>,
     next_id:      u64,
     paused:       bool,
     /// L3: rects queued by `/scene/spawn_rect`. Drained by main thread.
     pending_spawn:    Vec<RectModel>,
     pending_strokes:  Vec<StrokeModel>,
     pending_polys:    Vec<PolylineModel>,
-    pending_beziers:  Vec<BezierModel>,
-    pending_fills:    Vec<FillPathModel>,
+    pending_beziers:    Vec<BezierModel>,
+    pending_fills:      Vec<FillPathModel>,
+    pending_multigrads: Vec<MultiGradModel>,
     /// L3: clear-all flag.
     pending_clear: bool,
     /// L3: load dashboard preset flag.
@@ -275,6 +289,12 @@ fn spawn_agent_server(state: AgentState) -> std::thread::JoinHandle<()> {
     }
     #[derive(Deserialize)]
     struct SpawnFillPathBody { points: Vec<[f32; 2]>, color: [u8; 4] }
+    #[derive(Deserialize)]
+    struct SpawnMultiGradBody {
+        bbox:      [f32; 4],
+        stops:     Vec<[f32; 5]>,
+        direction: Option<u32>,
+    }
     #[derive(Serialize)]
     struct OkReply { ok: bool, msg: String }
     fn ok(msg: impl Into<String>) -> Json<OkReply> {
@@ -417,6 +437,23 @@ fn spawn_agent_server(state: AgentState) -> std::thread::JoinHandle<()> {
                                 id, points: b.points, color: b.color,
                             });
                             (StatusCode::OK, ok(format!("fill_path queued, id={id}"))).into_response()
+                        },
+                    ))
+                    .route("/scene/spawn_multi_grad", post(
+                        |AxState(s): AxState<AgentState>, Json(b): Json<SpawnMultiGradBody>| async move {
+                            if b.stops.len() < 2 {
+                                return (StatusCode::BAD_REQUEST,
+                                    Json(OkReply { ok: false,
+                                        msg: "multi_grad needs >= 2 stops".into() }))
+                                    .into_response();
+                            }
+                            let mut sc = s.scene.lock().unwrap();
+                            let id = sc.next_id; sc.next_id += 1;
+                            sc.pending_multigrads.push(MultiGradModel {
+                                id, bbox: b.bbox, stops: b.stops,
+                                direction: b.direction.unwrap_or(0).min(3),
+                            });
+                            (StatusCode::OK, ok(format!("multi_grad queued, id={id}"))).into_response()
                         },
                     ))
                     .route("/scene/preset/dashboard", post(
@@ -595,11 +632,13 @@ impl GpuState {
             for p in sc.polylines.iter() { self.engine.remove_region(RegionId(p.id)); }
             for b in sc.beziers.iter()   { self.engine.remove_region(RegionId(b.id)); }
             for f in sc.fills.iter()     { self.engine.remove_region(RegionId(f.id)); }
+            for mg in sc.multigrads.iter() { self.engine.remove_region(RegionId(mg.id)); }
             sc.rects.clear();
             sc.strokes.clear();
             sc.polylines.clear();
             sc.beziers.clear();
             sc.fills.clear();
+            sc.multigrads.clear();
         }
 
         // ─ L3: dashboard preset (clear + populate grid + sparkline) ──
@@ -610,11 +649,13 @@ impl GpuState {
             for p in sc.polylines.iter() { self.engine.remove_region(RegionId(p.id)); }
             for b in sc.beziers.iter()   { self.engine.remove_region(RegionId(b.id)); }
             for f in sc.fills.iter()     { self.engine.remove_region(RegionId(f.id)); }
+            for mg in sc.multigrads.iter() { self.engine.remove_region(RegionId(mg.id)); }
             sc.rects.clear();
             sc.strokes.clear();
             sc.polylines.clear();
             sc.beziers.clear();
             sc.fills.clear();
+            sc.multigrads.clear();
             sc.paused = false;
 
             // 1. background rect (whole window dark slate)
@@ -694,6 +735,9 @@ impl GpuState {
                 } else if let Some(pos) = sc.fills.iter().position(|f| f.id == id) {
                     sc.fills.remove(pos);
                     self.engine.remove_region(RegionId(id));
+                } else if let Some(pos) = sc.multigrads.iter().position(|mg| mg.id == id) {
+                    sc.multigrads.remove(pos);
+                    self.engine.remove_region(RegionId(id));
                 }
             }
         }
@@ -736,6 +780,14 @@ impl GpuState {
             for f_in in queued {
                 if sc.fills.len() < MAX_N {
                     sc.fills.push(f_in);
+                }
+            }
+        }
+        if !sc.pending_multigrads.is_empty() {
+            let queued = std::mem::take(&mut sc.pending_multigrads);
+            for mg_in in queued {
+                if sc.multigrads.len() < MAX_N {
+                    sc.multigrads.push(mg_in);
                 }
             }
         }
@@ -967,9 +1019,66 @@ impl GpuState {
             );
         }
 
+        // ─ Push to engine: multi-stop linear gradients ───────────────
+        // We construct a peniko Gradient with N stops and push it as
+        // DrawCommand::FillRect; the encoder routes >2 stops to
+        // SceneCmd::multi_lin_gradient.
+        for mg in sc.multigrads.iter() {
+            if mg.stops.len() < 2 { continue; }
+            let mut scene = Scene::new();
+
+            // Map direction enum to (start, end) line that the encoder
+            // snaps to one of the four lin_dir constants.
+            let (sx, sy, ex, ey) = match mg.direction {
+                0 => (mg.bbox[0] as f64, 0.0, mg.bbox[2] as f64, 0.0), // H
+                1 => (0.0, mg.bbox[1] as f64, 0.0, mg.bbox[3] as f64), // V
+                2 => (mg.bbox[0] as f64, mg.bbox[1] as f64,            // TL→BR
+                       mg.bbox[2] as f64, mg.bbox[3] as f64),
+                _ => (mg.bbox[0] as f64, mg.bbox[3] as f64,            // BL→TR
+                       mg.bbox[2] as f64, mg.bbox[1] as f64),
+            };
+
+            let mut color_stops = uzor_urx_core::math::ColorStops::new();
+            for s in &mg.stops {
+                color_stops.push(uzor_urx_core::math::ColorStop {
+                    offset: s[0].clamp(0.0, 1.0),
+                    color:  Color::rgba8(
+                        s[1].clamp(0.0, 255.0) as u8,
+                        s[2].clamp(0.0, 255.0) as u8,
+                        s[3].clamp(0.0, 255.0) as u8,
+                        s[4].clamp(0.0, 255.0) as u8,
+                    ).into(),
+                });
+            }
+            let gradient = uzor_urx_core::math::Gradient {
+                kind: uzor_urx_core::math::GradientKind::Linear {
+                    start: uzor_urx_core::math::Point::new(sx, sy),
+                    end:   uzor_urx_core::math::Point::new(ex, ey),
+                },
+                stops: color_stops,
+                ..Default::default()
+            };
+
+            scene.commands.push(DrawCommand::FillRect {
+                rect: UxRect::new(mg.bbox[0] as f64, mg.bbox[1] as f64,
+                                   mg.bbox[2] as f64, mg.bbox[3] as f64),
+                radii: None,
+                brush: Brush::Gradient(gradient),
+                transform: Affine::IDENTITY,
+            });
+            self.engine.upsert_region(
+                RegionId(mg.id),
+                scene,
+                UxRect::new(mg.bbox[0] as f64, mg.bbox[1] as f64,
+                             mg.bbox[2] as f64, mg.bbox[3] as f64),
+                RenderCadence::Static,
+            );
+        }
+
         let paused  = sc.paused;
         let regions = (sc.rects.len() + sc.strokes.len() + sc.polylines.len()
-                        + sc.beziers.len() + sc.fills.len()) as u32;
+                        + sc.beziers.len() + sc.fills.len()
+                        + sc.multigrads.len()) as u32;
         drop(sc);
 
         // Publish to metrics for L1 /state polling.
