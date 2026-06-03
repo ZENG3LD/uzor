@@ -33,6 +33,31 @@ impl QuadInstance {
             tint: [1.0, 1.0, 1.0, 1.0],
         }
     }
+
+    /// Builder: update dst rect (transform-only path).
+    /// Keeps UV + tint intact. Cheaper than rebuilding from scratch
+    /// when animating a static region's position/size.
+    #[inline]
+    pub fn with_dst(mut self, x: f32, y: f32, w: f32, h: f32) -> Self {
+        self.dst = [x, y, w, h];
+        self
+    }
+
+    /// Builder: update sub-rect UV. For atlas-packed regions where
+    /// the same region maps to different atlas slots over time.
+    #[inline]
+    pub fn with_uv(mut self, u0: f32, v0: f32, u1: f32, v1: f32) -> Self {
+        self.uv = [u0, v0, u1, v1];
+        self
+    }
+
+    /// Builder: update tint. `[1,1,1,1]` = identity (no tint).
+    /// Per-instance fade or color animation lives here.
+    #[inline]
+    pub fn with_tint(mut self, r: f32, g: f32, b: f32, a: f32) -> Self {
+        self.tint = [r, g, b, a];
+        self
+    }
 }
 
 /// Screen-size uniform. One per render pass.

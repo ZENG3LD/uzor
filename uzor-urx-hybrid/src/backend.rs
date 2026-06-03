@@ -28,6 +28,11 @@ pub struct HybridBackend {
     pipeline:        Option<CompositorPipeline>,
     /// Dirty-skip + atlas tuning policy.
     config:          UrxConfig,
+    /// Count of `upsert_*` calls (any upload OR skipped-by-dirty)
+    /// since the previous `composite()`. Reset on every composite().
+    /// When 0 after a composite, the frame was transform-only — see
+    /// `KEY_HYBRID_COMPOSITE_TRANSFORM_ONLY_FRAMES`.
+    uploads_since_last_composite: u32,
 }
 
 struct CompositorPipeline {
@@ -46,6 +51,7 @@ impl HybridBackend {
             region_textures: BTreeMap::new(),
             pipeline: None,
             config: UrxConfig::default(),
+            uploads_since_last_composite: 0,
         }
     }
 
@@ -58,6 +64,7 @@ impl HybridBackend {
             region_textures: BTreeMap::new(),
             pipeline: None,
             config: cfg,
+            uploads_since_last_composite: 0,
         }
     }
 
@@ -107,6 +114,8 @@ impl HybridBackend {
                 Ok(()) => {
                     metrics::counter!(KEY_HYBRID_UPLOAD_BYTES)
                         .increment(existing.bytes);
+                    self.uploads_since_last_composite =
+                        self.uploads_since_last_composite.saturating_add(1);
                     return;
                 }
                 Err(ResizeNeeded) => {
@@ -117,6 +126,8 @@ impl HybridBackend {
         let tex = RegionTexture::new(device, queue, region_id, pixmap);
         metrics::counter!(KEY_HYBRID_UPLOAD_BYTES).increment(tex.bytes);
         self.region_textures.insert(region_id, tex);
+        self.uploads_since_last_composite =
+            self.uploads_since_last_composite.saturating_add(1);
     }
 
     /// Returns the generation counter recorded for this region's
@@ -345,6 +356,22 @@ impl HybridBackend {
             .increment(instances.len() as u64);
         metrics::counter!(uzor_urx_core::metrics_keys::KEY_HYBRID_COMPOSITE_CALLS)
             .increment(1);
+        // Transform-only frame proxy: composite happened, zero uploads
+        // since last composite. Reset the counter for the next frame.
+        if self.uploads_since_last_composite == 0 {
+            metrics::counter!(
+                uzor_urx_core::metrics_keys::KEY_HYBRID_COMPOSITE_TRANSFORM_ONLY_FRAMES
+            ).increment(1);
+        }
+        self.uploads_since_last_composite = 0;
+    }
+
+    /// Returns how many region uploads (or skipped-by-dirty calls)
+    /// happened since the previous `composite()`. Reset on every
+    /// composite call. Used by tests to verify the transform-only
+    /// path; also useful for live diagnostics.
+    pub fn uploads_since_last_composite(&self) -> u32 {
+        self.uploads_since_last_composite
     }
 }
 

@@ -87,6 +87,16 @@ pub const KEY_HYBRID_UPLOAD_SKIPPED:        &str = "urx.hybrid.upload.skipped";
 /// Counter — total bytes that would have been uploaded but were
 /// skipped via the dirty-skip path.
 pub const KEY_HYBRID_UPLOAD_SKIPPED_BYTES:  &str = "urx.hybrid.upload.skipped_bytes";
+/// Counter — composite frames where ZERO region uploads happened
+/// since the previous composite. This is the "transform-only frame"
+/// proxy: pure animation (translate/scale of cached regions via the
+/// per-instance `QuadInstance.dst`) with no CPU rasterisation cost
+/// and no GPU upload cost — only the composite render pass.
+///
+/// Read against `urx.hybrid.composite.calls` to compute the fraction
+/// of frames spent in pure composite mode.
+pub const KEY_HYBRID_COMPOSITE_TRANSFORM_ONLY_FRAMES: &str =
+    "urx.hybrid.composite.transform_only_frames";
 
 // ── Skeleton ────────────────────────────────────────────────────────────────
 
@@ -148,6 +158,7 @@ pub static METRIC_CATALOG: &[&str] = &[
     KEY_HYBRID_UPLOAD_BYTES,
     KEY_HYBRID_UPLOAD_SKIPPED,
     KEY_HYBRID_UPLOAD_SKIPPED_BYTES,
+    KEY_HYBRID_COMPOSITE_TRANSFORM_ONLY_FRAMES,
     KEY_RENDER_SKIPPED_NONFINITE,
     KEY_RENDER_SKIPPED_DEGENERATE,
     KEY_SKELETON_FRAMES,
