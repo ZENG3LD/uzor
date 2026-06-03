@@ -6,10 +6,9 @@
 //! own small uniform buffer (one model matrix + tint). The buffer is
 //! cycled through a ring so we don't stall on a single uniform slot.
 
-use crate::{camera::PerspectiveCamera, mesh::Vertex, scene3d::Scene3D};
+use crate::{camera::PerspectiveCamera, mesh::Vertex, mesh_cache::MeshCache, scene3d::Scene3D};
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
-use wgpu::util::DeviceExt;
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -39,6 +38,7 @@ pub struct Renderer3D {
     depth_view: wgpu::TextureView,
     depth_size: (u32, u32),
     color_format: wgpu::TextureFormat,
+    mesh_cache: MeshCache,
 }
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -162,6 +162,7 @@ impl Renderer3D {
             depth_view,
             depth_size: initial_size,
             color_format,
+            mesh_cache: MeshCache::new(),
         }
     }
 
@@ -266,20 +267,16 @@ impl Renderer3D {
             queue.write_buffer(&self.node_buf, 0, bytemuck::cast_slice(&node_data));
         }
 
-        // 4. Vertex/index buffers per node (Wave 1: fresh each frame).
-        let mut vb_ib: Vec<(wgpu::Buffer, wgpu::Buffer, u32)> = Vec::with_capacity(scene.nodes.len());
+        // 4. Vertex/index buffers per node — pulled from MeshCache so
+        //    identical Arc<Mesh> across Nodes reuses one VB/IB pair.
+        //    Wave 1 uploaded fresh per node per frame; Wave 2 hits the
+        //    cache and only allocates on first sighting of a Mesh.
+        self.mesh_cache.begin_frame();
+        let mut node_buffers: Vec<(wgpu::Buffer, wgpu::Buffer, u32)> =
+            Vec::with_capacity(scene.nodes.len());
         for n in &scene.nodes {
-            let vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("urx3d.vb"),
-                contents: bytemuck::cast_slice(&n.mesh.vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-            let ib = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("urx3d.ib"),
-                contents: bytemuck::cast_slice(&n.mesh.indices),
-                usage: wgpu::BufferUsages::INDEX,
-            });
-            vb_ib.push((vb, ib, n.mesh.indices.len() as u32));
+            let entry = self.mesh_cache.get_or_upload(device, &n.mesh);
+            node_buffers.push((entry.vb.clone(), entry.ib.clone(), entry.index_count));
         }
 
         // 5. Render pass
@@ -315,7 +312,7 @@ impl Renderer3D {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.frame_bg, &[]);
 
-        for (i, (vb, ib, n_idx)) in vb_ib.iter().enumerate() {
+        for (i, (vb, ib, n_idx)) in node_buffers.iter().enumerate() {
             pass.set_bind_group(1, &self.node_bgs[i], &[]);
             pass.set_vertex_buffer(0, vb.slice(..));
             pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);

@@ -18,11 +18,13 @@
 pub mod camera;
 pub mod math;
 pub mod mesh;
+pub mod mesh_cache;
 pub mod pipeline;
 pub mod scene3d;
 
 pub use camera::PerspectiveCamera;
 pub use math::{look_at_rh, model_trs, perspective_rh, Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
 pub use mesh::{Mesh, Vertex};
+pub use mesh_cache::{MeshCache, MeshGpu};
 pub use pipeline::{Renderer3D, DEPTH_FORMAT};
 pub use scene3d::{Node, Scene3D};

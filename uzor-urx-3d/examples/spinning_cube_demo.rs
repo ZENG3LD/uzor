@@ -26,6 +26,9 @@
 //! | Method | Path                        | Body                                    | Purpose |
 //! |--------|-----------------------------|-----------------------------------------|---------|
 //! | `POST` | `/scene/spawn_cube`         | `{pos: [x,y,z], scale: f, tint: [r,g,b,a]}` | add a cube node |
+//! | `POST` | `/scene/spawn_batch`        | `[{pos,scale,tint},…]`                  | bulk-add many cubes in one request |
+//! | `POST` | `/scene/preset/ring`        | `{n, radius?}`                          | spawn an N-cube ring on the XZ plane |
+//! | `POST` | `/scene/preset/grid`        | `{nx, ny, nz, spacing?}`                | spawn an Nx×Ny×Nz cube grid |
 //! | `POST` | `/scene/clear`              | —                                       | remove every node (re-spawn the central spinning cube) |
 //! | `POST` | `/camera/look_at`           | `{eye: [x,y,z], target: [x,y,z]}`       | move the camera explicitly |
 //!
@@ -134,6 +137,9 @@ mod http {
                     .route("/act/reset_camera", post(act_reset_camera))
                     .route("/act/spin_rate", post(act_spin_rate))
                     .route("/scene/spawn_cube", post(scene_spawn_cube))
+                    .route("/scene/spawn_batch", post(scene_spawn_batch))
+                    .route("/scene/preset/ring", post(scene_preset_ring))
+                    .route("/scene/preset/grid", post(scene_preset_grid))
                     .route("/scene/clear", post(scene_clear))
                     .route("/camera/look_at", post(camera_look_at))
                     .with_state(shared);
@@ -196,6 +202,105 @@ mod http {
     ) -> StatusCode {
         s.lock().unwrap().pending_cubes.push(b);
         StatusCode::OK
+    }
+
+    async fn scene_spawn_batch(
+        State(s): State<Shared>,
+        Json(b): Json<Vec<CubeSpec>>,
+    ) -> StatusCode {
+        s.lock().unwrap().pending_cubes.extend(b);
+        StatusCode::OK
+    }
+
+    #[derive(Deserialize)]
+    struct PresetRing {
+        n: u32,
+        #[serde(default = "default_ring_radius")]
+        radius: f32,
+    }
+    fn default_ring_radius() -> f32 {
+        4.0
+    }
+
+    async fn scene_preset_ring(
+        State(s): State<Shared>,
+        Json(b): Json<PresetRing>,
+    ) -> StatusCode {
+        let n = b.n.min(4096);
+        let mut cubes = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            let theta = (i as f32 / n as f32) * std::f32::consts::TAU;
+            let hue = i as f32 / n as f32;
+            cubes.push(CubeSpec {
+                pos: [theta.cos() * b.radius, 0.0, theta.sin() * b.radius],
+                scale: 0.3,
+                tint: hue_to_rgba(hue),
+            });
+        }
+        s.lock().unwrap().pending_cubes.extend(cubes);
+        StatusCode::OK
+    }
+
+    #[derive(Deserialize)]
+    struct PresetGrid {
+        nx: u32,
+        ny: u32,
+        nz: u32,
+        #[serde(default = "default_grid_spacing")]
+        spacing: f32,
+    }
+    fn default_grid_spacing() -> f32 {
+        1.5
+    }
+
+    async fn scene_preset_grid(
+        State(s): State<Shared>,
+        Json(b): Json<PresetGrid>,
+    ) -> StatusCode {
+        let total = (b.nx * b.ny * b.nz) as usize;
+        let total = total.min(8192);
+        let mut cubes = Vec::with_capacity(total);
+        let half_x = (b.nx as f32 - 1.0) / 2.0;
+        let half_y = (b.ny as f32 - 1.0) / 2.0;
+        let half_z = (b.nz as f32 - 1.0) / 2.0;
+        for i in 0..b.nx {
+            for j in 0..b.ny {
+                for k in 0..b.nz {
+                    if cubes.len() >= total {
+                        break;
+                    }
+                    let hue = (i + j * b.nx + k * b.nx * b.ny) as f32
+                        / (b.nx * b.ny * b.nz) as f32;
+                    cubes.push(CubeSpec {
+                        pos: [
+                            (i as f32 - half_x) * b.spacing,
+                            (j as f32 - half_y) * b.spacing,
+                            (k as f32 - half_z) * b.spacing,
+                        ],
+                        scale: 0.35,
+                        tint: hue_to_rgba(hue),
+                    });
+                }
+            }
+        }
+        s.lock().unwrap().pending_cubes.extend(cubes);
+        StatusCode::OK
+    }
+
+    fn hue_to_rgba(h: f32) -> [f32; 4] {
+        // simple HSV→RGB with full saturation+value
+        let c = 1.0;
+        let h6 = h * 6.0;
+        let x = c * (1.0 - ((h6 % 2.0) - 1.0).abs());
+        let (r, g, b) = match h6 as u32 {
+            0 => (c, x, 0.0),
+            1 => (x, c, 0.0),
+            2 => (0.0, c, x),
+            3 => (0.0, x, c),
+            4 => (x, 0.0, c),
+            _ => (c, 0.0, x),
+        };
+        [r, g, b, 1.0]
     }
 
     async fn scene_clear(State(s): State<Shared>) -> StatusCode {
