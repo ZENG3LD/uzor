@@ -104,6 +104,18 @@ pub const KEY_HYBRID_COMPOSITE_TRANSFORM_ONLY_FRAMES: &str =
 /// enabled + atlas-packed regions, contiguous atlas runs coalesce
 /// into a single draw — the ratio reveals the actual batching win.
 pub const KEY_HYBRID_COMPOSITE_PASS_DRAWS:    &str = "urx.hybrid.composite.pass_draws";
+/// Counter — LRU evictions from the region atlas. Each increment
+/// means a slot was reclaimed because the atlas was full and a
+/// fresh allocation needed space. High frequency = atlas too small
+/// for the workload; consumer should bump `hybrid_atlas_w/h`.
+pub const KEY_HYBRID_ATLAS_EVICTIONS:    &str = "urx.hybrid.atlas.evictions";
+/// Counter — `try_upsert` calls that hit Reject after LRU eviction
+/// failed (region too large to fit even an empty atlas, OR
+/// allocator fragmentation made the fit impossible even after
+/// freeing all space). Signals that the consumer should fall back
+/// to standalone-texture path AND that something's wrong with
+/// atlas sizing.
+pub const KEY_HYBRID_ATLAS_REJECTS:    &str = "urx.hybrid.atlas.rejects";
 
 // ── Skeleton ────────────────────────────────────────────────────────────────
 
@@ -167,6 +179,8 @@ pub static METRIC_CATALOG: &[&str] = &[
     KEY_HYBRID_UPLOAD_SKIPPED_BYTES,
     KEY_HYBRID_COMPOSITE_TRANSFORM_ONLY_FRAMES,
     KEY_HYBRID_COMPOSITE_PASS_DRAWS,
+    KEY_HYBRID_ATLAS_EVICTIONS,
+    KEY_HYBRID_ATLAS_REJECTS,
     KEY_RENDER_SKIPPED_NONFINITE,
     KEY_RENDER_SKIPPED_DEGENERATE,
     KEY_SKELETON_FRAMES,

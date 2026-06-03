@@ -74,6 +74,13 @@ pub enum AtlasUpsertResult {
 }
 
 /// Shared-texture region atlas. Construct once per HybridBackend.
+///
+/// LRU eviction is built-in: on allocation failure (atlas full), the
+/// least-recently-used slot is evicted and its space freed for the
+/// new allocation. "Recency" is tracked at upsert AND at composite
+/// time via [`Self::touch`] — callers should `touch` each rendered
+/// region once per frame so static panels stay alive across many
+/// dynamic uploads.
 pub struct RegionAtlas {
     pub texture:    wgpu::Texture,
     pub view:       wgpu::TextureView,
@@ -81,6 +88,9 @@ pub struct RegionAtlas {
     pub height:     u32,
     allocator:      BucketedAtlasAllocator,
     slots:          HashMap<RegionId, AtlasSlot>,
+    /// LRU queue. `lru_order[0]` = least-recently-used (head); push
+    /// to back on every touch. Eviction pops the head.
+    lru_order:      std::collections::VecDeque<RegionId>,
 }
 
 impl RegionAtlas {
@@ -106,8 +116,37 @@ impl RegionAtlas {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let allocator = BucketedAtlasAllocator::new(size2(width as i32, height as i32));
         Self {
-            texture, view, width, height, allocator, slots: HashMap::new(),
+            texture, view, width, height, allocator,
+            slots: HashMap::new(),
+            lru_order: std::collections::VecDeque::new(),
         }
+    }
+
+    /// Promote `id` to most-recently-used position in the LRU queue.
+    /// Call once per region per frame from the consumer's composite
+    /// path so static panels stay alive across many dynamic uploads.
+    pub fn touch(&mut self, id: RegionId) {
+        if let Some(pos) = self.lru_order.iter().position(|&r| r == id) {
+            self.lru_order.remove(pos);
+        }
+        self.lru_order.push_back(id);
+    }
+
+    /// Pop + deallocate the least-recently-used slot. Returns the
+    /// evicted id (and bumps `KEY_HYBRID_ATLAS_EVICTIONS`), or `None`
+    /// if the atlas is empty.
+    fn evict_lru(&mut self) -> Option<RegionId> {
+        while let Some(victim) = self.lru_order.pop_front() {
+            if let Some(slot) = self.slots.remove(&victim) {
+                self.allocator.deallocate(slot.allocation.id);
+                metrics::counter!(
+                    uzor_urx_core::metrics_keys::KEY_HYBRID_ATLAS_EVICTIONS
+                ).increment(1);
+                return Some(victim);
+            }
+            // Stale entry in LRU queue (slot already gone) — keep popping.
+        }
+        None
     }
 
     /// True iff a region of (w, h) is small enough to fit any free
@@ -148,6 +187,8 @@ impl RegionAtlas {
             if slot.px_rect[2] == w && slot.px_rect[3] == h {
                 let new_hash = fnv1a_64(pixmap.pixels());
                 if new_hash == slot.content_hash {
+                    // Touch — still in use, even though we skipped upload.
+                    self.touch(id);
                     return AtlasUpsertResult::Skipped {
                         bytes: (w as u64) * (h as u64) * 4,
                     };
@@ -156,6 +197,7 @@ impl RegionAtlas {
                 write_to_slot(queue, &self.texture, slot, pixmap);
                 let slot_mut = self.slots.get_mut(&id).unwrap();
                 slot_mut.content_hash = new_hash;
+                self.touch(id);
                 return AtlasUpsertResult::Uploaded {
                     bytes: (w as u64) * (h as u64) * 4,
                 };
@@ -164,11 +206,34 @@ impl RegionAtlas {
             let alloc = slot.allocation;
             self.allocator.deallocate(alloc.id);
             self.slots.remove(&id);
+            if let Some(pos) = self.lru_order.iter().position(|&r| r == id) {
+                self.lru_order.remove(pos);
+            }
         }
 
-        // Allocate fresh.
-        let Some(alloc) = self.allocator.allocate(size2(w as i32, h as i32)) else {
-            return AtlasUpsertResult::Reject;
+        // Try to allocate. On OOM, evict LRU and retry. Bounded by the
+        // slot count — at most N evictions to free enough space.
+        let alloc = match self.allocator.allocate(size2(w as i32, h as i32)) {
+            Some(a) => a,
+            None => {
+                // Evict LRU slots until we either succeed or run out.
+                let mut allocated = None;
+                while self.evict_lru().is_some() {
+                    if let Some(a) = self.allocator.allocate(size2(w as i32, h as i32)) {
+                        allocated = Some(a);
+                        break;
+                    }
+                }
+                match allocated {
+                    Some(a) => a,
+                    None => {
+                        metrics::counter!(
+                            uzor_urx_core::metrics_keys::KEY_HYBRID_ATLAS_REJECTS
+                        ).increment(1);
+                        return AtlasUpsertResult::Reject;
+                    }
+                }
+            }
         };
         let px_rect = [
             alloc.rectangle.min.x as u32,
@@ -192,6 +257,7 @@ impl RegionAtlas {
         };
         write_to_slot(queue, &self.texture, &slot, pixmap);
         self.slots.insert(id, slot);
+        self.touch(id);
         AtlasUpsertResult::Uploaded { bytes: (w as u64) * (h as u64) * 4 }
     }
 
@@ -200,6 +266,9 @@ impl RegionAtlas {
         if let Some(slot) = self.slots.remove(&id) {
             self.allocator.deallocate(slot.allocation.id);
         }
+        if let Some(pos) = self.lru_order.iter().position(|&r| r == id) {
+            self.lru_order.remove(pos);
+        }
     }
 
     /// Clear the entire atlas.
@@ -207,6 +276,7 @@ impl RegionAtlas {
         for (_, slot) in self.slots.drain() {
             self.allocator.deallocate(slot.allocation.id);
         }
+        self.lru_order.clear();
     }
 
     /// Update the generation tag on an existing slot (no upload).

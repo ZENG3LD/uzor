@@ -440,6 +440,7 @@ impl HybridBackend {
         let mut texture_views: Vec<wgpu::TextureView> = Vec::with_capacity(instances.len());
         let mut inst_data: Vec<QuadInstance> = Vec::with_capacity(instances.len());
         let mut atlas_mask: Vec<bool> = Vec::with_capacity(instances.len());
+        let mut atlas_touched: Vec<RegionId> = Vec::new();
         for (id, qi) in instances {
             // Atlas path?
             if let Some(atlas) = self.atlas.as_ref() {
@@ -464,6 +465,7 @@ impl HybridBackend {
                         tint: qi.tint,
                     });
                     atlas_mask.push(true);
+                    atlas_touched.push(*id);
                     continue;
                 }
             }
@@ -473,6 +475,15 @@ impl HybridBackend {
             texture_views.push(tex.view.clone());
             inst_data.push(*qi);
             atlas_mask.push(false);
+        }
+
+        // LRU bookkeeping: mark all atlas-resident regions composited
+        // this frame as MRU so static panels survive across many
+        // dynamic uploads. Cheap O(N) on a small VecDeque.
+        if let Some(atlas) = self.atlas.as_mut() {
+            for id in atlas_touched.drain(..) {
+                atlas.touch(id);
+            }
         }
 
         let coalesce = self.config.hybrid_instanced_composite;
