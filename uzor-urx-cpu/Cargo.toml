@@ -21,11 +21,12 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 # source. Math + algorithm stay ours — wide is just register types +
 # lane ops. License: MIT/Apache-2.0/Zlib. Transitive deps: 2.
 wide = "1"
-# Runtime ISA dispatch — one binary that picks the best span-fill path
-# at startup (AVX2 / SSE2 / scalar). proc-macro only at runtime so the
-# release binary has zero extra weight.
 multiversion = "0.8"
 bytemuck = { version = "1", features = ["derive"] }
+# Per-frame arena allocator for tile cmd lists. Zero per-frame
+# malloc/free; everything in one slab reset between frames. MIT/Apache,
+# zero transitive deps.
+bumpalo = { version = "3", features = ["collections"] }
 
 [dev-dependencies]
 criterion = "0.5"
@@ -42,6 +43,10 @@ harness = false
 
 [[bench]]
 name = "inner_loops"
+harness = false
+
+[[bench]]
+name = "compare_tiled"
 harness = false
 
 [features]

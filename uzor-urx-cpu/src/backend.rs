@@ -3,8 +3,34 @@
 
 use std::time::Instant;
 
-use uzor_urx_core::math::Rect;
+use uzor_urx_core::math::{Brush, Rect};
 use uzor_urx_core::scene::{DrawCommand, Scene};
+
+/// Predicate: is this scene eligible for the tile pipeline?
+/// Tile path supports: FillRect (Solid brush only, no radii, axis-aligned
+/// transform), PushClipRect, PopClip. Anything else forces the
+/// scanline fallback.
+fn tile_eligible(scene: &Scene) -> bool {
+    for cmd in &scene.commands {
+        match cmd {
+            DrawCommand::FillRect { radii, brush, transform, .. } => {
+                if let Some(r) = radii {
+                    if r.iter().any(|v| *v > 0.0) { return false; }
+                }
+                if !matches!(brush, Brush::Solid(_)) { return false; }
+                let c = transform.as_coeffs();
+                if c[1].abs() > 1e-6 || c[2].abs() > 1e-6 { return false; }
+            }
+            DrawCommand::PushClipRect { transform, .. } => {
+                let c = transform.as_coeffs();
+                if c[1].abs() > 1e-6 || c[2].abs() > 1e-6 { return false; }
+            }
+            DrawCommand::PopClip => {}
+            _ => return false,
+        }
+    }
+    true
+}
 
 use crate::clip::ClipStack;
 use crate::color::brush_to_color;
@@ -37,6 +63,12 @@ impl CpuBackend {
     /// Render a whole scene into a pixmap. Does NOT clear the pixmap
     /// first — caller decides background fill (gives us a free
     /// `LoadOp::Load` equivalent for dirty-rect re-paint).
+    ///
+    /// **Auto-routing**: if the scene contains ONLY FillRect commands
+    /// with simple brushes (Solid) and axis-aligned transforms, AND
+    /// command count ≥ 50, the tile pipeline is used (bumpalo arena
+    /// + rayon parallel band flush + bg-replacement). Otherwise falls
+    /// through to the per-primitive scanline backend.
     pub fn render(&self, scene: &Scene, pixmap: &mut Pixmap) -> Result<(), RenderError> {
         use uzor_urx_core::metrics_keys::{
             render_submit_us_key, render_submit_count_key,
@@ -45,6 +77,18 @@ impl CpuBackend {
         };
 
         let t0 = Instant::now();
+
+        if scene.commands.len() >= 50 && tile_eligible(scene) {
+            crate::tile::render_tiled(scene, pixmap);
+            let elapsed_us = t0.elapsed().as_micros() as u64;
+            metrics::histogram!(KEY_TICK_SUBMIT_US).record(elapsed_us as f64);
+            metrics::counter!(KEY_TICK_FRAMES).increment(1);
+            metrics::histogram!(render_submit_us_key("urx_cpu_tile")).record(elapsed_us as f64);
+            metrics::counter!(render_submit_count_key("urx_cpu_tile")).increment(1);
+            metrics::counter!(KEY_RENDER_PRIMITIVES).increment(scene.commands.len() as u64);
+            return Ok(());
+        }
+
         let bounds = Rect::new(0.0, 0.0, pixmap.width() as f64, pixmap.height() as f64);
         let mut clip = ClipStack::new(bounds);
 
