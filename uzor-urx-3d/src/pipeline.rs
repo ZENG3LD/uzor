@@ -1,14 +1,18 @@
-//! Renderer3D — wgpu render pipeline + depth buffer + per-node uniform
-//! ring.
+//! Renderer3D — wgpu render pipeline + depth buffer.
 //!
-//! Wave 1 keeps it simple: vertex+fragment pipeline, Depth32Float, no
-//! instancing (Wave 2 adds instance buffer). Each Node draws with its
-//! own small uniform buffer (one model matrix + tint). The buffer is
-//! cycled through a ring so we don't stall on a single uniform slot.
+//! Wave 1: per-node draw_indexed.
+//! Wave 2: + Mesh GPU buffer cache (Arc identity dedup of VB/IB).
+//! Wave 3: + instancing — nodes are grouped by Mesh identity; each
+//!         group becomes ONE draw_indexed_instanced with the per-
+//!         instance Model + tint packed in a vertex buffer at
+//!         step_mode=Instance. Collapses the N-draw loop into
+//!         #unique-meshes draws.
 
 use crate::{camera::PerspectiveCamera, mesh::Vertex, mesh_cache::MeshCache, scene3d::Scene3D};
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -26,15 +30,50 @@ struct NodeUniform {
 
 const NODE_UNIFORM_SIZE: u64 = std::mem::size_of::<NodeUniform>() as u64;
 
+/// Per-instance vertex-buffer record for the instanced pipeline.
+/// 4 vec4 columns of the model matrix + tint = 80 bytes / instance.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct InstanceRaw {
+    model: [[f32; 4]; 4],
+    tint: [f32; 4],
+}
+
+impl InstanceRaw {
+    fn vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<InstanceRaw>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                // model columns at locations 2..5
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0,  shader_location: 2 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16, shader_location: 3 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 4 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48, shader_location: 5 },
+                // tint at location 6
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 64, shader_location: 6 },
+            ],
+        }
+    }
+}
+
 pub struct Renderer3D {
     pipeline: wgpu::RenderPipeline,
+    pipeline_instanced: wgpu::RenderPipeline,
     node_bgl: wgpu::BindGroupLayout,
     frame_buf: wgpu::Buffer,
     frame_bg: wgpu::BindGroup,
-    /// Ring of per-node uniform buffers — one buffer, N offsets.
+    frame_bg_inst: wgpu::BindGroup,
+    /// Ring of per-node uniform buffers — used by the non-instanced
+    /// fallback path (kept for backwards compatibility / non-grouped
+    /// rendering once we add per-node features that instancing can't
+    /// express).
     node_buf: wgpu::Buffer,
     node_bgs: Vec<wgpu::BindGroup>,
     node_capacity: u32,
+    /// Instance buffer (vertex-buffer attached at step_mode=Instance).
+    instance_buf: wgpu::Buffer,
+    instance_capacity: u32,
     depth_view: wgpu::TextureView,
     depth_size: (u32, u32),
     color_format: wgpu::TextureFormat,
@@ -149,16 +188,103 @@ impl Renderer3D {
         let (node_buf, node_bgs) =
             Self::allocate_node_ring(device, &node_bgl, node_capacity);
 
+        // ── Instanced pipeline (Wave 3) ────────────────────────────────
+        let shader_inst = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("urx3d.unlit_instanced"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/unlit_instanced.wgsl").into()),
+        });
+        let frame_bgl_inst = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("urx3d.frame_bgl_inst"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let pipeline_layout_inst =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("urx3d.pipeline_layout_inst"),
+                bind_group_layouts: &[&frame_bgl_inst],
+                immediate_size: 0,
+            });
+        let pipeline_instanced = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urx3d.pipeline_instanced"),
+            layout: Some(&pipeline_layout_inst),
+            vertex: wgpu::VertexState {
+                module: &shader_inst,
+                entry_point: Some("vs_main"),
+                buffers: &[
+                    Vertex::vertex_buffer_layout(),
+                    InstanceRaw::vertex_buffer_layout(),
+                ],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader_inst,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let frame_bg_inst = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("urx3d.frame_bg_inst"),
+            layout: &frame_bgl_inst,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: frame_buf.as_entire_binding(),
+            }],
+        });
+
+        let instance_capacity = node_capacity.max(64);
+        let instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_buf"),
+            size: std::mem::size_of::<InstanceRaw>() as u64 * instance_capacity as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let depth_view = Self::create_depth(device, initial_size);
 
         Self {
             pipeline,
+            pipeline_instanced,
             node_bgl,
             frame_buf,
             frame_bg,
+            frame_bg_inst,
             node_buf,
             node_bgs,
             node_capacity,
+            instance_buf,
+            instance_capacity,
             depth_view,
             depth_size: initial_size,
             color_format,
@@ -233,11 +359,26 @@ impl Renderer3D {
         self.node_capacity = new_cap;
     }
 
+    fn grow_instance_buf(&mut self, device: &wgpu::Device, needed: u32) {
+        if needed <= self.instance_capacity {
+            return;
+        }
+        let new_cap = needed.next_power_of_two().max(64);
+        self.instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_buf"),
+            size: std::mem::size_of::<InstanceRaw>() as u64 * new_cap as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.instance_capacity = new_cap;
+    }
+
     /// One-shot pass: encode the whole Scene3D into the target view.
     ///
-    /// Vertex/index buffers are uploaded fresh every frame for Wave 1 —
-    /// Wave 2 caches per-Mesh GPU buffers in a registry. This keeps the
-    /// API surface minimal during bringup.
+    /// Wave 3 path: nodes are grouped by `Arc<Mesh>` identity; each
+    /// group becomes ONE `draw_indexed_instanced` with an instance
+    /// buffer of model matrices + tints. So a 10k-cube scene with one
+    /// shared Mesh = ONE drawcall, regardless of node count.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -251,35 +392,58 @@ impl Renderer3D {
         let frame = FrameUniform { view_proj: camera.view_proj().to_cols_array_2d() };
         queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&frame));
 
-        // 2. Grow node ring if needed
-        self.grow_node_ring(device, scene.nodes.len() as u32);
+        // 2. Refresh mesh cache + group nodes by Mesh identity.
+        self.mesh_cache.begin_frame();
+        // BTreeMap key = Arc::as_ptr cast to usize — preserves insertion
+        // determinism without needing Hash on raw pointers.
+        let mut groups: BTreeMap<usize, (Arc<crate::mesh::Mesh>, Vec<usize>)> = BTreeMap::new();
+        for (i, n) in scene.nodes.iter().enumerate() {
+            let k = Arc::as_ptr(&n.mesh) as usize;
+            groups
+                .entry(k)
+                .or_insert_with(|| (n.mesh.clone(), Vec::new()))
+                .1
+                .push(i);
+        }
 
-        // 3. Per-node uniforms in one big write
-        let mut node_data: Vec<NodeUniform> = Vec::with_capacity(scene.nodes.len());
-        for n in &scene.nodes {
-            node_data.push(NodeUniform {
-                model: n.model_matrix().to_cols_array_2d(),
-                tint: n.color_tint,
-                _pad: [0.0; 44],
+        // 3. Build the instance buffer in group order; record per-group
+        //    (vb, ib, index_count, first_instance, instance_count).
+        let total_instances: u32 = scene.nodes.len() as u32;
+        self.grow_instance_buf(device, total_instances);
+
+        let mut instances: Vec<InstanceRaw> = Vec::with_capacity(total_instances as usize);
+        struct GroupDraw {
+            vb: wgpu::Buffer,
+            ib: wgpu::Buffer,
+            index_count: u32,
+            first_instance: u32,
+            instance_count: u32,
+        }
+        let mut group_draws: Vec<GroupDraw> = Vec::with_capacity(groups.len());
+        for (_k, (mesh, node_indices)) in groups.iter() {
+            let entry = self.mesh_cache.get_or_upload(device, mesh);
+            let first = instances.len() as u32;
+            for &idx in node_indices {
+                let n = &scene.nodes[idx];
+                instances.push(InstanceRaw {
+                    model: n.model_matrix().to_cols_array_2d(),
+                    tint: n.color_tint,
+                });
+            }
+            let count = instances.len() as u32 - first;
+            group_draws.push(GroupDraw {
+                vb: entry.vb.clone(),
+                ib: entry.ib.clone(),
+                index_count: entry.index_count,
+                first_instance: first,
+                instance_count: count,
             });
         }
-        if !node_data.is_empty() {
-            queue.write_buffer(&self.node_buf, 0, bytemuck::cast_slice(&node_data));
+        if !instances.is_empty() {
+            queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(&instances));
         }
 
-        // 4. Vertex/index buffers per node — pulled from MeshCache so
-        //    identical Arc<Mesh> across Nodes reuses one VB/IB pair.
-        //    Wave 1 uploaded fresh per node per frame; Wave 2 hits the
-        //    cache and only allocates on first sighting of a Mesh.
-        self.mesh_cache.begin_frame();
-        let mut node_buffers: Vec<(wgpu::Buffer, wgpu::Buffer, u32)> =
-            Vec::with_capacity(scene.nodes.len());
-        for n in &scene.nodes {
-            let entry = self.mesh_cache.get_or_upload(device, &n.mesh);
-            node_buffers.push((entry.vb.clone(), entry.ib.clone(), entry.index_count));
-        }
-
-        // 5. Render pass
+        // 4. Render pass — single pipeline_instanced, one draw per group.
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("urx3d.pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -309,15 +473,27 @@ impl Renderer3D {
             multiview_mask: None,
         });
 
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.frame_bg, &[]);
+        if !group_draws.is_empty() {
+            pass.set_pipeline(&self.pipeline_instanced);
+            pass.set_bind_group(0, &self.frame_bg_inst, &[]);
+            pass.set_vertex_buffer(1, self.instance_buf.slice(..));
 
-        for (i, (vb, ib, n_idx)) in node_buffers.iter().enumerate() {
-            pass.set_bind_group(1, &self.node_bgs[i], &[]);
-            pass.set_vertex_buffer(0, vb.slice(..));
-            pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..*n_idx, 0, 0..1);
+            for g in &group_draws {
+                pass.set_vertex_buffer(0, g.vb.slice(..));
+                pass.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
+                let end = g.first_instance + g.instance_count;
+                pass.draw_indexed(0..g.index_count, 0, g.first_instance..end);
+            }
         }
+    }
+
+    /// Direct access to the non-instanced pipeline + per-node uniforms.
+    /// Kept for diagnostics / future features (per-node bind groups
+    /// don't survive instancing — anything that varies per-draw rather
+    /// than per-instance has to fall back here).
+    #[doc(hidden)]
+    pub fn _non_instanced_handles(&self) -> (&wgpu::RenderPipeline, &wgpu::BindGroup, &[wgpu::BindGroup]) {
+        (&self.pipeline, &self.frame_bg, &self.node_bgs)
     }
 
     pub fn color_format(&self) -> wgpu::TextureFormat {
