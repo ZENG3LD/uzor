@@ -56,6 +56,7 @@ pub const TILE_CMD_CAP: u32 = 64;
 const TILE_ASSIGN_WGSL: &str = include_str!("shaders/tile_assign.wgsl");
 const TILE_SORT_WGSL:   &str = include_str!("shaders/tile_sort.wgsl");
 const FINE_WGSL:        &str = include_str!("shaders/fine.wgsl");
+const BLIT_WGSL:        &str = include_str!("shaders/blit.wgsl");
 
 /// GPU buffers for the tile binning pipeline.
 pub struct TileBuffers {
@@ -130,8 +131,11 @@ impl TileBuffers {
             sample_count:    1,
             dimension:       wgpu::TextureDimension::D2,
             format:          wgpu::TextureFormat::Rgba8Unorm,
+            // TEXTURE_BINDING added so BlitPipeline can sample this as a
+            // regular texture_2d<f32> in the blit fragment shader.
             usage:           wgpu::TextureUsages::STORAGE_BINDING
-                           | wgpu::TextureUsages::COPY_SRC,
+                           | wgpu::TextureUsages::COPY_SRC
+                           | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats:    &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -387,5 +391,241 @@ impl TilePipeline {
             pass.set_bind_group(0, &bg, &[]);
             pass.dispatch_workgroups(bufs.tile_count_x, bufs.tile_count_y, 1);
         }
+    }
+
+    /// Convenience wrapper: `dispatch_full` followed immediately by
+    /// `blit.blit(...)` — both encoded into the same `encoder`.
+    ///
+    /// `src_view` must be the `TextureView` returned by
+    /// `TileBuffers::with_output_texture`. `src_w`/`src_h` are the padded
+    /// tile-aligned dimensions (`tile_count_x * TILE_SIZE`, etc.).
+    ///
+    /// `target_view` is any render-attachment-compatible `TextureView`
+    /// (e.g. a swapchain surface texture).
+    ///
+    /// Call `queue.submit` once after this method returns — both passes are
+    /// recorded in the same encoder.
+    pub fn render_to_target(
+        &self,
+        device:      &wgpu::Device,
+        queue:       &wgpu::Queue,
+        encoder:     &mut wgpu::CommandEncoder,
+        bufs:        &TileBuffers,
+        cmds:        &[SceneCmd],
+        src_view:    &wgpu::TextureView,
+        blit:        &BlitPipeline,
+        target_view: &wgpu::TextureView,
+        src_w:       u32,
+        src_h:       u32,
+    ) {
+        self.dispatch_full(device, queue, encoder, bufs, cmds, src_view);
+        blit.blit(device, encoder, src_view, target_view, src_w, src_h, queue);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// BlitPipeline
+// ---------------------------------------------------------------------------
+
+/// Render pipeline that blits from an rgba8unorm storage texture to any
+/// render-attachment-compatible target format (e.g. bgra8unorm for a
+/// swapchain surface, or rgba8unorm-srgb for a HDR surface).
+///
+/// # Format binding
+///
+/// The target format is fixed at pipeline creation time (WGSL / SPIR-V
+/// pipeline compilation bakes the attachment format). If the consumer's
+/// surface format changes (window resize, DPI change, monitor switch),
+/// create a new `BlitPipeline` with the updated format.
+///
+/// # Usage
+///
+/// ```ignore
+/// let blit = BlitPipeline::new(&device, surface_format);
+/// // inside render loop:
+/// pipeline.render_to_target(
+///     &device, &queue, &mut encoder,
+///     &bufs, &cmds,
+///     &storage_view, &blit, &surface_view,
+///     tex_w, tex_h,
+/// );
+/// queue.submit(Some(encoder.finish()));
+/// ```
+pub struct BlitPipeline {
+    pipeline:  wgpu::RenderPipeline,
+    sampler:   wgpu::Sampler,
+    bgl:       wgpu::BindGroupLayout,
+    /// 16-byte uniform: `[src_w: u32, src_h: u32, 0u32, 0u32]`.
+    size_buf:  wgpu::Buffer,
+}
+
+impl BlitPipeline {
+    /// Compile the blit render pipeline targeting `target_format`.
+    ///
+    /// `target_format` must be a render-attachment-capable format on the
+    /// current adapter (e.g. `wgpu::TextureFormat::Bgra8Unorm`).
+    pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> Self {
+        let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("urx-blit-bgl"),
+            entries: &[
+                // binding 0 — source texture
+                wgpu::BindGroupLayoutEntry {
+                    binding:    0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type:    wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled:   false,
+                    },
+                    count: None,
+                },
+                // binding 1 — sampler
+                wgpu::BindGroupLayoutEntry {
+                    binding:    1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                // binding 2 — src_size uniform (w, h, 0, 0)
+                wgpu::BindGroupLayoutEntry {
+                    binding:    2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty:                 wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size:   None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label:                Some("urx-blit-pipeline-layout"),
+            bind_group_layouts:   &[&bgl],
+            immediate_size:       0,
+        });
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label:  Some("blit"),
+            source: wgpu::ShaderSource::Wgsl(BLIT_WGSL.into()),
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label:  Some("urx-blit-pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module:              &shader,
+                entry_point:         Some("vs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers:             &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module:              &shader,
+                entry_point:         Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format:     target_format,
+                    blend:      None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive:    wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample:  wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache:          None,
+        });
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label:          Some("urx-blit-sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter:     wgpu::FilterMode::Linear,
+            min_filter:     wgpu::FilterMode::Linear,
+            mipmap_filter:  wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // 16-byte uniform: [w, h, 0, 0] as u32 array.
+        let size_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label:              Some("urx-blit-size-buf"),
+            size:               16,
+            usage:              wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        Self { pipeline, sampler, bgl, size_buf }
+    }
+
+    /// Encode a single render pass that samples `src_view` and writes to
+    /// `target_view`.
+    ///
+    /// - `src_view` must come from an rgba8unorm texture created with
+    ///   `TextureUsages::TEXTURE_BINDING` (guaranteed by
+    ///   `TileBuffers::with_output_texture`).
+    /// - `target_view` must be a render-attachment-compatible view whose
+    ///   format matches the `target_format` passed to `BlitPipeline::new`.
+    /// - `src_w` / `src_h` are the padded tile-aligned dimensions of the
+    ///   source texture (typically `tile_count_x * TILE_SIZE`).
+    ///
+    /// The `queue` parameter is used only to upload the size uniform; no
+    /// separate submit is performed — the render pass is recorded into
+    /// `encoder`.
+    pub fn blit(
+        &self,
+        _device:     &wgpu::Device,
+        encoder:     &mut wgpu::CommandEncoder,
+        src_view:    &wgpu::TextureView,
+        target_view: &wgpu::TextureView,
+        src_w:       u32,
+        src_h:       u32,
+        queue:       &wgpu::Queue,
+    ) {
+        // Upload src_size uniform: [w, h, 0, 0] packed as 4×u32 = 16 bytes.
+        let size_data: [u32; 4] = [src_w, src_h, 0, 0];
+        queue.write_buffer(&self.size_buf, 0, bytemuck::cast_slice(&size_data));
+
+        let bg = _device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label:   Some("urx-blit-bg"),
+            layout:  &self.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding:  0,
+                    resource: wgpu::BindingResource::TextureView(src_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding:  1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding:  2,
+                    resource: self.size_buf.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("urx-blit-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view:           target_view,
+                resolve_target: None,
+                depth_slice:    None,
+                ops: wgpu::Operations {
+                    load:  wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes:         None,
+            occlusion_query_set:      None,
+            multiview_mask:           None,
+        });
+
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &bg, &[]);
+        // 3 vertices → fullscreen triangle (no index buffer, no vertex buffer).
+        pass.draw(0..3, 0..1);
     }
 }

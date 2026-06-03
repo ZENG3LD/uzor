@@ -21,4 +21,4 @@ pub mod tile;
 
 pub use cmd::{CmdKind, SceneCmd};
 pub use encoder::encode_scene;
-pub use tile::{DispatchUniforms, TileBuffers, TilePipeline, TILE_CMD_CAP, TILE_SIZE};
+pub use tile::{BlitPipeline, DispatchUniforms, TileBuffers, TilePipeline, TILE_CMD_CAP, TILE_SIZE};

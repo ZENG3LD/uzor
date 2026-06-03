@@ -25,6 +25,9 @@ name = "tile_bin_demo"
 [[example]]
 name = "pixel_render_demo"
 
+[[example]]
+name = "surface_render_demo"
+
 [[bench]]
 name    = "full_gpu_vs_cpu"
 harness = false
