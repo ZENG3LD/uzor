@@ -25,9 +25,14 @@ wgpu = { version = "28", optional = true }
 default = ["wgpu-backend"]
 wgpu-backend = ["dep:uzor-urx-wgpu"]
 hybrid-backend = ["dep:uzor-urx-hybrid", "dep:wgpu"]
-# Experimental full-GPU compute pipeline. Adds Backend::FullGpu enum
-# variant; render() dispatch is NOT wired — use uzor-urx-wgpu-full directly.
-full-gpu-backend = ["dep:uzor-urx-wgpu-full"]
+# URX 1.6 full-GPU compute pipeline (encode → tile → fine → blit).
+# Wires Backend::FullGpu + RenderTarget::FullGpu into render(); auto()
+# picks it when WorkloadHint::heavy_compute is true.
+full-gpu-backend = ["dep:uzor-urx-wgpu-full", "dep:wgpu"]
+
+[dev-dependencies]
+pollster = "0.4"
+wgpu     = "28"
 
 [[example]]
 name = "backend_auto_demo"

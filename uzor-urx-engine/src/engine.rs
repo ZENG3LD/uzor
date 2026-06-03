@@ -21,10 +21,10 @@ pub enum Backend {
     Wgpu,
     #[cfg(feature = "hybrid-backend")]
     Hybrid,
-    /// Experimental full-GPU compute pipeline (URX 1.6 encode→tile→fine).
-    /// Not wired into `render()` yet — access via `uzor-urx-wgpu-full`
-    /// crate directly. Present here for API completeness; excluded from
-    /// `Backend::auto` until stable.
+    /// URX 1.6 full-GPU compute pipeline (encode → tile_assign →
+    /// tile_sort → fine → blit). Wired into `render()` via
+    /// [`RenderTarget::FullGpu`]; selected by [`Backend::auto`] when
+    /// `WorkloadHint::heavy_compute` is set.
     #[cfg(feature = "full-gpu-backend")]
     FullGpu,
 }
@@ -58,6 +58,12 @@ pub struct WorkloadHint {
     /// True if the host is on Apple Silicon / unified memory. Lowers
     /// the cost of CPU↔GPU transfer so hybrid wins more workloads.
     pub unified_memory:   bool,
+    /// Hint that the workload is dense draw-call-heavy (>5000 prims/frame
+    /// across all regions, no per-region retained cache). Selects the
+    /// URX 1.6 full-GPU compute pipeline when `full-gpu-backend` is on —
+    /// it eats large cmd counts cheaper than CPU raster + GPU composite
+    /// (13× win at N=10k on RTX 4060 Ti). Requires `gpu_available`.
+    pub heavy_compute:    bool,
 }
 
 impl Backend {
@@ -84,6 +90,13 @@ impl Backend {
         // Small workloads: GPU overhead dominates. Stay on CPU.
         if hint.region_count < 4 && hint.total_pixels < 100_000 {
             return Backend::Cpu;
+        }
+        // Dense draw-call-heavy + GPU → URX 1.6 compute pipeline.
+        // 13× win vs CPU at N=10k; cmd count grows linearly so
+        // beats per-region raster once the cmd density is high.
+        #[cfg(feature = "full-gpu-backend")]
+        if hint.heavy_compute {
+            return Backend::FullGpu;
         }
         // Retained-mode + GPU = hybrid sweet spot.
         #[cfg(feature = "hybrid-backend")]
@@ -135,6 +148,38 @@ pub enum RenderTarget<'a> {
         surface_format: wgpu::TextureFormat,
         screen_w:       u32,
         screen_h:       u32,
+    },
+    /// FullGpu: URX 1.6 compute pipeline. Engine walks dirty regions,
+    /// encodes each scene → `Vec<SceneCmd>`, concatenates into one
+    /// dispatch, runs assign → sort → fine → blit into `target_view`.
+    ///
+    /// Caller owns:
+    /// - `pipeline` — compiled `TilePipeline` (one per device)
+    /// - `blit`     — compiled `BlitPipeline` whose format matches
+    ///                `target_view`'s texture format
+    /// - `bufs`     — `TileBuffers` sized for the screen; if cmd count
+    ///                exceeds `bufs.cmds_buf` capacity the engine
+    ///                returns `RenderError::CmdBufferTooSmall` and the
+    ///                caller should re-allocate.
+    /// - `storage_view` — the rgba8unorm storage texture view that
+    ///                `bufs` was created with (via `with_output_texture`)
+    /// - `target_view` — final render-attachment-compatible view
+    /// - `glyph_atlas_view` — R8Unorm view; pass the value from
+    ///                `TilePipeline::dummy_glyph_atlas` when no glyphs
+    /// - `src_w`/`src_h` — padded tile-aligned dims (`tile_count_x*16`)
+    #[cfg(feature = "full-gpu-backend")]
+    FullGpu {
+        pipeline:         &'a uzor_urx_wgpu_full::TilePipeline,
+        blit:             &'a uzor_urx_wgpu_full::BlitPipeline,
+        bufs:             &'a uzor_urx_wgpu_full::TileBuffers,
+        device:           &'a wgpu::Device,
+        queue:            &'a wgpu::Queue,
+        encoder:          &'a mut wgpu::CommandEncoder,
+        storage_view:     &'a wgpu::TextureView,
+        target_view:      &'a wgpu::TextureView,
+        glyph_atlas_view: &'a wgpu::TextureView,
+        src_w:            u32,
+        src_h:            u32,
     },
 }
 
@@ -236,6 +281,18 @@ impl UrxEngine {
     #[cfg(feature = "hybrid-backend")]
     pub fn new_hybrid_with_config(width: u32, height: u32, config: UrxConfig) -> Self {
         Self::new_with_config(Backend::Hybrid, width, height, config)
+    }
+
+    /// Convenience: FullGpu (URX 1.6 compute) engine with default config.
+    #[cfg(feature = "full-gpu-backend")]
+    pub fn new_full_gpu(width: u32, height: u32) -> Self {
+        Self::new(Backend::FullGpu, width, height)
+    }
+
+    /// Convenience: FullGpu engine with explicit config.
+    #[cfg(feature = "full-gpu-backend")]
+    pub fn new_full_gpu_with_config(width: u32, height: u32, config: UrxConfig) -> Self {
+        Self::new_with_config(Backend::FullGpu, width, height, config)
     }
 
     pub fn backend(&self) -> Backend { self.backend }
@@ -465,6 +522,39 @@ impl UrxEngine {
                     );
                 }
             }
+            #[cfg(feature = "full-gpu-backend")]
+            (RenderTarget::FullGpu {
+                pipeline, blit, bufs, device, queue, encoder,
+                storage_view, target_view, glyph_atlas_view,
+                src_w, src_h,
+            }, Backend::FullGpu) => {
+                // FullGpu is a write-only-into-storage path: we walk ALL
+                // regions every frame (not just dirty) because the output
+                // texture is cleared each blit. There's no per-region
+                // cache yet — total cost dominates by the encode/dispatch
+                // for the cmd list, not by tracking per-region dirty.
+                let mut all_cmds: Vec<uzor_urx_wgpu_full::SceneCmd> = Vec::new();
+                for rs in self.regions.values_mut() {
+                    let mut shifted = rs.scene.clone();
+                    shift_scene_origin(&mut shifted, rs.bounds.x0, rs.bounds.y0);
+                    let mut cmds = uzor_urx_wgpu_full::encode_scene(&shifted);
+                    all_cmds.append(&mut cmds);
+                    rs.dirty = DirtyState::Clean;
+                }
+
+                let needed = all_cmds.len() as u32;
+                let available = (bufs.cmds_buf.size() / 32) as u32;
+                if needed > available {
+                    return Err(RenderError::CmdBufferTooSmall { needed, available });
+                }
+
+                pipeline.render_to_target(
+                    device, queue, encoder, bufs, &all_cmds,
+                    storage_view, blit, target_view,
+                    src_w, src_h, glyph_atlas_view,
+                );
+                cache_misses = self.regions.len() as u32;
+            }
             _ => return Err(RenderError::BackendMismatch),
         }
 
@@ -555,4 +645,8 @@ pub struct RenderStats {
 pub enum RenderError {
     BackendMismatch,
     BackendFailed,
+    /// FullGpu only: the supplied `TileBuffers::cmds_buf` is too small
+    /// for the concatenated cmd list. Caller should re-allocate
+    /// `TileBuffers` with `cmds_n >= reported size` and retry.
+    CmdBufferTooSmall { needed: u32, available: u32 },
 }
