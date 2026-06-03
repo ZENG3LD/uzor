@@ -1,0 +1,18 @@
+[package]
+name        = "uzor-urx-hybrid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "URX Hybrid backend — CPU rasterises static/cacheable regions to pixmaps, uploads to wgpu textures, GPU composites everything in one pass. Marries urx-cpu (rasteriser) + urx-wgpu (compositor)."
+keywords    = ["graphics", "rendering", "ui", "wgpu", "hybrid"]
+categories  = ["graphics", "rendering"]
+
+[dependencies]
+uzor-urx-core = { workspace = true }
+uzor-urx-cpu  = { workspace = true }
+uzor-urx-wgpu = { workspace = true }
+metrics = "0.24"
+wgpu    = "28"
+bytemuck = { version = "1", features = ["derive"] }
