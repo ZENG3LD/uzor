@@ -8,9 +8,6 @@ homepage.workspace = true
 description = "URX full-GPU compute pipeline backend — encodes scene to GPU buffer, tile-bins via compute dispatch, sorts per-tile, rasterises via PTCL fragment pass. Sibling to urx-cpu / urx-hybrid / urx-wgpu (instanced)."
 keywords    = ["graphics", "rendering", "ui", "wgpu", "compute"]
 categories  = ["graphics", "rendering"]
-# Experimental — feature-complete (full v1.6) before publishing.
-# Engine integration uses path dep behind feature flag.
-publish = false
 
 [dependencies]
 uzor-urx-core = { workspace = true }
