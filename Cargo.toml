@@ -37,7 +37,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.4.0"
+version = "1.4.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zeng3ld/uzor"
@@ -46,27 +46,27 @@ keywords = ["ui", "rendering", "framework", "headless", "gpu"]
 categories = ["gui", "rendering", "graphics"]
 
 [workspace.dependencies]
-uzor = { version = "1.4.0", path = "./uzor" }
-uzor-fonts = { version = "1.4.0", path = "./uzor-fonts" }
-uzor-render-hub = { version = "1.4.0", path = "./uzor-render-hub" }
-uzor-render-vello-gpu = { version = "1.4.0", path = "./uzor-render-vello-gpu" }
-uzor-render-vello-hybrid = { version = "1.4.0", path = "./uzor-render-vello-hybrid" }
-uzor-render-vello-cpu = { version = "1.4.0", path = "./uzor-render-vello-cpu" }
-uzor-render-tiny-skia = { version = "1.4.0", path = "./uzor-render-tiny-skia" }
-uzor-render-wgpu-instanced = { version = "1.4.0", path = "./uzor-render-wgpu-instanced" }
-uzor-render-canvas2d = { version = "1.4.0", path = "./uzor-render-canvas2d" }
-uzor-window-desktop = { version = "1.4.0", path = "./uzor-window-desktop" }
-uzor-icon = { version = "1.4.0", path = "./uzor-icon" }
-uzor-window-web = { version = "1.4.0", path = "./uzor-window-web" }
-uzor-window-mobile = { version = "1.4.0", path = "./uzor-window-mobile" }
-uzor-framework-macros = { version = "1.4.0", path = "./uzor-framework-macros" }
-uzor-desktop = { version = "1.4.0", path = "./uzor-desktop" }
-uzor-agent-api = { version = "1.4.0", path = "./uzor-agent-api" }
-uzor-urx-core = { version = "1.4.0", path = "./uzor-urx-core" }
-uzor-urx-cpu  = { version = "1.4.0", path = "./uzor-urx-cpu" }
-uzor-urx-wgpu = { version = "1.4.0", path = "./uzor-urx-wgpu" }
-uzor-urx-engine = { version = "1.4.0", path = "./uzor-urx-engine" }
-uzor-urx-hybrid = { version = "1.4.0", path = "./uzor-urx-hybrid" }
-uzor-urx-glyph = { version = "1.4.0", path = "./uzor-urx-glyph" }
+uzor = { version = "1.4.1", path = "./uzor" }
+uzor-fonts = { version = "1.4.1", path = "./uzor-fonts" }
+uzor-render-hub = { version = "1.4.1", path = "./uzor-render-hub" }
+uzor-render-vello-gpu = { version = "1.4.1", path = "./uzor-render-vello-gpu" }
+uzor-render-vello-hybrid = { version = "1.4.1", path = "./uzor-render-vello-hybrid" }
+uzor-render-vello-cpu = { version = "1.4.1", path = "./uzor-render-vello-cpu" }
+uzor-render-tiny-skia = { version = "1.4.1", path = "./uzor-render-tiny-skia" }
+uzor-render-wgpu-instanced = { version = "1.4.1", path = "./uzor-render-wgpu-instanced" }
+uzor-render-canvas2d = { version = "1.4.1", path = "./uzor-render-canvas2d" }
+uzor-window-desktop = { version = "1.4.1", path = "./uzor-window-desktop" }
+uzor-icon = { version = "1.4.1", path = "./uzor-icon" }
+uzor-window-web = { version = "1.4.1", path = "./uzor-window-web" }
+uzor-window-mobile = { version = "1.4.1", path = "./uzor-window-mobile" }
+uzor-framework-macros = { version = "1.4.1", path = "./uzor-framework-macros" }
+uzor-desktop = { version = "1.4.1", path = "./uzor-desktop" }
+uzor-agent-api = { version = "1.4.1", path = "./uzor-agent-api" }
+uzor-urx-core = { version = "1.4.1", path = "./uzor-urx-core" }
+uzor-urx-cpu  = { version = "1.4.1", path = "./uzor-urx-cpu" }
+uzor-urx-wgpu = { version = "1.4.1", path = "./uzor-urx-wgpu" }
+uzor-urx-engine = { version = "1.4.1", path = "./uzor-urx-engine" }
+uzor-urx-hybrid = { version = "1.4.1", path = "./uzor-urx-hybrid" }
+uzor-urx-glyph = { version = "1.4.1", path = "./uzor-urx-glyph" }
 serde = { version = "1.0", features = ["derive"] }
 

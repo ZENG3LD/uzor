@@ -34,6 +34,7 @@ pub mod path;
 pub mod rounded;
 pub mod image_reg;
 pub mod image_draw;
+pub mod simd;
 #[cfg(feature = "parallel")]
 pub mod parallel;
 
