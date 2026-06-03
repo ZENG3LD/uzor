@@ -20,9 +20,9 @@ struct FrameUniform {
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct NodeUniform {
-    model: [[f32; 4]; 4],
-    tint: [f32; 4],
-    _pad: [f32; 12], // pad up to 256 — typical wgpu min-uniform-binding-alignment
+    model: [[f32; 4]; 4], // 64
+    tint: [f32; 4],       // 16
+    _pad: [f32; 44],      // pad to 256 to satisfy min_uniform_buffer_offset_alignment
 }
 
 const NODE_UNIFORM_SIZE: u64 = std::mem::size_of::<NodeUniform>() as u64;
@@ -259,7 +259,7 @@ impl Renderer3D {
             node_data.push(NodeUniform {
                 model: n.model_matrix().to_cols_array_2d(),
                 tint: n.color_tint,
-                _pad: [0.0; 12],
+                _pad: [0.0; 44],
             });
         }
         if !node_data.is_empty() {
