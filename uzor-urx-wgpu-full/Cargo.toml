@@ -1,0 +1,18 @@
+[package]
+name        = "uzor-urx-wgpu-full"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "URX full-GPU compute pipeline backend — encodes scene to GPU buffer, tile-bins via compute dispatch, sorts per-tile, rasterises via PTCL fragment pass. Sibling to urx-cpu / urx-hybrid / urx-wgpu (instanced)."
+keywords    = ["graphics", "rendering", "ui", "wgpu", "compute"]
+categories  = ["graphics", "rendering"]
+
+[dependencies]
+uzor-urx-core = { workspace = true }
+wgpu = "28"
+bytemuck = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+pollster = "0.4"

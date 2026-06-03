@@ -25,6 +25,8 @@ members = [
     "uzor-urx-engine",
     "uzor-urx-hybrid",
     "uzor-urx-glyph",
+    # URX full-GPU compute pipeline backend (v1.6 scaffold)
+    "uzor-urx-wgpu-full",
     # Utils
     "uzor-render-hub",
     # Icon utilities
@@ -68,5 +70,6 @@ uzor-urx-wgpu = { version = "1.4.2", path = "./uzor-urx-wgpu" }
 uzor-urx-engine = { version = "1.4.2", path = "./uzor-urx-engine" }
 uzor-urx-hybrid = { version = "1.4.2", path = "./uzor-urx-hybrid" }
 uzor-urx-glyph = { version = "1.4.2", path = "./uzor-urx-glyph" }
+uzor-urx-wgpu-full = { version = "1.4.2", path = "./uzor-urx-wgpu-full" }
 serde = { version = "1.0", features = ["derive"] }
 
