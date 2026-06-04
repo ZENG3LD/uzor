@@ -7,14 +7,16 @@
 @group(0) @binding(1) var s_hdr:    sampler;
 @group(0) @binding(2) var t_bloom:  texture_2d<f32>;
 @group(0) @binding(3) var s_bloom:  sampler;
+@group(0) @binding(4) var t_ssao:   texture_2d<f32>;
+@group(0) @binding(5) var s_ssao:   sampler;
 
 struct Params {
     bloom_strength: f32,
-    _pad0: f32,
+    ssao_strength:  f32,
     _pad1: f32,
     _pad2: f32,
 };
-@group(0) @binding(4) var<uniform> params: Params;
+@group(0) @binding(6) var<uniform> params: Params;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -48,7 +50,12 @@ fn aces_filmic(x: vec3<f32>) -> vec3<f32> {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let hdr = textureSample(t_hdr, s_hdr, in.uv).rgb;
     let bloom = textureSample(t_bloom, s_bloom, in.uv).rgb;
-    let lit = hdr + bloom * params.bloom_strength;
+    let ao = textureSample(t_ssao, s_ssao, in.uv).r;
+    // Wave 20: AO modulates HDR. ssao_strength = 0 disables; 1 = full
+    // darkening at occluders. ssao texture is 1.0 outside any crease,
+    // so the lerp falls back to identity when SSAO is effectively off.
+    let ao_mul = mix(1.0, ao, params.ssao_strength);
+    let lit = hdr * ao_mul + bloom * params.bloom_strength;
     let tonemapped = aces_filmic(lit);
     let gamma = pow(tonemapped, vec3<f32>(1.0 / 2.2));
     return vec4<f32>(gamma, 1.0);

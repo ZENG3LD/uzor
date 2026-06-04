@@ -250,10 +250,20 @@ pub struct Renderer3D {
     bloom_params_buf: wgpu::Buffer,                // threshold for level 0 only
     bloom_zero_params_buf: wgpu::Buffer,           // threshold = 0 for other levels
     composite_bgl: wgpu::BindGroupLayout,
-    composite_params_buf: wgpu::Buffer,            // bloom_strength
+    composite_params_buf: wgpu::Buffer,            // bloom_strength + ssao_strength
     /// Tunable HDR/bloom knobs (consumer-set via setters).
     bloom_threshold: f32,
     bloom_strength: f32,
+
+    // Wave 20 — depth-based SSAO (half-res R8Unorm).
+    ssao_view: wgpu::TextureView,
+    ssao_sampler: wgpu::Sampler,
+    pipeline_ssao: wgpu::RenderPipeline,
+    ssao_bgl: wgpu::BindGroupLayout,
+    ssao_params_buf: wgpu::Buffer,
+    ssao_strength: f32,
+    ssao_radius_px: f32,
+    ssao_max_delta: f32,
     mesh_cache: MeshCache,
     mesh_lit_cache: crate::mesh_cache::MeshLitCache,
     mesh_uv_cache: crate::mesh_cache::MeshUvCache,
@@ -1074,6 +1084,7 @@ impl Renderer3D {
         let composite_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("urx3d.composite_bgl"),
             entries: &[
+                // 0/1 HDR + sampler
                 wgpu::BindGroupLayoutEntry {
                     binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
@@ -1088,6 +1099,7 @@ impl Renderer3D {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // 2/3 bloom + sampler
                 wgpu::BindGroupLayoutEntry {
                     binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
@@ -1102,8 +1114,24 @@ impl Renderer3D {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // 4/5 ssao + sampler (Wave 20)
                 wgpu::BindGroupLayoutEntry {
                     binding: 4, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                // 6 params (bloom_strength + ssao_strength)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6, visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -1118,6 +1146,77 @@ impl Renderer3D {
             size: 16,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
+        });
+
+        // ── Wave 20 — SSAO half-res target + pipeline ─────────────
+        let (ssao_view, ssao_sampler) = Self::create_ssao(device, initial_size);
+        let ssao_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("urx3d.ssao_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let ssao_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.ssao_params"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ssao_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("urx3d.ssao"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/ssao.wgsl").into()),
+        });
+        let ssao_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("urx3d.ssao_pipeline_layout"),
+            bind_group_layouts: &[&ssao_bgl],
+            immediate_size: 0,
+        });
+        let pipeline_ssao = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urx3d.pipeline_ssao"),
+            layout: Some(&ssao_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &ssao_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &ssao_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::R8Unorm,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
         });
         let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("urx3d.composite"),
@@ -1236,6 +1335,14 @@ impl Renderer3D {
             composite_params_buf,
             bloom_threshold: 1.0,
             bloom_strength: 0.04,
+            ssao_view,
+            ssao_sampler,
+            pipeline_ssao,
+            ssao_bgl,
+            ssao_params_buf,
+            ssao_strength: 0.7,
+            ssao_radius_px: 16.0,
+            ssao_max_delta: 0.4,
             mesh_cache: MeshCache::new(),
             mesh_lit_cache: crate::mesh_cache::MeshLitCache::new(),
             mesh_uv_cache: crate::mesh_cache::MeshUvCache::new(),
@@ -1341,6 +1448,36 @@ impl Renderer3D {
         (hdr_view, hdr_sampler, bloom_views, bloom_sampler, bloom_size)
     }
 
+    /// Wave 20 — half-resolution SSAO target (R8Unorm).
+    fn create_ssao(
+        device: &wgpu::Device,
+        size: (u32, u32),
+    ) -> (wgpu::TextureView, wgpu::Sampler) {
+        let w = (size.0 / 2).max(1);
+        let h = (size.1 / 2).max(1);
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("urx3d.ssao_target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("urx3d.ssao_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        (view, sampler)
+    }
+
     fn create_depth(device: &wgpu::Device, size: (u32, u32)) -> wgpu::TextureView {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("urx3d.depth"),
@@ -1374,8 +1511,24 @@ impl Renderer3D {
         self.bloom_views = bloom_views;
         self.bloom_sampler = bloom_sampler;
         self.bloom_size = bloom_size;
+        // Wave 20 — SSAO target follows the swapchain (half-res).
+        let (ssao_view, ssao_sampler) = Self::create_ssao(device, size);
+        self.ssao_view = ssao_view;
+        self.ssao_sampler = ssao_sampler;
         self.depth_size = size;
     }
+
+    /// Wave 20 — tunable SSAO strength (0 = disabled, 1 = full crease
+    /// darkening). Default 0.7.
+    pub fn set_ssao_strength(&mut self, s: f32) { self.ssao_strength = s.clamp(0.0, 1.0); }
+
+    /// Wave 20 — sample radius in screen-space PIXELS. Higher = wider
+    /// occluder search; too high causes haloing on edges. Default 16.
+    pub fn set_ssao_radius_px(&mut self, r: f32) { self.ssao_radius_px = r.max(1.0); }
+
+    /// Wave 20 — max world-space depth delta that still counts an
+    /// occluder. Larger = darker creases / longer-range AO. Default 0.4.
+    pub fn set_ssao_max_delta(&mut self, d: f32) { self.ssao_max_delta = d.max(0.001); }
 
     /// Wave 12 — tunable bloom threshold (HDR luma above this radiates
     /// into the bloom pyramid).
@@ -2322,18 +2475,19 @@ impl Renderer3D {
         } // close the block opened at "// 7." — pass + tpass released
 
         // ── Wave 12 — bloom pyramid + ACES composite ──────────────
-        self.run_bloom_and_composite(device, queue, encoder, target_view);
+        self.run_bloom_and_composite(device, queue, encoder, target_view, camera);
     }
 
     /// Wave 12 — downsample HDR → bloom pyramid (with bright-pass at
     /// level 0), upsample back additively, then composite (HDR +
-    /// bloom) into the swapchain through ACES + gamma.
+    /// bloom + SSAO) into the swapchain through ACES + gamma.
     fn run_bloom_and_composite(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         target_view: &wgpu::TextureView,
+        camera: &PerspectiveCamera,
     ) {
         // Bright-pass params for the FIRST downsample (level 0 reads
         // the HDR target, applies the threshold while shrinking).
@@ -2405,10 +2559,52 @@ impl Renderer3D {
             p.draw(0..3, 0..1);
         }
 
-        // Composite — write bloom_strength into params then run
-        // HDR + bloom[0] through the ACES composite shader into the
-        // user-facing swapchain.
-        let cp = [self.bloom_strength, 0.0, 0.0, 0.0];
+        // ── Wave 20 — SSAO pass: depth → half-res AO map ───────
+        // Skip the SSAO render if strength = 0 (consumer disabled it):
+        // clear the AO target to white so the composite multiplier
+        // becomes a no-op for that pixel set.
+        let ssao_bp = [
+            camera.z_near, camera.z_far,
+            self.ssao_radius_px, self.ssao_max_delta,
+        ];
+        queue.write_buffer(&self.ssao_params_buf, 0, bytemuck::bytes_of(&ssao_bp));
+        let ssao_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("urx3d.ssao_bg"),
+            layout: &self.ssao_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.depth_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.ssao_sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: self.ssao_params_buf.as_entire_binding() },
+            ],
+        });
+        {
+            let mut sp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("urx3d.ssao_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.ssao_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            if self.ssao_strength > 0.0 {
+                sp.set_pipeline(&self.pipeline_ssao);
+                sp.set_bind_group(0, &ssao_bg, &[]);
+                sp.draw(0..3, 0..1);
+            }
+        }
+
+        // Composite — write bloom_strength + ssao_strength into params
+        // then run HDR + bloom[0] + ssao through the ACES composite
+        // shader into the user-facing swapchain.
+        let cp = [self.bloom_strength, self.ssao_strength, 0.0, 0.0];
         queue.write_buffer(&self.composite_params_buf, 0, bytemuck::bytes_of(&cp));
 
         let composite_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2419,7 +2615,9 @@ impl Renderer3D {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.hdr_sampler) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.bloom_views[0]) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.bloom_sampler) },
-                wgpu::BindGroupEntry { binding: 4, resource: self.composite_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&self.ssao_view) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&self.ssao_sampler) },
+                wgpu::BindGroupEntry { binding: 6, resource: self.composite_params_buf.as_entire_binding() },
             ],
         });
         let mut p = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
