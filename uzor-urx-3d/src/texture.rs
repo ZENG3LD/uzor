@@ -81,6 +81,41 @@ impl Texture3D {
         Self { texture, view, sampler, width, height }
     }
 
+    /// Build a texture as a RENDER TARGET (RGBA8 / Srgb / RENDER_ATTACHMENT
+    /// + TEXTURE_BINDING). Used by Wave 8 to capture a Scene3D or URX 2D
+    /// scene into a texture, then bind it back as a `Texture3D` for a 3D
+    /// quad (URX 2D inside 3D) or as a `SceneCmd::image` (3D inside URX 2D).
+    pub fn render_target(device: &wgpu::Device, width: u32, height: u32) -> Self {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("urx3d.tex.render_target"),
+            size: wgpu::Extent3d {
+                width: width.max(1),
+                height: height.max(1),
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("urx3d.tex.rt_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        Self { texture, view, sampler, width, height }
+    }
+
     /// 64×64 procedural checkerboard atlas (RGB rainbow on bright cells).
     /// Useful default for demos and tests without shipping an image.
     pub fn checkerboard(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {

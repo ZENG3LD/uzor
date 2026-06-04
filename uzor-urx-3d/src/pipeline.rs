@@ -1198,6 +1198,29 @@ impl Renderer3D {
     pub fn color_format(&self) -> wgpu::TextureFormat {
         self.color_format
     }
+
+    /// Wave 8 — render the scene to an `OffscreenTarget` (a Texture3D
+    /// with `RENDER_ATTACHMENT + TEXTURE_BINDING`). The same texture
+    /// can then be passed to a `Node::new_textured` / `Node::new_pbr`
+    /// to embed the 3D output inside another 3D scene, or be bound as
+    /// a URX 2D `SceneCmd::image` source.
+    ///
+    /// The renderer's color_format must match the target's
+    /// (`Rgba8UnormSrgb`). If you constructed the renderer for a
+    /// different swapchain format, re-create it with `Rgba8UnormSrgb`
+    /// for offscreen rendering or split into two renderers.
+    pub fn render_to_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &Texture3D,
+        camera: &PerspectiveCamera,
+        scene: &Scene3D,
+    ) {
+        self.resize(device, (target.width, target.height));
+        self.render(device, queue, encoder, &target.view, camera, scene);
+    }
 }
 
 /// Build a model matrix from translation/rotation/scale.
