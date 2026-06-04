@@ -16,6 +16,7 @@
 //! glTF.
 
 pub mod camera;
+pub mod gltf_loader;
 pub mod light;
 pub mod math;
 pub mod mesh;
@@ -24,6 +25,8 @@ pub mod particles;
 pub mod pipeline;
 pub mod scene3d;
 pub mod texture;
+
+pub use gltf_loader::load_gltf;
 
 pub use camera::PerspectiveCamera;
 pub use light::{Light, LightArrayRaw, LightRaw, MAX_LIGHTS};

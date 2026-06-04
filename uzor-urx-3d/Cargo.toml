@@ -13,6 +13,7 @@ categories  = ["graphics", "rendering"]
 wgpu = "28"
 bytemuck = { version = "1", features = ["derive"] }
 glam = { version = "0.29", features = ["bytemuck"] }
+gltf = { version = "1", default-features = false, features = ["import", "utils", "names"] }
 
 [dev-dependencies]
 pollster   = "0.4"
