@@ -32,6 +32,7 @@ fn glyph_run_via_backend_paints_pixels() {
         font_size: 32.0,
         brush: Brush::Solid(Color::rgba8(255, 255, 255, 255)),
         transform: Affine::translate((0.0, 50.0)),
+        text: None,
     });
     CpuBackend::new().render(&scene, &mut p).unwrap();
 

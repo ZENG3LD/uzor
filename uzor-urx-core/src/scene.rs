@@ -5,7 +5,7 @@
 //! variants only when a real consumer needs them. New variants MUST be
 //! implementable across all 3 backends or the variant doesn't ship.
 
-use crate::math::{Affine, BezPath, Brush, Color, Rect, RoundedRect, Vec2};
+use crate::math::{Affine, BezPath, BlendMode, Brush, Color, Rect, RoundedRect, Vec2};
 
 /// Stroke parameters for line/path stroking.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -115,12 +115,25 @@ pub enum DrawCommand {
     },
     /// Pre-shaped glyph run. Position is the run's origin; per-glyph
     /// (x, y) are relative offsets.
+    ///
+    /// `text` is an OPTIONAL source-string companion: when `Some`, backends
+    /// that rasterise text through a `&str`-driven atlas API (e.g.
+    /// urx-wgpu's `InstancedRenderContext::fill_text`) can use it
+    /// directly. When `None`, backends MUST drive their own glyph atlas
+    /// via the (font, glyph_id, font_size) tuple. Producers SHOULD set
+    /// it for round-trip-friendly text but MAY omit it when only
+    /// pre-shaped glyph ids are available (cosmic-text output, etc.).
     GlyphRun {
         glyphs:    Vec<Glyph>,
         font:      FontId,
         font_size: f32,
         brush:     Brush,
         transform: Affine,
+        /// Optional source string for backends that take `&str`. Set
+        /// to `Some(source.to_string())` when emitting from a context
+        /// that has the original string available; leave `None` when
+        /// only pre-shaped glyph ids are known.
+        text:      Option<String>,
     },
     /// Image (texture) into destination rect with optional source crop.
     Image {
@@ -142,6 +155,26 @@ pub enum DrawCommand {
         transform: Affine,
     },
     PopClip,
+
+    /// Push a blend layer. Every subsequent draw command goes into an
+    /// offscreen target (per backend's choice — texture on GPU,
+    /// pixmap on CPU) until the matching `PopBlendLayer` composites
+    /// the layer back over the parent target using `mode`.
+    ///
+    /// Backends that don't yet implement non-`SrcOver` blend modes
+    /// degrade silently to `SrcOver` (and emit a counter). The IR
+    /// carries the request verbatim — no degradation at the producer
+    /// side.
+    PushBlendLayer {
+        mode:      BlendMode,
+        /// Per-layer alpha multiplier on the final composite. `1.0`
+        /// preserves the layer's own alpha; `< 1.0` fades it.
+        alpha:     f32,
+        transform: Affine,
+    },
+    /// Pop the matching blend layer pushed by [`Self::PushBlendLayer`]
+    /// and composite it onto the parent target.
+    PopBlendLayer,
 }
 
 /// A complete scene to render. Drained per-frame by the backend.

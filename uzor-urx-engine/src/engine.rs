@@ -780,6 +780,10 @@ fn shift_scene_origin(scene: &mut Scene, dx: f64, dy: f64) {
                 *transform = shift * *transform;
             }
             DrawCommand::PopClip => {}
+            DrawCommand::PushBlendLayer { transform, .. } => {
+                *transform = shift * *transform;
+            }
+            DrawCommand::PopBlendLayer => {}
         }
     }
 }

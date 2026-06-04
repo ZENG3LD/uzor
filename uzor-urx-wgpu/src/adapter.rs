@@ -218,6 +218,17 @@ pub fn adapt_scene_into(scene: &Scene, ctx: &mut InstancedRenderContext) {
                     clip_depth -= 1;
                 }
             }
+            DrawCommand::PushBlendLayer { .. } | DrawCommand::PopBlendLayer => {
+                // Stage 2 IR additions — non-SrcOver blend modes on the
+                // wgpu adapter require offscreen-target lift, which the
+                // underlying InstancedRenderContext doesn't expose yet.
+                // Drop silently; Stage 1b's native pipeline rewrite owns
+                // the proper implementation.
+                metrics::counter!(
+                    uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+                    "kind" => "wgpu_blend_layer_dropped",
+                ).increment(1);
+            }
         }
     }
     while clip_depth > 0 {

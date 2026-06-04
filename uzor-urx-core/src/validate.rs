@@ -117,7 +117,7 @@ pub fn validate_command(cmd: &DrawCommand) -> Result<(), ValidationIssue> {
             }
             Ok(())
         }
-        DrawCommand::GlyphRun { glyphs, font: _, font_size, brush: _, transform } => {
+        DrawCommand::GlyphRun { glyphs, font: _, font_size, brush: _, transform, text: _ } => {
             if !font_size.is_finite() || !is_finite_affine(*transform) {
                 return Err(ValidationIssue::NonFinite);
             }
@@ -152,6 +152,13 @@ pub fn validate_command(cmd: &DrawCommand) -> Result<(), ValidationIssue> {
             Ok(())
         }
         DrawCommand::PopClip => Ok(()),
+        DrawCommand::PushBlendLayer { mode: _, alpha, transform } => {
+            if !alpha.is_finite() || !is_finite_affine(*transform) {
+                return Err(ValidationIssue::NonFinite);
+            }
+            Ok(())
+        }
+        DrawCommand::PopBlendLayer => Ok(()),
     }
 }
 

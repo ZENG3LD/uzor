@@ -48,7 +48,9 @@ pub fn render_parallel(
             DrawCommand::FillPath { .. }
             | DrawCommand::StrokePath { .. }
             | DrawCommand::GlyphRun { .. }
-            | DrawCommand::Image { .. } => {
+            | DrawCommand::Image { .. }
+            | DrawCommand::PushBlendLayer { .. }
+            | DrawCommand::PopBlendLayer => {
                 return Err(RenderError::ParallelUnsupported(i));
             }
             DrawCommand::FillRect { brush, .. }
@@ -119,6 +121,11 @@ pub fn render_parallel(
                     clip.push_rounded_rect(*rect, transform);
                 }
                 DrawCommand::PopClip => { clip.pop(); }
+                DrawCommand::PushBlendLayer { .. } | DrawCommand::PopBlendLayer => {
+                    // Parallel rasteriser skips blend layers (would need
+                    // per-strip offscreen pixmap merge). Sequential
+                    // `render()` is the supported path for blend modes.
+                }
             }
         }
         Ok(())

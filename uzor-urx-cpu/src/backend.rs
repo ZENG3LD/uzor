@@ -197,7 +197,7 @@ impl CpuBackend {
                     let color = brush_to_color(brush);
                     crate::path::stroke_path_aa(pixmap, &clip, path, stroke, color, transform);
                 }
-                DrawCommand::GlyphRun { glyphs, font, font_size, brush, transform } => {
+                DrawCommand::GlyphRun { glyphs, font, font_size, brush, transform, text: _ } => {
                     #[cfg(feature = "glyph")]
                     {
                         let color = brush_to_color(brush);
@@ -237,6 +237,16 @@ impl CpuBackend {
                 }
                 DrawCommand::PopClip => {
                     clip.pop();
+                }
+                DrawCommand::PushBlendLayer { .. } | DrawCommand::PopBlendLayer => {
+                    // Stage 2 IR additions — CPU backend lift to offscreen
+                    // pixmap is a Stage 2.5 follow-up. For now we degrade
+                    // to identity (SrcOver direct draw); counter so
+                    // consumers know the request was dropped.
+                    metrics::counter!(
+                        KEY_RENDER_PRIMITIVES,
+                        "kind" => "cpu_blend_layer_dropped",
+                    ).increment(1);
                 }
             }
         }
