@@ -27,6 +27,49 @@ pub enum Backend {
     /// `WorkloadHint::heavy_compute` is set.
     #[cfg(feature = "full-gpu-backend")]
     FullGpu,
+    /// Wave 9 (urx-3d session) — per-region mixed backend dispatch.
+    /// Engine routes each region through its own `BackendHint` and
+    /// composites the per-region intermediate textures onto the
+    /// swapchain in one final pass. See `BackendHint` + [`RegionMixer`]
+    /// for the per-region routing rules.
+    ///
+    /// Construction: `UrxEngine::new(Backend::Mixed, w, h)`. Mixed
+    /// backend is currently a SCAFFOLD — `render()` accepts a
+    /// [`RenderTarget::Mixed`] but defers actual dispatch to the
+    /// consumer-supplied [`RegionMixer`]. The contract + design lives
+    /// in `crate::mixer`; consumer must drive the mix loop directly
+    /// until Wave 9b ships the in-engine mixer implementation.
+    Mixed,
+}
+
+/// Per-region backend routing hint (Wave 9). Engine reads this on
+/// every `render()` call to a `RenderTarget::Mixed` target; the mixer
+/// dispatches each region through the indicated backend.
+///
+/// This is INTENT — the engine still has to have a concrete
+/// [`Backend`] enum value for the global construction. Mixed mode
+/// reads the per-region `BackendHint` instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendHint {
+    /// Force CPU rasterisation for this region. Right for static UI
+    /// chrome, borders, button bands, anything cache-friendly that
+    /// would waste GPU bandwidth.
+    Cpu,
+    /// Force GPU compute pipeline (URX 1.6). Right for heavy realtime
+    /// regions — charts, particle effects, 5000+ primitive scenes.
+    FullGpu,
+    /// Force Hybrid (CPU rasterise → GPU composite). Right for
+    /// retained-mode regions with many small primitives.
+    Hybrid,
+    /// Default — engine picks per its global construction backend.
+    /// Same as leaving the hint unset.
+    Inherit,
+}
+
+impl Default for BackendHint {
+    fn default() -> Self {
+        Self::Inherit
+    }
 }
 
 /// Hint about the consumer's expected workload — feeds [`Backend::auto`].
@@ -184,6 +227,36 @@ pub enum RenderTarget<'a> {
         src_w:            u32,
         src_h:            u32,
     },
+    /// Wave 9 — Mixed: caller supplies a per-region dispatcher.
+    /// Engine iterates regions in RegionId order, hands each
+    /// (RegionId, bounds, BackendHint, &Scene) to the dispatcher's
+    /// callback. The dispatcher is responsible for invoking the
+    /// concrete backend per region and compositing onto the final
+    /// swapchain.
+    ///
+    /// This is intentionally a SCAFFOLD: the engine guarantees stable
+    /// iteration order + correct dirty bookkeeping; the dispatcher
+    /// owns intermediate-texture management, recipe-per-backend, and
+    /// composite. Future Wave 9b will move the recipe + composite
+    /// into the engine itself.
+    Mixed {
+        dispatcher: &'a mut dyn MixDispatcher,
+    },
+}
+
+/// Callback the consumer provides for `RenderTarget::Mixed`. The
+/// engine calls `dispatch` once per region in stable RegionId order;
+/// the consumer routes the region to its concrete backend (CPU
+/// pixmap / FullGpu / Hybrid / etc.) and accumulates results onto
+/// the final swapchain.
+pub trait MixDispatcher {
+    fn dispatch(
+        &mut self,
+        id: RegionId,
+        bounds: Rect,
+        hint: BackendHint,
+        scene: &Scene,
+    );
 }
 
 /// The URX engine. ONE per window. Owns region state + dirty tracking;
@@ -298,6 +371,12 @@ impl UrxEngine {
         Self::new_with_config(Backend::FullGpu, width, height, config)
     }
 
+    /// Convenience: Mixed engine (Wave 9 — per-region BackendHint
+    /// routing).
+    pub fn new_mixed(width: u32, height: u32) -> Self {
+        Self::new(Backend::Mixed, width, height)
+    }
+
     pub fn backend(&self) -> Backend { self.backend }
     pub fn region_count(&self) -> usize { self.regions.len() }
 
@@ -319,6 +398,52 @@ impl UrxEngine {
         }
         self.dirty.add(bounds);
         self.regions.insert(id, RegionState::new(scene, bounds, cadence));
+    }
+
+    /// Wave 9 — same as `upsert_region` plus a per-region backend
+    /// routing hint. Read by [`RenderTarget::Mixed`] for per-region
+    /// dispatch.
+    pub fn upsert_region_with_hint(
+        &mut self,
+        id:      RegionId,
+        scene:   Scene,
+        bounds:  Rect,
+        cadence: RenderCadence,
+        hint:    BackendHint,
+    ) {
+        if let Some(old) = self.regions.get(&id) {
+            self.dirty.add(old.bounds);
+        }
+        self.dirty.add(bounds);
+        let mut rs = RegionState::new(scene, bounds, cadence);
+        rs.backend_hint = hint;
+        self.regions.insert(id, rs);
+    }
+
+    /// Set just the backend hint for an existing region. No-op if the
+    /// region doesn't exist.
+    pub fn set_region_backend_hint(&mut self, id: RegionId, hint: BackendHint) {
+        if let Some(rs) = self.regions.get_mut(&id) {
+            rs.backend_hint = hint;
+        }
+    }
+
+    /// Read a region's backend hint, falling back to `Inherit` when the
+    /// region doesn't exist.
+    pub fn region_backend_hint(&self, id: RegionId) -> BackendHint {
+        self.regions
+            .get(&id)
+            .map(|r| r.backend_hint)
+            .unwrap_or(BackendHint::Inherit)
+    }
+
+    /// Iterator over (id, bounds, hint, dirty) for all regions, sorted
+    /// by RegionId (matches the engine's painter order). Used by
+    /// Wave 9 mixers to drive per-region dispatch from outside.
+    pub fn regions_for_mix(&self) -> impl Iterator<Item = (RegionId, Rect, BackendHint, &Scene)> + '_ {
+        self.regions
+            .iter()
+            .map(|(&id, rs)| (id, rs.bounds, rs.backend_hint, &rs.scene))
     }
 
     /// Remove a region. Marks the region's bounds dirty so the next
@@ -572,6 +697,16 @@ impl UrxEngine {
                     storage_view, blit, target_view,
                     src_w, src_h, glyph_atlas_view, image_atlas_view,
                 );
+                cache_misses = self.regions.len() as u32;
+            }
+            (RenderTarget::Mixed { dispatcher }, Backend::Mixed) => {
+                // Wave 9 dispatch — engine guarantees stable RegionId
+                // order + dirty bookkeeping; consumer's MixDispatcher
+                // owns concrete backend dispatch + composite.
+                for (id, rs) in self.regions.iter_mut() {
+                    dispatcher.dispatch(*id, rs.bounds, rs.backend_hint, &rs.scene);
+                    rs.dirty = DirtyState::Clean;
+                }
                 cache_misses = self.regions.len() as u32;
             }
             _ => return Err(RenderError::BackendMismatch),

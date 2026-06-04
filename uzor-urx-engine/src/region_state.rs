@@ -5,6 +5,7 @@ use uzor_urx_core::math::{Affine, Rect};
 use uzor_urx_core::scene::Scene;
 
 use crate::cadence::RenderCadence;
+use crate::engine::BackendHint;
 
 #[derive(Debug, Clone)]
 pub struct RegionState {
@@ -20,6 +21,9 @@ pub struct RegionState {
     pub dirty:     DirtyState,
     /// Caller-declared cadence intent.
     pub cadence:   RenderCadence,
+    /// Wave 9 — per-region backend routing hint. Default = Inherit
+    /// (use engine-global backend). Read by [`RenderTarget::Mixed`].
+    pub backend_hint: BackendHint,
 }
 
 impl RegionState {
@@ -31,6 +35,7 @@ impl RegionState {
             // First time we see a region it must paint at least once.
             dirty: DirtyState::Content,
             cadence,
+            backend_hint: BackendHint::Inherit,
         }
     }
 }
