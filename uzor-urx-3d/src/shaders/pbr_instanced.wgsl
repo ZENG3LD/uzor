@@ -1,25 +1,25 @@
-// Instanced PBR (Cook-Torrance) for URX 3D Wave 6.
+// Instanced PBR (Cook-Torrance) for URX 3D Wave 6 + 7 (shadows)
+// + Wave 10b (IBL) + Wave 4b (spot lights) + Wave 11 (normal matrix).
 //
 // Microfacet BRDF: GGX (Trowbridge-Reitz) NDF, Smith geometry,
-// Schlick Fresnel. F0 = mix(0.04, albedo, metalness) — dielectric vs
-// conductor split.
+// Schlick Fresnel. F0 = mix(0.04, albedo, metalness).
 //
-// @group(0): frame + lights (same layout as phong/textured)
+// @group(0): frame + lights
 // @group(1): albedo texture + sampler
-// @group(2): normal map texture + sampler (single 1x1 stub when no
-//           normal map; sampled but multiplied by has_normal_map flag)
+// @group(2): normal map texture + sampler
+// @group(3): shadow depth + sampler + env cubemap + sampler (Wave 10b combined)
 //
 // Vertex inputs (per-vertex VB layout 0):
 //   @0 pos     : vec3<f32>
 //   @1 normal  : vec3<f32>
-//   @2 tangent : vec4<f32>  xyz = tangent dir, w = handedness ±1
+//   @2 tangent : vec4<f32>
 //   @3 uv      : vec2<f32>
 //
 // Instance inputs (per-instance VB layout 1):
 //   @4 model_c0..@7 model_c3 : vec4<f32>
 //   @8 tint                  : vec4<f32>
-//   @9 pbr_params            : vec4<f32>  metalness, roughness, ao,
-//                                          has_normal_map (0 or 1)
+//   @9 pbr_params            : vec4<f32>  metalness, roughness, ao, has_normal_map
+//   @10 nmat_c0..@12 nmat_c2 : vec4<f32>  normal matrix columns (Wave 11)
 
 const MAX_LIGHTS: u32 = 8u;
 const PI: f32 = 3.14159265358979;
@@ -41,7 +41,11 @@ struct LightSlot {
     color:     vec3<f32>,
     intensity: f32,
     range:     f32,
-    _pad2:     vec3<f32>,
+    cos_inner: f32,
+    cos_outer: f32,
+    _pad2c:    f32,
+    dir:       vec3<f32>,
+    _trailing_d: f32,
 };
 
 struct LightArrayU {
@@ -63,8 +67,6 @@ struct LightArrayU {
 @group(2) @binding(0) var t_normal: texture_2d<f32>;
 @group(2) @binding(1) var s_normal: sampler;
 
-// Wave 7 shadow + Wave 10b env cubemap merged into one bind group
-// to stay within the wgpu 4-group limit.
 @group(3) @binding(0) var t_shadow: texture_depth_2d;
 @group(3) @binding(1) var s_shadow: sampler_comparison;
 @group(3) @binding(2) var t_env:    texture_cube<f32>;
@@ -89,20 +91,23 @@ fn sample_shadow(world_pos: vec3<f32>) -> f32 {
 }
 
 struct VsIn {
-    @location(0) pos:     vec3<f32>,
-    @location(1) normal:  vec3<f32>,
-    @location(2) tangent: vec4<f32>,
-    @location(3) uv:      vec2<f32>,
-    @location(4) model_c0: vec4<f32>,
-    @location(5) model_c1: vec4<f32>,
-    @location(6) model_c2: vec4<f32>,
-    @location(7) model_c3: vec4<f32>,
+    @location(0) pos:        vec3<f32>,
+    @location(1) normal:     vec3<f32>,
+    @location(2) tangent:    vec4<f32>,
+    @location(3) uv:         vec2<f32>,
+    @location(4) model_c0:   vec4<f32>,
+    @location(5) model_c1:   vec4<f32>,
+    @location(6) model_c2:   vec4<f32>,
+    @location(7) model_c3:   vec4<f32>,
     @location(8) tint:       vec4<f32>,
     @location(9) pbr_params: vec4<f32>,
+    @location(10) nmat_c0:   vec4<f32>,
+    @location(11) nmat_c1:   vec4<f32>,
+    @location(12) nmat_c2:   vec4<f32>,
 };
 
 struct VsOut {
-    @builtin(position) clip:    vec4<f32>,
+    @builtin(position) clip: vec4<f32>,
     @location(0) world_pos:     vec3<f32>,
     @location(1) world_normal:  vec3<f32>,
     @location(2) world_tangent: vec4<f32>,
@@ -118,9 +123,11 @@ fn vs_main(in: VsIn) -> VsOut {
     let world = model * vec4<f32>(in.pos, 1.0);
     out.world_pos = world.xyz;
 
-    let m3 = mat3x3<f32>(model[0].xyz, model[1].xyz, model[2].xyz);
-    out.world_normal  = normalize(m3 * in.normal);
-    out.world_tangent = vec4<f32>(normalize(m3 * in.tangent.xyz), in.tangent.w);
+    let nmat = mat3x3<f32>(in.nmat_c0.xyz, in.nmat_c1.xyz, in.nmat_c2.xyz);
+    out.world_normal  = normalize(nmat * in.normal);
+    // Tangent in world-space — transformed by nmat too keeps it
+    // perpendicular to the corrected normal under non-uniform scale.
+    out.world_tangent = vec4<f32>(normalize(nmat * in.tangent.xyz), in.tangent.w);
 
     out.clip = frame.view_proj * world;
     out.uv = in.uv;
@@ -172,6 +179,17 @@ fn light_dir_and_atten(
         let r = max(l.range, 1e-4);
         let x = clamp(dist / r, 0.0, 1.0);
         return vec4<f32>(dir, (1.0 - x) * (1.0 - x));
+    } else if (l.kind == 2u) {
+        let d_vec = l.vec - world_pos;
+        let dist = length(d_vec);
+        let dir = d_vec / max(dist, 1e-4);
+        let r = max(l.range, 1e-4);
+        let x = clamp(dist / r, 0.0, 1.0);
+        let dist_atten = (1.0 - x) * (1.0 - x);
+        let cone_axis = normalize(l.dir);
+        let cos_theta = dot(-dir, cone_axis);
+        let cone = smoothstep(l.cos_outer, l.cos_inner, cos_theta);
+        return vec4<f32>(dir, dist_atten * cone);
     } else {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
@@ -186,7 +204,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let ao        = clamp(in.pbr_params.z, 0.0, 1.0);
     let has_nmap  = in.pbr_params.w;
 
-    // Reconstruct world-space normal: use normal map if enabled.
     var n = normalize(in.world_normal);
     if (has_nmap > 0.5) {
         let nm = textureSample(t_normal, s_normal, in.uv).xyz * 2.0 - vec3<f32>(1.0);
@@ -228,18 +245,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         i = i + 1u;
     }
 
-    // ── IBL (Wave 10b) ───────────────────────────────────────────
-    // Approximate split-sum: irradiance = env at normal; specular =
-    // env at reflection direction. Roughness blends between them.
-    // Without a pre-filtered mip chain we use a single-level sample
-    // and lerp by roughness instead — looks plausible, not strictly
-    // correct. Wave 10c could add real pre-filtered mip mapping.
+    // ── IBL (Wave 10b) ─────────────────────────────────────────
     let ndotv = max(dot(n, v), 0.0);
     let r_dir = reflect(-v, n);
     let env_diffuse  = textureSample(t_env, s_env, n).rgb;
     let env_specular = textureSample(t_env, s_env, r_dir).rgb;
-    // Roughness attenuates the sharp reflection toward the diffuse
-    // sample (cheap approximation of pre-filtered roughness mips).
     let env_spec_mix = mix(env_specular, env_diffuse, roughness);
     let f_ibl = fresnel_schlick(ndotv, f0);
     let kd_ibl = (vec3<f32>(1.0) - f_ibl) * (1.0 - metalness);
@@ -251,7 +261,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let ambient = albedo * lights.ambient * ao;
     var color = ambient + lo + ibl;
 
-    // Reinhard tonemap + gamma 2.2
     color = color / (color + vec3<f32>(1.0));
     color = pow(color, vec3<f32>(1.0 / 2.2));
 

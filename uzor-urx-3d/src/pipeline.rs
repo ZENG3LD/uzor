@@ -17,9 +17,31 @@ use crate::{
     texture::{Texture3D, TextureCache, TextureCube},
 };
 use bytemuck::{Pod, Zeroable};
-use glam::Mat4;
+use glam::{Mat3, Mat4};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+
+/// Wave 11 — build the GPU-side normal matrix from a model matrix.
+/// `normal = transpose(inverse(upper_3x3(model)))`, padded to three
+/// vec4 columns (w=0). Falls back to the identity 3×3 when the model
+/// 3×3 is singular (degenerate scale = 0).
+fn normal_matrix_cols(model: &Mat4) -> [[f32; 4]; 3] {
+    let m3 = Mat3::from_mat4(*model);
+    let det = m3.determinant();
+    let n = if det.abs() < 1e-8 {
+        Mat3::IDENTITY
+    } else {
+        m3.inverse().transpose()
+    };
+    let c0 = n.x_axis;
+    let c1 = n.y_axis;
+    let c2 = n.z_axis;
+    [
+        [c0.x, c0.y, c0.z, 0.0],
+        [c1.x, c1.y, c1.z, 0.0],
+        [c2.x, c2.y, c2.z, 0.0],
+    ]
+}
 
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -67,15 +89,21 @@ impl InstanceRaw {
     }
 }
 
-/// Wave 4 per-instance record for the Phong path.
-/// Layout: model (64) + tint (16) + material (16) = 96 bytes / instance.
+/// Wave 4 per-instance record for the Phong path, extended in Wave 11
+/// with normal_matrix (upper-3×3 of the inverse-transpose of model,
+/// padded to three vec4 columns for GPU friendliness).
+///
+/// Layout: model (64) + tint (16) + material (16) + normal_mat (48) = 144.
 /// material = [ambient_k, diffuse_k, specular_k, shininess]
+/// normal_mat columns 0..2 store rows-as-vec4 of the 3×3 normal matrix
+/// with w=0 (the shader treats them as vec3 directly).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct InstanceLitRaw {
     model: [[f32; 4]; 4],
     tint: [f32; 4],
     material: [f32; 4],
+    normal_mat: [[f32; 4]; 3],
 }
 
 impl InstanceLitRaw {
@@ -84,12 +112,16 @@ impl InstanceLitRaw {
             array_stride: std::mem::size_of::<InstanceLitRaw>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0,  shader_location: 3 },
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16, shader_location: 4 },
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 5 },
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48, shader_location: 6 },
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 64, shader_location: 7 },
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 80, shader_location: 8 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0,   shader_location: 3 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16,  shader_location: 4 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32,  shader_location: 5 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48,  shader_location: 6 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 64,  shader_location: 7 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 80,  shader_location: 8 },
+                // Wave 11 — normal matrix columns at locations 9..11
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 96,  shader_location: 9 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 112, shader_location: 10 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 128, shader_location: 11 },
             ],
         }
     }
@@ -97,9 +129,9 @@ impl InstanceLitRaw {
 
 /// Wave 6 per-instance record for the PBR pipeline. PBR vertex has 4
 /// attribute slots (pos@0, normal@1, tangent@2, uv@3) so per-instance
-/// locations start at 4.
+/// locations start at 4. Wave 11 added the normal matrix.
 ///
-/// Layout: model (64) + tint (16) + pbr_params (16) = 96 bytes.
+/// Layout: model (64) + tint (16) + pbr_params (16) + normal_mat (48) = 144.
 /// pbr_params = [metalness, roughness, ao, has_normal_map]
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -107,6 +139,7 @@ struct InstancePbrRaw {
     model: [[f32; 4]; 4],
     tint: [f32; 4],
     pbr_params: [f32; 4],
+    normal_mat: [[f32; 4]; 3],
 }
 
 impl InstancePbrRaw {
@@ -115,12 +148,16 @@ impl InstancePbrRaw {
             array_stride: std::mem::size_of::<InstancePbrRaw>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &[
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0,  shader_location: 4 },
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16, shader_location: 5 },
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 6 },
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48, shader_location: 7 },
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 64, shader_location: 8 },
-                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 80, shader_location: 9 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0,   shader_location: 4 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16,  shader_location: 5 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32,  shader_location: 6 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48,  shader_location: 7 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 64,  shader_location: 8 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 80,  shader_location: 9 },
+                // Wave 11 — normal matrix columns at locations 10..12
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 96,  shader_location: 10 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 112, shader_location: 11 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 128, shader_location: 12 },
             ],
         }
     }
@@ -135,6 +172,8 @@ pub struct Renderer3D {
     // Wave 7 — shadow caster pipelines (depth-only)
     pipeline_shadow_lit: wgpu::RenderPipeline,
     pipeline_shadow_pbr: wgpu::RenderPipeline,
+    // Wave 14 — textured pipeline as shadow caster
+    pipeline_shadow_tex: wgpu::RenderPipeline,
     node_bgl: wgpu::BindGroupLayout,
     tex_bgl: wgpu::BindGroupLayout,
     frame_buf: wgpu::Buffer,
@@ -475,54 +514,10 @@ impl Renderer3D {
                 },
             ],
         });
-        let pipeline_layout_tex =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("urx3d.pipeline_layout_textured"),
-                bind_group_layouts: &[&frame_bgl_phong, &tex_bgl],
-                immediate_size: 0,
-            });
-        let pipeline_textured = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("urx3d.pipeline_textured"),
-            layout: Some(&pipeline_layout_tex),
-            vertex: wgpu::VertexState {
-                module: &shader_tex,
-                entry_point: Some("vs_main"),
-                buffers: &[
-                    VertexUv::vertex_buffer_layout(),
-                    InstanceLitRaw::vertex_buffer_layout(),
-                ],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader_tex,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        // pipeline_textured is rebuilt after shadow_bgl is created (Wave 14)
+        // — see the `pipeline_textured` (`_v2`) construction below.
+        // shader_tex is held in this scope for use by that build.
+        let _shader_tex_held_in_scope_for_textured_v2 = ();
 
         // ── PBR (Wave 6) ───────────────────────────────────────────────
         let shader_pbr = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -834,8 +829,61 @@ impl Renderer3D {
         };
         let lit_vb = [VertexLit::vertex_buffer_layout(), InstanceLitRaw::vertex_buffer_layout()];
         let pbr_vb = [VertexPbr::vertex_buffer_layout(), InstancePbrRaw::vertex_buffer_layout()];
+        let tex_vb = [VertexUv::vertex_buffer_layout(), InstanceLitRaw::vertex_buffer_layout()];
         let pipeline_shadow_lit = make_shadow_pipeline("urx3d.pipeline_shadow_lit", "vs_lit", &lit_vb);
         let pipeline_shadow_pbr = make_shadow_pipeline("urx3d.pipeline_shadow_pbr", "vs_pbr", &pbr_vb);
+        // Wave 14 — textured shadow caster (reuses VertexUv + InstanceLitRaw).
+        let pipeline_shadow_tex = make_shadow_pipeline("urx3d.pipeline_shadow_tex", "vs_tex", &tex_vb);
+
+        // Wave 14 — final textured pipeline (now with shadow group at slot 2).
+        let pipeline_layout_tex_v2 =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("urx3d.pipeline_layout_textured_v2"),
+                bind_group_layouts: &[&frame_bgl_phong, &tex_bgl, &shadow_bgl],
+                immediate_size: 0,
+            });
+        let pipeline_textured = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urx3d.pipeline_textured_v2"),
+            layout: Some(&pipeline_layout_tex_v2),
+            vertex: wgpu::VertexState {
+                module: &shader_tex,
+                entry_point: Some("vs_main"),
+                buffers: &[
+                    VertexUv::vertex_buffer_layout(),
+                    InstanceLitRaw::vertex_buffer_layout(),
+                ],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader_tex,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
 
         // Wave 10b — default sky cubemap + combined shadow+env BG for PBR
         let env_default = Arc::new(TextureCube::default_sky(device, queue));
@@ -860,6 +908,7 @@ impl Renderer3D {
             pipeline_pbr,
             pipeline_shadow_lit,
             pipeline_shadow_pbr,
+            pipeline_shadow_tex,
             node_bgl,
             tex_bgl,
             frame_buf,
@@ -1204,8 +1253,9 @@ impl Renderer3D {
             for &idx in node_indices {
                 let n = &scene.nodes[idx];
                 let mat = n.material;
+                let model = n.model_matrix();
                 lit_instances.push(InstanceLitRaw {
-                    model: n.model_matrix().to_cols_array_2d(),
+                    model: model.to_cols_array_2d(),
                     tint: n.color_tint,
                     material: [
                         mat.ambient_strength,
@@ -1213,6 +1263,7 @@ impl Renderer3D {
                         mat.specular_strength,
                         mat.shininess,
                     ],
+                    normal_mat: normal_matrix_cols(&model),
                 });
             }
             let count = lit_instances.len() as u32 - first;
@@ -1247,8 +1298,9 @@ impl Renderer3D {
             for &idx in node_indices {
                 let n = &scene.nodes[idx];
                 let mat = n.material;
+                let model = n.model_matrix();
                 tex_instances.push(InstanceLitRaw {
-                    model: n.model_matrix().to_cols_array_2d(),
+                    model: model.to_cols_array_2d(),
                     tint: n.color_tint,
                     material: [
                         mat.ambient_strength,
@@ -1256,6 +1308,7 @@ impl Renderer3D {
                         mat.specular_strength,
                         mat.shininess,
                     ],
+                    normal_mat: normal_matrix_cols(&model),
                 });
             }
             let count = tex_instances.len() as u32 - first;
@@ -1326,10 +1379,12 @@ impl Renderer3D {
                     _ => unreachable!(),
                 };
                 let has_nm: f32 = if mat.normal_map.is_some() { 1.0 } else { 0.0 };
+                let model = n.model_matrix();
                 pbr_instances.push(InstancePbrRaw {
-                    model: n.model_matrix().to_cols_array_2d(),
+                    model: model.to_cols_array_2d(),
                     tint: n.color_tint,
                     pbr_params: [mat.metalness, mat.roughness, mat.ao, has_nm],
+                    normal_mat: normal_matrix_cols(&model),
                 });
             }
             let count = pbr_instances.len() as u32 - first;
@@ -1425,6 +1480,18 @@ impl Renderer3D {
                     spass.draw_indexed(0..g.index_count, 0, g.first_instance..end);
                 }
             }
+            // Wave 14 — textured nodes cast shadows too.
+            if !tex_draws.is_empty() {
+                spass.set_pipeline(&self.pipeline_shadow_tex);
+                spass.set_bind_group(0, &self.shadow_frame_bg, &[]);
+                spass.set_vertex_buffer(1, self.instance_tex_buf.slice(..));
+                for g in &tex_draws {
+                    spass.set_vertex_buffer(0, g.vb.slice(..));
+                    spass.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
+                    let end = g.first_instance + g.instance_count;
+                    spass.draw_indexed(0..g.index_count, 0, g.first_instance..end);
+                }
+            }
         }
 
         // 7. One render pass — four pipelines.
@@ -1484,10 +1551,11 @@ impl Renderer3D {
             }
         }
 
-        // Textured (Wave 5) pass
+        // Textured (Wave 5) pass — Wave 14 added shadow group at slot 2
         if !tex_draws.is_empty() {
             pass.set_pipeline(&self.pipeline_textured);
             pass.set_bind_group(0, &self.frame_bg_phong, &[]);
+            pass.set_bind_group(2, &self.shadow_bg, &[]);
             pass.set_vertex_buffer(1, self.instance_tex_buf.slice(..));
             for g in &tex_draws {
                 pass.set_bind_group(1, &g.bg, &[]);

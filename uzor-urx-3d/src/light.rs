@@ -1,12 +1,14 @@
 //! Light sources for the Wave 4 Phong / Blinn-Phong pipeline.
 //!
-//! Two kinds for now:
+//! Three kinds:
 //!   - `Directional` — infinite-distance light, single direction (sun)
-//!   - `Point` — positioned light, inverse-square-ish falloff
+//!   - `Point`       — positioned light, smooth quadratic falloff
+//!   - `Spot`        — positioned + directional cone with inner/outer
+//!                     cutoff cosines (Wave 4b)
 //!
 //! GPU layout: packed 80-byte uniform record per slot. The full
 //! `LightArray` is one uniform block with a count + fixed-size array.
-//! Wave 7 will add per-light shadow params (depth map slice index).
+//! Wave 7 added per-light shadow params (only first directional casts).
 
 use bytemuck::{Pod, Zeroable};
 use glam::Vec3;
@@ -26,9 +28,21 @@ pub enum Light {
         position: Vec3,
         color: [f32; 3],
         intensity: f32,
-        /// Quadratic attenuation = 1 / (1 + linear·d + quad·d²).
-        /// `range` derives both: linear = 4.5/range, quad = 75/range².
+        /// Quadratic attenuation falls smoothly from 1 to 0 in `[0,range]`.
         range: f32,
+    },
+    /// Cone light: positioned + direction + inner/outer cutoff angles.
+    /// Inside `inner_cone_rad` — full brightness. Between inner and
+    /// outer — smoothstep fade. Beyond outer — dark.
+    Spot {
+        position: Vec3,
+        /// Direction the cone POINTS (axis from emitter outward).
+        direction: Vec3,
+        color: [f32; 3],
+        intensity: f32,
+        range: f32,
+        inner_cone_rad: f32,
+        outer_cone_rad: f32,
     },
 }
 
@@ -40,27 +54,45 @@ impl Light {
     pub fn point(position: Vec3, color: [f32; 3], intensity: f32, range: f32) -> Self {
         Self::Point { position, color, intensity, range }
     }
+
+    pub fn spot(
+        position: Vec3,
+        direction: Vec3,
+        color: [f32; 3],
+        intensity: f32,
+        range: f32,
+        inner_cone_rad: f32,
+        outer_cone_rad: f32,
+    ) -> Self {
+        Self::Spot {
+            position,
+            direction,
+            color,
+            intensity,
+            range,
+            inner_cone_rad: inner_cone_rad.max(0.0),
+            outer_cone_rad: outer_cone_rad.max(inner_cone_rad.max(0.0) + 1e-4),
+        }
+    }
 }
 
 /// One light slot — repr(C), 80 bytes, matches WGSL `LightSlot` after
 /// std140-style padding.
 ///
 /// Layout (offsets):
-///   00  kind:u32
+///   00  kind:u32                   (0=dir, 1=point, 2=spot)
 ///   04  _pad0a:u32  ── kind block padded to 16B
 ///   08  _pad0b:u32
 ///   12  _pad0c:u32
-///   16  vec:[f32;3]
+///   16  vec:[f32;3]                (dir vector OR position depending on kind)
 ///   28  _pad1:f32
 ///   32  color:[f32;3]
 ///   44  intensity:f32
 ///   48  range:f32
-///   52  _pad2a:f32
-///   56  _pad2b:f32
+///   52  cos_inner:f32              (Wave 4b — spot only; 0 for non-spot)
+///   56  cos_outer:f32              (Wave 4b — spot only; 0 for non-spot)
 ///   60  _pad2c:f32
-///   64  _trailing_a:f32        ── struct stride rounded up to 80
-///   68  _trailing_b:f32
-///   72  _trailing_c:f32
+///   64  dir:[f32;3]                (Wave 4b — spot only; cone axis)
 ///   76  _trailing_d:f32
 ///   80  end
 #[repr(C)]
@@ -73,8 +105,11 @@ pub struct LightRaw {
     pub color: [f32; 3],
     pub intensity: f32,
     pub range: f32,
-    pub _pad2: [f32; 3],
-    pub _trailing: [f32; 4],
+    pub cos_inner: f32,
+    pub cos_outer: f32,
+    pub _pad2c: f32,
+    pub dir: [f32; 3],
+    pub _trailing_d: f32,
 }
 
 impl LightRaw {
@@ -86,8 +121,11 @@ impl LightRaw {
         color: [0.0; 3],
         intensity: 0.0,
         range: 0.0,
-        _pad2: [0.0; 3],
-        _trailing: [0.0; 4],
+        cos_inner: 0.0,
+        cos_outer: 0.0,
+        _pad2c: 0.0,
+        dir: [0.0; 3],
+        _trailing_d: 0.0,
     };
 
     pub fn from_light(l: &Light) -> Self {
@@ -100,8 +138,11 @@ impl LightRaw {
                 color,
                 intensity,
                 range: 0.0,
-                _pad2: [0.0; 3],
-                _trailing: [0.0; 4],
+                cos_inner: 0.0,
+                cos_outer: 0.0,
+                _pad2c: 0.0,
+                dir: [0.0; 3],
+                _trailing_d: 0.0,
             },
             Light::Point { position, color, intensity, range } => Self {
                 kind: 1,
@@ -111,8 +152,33 @@ impl LightRaw {
                 color,
                 intensity,
                 range,
-                _pad2: [0.0; 3],
-                _trailing: [0.0; 4],
+                cos_inner: 0.0,
+                cos_outer: 0.0,
+                _pad2c: 0.0,
+                dir: [0.0; 3],
+                _trailing_d: 0.0,
+            },
+            Light::Spot {
+                position,
+                direction,
+                color,
+                intensity,
+                range,
+                inner_cone_rad,
+                outer_cone_rad,
+            } => Self {
+                kind: 2,
+                _pad0: [0; 3],
+                vec: position.to_array(),
+                _pad1: 0.0,
+                color,
+                intensity,
+                range,
+                cos_inner: inner_cone_rad.cos(),
+                cos_outer: outer_cone_rad.cos(),
+                _pad2c: 0.0,
+                dir: direction.normalize_or_zero().to_array(),
+                _trailing_d: 0.0,
             },
         }
     }
