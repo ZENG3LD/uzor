@@ -89,6 +89,65 @@ impl VertexLit {
     }
 }
 
+/// Textured-lit vertex format for Wave 5 — pos + normal + uv.
+///
+/// 48 bytes / vertex with f32 pads for std140 alignment. UV is 2D so
+/// fits naturally in the trailing slot (no color — that's per-instance
+/// tint multiplied into the sampled texel).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct VertexUv {
+    pub pos: [f32; 3],
+    pub _pad0: f32,
+    pub normal: [f32; 3],
+    pub _pad1: f32,
+    pub uv: [f32; 2],
+    pub _pad2: [f32; 2],
+}
+
+impl VertexUv {
+    pub fn new(pos: Vec3, normal: Vec3, uv: [f32; 2]) -> Self {
+        Self {
+            pos: pos.to_array(),
+            _pad0: 0.0,
+            normal: normal.normalize_or_zero().to_array(),
+            _pad1: 0.0,
+            uv,
+            _pad2: [0.0; 2],
+        }
+    }
+
+    pub fn vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<VertexUv>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 16,
+                    shader_location: 1,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: 32,
+                    shader_location: 2,
+                },
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MeshUv {
+    pub vertices: Vec<VertexUv>,
+    pub indices: Vec<u32>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
@@ -163,6 +222,56 @@ impl MeshLit {
             indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         }
         Self { vertices, indices }
+    }
+
+    /// Cube with UV mapping — each face has its own quad in
+    /// `[0,1]×[0,1]` UV space, all six faces share the SAME atlas
+    /// region. Wave 5+ atlas manager can substitute different UVs
+    /// per face by post-processing this Mesh's vertices.
+    pub fn cube_uv() -> MeshUv {
+        let faces: [([[f32; 3]; 4], [f32; 3]); 6] = [
+            (
+                [[1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [1.0, -1.0, 1.0]],
+                [1.0, 0.0, 0.0],
+            ),
+            (
+                [[-1.0, -1.0, 1.0], [-1.0, 1.0, 1.0], [-1.0, 1.0, -1.0], [-1.0, -1.0, -1.0]],
+                [-1.0, 0.0, 0.0],
+            ),
+            (
+                [[-1.0, 1.0, -1.0], [-1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, -1.0]],
+                [0.0, 1.0, 0.0],
+            ),
+            (
+                [[-1.0, -1.0, 1.0], [-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, -1.0, 1.0]],
+                [0.0, -1.0, 0.0],
+            ),
+            (
+                [[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]],
+                [0.0, 0.0, 1.0],
+            ),
+            (
+                [[1.0, -1.0, -1.0], [-1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [1.0, 1.0, -1.0]],
+                [0.0, 0.0, -1.0],
+            ),
+        ];
+
+        let uv_corners = [[0.0_f32, 1.0], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
+        let mut vertices = Vec::with_capacity(24);
+        let mut indices = Vec::with_capacity(36);
+        for (i, (corners, normal)) in faces.iter().enumerate() {
+            let base = (i * 4) as u32;
+            let n = Vec3::from_array(*normal);
+            for (k, c) in corners.iter().enumerate() {
+                vertices.push(VertexUv::new(
+                    Vec3::from_array(*c),
+                    n,
+                    uv_corners[k],
+                ));
+            }
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+        MeshUv { vertices, indices }
     }
 
     /// Flat plane on the XZ plane (Y=0) facing +Y.

@@ -53,7 +53,8 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use uzor_urx_3d::{
-    Light, Mesh, MeshLit, Node, PerspectiveCamera, PhongMaterial, Quat, Renderer3D, Scene3D, Vec3,
+    Light, Mesh, MeshLit, Node, PerspectiveCamera, PhongMaterial, Quat, Renderer3D, Scene3D,
+    Texture3D, Vec3,
 };
 
 use winit::application::ApplicationHandler;
@@ -68,10 +69,14 @@ struct CubeSpec {
     pos: [f32; 3],
     scale: f32,
     tint: [f32; 4],
-    /// Optional — `false` (default) routes through unlit pipeline;
-    /// `true` uses the Phong-lit pipeline and material defaults.
+    /// Routing:
+    /// - `lit=false, textured=false` → Wave 3 unlit pipeline
+    /// - `lit=true,  textured=false` → Wave 4 Phong pipeline
+    /// - `textured=true`             → Wave 5 textured pipeline (Phong + atlas)
     #[serde(default)]
     lit: bool,
+    #[serde(default)]
+    textured: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -282,6 +287,7 @@ mod http {
                 scale: 0.3,
                 tint: hue_to_rgba(hue),
                 lit: false,
+                textured: false,
             });
         }
         s.lock().unwrap().pending_cubes.extend(cubes);
@@ -327,6 +333,7 @@ mod http {
                         scale: 0.35,
                         tint: hue_to_rgba(hue),
                         lit: false,
+                        textured: false,
                     });
                 }
             }
@@ -422,6 +429,9 @@ struct App {
     renderer: Option<Renderer3D>,
     cube_mesh: Arc<Mesh>,
     cube_mesh_lit: Arc<MeshLit>,
+    cube_mesh_uv: Arc<uzor_urx_3d::MeshUv>,
+    // Built lazily on first draw (needs device).
+    atlas: Option<Arc<Texture3D>>,
     angle_rad: f32,
     last_frame: Instant,
     fps_accum_frames: u32,
@@ -442,6 +452,8 @@ impl App {
             renderer: None,
             cube_mesh: Arc::new(Mesh::cube_rgb_faces()),
             cube_mesh_lit: Arc::new(MeshLit::cube_lit()),
+            cube_mesh_uv: Arc::new(MeshLit::cube_uv()),
+            atlas: None,
             angle_rad: 0.0,
             last_frame: Instant::now(),
             fps_accum_frames: 0,
@@ -494,12 +506,14 @@ impl App {
         surface.configure(&device, &config);
 
         let renderer = Renderer3D::new(&device, format, (config.width, config.height), 64);
+        let atlas = Arc::new(Texture3D::checkerboard(&device, &queue));
 
         self.surface = Some(surface);
         self.device = Some(device);
         self.queue = Some(queue);
         self.config = Some(config);
         self.renderer = Some(renderer);
+        self.atlas = Some(atlas);
     }
 
     fn reconcile_and_tick(&mut self) {
@@ -620,9 +634,16 @@ impl App {
         };
         scene.push(central_node.with_rotation(Quat::from_rotation_y(self.angle_rad)));
 
-        // Agent-added cubes — each can pick lit or unlit
+        // Agent-added cubes — each can pick unlit / lit / textured
+        let atlas = self.atlas.clone();
         for c in &cubes_extra {
-            let n = if c.lit {
+            let n = if c.textured {
+                if let Some(a) = atlas.as_ref() {
+                    Node::new_textured(self.cube_mesh_uv.clone(), a.clone())
+                } else {
+                    Node::new(self.cube_mesh.clone())
+                }
+            } else if c.lit {
                 Node::new_lit(self.cube_mesh_lit.clone())
             } else {
                 Node::new(self.cube_mesh.clone())

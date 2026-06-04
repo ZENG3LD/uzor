@@ -1,21 +1,22 @@
 //! Scene3D — collection of nodes with per-node transform + tint.
 
 use crate::light::Light;
-use crate::mesh::{Mesh, MeshLit};
+use crate::mesh::{Mesh, MeshLit, MeshUv};
+use crate::texture::Texture3D;
 use glam::{Mat4, Quat, Vec3};
 use std::sync::Arc;
 
-/// Wave 4 material model.
+/// Wave 4+5 material model.
 ///
-/// `Unlit`  → routed through the Wave 3 `unlit_instanced` pipeline.
-///            mesh: Arc<Mesh> (pos + color verts).
-/// `Phong`  → routed through the Wave 4 `phong_instanced` pipeline.
-///            mesh: Arc<MeshLit> (pos + normal + color verts) + Phong
-///            params.
+/// `Unlit`     → Wave 3 `unlit_instanced` (Arc<Mesh>, vertex color only)
+/// `Lit`       → Wave 4 `phong_instanced` (Arc<MeshLit> + PhongMaterial)
+/// `Textured`  → Wave 5 `textured_instanced` (Arc<MeshUv> + Arc<Texture3D>
+///               + PhongMaterial); texel × tint × Phong
 #[derive(Clone)]
 pub enum NodeMesh {
     Unlit(Arc<Mesh>),
     Lit(Arc<MeshLit>),
+    Textured(Arc<MeshUv>, Arc<Texture3D>),
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -62,6 +63,17 @@ impl Node {
     pub fn new_lit(mesh: Arc<MeshLit>) -> Self {
         Self {
             geometry: NodeMesh::Lit(mesh),
+            translation: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+            color_tint: [1.0, 1.0, 1.0, 1.0],
+            material: PhongMaterial::default(),
+        }
+    }
+
+    pub fn new_textured(mesh: Arc<MeshUv>, texture: Arc<Texture3D>) -> Self {
+        Self {
+            geometry: NodeMesh::Textured(mesh, texture),
             translation: Vec3::ZERO,
             rotation: Quat::IDENTITY,
             scale: Vec3::ONE,

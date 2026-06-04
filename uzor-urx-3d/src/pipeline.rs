@@ -11,9 +11,10 @@
 use crate::{
     camera::PerspectiveCamera,
     light::LightArrayRaw,
-    mesh::{Vertex, VertexLit},
+    mesh::{Vertex, VertexLit, VertexUv},
     mesh_cache::MeshCache,
     scene3d::{NodeMesh, Scene3D},
+    texture::{Texture3D, TextureCache},
 };
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
@@ -96,13 +97,18 @@ pub struct Renderer3D {
     pipeline: wgpu::RenderPipeline,
     pipeline_instanced: wgpu::RenderPipeline,
     pipeline_phong: wgpu::RenderPipeline,
+    pipeline_textured: wgpu::RenderPipeline,
     node_bgl: wgpu::BindGroupLayout,
+    tex_bgl: wgpu::BindGroupLayout,
     frame_buf: wgpu::Buffer,
     frame_bg: wgpu::BindGroup,
     frame_bg_inst: wgpu::BindGroup,
     /// Phong path uses a combined BG (frame + lights at bindings 0+1).
     lights_buf: wgpu::Buffer,
     frame_bg_phong: wgpu::BindGroup,
+    /// Textured path reuses the same frame+lights BG; needs its own
+    /// per-texture BG (texture view + sampler), cached.
+    texture_cache: TextureCache,
     /// Ring of per-node uniform buffers — used by the non-instanced
     /// fallback path (kept for backwards compatibility / non-grouped
     /// rendering once we add per-node features that instancing can't
@@ -116,11 +122,17 @@ pub struct Renderer3D {
     /// Lit instance buffer for the Phong path.
     instance_lit_buf: wgpu::Buffer,
     instance_lit_capacity: u32,
+    /// Textured instance buffer (same InstanceLitRaw layout, distinct
+    /// storage so phong + textured can both bind their own VBs in one
+    /// render pass).
+    instance_tex_buf: wgpu::Buffer,
+    instance_tex_capacity: u32,
     depth_view: wgpu::TextureView,
     depth_size: (u32, u32),
     color_format: wgpu::TextureFormat,
     mesh_cache: MeshCache,
     mesh_lit_cache: crate::mesh_cache::MeshLitCache,
+    mesh_uv_cache: crate::mesh_cache::MeshUvCache,
 }
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -415,18 +427,106 @@ impl Renderer3D {
             mapped_at_creation: false,
         });
 
+        let instance_tex_capacity = node_capacity.max(64);
+        let instance_tex_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_tex_buf"),
+            size: std::mem::size_of::<InstanceLitRaw>() as u64 * instance_tex_capacity as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // ── Textured (Wave 5) ──────────────────────────────────────────
+        let shader_tex = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("urx3d.textured_instanced"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("shaders/textured_instanced.wgsl").into(),
+            ),
+        });
+        let tex_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("urx3d.tex_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout_tex =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("urx3d.pipeline_layout_textured"),
+                bind_group_layouts: &[&frame_bgl_phong, &tex_bgl],
+                immediate_size: 0,
+            });
+        let pipeline_textured = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urx3d.pipeline_textured"),
+            layout: Some(&pipeline_layout_tex),
+            vertex: wgpu::VertexState {
+                module: &shader_tex,
+                entry_point: Some("vs_main"),
+                buffers: &[
+                    VertexUv::vertex_buffer_layout(),
+                    InstanceLitRaw::vertex_buffer_layout(),
+                ],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader_tex,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let depth_view = Self::create_depth(device, initial_size);
 
         Self {
             pipeline,
             pipeline_instanced,
             pipeline_phong,
+            pipeline_textured,
             node_bgl,
+            tex_bgl,
             frame_buf,
             frame_bg,
             frame_bg_inst,
             lights_buf,
             frame_bg_phong,
+            texture_cache: TextureCache::new(),
             node_buf,
             node_bgs,
             node_capacity,
@@ -434,11 +534,14 @@ impl Renderer3D {
             instance_capacity,
             instance_lit_buf,
             instance_lit_capacity,
+            instance_tex_buf,
+            instance_tex_capacity,
             depth_view,
             depth_size: initial_size,
             color_format,
             mesh_cache: MeshCache::new(),
             mesh_lit_cache: crate::mesh_cache::MeshLitCache::new(),
+            mesh_uv_cache: crate::mesh_cache::MeshUvCache::new(),
         }
     }
 
@@ -537,6 +640,20 @@ impl Renderer3D {
         self.instance_lit_capacity = new_cap;
     }
 
+    fn grow_instance_tex_buf(&mut self, device: &wgpu::Device, needed: u32) {
+        if needed <= self.instance_tex_capacity {
+            return;
+        }
+        let new_cap = needed.next_power_of_two().max(64);
+        self.instance_tex_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_tex_buf"),
+            size: std::mem::size_of::<InstanceLitRaw>() as u64 * new_cap as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.instance_tex_capacity = new_cap;
+    }
+
     /// One-shot pass: encode the whole Scene3D into the target view.
     ///
     /// Wave 3 path: nodes are grouped by `Arc<Mesh>` identity; each
@@ -567,13 +684,21 @@ impl Renderer3D {
         // 3. Refresh mesh caches.
         self.mesh_cache.begin_frame();
         self.mesh_lit_cache.begin_frame();
+        self.mesh_uv_cache.begin_frame();
+        self.texture_cache.begin_frame();
 
-        // 4. Split nodes by material into two groupings, both keyed on
-        //    Arc<Mesh*> identity for instancing.
+        // 4. Split nodes by material into three groupings, all keyed on
+        //    Arc<*> identity for instancing.
         let mut groups_unlit: BTreeMap<usize, (Arc<crate::mesh::Mesh>, Vec<usize>)> =
             BTreeMap::new();
         let mut groups_lit: BTreeMap<usize, (Arc<crate::mesh::MeshLit>, Vec<usize>)> =
             BTreeMap::new();
+        // Textured groups key on (mesh, texture) pair — same mesh+different
+        // texture → two groups; one drawcall each.
+        let mut groups_tex: BTreeMap<
+            (usize, usize),
+            (Arc<crate::mesh::MeshUv>, Arc<Texture3D>, Vec<usize>),
+        > = BTreeMap::new();
         for (i, n) in scene.nodes.iter().enumerate() {
             match &n.geometry {
                 NodeMesh::Unlit(m) => {
@@ -583,6 +708,14 @@ impl Renderer3D {
                 NodeMesh::Lit(m) => {
                     let k = Arc::as_ptr(m) as usize;
                     groups_lit.entry(k).or_insert_with(|| (m.clone(), Vec::new())).1.push(i);
+                }
+                NodeMesh::Textured(m, t) => {
+                    let k = (Arc::as_ptr(m) as usize, Arc::as_ptr(t) as usize);
+                    groups_tex
+                        .entry(k)
+                        .or_insert_with(|| (m.clone(), t.clone(), Vec::new()))
+                        .2
+                        .push(i);
                 }
             }
         }
@@ -658,7 +791,81 @@ impl Renderer3D {
             queue.write_buffer(&self.instance_lit_buf, 0, bytemuck::cast_slice(&lit_instances));
         }
 
-        // 7. One render pass — both pipelines.
+        // 6b. Build textured instance buffer + per-group BG.
+        let total_tex: u32 = groups_tex.values().map(|(_, _, v)| v.len() as u32).sum();
+        self.grow_instance_tex_buf(device, total_tex.max(1));
+        let mut tex_instances: Vec<InstanceLitRaw> = Vec::with_capacity(total_tex as usize);
+        struct TexGroupDraw {
+            vb: wgpu::Buffer,
+            ib: wgpu::Buffer,
+            index_count: u32,
+            first_instance: u32,
+            instance_count: u32,
+            bg: wgpu::BindGroup,
+        }
+        let mut tex_draws: Vec<TexGroupDraw> = Vec::with_capacity(groups_tex.len());
+        for (_k, (mesh, tex, node_indices)) in groups_tex.iter() {
+            let entry = self.mesh_uv_cache.get_or_upload(device, mesh);
+            let first = tex_instances.len() as u32;
+            for &idx in node_indices {
+                let n = &scene.nodes[idx];
+                let mat = n.material;
+                tex_instances.push(InstanceLitRaw {
+                    model: n.model_matrix().to_cols_array_2d(),
+                    tint: n.color_tint,
+                    material: [
+                        mat.ambient_strength,
+                        mat.diffuse_strength,
+                        mat.specular_strength,
+                        mat.shininess,
+                    ],
+                });
+            }
+            let count = tex_instances.len() as u32 - first;
+
+            // Build per-texture BG inline — TextureCache holds the
+            // resulting BindGroup for next-frame reuse keyed on Arc.
+            // We need the BG by value (clone-safe — BindGroup is
+            // Arc-internal in wgpu).
+            let bg = {
+                let layout = &self.tex_bgl;
+                let cached = self.texture_cache.get_or_create(tex, |t| {
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("urx3d.tex_bg"),
+                        layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&t.view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(&t.sampler),
+                            },
+                        ],
+                    })
+                });
+                cached.clone()
+            };
+
+            tex_draws.push(TexGroupDraw {
+                vb: entry.vb.clone(),
+                ib: entry.ib.clone(),
+                index_count: entry.index_count,
+                first_instance: first,
+                instance_count: count,
+                bg,
+            });
+        }
+        if !tex_instances.is_empty() {
+            queue.write_buffer(
+                &self.instance_tex_buf,
+                0,
+                bytemuck::cast_slice(&tex_instances),
+            );
+        }
+
+        // 7. One render pass — three pipelines.
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("urx3d.pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -707,6 +914,20 @@ impl Renderer3D {
             pass.set_bind_group(0, &self.frame_bg_phong, &[]);
             pass.set_vertex_buffer(1, self.instance_lit_buf.slice(..));
             for g in &lit_draws {
+                pass.set_vertex_buffer(0, g.vb.slice(..));
+                pass.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
+                let end = g.first_instance + g.instance_count;
+                pass.draw_indexed(0..g.index_count, 0, g.first_instance..end);
+            }
+        }
+
+        // Textured (Wave 5) pass
+        if !tex_draws.is_empty() {
+            pass.set_pipeline(&self.pipeline_textured);
+            pass.set_bind_group(0, &self.frame_bg_phong, &[]);
+            pass.set_vertex_buffer(1, self.instance_tex_buf.slice(..));
+            for g in &tex_draws {
+                pass.set_bind_group(1, &g.bg, &[]);
                 pass.set_vertex_buffer(0, g.vb.slice(..));
                 pass.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
                 let end = g.first_instance + g.instance_count;
