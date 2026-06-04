@@ -1,6 +1,6 @@
 //! Wave 15 + 16 — collision + dynamics tests (no GPU, no #[ignore]).
 
-use uzor_urx_physics::{BodyKind, Collider, PhysicsWorld, Vec3};
+use uzor_urx_physics::{BodyKind, Collider, Joint, PhysicsWorld, Vec3};
 
 #[test]
 fn aabb_overlap_detected() {
@@ -101,6 +101,101 @@ fn kinematic_body_doesnt_fall_but_collides() {
     let y = w.body(id).unwrap().position.y;
     assert!((y - 5.0).abs() < 1e-3, "kinematic body should not fall: y={}", y);
     assert_eq!(w.body(id).unwrap().kind, BodyKind::Kinematic);
+}
+
+#[test]
+fn distance_joint_keeps_pendulum_fixed_length() {
+    // A kinematic anchor at (0, 0, 0) holds a dynamic ball that
+    // wants to fall under gravity. Distance joint with rest_length=2
+    // → the ball settles to a swinging arc at radius 2.
+    let mut w = PhysicsWorld::new();
+    let id_anchor = w.fresh_id();
+    w.add(uzor_urx_physics::Body::kinematic(id_anchor, Collider::sphere(0.1), Vec3::ZERO));
+    let id_ball = w.spawn_dynamic(
+        Collider::sphere(0.2),
+        Vec3::new(2.0, 0.0, 0.0), // start to the side, distance 2 from anchor
+        1.0,
+    );
+    w.add_joint(Joint::distance(id_anchor, id_ball, 2.0));
+
+    for _ in 0..240 { w.step(1.0 / 60.0); }
+    let p = w.body(id_ball).unwrap().position;
+    let d = (p - Vec3::ZERO).length();
+    // Pendulum should still be roughly at radius 2 from anchor.
+    assert!(
+        (d - 2.0).abs() < 0.05,
+        "pendulum drifted off the joint length: dist={}, pos={:?}",
+        d, p
+    );
+}
+
+#[test]
+fn distance_joint_chain_hangs_under_gravity() {
+    // Three dynamic balls in a row, joined to a kinematic anchor.
+    // After settling, all three should be roughly straight down with
+    // joint lengths preserved.
+    let mut w = PhysicsWorld::new();
+    let id_anchor = w.fresh_id();
+    w.add(uzor_urx_physics::Body::kinematic(
+        id_anchor, Collider::sphere(0.1), Vec3::ZERO,
+    ));
+    let mut prev = id_anchor;
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        let id = w.spawn_dynamic(
+            Collider::sphere(0.15),
+            Vec3::new(0.0, -(i + 1) as f32, 0.0),
+            1.0,
+        );
+        w.add_joint(Joint::distance(prev, id, 1.0));
+        ids.push(id);
+        prev = id;
+    }
+    // Settle.
+    for _ in 0..600 { w.step(1.0 / 60.0); }
+
+    // First link distance from anchor.
+    let p0 = w.body(ids[0]).unwrap().position;
+    let p1 = w.body(ids[1]).unwrap().position;
+    let p2 = w.body(ids[2]).unwrap().position;
+    let d0 = p0.length();
+    let d1 = (p1 - p0).length();
+    let d2 = (p2 - p1).length();
+    eprintln!("chain links: {} {} {}", d0, d1, d2);
+    // Joint solver should keep each link near 1 unit.
+    for d in [d0, d1, d2] {
+        assert!(
+            (d - 1.0).abs() < 0.15,
+            "joint link drifted: {} (expected ~1)", d
+        );
+    }
+    // Chain hangs roughly downward — y of last ball < y of first.
+    assert!(p2.y < p0.y - 0.5, "chain not hanging downward: p0={:?} p2={:?}", p0, p2);
+}
+
+#[test]
+fn pin_joint_welds_kinematic_anchor_and_dynamic_block() {
+    let mut w = PhysicsWorld::new();
+    let id_anchor = w.fresh_id();
+    w.add(uzor_urx_physics::Body::kinematic(
+        id_anchor, Collider::sphere(0.1), Vec3::new(0.0, 5.0, 0.0),
+    ));
+    let id_block = w.spawn_dynamic(
+        Collider::aabb(Vec3::splat(0.3)),
+        Vec3::new(1.0, 5.0, 0.0),
+        1.0,
+    );
+    // Weld at current offset (1, 0, 0).
+    let joint = Joint::weld(&w, id_anchor, id_block).unwrap();
+    w.add_joint(joint);
+    // 4 seconds of gravity — block must still hang at offset (1,0,0).
+    for _ in 0..240 { w.step(1.0 / 60.0); }
+    let pa = w.body(id_anchor).unwrap().position;
+    let pb = w.body(id_block).unwrap().position;
+    let off = pb - pa;
+    let drift = (off - Vec3::new(1.0, 0.0, 0.0)).length();
+    eprintln!("pin offset drift: {}, off={:?}", drift, off);
+    assert!(drift < 0.1, "pin joint failed to hold: drift={}", drift);
 }
 
 #[test]

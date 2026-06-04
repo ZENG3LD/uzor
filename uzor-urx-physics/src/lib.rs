@@ -84,6 +84,49 @@ impl Body {
     }
 }
 
+/// Wave 17 — joint between two bodies.
+///
+/// All joints are constraint-only — they generate impulses that
+/// preserve a relationship every frame. No rotational state means we
+/// can't simulate a true 1-DOF hinge axis (that needs body rotation),
+/// so HingeAxis is approximated by a `Pin` joint at the hinge point.
+#[derive(Debug, Clone, Copy)]
+pub enum Joint {
+    /// Keep `a` and `b` at exactly `rest_length` apart along the line
+    /// connecting their centres. Rod / chain link.
+    Distance {
+        a: BodyId,
+        b: BodyId,
+        rest_length: f32,
+    },
+    /// Pin two bodies together at their CURRENT centre offset.
+    /// Useful for welding kinematic and dynamic bodies, or building
+    /// rigid compound shapes from primitives. Acts as a ball joint
+    /// (3-axis translation locked, no rotation lock since bodies
+    /// don't carry rotation in this physics world).
+    Pin {
+        a: BodyId,
+        b: BodyId,
+        /// Target world-space offset of b relative to a — captured at
+        /// `Pin::weld` time.
+        offset: Vec3,
+    },
+}
+
+impl Joint {
+    pub fn distance(a: BodyId, b: BodyId, rest_length: f32) -> Self {
+        Self::Distance { a, b, rest_length: rest_length.max(0.0) }
+    }
+    /// Capture the current world-space offset between `a` and `b` and
+    /// freeze it as the pin target. (Bodies must already be in their
+    /// pinned configuration when you call this.)
+    pub fn weld(world: &PhysicsWorld, a: BodyId, b: BodyId) -> Option<Self> {
+        let pa = world.body(a)?.position;
+        let pb = world.body(b)?.position;
+        Some(Self::Pin { a, b, offset: pb - pa })
+    }
+}
+
 /// Overlap event — `a` < `b` always (lower-id first) to avoid dupes.
 #[derive(Debug, Clone, Copy)]
 pub struct Contact {
@@ -99,6 +142,10 @@ pub struct PhysicsWorld {
     pub gravity: Vec3,
     bodies: Vec<Body>,
     next_id: u32,
+    joints: Vec<Joint>,
+    /// Sequential-impulse solver iterations per step. More = stiffer
+    /// joints under load, more CPU.
+    pub joint_iterations: u32,
 }
 
 impl Default for PhysicsWorld {
@@ -109,8 +156,18 @@ impl Default for PhysicsWorld {
 
 impl PhysicsWorld {
     pub fn new() -> Self {
-        Self { gravity: Vec3::new(0.0, -9.81, 0.0), bodies: Vec::new(), next_id: 0 }
+        Self {
+            gravity: Vec3::new(0.0, -9.81, 0.0),
+            bodies: Vec::new(),
+            next_id: 0,
+            joints: Vec::new(),
+            joint_iterations: 8,
+        }
     }
+
+    pub fn add_joint(&mut self, j: Joint) { self.joints.push(j); }
+    pub fn joints(&self) -> &[Joint] { &self.joints }
+    pub fn clear_joints(&mut self) { self.joints.clear(); }
 
     pub fn fresh_id(&mut self) -> BodyId {
         let id = BodyId(self.next_id);
@@ -172,7 +229,109 @@ impl PhysicsWorld {
         for c in &contacts {
             self.resolve_contact(*c);
         }
+
+        // Wave 17 — Sequential Impulse joint solver. Each iteration
+        // walks every joint and projects its constraint, accumulating
+        // toward stable rest. 8 iterations default is a good balance
+        // for chains up to ~6 links.
+        for _ in 0..self.joint_iterations {
+            for j in 0..self.joints.len() {
+                let joint = self.joints[j];
+                self.resolve_joint(joint);
+            }
+        }
+
         contacts
+    }
+
+    fn resolve_joint(&mut self, j: Joint) {
+        match j {
+            Joint::Distance { a, b, rest_length } => {
+                let ia = self.bodies.iter().position(|x| x.id == a);
+                let ib = self.bodies.iter().position(|x| x.id == b);
+                let (ia, ib) = match (ia, ib) { (Some(a), Some(b)) => (a, b), _ => return };
+                let pa = self.bodies[ia].position;
+                let pb = self.bodies[ib].position;
+                let d = pb - pa;
+                let dist = d.length();
+                if dist < 1e-6 { return; }
+                let n = d / dist;
+                let c = dist - rest_length;
+                let inv_a = self.bodies[ia].inv_mass;
+                let inv_b = self.bodies[ib].inv_mass;
+                let inv_sum = inv_a + inv_b;
+                if inv_sum < 1e-6 { return; }
+
+                // Position correction.
+                let push = n * (c / inv_sum);
+                if self.bodies[ia].kind != BodyKind::Static {
+                    let p = push * inv_a;
+                    self.bodies[ia].position += p;
+                }
+                if self.bodies[ib].kind != BodyKind::Static {
+                    let p = push * inv_b;
+                    self.bodies[ib].position -= p;
+                }
+
+                // Velocity correction along the constraint axis.
+                let rv = self.bodies[ib].velocity - self.bodies[ia].velocity;
+                let v_along = rv.dot(n);
+                let lambda = -v_along / inv_sum;
+                let impulse = n * lambda;
+                if self.bodies[ia].kind == BodyKind::Dynamic {
+                    let dv = impulse * inv_a;
+                    self.bodies[ia].velocity -= dv;
+                }
+                if self.bodies[ib].kind == BodyKind::Dynamic {
+                    let dv = impulse * inv_b;
+                    self.bodies[ib].velocity += dv;
+                }
+            }
+            Joint::Pin { a, b, offset } => {
+                let ia = self.bodies.iter().position(|x| x.id == a);
+                let ib = self.bodies.iter().position(|x| x.id == b);
+                let (ia, ib) = match (ia, ib) { (Some(a), Some(b)) => (a, b), _ => return };
+                let pa = self.bodies[ia].position;
+                let pb = self.bodies[ib].position;
+                let target = pa + offset;
+                let err = pb - target;
+                let err_len = err.length();
+                if err_len < 1e-6 { return; }
+                let n = err / err_len;
+                let inv_a = self.bodies[ia].inv_mass;
+                let inv_b = self.bodies[ib].inv_mass;
+                let inv_sum = inv_a + inv_b;
+                if inv_sum < 1e-6 { return; }
+
+                // Position correction — move bodies until b - a == offset.
+                let push = n * (err_len / inv_sum);
+                if self.bodies[ia].kind != BodyKind::Static {
+                    let p = push * inv_a;
+                    self.bodies[ia].position += p;
+                }
+                if self.bodies[ib].kind != BodyKind::Static {
+                    let p = push * inv_b;
+                    self.bodies[ib].position -= p;
+                }
+
+                // Velocity match — bodies should drift together along
+                // any axis (full 3-DOF lock for a pin/ball joint).
+                let rv = self.bodies[ib].velocity - self.bodies[ia].velocity;
+                let rv_len = rv.length();
+                if rv_len < 1e-6 { return; }
+                let dir = rv / rv_len;
+                let lambda = -rv_len / inv_sum;
+                let impulse = dir * lambda;
+                if self.bodies[ia].kind == BodyKind::Dynamic {
+                    let dv = impulse * inv_a;
+                    self.bodies[ia].velocity -= dv;
+                }
+                if self.bodies[ib].kind == BodyKind::Dynamic {
+                    let dv = impulse * inv_b;
+                    self.bodies[ib].velocity += dv;
+                }
+            }
+        }
     }
 
     /// Run only the collision-detection pass without integrating.
