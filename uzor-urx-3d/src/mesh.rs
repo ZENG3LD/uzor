@@ -266,6 +266,80 @@ impl MeshPbr {
         }
         Self { vertices, indices }
     }
+
+    /// Wave 10 — PBR UV sphere with tangents in the +U (longitude)
+    /// direction. UVs span the full [0,1]² rectangle (equirect).
+    pub fn sphere_pbr(radius: f32, rings: u32, slices: u32) -> Self {
+        let rings = rings.max(2);
+        let slices = slices.max(3);
+        let mut vertices = Vec::with_capacity(((rings + 1) * (slices + 1)) as usize);
+        for r in 0..=rings {
+            let v = r as f32 / rings as f32;
+            let phi = v * std::f32::consts::PI;
+            let (sp, cp) = phi.sin_cos();
+            for s in 0..=slices {
+                let u = s as f32 / slices as f32;
+                let theta = u * std::f32::consts::TAU;
+                let (st, ct) = theta.sin_cos();
+                let n = Vec3::new(sp * ct, cp, sp * st);
+                let p = n * radius;
+                // Tangent points in the direction of increasing θ:
+                // ∂/∂θ (sin φ cos θ, cos φ, sin φ sin θ) = sin φ (-sin θ, 0, cos θ)
+                // Normalize and store (handedness +1).
+                let tang = Vec3::new(-st, 0.0, ct).normalize_or_zero();
+                vertices.push(VertexPbr::new(p, n, [tang.x, tang.y, tang.z, 1.0], [u, v]));
+            }
+        }
+        let mut indices = Vec::with_capacity((rings * slices * 6) as usize);
+        let stride = slices + 1;
+        for r in 0..rings {
+            for s in 0..slices {
+                let a = r * stride + s;
+                let b = (r + 1) * stride + s;
+                let c = (r + 1) * stride + s + 1;
+                let d = r * stride + s + 1;
+                indices.extend_from_slice(&[a, b, c, a, c, d]);
+            }
+        }
+        Self { vertices, indices }
+    }
+
+    /// Wave 10 — PBR torus (around Y axis).
+    pub fn torus_pbr(major_r: f32, minor_r: f32, rings: u32, slices: u32) -> Self {
+        let rings = rings.max(3);
+        let slices = slices.max(3);
+        let mut vertices = Vec::with_capacity(((rings + 1) * (slices + 1)) as usize);
+        for r in 0..=rings {
+            let u = r as f32 / rings as f32;
+            let theta = u * std::f32::consts::TAU;
+            let (st, ct) = theta.sin_cos();
+            let centre = Vec3::new(ct * major_r, 0.0, st * major_r);
+            // Outward-from-centre direction in the XZ plane.
+            let radial = Vec3::new(ct, 0.0, st);
+            for s in 0..=slices {
+                let v = s as f32 / slices as f32;
+                let phi = v * std::f32::consts::TAU;
+                let (sp, cp) = phi.sin_cos();
+                let normal = (radial * cp + Vec3::Y * sp).normalize_or_zero();
+                let pos = centre + normal * minor_r;
+                // Tangent along the major ring (∂/∂θ centre direction).
+                let tang = Vec3::new(-st, 0.0, ct).normalize_or_zero();
+                vertices.push(VertexPbr::new(pos, normal, [tang.x, tang.y, tang.z, 1.0], [u, v]));
+            }
+        }
+        let mut indices = Vec::with_capacity((rings * slices * 6) as usize);
+        let stride = slices + 1;
+        for r in 0..rings {
+            for s in 0..slices {
+                let a = r * stride + s;
+                let b = (r + 1) * stride + s;
+                let c = (r + 1) * stride + s + 1;
+                let d = r * stride + s + 1;
+                indices.extend_from_slice(&[a, b, c, a, c, d]);
+            }
+        }
+        Self { vertices, indices }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -405,6 +479,192 @@ impl MeshLit {
             VertexLit::new(Vec3::new(extent, 0.0, -extent), n, color),
         ];
         let idx = vec![0, 1, 2, 0, 2, 3];
+        Self::new(verts, idx)
+    }
+
+    /// Wave 10 — UV sphere on the unit radius with `rings` latitude
+    /// bands and `slices` longitude bands. CCW winding from outside.
+    /// Per-vertex normal = position (since centred at origin).
+    pub fn sphere(radius: f32, rings: u32, slices: u32, color: [f32; 4]) -> Self {
+        let rings = rings.max(2);
+        let slices = slices.max(3);
+        let mut verts = Vec::with_capacity(((rings + 1) * (slices + 1)) as usize);
+        for r in 0..=rings {
+            let v = r as f32 / rings as f32;
+            let phi = v * std::f32::consts::PI; // 0..π
+            let (sp, cp) = phi.sin_cos();
+            for s in 0..=slices {
+                let u = s as f32 / slices as f32;
+                let theta = u * std::f32::consts::TAU; // 0..2π
+                let (st, ct) = theta.sin_cos();
+                let n = Vec3::new(sp * ct, cp, sp * st);
+                let p = n * radius;
+                verts.push(VertexLit::new(p, n, color));
+            }
+        }
+        let mut idx = Vec::with_capacity((rings * slices * 6) as usize);
+        let stride = slices + 1;
+        for r in 0..rings {
+            for s in 0..slices {
+                let a = r * stride + s;
+                let b = (r + 1) * stride + s;
+                let c = (r + 1) * stride + s + 1;
+                let d = r * stride + s + 1;
+                idx.extend_from_slice(&[a, b, c, a, c, d]);
+            }
+        }
+        Self::new(verts, idx)
+    }
+
+    /// Wave 10 — capped cylinder along +Y, base at y=0, top at y=height.
+    pub fn cylinder(radius: f32, height: f32, slices: u32, color: [f32; 4]) -> Self {
+        let slices = slices.max(3);
+        let mut verts: Vec<VertexLit> = Vec::new();
+        let mut idx: Vec<u32> = Vec::new();
+
+        // Side wall — duplicate ring at y=0 and y=h for flat normals.
+        let side_base = verts.len() as u32;
+        for s in 0..=slices {
+            let u = s as f32 / slices as f32;
+            let theta = u * std::f32::consts::TAU;
+            let (st, ct) = theta.sin_cos();
+            let n = Vec3::new(ct, 0.0, st);
+            verts.push(VertexLit::new(Vec3::new(ct * radius, 0.0, st * radius), n, color));
+            verts.push(VertexLit::new(Vec3::new(ct * radius, height, st * radius), n, color));
+        }
+        for s in 0..slices {
+            let i = side_base + s * 2;
+            // (i, i+1) = bottom-top for column s; (i+2, i+3) for column s+1
+            idx.extend_from_slice(&[i, i + 1, i + 3, i, i + 3, i + 2]);
+        }
+
+        // Bottom cap — fan around centre, normal -Y.
+        let bot_centre = verts.len() as u32;
+        verts.push(VertexLit::new(Vec3::ZERO, -Vec3::Y, color));
+        let bot_ring_start = verts.len() as u32;
+        for s in 0..=slices {
+            let u = s as f32 / slices as f32;
+            let theta = u * std::f32::consts::TAU;
+            let (st, ct) = theta.sin_cos();
+            verts.push(VertexLit::new(
+                Vec3::new(ct * radius, 0.0, st * radius),
+                -Vec3::Y,
+                color,
+            ));
+        }
+        for s in 0..slices {
+            // Winding: viewed from -Y (below) — to be CCW we walk
+            // centre → ring[s+1] → ring[s].
+            idx.extend_from_slice(&[bot_centre, bot_ring_start + s + 1, bot_ring_start + s]);
+        }
+
+        // Top cap — fan around centre, normal +Y.
+        let top_centre = verts.len() as u32;
+        verts.push(VertexLit::new(Vec3::new(0.0, height, 0.0), Vec3::Y, color));
+        let top_ring_start = verts.len() as u32;
+        for s in 0..=slices {
+            let u = s as f32 / slices as f32;
+            let theta = u * std::f32::consts::TAU;
+            let (st, ct) = theta.sin_cos();
+            verts.push(VertexLit::new(
+                Vec3::new(ct * radius, height, st * radius),
+                Vec3::Y,
+                color,
+            ));
+        }
+        for s in 0..slices {
+            idx.extend_from_slice(&[top_centre, top_ring_start + s, top_ring_start + s + 1]);
+        }
+
+        Self::new(verts, idx)
+    }
+
+    /// Wave 10 — cone with apex at +Y. Base at y=0, apex at y=height.
+    /// Smooth side normals point outward + slight up (correct for a
+    /// cone surface).
+    pub fn cone(base_radius: f32, height: f32, slices: u32, color: [f32; 4]) -> Self {
+        let slices = slices.max(3);
+        let mut verts: Vec<VertexLit> = Vec::new();
+        let mut idx: Vec<u32> = Vec::new();
+
+        // Cone slant normal: derivation — the outward normal at angle θ
+        // is normalize((cos θ, base_radius/height, sin θ)) — partial of
+        // (r(1-y/h)cosθ, y, r(1-y/h)sinθ) wrt (θ, y) gives that direction.
+        let slant_y = base_radius / height.max(1e-4);
+        let nlen = (1.0 + slant_y * slant_y).sqrt();
+        let ny = slant_y / nlen;
+
+        // Side — duplicate apex per slice for flat-shaded look (no
+        // shared apex would give NaN normals).
+        let side_base = verts.len() as u32;
+        for s in 0..=slices {
+            let u = s as f32 / slices as f32;
+            let theta = u * std::f32::consts::TAU;
+            let (st, ct) = theta.sin_cos();
+            let n = Vec3::new(ct / nlen, ny, st / nlen);
+            verts.push(VertexLit::new(Vec3::new(ct * base_radius, 0.0, st * base_radius), n, color));
+            verts.push(VertexLit::new(Vec3::new(0.0, height, 0.0), n, color));
+        }
+        for s in 0..slices {
+            let i = side_base + s * 2;
+            // Tri: base[s], apex[s], base[s+1]  (CCW from outside)
+            idx.extend_from_slice(&[i, i + 1, i + 2]);
+        }
+
+        // Bottom cap normal -Y.
+        let bot_centre = verts.len() as u32;
+        verts.push(VertexLit::new(Vec3::ZERO, -Vec3::Y, color));
+        let bot_ring_start = verts.len() as u32;
+        for s in 0..=slices {
+            let u = s as f32 / slices as f32;
+            let theta = u * std::f32::consts::TAU;
+            let (st, ct) = theta.sin_cos();
+            verts.push(VertexLit::new(
+                Vec3::new(ct * base_radius, 0.0, st * base_radius),
+                -Vec3::Y,
+                color,
+            ));
+        }
+        for s in 0..slices {
+            idx.extend_from_slice(&[bot_centre, bot_ring_start + s + 1, bot_ring_start + s]);
+        }
+
+        Self::new(verts, idx)
+    }
+
+    /// Wave 10 — torus around the Y axis. `major_r` = distance from
+    /// origin to tube centre; `minor_r` = tube radius.
+    pub fn torus(major_r: f32, minor_r: f32, rings: u32, slices: u32, color: [f32; 4]) -> Self {
+        let rings = rings.max(3);
+        let slices = slices.max(3);
+        let mut verts = Vec::with_capacity(((rings + 1) * (slices + 1)) as usize);
+        for r in 0..=rings {
+            let u = r as f32 / rings as f32;
+            let theta = u * std::f32::consts::TAU; // around Y
+            let (st, ct) = theta.sin_cos();
+            // Centre of tube ring at this θ.
+            let centre = Vec3::new(ct * major_r, 0.0, st * major_r);
+            for s in 0..=slices {
+                let v = s as f32 / slices as f32;
+                let phi = v * std::f32::consts::TAU;
+                let (sp, cp) = phi.sin_cos();
+                // Local frame: outward = (ct, 0, st), up = +Y.
+                let normal = Vec3::new(ct * cp, sp, st * cp).normalize_or_zero();
+                let pos = centre + normal * minor_r;
+                verts.push(VertexLit::new(pos, normal, color));
+            }
+        }
+        let mut idx = Vec::with_capacity((rings * slices * 6) as usize);
+        let stride = slices + 1;
+        for r in 0..rings {
+            for s in 0..slices {
+                let a = r * stride + s;
+                let b = (r + 1) * stride + s;
+                let c = (r + 1) * stride + s + 1;
+                let d = r * stride + s + 1;
+                idx.extend_from_slice(&[a, b, c, a, c, d]);
+            }
+        }
         Self::new(verts, idx)
     }
 }
