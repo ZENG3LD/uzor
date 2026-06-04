@@ -14,7 +14,7 @@ use crate::{
     mesh::{Vertex, VertexLit, VertexPbr, VertexUv},
     mesh_cache::MeshCache,
     scene3d::{NodeMesh, Scene3D},
-    texture::{Texture3D, TextureCache},
+    texture::{Texture3D, TextureCache, TextureCube},
 };
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
@@ -176,6 +176,10 @@ pub struct Renderer3D {
     shadow_frame_buf: wgpu::Buffer,
     shadow_frame_bg: wgpu::BindGroup,
     shadow_bg: wgpu::BindGroup,
+    /// Wave 10b — env cubemap bind group used by the PBR pipeline.
+    env_bg: wgpu::BindGroup,
+    /// Owned default sky cubemap (used when no consumer-supplied env).
+    _env_default: Arc<TextureCube>,
     depth_view: wgpu::TextureView,
     depth_size: (u32, u32),
     color_format: wgpu::TextureFormat,
@@ -694,10 +698,55 @@ impl Renderer3D {
             cache: None,
         });
 
+        // Wave 10b — PBR shadow + env packed into one BGL to stay
+        // under wgpu's 4-bind-group limit. Phong keeps the smaller
+        // `shadow_bgl` (no IBL there yet).
+        let pbr_shadow_env_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("urx3d.pbr_shadow_env_bgl"),
+            entries: &[
+                // Shadow depth
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+                // Env cubemap
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::Cube,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
         let pipeline_layout_pbr_v2 =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("urx3d.pipeline_layout_pbr_v2"),
-                bind_group_layouts: &[&frame_bgl_phong, &tex_bgl, &tex_bgl, &shadow_bgl],
+                bind_group_layouts: &[
+                    &frame_bgl_phong, &tex_bgl, &tex_bgl, &pbr_shadow_env_bgl,
+                ],
                 immediate_size: 0,
             });
         let pipeline_pbr = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -788,6 +837,19 @@ impl Renderer3D {
         let pipeline_shadow_lit = make_shadow_pipeline("urx3d.pipeline_shadow_lit", "vs_lit", &lit_vb);
         let pipeline_shadow_pbr = make_shadow_pipeline("urx3d.pipeline_shadow_pbr", "vs_pbr", &pbr_vb);
 
+        // Wave 10b — default sky cubemap + combined shadow+env BG for PBR
+        let env_default = Arc::new(TextureCube::default_sky(device, queue));
+        let env_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("urx3d.pbr_shadow_env_bg"),
+            layout: &pbr_shadow_env_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&shadow_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&shadow_sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&env_default.view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&env_default.sampler) },
+            ],
+        });
+
         let depth_view = Self::create_depth(device, initial_size);
 
         Self {
@@ -822,6 +884,8 @@ impl Renderer3D {
             shadow_frame_buf,
             shadow_frame_bg,
             shadow_bg,
+            env_bg,
+            _env_default: env_default,
             depth_view,
             depth_size: initial_size,
             color_format,
@@ -1434,11 +1498,11 @@ impl Renderer3D {
             }
         }
 
-        // PBR (Wave 6) pass — with Wave 7 shadow group at slot 3
+        // PBR (Wave 6) pass — Wave 7 shadow + Wave 10b env packed at slot 3
         if !pbr_draws.is_empty() {
             pass.set_pipeline(&self.pipeline_pbr);
             pass.set_bind_group(0, &self.frame_bg_phong, &[]);
-            pass.set_bind_group(3, &self.shadow_bg, &[]);
+            pass.set_bind_group(3, &self.env_bg, &[]); // shadow+env combined BG
             pass.set_vertex_buffer(1, self.instance_pbr_buf.slice(..));
             for g in &pbr_draws {
                 pass.set_bind_group(1, &g.bg_albedo, &[]);

@@ -11,6 +11,122 @@ use std::sync::Arc;
 
 const EVICT_AFTER_FRAMES: u32 = 240;
 
+/// Wave 10b — cubemap environment map for IBL.
+///
+/// Six RGBA8 faces in the canonical wgpu cubemap order:
+///   +X, -X, +Y, -Y, +Z, -Z
+/// Each face must be `size × size` bytes (4 per pixel). One sampler
+/// (Linear/ClampToEdge) is shared across all faces.
+pub struct TextureCube {
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    pub sampler: wgpu::Sampler,
+    pub size: u32,
+}
+
+impl TextureCube {
+    /// Build from 6 RGBA8 faces. Each face = `size*size*4` bytes.
+    pub fn from_faces_rgba8(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        size: u32,
+        faces: [&[u8]; 6],
+    ) -> Self {
+        let face_bytes = (size * size * 4) as usize;
+        for (i, f) in faces.iter().enumerate() {
+            assert_eq!(
+                f.len(),
+                face_bytes,
+                "cubemap face {} must be {} bytes ({}x{}x4)",
+                i,
+                face_bytes,
+                size,
+                size
+            );
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("urx3d.cubemap"),
+            size: wgpu::Extent3d {
+                width: size,
+                height: size,
+                depth_or_array_layers: 6,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for (i, face) in faces.iter().enumerate() {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: i as u32 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                face,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size * 4),
+                    rows_per_image: Some(size),
+                },
+                wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("urx3d.cubemap.view"),
+            dimension: Some(wgpu::TextureViewDimension::Cube),
+            ..Default::default()
+        });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("urx3d.cubemap.sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        Self { texture, view, sampler, size }
+    }
+
+    /// Sky-blue gradient stub for default scenes. 64×64 per face.
+    /// +Y face = brightest sky, -Y darkest (faux ground), sides = mid.
+    pub fn default_sky(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        let s = 64u32;
+        let n = (s * s * 4) as usize;
+        let mut top = vec![0u8; n];
+        let mut bot = vec![0u8; n];
+        let mut side = vec![0u8; n];
+        for y in 0..s {
+            for x in 0..s {
+                let i = ((y * s + x) * 4) as usize;
+                // Top: light blue (135, 200, 255)
+                top[i] = 135; top[i+1] = 200; top[i+2] = 255; top[i+3] = 255;
+                // Bottom: dark brown (40, 30, 20) — faux ground
+                bot[i] = 40; bot[i+1] = 30; bot[i+2] = 20; bot[i+3] = 255;
+                // Sides: horizon gradient mid → bright at top of face
+                let t = y as f32 / s as f32; // 0 at top, 1 at bottom
+                let r = (160.0 * (1.0 - t) + 70.0 * t) as u8;
+                let g = (180.0 * (1.0 - t) + 90.0 * t) as u8;
+                let b = (220.0 * (1.0 - t) + 130.0 * t) as u8;
+                side[i] = r; side[i+1] = g; side[i+2] = b; side[i+3] = 255;
+            }
+        }
+        // wgpu cubemap face order: +X, -X, +Y, -Y, +Z, -Z
+        Self::from_faces_rgba8(device, queue, s, [
+            &side, &side, &top, &bot, &side, &side,
+        ])
+    }
+}
+
 pub struct Texture3D {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,

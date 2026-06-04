@@ -63,8 +63,12 @@ struct LightArrayU {
 @group(2) @binding(0) var t_normal: texture_2d<f32>;
 @group(2) @binding(1) var s_normal: sampler;
 
+// Wave 7 shadow + Wave 10b env cubemap merged into one bind group
+// to stay within the wgpu 4-group limit.
 @group(3) @binding(0) var t_shadow: texture_depth_2d;
 @group(3) @binding(1) var s_shadow: sampler_comparison;
+@group(3) @binding(2) var t_env:    texture_cube<f32>;
+@group(3) @binding(3) var s_env:    sampler;
 
 fn sample_shadow(world_pos: vec3<f32>) -> f32 {
     if (frame.shadow_params.x < 0.5) { return 1.0; }
@@ -224,8 +228,28 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         i = i + 1u;
     }
 
+    // ── IBL (Wave 10b) ───────────────────────────────────────────
+    // Approximate split-sum: irradiance = env at normal; specular =
+    // env at reflection direction. Roughness blends between them.
+    // Without a pre-filtered mip chain we use a single-level sample
+    // and lerp by roughness instead — looks plausible, not strictly
+    // correct. Wave 10c could add real pre-filtered mip mapping.
+    let ndotv = max(dot(n, v), 0.0);
+    let r_dir = reflect(-v, n);
+    let env_diffuse  = textureSample(t_env, s_env, n).rgb;
+    let env_specular = textureSample(t_env, s_env, r_dir).rgb;
+    // Roughness attenuates the sharp reflection toward the diffuse
+    // sample (cheap approximation of pre-filtered roughness mips).
+    let env_spec_mix = mix(env_specular, env_diffuse, roughness);
+    let f_ibl = fresnel_schlick(ndotv, f0);
+    let kd_ibl = (vec3<f32>(1.0) - f_ibl) * (1.0 - metalness);
+
+    let ibl_diffuse  = kd_ibl * albedo * env_diffuse;
+    let ibl_specular = f_ibl * env_spec_mix;
+    let ibl = (ibl_diffuse + ibl_specular) * ao;
+
     let ambient = albedo * lights.ambient * ao;
-    var color = ambient + lo;
+    var color = ambient + lo + ibl;
 
     // Reinhard tonemap + gamma 2.2
     color = color / (color + vec3<f32>(1.0));

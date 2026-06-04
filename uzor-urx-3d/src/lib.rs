@@ -33,4 +33,4 @@ pub use mesh_cache::{
 };
 pub use pipeline::{Renderer3D, DEPTH_FORMAT};
 pub use scene3d::{Node, NodeMesh, PbrMaterial, PhongMaterial, Scene3D};
-pub use texture::{Texture3D, TextureCache};
+pub use texture::{Texture3D, TextureCache, TextureCube};
