@@ -197,6 +197,122 @@ impl Texture3D {
         Self { texture, view, sampler, width, height }
     }
 
+    /// Wave 21 — RGBA8 texture with a full mip chain generated on CPU
+    /// by averaging 2×2 box-filter. Sampler uses trilinear filtering
+    /// (mipmap_filter = Linear). For sRGB textures we down-sample in
+    /// LINEAR space (manual sRGB→linear→average→linear→sRGB) so mip
+    /// levels don't drift toward dark — wgpu treats Rgba8UnormSrgb as
+    /// gamma-encoded, and a naïve byte-average would brighten the mip
+    /// chain incorrectly.
+    pub fn from_rgba8_mipped(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> Self {
+        assert_eq!(
+            pixels.len(),
+            (width * height * 4) as usize,
+            "rgba8 pixel buffer size mismatch"
+        );
+        let mip_count = mip_levels(width, height);
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("urx3d.tex.rgba8.mipped"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: mip_count,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        // Level 0 — upload as-is.
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+
+        // Build subsequent mip levels by 2×2 box-filter in LINEAR space.
+        let mut prev: Vec<u8> = pixels.to_vec();
+        let mut prev_w = width;
+        let mut prev_h = height;
+        for level in 1..mip_count {
+            let next_w = (prev_w / 2).max(1);
+            let next_h = (prev_h / 2).max(1);
+            let mut next = vec![0u8; (next_w * next_h * 4) as usize];
+            for y in 0..next_h {
+                for x in 0..next_w {
+                    let x2 = (x * 2).min(prev_w - 1);
+                    let y2 = (y * 2).min(prev_h - 1);
+                    let xp = (x2 + 1).min(prev_w - 1);
+                    let yp = (y2 + 1).min(prev_h - 1);
+                    let mut acc = [0.0f32; 4];
+                    for (sx, sy) in [(x2, y2), (xp, y2), (x2, yp), (xp, yp)] {
+                        let i = ((sy * prev_w + sx) * 4) as usize;
+                        // RGB: sRGB → linear. A: stays linear.
+                        for c in 0..3 {
+                            acc[c] += srgb_to_linear(prev[i + c]);
+                        }
+                        acc[3] += prev[i + 3] as f32 / 255.0;
+                    }
+                    let i = ((y * next_w + x) * 4) as usize;
+                    for c in 0..3 {
+                        next[i + c] = linear_to_srgb(acc[c] * 0.25);
+                    }
+                    next[i + 3] = ((acc[3] * 0.25) * 255.0).clamp(0.0, 255.0) as u8;
+                }
+            }
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: level,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &next,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(next_w * 4),
+                    rows_per_image: Some(next_h),
+                },
+                wgpu::Extent3d {
+                    width: next_w,
+                    height: next_h,
+                    depth_or_array_layers: 1,
+                },
+            );
+            prev = next;
+            prev_w = next_w;
+            prev_h = next_h;
+        }
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("urx3d.tex.sampler_trilinear"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+        Self { texture, view, sampler, width, height }
+    }
+
     /// Build a texture as a RENDER TARGET (RGBA8 / Srgb / RENDER_ATTACHMENT
     /// + TEXTURE_BINDING). Used by Wave 8 to capture a Scene3D or URX 2D
     /// scene into a texture, then bind it back as a `Texture3D` for a 3D
@@ -259,6 +375,27 @@ impl Texture3D {
         }
         Self::from_rgba8(device, queue, w, h, &px)
     }
+}
+
+/// Wave 21 — number of mip levels needed to fully reduce a (w, h)
+/// texture to 1×1 (or to its smallest non-zero side).
+#[inline]
+pub fn mip_levels(w: u32, h: u32) -> u32 {
+    let m = w.max(h).max(1);
+    (32 - m.leading_zeros()).max(1)
+}
+
+#[inline]
+fn srgb_to_linear(c: u8) -> f32 {
+    let s = c as f32 / 255.0;
+    if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+}
+
+#[inline]
+fn linear_to_srgb(l: f32) -> u8 {
+    let l = l.clamp(0.0, 1.0);
+    let s = if l <= 0.0031308 { l * 12.92 } else { 1.055 * l.powf(1.0 / 2.4) - 0.055 };
+    (s * 255.0 + 0.5).clamp(0.0, 255.0) as u8
 }
 
 #[derive(Eq, PartialEq, Hash, Copy, Clone)]
