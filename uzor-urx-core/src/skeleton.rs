@@ -43,7 +43,7 @@ pub struct SkeletonImage {
 impl Default for SkeletonSpec {
     fn default() -> Self {
         Self {
-            bg:            Color::rgba8(13, 17, 23, 255),
+            bg:            Color::from_rgba8(13, 17, 23, 255),
             logo:          None,
             spinner:       true,
             spinner_color: None,
@@ -91,13 +91,13 @@ impl SkeletonFrame {
         if self.spec.spinner {
             let elapsed_us = now_us.saturating_sub(self.started_us);
             let phase = (elapsed_us as f64 / 16_000.0) % std::f64::consts::TAU;
-            let color = self.spec.spinner_color.unwrap_or(Color::rgba8(120, 180, 255, 255));
+            let color = self.spec.spinner_color.unwrap_or(Color::from_rgba8(120, 180, 255, 255));
             draw_spinner(&mut self.pixels, self.width, self.height,
                          cx, cy + 32.0, 14.0, 2.5, phase, color);
         }
 
         if let Some(caption) = &self.spec.caption {
-            let color = self.spec.caption_color.unwrap_or(Color::rgba8(160, 168, 180, 255));
+            let color = self.spec.caption_color.unwrap_or(Color::from_rgba8(160, 168, 180, 255));
             let tw = caption_pixel_width(caption);
             let x = cx - tw as f64 / 2.0;
             let y = cy + 60.0;
@@ -113,13 +113,22 @@ impl SkeletonFrame {
 }
 
 #[inline]
+fn color_rgba8(c: Color) -> [u8; 4] {
+    // peniko 0.6: Color = AlphaColor<Srgb>, components are linear f32.
+    // `to_rgba8()` returns the sRGB-encoded byte quad.
+    let p = c.to_rgba8();
+    [p.r, p.g, p.b, p.a]
+}
+
+#[inline]
 fn premul(c: Color) -> [u8; 4] {
-    let a = c.a as u32;
+    let [r, g, b, a] = color_rgba8(c);
+    let aw = a as u32;
     [
-        ((c.r as u32 * a + 127) / 255) as u8,
-        ((c.g as u32 * a + 127) / 255) as u8,
-        ((c.b as u32 * a + 127) / 255) as u8,
-        c.a,
+        ((r as u32 * aw + 127) / 255) as u8,
+        ((g as u32 * aw + 127) / 255) as u8,
+        ((b as u32 * aw + 127) / 255) as u8,
+        a,
     ]
 }
 
@@ -168,7 +177,8 @@ fn draw_spinner(
     let y0 = (cy - r_outer).floor() as i64;
     let x1 = (cx + r_outer).ceil() as i64;
     let y1 = (cy + r_outer).ceil() as i64;
-    let base_a = color.a as f64;
+    let [cr, cg, cb, ca] = color_rgba8(color);
+    let base_a = ca as f64;
     for py in y0..=y1 {
         let dy = py as f64 + 0.5 - cy;
         for px in x0..=x1 {
@@ -187,9 +197,9 @@ fn draw_spinner(
             let alpha = (base_a * cov * mask).round().clamp(0.0, 255.0) as u8;
             if alpha == 0 { continue; }
             let src = [
-                ((color.r as u32 * alpha as u32 + 127) / 255) as u8,
-                ((color.g as u32 * alpha as u32 + 127) / 255) as u8,
-                ((color.b as u32 * alpha as u32 + 127) / 255) as u8,
+                ((cr as u32 * alpha as u32 + 127) / 255) as u8,
+                ((cg as u32 * alpha as u32 + 127) / 255) as u8,
+                ((cb as u32 * alpha as u32 + 127) / 255) as u8,
                 alpha,
             ];
             blend_pixel(pixels, pw, ph, px, py, src);
@@ -309,7 +319,7 @@ mod tests {
     fn background_fills_solid() {
         let mut f = SkeletonFrame::new(20, 20, SkeletonSpec {
             spinner: false, caption: None, logo: None,
-            bg: Color::rgba8(80, 90, 100, 255), ..SkeletonSpec::default()
+            bg: Color::from_rgba8(80, 90, 100, 255), ..SkeletonSpec::default()
         });
         f.render(0);
         let i = (5 * 20 + 5) * 4;
@@ -338,7 +348,7 @@ mod tests {
         let mut f = SkeletonFrame::new(200, 200, SkeletonSpec {
             spinner: false, logo: None,
             caption: Some("LOADING".into()),
-            caption_color: Some(Color::rgba8(255, 255, 255, 255)),
+            caption_color: Some(Color::from_rgba8(255, 255, 255, 255)),
             ..SkeletonSpec::default()
         });
         f.render(0);

@@ -194,7 +194,7 @@ mod tests {
         let cmd = DrawCommand::FillRect {
             rect: Rect::new(f64::NAN, 0.0, 1.0, 1.0),
             radii: None,
-            brush: Brush::Solid(Color::rgba8(0, 0, 0, 255)),
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
             transform: Affine::IDENTITY,
         };
         assert_eq!(validate_command(&cmd), Err(ValidationIssue::NonFinite));
@@ -205,7 +205,7 @@ mod tests {
         let cmd = DrawCommand::FillRect {
             rect: Rect::new(10.0, 10.0, 10.0, 10.0),
             radii: None,
-            brush: Brush::Solid(Color::rgba8(0, 0, 0, 255)),
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
             transform: Affine::IDENTITY,
         };
         assert_eq!(validate_command(&cmd), Err(ValidationIssue::DegenerateGeometry));
@@ -216,7 +216,7 @@ mod tests {
         let cmd = DrawCommand::FillRect {
             rect: Rect::new(0.0, 0.0, 10.0, 10.0),
             radii: Some([1.0, f32::NAN, 1.0, 1.0]),
-            brush: Brush::Solid(Color::rgba8(0, 0, 0, 255)),
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
             transform: Affine::IDENTITY,
         };
         assert_eq!(validate_command(&cmd), Err(ValidationIssue::NonFinite));
@@ -227,7 +227,7 @@ mod tests {
         let cmd = DrawCommand::FillRect {
             rect: Rect::new(0.0, 0.0, 10.0, 10.0),
             radii: None,
-            brush: Brush::Solid(Color::rgba8(0, 0, 0, 255)),
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
             transform: Affine::IDENTITY,
         };
         assert!(validate_command(&cmd).is_ok());
@@ -236,9 +236,9 @@ mod tests {
     #[test]
     fn scene_validate_reports_all_issues() {
         let mut s = Scene::new();
-        s.fill_rect_solid(Rect::new(0.0, 0.0, 1.0, 1.0), Color::rgba8(0, 0, 0, 255));
-        s.fill_rect_solid(Rect::new(f64::NAN, 0.0, 1.0, 1.0), Color::rgba8(0, 0, 0, 255));
-        s.fill_rect_solid(Rect::new(5.0, 5.0, 5.0, 5.0), Color::rgba8(0, 0, 0, 255));
+        s.fill_rect_solid(Rect::new(0.0, 0.0, 1.0, 1.0), Color::from_rgba8(0, 0, 0, 255));
+        s.fill_rect_solid(Rect::new(f64::NAN, 0.0, 1.0, 1.0), Color::from_rgba8(0, 0, 0, 255));
+        s.fill_rect_solid(Rect::new(5.0, 5.0, 5.0, 5.0), Color::from_rgba8(0, 0, 0, 255));
         let issues = s.validate();
         assert_eq!(issues.len(), 2);
         assert_eq!(issues[0], (1, ValidationIssue::NonFinite));

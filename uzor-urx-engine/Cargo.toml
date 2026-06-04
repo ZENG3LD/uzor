@@ -34,7 +34,7 @@ full-gpu-backend = ["dep:uzor-urx-wgpu-full", "dep:wgpu"]
 pollster   = "0.4"
 wgpu       = "28"
 winit      = "0.30"
-peniko     = "0.2"
+peniko = "0.6"
 # Agentic control plane (3-level HTTP) for winit_full_gpu_demo.
 axum       = { version = "0.7", default-features = false, features = ["tokio", "http1", "json", "query"] }
 tokio      = { version = "1", features = ["rt-multi-thread", "sync", "macros", "net"] }

@@ -8,14 +8,18 @@ use uzor_urx_core::math::{Brush, Color};
 
 /// Convert a `peniko::Color` to premultiplied `[r, g, b, a]` bytes.
 /// Rounding: round-half-up (`+127 / 255` is correct for u8).
+///
+/// peniko 0.6: `Color = AlphaColor<Srgb>`; we get the sRGB byte quad via
+/// `to_rgba8()` instead of the old direct `r/g/b/a` fields.
 #[inline]
 pub(crate) fn color_to_premul(c: Color) -> [u8; 4] {
-    let a = c.a as u32;
+    let p = c.to_rgba8();
+    let a = p.a as u32;
     [
-        ((c.r as u32 * a + 127) / 255) as u8,
-        ((c.g as u32 * a + 127) / 255) as u8,
-        ((c.b as u32 * a + 127) / 255) as u8,
-        c.a,
+        ((p.r as u32 * a + 127) / 255) as u8,
+        ((p.g as u32 * a + 127) / 255) as u8,
+        ((p.b as u32 * a + 127) / 255) as u8,
+        p.a,
     ]
 }
 
@@ -39,7 +43,10 @@ pub fn premul_scale(rgba: [u8; 4], cov: u8) -> [u8; 4] {
 pub fn brush_to_color(brush: &Brush) -> Color {
     match brush {
         Brush::Solid(c)        => *c,
-        Brush::Gradient(g)     => g.stops.first().map(|s| s.color).unwrap_or(Color::rgba8(0, 0, 0, 0)),
-        Brush::Image(_)        => Color::rgba8(0, 0, 0, 0),
+        // peniko 0.6: ColorStop.color is `DynamicColor`; convert to AlphaColor<Srgb>.
+        Brush::Gradient(g)     => g.stops.first()
+            .map(|s| s.color.to_alpha_color::<peniko::color::Srgb>())
+            .unwrap_or(Color::from_rgba8(0, 0, 0, 0)),
+        Brush::Image(_)        => Color::from_rgba8(0, 0, 0, 0),
     }
 }

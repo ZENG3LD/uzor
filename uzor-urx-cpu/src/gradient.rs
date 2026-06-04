@@ -16,7 +16,7 @@
 use std::sync::{Arc, RwLock};
 
 use uzor_urx_core::math::{
-    Brush, Color, ColorStop, Extend, Gradient, GradientKind, Rect,
+    Brush, ColorStop, Extend, Gradient, GradientKind, Rect,
 };
 
 use crate::clip::ClipStack;
@@ -68,6 +68,15 @@ static LUT_CACHE: RwLock<Option<LutCache>> = RwLock::new(None);
 /// Deterministic FNV-1a 64-bit hash over the stop bytes + extend mode.
 /// Stable across processes (unlike DefaultHasher) so cache hits work
 /// reliably and collisions are rare for ColorStop counts we expect.
+// peniko 0.6: ColorStop.color is `DynamicColor`. Convert to sRGB byte quad
+// at the stop boundary so the rest of the gradient math (premul + lerp) stays
+// in u8 space exactly as before.
+#[inline]
+fn stop_rgba8(s: &ColorStop) -> [u8; 4] {
+    let p = s.color.to_alpha_color::<peniko::color::Srgb>().to_rgba8();
+    [p.r, p.g, p.b, p.a]
+}
+
 fn hash_stops(stops: &[ColorStop], extend: Extend) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf29ce484222325;
     const FNV_PRIME:  u64 = 0x00000100000001b3;
@@ -78,10 +87,8 @@ fn hash_stops(stops: &[ColorStop], extend: Extend) -> u64 {
     };
     for s in stops {
         for b in s.offset.to_bits().to_le_bytes() { feed(b); }
-        feed(s.color.r);
-        feed(s.color.g);
-        feed(s.color.b);
-        feed(s.color.a);
+        let [r, g, b8, a] = stop_rgba8(s);
+        feed(r); feed(g); feed(b8); feed(a);
     }
     feed(extend as u8);
     h
@@ -124,7 +131,7 @@ fn build_lut(stops: &[ColorStop]) -> GradientLut {
         return lut;
     }
     if stops.len() == 1 {
-        let c = premul(stops[0].color);
+        let c = premul(&stops[0]);
         for slot in lut.iter_mut() { *slot = c; }
         return lut;
     }
@@ -135,13 +142,14 @@ fn build_lut(stops: &[ColorStop]) -> GradientLut {
     lut
 }
 
-fn premul(c: Color) -> [u8; 4] {
-    let a = c.a as u32;
+fn premul(s: &ColorStop) -> [u8; 4] {
+    let [r, g, b, a] = stop_rgba8(s);
+    let aw = a as u32;
     [
-        ((c.r as u32 * a + 127) / 255) as u8,
-        ((c.g as u32 * a + 127) / 255) as u8,
-        ((c.b as u32 * a + 127) / 255) as u8,
-        c.a,
+        ((r as u32 * aw + 127) / 255) as u8,
+        ((g as u32 * aw + 127) / 255) as u8,
+        ((b as u32 * aw + 127) / 255) as u8,
+        a,
     ]
 }
 
@@ -149,16 +157,16 @@ fn premul(c: Color) -> [u8; 4] {
 /// premultiplied RGBA8 via lerp between bracketing stops.
 fn sample_stops(stops: &[ColorStop], t: f32) -> [u8; 4] {
     // Stops are normally sorted by `offset`; bracket-search.
-    if t <= stops[0].offset { return premul(stops[0].color); }
-    if t >= stops[stops.len() - 1].offset { return premul(stops[stops.len() - 1].color); }
+    if t <= stops[0].offset { return premul(&stops[0]); }
+    if t >= stops[stops.len() - 1].offset { return premul(&stops[stops.len() - 1]); }
     for w in stops.windows(2) {
         let s0 = &w[0];
         let s1 = &w[1];
         if t >= s0.offset && t <= s1.offset {
             let span = s1.offset - s0.offset;
             let local = if span < 1e-9 { 0.0 } else { (t - s0.offset) / span };
-            let c0 = premul(s0.color);
-            let c1 = premul(s1.color);
+            let c0 = premul(s0);
+            let c1 = premul(s1);
             return [
                 lerp_u8(c0[0], c1[0], local),
                 lerp_u8(c0[1], c1[1], local),
@@ -167,7 +175,7 @@ fn sample_stops(stops: &[ColorStop], t: f32) -> [u8; 4] {
             ];
         }
     }
-    premul(stops[stops.len() - 1].color)
+    premul(&stops[stops.len() - 1])
 }
 
 #[inline]
@@ -225,14 +233,17 @@ pub(crate) fn fill_rect_gradient_aa(
     let lut = get_lut(&gradient.stops, gradient.extend);
 
     match gradient.kind {
-        GradientKind::Linear { start, end } => {
+        // peniko 0.6: GradientKind variants are tuple-wrapped over position structs.
+        GradientKind::Linear(peniko::LinearGradientPosition { start, end }) => {
             // dot(d, d) — squared gradient axis length.
             let dx = end.x - start.x;
             let dy = end.y - start.y;
             let d2 = (dx * dx + dy * dy) as f32;
             if d2 < 1e-9 {
                 // Degenerate — fill with stop[0].
-                let c = premul(gradient.stops.first().map(|s| s.color).unwrap_or(Color::rgba8(0, 0, 0, 0)));
+                let c = gradient.stops.first()
+                    .map(|s| premul(s))
+                    .unwrap_or([0, 0, 0, 0]);
                 fill_solid(pixmap, ix0, iy0, ix1, iy1, &visible, c);
                 return true;
             }
@@ -258,7 +269,7 @@ pub(crate) fn fill_rect_gradient_aa(
                 }
             }
         }
-        GradientKind::Radial { start_center, start_radius, end_center, end_radius } => {
+        GradientKind::Radial(peniko::RadialGradientPosition { start_center, start_radius, end_center, end_radius }) => {
             // Honest scope: only concentric (start_center ≈ end_center
             // AND start_radius ≈ 0) is exact. For focal variants we
             // approximate as concentric on `end_center / end_radius`
@@ -299,7 +310,7 @@ pub(crate) fn fill_rect_gradient_aa(
                 }
             }
         }
-        GradientKind::Sweep { center, start_angle, end_angle } => {
+        GradientKind::Sweep(peniko::SweepGradientPosition { center, start_angle, end_angle }) => {
             // Angular gradient — t = (angle - start) / (end - start),
             // wrapped per spread mode. atan2 per pixel; not vectorised
             // yet but fine for typical sweep usage (small radial pies

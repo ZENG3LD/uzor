@@ -124,7 +124,8 @@ pub fn render_tiled_with_config(scene: &Scene, pixmap: &mut Pixmap, cfg: &UrxCon
                 let cur = clip.current();
                 let visible = r_screen.intersect(cur);
                 if visible.width() <= 0.0 || visible.height() <= 0.0 { continue; }
-                let opaque = color.a == 255;
+                // peniko 0.6: alpha via to_rgba8() instead of .a
+                let opaque = color.to_rgba8().a == 255;
                 add_rect_to_tiles(&mut tiles, n_x, n_y, pw, ph, visible, color, opaque, tile_w, tile_h);
             }
             DrawCommand::PushClipRect { rect, transform } => {
@@ -154,7 +155,7 @@ pub fn render_tiled_with_config(scene: &Scene, pixmap: &mut Pixmap, cfg: &UrxCon
 fn brush_to_color(b: &Brush) -> Color {
     match b {
         Brush::Solid(c) => *c,
-        _ => Color::rgba8(0, 0, 0, 0),
+        _ => Color::from_rgba8(0, 0, 0, 0),
     }
 }
 

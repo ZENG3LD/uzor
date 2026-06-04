@@ -6,10 +6,24 @@
 //! The output is ready to upload directly to a GPU storage buffer
 //! (`bytemuck::cast_slice(&cmds[..])`).
 
-use uzor_urx_core::math::{Brush, GradientKind};
+use uzor_urx_core::math::{Brush, Color, GradientKind};
 use uzor_urx_core::scene::{DrawCommand, LineCap, Scene};
 
 use crate::cmd::{cap_kind, lin_dir, SceneCmd};
+
+// peniko 0.6 color helpers — fields `r/g/b/a: u8` were removed; the byte
+// quad is now produced by `to_rgba8()`. Two helpers below isolate the
+// conversion so the GPU-encoding logic stays unchanged.
+#[inline]
+fn rgba8(c: Color) -> [u8; 4] {
+    let p = c.to_rgba8();
+    [p.r, p.g, p.b, p.a]
+}
+
+#[inline]
+fn stop_rgba8(s: &peniko::ColorStop) -> [u8; 4] {
+    rgba8(s.color.to_alpha_color::<peniko::color::Srgb>())
+}
 
 /// Snap a (dx, dy) direction vector to the nearest of the 4 supported
 /// linear gradient direction constants.
@@ -86,10 +100,11 @@ pub fn encode_scene_with_paths(
 
                 match brush {
                     Brush::Solid(c) => {
-                        out.push(SceneCmd::rect(x0, y0, x1, y1, [c.r, c.g, c.b, c.a]));
+                        out.push(SceneCmd::rect(x0, y0, x1, y1, rgba8(*c)));
                     }
                     Brush::Gradient(g) => match g.kind {
-                        GradientKind::Linear { start, end } => {
+                        // peniko 0.6: GradientKind variants are tuple-wrapped position structs.
+                        GradientKind::Linear(peniko::LinearGradientPosition { start, end }) => {
                             if g.stops.is_empty() {
                                 continue;
                             }
@@ -99,12 +114,13 @@ pub fn encode_scene_with_paths(
 
                             if g.stops.len() <= 2 {
                                 // Fast path: 2-stop linear → kind=2 inline.
-                                let first = g.stops.first().map(|s| s.color).unwrap_or_default();
-                                let last  = g.stops.last().map(|s| s.color).unwrap_or_default();
+                                // ColorStop.color is DynamicColor in peniko 0.6; transparent black for missing stops.
+                                let first = g.stops.first().map(stop_rgba8).unwrap_or([0, 0, 0, 0]);
+                                let last  = g.stops.last().map(stop_rgba8).unwrap_or([0, 0, 0, 0]);
                                 out.push(SceneCmd::lin_gradient(
                                     x0, y0, x1, y1,
-                                    [first.r, first.g, first.b, first.a],
-                                    [last.r,  last.g,  last.b,  last.a],
+                                    first,
+                                    last,
                                     direction,
                                 ));
                             } else {
@@ -116,7 +132,7 @@ pub fn encode_scene_with_paths(
                                 for s in g.stops.iter() {
                                     points.push(crate::cmd::pack_gradient_stop(
                                         s.offset.clamp(0.0, 1.0),
-                                        [s.color.r, s.color.g, s.color.b, s.color.a],
+                                        stop_rgba8(s),
                                     ));
                                 }
                                 out.push(SceneCmd::multi_lin_gradient(
@@ -127,20 +143,20 @@ pub fn encode_scene_with_paths(
                                 ));
                             }
                         }
-                        GradientKind::Radial { .. } => {
+                        GradientKind::Radial(_) => {
                             if g.stops.is_empty() {
                                 continue;
                             }
-                            let inner = g.stops.first().map(|s| s.color).unwrap_or_default();
-                            let outer = g.stops.last().map(|s| s.color).unwrap_or_default();
+                            let inner = g.stops.first().map(stop_rgba8).unwrap_or([0, 0, 0, 0]);
+                            let outer = g.stops.last().map(stop_rgba8).unwrap_or([0, 0, 0, 0]);
 
                             out.push(SceneCmd::rad_gradient(
                                 x0, y0, x1, y1,
-                                [inner.r, inner.g, inner.b, inner.a],
-                                [outer.r, outer.g, outer.b, outer.a],
+                                inner,
+                                outer,
                             ));
                         }
-                        GradientKind::Sweep { .. } => {
+                        GradientKind::Sweep(_) => {
                             // Sweep gradients not yet supported in GPU pipeline v1.6.x.
                         }
                     },
@@ -165,7 +181,7 @@ pub fn encode_scene_with_paths(
                 // Only solid brush supported; gradient/image along a stroke
                 // are out of scope until Path / GlyphRun encoding lands.
                 let color = match brush {
-                    Brush::Solid(c) => [c.r, c.g, c.b, c.a],
+                    Brush::Solid(c) => rgba8(*c),
                     _ => continue,
                 };
                 if !(stroke.width > 0.0) {
@@ -187,7 +203,7 @@ pub fn encode_scene_with_paths(
                 // point counts (a typical quad-Bézier flattens to 6-12
                 // segments at this tolerance).
                 let color = match brush {
-                    Brush::Solid(c) => [c.r, c.g, c.b, c.a],
+                    Brush::Solid(c) => rgba8(*c),
                     _ => continue,
                 };
                 if !(stroke.width > 0.0) { continue; }
@@ -270,7 +286,7 @@ pub fn encode_scene_with_paths(
                 // not yet wired through the shader; consumers that
                 // care should split paths or pre-tessellate).
                 let color = match brush {
-                    Brush::Solid(c) => [c.r, c.g, c.b, c.a],
+                    Brush::Solid(c) => rgba8(*c),
                     _ => continue,
                 };
                 // Each sub-path (MoveTo-started) → one FillPath cmd.

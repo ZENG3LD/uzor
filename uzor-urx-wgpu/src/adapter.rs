@@ -203,8 +203,11 @@ fn emit_path_into_ctx(path: &BezPath, ctx: &mut InstancedRenderContext) {
 fn brush_to_color(brush: &Brush) -> Color {
     match brush {
         Brush::Solid(c)    => *c,
-        Brush::Gradient(g) => g.stops.first().map(|s| s.color).unwrap_or(Color::rgba8(0, 0, 0, 0)),
-        Brush::Image(_)    => Color::rgba8(0, 0, 0, 0),
+        // peniko 0.6: ColorStop.color is DynamicColor — convert back to AlphaColor<Srgb>.
+        Brush::Gradient(g) => g.stops.first()
+            .map(|s| s.color.to_alpha_color::<peniko::color::Srgb>())
+            .unwrap_or(Color::from_rgba8(0, 0, 0, 0)),
+        Brush::Image(_)    => Color::from_rgba8(0, 0, 0, 0),
     }
 }
 
@@ -212,7 +215,9 @@ fn brush_to_color(brush: &Brush) -> Color {
 fn color_to_css(c: Color) -> String {
     // CSS rgba — the underlying context parses this back into [r,g,b,a].
     // Premultiplication happens in the shader.
-    format!("rgba({},{},{},{})", c.r, c.g, c.b, (c.a as f64) / 255.0)
+    // peniko 0.6: r/g/b/a fields gone — use to_rgba8() byte quad.
+    let p = c.to_rgba8();
+    format!("rgba({},{},{},{})", p.r, p.g, p.b, (p.a as f64) / 255.0)
 }
 
 /// Apply a kurbo `Affine` to the context's transform via the small set
@@ -252,7 +257,7 @@ mod tests {
         scene.push(DrawCommand::FillRect {
             rect: Rect::new(10.0, 10.0, 50.0, 50.0),
             radii: None,
-            brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+            brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
             transform: Affine::IDENTITY,
         });
         adapt_scene_into(&scene, &mut ctx);
@@ -269,7 +274,7 @@ mod tests {
             from: Vec2 { x: 5.0, y: 5.0 },
             to:   Vec2 { x: 50.0, y: 50.0 },
             stroke: Stroke { width: 2.0, ..Stroke::default() },
-            brush: Brush::Solid(Color::rgba8(0, 255, 0, 255)),
+            brush: Brush::Solid(Color::from_rgba8(0, 255, 0, 255)),
             transform: Affine::IDENTITY,
         });
         adapt_scene_into(&scene, &mut ctx);

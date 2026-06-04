@@ -12,7 +12,8 @@ categories  = ["graphics", "rendering"]
 [dependencies]
 uzor-urx-core = { workspace = true }
 metrics = "0.24"
-kurbo = "0.11"
+kurbo = "0.13"
+peniko = "0.6"
 rayon = { version = "1", optional = true }
 uzor-urx-glyph = { workspace = true, optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
@@ -30,7 +31,7 @@ bumpalo = { version = "3", features = ["collections"] }
 
 [dev-dependencies]
 criterion = "0.5"
-vello_cpu  = { version = "0.0.7", features = ["std"] }
+vello_cpu  = { version = "0.0.9", features = ["std"] }
 tiny-skia  = "0.11"
 
 [[bench]]
