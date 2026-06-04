@@ -212,6 +212,16 @@ pub struct WindowRenderState {
     /// via `handle.engine.upsert_region(...)`. Backend selection inside
     /// the engine is derived from `active_urx`.
     pub(crate) urx_engine: Option<uzor_urx_engine::UrxEngine>,
+    /// URX 3D renderer + scene. Stage 4: lazy-init on first
+    /// `with_renderer_3d` call. Independent of `urx_engine` — a
+    /// consumer can drive 2D-only or 3D-only or both. The 3D submit
+    /// runs as an overlay pass (depth-tested, painter's order after
+    /// the 2D backend). Stage 5 makes the over/under composition
+    /// configurable via `UrxConfig::z_order_3d_first`.
+    pub(crate) urx_renderer_3d: Option<uzor_urx_3d::Renderer3D>,
+    pub(crate) urx_scene_3d:    Option<uzor_urx_3d::Scene3D>,
+    pub(crate) urx_depth_view:  Option<wgpu::TextureView>,
+    pub(crate) urx_depth_size:  (u32, u32),
 
     // ── Canvas 2D context (wasm32 only) ───────────────────────────────────────
     /// HTML Canvas 2D render context.  Only populated when `active` is
@@ -265,6 +275,10 @@ impl WindowRenderState {
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
+            urx_renderer_3d: None,
+            urx_scene_3d:    None,
+            urx_depth_view:  None,
+            urx_depth_size:  (0, 0),
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -300,6 +314,10 @@ impl WindowRenderState {
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
+            urx_renderer_3d: None,
+            urx_scene_3d:    None,
+            urx_depth_view:  None,
+            urx_depth_size:  (0, 0),
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -363,6 +381,10 @@ impl WindowRenderState {
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
+            urx_renderer_3d: None,
+            urx_scene_3d:    None,
+            urx_depth_view:  None,
+            urx_depth_size:  (0, 0),
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -396,6 +418,10 @@ impl WindowRenderState {
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
+            urx_renderer_3d: None,
+            urx_scene_3d:    None,
+            urx_depth_view:  None,
+            urx_depth_size:  (0, 0),
             active_urx: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
@@ -427,6 +453,10 @@ impl WindowRenderState {
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
+            urx_renderer_3d: None,
+            urx_scene_3d:    None,
+            urx_depth_view:  None,
+            urx_depth_size:  (0, 0),
             active_urx: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
@@ -506,6 +536,10 @@ impl WindowRenderState {
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
+            urx_renderer_3d: None,
+            urx_scene_3d:    None,
+            urx_depth_view:  None,
+            urx_depth_size:  (0, 0),
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -540,6 +574,10 @@ impl WindowRenderState {
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
+            urx_renderer_3d: None,
+            urx_scene_3d:    None,
+            urx_depth_view:  None,
+            urx_depth_size:  (0, 0),
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -593,6 +631,10 @@ impl WindowRenderState {
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
+            urx_renderer_3d: None,
+            urx_scene_3d:    None,
+            urx_depth_view:  None,
+            urx_depth_size:  (0, 0),
             active_urx: None,
             canvas2d_ctx: Some(ctx),
             scene: Scene::new(),
@@ -1150,5 +1192,72 @@ impl WindowRenderState {
             frame_idx: 0, // Stage 5 wires real counter.
         };
         Some(f(&mut handle))
+    }
+
+    /// Borrow the URX 3D renderer + Scene3D together (lazy-initialised
+    /// on first call). Stage 4 surface — independent of the 2D URX
+    /// channel; a consumer can drive 2D-only, 3D-only, or both.
+    ///
+    /// Returns `None` when the surface is software-only (3D requires
+    /// a wgpu device) or surface dimensions are zero.
+    ///
+    /// The renderer is initialised with `node_capacity = 1024`. To use
+    /// a larger capacity, see [`Self::init_renderer_3d_with_capacity`].
+    pub fn with_renderer_3d<R>(
+        &mut self,
+        f: impl FnOnce(&mut uzor_urx_3d::Renderer3D, &mut uzor_urx_3d::Scene3D) -> R,
+    ) -> Option<R> {
+        let (width, height) = match &self.surface {
+            SurfaceMode::Gpu { surface, .. } => (surface.config.width, surface.config.height),
+            _ => return None,
+        };
+        if width == 0 || height == 0 { return None; }
+
+        // Capture surface format BEFORE borrowing &mut self for slots.
+        let (device, queue, surface_format) = match &self.surface {
+            SurfaceMode::Gpu { gpu_pool, surface, dev_id } => (
+                gpu_pool.devices[*dev_id].device.clone(),
+                gpu_pool.devices[*dev_id].queue.clone(),
+                surface.config.format,
+            ),
+            _ => return None,
+        };
+
+        if self.urx_renderer_3d.is_none() {
+            self.urx_renderer_3d = Some(uzor_urx_3d::Renderer3D::new(
+                &device,
+                &queue,
+                surface_format,
+                (width, height),
+                1024,
+            ));
+        }
+        if self.urx_scene_3d.is_none() {
+            self.urx_scene_3d = Some(uzor_urx_3d::Scene3D::new());
+        }
+        // Resize depth buffer on surface drift.
+        if self.urx_depth_size != (width, height) || self.urx_depth_view.is_none() {
+            let depth_tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("urx-3d-depth"),
+                size:  wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count:    1,
+                dimension:       wgpu::TextureDimension::D2,
+                format:          uzor_urx_3d::DEPTH_FORMAT,
+                usage:           wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats:    &[],
+            });
+            self.urx_depth_view = Some(depth_tex.create_view(&wgpu::TextureViewDescriptor::default()));
+            self.urx_depth_size = (width, height);
+        }
+        let r3d = self.urx_renderer_3d.as_mut()?;
+        let scene_3d = self.urx_scene_3d.as_mut()?;
+        Some(f(r3d, scene_3d))
+    }
+
+    /// Borrow the depth view for the URX 3D pass. `None` if
+    /// `with_renderer_3d` has not yet run (slot is lazy).
+    pub fn urx_depth_view(&self) -> Option<&wgpu::TextureView> {
+        self.urx_depth_view.as_ref()
     }
 }

@@ -28,6 +28,7 @@ uzor-urx-hybrid = { workspace = true }
 # `UrxWgpuFull` enum variant exists but renders nothing (logged as TODO).
 uzor-urx-wgpu-full = { workspace = true }
 uzor-urx-engine = { workspace = true, features = ["wgpu-backend", "hybrid-backend", "full-gpu-backend"] }
+uzor-urx-3d = { workspace = true }
 vello = "0.9"
 vello_hybrid = { version = "0.0.9", features = ["wgpu"] }
 wgpu = "29"
