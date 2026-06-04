@@ -66,7 +66,9 @@ pub use widgets::{
 
 pub use ui::assets::cursors::CursorIcon;
 
-pub use platform::types::{RgbaIcon, RenderBackend, ResizeDirection, CornerStyle};
+pub use platform::types::{
+    RgbaIcon, RenderBackend, Scene2DBackend, UrxBackend, ResizeDirection, CornerStyle,
+};
 
 // Note: tier-organised registration shortcuts (`coord`, `ctx`, `lm`) live in
 // `uzor-framework::widgets` — this core crate exposes only the long-form
