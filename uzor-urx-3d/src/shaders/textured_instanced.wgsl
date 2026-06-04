@@ -16,8 +16,10 @@
 const MAX_LIGHTS: u32 = 8u;
 
 struct Frame {
-    view_proj: mat4x4<f32>,
-    eye:       vec4<f32>,
+    view_proj:       mat4x4<f32>,
+    eye:             vec4<f32>,
+    light_view_proj: mat4x4<f32>,
+    shadow_params:   vec4<f32>,
 };
 
 struct LightSlot {

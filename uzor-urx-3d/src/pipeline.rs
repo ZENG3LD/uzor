@@ -24,8 +24,10 @@ use std::sync::Arc;
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct FrameUniform {
-    view_proj: [[f32; 4]; 4],
-    eye: [f32; 4], // xyz = camera position, w = unused (alignment)
+    view_proj: [[f32; 4]; 4],       // 64
+    eye: [f32; 4],                   // 16 — xyz = camera pos, w = unused
+    light_view_proj: [[f32; 4]; 4], // 64 — Wave 7 shadow map projection
+    shadow_params: [f32; 4],         // 16 — x = has_shadow (0/1), y..w unused
 }
 
 #[repr(C)]
@@ -130,6 +132,9 @@ pub struct Renderer3D {
     pipeline_phong: wgpu::RenderPipeline,
     pipeline_textured: wgpu::RenderPipeline,
     pipeline_pbr: wgpu::RenderPipeline,
+    // Wave 7 — shadow caster pipelines (depth-only)
+    pipeline_shadow_lit: wgpu::RenderPipeline,
+    pipeline_shadow_pbr: wgpu::RenderPipeline,
     node_bgl: wgpu::BindGroupLayout,
     tex_bgl: wgpu::BindGroupLayout,
     frame_buf: wgpu::Buffer,
@@ -165,6 +170,12 @@ pub struct Renderer3D {
     /// 1×1 flat-blue normal-map stub for PBR nodes without a real
     /// normal map (sampled but multiplied by has_normal_map=0).
     normal_map_stub: Arc<Texture3D>,
+    /// Wave 7 — shadow map texture + view + dedicated frame uniform
+    /// buffer for the depth pass (carries light_view_proj as view_proj).
+    shadow_view: wgpu::TextureView,
+    shadow_frame_buf: wgpu::Buffer,
+    shadow_frame_bg: wgpu::BindGroup,
+    shadow_bg: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
     depth_size: (u32, u32),
     color_format: wgpu::TextureFormat,
@@ -410,54 +421,11 @@ impl Renderer3D {
                 wgpu::BindGroupEntry { binding: 1, resource: lights_buf.as_entire_binding() },
             ],
         });
-        let pipeline_layout_phong =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("urx3d.pipeline_layout_phong"),
-                bind_group_layouts: &[&frame_bgl_phong],
-                immediate_size: 0,
-            });
-        let pipeline_phong = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("urx3d.pipeline_phong"),
-            layout: Some(&pipeline_layout_phong),
-            vertex: wgpu::VertexState {
-                module: &shader_phong,
-                entry_point: Some("vs_main"),
-                buffers: &[
-                    VertexLit::vertex_buffer_layout(),
-                    InstanceLitRaw::vertex_buffer_layout(),
-                ],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader_phong,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        // (Old pipeline_phong layout/pipeline removed in Wave 7 — replaced
+        // by `pipeline_phong` further down that includes the shadow_bgl
+        // bind group. shader_phong now references @group(1) which the
+        // OLD layout doesn't provide → wgpu validation fail. Pipeline is
+        // constructed once, after shadow_bgl exists.)
 
         let instance_lit_capacity = node_capacity.max(64);
         let instance_lit_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -561,22 +529,184 @@ impl Renderer3D {
         // Layouts 0 + 1 already exist (frame_bgl_phong + tex_bgl); the
         // normal map layout is the SAME shape as tex_bgl so we can reuse
         // it (texture + sampler).
-        let pipeline_layout_pbr =
+        // (Old pipeline_pbr — same reason as old pipeline_phong above —
+        // replaced by `pipeline_pbr` after shadow_bgl is in scope.)
+        let instance_pbr_capacity = node_capacity.max(64);
+        let instance_pbr_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_pbr_buf"),
+            size: std::mem::size_of::<InstancePbrRaw>() as u64 * instance_pbr_capacity as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        // 1×1 flat-blue normal map = tangent-space (0,0,1) packed to
+        // [0.5,0.5,1.0]. Sampled but multiplied by has_normal_map=0.
+        let normal_map_stub = Arc::new(Texture3D::from_rgba8(
+            device, queue, 1, 1, &[128, 128, 255, 255],
+        ));
+
+        // ── Shadow pass (Wave 7) ──────────────────────────────────────
+        let shadow_depth_size = 2048u32;
+        let shadow_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("urx3d.shadow_map"),
+            size: wgpu::Extent3d {
+                width: shadow_depth_size,
+                height: shadow_depth_size,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let shadow_view = shadow_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let shadow_frame_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.shadow_frame_buf"),
+            size: std::mem::size_of::<FrameUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        // shadow_frame_bgl is identical SHAPE to frame_bgl (one uniform).
+        let shadow_frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("urx3d.shadow_frame_bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let shadow_frame_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("urx3d.shadow_frame_bg"),
+            layout: &shadow_frame_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: shadow_frame_buf.as_entire_binding(),
+            }],
+        });
+
+        // shadow_bgl = depth texture + compare sampler (used by phong + pbr passes)
+        let shadow_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("urx3d.shadow_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+            ],
+        });
+        let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("urx3d.shadow_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
+        });
+        let shadow_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("urx3d.shadow_bg"),
+            layout: &shadow_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&shadow_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&shadow_sampler) },
+            ],
+        });
+
+        let shader_shadow = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("urx3d.shadow_pass"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/shadow_pass.wgsl").into()),
+        });
+
+        // Re-build phong + pbr pipelines INCLUDING shadow group at bind group 1 / 3
+        // To keep the diff minimal we add shadow_bgl as an extra group on
+        // the pipeline_layout for these two pipelines. The original
+        // pipeline_layouts are already constructed above with the OLD
+        // layouts — so we redefine pipeline_phong + pipeline_pbr below
+        // with the right layouts.
+        //
+        // Sleight of hand: the existing pipelines (variables `pipeline_phong`
+        // and `pipeline_pbr`) are about to be shadowed by new bindings
+        // BEFORE they reach `Self {}`, so any earlier reference doesn't leak.
+        let pipeline_layout_phong_v2 =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("urx3d.pipeline_layout_pbr"),
-                bind_group_layouts: &[&frame_bgl_phong, &tex_bgl, &tex_bgl],
+                label: Some("urx3d.pipeline_layout_phong_v2"),
+                bind_group_layouts: &[&frame_bgl_phong, &shadow_bgl],
+                immediate_size: 0,
+            });
+        let pipeline_phong = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urx3d.pipeline_phong_v2"),
+            layout: Some(&pipeline_layout_phong_v2),
+            vertex: wgpu::VertexState {
+                module: &shader_phong,
+                entry_point: Some("vs_main"),
+                buffers: &[VertexLit::vertex_buffer_layout(), InstanceLitRaw::vertex_buffer_layout()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader_phong,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let pipeline_layout_pbr_v2 =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("urx3d.pipeline_layout_pbr_v2"),
+                bind_group_layouts: &[&frame_bgl_phong, &tex_bgl, &tex_bgl, &shadow_bgl],
                 immediate_size: 0,
             });
         let pipeline_pbr = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("urx3d.pipeline_pbr"),
-            layout: Some(&pipeline_layout_pbr),
+            label: Some("urx3d.pipeline_pbr_v2"),
+            layout: Some(&pipeline_layout_pbr_v2),
             vertex: wgpu::VertexState {
                 module: &shader_pbr,
                 entry_point: Some("vs_main"),
-                buffers: &[
-                    VertexPbr::vertex_buffer_layout(),
-                    InstancePbrRaw::vertex_buffer_layout(),
-                ],
+                buffers: &[VertexPbr::vertex_buffer_layout(), InstancePbrRaw::vertex_buffer_layout()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -609,18 +739,54 @@ impl Renderer3D {
             multiview_mask: None,
             cache: None,
         });
-        let instance_pbr_capacity = node_capacity.max(64);
-        let instance_pbr_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("urx3d.instance_pbr_buf"),
-            size: std::mem::size_of::<InstancePbrRaw>() as u64 * instance_pbr_capacity as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        // 1×1 flat-blue normal map = tangent-space (0,0,1) packed to
-        // [0.5,0.5,1.0]. Sampled but multiplied by has_normal_map=0.
-        let normal_map_stub = Arc::new(Texture3D::from_rgba8(
-            device, queue, 1, 1, &[128, 128, 255, 255],
-        ));
+
+        // Shadow-caster pipelines (depth-only, no color target)
+        let pipeline_layout_shadow =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("urx3d.pipeline_layout_shadow"),
+                bind_group_layouts: &[&shadow_frame_bgl],
+                immediate_size: 0,
+            });
+        let make_shadow_pipeline = |label: &str, vs_entry: &str, vb_layouts: &[wgpu::VertexBufferLayout]| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout_shadow),
+                vertex: wgpu::VertexState {
+                    module: &shader_shadow,
+                    entry_point: Some(vs_entry),
+                    buffers: vb_layouts,
+                    compilation_options: Default::default(),
+                },
+                fragment: None,
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: Some(wgpu::Face::Back),
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: true,
+                    depth_compare: wgpu::CompareFunction::Less,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState {
+                        constant: 2,
+                        slope_scale: 2.0,
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let lit_vb = [VertexLit::vertex_buffer_layout(), InstanceLitRaw::vertex_buffer_layout()];
+        let pbr_vb = [VertexPbr::vertex_buffer_layout(), InstancePbrRaw::vertex_buffer_layout()];
+        let pipeline_shadow_lit = make_shadow_pipeline("urx3d.pipeline_shadow_lit", "vs_lit", &lit_vb);
+        let pipeline_shadow_pbr = make_shadow_pipeline("urx3d.pipeline_shadow_pbr", "vs_pbr", &pbr_vb);
 
         let depth_view = Self::create_depth(device, initial_size);
 
@@ -630,6 +796,8 @@ impl Renderer3D {
             pipeline_phong,
             pipeline_textured,
             pipeline_pbr,
+            pipeline_shadow_lit,
+            pipeline_shadow_pbr,
             node_bgl,
             tex_bgl,
             frame_buf,
@@ -650,6 +818,10 @@ impl Renderer3D {
             instance_pbr_buf,
             instance_pbr_capacity,
             normal_map_stub,
+            shadow_view,
+            shadow_frame_buf,
+            shadow_frame_bg,
+            shadow_bg,
             depth_view,
             depth_size: initial_size,
             color_format,
@@ -798,12 +970,60 @@ impl Renderer3D {
         camera: &PerspectiveCamera,
         scene: &Scene3D,
     ) {
-        // 1. Frame uniform (view_proj + eye position for spec calc).
+        // 1a. Pick the first DIRECTIONAL light as the shadow caster (if any).
+        let mut shadow_light_dir: Option<glam::Vec3> = None;
+        for l in &scene.lights {
+            if let crate::light::Light::Directional { direction, .. } = l {
+                shadow_light_dir = Some(*direction);
+                break;
+            }
+        }
+        let has_shadow = shadow_light_dir.is_some();
+        // 1b. Build a light_view_proj from the first directional light.
+        //     Orthographic projection covers an axis-aligned cube around
+        //     the scene origin sized to a fixed half-extent. Good enough
+        //     for cube/plane Wave 7 demos; mlc/tessera-scale scenes can
+        //     pass a custom shadow camera in a future API rev.
+        let light_view_proj = if let Some(dir) = shadow_light_dir {
+            let dir_n = dir.normalize_or_zero();
+            let half_extent = 8.0_f32;
+            let light_eye = -dir_n * 12.0;
+            // Pick an up vector that is NOT parallel to the view dir.
+            let up = if dir_n.y.abs() > 0.99 {
+                glam::Vec3::Z
+            } else {
+                glam::Vec3::Y
+            };
+            let view = glam::Mat4::look_at_rh(light_eye, glam::Vec3::ZERO, up);
+            let proj = glam::Mat4::orthographic_rh(
+                -half_extent, half_extent,
+                -half_extent, half_extent,
+                0.5, 30.0,
+            );
+            proj * view
+        } else {
+            Mat4::IDENTITY
+        };
+
+        // 1c. Frame uniform — view_proj + eye + light_view_proj + shadow_params
         let frame = FrameUniform {
             view_proj: camera.view_proj().to_cols_array_2d(),
             eye: [camera.eye.x, camera.eye.y, camera.eye.z, 1.0],
+            light_view_proj: light_view_proj.to_cols_array_2d(),
+            shadow_params: [if has_shadow { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
         };
         queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&frame));
+
+        // 1d. Shadow-pass frame uniform: view_proj REPLACED with
+        //     light_view_proj so the vertex shader projects from the
+        //     light's POV. Other fields don't matter for depth-only.
+        let shadow_frame = FrameUniform {
+            view_proj: light_view_proj.to_cols_array_2d(),
+            eye: [0.0; 4],
+            light_view_proj: light_view_proj.to_cols_array_2d(),
+            shadow_params: [0.0; 4],
+        };
+        queue.write_buffer(&self.shadow_frame_buf, 0, bytemuck::bytes_of(&shadow_frame));
 
         // 2. Light uniform — uploaded once per frame; phong shader uses
         //    it, unlit shader doesn't bind binding=1.
@@ -1100,6 +1320,49 @@ impl Renderer3D {
             );
         }
 
+        // 6d. Shadow pass (Wave 7) — depth-only pre-pass into shadow_tex.
+        //     Casters = lit groups + pbr groups (other materials skip).
+        if has_shadow && (!lit_draws.is_empty() || !pbr_draws.is_empty()) {
+            let mut spass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("urx3d.shadow_pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.shadow_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+
+            if !lit_draws.is_empty() {
+                spass.set_pipeline(&self.pipeline_shadow_lit);
+                spass.set_bind_group(0, &self.shadow_frame_bg, &[]);
+                spass.set_vertex_buffer(1, self.instance_lit_buf.slice(..));
+                for g in &lit_draws {
+                    spass.set_vertex_buffer(0, g.vb.slice(..));
+                    spass.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
+                    let end = g.first_instance + g.instance_count;
+                    spass.draw_indexed(0..g.index_count, 0, g.first_instance..end);
+                }
+            }
+            if !pbr_draws.is_empty() {
+                spass.set_pipeline(&self.pipeline_shadow_pbr);
+                spass.set_bind_group(0, &self.shadow_frame_bg, &[]);
+                spass.set_vertex_buffer(1, self.instance_pbr_buf.slice(..));
+                for g in &pbr_draws {
+                    spass.set_vertex_buffer(0, g.vb.slice(..));
+                    spass.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
+                    let end = g.first_instance + g.instance_count;
+                    spass.draw_indexed(0..g.index_count, 0, g.first_instance..end);
+                }
+            }
+        }
+
         // 7. One render pass — four pipelines.
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("urx3d.pass"),
@@ -1147,6 +1410,7 @@ impl Renderer3D {
         if !lit_draws.is_empty() {
             pass.set_pipeline(&self.pipeline_phong);
             pass.set_bind_group(0, &self.frame_bg_phong, &[]);
+            pass.set_bind_group(1, &self.shadow_bg, &[]);
             pass.set_vertex_buffer(1, self.instance_lit_buf.slice(..));
             for g in &lit_draws {
                 pass.set_vertex_buffer(0, g.vb.slice(..));
@@ -1170,10 +1434,11 @@ impl Renderer3D {
             }
         }
 
-        // PBR (Wave 6) pass
+        // PBR (Wave 6) pass — with Wave 7 shadow group at slot 3
         if !pbr_draws.is_empty() {
             pass.set_pipeline(&self.pipeline_pbr);
             pass.set_bind_group(0, &self.frame_bg_phong, &[]);
+            pass.set_bind_group(3, &self.shadow_bg, &[]);
             pass.set_vertex_buffer(1, self.instance_pbr_buf.slice(..));
             for g in &pbr_draws {
                 pass.set_bind_group(1, &g.bg_albedo, &[]);

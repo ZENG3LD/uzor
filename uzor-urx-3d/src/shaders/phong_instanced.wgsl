@@ -22,8 +22,10 @@
 const MAX_LIGHTS: u32 = 8u;
 
 struct Frame {
-    view_proj: mat4x4<f32>,
-    eye:       vec4<f32>,  // xyz = camera position, w = unused
+    view_proj:       mat4x4<f32>,
+    eye:             vec4<f32>,
+    light_view_proj: mat4x4<f32>,
+    shadow_params:   vec4<f32>,
 };
 
 struct LightSlot {
@@ -51,6 +53,9 @@ struct LightArrayU {
 
 @group(0) @binding(0) var<uniform> frame:  Frame;
 @group(0) @binding(1) var<uniform> lights: LightArrayU;
+
+@group(1) @binding(0) var t_shadow: texture_depth_2d;
+@group(1) @binding(1) var s_shadow: sampler_comparison;
 
 struct VsIn {
     @location(0) pos:    vec3<f32>,
@@ -133,6 +138,34 @@ fn light_contribution(
     return l.color * l.intensity * atten * (diff + spec);
 }
 
+fn sample_shadow(world_pos: vec3<f32>) -> f32 {
+    if (frame.shadow_params.x < 0.5) {
+        return 1.0; // shadow disabled — full light
+    }
+    let clip = frame.light_view_proj * vec4<f32>(world_pos, 1.0);
+    let proj = clip.xyz / clip.w;
+    // Light NDC: x,y in [-1,1], z in [0,1] for wgpu. Map to UV.
+    let uv = vec2<f32>(proj.x * 0.5 + 0.5, -proj.y * 0.5 + 0.5);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || proj.z > 1.0) {
+        return 1.0; // outside shadow map → unshadowed
+    }
+    let bias = 0.005;
+    // 3×3 PCF
+    var sum = 0.0;
+    let texel = 1.0 / 2048.0;
+    for (var dy = -1; dy <= 1; dy = dy + 1) {
+        for (var dx = -1; dx <= 1; dx = dx + 1) {
+            let off = vec2<f32>(f32(dx), f32(dy)) * texel;
+            sum = sum + textureSampleCompare(
+                t_shadow, s_shadow,
+                uv + off,
+                proj.z - bias,
+            );
+        }
+    }
+    return sum / 9.0;
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let n = normalize(in.world_normal);
@@ -144,15 +177,19 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let shininess  = in.material.w;
 
     var rgb = lights.ambient * ambient_k * in.base_color.rgb;
+    let shadow_factor = sample_shadow(in.world_pos);
 
     var i = 0u;
     loop {
         if (i >= lights.count) { break; }
         if (i >= MAX_LIGHTS) { break; }
         let l = lights.lights[i];
+        // First-light directional gets the shadow factor; others
+        // unshadowed (single-light shadow map in Wave 7).
+        let f = select(1.0, shadow_factor, i == 0u && l.kind == 0u);
         rgb = rgb + light_contribution(l, in.world_pos, n, view_dir,
                                        diffuse_k, specular_k, shininess)
-                  * in.base_color.rgb;
+                  * in.base_color.rgb * f;
         i = i + 1u;
     }
 

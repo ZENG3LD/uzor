@@ -25,8 +25,10 @@ const MAX_LIGHTS: u32 = 8u;
 const PI: f32 = 3.14159265358979;
 
 struct Frame {
-    view_proj: mat4x4<f32>,
-    eye:       vec4<f32>,
+    view_proj:       mat4x4<f32>,
+    eye:             vec4<f32>,
+    light_view_proj: mat4x4<f32>,
+    shadow_params:   vec4<f32>,
 };
 
 struct LightSlot {
@@ -60,6 +62,27 @@ struct LightArrayU {
 
 @group(2) @binding(0) var t_normal: texture_2d<f32>;
 @group(2) @binding(1) var s_normal: sampler;
+
+@group(3) @binding(0) var t_shadow: texture_depth_2d;
+@group(3) @binding(1) var s_shadow: sampler_comparison;
+
+fn sample_shadow(world_pos: vec3<f32>) -> f32 {
+    if (frame.shadow_params.x < 0.5) { return 1.0; }
+    let clip = frame.light_view_proj * vec4<f32>(world_pos, 1.0);
+    let proj = clip.xyz / clip.w;
+    let uv = vec2<f32>(proj.x * 0.5 + 0.5, -proj.y * 0.5 + 0.5);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || proj.z > 1.0) { return 1.0; }
+    let bias = 0.005;
+    var sum = 0.0;
+    let texel = 1.0 / 2048.0;
+    for (var dy = -1; dy <= 1; dy = dy + 1) {
+        for (var dx = -1; dx <= 1; dx = dx + 1) {
+            let off = vec2<f32>(f32(dx), f32(dy)) * texel;
+            sum = sum + textureSampleCompare(t_shadow, s_shadow, uv + off, proj.z - bias);
+        }
+    }
+    return sum / 9.0;
+}
 
 struct VsIn {
     @location(0) pos:     vec3<f32>,
@@ -172,6 +195,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let v = normalize(frame.eye.xyz - in.world_pos);
     let f0 = mix(vec3<f32>(0.04), albedo, vec3<f32>(metalness));
 
+    let shadow_factor = sample_shadow(in.world_pos);
     var lo = vec3<f32>(0.0);
     var i = 0u;
     loop {
@@ -194,7 +218,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let diffuse = kd * albedo / PI;
 
             let radiance = lights.lights[i].color * lights.lights[i].intensity * atten;
-            lo = lo + (diffuse + specular) * radiance * ndotl;
+            let sf = select(1.0, shadow_factor, i == 0u && lights.lights[i].kind == 0u);
+            lo = lo + (diffuse + specular) * radiance * ndotl * sf;
         }
         i = i + 1u;
     }

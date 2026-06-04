@@ -7,8 +7,10 @@
 // draw_indexed_instanced.
 
 struct Frame {
-    view_proj: mat4x4<f32>,
-    eye:       vec4<f32>,
+    view_proj:       mat4x4<f32>,
+    eye:             vec4<f32>,
+    light_view_proj: mat4x4<f32>,
+    shadow_params:   vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;
