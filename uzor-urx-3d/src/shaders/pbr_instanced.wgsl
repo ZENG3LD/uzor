@@ -67,10 +67,22 @@ struct LightArrayU {
 @group(2) @binding(0) var t_normal: texture_2d<f32>;
 @group(2) @binding(1) var s_normal: sampler;
 
+// Wave 7 shadow + Wave 6b real-IBL packed into one bind group.
+// 0/1: shadow depth + comparison sampler
+// 2/3: irradiance cubemap + filtering sampler (diffuse IBL)
+// 4/5: prefiltered cubemap + filtering sampler (specular IBL)
+// 6/7: BRDF integration LUT + sampler
+//
+// `frame.shadow_params.y` = number of prefilter mip levels (passed
+// from the CPU so the shader knows how to scale roughness → mip).
 @group(3) @binding(0) var t_shadow: texture_depth_2d;
 @group(3) @binding(1) var s_shadow: sampler_comparison;
-@group(3) @binding(2) var t_env:    texture_cube<f32>;
-@group(3) @binding(3) var s_env:    sampler;
+@group(3) @binding(2) var t_irr:    texture_cube<f32>;
+@group(3) @binding(3) var s_irr:    sampler;
+@group(3) @binding(4) var t_pref:   texture_cube<f32>;
+@group(3) @binding(5) var s_pref:   sampler;
+@group(3) @binding(6) var t_brdf:   texture_2d<f32>;
+@group(3) @binding(7) var s_brdf:   sampler;
 
 fn sample_shadow(world_pos: vec3<f32>) -> f32 {
     if (frame.shadow_params.x < 0.5) { return 1.0; }
@@ -245,17 +257,25 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         i = i + 1u;
     }
 
-    // ── IBL (Wave 10b) ─────────────────────────────────────────
+    // ── IBL (Wave 6b: split-sum, pre-filtered + BRDF LUT) ──────
+    // Diffuse: irradiance cubemap sampled along the surface normal.
+    // Specular: prefiltered cubemap sampled along the reflection
+    //   direction at mip = roughness * (mips - 1), modulated by the
+    //   BRDF LUT for energy conservation (Karis "Real Shading in UE4").
     let ndotv = max(dot(n, v), 0.0);
     let r_dir = reflect(-v, n);
-    let env_diffuse  = textureSample(t_env, s_env, n).rgb;
-    let env_specular = textureSample(t_env, s_env, r_dir).rgb;
-    let env_spec_mix = mix(env_specular, env_diffuse, roughness);
-    let f_ibl = fresnel_schlick(ndotv, f0);
+    let mip_levels = max(frame.shadow_params.y - 1.0, 0.0);
+    let mip = roughness * mip_levels;
+
+    let irradiance   = textureSample(t_irr, s_irr, n).rgb;
+    let prefiltered  = textureSampleLevel(t_pref, s_pref, r_dir, mip).rgb;
+    let brdf         = textureSample(t_brdf, s_brdf, vec2<f32>(ndotv, roughness)).rg;
+
+    let f_ibl  = fresnel_schlick(ndotv, f0);
     let kd_ibl = (vec3<f32>(1.0) - f_ibl) * (1.0 - metalness);
 
-    let ibl_diffuse  = kd_ibl * albedo * env_diffuse;
-    let ibl_specular = f_ibl * env_spec_mix;
+    let ibl_diffuse  = kd_ibl * albedo * irradiance;
+    let ibl_specular = prefiltered * (f_ibl * brdf.x + vec3<f32>(brdf.y));
     let ibl = (ibl_diffuse + ibl_specular) * ao;
 
     let ambient = albedo * lights.ambient * ao;

@@ -230,6 +230,9 @@ pub struct Renderer3D {
     env_bg: wgpu::BindGroup,
     /// Owned default sky cubemap (used when no consumer-supplied env).
     _env_default: Arc<TextureCube>,
+    /// Wave 6b — baked irradiance + prefiltered + BRDF LUT. Keeps the
+    /// underlying textures alive while their views are bound below.
+    _ibl_baked: Arc<crate::ibl::IblBaked>,
     depth_view: wgpu::TextureView,
     depth_size: (u32, u32),
     color_format: wgpu::TextureFormat,
@@ -730,16 +733,14 @@ impl Renderer3D {
             cache: None,
         });
 
-        // Wave 10b — PBR shadow + env packed into one BGL to stay
-        // under wgpu's 4-bind-group limit. Phong keeps the smaller
-        // `shadow_bgl` (no IBL there yet).
+        // Wave 6b — PBR shadow + real-IBL (irradiance + prefiltered +
+        // BRDF LUT) packed into one bind group. All 8 binding slots.
         let pbr_shadow_env_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("urx3d.pbr_shadow_env_bgl"),
+            label: Some("urx3d.pbr_shadow_ibl_bgl"),
             entries: &[
-                // Shadow depth
+                // 0/1: shadow depth + comparison sampler
                 wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Depth,
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -748,15 +749,13 @@ impl Renderer3D {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
-                // Env cubemap
+                // 2/3: irradiance cubemap + sampler
                 wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::Cube,
@@ -765,8 +764,37 @@ impl Renderer3D {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    binding: 3, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                // 4/5: prefiltered cubemap + sampler
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::Cube,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                // 6/7: BRDF LUT + sampler
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7, visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
@@ -922,18 +950,26 @@ impl Renderer3D {
             cache: None,
         });
 
-        // Wave 10b — default sky cubemap + combined shadow+env BG for PBR
+        // Wave 6b — default sky cubemap + baked IBL (irradiance +
+        // prefiltered + BRDF LUT). The bake is one-shot at renderer
+        // construction so consumers don't pay for it per-frame.
         let env_default = Arc::new(TextureCube::default_sky(device, queue));
+        let ibl = crate::ibl::bake_ibl(device, queue, &env_default);
         let env_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("urx3d.pbr_shadow_env_bg"),
+            label: Some("urx3d.pbr_shadow_ibl_bg"),
             layout: &pbr_shadow_env_bgl,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&shadow_view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&shadow_sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&env_default.view) },
-                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&env_default.sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&ibl.irradiance_view) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&ibl.irradiance_sampler) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&ibl.prefiltered_view) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::Sampler(&ibl.prefiltered_sampler) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&ibl.brdf_lut_view) },
+                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&ibl.brdf_lut_sampler) },
             ],
         });
+        let ibl_baked = ibl; // moved into Self below
 
         let depth_view = Self::create_depth(device, initial_size);
 
@@ -1181,6 +1217,7 @@ impl Renderer3D {
             shadow_bg,
             env_bg,
             _env_default: env_default,
+            _ibl_baked: ibl_baked,
             depth_view,
             depth_size: initial_size,
             color_format,
@@ -1515,7 +1552,12 @@ impl Renderer3D {
             view_proj: camera.view_proj().to_cols_array_2d(),
             eye: [camera.eye.x, camera.eye.y, camera.eye.z, 1.0],
             light_view_proj: light_view_proj.to_cols_array_2d(),
-            shadow_params: [if has_shadow { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            shadow_params: [
+                if has_shadow { 1.0 } else { 0.0 },
+                crate::ibl::PREFILTER_MIPS as f32, // Wave 6b — passed to PBR shader for roughness→mip
+                0.0,
+                0.0,
+            ],
         };
         queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&frame));
 

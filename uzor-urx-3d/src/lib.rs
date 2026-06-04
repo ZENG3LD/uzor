@@ -17,6 +17,7 @@
 
 pub mod camera;
 pub mod gltf_loader;
+pub mod ibl;
 pub mod light;
 pub mod math;
 pub mod mesh;
