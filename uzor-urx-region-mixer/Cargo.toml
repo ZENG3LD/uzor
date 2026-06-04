@@ -10,8 +10,8 @@ keywords    = ["graphics", "rendering", "uzor", "urx", "wgpu"]
 categories  = ["graphics", "rendering"]
 
 [dependencies]
-uzor-urx-engine = { version = "1.4.4", path = "../uzor-urx-engine" }
-uzor-urx-core   = { version = "1.4.4", path = "../uzor-urx-core" }
+uzor-urx-engine = { version = "1.4.5", path = "../uzor-urx-engine" }
+uzor-urx-core   = { version = "1.4.5", path = "../uzor-urx-core" }
 wgpu            = "28"
 bytemuck        = { version = "1", features = ["derive"] }
 

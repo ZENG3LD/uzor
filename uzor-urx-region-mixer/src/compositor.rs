@@ -42,7 +42,6 @@ pub struct GpuCompositor {
     sampler: wgpu::Sampler,
     bgl: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
-    params_buf: wgpu::Buffer,
     target_format: wgpu::TextureFormat,
 }
 
@@ -135,19 +134,11 @@ impl GpuCompositor {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("urx-region-mixer.blit_params"),
-            size: std::mem::size_of::<BlitRect>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
         Self {
             surfaces: HashMap::new(),
             sampler,
             bgl,
             pipeline,
-            params_buf,
             target_format,
         }
     }
