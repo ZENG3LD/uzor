@@ -40,6 +40,9 @@ use uzor_urx_core::region::RegionId;
 use uzor_urx_core::scene::Scene;
 use uzor_urx_engine::{BackendHint, MixDispatcher};
 
+pub mod compositor;
+pub use compositor::{GpuCompositor, COMPOSITOR_FORMAT};
+
 /// One dispatched region in the order the engine sent it.
 #[derive(Debug, Clone, Copy)]
 pub struct DispatchRecord {
