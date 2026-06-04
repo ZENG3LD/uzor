@@ -18,6 +18,7 @@
 pub mod cmd;
 pub mod encoder;
 pub mod tile;
+pub mod backend;
 
 pub use cmd::{pack_gradient_stop, CmdKind, SceneCmd};
 pub use encoder::{encode_scene, encode_scene_with_paths};
@@ -25,3 +26,4 @@ pub use tile::{
     BlitPipeline, DispatchUniforms, TileBuffers, TilePipeline,
     DEFAULT_PATH_POINTS_CAP, TILE_CMD_CAP, TILE_SIZE,
 };
+pub use backend::{WgpuFullBackend, WgpuFullSubmitError};

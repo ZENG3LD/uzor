@@ -15,6 +15,7 @@ wgpu = "29"
 bytemuck = { version = "1", features = ["derive"] }
 kurbo = "0.13"
 peniko = "0.6"
+thiserror = "1"
 
 [dev-dependencies]
 pollster  = "0.4"
