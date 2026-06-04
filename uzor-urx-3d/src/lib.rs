@@ -20,6 +20,7 @@ pub mod light;
 pub mod math;
 pub mod mesh;
 pub mod mesh_cache;
+pub mod particles;
 pub mod pipeline;
 pub mod scene3d;
 pub mod texture;
@@ -31,6 +32,7 @@ pub use mesh::{Mesh, MeshLit, MeshPbr, MeshUv, Vertex, VertexLit, VertexPbr, Ver
 pub use mesh_cache::{
     MeshCache, MeshGpu, MeshLitCache, MeshLitGpu, MeshPbrCache, MeshPbrGpu, MeshUvCache, MeshUvGpu,
 };
-pub use pipeline::{Renderer3D, DEPTH_FORMAT};
+pub use particles::{EmitterConfig, Particle, ParticleRenderer, ParticleSystem};
+pub use pipeline::{Renderer3D, DEPTH_FORMAT, HDR_FORMAT};
 pub use scene3d::{Node, NodeMesh, PbrMaterial, PhongMaterial, Scene3D};
 pub use texture::{Texture3D, TextureCache, TextureCube};
