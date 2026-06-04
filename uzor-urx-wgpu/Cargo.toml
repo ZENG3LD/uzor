@@ -14,7 +14,7 @@ uzor-urx-core              = { workspace = true }
 uzor-render-wgpu-instanced = { workspace = true }
 uzor                       = { workspace = true }
 metrics = "0.24"
-wgpu    = "28"
+wgpu    = "29"
 # kurbo/peniko come transitively through urx-core, but pin explicitly
 # for clarity in the DrawCommand → InstancedRenderContext adapter.
 kurbo = "0.13"

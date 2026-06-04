@@ -19,7 +19,7 @@ metrics = "0.24"
 uzor-urx-wgpu      = { workspace = true, optional = true }
 uzor-urx-hybrid    = { workspace = true, optional = true }
 uzor-urx-wgpu-full = { workspace = true, optional = true }
-wgpu = { version = "28", optional = true }
+wgpu = { version = "29", optional = true }
 
 [features]
 default = ["wgpu-backend"]
@@ -32,7 +32,7 @@ full-gpu-backend = ["dep:uzor-urx-wgpu-full", "dep:wgpu"]
 
 [dev-dependencies]
 pollster   = "0.4"
-wgpu       = "28"
+wgpu       = "29"
 winit      = "0.30"
 peniko = "0.6"
 # Agentic control plane (3-level HTTP) for winit_full_gpu_demo.

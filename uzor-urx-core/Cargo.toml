@@ -27,7 +27,7 @@ metrics = "0.24"
 # urx-core itself is wgpu-agnostic; the pipeline_cache module is a
 # thin convenience that wraps wgpu's PipelineCache API + namespaced
 # disk persistence. urx-core does not depend on wgpu otherwise.
-wgpu = { version = "28", optional = true, default-features = false }
+wgpu = { version = "29", optional = true, default-features = false }
 
 [features]
 default = []

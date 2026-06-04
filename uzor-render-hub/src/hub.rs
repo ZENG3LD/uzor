@@ -347,7 +347,9 @@ impl RenderHub {
 /// Not available on `wasm32` — use [`RenderHub::fixed`]`(RenderBackend::Canvas2d)` instead.
 #[cfg(not(target_arch = "wasm32"))]
 fn probe_adapter() -> Option<wgpu::AdapterInfo> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    // wgpu 29: Instance::new takes the descriptor by value; default() is gone,
+    // use new_without_display_handle() instead.
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         compatible_surface: None,

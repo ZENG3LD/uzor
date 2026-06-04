@@ -10,5 +10,5 @@ readme = "../README.md"
 
 [dependencies]
 uzor = { workspace = true, features = ["shaper"] }
-vello = "0.8"
-skrifa = "0.40"
+vello = "0.9"
+skrifa = "0.42"

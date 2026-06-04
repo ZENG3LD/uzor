@@ -10,10 +10,10 @@ readme = "../README.md"
 
 [dependencies]
 uzor = { workspace = true }
-wgpu = "28"
+wgpu = "29"
 bytemuck = { version = "1", features = ["derive"] }
 cosmic-text = "0.12"
-skrifa = "0.40"
+skrifa = "0.42"
 etagere = "0.2"
 lyon_tessellation = "1.0"
 lyon_path = "1.0"

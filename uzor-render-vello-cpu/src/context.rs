@@ -295,6 +295,9 @@ struct SavedState {
 pub struct VelloCpuRenderContext {
     // vello_cpu renderer — re-created on size change, reset each frame
     render_ctx:   Option<VelloCpuCtx>,
+    // vello_cpu 0.0.9 split per-render resources (image-registry + glyph caches)
+    // out of the context so the rasteriser can own them across frames.
+    resources:    vello_cpu::Resources,
     width:        u32,
     height:       u32,
     dpr:          f64,
@@ -336,6 +339,7 @@ impl VelloCpuRenderContext {
     pub fn new(dpr: f64) -> Self {
         Self {
             render_ctx:   None,
+            resources:    vello_cpu::Resources::new(),
             width:        0,
             height:       0,
             dpr,
@@ -403,7 +407,8 @@ impl VelloCpuRenderContext {
     pub fn render_to_pixmap_rgba8(&mut self, buffer: &mut [u8], width: u16, height: u16) {
         if let Some(ref mut ctx) = self.render_ctx {
             ctx.flush();
-            ctx.render_to_buffer(buffer, width, height, RenderMode::OptimizeSpeed);
+            // vello_cpu 0.0.9: render_to_buffer now takes &mut Resources first.
+            ctx.render_to_buffer(&mut self.resources, buffer, width, height, RenderMode::OptimizeSpeed);
         }
     }
 
@@ -839,6 +844,9 @@ impl TextRenderer for VelloCpuRenderContext {
         let fill_color = self.effective_fill_color();
         let white = Color::from_rgba8(255, 255, 255, 255);
 
+        // vello_cpu 0.0.9: glyph_run now takes &mut Resources first. Split-borrow
+        // self.render_ctx + self.resources so both can be referenced inside the loop.
+        let resources = &mut self.resources;
         if let Some(ref mut ctx) = self.render_ctx {
             ctx.set_transform(combined);
 
@@ -858,7 +866,7 @@ impl TextRenderer for VelloCpuRenderContext {
                 };
                 ctx.set_paint(if is_color_emoji { white } else { fill_color });
                 let glyphs = run.iter().map(|g| Glyph { id: g.glyph_id, x: g.x, y: 0.0 });
-                ctx.glyph_run(font)
+                ctx.glyph_run(resources, font)
                     .font_size(font_size)
                     .hint(false)
                     .normalized_coords(&[])

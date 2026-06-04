@@ -240,7 +240,7 @@ impl ParticleRenderer {
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("urx3d.particle_pipeline_layout"),
-            bind_group_layouts: &[&frame_bgl],
+            bind_group_layouts: &[Some(&frame_bgl)],
             immediate_size: 0,
         });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -282,8 +282,8 @@ impl ParticleRenderer {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: crate::pipeline::DEPTH_FORMAT,
                 // Write disabled — particles read depth but don't write.
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),

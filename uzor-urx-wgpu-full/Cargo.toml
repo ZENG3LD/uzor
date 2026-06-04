@@ -11,7 +11,7 @@ categories  = ["graphics", "rendering"]
 
 [dependencies]
 uzor-urx-core = { workspace = true }
-wgpu = "28"
+wgpu = "29"
 bytemuck = { version = "1", features = ["derive"] }
 kurbo = "0.13"
 peniko = "0.6"

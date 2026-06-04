@@ -311,7 +311,7 @@ impl TilePipeline {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("urx-fullgpu-pipeline-layout"),
-            bind_group_layouts: &[&bgl],
+            bind_group_layouts: &[Some(&bgl)],
             immediate_size: 0,
         });
 
@@ -705,7 +705,7 @@ impl BlitPipeline {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label:                Some("urx-blit-pipeline-layout"),
-            bind_group_layouts:   &[&bgl],
+            bind_group_layouts:   &[Some(&bgl)],
             immediate_size:       0,
         });
 

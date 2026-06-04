@@ -324,7 +324,7 @@ impl Renderer3D {
         let pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("urx3d.pipeline_layout"),
-                bind_group_layouts: &[&frame_bgl, &node_bgl],
+                bind_group_layouts: &[Some(&frame_bgl), Some(&node_bgl)],
                 immediate_size: 0,
             });
 
@@ -358,8 +358,8 @@ impl Renderer3D {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -408,7 +408,7 @@ impl Renderer3D {
         let pipeline_layout_inst =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("urx3d.pipeline_layout_inst"),
-                bind_group_layouts: &[&frame_bgl_inst],
+                bind_group_layouts: &[Some(&frame_bgl_inst)],
                 immediate_size: 0,
             });
         let pipeline_instanced = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -444,8 +444,8 @@ impl Renderer3D {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -700,7 +700,7 @@ impl Renderer3D {
         let pipeline_layout_phong_v2 =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("urx3d.pipeline_layout_phong_v2"),
-                bind_group_layouts: &[&frame_bgl_phong, &shadow_bgl],
+                bind_group_layouts: &[Some(&frame_bgl_phong), Some(&shadow_bgl)],
                 immediate_size: 0,
             });
         let pipeline_phong = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -733,8 +733,8 @@ impl Renderer3D {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -814,9 +814,7 @@ impl Renderer3D {
         let pipeline_layout_pbr_v2 =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("urx3d.pipeline_layout_pbr_v2"),
-                bind_group_layouts: &[
-                    &frame_bgl_phong, &tex_bgl, &tex_bgl, &pbr_shadow_env_bgl,
-                ],
+                bind_group_layouts: &[Some(&frame_bgl_phong), Some(&tex_bgl), Some(&tex_bgl), Some(&pbr_shadow_env_bgl)],
                 immediate_size: 0,
             });
         let pipeline_pbr = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -849,8 +847,8 @@ impl Renderer3D {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -863,7 +861,7 @@ impl Renderer3D {
         let pipeline_layout_shadow =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("urx3d.pipeline_layout_shadow"),
-                bind_group_layouts: &[&shadow_frame_bgl],
+                bind_group_layouts: &[Some(&shadow_frame_bgl)],
                 immediate_size: 0,
             });
         let make_shadow_pipeline = |label: &str, vs_entry: &str, vb_layouts: &[wgpu::VertexBufferLayout]| {
@@ -888,8 +886,8 @@ impl Renderer3D {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
-                    depth_write_enabled: true,
-                    depth_compare: wgpu::CompareFunction::Less,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState {
                         constant: 2,
@@ -914,7 +912,7 @@ impl Renderer3D {
         let pipeline_layout_tex_v2 =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("urx3d.pipeline_layout_textured_v2"),
-                bind_group_layouts: &[&frame_bgl_phong, &tex_bgl, &shadow_bgl],
+                bind_group_layouts: &[Some(&frame_bgl_phong), Some(&tex_bgl), Some(&shadow_bgl)],
                 immediate_size: 0,
             });
         let pipeline_textured = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -950,8 +948,8 @@ impl Renderer3D {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -1035,7 +1033,7 @@ impl Renderer3D {
         });
         let bloom_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("urx3d.bloom_pipeline_layout"),
-            bind_group_layouts: &[&bloom_bgl],
+            bind_group_layouts: &[Some(&bloom_bgl)],
             immediate_size: 0,
         });
         let make_bloom_pipeline = |label: &str, fs_entry: &str, blend: Option<wgpu::BlendState>| {
@@ -1190,7 +1188,7 @@ impl Renderer3D {
         });
         let ssao_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("urx3d.ssao_pipeline_layout"),
-            bind_group_layouts: &[&ssao_bgl],
+            bind_group_layouts: &[Some(&ssao_bgl)],
             immediate_size: 0,
         });
         let pipeline_ssao = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1224,7 +1222,7 @@ impl Renderer3D {
         });
         let composite_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("urx3d.composite_pipeline_layout"),
-            bind_group_layouts: &[&composite_bgl],
+            bind_group_layouts: &[Some(&composite_bgl)],
             immediate_size: 0,
         });
         let pipeline_composite = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {

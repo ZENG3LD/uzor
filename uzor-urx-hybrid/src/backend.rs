@@ -702,7 +702,7 @@ fn build_pipeline(
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("urx-hybrid-pl"),
-        bind_group_layouts: &[&layout_0, &layout_1],
+        bind_group_layouts: &[Some(&layout_0), Some(&layout_1)],
         immediate_size: 0,
     });
 

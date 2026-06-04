@@ -351,7 +351,7 @@ impl InstancedRenderer {
         // ── Shared pipeline layout (group 0 only — for quad + line) ───────
         let base_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label:                Some("instanced_pipeline_layout"),
-            bind_group_layouts:   &[&uniform_bgl],
+            bind_group_layouts:   &[Some(&uniform_bgl)],
             immediate_size: 0,
         });
 
@@ -506,7 +506,7 @@ impl InstancedRenderer {
         let glyph_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label:                Some("glyph_pipeline_layout"),
-                bind_group_layouts:   &[&uniform_bgl, &atlas_bind_group_layout],
+                bind_group_layouts:   &[Some(&uniform_bgl), Some(&atlas_bind_group_layout)],
                 immediate_size: 0,
             });
 

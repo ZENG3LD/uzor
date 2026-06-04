@@ -389,11 +389,14 @@ fn build_dcomp_instance() -> wgpu::Instance {
             },
             ..Default::default()
         };
-        return wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        // wgpu 29: Instance::new takes the descriptor by value, the descriptor
+        // gained a `display: Option<...>` field (None = no display handle).
+        return wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
             flags,
             memory_budget_thresholds,
             backend_options,
+            display: None,
         });
     }
     #[cfg(not(target_os = "windows"))]

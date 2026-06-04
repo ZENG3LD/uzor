@@ -1101,8 +1101,10 @@ impl AppState {
             .unwrap_or_default();
 
         let surface_texture = match self.surface.surface.get_current_texture() {
-            Ok(t) => t,
-            Err(_) => return,
+            // wgpu 29: returns CurrentSurfaceTexture enum.
+            vello::wgpu::CurrentSurfaceTexture::Success(t)
+            | vello::wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            _ => return,
         };
         let surface_view = surface_texture
             .texture

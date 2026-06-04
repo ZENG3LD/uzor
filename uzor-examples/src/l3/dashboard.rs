@@ -2617,8 +2617,10 @@ impl AppState {
             .render_to_texture(&dev.device, &dev.queue, &self.scene, &self.surface.target_view, &render_params)
             .unwrap_or_default();
         let surface_texture = match self.surface.surface.get_current_texture() {
-            Ok(t) => t,
-            Err(_) => return,
+            // wgpu 29: returns CurrentSurfaceTexture enum.
+            vello::wgpu::CurrentSurfaceTexture::Success(t)
+            | vello::wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            _ => return,
         };
         let surface_view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = dev.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("l3-blit") });

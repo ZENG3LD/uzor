@@ -102,7 +102,7 @@ pub fn bake_ibl(
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("urx3d.ibl_bake_pipeline_layout"),
-        bind_group_layouts: &[&bgl],
+        bind_group_layouts: &[Some(&bgl)],
         immediate_size: 0,
     });
     let make_pipeline = |label: &str, fs_entry: &str, format: wgpu::TextureFormat| {

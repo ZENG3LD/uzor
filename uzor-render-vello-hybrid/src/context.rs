@@ -43,7 +43,8 @@ use std::sync::{Arc, OnceLock};
 // vello_common re-exports — kurbo geometry, peniko paints, glyph types
 // ---------------------------------------------------------------------------
 
-use vello_common::glyph::Glyph;
+// vello_common 0.0.9 moved glyph types into the glifo crate.
+use glifo::Glyph;
 use vello_common::kurbo::{self, Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
 use vello_common::peniko::{Blob, Compose, Fill, FontData, Mix};
 
@@ -350,6 +351,9 @@ struct SavedState {
 pub struct VelloHybridRenderContext {
     /// The vello_hybrid scene — rebuilt each frame.
     scene:         Option<Scene>,
+    /// vello_hybrid 0.0.9 split per-frame resources (atlas / glyph cache) out of
+    /// the renderer; we own one set so glyph_run + render() can borrow it.
+    resources:     vello_hybrid::Resources,
     width:         u32,
     height:        u32,
     dpr:           f64,
@@ -391,6 +395,7 @@ impl VelloHybridRenderContext {
     pub fn new(dpr: f64) -> Self {
         Self {
             scene:         None,
+            resources:     vello_hybrid::Resources::new(),
             width:         0,
             height:        0,
             dpr,
@@ -450,7 +455,7 @@ impl VelloHybridRenderContext {
     ///
     /// Returns a `vello_hybrid::RenderError` if the GPU upload or draw fails.
     pub fn render(
-        &self,
+        &mut self,
         renderer: &mut vello_hybrid::Renderer,
         device:   &Device,
         queue:    &Queue,
@@ -460,8 +465,11 @@ impl VelloHybridRenderContext {
         let Some(ref scene) = self.scene else {
             return Ok(());
         };
+        // vello_hybrid 0.0.9: render() takes &mut Resources + &TextureBindings.
+        let texture_bindings = vello_hybrid::TextureBindings::default();
         renderer.render(
             scene,
+            &mut self.resources,
             device,
             queue,
             encoder,
@@ -470,6 +478,7 @@ impl VelloHybridRenderContext {
                 height: self.height,
             },
             view,
+            &texture_bindings,
         )
     }
 
@@ -808,6 +817,8 @@ impl TextRenderer for VelloHybridRenderContext {
         let fill_color = self.effective_fill_color();
         let white = Color::from_rgba8(255, 255, 255, 255);
 
+        // vello_hybrid 0.0.9: Scene::glyph_run now takes &mut Resources first.
+        let resources = &mut self.resources;
         if let Some(ref mut s) = self.scene {
             s.set_transform(combined);
             let mut i = 0;
@@ -824,7 +835,7 @@ impl TextRenderer for VelloHybridRenderContext {
                 };
                 s.set_paint(if is_color_emoji { white } else { fill_color });
                 let glyphs = run.iter().map(|g| Glyph { id: g.glyph_id, x: g.x, y: 0.0 });
-                s.glyph_run(font).font_size(font_size).hint(false).normalized_coords(&[]).fill_glyphs(glyphs);
+                s.glyph_run(resources, font).font_size(font_size).hint(false).normalized_coords(&[]).fill_glyphs(glyphs);
             }
             s.set_transform(self.transform);
         }

@@ -182,12 +182,17 @@ fn submit_vello_hybrid(
 
     let present_t0 = std::time::Instant::now();
 
+    // wgpu 29: get_current_texture returns CurrentSurfaceTexture enum, not Result.
     let surface_texture = match surface.surface.get_current_texture() {
-        Ok(t) => t,
-        Err(wgpu::SurfaceError::OutOfMemory) => return true,
-        Err(e) => {
-            eprintln!("[render-hub] vello-hybrid surface error: {e:?}, reconfiguring");
+        wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return false,
+        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            eprintln!("[render-hub] vello-hybrid surface outdated/lost, reconfiguring");
             surface.surface.configure(device, &surface.config);
+            return false;
+        }
+        wgpu::CurrentSurfaceTexture::Validation => {
+            eprintln!("[render-hub] vello-hybrid surface validation error");
             return false;
         }
     };
@@ -243,12 +248,17 @@ fn submit_instanced(
 
     let present_t0 = std::time::Instant::now();
 
+    // wgpu 29: get_current_texture returns CurrentSurfaceTexture enum, not Result.
     let surface_texture = match surface.surface.get_current_texture() {
-        Ok(t) => t,
-        Err(wgpu::SurfaceError::OutOfMemory) => return true,
-        Err(e) => {
-            eprintln!("[render-hub] instanced surface error: {e:?}, reconfiguring");
+        wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return false,
+        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            eprintln!("[render-hub] instanced surface outdated/lost, reconfiguring");
             surface.surface.configure(device, &surface.config);
+            return false;
+        }
+        wgpu::CurrentSurfaceTexture::Validation => {
+            eprintln!("[render-hub] instanced surface validation error");
             return false;
         }
     };
@@ -459,12 +469,17 @@ fn blit_and_present(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
 ) -> bool {
+    // wgpu 29: get_current_texture returns CurrentSurfaceTexture enum, not Result.
     let surface_texture = match surface.surface.get_current_texture() {
-        Ok(t) => t,
-        Err(wgpu::SurfaceError::OutOfMemory) => return true,
-        Err(e) => {
-            eprintln!("[render-hub] surface error: {e:?}, reconfiguring");
+        wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return false,
+        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            eprintln!("[render-hub] vello-gpu surface outdated/lost, reconfiguring");
             surface.surface.configure(device, &surface.config);
+            return false;
+        }
+        wgpu::CurrentSurfaceTexture::Validation => {
+            eprintln!("[render-hub] vello-gpu surface validation error");
             return false;
         }
     };
