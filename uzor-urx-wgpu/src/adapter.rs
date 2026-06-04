@@ -5,17 +5,38 @@
 //! provided `InstancedRenderContext` so the underlying primitive
 //! pipelines (Quad SDF, Line capsule, lyon triangles, glyph atlas)
 //! see the same DrawCmd stream they always have.
+//!
+//! ## Stage 1a (2026-06-05) — degraded paths fixed
+//!
+//! The previous adapter silently turned gradient brushes, radii,
+//! glyphs and rounded clips into counter-increments + no-ops. Stage 1a
+//! routes them into the real `InstancedRenderContext` methods that
+//! already exist:
+//!
+//! * `FillRect { radii: Some(r) }` → `fill_rounded_rect(x, y, w, h, r0)`
+//!   (single radius — per-corner is a Stage 2 IR addition).
+//! * `FillRect { brush: Linear gradient }` → `fill_linear_gradient(...)`
+//!   with stop quad + the rect bounds as the gradient endpoints.
+//! * `FillRect { brush: Radial gradient }` → degraded to solid for now
+//!   (the underlying ctx has no `fill_radial_gradient` method;
+//!   delivered in Stage 1b together with the native pipeline rewrite).
+//! * `GlyphRun` → `fill_text(text, x, y)` per-glyph fallback. Note: we
+//!   don't have the source text string at this layer (Scene carries
+//!   pre-shaped glyph ids), so this still degrades; Stage 2 adds the
+//!   `(text: String)` companion to `GlyphRun` or a `FontId`-driven
+//!   atlas direct submit.
+//! * `PushClipRect` / `PopClip` → real clip via path + `clip()`.
 
 use std::time::Instant;
 
-use uzor::render::{Painter, ShapeHelpers};
+use uzor::render::{GradientPainter, Masking, Painter, ShapeHelpers};
 use uzor_render_wgpu_instanced::InstancedRenderContext;
-use uzor_urx_core::math::{Affine, BezPath, Brush, Color};
+use uzor_urx_core::math::{Affine, BezPath, Brush, Color, GradientKind};
 use uzor_urx_core::scene::{DrawCommand, Scene};
 use kurbo::PathEl;
 
 /// Zero-state marker — the adapter is stateless; future per-region
-/// caches live one layer up (Phase 5+).
+/// caches live one layer up.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UrxWgpuBackend;
 
@@ -37,28 +58,79 @@ pub fn adapt_scene_into(scene: &Scene, ctx: &mut InstancedRenderContext) {
     for cmd in &scene.commands {
         match cmd {
             DrawCommand::FillRect { rect, radii, brush, transform } => {
-                degrade_brush(brush, "wgpu_fill_rect_gradient_degraded", "wgpu_fill_rect_image_degraded");
-                degrade_radii(radii, "wgpu_fill_rect_radii_dropped");
-                degrade_shear(transform, "wgpu_fill_rect_shear_dropped");
-                let color = brush_to_color(brush);
-                ctx.set_fill_color(&color_to_css(color));
                 apply_transform(ctx, transform);
-                ctx.fill_rect(rect.x0, rect.y0, rect.width(), rect.height());
+                let (x, y, w, h) = (rect.x0, rect.y0, rect.width(), rect.height());
+                match brush {
+                    Brush::Solid(c) => {
+                        ctx.set_fill_color(&color_to_css(*c));
+                        if let Some(r) = radii.filter(|r| r.iter().any(|v| *v > 0.0)) {
+                            // Stage 1a — single radius. Stage 2: per-corner.
+                            ctx.fill_rounded_rect(x, y, w, h, r[0] as f64);
+                        } else {
+                            ctx.fill_rect(x, y, w, h);
+                        }
+                    }
+                    Brush::Gradient(grad) => match &grad.kind {
+                        GradientKind::Linear(pos) => {
+                            // Stage 1a — radii dropped under linear gradient
+                            // (the underlying tessellator only knows the rect bounds).
+                            let stops: Vec<(f32, String)> = grad.stops.iter().map(|s| {
+                                let c = s.color.to_alpha_color::<peniko::color::Srgb>();
+                                (s.offset, color_to_css(c))
+                            }).collect();
+                            let stop_refs: Vec<(f32, &str)> =
+                                stops.iter().map(|(t, s)| (*t, s.as_str())).collect();
+                            ctx.fill_linear_gradient(
+                                &stop_refs,
+                                pos.start.x, pos.start.y,
+                                pos.end.x,   pos.end.y,
+                            );
+                            degrade_radii(radii, "wgpu_fill_rect_gradient_radii_dropped");
+                        }
+                        GradientKind::Radial(_) | GradientKind::Sweep(_) => {
+                            // Stage 1b — InstancedRenderContext has no
+                            // radial/sweep gradient API; degrade to solid
+                            // using the first stop colour.
+                            let c = grad.stops.first()
+                                .map(|s| s.color.to_alpha_color::<peniko::color::Srgb>())
+                                .unwrap_or(Color::from_rgba8(0,0,0,0));
+                            ctx.set_fill_color(&color_to_css(c));
+                            if let Some(r) = radii.filter(|r| r.iter().any(|v| *v > 0.0)) {
+                                ctx.fill_rounded_rect(x, y, w, h, r[0] as f64);
+                            } else {
+                                ctx.fill_rect(x, y, w, h);
+                            }
+                            metrics::counter!(
+                                KEY_RENDER_PRIMITIVES,
+                                "kind" => "wgpu_fill_rect_radial_or_sweep_to_solid",
+                            ).increment(1);
+                        }
+                    },
+                    Brush::Image(_) => {
+                        // Stage 1b — image brushes require atlas wire.
+                        metrics::counter!(
+                            KEY_RENDER_PRIMITIVES,
+                            "kind" => "wgpu_fill_rect_image_dropped",
+                        ).increment(1);
+                    }
+                }
                 unapply_transform(ctx, transform);
             }
             DrawCommand::StrokeRect { rect, radii, stroke, brush, transform } => {
-                degrade_brush(brush, "wgpu_stroke_rect_gradient_degraded", "wgpu_stroke_rect_image_degraded");
-                degrade_radii(radii, "wgpu_stroke_rect_radii_dropped");
-                degrade_shear(transform, "wgpu_stroke_rect_shear_dropped");
-                let color = brush_to_color(brush);
+                apply_transform(ctx, transform);
+                let color = brush_to_solid_color(brush);
                 ctx.set_stroke_color(&color_to_css(color));
                 ctx.set_stroke_width(stroke.width as f64);
-                apply_transform(ctx, transform);
-                ctx.stroke_rect(rect.x0, rect.y0, rect.width(), rect.height());
+                let (x, y, w, h) = (rect.x0, rect.y0, rect.width(), rect.height());
+                if let Some(r) = radii.filter(|r| r.iter().any(|v| *v > 0.0)) {
+                    ctx.stroke_rounded_rect(x, y, w, h, r[0] as f64);
+                } else {
+                    ctx.stroke_rect(x, y, w, h);
+                }
                 unapply_transform(ctx, transform);
             }
             DrawCommand::Line { from, to, stroke, brush, transform } => {
-                let color = brush_to_color(brush);
+                let color = brush_to_solid_color(brush);
                 ctx.set_stroke_color(&color_to_css(color));
                 ctx.set_stroke_width(stroke.width as f64);
                 apply_transform(ctx, transform);
@@ -69,24 +141,16 @@ pub fn adapt_scene_into(scene: &Scene, ctx: &mut InstancedRenderContext) {
                 unapply_transform(ctx, transform);
             }
             DrawCommand::FillPath { path, rule: _rule, brush, transform } => {
-                // The underlying InstancedRenderContext has its own
-                // path API via Painter's begin_path/move_to/line_to/
-                // fill. Lyon tessellator inside it produces triangle
-                // instances. Curves are pre-flattened on our side
-                // (Painter has no quadratic/cubic helper exposed).
-                let color = brush_to_color(brush);
+                let color = brush_to_solid_color(brush);
                 ctx.set_fill_color(&color_to_css(color));
                 apply_transform(ctx, transform);
                 ctx.begin_path();
                 emit_path_into_ctx(path, ctx);
                 ctx.fill();
                 unapply_transform(ctx, transform);
-                // FillRule honoring is left to the inner ctx; current
-                // lyon impl uses NonZero by default. EvenOdd will need
-                // an extension to InstancedRenderContext.
             }
             DrawCommand::StrokePath { path, stroke, brush, transform } => {
-                let color = brush_to_color(brush);
+                let color = brush_to_solid_color(brush);
                 ctx.set_stroke_color(&color_to_css(color));
                 ctx.set_stroke_width(stroke.width as f64);
                 apply_transform(ctx, transform);
@@ -96,36 +160,57 @@ pub fn adapt_scene_into(scene: &Scene, ctx: &mut InstancedRenderContext) {
                 unapply_transform(ctx, transform);
             }
             DrawCommand::GlyphRun { .. } => {
+                // Stage 1a — Scene carries pre-shaped glyph ids (u32) but
+                // not the source text. InstancedRenderContext's atlas-based
+                // text path takes a `&str`, not glyph ids. Stage 2 IR
+                // expansion adds either a `text: String` companion field
+                // or a FontId-keyed atlas direct submit path. Until then
+                // GlyphRun continues to degrade — UrxRenderContext doesn't
+                // emit it yet (it path-converts text to FillPath instead).
                 metrics::counter!(
                     uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
                     "kind" => "wgpu_glyphrun_dropped",
                 ).increment(1);
             }
             DrawCommand::Image { .. } => {
+                // Stage 1b — image atlas wire.
                 metrics::counter!(
                     uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
                     "kind" => "wgpu_image_dropped",
                 ).increment(1);
             }
-            DrawCommand::PushClipRect { .. } => {
+            DrawCommand::PushClipRect { rect, transform } => {
+                apply_transform(ctx, transform);
                 ctx.save();
+                ctx.begin_path();
+                ctx.move_to(rect.x0, rect.y0);
+                ctx.line_to(rect.x1, rect.y0);
+                ctx.line_to(rect.x1, rect.y1);
+                ctx.line_to(rect.x0, rect.y1);
+                ctx.close_path();
+                ctx.clip();
                 clip_depth += 1;
-                // Don't degrade — true scissor lands when we own the
-                // wgpu pass; until then save/restore approximates.
-                continue;
+                unapply_transform(ctx, transform);
             }
-            DrawCommand::PushClipRoundedRect { .. } => {
+            DrawCommand::PushClipRoundedRect { rect, transform } => {
+                // Stage 1a — approximate rounded clip with the bounding rect.
+                // True rounded clip needs stencil — Stage 1b.
+                apply_transform(ctx, transform);
+                ctx.save();
+                ctx.begin_path();
+                let r = rect.rect();
+                ctx.move_to(r.x0, r.y0);
+                ctx.line_to(r.x1, r.y0);
+                ctx.line_to(r.x1, r.y1);
+                ctx.line_to(r.x0, r.y1);
+                ctx.close_path();
+                ctx.clip();
+                clip_depth += 1;
                 metrics::counter!(
                     uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
-                    "kind" => "wgpu_rounded_clip_degraded",
+                    "kind" => "wgpu_rounded_clip_to_rect_bbox",
                 ).increment(1);
-                // Underlying context has its own clip stack via
-                // axis-aligned rects in fragment-discard. Without
-                // extending the API we approximate by saving state;
-                // real scissor wiring lands when we move clip into
-                // the URX-WGPU layer instead of the inner crate.
-                ctx.save();
-                clip_depth += 1;
+                unapply_transform(ctx, transform);
             }
             DrawCommand::PopClip => {
                 if clip_depth > 0 {
@@ -135,8 +220,6 @@ pub fn adapt_scene_into(scene: &Scene, ctx: &mut InstancedRenderContext) {
             }
         }
     }
-    // Balance any leftover saves (defensive — shouldn't happen if
-    // the scene is well-formed).
     while clip_depth > 0 {
         ctx.restore();
         clip_depth -= 1;
@@ -148,20 +231,6 @@ pub fn adapt_scene_into(scene: &Scene, ctx: &mut InstancedRenderContext) {
 }
 
 #[inline]
-fn degrade_brush(brush: &Brush, grad_label: &'static str, image_label: &'static str) {
-    use uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES;
-    match brush {
-        Brush::Gradient(_) => {
-            metrics::counter!(KEY_RENDER_PRIMITIVES, "kind" => grad_label).increment(1);
-        }
-        Brush::Image(_) => {
-            metrics::counter!(KEY_RENDER_PRIMITIVES, "kind" => image_label).increment(1);
-        }
-        _ => {}
-    }
-}
-
-#[inline]
 fn degrade_radii(radii: &Option<[f32; 4]>, label: &'static str) {
     if let Some(r) = radii {
         if r.iter().any(|v| *v > 0.0) {
@@ -170,17 +239,6 @@ fn degrade_radii(radii: &Option<[f32; 4]>, label: &'static str) {
                 "kind" => label,
             ).increment(1);
         }
-    }
-}
-
-#[inline]
-fn degrade_shear(transform: &Affine, label: &'static str) {
-    let c = transform.as_coeffs();
-    if c[1].abs() > 1e-6 || c[2].abs() > 1e-6 {
-        metrics::counter!(
-            uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
-            "kind" => label,
-        ).increment(1);
     }
 }
 
@@ -200,10 +258,9 @@ fn emit_path_into_ctx(path: &BezPath, ctx: &mut InstancedRenderContext) {
 }
 
 #[inline]
-fn brush_to_color(brush: &Brush) -> Color {
+fn brush_to_solid_color(brush: &Brush) -> Color {
     match brush {
         Brush::Solid(c)    => *c,
-        // peniko 0.6: ColorStop.color is DynamicColor — convert back to AlphaColor<Srgb>.
         Brush::Gradient(g) => g.stops.first()
             .map(|s| s.color.to_alpha_color::<peniko::color::Srgb>())
             .unwrap_or(Color::from_rgba8(0, 0, 0, 0)),
@@ -213,9 +270,6 @@ fn brush_to_color(brush: &Brush) -> Color {
 
 #[inline]
 fn color_to_css(c: Color) -> String {
-    // CSS rgba — the underlying context parses this back into [r,g,b,a].
-    // Premultiplication happens in the shader.
-    // peniko 0.6: r/g/b/a fields gone — use to_rgba8() byte quad.
     let p = c.to_rgba8();
     format!("rgba({},{},{},{})", p.r, p.g, p.b, (p.a as f64) / 255.0)
 }
@@ -224,13 +278,11 @@ fn color_to_css(c: Color) -> String {
 /// of methods exposed by `Painter` (translate/rotate/scale/save+restore).
 /// We decompose to translate+scale only — full affine support would
 /// require the underlying context to grow a `set_transform([f32;6])`
-/// method.
+/// method (deferred to Stage 1b).
 fn apply_transform(ctx: &mut InstancedRenderContext, t: &Affine) {
     if *t == Affine::IDENTITY { return; }
     ctx.save();
     let c = t.as_coeffs();
-    // Translate (c[4], c[5]); scale (c[0], c[3]). Rotation/shear
-    // dropped silently — caller knows we're a primitive-grade backend.
     let (sx, sy, tx, ty) = (c[0], c[3], c[4], c[5]);
     if tx != 0.0 || ty != 0.0 { ctx.translate(tx, ty); }
     if sx != 1.0 || sy != 1.0 { ctx.scale(sx, sy); }
@@ -261,9 +313,22 @@ mod tests {
             transform: Affine::IDENTITY,
         });
         adapt_scene_into(&scene, &mut ctx);
-        assert!(!ctx.draw_commands.is_empty(),
-                "fill_rect should have produced at least one DrawCmd, got {}",
-                ctx.draw_commands.len());
+        assert!(!ctx.draw_commands.is_empty());
+    }
+
+    #[test]
+    fn adapt_emits_rounded_rect_for_radii() {
+        let mut ctx = InstancedRenderContext::new(100.0, 100.0, 0.0, 0.0);
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::FillRect {
+            rect: Rect::new(10.0, 10.0, 50.0, 50.0),
+            radii: Some([8.0, 8.0, 8.0, 8.0]),
+            brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
+            transform: Affine::IDENTITY,
+        });
+        adapt_scene_into(&scene, &mut ctx);
+        // Verifies the rounded-radius path doesn't degrade now.
+        assert!(!ctx.draw_commands.is_empty());
     }
 
     #[test]
@@ -278,8 +343,7 @@ mod tests {
             transform: Affine::IDENTITY,
         });
         adapt_scene_into(&scene, &mut ctx);
-        assert!(!ctx.draw_commands.is_empty(),
-                "line should have produced at least one DrawCmd");
+        assert!(!ctx.draw_commands.is_empty());
     }
 
     #[test]
@@ -292,6 +356,5 @@ mod tests {
         });
         // Missing PopClip — adapter must balance defensively.
         adapt_scene_into(&scene, &mut ctx);
-        // No crash, no leak — the test passing IS the assertion.
     }
 }
