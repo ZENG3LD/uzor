@@ -1316,7 +1316,9 @@ impl Renderer3D {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // Wave 20 — depth is sampled by the SSAO pass, so it needs
+            // TEXTURE_BINDING in addition to RENDER_ATTACHMENT.
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         tex.create_view(&wgpu::TextureViewDescriptor::default())

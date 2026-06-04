@@ -19,7 +19,7 @@
 //! each region to the right one based on `BackendHint`. Hints set to
 //! `Inherit` are routed to a fallback callback (or panic if none).
 //!
-//! ```ignore
+//! ```text
 //! use uzor_urx_engine::{BackendHint, RenderTarget, UrxEngine};
 //! use uzor_urx_region_mixer::RegionMixer;
 //!
