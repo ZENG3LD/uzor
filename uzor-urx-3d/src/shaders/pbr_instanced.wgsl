@@ -259,10 +259,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let ibl = (ibl_diffuse + ibl_specular) * ao;
 
     let ambient = albedo * lights.ambient * ao;
-    var color = ambient + lo + ibl;
+    let color = ambient + lo + ibl;
 
-    color = color / (color + vec3<f32>(1.0));
-    color = pow(color, vec3<f32>(1.0 / 2.2));
-
+    // Wave 12: leave color in LINEAR HDR space — tonemap + gamma
+    // happen once in the composite pass over the Rgba16Float
+    // intermediate buffer (ACES instead of Reinhard, applied per-frame
+    // rather than per-shader).
     return vec4<f32>(color, albedo_sample.a * in.tint.a);
 }

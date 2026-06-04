@@ -233,6 +233,24 @@ pub struct Renderer3D {
     depth_view: wgpu::TextureView,
     depth_size: (u32, u32),
     color_format: wgpu::TextureFormat,
+
+    // Wave 12 — HDR intermediate + bloom pyramid + composite pipeline.
+    hdr_view: wgpu::TextureView,
+    hdr_sampler: wgpu::Sampler,
+    bloom_views: Vec<wgpu::TextureView>,           // BLOOM_LEVELS down + up
+    bloom_sampler: wgpu::Sampler,
+    bloom_size: (u32, u32),
+    pipeline_bloom_down: wgpu::RenderPipeline,     // bright + threshold
+    pipeline_bloom_up:   wgpu::RenderPipeline,     // tent upsample (additive blend)
+    pipeline_composite:  wgpu::RenderPipeline,     // HDR + bloom -> swapchain
+    bloom_bgl: wgpu::BindGroupLayout,
+    bloom_params_buf: wgpu::Buffer,                // threshold for level 0 only
+    bloom_zero_params_buf: wgpu::Buffer,           // threshold = 0 for other levels
+    composite_bgl: wgpu::BindGroupLayout,
+    composite_params_buf: wgpu::Buffer,            // bloom_strength
+    /// Tunable HDR/bloom knobs (consumer-set via setters).
+    bloom_threshold: f32,
+    bloom_strength: f32,
     mesh_cache: MeshCache,
     mesh_lit_cache: crate::mesh_cache::MeshLitCache,
     mesh_uv_cache: crate::mesh_cache::MeshUvCache,
@@ -240,6 +258,14 @@ pub struct Renderer3D {
 }
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+
+/// Wave 12 — internal HDR buffer all main passes target. ACES tonemap
+/// + gamma run once in the composite pass over this buffer when
+/// blitting to the final `color_format` swapchain.
+pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// Wave 12 — bloom pyramid levels (downsample × N).
+const BLOOM_LEVELS: u32 = 5;
 
 impl Renderer3D {
     pub fn new(
@@ -302,7 +328,7 @@ impl Renderer3D {
                 module: &shader,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
+                    format: HDR_FORMAT,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -388,7 +414,7 @@ impl Renderer3D {
                 module: &shader_inst,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
+                    format: HDR_FORMAT,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -677,7 +703,7 @@ impl Renderer3D {
                 module: &shader_phong,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
+                    format: HDR_FORMAT,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -768,7 +794,7 @@ impl Renderer3D {
                 module: &shader_pbr,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
+                    format: HDR_FORMAT,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -869,7 +895,7 @@ impl Renderer3D {
                 module: &shader_tex,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
+                    format: HDR_FORMAT,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -910,6 +936,187 @@ impl Renderer3D {
         });
 
         let depth_view = Self::create_depth(device, initial_size);
+
+        // ── Wave 12 — HDR + bloom + composite ─────────────────────
+        let (hdr_view, hdr_sampler, bloom_views, bloom_sampler, bloom_size) =
+            Self::create_hdr_and_bloom(device, initial_size);
+
+        let bloom_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("urx3d.bloom_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let bloom_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.bloom_params"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bloom_zero_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.bloom_zero_params"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&bloom_zero_params_buf, 0, bytemuck::bytes_of(&[0.0f32; 4]));
+
+        let bloom_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("urx3d.bloom"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/bloom.wgsl").into()),
+        });
+        let bloom_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("urx3d.bloom_pipeline_layout"),
+            bind_group_layouts: &[&bloom_bgl],
+            immediate_size: 0,
+        });
+        let make_bloom_pipeline = |label: &str, fs_entry: &str, blend: Option<wgpu::BlendState>| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&bloom_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &bloom_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &bloom_shader,
+                    entry_point: Some(fs_entry),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: HDR_FORMAT,
+                        blend,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline_bloom_down = make_bloom_pipeline(
+            "urx3d.pipeline_bloom_down", "fs_down13", None,
+        );
+        // Upsample blends ADDITIVELY onto the previous mip.
+        let additive = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::REPLACE,
+        };
+        let pipeline_bloom_up = make_bloom_pipeline(
+            "urx3d.pipeline_bloom_up", "fs_up_tent", Some(additive),
+        );
+
+        let composite_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("urx3d.composite_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let composite_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.composite_params"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("urx3d.composite"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/composite_aces.wgsl").into()),
+        });
+        let composite_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("urx3d.composite_pipeline_layout"),
+            bind_group_layouts: &[&composite_bgl],
+            immediate_size: 0,
+        });
+        let pipeline_composite = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urx3d.pipeline_composite"),
+            layout: Some(&composite_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &composite_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &composite_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
 
         Self {
             pipeline,
@@ -977,6 +1184,21 @@ impl Renderer3D {
             depth_view,
             depth_size: initial_size,
             color_format,
+            hdr_view,
+            hdr_sampler,
+            bloom_views,
+            bloom_sampler,
+            bloom_size,
+            pipeline_bloom_down,
+            pipeline_bloom_up,
+            pipeline_composite,
+            bloom_bgl,
+            bloom_params_buf,
+            bloom_zero_params_buf,
+            composite_bgl,
+            composite_params_buf,
+            bloom_threshold: 1.0,
+            bloom_strength: 0.04,
             mesh_cache: MeshCache::new(),
             mesh_lit_cache: crate::mesh_cache::MeshLitCache::new(),
             mesh_uv_cache: crate::mesh_cache::MeshUvCache::new(),
@@ -1014,6 +1236,74 @@ impl Renderer3D {
         (buf, bgs)
     }
 
+    /// Wave 12 — build the HDR intermediate + bloom mip chain in one go.
+    /// Returns (hdr_view, hdr_sampler, bloom_views, bloom_sampler, bloom_size).
+    /// `bloom_size` = the size of mip 0 of the bloom chain (= half the
+    /// HDR target so the first bright pass already downsamples).
+    fn create_hdr_and_bloom(
+        device: &wgpu::Device,
+        size: (u32, u32),
+    ) -> (wgpu::TextureView, wgpu::Sampler, Vec<wgpu::TextureView>, wgpu::Sampler, (u32, u32)) {
+        let w = size.0.max(1);
+        let h = size.1.max(1);
+        let hdr_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("urx3d.hdr_target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: HDR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let hdr_view = hdr_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let hdr_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("urx3d.hdr_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // Bloom mip chain — separate textures so each mip can serve as
+        // both source AND attachment in different passes.
+        let mut bloom_views = Vec::with_capacity(BLOOM_LEVELS as usize);
+        let mut mw = (w / 2).max(1);
+        let mut mh = (h / 2).max(1);
+        let bloom_size = (mw, mh);
+        for level in 0..BLOOM_LEVELS {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("urx3d.bloom_mip"),
+                size: wgpu::Extent3d { width: mw, height: mh, depth_or_array_layers: 1 },
+                mip_level_count: 1, sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: HDR_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            bloom_views.push(tex.create_view(&wgpu::TextureViewDescriptor::default()));
+            // Next level is half-resolution. Clamp at 1 so we don't run
+            // out of useful detail; deeper levels saturate at 1×1.
+            if level + 1 < BLOOM_LEVELS {
+                mw = (mw / 2).max(1);
+                mh = (mh / 2).max(1);
+            }
+        }
+        let bloom_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("urx3d.bloom_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        (hdr_view, hdr_sampler, bloom_views, bloom_sampler, bloom_size)
+    }
+
     fn create_depth(device: &wgpu::Device, size: (u32, u32)) -> wgpu::TextureView {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("urx3d.depth"),
@@ -1037,8 +1327,24 @@ impl Renderer3D {
             return;
         }
         self.depth_view = Self::create_depth(device, size);
+        // Wave 12 — HDR target + bloom pyramid follow the swapchain size.
+        let (hdr_view, hdr_sampler, bloom_views, bloom_sampler, bloom_size) =
+            Self::create_hdr_and_bloom(device, size);
+        self.hdr_view = hdr_view;
+        self.hdr_sampler = hdr_sampler;
+        self.bloom_views = bloom_views;
+        self.bloom_sampler = bloom_sampler;
+        self.bloom_size = bloom_size;
         self.depth_size = size;
     }
+
+    /// Wave 12 — tunable bloom threshold (HDR luma above this radiates
+    /// into the bloom pyramid).
+    pub fn set_bloom_threshold(&mut self, t: f32) { self.bloom_threshold = t.max(0.0); }
+
+    /// Wave 12 — tunable bloom strength (final additive weight onto
+    /// HDR before tonemap). 0 = disabled, 0.04 = default sweet spot.
+    pub fn set_bloom_strength(&mut self, s: f32) { self.bloom_strength = s.max(0.0); }
 
     pub fn grow_node_ring(&mut self, device: &wgpu::Device, needed: u32) {
         if needed <= self.node_capacity {
@@ -1593,11 +1899,15 @@ impl Renderer3D {
             }
         }
 
-        // 7. One render pass — four pipelines.
+        // 7. Wave 12 — main passes target the HDR intermediate buffer
+        //    instead of the swapchain. Composite + tonemap happens at
+        //    the end of the frame. We open an explicit block so the
+        //    encoder borrow ends before run_bloom_and_composite below.
+        {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("urx3d.pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target_view,
+                view: &self.hdr_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -1828,12 +2138,12 @@ impl Renderer3D {
                 }
             }
 
-            // Re-open the same color pass with LOAD ops so previous
+            // Re-open the HDR color pass with LOAD ops so previous
             // opaque contents survive.
             let mut tpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("urx3d.pass_transparent"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target_view,
+                    view: &self.hdr_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Load,
@@ -1964,6 +2274,130 @@ impl Renderer3D {
                 }
             }
         }
+
+        } // close the block opened at "// 7." — pass + tpass released
+
+        // ── Wave 12 — bloom pyramid + ACES composite ──────────────
+        self.run_bloom_and_composite(device, queue, encoder, target_view);
+    }
+
+    /// Wave 12 — downsample HDR → bloom pyramid (with bright-pass at
+    /// level 0), upsample back additively, then composite (HDR +
+    /// bloom) into the swapchain through ACES + gamma.
+    fn run_bloom_and_composite(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+    ) {
+        // Bright-pass params for the FIRST downsample (level 0 reads
+        // the HDR target, applies the threshold while shrinking).
+        let bp = [self.bloom_threshold, 0.0, 0.0, 0.0];
+        queue.write_buffer(&self.bloom_params_buf, 0, bytemuck::bytes_of(&bp));
+
+        // Bind groups + downsample passes.
+        let make_bloom_bg = |src: &wgpu::TextureView, params: &wgpu::Buffer| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("urx3d.bloom_bg"),
+                layout: &self.bloom_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(src) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.bloom_sampler) },
+                    wgpu::BindGroupEntry { binding: 2, resource: params.as_entire_binding() },
+                ],
+            })
+        };
+
+        // Downsample: HDR → bloom[0] (with bright-pass), bloom[i] → bloom[i+1].
+        for level in 0..(BLOOM_LEVELS as usize) {
+            let src_view = if level == 0 { &self.hdr_view } else { &self.bloom_views[level - 1] };
+            let params = if level == 0 { &self.bloom_params_buf } else { &self.bloom_zero_params_buf };
+            let bg = make_bloom_bg(src_view, params);
+            let mut p = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("urx3d.bloom_down"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.bloom_views[level],
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            p.set_pipeline(&self.pipeline_bloom_down);
+            p.set_bind_group(0, &bg, &[]);
+            p.draw(0..3, 0..1);
+        }
+
+        // Upsample: starting from the smallest mip, blend additively
+        // back up the chain. bloom[i+1] → bloom[i] (LoadOp::Load +
+        // additive blend).
+        for level in (0..(BLOOM_LEVELS as usize - 1)).rev() {
+            let bg = make_bloom_bg(&self.bloom_views[level + 1], &self.bloom_zero_params_buf);
+            let mut p = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("urx3d.bloom_up"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &self.bloom_views[level],
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+            p.set_pipeline(&self.pipeline_bloom_up);
+            p.set_bind_group(0, &bg, &[]);
+            p.draw(0..3, 0..1);
+        }
+
+        // Composite — write bloom_strength into params then run
+        // HDR + bloom[0] through the ACES composite shader into the
+        // user-facing swapchain.
+        let cp = [self.bloom_strength, 0.0, 0.0, 0.0];
+        queue.write_buffer(&self.composite_params_buf, 0, bytemuck::bytes_of(&cp));
+
+        let composite_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("urx3d.composite_bg"),
+            layout: &self.composite_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.hdr_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.hdr_sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&self.bloom_views[0]) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::Sampler(&self.bloom_sampler) },
+                wgpu::BindGroupEntry { binding: 4, resource: self.composite_params_buf.as_entire_binding() },
+            ],
+        });
+        let mut p = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("urx3d.composite"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            occlusion_query_set: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+        });
+        p.set_pipeline(&self.pipeline_composite);
+        p.set_bind_group(0, &composite_bg, &[]);
+        p.draw(0..3, 0..1);
+        let _ = self.bloom_size;
     }
 
     /// Direct access to the non-instanced pipeline + per-node uniforms.

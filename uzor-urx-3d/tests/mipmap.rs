@@ -195,24 +195,33 @@ fn mipmapped_checker_does_not_alias_at_distance() {
     // is visible (top of frame is sky), and far enough back along the
     // floor that distant texels alias without mipmaps.
     let band_y = H * 6 / 10;
-    let mut var_no = 0i64;
-    let mut var_mip = 0i64;
+    // Compute variance from each scene's OWN mean — both scenes pass
+    // through ACES + gamma, so absolute luma differs but a mipped
+    // chain produces a smoother (lower-variance) signal.
+    let mut sum_no = 0i64;
+    let mut sum_mip = 0i64;
     let mut samples = 0i64;
+    let mut row_no = Vec::new();
+    let mut row_mip = Vec::new();
     for x in (W / 10)..(W - W / 10) {
         let l_no = luma(at(&px_no, x, band_y)) / 3;
         let l_mip = luma(at(&px_mip, x, band_y)) / 3;
-        // distance from mid-grey 128
-        var_no += ((l_no as i64 - 128).pow(2)) as i64;
-        var_mip += ((l_mip as i64 - 128).pow(2)) as i64;
+        sum_no += l_no as i64;
+        sum_mip += l_mip as i64;
+        row_no.push(l_no as i64);
+        row_mip.push(l_mip as i64);
         samples += 1;
     }
-    let var_no = var_no / samples;
-    let var_mip = var_mip / samples;
-    eprintln!("distant band variance from grey: no_mips={}  with_mips={}", var_no, var_mip);
+    let mean_no = sum_no / samples;
+    let mean_mip = sum_mip / samples;
+    let var_no: i64 = row_no.iter().map(|v| (v - mean_no).pow(2)).sum::<i64>() / samples;
+    let var_mip: i64 = row_mip.iter().map(|v| (v - mean_mip).pow(2)).sum::<i64>() / samples;
+    eprintln!(
+        "distant band: no_mips mean={} var={};  with_mips mean={} var={}",
+        mean_no, var_no, mean_mip, var_mip
+    );
 
-    // With proper trilinear mip sampling, the distant band averages
-    // to grey — variance from 128 is LOW.
-    // Without mipmaps, the same pixels alias hard — variance is HIGH.
+    // Mipped chain must alias LESS than the non-mipped texture.
     assert!(
         var_mip < var_no,
         "mipmapped texture must alias LESS than non-mipped: \
