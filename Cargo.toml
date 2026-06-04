@@ -29,6 +29,8 @@ members = [
     "uzor-urx-wgpu-full",
     # URX 3D backend (native XYZ, perspective camera, depth pipeline — Wave 1+)
     "uzor-urx-3d",
+    # URX 3D physics (Wave 15+16 — AABB/sphere colliders + dynamics)
+    "uzor-urx-physics",
     # Utils
     "uzor-render-hub",
     # Icon utilities

@@ -1,0 +1,12 @@
+[package]
+name = "uzor-urx-physics"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Lightweight 3D physics (AABB/sphere colliders + simple Verlet rigid bodies) for the URX render family."
+repository = "https://github.com/uzor-team/uzor"
+keywords = ["physics", "collision", "3d", "uzor", "urx"]
+categories = ["game-development", "graphics"]
+
+[dependencies]
+glam = { version = "0.29", features = ["bytemuck"] }
