@@ -5,17 +5,17 @@
 //! `urx_core::Scene` produced by `UrxRenderContext` during the frame, so
 //! the only difference is which backend rasterises it.
 //!
-//! **Phase A scope:**
-//! - `UrxCpu` — fully wired: own scanline rasteriser → pixmap → existing CPU
-//!   presenter path (mirror of `submit_cpu_tinyskia`).
-//! - `UrxWgpu` / `UrxHybrid` / `UrxWgpuFull` — not yet wired. The Scene is
-//!   produced and dropped; the swapchain is cleared. Logged once per
-//!   process so callers see backend selection is honoured but no pixels
-//!   are produced yet. To be filled in once the convenience surface APIs
-//!   of those backends settle (each one currently has a different submit
-//!   shape: WgpuBackend builds DrawCmds → uzor-render-wgpu-instanced
-//!   submit; HybridBackend has its own dispatch; WgpuFullBackend encodes
-//!   → uploads → compute dispatches → blits).
+//! **Stage 1a (2026-06-05) — all 4 backends real:**
+//! - `UrxCpu` — own scanline rasteriser → pixmap → CPU presenter path
+//!   (mirror of `submit_cpu_tinyskia`).
+//! - `UrxWgpu` — adapter pushes Scene into the shared
+//!   `InstancedRenderContext`, then `InstancedRenderer` draws it onto the
+//!   swapchain (same path Scene2DBackend::InstancedWgpu uses).
+//! - `UrxHybrid` — CpuBackend rasterises into one region pixmap,
+//!   `HybridBackend.upsert_region_pixmap` uploads it as the sole region,
+//!   `HybridBackend.composite` blits it to the swapchain.
+//! - `UrxWgpuFull` — `WgpuFullBackend.submit` runs the encode → tile_assign
+//!   → tile_sort → fine → blit chain.
 
 use uzor_urx_core::Scene;
 
@@ -140,55 +140,258 @@ fn ensure_urx_cpu_resources(state: &mut WindowRenderState, width: u32, height: u
     }
 }
 
-// ── UrxWgpu / UrxHybrid / UrxWgpuFull (Phase A skeletons) ───────────────────
+// ── UrxWgpu ────────────────────────────────────────────────────────────────
+//
+// Stage 1a wires the urx-wgpu adapter (Scene → InstancedRenderContext →
+// InstancedRenderer) into the same GPU swapchain path InstancedWgpu uses.
+// We share the `state.instanced_renderer` / `state.instanced_ctx` slots —
+// each frame the URX channel's Scene is adapted into the ctx's
+// `draw_commands`, then the same renderer draws them.
 
 pub fn submit_urx_wgpu(
     state: &mut WindowRenderState,
-    _params: &SubmitParams,
-    _metrics: &mut RenderMetrics,
+    params: &SubmitParams,
+    metrics: &mut RenderMetrics,
 ) -> bool {
-    let _ = take_urx_scene(state); // drain so the Scene isn't carried forward
-    log_phase_a_skeleton("urx_wgpu");
+    let scene = match take_urx_scene(state) {
+        Some(s) => s,
+        None => return false,
+    };
+
+    let SurfaceMode::Gpu { ref gpu_pool, ref mut surface, dev_id } = state.surface else {
+        eprintln!("[render-hub] urx_wgpu requires SurfaceMode::Gpu");
+        return false;
+    };
+    let width  = surface.config.width;
+    let height = surface.config.height;
+    if width == 0 || height == 0 { return false; }
+
+    let device = &gpu_pool.devices[dev_id].device;
+    let queue  = &gpu_pool.devices[dev_id].queue;
+
+    let surface_texture = match surface.surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return false,
+        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            surface.surface.configure(device, &surface.config);
+            return false;
+        }
+        wgpu::CurrentSurfaceTexture::Validation => return false,
+    };
+    let surface_view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let format = surface_texture.texture.format();
+
+    // Lazy-init InstancedRenderer (shared with the Scene2DBackend::InstancedWgpu path).
+    if state.instanced_renderer.is_none() {
+        state.instanced_renderer =
+            Some(uzor_render_wgpu_instanced::InstancedRenderer::new(device, queue, format));
+    }
+    // Lazy-init the per-frame ctx (the adapter writes into its draw_commands).
+    if state.instanced_ctx.is_none() {
+        state.instanced_ctx = Some(uzor_render_wgpu_instanced::InstancedRenderContext::new(
+            width as f32, height as f32, 0.0, 0.0,
+        ));
+    }
+    // Run the adapter: Scene → InstancedRenderContext draw_commands.
+    let r2t_t0 = std::time::Instant::now();
+    if let Some(ctx) = state.instanced_ctx.as_mut() {
+        ctx.clear();
+        uzor_urx_wgpu::adapt_scene_into(&scene, ctx);
+    }
+    let cmds: Vec<uzor_render_wgpu_instanced::DrawCmd> = state.instanced_ctx.as_mut()
+        .map(|c| std::mem::take(&mut c.draw_commands))
+        .unwrap_or_default();
+
+    let clear = wgpu::Color {
+        r: params.base_color.components[0] as f64,
+        g: params.base_color.components[1] as f64,
+        b: params.base_color.components[2] as f64,
+        a: params.base_color.components[3] as f64,
+    };
+    if let Some(ref mut inst) = state.instanced_renderer {
+        inst.render(device, queue, &surface_view, width, height, &cmds, Some(clear), None);
+    }
+    metrics.render_to_texture_us = r2t_t0.elapsed().as_micros() as u64;
+    // Return the Vec to the ctx so its capacity is reused.
+    if let Some(ctx) = state.instanced_ctx.as_mut() {
+        let mut taken = cmds;
+        taken.clear();
+        ctx.draw_commands = taken;
+    }
+
+    let present_t0 = std::time::Instant::now();
+    surface_texture.present();
+    metrics.present_us = present_t0.elapsed().as_micros() as u64;
     false
 }
+
+// ── UrxHybrid ──────────────────────────────────────────────────────────────
+//
+// HybridBackend = CPU strip raster + GPU atlas + quad compositor. Stage 1a
+// runs it in single-region mode (one region = whole window). The whole
+// Scene is CPU-rasterised into one Pixmap (via CpuBackend, since the URX
+// hybrid backend doesn't yet own a CPU rasteriser of its own — that's a
+// Stage 3 refactor when regions land), uploaded as the sole region
+// texture, then composited.
 
 pub fn submit_urx_hybrid(
     state: &mut WindowRenderState,
-    _params: &SubmitParams,
-    _metrics: &mut RenderMetrics,
+    params: &SubmitParams,
+    metrics: &mut RenderMetrics,
 ) -> bool {
-    let _ = take_urx_scene(state);
-    log_phase_a_skeleton("urx_hybrid");
+    let scene = match take_urx_scene(state) {
+        Some(s) => s,
+        None => return false,
+    };
+
+    let SurfaceMode::Gpu { ref gpu_pool, ref mut surface, dev_id } = state.surface else {
+        eprintln!("[render-hub] urx_hybrid requires SurfaceMode::Gpu");
+        return false;
+    };
+    let width  = surface.config.width;
+    let height = surface.config.height;
+    if width == 0 || height == 0 { return false; }
+
+    let device = &gpu_pool.devices[dev_id].device;
+    let queue  = &gpu_pool.devices[dev_id].queue;
+
+    // Lazy-init backends.
+    if state.urx_cpu_backend.is_none() {
+        state.urx_cpu_backend = Some(uzor_urx_cpu::CpuBackend::new());
+    }
+    if state.urx_hybrid_backend.is_none() {
+        state.urx_hybrid_backend = Some(uzor_urx_hybrid::HybridBackend::new());
+    }
+    let need_new_pixmap = match &state.urx_cpu_pixmap {
+        None => true,
+        Some(p) => p.width() != width || p.height() != height,
+    };
+    if need_new_pixmap {
+        state.urx_cpu_pixmap = Some(uzor_urx_cpu::Pixmap::new(width, height));
+    }
+
+    // Step 1: CPU rasterise the Scene into the shared pixmap.
+    let r2t_t0 = std::time::Instant::now();
+    let render_ok = {
+        let backend = state.urx_cpu_backend.as_ref().expect("inited above");
+        let pixmap  = state.urx_cpu_pixmap.as_mut().expect("inited above");
+        pixmap.fill([0, 0, 0, 0]);
+        backend.render(&scene, pixmap).is_ok()
+    };
+    if !render_ok { return false; }
+
+    // Step 2: upsert the pixmap into the hybrid backend as one region.
+    let region_id = uzor_urx_core::region::RegionId(0);
+    let pixmap_clone = state.urx_cpu_pixmap.as_ref().expect("inited above").clone();
+    if let Some(ref mut hb) = state.urx_hybrid_backend {
+        hb.upsert_region_pixmap(device, queue, region_id, &pixmap_clone);
+    }
+    metrics.render_to_texture_us = r2t_t0.elapsed().as_micros() as u64;
+
+    // Step 3: composite the region onto the swapchain.
+    let surface_texture = match surface.surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return false,
+        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            surface.surface.configure(device, &surface.config);
+            return false;
+        }
+        wgpu::CurrentSurfaceTexture::Validation => return false,
+    };
+    let surface_view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let format = surface_texture.texture.format();
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("urx-hybrid-encoder"),
+    });
+    let _ = params;
+    let present_t0 = std::time::Instant::now();
+
+    // Single-region composite: whole window as one quad sampling the texture
+    // (full UV [0..1, 0..1], neutral tint).
+    let instances: [(uzor_urx_core::region::RegionId, uzor_urx_hybrid::QuadInstance); 1] = [
+        (region_id, uzor_urx_hybrid::QuadInstance::new(
+            0.0, 0.0, width as f32, height as f32,
+        )),
+    ];
+    if let Some(ref mut hb) = state.urx_hybrid_backend {
+        hb.composite(
+            device, queue, &mut encoder, &surface_view, format,
+            width, height, &instances,
+        );
+    }
+    queue.submit(std::iter::once(encoder.finish()));
+    surface_texture.present();
+    metrics.present_us = present_t0.elapsed().as_micros() as u64;
     false
 }
+
+// ── UrxWgpuFull ────────────────────────────────────────────────────────────
+//
+// Stage 1a wires the WgpuFullBackend wrapper from uzor-urx-wgpu-full.
+// We lazy-init the backend on first frame with the surface's device/queue/
+// format, resize it on every frame (cheap if dims unchanged), then call
+// `submit(scene, encoder, view)` and present.
 
 pub fn submit_urx_wgpu_full(
     state: &mut WindowRenderState,
-    _params: &SubmitParams,
-    _metrics: &mut RenderMetrics,
+    params: &SubmitParams,
+    metrics: &mut RenderMetrics,
 ) -> bool {
-    let _ = take_urx_scene(state);
-    log_phase_a_skeleton("urx_wgpu_full");
-    false
-}
-
-fn log_phase_a_skeleton(name: &str) {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::OnceLock;
-    static LOGGED: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
-    let lock = LOGGED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
-    let mut g = match lock.lock() {
-        Ok(g) => g,
-        Err(p) => p.into_inner(),
+    let scene = match take_urx_scene(state) {
+        Some(s) => s,
+        None => return false,
     };
-    if g.insert(name.to_string()) {
-        eprintln!(
-            "[render-hub] {} backend is wired into the catalog but not yet \
-             producing pixels (Phase A skeleton). Use urx_cpu for now.",
-            name
-        );
+
+    let SurfaceMode::Gpu { ref gpu_pool, ref mut surface, dev_id } = state.surface else {
+        eprintln!("[render-hub] urx_wgpu_full requires SurfaceMode::Gpu");
+        return false;
+    };
+    let width  = surface.config.width;
+    let height = surface.config.height;
+    if width == 0 || height == 0 { return false; }
+
+    let device = gpu_pool.devices[dev_id].device.clone();
+    let queue  = gpu_pool.devices[dev_id].queue.clone();
+
+    // Lazy-init.
+    if state.urx_wgpu_full_backend.is_none() {
+        let surface_texture_format = surface.config.format;
+        state.urx_wgpu_full_backend = Some(uzor_urx_wgpu_full::WgpuFullBackend::new(
+            device.clone(), queue.clone(), surface_texture_format,
+        ));
     }
-    // `AtomicBool` referenced just to silence the dead-import lint if rust-analyser
-    // decides nothing else uses it.
-    let _ = AtomicBool::new(false).load(Ordering::Relaxed);
+    if let Some(ref mut backend) = state.urx_wgpu_full_backend {
+        backend.resize(width, height);
+    }
+
+    let surface_texture = match surface.surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+        wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return false,
+        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            surface.surface.configure(&device, &surface.config);
+            return false;
+        }
+        wgpu::CurrentSurfaceTexture::Validation => return false,
+    };
+    let surface_view = surface_texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("urx-wgpu-full-encoder"),
+    });
+    let _ = params; // base_color handled inside the blit pass (clear=TRANSPARENT) currently.
+
+    let r2t_t0 = std::time::Instant::now();
+    if let Some(ref mut backend) = state.urx_wgpu_full_backend {
+        if let Err(e) = backend.submit(&scene, &mut encoder, &surface_view) {
+            eprintln!("[render-hub] urx_wgpu_full submit error: {:?}", e);
+        }
+    }
+    queue.submit(std::iter::once(encoder.finish()));
+    metrics.render_to_texture_us = r2t_t0.elapsed().as_micros() as u64;
+
+    let present_t0 = std::time::Instant::now();
+    surface_texture.present();
+    metrics.present_us = present_t0.elapsed().as_micros() as u64;
+    false
 }

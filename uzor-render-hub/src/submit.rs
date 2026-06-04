@@ -615,9 +615,16 @@ mod tests {
             instanced_ctx:        None,
             vello_cpu_ctx:        None,
             tiny_skia_ctx:        Some(tiny_ctx),
+            urx_ctx:              None,
+            urx_cpu_backend:      None,
+            urx_cpu_pixmap:       None,
+            urx_wgpu_backend:     None,
+            urx_hybrid_backend:   None,
+            urx_wgpu_full_backend: None,
             scene:                vello::Scene::new(),
             vello_hybrid_ctx:     uzor_render_vello_hybrid::VelloHybridRenderContext::new(1.0),
             active:               RenderBackend::TinySkia,
+            active_urx:           None,
         };
 
         let outcome = submit_frame(
@@ -686,9 +693,16 @@ mod tests {
             instanced_ctx:         None,
             vello_cpu_ctx:         Some(vello_ctx),
             tiny_skia_ctx:         None,
+            urx_ctx:               None,
+            urx_cpu_backend:       None,
+            urx_cpu_pixmap:        None,
+            urx_wgpu_backend:      None,
+            urx_hybrid_backend:    None,
+            urx_wgpu_full_backend: None,
             scene:                 vello::Scene::new(),
             vello_hybrid_ctx:      uzor_render_vello_hybrid::VelloHybridRenderContext::new(1.0),
             active:                RenderBackend::VelloCpu,
+            active_urx:            None,
         };
 
         let outcome = submit_frame(

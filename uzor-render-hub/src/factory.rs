@@ -196,13 +196,17 @@ pub struct WindowRenderState {
     pub(crate) urx_cpu_backend: Option<uzor_urx_cpu::CpuBackend>,
     /// URX CPU output pixmap — same role as `tiny_skia_ctx`'s buffer.
     pub(crate) urx_cpu_pixmap: Option<uzor_urx_cpu::Pixmap>,
-    /// URX instanced-wgpu backend. Lazy-init on first GPU-side submit.
-    /// Phase B will read this; Phase A leaves it `None`.
+    /// URX instanced-wgpu backend slot. Stage 1a uses the shared
+    /// `instanced_renderer` / `instanced_ctx` slots for the actual render —
+    /// this slot stays unused until Stage 1b's native pipeline rewrite
+    /// gives urx-wgpu its own backend type.
     #[allow(dead_code)]
     pub(crate) urx_wgpu_backend: Option<uzor_urx_wgpu::UrxWgpuBackend>,
-    /// URX hybrid backend. Phase B; allocated slot only in Phase A.
-    #[allow(dead_code)]
+    /// URX hybrid backend. Wired in Stage 1a (single-region: whole window).
     pub(crate) urx_hybrid_backend: Option<uzor_urx_hybrid::HybridBackend>,
+    /// URX full-GPU backend (`WgpuFullBackend` wrapper from
+    /// uzor-urx-wgpu-full). Lazy-init on first urx_wgpu_full submit.
+    pub(crate) urx_wgpu_full_backend: Option<uzor_urx_wgpu_full::WgpuFullBackend>,
 
     // ── Canvas 2D context (wasm32 only) ───────────────────────────────────────
     /// HTML Canvas 2D render context.  Only populated when `active` is
@@ -254,6 +258,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            urx_wgpu_full_backend: None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -287,6 +292,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            urx_wgpu_full_backend: None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -348,6 +354,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            urx_wgpu_full_backend: None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -379,6 +386,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            urx_wgpu_full_backend: None,
             active_urx: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
@@ -408,6 +416,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            urx_wgpu_full_backend: None,
             active_urx: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
@@ -485,6 +494,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            urx_wgpu_full_backend: None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -517,6 +527,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            urx_wgpu_full_backend: None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -568,6 +579,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            urx_wgpu_full_backend: None,
             active_urx: None,
             canvas2d_ctx: Some(ctx),
             scene: Scene::new(),
