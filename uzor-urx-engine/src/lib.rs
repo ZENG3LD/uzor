@@ -42,5 +42,5 @@ pub mod region_state;
 
 pub use cache::DEFAULT_CACHE_BUDGET_BYTES;
 pub use cadence::RenderCadence;
-pub use engine::{Backend, BackendHint, MixDispatcher, RenderTarget, UrxEngine};
+pub use engine::{Backend, BackendHint, MixDispatcher, RenderTarget, UrxEngine, WorkloadHint};
 pub use region_state::RegionState;

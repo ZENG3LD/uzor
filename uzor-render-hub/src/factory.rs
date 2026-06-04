@@ -1154,36 +1154,41 @@ impl WindowRenderState {
         let ctx = self.urx_ctx.as_mut()?;
         ctx.begin_frame(width, height);
 
-        // Lazy-init UrxEngine sized to the current surface.
-        if self.urx_engine.is_none() {
-            let core_backend = match backend {
+        // Resolve UrxBackend → urx_engine::Backend, plumbing
+        // `UrxBackend::Auto` through `Backend::auto(WorkloadHint)`.
+        let gpu_available = matches!(self.surface, SurfaceMode::Gpu { .. });
+        let resolve_backend = |b: uzor::UrxBackend| -> uzor_urx_engine::Backend {
+            match b {
                 uzor::UrxBackend::Cpu      => uzor_urx_engine::Backend::Cpu,
                 uzor::UrxBackend::Wgpu     => uzor_urx_engine::Backend::Wgpu,
                 uzor::UrxBackend::Hybrid   => uzor_urx_engine::Backend::Hybrid,
                 uzor::UrxBackend::WgpuFull => uzor_urx_engine::Backend::FullGpu,
                 uzor::UrxBackend::Auto     => {
-                    // Auto: WorkloadHint is built from coarse signals (Stage 5
-                    // refines). For now default to Cpu to avoid wgpu-init in
-                    // headless tests; backends that need GPU should be picked
-                    // explicitly.
-                    uzor_urx_engine::Backend::Cpu
+                    let hint = uzor_urx_engine::WorkloadHint {
+                        region_count: 1, // single-region default; consumer
+                                         // upserting more rebuilds engine.
+                        total_pixels: (width as u64) * (height as u64),
+                        high_hz: false,
+                        retained: true, // default to retained for cached cost.
+                        gpu_available,
+                        unified_memory: false,
+                        heavy_compute: false,
+                    };
+                    uzor_urx_engine::Backend::auto(hint)
                 }
-            };
+            }
+        };
+
+        // Lazy-init UrxEngine sized to the current surface.
+        if self.urx_engine.is_none() {
+            let core_backend = resolve_backend(backend);
             self.urx_engine = Some(uzor_urx_engine::UrxEngine::new(core_backend, width, height));
         }
         // Resize on surface change.
         if let Some(eng) = self.urx_engine.as_mut() {
-            // urx-engine has no public resize() — recreate when dims drift.
-            // Cheap: regions are re-uploaded by the consumer anyway.
             let (ew, eh) = (eng.width(), eng.height());
             if ew != width || eh != height {
-                let core_backend = match backend {
-                    uzor::UrxBackend::Cpu      => uzor_urx_engine::Backend::Cpu,
-                    uzor::UrxBackend::Wgpu     => uzor_urx_engine::Backend::Wgpu,
-                    uzor::UrxBackend::Hybrid   => uzor_urx_engine::Backend::Hybrid,
-                    uzor::UrxBackend::WgpuFull => uzor_urx_engine::Backend::FullGpu,
-                    uzor::UrxBackend::Auto     => uzor_urx_engine::Backend::Cpu,
-                };
+                let core_backend = resolve_backend(backend);
                 *eng = uzor_urx_engine::UrxEngine::new(core_backend, width, height);
             }
         }
