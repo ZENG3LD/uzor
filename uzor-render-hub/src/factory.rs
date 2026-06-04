@@ -1251,6 +1251,63 @@ impl WindowRenderState {
         Some(f(r3d, scene_3d))
     }
 
+    /// Paint a cold-start skeleton frame (CPU rasterised, zero GPU
+    /// dependencies — runs even before any wgpu adapter ready) into
+    /// the swapchain. Stage 5 surface — call once per launch before
+    /// the GPU pipelines finish compiling, then drive the normal
+    /// `submit_frame` path on subsequent frames.
+    ///
+    /// `now_us` is the consumer's monotonic clock in microseconds —
+    /// used to animate the spinner. Pass `Instant::now().elapsed()`
+    /// since process start.
+    ///
+    /// Returns `false` when the surface is unavailable or 0×0; the
+    /// caller should retry next frame.
+    pub fn paint_skeleton(&mut self, spec: uzor_urx_core::SkeletonSpec, now_us: u64) -> bool {
+        let (width, height) = match &self.surface {
+            SurfaceMode::Gpu { surface, .. } => (surface.config.width, surface.config.height),
+            #[cfg(not(target_arch = "wasm32"))]
+            SurfaceMode::Software { width, height, .. } => (*width, *height),
+            #[cfg(target_arch = "wasm32")]
+            SurfaceMode::Canvas2d { .. } => return false,
+        };
+        if width == 0 || height == 0 { return false; }
+
+        let mut frame = uzor_urx_core::SkeletonFrame::new(width, height, spec);
+        frame.render(now_us);
+
+        match &mut self.surface {
+            SurfaceMode::Gpu { gpu_pool, surface, dev_id } => {
+                let device = &gpu_pool.devices[*dev_id].device;
+                let queue  = &gpu_pool.devices[*dev_id].queue;
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &surface.target_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &frame.pixels,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * width),
+                        rows_per_image: Some(height),
+                    },
+                    wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                );
+                let _ = crate::submit::blit_and_present_urx(surface, device, queue);
+                true
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            SurfaceMode::Software { presenter, .. } => {
+                presenter.present(&frame.pixels, width, height);
+                true
+            }
+            #[cfg(target_arch = "wasm32")]
+            SurfaceMode::Canvas2d { .. } => false,
+        }
+    }
+
     /// Borrow the URX physics world (lazy-init on first call). Stage 4
     /// surface — independent of all render slots. Consumer ticks
     /// `physics.step(dt)` per frame, reads body positions into Scene3D
