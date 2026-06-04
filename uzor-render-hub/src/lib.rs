@@ -18,6 +18,7 @@ pub mod hub;
 pub mod metrics;
 pub mod factory;
 pub mod submit;
+pub mod submit_urx;
 pub mod runtime;
 pub mod surface;
 pub mod factories;

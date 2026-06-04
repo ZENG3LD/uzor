@@ -72,6 +72,14 @@ impl BackendPool {
         initialized.insert(RenderBackend::InstancedWgpu);
         initialized.insert(RenderBackend::VelloCpu);
         initialized.insert(RenderBackend::TinySkia);
+        // URX family — same caralog entry as the vello family. Phase A:
+        // UrxCpu actually renders; UrxWgpu/UrxHybrid/UrxWgpuFull are exposed
+        // so dropdowns / agent3l can pick them, but their submit path is a
+        // skeleton (see crate::submit_urx).
+        initialized.insert(RenderBackend::UrxCpu);
+        initialized.insert(RenderBackend::UrxWgpu);
+        initialized.insert(RenderBackend::UrxHybrid);
+        initialized.insert(RenderBackend::UrxWgpuFull);
         Self { has_gpu: true, initialized, recommended }
     }
 
@@ -81,6 +89,7 @@ impl BackendPool {
         let mut initialized = HashSet::new();
         initialized.insert(RenderBackend::VelloCpu);
         initialized.insert(RenderBackend::TinySkia);
+        initialized.insert(RenderBackend::UrxCpu);
         Self {
             has_gpu: false,
             initialized,

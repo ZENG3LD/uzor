@@ -63,22 +63,51 @@ pub enum RenderBackend {
     TinySkia,
     /// HTML Canvas 2D backend (wasm32 only).
     Canvas2d,
+
+    // ── URX render family — own math, no vello/tiny-skia inside ───────────
+    /// URX CPU scanline rasteriser — own analytic-AA path, no upstream
+    /// dependency. Software surface presenter (same path as TinySkia/VelloCpu).
+    UrxCpu,
+    /// URX instanced wgpu adapter — thin wrapper that lifts urx_core::Scene
+    /// into the existing instanced primitive pipelines. GPU swapchain.
+    UrxWgpu,
+    /// URX hybrid — CPU strip generation + GPU fine rasterisation, own pipeline.
+    UrxHybrid,
+    /// URX full-GPU compute pipeline — tile-bin + sort + PTCL rasterise,
+    /// 100% GPU-driven.
+    UrxWgpuFull,
 }
 
 impl RenderBackend {
     /// True if the backend renders into a CPU pixel buffer.
     pub fn is_cpu(self) -> bool {
-        matches!(self, Self::VelloCpu | Self::TinySkia)
+        matches!(self, Self::VelloCpu | Self::TinySkia | Self::UrxCpu)
     }
 
     /// True if the backend renders directly to the swapchain on the GPU.
     pub fn is_gpu_swapchain(self) -> bool {
-        matches!(self, Self::VelloGpu | Self::InstancedWgpu | Self::VelloHybrid)
+        matches!(
+            self,
+            Self::VelloGpu
+                | Self::InstancedWgpu
+                | Self::VelloHybrid
+                | Self::UrxWgpu
+                | Self::UrxHybrid
+                | Self::UrxWgpuFull,
+        )
     }
 
     /// True if the backend renders into a DOM canvas (wasm32 only).
     pub fn is_canvas(self) -> bool {
         matches!(self, Self::Canvas2d)
+    }
+
+    /// True if the backend belongs to the URX render family.
+    pub fn is_urx(self) -> bool {
+        matches!(
+            self,
+            Self::UrxCpu | Self::UrxWgpu | Self::UrxHybrid | Self::UrxWgpuFull,
+        )
     }
 
     /// Stable identifier suitable for config files / UI.
@@ -90,6 +119,10 @@ impl RenderBackend {
             Self::VelloHybrid   => "vello_hybrid",
             Self::TinySkia      => "tiny_skia",
             Self::Canvas2d      => "canvas2d",
+            Self::UrxCpu        => "urx_cpu",
+            Self::UrxWgpu       => "urx_wgpu",
+            Self::UrxHybrid     => "urx_hybrid",
+            Self::UrxWgpuFull   => "urx_wgpu_full",
         }
     }
 
@@ -102,6 +135,10 @@ impl RenderBackend {
             Self::VelloHybrid   => "Vello Hybrid",
             Self::TinySkia      => "Tiny-Skia CPU",
             Self::Canvas2d      => "Canvas 2D (Web)",
+            Self::UrxCpu        => "URX CPU",
+            Self::UrxWgpu       => "URX wGPU",
+            Self::UrxHybrid     => "URX Hybrid",
+            Self::UrxWgpuFull   => "URX Full-GPU",
         }
     }
 }

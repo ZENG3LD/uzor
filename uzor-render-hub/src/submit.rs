@@ -79,6 +79,15 @@ pub fn submit_frame(state: &mut WindowRenderState, params: SubmitParams) -> Subm
             // by the app's ui() callback via canvas2d_ctx_mut(). Nothing to flush.
             false
         }
+
+        // ── URX family ─────────────────────────────────────────────────────
+        // All four URX backends consume the same `urx_core::Scene` produced
+        // by `UrxRenderContext`. Phase A: backend functions live in
+        // `crate::submit_urx::*` and turn that scene into pixels.
+        RenderBackend::UrxCpu        => crate::submit_urx::submit_urx_cpu(state, &mut frame_metrics),
+        RenderBackend::UrxWgpu       => crate::submit_urx::submit_urx_wgpu(state, &params, &mut frame_metrics),
+        RenderBackend::UrxHybrid     => crate::submit_urx::submit_urx_hybrid(state, &params, &mut frame_metrics),
+        RenderBackend::UrxWgpuFull   => crate::submit_urx::submit_urx_wgpu_full(state, &params, &mut frame_metrics),
     };
 
     frame_metrics.submit_us = total_t0.elapsed().as_micros() as u64;
@@ -464,6 +473,17 @@ fn submit_cpu_tinyskia(state: &mut WindowRenderState, metrics: &mut RenderMetric
 ///
 /// Returns `true` on `OutOfMemory` (surface lost), `false` on success or
 /// recoverable errors (reconfigured inline).
+/// Crate-public alias of `blit_and_present` — used by `submit_urx::submit_urx_cpu`
+/// (CPU rasteriser → swapchain) to share the same blit + present path as
+/// the other CPU backends.
+pub(crate) fn blit_and_present_urx(
+    surface: &mut vello::util::RenderSurface<'static>,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) -> bool {
+    blit_and_present(surface, device, queue)
+}
+
 fn blit_and_present(
     surface: &mut vello::util::RenderSurface<'static>,
     device: &wgpu::Device,

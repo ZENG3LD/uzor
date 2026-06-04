@@ -18,6 +18,15 @@ uzor-render-vello-hybrid = { workspace = true }
 uzor-render-wgpu-instanced = { workspace = true }
 uzor-render-vello-cpu = { workspace = true }
 uzor-render-tiny-skia = { workspace = true }
+uzor-render-urx = { workspace = true }
+uzor-urx-cpu = { workspace = true }
+uzor-urx-wgpu = { workspace = true }
+uzor-urx-hybrid = { workspace = true }
+# urx-wgpu-full has a different consumer API (encode → upload → dispatch +
+# blit) than the (Scene → render → bytes) shape of the other three. It will
+# be wired separately once the convenience wrapper lands. For now the
+# `UrxWgpuFull` enum variant exists but renders nothing (logged as TODO).
+uzor-urx-wgpu-full = { workspace = true }
 vello = "0.9"
 vello_hybrid = { version = "0.0.9", features = ["wgpu"] }
 wgpu = "29"

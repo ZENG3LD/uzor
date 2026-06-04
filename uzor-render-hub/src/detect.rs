@@ -37,6 +37,12 @@ pub fn default_perf(backend: RenderBackend) -> PerfDefaults {
         RenderBackend::InstancedWgpu => (90,     8),
         RenderBackend::VelloHybrid   => (90,     8),
         RenderBackend::Canvas2d      => (60,     0),
+        // URX family — mirrors Vello-equivalent defaults until real benches
+        // give us numbers.
+        RenderBackend::UrxCpu        => (30,     0),
+        RenderBackend::UrxWgpu       => (90,     8),
+        RenderBackend::UrxHybrid     => (90,     8),
+        RenderBackend::UrxWgpuFull   => (120,    8),
     };
     PerfDefaults { fps_limit, msaa_samples }
 }

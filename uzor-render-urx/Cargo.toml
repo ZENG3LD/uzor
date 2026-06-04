@@ -1,0 +1,16 @@
+[package]
+name        = "uzor-render-urx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "URX render adapter — implements uzor::RenderContext, emits urx_core::Scene. Lets uzor/tessera consumers select any of the 4 URX 2D backends (cpu/wgpu/hybrid/wgpu-full) through the standard backend-selection path. Phase A bridge — Phase B will let consumers emit Scene directly."
+keywords    = ["graphics", "rendering", "urx", "adapter", "uzor"]
+categories  = ["graphics", "rendering"]
+
+[dependencies]
+uzor          = { workspace = true, features = ["shaper"] }
+uzor-urx-core = { workspace = true }
+kurbo         = "0.13"
+peniko        = "0.6"
