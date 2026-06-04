@@ -22,18 +22,36 @@
 //! the rest, identical to the legacy `with_render_context` ergonomics.
 
 use uzor::render::RenderContext;
+use uzor_urx_engine::UrxEngine;
 
 /// Fat handle handed to the closure passed to `RenderHub::with_urx_engine`.
 ///
 /// Lifetime `'a` binds to the borrow of the `WindowRenderState` taken
 /// for the duration of the callback. All fields are mutable borrows —
 /// the consumer may freely mutate any subset.
+///
+/// Consumer modes:
+/// * **Immediate** — use only `render_ctx`. Ergonomics identical to the
+///   legacy `with_render_context` channel; the Scene buffered by
+///   `UrxRenderContext` is handed to the active URX backend at submit
+///   time as one big region.
+/// * **Retained** — drive `engine` (upsert_region / mark_dirty /
+///   needs_paint / render). Multiple regions get independent dirty
+///   tracking + per-region BackendHint dispatch. Stage 3 surface; the
+///   default `RegionMixer` wire to submit lands in Stage 3 part 2.
 pub struct UrxEngineHandle<'a> {
     /// Standard 2D scene (Canvas2D shape — fill_rect/stroke/text/...).
     /// Same `RenderContext` trait the legacy channel uses, so a
     /// consumer that ignores the rest of this handle still draws
     /// pixels with one line.
     pub render_ctx: &'a mut dyn RenderContext,
+
+    /// Retained-mode engine handle. Always `Some` in Stage 3+ — lazy-
+    /// initialised on the first `with_urx_engine` call with the URX
+    /// channel armed. Consumers that only use the immediate path can
+    /// ignore this field; consumers that want regions call methods on
+    /// it directly.
+    pub engine: &'a mut UrxEngine,
 
     /// Frame dimensions in physical pixels (post-DPI scaling).
     pub width: u32,
@@ -42,15 +60,13 @@ pub struct UrxEngineHandle<'a> {
     pub dpr: f64,
     /// Monotonic frame counter for this window.
     pub frame_idx: u64,
-    // ── Stage 3+ fields (currently always `None`) ─────────────────────────
+    // ── Stage 4+ fields (currently absent) ────────────────────────────────
     //
-    // The plan deliberately keeps these absent from Stage 1 — adding the
-    // field with `pub engine: Option<&'a mut UrxEngine>` etc. brings in
-    // the urx-engine API surface before the slot itself exists in
-    // WindowRenderState. Stage 3 will:
-    //   * add UrxEngine slot in WindowRenderState
-    //   * extend this handle with `pub engine: &'a mut UrxEngine`
-    //   * extend it with `pub r3d: Option<&'a mut Renderer3D>` etc.
-    // Backward-compatible: a consumer only naming `render_ctx` continues
-    // to compile because the new fields are pure additions.
+    // Stage 4 will add:
+    //   * `pub r3d: Option<&'a mut Renderer3D>`
+    //   * `pub scene_3d: Option<&'a mut Scene3D>`
+    //   * `pub physics: Option<&'a mut PhysicsWorld>`
+    //   * `pub particles: Option<&'a mut ParticleSystem>`
+    // Backward-compatible: a consumer only naming `render_ctx` / `engine`
+    // continues to compile because the new fields are pure additions.
 }

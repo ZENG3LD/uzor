@@ -322,6 +322,12 @@ impl UrxEngine {
     pub fn cache_bytes(&self) -> u64 { self.cache.total_bytes() }
     pub fn cache_count(&self) -> usize { self.cache.count() }
 
+    /// Surface dimensions the engine was constructed with. Returned for
+    /// resize-detection in consumers (`UrxEngineHandle`, etc.) that
+    /// re-create the engine when the swapchain grows.
+    pub fn width(&self) -> u32 { self.width }
+    pub fn height(&self) -> u32 { self.height }
+
     /// Read-only access to the engine's config.
     pub fn config(&self) -> &UrxConfig { &self.config }
 

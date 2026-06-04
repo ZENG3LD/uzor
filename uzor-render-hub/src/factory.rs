@@ -207,6 +207,11 @@ pub struct WindowRenderState {
     /// URX full-GPU backend (`WgpuFullBackend` wrapper from
     /// uzor-urx-wgpu-full). Lazy-init on first urx_wgpu_full submit.
     pub(crate) urx_wgpu_full_backend: Option<uzor_urx_wgpu_full::WgpuFullBackend>,
+    /// URX retained-mode engine. Stage 3: lazy-init on first
+    /// `with_urx_engine` call when the consumer chooses retained-mode
+    /// via `handle.engine.upsert_region(...)`. Backend selection inside
+    /// the engine is derived from `active_urx`.
+    pub(crate) urx_engine: Option<uzor_urx_engine::UrxEngine>,
 
     // ── Canvas 2D context (wasm32 only) ───────────────────────────────────────
     /// HTML Canvas 2D render context.  Only populated when `active` is
@@ -259,6 +264,7 @@ impl WindowRenderState {
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
+            urx_engine: None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -293,6 +299,7 @@ impl WindowRenderState {
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
+            urx_engine: None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -355,6 +362,7 @@ impl WindowRenderState {
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
+            urx_engine: None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -387,6 +395,7 @@ impl WindowRenderState {
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
+            urx_engine: None,
             active_urx: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
@@ -417,6 +426,7 @@ impl WindowRenderState {
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
+            urx_engine: None,
             active_urx: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
@@ -495,6 +505,7 @@ impl WindowRenderState {
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
+            urx_engine: None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -528,6 +539,7 @@ impl WindowRenderState {
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
+            urx_engine: None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -580,6 +592,7 @@ impl WindowRenderState {
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
+            urx_engine: None,
             active_urx: None,
             canvas2d_ctx: Some(ctx),
             scene: Scene::new(),
@@ -1059,18 +1072,19 @@ impl WindowRenderState {
     /// channel. Returns `None` if the URX channel isn't armed
     /// (`active_urx == None`) or the surface has zero area.
     ///
-    /// Stage 1 wiring: handle's `render_ctx` is the same
-    /// `UrxRenderContext` Scene buffer the existing `with_render_context`
-    /// path uses when one of the URX `Scene2DBackend` variants is active.
-    /// Submitting at frame-end goes through the same `submit_urx_*`
-    /// dispatcher; the only difference vs the legacy path is which
-    /// backend is selected (via `active_urx` rather than `active`).
+    /// Stage 3 wiring: handle's `render_ctx` is the same
+    /// `UrxRenderContext` Scene buffer the legacy path uses; handle's
+    /// `engine` is the `UrxEngine` lazy-initialised here, sized to the
+    /// surface, with backend derived from `active_urx`. Consumers that
+    /// want retained-mode regions drive `engine.upsert_region(...)`
+    /// and friends; consumers that prefer immediate-mode ignore the
+    /// engine and paint into `render_ctx`.
     pub fn with_urx_engine<R>(
         &mut self,
         f: impl FnOnce(&mut crate::urx_engine_handle::UrxEngineHandle<'_>) -> R,
     ) -> Option<R> {
         // Channel must be armed.
-        let _backend = self.active_urx?;
+        let backend = self.active_urx?;
 
         // Resolve surface dimensions.
         let (width, height) = match &self.surface {
@@ -1085,19 +1099,55 @@ impl WindowRenderState {
         }
 
         // Lazy-init shared URX paint context.
-        let dpr = 1.0_f64; // TODO Stage 3: real DPR from window.
+        let dpr = 1.0_f64; // TODO Stage 5: real DPR from window.
         if self.urx_ctx.is_none() {
             self.urx_ctx = Some(uzor_render_urx::UrxRenderContext::new(dpr));
         }
         let ctx = self.urx_ctx.as_mut()?;
         ctx.begin_frame(width, height);
 
+        // Lazy-init UrxEngine sized to the current surface.
+        if self.urx_engine.is_none() {
+            let core_backend = match backend {
+                uzor::UrxBackend::Cpu      => uzor_urx_engine::Backend::Cpu,
+                uzor::UrxBackend::Wgpu     => uzor_urx_engine::Backend::Wgpu,
+                uzor::UrxBackend::Hybrid   => uzor_urx_engine::Backend::Hybrid,
+                uzor::UrxBackend::WgpuFull => uzor_urx_engine::Backend::FullGpu,
+                uzor::UrxBackend::Auto     => {
+                    // Auto: WorkloadHint is built from coarse signals (Stage 5
+                    // refines). For now default to Cpu to avoid wgpu-init in
+                    // headless tests; backends that need GPU should be picked
+                    // explicitly.
+                    uzor_urx_engine::Backend::Cpu
+                }
+            };
+            self.urx_engine = Some(uzor_urx_engine::UrxEngine::new(core_backend, width, height));
+        }
+        // Resize on surface change.
+        if let Some(eng) = self.urx_engine.as_mut() {
+            // urx-engine has no public resize() — recreate when dims drift.
+            // Cheap: regions are re-uploaded by the consumer anyway.
+            let (ew, eh) = (eng.width(), eng.height());
+            if ew != width || eh != height {
+                let core_backend = match backend {
+                    uzor::UrxBackend::Cpu      => uzor_urx_engine::Backend::Cpu,
+                    uzor::UrxBackend::Wgpu     => uzor_urx_engine::Backend::Wgpu,
+                    uzor::UrxBackend::Hybrid   => uzor_urx_engine::Backend::Hybrid,
+                    uzor::UrxBackend::WgpuFull => uzor_urx_engine::Backend::FullGpu,
+                    uzor::UrxBackend::Auto     => uzor_urx_engine::Backend::Cpu,
+                };
+                *eng = uzor_urx_engine::UrxEngine::new(core_backend, width, height);
+            }
+        }
+        let engine = self.urx_engine.as_mut()?;
+
         let mut handle = crate::urx_engine_handle::UrxEngineHandle {
             render_ctx: ctx as &mut dyn uzor::render::RenderContext,
+            engine,
             width,
             height,
             dpr,
-            frame_idx: 0, // Stage 3 wires real counter.
+            frame_idx: 0, // Stage 5 wires real counter.
         };
         Some(f(&mut handle))
     }
