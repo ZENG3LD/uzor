@@ -165,6 +165,13 @@ impl Node {
     pub fn is_lit(&self) -> bool {
         matches!(self.geometry, NodeMesh::Lit(_))
     }
+
+    /// Wave 18 — node is treated as transparent if its tint alpha drops
+    /// below 1.0. Renderer3D sorts these back-to-front and draws them
+    /// AFTER all opaque nodes for correct alpha blending.
+    pub fn is_transparent(&self) -> bool {
+        self.color_tint[3] < 0.999
+    }
 }
 
 #[derive(Clone)]

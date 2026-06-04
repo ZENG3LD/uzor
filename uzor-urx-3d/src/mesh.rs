@@ -632,6 +632,39 @@ impl MeshLit {
         Self::new(verts, idx)
     }
 
+    /// Wave 18 — flat water-like plane on XZ (Y=0) facing +Y, but
+    /// subdivided into a `(subdivs+1)²` vertex grid so a future
+    /// vertex-displacement water shader can flex the surface. With the
+    /// default Phong pipeline this is just a plane; consumers set
+    /// translucent tint (e.g. `[0.2, 0.45, 0.6, 0.55]`) and the alpha
+    /// blends against whatever was drawn before it.
+    pub fn water_plane(extent: f32, subdivs: u32, color: [f32; 4]) -> Self {
+        let subdivs = subdivs.max(1);
+        let stride = subdivs + 1;
+        let n = Vec3::Y;
+        let mut verts = Vec::with_capacity((stride * stride) as usize);
+        for r in 0..=subdivs {
+            for c in 0..=subdivs {
+                let u = c as f32 / subdivs as f32;
+                let v = r as f32 / subdivs as f32;
+                let x = (u - 0.5) * 2.0 * extent;
+                let z = (v - 0.5) * 2.0 * extent;
+                verts.push(VertexLit::new(Vec3::new(x, 0.0, z), n, color));
+            }
+        }
+        let mut idx = Vec::with_capacity((subdivs * subdivs * 6) as usize);
+        for r in 0..subdivs {
+            for c in 0..subdivs {
+                let a = r * stride + c;
+                let b = (r + 1) * stride + c;
+                let cc = (r + 1) * stride + c + 1;
+                let d = r * stride + c + 1;
+                idx.extend_from_slice(&[a, b, cc, a, cc, d]);
+            }
+        }
+        Self::new(verts, idx)
+    }
+
     /// Wave 10 — torus around the Y axis. `major_r` = distance from
     /// origin to tube centre; `minor_r` = tube radius.
     pub fn torus(major_r: f32, minor_r: f32, rings: u32, slices: u32, color: [f32; 4]) -> Self {

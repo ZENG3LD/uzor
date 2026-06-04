@@ -206,6 +206,17 @@ pub struct Renderer3D {
     /// PBR instance buffer.
     instance_pbr_buf: wgpu::Buffer,
     instance_pbr_capacity: u32,
+    /// Wave 18 — dedicated transparent instance buffers per pipeline.
+    /// Kept SEPARATE from opaque ones so growing them never invalidates
+    /// the opaque uploads earlier in the frame.
+    instance_transp_unlit_buf: wgpu::Buffer,
+    instance_transp_unlit_cap: u32,
+    instance_transp_lit_buf: wgpu::Buffer,
+    instance_transp_lit_cap: u32,
+    instance_transp_tex_buf: wgpu::Buffer,
+    instance_transp_tex_cap: u32,
+    instance_transp_pbr_buf: wgpu::Buffer,
+    instance_transp_pbr_cap: u32,
     /// 1×1 flat-blue normal-map stub for PBR nodes without a real
     /// normal map (sampled but multiplied by has_normal_map=0).
     normal_map_stub: Arc<Texture3D>,
@@ -928,6 +939,34 @@ impl Renderer3D {
             instance_tex_capacity,
             instance_pbr_buf,
             instance_pbr_capacity,
+            instance_transp_unlit_buf: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("urx3d.instance_transp_unlit"),
+                size: std::mem::size_of::<InstanceRaw>() as u64 * 16,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            instance_transp_unlit_cap: 16,
+            instance_transp_lit_buf: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("urx3d.instance_transp_lit"),
+                size: std::mem::size_of::<InstanceLitRaw>() as u64 * 16,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            instance_transp_lit_cap: 16,
+            instance_transp_tex_buf: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("urx3d.instance_transp_tex"),
+                size: std::mem::size_of::<InstanceLitRaw>() as u64 * 16,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            instance_transp_tex_cap: 16,
+            instance_transp_pbr_buf: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("urx3d.instance_transp_pbr"),
+                size: std::mem::size_of::<InstancePbrRaw>() as u64 * 16,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            instance_transp_pbr_cap: 16,
             normal_map_stub,
             shadow_view,
             shadow_frame_buf,
@@ -1054,6 +1093,51 @@ impl Renderer3D {
         self.instance_tex_capacity = new_cap;
     }
 
+    fn grow_transp_unlit(&mut self, device: &wgpu::Device, needed: u32) {
+        if needed <= self.instance_transp_unlit_cap { return; }
+        let new_cap = needed.next_power_of_two().max(16);
+        self.instance_transp_unlit_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_transp_unlit"),
+            size: std::mem::size_of::<InstanceRaw>() as u64 * new_cap as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.instance_transp_unlit_cap = new_cap;
+    }
+    fn grow_transp_lit(&mut self, device: &wgpu::Device, needed: u32) {
+        if needed <= self.instance_transp_lit_cap { return; }
+        let new_cap = needed.next_power_of_two().max(16);
+        self.instance_transp_lit_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_transp_lit"),
+            size: std::mem::size_of::<InstanceLitRaw>() as u64 * new_cap as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.instance_transp_lit_cap = new_cap;
+    }
+    fn grow_transp_tex(&mut self, device: &wgpu::Device, needed: u32) {
+        if needed <= self.instance_transp_tex_cap { return; }
+        let new_cap = needed.next_power_of_two().max(16);
+        self.instance_transp_tex_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_transp_tex"),
+            size: std::mem::size_of::<InstanceLitRaw>() as u64 * new_cap as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.instance_transp_tex_cap = new_cap;
+    }
+    fn grow_transp_pbr(&mut self, device: &wgpu::Device, needed: u32) {
+        if needed <= self.instance_transp_pbr_cap { return; }
+        let new_cap = needed.next_power_of_two().max(16);
+        self.instance_transp_pbr_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_transp_pbr"),
+            size: std::mem::size_of::<InstancePbrRaw>() as u64 * new_cap as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.instance_transp_pbr_cap = new_cap;
+    }
+
     fn grow_instance_pbr_buf(&mut self, device: &wgpu::Device, needed: u32) {
         if needed <= self.instance_pbr_capacity {
             return;
@@ -1172,7 +1256,19 @@ impl Renderer3D {
                 Vec<usize>,
             ),
         > = BTreeMap::new();
+        // Wave 18 — transparent nodes collected separately and sorted
+        // back-to-front by camera distance. They draw in a second pass
+        // after the opaque draw. Each entry remembers its node index;
+        // mesh+material lookup happens per draw (no instancing for
+        // translucent — one draw per transparent node, sorted).
+        let mut transparent_order: Vec<(usize, f32)> = Vec::new();
+
         for (i, n) in scene.nodes.iter().enumerate() {
+            if n.is_transparent() {
+                let d = (n.translation - camera.eye).length_squared();
+                transparent_order.push((i, d));
+                continue;
+            }
             match &n.geometry {
                 NodeMesh::Unlit(m) => {
                     let k = Arc::as_ptr(m) as usize;
@@ -1205,6 +1301,9 @@ impl Renderer3D {
                 }
             }
         }
+        // Sort back-to-front (farthest first). Distance comparison is
+        // squared — order is preserved.
+        transparent_order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         struct GroupDraw {
             vb: wgpu::Buffer,
@@ -1579,6 +1678,290 @@ impl Renderer3D {
                 pass.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
                 let end = g.first_instance + g.instance_count;
                 pass.draw_indexed(0..g.index_count, 0, g.first_instance..end);
+            }
+        }
+
+        // ── Wave 18 — transparent pass: one draw per sorted node ──
+        // We reuse the existing instance buffers by APPENDING the
+        // transparent-node records past the opaque region. Each
+        // transparent draw issues a 1-instance draw_indexed pointing
+        // at its slot. Depth test stays Less (writes too — meaning
+        // overlapping transparent volumes get coarse sorted by node
+        // centre, fine-grained pixel sort is out of scope for Wave 18).
+        if !transparent_order.is_empty() {
+            // We'll lazily grow per-pipeline buffers as needed beyond
+            // the opaque high water mark, then write the records.
+            let mut lit_writes: Vec<(u32, InstanceLitRaw, &Arc<crate::mesh::MeshLit>)> = Vec::new();
+            let mut tex_writes: Vec<(
+                u32,
+                InstanceLitRaw,
+                &Arc<crate::mesh::MeshUv>,
+                &Arc<Texture3D>,
+            )> = Vec::new();
+            let mut pbr_writes: Vec<(
+                u32,
+                InstancePbrRaw,
+                &Arc<crate::mesh::MeshPbr>,
+                &Arc<Texture3D>,
+                Option<&Arc<Texture3D>>,
+            )> = Vec::new();
+            let mut unlit_writes: Vec<(u32, InstanceRaw, &Arc<crate::mesh::Mesh>)> = Vec::new();
+
+            let mut lit_n = 0u32;
+            let mut tex_n = 0u32;
+            let mut pbr_n = 0u32;
+            let mut unlit_n = 0u32;
+
+            for (i, _) in transparent_order.iter() {
+                let n = &scene.nodes[*i];
+                let model = n.model_matrix();
+                let mat = n.material;
+                match &n.geometry {
+                    NodeMesh::Unlit(m) => {
+                        unlit_writes.push((
+                            unlit_n,
+                            InstanceRaw {
+                                model: model.to_cols_array_2d(),
+                                tint: n.color_tint,
+                            },
+                            m,
+                        ));
+                        unlit_n += 1;
+                    }
+                    NodeMesh::Lit(m) => {
+                        lit_writes.push((
+                            lit_n,
+                            InstanceLitRaw {
+                                model: model.to_cols_array_2d(),
+                                tint: n.color_tint,
+                                material: [
+                                    mat.ambient_strength,
+                                    mat.diffuse_strength,
+                                    mat.specular_strength,
+                                    mat.shininess,
+                                ],
+                                normal_mat: normal_matrix_cols(&model),
+                            },
+                            m,
+                        ));
+                        lit_n += 1;
+                    }
+                    NodeMesh::Textured(m, t) => {
+                        tex_writes.push((
+                            tex_n,
+                            InstanceLitRaw {
+                                model: model.to_cols_array_2d(),
+                                tint: n.color_tint,
+                                material: [
+                                    mat.ambient_strength,
+                                    mat.diffuse_strength,
+                                    mat.specular_strength,
+                                    mat.shininess,
+                                ],
+                                normal_mat: normal_matrix_cols(&model),
+                            },
+                            m,
+                            t,
+                        ));
+                        tex_n += 1;
+                    }
+                    NodeMesh::Pbr(m, pbr_mat) => {
+                        let has_nm: f32 = if pbr_mat.normal_map.is_some() { 1.0 } else { 0.0 };
+                        pbr_writes.push((
+                            pbr_n,
+                            InstancePbrRaw {
+                                model: model.to_cols_array_2d(),
+                                tint: n.color_tint,
+                                pbr_params: [pbr_mat.metalness, pbr_mat.roughness, pbr_mat.ao, has_nm],
+                                normal_mat: normal_matrix_cols(&model),
+                            },
+                            m,
+                            &pbr_mat.albedo,
+                            pbr_mat.normal_map.as_ref(),
+                        ));
+                        pbr_n += 1;
+                    }
+                }
+            }
+            drop(pass);
+
+            // Wave 18 — write to DEDICATED transparent buffers so we
+            // never invalidate the opaque uploads earlier in the frame.
+            if unlit_n > 0 {
+                self.grow_transp_unlit(device, unlit_n);
+                for (slot, rec, _) in &unlit_writes {
+                    queue.write_buffer(
+                        &self.instance_transp_unlit_buf,
+                        (*slot as u64) * std::mem::size_of::<InstanceRaw>() as u64,
+                        bytemuck::bytes_of(rec),
+                    );
+                }
+            }
+            if lit_n > 0 {
+                self.grow_transp_lit(device, lit_n);
+                for (slot, rec, _) in &lit_writes {
+                    queue.write_buffer(
+                        &self.instance_transp_lit_buf,
+                        (*slot as u64) * std::mem::size_of::<InstanceLitRaw>() as u64,
+                        bytemuck::bytes_of(rec),
+                    );
+                }
+            }
+            if tex_n > 0 {
+                self.grow_transp_tex(device, tex_n);
+                for (slot, rec, _, _) in &tex_writes {
+                    queue.write_buffer(
+                        &self.instance_transp_tex_buf,
+                        (*slot as u64) * std::mem::size_of::<InstanceLitRaw>() as u64,
+                        bytemuck::bytes_of(rec),
+                    );
+                }
+            }
+            if pbr_n > 0 {
+                self.grow_transp_pbr(device, pbr_n);
+                for (slot, rec, _, _, _) in &pbr_writes {
+                    queue.write_buffer(
+                        &self.instance_transp_pbr_buf,
+                        (*slot as u64) * std::mem::size_of::<InstancePbrRaw>() as u64,
+                        bytemuck::bytes_of(rec),
+                    );
+                }
+            }
+
+            // Re-open the same color pass with LOAD ops so previous
+            // opaque contents survive.
+            let mut tpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("urx3d.pass_transparent"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.depth_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+
+            // Walk transparent_order again, picking the matching draw
+            // from the appropriate per-pipeline write list. Counter
+            // bookkeeping per pipeline lets us hop pipelines in the
+            // sorted order.
+            let mut lit_iter = 0usize;
+            let mut tex_iter = 0usize;
+            let mut pbr_iter = 0usize;
+            let mut unlit_iter = 0usize;
+
+            for (i, _) in transparent_order.iter() {
+                let n = &scene.nodes[*i];
+                match &n.geometry {
+                    NodeMesh::Unlit(_) => {
+                        let (slot, _, mesh) = &unlit_writes[unlit_iter];
+                        unlit_iter += 1;
+                        let entry = self.mesh_cache.get_or_upload(device, mesh);
+                        tpass.set_pipeline(&self.pipeline_instanced);
+                        tpass.set_bind_group(0, &self.frame_bg_inst, &[]);
+                        tpass.set_vertex_buffer(0, entry.vb.slice(..));
+                        tpass.set_vertex_buffer(1, self.instance_transp_unlit_buf.slice(..));
+                        tpass.set_index_buffer(entry.ib.slice(..), wgpu::IndexFormat::Uint32);
+                        tpass.draw_indexed(0..entry.index_count, 0, *slot..(*slot + 1));
+                    }
+                    NodeMesh::Lit(_) => {
+                        let (slot, _, mesh) = &lit_writes[lit_iter];
+                        lit_iter += 1;
+                        let entry = self.mesh_lit_cache.get_or_upload(device, mesh);
+                        tpass.set_pipeline(&self.pipeline_phong);
+                        tpass.set_bind_group(0, &self.frame_bg_phong, &[]);
+                        tpass.set_bind_group(1, &self.shadow_bg, &[]);
+                        tpass.set_vertex_buffer(0, entry.vb.slice(..));
+                        tpass.set_vertex_buffer(1, self.instance_transp_lit_buf.slice(..));
+                        tpass.set_index_buffer(entry.ib.slice(..), wgpu::IndexFormat::Uint32);
+                        tpass.draw_indexed(0..entry.index_count, 0, *slot..(*slot + 1));
+                    }
+                    NodeMesh::Textured(_, _) => {
+                        let (slot, _, mesh, t) = &tex_writes[tex_iter];
+                        tex_iter += 1;
+                        let entry = self.mesh_uv_cache.get_or_upload(device, mesh);
+                        let layout = &self.tex_bgl;
+                        let bg = {
+                            let cached = self.texture_cache.get_or_create(t, |tx| {
+                                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                    label: Some("urx3d.tex_bg.transp"),
+                                    layout,
+                                    entries: &[
+                                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&tx.view) },
+                                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&tx.sampler) },
+                                    ],
+                                })
+                            });
+                            cached.clone()
+                        };
+                        tpass.set_pipeline(&self.pipeline_textured);
+                        tpass.set_bind_group(0, &self.frame_bg_phong, &[]);
+                        tpass.set_bind_group(1, &bg, &[]);
+                        tpass.set_bind_group(2, &self.shadow_bg, &[]);
+                        tpass.set_vertex_buffer(0, entry.vb.slice(..));
+                        tpass.set_vertex_buffer(1, self.instance_transp_tex_buf.slice(..));
+                        tpass.set_index_buffer(entry.ib.slice(..), wgpu::IndexFormat::Uint32);
+                        tpass.draw_indexed(0..entry.index_count, 0, *slot..(*slot + 1));
+                    }
+                    NodeMesh::Pbr(_, _) => {
+                        let (slot, _, mesh, albedo, nm_opt) = &pbr_writes[pbr_iter];
+                        pbr_iter += 1;
+                        let entry = self.mesh_pbr_cache.get_or_upload(device, mesh);
+                        let layout = &self.tex_bgl;
+                        let bg_albedo = {
+                            let cached = self.texture_cache.get_or_create(albedo, |tx| {
+                                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                    label: Some("urx3d.tex_bg.transp.albedo"),
+                                    layout,
+                                    entries: &[
+                                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&tx.view) },
+                                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&tx.sampler) },
+                                    ],
+                                })
+                            });
+                            cached.clone()
+                        };
+                        let nm_arc = match nm_opt {
+                            Some(a) => (*a).clone(),
+                            None => self.normal_map_stub.clone(),
+                        };
+                        let bg_normal = {
+                            let cached = self.texture_cache.get_or_create(&nm_arc, |tx| {
+                                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                                    label: Some("urx3d.tex_bg.transp.normal"),
+                                    layout,
+                                    entries: &[
+                                        wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&tx.view) },
+                                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&tx.sampler) },
+                                    ],
+                                })
+                            });
+                            cached.clone()
+                        };
+                        tpass.set_pipeline(&self.pipeline_pbr);
+                        tpass.set_bind_group(0, &self.frame_bg_phong, &[]);
+                        tpass.set_bind_group(1, &bg_albedo, &[]);
+                        tpass.set_bind_group(2, &bg_normal, &[]);
+                        tpass.set_bind_group(3, &self.env_bg, &[]);
+                        tpass.set_vertex_buffer(0, entry.vb.slice(..));
+                        tpass.set_vertex_buffer(1, self.instance_transp_pbr_buf.slice(..));
+                        tpass.set_index_buffer(entry.ib.slice(..), wgpu::IndexFormat::Uint32);
+                        tpass.draw_indexed(0..entry.index_count, 0, *slot..(*slot + 1));
+                    }
+                }
             }
         }
     }
