@@ -1,0 +1,16 @@
+[package]
+name = "uzor-urx-region-mixer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Default MixDispatcher impl for uzor-urx-engine — per-region BackendHint routing + record/log helpers for CPU+GPU+Hybrid splits inside a single window."
+keywords    = ["graphics", "rendering", "uzor", "urx", "wgpu"]
+categories  = ["graphics", "rendering"]
+
+[dependencies]
+uzor-urx-engine = { version = "1.4.4", path = "../uzor-urx-engine" }
+uzor-urx-core   = { version = "1.4.4", path = "../uzor-urx-core" }
+
+[dev-dependencies]

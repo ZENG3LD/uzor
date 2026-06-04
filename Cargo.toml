@@ -31,6 +31,8 @@ members = [
     "uzor-urx-3d",
     # URX 3D physics (Wave 15+16 — AABB/sphere colliders + dynamics)
     "uzor-urx-physics",
+    # URX region mixer (Wave 9b — default MixDispatcher for engine)
+    "uzor-urx-region-mixer",
     # Utils
     "uzor-render-hub",
     # Icon utilities
