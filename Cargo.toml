@@ -82,6 +82,7 @@ uzor-urx-hybrid = { version = "1.4.5", path = "./uzor-urx-hybrid" }
 uzor-urx-glyph = { version = "1.4.5", path = "./uzor-urx-glyph" }
 uzor-urx-wgpu-full = { version = "1.4.5", path = "./uzor-urx-wgpu-full" }
 uzor-urx-3d = { version = "1.4.5", path = "./uzor-urx-3d" }
+uzor-urx-physics = { version = "1.4.5", path = "./uzor-urx-physics" }
 uzor-render-urx = { version = "1.4.5", path = "./uzor-render-urx" }
 serde = { version = "1.0", features = ["derive"] }
 

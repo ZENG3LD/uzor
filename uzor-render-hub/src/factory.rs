@@ -214,14 +214,20 @@ pub struct WindowRenderState {
     pub(crate) urx_engine: Option<uzor_urx_engine::UrxEngine>,
     /// URX 3D renderer + scene. Stage 4: lazy-init on first
     /// `with_renderer_3d` call. Independent of `urx_engine` — a
-    /// consumer can drive 2D-only or 3D-only or both. The 3D submit
-    /// runs as an overlay pass (depth-tested, painter's order after
-    /// the 2D backend). Stage 5 makes the over/under composition
-    /// configurable via `UrxConfig::z_order_3d_first`.
+    /// consumer can drive 2D-only, 3D-only, or both. Renderer3D owns
+    /// its own depth attachment internally, so no separate depth slot
+    /// is needed here.
     pub(crate) urx_renderer_3d: Option<uzor_urx_3d::Renderer3D>,
     pub(crate) urx_scene_3d:    Option<uzor_urx_3d::Scene3D>,
-    pub(crate) urx_depth_view:  Option<wgpu::TextureView>,
-    pub(crate) urx_depth_size:  (u32, u32),
+    /// URX 3D physics world. Stage 4: lazy-init on first
+    /// `with_physics_world` call. Independent of all other slots —
+    /// consumer ticks `physics.step(dt)` per frame, reads body
+    /// positions into Scene3D nodes.
+    pub(crate) urx_physics: Option<uzor_urx_physics::PhysicsWorld>,
+    /// URX 3D particle system. Stage 4: opt-in via
+    /// `init_particles(emitter_config)` — no zero-arg default
+    /// (the EmitterConfig drives spawn rate / lifetime / direction).
+    pub(crate) urx_particles: Option<uzor_urx_3d::ParticleSystem>,
 
     // ── Canvas 2D context (wasm32 only) ───────────────────────────────────────
     /// HTML Canvas 2D render context.  Only populated when `active` is
@@ -277,8 +283,8 @@ impl WindowRenderState {
             urx_engine: None,
             urx_renderer_3d: None,
             urx_scene_3d:    None,
-            urx_depth_view:  None,
-            urx_depth_size:  (0, 0),
+            urx_physics:     None,
+            urx_particles:   None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -316,8 +322,8 @@ impl WindowRenderState {
             urx_engine: None,
             urx_renderer_3d: None,
             urx_scene_3d:    None,
-            urx_depth_view:  None,
-            urx_depth_size:  (0, 0),
+            urx_physics:     None,
+            urx_particles:   None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -383,8 +389,8 @@ impl WindowRenderState {
             urx_engine: None,
             urx_renderer_3d: None,
             urx_scene_3d:    None,
-            urx_depth_view:  None,
-            urx_depth_size:  (0, 0),
+            urx_physics:     None,
+            urx_particles:   None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -420,8 +426,8 @@ impl WindowRenderState {
             urx_engine: None,
             urx_renderer_3d: None,
             urx_scene_3d:    None,
-            urx_depth_view:  None,
-            urx_depth_size:  (0, 0),
+            urx_physics:     None,
+            urx_particles:   None,
             active_urx: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
@@ -455,8 +461,8 @@ impl WindowRenderState {
             urx_engine: None,
             urx_renderer_3d: None,
             urx_scene_3d:    None,
-            urx_depth_view:  None,
-            urx_depth_size:  (0, 0),
+            urx_physics:     None,
+            urx_particles:   None,
             active_urx: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
@@ -538,8 +544,8 @@ impl WindowRenderState {
             urx_engine: None,
             urx_renderer_3d: None,
             urx_scene_3d:    None,
-            urx_depth_view:  None,
-            urx_depth_size:  (0, 0),
+            urx_physics:     None,
+            urx_particles:   None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -576,8 +582,8 @@ impl WindowRenderState {
             urx_engine: None,
             urx_renderer_3d: None,
             urx_scene_3d:    None,
-            urx_depth_view:  None,
-            urx_depth_size:  (0, 0),
+            urx_physics:     None,
+            urx_particles:   None,
             active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
@@ -633,8 +639,8 @@ impl WindowRenderState {
             urx_engine: None,
             urx_renderer_3d: None,
             urx_scene_3d:    None,
-            urx_depth_view:  None,
-            urx_depth_size:  (0, 0),
+            urx_physics:     None,
+            urx_particles:   None,
             active_urx: None,
             canvas2d_ctx: Some(ctx),
             scene: Scene::new(),
@@ -1235,29 +1241,39 @@ impl WindowRenderState {
         if self.urx_scene_3d.is_none() {
             self.urx_scene_3d = Some(uzor_urx_3d::Scene3D::new());
         }
-        // Resize depth buffer on surface drift.
-        if self.urx_depth_size != (width, height) || self.urx_depth_view.is_none() {
-            let depth_tex = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("urx-3d-depth"),
-                size:  wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count:    1,
-                dimension:       wgpu::TextureDimension::D2,
-                format:          uzor_urx_3d::DEPTH_FORMAT,
-                usage:           wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats:    &[],
-            });
-            self.urx_depth_view = Some(depth_tex.create_view(&wgpu::TextureViewDescriptor::default()));
-            self.urx_depth_size = (width, height);
-        }
         let r3d = self.urx_renderer_3d.as_mut()?;
         let scene_3d = self.urx_scene_3d.as_mut()?;
         Some(f(r3d, scene_3d))
     }
 
-    /// Borrow the depth view for the URX 3D pass. `None` if
-    /// `with_renderer_3d` has not yet run (slot is lazy).
-    pub fn urx_depth_view(&self) -> Option<&wgpu::TextureView> {
-        self.urx_depth_view.as_ref()
+    /// Borrow the URX physics world (lazy-init on first call). Stage 4
+    /// surface — independent of all render slots. Consumer ticks
+    /// `physics.step(dt)` per frame, reads body positions into Scene3D
+    /// nodes (the wire from physics to render is consumer-side).
+    pub fn with_physics_world<R>(
+        &mut self,
+        f: impl FnOnce(&mut uzor_urx_physics::PhysicsWorld) -> R,
+    ) -> R {
+        if self.urx_physics.is_none() {
+            self.urx_physics = Some(uzor_urx_physics::PhysicsWorld::new());
+        }
+        let physics = self.urx_physics.as_mut().expect("just inited");
+        f(physics)
+    }
+
+    /// Construct the URX particle system from a consumer-supplied
+    /// `EmitterConfig`. Idempotent only if called with the same config;
+    /// re-init replaces the previous instance. Stage 4 surface.
+    pub fn init_particles(&mut self, config: uzor_urx_3d::EmitterConfig) {
+        self.urx_particles = Some(uzor_urx_3d::ParticleSystem::new(config));
+    }
+
+    /// Borrow the URX particle system (only when initialised via
+    /// [`Self::init_particles`]). `None` until then.
+    pub fn with_particles<R>(
+        &mut self,
+        f: impl FnOnce(&mut uzor_urx_3d::ParticleSystem) -> R,
+    ) -> Option<R> {
+        self.urx_particles.as_mut().map(f)
     }
 }
