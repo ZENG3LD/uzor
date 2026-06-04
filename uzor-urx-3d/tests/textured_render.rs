@@ -142,7 +142,7 @@ fn render_once(
     scene: &Scene3D,
     camera: &PerspectiveCamera,
 ) -> Vec<u8> {
-    let mut r = Renderer3D::new(device, COLOR_FORMAT, (W, H), 8);
+    let mut r = Renderer3D::new(device, queue, COLOR_FORMAT, (W, H), 8);
     let (tex, view) = make_target(device);
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     r.render(device, queue, &mut enc, &view, camera, scene);

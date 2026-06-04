@@ -141,7 +141,7 @@ fn cube_renders_six_faces_with_distinct_colors() {
     scene.clear_color = [0.0, 0.0, 0.0, 1.0];
     scene.push(Node::new(Arc::new(Mesh::cube_rgb_faces())));
 
-    let mut r = Renderer3D::new(&device, COLOR_FORMAT, (W, H), 4);
+    let mut r = Renderer3D::new(&device, &queue, COLOR_FORMAT, (W, H), 4);
     let (tex, view) = make_target(&device);
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     r.render(&device, &queue, &mut enc, &view, &camera, &scene);
@@ -230,7 +230,7 @@ fn depth_test_occludes_back_face() {
             .with_tint([1.0, 0.0, 1.0, 1.0]),
     );
 
-    let mut r = Renderer3D::new(&device, COLOR_FORMAT, (W, H), 4);
+    let mut r = Renderer3D::new(&device, &queue, COLOR_FORMAT, (W, H), 4);
     let (tex, view) = make_target(&device);
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
     r.render(&device, &queue, &mut enc, &view, &camera, &scene);
@@ -273,7 +273,7 @@ fn camera_move_changes_pixels() {
     scene.clear_color = [0.0, 0.0, 0.0, 1.0];
     scene.push(Node::new(cube));
 
-    let mut r = Renderer3D::new(&device, COLOR_FORMAT, (W, H), 4);
+    let mut r = Renderer3D::new(&device, &queue, COLOR_FORMAT, (W, H), 4);
 
     // Frame A: eye at +Z
     let cam_a = PerspectiveCamera::new(Vec3::new(0.0, 0.0, 5.0), Vec3::ZERO, W as f32 / H as f32);

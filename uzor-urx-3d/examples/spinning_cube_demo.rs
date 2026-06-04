@@ -53,8 +53,8 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use uzor_urx_3d::{
-    Light, Mesh, MeshLit, Node, PerspectiveCamera, PhongMaterial, Quat, Renderer3D, Scene3D,
-    Texture3D, Vec3,
+    Light, Mesh, MeshLit, MeshPbr, Node, PbrMaterial, PerspectiveCamera, PhongMaterial, Quat,
+    Renderer3D, Scene3D, Texture3D, Vec3,
 };
 
 use winit::application::ApplicationHandler;
@@ -69,15 +69,25 @@ struct CubeSpec {
     pos: [f32; 3],
     scale: f32,
     tint: [f32; 4],
-    /// Routing:
-    /// - `lit=false, textured=false` → Wave 3 unlit pipeline
-    /// - `lit=true,  textured=false` → Wave 4 Phong pipeline
-    /// - `textured=true`             → Wave 5 textured pipeline (Phong + atlas)
+    /// Routing (priority: pbr > textured > lit > unlit):
+    /// - default                  → Wave 3 unlit
+    /// - `lit=true`               → Wave 4 Phong
+    /// - `textured=true`          → Wave 5 textured-Phong
+    /// - `pbr=true`               → Wave 6 PBR (uses atlas albedo,
+    ///                              metalness + roughness fields)
     #[serde(default)]
     lit: bool,
     #[serde(default)]
     textured: bool,
+    #[serde(default)]
+    pbr: bool,
+    #[serde(default = "default_metalness")]
+    metalness: f32,
+    #[serde(default = "default_roughness")]
+    roughness: f32,
 }
+fn default_metalness() -> f32 { 0.0 }
+fn default_roughness() -> f32 { 0.5 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct LightSpec {
@@ -288,6 +298,9 @@ mod http {
                 tint: hue_to_rgba(hue),
                 lit: false,
                 textured: false,
+                pbr: false,
+                metalness: 0.0,
+                roughness: 0.5,
             });
         }
         s.lock().unwrap().pending_cubes.extend(cubes);
@@ -334,6 +347,9 @@ mod http {
                         tint: hue_to_rgba(hue),
                         lit: false,
                         textured: false,
+                        pbr: false,
+                        metalness: 0.0,
+                        roughness: 0.5,
                     });
                 }
             }
@@ -430,6 +446,7 @@ struct App {
     cube_mesh: Arc<Mesh>,
     cube_mesh_lit: Arc<MeshLit>,
     cube_mesh_uv: Arc<uzor_urx_3d::MeshUv>,
+    cube_mesh_pbr: Arc<MeshPbr>,
     // Built lazily on first draw (needs device).
     atlas: Option<Arc<Texture3D>>,
     angle_rad: f32,
@@ -453,6 +470,7 @@ impl App {
             cube_mesh: Arc::new(Mesh::cube_rgb_faces()),
             cube_mesh_lit: Arc::new(MeshLit::cube_lit()),
             cube_mesh_uv: Arc::new(MeshLit::cube_uv()),
+            cube_mesh_pbr: Arc::new(MeshPbr::cube_pbr()),
             atlas: None,
             angle_rad: 0.0,
             last_frame: Instant::now(),
@@ -505,7 +523,7 @@ impl App {
         };
         surface.configure(&device, &config);
 
-        let renderer = Renderer3D::new(&device, format, (config.width, config.height), 64);
+        let renderer = Renderer3D::new(&device, &queue, format, (config.width, config.height), 64);
         let atlas = Arc::new(Texture3D::checkerboard(&device, &queue));
 
         self.surface = Some(surface);
@@ -634,10 +652,19 @@ impl App {
         };
         scene.push(central_node.with_rotation(Quat::from_rotation_y(self.angle_rad)));
 
-        // Agent-added cubes — each can pick unlit / lit / textured
+        // Agent-added cubes — each can pick unlit / lit / textured / PBR
         let atlas = self.atlas.clone();
         for c in &cubes_extra {
-            let n = if c.textured {
+            let n = if c.pbr {
+                if let Some(a) = atlas.as_ref() {
+                    let mat = PbrMaterial::new(a.clone())
+                        .with_metalness(c.metalness)
+                        .with_roughness(c.roughness);
+                    Node::new_pbr(self.cube_mesh_pbr.clone(), mat)
+                } else {
+                    Node::new(self.cube_mesh.clone())
+                }
+            } else if c.textured {
                 if let Some(a) = atlas.as_ref() {
                     Node::new_textured(self.cube_mesh_uv.clone(), a.clone())
                 } else {

@@ -148,6 +148,126 @@ pub struct MeshUv {
     pub indices: Vec<u32>,
 }
 
+/// PBR vertex format for Wave 6 — pos + normal + tangent + uv.
+///
+/// 64 bytes / vertex. Tangent comes with an implicit bitangent via
+/// `cross(normal, tangent.xyz) * tangent.w` (handedness in tangent.w).
+/// Pad of 1 float keeps the struct 16-aligned for std140-style layout.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct VertexPbr {
+    pub pos: [f32; 3],
+    pub _pad0: f32,
+    pub normal: [f32; 3],
+    pub _pad1: f32,
+    pub tangent: [f32; 4], // xyz = tangent, w = handedness ±1
+    pub uv: [f32; 2],
+    pub _pad2: [f32; 2],
+}
+
+impl VertexPbr {
+    pub fn new(pos: Vec3, normal: Vec3, tangent: [f32; 4], uv: [f32; 2]) -> Self {
+        Self {
+            pos: pos.to_array(),
+            _pad0: 0.0,
+            normal: normal.normalize_or_zero().to_array(),
+            _pad1: 0.0,
+            tangent,
+            uv,
+            _pad2: [0.0; 2],
+        }
+    }
+
+    pub fn vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<VertexPbr>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 0,  shader_location: 0 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x3, offset: 16, shader_location: 1 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 2 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 48, shader_location: 3 },
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MeshPbr {
+    pub vertices: Vec<VertexPbr>,
+    pub indices: Vec<u32>,
+}
+
+impl MeshPbr {
+    pub fn new(vertices: Vec<VertexPbr>, indices: Vec<u32>) -> Self {
+        Self { vertices, indices }
+    }
+
+    /// Unit cube with per-face normals + tangents + UVs. Same UV winding
+    /// as `MeshLit::cube_uv` (so PBR cubes can reuse textures built for
+    /// the Wave 5 cube). Tangent points in +U direction; handedness=+1.
+    pub fn cube_pbr() -> Self {
+        // (corners CCW from outside, normal, tangent in +U direction)
+        let faces: [([[f32; 3]; 4], [f32; 3], [f32; 3]); 6] = [
+            // +X face: normal=+X, tangent runs along +Z (right of camera)
+            (
+                [[1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [1.0, -1.0, 1.0]],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ),
+            // -X
+            (
+                [[-1.0, -1.0, 1.0], [-1.0, 1.0, 1.0], [-1.0, 1.0, -1.0], [-1.0, -1.0, -1.0]],
+                [-1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+            ),
+            // +Y
+            (
+                [[-1.0, 1.0, -1.0], [-1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, -1.0]],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ),
+            // -Y
+            (
+                [[-1.0, -1.0, 1.0], [-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, -1.0, 1.0]],
+                [0.0, -1.0, 0.0],
+                [1.0, 0.0, 0.0],
+            ),
+            // +Z
+            (
+                [[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]],
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 0.0],
+            ),
+            // -Z
+            (
+                [[1.0, -1.0, -1.0], [-1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [1.0, 1.0, -1.0]],
+                [0.0, 0.0, -1.0],
+                [-1.0, 0.0, 0.0],
+            ),
+        ];
+
+        let uv_corners = [[0.0_f32, 1.0], [0.0, 0.0], [1.0, 0.0], [1.0, 1.0]];
+        let mut vertices = Vec::with_capacity(24);
+        let mut indices = Vec::with_capacity(36);
+        for (i, (corners, normal, tangent)) in faces.iter().enumerate() {
+            let base = (i * 4) as u32;
+            let n = Vec3::from_array(*normal);
+            let t = [tangent[0], tangent[1], tangent[2], 1.0_f32]; // handedness +1
+            for (k, c) in corners.iter().enumerate() {
+                vertices.push(VertexPbr::new(
+                    Vec3::from_array(*c),
+                    n,
+                    t,
+                    uv_corners[k],
+                ));
+            }
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+        Self { vertices, indices }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Mesh {
     pub vertices: Vec<Vertex>,

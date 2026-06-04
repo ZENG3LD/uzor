@@ -11,7 +11,7 @@
 use crate::{
     camera::PerspectiveCamera,
     light::LightArrayRaw,
-    mesh::{Vertex, VertexLit, VertexUv},
+    mesh::{Vertex, VertexLit, VertexPbr, VertexUv},
     mesh_cache::MeshCache,
     scene3d::{NodeMesh, Scene3D},
     texture::{Texture3D, TextureCache},
@@ -93,11 +93,43 @@ impl InstanceLitRaw {
     }
 }
 
+/// Wave 6 per-instance record for the PBR pipeline. PBR vertex has 4
+/// attribute slots (pos@0, normal@1, tangent@2, uv@3) so per-instance
+/// locations start at 4.
+///
+/// Layout: model (64) + tint (16) + pbr_params (16) = 96 bytes.
+/// pbr_params = [metalness, roughness, ao, has_normal_map]
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct InstancePbrRaw {
+    model: [[f32; 4]; 4],
+    tint: [f32; 4],
+    pbr_params: [f32; 4],
+}
+
+impl InstancePbrRaw {
+    fn vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<InstancePbrRaw>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0,  shader_location: 4 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16, shader_location: 5 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 6 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48, shader_location: 7 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 64, shader_location: 8 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 80, shader_location: 9 },
+            ],
+        }
+    }
+}
+
 pub struct Renderer3D {
     pipeline: wgpu::RenderPipeline,
     pipeline_instanced: wgpu::RenderPipeline,
     pipeline_phong: wgpu::RenderPipeline,
     pipeline_textured: wgpu::RenderPipeline,
+    pipeline_pbr: wgpu::RenderPipeline,
     node_bgl: wgpu::BindGroupLayout,
     tex_bgl: wgpu::BindGroupLayout,
     frame_buf: wgpu::Buffer,
@@ -127,12 +159,19 @@ pub struct Renderer3D {
     /// render pass).
     instance_tex_buf: wgpu::Buffer,
     instance_tex_capacity: u32,
+    /// PBR instance buffer.
+    instance_pbr_buf: wgpu::Buffer,
+    instance_pbr_capacity: u32,
+    /// 1×1 flat-blue normal-map stub for PBR nodes without a real
+    /// normal map (sampled but multiplied by has_normal_map=0).
+    normal_map_stub: Arc<Texture3D>,
     depth_view: wgpu::TextureView,
     depth_size: (u32, u32),
     color_format: wgpu::TextureFormat,
     mesh_cache: MeshCache,
     mesh_lit_cache: crate::mesh_cache::MeshLitCache,
     mesh_uv_cache: crate::mesh_cache::MeshUvCache,
+    mesh_pbr_cache: crate::mesh_cache::MeshPbrCache,
 }
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -140,6 +179,7 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 impl Renderer3D {
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
         initial_size: (u32, u32),
         node_capacity: u32,
@@ -512,6 +552,76 @@ impl Renderer3D {
             cache: None,
         });
 
+        // ── PBR (Wave 6) ───────────────────────────────────────────────
+        let shader_pbr = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("urx3d.pbr_instanced"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/pbr_instanced.wgsl").into()),
+        });
+        // PBR uses three bind groups: 0 frame+lights, 1 albedo, 2 normal map.
+        // Layouts 0 + 1 already exist (frame_bgl_phong + tex_bgl); the
+        // normal map layout is the SAME shape as tex_bgl so we can reuse
+        // it (texture + sampler).
+        let pipeline_layout_pbr =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("urx3d.pipeline_layout_pbr"),
+                bind_group_layouts: &[&frame_bgl_phong, &tex_bgl, &tex_bgl],
+                immediate_size: 0,
+            });
+        let pipeline_pbr = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urx3d.pipeline_pbr"),
+            layout: Some(&pipeline_layout_pbr),
+            vertex: wgpu::VertexState {
+                module: &shader_pbr,
+                entry_point: Some("vs_main"),
+                buffers: &[
+                    VertexPbr::vertex_buffer_layout(),
+                    InstancePbrRaw::vertex_buffer_layout(),
+                ],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader_pbr,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let instance_pbr_capacity = node_capacity.max(64);
+        let instance_pbr_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_pbr_buf"),
+            size: std::mem::size_of::<InstancePbrRaw>() as u64 * instance_pbr_capacity as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        // 1×1 flat-blue normal map = tangent-space (0,0,1) packed to
+        // [0.5,0.5,1.0]. Sampled but multiplied by has_normal_map=0.
+        let normal_map_stub = Arc::new(Texture3D::from_rgba8(
+            device, queue, 1, 1, &[128, 128, 255, 255],
+        ));
+
         let depth_view = Self::create_depth(device, initial_size);
 
         Self {
@@ -519,6 +629,7 @@ impl Renderer3D {
             pipeline_instanced,
             pipeline_phong,
             pipeline_textured,
+            pipeline_pbr,
             node_bgl,
             tex_bgl,
             frame_buf,
@@ -536,12 +647,16 @@ impl Renderer3D {
             instance_lit_capacity,
             instance_tex_buf,
             instance_tex_capacity,
+            instance_pbr_buf,
+            instance_pbr_capacity,
+            normal_map_stub,
             depth_view,
             depth_size: initial_size,
             color_format,
             mesh_cache: MeshCache::new(),
             mesh_lit_cache: crate::mesh_cache::MeshLitCache::new(),
             mesh_uv_cache: crate::mesh_cache::MeshUvCache::new(),
+            mesh_pbr_cache: crate::mesh_cache::MeshPbrCache::new(),
         }
     }
 
@@ -654,6 +769,20 @@ impl Renderer3D {
         self.instance_tex_capacity = new_cap;
     }
 
+    fn grow_instance_pbr_buf(&mut self, device: &wgpu::Device, needed: u32) {
+        if needed <= self.instance_pbr_capacity {
+            return;
+        }
+        let new_cap = needed.next_power_of_two().max(64);
+        self.instance_pbr_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_pbr_buf"),
+            size: std::mem::size_of::<InstancePbrRaw>() as u64 * new_cap as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.instance_pbr_capacity = new_cap;
+    }
+
     /// One-shot pass: encode the whole Scene3D into the target view.
     ///
     /// Wave 3 path: nodes are grouped by `Arc<Mesh>` identity; each
@@ -685,19 +814,30 @@ impl Renderer3D {
         self.mesh_cache.begin_frame();
         self.mesh_lit_cache.begin_frame();
         self.mesh_uv_cache.begin_frame();
+        self.mesh_pbr_cache.begin_frame();
         self.texture_cache.begin_frame();
 
-        // 4. Split nodes by material into three groupings, all keyed on
+        // 4. Split nodes by material into four groupings, all keyed on
         //    Arc<*> identity for instancing.
         let mut groups_unlit: BTreeMap<usize, (Arc<crate::mesh::Mesh>, Vec<usize>)> =
             BTreeMap::new();
         let mut groups_lit: BTreeMap<usize, (Arc<crate::mesh::MeshLit>, Vec<usize>)> =
             BTreeMap::new();
-        // Textured groups key on (mesh, texture) pair — same mesh+different
-        // texture → two groups; one drawcall each.
         let mut groups_tex: BTreeMap<
             (usize, usize),
             (Arc<crate::mesh::MeshUv>, Arc<Texture3D>, Vec<usize>),
+        > = BTreeMap::new();
+        // PBR groups key on (mesh, albedo, normal_map). normal_map can be
+        // None → key uses 0 sentinel; the shader's has_normal_map flag
+        // distinguishes.
+        let mut groups_pbr: BTreeMap<
+            (usize, usize, usize),
+            (
+                Arc<crate::mesh::MeshPbr>,
+                Arc<Texture3D>,
+                Option<Arc<Texture3D>>,
+                Vec<usize>,
+            ),
         > = BTreeMap::new();
         for (i, n) in scene.nodes.iter().enumerate() {
             match &n.geometry {
@@ -715,6 +855,19 @@ impl Renderer3D {
                         .entry(k)
                         .or_insert_with(|| (m.clone(), t.clone(), Vec::new()))
                         .2
+                        .push(i);
+                }
+                NodeMesh::Pbr(m, mat) => {
+                    let nm_ptr = mat.normal_map.as_ref().map_or(0, |a| Arc::as_ptr(a) as usize);
+                    let k = (
+                        Arc::as_ptr(m) as usize,
+                        Arc::as_ptr(&mat.albedo) as usize,
+                        nm_ptr,
+                    );
+                    groups_pbr
+                        .entry(k)
+                        .or_insert_with(|| (m.clone(), mat.albedo.clone(), mat.normal_map.clone(), Vec::new()))
+                        .3
                         .push(i);
                 }
             }
@@ -865,7 +1018,89 @@ impl Renderer3D {
             );
         }
 
-        // 7. One render pass — three pipelines.
+        // 6c. Build PBR instance buffer + per-(albedo,normal) BGs.
+        let total_pbr: u32 = groups_pbr.values().map(|(_, _, _, v)| v.len() as u32).sum();
+        self.grow_instance_pbr_buf(device, total_pbr.max(1));
+        let mut pbr_instances: Vec<InstancePbrRaw> = Vec::with_capacity(total_pbr as usize);
+        struct PbrGroupDraw {
+            vb: wgpu::Buffer,
+            ib: wgpu::Buffer,
+            index_count: u32,
+            first_instance: u32,
+            instance_count: u32,
+            bg_albedo: wgpu::BindGroup,
+            bg_normal: wgpu::BindGroup,
+        }
+        let mut pbr_draws: Vec<PbrGroupDraw> = Vec::with_capacity(groups_pbr.len());
+        for (_k, (mesh, albedo, nm_opt, node_indices)) in groups_pbr.iter() {
+            let entry = self.mesh_pbr_cache.get_or_upload(device, mesh);
+            let first = pbr_instances.len() as u32;
+            for &idx in node_indices {
+                let n = &scene.nodes[idx];
+                let mat = match &n.geometry {
+                    NodeMesh::Pbr(_, m) => m,
+                    _ => unreachable!(),
+                };
+                let has_nm: f32 = if mat.normal_map.is_some() { 1.0 } else { 0.0 };
+                pbr_instances.push(InstancePbrRaw {
+                    model: n.model_matrix().to_cols_array_2d(),
+                    tint: n.color_tint,
+                    pbr_params: [mat.metalness, mat.roughness, mat.ao, has_nm],
+                });
+            }
+            let count = pbr_instances.len() as u32 - first;
+
+            // Albedo BG
+            let bg_albedo = {
+                let layout = &self.tex_bgl;
+                let cached = self.texture_cache.get_or_create(albedo, |t| {
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("urx3d.tex_bg.albedo"),
+                        layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&t.view) },
+                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&t.sampler) },
+                        ],
+                    })
+                });
+                cached.clone()
+            };
+            // Normal map BG (stub when None)
+            let nm_arc = nm_opt.clone().unwrap_or_else(|| self.normal_map_stub.clone());
+            let bg_normal = {
+                let layout = &self.tex_bgl;
+                let cached = self.texture_cache.get_or_create(&nm_arc, |t| {
+                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("urx3d.tex_bg.normal"),
+                        layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&t.view) },
+                            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&t.sampler) },
+                        ],
+                    })
+                });
+                cached.clone()
+            };
+
+            pbr_draws.push(PbrGroupDraw {
+                vb: entry.vb.clone(),
+                ib: entry.ib.clone(),
+                index_count: entry.index_count,
+                first_instance: first,
+                instance_count: count,
+                bg_albedo,
+                bg_normal,
+            });
+        }
+        if !pbr_instances.is_empty() {
+            queue.write_buffer(
+                &self.instance_pbr_buf,
+                0,
+                bytemuck::cast_slice(&pbr_instances),
+            );
+        }
+
+        // 7. One render pass — four pipelines.
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("urx3d.pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -928,6 +1163,21 @@ impl Renderer3D {
             pass.set_vertex_buffer(1, self.instance_tex_buf.slice(..));
             for g in &tex_draws {
                 pass.set_bind_group(1, &g.bg, &[]);
+                pass.set_vertex_buffer(0, g.vb.slice(..));
+                pass.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
+                let end = g.first_instance + g.instance_count;
+                pass.draw_indexed(0..g.index_count, 0, g.first_instance..end);
+            }
+        }
+
+        // PBR (Wave 6) pass
+        if !pbr_draws.is_empty() {
+            pass.set_pipeline(&self.pipeline_pbr);
+            pass.set_bind_group(0, &self.frame_bg_phong, &[]);
+            pass.set_vertex_buffer(1, self.instance_pbr_buf.slice(..));
+            for g in &pbr_draws {
+                pass.set_bind_group(1, &g.bg_albedo, &[]);
+                pass.set_bind_group(2, &g.bg_normal, &[]);
                 pass.set_vertex_buffer(0, g.vb.slice(..));
                 pass.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
                 let end = g.first_instance + g.instance_count;

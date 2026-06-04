@@ -27,8 +27,10 @@ pub mod texture;
 pub use camera::PerspectiveCamera;
 pub use light::{Light, LightArrayRaw, LightRaw, MAX_LIGHTS};
 pub use math::{look_at_rh, model_trs, perspective_rh, Mat3, Mat4, Quat, Vec2, Vec3, Vec4};
-pub use mesh::{Mesh, MeshLit, MeshUv, Vertex, VertexLit, VertexUv};
-pub use mesh_cache::{MeshCache, MeshGpu, MeshLitCache, MeshLitGpu, MeshUvCache, MeshUvGpu};
+pub use mesh::{Mesh, MeshLit, MeshPbr, MeshUv, Vertex, VertexLit, VertexPbr, VertexUv};
+pub use mesh_cache::{
+    MeshCache, MeshGpu, MeshLitCache, MeshLitGpu, MeshPbrCache, MeshPbrGpu, MeshUvCache, MeshUvGpu,
+};
 pub use pipeline::{Renderer3D, DEPTH_FORMAT};
-pub use scene3d::{Node, NodeMesh, PhongMaterial, Scene3D};
+pub use scene3d::{Node, NodeMesh, PbrMaterial, PhongMaterial, Scene3D};
 pub use texture::{Texture3D, TextureCache};

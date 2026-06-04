@@ -16,7 +16,7 @@
 //! bounded for streaming/procedural workloads (Wave 6+ might add LRU
 //! or a memory-budget gate; not needed for Wave 2 acceptance).
 
-use crate::mesh::{Mesh, MeshLit, MeshUv};
+use crate::mesh::{Mesh, MeshLit, MeshPbr, MeshUv};
 use bytemuck::cast_slice;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -237,6 +237,78 @@ impl MeshUvCache {
             self.entries.insert(
                 key,
                 MeshUvGpu {
+                    vb,
+                    ib,
+                    index_count: mesh.indices.len() as u32,
+                    last_touched: self.frame,
+                },
+            );
+        }
+        let e = self.entries.get_mut(&key).unwrap();
+        e.last_touched = self.frame;
+        e
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+// ─── MeshPbr cache (Wave 6) ──────────────────────────────────────────
+
+#[derive(Eq, PartialEq, Hash, Copy, Clone)]
+struct MeshPbrKey(*const MeshPbr);
+unsafe impl Send for MeshPbrKey {}
+unsafe impl Sync for MeshPbrKey {}
+
+pub struct MeshPbrGpu {
+    pub vb: wgpu::Buffer,
+    pub ib: wgpu::Buffer,
+    pub index_count: u32,
+    last_touched: u32,
+}
+
+pub struct MeshPbrCache {
+    entries: HashMap<MeshPbrKey, MeshPbrGpu>,
+    frame: u32,
+}
+
+impl Default for MeshPbrCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MeshPbrCache {
+    pub fn new() -> Self {
+        Self { entries: HashMap::new(), frame: 0 }
+    }
+
+    pub fn begin_frame(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+        let cutoff = self.frame.wrapping_sub(EVICT_AFTER_FRAMES);
+        self.entries.retain(|_, e| {
+            let age = self.frame.wrapping_sub(e.last_touched);
+            age < EVICT_AFTER_FRAMES || cutoff == 0
+        });
+    }
+
+    pub fn get_or_upload(&mut self, device: &wgpu::Device, mesh: &Arc<MeshPbr>) -> &MeshPbrGpu {
+        let key = MeshPbrKey(Arc::as_ptr(mesh));
+        if !self.entries.contains_key(&key) {
+            let vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("urx3d.mesh_pbr.vb"),
+                contents: cast_slice(&mesh.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            let ib = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("urx3d.mesh_pbr.ib"),
+                contents: cast_slice(&mesh.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+            self.entries.insert(
+                key,
+                MeshPbrGpu {
                     vb,
                     ib,
                     index_count: mesh.indices.len() as u32,

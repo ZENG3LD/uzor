@@ -1,22 +1,62 @@
 //! Scene3D — collection of nodes with per-node transform + tint.
 
 use crate::light::Light;
-use crate::mesh::{Mesh, MeshLit, MeshUv};
+use crate::mesh::{Mesh, MeshLit, MeshPbr, MeshUv};
 use crate::texture::Texture3D;
 use glam::{Mat4, Quat, Vec3};
 use std::sync::Arc;
 
-/// Wave 4+5 material model.
+/// Wave 4-6 material model.
 ///
-/// `Unlit`     → Wave 3 `unlit_instanced` (Arc<Mesh>, vertex color only)
-/// `Lit`       → Wave 4 `phong_instanced` (Arc<MeshLit> + PhongMaterial)
-/// `Textured`  → Wave 5 `textured_instanced` (Arc<MeshUv> + Arc<Texture3D>
-///               + PhongMaterial); texel × tint × Phong
+/// `Unlit`     → Wave 3 `unlit_instanced`     (Arc<Mesh>, vertex color)
+/// `Lit`       → Wave 4 `phong_instanced`     (Arc<MeshLit> + PhongMaterial)
+/// `Textured`  → Wave 5 `textured_instanced`  (Arc<MeshUv> + Texture3D)
+/// `Pbr`       → Wave 6 `pbr_instanced`       (Arc<MeshPbr> + PbrMaterial:
+///                albedo, metalness, roughness, ao, optional normal map)
 #[derive(Clone)]
 pub enum NodeMesh {
     Unlit(Arc<Mesh>),
     Lit(Arc<MeshLit>),
     Textured(Arc<MeshUv>, Arc<Texture3D>),
+    Pbr(Arc<MeshPbr>, PbrMaterial),
+}
+
+#[derive(Clone)]
+pub struct PbrMaterial {
+    pub albedo: Arc<Texture3D>,
+    pub normal_map: Option<Arc<Texture3D>>,
+    pub metalness: f32,
+    pub roughness: f32,
+    pub ao: f32,
+}
+
+impl PbrMaterial {
+    pub fn new(albedo: Arc<Texture3D>) -> Self {
+        Self {
+            albedo,
+            normal_map: None,
+            metalness: 0.0,
+            roughness: 0.5,
+            ao: 1.0,
+        }
+    }
+
+    pub fn with_metalness(mut self, m: f32) -> Self {
+        self.metalness = m.clamp(0.0, 1.0);
+        self
+    }
+    pub fn with_roughness(mut self, r: f32) -> Self {
+        self.roughness = r.clamp(0.04, 1.0);
+        self
+    }
+    pub fn with_ao(mut self, ao: f32) -> Self {
+        self.ao = ao.clamp(0.0, 1.0);
+        self
+    }
+    pub fn with_normal_map(mut self, nm: Arc<Texture3D>) -> Self {
+        self.normal_map = Some(nm);
+        self
+    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -79,6 +119,17 @@ impl Node {
             scale: Vec3::ONE,
             color_tint: [1.0, 1.0, 1.0, 1.0],
             material: PhongMaterial::default(),
+        }
+    }
+
+    pub fn new_pbr(mesh: Arc<MeshPbr>, pbr: PbrMaterial) -> Self {
+        Self {
+            geometry: NodeMesh::Pbr(mesh, pbr),
+            translation: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+            color_tint: [1.0, 1.0, 1.0, 1.0],
+            material: PhongMaterial::default(), // unused for PBR; keeps API uniform
         }
     }
 
