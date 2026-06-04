@@ -3,6 +3,10 @@ Cargo.lock
 /_deprecated/
 _author_rights/
 
+# Cygwin/MSYS bash crash dumps — they keep sneaking into the tree.
+*.stackdump
+bash.exe.stackdump
+
 # Internal planning docs
 *_RPD.md
 *_SPEC.md
