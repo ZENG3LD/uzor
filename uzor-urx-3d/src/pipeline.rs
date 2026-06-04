@@ -8,7 +8,13 @@
 //!         step_mode=Instance. Collapses the N-draw loop into
 //!         #unique-meshes draws.
 
-use crate::{camera::PerspectiveCamera, mesh::Vertex, mesh_cache::MeshCache, scene3d::Scene3D};
+use crate::{
+    camera::PerspectiveCamera,
+    light::LightArrayRaw,
+    mesh::{Vertex, VertexLit},
+    mesh_cache::MeshCache,
+    scene3d::{NodeMesh, Scene3D},
+};
 use bytemuck::{Pod, Zeroable};
 use glam::Mat4;
 use std::collections::BTreeMap;
@@ -18,6 +24,7 @@ use std::sync::Arc;
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct FrameUniform {
     view_proj: [[f32; 4]; 4],
+    eye: [f32; 4], // xyz = camera position, w = unused (alignment)
 }
 
 #[repr(C)]
@@ -57,13 +64,45 @@ impl InstanceRaw {
     }
 }
 
+/// Wave 4 per-instance record for the Phong path.
+/// Layout: model (64) + tint (16) + material (16) = 96 bytes / instance.
+/// material = [ambient_k, diffuse_k, specular_k, shininess]
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct InstanceLitRaw {
+    model: [[f32; 4]; 4],
+    tint: [f32; 4],
+    material: [f32; 4],
+}
+
+impl InstanceLitRaw {
+    fn vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<InstanceLitRaw>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &[
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 0,  shader_location: 3 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 16, shader_location: 4 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 32, shader_location: 5 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 48, shader_location: 6 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 64, shader_location: 7 },
+                wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x4, offset: 80, shader_location: 8 },
+            ],
+        }
+    }
+}
+
 pub struct Renderer3D {
     pipeline: wgpu::RenderPipeline,
     pipeline_instanced: wgpu::RenderPipeline,
+    pipeline_phong: wgpu::RenderPipeline,
     node_bgl: wgpu::BindGroupLayout,
     frame_buf: wgpu::Buffer,
     frame_bg: wgpu::BindGroup,
     frame_bg_inst: wgpu::BindGroup,
+    /// Phong path uses a combined BG (frame + lights at bindings 0+1).
+    lights_buf: wgpu::Buffer,
+    frame_bg_phong: wgpu::BindGroup,
     /// Ring of per-node uniform buffers — used by the non-instanced
     /// fallback path (kept for backwards compatibility / non-grouped
     /// rendering once we add per-node features that instancing can't
@@ -74,10 +113,14 @@ pub struct Renderer3D {
     /// Instance buffer (vertex-buffer attached at step_mode=Instance).
     instance_buf: wgpu::Buffer,
     instance_capacity: u32,
+    /// Lit instance buffer for the Phong path.
+    instance_lit_buf: wgpu::Buffer,
+    instance_lit_capacity: u32,
     depth_view: wgpu::TextureView,
     depth_size: (u32, u32),
     color_format: wgpu::TextureFormat,
     mesh_cache: MeshCache,
+    mesh_lit_cache: crate::mesh_cache::MeshLitCache,
 }
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -271,24 +314,131 @@ impl Renderer3D {
             mapped_at_creation: false,
         });
 
+        // ── Phong (Wave 4) ─────────────────────────────────────────────
+        let shader_phong = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("urx3d.phong_instanced"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/phong_instanced.wgsl").into()),
+        });
+        let frame_bgl_phong = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("urx3d.frame_bgl_phong"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.lights_buf"),
+            size: std::mem::size_of::<LightArrayRaw>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let frame_bg_phong = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("urx3d.frame_bg_phong"),
+            layout: &frame_bgl_phong,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: frame_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: lights_buf.as_entire_binding() },
+            ],
+        });
+        let pipeline_layout_phong =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("urx3d.pipeline_layout_phong"),
+                bind_group_layouts: &[&frame_bgl_phong],
+                immediate_size: 0,
+            });
+        let pipeline_phong = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urx3d.pipeline_phong"),
+            layout: Some(&pipeline_layout_phong),
+            vertex: wgpu::VertexState {
+                module: &shader_phong,
+                entry_point: Some("vs_main"),
+                buffers: &[
+                    VertexLit::vertex_buffer_layout(),
+                    InstanceLitRaw::vertex_buffer_layout(),
+                ],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader_phong,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let instance_lit_capacity = node_capacity.max(64);
+        let instance_lit_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_lit_buf"),
+            size: std::mem::size_of::<InstanceLitRaw>() as u64 * instance_lit_capacity as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let depth_view = Self::create_depth(device, initial_size);
 
         Self {
             pipeline,
             pipeline_instanced,
+            pipeline_phong,
             node_bgl,
             frame_buf,
             frame_bg,
             frame_bg_inst,
+            lights_buf,
+            frame_bg_phong,
             node_buf,
             node_bgs,
             node_capacity,
             instance_buf,
             instance_capacity,
+            instance_lit_buf,
+            instance_lit_capacity,
             depth_view,
             depth_size: initial_size,
             color_format,
             mesh_cache: MeshCache::new(),
+            mesh_lit_cache: crate::mesh_cache::MeshLitCache::new(),
         }
     }
 
@@ -373,6 +523,20 @@ impl Renderer3D {
         self.instance_capacity = new_cap;
     }
 
+    fn grow_instance_lit_buf(&mut self, device: &wgpu::Device, needed: u32) {
+        if needed <= self.instance_lit_capacity {
+            return;
+        }
+        let new_cap = needed.next_power_of_two().max(64);
+        self.instance_lit_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_lit_buf"),
+            size: std::mem::size_of::<InstanceLitRaw>() as u64 * new_cap as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.instance_lit_capacity = new_cap;
+    }
+
     /// One-shot pass: encode the whole Scene3D into the target view.
     ///
     /// Wave 3 path: nodes are grouped by `Arc<Mesh>` identity; each
@@ -388,30 +552,41 @@ impl Renderer3D {
         camera: &PerspectiveCamera,
         scene: &Scene3D,
     ) {
-        // 1. Frame uniform
-        let frame = FrameUniform { view_proj: camera.view_proj().to_cols_array_2d() };
+        // 1. Frame uniform (view_proj + eye position for spec calc).
+        let frame = FrameUniform {
+            view_proj: camera.view_proj().to_cols_array_2d(),
+            eye: [camera.eye.x, camera.eye.y, camera.eye.z, 1.0],
+        };
         queue.write_buffer(&self.frame_buf, 0, bytemuck::bytes_of(&frame));
 
-        // 2. Refresh mesh cache + group nodes by Mesh identity.
+        // 2. Light uniform — uploaded once per frame; phong shader uses
+        //    it, unlit shader doesn't bind binding=1.
+        let lights = LightArrayRaw::from_lights(&scene.lights, scene.ambient);
+        queue.write_buffer(&self.lights_buf, 0, bytemuck::bytes_of(&lights));
+
+        // 3. Refresh mesh caches.
         self.mesh_cache.begin_frame();
-        // BTreeMap key = Arc::as_ptr cast to usize — preserves insertion
-        // determinism without needing Hash on raw pointers.
-        let mut groups: BTreeMap<usize, (Arc<crate::mesh::Mesh>, Vec<usize>)> = BTreeMap::new();
+        self.mesh_lit_cache.begin_frame();
+
+        // 4. Split nodes by material into two groupings, both keyed on
+        //    Arc<Mesh*> identity for instancing.
+        let mut groups_unlit: BTreeMap<usize, (Arc<crate::mesh::Mesh>, Vec<usize>)> =
+            BTreeMap::new();
+        let mut groups_lit: BTreeMap<usize, (Arc<crate::mesh::MeshLit>, Vec<usize>)> =
+            BTreeMap::new();
         for (i, n) in scene.nodes.iter().enumerate() {
-            let k = Arc::as_ptr(&n.mesh) as usize;
-            groups
-                .entry(k)
-                .or_insert_with(|| (n.mesh.clone(), Vec::new()))
-                .1
-                .push(i);
+            match &n.geometry {
+                NodeMesh::Unlit(m) => {
+                    let k = Arc::as_ptr(m) as usize;
+                    groups_unlit.entry(k).or_insert_with(|| (m.clone(), Vec::new())).1.push(i);
+                }
+                NodeMesh::Lit(m) => {
+                    let k = Arc::as_ptr(m) as usize;
+                    groups_lit.entry(k).or_insert_with(|| (m.clone(), Vec::new())).1.push(i);
+                }
+            }
         }
 
-        // 3. Build the instance buffer in group order; record per-group
-        //    (vb, ib, index_count, first_instance, instance_count).
-        let total_instances: u32 = scene.nodes.len() as u32;
-        self.grow_instance_buf(device, total_instances);
-
-        let mut instances: Vec<InstanceRaw> = Vec::with_capacity(total_instances as usize);
         struct GroupDraw {
             vb: wgpu::Buffer,
             ib: wgpu::Buffer,
@@ -419,19 +594,24 @@ impl Renderer3D {
             first_instance: u32,
             instance_count: u32,
         }
-        let mut group_draws: Vec<GroupDraw> = Vec::with_capacity(groups.len());
-        for (_k, (mesh, node_indices)) in groups.iter() {
+
+        // 5. Build unlit instance buffer.
+        let total_unlit: u32 = groups_unlit.values().map(|(_, v)| v.len() as u32).sum();
+        self.grow_instance_buf(device, total_unlit.max(1));
+        let mut unlit_instances: Vec<InstanceRaw> = Vec::with_capacity(total_unlit as usize);
+        let mut unlit_draws: Vec<GroupDraw> = Vec::with_capacity(groups_unlit.len());
+        for (_k, (mesh, node_indices)) in groups_unlit.iter() {
             let entry = self.mesh_cache.get_or_upload(device, mesh);
-            let first = instances.len() as u32;
+            let first = unlit_instances.len() as u32;
             for &idx in node_indices {
                 let n = &scene.nodes[idx];
-                instances.push(InstanceRaw {
+                unlit_instances.push(InstanceRaw {
                     model: n.model_matrix().to_cols_array_2d(),
                     tint: n.color_tint,
                 });
             }
-            let count = instances.len() as u32 - first;
-            group_draws.push(GroupDraw {
+            let count = unlit_instances.len() as u32 - first;
+            unlit_draws.push(GroupDraw {
                 vb: entry.vb.clone(),
                 ib: entry.ib.clone(),
                 index_count: entry.index_count,
@@ -439,11 +619,46 @@ impl Renderer3D {
                 instance_count: count,
             });
         }
-        if !instances.is_empty() {
-            queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(&instances));
+        if !unlit_instances.is_empty() {
+            queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(&unlit_instances));
         }
 
-        // 4. Render pass — single pipeline_instanced, one draw per group.
+        // 6. Build lit instance buffer.
+        let total_lit: u32 = groups_lit.values().map(|(_, v)| v.len() as u32).sum();
+        self.grow_instance_lit_buf(device, total_lit.max(1));
+        let mut lit_instances: Vec<InstanceLitRaw> = Vec::with_capacity(total_lit as usize);
+        let mut lit_draws: Vec<GroupDraw> = Vec::with_capacity(groups_lit.len());
+        for (_k, (mesh, node_indices)) in groups_lit.iter() {
+            let entry = self.mesh_lit_cache.get_or_upload(device, mesh);
+            let first = lit_instances.len() as u32;
+            for &idx in node_indices {
+                let n = &scene.nodes[idx];
+                let mat = n.material;
+                lit_instances.push(InstanceLitRaw {
+                    model: n.model_matrix().to_cols_array_2d(),
+                    tint: n.color_tint,
+                    material: [
+                        mat.ambient_strength,
+                        mat.diffuse_strength,
+                        mat.specular_strength,
+                        mat.shininess,
+                    ],
+                });
+            }
+            let count = lit_instances.len() as u32 - first;
+            lit_draws.push(GroupDraw {
+                vb: entry.vb.clone(),
+                ib: entry.ib.clone(),
+                index_count: entry.index_count,
+                first_instance: first,
+                instance_count: count,
+            });
+        }
+        if !lit_instances.is_empty() {
+            queue.write_buffer(&self.instance_lit_buf, 0, bytemuck::cast_slice(&lit_instances));
+        }
+
+        // 7. One render pass — both pipelines.
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("urx3d.pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -473,12 +688,25 @@ impl Renderer3D {
             multiview_mask: None,
         });
 
-        if !group_draws.is_empty() {
+        // Unlit pass
+        if !unlit_draws.is_empty() {
             pass.set_pipeline(&self.pipeline_instanced);
             pass.set_bind_group(0, &self.frame_bg_inst, &[]);
             pass.set_vertex_buffer(1, self.instance_buf.slice(..));
+            for g in &unlit_draws {
+                pass.set_vertex_buffer(0, g.vb.slice(..));
+                pass.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
+                let end = g.first_instance + g.instance_count;
+                pass.draw_indexed(0..g.index_count, 0, g.first_instance..end);
+            }
+        }
 
-            for g in &group_draws {
+        // Lit (Phong) pass
+        if !lit_draws.is_empty() {
+            pass.set_pipeline(&self.pipeline_phong);
+            pass.set_bind_group(0, &self.frame_bg_phong, &[]);
+            pass.set_vertex_buffer(1, self.instance_lit_buf.slice(..));
+            for g in &lit_draws {
                 pass.set_vertex_buffer(0, g.vb.slice(..));
                 pass.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
                 let end = g.first_instance + g.instance_count;

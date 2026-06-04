@@ -1,26 +1,72 @@
 //! Scene3D — collection of nodes with per-node transform + tint.
 
-use crate::mesh::Mesh;
+use crate::light::Light;
+use crate::mesh::{Mesh, MeshLit};
 use glam::{Mat4, Quat, Vec3};
 use std::sync::Arc;
 
+/// Wave 4 material model.
+///
+/// `Unlit`  → routed through the Wave 3 `unlit_instanced` pipeline.
+///            mesh: Arc<Mesh> (pos + color verts).
+/// `Phong`  → routed through the Wave 4 `phong_instanced` pipeline.
+///            mesh: Arc<MeshLit> (pos + normal + color verts) + Phong
+///            params.
+#[derive(Clone)]
+pub enum NodeMesh {
+    Unlit(Arc<Mesh>),
+    Lit(Arc<MeshLit>),
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct PhongMaterial {
+    pub ambient_strength: f32,
+    pub diffuse_strength: f32,
+    pub specular_strength: f32,
+    pub shininess: f32,
+}
+
+impl Default for PhongMaterial {
+    fn default() -> Self {
+        Self {
+            ambient_strength: 0.1,
+            diffuse_strength: 0.85,
+            specular_strength: 0.4,
+            shininess: 32.0,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Node {
-    pub mesh: Arc<Mesh>,
+    pub geometry: NodeMesh,
     pub translation: Vec3,
     pub rotation: Quat,
     pub scale: Vec3,
     pub color_tint: [f32; 4],
+    pub material: PhongMaterial,
 }
 
 impl Node {
     pub fn new(mesh: Arc<Mesh>) -> Self {
         Self {
-            mesh,
+            geometry: NodeMesh::Unlit(mesh),
             translation: Vec3::ZERO,
             rotation: Quat::IDENTITY,
             scale: Vec3::ONE,
             color_tint: [1.0, 1.0, 1.0, 1.0],
+            material: PhongMaterial::default(),
+        }
+    }
+
+    pub fn new_lit(mesh: Arc<MeshLit>) -> Self {
+        Self {
+            geometry: NodeMesh::Lit(mesh),
+            translation: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+            color_tint: [1.0, 1.0, 1.0, 1.0],
+            material: PhongMaterial::default(),
         }
     }
 
@@ -44,23 +90,49 @@ impl Node {
         self
     }
 
+    pub fn with_material(mut self, m: PhongMaterial) -> Self {
+        self.material = m;
+        self
+    }
+
     pub fn model_matrix(&self) -> Mat4 {
         Mat4::from_scale_rotation_translation(self.scale, self.rotation, self.translation)
     }
+
+    pub fn is_lit(&self) -> bool {
+        matches!(self.geometry, NodeMesh::Lit(_))
+    }
 }
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct Scene3D {
     pub nodes: Vec<Node>,
     pub clear_color: [f32; 4],
+    pub lights: Vec<Light>,
+    pub ambient: [f32; 3],
+}
+
+impl Default for Scene3D {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Scene3D {
     pub fn new() -> Self {
-        Self { nodes: Vec::new(), clear_color: [0.04, 0.04, 0.08, 1.0] }
+        Self {
+            nodes: Vec::new(),
+            clear_color: [0.04, 0.04, 0.08, 1.0],
+            lights: Vec::new(),
+            ambient: [0.08, 0.08, 0.10],
+        }
     }
 
     pub fn push(&mut self, node: Node) {
         self.nodes.push(node);
+    }
+
+    pub fn push_light(&mut self, light: Light) {
+        self.lights.push(light);
     }
 }

@@ -39,10 +39,145 @@ impl Vertex {
     }
 }
 
+/// Lit vertex format for Wave 4 — pos + normal + color.
+///
+/// 48 bytes / vertex with one f32 pad after pos (so normal stays
+/// 16-aligned for std140-friendly buffer layout).
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Pod, Zeroable)]
+pub struct VertexLit {
+    pub pos: [f32; 3],
+    pub _pad0: f32,
+    pub normal: [f32; 3],
+    pub _pad1: f32,
+    pub color: [f32; 4],
+}
+
+impl VertexLit {
+    pub fn new(pos: Vec3, normal: Vec3, color: [f32; 4]) -> Self {
+        Self {
+            pos: pos.to_array(),
+            _pad0: 0.0,
+            normal: normal.normalize_or_zero().to_array(),
+            _pad1: 0.0,
+            color,
+        }
+    }
+
+    pub fn vertex_buffer_layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<VertexLit>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
+                    offset: 16,
+                    shader_location: 1,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 32,
+                    shader_location: 2,
+                },
+            ],
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MeshLit {
+    pub vertices: Vec<VertexLit>,
+    pub indices: Vec<u32>,
+}
+
+impl MeshLit {
+    pub fn new(vertices: Vec<VertexLit>, indices: Vec<u32>) -> Self {
+        Self { vertices, indices }
+    }
+
+    /// Unit cube with per-face flat normals (no shared verts across
+    /// faces, so each face's 4 corners get the same normal vector).
+    ///
+    /// Default face colors match `Mesh::cube_rgb_faces` so existing
+    /// demos / tests look the same when migrated to the lit pipeline:
+    ///   +X red, -X cyan, +Y green, -Y magenta, +Z blue, -Z yellow.
+    pub fn cube_lit() -> Self {
+        let faces: [([[f32; 3]; 4], [f32; 3], [f32; 4]); 6] = [
+            // +X
+            (
+                [[1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [1.0, -1.0, 1.0]],
+                [1.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0, 1.0],
+            ),
+            // -X
+            (
+                [[-1.0, -1.0, 1.0], [-1.0, 1.0, 1.0], [-1.0, 1.0, -1.0], [-1.0, -1.0, -1.0]],
+                [-1.0, 0.0, 0.0],
+                [0.0, 1.0, 1.0, 1.0],
+            ),
+            // +Y
+            (
+                [[-1.0, 1.0, -1.0], [-1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, -1.0]],
+                [0.0, 1.0, 0.0],
+                [0.0, 1.0, 0.0, 1.0],
+            ),
+            // -Y
+            (
+                [[-1.0, -1.0, 1.0], [-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, -1.0, 1.0]],
+                [0.0, -1.0, 0.0],
+                [1.0, 0.0, 1.0, 1.0],
+            ),
+            // +Z
+            (
+                [[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0, 1.0],
+            ),
+            // -Z
+            (
+                [[1.0, -1.0, -1.0], [-1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [1.0, 1.0, -1.0]],
+                [0.0, 0.0, -1.0],
+                [1.0, 1.0, 0.0, 1.0],
+            ),
+        ];
+
+        let mut vertices = Vec::with_capacity(24);
+        let mut indices = Vec::with_capacity(36);
+        for (i, (corners, normal, color)) in faces.iter().enumerate() {
+            let base = (i * 4) as u32;
+            let n = Vec3::from_array(*normal);
+            for c in corners {
+                vertices.push(VertexLit::new(Vec3::from_array(*c), n, *color));
+            }
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+        Self { vertices, indices }
+    }
+
+    /// Flat plane on the XZ plane (Y=0) facing +Y.
+    /// `extent` half-side, color uniform.
+    pub fn plane_lit(extent: f32, color: [f32; 4]) -> Self {
+        let n = Vec3::Y;
+        let verts = vec![
+            VertexLit::new(Vec3::new(-extent, 0.0, -extent), n, color),
+            VertexLit::new(Vec3::new(-extent, 0.0, extent), n, color),
+            VertexLit::new(Vec3::new(extent, 0.0, extent), n, color),
+            VertexLit::new(Vec3::new(extent, 0.0, -extent), n, color),
+        ];
+        let idx = vec![0, 1, 2, 0, 2, 3];
+        Self::new(verts, idx)
+    }
 }
 
 impl Mesh {

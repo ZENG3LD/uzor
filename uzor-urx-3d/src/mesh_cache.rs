@@ -16,7 +16,7 @@
 //! bounded for streaming/procedural workloads (Wave 6+ might add LRU
 //! or a memory-budget gate; not needed for Wave 2 acceptance).
 
-use crate::mesh::Mesh;
+use crate::mesh::{Mesh, MeshLit};
 use bytemuck::cast_slice;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -107,5 +107,77 @@ impl MeshCache {
 
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+}
+
+// ─── MeshLit cache (Wave 4) ──────────────────────────────────────────
+
+#[derive(Eq, PartialEq, Hash, Copy, Clone)]
+struct MeshLitKey(*const MeshLit);
+unsafe impl Send for MeshLitKey {}
+unsafe impl Sync for MeshLitKey {}
+
+pub struct MeshLitGpu {
+    pub vb: wgpu::Buffer,
+    pub ib: wgpu::Buffer,
+    pub index_count: u32,
+    last_touched: u32,
+}
+
+pub struct MeshLitCache {
+    entries: HashMap<MeshLitKey, MeshLitGpu>,
+    frame: u32,
+}
+
+impl Default for MeshLitCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MeshLitCache {
+    pub fn new() -> Self {
+        Self { entries: HashMap::new(), frame: 0 }
+    }
+
+    pub fn begin_frame(&mut self) {
+        self.frame = self.frame.wrapping_add(1);
+        let cutoff = self.frame.wrapping_sub(EVICT_AFTER_FRAMES);
+        self.entries.retain(|_, e| {
+            let age = self.frame.wrapping_sub(e.last_touched);
+            age < EVICT_AFTER_FRAMES || cutoff == 0
+        });
+    }
+
+    pub fn get_or_upload(&mut self, device: &wgpu::Device, mesh: &Arc<MeshLit>) -> &MeshLitGpu {
+        let key = MeshLitKey(Arc::as_ptr(mesh));
+        if !self.entries.contains_key(&key) {
+            let vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("urx3d.mesh_lit.vb"),
+                contents: cast_slice(&mesh.vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            let ib = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("urx3d.mesh_lit.ib"),
+                contents: cast_slice(&mesh.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+            self.entries.insert(
+                key,
+                MeshLitGpu {
+                    vb,
+                    ib,
+                    index_count: mesh.indices.len() as u32,
+                    last_touched: self.frame,
+                },
+            );
+        }
+        let e = self.entries.get_mut(&key).unwrap();
+        e.last_touched = self.frame;
+        e
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
     }
 }

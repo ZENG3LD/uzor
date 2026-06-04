@@ -8,6 +8,7 @@
 
 struct Frame {
     view_proj: mat4x4<f32>,
+    eye:       vec4<f32>,
 };
 
 struct NodeData {

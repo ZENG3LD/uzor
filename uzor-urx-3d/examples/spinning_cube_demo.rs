@@ -52,7 +52,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use uzor_urx_3d::{Mesh, Node, PerspectiveCamera, Quat, Renderer3D, Scene3D, Vec3};
+use uzor_urx_3d::{
+    Light, Mesh, MeshLit, Node, PerspectiveCamera, PhongMaterial, Quat, Renderer3D, Scene3D, Vec3,
+};
 
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -66,6 +68,25 @@ struct CubeSpec {
     pos: [f32; 3],
     scale: f32,
     tint: [f32; 4],
+    /// Optional — `false` (default) routes through unlit pipeline;
+    /// `true` uses the Phong-lit pipeline and material defaults.
+    #[serde(default)]
+    lit: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct LightSpec {
+    /// "directional" or "point"
+    kind: String,
+    /// directional: direction vector; point: position
+    vec: [f32; 3],
+    color: [f32; 3],
+    intensity: f32,
+    #[serde(default = "default_range")]
+    range: f32,
+}
+fn default_range() -> f32 {
+    8.0
 }
 
 #[derive(Default)]
@@ -76,7 +97,14 @@ struct SharedState {
     target: [f32; 3],
     cubes: Vec<CubeSpec>,
     pending_cubes: Vec<CubeSpec>,
+    lights: Vec<LightSpec>,
+    pending_lights: Vec<LightSpec>,
     pending_clear: bool,
+    pending_clear_lights: bool,
+    ambient: [f32; 3],
+    /// When true, the central spinning cube renders through Phong
+    /// pipeline (so default scene shows lighting).
+    central_lit: bool,
     pending_camera_eye: Option<[f32; 3]>,
     pending_camera_target: Option<[f32; 3]>,
     pending_reset_camera: bool,
@@ -96,7 +124,18 @@ impl SharedState {
             target: [0.0, 0.0, 0.0],
             cubes: Vec::new(),
             pending_cubes: Vec::new(),
+            lights: vec![LightSpec {
+                kind: "directional".into(),
+                vec: [-0.4, -1.0, -0.3],
+                color: [1.0, 0.95, 0.85],
+                intensity: 1.1,
+                range: 0.0,
+            }],
+            pending_lights: Vec::new(),
             pending_clear: false,
+            pending_clear_lights: false,
+            ambient: [0.10, 0.10, 0.14],
+            central_lit: true,
             pending_camera_eye: None,
             pending_camera_target: None,
             pending_reset_camera: false,
@@ -141,6 +180,10 @@ mod http {
                     .route("/scene/preset/ring", post(scene_preset_ring))
                     .route("/scene/preset/grid", post(scene_preset_grid))
                     .route("/scene/clear", post(scene_clear))
+                    .route("/scene/spawn_light", post(scene_spawn_light))
+                    .route("/scene/clear_lights", post(scene_clear_lights))
+                    .route("/scene/set_ambient", post(scene_set_ambient))
+                    .route("/scene/central_lit", post(scene_central_lit))
                     .route("/camera/look_at", post(camera_look_at))
                     .with_state(shared);
                 let bind = format!("127.0.0.1:{}", AGENT_PORT);
@@ -166,6 +209,9 @@ mod http {
             "eye": g.eye,
             "target": g.target,
             "cubes": g.cubes.len(),
+            "lights": g.lights.len(),
+            "ambient": g.ambient,
+            "central_lit": g.central_lit,
             "win_w": g.win_w,
             "win_h": g.win_h,
         }))
@@ -235,6 +281,7 @@ mod http {
                 pos: [theta.cos() * b.radius, 0.0, theta.sin() * b.radius],
                 scale: 0.3,
                 tint: hue_to_rgba(hue),
+                lit: false,
             });
         }
         s.lock().unwrap().pending_cubes.extend(cubes);
@@ -279,6 +326,7 @@ mod http {
                         ],
                         scale: 0.35,
                         tint: hue_to_rgba(hue),
+                        lit: false,
                     });
                 }
             }
@@ -305,6 +353,43 @@ mod http {
 
     async fn scene_clear(State(s): State<Shared>) -> StatusCode {
         s.lock().unwrap().pending_clear = true;
+        StatusCode::OK
+    }
+
+    async fn scene_spawn_light(
+        State(s): State<Shared>,
+        Json(b): Json<LightSpec>,
+    ) -> StatusCode {
+        s.lock().unwrap().pending_lights.push(b);
+        StatusCode::OK
+    }
+
+    async fn scene_clear_lights(State(s): State<Shared>) -> StatusCode {
+        s.lock().unwrap().pending_clear_lights = true;
+        StatusCode::OK
+    }
+
+    #[derive(Deserialize)]
+    struct AmbientBody {
+        rgb: [f32; 3],
+    }
+    async fn scene_set_ambient(
+        State(s): State<Shared>,
+        Json(b): Json<AmbientBody>,
+    ) -> StatusCode {
+        s.lock().unwrap().ambient = b.rgb;
+        StatusCode::OK
+    }
+
+    #[derive(Deserialize)]
+    struct CentralLitBody {
+        on: bool,
+    }
+    async fn scene_central_lit(
+        State(s): State<Shared>,
+        Json(b): Json<CentralLitBody>,
+    ) -> StatusCode {
+        s.lock().unwrap().central_lit = b.on;
         StatusCode::OK
     }
 
@@ -336,6 +421,7 @@ struct App {
     config: Option<wgpu::SurfaceConfiguration>,
     renderer: Option<Renderer3D>,
     cube_mesh: Arc<Mesh>,
+    cube_mesh_lit: Arc<MeshLit>,
     angle_rad: f32,
     last_frame: Instant,
     fps_accum_frames: u32,
@@ -355,6 +441,7 @@ impl App {
             config: None,
             renderer: None,
             cube_mesh: Arc::new(Mesh::cube_rgb_faces()),
+            cube_mesh_lit: Arc::new(MeshLit::cube_lit()),
             angle_rad: 0.0,
             last_frame: Instant::now(),
             fps_accum_frames: 0,
@@ -420,14 +507,16 @@ impl App {
         let dt = (now - self.last_frame).as_secs_f32();
         self.last_frame = now;
 
-        let (paused, spin_rate, spawn, clear, eye_override, tgt_override, reset_cam) = {
+        let (paused, spin_rate, spawn, clear, light_spawn, light_clear, eye_override, tgt_override, reset_cam) = {
             let mut g = self.shared.lock().unwrap();
             let spawn = std::mem::take(&mut g.pending_cubes);
             let clear = std::mem::take(&mut g.pending_clear);
+            let light_spawn = std::mem::take(&mut g.pending_lights);
+            let light_clear = std::mem::take(&mut g.pending_clear_lights);
             let eye_override = g.pending_camera_eye.take();
             let tgt_override = g.pending_camera_target.take();
             let reset_cam = std::mem::take(&mut g.pending_reset_camera);
-            (g.paused, g.spin_rate_rps, spawn, clear, eye_override, tgt_override, reset_cam)
+            (g.paused, g.spin_rate_rps, spawn, clear, light_spawn, light_clear, eye_override, tgt_override, reset_cam)
         };
         if !paused {
             self.angle_rad += dt * spin_rate * std::f32::consts::TAU;
@@ -438,6 +527,12 @@ impl App {
         }
         for c in spawn {
             g.cubes.push(c);
+        }
+        if light_clear {
+            g.lights.clear();
+        }
+        for l in light_spawn {
+            g.lights.push(l);
         }
         if reset_cam {
             g.eye = [3.0, 3.0, 3.0];
@@ -477,9 +572,16 @@ impl App {
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let (eye, target, cubes_extra) = {
+        let (eye, target, cubes_extra, light_specs, ambient, central_lit) = {
             let g = self.shared.lock().unwrap();
-            (g.eye, g.target, g.cubes.clone())
+            (
+                g.eye,
+                g.target,
+                g.cubes.clone(),
+                g.lights.clone(),
+                g.ambient,
+                g.central_lit,
+            )
         };
 
         let aspect = config.width.max(1) as f32 / config.height.max(1) as f32;
@@ -491,21 +593,46 @@ impl App {
 
         let mut scene = Scene3D::new();
         scene.clear_color = [0.04, 0.04, 0.08, 1.0];
+        scene.ambient = ambient;
+        for l in &light_specs {
+            match l.kind.as_str() {
+                "directional" => scene.push_light(Light::directional(
+                    Vec3::from_array(l.vec),
+                    l.color,
+                    l.intensity,
+                )),
+                "point" => scene.push_light(Light::point(
+                    Vec3::from_array(l.vec),
+                    l.color,
+                    l.intensity,
+                    l.range.max(0.01),
+                )),
+                _ => {}
+            }
+        }
 
-        // Central spinning cube
-        scene.push(
+        // Central spinning cube — Phong by default so the live demo
+        // shows the directional light on first launch.
+        let central_node = if central_lit {
+            Node::new_lit(self.cube_mesh_lit.clone())
+        } else {
             Node::new(self.cube_mesh.clone())
-                .with_rotation(Quat::from_rotation_y(self.angle_rad)),
-        );
+        };
+        scene.push(central_node.with_rotation(Quat::from_rotation_y(self.angle_rad)));
 
-        // Agent-added cubes
+        // Agent-added cubes — each can pick lit or unlit
         for c in &cubes_extra {
-            scene.push(
+            let n = if c.lit {
+                Node::new_lit(self.cube_mesh_lit.clone())
+            } else {
                 Node::new(self.cube_mesh.clone())
-                    .with_translation(Vec3::from_array(c.pos))
+            };
+            scene.push(
+                n.with_translation(Vec3::from_array(c.pos))
                     .with_scale(Vec3::splat(c.scale))
                     .with_rotation(Quat::from_rotation_y(self.angle_rad * 0.5))
-                    .with_tint(c.tint),
+                    .with_tint(c.tint)
+                    .with_material(PhongMaterial::default()),
             );
         }
 
