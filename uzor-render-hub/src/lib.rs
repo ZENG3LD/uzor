@@ -22,12 +22,14 @@ pub mod submit_urx;
 pub mod runtime;
 pub mod surface;
 pub mod factories;
+pub mod urx_engine_handle;
 
 pub use backend::RenderBackend;
 pub use detect::{detect_backend, default_perf, detect, GpuInfo, PerfDefaults, RecommendedBackend};
 pub use hub::{BackendPool, HubError, PerfSettings, RenderHub};
 pub use metrics::RenderMetrics;
 pub use factory::{BackendContext, GpuDevicePool, WindowRenderState};
+pub use urx_engine_handle::UrxEngineHandle;
 pub use submit::{submit_frame, SubmitOutcome, SubmitParams};
 pub use uzor::layout::window::SoftwarePresenter;
 pub use runtime::RuntimeBackend;

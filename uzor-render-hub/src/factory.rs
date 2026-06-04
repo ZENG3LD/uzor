@@ -219,8 +219,16 @@ pub struct WindowRenderState {
     pub(crate) vello_hybrid_ctx: VelloHybridRenderContext,
 
     // ── Active backend ────────────────────────────────────────────────────────
-    /// Currently active backend (set by `RenderHub::set_active`).
+    /// Currently active 2D-scene backend (set by `RenderHub::set_active`).
+    /// One of `Scene2DBackend` (renamed legacy `RenderBackend`).
     pub(crate) active: RenderBackend,
+    /// Currently active URX-channel backend (set by `RenderHub::set_active_urx`).
+    /// When `Some`, consumers using the `with_urx_engine` channel are routed
+    /// through this backend's submit path; when `None`, the channel is idle
+    /// and consumers fall back to the 2D path via `active`. Stage 1
+    /// of urx-full-integration introduces this slot; Stage 3 will wire
+    /// `UrxEngine` lifetime + RegionMixer behind it.
+    pub(crate) active_urx: Option<uzor::UrxBackend>,
 }
 
 impl WindowRenderState {
@@ -246,6 +254,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -278,6 +287,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -338,6 +348,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -368,6 +379,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            active_urx: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
             active: RenderBackend::TinySkia,
@@ -396,6 +408,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            active_urx: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
             active: RenderBackend::VelloCpu,
@@ -472,6 +485,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -503,6 +517,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            active_urx: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -553,6 +568,7 @@ impl WindowRenderState {
             urx_cpu_pixmap: None,
             urx_wgpu_backend: None,
             urx_hybrid_backend: None,
+            active_urx: None,
             canvas2d_ctx: Some(ctx),
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
@@ -1003,5 +1019,74 @@ impl WindowRenderState {
                 // needs the surface size). Nothing per-frame here.
             }
         }
+    }
+
+    // ── URX channel (2026-06-05 dual-enum) ───────────────────────────────────
+    //
+    // Stage 1 ships the channel skeleton only: the handle exposes `render_ctx`
+    // (re-using the existing `UrxRenderContext` Scene-buffering path) and frame
+    // metadata. Engine / 3D / physics / particles slots are NOT yet on the
+    // handle — they land in Stages 3/4 along with their backing slots on
+    // `WindowRenderState`.
+
+    /// Flip the URX channel's active backend. Setting `Some(b)` arms the
+    /// `with_urx_engine` channel; the 2D channel (`with_render_context`)
+    /// keeps working in parallel for now. Stage 3 will gate the two
+    /// channels so they don't both try to paint the swapchain in the
+    /// same frame.
+    pub fn set_active_urx(&mut self, backend: Option<uzor::UrxBackend>) {
+        self.active_urx = backend;
+    }
+
+    /// Read the URX channel's current backend selection (if any).
+    pub fn active_urx(&self) -> Option<uzor::UrxBackend> {
+        self.active_urx
+    }
+
+    /// Call `f` with a `UrxEngineHandle` bound to this window's URX
+    /// channel. Returns `None` if the URX channel isn't armed
+    /// (`active_urx == None`) or the surface has zero area.
+    ///
+    /// Stage 1 wiring: handle's `render_ctx` is the same
+    /// `UrxRenderContext` Scene buffer the existing `with_render_context`
+    /// path uses when one of the URX `Scene2DBackend` variants is active.
+    /// Submitting at frame-end goes through the same `submit_urx_*`
+    /// dispatcher; the only difference vs the legacy path is which
+    /// backend is selected (via `active_urx` rather than `active`).
+    pub fn with_urx_engine<R>(
+        &mut self,
+        f: impl FnOnce(&mut crate::urx_engine_handle::UrxEngineHandle<'_>) -> R,
+    ) -> Option<R> {
+        // Channel must be armed.
+        let _backend = self.active_urx?;
+
+        // Resolve surface dimensions.
+        let (width, height) = match &self.surface {
+            SurfaceMode::Gpu { surface, .. } => (surface.config.width, surface.config.height),
+            #[cfg(not(target_arch = "wasm32"))]
+            SurfaceMode::Software { width, height, .. } => (*width, *height),
+            #[cfg(target_arch = "wasm32")]
+            SurfaceMode::Canvas2d { .. } => (0, 0),
+        };
+        if width == 0 || height == 0 {
+            return None;
+        }
+
+        // Lazy-init shared URX paint context.
+        let dpr = 1.0_f64; // TODO Stage 3: real DPR from window.
+        if self.urx_ctx.is_none() {
+            self.urx_ctx = Some(uzor_render_urx::UrxRenderContext::new(dpr));
+        }
+        let ctx = self.urx_ctx.as_mut()?;
+        ctx.begin_frame(width, height);
+
+        let mut handle = crate::urx_engine_handle::UrxEngineHandle {
+            render_ctx: ctx as &mut dyn uzor::render::RenderContext,
+            width,
+            height,
+            dpr,
+            frame_idx: 0, // Stage 3 wires real counter.
+        };
+        Some(f(&mut handle))
     }
 }
