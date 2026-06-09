@@ -68,6 +68,45 @@ pub fn submit_frame(state: &mut WindowRenderState, params: SubmitParams) -> Subm
     };
     let total_t0 = std::time::Instant::now();
 
+    // ── URX engine channel takes priority when armed ────────────────────
+    // Dual-channel dispatch (2026-06-09 owner doctrine, prefix scheme):
+    // - `engine3d_*` consumer calls `set_active_urx(Some(b))` →
+    //   `state.active_urx` is `Some`. Paint walker writes into
+    //   `state.urx_ctx` via `with_urx_engine`. Submit MUST go through
+    //   the URX backend matching `active_urx`, not the Scene2D `active`.
+    // - `canvas2d_*` consumer leaves `active_urx == None`. Submit
+    //   follows the Scene2D channel as before.
+    //
+    // Channels co-exist; this dispatch picks which one paints the
+    // swapchain THIS frame. The other channel's last buffered content
+    // is preserved but not presented.
+    if let Some(urx) = state.active_urx {
+        let surface_lost = match urx {
+            uzor::UrxBackend::Cpu      => crate::submit_urx::submit_urx_cpu(state, &mut frame_metrics),
+            uzor::UrxBackend::Wgpu     => crate::submit_urx::submit_urx_wgpu(state, &params, &mut frame_metrics),
+            uzor::UrxBackend::Hybrid   => crate::submit_urx::submit_urx_hybrid(state, &params, &mut frame_metrics),
+            uzor::UrxBackend::WgpuFull => crate::submit_urx::submit_urx_wgpu_full(state, &params, &mut frame_metrics),
+            uzor::UrxBackend::Auto     => {
+                // Auto resolves at `with_urx_engine` time via WorkloadHint.
+                // For submit we mirror that choice — the engine remembers
+                // what it picked. Until the auto-pick is surfaced through
+                // a backend accessor, fall through to UrxWgpu for GPU
+                // surfaces / UrxCpu for software.
+                let gpu = matches!(state.surface, crate::factory::SurfaceMode::Gpu { .. });
+                if gpu {
+                    crate::submit_urx::submit_urx_wgpu(state, &params, &mut frame_metrics)
+                } else {
+                    crate::submit_urx::submit_urx_cpu(state, &mut frame_metrics)
+                }
+            }
+        };
+        frame_metrics.submit_us = total_t0.elapsed().as_micros() as u64;
+        return SubmitOutcome {
+            metrics: frame_metrics,
+            surface_lost,
+        };
+    }
+
     let surface_lost = match state.active {
         RenderBackend::VelloGpu      => submit_vello_gpu(state, &params, &mut frame_metrics),
         RenderBackend::VelloHybrid   => submit_vello_hybrid(state, &params, &mut frame_metrics),
@@ -80,10 +119,10 @@ pub fn submit_frame(state: &mut WindowRenderState, params: SubmitParams) -> Subm
             false
         }
 
-        // ── URX family ─────────────────────────────────────────────────────
-        // All four URX backends consume the same `urx_core::Scene` produced
-        // by `UrxRenderContext`. Phase A: backend functions live in
-        // `crate::submit_urx::*` and turn that scene into pixels.
+        // ── URX family via Scene2D channel ─────────────────────────────────
+        // Reached via `canvas2d_urx_*` labels — consumer used the legacy
+        // Canvas2D vocabulary with a URX rasterizer underneath. Same
+        // submit functions as the dedicated URX channel above.
         RenderBackend::UrxCpu        => crate::submit_urx::submit_urx_cpu(state, &mut frame_metrics),
         RenderBackend::UrxWgpu       => crate::submit_urx::submit_urx_wgpu(state, &params, &mut frame_metrics),
         RenderBackend::UrxHybrid     => crate::submit_urx::submit_urx_hybrid(state, &params, &mut frame_metrics),

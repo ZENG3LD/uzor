@@ -1308,6 +1308,83 @@ impl WindowRenderState {
         }
     }
 
+    /// Submit one full URX 3D frame to the swapchain.
+    ///
+    /// This is the public consumer-facing 3D submit path (U3-hub-1,
+    /// 2026-06-09). Consumers drive 3D content by:
+    ///
+    /// 1. Mutating the hub-owned Scene3D via [`Self::with_renderer_3d`]
+    ///    (`|r3d, scene| { *scene = my_scene; }`) — OR just letting
+    ///    the slot stay default-init'd for an empty scene.
+    /// 2. Calling `submit_3d_frame(camera)` to render that scene with
+    ///    the given camera into the swapchain.
+    ///
+    /// Returns `Ok(())` on success, `Err(())` when the surface is
+    /// unavailable / 0×0 / software-only (3D requires a wgpu device).
+    ///
+    /// **Co-existence**: this submit path is OUT-OF-BAND with the
+    /// `submit_frame` dispatch — it presents directly, ignoring
+    /// `state.active` / `state.active_urx`. A frame that calls this
+    /// MUST NOT also call `submit_frame` — they both consume the
+    /// swapchain. Tessera-window's paint walker case-splits at
+    /// `ContentBody::Scene3D` and calls this method instead of
+    /// `submit_frame`.
+    pub fn submit_3d_frame(
+        &mut self,
+        camera: &uzor_urx_3d::PerspectiveCamera,
+    ) -> Result<(), ()> {
+        // Resolve GPU surface + sizes. Software-only surfaces can't
+        // run the Renderer3D — return Err so callers can fallback.
+        let (width, height) = match &self.surface {
+            SurfaceMode::Gpu { surface, .. } => (surface.config.width, surface.config.height),
+            _ => return Err(()),
+        };
+        if width == 0 || height == 0 { return Err(()); }
+
+        // Capture device/queue/format BEFORE borrowing slots.
+        let (device, queue, surface_format) = match &self.surface {
+            SurfaceMode::Gpu { gpu_pool, surface, dev_id } => (
+                gpu_pool.devices[*dev_id].device.clone(),
+                gpu_pool.devices[*dev_id].queue.clone(),
+                surface.config.format,
+            ),
+            _ => return Err(()),
+        };
+
+        // Lazy-init renderer + scene (same shape as `with_renderer_3d`).
+        if self.urx_renderer_3d.is_none() {
+            self.urx_renderer_3d = Some(uzor_urx_3d::Renderer3D::new(
+                &device, &queue, surface_format, (width, height), 1024,
+            ));
+        }
+        if self.urx_scene_3d.is_none() {
+            self.urx_scene_3d = Some(uzor_urx_3d::Scene3D::new());
+        }
+
+        // Acquire swapchain frame, build encoder, render, present.
+        let SurfaceMode::Gpu { surface, .. } = &mut self.surface else {
+            return Err(());
+        };
+        let frame = match surface.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            _ => return Err(()),
+        };
+        let swap_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("urx-3d-frame"),
+        });
+
+        // Renderer3D writes into `swap_view` (full-surface) — viewport
+        // sub-rects are a future hub method (`submit_3d_frame_to_rect`).
+        let r3d   = self.urx_renderer_3d.as_mut().ok_or(())?;
+        let scene = self.urx_scene_3d.as_ref().ok_or(())?;
+        r3d.render(&device, &queue, &mut encoder, &swap_view, camera, scene);
+
+        queue.submit([encoder.finish()]);
+        frame.present();
+        Ok(())
+    }
+
     /// Borrow the URX physics world (lazy-init on first call). Stage 4
     /// surface — independent of all render slots. Consumer ticks
     /// `physics.step(dt)` per frame, reads body positions into Scene3D
