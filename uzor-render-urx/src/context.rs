@@ -170,6 +170,28 @@ impl UrxRenderContext {
         }
     }
 
+    /// Defensive guard for any path-op that kurbo requires be preceded
+    /// by a `MoveTo` (line_to, quad_to, curve_to, close_path, arc
+    /// segment append). Canvas2D semantics tolerate calling these on
+    /// an empty / just-closed path — they implicitly start a fresh
+    /// subpath at the given fallback point (or at the op's own
+    /// target). kurbo panics with "BezPath must begin with MoveTo",
+    /// so we open the subpath ourselves.
+    ///
+    /// Cheap when the subpath is already open (one `last()` peek +
+    /// pattern match) — only walks the elements when the path is
+    /// non-empty AND the last element is a `ClosePath`.
+    fn ensure_subpath_open(&mut self, fallback: KPoint) {
+        let needs_move = match self.path.elements().last() {
+            None => true,
+            Some(kurbo::PathEl::ClosePath) => true,
+            _ => false,
+        };
+        if needs_move {
+            self.path.move_to(fallback);
+        }
+    }
+
     /// Reset for a new frame. Discards any buffered draws + state.
     pub fn begin_frame(&mut self, width: u32, height: u32) {
         self.scene.reset();
@@ -367,8 +389,20 @@ impl Painter for UrxRenderContext {
 
     fn begin_path(&mut self) { self.path.truncate(0); }
     fn move_to(&mut self, x: f64, y: f64) { self.path.move_to(KPoint::new(x, y)); }
-    fn line_to(&mut self, x: f64, y: f64) { self.path.line_to(KPoint::new(x, y)); }
-    fn close_path(&mut self) { self.path.close_path(); }
+    fn line_to(&mut self, x: f64, y: f64) {
+        // Canvas2D tolerates `lineTo` on an empty path (starts a
+        // subpath at that point). kurbo panics — open the subpath.
+        self.ensure_subpath_open(KPoint::new(x, y));
+        self.path.line_to(KPoint::new(x, y));
+    }
+    fn close_path(&mut self) {
+        // No-op if no subpath is open — Canvas2D semantics.
+        if !self.path.elements().is_empty()
+            && !matches!(self.path.elements().last(), Some(kurbo::PathEl::ClosePath))
+        {
+            self.path.close_path();
+        }
+    }
     fn rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
         self.path.move_to(KPoint::new(x, y));
         self.path.line_to(KPoint::new(x + w, y));
@@ -378,6 +412,11 @@ impl Painter for UrxRenderContext {
     }
     fn arc(&mut self, cx: f64, cy: f64, radius: f64, start: f64, end: f64) {
         // kurbo::Arc → BezPath path-elements appended to the current path.
+        // `append_iter` yields LineTo/CurveTo without a leading MoveTo —
+        // valid for "continue current subpath", panics on an empty/just-
+        // closed path. Emit MoveTo to the arc's starting point when
+        // needed (Canvas2D semantics: arc on a fresh path starts a new
+        // subpath at the first arc point).
         let arc = kurbo::Arc::new(
             KPoint::new(cx, cy),
             Vec2::new(radius, radius),
@@ -385,6 +424,10 @@ impl Painter for UrxRenderContext {
             end - start,
             0.0,
         );
+        self.ensure_subpath_open(KPoint::new(
+            cx + radius * start.cos(),
+            cy + radius * start.sin(),
+        ));
         for el in arc.append_iter(0.1) {
             self.path.push(el);
         }
@@ -397,14 +440,24 @@ impl Painter for UrxRenderContext {
             end - start,
             0.0,
         );
+        self.ensure_subpath_open(KPoint::new(
+            cx + rx * start.cos(),
+            cy + ry * start.sin(),
+        ));
         for el in arc.append_iter(0.1) {
             self.path.push(el);
         }
     }
     fn quadratic_curve_to(&mut self, cpx: f64, cpy: f64, x: f64, y: f64) {
+        // kurbo `quad_to` requires an open subpath. Canvas2D starts
+        // one implicitly at the control point's previous position;
+        // we fall back to the curve start (close enough — only fires
+        // when the consumer skipped `move_to`).
+        self.ensure_subpath_open(KPoint::new(cpx, cpy));
         self.path.quad_to(KPoint::new(cpx, cpy), KPoint::new(x, y));
     }
     fn bezier_curve_to(&mut self, cp1x: f64, cp1y: f64, cp2x: f64, cp2y: f64, x: f64, y: f64) {
+        self.ensure_subpath_open(KPoint::new(cp1x, cp1y));
         self.path.curve_to(
             KPoint::new(cp1x, cp1y),
             KPoint::new(cp2x, cp2y),
@@ -804,5 +857,78 @@ mod tests {
             }
             _ => panic!("expected FillRect"),
         }
+    }
+
+    // ── Defensive subpath-open invariants (2026-06-09 owner-driven) ──
+    //
+    // kurbo's BezPath panics on any append after an empty or just-
+    // closed path. Canvas2D semantics tolerate every path-op as a
+    // fresh-subpath starter. UrxRenderContext bridges the two —
+    // these tests pin that bridge.
+
+    // Direct-call tests on the inherent impl block (the UzorRenderContext
+    // trait impls invoke the same path-op methods). UrxRenderContext
+    // exposes them via the trait — UFCS isn't available because the
+    // RenderContext supertrait composition causes ambiguity; we exercise
+    // via the trait object instead.
+
+    #[test]
+    fn arc_on_empty_path_does_not_panic() {
+        // Before the fix this panicked with "BezPath must begin with MoveTo".
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        let rc: &mut dyn uzor::render::RenderContext = &mut ctx;
+        rc.begin_path();
+        rc.arc(50.0, 50.0, 20.0, 0.0, std::f64::consts::PI);
+        rc.stroke();
+        let scene = ctx.take_scene();
+        assert!(scene.commands.iter().any(|c| matches!(c, DrawCommand::StrokePath { .. })));
+    }
+
+    #[test]
+    fn ellipse_on_empty_path_does_not_panic() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        let rc: &mut dyn uzor::render::RenderContext = &mut ctx;
+        rc.begin_path();
+        rc.ellipse(50.0, 50.0, 20.0, 30.0, 0.0, 0.0, std::f64::consts::TAU);
+        rc.fill();
+        let _ = ctx.take_scene();
+    }
+
+    #[test]
+    fn line_to_on_empty_path_does_not_panic() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        let rc: &mut dyn uzor::render::RenderContext = &mut ctx;
+        rc.begin_path();
+        rc.line_to(10.0, 20.0);
+        rc.line_to(30.0, 40.0);
+        rc.stroke();
+        let _ = ctx.take_scene();
+    }
+
+    #[test]
+    fn close_path_on_empty_is_silent_noop() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        let rc: &mut dyn uzor::render::RenderContext = &mut ctx;
+        rc.begin_path();
+        rc.close_path();
+        let _ = ctx.take_scene();
+    }
+
+    #[test]
+    fn bezier_after_close_does_not_panic() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        let rc: &mut dyn uzor::render::RenderContext = &mut ctx;
+        rc.begin_path();
+        rc.move_to(10.0, 10.0);
+        rc.line_to(20.0, 20.0);
+        rc.close_path();
+        rc.bezier_curve_to(30.0, 30.0, 40.0, 40.0, 50.0, 50.0);
+        rc.stroke();
+        let _ = ctx.take_scene();
     }
 }
