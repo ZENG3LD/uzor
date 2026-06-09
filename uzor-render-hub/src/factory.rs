@@ -1638,4 +1638,129 @@ impl WindowRenderState {
     ) -> Option<R> {
         self.urx_particles.as_mut().map(f)
     }
+
+    /// Submit one URX particle frame into a sub-rectangle of the
+    /// swapchain (U-particles, 2026-06-10). Mirror of
+    /// [`Self::submit_3d_frame_to_rect`] but renders the hub-owned
+    /// `ParticleSystem` (set via [`Self::init_particles`]) as
+    /// billboards through the URX 3D HDR pipeline (tonemap + bloom),
+    /// then copies the result into the swapchain at `(dst_x, dst_y)`.
+    ///
+    /// The system is NOT ticked here — the caller advances it via
+    /// [`Self::with_particles`] (`|s| s.tick(dt)`) before this call,
+    /// so the driver controls the timestep. Returns
+    /// [`Submit3DError::SlotMissing`] when no particle system was
+    /// initialised.
+    ///
+    /// Renders against an EMPTY `Scene3D` (particles-only viewport).
+    /// To draw particles ON TOP of a 3D scene, push the scene into the
+    /// slot via [`Self::with_renderer_3d`] first — the particle pass
+    /// composites over whatever the scene drew.
+    pub fn submit_particles_to_rect(
+        &mut self,
+        camera: &uzor_urx_3d::PerspectiveCamera,
+        dst_x: u32,
+        dst_y: u32,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Result<(), Submit3DError> {
+        let (surf_w, surf_h, surface_format) = match &self.surface {
+            SurfaceMode::Gpu { surface, .. } => (
+                surface.config.width,
+                surface.config.height,
+                surface.config.format,
+            ),
+            _ => return Err(Submit3DError::NotGpuSurface),
+        };
+        if surf_w == 0 || surf_h == 0 { return Err(Submit3DError::ZeroSizedSurface); }
+
+        // Clip rect to swapchain (out-of-bounds shrinks).
+        let dx = dst_x.min(surf_w.saturating_sub(1));
+        let dy = dst_y.min(surf_h.saturating_sub(1));
+        let dw = dst_w.min(surf_w.saturating_sub(dx));
+        let dh = dst_h.min(surf_h.saturating_sub(dy));
+        if dw == 0 || dh == 0 { return Err(Submit3DError::ZeroSizedSurface); }
+
+        if self.urx_particles.is_none() { return Err(Submit3DError::SlotMissing); }
+
+        let (device, queue) = match &self.surface {
+            SurfaceMode::Gpu { gpu_pool, dev_id, .. } => (
+                gpu_pool.devices[*dev_id].device.clone(),
+                gpu_pool.devices[*dev_id].queue.clone(),
+            ),
+            _ => return Err(Submit3DError::NotGpuSurface),
+        };
+
+        // Lazy-init renderer + (empty) scene — particles render through
+        // the 3D HDR pipeline, so they need a Renderer3D.
+        if self.urx_renderer_3d.is_none() {
+            self.urx_renderer_3d = Some(uzor_urx_3d::Renderer3D::new(
+                &device, &queue, surface_format, (dw, dh), 1024,
+            ));
+        }
+        if self.urx_scene_3d.is_none() {
+            self.urx_scene_3d = Some(uzor_urx_3d::Scene3D::new());
+        }
+
+        // Lazy / resize offscreen target (same as submit_3d_frame_to_rect).
+        let need_new_target = match &self.urx_offscreen_3d {
+            None => true,
+            Some(o) => o.width != dw || o.height != dh || o.format != surface_format,
+        };
+        if need_new_target {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("urx-particles-offscreen"),
+                size: wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: surface_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.urx_offscreen_3d = Some(UrxOffscreen3D {
+                texture, view, width: dw, height: dh, format: surface_format,
+            });
+        }
+
+        let SurfaceMode::Gpu { surface, .. } = &mut self.surface else {
+            return Err(Submit3DError::NotGpuSurface);
+        };
+        let frame = match surface.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            _ => return Err(Submit3DError::SurfaceLost),
+        };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("urx-particles-frame-to-rect"),
+        });
+
+        // Render Scene3D + particles into the offscreen view.
+        let r3d       = self.urx_renderer_3d.as_mut().ok_or(Submit3DError::SlotMissing)?;
+        let scene     = self.urx_scene_3d.as_ref().ok_or(Submit3DError::SlotMissing)?;
+        let particles = self.urx_particles.as_ref().ok_or(Submit3DError::SlotMissing)?;
+        let off       = self.urx_offscreen_3d.as_ref().ok_or(Submit3DError::SlotMissing)?;
+        r3d.render_with_particles(&device, &queue, &mut encoder, &off.view, camera, scene, particles);
+
+        // Copy offscreen → swapchain at (dx, dy).
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture:   &off.texture,
+                mip_level: 0,
+                origin:    wgpu::Origin3d::ZERO,
+                aspect:    wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture:   &frame.texture,
+                mip_level: 0,
+                origin:    wgpu::Origin3d { x: dx, y: dy, z: 0 },
+                aspect:    wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
+        );
+
+        queue.submit([encoder.finish()]);
+        frame.present();
+        Ok(())
+    }
 }

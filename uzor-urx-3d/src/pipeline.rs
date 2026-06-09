@@ -268,6 +268,11 @@ pub struct Renderer3D {
     mesh_lit_cache: crate::mesh_cache::MeshLitCache,
     mesh_uv_cache: crate::mesh_cache::MeshUvCache,
     mesh_pbr_cache: crate::mesh_cache::MeshPbrCache,
+    /// Optional particle renderer — lazy-built on first
+    /// `render_with_particles` call. Draws billboards into the HDR
+    /// target between the transparent pass and bloom/composite so
+    /// particles get tonemapped + bloomed with the rest of the scene.
+    particle_renderer: Option<std::sync::Arc<crate::particles::ParticleRenderer>>,
 }
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -1345,6 +1350,7 @@ impl Renderer3D {
             mesh_lit_cache: crate::mesh_cache::MeshLitCache::new(),
             mesh_uv_cache: crate::mesh_cache::MeshUvCache::new(),
             mesh_pbr_cache: crate::mesh_cache::MeshPbrCache::new(),
+            particle_renderer: None,
         }
     }
 
@@ -1662,6 +1668,44 @@ impl Renderer3D {
         target_view: &wgpu::TextureView,
         camera: &PerspectiveCamera,
         scene: &Scene3D,
+    ) {
+        self.render_inner(device, queue, encoder, target_view, camera, scene, None);
+    }
+
+    /// Same as [`Self::render`] but also draws a live `ParticleSystem`
+    /// as billboards INTO the HDR buffer, so the particles get the
+    /// same ACES tonemap + bloom as the rest of the scene. Lazy-builds
+    /// the internal `ParticleRenderer` on first call.
+    ///
+    /// `scene` can be empty (`Scene3D::new()`) for a particles-only
+    /// viewport — the geometry passes just emit nothing and the
+    /// particle billboards composite over the scene clear color.
+    pub fn render_with_particles(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+        camera: &PerspectiveCamera,
+        scene: &Scene3D,
+        particles: &crate::particles::ParticleSystem,
+    ) {
+        if self.particle_renderer.is_none() {
+            self.particle_renderer =
+                Some(crate::particles::ParticleRenderer::new(device, HDR_FORMAT));
+        }
+        self.render_inner(device, queue, encoder, target_view, camera, scene, Some(particles));
+    }
+
+    fn render_inner(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+        camera: &PerspectiveCamera,
+        scene: &Scene3D,
+        particles: Option<&crate::particles::ParticleSystem>,
     ) {
         // 1a. Pick the first DIRECTIONAL light as the shadow caster (if any).
         let mut shadow_light_dir: Option<glam::Vec3> = None;
@@ -2471,6 +2515,22 @@ impl Renderer3D {
         }
 
         } // close the block opened at "// 7." — pass + tpass released
+
+        // ── U-particles — billboard pass into the HDR buffer ──────
+        // Drawn AFTER all geometry (opaque + transparent) so particles
+        // composite over the scene, and BEFORE bloom/composite so they
+        // get the same ACES tonemap + bloom. `ParticleRenderer::draw`
+        // opens its own Load/Load HDR+depth pass — the geometry passes
+        // above are released by now (block close at "// 7.").
+        if let Some(system) = particles {
+            if let Some(pr) = self.particle_renderer.as_mut() {
+                pr.draw(
+                    device, queue, encoder,
+                    &self.hdr_view, &self.depth_view,
+                    camera, system,
+                );
+            }
+        }
 
         // ── Wave 12 — bloom pyramid + ACES composite ──────────────
         self.run_bloom_and_composite(device, queue, encoder, target_view, camera);
