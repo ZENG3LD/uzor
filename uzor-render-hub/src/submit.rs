@@ -671,6 +671,8 @@ mod tests {
             active_urx:           None,
             urx_unified_memory:   None,
             urx_offscreen_3d:     None,
+            urx_capture_3d:       None,
+            capture_3d_enabled:   false,
         };
 
         let outcome = submit_frame(
@@ -756,6 +758,8 @@ mod tests {
             active_urx:            None,
             urx_unified_memory:    None,
             urx_offscreen_3d:      None,
+            urx_capture_3d:        None,
+            capture_3d_enabled:    false,
         };
 
         let outcome = submit_frame(

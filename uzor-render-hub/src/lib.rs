@@ -34,7 +34,7 @@ pub use detect::{detect_backend, default_perf, detect, GpuInfo, PerfDefaults, Re
 pub use uzor_urx_core::{SkeletonSpec, SkeletonFrame};
 pub use hub::{BackendPool, HubError, PerfSettings, RenderHub};
 pub use metrics::RenderMetrics;
-pub use factory::{BackendContext, GpuDevicePool, Submit3DError, WindowRenderState};
+pub use factory::{BackendContext, GpuDevicePool, Submit3DError, UrxCapture3D, WindowRenderState};
 pub use compose::{Compose3DJob, ComposedOutcome, submit_urx_composed};
 pub use urx_engine_handle::UrxEngineHandle;
 pub use submit::{submit_frame, SubmitOutcome, SubmitParams};

@@ -119,6 +119,12 @@ pub fn submit_urx_composed(
     // backend's normal lazy-init.
     let urx_scene_opt = state.urx_ctx.as_mut().map(|c| c.take_scene());
 
+    // Screenshot mirror — ensure BEFORE the surface borrow below. The
+    // 2D + 3D phases each dup their output into it when present.
+    if state.capture_3d_enabled {
+        state.ensure_capture_3d(&device, surf_w, surf_h, surface_format);
+    }
+
     // ── Phase 1: acquire swapchain frame ────────────────────────────
     let SurfaceMode::Gpu { surface, .. } = &mut state.surface else {
         return Err(Submit3DError::NotGpuSurface);
@@ -258,6 +264,24 @@ pub fn submit_urx_composed(
             },
             wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
         );
+        // Mirror the same rect into the capture texture (screenshot pipe).
+        if let Some(cap) = state.urx_capture_3d.as_ref() {
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture:   &off.texture,
+                    mip_level: 0,
+                    origin:    wgpu::Origin3d::ZERO,
+                    aspect:    wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture:   &cap.texture,
+                    mip_level: 0,
+                    origin:    wgpu::Origin3d { x: dx, y: dy, z: 0 },
+                    aspect:    wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
+            );
+        }
         jobs_rendered += 1;
     }
 
@@ -376,6 +400,12 @@ fn compose_urx_cpu_into_swap(
     }
     // Blit target_texture → swap_view in our encoder.
     surface.blitter.copy(_device, encoder, &surface.target_view, swap_view);
+    // Mirror the 2D layer into the capture texture (screenshot pipe).
+    // Disjoint field borrow — `surface` is state.surface, `cap` is
+    // state.urx_capture_3d.
+    if let Some(cap) = state.urx_capture_3d.as_ref() {
+        surface.blitter.copy(_device, encoder, &surface.target_view, &cap.view);
+    }
     let _ = base_color;
 }
 
@@ -437,6 +467,12 @@ fn compose_urx_wgpu_into_swap(
     // frame. Tracked as backlog item for 1.4.10.
     if let Some(ref mut inst) = state.instanced_renderer {
         inst.render(device, queue, swap_view, surf_w, surf_h, &cmds, Some(clear), None);
+        // Mirror the 2D layer into the capture texture (screenshot
+        // pipe). A second instanced render is acceptable here — the
+        // mirror is armed only while a screenshot consumer is active.
+        if let Some(cap) = state.urx_capture_3d.as_ref() {
+            inst.render(device, queue, &cap.view, surf_w, surf_h, &cmds, Some(clear), None);
+        }
     }
     // Hand the Vec back so its capacity is reused.
     if let Some(ctx) = state.instanced_ctx.as_mut() {

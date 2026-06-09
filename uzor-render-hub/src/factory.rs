@@ -268,6 +268,30 @@ pub struct WindowRenderState {
     /// blit shader. Lazy-init at first viewport-sized 3D submit;
     /// re-init when the requested rect size changes.
     pub(crate) urx_offscreen_3d: Option<UrxOffscreen3D>,
+
+    /// Screenshot capture mirror for the 3D / compose submit paths
+    /// (2026-06-10). Those paths write straight into the swapchain
+    /// (which has no COPY_SRC), bypassing `target_texture` — so the
+    /// legacy screenshot pipe sees a blank frame. When
+    /// [`Self::set_capture_3d`] arms this, every 3D-family submit ALSO
+    /// mirrors its output into this full-surface texture
+    /// (surface-format, COPY_SRC) which the consumer's screenshot path
+    /// can read back. `None` + disarmed by default — zero overhead
+    /// until a screenshot is actually requested.
+    pub(crate) urx_capture_3d: Option<UrxCapture3D>,
+    /// Arms the capture mirror above. Set by the consumer's screenshot
+    /// pipeline on first request for a window.
+    pub(crate) capture_3d_enabled: bool,
+}
+
+/// Backing for the 3D screenshot capture mirror — see
+/// `WindowRenderState.urx_capture_3d`.
+pub struct UrxCapture3D {
+    pub texture: wgpu::Texture,
+    pub view:    wgpu::TextureView,
+    pub width:   u32,
+    pub height:  u32,
+    pub format:  wgpu::TextureFormat,
 }
 
 /// Backing for the offscreen 3D render target — see
@@ -327,6 +351,8 @@ impl WindowRenderState {
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
+            urx_capture_3d: None,
+            capture_3d_enabled: false,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -368,6 +394,8 @@ impl WindowRenderState {
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
+            urx_capture_3d: None,
+            capture_3d_enabled: false,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -437,6 +465,8 @@ impl WindowRenderState {
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
+            urx_capture_3d: None,
+            capture_3d_enabled: false,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -476,6 +506,8 @@ impl WindowRenderState {
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
+            urx_capture_3d: None,
+            capture_3d_enabled: false,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
             active: RenderBackend::TinySkia,
@@ -513,6 +545,8 @@ impl WindowRenderState {
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
+            urx_capture_3d: None,
+            capture_3d_enabled: false,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
             active: RenderBackend::VelloCpu,
@@ -598,6 +632,8 @@ impl WindowRenderState {
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
+            urx_capture_3d: None,
+            capture_3d_enabled: false,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -638,6 +674,8 @@ impl WindowRenderState {
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
+            urx_capture_3d: None,
+            capture_3d_enabled: false,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -697,6 +735,8 @@ impl WindowRenderState {
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
+            urx_capture_3d: None,
+            capture_3d_enabled: false,
             canvas2d_ctx: Some(ctx),
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
@@ -1564,6 +1604,11 @@ impl WindowRenderState {
             });
         }
 
+        // Screenshot mirror — ensure BEFORE the surface borrow below.
+        if self.capture_3d_enabled {
+            self.ensure_capture_3d(&device, surf_w, surf_h, surface_format);
+        }
+
         // Acquire swapchain frame, build encoder.
         let SurfaceMode::Gpu { surface, .. } = &mut self.surface else {
             return Err(Submit3DError::NotGpuSurface);
@@ -1602,6 +1647,26 @@ impl WindowRenderState {
             },
             wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
         );
+        // Mirror the same rect into the capture texture (screenshot
+        // pipe). Disjoint slot borrow — `off` is urx_offscreen_3d,
+        // `cap` is urx_capture_3d.
+        if let Some(cap) = self.urx_capture_3d.as_ref() {
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture:   &off.texture,
+                    mip_level: 0,
+                    origin:    wgpu::Origin3d::ZERO,
+                    aspect:    wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture:   &cap.texture,
+                    mip_level: 0,
+                    origin:    wgpu::Origin3d { x: dx, y: dy, z: 0 },
+                    aspect:    wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
+            );
+        }
 
         queue.submit([encoder.finish()]);
         frame.present();
@@ -1637,6 +1702,58 @@ impl WindowRenderState {
         f: impl FnOnce(&mut uzor_urx_3d::ParticleSystem) -> R,
     ) -> Option<R> {
         self.urx_particles.as_mut().map(f)
+    }
+
+    /// Arm / disarm the 3D screenshot capture mirror. While armed,
+    /// every 3D-family submit (`submit_3d_frame_to_rect`,
+    /// `submit_particles_to_rect`, `submit_urx_composed`) ALSO mirrors
+    /// its output into a full-surface COPY_SRC texture readable by the
+    /// consumer's screenshot pipeline (the swapchain itself has no
+    /// COPY_SRC, and these paths bypass `target_texture`). Disarmed by
+    /// default — zero per-frame cost until a screenshot is requested.
+    pub fn set_capture_3d(&mut self, on: bool) {
+        self.capture_3d_enabled = on;
+        if !on { self.urx_capture_3d = None; }
+    }
+
+    /// Borrow the 3D capture mirror, if armed AND at least one
+    /// 3D-family submit has run since. The texture is full-surface in
+    /// the swapchain format (often Bgra8 — the reader must swizzle).
+    pub fn capture_3d(&self) -> Option<&UrxCapture3D> {
+        self.urx_capture_3d.as_ref()
+    }
+
+    /// Ensure the capture mirror exists at the current surface size.
+    /// Crate-internal — called by the 3D submit paths when armed.
+    pub(crate) fn ensure_capture_3d(
+        &mut self,
+        device: &wgpu::Device,
+        surf_w: u32,
+        surf_h: u32,
+        format: wgpu::TextureFormat,
+    ) {
+        let need_new = match &self.urx_capture_3d {
+            None => true,
+            Some(c) => c.width != surf_w || c.height != surf_h || c.format != format,
+        };
+        if need_new {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("urx-3d-capture-mirror"),
+                size: wgpu::Extent3d { width: surf_w, height: surf_h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC
+                    | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.urx_capture_3d = Some(UrxCapture3D {
+                texture, view, width: surf_w, height: surf_h, format,
+            });
+        }
     }
 
     /// Submit one URX particle frame into a sub-rectangle of the
@@ -1724,6 +1841,11 @@ impl WindowRenderState {
             });
         }
 
+        // Screenshot mirror — ensure BEFORE the surface borrow below.
+        if self.capture_3d_enabled {
+            self.ensure_capture_3d(&device, surf_w, surf_h, surface_format);
+        }
+
         let SurfaceMode::Gpu { surface, .. } = &mut self.surface else {
             return Err(Submit3DError::NotGpuSurface);
         };
@@ -1758,6 +1880,24 @@ impl WindowRenderState {
             },
             wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
         );
+        // Mirror into the capture texture (screenshot pipe).
+        if let Some(cap) = self.urx_capture_3d.as_ref() {
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture:   &off.texture,
+                    mip_level: 0,
+                    origin:    wgpu::Origin3d::ZERO,
+                    aspect:    wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyTextureInfo {
+                    texture:   &cap.texture,
+                    mip_level: 0,
+                    origin:    wgpu::Origin3d { x: dx, y: dy, z: 0 },
+                    aspect:    wgpu::TextureAspect::All,
+                },
+                wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
+            );
+        }
 
         queue.submit([encoder.finish()]);
         frame.present();
