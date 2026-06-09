@@ -216,7 +216,7 @@ pub fn build_surface_from_device(
     };
 
     let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
         format: swap_format,
         width: size.width.max(1),
         height: size.height.max(1),
@@ -314,7 +314,7 @@ fn finalize_gpu_surface(
     };
 
     let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
         format: swap_format,
         width: size.width.max(1),
         height: size.height.max(1),
@@ -491,7 +491,7 @@ fn init_gpu_surface(
     // Step 3: build SurfaceConfiguration with the chosen alpha mode and
     // configure exactly once.
     let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
         format: swap_format,
         width: size.width.max(1),
         height: size.height.max(1),
