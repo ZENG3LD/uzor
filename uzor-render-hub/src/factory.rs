@@ -263,6 +263,21 @@ pub struct WindowRenderState {
     pub(crate) urx_unified_memory: Option<bool>,
 }
 
+/// Reasons [`WindowRenderState::submit_3d_frame`] can fail.
+/// Typed so callers can branch (e.g. software fallback on
+/// `NotGpuSurface`, retry on `SurfaceLost`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Submit3DError {
+    /// Surface is software-only (or canvas2d on wasm); 3D needs wgpu.
+    NotGpuSurface,
+    /// Surface dimensions are 0×0 — window minimised or pre-resize.
+    ZeroSizedSurface,
+    /// `get_current_texture` returned `Lost` / `Outdated`.
+    SurfaceLost,
+    /// Internal slot (renderer or scene) failed lazy-init.
+    SlotMissing,
+}
+
 impl WindowRenderState {
     // ── Constructors ──────────────────────────────────────────────────────────
 
@@ -1369,14 +1384,14 @@ impl WindowRenderState {
     pub fn submit_3d_frame(
         &mut self,
         camera: &uzor_urx_3d::PerspectiveCamera,
-    ) -> Result<(), ()> {
+    ) -> Result<(), Submit3DError> {
         // Resolve GPU surface + sizes. Software-only surfaces can't
-        // run the Renderer3D — return Err so callers can fallback.
+        // run the Renderer3D — return error so callers can fallback.
         let (width, height) = match &self.surface {
             SurfaceMode::Gpu { surface, .. } => (surface.config.width, surface.config.height),
-            _ => return Err(()),
+            _ => return Err(Submit3DError::NotGpuSurface),
         };
-        if width == 0 || height == 0 { return Err(()); }
+        if width == 0 || height == 0 { return Err(Submit3DError::ZeroSizedSurface); }
 
         // Capture device/queue/format BEFORE borrowing slots.
         let (device, queue, surface_format) = match &self.surface {
@@ -1385,7 +1400,7 @@ impl WindowRenderState {
                 gpu_pool.devices[*dev_id].queue.clone(),
                 surface.config.format,
             ),
-            _ => return Err(()),
+            _ => return Err(Submit3DError::NotGpuSurface),
         };
 
         // Lazy-init renderer + scene (same shape as `with_renderer_3d`).
@@ -1400,11 +1415,11 @@ impl WindowRenderState {
 
         // Acquire swapchain frame, build encoder, render, present.
         let SurfaceMode::Gpu { surface, .. } = &mut self.surface else {
-            return Err(());
+            return Err(Submit3DError::NotGpuSurface);
         };
         let frame = match surface.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            _ => return Err(()),
+            _ => return Err(Submit3DError::SurfaceLost),
         };
         let swap_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1413,8 +1428,8 @@ impl WindowRenderState {
 
         // Renderer3D writes into `swap_view` (full-surface) — viewport
         // sub-rects are a future hub method (`submit_3d_frame_to_rect`).
-        let r3d   = self.urx_renderer_3d.as_mut().ok_or(())?;
-        let scene = self.urx_scene_3d.as_ref().ok_or(())?;
+        let r3d   = self.urx_renderer_3d.as_mut().ok_or(Submit3DError::SlotMissing)?;
+        let scene = self.urx_scene_3d.as_ref().ok_or(Submit3DError::SlotMissing)?;
         r3d.render(&device, &queue, &mut encoder, &swap_view, camera, scene);
 
         queue.submit([encoder.finish()]);
