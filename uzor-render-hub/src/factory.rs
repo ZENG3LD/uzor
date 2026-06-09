@@ -272,7 +272,7 @@ pub struct WindowRenderState {
 
 /// Backing for the offscreen 3D render target — see
 /// `WindowRenderState.urx_offscreen_3d`.
-pub(crate) struct UrxOffscreen3D {
+pub struct UrxOffscreen3D {
     pub texture: wgpu::Texture,
     pub view:    wgpu::TextureView,
     pub width:   u32,
