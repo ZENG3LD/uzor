@@ -261,6 +261,23 @@ pub struct WindowRenderState {
     /// wins). `Some(false)` on discrete GPUs / software surfaces.
     /// PR3b refinement (2026-06-09).
     pub(crate) urx_unified_memory: Option<bool>,
+
+    /// Offscreen texture for `submit_3d_frame_to_rect` (U-blit-viewport-1,
+    /// 2026-06-09). Format matches the swapchain so we can
+    /// `copy_texture_to_texture` directly into a sub-rectangle without a
+    /// blit shader. Lazy-init at first viewport-sized 3D submit;
+    /// re-init when the requested rect size changes.
+    pub(crate) urx_offscreen_3d: Option<UrxOffscreen3D>,
+}
+
+/// Backing for the offscreen 3D render target — see
+/// `WindowRenderState.urx_offscreen_3d`.
+pub(crate) struct UrxOffscreen3D {
+    pub texture: wgpu::Texture,
+    pub view:    wgpu::TextureView,
+    pub width:   u32,
+    pub height:  u32,
+    pub format:  wgpu::TextureFormat,
 }
 
 /// Reasons [`WindowRenderState::submit_3d_frame`] can fail.
@@ -309,6 +326,7 @@ impl WindowRenderState {
             urx_particles:   None,
             active_urx: None,
             urx_unified_memory: None,
+            urx_offscreen_3d: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -349,6 +367,7 @@ impl WindowRenderState {
             urx_particles:   None,
             active_urx: None,
             urx_unified_memory: None,
+            urx_offscreen_3d: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -417,6 +436,7 @@ impl WindowRenderState {
             urx_particles:   None,
             active_urx: None,
             urx_unified_memory: None,
+            urx_offscreen_3d: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -455,6 +475,7 @@ impl WindowRenderState {
             urx_particles:   None,
             active_urx: None,
             urx_unified_memory: None,
+            urx_offscreen_3d: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
             active: RenderBackend::TinySkia,
@@ -491,6 +512,7 @@ impl WindowRenderState {
             urx_particles:   None,
             active_urx: None,
             urx_unified_memory: None,
+            urx_offscreen_3d: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
             active: RenderBackend::VelloCpu,
@@ -575,6 +597,7 @@ impl WindowRenderState {
             urx_particles:   None,
             active_urx: None,
             urx_unified_memory: None,
+            urx_offscreen_3d: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -614,6 +637,7 @@ impl WindowRenderState {
             urx_particles:   None,
             active_urx: None,
             urx_unified_memory: None,
+            urx_offscreen_3d: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -672,6 +696,7 @@ impl WindowRenderState {
             urx_particles:   None,
             active_urx: None,
             urx_unified_memory: None,
+            urx_offscreen_3d: None,
             canvas2d_ctx: Some(ctx),
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
@@ -1431,6 +1456,152 @@ impl WindowRenderState {
         let r3d   = self.urx_renderer_3d.as_mut().ok_or(Submit3DError::SlotMissing)?;
         let scene = self.urx_scene_3d.as_ref().ok_or(Submit3DError::SlotMissing)?;
         r3d.render(&device, &queue, &mut encoder, &swap_view, camera, scene);
+
+        queue.submit([encoder.finish()]);
+        frame.present();
+        Ok(())
+    }
+
+    /// Submit one URX 3D frame into a sub-rectangle of the swapchain.
+    ///
+    /// Renders the hub-owned `Scene3D` (mutated via `with_renderer_3d`)
+    /// into an offscreen texture sized `(dst_w, dst_h)`, then copies
+    /// the result into the swapchain back-buffer at `(dst_x, dst_y)`.
+    /// The rest of the swapchain is untouched — this composes with
+    /// any other channel that wrote to the swapchain earlier in the
+    /// frame (e.g. a Scene2D paint walker filled the chrome around
+    /// the viewport).
+    ///
+    /// Constraints:
+    /// * `dst_x + dst_w <= surface.width`, `dst_y + dst_h <= surface.height`.
+    ///   Out-of-bounds rects clip silently (we shrink to fit).
+    /// * `dst_w`, `dst_h` must be positive after clipping.
+    /// * Caller writes to the swapchain ONLY through this method this
+    ///   frame (or doesn't call `frame.present()` themselves). Mixing
+    ///   with `submit_3d_frame` (fullscreen) in the same frame is
+    ///   undefined; mixing with `submit_frame` (Scene2D / URX 2D) is
+    ///   the SUPPORTED pattern — they share the swapchain via the
+    ///   target_texture → blitter pipeline.
+    ///
+    /// **NOTE**: this method **presents** the swapchain frame at the
+    /// end — it's a complete submit, NOT a "render into the swapchain
+    /// and let the caller present" variant. If you want to interleave
+    /// 2D + 3D paint in the same frame, use the matching helper
+    /// `paint_3d_into_swap_view` (TODO post-1.4.7 once tessera U3
+    /// demos prove the composition shape).
+    ///
+    /// U-blit-viewport-1 (2026-06-09).
+    pub fn submit_3d_frame_to_rect(
+        &mut self,
+        camera: &uzor_urx_3d::PerspectiveCamera,
+        dst_x: u32,
+        dst_y: u32,
+        dst_w: u32,
+        dst_h: u32,
+    ) -> Result<(), Submit3DError> {
+        // Resolve surface + format. 3D needs wgpu.
+        let (surf_w, surf_h, surface_format) = match &self.surface {
+            SurfaceMode::Gpu { surface, .. } => (
+                surface.config.width,
+                surface.config.height,
+                surface.config.format,
+            ),
+            _ => return Err(Submit3DError::NotGpuSurface),
+        };
+        if surf_w == 0 || surf_h == 0 { return Err(Submit3DError::ZeroSizedSurface); }
+
+        // Clip the requested rect to the swapchain. Out-of-bounds
+        // requests shrink instead of erroring — tessera-canvas
+        // viewports near window edges hit this every resize.
+        let dx = dst_x.min(surf_w.saturating_sub(1));
+        let dy = dst_y.min(surf_h.saturating_sub(1));
+        let dw = dst_w.min(surf_w.saturating_sub(dx));
+        let dh = dst_h.min(surf_h.saturating_sub(dy));
+        if dw == 0 || dh == 0 { return Err(Submit3DError::ZeroSizedSurface); }
+
+        // Capture device/queue BEFORE borrowing slots.
+        let (device, queue) = match &self.surface {
+            SurfaceMode::Gpu { gpu_pool, dev_id, .. } => (
+                gpu_pool.devices[*dev_id].device.clone(),
+                gpu_pool.devices[*dev_id].queue.clone(),
+            ),
+            _ => return Err(Submit3DError::NotGpuSurface),
+        };
+
+        // Lazy-init renderer + scene. Renderer's color attachment
+        // format is fixed at construction time — to match the
+        // swapchain (so we can `copy_texture_to_texture` later) we
+        // construct it with `surface_format`.
+        if self.urx_renderer_3d.is_none() {
+            self.urx_renderer_3d = Some(uzor_urx_3d::Renderer3D::new(
+                &device, &queue, surface_format, (dw, dh), 1024,
+            ));
+        }
+        if self.urx_scene_3d.is_none() {
+            self.urx_scene_3d = Some(uzor_urx_3d::Scene3D::new());
+        }
+
+        // Lazy-init / resize the offscreen target. Match the
+        // swapchain format so `copy_texture_to_texture` accepts it.
+        let need_new_target = match &self.urx_offscreen_3d {
+            None => true,
+            Some(o) => o.width != dw || o.height != dh || o.format != surface_format,
+        };
+        if need_new_target {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("urx-3d-offscreen"),
+                size: wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: surface_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            self.urx_offscreen_3d = Some(UrxOffscreen3D {
+                texture, view, width: dw, height: dh, format: surface_format,
+            });
+        }
+
+        // Acquire swapchain frame, build encoder.
+        let SurfaceMode::Gpu { surface, .. } = &mut self.surface else {
+            return Err(Submit3DError::NotGpuSurface);
+        };
+        let frame = match surface.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+            _ => return Err(Submit3DError::SurfaceLost),
+        };
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("urx-3d-frame-to-rect"),
+        });
+
+        // Render Scene3D into the offscreen view.
+        let r3d   = self.urx_renderer_3d.as_mut().ok_or(Submit3DError::SlotMissing)?;
+        let scene = self.urx_scene_3d.as_ref().ok_or(Submit3DError::SlotMissing)?;
+        let off   = self.urx_offscreen_3d.as_ref().ok_or(Submit3DError::SlotMissing)?;
+        // Renderer3D::render's first action is `self.resize(target_size)` —
+        // we don't re-resize from the caller side.
+        r3d.render(&device, &queue, &mut encoder, &off.view, camera, scene);
+
+        // Copy the offscreen result into the swapchain at (dx, dy).
+        // Formats match (both `surface_format`) so this is the
+        // cheap GPU-side path — no shader, no pipeline.
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture:   &off.texture,
+                mip_level: 0,
+                origin:    wgpu::Origin3d::ZERO,
+                aspect:    wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture:   &frame.texture,
+                mip_level: 0,
+                origin:    wgpu::Origin3d { x: dx, y: dy, z: 0 },
+                aspect:    wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
+        );
 
         queue.submit([encoder.finish()]);
         frame.present();

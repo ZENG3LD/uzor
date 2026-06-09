@@ -670,6 +670,7 @@ mod tests {
             active:               RenderBackend::TinySkia,
             active_urx:           None,
             urx_unified_memory:   None,
+            urx_offscreen_3d:     None,
         };
 
         let outcome = submit_frame(
@@ -754,6 +755,7 @@ mod tests {
             active:                RenderBackend::VelloCpu,
             active_urx:            None,
             urx_unified_memory:    None,
+            urx_offscreen_3d:      None,
         };
 
         let outcome = submit_frame(
