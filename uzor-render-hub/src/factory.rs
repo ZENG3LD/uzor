@@ -1723,6 +1723,16 @@ impl WindowRenderState {
         self.urx_capture_3d.as_ref()
     }
 
+    /// Region-mode observability: `(region_count, needs_paint)` from
+    /// the retained URX engine, `None` when the engine was never
+    /// initialised (immediate mode / engine channel unused). Feeds the
+    /// consumer's stats endpoints (U2 Wave A, 2026-06-10).
+    pub fn urx_region_stats(&self) -> Option<(usize, bool)> {
+        self.urx_engine.as_ref().map(|e| {
+            (e.region_count(), e.needs_paint().is_some())
+        })
+    }
+
     /// Ensure the capture mirror exists at the current surface size.
     /// Crate-internal — called by the 3D submit paths when armed.
     pub(crate) fn ensure_capture_3d(

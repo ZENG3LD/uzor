@@ -38,6 +38,7 @@ pub use factory::{BackendContext, GpuDevicePool, Submit3DError, UrxCapture3D, Wi
 pub use compose::{Compose3DJob, ComposedOutcome, submit_urx_composed};
 pub use urx_engine_handle::UrxEngineHandle;
 pub use submit::{submit_frame, SubmitOutcome, SubmitParams};
+pub use submit_urx::{submit_urx_regions, RegionSubmitOutcome};
 pub use uzor::layout::window::SoftwarePresenter;
 pub use runtime::RuntimeBackend;
 pub use surface::{RenderSurfaceFactory, SurfaceError, SurfaceSize};

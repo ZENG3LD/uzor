@@ -234,6 +234,135 @@ pub fn submit_urx_wgpu(
 // Stage 3 refactor when regions land), uploaded as the sole region
 // texture, then composited.
 
+// ── UrxRegions (U2 Wave A, 2026-06-10) ─────────────────────────────────────
+//
+// Retained-mode submit: drives the `UrxEngine`'s dirty-region pipeline
+// instead of consuming the immediate `urx_ctx` scene. The consumer
+// (tessera-window region walker) has already `upsert_region`'d this
+// frame's changed regions; this fn:
+//   1. `engine.needs_paint()` — `None` → return `skipped` WITHOUT
+//      acquiring the swapchain. That early-out is the whole point of
+//      retained mode: a fully-static window costs ~nothing.
+//   2. `engine.render(RenderTarget::Cpu(&mut pixmap))` — re-rasterises
+//      ONLY dirty regions into the PERSISTENT pixmap (the same pixmap
+//      lives across frames, so clean regions keep their pixels).
+//   3. upload + blit + present (same plumbing as `submit_urx_cpu`).
+//
+// Wave A rasterises regions on CPU regardless of `active_urx` — the
+// pixmap-persistence model is what makes dirty-skip correct. Engine
+// Wgpu/Hybrid render-targets are a follow-up (they need clean-region
+// re-emit semantics verified first).
+
+/// Outcome of [`submit_urx_regions`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RegionSubmitOutcome {
+    /// `true` when `needs_paint()` returned `None` — nothing dirty,
+    /// no GPU work was done, the swapchain was NOT touched.
+    pub skipped: bool,
+    /// `true` when the surface was lost (caller should retry next frame).
+    pub surface_lost: bool,
+    /// Regions re-rasterised this call (0 when skipped).
+    pub dirty_regions: u32,
+}
+
+pub fn submit_urx_regions(
+    state: &mut WindowRenderState,
+    _params: &SubmitParams,
+    metrics: &mut RenderMetrics,
+) -> RegionSubmitOutcome {
+    // Engine must exist (the region walker lazy-inits it via
+    // `with_urx_engine` before calling us).
+    let Some(engine) = state.urx_engine.as_mut() else {
+        return RegionSubmitOutcome::default();
+    };
+
+    // 1. Frame skip — the retained-mode payoff.
+    if engine.needs_paint().is_none() {
+        return RegionSubmitOutcome { skipped: true, ..Default::default() };
+    }
+
+    // Resolve surface size.
+    let (width, height) = match &state.surface {
+        SurfaceMode::Gpu { surface, .. } => (surface.config.width, surface.config.height),
+        #[cfg(not(target_arch = "wasm32"))]
+        SurfaceMode::Software { width, height, .. } => (*width, *height),
+        #[cfg(target_arch = "wasm32")]
+        SurfaceMode::Canvas2d { .. } => return RegionSubmitOutcome::default(),
+    };
+    if width == 0 || height == 0 { return RegionSubmitOutcome::default(); }
+
+    // 2. Persistent pixmap — clean regions keep their pixels across
+    // frames; a size change forces a full re-rasterise.
+    let need_new = match &state.urx_cpu_pixmap {
+        None => true,
+        Some(p) => p.width() != width || p.height() != height,
+    };
+    if need_new {
+        state.urx_cpu_pixmap = Some(uzor_urx_cpu::Pixmap::new(width, height));
+        if let Some(engine) = state.urx_engine.as_mut() {
+            engine.invalidate_all();
+        }
+    }
+
+    let r2t_t0 = std::time::Instant::now();
+    let dirty_regions = {
+        let engine = state.urx_engine.as_mut().expect("checked above");
+        let pixmap = state.urx_cpu_pixmap.as_mut().expect("inited above");
+        match engine.render(uzor_urx_engine::RenderTarget::Cpu(pixmap)) {
+            Ok(stats) => stats.regions_dirty,
+            Err(e) => {
+                eprintln!("[render-hub] urx region render error: {:?}", e);
+                return RegionSubmitOutcome::default();
+            }
+        }
+    };
+    metrics.render_to_texture_us = r2t_t0.elapsed().as_micros() as u64;
+
+    // 3. Present — same upload/blit path as submit_urx_cpu.
+    let (pix_ptr, pix_len, cw, ch) = {
+        let pixmap = state.urx_cpu_pixmap.as_ref().expect("inited above");
+        let pix = pixmap.pixels();
+        (pix.as_ptr(), pix.len(), pixmap.width(), pixmap.height())
+    };
+    match &mut state.surface {
+        SurfaceMode::Gpu { gpu_pool, surface, dev_id } => {
+            let device = &gpu_pool.devices[*dev_id].device;
+            let queue  = &gpu_pool.devices[*dev_id].queue;
+            // SAFETY: disjoint fields — pixmap outlives this borrow of surface.
+            let pix: &[u8] = unsafe { std::slice::from_raw_parts(pix_ptr, pix_len) };
+            if !pix.is_empty() && cw == width && ch == height {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &surface.target_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    pix,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * cw),
+                        rows_per_image: Some(ch),
+                    },
+                    wgpu::Extent3d { width: cw, height: ch, depth_or_array_layers: 1 },
+                );
+            }
+            let present_t0 = std::time::Instant::now();
+            let lost = crate::submit::blit_and_present_urx(surface, device, queue);
+            metrics.present_us = present_t0.elapsed().as_micros() as u64;
+            RegionSubmitOutcome { skipped: false, surface_lost: lost, dirty_regions }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        SurfaceMode::Software { presenter, .. } => {
+            let pix: &[u8] = unsafe { std::slice::from_raw_parts(pix_ptr, pix_len) };
+            presenter.present(pix, cw, ch);
+            RegionSubmitOutcome { skipped: false, surface_lost: false, dirty_regions }
+        }
+        #[cfg(target_arch = "wasm32")]
+        SurfaceMode::Canvas2d { .. } => RegionSubmitOutcome::default(),
+    }
+}
+
 pub fn submit_urx_hybrid(
     state: &mut WindowRenderState,
     params: &SubmitParams,
