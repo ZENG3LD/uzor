@@ -254,6 +254,13 @@ pub struct WindowRenderState {
     /// of urx-full-integration introduces this slot; Stage 3 will wire
     /// `UrxEngine` lifetime + RegionMixer behind it.
     pub(crate) active_urx: Option<uzor::UrxBackend>,
+
+    /// Cached `unified_memory` flag for `UrxBackend::Auto` `WorkloadHint`.
+    /// `None` until the GPU surface initialises and we query the adapter.
+    /// `Some(true)` on integrated GPUs (CPU+GPU share RAM — Hybrid path
+    /// wins). `Some(false)` on discrete GPUs / software surfaces.
+    /// PR3b refinement (2026-06-09).
+    pub(crate) urx_unified_memory: Option<bool>,
 }
 
 impl WindowRenderState {
@@ -286,6 +293,7 @@ impl WindowRenderState {
             urx_physics:     None,
             urx_particles:   None,
             active_urx: None,
+            urx_unified_memory: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -325,6 +333,7 @@ impl WindowRenderState {
             urx_physics:     None,
             urx_particles:   None,
             active_urx: None,
+            urx_unified_memory: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -392,6 +401,7 @@ impl WindowRenderState {
             urx_physics:     None,
             urx_particles:   None,
             active_urx: None,
+            urx_unified_memory: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -429,6 +439,7 @@ impl WindowRenderState {
             urx_physics:     None,
             urx_particles:   None,
             active_urx: None,
+            urx_unified_memory: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
             active: RenderBackend::TinySkia,
@@ -464,6 +475,7 @@ impl WindowRenderState {
             urx_physics:     None,
             urx_particles:   None,
             active_urx: None,
+            urx_unified_memory: None,
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
             active: RenderBackend::VelloCpu,
@@ -547,6 +559,7 @@ impl WindowRenderState {
             urx_physics:     None,
             urx_particles:   None,
             active_urx: None,
+            urx_unified_memory: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -585,6 +598,7 @@ impl WindowRenderState {
             urx_physics:     None,
             urx_particles:   None,
             active_urx: None,
+            urx_unified_memory: None,
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -642,6 +656,7 @@ impl WindowRenderState {
             urx_physics:     None,
             urx_particles:   None,
             active_urx: None,
+            urx_unified_memory: None,
             canvas2d_ctx: Some(ctx),
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
@@ -1156,7 +1171,30 @@ impl WindowRenderState {
 
         // Resolve UrxBackend → urx_engine::Backend, plumbing
         // `UrxBackend::Auto` through `Backend::auto(WorkloadHint)`.
+        //
+        // PR3b refinement (2026-06-09): hints filled from real
+        // run-time signals instead of placeholder defaults.
+        // - region_count: live count from the engine (if present;
+        //   `1` on first init before any upsert).
+        // - unified_memory: integrated GPU (CPU+GPU share RAM).
+        //   Cached on `self.urx_unified_memory` so we only ask the
+        //   adapter once.
+        // - heavy_compute: scene draw count past a threshold.
+        // - high_hz / retained: still defaulted — surfaced by
+        //   consumer when region-mode + cadence wire is in (tessera U2).
         let gpu_available = matches!(self.surface, SurfaceMode::Gpu { .. });
+        let region_count: u32 = self.urx_engine
+            .as_ref()
+            .map(|e| e.region_count())
+            .unwrap_or(1)
+            .max(1)
+            .try_into()
+            .unwrap_or(u32::MAX);
+        let unified_memory = self.urx_unified_memory.unwrap_or(false);
+        // `ctx` already holds the &mut borrow above — read its scene
+        // directly instead of re-borrowing self.urx_ctx (would
+        // collide with the active mut borrow).
+        let heavy_compute = ctx.scene().commands.len() > 5000;
         let resolve_backend = |b: uzor::UrxBackend| -> uzor_urx_engine::Backend {
             match b {
                 uzor::UrxBackend::Cpu      => uzor_urx_engine::Backend::Cpu,
@@ -1165,14 +1203,13 @@ impl WindowRenderState {
                 uzor::UrxBackend::WgpuFull => uzor_urx_engine::Backend::FullGpu,
                 uzor::UrxBackend::Auto     => {
                     let hint = uzor_urx_engine::WorkloadHint {
-                        region_count: 1, // single-region default; consumer
-                                         // upserting more rebuilds engine.
+                        region_count,
                         total_pixels: (width as u64) * (height as u64),
-                        high_hz: false,
-                        retained: true, // default to retained for cached cost.
+                        high_hz: false, // Tessera U2 will surface real cadence.
+                        retained: true, // default — retained-mode is the URX sweet spot.
                         gpu_available,
-                        unified_memory: false,
-                        heavy_compute: false,
+                        unified_memory,
+                        heavy_compute,
                     };
                     uzor_urx_engine::Backend::auto(hint)
                 }

@@ -669,6 +669,7 @@ mod tests {
             vello_hybrid_ctx:     uzor_render_vello_hybrid::VelloHybridRenderContext::new(1.0),
             active:               RenderBackend::TinySkia,
             active_urx:           None,
+            urx_unified_memory:   None,
         };
 
         let outcome = submit_frame(
@@ -752,6 +753,7 @@ mod tests {
             vello_hybrid_ctx:      uzor_render_vello_hybrid::VelloHybridRenderContext::new(1.0),
             active:                RenderBackend::VelloCpu,
             active_urx:            None,
+            urx_unified_memory:    None,
         };
 
         let outcome = submit_frame(
