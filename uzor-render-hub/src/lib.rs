@@ -26,6 +26,11 @@ pub mod urx_engine_handle;
 
 pub use backend::RenderBackend;
 pub use detect::{detect_backend, default_perf, detect, GpuInfo, PerfDefaults, RecommendedBackend};
+
+// URX cold-start skeleton types — re-exported so consumers
+// (tessera-window etc.) don't need a direct `uzor-urx-core` dep
+// just to pass a spec into `WindowRenderState::paint_skeleton`.
+pub use uzor_urx_core::{SkeletonSpec, SkeletonFrame};
 pub use hub::{BackendPool, HubError, PerfSettings, RenderHub};
 pub use metrics::RenderMetrics;
 pub use factory::{BackendContext, GpuDevicePool, WindowRenderState};
