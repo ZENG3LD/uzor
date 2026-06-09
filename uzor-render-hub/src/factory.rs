@@ -1733,6 +1733,38 @@ impl WindowRenderState {
         })
     }
 
+    /// U2 Wave C support — buffer ONE region's draw calls into the
+    /// shared URX paint context and return the resulting `Scene`.
+    ///
+    /// Runs `f` against `urx_ctx` (begin_frame'd to the surface size,
+    /// so previous content is cleared), then drains the buffered
+    /// scene. The region walker calls this once per cadence-due
+    /// container, then hands the scene to
+    /// `with_urx_engine(|h| h.engine.upsert_region(...))`.
+    /// (Two calls instead of one handle: the handle's `render_ctx` is
+    /// `&mut dyn RenderContext`, which can't expose `take_scene` —
+    /// this method has the concrete context.)
+    pub fn paint_urx_region_scene(
+        &mut self,
+        f: impl FnOnce(&mut dyn uzor::render::RenderContext),
+    ) -> Option<uzor_urx_core::Scene> {
+        let (width, height) = match &self.surface {
+            SurfaceMode::Gpu { surface, .. } => (surface.config.width, surface.config.height),
+            #[cfg(not(target_arch = "wasm32"))]
+            SurfaceMode::Software { width, height, .. } => (*width, *height),
+            #[cfg(target_arch = "wasm32")]
+            SurfaceMode::Canvas2d { .. } => return None,
+        };
+        if width == 0 || height == 0 { return None; }
+        if self.urx_ctx.is_none() {
+            self.urx_ctx = Some(uzor_render_urx::UrxRenderContext::new(1.0));
+        }
+        let ctx = self.urx_ctx.as_mut()?;
+        ctx.begin_frame(width, height);
+        f(ctx);
+        Some(ctx.take_scene())
+    }
+
     /// Ensure the capture mirror exists at the current surface size.
     /// Crate-internal — called by the 3D submit paths when armed.
     pub(crate) fn ensure_capture_3d(
