@@ -67,11 +67,12 @@ pub struct ComposedOutcome {
 /// - `state.surface` is [`SurfaceMode::Gpu`] — software surfaces don't
 ///   carry the 3D path (returns [`Submit3DError::NotGpuSurface`]).
 /// - `state.active_urx` is `Some(_)` — the URX channel must be armed
-///   (caller did `set_active_urx(Some(b))` before paint). For the
-///   composed path only `UrxBackend::Cpu` and `UrxBackend::Wgpu` (and
-///   `Auto` resolving to one of them on a GPU surface) are wired in
-///   1.4.9 — the Hybrid / WgpuFull backends fall back to fullscreen
-///   submit-then-3D, which still works but with one extra encoder.
+///   (caller did `set_active_urx(Some(b))` before paint). The 2D pass is
+///   wired for every backend: `Cpu` and the `Hybrid`/`WgpuFull`/`Auto`
+///   arm rasterise the chrome through the CPU URX backend (chrome is not
+///   perf-critical); `Wgpu` draws it via the instanced renderer. The 3D
+///   viewports always render natively via `Renderer3D`. A GPU 2D compose
+///   pass for Hybrid/WgpuFull arrives with SR3 (native-wgpu pipelines).
 /// - For each job: the caller has already pushed the desired
 ///   `Scene3D` into the hub slot via
 ///   `state.with_renderer_3d(|_, scene| *scene = my_scene_for_this_job)`.
@@ -174,17 +175,20 @@ pub fn submit_urx_composed(
             );
         }
         uzor::UrxBackend::Hybrid | uzor::UrxBackend::WgpuFull | uzor::UrxBackend::Auto => {
-            // 1.4.9 fallback: clear the swap_view to base_color so 3D
-            // viewports composite onto a clean background. Hybrid /
-            // WgpuFull compose passes land in a follow-up patch.
-            clear_swap_view(&mut encoder, &swap_view, base_color);
-            // Re-stash the unused scene so the next frame starts fresh.
-            if let Some(ref mut c) = state.urx_ctx {
-                // `take_scene` already drained it; nothing more to do here.
-                // (Future: a `restore_scene(s)` op so we can return the
-                // borrowed scene to the ctx if needed.)
-                let _ = c;
-            }
+            // Hybrid / WgpuFull have monolithic submit paths with no
+            // external-encoder entry point (that's the SR3 native-wgpu
+            // work). For the COMPOSE case their 2D layer is chrome — not
+            // perf-critical — so we rasterise it through the CPU URX
+            // backend into the pixmap and blit, exactly like the Cpu arm.
+            // The 3D viewports still render natively via Renderer3D in
+            // Phase 4. This is honest (chrome actually paints) and cheap,
+            // and replaces the 1.4.9 clear-only stub that dropped all 2D
+            // content. A true GPU 2D compose pass for these backends
+            // arrives with SR3 (render_into_encoder).
+            compose_urx_cpu_into_swap(
+                state, &device, &queue, &mut encoder, &swap_view,
+                surf_w, surf_h, urx_scene_opt, base_color,
+            );
         }
     }
 
@@ -293,37 +297,6 @@ pub fn submit_urx_composed(
 }
 
 // ── 2D pass helpers ─────────────────────────────────────────────────
-
-/// Clear `swap_view` to `base_color` via a render pass with LoadOp::Clear
-/// and no draws. Used by Hybrid / WgpuFull fallback paths.
-fn clear_swap_view(
-    encoder:    &mut wgpu::CommandEncoder,
-    swap_view:  &wgpu::TextureView,
-    base_color: [f32; 4],
-) {
-    let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("compose:clear"),
-        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-            view: swap_view,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color {
-                    r: base_color[0] as f64,
-                    g: base_color[1] as f64,
-                    b: base_color[2] as f64,
-                    a: base_color[3] as f64,
-                }),
-                store: wgpu::StoreOp::Store,
-            },
-            depth_slice: None,
-        })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
-        multiview_mask: None,
-    });
-    // _pass dropped → encoder records the pass.
-}
 
 /// CPU URX 2D pass — rasterise into the per-window pixmap, upload via
 /// queue.write_texture into surface.target_texture, then blit
