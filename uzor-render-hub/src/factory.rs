@@ -224,10 +224,12 @@ pub struct WindowRenderState {
     /// consumer ticks `physics.step(dt)` per frame, reads body
     /// positions into Scene3D nodes.
     pub(crate) urx_physics: Option<uzor_urx_physics::PhysicsWorld>,
-    /// URX 3D particle system. Stage 4: opt-in via
-    /// `init_particles(emitter_config)` — no zero-arg default
-    /// (the EmitterConfig drives spawn rate / lifetime / direction).
-    pub(crate) urx_particles: Option<uzor_urx_3d::ParticleSystem>,
+    /// URX 3D particle systems, keyed by `ParticlesId.raw()` (1.4.11 —
+    /// multi-emitter: one slot per `Content::Particles` container in the
+    /// window). Opt-in via `init_particles(id, emitter_config)` — no
+    /// zero-arg default (the EmitterConfig drives spawn rate / lifetime /
+    /// direction). Was a single `Option` slot through 1.4.10.
+    pub(crate) urx_particles: std::collections::HashMap<u64, uzor_urx_3d::ParticleSystem>,
 
     // ── Canvas 2D context (wasm32 only) ───────────────────────────────────────
     /// HTML Canvas 2D render context.  Only populated when `active` is
@@ -347,7 +349,7 @@ impl WindowRenderState {
             urx_renderer_3d: None,
             urx_scene_3d:    None,
             urx_physics:     None,
-            urx_particles:   None,
+            urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
@@ -390,7 +392,7 @@ impl WindowRenderState {
             urx_renderer_3d: None,
             urx_scene_3d:    None,
             urx_physics:     None,
-            urx_particles:   None,
+            urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
@@ -461,7 +463,7 @@ impl WindowRenderState {
             urx_renderer_3d: None,
             urx_scene_3d:    None,
             urx_physics:     None,
-            urx_particles:   None,
+            urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
@@ -502,7 +504,7 @@ impl WindowRenderState {
             urx_renderer_3d: None,
             urx_scene_3d:    None,
             urx_physics:     None,
-            urx_particles:   None,
+            urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
@@ -541,7 +543,7 @@ impl WindowRenderState {
             urx_renderer_3d: None,
             urx_scene_3d:    None,
             urx_physics:     None,
-            urx_particles:   None,
+            urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
@@ -628,7 +630,7 @@ impl WindowRenderState {
             urx_renderer_3d: None,
             urx_scene_3d:    None,
             urx_physics:     None,
-            urx_particles:   None,
+            urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
@@ -670,7 +672,7 @@ impl WindowRenderState {
             urx_renderer_3d: None,
             urx_scene_3d:    None,
             urx_physics:     None,
-            urx_particles:   None,
+            urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
@@ -731,7 +733,7 @@ impl WindowRenderState {
             urx_renderer_3d: None,
             urx_scene_3d:    None,
             urx_physics:     None,
-            urx_particles:   None,
+            urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
             urx_offscreen_3d: None,
@@ -1688,20 +1690,32 @@ impl WindowRenderState {
         f(physics)
     }
 
-    /// Construct the URX particle system from a consumer-supplied
+    /// Construct a URX particle system for `id` from a consumer-supplied
     /// `EmitterConfig`. Idempotent only if called with the same config;
-    /// re-init replaces the previous instance. Stage 4 surface.
-    pub fn init_particles(&mut self, config: uzor_urx_3d::EmitterConfig) {
-        self.urx_particles = Some(uzor_urx_3d::ParticleSystem::new(config));
+    /// re-init replaces the previous instance for that id. Multi-emitter
+    /// (1.4.11): each `Content::Particles` container gets its own slot.
+    pub fn init_particles(&mut self, id: u64, config: uzor_urx_3d::EmitterConfig) {
+        self.urx_particles.insert(id, uzor_urx_3d::ParticleSystem::new(config));
     }
 
-    /// Borrow the URX particle system (only when initialised via
+    /// `true` once `id` has been initialised via [`Self::init_particles`].
+    pub fn has_particles(&self, id: u64) -> bool {
+        self.urx_particles.contains_key(&id)
+    }
+
+    /// Borrow the URX particle system for `id` (only after
     /// [`Self::init_particles`]). `None` until then.
     pub fn with_particles<R>(
         &mut self,
+        id: u64,
         f: impl FnOnce(&mut uzor_urx_3d::ParticleSystem) -> R,
     ) -> Option<R> {
-        self.urx_particles.as_mut().map(f)
+        self.urx_particles.get_mut(&id).map(f)
+    }
+
+    /// Drop the particle system for `id` (container despawned / migrated).
+    pub fn remove_particles(&mut self, id: u64) {
+        self.urx_particles.remove(&id);
     }
 
     /// Arm / disarm the 3D screenshot capture mirror. While armed,
@@ -1817,6 +1831,7 @@ impl WindowRenderState {
     /// composites over whatever the scene drew.
     pub fn submit_particles_to_rect(
         &mut self,
+        id: u64,
         camera: &uzor_urx_3d::PerspectiveCamera,
         dst_x: u32,
         dst_y: u32,
@@ -1840,7 +1855,7 @@ impl WindowRenderState {
         let dh = dst_h.min(surf_h.saturating_sub(dy));
         if dw == 0 || dh == 0 { return Err(Submit3DError::ZeroSizedSurface); }
 
-        if self.urx_particles.is_none() { return Err(Submit3DError::SlotMissing); }
+        if !self.urx_particles.contains_key(&id) { return Err(Submit3DError::SlotMissing); }
 
         let (device, queue) = match &self.surface {
             SurfaceMode::Gpu { gpu_pool, dev_id, .. } => (
@@ -1902,7 +1917,7 @@ impl WindowRenderState {
         // Render Scene3D + particles into the offscreen view.
         let r3d       = self.urx_renderer_3d.as_mut().ok_or(Submit3DError::SlotMissing)?;
         let scene     = self.urx_scene_3d.as_ref().ok_or(Submit3DError::SlotMissing)?;
-        let particles = self.urx_particles.as_ref().ok_or(Submit3DError::SlotMissing)?;
+        let particles = self.urx_particles.get(&id).ok_or(Submit3DError::SlotMissing)?;
         let off       = self.urx_offscreen_3d.as_ref().ok_or(Submit3DError::SlotMissing)?;
         r3d.render_with_particles(&device, &queue, &mut encoder, &off.view, camera, scene, particles);
 

@@ -473,7 +473,14 @@ fn init_gpu_surface(
         } else {
             wgpu::CompositeAlphaMode::Auto
         };
-        // Match vello's selection — first Rgba8Unorm / Bgra8Unorm.
+        // Match vello's selection — first non-sRGB Rgba8/Bgra8. The blit
+        // path uploads sRGB CPU pixmap bytes straight into the swapchain,
+        // so a non-sRGB swapchain is gamma-correct (verified: this dev box
+        // picks Bgra8Unorm, screenshot bytes match spec exactly). An
+        // `*Srgb`-only adapter would double-encode (darker) — but the safe
+        // fix there (non-sRGB view_format + blit through it) is unverified
+        // for lack of such hardware, so it's left for the SR3 native-wgpu
+        // pass which owns the surface config. See backlog 1.4.11b.
         let fmt = caps
             .formats
             .iter()
