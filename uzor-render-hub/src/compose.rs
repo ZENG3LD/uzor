@@ -47,6 +47,21 @@ pub struct Compose3DJob {
     pub dst_h: u32,
 }
 
+/// One particle viewport contribution to a composed frame. Mirrors
+/// [`Compose3DJob`] but carries a `ParticlesId.raw()` so the per-id
+/// system (1.4.11 multi-emitter registry) is selected per job.
+#[derive(Debug, Clone)]
+pub struct ComposeParticlesJob {
+    /// `ParticlesId.raw()` — selects the hub's per-id particle system.
+    pub id: u64,
+    /// Perspective camera for this viewport.
+    pub camera: uzor_urx_3d::PerspectiveCamera,
+    pub dst_x: u32,
+    pub dst_y: u32,
+    pub dst_w: u32,
+    pub dst_h: u32,
+}
+
 /// Outcome of [`submit_urx_composed`].
 #[derive(Debug, Clone, Copy)]
 pub struct ComposedOutcome {
@@ -293,6 +308,187 @@ pub fn submit_urx_composed(
     queue.submit([encoder.finish()]);
     frame.present();
 
+    Ok(ComposedOutcome { jobs_rendered, jobs_skipped, surface_lost: false })
+}
+
+/// Compose N particle viewports into ONE swapchain frame — single
+/// acquire, background clear, per-job particle render, single present.
+///
+/// Replaces calling [`WindowRenderState::submit_particles_to_rect`] once
+/// per emitter: that path did its own `get_current_texture` + `present`
+/// per call, so two emitters in a window issued TWO presents on one
+/// swapchain frame (undefined → hard flicker) AND each only copied its
+/// own sub-rect into an otherwise-uninitialised swapchain texture (the
+/// area outside the rect flickered between recycled frames even with a
+/// single emitter). This path clears the whole frame to `base_color`
+/// first, then composites every emitter's offscreen over it, then
+/// presents once — flicker-free for any emitter count.
+///
+/// Each job's particle system is selected by `job.id` from the per-id
+/// registry (1.4.11). Jobs whose rect clips to zero or whose id is
+/// uninitialised are skipped.
+pub fn submit_particles_composed(
+    state:      &mut WindowRenderState,
+    base_color: [f32; 4],
+    jobs:       &[ComposeParticlesJob],
+) -> Result<ComposedOutcome, Submit3DError> {
+    let (surf_w, surf_h, surface_format) = match &state.surface {
+        SurfaceMode::Gpu { surface, .. } => (
+            surface.config.width, surface.config.height, surface.config.format,
+        ),
+        _ => return Err(Submit3DError::NotGpuSurface),
+    };
+    if surf_w == 0 || surf_h == 0 { return Err(Submit3DError::ZeroSizedSurface); }
+
+    let (device, queue) = match &state.surface {
+        SurfaceMode::Gpu { gpu_pool, dev_id, .. } => (
+            gpu_pool.devices[*dev_id].device.clone(),
+            gpu_pool.devices[*dev_id].queue.clone(),
+        ),
+        _ => return Err(Submit3DError::NotGpuSurface),
+    };
+
+    if state.capture_3d_enabled {
+        state.ensure_capture_3d(&device, surf_w, surf_h, surface_format);
+    }
+
+    // Acquire the frame.
+    let SurfaceMode::Gpu { surface, .. } = &mut state.surface else {
+        return Err(Submit3DError::NotGpuSurface);
+    };
+    let frame = match surface.surface.get_current_texture() {
+        wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+            surface.surface.configure(&device, &surface.config);
+            return Ok(ComposedOutcome { jobs_rendered: 0, jobs_skipped: jobs.len() as u32, surface_lost: true });
+        }
+        _ => return Ok(ComposedOutcome { jobs_rendered: 0, jobs_skipped: jobs.len() as u32, surface_lost: true }),
+    };
+    let swap_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("uzor-render-hub:particles-compose"),
+    });
+
+    // Phase: clear the whole frame so areas outside every viewport are
+    // a stable background instead of a recycled swapchain texture.
+    {
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("particles-compose:clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &swap_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: base_color[0] as f64, g: base_color[1] as f64,
+                        b: base_color[2] as f64, a: base_color[3] as f64,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+    }
+    // Mirror clear into the capture texture too (so areas outside the
+    // viewports aren't stale in screenshots).
+    if let Some(cap) = state.urx_capture_3d.as_ref() {
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("particles-compose:clear-capture"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &cap.view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: base_color[0] as f64, g: base_color[1] as f64,
+                        b: base_color[2] as f64, a: base_color[3] as f64,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+                depth_slice: None,
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+    }
+
+    // Lazy renderer + empty scene (particles need a Renderer3D + a scene
+    // to draw "over"; the scene stays empty for pure-particle viewports).
+    if state.urx_renderer_3d.is_none() {
+        state.urx_renderer_3d = Some(uzor_urx_3d::Renderer3D::new(
+            &device, &queue, surface_format, (surf_w.max(1), surf_h.max(1)), 1024,
+        ));
+    }
+    if state.urx_scene_3d.is_none() {
+        state.urx_scene_3d = Some(uzor_urx_3d::Scene3D::new());
+    }
+
+    let mut jobs_rendered = 0u32;
+    let mut jobs_skipped  = 0u32;
+
+    for job in jobs {
+        let dx = job.dst_x.min(surf_w.saturating_sub(1));
+        let dy = job.dst_y.min(surf_h.saturating_sub(1));
+        let dw = job.dst_w.min(surf_w.saturating_sub(dx));
+        let dh = job.dst_h.min(surf_h.saturating_sub(dy));
+        if dw == 0 || dh == 0 { jobs_skipped += 1; continue; }
+        if !state.urx_particles.contains_key(&job.id) { jobs_skipped += 1; continue; }
+
+        // Resize the shared offscreen to this job's rect.
+        let need_new = match &state.urx_offscreen_3d {
+            None => true,
+            Some(o) => o.width != dw || o.height != dh || o.format != surface_format,
+        };
+        if need_new {
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("urx-particles-offscreen-compose"),
+                size: wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: surface_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            state.urx_offscreen_3d = Some(crate::factory::UrxOffscreen3D {
+                texture, view, width: dw, height: dh, format: surface_format,
+            });
+        }
+
+        // Render this id's particles into the offscreen (over the empty scene).
+        {
+            let r3d   = match state.urx_renderer_3d.as_mut()   { Some(r) => r, None => { jobs_skipped += 1; continue; } };
+            let scene = match state.urx_scene_3d.as_ref()       { Some(s) => s, None => { jobs_skipped += 1; continue; } };
+            let parts = match state.urx_particles.get(&job.id)  { Some(p) => p, None => { jobs_skipped += 1; continue; } };
+            let off   = match state.urx_offscreen_3d.as_ref()   { Some(o) => o, None => { jobs_skipped += 1; continue; } };
+            r3d.render_with_particles(&device, &queue, &mut encoder, &off.view, &job.camera, scene, parts);
+        }
+
+        // Copy offscreen → swapchain at (dx,dy), and into the mirror.
+        let off = state.urx_offscreen_3d.as_ref().unwrap();
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo { texture: &off.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            wgpu::TexelCopyTextureInfo { texture: &frame.texture, mip_level: 0, origin: wgpu::Origin3d { x: dx, y: dy, z: 0 }, aspect: wgpu::TextureAspect::All },
+            wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
+        );
+        if let Some(cap) = state.urx_capture_3d.as_ref() {
+            encoder.copy_texture_to_texture(
+                wgpu::TexelCopyTextureInfo { texture: &off.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo { texture: &cap.texture, mip_level: 0, origin: wgpu::Origin3d { x: dx, y: dy, z: 0 }, aspect: wgpu::TextureAspect::All },
+                wgpu::Extent3d { width: dw, height: dh, depth_or_array_layers: 1 },
+            );
+        }
+        jobs_rendered += 1;
+    }
+
+    queue.submit([encoder.finish()]);
+    frame.present();
     Ok(ComposedOutcome { jobs_rendered, jobs_skipped, surface_lost: false })
 }
 
