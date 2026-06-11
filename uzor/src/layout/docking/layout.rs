@@ -196,8 +196,21 @@ impl<P: DockPanel> DockingTree<P> {
             }
         }
 
-        // 3. Proportions
-        if branch.proportions.len() == n {
+        // 3. Proportions — only for true single-axis layouts.
+        // Multi-axis layouts (Grid2x2, OneLeftTwoRight, TwoLeftOneRight,
+        // OneTopTwoBottom, TwoTopOneBottom) must fall through to their
+        // shape-aware path (cross_ratio / calculate_rects) even when a
+        // stale proportions vec happens to match child count.  Without
+        // this guard a Grid2x2 with proportions.len()==4 collapses into
+        // 4 horizontal strips on the first separator drag.
+        let is_single_axis_layout = matches!(
+            branch.layout,
+            WindowLayout::SplitHorizontal
+                | WindowLayout::SplitVertical
+                | WindowLayout::ThreeColumns
+                | WindowLayout::ThreeRows
+        );
+        if is_single_axis_layout && branch.proportions.len() == n {
             let is_vertical = matches!(branch.layout, WindowLayout::SplitVertical | WindowLayout::ThreeRows);
             let total_gap = if n > 1 { (n - 1) as f32 * gap } else { 0.0 };
 
@@ -286,5 +299,261 @@ impl<P: DockPanel> DockingTree<P> {
             }
         }
         None
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::docking::{
+        DockPanel, DockingTree, Branch, PanelNode, Leaf, BranchId, LeafId,
+        WindowLayout, SplitKind,
+    };
+
+    /// Minimal panel type for tests.
+    #[derive(Clone)]
+    struct P;
+    impl DockPanel for P {
+        fn title(&self)   -> &str { "p" }
+        fn type_id(&self) -> &'static str { "p" }
+        fn min_size(&self) -> (f32, f32) { (0.0, 0.0) }
+    }
+
+    /// Build a 4-child Branch in Grid2x2 layout with stale proportions.
+    ///
+    /// This is the state that previously triggered the 4x1 collapse: a Grid2x2
+    /// branch whose `proportions` vec happened to be length 4 (written by an
+    /// earlier separator drag before Part A guard was added).
+    fn grid2x2_branch_with_proportions() -> Branch<P> {
+        let make_leaf = |id: u64| PanelNode::Leaf(Leaf::new(LeafId(id), P));
+        Branch {
+            id: BranchId(0),
+            children: vec![make_leaf(1), make_leaf(2), make_leaf(3), make_leaf(4)],
+            layout: WindowLayout::Grid2x2,
+            custom_rects: Vec::new(),
+            // Stale proportions from an old (pre-fix) separator drag — must be ignored.
+            proportions: vec![0.3, 0.3, 0.2, 0.2],
+            cross_ratio: None,
+            preserve_if_empty: false,
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Part A — proportions guard
+    // -------------------------------------------------------------------------
+
+    /// Grid2x2 with stale proportions must NOT collapse to 4 horizontal strips.
+    ///
+    /// Before the fix, `compute_child_rects` entered the proportions fast-path
+    /// (because `proportions.len() == 4 == n`) and rendered 4 same-height rows,
+    /// destroying the 2×2 shape.  After the fix the proportions path is skipped
+    /// for multi-axis layouts, so we fall through to `calculate_rects` which
+    /// returns proper quadrants.
+    #[test]
+    fn grid2x2_with_proportions_does_not_flatten() {
+        let branch = grid2x2_branch_with_proportions();
+        let parent = PanelRect::new(0.0, 0.0, 1000.0, 800.0);
+        let rects = DockingTree::<P>::compute_child_rects(&branch, parent);
+
+        assert_eq!(rects.len(), 4, "must have 4 children");
+
+        // Quadrant shape check: TL and BL must share x=0 (left column),
+        // TR and BR must share a positive x (right column).
+        let tl = rects[0];
+        let tr = rects[1];
+        let bl = rects[2];
+        let br = rects[3];
+
+        // Left column: x == 0
+        assert!(tl.x < 1.0,  "TL must start at left edge, got x={}", tl.x);
+        assert!(bl.x < 1.0,  "BL must start at left edge, got x={}", bl.x);
+
+        // Right column: x > 0
+        assert!(tr.x > 1.0,  "TR must be in right column, got x={}", tr.x);
+        assert!(br.x > 1.0,  "BR must be in right column, got x={}", br.x);
+
+        // Top row: y == 0
+        assert!(tl.y < 1.0,  "TL must start at top, got y={}", tl.y);
+        assert!(tr.y < 1.0,  "TR must start at top, got y={}", tr.y);
+
+        // Bottom row: y > 0
+        assert!(bl.y > 1.0,  "BL must be in bottom row, got y={}", bl.y);
+        assert!(br.y > 1.0,  "BR must be in bottom row, got y={}", br.y);
+    }
+
+    /// Grid2x2 with an explicit cross_ratio must lay out correct quadrant sizes.
+    #[test]
+    fn grid2x2_cross_ratio_quadrant_sizes() {
+        let make_leaf = |id: u64| PanelNode::Leaf(Leaf::new(LeafId(id), P));
+        let branch = Branch {
+            id: BranchId(0),
+            children: vec![make_leaf(1), make_leaf(2), make_leaf(3), make_leaf(4)],
+            layout: WindowLayout::Grid2x2,
+            custom_rects: Vec::new(),
+            proportions: Vec::new(),
+            // 40% left / 60% right,  30% top / 70% bottom
+            cross_ratio: Some((0.4, 0.3)),
+            preserve_if_empty: false,
+        };
+
+        let parent = PanelRect::new(0.0, 0.0, 1000.0, 800.0);
+        let rects = DockingTree::<P>::compute_child_rects(&branch, parent);
+
+        let tl = rects[0];
+        let tr = rects[1];
+        let bl = rects[2];
+
+        // Left column width ≈ 400
+        assert!((tl.width - 400.0).abs() < 1.0,
+            "TL width should be ~400, got {}", tl.width);
+        // Right column width ≈ 600
+        assert!((tr.width - 600.0).abs() < 1.0,
+            "TR width should be ~600, got {}", tr.width);
+        // Top row height ≈ 240
+        assert!((tl.height - 240.0).abs() < 1.0,
+            "TL height should be ~240, got {}", tl.height);
+        // Bottom row height ≈ 560
+        assert!((bl.height - 560.0).abs() < 1.0,
+            "BL height should be ~560, got {}", bl.height);
+    }
+
+    // -------------------------------------------------------------------------
+    // Part A — single-axis layouts still respect proportions
+    // -------------------------------------------------------------------------
+
+    /// SplitHorizontal with explicit proportions must use them (not fall through).
+    #[test]
+    fn split_horizontal_respects_proportions() {
+        let make_leaf = |id: u64| PanelNode::Leaf(Leaf::new(LeafId(id), P));
+        let branch = Branch {
+            id: BranchId(0),
+            children: vec![make_leaf(1), make_leaf(2)],
+            layout: WindowLayout::SplitHorizontal,
+            custom_rects: Vec::new(),
+            proportions: vec![0.75, 0.25],
+            cross_ratio: None,
+            preserve_if_empty: false,
+        };
+
+        let parent = PanelRect::new(0.0, 0.0, 1000.0, 600.0);
+        let rects = DockingTree::<P>::compute_child_rects(&branch, parent);
+
+        assert_eq!(rects.len(), 2);
+        // First child should be ~75% of 1000px = 750px wide.
+        assert!((rects[0].width - 750.0).abs() < 2.0,
+            "first child width should be ~750, got {}", rects[0].width);
+        assert!((rects[1].width - 250.0).abs() < 2.0,
+            "second child width should be ~250, got {}", rects[1].width);
+    }
+
+    /// ThreeRows with explicit proportions must stack vertically per proportions.
+    #[test]
+    fn three_rows_respects_proportions() {
+        let make_leaf = |id: u64| PanelNode::Leaf(Leaf::new(LeafId(id), P));
+        let branch = Branch {
+            id: BranchId(0),
+            children: vec![make_leaf(1), make_leaf(2), make_leaf(3)],
+            layout: WindowLayout::ThreeRows,
+            custom_rects: Vec::new(),
+            proportions: vec![0.5, 0.25, 0.25],
+            cross_ratio: None,
+            preserve_if_empty: false,
+        };
+
+        let parent = PanelRect::new(0.0, 0.0, 800.0, 600.0);
+        let rects = DockingTree::<P>::compute_child_rects(&branch, parent);
+
+        assert_eq!(rects.len(), 3);
+        // Heights: 300, 150, 150
+        assert!((rects[0].height - 300.0).abs() < 2.0,
+            "row 0 height should be ~300, got {}", rects[0].height);
+        assert!((rects[1].height - 150.0).abs() < 2.0,
+            "row 1 height should be ~150, got {}", rects[1].height);
+        assert!((rects[2].height - 150.0).abs() < 2.0,
+            "row 2 height should be ~150, got {}", rects[2].height);
+    }
+
+    // -------------------------------------------------------------------------
+    // Part B — Grid2x2 drag actually moves cross_ratio via DockingTree
+    // -------------------------------------------------------------------------
+
+    /// Helper: after `add_leaf` + `split_leaf_with_children(Grid2x2)`, the root
+    /// has 1 child which is the Grid2x2 branch.  Returns a reference to it.
+    fn find_grid2x2_branch(tree: &DockingTree<P>) -> &Branch<P> {
+        // root → children[0] = Branch(Grid2x2)
+        match &tree.root().children[0] {
+            PanelNode::Branch(b) => b,
+            PanelNode::Leaf(_) => panic!("expected Grid2x2 branch as root child"),
+        }
+    }
+
+    /// Dragging the vertical (left/right) separator of a Grid2x2 branch must
+    /// update cross_ratio.x and NOT write proportions.
+    ///
+    /// We directly call `set_branch_cross_ratio` to mirror the Part B path,
+    /// then verify via `compute_child_rects`.
+    #[test]
+    fn grid2x2_set_cross_ratio_changes_quadrant_widths() {
+        let mut tree: DockingTree<P> = DockingTree::new();
+        let first_id = tree.add_leaf(P);
+        // After split, root has 1 child = Grid2x2 branch with 4 leaves
+        let leaf_ids = tree.split_leaf_with_children(first_id, SplitKind::Grid2x2, 1000.0, 800.0);
+        assert_eq!(leaf_ids.len(), 4);
+
+        // The Grid2x2 branch is root's first (only) child.
+        let grid_branch_id = find_grid2x2_branch(&tree).id;
+
+        // Set cross_ratio: 60% left / 40% right, 50/50 top/bottom
+        tree.set_branch_cross_ratio(grid_branch_id, 0.6, 0.5);
+
+        let grid_branch = find_grid2x2_branch(&tree);
+        let parent = PanelRect::new(0.0, 0.0, 1000.0, 800.0);
+        let rects = DockingTree::<P>::compute_child_rects(grid_branch, parent);
+
+        assert_eq!(rects.len(), 4);
+        let tl = rects[0];
+        let tr = rects[1];
+
+        // Left column ~600, right column ~400
+        assert!((tl.width - 600.0).abs() < 1.0,
+            "TL width after cross_ratio should be ~600, got {}", tl.width);
+        assert!((tr.width - 400.0).abs() < 1.0,
+            "TR width after cross_ratio should be ~400, got {}", tr.width);
+
+        // proportions must NOT have been written on the grid branch
+        assert!(find_grid2x2_branch(&tree).proportions.is_empty(),
+            "proportions must stay empty on Grid2x2 cross_ratio drag");
+    }
+
+    /// Moving the horizontal separator (Horizontal orientation) must update
+    /// cross_ratio.y — top/bottom row heights change, column widths stay equal.
+    #[test]
+    fn grid2x2_cross_ratio_y_changes_row_heights() {
+        let mut tree: DockingTree<P> = DockingTree::new();
+        let first_id = tree.add_leaf(P);
+        let _ = tree.split_leaf_with_children(first_id, SplitKind::Grid2x2, 1000.0, 800.0);
+
+        let grid_branch_id = find_grid2x2_branch(&tree).id;
+        // 50/50 left/right, 30/70 top/bottom
+        tree.set_branch_cross_ratio(grid_branch_id, 0.5, 0.3);
+
+        let grid_branch = find_grid2x2_branch(&tree);
+        let parent = PanelRect::new(0.0, 0.0, 1000.0, 800.0);
+        let rects = DockingTree::<P>::compute_child_rects(grid_branch, parent);
+
+        assert_eq!(rects.len(), 4);
+        let tl = rects[0];
+        let bl = rects[2];
+
+        // Top row height ~240 (30% of 800)
+        assert!((tl.height - 240.0).abs() < 1.0,
+            "TL height should be ~240, got {}", tl.height);
+        // Bottom row height ~560 (70% of 800)
+        assert!((bl.height - 560.0).abs() < 1.0,
+            "BL height should be ~560, got {}", bl.height);
     }
 }

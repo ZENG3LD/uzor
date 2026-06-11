@@ -486,6 +486,54 @@ impl<P: DockPanel> DockState<P> {
             (n, raw_props, children_min_px, pos_a, pos_b)
         };
 
+        // --- Grid2x2 fast path: route separator drags to cross_ratio ---
+        //
+        // A Grid2x2 layout is controlled by cross_ratio (xr = vertical divider,
+        // yr = horizontal divider).  Writing proportions on it is wrong (Part A
+        // guard prevents the layout collapse, but we still want a functional
+        // drag).  Convert the pixel delta into a ratio delta and commit via
+        // set_branch_cross_ratio instead.
+        {
+            let is_grid2x2 = self.tree.find_branch(parent_id)
+                .map(|b| matches!(b.layout, WindowLayout::Grid2x2))
+                .unwrap_or(false);
+
+            if is_grid2x2 {
+                let (full_w, full_h) = match branch_rect {
+                    Some(r) => (r.width, r.height),
+                    None => (content_width, content_height),
+                };
+                // Read current cross_ratio, defaulting to centred 0.5/0.5.
+                let (cur_xr, cur_yr) = self.tree.find_branch(parent_id)
+                    .and_then(|b| b.cross_ratio)
+                    .unwrap_or((0.5, 0.5));
+
+                // The effective total size per axis for ratio calculation must
+                // account for the gap so the separator tracks its line.
+                let gap = super::docking::presets::PANEL_GAP;
+                let new_xr;
+                let new_yr;
+                match orientation {
+                    SeparatorOrientation::Vertical => {
+                        // Vertical bar → moves left/right → affects x ratio.
+                        let available_w = (full_w - gap).max(1.0);
+                        new_xr = (cur_xr + delta as f64 / available_w as f64)
+                            .clamp(0.05, 0.95);
+                        new_yr = cur_yr;
+                    }
+                    SeparatorOrientation::Horizontal => {
+                        // Horizontal bar → moves up/down → affects y ratio.
+                        let available_h = (full_h - gap).max(1.0);
+                        new_xr = cur_xr;
+                        new_yr = (cur_yr + delta as f64 / available_h as f64)
+                            .clamp(0.05, 0.95);
+                    }
+                }
+                self.tree.set_branch_cross_ratio(parent_id, new_xr, new_yr);
+                return true;
+            }
+        }
+
         // Convert pixel delta to share-space delta relative to total share sum.
         let total_share: f64 = raw_props.iter().sum();
         let delta_share = (delta as f64 / branch_size as f64) * total_share;
@@ -1476,5 +1524,220 @@ impl<P: DockPanel> DockState<P> {
 impl<P: DockPanel> Default for DockState<P> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::docking::{DockPanel, DockingTree, SplitKind, PanelNode, BranchId};
+
+    /// Minimal panel for testing.
+    #[derive(Clone)]
+    struct P;
+    impl DockPanel for P {
+        fn title(&self)   -> &str { "p" }
+        fn type_id(&self) -> &'static str { "p" }
+        fn min_size(&self) -> (f32, f32) { (0.0, 0.0) }
+    }
+
+    /// Build a `DockState` with a Grid2x2 layout (root→Grid2x2Branch→4 leaves),
+    /// call `layout` so separators are populated.  Returns (state, [leaf_ids]).
+    fn grid2x2_state(w: f32, h: f32) -> (DockState<P>, Vec<LeafId>) {
+        let mut state = DockState::<P>::new();
+        let first = state.tree_mut().add_leaf(P);
+        let ids = state.tree_mut().split_leaf_with_children(
+            first, SplitKind::Grid2x2, w, h
+        );
+        state.layout(PanelRect::new(0.0, 0.0, w, h));
+        (state, ids)
+    }
+
+    /// After `add_leaf` + `split_leaf_with_children(Grid2x2)`, root has 1 child
+    /// which is the Grid2x2 branch.  Return its BranchId.
+    fn grid2x2_branch_id(state: &DockState<P>) -> BranchId {
+        match &state.tree().root().children[0] {
+            PanelNode::Branch(b) => b.id,
+            _ => panic!("expected Grid2x2 branch as first root child"),
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Part B — drag_separator routes Grid2x2 to cross_ratio, not proportions
+    // -------------------------------------------------------------------------
+
+    /// Dragging the vertical separator in a Grid2x2 layout must update
+    /// cross_ratio.x on the Grid2x2 branch.  Proportions must stay empty.
+    #[test]
+    fn grid2x2_drag_vertical_sep_updates_cross_ratio_x() {
+        let (mut state, _) = grid2x2_state(1000.0, 800.0);
+        let grid_id = grid2x2_branch_id(&state);
+
+        // Find a vertical separator belonging to the Grid2x2 branch.
+        let sep_idx = state.separators().iter().position(|s| {
+            s.orientation == SeparatorOrientation::Vertical
+                && matches!(&s.level, SeparatorLevel::Node { parent_id, .. } if *parent_id == grid_id)
+        });
+        let sep_idx = sep_idx.expect("Grid2x2 must have at least one vertical separator");
+
+        // Initial cross_ratio (None = defaults to 0.5/0.5)
+        let initial_xr = state.tree().find_branch(grid_id)
+            .and_then(|b| b.cross_ratio)
+            .map(|(x, _)| x)
+            .unwrap_or(0.5);
+
+        // Drag right by +100 px
+        let result = state.drag_separator(sep_idx, 100.0, 1000.0, 800.0);
+        assert!(result, "drag_separator must return true for Grid2x2");
+
+        // cross_ratio.x must have moved right (increased)
+        let new_xr = state.tree().find_branch(grid_id)
+            .and_then(|b| b.cross_ratio)
+            .map(|(x, _)| x)
+            .expect("cross_ratio must be Some after drag");
+        assert!(new_xr > initial_xr,
+            "cross_ratio.x must increase after rightward drag: {} -> {}", initial_xr, new_xr);
+
+        // proportions on the Grid2x2 branch must remain empty
+        let grid_proportions = state.tree().find_branch(grid_id)
+            .map(|b| b.proportions.len())
+            .unwrap_or(0);
+        assert_eq!(grid_proportions, 0,
+            "Grid2x2 drag must not write proportions");
+    }
+
+    /// Dragging the horizontal separator in a Grid2x2 layout must update
+    /// cross_ratio.y on the Grid2x2 branch.
+    #[test]
+    fn grid2x2_drag_horizontal_sep_updates_cross_ratio_y() {
+        let (mut state, _) = grid2x2_state(1000.0, 800.0);
+        let grid_id = grid2x2_branch_id(&state);
+
+        // Find a horizontal separator belonging to the Grid2x2 branch.
+        let sep_idx = state.separators().iter().position(|s| {
+            s.orientation == SeparatorOrientation::Horizontal
+                && matches!(&s.level, SeparatorLevel::Node { parent_id, .. } if *parent_id == grid_id)
+        });
+        let sep_idx = sep_idx.expect("Grid2x2 must have at least one horizontal separator");
+
+        let initial_yr = state.tree().find_branch(grid_id)
+            .and_then(|b| b.cross_ratio)
+            .map(|(_, y)| y)
+            .unwrap_or(0.5);
+
+        // Drag down by +80 px
+        let result = state.drag_separator(sep_idx, 80.0, 1000.0, 800.0);
+        assert!(result, "drag_separator must return true for Grid2x2 horizontal sep");
+
+        let new_yr = state.tree().find_branch(grid_id)
+            .and_then(|b| b.cross_ratio)
+            .map(|(_, y)| y)
+            .expect("cross_ratio must be Some after horizontal drag");
+        assert!(new_yr > initial_yr,
+            "cross_ratio.y must increase after downward drag: {} -> {}", initial_yr, new_yr);
+
+        let grid_proportions = state.tree().find_branch(grid_id)
+            .map(|b| b.proportions.len())
+            .unwrap_or(0);
+        assert_eq!(grid_proportions, 0,
+            "Grid2x2 drag must not write proportions");
+    }
+
+    /// After a Grid2x2 separator drag, re-running layout must produce four
+    /// distinct quadrants (not a single column/row).
+    #[test]
+    fn grid2x2_drag_then_layout_keeps_2x2_shape() {
+        let (mut state, _) = grid2x2_state(1000.0, 800.0);
+        let grid_id = grid2x2_branch_id(&state);
+
+        // Drag the vertical separator right by 100px
+        if let Some(sep_idx) = state.separators().iter().position(|s| {
+            s.orientation == SeparatorOrientation::Vertical
+                && matches!(&s.level, SeparatorLevel::Node { parent_id, .. } if *parent_id == grid_id)
+        }) {
+            state.drag_separator(sep_idx, 100.0, 1000.0, 800.0);
+        }
+
+        // Re-layout
+        state.layout(PanelRect::new(0.0, 0.0, 1000.0, 800.0));
+
+        // Note: empty leaves (slots 1-3 after split_leaf_with_children) may not
+        // appear in panel_rects since they have no panels.  What matters is that
+        // the ones that DO appear keep the 2x2 quadrant shape, i.e. there are at
+        // most 2 distinct x-origins and 2 distinct y-origins.
+        // Minimum: the root branch passes through the Grid2x2 branch's cross_ratio.
+        // Verify by checking the Grid2x2 branch directly.
+        let grid_branch = state.tree().find_branch(grid_id)
+            .expect("Grid2x2 branch must still exist after drag+layout");
+        let parent = PanelRect::new(0.0, 0.0, 1000.0, 800.0);
+        let child_rects = DockingTree::<P>::compute_child_rects(grid_branch, parent);
+
+        assert_eq!(child_rects.len(), 4, "Grid2x2 must have 4 child rects");
+
+        // Two distinct x-origins (left/right columns)
+        let mut xs: Vec<i32> = child_rects.iter().map(|r| r.x.round() as i32).collect();
+        xs.sort();
+        xs.dedup();
+        assert_eq!(xs.len(), 2, "must have exactly 2 column x-origins, got {:?}", xs);
+
+        // Two distinct y-origins (top/bottom rows)
+        let mut ys: Vec<i32> = child_rects.iter().map(|r| r.y.round() as i32).collect();
+        ys.sort();
+        ys.dedup();
+        assert_eq!(ys.len(), 2, "must have exactly 2 row y-origins, got {:?}", ys);
+
+        // Left column must be wider than default 500 (we dragged +100px right)
+        let left_w = child_rects[0].width;
+        assert!(left_w > 550.0,
+            "left column must be wider than 550 after +100px drag, got {}", left_w);
+    }
+
+    // -------------------------------------------------------------------------
+    // Regression: single-axis proportions still work via drag_separator
+    // -------------------------------------------------------------------------
+
+    /// Dragging a SplitHorizontal separator must still write proportions (not
+    /// cross_ratio) and change panel widths accordingly.
+    ///
+    /// After `add_leaf` + `split_leaf(SplitRight)`, root has 1 child = the
+    /// SplitHorizontal branch.
+    #[test]
+    fn split_horizontal_drag_writes_proportions() {
+        let mut state = DockState::<P>::new();
+        let first = state.tree_mut().add_leaf(P);
+        state.tree_mut().split_leaf(first, SplitKind::SplitRight, P);
+        state.layout(PanelRect::new(0.0, 0.0, 1000.0, 600.0));
+
+        // The SplitHorizontal branch is root's first child.
+        let split_branch_id = match &state.tree().root().children[0] {
+            PanelNode::Branch(b) => b.id,
+            _ => panic!("expected SplitHorizontal branch as first root child"),
+        };
+
+        // Must have a vertical separator belonging to that branch
+        let sep_idx = state.separators().iter().position(|s| {
+            s.orientation == SeparatorOrientation::Vertical
+                && matches!(&s.level, SeparatorLevel::Node { parent_id, .. } if *parent_id == split_branch_id)
+        }).expect("SplitHorizontal must have a vertical separator");
+
+        let result = state.drag_separator(sep_idx, 100.0, 1000.0, 600.0);
+        assert!(result, "drag must succeed for SplitHorizontal");
+
+        // cross_ratio must remain None on the split branch
+        let cr = state.tree().find_branch(split_branch_id)
+            .and_then(|b| b.cross_ratio);
+        assert!(cr.is_none(),
+            "SplitHorizontal drag must not set cross_ratio");
+
+        // proportions must now be written on the split branch
+        let props_len = state.tree().find_branch(split_branch_id)
+            .map(|b| b.proportions.len())
+            .unwrap_or(0);
+        assert_eq!(props_len, 2,
+            "SplitHorizontal drag must write 2 proportions, got {}", props_len);
     }
 }
