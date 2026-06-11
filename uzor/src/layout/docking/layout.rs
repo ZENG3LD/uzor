@@ -196,7 +196,81 @@ impl<P: DockPanel> DockingTree<P> {
             }
         }
 
-        // 3. Proportions — only for true single-axis layouts.
+        // 3. L-shaped (3-child, multi-axis) layouts with cross_ratio.
+        //
+        // Each L-shape has exactly one vertical separator and one horizontal
+        // separator.  cross_ratio.x drives the vertical divider (column split)
+        // and cross_ratio.y drives the horizontal divider (row split).
+        //
+        // Children order matches calculate_rects_with_gap / presets.rs:
+        //   OneLeftTwoRight  : [left_full, right_top, right_bottom]
+        //   TwoLeftOneRight  : [left_top, left_bottom, right_full]
+        //   OneTopTwoBottom  : [top_full, bottom_left, bottom_right]
+        //   TwoTopOneBottom  : [top_left, top_right, bottom_full]
+        if n == 3 {
+            if let Some((xr, yr)) = branch.cross_ratio {
+                let xr = xr as f32;
+                let yr = yr as f32;
+                let w  = parent_rect.width;
+                let h  = parent_rect.height;
+                let ox = parent_rect.x;
+                let oy = parent_rect.y;
+
+                match branch.layout {
+                    WindowLayout::OneLeftTwoRight => {
+                        // xr = left column fraction; yr = right column row split
+                        let left_w  = ((w - gap) * xr).max(50.0);
+                        let right_w = ((w - gap) * (1.0 - xr)).max(50.0);
+                        let top_h   = ((h - gap) * yr).max(50.0);
+                        let bot_h   = ((h - gap) * (1.0 - yr)).max(50.0);
+                        return vec![
+                            PanelRect::new(ox,                  oy,           left_w,  h),
+                            PanelRect::new(ox + left_w + gap,   oy,           right_w, top_h),
+                            PanelRect::new(ox + left_w + gap,   oy + top_h + gap, right_w, bot_h),
+                        ];
+                    }
+                    WindowLayout::TwoLeftOneRight => {
+                        // xr = left column fraction; yr = left column row split
+                        let left_w  = ((w - gap) * xr).max(50.0);
+                        let right_w = ((w - gap) * (1.0 - xr)).max(50.0);
+                        let top_h   = ((h - gap) * yr).max(50.0);
+                        let bot_h   = ((h - gap) * (1.0 - yr)).max(50.0);
+                        return vec![
+                            PanelRect::new(ox,            oy,               left_w,  top_h),
+                            PanelRect::new(ox,            oy + top_h + gap, left_w,  bot_h),
+                            PanelRect::new(ox + left_w + gap, oy,           right_w, h),
+                        ];
+                    }
+                    WindowLayout::OneTopTwoBottom => {
+                        // yr = top row fraction; xr = bottom row column split
+                        let top_h   = ((h - gap) * yr).max(50.0);
+                        let bot_h   = ((h - gap) * (1.0 - yr)).max(50.0);
+                        let left_w  = ((w - gap) * xr).max(50.0);
+                        let right_w = ((w - gap) * (1.0 - xr)).max(50.0);
+                        return vec![
+                            PanelRect::new(ox,            oy,               w,       top_h),
+                            PanelRect::new(ox,            oy + top_h + gap, left_w,  bot_h),
+                            PanelRect::new(ox + left_w + gap, oy + top_h + gap, right_w, bot_h),
+                        ];
+                    }
+                    WindowLayout::TwoTopOneBottom => {
+                        // yr = top row fraction; xr = top row column split
+                        let top_h   = ((h - gap) * yr).max(50.0);
+                        let bot_h   = ((h - gap) * (1.0 - yr)).max(50.0);
+                        let left_w  = ((w - gap) * xr).max(50.0);
+                        let right_w = ((w - gap) * (1.0 - xr)).max(50.0);
+                        return vec![
+                            PanelRect::new(ox,                oy,           left_w,  top_h),
+                            PanelRect::new(ox + left_w + gap, oy,           right_w, top_h),
+                            PanelRect::new(ox,                oy + top_h + gap, w,   bot_h),
+                        ];
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // 4. Proportions — only for true single-axis layouts.
         // Multi-axis layouts (Grid2x2, OneLeftTwoRight, TwoLeftOneRight,
         // OneTopTwoBottom, TwoTopOneBottom) must fall through to their
         // shape-aware path (cross_ratio / calculate_rects) even when a
@@ -555,5 +629,122 @@ mod tests {
         // Bottom row height ~560 (70% of 800)
         assert!((bl.height - 560.0).abs() < 1.0,
             "BL height should be ~560, got {}", bl.height);
+    }
+
+    // -------------------------------------------------------------------------
+    // L-shape cross_ratio rect math
+    // -------------------------------------------------------------------------
+
+    /// OneLeftTwoRight with explicit cross_ratio must place 3 children correctly:
+    ///   child[0] = full-height left column (width = w * xr)
+    ///   child[1] = right-top  (height = h * yr)
+    ///   child[2] = right-bot  (height = h * (1-yr))
+    #[test]
+    fn one_left_two_right_cross_ratio_rect_math() {
+        let make_leaf = |id: u64| PanelNode::Leaf(Leaf::new(LeafId(id), P));
+        let branch = Branch {
+            id: BranchId(0),
+            children: vec![make_leaf(1), make_leaf(2), make_leaf(3)],
+            layout: WindowLayout::OneLeftTwoRight,
+            custom_rects: Vec::new(),
+            proportions: Vec::new(),
+            // 70% left column, 40% top in right column
+            cross_ratio: Some((0.7, 0.4)),
+            preserve_if_empty: false,
+        };
+
+        let parent = PanelRect::new(0.0, 0.0, 1000.0, 800.0);
+        let rects = DockingTree::<P>::compute_child_rects(&branch, parent);
+
+        assert_eq!(rects.len(), 3, "must have 3 children");
+
+        let left  = rects[0];
+        let rt    = rects[1];  // right-top
+        let rb    = rects[2];  // right-bottom
+
+        // Left column: starts at x=0, full height
+        assert!(left.x < 1.0,  "left starts at x=0, got {}", left.x);
+        assert!(left.y < 1.0,  "left starts at y=0, got {}", left.y);
+        assert!((left.height - 800.0).abs() < 1.0,
+            "left height must equal parent height, got {}", left.height);
+
+        // Left column width ~ (1000 - gap) * 0.7
+        let gap = PANEL_GAP;
+        let exp_left_w = (1000.0 - gap) * 0.7;
+        assert!((left.width - exp_left_w).abs() < 1.0,
+            "left width should be ~{exp_left_w}, got {}", left.width);
+
+        // Right column: starts at x = left.width + gap
+        let exp_right_x = left.width + gap;
+        assert!((rt.x - exp_right_x).abs() < 1.0,
+            "right-top x should be ~{exp_right_x}, got {}", rt.x);
+        assert!((rb.x - exp_right_x).abs() < 1.0,
+            "right-bot x should be ~{exp_right_x}, got {}", rb.x);
+
+        // Right column heights: top ~ (800-gap)*0.4, bot ~ (800-gap)*0.6
+        let exp_top_h = (800.0 - gap) * 0.4;
+        let exp_bot_h = (800.0 - gap) * 0.6;
+        assert!((rt.height - exp_top_h).abs() < 1.0,
+            "right-top height should be ~{exp_top_h}, got {}", rt.height);
+        assert!((rb.height - exp_bot_h).abs() < 1.0,
+            "right-bot height should be ~{exp_bot_h}, got {}", rb.height);
+
+        // proportions must stay empty (we set cross_ratio directly)
+        assert!(branch.proportions.is_empty(),
+            "proportions must remain empty when cross_ratio is set");
+    }
+
+    /// TwoTopOneBottom with explicit cross_ratio must place 3 children correctly:
+    ///   child[0] = top-left  (width = w * xr, height = h * yr)
+    ///   child[1] = top-right (width = w * (1-xr), height = h * yr)
+    ///   child[2] = bottom full-width (height = h * (1-yr))
+    #[test]
+    fn two_top_one_bottom_cross_ratio_rect_math() {
+        let make_leaf = |id: u64| PanelNode::Leaf(Leaf::new(LeafId(id), P));
+        let branch = Branch {
+            id: BranchId(0),
+            children: vec![make_leaf(1), make_leaf(2), make_leaf(3)],
+            layout: WindowLayout::TwoTopOneBottom,
+            custom_rects: Vec::new(),
+            proportions: Vec::new(),
+            // 60% left in top row, 30% top row height
+            cross_ratio: Some((0.6, 0.3)),
+            preserve_if_empty: false,
+        };
+
+        let parent = PanelRect::new(0.0, 0.0, 1000.0, 800.0);
+        let rects = DockingTree::<P>::compute_child_rects(&branch, parent);
+
+        assert_eq!(rects.len(), 3, "must have 3 children");
+
+        let tl  = rects[0];  // top-left
+        let tr  = rects[1];  // top-right
+        let bot = rects[2];  // bottom full
+
+        let gap = PANEL_GAP;
+
+        // Top row height ~ (800-gap)*0.3
+        let exp_top_h = (800.0 - gap) * 0.3;
+        assert!((tl.height - exp_top_h).abs() < 1.0,
+            "top-left height should be ~{exp_top_h}, got {}", tl.height);
+        assert!((tr.height - exp_top_h).abs() < 1.0,
+            "top-right height should be ~{exp_top_h}, got {}", tr.height);
+
+        // Bottom: full width, starts below top row
+        let exp_bot_y = exp_top_h + gap;
+        assert!((bot.y - exp_bot_y).abs() < 1.0,
+            "bottom y should be ~{exp_bot_y}, got {}", bot.y);
+        assert!((bot.width - 1000.0).abs() < 1.0,
+            "bottom width must equal parent width, got {}", bot.width);
+
+        // Top-left width ~ (1000-gap)*0.6
+        let exp_tl_w = (1000.0 - gap) * 0.6;
+        assert!((tl.width - exp_tl_w).abs() < 1.0,
+            "top-left width should be ~{exp_tl_w}, got {}", tl.width);
+
+        // Top-right: starts at tl.width + gap
+        let exp_tr_x = tl.width + gap;
+        assert!((tr.x - exp_tr_x).abs() < 1.0,
+            "top-right x should be ~{exp_tr_x}, got {}", tr.x);
     }
 }
