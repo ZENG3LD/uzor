@@ -317,7 +317,15 @@ struct SavedState {
     font_family: FontFamily,
     text_align: TextAlign,
     text_baseline: TextBaseline,
-    has_clip: bool,
+    /// Clip layers open in the ENCLOSING frame at save() time. restore()
+    /// pops exactly the layers opened since the matching save() and resumes
+    /// this count. The previous single-slot `has_clip: bool` leaked a layer
+    /// whenever one frame pushed two clips (second overwrote the slot,
+    /// restore popped once) and popped a phantom layer on save-while-clipped
+    /// + restore pairs. A leaked clip layer silently clips EVERYTHING drawn
+    /// after it in the composed scene — content visibly "blinks" on exactly
+    /// the frames whose rebuild executed such a sequence.
+    outer_open_clips: usize,
 }
 
 /// Controls whether `emit_shadow_for_shape` draws the shadow as a fill or a stroke.
@@ -346,8 +354,8 @@ pub struct VelloGpuRenderContext<'a> {
     // Path state
     path_builder: Option<BezPath>,
 
-    // Pending clip path (set by clip(), applied on next draw)
-    pending_clip: Option<BezPath>,
+    // Clip layers opened in the CURRENT save frame (popped by restore()).
+    open_clip_layers: usize,
 
     // Text state
     font_size: f64,
@@ -395,7 +403,7 @@ impl<'a> VelloGpuRenderContext<'a> {
             line_join: Join::Miter,
             global_alpha: 1.0,
             path_builder: None,
-            pending_clip: None,
+            open_clip_layers: 0,
             font_size: 12.0,
             font_bold: false,
             font_italic: false,
@@ -578,15 +586,15 @@ impl<'a> Painter for VelloGpuRenderContext<'a> {
             font_family: self.font_family,
             text_align: self.text_align,
             text_baseline: self.text_baseline,
-            has_clip: self.pending_clip.is_some(),
+            outer_open_clips: self.open_clip_layers,
         };
         self.state_stack.push(state);
-        self.pending_clip = None;
+        self.open_clip_layers = 0;
     }
 
     fn restore(&mut self) {
         if let Some(state) = self.state_stack.pop() {
-            if self.pending_clip.is_some() {
+            for _ in 0..self.open_clip_layers {
                 self.scene.pop_layer();
             }
             self.transform = state.transform;
@@ -603,11 +611,7 @@ impl<'a> Painter for VelloGpuRenderContext<'a> {
             self.font_family = state.font_family;
             self.text_align = state.text_align;
             self.text_baseline = state.text_baseline;
-            if state.has_clip {
-                self.pending_clip = Some(BezPath::new());
-            } else {
-                self.pending_clip = None;
-            }
+            self.open_clip_layers = state.outer_open_clips;
         }
     }
 
@@ -963,7 +967,7 @@ impl<'a> Masking for VelloGpuRenderContext<'a> {
                 self.transform,
                 &path,
             );
-            self.pending_clip = Some(path);
+            self.open_clip_layers += 1;
         }
     }
     // push_mask / pop_mask / clip_rect: use default impls (save+clip / restore)
@@ -979,8 +983,10 @@ impl<'a> Masking for VelloGpuRenderContext<'a> {
                 self.transform,
                 &path,
             );
+            // Open a fresh save frame, then record the layer in THAT frame so
+            // the matching pop_mask()/restore() pops exactly this clip.
             self.save();
-            self.pending_clip = Some(path);
+            self.open_clip_layers += 1;
         }
     }
 }
