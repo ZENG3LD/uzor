@@ -207,6 +207,23 @@ pub enum DropdownItemDef {
         icon: Option<ToolbarIconId>,
         shortcut: Option<String>,
     },
+    /// Action item with an inline text-input field rendered to the right of
+    /// the label. Selecting the row (left side) fires the action; clicking
+    /// the input lets the user edit a numeric / short-string parameter that
+    /// is committed on Enter.
+    ///
+    /// `field_id` is the `WidgetId` string that addresses the text-input
+    /// in the host's `InputCoordinator::text_fields` store — the host
+    /// registers it once at startup with its own filter/max_len config.
+    ActionWithInput {
+        id: String,
+        label: String,
+        icon: Option<ToolbarIconId>,
+        /// Text-field store key for the inline input (e.g. `"bar_mode_param"`).
+        field_id: String,
+        /// Default text shown when the input is empty (placeholder).
+        default_text: String,
+    },
     /// Submenu (nested dropdown)
     Submenu {
         id: String,
@@ -233,9 +250,30 @@ impl DropdownItemDef {
         }
     }
 
+    /// Build an action item with an inline parameter-input field.
+    ///
+    /// `field_id` must match a key previously registered on the host's
+    /// `TextFieldStore`. `default_text` is the placeholder shown when the
+    /// field is empty.
+    pub fn action_with_input(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        field_id: impl Into<String>,
+        default_text: impl Into<String>,
+    ) -> Self {
+        Self::ActionWithInput {
+            id: id.into(),
+            label: label.into(),
+            icon: None,
+            field_id: field_id.into(),
+            default_text: default_text.into(),
+        }
+    }
+
     pub fn with_icon(mut self, icon: impl Into<ToolbarIconId>) -> Self {
         match &mut self {
             Self::Action { icon: ref mut i, .. } => *i = Some(icon.into()),
+            Self::ActionWithInput { icon: ref mut i, .. } => *i = Some(icon.into()),
             Self::Submenu { icon: ref mut i, .. } => *i = Some(icon.into()),
             _ => {}
         }
