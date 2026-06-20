@@ -120,20 +120,36 @@ impl AsciiGrid {
     }
 
     /// Draw the buffer into a `cols*cell_w × rows*cell_h` box at `(ox, oy)`.
+    ///
+    /// Hot path — avoids per-cell heap allocs (stack utf8 buffer for the glyph,
+    /// one reused colour string) and only flips global-alpha when it changes.
     pub fn render(&self, ctx: &mut dyn RenderContext, ox: f64, oy: f64, cell_w: f64, cell_h: f64) {
+        use std::fmt::Write;
         let fs = (cell_h + 1.0).max(5.0);
         ctx.set_font(&format!("{}px monospace", fs as i32));
         ctx.set_text_align(TextAlign::Left);
         ctx.set_text_baseline(TextBaseline::Top);
+
+        let mut col = String::with_capacity(20);
+        let mut chbuf = [0u8; 4];
+        let mut cur_alpha = 1.0_f64;
+        ctx.set_global_alpha(1.0);
         for y in 0..self.rows {
             for x in 0..self.cols {
                 let c = self.cell(x, y);
                 if c.ch == ' ' || c.alpha <= 0.01 {
                     continue;
                 }
-                ctx.set_global_alpha(c.alpha as f64);
-                ctx.set_fill_color(&format!("rgb({},{},{})", c.color[0], c.color[1], c.color[2]));
-                ctx.fill_text(&c.ch.to_string(), ox + x as f64 * cell_w, oy + y as f64 * cell_h);
+                let a = c.alpha as f64;
+                if (a - cur_alpha).abs() > 0.004 {
+                    ctx.set_global_alpha(a);
+                    cur_alpha = a;
+                }
+                col.clear();
+                let _ = write!(col, "rgb({},{},{})", c.color[0], c.color[1], c.color[2]);
+                ctx.set_fill_color(&col);
+                let s = c.ch.encode_utf8(&mut chbuf);
+                ctx.fill_text(s, ox + x as f64 * cell_w, oy + y as f64 * cell_h);
             }
         }
         ctx.set_global_alpha(1.0);
