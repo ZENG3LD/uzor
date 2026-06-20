@@ -55,7 +55,8 @@ const NEW_WINDOW_BTN_WIDTH: f64 = 36.0;
 
 struct ButtonPositions {
     close_x: f64,
-    maximize_x: f64,
+    /// `None` when `view.show_maximize` is `false`.
+    maximize_x: Option<f64>,
     minimize_x: f64,
     /// Pre-divider button column starts here (rightmost of the optional
     /// button group: new_window / menu / close_window).  `None` means no
@@ -63,25 +64,44 @@ struct ButtonPositions {
     group_right: Option<f64>,
     /// Compact left edges, `None` when the corresponding button is disabled.
     close_window_left: Option<f64>,
-    menu_left:         Option<f64>,
+    /// `None` either when `show_menu_btn` is false OR when `menu_left` is
+    /// true (the button lives on the left side instead).
+    menu_right_left:   Option<f64>,
     new_window_left:   Option<f64>,
+    /// X position of the left-side menu button when `view.menu_left` is true
+    /// and `view.show_menu_btn` is true.  Value is in the same coordinate
+    /// space as `rect.x` — i.e. it is `0.0` (== `rect.x` offset is zero
+    /// because callers add `rect.x`).
+    menu_left_x: Option<f64>,
 }
 
 impl ButtonPositions {
     /// Compute compact positions: each optional button reserves its column
     /// only when enabled.  Disabled buttons leave no gap — the next-left
     /// button slides right against the previous.
+    ///
+    /// `show_maximize == false` → maximize slot removed; minimize shifts to
+    /// `width - BUTTON_WIDTH * 2`, close stays at `width - BUTTON_WIDTH`.
+    ///
+    /// `menu_left == true && show_menu_btn == true` → menu button is placed
+    /// at `x = 0` on the LEFT side (caller must add `rect.x`); it is NOT
+    /// added to the right cluster.
     fn compute(width: f64, view: &super::types::ChromeView<'_>) -> Self {
-        let close_x    = width - BUTTON_WIDTH;
-        let maximize_x = width - BUTTON_WIDTH * 2.0;
-        let minimize_x = width - BUTTON_WIDTH * 3.0;
+        let close_x = width - BUTTON_WIDTH;
+
+        let (maximize_x, minimize_x) = if view.show_maximize {
+            (Some(width - BUTTON_WIDTH * 2.0), width - BUTTON_WIDTH * 3.0)
+        } else {
+            (None, width - BUTTON_WIDTH * 2.0)
+        };
 
         // Walk right-to-left through the optional group, pushing each
         // enabled button against the previous one.
         let mut cursor = minimize_x;          // right edge of the group
         let mut close_window_left: Option<f64> = None;
-        let mut menu_left:         Option<f64> = None;
+        let mut menu_right_left:   Option<f64> = None;
         let mut new_window_left:   Option<f64> = None;
+        let mut menu_left_x:       Option<f64> = None;
 
         // Pair rule: enabling new_window pulls in close_window so users
         // always have a way to close the spawned window even if they only
@@ -92,16 +112,22 @@ impl ButtonPositions {
             cursor -= CLOSE_WINDOW_BTN_WIDTH;
             close_window_left = Some(cursor);
         }
+        // Menu button — right cluster or left side.
         if view.show_menu_btn {
-            cursor -= MENU_BTN_WIDTH;
-            menu_left = Some(cursor);
+            if view.menu_left {
+                // Left-side placement: `x = 0` relative to rect.x.
+                menu_left_x = Some(0.0);
+            } else {
+                cursor -= MENU_BTN_WIDTH;
+                menu_right_left = Some(cursor);
+            }
         }
         if view.show_new_window_btn {
             cursor -= NEW_WINDOW_BTN_WIDTH;
             new_window_left = Some(cursor);
         }
         let any_enabled = close_window_left.is_some()
-            || menu_left.is_some()
+            || menu_right_left.is_some()
             || new_window_left.is_some();
         let group_right = if any_enabled { Some(minimize_x) } else { None };
 
@@ -111,8 +137,9 @@ impl ButtonPositions {
             minimize_x,
             group_right,
             close_window_left,
-            menu_left,
+            menu_right_left,
             new_window_left,
+            menu_left_x,
         }
     }
 }
@@ -152,11 +179,32 @@ pub fn register_input_coordinator_chrome(
     let bp    = ButtonPositions::compute(rect.width, view);
     let h     = style.chrome_height();
 
-    // --- Tabs ---
+    // Left-side menu button (when view.menu_left && view.show_menu_btn).
+    // Register before tabs so input ordering is correct.
     let show_tabs = !matches!(kind, ChromeRenderKind::WindowControlsOnly);
     if show_tabs {
+        if let Some(mlx) = bp.menu_left_x {
+            coord.register_child(
+                &chrome_id,
+                format!("{}:menu", chrome_id.0.0),
+                WidgetKind::Button,
+                Rect::new(rect.x + mlx, rect.y, MENU_BTN_WIDTH, h),
+                Sense::CLICK | Sense::HOVER,
+            );
+        }
+    }
+
+    // Tab-area left margin: skip over the left-side menu button if present.
+    let tab_area_left = if show_tabs && bp.menu_left_x.is_some() {
+        MENU_BTN_WIDTH
+    } else {
+        TAB_LEFT_MARGIN
+    };
+
+    // --- Tabs ---
+    if show_tabs {
         let uniform_w = uniform_tab_width(view.tabs, style.tab_padding_h(), style.tab_close_size());
-        let mut x = rect.x + TAB_LEFT_MARGIN;
+        let mut x = rect.x + tab_area_left;
         for (i, tab) in view.tabs.iter().enumerate() {
             let cached = tab_width(tab, state, i, style.tab_padding_h(), style.tab_close_size());
             let tab_w = if cached > 0.0 { cached } else { uniform_w };
@@ -203,7 +251,7 @@ pub fn register_input_coordinator_chrome(
         // Caption / drag zone — extends up to the leftmost enabled
         // optional button (or to Min when none are enabled).
         let group_left = bp.new_window_left
-            .or(bp.menu_left)
+            .or(bp.menu_right_left)
             .or(bp.close_window_left)
             .unwrap_or(bp.minimize_x);
         let drag_right = rect.x + group_left;
@@ -249,7 +297,8 @@ pub fn register_input_coordinator_chrome(
                     Sense::CLICK | Sense::HOVER,
                 );
             }
-            if let Some(left) = bp.menu_left {
+            // Right-cluster menu (only when not in menu_left mode).
+            if let Some(left) = bp.menu_right_left {
                 coord.register_child(
                     &chrome_id,
                     format!("{}:menu", chrome_id.0.0),
@@ -278,14 +327,16 @@ pub fn register_input_coordinator_chrome(
             Sense::CLICK | Sense::HOVER,
         );
 
-        // Maximize / restore
-        coord.register_child(
-            &chrome_id,
-            format!("{}:max", chrome_id.0.0),
-            WidgetKind::Button,
-            Rect::new(rect.x + bp.maximize_x, rect.y, BUTTON_WIDTH, h),
-            Sense::CLICK | Sense::HOVER,
-        );
+        // Maximize / restore (only when view.show_maximize).
+        if let Some(max_x) = bp.maximize_x {
+            coord.register_child(
+                &chrome_id,
+                format!("{}:max", chrome_id.0.0),
+                WidgetKind::Button,
+                Rect::new(rect.x + max_x, rect.y, BUTTON_WIDTH, h),
+                Sense::CLICK | Sense::HOVER,
+            );
+        }
 
         // Close app
         coord.register_child(
@@ -365,10 +416,33 @@ pub fn draw_chrome(
     let show_tabs     = !matches!(kind, ChromeRenderKind::WindowControlsOnly);
     let show_controls = !matches!(kind, ChromeRenderKind::Minimal);
 
+    // --- Left-side menu button (drawn before tabs so it sits behind the tab hover) ---
+    if show_tabs {
+        if let Some(mlx) = bp.menu_left_x {
+            let bx = rect.x + mlx;
+            let by = rect.y;
+            let menu_cx = bx + MENU_BTN_WIDTH / 2.0;
+            let menu_cy = by + h / 2.0;
+            let line_w  = style.action_icon_size();
+            ctx.set_fill_color(theme.icon_normal());
+            for i in 0_i32..3_i32 {
+                let ly = menu_cy - 3.0 + i as f64 * 3.0;
+                ctx.fill_rect(menu_cx - line_w / 2.0, ly - 0.75, line_w, 1.5);
+            }
+        }
+    }
+
+    // Tab-area left margin: skip over the left-side menu button if present.
+    let tab_area_left = if show_tabs && bp.menu_left_x.is_some() {
+        MENU_BTN_WIDTH
+    } else {
+        TAB_LEFT_MARGIN
+    };
+
     // --- 2–3. Tab bodies + close-X icons ---
     if show_tabs {
         let uniform_w = uniform_tab_width(view.tabs, style.tab_padding_h(), style.tab_close_size());
-        let mut x = rect.x + TAB_LEFT_MARGIN;
+        let mut x = rect.x + tab_area_left;
         for (i, tab) in view.tabs.iter().enumerate() {
             let cached = tab_width(tab, state, i, style.tab_padding_h(), style.tab_close_size());
             let tw = if cached > 0.0 { cached } else { uniform_w };
@@ -480,9 +554,9 @@ pub fn draw_chrome(
             }
         }
 
-        // --- 6. Menu icon ---
+        // --- 6. Menu icon (right-cluster placement only; left-side drawn earlier) ---
         if show_tabs {
-            if let Some(left) = bp.menu_left {
+            if let Some(left) = bp.menu_right_left {
                 let menu_cx = rect.x + left + MENU_BTN_WIDTH / 2.0;
                 let menu_cy = rect.y + h / 2.0;
                 let line_w  = icon_sz;
@@ -531,14 +605,14 @@ pub fn draw_chrome(
             ctx.fill_rect(mid_x - 5.0, mid_y - 0.5, 10.0, 1.0);
         }
 
-        // --- 11. Maximize / restore icon ---
-        {
-            let btn_rect = Rect::new(rect.x + bp.maximize_x, rect.y, BUTTON_WIDTH, h);
+        // --- 11. Maximize / restore icon (only when view.show_maximize) ---
+        if let Some(max_x) = bp.maximize_x {
+            let btn_rect = Rect::new(rect.x + max_x, rect.y, BUTTON_WIDTH, h);
             if state.hovered == super::types::ChromeHit::MaxBtn {
                 ctx.set_fill_color(theme.button_hover());
                 ctx.fill_rect(btn_rect.x, btn_rect.y, btn_rect.width, btn_rect.height);
             }
-            let mid_x = rect.x + bp.maximize_x + BUTTON_WIDTH / 2.0;
+            let mid_x = rect.x + max_x + BUTTON_WIDTH / 2.0;
             let mid_y = rect.y + h / 2.0;
             ctx.set_stroke_color(theme.icon_normal());
             ctx.set_stroke_width(1.0);

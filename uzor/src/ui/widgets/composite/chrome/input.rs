@@ -155,26 +155,41 @@ pub fn chrome_hit_test(
         return ChromeHit::None;
     }
 
-    let bp_close_x     = rect.x + w - 46.0;
-    let bp_maximize_x  = rect.x + w - 92.0;
-    let bp_minimize_x  = rect.x + w - 138.0;
+    let bp_close_x    = rect.x + w - 46.0;
+    // When show_maximize is false, minimize shifts to w-92 (one slot), close stays w-46.
+    let bp_maximize_x = if view.show_maximize {
+        Some(rect.x + w - 92.0)
+    } else {
+        None
+    };
+    let bp_minimize_x = if view.show_maximize {
+        rect.x + w - 138.0
+    } else {
+        rect.x + w - 92.0
+    };
 
     // Pair rule: enabling new_window without close_window leaves no way to
     // close the spawned window, so the chrome composite treats them as a
     // pair when the caller only flipped `show_new_window_btn`.
     let effective_close_window = view.show_close_window_btn || view.show_new_window_btn;
 
-    // Compact left edges for the optional group — disabled buttons leave
-    // no gap.  Mirrors `ButtonPositions::compute` in render.rs.
+    // Compact left edges for the optional right-cluster group — mirrors
+    // `ButtonPositions::compute` in render.rs.
+    // When `view.menu_left` is true the menu button is on the LEFT side and
+    // is NOT added to the right cluster cursor.
     let mut cursor = bp_minimize_x;
-    let bp_cw_left   = if effective_close_window {
+    let bp_cw_left        = if effective_close_window {
         cursor -= 36.0; Some(cursor)
     } else { None };
-    let bp_menu_left = if view.show_menu_btn {
+    let bp_menu_right_left = if view.show_menu_btn && !view.menu_left {
         cursor -= 36.0; Some(cursor)
     } else { None };
-    let bp_nw_left   = if view.show_new_window_btn {
+    let bp_nw_left        = if view.show_new_window_btn {
         cursor -= 36.0; Some(cursor)
+    } else { None };
+    // Left-side menu button position (window-absolute).
+    let bp_menu_left_abs = if view.show_menu_btn && view.menu_left {
+        Some(rect.x) // x = rect.x + 0
     } else { None };
 
     let show_tabs     = !matches!(kind, ChromeRenderKind::WindowControlsOnly);
@@ -183,7 +198,9 @@ pub fn chrome_hit_test(
     // --- Window control buttons (right-to-left) ---
     if show_controls {
         if px >= bp_close_x    { return ChromeHit::CloseBtn; }
-        if px >= bp_maximize_x { return ChromeHit::MaxBtn;   }
+        if let Some(max_x) = bp_maximize_x {
+            if px >= max_x { return ChromeHit::MaxBtn; }
+        }
         if px >= bp_minimize_x { return ChromeHit::MinBtn;   }
         if show_tabs {
             if let Some(left) = bp_cw_left {
@@ -191,7 +208,7 @@ pub fn chrome_hit_test(
                     return ChromeHit::CloseWindowBtn;
                 }
             }
-            if let Some(left) = bp_menu_left {
+            if let Some(left) = bp_menu_right_left {
                 if px >= left && px < left + 36.0 { return ChromeHit::Menu; }
             }
             if let Some(left) = bp_nw_left {
@@ -202,11 +219,26 @@ pub fn chrome_hit_test(
 
     // --- Tabs ---
     if show_tabs {
+        // Left-side menu button hit-test (before tabs).
+        if let Some(lmx) = bp_menu_left_abs {
+            if px >= lmx && px < lmx + 36.0 {
+                return ChromeHit::Menu;
+            }
+        }
+
         let padding_h  = style.tab_padding_h();
         let close_size = style.tab_close_size();
         let tab_gap    = style.tab_gap();
 
-        let mut x = rect.x + 4.0; // TAB_LEFT_MARGIN
+        // Tab area starts after the left-side menu button (if present).
+        // TAB_LEFT_MARGIN = 0.0 (mirrors render.rs const).
+        let tab_start = if bp_menu_left_abs.is_some() {
+            rect.x + 36.0 // MENU_BTN_WIDTH
+        } else {
+            rect.x // TAB_LEFT_MARGIN == 0.0
+        };
+
+        let mut x = tab_start;
         for (i, tab) in view.tabs.iter().enumerate() {
             let tw = tab_w(tab.label, state, i, padding_h, close_size);
             if px >= x && px < x + tw {
@@ -230,8 +262,8 @@ pub fn chrome_hit_test(
         let x_after_new_tab = x + 28.0;
 
         // Caption drag zone — extends up to the leftmost enabled optional
-        // button, or to Min if none of them are enabled.
-        let drag_end = bp_nw_left.or(bp_menu_left).or(bp_cw_left).unwrap_or(bp_minimize_x);
+        // right-cluster button, or to Min if none are enabled.
+        let drag_end = bp_nw_left.or(bp_menu_right_left).or(bp_cw_left).unwrap_or(bp_minimize_x);
         if px >= x_after_new_tab && px < drag_end {
             return ChromeHit::Drag;
         }

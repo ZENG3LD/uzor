@@ -1276,6 +1276,8 @@ impl AppState {
             show_new_window_btn: false,
             show_close_window_btn: false,
             is_maximized: self.window.is_maximized(),
+            menu_left: false,
+            show_maximize: true,
             cursor_x: mx,
             cursor_y: my,
             time_ms,
@@ -3012,6 +3014,8 @@ impl AppState {
                 show_new_window_btn: false,
                 show_close_window_btn: false,
                 is_maximized: self.window.is_maximized(),
+                menu_left: false,
+                show_maximize: true,
                 cursor_x: x,
                 cursor_y: y,
                 time_ms: self.time_ms(),
@@ -3420,7 +3424,7 @@ impl ApplicationHandler for Handler {
                 ChromeTabConfig { id: "tab-1", label: "Panels",     icon: None, color_tag: None, closable: false, active: app.active_view == 1 },
                 ChromeTabConfig { id: "tab-2", label: "Monitoring", icon: None, color_tag: None, closable: false, active: app.active_view == 2 },
             ];
-            let chrome_view_tmp = ChromeView { tabs: &chrome_tabs_tmp, active_tab_id: Some(tab_ids[app.active_view]), show_new_tab_btn: false, show_menu_btn: false, show_new_window_btn: false, show_close_window_btn: false, is_maximized: app.window.is_maximized(), cursor_x: mx, cursor_y: my, time_ms: app.time_ms() };
+            let chrome_view_tmp = ChromeView { tabs: &chrome_tabs_tmp, active_tab_id: Some(tab_ids[app.active_view]), show_new_tab_btn: false, show_menu_btn: false, show_new_window_btn: false, show_close_window_btn: false, is_maximized: app.window.is_maximized(), menu_left: false, show_maximize: true, cursor_x: mx, cursor_y: my, time_ms: app.time_ms() };
             // Close-app is app-specific (sets exit_requested); others delegated to helper.
             if let Some(chrome_rect) = app.layout.rect_for_chrome() {
                 let hit = chrome_hit_test(&app.layout.chrome_state(), &chrome_view_tmp, &ChromeSettings::default(), &ChromeRenderKind::Default, chrome_rect, (mx, my));

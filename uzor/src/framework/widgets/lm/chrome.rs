@@ -88,6 +88,12 @@ pub struct ChromeBuilder<'a> {
     show_new_window_btn:  bool,
     show_close_window_btn:bool,
     is_maximized:         bool,
+    /// When `true`, the menu button is placed at the LEFT edge instead of the
+    /// right button cluster.  Requires `show_menu_btn(true)` to be visible.
+    menu_left:            bool,
+    /// When `false`, the maximize / restore button is hidden and minimize
+    /// shifts left by one slot.  Default: `true`.
+    show_maximize:        bool,
     cursor_x:             f64,
     cursor_y:             f64,
     time_ms:              f64,
@@ -116,6 +122,8 @@ impl<'a> ChromeBuilder<'a> {
             show_new_window_btn:   false,
             show_close_window_btn: false,
             is_maximized:          false,
+            menu_left:             false,
+            show_maximize:         true,
             cursor_x:              0.0,
             cursor_y:              0.0,
             time_ms:               0.0,
@@ -137,6 +145,13 @@ impl<'a> ChromeBuilder<'a> {
     pub fn show_new_window_btn(mut self, on: bool) -> Self { self.show_new_window_btn = on; self }
     pub fn show_close_window_btn(mut self, on: bool) -> Self { self.show_close_window_btn = on; self }
     pub fn is_maximized(mut self, on: bool) -> Self { self.is_maximized = on; self }
+    /// Place the menu / hamburger button at the LEFT edge of the chrome strip
+    /// instead of in the right button cluster.  Has no effect if
+    /// `show_menu_btn` is `false`.
+    pub fn menu_left(mut self, on: bool) -> Self { self.menu_left = on; self }
+    /// Show or hide the maximize / restore button.  When `false`, minimize
+    /// shifts left and close stays at `w - 46`.  Default: `true`.
+    pub fn show_maximize(mut self, on: bool) -> Self { self.show_maximize = on; self }
 
     /// Cursor position (logical px, window-relative) — for tooltip update.
     pub fn cursor(mut self, pos: (f64, f64)) -> Self {
@@ -186,6 +201,8 @@ impl<'a> ChromeBuilder<'a> {
             show_new_window_btn:   self.show_new_window_btn,
             show_close_window_btn: self.show_close_window_btn,
             is_maximized:          self.is_maximized,
+            menu_left:             self.menu_left,
+            show_maximize:         self.show_maximize,
             cursor_x:              cx,
             cursor_y:              cy,
             time_ms,

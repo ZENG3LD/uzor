@@ -104,6 +104,15 @@ pub struct ChromeView<'a> {
     pub show_close_window_btn: bool,
     /// Whether the window is currently maximized (changes max icon to restore).
     pub is_maximized: bool,
+    /// When `true` and `show_menu_btn` is also `true`, the menu / hamburger
+    /// button is drawn at the LEFT edge of the chrome strip (≈36 px wide)
+    /// instead of in the right button cluster.  The drag zone then begins
+    /// after the left-side menu button.  Default: `false` (right cluster).
+    pub menu_left: bool,
+    /// When `false` the maximize / restore button is hidden; minimize shifts
+    /// one slot left (`w - 92`) and close stays at `w - 46`.
+    /// Default: `true` (maximize button visible).
+    pub show_maximize: bool,
     /// Current cursor X (logical px, window-relative) — for tooltip update.
     pub cursor_x: f64,
     /// Current cursor Y (logical px, window-relative) — for tooltip update.
@@ -123,6 +132,8 @@ impl<'a> ChromeView<'a> {
             show_new_window_btn: true,
             show_close_window_btn: true,
             is_maximized: false,
+            menu_left: false,
+            show_maximize: true,
             cursor_x: 0.0,
             cursor_y: 0.0,
             time_ms: 0.0,

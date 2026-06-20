@@ -989,6 +989,8 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                         show_new_window_btn: true,
                         show_close_window_btn: true,
                         is_maximized: pw2.window.is_maximized(),
+                        menu_left: false,
+                        show_maximize: true,
                         cursor_x: mx,
                         cursor_y: my,
                         time_ms: now_ms,
