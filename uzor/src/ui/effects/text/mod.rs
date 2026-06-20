@@ -15,10 +15,13 @@ pub mod shiny;
 pub mod decrypt;
 pub mod gradient;
 pub mod fuzzy;
-pub mod glitch;
+pub mod cell_shader;
 
 pub use shiny::{ShinyTextConfig, ShinyTextState};
 pub use decrypt::{DecryptedTextConfig, DecryptedTextState, RevealDirection};
 pub use gradient::{GradientTextConfig, GradientTextState, GradientDirection};
 pub use fuzzy::{FuzzyTextConfig, FuzzyTextState, FuzzyDirection};
-pub use glitch::{GlitchCell, GlitchGlyph, GlitchStyle};
+pub use cell_shader::{
+    density_char, hsl, sd_box, sd_circle, AsciiGrid, Cell, CellShader, Coord, Cursor, GlitchLetter,
+    GridContext, DENSITY,
+};
