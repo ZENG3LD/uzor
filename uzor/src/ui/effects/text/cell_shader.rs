@@ -53,11 +53,15 @@ pub struct Cell {
     pub ch: char,
     pub color: [u8; 3],
     pub alpha: f32,
+    /// Glyph size as a fraction of the cell height (1.0 = fill). Lets density
+    /// vary by SIZE as well as character, giving smooth texture transitions
+    /// instead of hard same-size cells.
+    pub scale: f32,
 }
 
 impl Default for Cell {
     fn default() -> Self {
-        Self { ch: ' ', color: [244, 244, 245], alpha: 1.0 }
+        Self { ch: ' ', color: [244, 244, 245], alpha: 1.0, scale: 1.0 }
     }
 }
 
@@ -125,20 +129,31 @@ impl AsciiGrid {
     /// one reused colour string) and only flips global-alpha when it changes.
     pub fn render(&self, ctx: &mut dyn RenderContext, ox: f64, oy: f64, cell_w: f64, cell_h: f64) {
         use std::fmt::Write;
-        let fs = (cell_h + 1.0).max(5.0);
-        ctx.set_font(&format!("{}px monospace", fs as i32));
-        ctx.set_text_align(TextAlign::Left);
-        ctx.set_text_baseline(TextBaseline::Top);
+        // Per-cell glyphs are drawn centred and scaled by `cell.scale`, so the
+        // field can fade by SIZE (small → large) for smooth texture transitions.
+        ctx.set_text_align(TextAlign::Center);
+        ctx.set_text_baseline(TextBaseline::Middle);
 
         let mut col = String::with_capacity(20);
         let mut chbuf = [0u8; 4];
         let mut cur_alpha = 1.0_f64;
+        let mut cur_fs = -1_i32;
         ctx.set_global_alpha(1.0);
+        let base = cell_h.max(4.0);
         for y in 0..self.rows {
             for x in 0..self.cols {
                 let c = self.cell(x, y);
-                if c.ch == ' ' || c.alpha <= 0.01 {
+                if c.ch == ' ' || c.alpha <= 0.01 || c.scale <= 0.06 {
                     continue;
+                }
+                // Quantise font size to integer px so `set_font` only fires when
+                // the size actually changes (adjacent cells usually match).
+                let fs = ((base * c.scale as f64).clamp(3.0, base * 1.7)).round() as i32;
+                if fs != cur_fs {
+                    col.clear();
+                    let _ = write!(col, "{}px monospace", fs);
+                    ctx.set_font(&col);
+                    cur_fs = fs;
                 }
                 let a = c.alpha as f64;
                 if (a - cur_alpha).abs() > 0.004 {
@@ -149,7 +164,11 @@ impl AsciiGrid {
                 let _ = write!(col, "rgb({},{},{})", c.color[0], c.color[1], c.color[2]);
                 ctx.set_fill_color(&col);
                 let s = c.ch.encode_utf8(&mut chbuf);
-                ctx.fill_text(s, ox + x as f64 * cell_w, oy + y as f64 * cell_h);
+                ctx.fill_text(
+                    s,
+                    ox + x as f64 * cell_w + cell_w / 2.0,
+                    oy + y as f64 * cell_h + cell_h / 2.0,
+                );
             }
         }
         ctx.set_global_alpha(1.0);
@@ -257,7 +276,7 @@ impl CellShader for GlitchLetter {
         // A few off-cells spark on at higher intensity.
         let spark = !on && it > 0.15 && fastrand::f64() < 0.02 * it;
         if !on && !spark {
-            return Cell { ch: ' ', color: self.base, alpha: 1.0 };
+            return Cell { ch: ' ', color: self.base, alpha: 1.0, scale: 1.0 };
         }
 
         // Glyph: steady rest char, or a glitch swap with probability ∝ intensity.
@@ -278,6 +297,6 @@ impl CellShader for GlitchLetter {
             [mix(self.base[0], cyc[0]), mix(self.base[1], cyc[1]), mix(self.base[2], cyc[2])]
         };
 
-        Cell { ch, color, alpha: if spark { 0.6 } else { 1.0 } }
+        Cell { ch, color, alpha: if spark { 0.6 } else { 1.0 }, scale: 1.0 }
     }
 }
