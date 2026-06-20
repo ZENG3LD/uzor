@@ -405,11 +405,14 @@ fn build_dcomp_instance() -> wgpu::Instance {
         let flags = wgpu::InstanceFlags::from_build_config().with_env();
         let memory_budget_thresholds = wgpu::MemoryBudgetThresholds::default();
         let backend_options = wgpu::BackendOptions::from_env_or_default();
-        wgpu::Instance::new(&wgpu::InstanceDescriptor {
+        // wgpu 29: by-value descriptor + `display` field (matches the windows
+        // branch above; this arm was missed when wgpu's API changed).
+        wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends,
             flags,
             memory_budget_thresholds,
             backend_options,
+            display: None,
         })
     }
 }
