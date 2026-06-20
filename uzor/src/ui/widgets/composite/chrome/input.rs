@@ -38,6 +38,10 @@ pub fn register_layout_manager_chrome<P: DockPanel>(
     // Take state out of the layout (or use default), work with it, then put back.
     let mut state = std::mem::take(layout.chrome_widget_state_mut());
 
+    // Persist the layout-affecting flags so the window-host press path
+    // (`handle_chrome_press`) hit-tests the SAME button layout drawn here.
+    state.layout_config = super::types::ChromeLayoutConfig::from_view(view);
+
     let layer = layout.compute_layer_for(parent);
     let node_id = layout.tree_mut().add_widget(parent, WidgetNode { id: id.clone(), kind: WidgetKind::Chrome, rect, sense: Sense::NONE, label: None });
 
@@ -259,7 +263,10 @@ pub fn chrome_hit_test(
         if view.show_new_tab_btn && px >= x && px < x + 28.0 {
             return ChromeHit::NewTab;
         }
-        let x_after_new_tab = x + 28.0;
+        // Advance past the "+" only when it is actually shown — mirrors
+        // render.rs, which advances `x` by NEW_TAB_BTN_WIDTH conditionally.
+        // (Unconditional +28 left a dead 28 px strip right of a left menu.)
+        let x_after_new_tab = if view.show_new_tab_btn { x + 28.0 } else { x };
 
         // Caption drag zone — extends up to the leftmost enabled optional
         // right-cluster button, or to Min if none are enabled.

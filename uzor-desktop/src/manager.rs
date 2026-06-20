@@ -498,7 +498,18 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 self.layout.set_current_window(key.clone());
                 self.layout.on_pointer_move(x, y);
                 self.layout.on_pointer_down(x, y);
-                let _ = self.layout.on_pointer_up(x, y);
+                // Route synthetic (agent-driven) clicks through the same App
+                // dispatch hooks as real clicks so chrome controls / tabs etc.
+                // respond to agent-api input too.
+                match self.layout.on_pointer_up(x, y) {
+                    uzor::layout::PointerUpOutcome::DismissedOverlay(h) => {
+                        self.app.on_dismiss(&mut self.layout, h);
+                    }
+                    uzor::layout::PointerUpOutcome::Click(_id, ev) => {
+                        self.app.dispatch_event(&mut self.layout, ev);
+                    }
+                    uzor::layout::PointerUpOutcome::Unhandled => {}
+                }
                 if let Some(id) = self.window_id_for(&key) {
                     if let Some(pw) = self.windows.get(&id) { pw.window.request_redraw(); }
                 }
@@ -981,16 +992,17 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                         chrome_hit_test, handle_chrome_action, ChromeAction,
                         ChromeRenderKind, ChromeSettings, ChromeView,
                     };
+                    let cfg = self.layout.chrome_state().layout_config;
                     let view = ChromeView {
                         tabs: &[],
                         active_tab_id: None,
-                        show_new_tab_btn: false,
-                        show_menu_btn: false,
-                        show_new_window_btn: true,
-                        show_close_window_btn: true,
+                        show_new_tab_btn: cfg.show_new_tab_btn,
+                        show_menu_btn: cfg.show_menu_btn,
+                        show_new_window_btn: cfg.show_new_window_btn,
+                        show_close_window_btn: cfg.show_close_window_btn,
                         is_maximized: pw2.window.is_maximized(),
-                        menu_left: false,
-                        show_maximize: true,
+                        menu_left: cfg.menu_left,
+                        show_maximize: cfg.show_maximize,
                         cursor_x: mx,
                         cursor_y: my,
                         time_ms: now_ms,
@@ -1025,8 +1037,22 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 let (mx, my) = pw.last_mouse_pos;
                 pw.dock_separator_drag = None;
                 // L3 records the click in last_click; no pw.input write needed.
-                let _outcome = self.layout.on_pointer_up(mx, my);
-                pw.window.request_redraw();
+                // Route the resolved click to the App dispatch hooks (chrome
+                // controls, tabs, dropdown / toolbar / context-menu items).
+                // Previously the outcome was discarded, so on_chrome_control and
+                // the other typed hooks were dead for AppBuilder apps.
+                match self.layout.on_pointer_up(mx, my) {
+                    uzor::layout::PointerUpOutcome::DismissedOverlay(h) => {
+                        self.app.on_dismiss(&mut self.layout, h);
+                    }
+                    uzor::layout::PointerUpOutcome::Click(_id, ev) => {
+                        self.app.dispatch_event(&mut self.layout, ev);
+                    }
+                    uzor::layout::PointerUpOutcome::Unhandled => {}
+                }
+                if let Some(pw) = self.windows.get(&id) {
+                    pw.window.request_redraw();
+                }
                 // App hooks on DispatchEvent / DismissedOverlay are called by
                 // App::ui each frame via consume_event — no immediate callback here.
             }

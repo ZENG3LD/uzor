@@ -119,47 +119,62 @@ pub trait App<P: DockPanel = NoPanel>: Sized + 'static {
         _widget_id: &crate::types::WidgetId,
     ) {}
 
+    /// Route a single already-resolved [`DispatchEvent`](crate::layout::DispatchEvent)
+    /// to the typed `on_*` hooks.
+    ///
+    /// Use this when the runtime already obtained the event from
+    /// [`LayoutManager::on_pointer_up`] (`PointerUpOutcome::Click`) and must
+    /// NOT re-run `handle_click` (which would consume the click a second time).
+    /// `route_click` delegates here after resolving the click itself.
+    fn dispatch_event(&mut self,
+        layout: &mut LayoutManager<P>,
+        event: crate::layout::DispatchEvent,
+    ) {
+        use crate::layout::DispatchEvent;
+        match event {
+            DispatchEvent::ModalCloseRequested(h) => {
+                self.on_modal_close(layout, h);
+            }
+            DispatchEvent::ModalTabClicked { modal, index } => {
+                self.on_modal_tab(layout, modal, index);
+            }
+            DispatchEvent::DropdownItemClicked { dropdown, ref item_id } => {
+                self.on_dropdown_item(layout, dropdown.clone(), item_id);
+            }
+            DispatchEvent::ToolbarItemClicked { toolbar, ref item_id } => {
+                self.on_toolbar_item(layout, toolbar.clone(), item_id);
+            }
+            DispatchEvent::ContextMenuItemClicked { menu, item_index } => {
+                self.on_context_menu_item(layout, menu, item_index);
+            }
+            DispatchEvent::ChromeTabClicked { tab_index } => {
+                self.on_chrome_tab(layout, tab_index);
+            }
+            DispatchEvent::ChromeWindowControl { control } => {
+                self.on_chrome_control(layout, control);
+            }
+            DispatchEvent::Unhandled(ref id) => {
+                self.on_unhandled_click(layout, id);
+            }
+            other => {
+                self.on_dispatch(layout, other);
+            }
+        }
+    }
+
     fn route_click(&mut self,
         layout: &mut LayoutManager<P>,
         x: f64,
         y: f64,
     ) -> bool {
-        use crate::layout::{ClickOutcome, DispatchEvent};
+        use crate::layout::ClickOutcome;
         match layout.handle_click((x, y)) {
             ClickOutcome::DismissOverlay(handle) => {
                 self.on_dismiss(layout, handle);
                 true
             }
             ClickOutcome::DispatchEvent(ev) => {
-                match ev {
-                    DispatchEvent::ModalCloseRequested(h) => {
-                        self.on_modal_close(layout, h);
-                    }
-                    DispatchEvent::ModalTabClicked { modal, index } => {
-                        self.on_modal_tab(layout, modal, index);
-                    }
-                    DispatchEvent::DropdownItemClicked { dropdown, ref item_id } => {
-                        self.on_dropdown_item(layout, dropdown.clone(), item_id);
-                    }
-                    DispatchEvent::ToolbarItemClicked { toolbar, ref item_id } => {
-                        self.on_toolbar_item(layout, toolbar.clone(), item_id);
-                    }
-                    DispatchEvent::ContextMenuItemClicked { menu, item_index } => {
-                        self.on_context_menu_item(layout, menu, item_index);
-                    }
-                    DispatchEvent::ChromeTabClicked { tab_index } => {
-                        self.on_chrome_tab(layout, tab_index);
-                    }
-                    DispatchEvent::ChromeWindowControl { control } => {
-                        self.on_chrome_control(layout, control);
-                    }
-                    DispatchEvent::Unhandled(ref id) => {
-                        self.on_unhandled_click(layout, id);
-                    }
-                    other => {
-                        self.on_dispatch(layout, other);
-                    }
-                }
+                self.dispatch_event(layout, ev);
                 true
             }
             ClickOutcome::Unhandled { .. } => false,

@@ -9,7 +9,7 @@ use crate::layout::LayoutManager;
 use crate::ui::widgets::atomic::tooltip::TooltipState;
 use crate::ui::widgets::composite::context_menu::ContextMenuState;
 
-use super::types::{ChromeColors, ChromeHit};
+use super::types::{ChromeColors, ChromeHit, ChromeLayoutConfig};
 
 // ---------------------------------------------------------------------------
 // TabState
@@ -93,6 +93,13 @@ pub struct ChromeState {
 
     /// Window title (not rendered in the strip; passed to the OS title bar).
     pub title: String,
+
+    // --- Layout config (captured at register time) ---
+
+    /// The layout-affecting chrome flags from the most recently registered
+    /// frame.  The window-host press path reads this so its hit-test matches
+    /// the button layout actually drawn.  See [`ChromeLayoutConfig`].
+    pub layout_config: ChromeLayoutConfig,
 }
 
 impl ChromeState {

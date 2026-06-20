@@ -121,6 +121,63 @@ pub struct ChromeView<'a> {
     pub time_ms: f64,
 }
 
+// ---------------------------------------------------------------------------
+// ChromeLayoutConfig
+// ---------------------------------------------------------------------------
+
+/// The layout-affecting subset of [`ChromeView`], captured at register time.
+///
+/// The window-host press path (`LayoutManager::handle_chrome_press`) runs on
+/// pointer-down to decide drag / minimize / maximize / close / resize.  It must
+/// hit-test the SAME button layout that was actually drawn this frame — but it
+/// has no access to the caller's per-frame `ChromeView` (which is borrowed and
+/// gone by the time the press arrives).  So `register_layout_manager_chrome`
+/// stores these flags in `ChromeState`, and the press path rebuilds an
+/// equivalent view from them instead of guessing a default layout.
+///
+/// Without this the host computed button positions for a fixed default cluster
+/// (menu-right + new/close-window + maximize) while the app drew a different one
+/// → clicks on the drawn minimize hit the host's maximize zone, the drag zone
+/// was offset, and the menu press was swallowed as a window drag.
+#[derive(Debug, Clone, Copy)]
+pub struct ChromeLayoutConfig {
+    pub show_new_tab_btn: bool,
+    pub show_menu_btn: bool,
+    pub show_new_window_btn: bool,
+    pub show_close_window_btn: bool,
+    pub menu_left: bool,
+    pub show_maximize: bool,
+}
+
+impl Default for ChromeLayoutConfig {
+    /// Matches the legacy hard-coded host view so any path that hit-tests
+    /// before chrome is first registered behaves exactly as before.
+    fn default() -> Self {
+        Self {
+            show_new_tab_btn: false,
+            show_menu_btn: false,
+            show_new_window_btn: true,
+            show_close_window_btn: true,
+            menu_left: false,
+            show_maximize: true,
+        }
+    }
+}
+
+impl ChromeLayoutConfig {
+    /// Capture the layout-affecting flags from a per-frame view.
+    pub fn from_view(view: &ChromeView<'_>) -> Self {
+        Self {
+            show_new_tab_btn: view.show_new_tab_btn,
+            show_menu_btn: view.show_menu_btn,
+            show_new_window_btn: view.show_new_window_btn,
+            show_close_window_btn: view.show_close_window_btn,
+            menu_left: view.menu_left,
+            show_maximize: view.show_maximize,
+        }
+    }
+}
+
 impl<'a> ChromeView<'a> {
     /// Minimal constructor with sensible defaults.
     pub fn new(tabs: &'a [ChromeTabConfig<'a>]) -> Self {

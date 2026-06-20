@@ -1690,16 +1690,20 @@ impl<P: DockPanel> LayoutManager<P> {
 
         // Chrome zone hit-test.
         if let Some(chrome_rect) = self.rect_for_chrome() {
+            // Use the layout-affecting flags captured at register time so the
+            // press hit-test matches the button cluster actually drawn this
+            // frame (menu side, maximize visibility, optional buttons).
+            let cfg = self.chrome_state().layout_config;
             let view = ChromeView {
                 tabs: &[],
                 active_tab_id: None,
-                show_new_tab_btn: false,
-                show_menu_btn: false,
-                show_new_window_btn: true,
-                show_close_window_btn: true,
+                show_new_tab_btn: cfg.show_new_tab_btn,
+                show_menu_btn: cfg.show_menu_btn,
+                show_new_window_btn: cfg.show_new_window_btn,
+                show_close_window_btn: cfg.show_close_window_btn,
                 is_maximized: host.is_maximized(),
-                menu_left: false,
-                show_maximize: true,
+                menu_left: cfg.menu_left,
+                show_maximize: cfg.show_maximize,
                 cursor_x: x,
                 cursor_y: y,
                 time_ms,
