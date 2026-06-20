@@ -15,8 +15,10 @@ pub mod shiny;
 pub mod decrypt;
 pub mod gradient;
 pub mod fuzzy;
+pub mod glitch;
 
 pub use shiny::{ShinyTextConfig, ShinyTextState};
 pub use decrypt::{DecryptedTextConfig, DecryptedTextState, RevealDirection};
 pub use gradient::{GradientTextConfig, GradientTextState, GradientDirection};
 pub use fuzzy::{FuzzyTextConfig, FuzzyTextState, FuzzyDirection};
+pub use glitch::{GlitchCell, GlitchGlyph, GlitchStyle};
