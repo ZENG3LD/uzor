@@ -41,9 +41,19 @@ fn main() {
             }
         }
 
+        // `--retry` makes the large-asset fetch resilient to transient TLS /
+        // network blips (a 15 MB download over a flaky link otherwise aborts the
+        // whole build on a single hiccup).
         let status = std::process::Command::new("curl")
             .arg("-sSL")
             .arg("--fail")
+            .arg("--retry")
+            .arg("6")
+            .arg("--retry-delay")
+            .arg("3")
+            .arg("--retry-all-errors")
+            .arg("--connect-timeout")
+            .arg("30")
             .arg("-o")
             .arg(&dest)
             .arg(url)
