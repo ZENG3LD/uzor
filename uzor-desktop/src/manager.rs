@@ -709,6 +709,19 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             attrs = attrs.with_min_inner_size(winit::dpi::LogicalSize::new(mw, mh));
         }
 
+        // macOS: a decorationless window is draggable by its background by
+        // default, so EVERY left-press starts a native window-drag — AppKit then
+        // consumes the mouse-up, so on_pointer_up never fires and NO click ever
+        // resolves (only right-click, which doesn't drag, gets a Released). The
+        // window still gets dragged explicitly via `chrome:drag` →
+        // `Window::drag_window()` on the header, so disabling background drag
+        // costs nothing and restores all clicks.
+        #[cfg(target_os = "macos")]
+        {
+            use winit::platform::macos::WindowAttributesExtMacOS;
+            attrs = attrs.with_movable_by_window_background(false);
+        }
+
         let window = std::sync::Arc::new(
             event_loop.create_window(attrs)
                 .map_err(|e| ManagerError::Window(e.to_string()))?
@@ -860,6 +873,11 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         use winit::event::{ElementState, MouseButton as WMouseButton};
 
         match event {
+            WindowEvent::CursorMoved { .. } | WindowEvent::RedrawRequested => {}
+            other => eprintln!("[EVDBG] {other:?}"),
+        }
+
+        match event {
             // ── Cursor moved ─────────────────────────────────────────────────
             WindowEvent::CursorMoved { position, .. } => {
                 let Some(pw) = self.windows.get_mut(&id) else { return };
@@ -910,6 +928,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 let Some(pw) = self.windows.get_mut(&id) else { return };
                 let (mx, my) = pw.last_mouse_pos;
                 self.layout.on_pointer_down(mx, my);
+                eprintln!("[CLICKDBG] PRESS-Left arm ({mx:.1},{my:.1}) pressed_widget={:?}", self.layout.last_pressed_widget());
 
                 // Dock-separator drag start.  on_pointer_down already
                 // wrote `last_pressed` via process_drag_press; check it
@@ -1023,8 +1042,28 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                     }
                 }
 
-                // Not a chrome press — forward as a regular click outcome to L3.
-                // (Actual click resolution happens on pointer-up.)
+                // Not a chrome press, not a drag target. macOS drags the whole
+                // window on this very press (winit's view returns
+                // mouseDownCanMoveWindow=YES and nothing we tried — isMovable,
+                // movableByWindowBackground, isa-swapping the view — disables it)
+                // and AppKit consumes the Left mouse-up, so the Released arm below
+                // never fires for body clicks. Resolve the click here, on press.
+                // Other platforms get a real mouse-up; this is macOS-only.
+                #[cfg(target_os = "macos")]
+                {
+                    match self.layout.on_pointer_up(mx, my) {
+                        uzor::layout::PointerUpOutcome::DismissedOverlay(h) => {
+                            self.app.on_dismiss(&mut self.layout, h);
+                        }
+                        uzor::layout::PointerUpOutcome::Click(_id, ev) => {
+                            self.app.dispatch_event(&mut self.layout, ev);
+                        }
+                        uzor::layout::PointerUpOutcome::Unhandled => {}
+                    }
+                    if let Some(pw) = self.windows.get(&id) {
+                        pw.window.request_redraw();
+                    }
+                }
             }
 
             // ── Mouse button released ────────────────────────────────────────
@@ -1035,6 +1074,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             } => {
                 let Some(pw) = self.windows.get_mut(&id) else { return };
                 let (mx, my) = pw.last_mouse_pos;
+                eprintln!("[CLICKDBG] RELEASE-Left arm ({mx:.1},{my:.1})");
                 pw.dock_separator_drag = None;
                 // L3 records the click in last_click; no pw.input write needed.
                 // Route the resolved click to the App dispatch hooks (chrome
@@ -1366,6 +1406,30 @@ where
                     if let Some(platform_ev) = uzor_window_desktop::map_winit_event(ev, 1.0) {
                         if let Some(slot) = self.layout.window_mut(&key) {
                             slot.provider.push_platform_event(platform_ev);
+                        }
+                    }
+                    // macOS consumes the Left mouse-up while it drags the window,
+                    // so the app never receives PointerUp and `pointer_down` sticks
+                    // true (planet spins on any move). Synthesize the up right after
+                    // the down so the app sees a complete click and clears its drag
+                    // state. (The window still moves — that's fine and expected.)
+                    #[cfg(target_os = "macos")]
+                    if matches!(
+                        ev,
+                        WindowEvent::MouseInput {
+                            state: winit::event::ElementState::Pressed,
+                            button: winit::event::MouseButton::Left,
+                            ..
+                        }
+                    ) {
+                        if let Some(slot) = self.layout.window_mut(&key) {
+                            slot.provider.push_platform_event(
+                                uzor::platform::PlatformEvent::PointerUp {
+                                    x: 0.0,
+                                    y: 0.0,
+                                    button: uzor::input::state::MouseButton::Left,
+                                },
+                            );
                         }
                     }
                 }
