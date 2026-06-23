@@ -12,6 +12,7 @@
 //! | POST   | `/input/click`        | `{window, x, y, button?}`         | [`CommandReply`]               |
 //! | POST   | `/input/hover`        | `{window, x, y}`                  | [`CommandReply`]               |
 //! | POST   | `/input/scroll`       | `{window, dx, dy}`                | [`CommandReply`]               |
+//! | POST   | `/input/drag`         | `{window, x1, y1, x2, y2, steps?}`| [`CommandReply`]               |
 //! | POST   | `/lm/click_widget`    | `{window, widget_id}`             | [`CommandReply`]               |
 //! | POST   | `/lm/hover_widget`    | `{window, widget_id}`             | [`CommandReply`]               |
 //! | POST   | `/lm/modal/open`      | `{window, modal_id}`              | [`CommandReply`]               |
@@ -120,6 +121,7 @@ pub fn spawn_server(
                     .route("/input/click",           post(post_input_click))
                     .route("/input/hover",           post(post_input_hover))
                     .route("/input/scroll",          post(post_input_scroll))
+                    .route("/input/drag",            post(post_input_drag))
                     .route("/lm/click_widget",       post(post_click_widget))
                     .route("/lm/hover_widget",       post(post_hover_widget))
                     .route("/lm/modal/open",         post(post_open_modal))
@@ -272,6 +274,23 @@ struct ScrollBody { window: String, dx: f64, dy: f64 }
 
 async fn post_input_scroll(State(s): State<AppState>, Json(b): Json<ScrollBody>) -> impl IntoResponse {
     forward(s, Command::InjectScroll { window: b.window, dx: b.dx, dy: b.dy }).await
+}
+
+#[derive(Deserialize)]
+struct DragBody {
+    window: String,
+    x1: f64, y1: f64,
+    x2: f64, y2: f64,
+    steps: Option<usize>,
+}
+
+async fn post_input_drag(State(s): State<AppState>, Json(b): Json<DragBody>) -> impl IntoResponse {
+    forward(s, Command::InjectDrag {
+        window: b.window,
+        x1: b.x1, y1: b.y1,
+        x2: b.x2, y2: b.y2,
+        steps: b.steps.unwrap_or(10),
+    }).await
 }
 
 // ── semantic LM ops ─────────────────────────────────────────────────

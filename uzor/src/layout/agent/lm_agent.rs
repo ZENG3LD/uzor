@@ -155,6 +155,7 @@ impl<P: DockPanel> LmAgent<P> {
             Command::InjectHover { window, .. }
             | Command::InjectClick { window, .. }
             | Command::InjectScroll { window, .. }
+            | Command::InjectDrag { window, .. }
             | Command::ClickWidget { window, .. }
             | Command::HoverWidget { window, .. }
             | Command::OpenModal { window, .. }
@@ -208,6 +209,7 @@ impl<P: DockPanel> LmAgent<P> {
             Command::InjectHover { .. }
             | Command::InjectClick { .. }
             | Command::InjectScroll { .. }
+            | Command::InjectDrag { .. }
             | Command::SpawnWindow { .. }
             | Command::CloseWindow { .. } => None,
 

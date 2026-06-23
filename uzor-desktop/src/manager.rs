@@ -496,6 +496,19 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                     return CommandReply::err("unknown window");
                 }
                 self.layout.set_current_window(key.clone());
+                // Push synthetic PointerDown platform event so app.on_event
+                // resets drag_moved to 0.0.  Without this, a stale drag_moved
+                // value from a prior real pointer drag silently blocks the
+                // `was_clicked && drag_moved < TAP_SLOP` guard in the app.
+                if let Some(slot) = self.layout.window_mut(&key) {
+                    slot.provider.push_platform_event(
+                        uzor::platform::PlatformEvent::PointerDown {
+                            x,
+                            y,
+                            button: uzor::input::state::MouseButton::Left,
+                        },
+                    );
+                }
                 self.layout.on_pointer_move(x, y);
                 self.layout.on_pointer_down(x, y);
                 // Route synthetic (agent-driven) clicks through the same App
@@ -522,6 +535,38 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 }
                 self.layout.set_current_window(key.clone());
                 self.layout.on_scroll(dx, dy);
+                if let Some(id) = self.window_id_for(&key) {
+                    if let Some(pw) = self.windows.get(&id) { pw.window.request_redraw(); }
+                }
+                CommandReply::ok()
+            }
+            Command::InjectDrag { window, x1, y1, x2, y2, steps } => {
+                let key = uzor::framework::multi_window::WindowKey::new(window);
+                if !self.layout.window_keys().any(|k| k == &key) {
+                    return CommandReply::err("unknown window");
+                }
+                self.layout.set_current_window(key.clone());
+                // Push synthetic PointerDown so app.on_event resets drag_moved.
+                if let Some(slot) = self.layout.window_mut(&key) {
+                    slot.provider.push_platform_event(
+                        uzor::platform::PlatformEvent::PointerDown {
+                            x: x1,
+                            y: y1,
+                            button: uzor::input::state::MouseButton::Left,
+                        },
+                    );
+                }
+                self.layout.on_pointer_move(x1, y1);
+                self.layout.on_pointer_down(x1, y1);
+                // Interpolated moves from (x1,y1) → (x2,y2).
+                let steps = steps.max(1);
+                for i in 1..=steps {
+                    let t = i as f64 / steps as f64;
+                    let mx = x1 + (x2 - x1) * t;
+                    let my = y1 + (y2 - y1) * t;
+                    self.layout.on_pointer_move(mx, my);
+                }
+                self.layout.on_pointer_up(x2, y2);
                 if let Some(id) = self.window_id_for(&key) {
                     if let Some(pw) = self.windows.get(&id) { pw.window.request_redraw(); }
                 }
@@ -1612,6 +1657,7 @@ fn command_window_key(cmd: &uzor::layout::agent::Command) -> Option<String> {
         C::InjectHover  { window, .. }
         | C::InjectClick  { window, .. }
         | C::InjectScroll { window, .. }
+        | C::InjectDrag   { window, .. }
         | C::ClickWidget  { window, .. }
         | C::HoverWidget  { window, .. }
         | C::OpenModal    { window, .. }

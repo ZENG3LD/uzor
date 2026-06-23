@@ -16,6 +16,18 @@ pub enum Command {
     InjectClick { window: String, x: f64, y: f64, button: MouseButton },
     /// Wheel scroll (`dx`, `dy` in logical pixels).
     InjectScroll { window: String, dx: f64, dy: f64 },
+    /// Press at (x1,y1), move through N intermediate steps, release at (x2,y2).
+    /// `steps` controls how many intermediate on_pointer_move calls are made
+    /// (default 10 if omitted). Useful for scrollbar drags, planet rotation, etc.
+    InjectDrag {
+        window: String,
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+        #[serde(default = "default_drag_steps")]
+        steps: usize,
+    },
 
     // ── semantic / direct LM ops ────────────────────────────────────
     /// Resolve `widget_id` to its rect via the branch's layout tree
@@ -116,6 +128,8 @@ pub enum Command {
         height:    f64,
     },
 }
+
+fn default_drag_steps() -> usize { 10 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
