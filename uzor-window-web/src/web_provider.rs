@@ -124,14 +124,47 @@ impl WebWindowProvider {
             .dyn_into::<web_sys::EventTarget>()
             .map_err(|_| "canvas is not an EventTarget")?;
 
-        // ── Mouse events ──────────────────────────────────────────────────────
+        // ── Pointer events ────────────────────────────────────────────────────
+        //
+        // Use pointer-events (PointerEvent extends MouseEvent) instead of
+        // mouse-events so we can call `setPointerCapture` on pointerdown.
+        // Without capture, mousemove/mouseup are only dispatched while the
+        // cursor is over the canvas — once a drag carries the cursor off the
+        // canvas (e.g. dragging a separator past the chart edge, or panning
+        // out of the window), the drag freezes and `mouseup` never arrives,
+        // leaving `mouse_pressed` stuck `true`. With capture, every
+        // pointermove/pointerup is delivered to the canvas for the lifetime
+        // of the gesture even if the cursor leaves the element.
+        //
+        // PointerEvent inherits `button()`, `offset_x()`, `offset_y()` from
+        // MouseEvent, so the existing `map_mouse_event` helper still applies.
 
-        for event_type in &["mousedown", "mousemove", "mouseup", "mouseenter", "mouseleave"] {
+        for event_type in &[
+            "pointerdown",
+            "pointermove",
+            "pointerup",
+            "pointercancel",
+            "pointerenter",
+            "pointerleave",
+        ] {
             let pending_clone = pending.clone();
+            let canvas_for_capture = canvas.clone();
             let et = (*event_type).to_string();
             let closure = Closure::wrap(Box::new(move |raw: Event| {
+                // Capture the pointer on pointerdown so that subsequent
+                // pointermove / pointerup (and pointercancel) fire on the
+                // canvas even if the cursor leaves it.
+                if et == "pointerdown" {
+                    // PointerEvent.pointerId via Reflect (web-sys' PointerEvent
+                    // type isn't enabled in the default feature set used here).
+                    if let Ok(pid) = js_sys::Reflect::get(raw.as_ref(), &"pointerId".into()) {
+                        if let Some(id) = pid.as_f64() {
+                            let _ = canvas_for_capture.set_pointer_capture(id as i32);
+                        }
+                    }
+                }
                 if let Ok(ev) = raw.dyn_into::<MouseEvent>() {
-                    if let Some(p) = map_mouse_event(&et, &ev) {
+                    if let Some(p) = map_pointer_event(&et, &ev) {
                         pending_clone.borrow_mut().push(p);
                     }
                 }
@@ -139,6 +172,22 @@ impl WebWindowProvider {
             canvas_target
                 .add_event_listener_with_callback(event_type, closure.as_ref().unchecked_ref())
                 .map_err(|_| format!("failed to add {} listener", event_type))?;
+            listeners.push(Listener { _closure: closure });
+        }
+
+        // ── contextmenu — prevent the browser's right-click menu ──────────────
+        //
+        // Without preventDefault the native context menu appears on right-click,
+        // hijacking the gesture before our PointerDown(Right) reaches
+        // `chart.on_right_click()`. Suppress it on the canvas.
+
+        {
+            let closure = Closure::wrap(Box::new(move |raw: Event| {
+                raw.prevent_default();
+            }) as Box<dyn FnMut(Event)>);
+            canvas_target
+                .add_event_listener_with_callback("contextmenu", closure.as_ref().unchecked_ref())
+                .map_err(|_| "failed to add contextmenu listener")?;
             listeners.push(Listener { _closure: closure });
         }
 
@@ -294,17 +343,26 @@ impl WindowProvider for WebWindowProvider {
 
 // ── Event mapping helpers ─────────────────────────────────────────────────────
 
-fn map_mouse_event(event_type: &str, ev: &MouseEvent) -> Option<PlatformEvent> {
+/// Map a DOM pointer event (PointerEvent extends MouseEvent) to a
+/// platform-neutral [`PlatformEvent`]. We listen on `pointer*` rather than
+/// `mouse*` so the canvas can call `setPointerCapture` on pointerdown and
+/// keep receiving move/up events even when the cursor leaves the canvas
+/// during a drag.
+fn map_pointer_event(event_type: &str, ev: &MouseEvent) -> Option<PlatformEvent> {
     let x = ev.offset_x() as f64;
     let y = ev.offset_y() as f64;
     let button = map_mouse_button(ev.button());
     match event_type {
-        "mousedown"  => Some(PlatformEvent::PointerDown { x, y, button }),
-        "mouseup"    => Some(PlatformEvent::PointerUp   { x, y, button }),
-        "mousemove"  => Some(PlatformEvent::PointerMoved { x, y }),
-        "mouseenter" => Some(PlatformEvent::PointerEntered),
-        "mouseleave" => Some(PlatformEvent::PointerLeft),
-        _            => None,
+        "pointerdown"   => Some(PlatformEvent::PointerDown { x, y, button }),
+        "pointerup"     => Some(PlatformEvent::PointerUp   { x, y, button }),
+        // pointercancel: browser aborted the gesture (e.g. system gesture,
+        // OS captured the input). Treat as release so we don't leave
+        // `mouse_pressed` stuck `true`.
+        "pointercancel" => Some(PlatformEvent::PointerUp   { x, y, button }),
+        "pointermove"   => Some(PlatformEvent::PointerMoved { x, y }),
+        "pointerenter"  => Some(PlatformEvent::PointerEntered),
+        "pointerleave"  => Some(PlatformEvent::PointerLeft),
+        _               => None,
     }
 }
 
