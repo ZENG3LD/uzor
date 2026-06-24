@@ -588,6 +588,11 @@ impl TextFieldStore {
         state.cursor = cursor_from_x(&state.last_char_positions, x);
     }
 
+    /// Returns `true` if a text-select drag is currently in progress.
+    pub fn drag_active(&self) -> bool {
+        self.drag_field.is_some()
+    }
+
     /// End the drag-selection. Clears degenerate (zero-width) selections.
     pub fn on_drag_end(&mut self) {
         if let Some(id) = self.drag_field.clone() {
