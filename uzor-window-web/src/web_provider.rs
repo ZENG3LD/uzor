@@ -217,8 +217,35 @@ impl WebWindowProvider {
             let et = (*event_type).to_string();
             let closure = Closure::wrap(Box::new(move |raw: Event| {
                 if let Ok(ev) = raw.dyn_into::<KeyboardEvent>() {
+                    let mut pending = pending_clone.borrow_mut();
                     if let Some(p) = map_keyboard_event(&et, &ev) {
-                        pending_clone.borrow_mut().push(p);
+                        pending.push(p);
+                    }
+                    // On keydown also emit `TextInput { text: ev.key() }` for
+                    // printable single-character keys.  Mirrors the
+                    // winit-Ime::Commit pathway on native: KeyboardInput +
+                    // Ime::Commit are both delivered, the input dispatcher
+                    // routes shortcuts (Ctrl+A/V/Z…) off the KeyDown and text
+                    // off the IME commit.  Without this `keydown` only carries
+                    // the positional KeyCode (KeyA, KeyB, …) which lacks
+                    // layout info, so non-Latin keyboards and Shift'd symbols
+                    // can never reach text fields.
+                    if et == "keydown" {
+                        let key = ev.key();
+                        // Filter out modifier-only chords and named-key strings
+                        // (Escape, Enter, ArrowLeft, F1, …) — those are >1 char.
+                        // Only emit when `ev.key()` is exactly one Unicode
+                        // scalar AND no Ctrl/Meta (those are shortcuts).
+                        if !ev.ctrl_key() && !ev.meta_key() {
+                            let mut chars = key.chars();
+                            if let (Some(ch), None) = (chars.next(), chars.next()) {
+                                if !ch.is_control() {
+                                    pending.push(PlatformEvent::TextInput {
+                                        text: ch.to_string(),
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }) as Box<dyn FnMut(Event)>);
