@@ -45,6 +45,11 @@ pub enum PlatformEvent {
     TextInput { text: String },
     ModifiersChanged { modifiers: ModifierKeys },
     ClipboardPaste { text: String },
+    /// Fired right after a `cut` gesture (Ctrl+X) has been handled by the
+    /// platform's copy provider — embedder is expected to delete the active
+    /// selection from the focused text input.  Mirrors the implicit
+    /// "copy + delete-selection" semantics of system cut.
+    ClipboardCut,
     FileDropped { path: std::path::PathBuf },
     FileHovered { path: std::path::PathBuf },
     FileCancelled,
@@ -139,6 +144,7 @@ impl EventProcessor {
             | PlatformEvent::WindowMoved { .. }
             | PlatformEvent::WindowDestroyed
             | PlatformEvent::ClipboardPaste { .. }
+            | PlatformEvent::ClipboardCut
             | PlatformEvent::FileDropped { .. }
             | PlatformEvent::FileHovered { .. }
             | PlatformEvent::FileCancelled

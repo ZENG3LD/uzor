@@ -24,7 +24,8 @@ use std::rc::Rc;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{
-    Document, Event, HtmlCanvasElement, KeyboardEvent, MouseEvent, TouchEvent, WheelEvent,
+    ClipboardEvent, Document, Event, HtmlCanvasElement, KeyboardEvent, MouseEvent, TouchEvent,
+    WheelEvent,
 };
 
 use uzor::core::types::Rect;
@@ -76,6 +77,14 @@ pub struct WebWindowProvider {
     canvas: HtmlCanvasElement,
     pending: Rc<RefCell<Vec<PlatformEvent>>>,
     should_close: Rc<RefCell<bool>>,
+    /// Producer called from inside the DOM `copy` / `cut` listeners to
+    /// synchronously read the text the embedder wants to put on the
+    /// system clipboard.  Returning `None` lets the browser fall through
+    /// to its default copy/cut behaviour (no-op on a canvas).
+    ///
+    /// Set via [`WebWindowProvider::set_copy_provider`].  Defaults to
+    /// `None`, in which case Ctrl+C / Ctrl+X are silent on this canvas.
+    copy_provider: Rc<RefCell<Option<Box<dyn FnMut() -> Option<String>>>>>,
     /// Kept alive so DOM listeners are not dropped.
     _listeners: Vec<Listener>,
 }
@@ -117,6 +126,17 @@ impl WebWindowProvider {
     pub fn from_canvas(canvas: HtmlCanvasElement) -> Result<Self, String> {
         let pending: Rc<RefCell<Vec<PlatformEvent>>> = Rc::new(RefCell::new(Vec::new()));
         let should_close: Rc<RefCell<bool>> = Rc::new(RefCell::new(false));
+        let copy_provider: Rc<RefCell<Option<Box<dyn FnMut() -> Option<String>>>>>
+            = Rc::new(RefCell::new(None));
+        // Tracks the last keyboard-modifier bits we observed.  Browser DOM does
+        // not surface a dedicated `modifierschange` event the way winit does on
+        // desktop, so we synthesize one from `keydown`/`keyup` whenever the
+        // modifier mask changes — otherwise downstream consumers (e.g.
+        // mlc-input-shell's Ctrl+A/S/F/Z/Y branch which gates on
+        // `state.modifiers.ctrl`) never see the modifier flip and the
+        // shortcut silently dies.
+        let last_modifiers: Rc<RefCell<ModifierKeys>> =
+            Rc::new(RefCell::new(ModifierKeys::default()));
         let mut listeners = Vec::new();
 
         let canvas_target = canvas
@@ -214,10 +234,52 @@ impl WebWindowProvider {
 
         for event_type in &["keydown", "keyup"] {
             let pending_clone = pending.clone();
+            let last_mods_clone = last_modifiers.clone();
             let et = (*event_type).to_string();
             let closure = Closure::wrap(Box::new(move |raw: Event| {
                 if let Ok(ev) = raw.dyn_into::<KeyboardEvent>() {
+                    // Block browser-default behaviour for the editing shortcuts
+                    // we route into TextFieldStore ourselves.  Without this:
+                    //   Ctrl+A  → browser "select all on page" steals selection
+                    //   Ctrl+S  → browser "save page" dialog
+                    //   Ctrl+F  → browser find bar
+                    //   Ctrl+Z  → no-op (canvas isn't editable) but may bubble
+                    //   Ctrl+Y  → reopen-closed-tab in Firefox
+                    // Ctrl+C / Ctrl+X / Ctrl+V are handled by the dedicated
+                    // copy/cut/paste listeners which already preventDefault.
+                    if et == "keydown" && (ev.ctrl_key() || ev.meta_key()) {
+                        match ev.code().as_str() {
+                            "KeyA" | "KeyS" | "KeyF" | "KeyZ" | "KeyY" => {
+                                ev.prevent_default();
+                            }
+                            _ => {}
+                        }
+                    }
                     let mut pending = pending_clone.borrow_mut();
+                    // Synthesize a `ModifiersChanged` event whenever the
+                    // modifier mask differs from the last keyboard event we
+                    // observed.  Browsers never fire a dedicated
+                    // modifier-change event, but downstream consumers (e.g.
+                    // shells that gate Ctrl-shortcuts on a tracked
+                    // `state.modifiers.ctrl` flag) expect winit-style
+                    // `ModifiersChanged` deltas.  Emitting before the
+                    // KeyDown/KeyUp guarantees the consumer's modifier state
+                    // is up-to-date by the time the key arm runs.
+                    let current_mods = ModifierKeys {
+                        shift: ev.shift_key(),
+                        ctrl:  ev.ctrl_key(),
+                        alt:   ev.alt_key(),
+                        meta:  ev.meta_key(),
+                    };
+                    {
+                        let mut last = last_mods_clone.borrow_mut();
+                        if *last != current_mods {
+                            *last = current_mods;
+                            pending.push(PlatformEvent::ModifiersChanged {
+                                modifiers: current_mods,
+                            });
+                        }
+                    }
                     if let Some(p) = map_keyboard_event(&et, &ev) {
                         pending.push(p);
                     }
@@ -320,12 +382,107 @@ impl WebWindowProvider {
             listeners.push(Listener { _closure: closure });
         }
 
+        // ── Clipboard events ──────────────────────────────────────────────────
+        //
+        // Browser security only delivers synchronous clipboard text inside
+        // user-gesture-triggered `paste` / `copy` / `cut` events.  Listen on
+        // `document` so the gesture is captured anywhere on the page (the
+        // canvas may not have focus at the moment Ctrl+V is hit).
+        if let Some(doc_for_clip) = web_sys::window().and_then(|w| w.document()) {
+            let doc_target = doc_for_clip.dyn_into::<web_sys::EventTarget>()
+                .map_err(|_| "document is not EventTarget")?;
+
+            // paste → translate clipboardData.text into PlatformEvent::ClipboardPaste.
+            {
+                let pending_clone = pending.clone();
+                let closure = Closure::wrap(Box::new(move |raw: Event| {
+                    if let Ok(ev) = raw.dyn_into::<ClipboardEvent>() {
+                        if let Some(dt) = ev.clipboard_data() {
+                            if let Ok(text) = dt.get_data("text") {
+                                if !text.is_empty() {
+                                    pending_clone.borrow_mut()
+                                        .push(PlatformEvent::ClipboardPaste { text });
+                                    ev.prevent_default();
+                                }
+                            }
+                        }
+                    }
+                }) as Box<dyn FnMut(Event)>);
+                doc_target
+                    .add_event_listener_with_callback("paste", closure.as_ref().unchecked_ref())
+                    .map_err(|_| "failed to add paste listener")?;
+                listeners.push(Listener { _closure: closure });
+            }
+
+            // copy → ask copy_provider for the text to put on the clipboard,
+            // write it via clipboardData.setData, suppress the default behaviour.
+            {
+                let provider = copy_provider.clone();
+                let closure = Closure::wrap(Box::new(move |raw: Event| {
+                    if let Ok(ev) = raw.clone().dyn_into::<ClipboardEvent>() {
+                        let text_opt = provider.borrow_mut().as_mut().and_then(|f| f());
+                        if let Some(text) = text_opt {
+                            if let Some(dt) = ev.clipboard_data() {
+                                let _ = dt.set_data("text/plain", &text);
+                                ev.prevent_default();
+                            }
+                        }
+                    }
+                }) as Box<dyn FnMut(Event)>);
+                doc_target
+                    .add_event_listener_with_callback("copy", closure.as_ref().unchecked_ref())
+                    .map_err(|_| "failed to add copy listener")?;
+                listeners.push(Listener { _closure: closure });
+            }
+
+            // cut → copy the selection AND fire ClipboardCut so the embedder
+            // deletes the selection from the focused text field.
+            {
+                let provider = copy_provider.clone();
+                let pending_clone = pending.clone();
+                let closure = Closure::wrap(Box::new(move |raw: Event| {
+                    if let Ok(ev) = raw.clone().dyn_into::<ClipboardEvent>() {
+                        let text_opt = provider.borrow_mut().as_mut().and_then(|f| f());
+                        if let Some(text) = text_opt {
+                            if let Some(dt) = ev.clipboard_data() {
+                                let _ = dt.set_data("text/plain", &text);
+                                ev.prevent_default();
+                                pending_clone.borrow_mut().push(PlatformEvent::ClipboardCut);
+                            }
+                        }
+                    }
+                }) as Box<dyn FnMut(Event)>);
+                doc_target
+                    .add_event_listener_with_callback("cut", closure.as_ref().unchecked_ref())
+                    .map_err(|_| "failed to add cut listener")?;
+                listeners.push(Listener { _closure: closure });
+            }
+        }
+
         Ok(Self {
             canvas,
             pending,
             should_close,
+            copy_provider,
             _listeners: listeners,
         })
+    }
+
+    /// Register a closure that returns the text the embedder wants placed on
+    /// the system clipboard when the user triggers a `copy` or `cut` gesture
+    /// (Ctrl+C / Ctrl+X, the Edit menu, or right-click Copy).
+    ///
+    /// The closure is called synchronously inside the DOM `copy` / `cut`
+    /// event listener — that is the only context in which `clipboardData`
+    /// is writable from JavaScript.  Returning `None` lets the browser's
+    /// default action run (which is typically a no-op on a canvas).
+    ///
+    /// Replaces any previously-registered provider.
+    pub fn set_copy_provider<F>(&self, provider: F)
+    where
+        F: FnMut() -> Option<String> + 'static,
+    {
+        *self.copy_provider.borrow_mut() = Some(Box::new(provider));
     }
 }
 
