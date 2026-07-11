@@ -10,6 +10,7 @@
 //! depend on `uzor-backend-vello-common` and implements all state management
 //! inline to avoid cross-version type conflicts.
 
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use vello_cpu::kurbo::{self, Affine, BezPath, Cap, Join, Rect, Shape, Stroke};
@@ -17,7 +18,10 @@ use vello_cpu::peniko::{
     Blob, ColorStop, ColorStops, Extend, Fill, FontData, Gradient, LinearGradientPosition, Mix,
     Compose,
 };
-use vello_cpu::{Glyph, RenderContext as VelloCpuCtx, RenderMode, RenderSettings};
+use vello_cpu::{
+    Glyph, Image, ImageSource, Pixmap as VelloCpuPixmap, RenderContext as VelloCpuCtx, RenderMode,
+    RenderSettings, Resources,
+};
 
 use skrifa::{
     MetadataProvider,
@@ -25,9 +29,11 @@ use skrifa::{
 };
 
 use uzor::fonts;
+use uzor::core::types::Rect as UzorRect;
 use uzor::render::{
     BatchPainter, BlendMode as UzorBlendMode, CircleBatch,
     Effects, GradientPainter, LineSegment, Masking, Painter,
+    OffscreenTarget, OffscreenTargetDesc, OffscreenTargetId,
     RenderContext as UzorRenderContext, RenderContextExt, ShapeHelpers,
     TextBounds, TextMetrics, TextRenderer, TextAlign, TextBaseline,
 };
@@ -327,6 +333,32 @@ pub struct VelloCpuRenderContext {
     shadow:       Option<ShadowState>,
     // M6-P3: Blend mode
     blend_mode:   UzorBlendMode,
+
+    // Offscreen render-target cache — rendered RGBA8 content, keyed by
+    // handle. See `uzor::render::offscreen` for the trait contract.
+    offscreen_targets: HashMap<OffscreenTargetId, CachedTarget>,
+    // Monotonic counter for allocating new `OffscreenTargetId`s.
+    next_offscreen_id: u64,
+    // Stack of saved recording state, swapped out by
+    // `push_offscreen_target`; `pop_offscreen_target` restores the top
+    // entry and stores the rendered content under the target's id.
+    offscreen_stack: Vec<SavedRecording>,
+}
+
+/// Recording state swapped out while painting into an offscreen target.
+struct SavedRecording {
+    id:         OffscreenTargetId,
+    render_ctx: Option<VelloCpuCtx>,
+    resources:  Resources,
+    width:      u32,
+    height:     u32,
+}
+
+/// Rendered offscreen target content — premultiplied RGBA8 pixels.
+struct CachedTarget {
+    pixels: Vec<u8>,
+    width:  u32,
+    height: u32,
 }
 
 impl VelloCpuRenderContext {
@@ -358,6 +390,9 @@ impl VelloCpuRenderContext {
             state_stack:  Vec::new(),
             shadow:       None,
             blend_mode:   UzorBlendMode::Normal,
+            offscreen_targets: HashMap::new(),
+            next_offscreen_id: 0,
+            offscreen_stack:   Vec::new(),
         }
     }
 
@@ -1217,6 +1252,150 @@ impl uzor::render::UiEffectHelpers for VelloCpuRenderContext {}
 impl UzorRenderContext for VelloCpuRenderContext {
     fn dpr(&self) -> f64 {
         self.dpr
+    }
+
+    fn supports_offscreen_targets(&self) -> bool {
+        true
+    }
+
+    fn push_offscreen_target(&mut self, desc: OffscreenTargetDesc) -> OffscreenTarget {
+        let w = desc.width_px.max(1);
+        let h = desc.height_px.max(1);
+        let w16 = w.min(u16::MAX as u32) as u16;
+        let h16 = h.min(u16::MAX as u32) as u16;
+
+        let id = OffscreenTargetId(self.next_offscreen_id);
+        self.next_offscreen_id += 1;
+
+        let settings = RenderSettings {
+            level:       vello_cpu::Level::new(),
+            num_threads: 0,
+            render_mode: RenderMode::OptimizeSpeed,
+        };
+        let fresh_ctx = VelloCpuCtx::new_with(w16, h16, settings);
+        let fresh_resources = Resources::new();
+
+        let saved_ctx = std::mem::replace(&mut self.render_ctx, Some(fresh_ctx));
+        let saved_resources = std::mem::replace(&mut self.resources, fresh_resources);
+        let saved_width = std::mem::replace(&mut self.width, w);
+        let saved_height = std::mem::replace(&mut self.height, h);
+
+        self.offscreen_stack.push(SavedRecording {
+            id,
+            render_ctx: saved_ctx,
+            resources:  saved_resources,
+            width:      saved_width,
+            height:     saved_height,
+        });
+
+        // The offscreen subtree paints at its own local origin — reset
+        // per-frame drawing state exactly like `begin_frame` does.
+        self.transform   = Affine::IDENTITY;
+        self.clip_active = false;
+        self.state_stack.clear();
+        self.path        = None;
+
+        Some(id)
+    }
+
+    fn pop_offscreen_target(&mut self) {
+        let Some(saved) = self.offscreen_stack.pop() else {
+            return;
+        };
+
+        let w = self.width.min(u16::MAX as u32) as u16;
+        let h = self.height.min(u16::MAX as u32) as u16;
+        let pixel_count = self.width as usize * self.height as usize;
+        let mut pixels = vec![0u8; pixel_count * 4];
+        if let Some(ref mut ctx) = self.render_ctx {
+            ctx.flush();
+            ctx.render_to_buffer(&mut self.resources, &mut pixels, w, h, RenderMode::OptimizeSpeed);
+        }
+
+        self.offscreen_targets.insert(
+            saved.id,
+            CachedTarget { pixels, width: self.width, height: self.height },
+        );
+
+        self.render_ctx = saved.render_ctx;
+        self.resources  = saved.resources;
+        self.width      = saved.width;
+        self.height     = saved.height;
+    }
+
+    fn draw_cached_target(&mut self, id: OffscreenTargetId, dst_rect: UzorRect) -> bool {
+        let Some(target) = self.offscreen_targets.get(&id) else {
+            return false;
+        };
+        if dst_rect.width <= 0.0 || dst_rect.height <= 0.0 {
+            return false;
+        }
+        let img_w = target.width.max(1);
+        let img_h = target.height.max(1);
+
+        // Convert the cached straight RGBA8 buffer into vello_common's
+        // premultiplied-alpha pixmap representation.
+        let premul: Vec<vello_cpu::color::PremulRgba8> = target
+            .pixels
+            .chunks_exact(4)
+            .map(|px| {
+                let a = u16::from(px[3]);
+                let mul = |c: u8| ((a * u16::from(c)) / 255) as u8;
+                vello_cpu::color::PremulRgba8 { r: mul(px[0]), g: mul(px[1]), b: mul(px[2]), a: px[3] }
+            })
+            .collect();
+        let pixmap = VelloCpuPixmap::from_parts(
+            premul,
+            img_w.min(u16::MAX as u32) as u16,
+            img_h.min(u16::MAX as u32) as u16,
+        );
+        let source = ImageSource::Pixmap(Arc::new(pixmap));
+        let image = Image { image: source, sampler: Default::default() };
+
+        // Place the image (native pixel space `[0,img_w) x [0,img_h)`)
+        // into `dst_rect` via the paint transform: scale from native
+        // size to the destination size, then translate into position.
+        let scale_x = dst_rect.width / f64::from(img_w);
+        let scale_y = dst_rect.height / f64::from(img_h);
+        let paint_transform = Affine::translate((dst_rect.x, dst_rect.y))
+            * Affine::scale_non_uniform(scale_x, scale_y);
+
+        let rect = Rect::new(dst_rect.x, dst_rect.y, dst_rect.x + dst_rect.width, dst_rect.y + dst_rect.height);
+        let path = rect.to_path(0.1);
+        let transform = self.transform;
+        let blend = Self::blend_to_vello_cpu(self.blend_mode);
+
+        if let Some(ref mut ctx) = self.render_ctx {
+            ctx.set_transform(transform);
+            ctx.set_blend_mode(blend);
+            ctx.set_paint_transform(paint_transform);
+            ctx.set_fill_rule(Fill::NonZero);
+            ctx.set_paint(image);
+            ctx.fill_path(&path);
+            ctx.reset_paint_transform();
+        }
+        true
+    }
+
+    fn resize_offscreen_target(&mut self, id: OffscreenTargetId, desc: OffscreenTargetDesc) -> bool {
+        if !self.offscreen_targets.contains_key(&id) {
+            return false;
+        }
+        // Cached content no longer matches the requested size — drop it;
+        // the caller's next `push_offscreen_target` (same id semantics
+        // don't apply here since ids aren't reused) will repaint fresh.
+        // Per the trait contract callers should `free` + `push` a new
+        // target when this returns `false`; report success only when
+        // the stored buffer already matches the new size (no-op resize).
+        let desc_matches = self
+            .offscreen_targets
+            .get(&id)
+            .is_some_and(|t| t.width == desc.width_px && t.height == desc.height_px);
+        desc_matches
+    }
+
+    fn free_offscreen_target(&mut self, id: OffscreenTargetId) {
+        self.offscreen_targets.remove(&id);
     }
 }
 

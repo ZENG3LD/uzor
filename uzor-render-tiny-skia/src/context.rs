@@ -25,9 +25,12 @@ use tiny_skia::{
 use uzor::render::{
     BackdropBlur, BatchPainter, BlendMode as UzorBlendMode, CircleBatch, Effects,
     GradientPainter, ImagePainter, LineSegment, Masking, Painter,
+    OffscreenTarget, OffscreenTargetDesc, OffscreenTargetId,
     RenderContext as UzorRenderContext, RenderContextExt, ShapeHelpers,
     TextAlign, TextBaseline, TextBounds, TextMetrics, TextRenderer, UiEffectHelpers,
 };
+use uzor::core::types::Rect as UzorRect;
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Centralized font bytes (sourced from uzor::fonts)
@@ -538,6 +541,15 @@ pub struct TinySkiaCpuRenderContext {
     // Backdrop blur radius (px) used by draw_blur_background.
     // Default 12.  Set via set_backdrop_blur_radius().
     blur_radius:   f32,
+    // Offscreen render-target cache — populated targets, keyed by handle.
+    // See `uzor::render::offscreen` for the trait contract.
+    offscreen_targets: HashMap<OffscreenTargetId, Pixmap>,
+    // Monotonic counter for allocating new `OffscreenTargetId`s.
+    next_offscreen_id: u64,
+    // Stack of (id, saved screen pixmap) entries swapped out by
+    // `push_offscreen_target`; `pop_offscreen_target` swaps the top
+    // entry back in and stores the painted pixmap under its id.
+    offscreen_stack: Vec<(OffscreenTargetId, Pixmap)>,
 }
 
 impl TinySkiaCpuRenderContext {
@@ -566,6 +578,9 @@ impl TinySkiaCpuRenderContext {
             blend_mode:    TsBlendMode::SourceOver,
             dpr,
             blur_radius:   12.0,
+            offscreen_targets: HashMap::new(),
+            next_offscreen_id: 0,
+            offscreen_stack:   Vec::new(),
         }
     }
 
@@ -1628,6 +1643,88 @@ impl ImagePainter for TinySkiaCpuRenderContext {
 impl UzorRenderContext for TinySkiaCpuRenderContext {
     fn dpr(&self) -> f64 {
         self.dpr
+    }
+
+    fn supports_offscreen_targets(&self) -> bool {
+        true
+    }
+
+    fn push_offscreen_target(&mut self, desc: OffscreenTargetDesc) -> OffscreenTarget {
+        let w = desc.width_px.max(1);
+        let h = desc.height_px.max(1);
+        let fresh = Pixmap::new(w, h)?;
+
+        let id = OffscreenTargetId(self.next_offscreen_id);
+        self.next_offscreen_id += 1;
+
+        // Swap the fresh (transparent) offscreen pixmap in; stash the
+        // previously-active pixmap (screen or an outer offscreen target,
+        // for nested boundaries) on the stack keyed by the new id.
+        let previous = std::mem::replace(&mut self.pixmap, fresh);
+        self.offscreen_stack.push((id, previous));
+        self.current_clip = None;
+
+        Some(id)
+    }
+
+    fn pop_offscreen_target(&mut self) {
+        let Some((id, previous)) = self.offscreen_stack.pop() else {
+            return;
+        };
+        // The pixmap just painted into `self.pixmap` becomes the cached
+        // target content; restore the previously-active surface.
+        let painted = std::mem::replace(&mut self.pixmap, previous);
+        self.offscreen_targets.insert(id, painted);
+        self.current_clip = None;
+    }
+
+    fn draw_cached_target(&mut self, id: OffscreenTargetId, dst_rect: UzorRect) -> bool {
+        let Some(pixmap) = self.offscreen_targets.get(&id) else {
+            return false;
+        };
+
+        let sw = pixmap.width().max(1) as f32;
+        let sh = pixmap.height().max(1) as f32;
+        let dw = dst_rect.width as f32;
+        let dh = dst_rect.height as f32;
+        if dw <= 0.0 || dh <= 0.0 {
+            return false;
+        }
+
+        let scale_x = dw / sw;
+        let scale_y = dh / sh;
+        let transform = self
+            .transform
+            .pre_concat(Transform::from_translate(dst_rect.x as f32, dst_rect.y as f32))
+            .pre_concat(Transform::from_scale(scale_x, scale_y));
+
+        let paint = tiny_skia::PixmapPaint {
+            opacity: self.global_alpha,
+            quality: tiny_skia::FilterQuality::Bilinear,
+            ..tiny_skia::PixmapPaint::default()
+        };
+
+        let clip = self.current_clip.clone();
+        self.pixmap
+            .draw_pixmap(0, 0, pixmap.as_ref(), &paint, transform, clip.as_ref());
+        true
+    }
+
+    fn resize_offscreen_target(&mut self, id: OffscreenTargetId, desc: OffscreenTargetDesc) -> bool {
+        let Some(existing) = self.offscreen_targets.get_mut(&id) else {
+            return false;
+        };
+        let w = desc.width_px.max(1);
+        let h = desc.height_px.max(1);
+        let Some(fresh) = Pixmap::new(w, h) else {
+            return false;
+        };
+        *existing = fresh;
+        true
+    }
+
+    fn free_offscreen_target(&mut self, id: OffscreenTargetId) {
+        self.offscreen_targets.remove(&id);
     }
 }
 

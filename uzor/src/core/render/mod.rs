@@ -39,6 +39,7 @@ mod svg;
 pub mod path;
 mod color;
 mod region;
+pub mod offscreen;
 
 pub use crate::ui::assets::icons;
 
@@ -62,6 +63,9 @@ pub use ui_effects::UiEffectHelpers;
 // Capability traits — opt-in
 pub use backdrop_blur::BackdropBlur;
 pub use image_painter::ImagePainter;
+
+// Offscreen render-target types (capability-gated RenderContext extension)
+pub use offscreen::{OffscreenTarget, OffscreenTargetDesc, OffscreenTargetId};
 
 // Existing types (unchanged)
 pub use types::{TextAlign, TextBaseline};
