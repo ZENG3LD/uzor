@@ -262,7 +262,29 @@ pub struct WindowRenderState {
     /// `Some(true)` on integrated GPUs (CPU+GPU share RAM — Hybrid path
     /// wins). `Some(false)` on discrete GPUs / software surfaces.
     /// PR3b refinement (2026-06-09).
+    ///
+    /// NOTE: no writer exists yet anywhere in the hub — stays `None`
+    /// forever today (`unwrap_or(false)` at the `WorkloadHint` call
+    /// site), i.e. `unified_memory` is still an undetected hardcoded
+    /// `false` in practice. Wiring `wgpu::AdapterInfo` detection is
+    /// explicitly OUT of scope for render-cache-parity plan §5 Step 5
+    /// (which only re-scopes `region_count`/`retained`/`high_hz`) —
+    /// left as the next PR3b tail item, not silently dropped.
     pub(crate) urx_unified_memory: Option<bool>,
+
+    /// `retained`/`high_hz` inputs for `UrxBackend::Auto`'s
+    /// `WorkloadHint` (render-cache-parity plan §5 Step 5). Driven by
+    /// [`Self::set_workload_hint_inputs`], called once per frame by
+    /// the consumer (tessera-window) from the region walker — the hub
+    /// itself has no notion of `CanvasMode` or per-container cadence,
+    /// so it cannot compute these values on its own.
+    ///
+    /// Defaults preserve the PRE-Step-5 hardcoded behavior for any
+    /// consumer that never calls the setter: `retained` defaults
+    /// `true` ("retained-mode is the URX sweet spot" — unchanged
+    /// default assumption), `high_hz` defaults `false`.
+    pub(crate) urx_retained_hint: bool,
+    pub(crate) urx_high_hz_hint: bool,
 
     /// Offscreen texture for `submit_3d_frame_to_rect` (U-blit-viewport-1,
     /// 2026-06-09). Format matches the swapchain so we can
@@ -352,6 +374,8 @@ impl WindowRenderState {
             urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
+            urx_retained_hint: true,
+            urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
@@ -395,6 +419,8 @@ impl WindowRenderState {
             urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
+            urx_retained_hint: true,
+            urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
@@ -466,6 +492,8 @@ impl WindowRenderState {
             urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
+            urx_retained_hint: true,
+            urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
@@ -507,6 +535,8 @@ impl WindowRenderState {
             urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
+            urx_retained_hint: true,
+            urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
@@ -546,6 +576,8 @@ impl WindowRenderState {
             urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
+            urx_retained_hint: true,
+            urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
@@ -633,6 +665,8 @@ impl WindowRenderState {
             urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
+            urx_retained_hint: true,
+            urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
@@ -675,6 +709,8 @@ impl WindowRenderState {
             urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
+            urx_retained_hint: true,
+            urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
@@ -736,6 +772,8 @@ impl WindowRenderState {
             urx_particles:   std::collections::HashMap::new(),
             active_urx: None,
             urx_unified_memory: None,
+            urx_retained_hint: true,
+            urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
@@ -1214,6 +1252,30 @@ impl WindowRenderState {
         self.active_urx
     }
 
+    /// Feed the `retained` / `high_hz` inputs of `UrxBackend::Auto`'s
+    /// `WorkloadHint` from real per-frame signals (render-cache-parity
+    /// plan §5 Step 5). The hub has no notion of `CanvasMode` or
+    /// per-container cadence on its own — the consumer (tessera-window's
+    /// region walker) is the one place that knows both, so it calls
+    /// this once per frame before/while driving [`Self::with_urx_engine`].
+    ///
+    /// - `retained`: `true` only when the window is actually painting
+    ///   through the retained per-region pipeline this frame (i.e. the
+    ///   window's `CanvasMode::UrxRegions` gate is active) — `false`
+    ///   for the immediate-URX-channel case (whole-window Scene, no
+    ///   regions upserted).
+    /// - `high_hz`: `true` when at least one region this frame mapped
+    ///   to `RenderCadence::HighHz` via the shared `cadence_to_urx`
+    ///   table (fast-changing content present) — `false` otherwise.
+    ///
+    /// A consumer that never calls this keeps the pre-Step-5 hardcoded
+    /// defaults (`retained: true`, `high_hz: false`) — additive, no
+    /// behavior change for callers that don't opt in.
+    pub fn set_workload_hint_inputs(&mut self, retained: bool, high_hz: bool) {
+        self.urx_retained_hint = retained;
+        self.urx_high_hz_hint = high_hz;
+    }
+
     /// Call `f` with a `UrxEngineHandle` bound to this window's URX
     /// channel. Returns `None` if the URX channel isn't armed
     /// (`active_urx == None`) or the surface has zero area.
@@ -1255,16 +1317,24 @@ impl WindowRenderState {
         // Resolve UrxBackend → urx_engine::Backend, plumbing
         // `UrxBackend::Auto` through `Backend::auto(WorkloadHint)`.
         //
-        // PR3b refinement (2026-06-09): hints filled from real
+        // PR3b refinement (2026-06-09, extended render-cache-parity
+        // plan §5 Step 5, 2026-07-12): hints filled from real
         // run-time signals instead of placeholder defaults.
         // - region_count: live count from the engine (if present;
         //   `1` on first init before any upsert).
         // - unified_memory: integrated GPU (CPU+GPU share RAM).
         //   Cached on `self.urx_unified_memory` so we only ask the
-        //   adapter once.
+        //   adapter once. STILL UNDETECTED (no writer exists) — out
+        //   of scope for Step 5, see the field doc comment.
         // - heavy_compute: scene draw count past a threshold.
-        // - high_hz / retained: still defaulted — surfaced by
-        //   consumer when region-mode + cadence wire is in (tessera U2).
+        // - high_hz / retained: fed by `self.urx_high_hz_hint` /
+        //   `self.urx_retained_hint`, set once per frame by the
+        //   consumer via `set_workload_hint_inputs` (tessera-window's
+        //   region walker — it is the only place that knows the
+        //   window's `CanvasMode` and this frame's per-container
+        //   cadence results). Defaults (`false` / `true`) match the
+        //   pre-Step-5 hardcoded values for any consumer that never
+        //   calls the setter.
         let gpu_available = matches!(self.surface, SurfaceMode::Gpu { .. });
         let region_count: u32 = self.urx_engine
             .as_ref()
@@ -1274,6 +1344,8 @@ impl WindowRenderState {
             .try_into()
             .unwrap_or(u32::MAX);
         let unified_memory = self.urx_unified_memory.unwrap_or(false);
+        let high_hz = self.urx_high_hz_hint;
+        let retained = self.urx_retained_hint;
         // `ctx` already holds the &mut borrow above — read its scene
         // directly instead of re-borrowing self.urx_ctx (would
         // collide with the active mut borrow).
@@ -1288,8 +1360,8 @@ impl WindowRenderState {
                     let hint = uzor_urx_engine::WorkloadHint {
                         region_count,
                         total_pixels: (width as u64) * (height as u64),
-                        high_hz: false, // Tessera U2 will surface real cadence.
-                        retained: true, // default — retained-mode is the URX sweet spot.
+                        high_hz,
+                        retained,
                         gpu_available,
                         unified_memory,
                         heavy_compute,
@@ -1960,5 +2032,41 @@ impl WindowRenderState {
         queue.submit([encoder.finish()]);
         frame.present();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod workload_hint_input_tests {
+    //! render-cache-parity plan §5 Step 5 — `set_workload_hint_inputs`
+    //! plumbing. Headless (software surface, no GPU/window needed):
+    //! covers the setter round-trip and the pre-Step-5-compatible
+    //! defaults for any consumer that never calls it.
+
+    use super::*;
+
+    struct NoopPresenter;
+    impl SoftwarePresenter for NoopPresenter {
+        fn present(&mut self, _pixels: &[u8], _width: u32, _height: u32) {}
+        fn resize(&mut self, _width: u32, _height: u32) {}
+    }
+
+    #[test]
+    fn defaults_match_pre_step5_hardcoded_values() {
+        let state = WindowRenderState::new_cpu(4, 4, Box::new(NoopPresenter));
+        // Pre-Step-5 hardcoded WorkloadHint: `retained: true`, `high_hz: false`.
+        assert!(state.urx_retained_hint);
+        assert!(!state.urx_high_hz_hint);
+    }
+
+    #[test]
+    fn setter_round_trips_both_flags() {
+        let mut state = WindowRenderState::new_cpu(4, 4, Box::new(NoopPresenter));
+        state.set_workload_hint_inputs(false, true);
+        assert!(!state.urx_retained_hint);
+        assert!(state.urx_high_hz_hint);
+
+        state.set_workload_hint_inputs(true, false);
+        assert!(state.urx_retained_hint);
+        assert!(!state.urx_high_hz_hint);
     }
 }
