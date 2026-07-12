@@ -3,14 +3,17 @@
 //! Wraps vello::Scene to implement the core RenderContext trait.
 //! This is the ONLY vello-specific code needed - everything else comes from core.
 
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use vello::kurbo::{self, Affine, BezPath, Cap, Join, Stroke, Shape};
 use vello::peniko::{Blob, Brush, Fill, FontData, color::palette};
 use vello::{Glyph, Scene};
+use uzor::core::types::Rect as UzorRect;
 use uzor::render::{
     BackdropBlur, BatchPainter, BlendMode as UzorBlendMode, CircleBatch, Effects,
     GradientPainter, ImagePainter, LineSegment, Masking, Painter,
+    OffscreenTarget, OffscreenTargetDesc, OffscreenTargetId,
     RenderContext as UzorRenderContext, RenderContextExt, ShapeHelpers,
     TextAlign, TextBaseline, TextBounds, TextMetrics, TextRenderer, UiEffectHelpers,
 };
@@ -337,9 +340,42 @@ enum ShapeIntent {
     Stroke { width: f64 },
 }
 
+/// The scene currently receiving draw calls.
+///
+/// Normally `self.scene` is the caller-supplied `&'a mut Scene` (the root
+/// surface). While recording an offscreen target (`push_offscreen_target`
+/// … `pop_offscreen_target`), draw calls must instead land in a fresh,
+/// owned `Scene` — the root scene stays untouched until the fragment is
+/// composited back in via `draw_cached_target`. This enum is the minimal
+/// indirection needed to redirect every draw call without touching the
+/// root field's borrowed lifetime.
+enum CurrentScene<'a> {
+    Root(&'a mut Scene),
+    Recording(Scene),
+}
+
+impl<'a> CurrentScene<'a> {
+    #[inline]
+    fn get_mut(&mut self) -> &mut Scene {
+        match self {
+            CurrentScene::Root(s) => s,
+            CurrentScene::Recording(s) => s,
+        }
+    }
+}
+
+/// One level of the offscreen-recording stack: the previously-current
+/// scene (root or an outer recording, for nested boundaries) saved while
+/// a fresh recording is active for the target being painted.
+struct RecordingSlot<'a> {
+    id: OffscreenTargetId,
+    desc: OffscreenTargetDesc,
+    saved: CurrentScene<'a>,
+}
+
 /// Vello-specific render context wrapping vello::Scene
 pub struct VelloGpuRenderContext<'a> {
-    scene: &'a mut Scene,
+    scene: CurrentScene<'a>,
     transform: Affine,
 
     // Styling state
@@ -380,6 +416,25 @@ pub struct VelloGpuRenderContext<'a> {
     shadow: Option<ShadowState>,
     // M6-P3: Blend mode (applied via push_layer when non-Normal)
     blend_mode: UzorBlendMode,
+
+    // Offscreen fragment cache — resolution-independent recorded Scenes,
+    // keyed by handle. See `uzor::render::offscreen` for the trait contract.
+    offscreen_fragments: HashMap<OffscreenTargetId, CachedFragment>,
+    // Monotonic counter for allocating new `OffscreenTargetId`s.
+    next_offscreen_id: u64,
+    // Stack of saved recording state, swapped out by
+    // `push_offscreen_target`; `pop_offscreen_target` restores the top
+    // entry and stashes the recorded fragment under the target's id.
+    offscreen_stack: Vec<RecordingSlot<'a>>,
+}
+
+/// Recorded offscreen fragment — a resolution-independent `Scene`
+/// (vector content, replayed via `Scene::append` at whatever transform
+/// `draw_cached_target` computes). `desc` is the size/dpr the fragment
+/// was recorded at; kept for `resize_offscreen_target`'s bookkeeping.
+struct CachedFragment {
+    scene: Scene,
+    desc: OffscreenTargetDesc,
 }
 
 impl<'a> VelloGpuRenderContext<'a> {
@@ -393,7 +448,7 @@ impl<'a> VelloGpuRenderContext<'a> {
         chart_rect_y: f64,
     ) -> Self {
         Self {
-            scene,
+            scene: CurrentScene::Root(scene),
             transform: Affine::translate((chart_rect_x, chart_rect_y)),
             stroke_color: palette::css::WHITE,
             stroke_width: 1.0,
@@ -417,7 +472,20 @@ impl<'a> VelloGpuRenderContext<'a> {
             use_convex_glass_buttons: false,
             shadow: None,
             blend_mode: UzorBlendMode::Normal,
+            offscreen_fragments: HashMap::new(),
+            next_offscreen_id: 0,
+            offscreen_stack: Vec::new(),
         }
+    }
+
+    /// Access the scene currently receiving draw calls — the root surface,
+    /// or (while an offscreen target is being recorded) the innermost
+    /// recording. All draw methods go through this instead of touching
+    /// `self.scene` directly, so `push_offscreen_target`/
+    /// `pop_offscreen_target` can redirect every call with one swap.
+    #[inline]
+    fn current_scene_mut(&mut self) -> &mut Scene {
+        self.scene.get_mut()
     }
 
     /// Set blur image for glass effects (FrostedGlass/LiquidGlass)
@@ -513,7 +581,7 @@ impl<'a> VelloGpuRenderContext<'a> {
         let shadow_transform = self.transform.then_translate(kurbo::Vec2::new(sh.dx, sh.dy));
         match intent {
             ShapeIntent::Fill => {
-                self.scene.fill(
+                self.current_scene_mut().fill(
                     Fill::NonZero,
                     shadow_transform,
                     sh.color,
@@ -523,7 +591,7 @@ impl<'a> VelloGpuRenderContext<'a> {
             }
             ShapeIntent::Stroke { width } => {
                 let shadow_stroke = self.make_stroke_with_width(width);
-                self.scene.stroke(
+                self.current_scene_mut().stroke(
                     &shadow_stroke,
                     shadow_transform,
                     sh.color,
@@ -595,7 +663,7 @@ impl<'a> Painter for VelloGpuRenderContext<'a> {
     fn restore(&mut self) {
         if let Some(state) = self.state_stack.pop() {
             for _ in 0..self.open_clip_layers {
-                self.scene.pop_layer();
+                self.current_scene_mut().pop_layer();
             }
             self.transform = state.transform;
             self.stroke_color = state.stroke_color;
@@ -766,7 +834,7 @@ impl<'a> Painter for VelloGpuRenderContext<'a> {
             let stroke = self.make_stroke();
             let transform = self.transform;
             let mode = self.blend_mode;
-            Self::with_blend_layer(self.scene, mode, None, |scene| {
+            Self::with_blend_layer(self.current_scene_mut(), mode, None, |scene| {
                 scene.stroke(&stroke, transform, color, None, &path);
             });
         }
@@ -778,7 +846,7 @@ impl<'a> Painter for VelloGpuRenderContext<'a> {
             let color = self.effective_fill_color();
             let transform = self.transform;
             let mode = self.blend_mode;
-            Self::with_blend_layer(self.scene, mode, None, |scene| {
+            Self::with_blend_layer(self.current_scene_mut(), mode, None, |scene| {
                 scene.fill(Fill::NonZero, transform, color, None, &path);
             });
         }
@@ -833,7 +901,7 @@ impl<'a> TextRenderer for VelloGpuRenderContext<'a> {
         let transform = self.transform.then_translate(kurbo::Vec2::new(adjusted_x, adjusted_y));
         let fallbacks = get_fallback_fonts();
         draw_resolved_glyphs(
-            &mut self.scene,
+            self.current_scene_mut(),
             &resolved,
             primary_font,
             fallbacks,
@@ -887,7 +955,7 @@ impl<'a> TextRenderer for VelloGpuRenderContext<'a> {
             .map(|g| ResolvedGlyph { x: g.x + h_off_f32, ..g })
             .collect();
         draw_resolved_glyphs(
-            &mut self.scene,
+            self.current_scene_mut(),
             &shifted,
             primary_font,
             fallbacks,
@@ -962,9 +1030,10 @@ impl<'a> TextMetrics for VelloGpuRenderContext<'a> {
 impl<'a> Masking for VelloGpuRenderContext<'a> {
     fn clip(&mut self) {
         if let Some(path) = self.path_builder.take() {
-            self.scene.push_clip_layer(
+            let transform = self.transform;
+            self.current_scene_mut().push_clip_layer(
                 vello::peniko::Fill::NonZero,
-                self.transform,
+                transform,
                 &path,
             );
             self.open_clip_layers += 1;
@@ -978,9 +1047,10 @@ impl<'a> Masking for VelloGpuRenderContext<'a> {
         // emit_svg_path calls begin_path (resets path_builder) then path cmds.
         uzor::render::emit_svg_path(self, d);
         if let Some(path) = self.path_builder.take() {
-            self.scene.push_clip_layer(
+            let transform = self.transform;
+            self.current_scene_mut().push_clip_layer(
                 vello::peniko::Fill::EvenOdd,
-                self.transform,
+                transform,
                 &path,
             );
             // Open a fresh save frame, then record the layer in THAT frame so
@@ -1021,7 +1091,8 @@ impl<'a> ShapeHelpers for VelloGpuRenderContext<'a> {
         self.emit_shadow_for_shape(&rect, ShapeIntent::Stroke { width });
         let color = self.effective_stroke_color();
         let stroke = self.make_stroke();
-        self.scene.stroke(&stroke, self.transform, color, None, &rect);
+        let transform = self.transform;
+        self.current_scene_mut().stroke(&stroke, transform, color, None, &rect);
     }
 
     fn fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
@@ -1030,7 +1101,7 @@ impl<'a> ShapeHelpers for VelloGpuRenderContext<'a> {
         let color = self.effective_fill_color();
         let transform = self.transform;
         let mode = self.blend_mode;
-        Self::with_blend_layer(self.scene, mode, Some(&rect), |scene| {
+        Self::with_blend_layer(self.current_scene_mut(), mode, Some(&rect), |scene| {
             scene.fill(Fill::NonZero, transform, color, None, &rect);
         });
     }
@@ -1087,7 +1158,7 @@ impl<'a> BatchPainter for VelloGpuRenderContext<'a> {
         let stroke = self.make_stroke();
         let transform = self.transform;
         let mode = self.blend_mode;
-        Self::with_blend_layer(self.scene, mode, None, |scene| {
+        Self::with_blend_layer(self.current_scene_mut(), mode, None, |scene| {
             scene.stroke(&stroke, transform, color, None, &path);
         });
     }
@@ -1106,7 +1177,7 @@ impl<'a> BatchPainter for VelloGpuRenderContext<'a> {
         let color = self.effective_fill_color();
         let transform = self.transform;
         let mode = self.blend_mode;
-        Self::with_blend_layer(self.scene, mode, None, |scene| {
+        Self::with_blend_layer(self.current_scene_mut(), mode, None, |scene| {
             scene.fill(Fill::NonZero, transform, color, None, &path);
         });
     }
@@ -1128,7 +1199,7 @@ impl<'a> BatchPainter for VelloGpuRenderContext<'a> {
         let stroke = self.make_stroke();
         let transform = self.transform;
         let mode = self.blend_mode;
-        Self::with_blend_layer(self.scene, mode, None, |scene| {
+        Self::with_blend_layer(self.current_scene_mut(), mode, None, |scene| {
             scene.stroke(&stroke, transform, color, None, &path);
         });
     }
@@ -1150,7 +1221,8 @@ impl<'a> GradientPainter for VelloGpuRenderContext<'a> {
                 kurbo::Point::new(x1, y1),
                 kurbo::Point::new(x2, y2),
             ).with_stops(color_stops.as_slice());
-            self.scene.fill(Fill::NonZero, self.transform, &gradient, None, &path);
+            let transform = self.transform;
+            self.current_scene_mut().fill(Fill::NonZero, transform, &gradient, None, &path);
         }
     }
 
@@ -1174,7 +1246,8 @@ impl<'a> GradientPainter for VelloGpuRenderContext<'a> {
                 .collect();
             let gradient = Gradient::new_radial(kurbo::Point::new(cx, cy), r as f32)
                 .with_stops(color_stops.as_slice());
-            self.scene.fill(Fill::NonZero, self.transform, &gradient, None, &path);
+            let transform = self.transform;
+            self.current_scene_mut().fill(Fill::NonZero, transform, &gradient, None, &path);
         }
     }
 }
@@ -1193,15 +1266,16 @@ impl<'a> UiEffectHelpers for VelloGpuRenderContext<'a> {
     }
 
     fn draw_blur_background(&mut self, x: f64, y: f64, width: f64, height: f64) {
-        if let Some(ref blur_image) = self.blur_image {
+        if let Some(blur_image) = self.blur_image.clone() {
             let clip_rect = kurbo::Rect::new(x, y, x + width, y + height);
-            self.scene.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip_rect);
             let scale_x = self.screen_width as f64 / blur_image.width as f64;
             let scale_y = self.screen_height as f64 / blur_image.height as f64;
             let image_transform = Affine::scale_non_uniform(scale_x, scale_y);
-            let brush = vello::peniko::ImageBrush::new(blur_image.clone());
-            self.scene.draw_image(&brush, image_transform);
-            self.scene.pop_layer();
+            let brush = vello::peniko::ImageBrush::new(blur_image);
+            let scene = self.current_scene_mut();
+            scene.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &clip_rect);
+            scene.draw_image(&brush, image_transform);
+            scene.pop_layer();
         }
     }
 
@@ -1221,14 +1295,15 @@ impl<'a> UiEffectHelpers for VelloGpuRenderContext<'a> {
         let theme_color = self.parse_color_to_rgba(color);
         let has_tint = theme_color[3] > 0.01;
 
-        if let Some(ref blur_image) = self.blur_image {
-            self.scene.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &rect);
+        if let Some(blur_image) = self.blur_image.clone() {
             let scale_x = self.screen_width as f64 / blur_image.width as f64;
             let scale_y = self.screen_height as f64 / blur_image.height as f64;
             let image_transform = Affine::scale_non_uniform(scale_x, scale_y);
-            let brush = vello::peniko::ImageBrush::new(blur_image.clone());
-            self.scene.draw_image(&brush, image_transform);
-            self.scene.pop_layer();
+            let brush = vello::peniko::ImageBrush::new(blur_image);
+            let scene = self.current_scene_mut();
+            scene.push_clip_layer(vello::peniko::Fill::NonZero, Affine::IDENTITY, &rect);
+            scene.draw_image(&brush, image_transform);
+            scene.pop_layer();
         }
 
         let bulge = if is_active { 0.15 } else { 0.25 };
@@ -1264,7 +1339,7 @@ impl<'a> UiEffectHelpers for VelloGpuRenderContext<'a> {
                 ColorStop { offset: 0.65, color: mid_color.into() },
                 ColorStop { offset: 1.0,  color: bottom_color.into() },
             ]);
-            self.scene.fill(Fill::NonZero, Affine::IDENTITY, &gradient, None, &rect);
+            self.current_scene_mut().fill(Fill::NonZero, Affine::IDENTITY, &gradient, None, &rect);
         }
         {
             let spec_intensity = if is_active { 0.25f32 } else { 0.45 };
@@ -1280,9 +1355,10 @@ impl<'a> UiEffectHelpers for VelloGpuRenderContext<'a> {
                 ColorStop { offset: 0.5, color: Color::from_rgba8(255, 255, 255, (spec_intensity * 80.0) as u8).into() },
                 ColorStop { offset: 1.0, color: Color::from_rgba8(255, 255, 255, 0).into() },
             ]);
-            self.scene.push_layer(vello::peniko::Fill::NonZero, Mix::Screen, 1.0, Affine::IDENTITY, &rect);
-            self.scene.fill(Fill::NonZero, Affine::IDENTITY, &spec_gradient, None, &highlight_rect);
-            self.scene.pop_layer();
+            let scene = self.current_scene_mut();
+            scene.push_layer(vello::peniko::Fill::NonZero, Mix::Screen, 1.0, Affine::IDENTITY, &rect);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, &spec_gradient, None, &highlight_rect);
+            scene.pop_layer();
         }
         {
             let shadow_intensity = if is_active { 0.3f32 } else { 0.2 };
@@ -1295,18 +1371,20 @@ impl<'a> UiEffectHelpers for VelloGpuRenderContext<'a> {
                 ColorStop { offset: 0.5, color: Color::from_rgba8(0, 0, 0, (shadow_intensity * 80.0) as u8).into() },
                 ColorStop { offset: 1.0, color: Color::from_rgba8(0, 0, 0, (shadow_intensity * 150.0) as u8).into() },
             ]);
-            self.scene.push_layer(vello::peniko::Fill::NonZero, Mix::Multiply, 1.0, Affine::IDENTITY, &rect);
-            self.scene.fill(Fill::NonZero, Affine::IDENTITY, &shadow_gradient, None, &rect);
-            self.scene.pop_layer();
+            let scene = self.current_scene_mut();
+            scene.push_layer(vello::peniko::Fill::NonZero, Mix::Multiply, 1.0, Affine::IDENTITY, &rect);
+            scene.fill(Fill::NonZero, Affine::IDENTITY, &shadow_gradient, None, &rect);
+            scene.pop_layer();
         }
         {
             let rim_intensity = if is_active { 0.15f32 } else { 0.3 };
             let rim_stroke = Stroke::new(1.5);
             let (rim_r, rim_g, rim_b) = lighten(base_r, base_g, base_b, 0.6);
             let rim_color = Color::from_rgba8(rim_r, rim_g, rim_b, (rim_intensity * 255.0) as u8);
-            self.scene.push_layer(vello::peniko::Fill::NonZero, Mix::Screen, 0.7, Affine::IDENTITY, &rect);
-            self.scene.stroke(&rim_stroke, Affine::IDENTITY, rim_color, None, &rect);
-            self.scene.pop_layer();
+            let scene = self.current_scene_mut();
+            scene.push_layer(vello::peniko::Fill::NonZero, Mix::Screen, 0.7, Affine::IDENTITY, &rect);
+            scene.stroke(&rim_stroke, Affine::IDENTITY, rim_color, None, &rect);
+            scene.pop_layer();
         }
         {
             let inner_stroke = Stroke::new(1.0);
@@ -1315,7 +1393,7 @@ impl<'a> UiEffectHelpers for VelloGpuRenderContext<'a> {
             );
             let (hl_r, hl_g, hl_b) = lighten(base_r, base_g, base_b, 0.5);
             let highlight_color = Color::from_rgba8(hl_r, hl_g, hl_b, if is_active { 30 } else { 50 });
-            self.scene.stroke(&inner_stroke, Affine::IDENTITY, highlight_color, None, &inner_rect);
+            self.current_scene_mut().stroke(&inner_stroke, Affine::IDENTITY, highlight_color, None, &inner_rect);
         }
     }
 }
@@ -1383,7 +1461,7 @@ impl<'a> ImagePainter for VelloGpuRenderContext<'a> {
         let scale_x = width / img_width as f64;
         let scale_y = height / img_height as f64;
         let image_transform = self.transform * Affine::translate((x, y)) * Affine::scale_non_uniform(scale_x, scale_y);
-        self.scene.draw_image(&brush, image_transform);
+        self.current_scene_mut().draw_image(&brush, image_transform);
     }
 }
 
@@ -1394,6 +1472,105 @@ impl<'a> ImagePainter for VelloGpuRenderContext<'a> {
 impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
     fn dpr(&self) -> f64 {
         1.0
+    }
+
+    fn supports_offscreen_targets(&self) -> bool {
+        true
+    }
+
+    /// Begin recording into a fresh, owned `vello::Scene` fragment. The
+    /// fragment is resolution-independent vector content (no raster, no
+    /// GPU handle needed) — `desc.width_px`/`height_px` are recorded only
+    /// for `resize_offscreen_target`'s bookkeeping, not used to size any
+    /// backing buffer.
+    ///
+    /// Mirrors `VelloCpuRenderContext::push_offscreen_target`: the
+    /// offscreen subtree paints at its own local origin, so per-frame
+    /// drawing state (transform, active path, clip/save stack) is reset
+    /// exactly like a fresh frame.
+    fn push_offscreen_target(&mut self, desc: OffscreenTargetDesc) -> OffscreenTarget {
+        let id = OffscreenTargetId(self.next_offscreen_id);
+        self.next_offscreen_id += 1;
+
+        let fresh = CurrentScene::Recording(Scene::new());
+        let saved = std::mem::replace(&mut self.scene, fresh);
+
+        self.offscreen_stack.push(RecordingSlot { id, desc, saved });
+
+        // Fresh coordinate space for the offscreen recording — same reset
+        // `begin_frame`/`VelloCpuRenderContext::push_offscreen_target` do.
+        self.transform = Affine::IDENTITY;
+        self.path_builder = None;
+        self.open_clip_layers = 0;
+        self.state_stack.clear();
+
+        Some(id)
+    }
+
+    /// Stash the recorded fragment under its id and restore the outer
+    /// scene (root, or an enclosing recording for nested boundaries).
+    fn pop_offscreen_target(&mut self) {
+        let Some(slot) = self.offscreen_stack.pop() else {
+            return;
+        };
+        let recorded = std::mem::replace(&mut self.scene, slot.saved);
+        let CurrentScene::Recording(scene) = recorded else {
+            // Root scenes are never pushed onto `offscreen_stack` as the
+            // *current* value being popped here — `push_offscreen_target`
+            // always swaps in `CurrentScene::Recording`. Unreachable in
+            // practice; treat defensively as "nothing to stash".
+            return;
+        };
+        self.offscreen_fragments.insert(
+            slot.id,
+            CachedFragment { scene, desc: slot.desc },
+        );
+    }
+
+    /// Composite a previously-recorded fragment into the currently active
+    /// scene via `Scene::append` — an O(N) merge of the fragment's
+    /// recorded encoding, translated to `dst_rect`'s origin.
+    ///
+    /// Scale semantics mirror `VelloCpuRenderContext::draw_cached_target`
+    /// exactly: the fragment is resolution-independent vector content
+    /// (recorded once at local-origin coordinates, no device-pixel
+    /// raster buffer), so there is no dpr/scale factor to reapply here —
+    /// `push_offscreen_target` already reset the recording's transform to
+    /// `Affine::IDENTITY`, and the content was drawn at logical
+    /// coordinates local to the boundary's own origin. `draw_cached_target`
+    /// only needs to translate into `dst_rect`'s position in the
+    /// currently-active surface, same convention as every other `Painter`
+    /// draw call (caller has already `translate`d/scaled via `self.transform`
+    /// for any dpr/viewport scaling that applies to the CURRENT surface).
+    fn draw_cached_target(&mut self, id: OffscreenTargetId, dst_rect: UzorRect) -> bool {
+        if !self.offscreen_fragments.contains_key(&id) {
+            return false;
+        }
+        let transform = self.transform
+            * Affine::translate(kurbo::Vec2::new(dst_rect.x, dst_rect.y));
+        // Split borrow: `offscreen_fragments` and `scene` are disjoint
+        // fields, so both can be borrowed mutably/immutably at once —
+        // avoids cloning the fragment's recorded `Scene` on every draw.
+        let fragment = self.offscreen_fragments.get(&id).map(|f| &f.scene);
+        if let Some(fragment_scene) = fragment {
+            self.scene.get_mut().append(fragment_scene, Some(transform));
+        }
+        true
+    }
+
+    /// Vector fragments are resolution-independent (no backing texture to
+    /// reallocate) — update the recorded size/dpr bookkeeping and report
+    /// success. Returns `false` only when `id` is unknown, per contract.
+    fn resize_offscreen_target(&mut self, id: OffscreenTargetId, desc: OffscreenTargetDesc) -> bool {
+        let Some(fragment) = self.offscreen_fragments.get_mut(&id) else {
+            return false;
+        };
+        fragment.desc = desc;
+        true
+    }
+
+    fn free_offscreen_target(&mut self, id: OffscreenTargetId) {
+        self.offscreen_fragments.remove(&id);
     }
 }
 
@@ -1408,5 +1585,111 @@ impl<'a> RenderContextExt for VelloGpuRenderContext<'a> {
 
     fn set_use_convex_glass_buttons(&mut self, use_convex: bool) {
         self.use_convex_glass_buttons = use_convex;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — offscreen-target fragment-cache round-trip
+// ---------------------------------------------------------------------------
+//
+// `vello::Scene` has no pixel buffer to assert against without a GPU
+// device/queue, so these tests assert structurally via the scene's public
+// `encoding()` introspection (`vello_encoding::Encoding::n_paths` — the
+// count of encoded path draw ops): the root scene must have MORE encoded
+// paths after `draw_cached_target` than before, proving the recorded
+// fragment's content was actually appended into the live surface.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uzor::render::{Painter, ShapeHelpers};
+
+    #[test]
+    fn offscreen_target_round_trip_appends_into_root_scene() {
+        let mut root = Scene::new();
+        let mut ctx = VelloGpuRenderContext::new(&mut root, 0.0, 0.0);
+
+        assert!(ctx.supports_offscreen_targets());
+
+        let desc = OffscreenTargetDesc { width_px: 64, height_px: 64, dpr: 1.0 };
+        let id = ctx
+            .push_offscreen_target(desc)
+            .expect("vello-gpu backend must support offscreen targets");
+
+        // Paint something into the offscreen recording.
+        ctx.set_fill_color("#ff0000");
+        ctx.fill_rect(0.0, 0.0, 32.0, 32.0);
+
+        ctx.pop_offscreen_target();
+
+        // Root scene must still be untouched immediately after pop — the
+        // recorded content lives only in `offscreen_fragments` until an
+        // explicit `draw_cached_target` call.
+        let paths_before = ctx.current_scene_mut().encoding().n_paths;
+
+        let drew = ctx.draw_cached_target(
+            id,
+            UzorRect { x: 10.0, y: 10.0, width: 32.0, height: 32.0 },
+        );
+        assert!(drew, "draw_cached_target must succeed for a freshly-popped id");
+
+        let paths_after = ctx.current_scene_mut().encoding().n_paths;
+        assert!(
+            paths_after > paths_before,
+            "root scene encoding must grow after appending the cached fragment \
+             (before={paths_before}, after={paths_after})"
+        );
+    }
+
+    #[test]
+    fn draw_cached_target_unknown_id_returns_false() {
+        let mut root = Scene::new();
+        let mut ctx = VelloGpuRenderContext::new(&mut root, 0.0, 0.0);
+
+        let bogus = OffscreenTargetId(9999);
+        let drew = ctx.draw_cached_target(
+            bogus,
+            UzorRect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 },
+        );
+        assert!(!drew, "unknown target id must report false, not panic");
+    }
+
+    #[test]
+    fn resize_offscreen_target_updates_desc_for_known_id_only() {
+        let mut root = Scene::new();
+        let mut ctx = VelloGpuRenderContext::new(&mut root, 0.0, 0.0);
+
+        let desc = OffscreenTargetDesc { width_px: 16, height_px: 16, dpr: 1.0 };
+        let id = ctx.push_offscreen_target(desc).expect("push must succeed");
+        ctx.pop_offscreen_target();
+
+        let bigger = OffscreenTargetDesc { width_px: 128, height_px: 128, dpr: 2.0 };
+        assert!(ctx.resize_offscreen_target(id, bigger));
+        assert_eq!(
+            ctx.offscreen_fragments.get(&id).map(|f| f.desc),
+            Some(bigger)
+        );
+
+        let unknown = OffscreenTargetId(id.0 + 1);
+        assert!(!ctx.resize_offscreen_target(unknown, bigger));
+    }
+
+    #[test]
+    fn free_offscreen_target_removes_fragment() {
+        let mut root = Scene::new();
+        let mut ctx = VelloGpuRenderContext::new(&mut root, 0.0, 0.0);
+
+        let desc = OffscreenTargetDesc { width_px: 8, height_px: 8, dpr: 1.0 };
+        let id = ctx.push_offscreen_target(desc).expect("push must succeed");
+        ctx.pop_offscreen_target();
+        assert!(ctx.offscreen_fragments.contains_key(&id));
+
+        ctx.free_offscreen_target(id);
+        assert!(!ctx.offscreen_fragments.contains_key(&id));
+
+        let drew = ctx.draw_cached_target(
+            id,
+            UzorRect { x: 0.0, y: 0.0, width: 8.0, height: 8.0 },
+        );
+        assert!(!drew, "freed target must no longer be drawable");
     }
 }

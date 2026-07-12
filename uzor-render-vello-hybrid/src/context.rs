@@ -1122,7 +1122,30 @@ impl uzor::render::UiEffectHelpers for VelloHybridRenderContext {}
 // ---------------------------------------------------------------------------
 // RenderContext (dpr only)
 // ---------------------------------------------------------------------------
-
+//
+// Offscreen-target support — NOT implemented, documented divergence
+// (render-cache-parity-2026-07-12 plan, §5 Step 2):
+//
+// `vello_hybrid::Scene` has no `vello::Scene::append`-equivalent: it is a
+// CPU-side sparse-strips command encoder feeding a GPU fragment shader
+// (`render/{wgpu,webgl}.rs`), not an encoding tree that can be merged with
+// another scene's encoding. There is also no CPU-only raster path (unlike
+// `vello_cpu`, which is fully self-contained) — the only way to turn a
+// `Scene` into reusable pixels is `Renderer::render()`, which needs a
+// `Device`/`Queue`/`TextureBindings` this context does not own (`render()`
+// takes them as call-site arguments, on purpose, so this struct stays
+// GPU-handle-free per its `new(dpr: f64)` constructor).
+//
+// A texture-level cache is possible in principle (bind a persistent
+// `wgpu::Texture` + `TextureId`, populate it once via `Renderer::render()`,
+// replay via `Scene::draw_texture_rects`), but that requires holding
+// `Device`/`Queue` (or a `Renderer`) inside `VelloHybridRenderContext` —
+// exactly the constructor-shape change this plan's scope forbids. Per the
+// `set_blur_image`/`set_gpu_handles` setter precedent (vello-gpu, same
+// plan §4), that would be a legitimate ADDITIVE follow-up (a
+// `set_gpu_handles(device, queue)` setter, capability gated on whether it
+// was called) — not built here; `supports_offscreen_targets` stays at the
+// trait's default `false` until that follow-up lands.
 impl UzorRenderContext for VelloHybridRenderContext {
     fn dpr(&self) -> f64 { self.dpr }
 }
@@ -1141,5 +1164,44 @@ impl RenderContextExt for VelloHybridRenderContext {
 
     fn set_use_convex_glass_buttons(&mut self, _use_convex: bool) {
         // Convex glass buttons are a vello-gpu-specific feature.
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — offscreen-target divergence is an honest, total no-op
+// ---------------------------------------------------------------------------
+//
+// No fragment-cache/raster-cache implementation exists for this backend
+// (documented divergence above). These tests are regression coverage for
+// that documented state: every offscreen-target call must behave exactly
+// like the trait's default (capability `false`, `push` → `None`, every
+// other call a safe no-op / `false`), never panic, so the kernel walker's
+// `supports_offscreen_targets()` gate (checked once per backend instance)
+// stays the only thing callers need to consult.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uzor::render::{OffscreenTargetDesc, OffscreenTargetId};
+
+    #[test]
+    fn offscreen_targets_are_unsupported_and_total_no_op() {
+        let mut ctx = VelloHybridRenderContext::new(1.0);
+        ctx.begin_frame(64, 64);
+
+        assert!(!ctx.supports_offscreen_targets());
+
+        let desc = OffscreenTargetDesc { width_px: 32, height_px: 32, dpr: 1.0 };
+        assert!(ctx.push_offscreen_target(desc).is_none());
+
+        // Safe to call even without a successful push (contract: total, no panic).
+        ctx.pop_offscreen_target();
+
+        let id = OffscreenTargetId(0);
+        let dst = uzor::core::types::Rect { x: 0.0, y: 0.0, width: 32.0, height: 32.0 };
+        assert!(!ctx.draw_cached_target(id, dst));
+        assert!(!ctx.resize_offscreen_target(id, desc));
+
+        // Safe to call for an id that was never allocated.
+        ctx.free_offscreen_target(id);
     }
 }
