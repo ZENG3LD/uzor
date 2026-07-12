@@ -943,9 +943,10 @@ impl WindowRenderState {
     /// }
     /// ```
     ///
-    /// Returns `None` only when the active backend is `InstancedWgpu` (which
-    /// does not expose a `RenderContext`-compatible draw API) or when the
-    /// corresponding context slot is uninitialised.
+    /// Returns `None` only when the corresponding context slot is
+    /// uninitialised (e.g. `InstancedWgpu` on a software surface — no GPU
+    /// handles). `InstancedWgpu` IS handled: it lazily builds an
+    /// `InstancedRenderContext` sized from the GPU surface config.
     /// Like [`with_render_context`] but writes into a caller-supplied
     /// `vello::Scene` rather than the per-window main scene.  Used by the
     /// per-region paint scheduler so each region can build into its own
