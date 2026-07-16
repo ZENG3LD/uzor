@@ -45,6 +45,8 @@ members = [
     "uzor-agent-api",
     # Reusable force-directed graph visualization engine
     "uzor-graph",
+    # Headless render-to-file (PNG export, no window/GPU dependency)
+    "uzor-export",
     # Layered demos
     "uzor-examples",
 ]

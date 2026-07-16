@@ -1,0 +1,17 @@
+[package]
+name = "uzor-export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Headless render-to-file for uzor — render draw code into a PNG at a chosen resolution, no window/GPU dependency."
+publish = false
+
+[dependencies]
+uzor = { workspace = true }
+uzor-render-tiny-skia = { workspace = true }
+tiny-skia = "0.11"
+
+[dev-dependencies]
+png = "0.17"
