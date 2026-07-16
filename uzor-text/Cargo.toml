@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Pretext-pattern text layout engine for uzor — plain-text greedy word-wrap over the cosmic-text shaper (Arc 2 Phase 1; rich spans/kinetics/ascii land in later phases)."
+description = "Pretext-pattern text layout engine for uzor — greedy word-wrap, rich multi-run spans, InlineBox, and a mixed-run baseline pass over the cosmic-text shaper (Arc 2 Phase 1+2; kinetics/ascii/hyphenation land in later phases)."
 publish = false
 
 [dependencies]

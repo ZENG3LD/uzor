@@ -1,18 +1,18 @@
 //! [`ParagraphLayout`] — the pretext-pattern output: positioned glyphs +
-//! line boxes for a single, single-font run of text.
+//! line boxes (+ placed inline boxes, Phase 2) for a laid-out paragraph.
 
-use uzor::render::WrappedLine;
-
-use crate::model::FontSpec;
+use crate::model::{FontSpec, Paragraph, StyledRun};
 use crate::shape::LineShaper;
+
+use super::paragraph::layout_paragraph;
 
 /// One positioned glyph cluster, absolute in the paragraph box.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlyphLayout {
     /// The cluster's source text (mirrors [`uzor::render::GlyphMetric::cluster`]).
     pub cluster: String,
-    /// Which run this glyph came from. Always `0` in Phase 1 (single-run
-    /// plain text) — meaningful once Phase 2 adds multi-run `Paragraph`.
+    /// Which run (index into the source [`Paragraph::runs`]) this glyph
+    /// came from. Always `0` for [`layout_text`]'s single-run case.
     pub run_index: usize,
     /// Which visual line this glyph belongs to (index into
     /// [`ParagraphLayout::lines`]).
@@ -25,6 +25,14 @@ pub struct GlyphLayout {
     pub advance: f64,
     /// Tight bbox width of the rendered cluster.
     pub width: f64,
+    /// This glyph's own run's font — carried per-glyph (rather than
+    /// requiring the caller to hold onto the source [`Paragraph`]) so
+    /// [`crate::draw::draw_paragraph`] can set the right font per glyph
+    /// from `ParagraphLayout` alone (design law 1: one measure path).
+    pub font: FontSpec,
+    /// This glyph's own run's color override (packed `0xRRGGBBAA`), or
+    /// `None` to defer to the draw call's default color.
+    pub color: Option<u32>,
 }
 
 /// Geometry of one visual line within a [`ParagraphLayout`].
@@ -38,19 +46,43 @@ pub struct LineBox {
     pub baseline_y: f64,
     /// This line's height (vertical space it occupies before the next line starts).
     pub height: f64,
-    /// This line's own content (advance) width — used by [`align_lines`].
+    /// This line's own rendered content width — for [`layout_text`]'s
+    /// output this is the natural (pre-alignment) advance width, matching
+    /// [`align_lines`]'s expectations; for [`layout_paragraph`]'s output
+    /// this already reflects `Justify`'s stretch, since justification
+    /// changes the glyphs themselves rather than being a post-process
+    /// (unlike `Left`/`Center`/`Right`, which `align_lines` applies as a
+    /// pure x-shift after the fact).
     pub content_width: f64,
 }
 
-/// Positioned glyphs + line boxes for one laid-out paragraph.
+/// One [`crate::model::InlineBox`] placed within a [`ParagraphLayout`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlacedInlineBox {
+    /// Echoes [`crate::model::InlineBox::id`] so the caller can match a
+    /// placement back to whatever it should draw there.
+    pub id: u64,
+    pub line_index: usize,
+    /// x-offset of the box's left edge, absolute in the paragraph box.
+    pub x: f64,
+    /// y-offset of the box's top edge, absolute in the paragraph box.
+    pub y_top: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// Positioned glyphs + line boxes (+ placed inline boxes) for one
+/// laid-out paragraph.
 ///
-/// Produced by [`layout_text`]. Immutable except through [`align_lines`],
-/// which is the only supported post-process (design law 1: one measure
-/// path — nothing else is allowed to recompute glyph positions).
+/// Produced by [`layout_text`]/[`layout_paragraph`]. Immutable except
+/// through [`align_lines`], which is the only supported post-process
+/// (design law 1: one measure path — nothing else is allowed to
+/// recompute glyph positions).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ParagraphLayout {
     pub glyphs: Vec<GlyphLayout>,
     pub lines: Vec<LineBox>,
+    pub boxes: Vec<PlacedInlineBox>,
     /// Widest line's content width.
     pub width: f64,
     /// Total vertical extent (last line's `y_top + height`).
@@ -59,13 +91,12 @@ pub struct ParagraphLayout {
 
 /// Horizontal line alignment.
 ///
-/// Phase-1-local: the design doc's Phase 2 introduces a broader
-/// `ParagraphAlign::{Left,Center,Right,Justify}` on the rich-span
-/// `Paragraph` model (`model/span.rs`) — this narrower `Align` exists only
-/// to drive [`align_lines`] for Phase 1's single-run `layout_text`, and is
-/// expected to be superseded/merged once Phase 2 lands. Kept deliberately
-/// separate so [`layout_text`]'s doc-specified signature
-/// (`text, font, max_width, shaper`) stays untouched.
+/// Phase-1-local: [`crate::model::ParagraphAlign`] is the richer,
+/// `Paragraph`-facing Phase 2 alignment type (adds `Justify`). This
+/// narrower `Align` is kept, unchanged, as the type [`align_lines`] and
+/// [`layout_text`]'s single-run callers use — deliberately NOT removed or
+/// renamed (Phase 1 regression guard), even though `ParagraphAlign` is now
+/// the type new (multi-run) code should reach for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Align {
     #[default]
@@ -78,12 +109,15 @@ pub enum Align {
 ///
 /// Pure function (design law 3): `(text, font, max_width, shaper)` in,
 /// [`ParagraphLayout`] out — no retained state. A `max_width` at or beyond
-/// the text's natural width degenerates to a single line (matches
-/// [`crate::shape::LineShaper`]'s underlying `measure_glyphs_wrapped`
-/// behavior). Empty text produces an empty [`ParagraphLayout`]; never panics.
+/// the text's natural width degenerates to a single line. Empty text
+/// produces an empty [`ParagraphLayout`]; never panics.
+///
+/// A thin wrapper over [`layout_paragraph`] with a single-run [`Paragraph`]
+/// (Phase 2 regression guard: this signature is unchanged from Phase 1).
 pub fn layout_text(text: &str, font: &FontSpec, max_width: f64, shaper: &dyn LineShaper) -> ParagraphLayout {
-    let wrapped = shaper.shape_wrapped(text, font, max_width);
-    build_layout(&wrapped, font)
+    let runs = [StyledRun::new(text, *font)];
+    let paragraph = Paragraph::new(&runs, max_width);
+    layout_paragraph(&paragraph, shaper)
 }
 
 /// Shift every line's glyphs horizontally so the paragraph reads as
@@ -111,61 +145,10 @@ pub fn align_lines(layout: &mut ParagraphLayout, box_width: f64, align: Align) {
         for glyph in layout.glyphs.iter_mut().filter(|g| g.line_index == line.line_index) {
             glyph.x += shift;
         }
-    }
-}
-
-fn build_layout(wrapped: &[WrappedLine], font: &FontSpec) -> ParagraphLayout {
-    if wrapped.is_empty() {
-        return ParagraphLayout::default();
-    }
-
-    let mut glyphs = Vec::new();
-    let mut lines = Vec::with_capacity(wrapped.len());
-
-    // Fallback single-line height: matches cosmic-text's own
-    // `Metrics::new(font_size, font_size * 1.2)` convention (uzor's
-    // shaper.rs) — used only when there is no next line to measure a real
-    // delta from.
-    let fallback_height = (font.size_px * 1.2).max(1.0);
-    let mut prev_delta = fallback_height;
-
-    for (line_index, line) in wrapped.iter().enumerate() {
-        for glyph in &line.glyphs {
-            glyphs.push(GlyphLayout {
-                cluster: glyph.cluster.clone(),
-                run_index: 0,
-                line_index,
-                x: glyph.x_offset,
-                y: line.baseline_y + glyph.y_offset,
-                advance: glyph.advance,
-                width: glyph.width,
-            });
+        for b in layout.boxes.iter_mut().filter(|b| b.line_index == line.line_index) {
+            b.x += shift;
         }
-
-        let height = match wrapped.get(line_index + 1) {
-            Some(next) => {
-                let delta = (next.line_top - line.line_top).max(1.0);
-                prev_delta = delta;
-                delta
-            }
-            None => prev_delta,
-        };
-
-        lines.push(LineBox {
-            line_index,
-            y_top: line.line_top,
-            baseline_y: line.baseline_y,
-            height,
-            content_width: line.width,
-        });
     }
-
-    let width = lines.iter().map(|l| l.content_width).fold(0.0_f64, f64::max);
-    // `lines` is non-empty here (guarded by the `wrapped.is_empty()` early
-    // return above), so `last()` always has an element.
-    let height = lines.last().map(|l| l.y_top + l.height).unwrap_or(0.0);
-
-    ParagraphLayout { glyphs, lines, width, height }
 }
 
 #[cfg(test)]
