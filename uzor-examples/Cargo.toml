@@ -16,6 +16,8 @@ uzor-render-hub       = { workspace = true }
 uzor-render-vello-gpu = { workspace = true }
 uzor-urx-core         = { workspace = true }
 uzor-window-desktop   = { workspace = true }
+uzor-viz              = { path = "../uzor-viz" }
+uzor-export           = { path = "../uzor-export" }
 vello                 = "0.9"
 pollster              = "0.4"
 winit                 = "0.30"
@@ -43,6 +45,12 @@ path = "src/l4/dashboard.rs"
 [[bin]]
 name = "force-graph-demo"
 path = "src/l4/force_graph_demo.rs"
+
+# uzor-viz V1 figures demo — bars/curve/histogram grid, agent-driven
+# reseed/theme/export. See uzor-viz/CLAUDE.md for the crate scope.
+[[bin]]
+name = "viz-charts-demo"
+path = "src/l4/viz_charts_demo.rs"
 
 # URX render-family profiling rigs (Phase 0+).
 # Pinned reference scene + agent HTTP backend switch + FPS readout.
