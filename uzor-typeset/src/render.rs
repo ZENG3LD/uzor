@@ -1,31 +1,130 @@
 //! Paint a composed [`Page`] onto a [`RenderContext`] — design law 6
 //! (native measure/paint seams, no bespoke ones): paragraphs paint through
-//! `uzor_text::draw_paragraph` unchanged, this crate invents no new text
-//! drawing primitive. Not itself named as a separate file in the design
-//! doc's P0 deliverables list, but required to fulfill that same phase's
-//! own "headless via `uzor-export::render_to_png`" demo/proof requirement.
+//! `uzor_text::draw_paragraph` unchanged, figures paint through their own
+//! `TypesetFigure::render`, neither is a new drawing primitive this crate
+//! invented.
+//!
+//! ## Image blocks — the `ImagePainter` seam is not reachable here (report)
+//!
+//! Design law 4 says images paint through `ImagePainter::draw_image_rgba`.
+//! Two independent gaps make that seam unreachable from THIS crate's own
+//! headless proof path:
+//! 1. `ImagePainter` is declared opt-in, NOT part of the `RenderContext`
+//!    supertrait (`uzor/src/core/render/context.rs`) — a `&mut dyn
+//!    RenderContext` alone cannot reach it, and this crate has no `Any`-
+//!    style downcast primitive to recover it (none exists anywhere in
+//!    `uzor` core yet — confirmed by inspection, not assumed).
+//! 2. Even the ONE backend that also implements `ImagePainter` in this
+//!    crate's own dependency chain (`uzor-render-tiny-skia`, the backend
+//!    `uzor-export::render_to_png` uses) declares `draw_image_rgba` a
+//!    documented no-op (`uzor-render-tiny-skia/src/context.rs:1617-1645`:
+//!    "tiny-skia does not load URL-based images... no wgpu texture
+//!    support in the CPU path") — so even a hypothetical downcast would
+//!    paint nothing.
+//!
+//! [`draw_page`] therefore paints a deterministic, visibly-labeled
+//! placeholder rect for [`crate::scene::Block::Image`] (never silently
+//! skipped) instead of pretending to composite pixels no reachable
+//! backend can actually draw. `crate::scene::image_block`'s own fit-rect
+//! geometry (`ImageBlock::content_rect`) is real, tested, backend-
+//! independent math — only the FINAL pixel blit is the gap.
 
-use uzor::render::RenderContext;
+use uzor::render::{RenderContext, TextAlign, TextBaseline};
+use uzor::types::Rect;
+use uzor_figures::FigureTheme;
 use uzor_text::draw_paragraph;
 
+use crate::region::{ListPlacement, PlacedBlock, TablePlacement};
 use crate::scene::Block;
 use crate::slice::Page;
+
+/// Dashed magenta — the same debug-outline convention
+/// `uzor_text::draw_paragraph`'s own `InlineBox` outline uses, so a
+/// reserved-but-unpainted rect always reads as "placeholder," never as a
+/// real content color.
+const IMAGE_PLACEHOLDER_COLOR: &str = "#ff00ffff";
 
 /// Paint every placed block of `page` onto `ctx`, each at its own
 /// frame-relative rect origin (design law 1: one transform — every draw
 /// derives its position from the SAME `PlacedBlock::rect`/
-/// `paragraph_layout` [`crate::compose::compose`] already computed, never
-/// a second ad hoc position formula).
-pub fn draw_page(ctx: &mut dyn RenderContext, page: &Page<'_>, default_color: &str) {
+/// `paragraph_layout`/`table_placement`/`list_placement`
+/// [`crate::compose::compose`] already computed, never a second ad hoc
+/// position formula). `figure_theme` is the theme every
+/// [`Block::Figure`] renders with (P2's full `Theme::figure_theme()`
+/// resolution chain doesn't exist yet — see this crate's `CLAUDE.md`).
+pub fn draw_page(ctx: &mut dyn RenderContext, page: &Page<'_>, default_color: &str, figure_theme: &FigureTheme) {
     for placed in &page.frame.blocks {
-        match (placed.kind, &placed.paragraph_layout) {
-            (Block::Paragraph(_), Some(layout)) => {
+        draw_placed_block(ctx, placed, default_color, figure_theme);
+    }
+}
+
+/// Paint ONE placed block — factored out of [`draw_page`] so table/list
+/// cell content (itself a `Vec<PlacedBlock>`) can recurse through the
+/// exact same paint logic top-level flow blocks use.
+fn draw_placed_block(ctx: &mut dyn RenderContext, placed: &PlacedBlock<'_>, default_color: &str, figure_theme: &FigureTheme) {
+    match placed.kind {
+        Block::Paragraph(_) => {
+            if let Some(layout) = &placed.paragraph_layout {
                 draw_paragraph(ctx, (placed.rect.x, placed.rect.y), layout, default_color, false);
             }
-            // A paragraph placement always carries a layout (compose()'s
-            // own invariant) and a spacer paints nothing — both fall
-            // through here without drawing.
-            (Block::Paragraph(_), None) | (Block::Spacer(_), _) => {}
+        }
+        Block::Figure(figure_block) => {
+            figure_block.figure.render(ctx, placed.rect, figure_theme);
+        }
+        Block::Image(_) => {
+            draw_image_placeholder(ctx, placed.rect);
+        }
+        Block::Table(_) => {
+            if let Some(table) = &placed.table_placement {
+                draw_table_placement(ctx, table, default_color, figure_theme);
+            }
+        }
+        Block::List(_) => {
+            if let Some(list) = &placed.list_placement {
+                draw_list_placement(ctx, list, default_color, figure_theme);
+            }
+        }
+        Block::Spacer(_) => {}
+    }
+}
+
+fn draw_image_placeholder(ctx: &mut dyn RenderContext, rect: Rect) {
+    ctx.set_stroke_color(IMAGE_PLACEHOLDER_COLOR);
+    ctx.set_line_dash(&[4.0, 3.0]);
+    ctx.set_stroke_width(1.0);
+    ctx.stroke_rect(rect.x, rect.y, rect.width, rect.height);
+    ctx.set_line_dash(&[]);
+}
+
+/// Draw a table's own row/column gridlines, then recurse into every
+/// cell's already-placed content.
+fn draw_table_placement(ctx: &mut dyn RenderContext, table: &TablePlacement<'_>, default_color: &str, figure_theme: &FigureTheme) {
+    ctx.set_stroke_color(default_color);
+    ctx.set_stroke_width(1.0);
+    for row in &table.rows {
+        ctx.stroke_rect(row.rect.x, row.rect.y, row.rect.width, row.rect.height);
+        for cell in &row.cells {
+            ctx.stroke_rect(cell.rect.x, cell.rect.y, cell.rect.width, cell.rect.height);
+            for inner in &cell.content {
+                draw_placed_block(ctx, inner, default_color, figure_theme);
+            }
+        }
+    }
+}
+
+/// Draw every item's marker text, then recurse into its own already-placed
+/// (already-indented) content.
+fn draw_list_placement(ctx: &mut dyn RenderContext, list: &ListPlacement<'_>, default_color: &str, figure_theme: &FigureTheme) {
+    for item in &list.items {
+        if !item.marker_text.is_empty() {
+            ctx.set_font(&item.marker_font.to_css_font());
+            ctx.set_fill_color(default_color);
+            ctx.set_text_align(TextAlign::Left);
+            ctx.set_text_baseline(TextBaseline::Top);
+            ctx.fill_text(&item.marker_text, item.marker_rect.x, item.marker_rect.y);
+        }
+        for inner in &item.content {
+            draw_placed_block(ctx, inner, default_color, figure_theme);
         }
     }
 }
@@ -164,12 +263,15 @@ mod tests {
         assert!(head_lines > 0 && tail_lines > 0, "both halves of the split must carry at least one whole line, never an empty placement");
 
         let spec = ExportSpec { width_px: PAGE_WIDTH, height_px: PAGE_HEIGHT, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+        let figure_theme = uzor_figures::FigureTheme::light();
 
-        let page1_bytes = render_to_png(&spec, |ctx| draw_page(ctx, &pages[0], "#111111")).expect("page 1 proof render should succeed");
+        let page1_bytes =
+            render_to_png(&spec, |ctx| draw_page(ctx, &pages[0], "#111111", &figure_theme)).expect("page 1 proof render should succeed");
         assert_eq!(decoded_png_dims(&page1_bytes), (PAGE_WIDTH, PAGE_HEIGHT));
         write_proof_png("typeset_p0_page1.png", &page1_bytes);
 
-        let page2_bytes = render_to_png(&spec, |ctx| draw_page(ctx, &pages[1], "#111111")).expect("page 2 proof render should succeed");
+        let page2_bytes =
+            render_to_png(&spec, |ctx| draw_page(ctx, &pages[1], "#111111", &figure_theme)).expect("page 2 proof render should succeed");
         assert_eq!(decoded_png_dims(&page2_bytes), (PAGE_WIDTH, PAGE_HEIGHT));
         write_proof_png("typeset_p0_page2.png", &page2_bytes);
 
@@ -181,6 +283,202 @@ mod tests {
                 assert!(placed.rect.x >= body.x - 0.01, "block must not start left of the margin");
                 assert!(placed.rect.x + placed.rect.width <= body.x + body.width + 0.01, "block must not extend past the right margin");
             }
+        }
+    }
+
+    /// P1 headless proof (design law 8 + this arc's own MUST report-figure
+    /// #8 shape): a fixed seeded 3-page report — title, justified body
+    /// paragraphs, a keep-with-next section heading, a `BarFigure` block, a
+    /// `TimelineFigure` block, a 4-column x 3-row table (`Fixed`/`Auto`/
+    /// `Fraction` columns all exercised), and a bulleted list (one item
+    /// wrapping to multiple lines) — sliced at A4-ish 595x842 and painted
+    /// through [`draw_page`] to `uzor/out/typeset_p1_page{1,2,3}.png`.
+    #[test]
+    fn seeded_three_page_report_with_figures_table_and_list_renders_to_three_valid_pngs() {
+        use uzor_figures::{BarFigure, TimelineEvent, TimelineFigure};
+
+        use crate::compose::BreakControl;
+        use crate::scene::{BlockSizing, ColumnSpec, FigureBlock, ListBlock, ListItem, MarkerStyle, TableBlock, TableCell, TableRow};
+
+        const TITLE_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 22.0, bold: true, italic: false };
+        const HEADING_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 17.0, bold: true, italic: false };
+        const BODY_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 14.0, bold: false, italic: false };
+        const TABLE_HEADER_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 13.0, bold: true, italic: false };
+        const TABLE_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 13.0, bold: false, italic: false };
+
+        let master = PageMaster::new(PAGE_WIDTH as f64, PAGE_HEIGHT as f64, Margins::uniform(40.0));
+        let body_width = master.body_rect().width;
+
+        // ── paragraphs (title / heading / reused filler runs) ──────────
+        let title_run = [StyledRun::new("Case Report — uzor-typeset P1 Proof (Chain-of-Custody Excerpt)", TITLE_FONT)];
+        let heading_a_run = [StyledRun::new("Section 1 — Transfer Narrative", HEADING_FONT)];
+        let heading_b_run = [StyledRun::new("Section 2 — Observed Amounts", HEADING_FONT)];
+        let filler_a_run = [StyledRun::new(FILLER_A, BODY_FONT)];
+        let filler_b_run = [StyledRun::new(FILLER_B, BODY_FONT)];
+
+        // ── figures (seeded, deterministic — no RNG/time) ──────────────
+        let bar_figure = BarFigure::new(
+            vec!["Hop 1".to_owned(), "Hop 2".to_owned(), "Hop 3".to_owned(), "Hop 4".to_owned(), "Hop 5".to_owned()],
+            vec![128_500.0, 640_000.0, 2_600_000.0, 1_450_000.0, 300_000.0],
+        )
+        .with_title("Observed amount per hop (seeded)");
+
+        const ANCHOR_2024_01_01: f64 = 1_704_067_200.0;
+        const DAY_SECS: f64 = 86_400.0;
+        let timeline_events = vec![
+            TimelineEvent { ts: ANCHOR_2024_01_01, end_ts: None, lane: 0, label: "initial deposit".to_owned(), kind: 0 },
+            TimelineEvent {
+                ts: ANCHOR_2024_01_01 + 2.0 * DAY_SECS,
+                end_ts: Some(ANCHOR_2024_01_01 + 5.0 * DAY_SECS),
+                lane: 0,
+                label: "relay window".to_owned(),
+                kind: 1,
+            },
+            TimelineEvent { ts: ANCHOR_2024_01_01 + 6.0 * DAY_SECS, end_ts: None, lane: 1, label: "exchange deposit".to_owned(), kind: 2 },
+            TimelineEvent { ts: ANCHOR_2024_01_01 + 9.0 * DAY_SECS, end_ts: None, lane: 1, label: "resting balance".to_owned(), kind: 0 },
+        ];
+        let timeline_figure =
+            TimelineFigure::new(timeline_events, vec!["path-a".to_owned(), "path-b".to_owned()]).with_title("Timeline of transfers (seeded)");
+
+        // ── table: 4 columns (Fixed/Auto/Auto/Fraction) x 3 rows ───────
+        let c_hop_h = [StyledRun::new("Hop", TABLE_HEADER_FONT)];
+        let n_hop_h = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_hop_h, f64::MAX)))];
+        let c_from_h = [StyledRun::new("From", TABLE_HEADER_FONT)];
+        let n_from_h = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_from_h, f64::MAX)))];
+        let c_to_h = [StyledRun::new("To", TABLE_HEADER_FONT)];
+        let n_to_h = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_to_h, f64::MAX)))];
+        let c_amount_h = [StyledRun::new("Amount (USDT)", TABLE_HEADER_FONT)];
+        let n_amount_h = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_amount_h, f64::MAX)))];
+
+        let c_hop_1 = [StyledRun::new("1", TABLE_FONT)];
+        let n_hop_1 = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_hop_1, f64::MAX)))];
+        let c_from_1 = [StyledRun::new("wallet-a19x...aa2", TABLE_FONT)];
+        let n_from_1 = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_from_1, f64::MAX)))];
+        let c_to_1 = [StyledRun::new("exchange-hot-7", TABLE_FONT)];
+        let n_to_1 = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_to_1, f64::MAX)))];
+        let c_amount_1 = [StyledRun::new("128,500.00", TABLE_FONT)];
+        let n_amount_1 = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_amount_1, f64::MAX)))];
+
+        let c_hop_2 = [StyledRun::new("2", TABLE_FONT)];
+        let n_hop_2 = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_hop_2, f64::MAX)))];
+        let c_from_2 = [StyledRun::new("exchange-hot-7", TABLE_FONT)];
+        let n_from_2 = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_from_2, f64::MAX)))];
+        let c_to_2 = [StyledRun::new("cold-storage-vault-2", TABLE_FONT)];
+        let n_to_2 = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_to_2, f64::MAX)))];
+        let c_amount_2 = [StyledRun::new("2,600,000.00", TABLE_FONT)];
+        let n_amount_2 = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_amount_2, f64::MAX)))];
+
+        let header_cells = [TableCell::new(&n_hop_h), TableCell::new(&n_from_h), TableCell::new(&n_to_h), TableCell::new(&n_amount_h)];
+        let row1_cells = [TableCell::new(&n_hop_1), TableCell::new(&n_from_1), TableCell::new(&n_to_1), TableCell::new(&n_amount_1)];
+        let row2_cells = [TableCell::new(&n_hop_2), TableCell::new(&n_from_2), TableCell::new(&n_to_2), TableCell::new(&n_amount_2)];
+        let table_rows = [TableRow::new(&header_cells), TableRow::new(&row1_cells), TableRow::new(&row2_cells)];
+        let table_columns = [ColumnSpec::Fixed(50.0), ColumnSpec::Auto, ColumnSpec::Auto, ColumnSpec::Fraction(1.0)];
+
+        // ── bulleted list (one item wraps to several lines) ────────────
+        let li1_run = [StyledRun::new("Confirmed direct transfer between wallet A and the exchange hot wallet.", BODY_FONT)];
+        let li1_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&li1_run, f64::MAX)))];
+        let li2_run = [StyledRun::new(
+            "Secondary relay observed roughly forty-eight hours later, consistent with layering behavior across \
+            several intermediate wallets before consolidation, long enough that this single list item is expected \
+            to wrap across more than one line once it is indented past the marker gutter at the page's own body width.",
+            BODY_FONT,
+        )];
+        let li2_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&li2_run, f64::MAX)))];
+        let li3_run = [StyledRun::new("Resting balance identified at custodial cold storage, pending subpoena response.", BODY_FONT)];
+        let li3_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&li3_run, f64::MAX)))];
+        let li4_run = [StyledRun::new("No further movement observed as of the report date.", BODY_FONT)];
+        let li4_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&li4_run, f64::MAX)))];
+        let list_items =
+            [ListItem::new(&li1_nodes), ListItem::new(&li2_nodes), ListItem::new(&li3_nodes), ListItem::new(&li4_nodes)];
+
+        // ── assemble the flow: title, keep-with-next heading, figures,
+        // table, list, and enough repeated filler paragraphs either side
+        // to land on exactly 3 pages (design law 8: fixed, not tuned by
+        // RNG/time — a deterministic paragraph COUNT, chosen by running
+        // this fixture and observing the resulting page count).
+        let mut flow: Vec<BlockNode<'_>> = vec![
+            BlockNode::new(Block::Paragraph(Paragraph::new(&title_run, body_width))),
+            BlockNode::new(Block::Spacer(18.0)),
+        ];
+        for _ in 0..2 {
+            flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(&filler_a_run, body_width).with_align(ParagraphAlign::Justify))));
+            flow.push(BlockNode::new(Block::Spacer(14.0)));
+            flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(&filler_b_run, body_width).with_align(ParagraphAlign::Justify))));
+            flow.push(BlockNode::new(Block::Spacer(14.0)));
+        }
+        flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(&heading_a_run, body_width))).with_break_control(BreakControl::AvoidAfter));
+        flow.push(BlockNode::new(Block::Spacer(8.0)));
+        flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(&filler_a_run, body_width).with_align(ParagraphAlign::Justify))));
+        flow.push(BlockNode::new(Block::Spacer(18.0)));
+        flow.push(BlockNode::new(Block::Figure(FigureBlock::new(&bar_figure, BlockSizing::FixedHeight(180.0)))));
+        flow.push(BlockNode::new(Block::Spacer(18.0)));
+        flow.push(BlockNode::new(Block::Figure(FigureBlock::new(&timeline_figure, BlockSizing::FixedHeight(180.0)))));
+        flow.push(BlockNode::new(Block::Spacer(18.0)));
+        for _ in 0..3 {
+            flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(&filler_b_run, body_width).with_align(ParagraphAlign::Justify))));
+            flow.push(BlockNode::new(Block::Spacer(14.0)));
+        }
+        flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(&heading_b_run, body_width))).with_break_control(BreakControl::AvoidAfter));
+        flow.push(BlockNode::new(Block::Spacer(8.0)));
+        flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(&filler_b_run, body_width).with_align(ParagraphAlign::Justify))));
+        flow.push(BlockNode::new(Block::Spacer(18.0)));
+        flow.push(BlockNode::new(Block::Table(TableBlock::new(&table_columns, &table_rows))));
+        flow.push(BlockNode::new(Block::Spacer(18.0)));
+        flow.push(BlockNode::new(Block::List(ListBlock::new(&list_items, MarkerStyle::Bullet('•'), 20.0))));
+        flow.push(BlockNode::new(Block::Spacer(18.0)));
+        for _ in 0..2 {
+            flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(&filler_a_run, body_width).with_align(ParagraphAlign::Justify))));
+            flow.push(BlockNode::new(Block::Spacer(14.0)));
+        }
+
+        let style = ComposeStyle::new(10.0, BODY_FONT);
+        let shaper = CosmicShaper::headless();
+
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 3, "fixture is tuned to land on exactly 3 pages, got {}", pages.len());
+
+        // Every table placement must show all 3 rows across however many
+        // pages the table itself spans, never dropping or duplicating a
+        // row (row-atomic splitting's own conservation law).
+        let total_table_rows: usize = pages
+            .iter()
+            .flat_map(|p| p.frame.blocks.iter())
+            .filter_map(|b| b.table_placement.as_ref())
+            .map(|t| t.rows.len())
+            .sum();
+        assert_eq!(total_table_rows, 3, "every table row must appear exactly once across whatever pages the table spans");
+
+        // The list must place all 4 items with real, non-zero indent.
+        let list_placement = pages
+            .iter()
+            .flat_map(|p| p.frame.blocks.iter())
+            .find_map(|b| b.list_placement.as_ref())
+            .expect("the bulleted list must be placed on some page");
+        assert_eq!(list_placement.items.len(), 4);
+        for item in &list_placement.items {
+            let content_block = item.content.first().expect("every item has content");
+            assert!(content_block.rect.x > item.marker_rect.x, "item content must indent past its own marker");
+        }
+        let wrapped_item = &list_placement.items[1];
+        let wrapped_lines = wrapped_item.content[0].paragraph_layout.as_ref().expect("list item paragraph carries a layout").lines.len();
+        assert!(wrapped_lines > 1, "the second list item's fixture text is long enough that it must wrap to more than one line");
+
+        // Neither keep-with-next heading is ever the LAST block on its own
+        // page while its immediate follower starts the next one.
+        for page in &pages {
+            if let Some(last) = page.frame.blocks.last() {
+                let is_heading = matches!(last.kind, Block::Paragraph(p) if p.runs[0].font.bold && p.runs[0].text.starts_with("Section"));
+                assert!(!is_heading || page.frame.overflow.is_none(), "a keep-with-next heading must never be orphaned alone at a page bottom");
+            }
+        }
+
+        let spec = ExportSpec { width_px: PAGE_WIDTH, height_px: PAGE_HEIGHT, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+        let figure_theme = uzor_figures::FigureTheme::light();
+
+        for (i, page) in pages.iter().enumerate() {
+            let bytes = render_to_png(&spec, |ctx| draw_page(ctx, page, "#111111", &figure_theme)).expect("page proof render should succeed");
+            assert_eq!(decoded_png_dims(&bytes), (PAGE_WIDTH, PAGE_HEIGHT));
+            write_proof_png(&format!("typeset_p1_page{}.png", i + 1), &bytes);
         }
     }
 }

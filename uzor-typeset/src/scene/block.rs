@@ -1,16 +1,24 @@
 //! [`Block`]/[`BlockNode`]/[`BlockId`] — the runtime scene tree's flow-unit
 //! (borrowed, matches `uzor_text::Paragraph<'a>`'s own convention).
 //!
-//! P0 scope (`nemo/docs/uzor-engines/uzor_typeset_arc4_design.md` §2.1/§7
-//! P0 phase entry): only the `Paragraph`/`Spacer` variants exist —
-//! additive-only law, P1 adds `Figure`/`Image`/`Table`/`List`/`Interactive`
-//! as NEW variants later, never a pre-declared placeholder now.
-//! `BlockNode` likewise carries only `id`/`kind` this phase —
-//! `break_control: BreakControl` (`compose/keep_break.rs`) and
-//! `style_ref: Option<StyleRef>` (`style/theme.rs`) are P1/P2 additions,
-//! omitted here for the same reason.
+//! P0 built only the `Paragraph`/`Spacer` variants
+//! (`nemo/docs/uzor-engines/uzor_typeset_arc4_design.md` §2.1/§7 P0 phase
+//! entry) — additive-only law. P1 adds `Figure`/`Image`/`Table`/`List` as
+//! NEW variants (this crate's own task scope narrows the doc's §2.1
+//! sketch: `Interactive` is NOT built this phase either — no P1 consumer
+//! or gate needs a reserved-rect placeholder yet, deferred with the same
+//! "no field/variant nothing reads" reasoning P0 already used). `BlockNode`
+//! gains `break_control: BreakControl` this phase (`compose::keep_break`);
+//! `style_ref: Option<StyleRef>` (`style/theme.rs`) is still a P2 addition,
+//! omitted here for the same reason P0 omitted it.
 
 use uzor_text::Paragraph;
+
+use crate::compose::keep_break::BreakControl;
+use crate::scene::figure_block::FigureBlock;
+use crate::scene::image_block::ImageBlock;
+use crate::scene::list::ListBlock;
+use crate::scene::table::TableBlock;
 
 /// Stable identity anchor for a [`BlockNode`], used by later phases' morph
 /// matching (§4.3 of the design doc).
@@ -55,6 +63,18 @@ pub enum Block<'a> {
     /// `uzor_text::layout_paragraph` — the content_size seam (design doc
     /// §3.3).
     Paragraph(Paragraph<'a>),
+    /// An erased figure + its required [`crate::scene::BlockSizing`] —
+    /// ATOMIC (never split across regions, design doc §2.2/§7 P1).
+    Figure(FigureBlock<'a>),
+    /// A raster image + its required sizing/fit — ATOMIC, same
+    /// all-or-nothing placement as [`Block::Figure`].
+    Image(ImageBlock<'a>),
+    /// A two-pass column-sized table — row-atomic splitting across
+    /// regions (design doc §3.5).
+    Table(TableBlock<'a>),
+    /// A marker + indent list — composed as ONE atomic unit this phase
+    /// (see `scene::list`'s own module docs).
+    List(ListBlock<'a>),
     /// A fixed vertical gap between flow blocks (no content, no measure
     /// pass — a plain, caller-chosen `f64` height in the same units as
     /// every other block's rect).
@@ -62,21 +82,29 @@ pub enum Block<'a> {
 }
 
 /// One node in a [`crate::compose::compose`] flow: a [`Block`] plus its
-/// (possibly author-assigned) identity.
+/// (possibly author-assigned) identity and its keep/break preference.
 pub struct BlockNode<'a> {
     pub id: Option<BlockId>,
     pub kind: Block<'a>,
+    pub break_control: BreakControl,
 }
 
 impl<'a> BlockNode<'a> {
-    /// An unlabeled node — gets a structural id from [`resolve_block_ids`].
+    /// An unlabeled, `BreakControl::Auto` node — gets a structural id
+    /// from [`resolve_block_ids`].
     pub fn new(kind: Block<'a>) -> Self {
-        Self { id: None, kind }
+        Self { id: None, kind, break_control: BreakControl::Auto }
     }
 
     /// Builder: assign an explicit author id.
     pub fn with_id(mut self, id: BlockId) -> Self {
         self.id = Some(id);
+        self
+    }
+
+    /// Builder: set this node's keep/break preference.
+    pub fn with_break_control(mut self, break_control: BreakControl) -> Self {
+        self.break_control = break_control;
         self
     }
 }
