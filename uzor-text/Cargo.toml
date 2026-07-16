@@ -14,6 +14,12 @@ publish = false
 # `uzor::shaper::measure_glyphs_wrapped` directly, so cosmic-text is
 # unconditionally required.
 uzor = { workspace = true, features = ["shaper"] }
+# Phase 4 (`ascii`): `GlitchLetter` (absorbed verbatim from uzor core's
+# `ui::effects::text::cell_shader`) draws its glitch swap/spark rolls from
+# `fastrand` directly — uzor core depends on the same crate (`uzor/Cargo.toml`)
+# but never re-exported it, so this move needs its own pin. Same major
+# version (2) as uzor core's own `fastrand = "2"` pin.
+fastrand = "2"
 
 [dev-dependencies]
 uzor-export = { path = "../uzor-export" }

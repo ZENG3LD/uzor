@@ -12,8 +12,16 @@
 //! fields (`sd_*`); chars are chosen by density (`density_char`); colour can
 //! cycle via [`hsl`]. Any shape expressible as an SDF or a bitmap mask can be
 //! filled with characters this way — letters (the menu "M"), the bloom, etc.
+//!
+//! Moved verbatim from `uzor` core (`uzor::ui::effects::text::cell_shader`)
+//! as Arc 2 Phase 4's hard cutover
+//! (`nemo/docs/uzor-viz/uzor_text_arc2_design.md` §4) — algorithm unchanged,
+//! only the `RenderContext`/`TextAlign`/`TextBaseline` import moved from
+//! `crate::render` (uzor core, in-crate) to `uzor::render` (this crate
+//! consumes uzor core as a dependency). [`super::ParagraphAsciiShader`] is
+//! the net-new piece this phase adds alongside this move.
 
-use crate::render::{RenderContext, TextAlign, TextBaseline};
+use uzor::render::{RenderContext, TextAlign, TextBaseline};
 
 /// Per-cell grid position.
 #[derive(Clone, Copy)]
@@ -298,5 +306,67 @@ impl CellShader for GlitchLetter {
         };
 
         Cell { ch, color, alpha: if spark { 0.6 } else { 1.0 }, scale: 1.0 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Headless proof: `GlitchLetter::letter_m()` at a fixed `fastrand` seed
+    //! and a fixed cursor intensity/time (design law 8 — deterministic demos,
+    //! no time/RNG driving the actual proof). `fastrand::seed` reseeds only
+    //! this test's own OS thread's thread-local generator
+    //! (`fastrand` 2.x global-RNG model), so this is reproducible regardless
+    //! of what other tests run concurrently on other threads.
+
+    use std::path::PathBuf;
+
+    use uzor_export::{render_to_png, ExportSpec};
+
+    use super::{AsciiGrid, Cursor, GlitchLetter};
+    use crate::ascii::{draw_ascii_grid, AsciiGridStyle};
+
+    const CELL: f64 = 24.0;
+    const WIDTH: u32 = 200;
+    const HEIGHT: u32 = 260;
+
+    fn out_dir() -> PathBuf {
+        // Fixed path — `uzor/out/` is the shared human-eyeball drop point
+        // for every headless proof render in this workspace (matches
+        // `crate::draw`'s own proof tests).
+        PathBuf::from(r"C:\Users\VA PC\CODING\ML_TRADING\nemo\uzor\out")
+    }
+
+    fn write_proof_png(name: &str, bytes: &[u8]) {
+        let dir = out_dir();
+        std::fs::create_dir_all(&dir).expect("create uzor/out/ proof directory");
+        std::fs::write(dir.join(name), bytes).expect("write proof PNG");
+    }
+
+    fn decoded_png_dims(bytes: &[u8]) -> (u32, u32) {
+        let decoder = png::Decoder::new(bytes);
+        let reader = decoder.read_info().expect("valid PNG header");
+        let info = reader.info();
+        (info.width, info.height)
+    }
+
+    #[test]
+    fn glitch_letter_at_a_fixed_seed_and_intensity_renders_to_a_valid_png() {
+        // Fixed seed + fixed cursor intensity + fixed time = 0.0: every
+        // `fastrand` draw `GlitchLetter::main` makes is reproducible.
+        fastrand::seed(20260716);
+
+        let shader = GlitchLetter::letter_m();
+        let mut grid = AsciiGrid::new(shader.cols, shader.rows);
+        grid.set_cursor(Cursor { x: 2.0, y: 3.0, pressed: false, inside: true, intensity: 0.65 });
+        grid.step(&shader, 0.0, 1.0);
+
+        let spec = ExportSpec { width_px: WIDTH, height_px: HEIGHT, dpr: 1.0, background: Some([11, 11, 14, 255]) };
+        let bytes = render_to_png(&spec, |ctx| {
+            draw_ascii_grid(ctx, (10.0, 10.0), &grid, AsciiGridStyle::square(CELL));
+        })
+        .unwrap_or_else(|e| panic!("glitch letter proof render should succeed: {e}"));
+
+        assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
+        write_proof_png("text_p4_glitch.png", &bytes);
     }
 }
