@@ -11,6 +11,7 @@ description = "Layered demos for uzor — L1 (raw input coordinator), L2 (contex
 uzor                  = { workspace = true }
 uzor-desktop          = { workspace = true }
 uzor-framework-macros = { workspace = true }
+uzor-graph            = { workspace = true }
 uzor-render-hub       = { workspace = true }
 uzor-render-vello-gpu = { workspace = true }
 uzor-urx-core         = { workspace = true }
@@ -36,6 +37,12 @@ path = "src/l3/dashboard.rs"
 [[bin]]
 name = "l4-dashboard"
 path = "src/l4/dashboard.rs"
+
+# uzor-graph engine demo — synthetic clustered graph, live force
+# settling, drag/zoom/pan, click->sidebar. See uzor-graph/RUN.md.
+[[bin]]
+name = "force-graph-demo"
+path = "src/l4/force_graph_demo.rs"
 
 # URX render-family profiling rigs (Phase 0+).
 # Pinned reference scene + agent HTTP backend switch + FPS readout.

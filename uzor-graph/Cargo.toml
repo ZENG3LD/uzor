@@ -1,0 +1,12 @@
+[package]
+name = "uzor-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Reusable force-directed graph visualization engine for uzor — generic node/edge model, Barnes-Hut force simulation, camera, native drag/pick interaction, and an agent-api blackbox surface."
+
+[dependencies]
+uzor = { workspace = true }
+serde_json = "1"
