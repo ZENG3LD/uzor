@@ -3,9 +3,10 @@
 //! Stateless layout + draw layer: scales (domain -> normalized `[0, 1]` ->
 //! screen px), a single plot-area coordinate transform ([`PlotArea`]),
 //! pure mark draw functions, axis/grid/crosshair/tooltip guides, a small
-//! theme, four composed figures (bar / curve / histogram / timeline), and
-//! (V2) an interaction plane — semantic input/output actions, hit-testing,
-//! hover/selection state, a 1D brush, and a cross-figure selection bus.
+//! theme, five composed figures (bar / curve / histogram / timeline /
+//! sankey), and (V2) an interaction plane — semantic input/output actions,
+//! hit-testing, hover/selection state, a 1D brush, and a cross-figure
+//! selection bus.
 //!
 //! See `nemo/docs/uzor-engines/uzor_figures_engine_architecture.md` §3 (crate
 //! layout) and §4 (design laws). V1 harvested scales/coord/marks/axes from
@@ -44,7 +45,7 @@ pub mod scale;
 pub mod theme;
 
 pub use coord::PlotArea;
-pub use figure::{BarFigure, CurveFigure, HistogramFigure, FigureOverlay, TimelineEvent, TimelineFigure};
+pub use figure::{BarFigure, CurveFigure, HistogramFigure, FigureOverlay, SankeyFigure, SankeyLink, SankeyNode, TimelineEvent, TimelineFigure};
 pub use interact::{BrushState, FocusSet, HitZone, HoverInfo, SelectionBus, FigureInputAction, FigureOutputAction};
 pub use mark::MarkStyle;
 pub use scale::{BandScale, LinearScale, LogScale, Scale, Tick, TimeScale};
@@ -63,7 +64,10 @@ mod proof_tests {
     use uzor_export::{render_to_png, ExportSpec};
 
     use crate::theme::FigureTheme;
-    use crate::{BarFigure, CurveFigure, FocusSet, HistogramFigure, FigureOverlay, TimeScale, TimelineEvent, TimelineFigure};
+    use crate::{
+        BarFigure, CurveFigure, FocusSet, HistogramFigure, FigureOverlay, SankeyFigure, SankeyLink, SankeyNode, TimeScale, TimelineEvent,
+        TimelineFigure,
+    };
 
     const WIDTH: u32 = 800;
     const HEIGHT: u32 = 500;
@@ -73,6 +77,9 @@ mod proof_tests {
     // V3 (TimelineFigure) proof render size per its own task spec.
     const TIMELINE_WIDTH: u32 = 800;
     const TIMELINE_HEIGHT: u32 = 400;
+    // Phase C (SankeyFigure) proof render size per its own task spec.
+    const SANKEY_WIDTH: u32 = 800;
+    const SANKEY_HEIGHT: u32 = 450;
 
     fn export_spec() -> ExportSpec {
         ExportSpec { width_px: WIDTH, height_px: HEIGHT, dpr: 1.0, background: None }
@@ -330,5 +337,75 @@ mod proof_tests {
         .expect("timeline figure with hover overlay should render");
         assert_eq!(decoded_png_dims(&bytes), (TIMELINE_WIDTH, TIMELINE_HEIGHT));
         write_proof_png("figures_v3_timeline_hover.png", &bytes);
+    }
+
+    // ── Phase C (SankeyFigure) proof ─────────────────────────────────────
+
+    /// Deterministic 3-stage/7-node/8-link fixture — neutral vocabulary
+    /// only (`src-*`/`mixer-*`/`sink-*`, no case-specific naming, design
+    /// law #8), uneven weights including one dominant path
+    /// (`src-a -> mixer-a`, weight 50) and a deliberate conservation leak
+    /// at `mixer-a` (in 59, out 57 — this figure does not enforce
+    /// conservation, see `figure::sankey`'s own module docs).
+    fn seeded_sankey_figure() -> SankeyFigure {
+        let nodes = vec![
+            SankeyNode { id: "src-a".to_owned(), label: "src-a".to_owned(), stage: 0 },
+            SankeyNode { id: "src-b".to_owned(), label: "src-b".to_owned(), stage: 0 },
+            SankeyNode { id: "mixer-a".to_owned(), label: "mixer-a".to_owned(), stage: 1 },
+            SankeyNode { id: "mixer-b".to_owned(), label: "mixer-b".to_owned(), stage: 1 },
+            SankeyNode { id: "mixer-c".to_owned(), label: "mixer-c".to_owned(), stage: 1 },
+            SankeyNode { id: "sink-a".to_owned(), label: "sink-a".to_owned(), stage: 2 },
+            SankeyNode { id: "sink-b".to_owned(), label: "sink-b".to_owned(), stage: 2 },
+        ];
+        let links = vec![
+            SankeyLink { from: 0, to: 2, weight: 50.0, kind: 0 }, // src-a -> mixer-a (dominant path)
+            SankeyLink { from: 0, to: 3, weight: 6.0, kind: 1 },  // src-a -> mixer-b
+            SankeyLink { from: 1, to: 2, weight: 9.0, kind: 0 },  // src-b -> mixer-a
+            SankeyLink { from: 1, to: 4, weight: 14.0, kind: 2 }, // src-b -> mixer-c
+            SankeyLink { from: 2, to: 5, weight: 48.0, kind: 0 }, // mixer-a -> sink-a
+            SankeyLink { from: 2, to: 6, weight: 9.0, kind: 0 },  // mixer-a -> sink-b (leaks 2 vs its 59 in)
+            SankeyLink { from: 3, to: 6, weight: 6.0, kind: 1 },  // mixer-b -> sink-b
+            SankeyLink { from: 4, to: 5, weight: 14.0, kind: 2 }, // mixer-c -> sink-a
+        ];
+        SankeyFigure::new(nodes, links).with_title("Staged flow (seeded)")
+    }
+
+    #[test]
+    fn sankey_figure_renders_to_a_valid_png() {
+        let figure = seeded_sankey_figure();
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: SANKEY_WIDTH, height_px: SANKEY_HEIGHT, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, SANKEY_WIDTH as f64, SANKEY_HEIGHT as f64);
+
+        let bytes = render_to_png(&spec, |ctx| {
+            figure.render(ctx, rect, &theme);
+        })
+        .expect("sankey figure should render");
+        assert_eq!(decoded_png_dims(&bytes), (SANKEY_WIDTH, SANKEY_HEIGHT));
+        write_proof_png("figures_v3_sankey.png", &bytes);
+    }
+
+    #[test]
+    fn sankey_figure_overlay_renders_hover_highlight_and_dim_to_a_valid_png() {
+        let figure = seeded_sankey_figure();
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: SANKEY_WIDTH, height_px: SANKEY_HEIGHT, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, SANKEY_WIDTH as f64, SANKEY_HEIGHT as f64);
+
+        // Hover over "mixer-b" (node index 3) — exercises the
+        // highlight-connected/dim-the-rest render path together with the
+        // tooltip (pixel-exact hit-test identity is already covered by
+        // `figure::sankey`'s own unit tests).
+        let layout = figure.layout(rect);
+        let r = layout.node_rects[3];
+        let hover_px = (r.x + r.width / 2.0, r.y + r.height / 2.0);
+        let overlay = FigureOverlay { hover_px: Some(hover_px), brush: None, focus: None };
+
+        let bytes = render_to_png(&spec, |ctx| {
+            figure.render_with(ctx, rect, &theme, &overlay);
+        })
+        .expect("sankey figure with hover overlay should render");
+        assert_eq!(decoded_png_dims(&bytes), (SANKEY_WIDTH, SANKEY_HEIGHT));
+        write_proof_png("figures_v3_sankey_hover.png", &bytes);
     }
 }
