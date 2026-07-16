@@ -1,11 +1,11 @@
-//! `VizTheme` — the small set of colors/font every guide and figure in
+//! `FigureTheme` — the small set of colors/font every guide and figure in
 //! this crate reads. Palette matches `uzor-graph::render::category_color`'s
 //! 10-color set so figures and the graph family share one visual identity
 //! across the uzor demo suite.
 
 /// Colors + font a figure needs to draw itself.
 #[derive(Debug, Clone)]
-pub struct VizTheme {
+pub struct FigureTheme {
     pub background: String,
     pub axis_color: String,
     pub grid_color: String,
@@ -22,7 +22,7 @@ const PALETTE: [&str; 10] = [
     "#4d90fe", "#e0703c", "#5cb87a", "#c94f7c", "#d9b64e", "#7e6bd9", "#3fb6c9", "#e0555a", "#8fbf5f", "#c78bd9",
 ];
 
-impl VizTheme {
+impl FigureTheme {
     /// Dark theme — matches `force-graph-demo`'s `#0d0f14` canvas
     /// background, the uzor demo suite's default aesthetic.
     pub fn dark() -> Self {
@@ -49,7 +49,7 @@ impl VizTheme {
     }
 }
 
-impl Default for VizTheme {
+impl Default for FigureTheme {
     /// Dark — matches the rest of the uzor demo suite's default aesthetic.
     fn default() -> Self {
         Self::dark()
@@ -62,12 +62,12 @@ mod tests {
 
     #[test]
     fn dark_and_light_both_carry_the_full_palette() {
-        assert_eq!(VizTheme::dark().palette.len(), PALETTE.len());
-        assert_eq!(VizTheme::light().palette.len(), PALETTE.len());
+        assert_eq!(FigureTheme::dark().palette.len(), PALETTE.len());
+        assert_eq!(FigureTheme::light().palette.len(), PALETTE.len());
     }
 
     #[test]
     fn default_is_dark() {
-        assert_eq!(VizTheme::default().background, VizTheme::dark().background);
+        assert_eq!(FigureTheme::default().background, FigureTheme::dark().background);
     }
 }

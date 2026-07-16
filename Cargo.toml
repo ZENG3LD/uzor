@@ -47,8 +47,8 @@ members = [
     "uzor-graph",
     # Headless render-to-file (PNG export, no window/GPU dependency)
     "uzor-export",
-    # Data-visualization engine core (scales/coord/marks/guides/figures)
-    "uzor-viz",
+    # Data-figure engine core (scales/coord/marks/guides/figures)
+    "uzor-figures",
     # Pretext-pattern text layout engine (Arc 2 — plain text Phase 1)
     "uzor-text",
     # Layered demos

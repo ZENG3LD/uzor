@@ -17,7 +17,7 @@
 use uzor::render::{RenderContext, TextAlign, TextBaseline};
 use uzor::types::Rect;
 
-use crate::theme::VizTheme;
+use crate::theme::FigureTheme;
 
 const PAD: f64 = 8.0;
 const ROW_GAP: f64 = 2.0;
@@ -29,7 +29,7 @@ const TOOLTIP_ALPHA: f64 = 0.94;
 /// Draw a `lines`-row tooltip box near `anchor_px`, staying inside
 /// `bounds` (flips left instead of right, and clamps vertically, when it
 /// would otherwise overflow). No-op for empty `lines`.
-pub fn draw_tooltip(ctx: &mut dyn RenderContext, theme: &VizTheme, anchor_px: (f64, f64), lines: &[(String, String)], bounds: Rect) {
+pub fn draw_tooltip(ctx: &mut dyn RenderContext, theme: &FigureTheme, anchor_px: (f64, f64), lines: &[(String, String)], bounds: Rect) {
     if lines.is_empty() {
         return;
     }

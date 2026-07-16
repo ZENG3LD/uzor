@@ -1,6 +1,6 @@
 //! Kinetics: two-[`crate::layout::ParagraphLayout`] position/opacity
 //! morph (Arc 2 Phase 3 of
-//! `nemo/docs/uzor-viz/uzor_text_arc2_design.md`).
+//! `nemo/docs/uzor-engines/uzor_text_arc2_design.md`).
 //!
 //! Scope, exactly as fixed by the design doc's §4 Phase 3: the
 //! **resize-morph** case — the same paragraph laid out twice at two

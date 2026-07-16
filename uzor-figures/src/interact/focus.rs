@@ -4,7 +4,7 @@
 //! instead of three parallel, drifting implementations" idea (engine
 //! design doc §4.3), keyed by a plain `u64` instead of graph's
 //! `NodeIndex`/`EdgeIndex` — a figure casts its own row/category/point
-//! index to `u64`, since uzor-viz has no node-link identity type of its
+//! index to `u64`, since uzor-figures has no node-link identity type of its
 //! own (that stays in `uzor-graph`; re-pointing `uzor-graph::FocusSet`
 //! onto this one is a later, separate arc — not done here).
 //!

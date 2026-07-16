@@ -1,6 +1,6 @@
 //! Plot-area coordinate transform — the ONE mapping from scale-normalized
 //! `[0, 1]` to screen pixels that every mark and (future) hit-test goes
-//! through (design law #1, `uzor_viz_engine_architecture.md` §4.1). Never
+//! through (design law #1, `uzor_figures_engine_architecture.md` §4.1). Never
 //! recompute a pixel position independently elsewhere in this crate.
 //!
 //! Zoom/pan/interaction are out of scope for V1 — [`PlotArea`] is a plain

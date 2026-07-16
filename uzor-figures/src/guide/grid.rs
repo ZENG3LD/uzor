@@ -9,10 +9,10 @@ use uzor::render::RenderContext;
 
 use crate::coord::PlotArea;
 use crate::scale::Scale;
-use crate::theme::VizTheme;
+use crate::theme::FigureTheme;
 
 /// Vertical grid lines at each x-axis tick.
-pub fn draw_x_grid(ctx: &mut dyn RenderContext, area: &PlotArea, scale: &dyn Scale, theme: &VizTheme, target_ticks: usize) {
+pub fn draw_x_grid(ctx: &mut dyn RenderContext, area: &PlotArea, scale: &dyn Scale, theme: &FigureTheme, target_ticks: usize) {
     let ticks = scale.ticks(target_ticks);
     if ticks.is_empty() {
         return;
@@ -30,7 +30,7 @@ pub fn draw_x_grid(ctx: &mut dyn RenderContext, area: &PlotArea, scale: &dyn Sca
 }
 
 /// Horizontal grid lines at each y-axis tick.
-pub fn draw_y_grid(ctx: &mut dyn RenderContext, area: &PlotArea, scale: &dyn Scale, theme: &VizTheme, target_ticks: usize) {
+pub fn draw_y_grid(ctx: &mut dyn RenderContext, area: &PlotArea, scale: &dyn Scale, theme: &FigureTheme, target_ticks: usize) {
     let ticks = scale.ticks(target_ticks);
     if ticks.is_empty() {
         return;

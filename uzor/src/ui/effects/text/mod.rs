@@ -13,7 +13,7 @@
 //!
 //! The ASCII cell-shader engine (`AsciiGrid`/`CellShader`/`GlitchLetter`,
 //! formerly `cell_shader` here) moved to `uzor-text::ascii` in Arc 2 Phase 4
-//! (`nemo/docs/uzor-viz/uzor_text_arc2_design.md` §4) — a hard cutover, no
+//! (`nemo/docs/uzor-engines/uzor_text_arc2_design.md` §4) — a hard cutover, no
 //! compat shim left in core. Consumers: `use uzor_text::ascii::{...}`.
 
 pub mod shiny;

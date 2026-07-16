@@ -7,13 +7,13 @@ use uzor::render::RenderContext;
 use uzor::types::Rect;
 
 use crate::coord::PlotArea;
-use crate::figure::VizOverlay;
+use crate::figure::FigureOverlay;
 use crate::guide::{axis, grid};
 use crate::mark::rect::draw_bars;
 use crate::mark::MarkStyle;
 use crate::scale::linear::format_value;
 use crate::scale::{BandScale, LinearScale, Scale};
-use crate::theme::VizTheme;
+use crate::theme::FigureTheme;
 
 const MARGIN_LEFT: f64 = 48.0;
 const MARGIN_RIGHT: f64 = 8.0;
@@ -102,9 +102,9 @@ impl HistogramFigure {
     }
 
     /// Render into `rect` of `ctx` using `theme`, with no overlay —
-    /// equivalent to `render_with(ctx, rect, theme, &VizOverlay::default())`.
-    pub fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &VizTheme) {
-        self.render_with(ctx, rect, theme, &VizOverlay::default());
+    /// equivalent to `render_with(ctx, rect, theme, &FigureOverlay::default())`.
+    pub fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureTheme) {
+        self.render_with(ctx, rect, theme, &FigureOverlay::default());
     }
 
     /// Render into `rect` of `ctx` using `theme`, reacting to
@@ -112,9 +112,9 @@ impl HistogramFigure {
     /// interval get redrawn in an accent color — the linked-brush half of
     /// the report's #2<->#5 shared-time-brush requirement, here linking a
     /// curve figure's drag to this figure's bins (see
-    /// [`crate::figure::VizOverlay`]). `overlay.hover_px`/`overlay.focus`
+    /// [`crate::figure::FigureOverlay`]). `overlay.hover_px`/`overlay.focus`
     /// are not consumed by this figure in V2.
-    pub fn render_with(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &VizTheme, overlay: &VizOverlay<'_>) {
+    pub fn render_with(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureTheme, overlay: &FigureOverlay<'_>) {
         ctx.set_fill_color(&theme.background);
         ctx.fill_rect(rect.x, rect.y, rect.width, rect.height);
 

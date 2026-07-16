@@ -7,7 +7,7 @@
 //! later behind the same trait).
 //!
 //! This crate currently implements **Phase 1 + Phase 2 + Phase 3 + Phase 4
-//! + Phase 5** of `nemo/docs/uzor-viz/uzor_text_arc2_design.md`: plain-text
+//! + Phase 5** of `nemo/docs/uzor-engines/uzor_text_arc2_design.md`: plain-text
 //! greedy word-wrap ([`layout_text`], Phase 1), rich multi-run spans,
 //! [`InlineBox`], and a mixed-run baseline pass ([`layout_paragraph`],
 //! Phase 2), the resize-morph kinetics ([`kinetics::build_morph`]/

@@ -19,14 +19,14 @@ use uzor::render::{RenderContext, TextAlign, TextBaseline};
 use crate::coord::PlotArea;
 use crate::mark::text::draw_label_right_aligned;
 use crate::scale::Scale;
-use crate::theme::VizTheme;
+use crate::theme::FigureTheme;
 
 const TICK_LENGTH: f64 = 4.0;
 const LABEL_GAP: f64 = 4.0;
 
 /// Draw the bottom x-axis: baseline, downward tick marks, and tick labels
 /// centered under each tick.
-pub fn draw_x_axis(ctx: &mut dyn RenderContext, area: &PlotArea, scale: &dyn Scale, theme: &VizTheme, target_ticks: usize) {
+pub fn draw_x_axis(ctx: &mut dyn RenderContext, area: &PlotArea, scale: &dyn Scale, theme: &FigureTheme, target_ticks: usize) {
     let ticks = scale.ticks(target_ticks);
     if ticks.is_empty() {
         return;
@@ -67,7 +67,7 @@ pub fn draw_x_axis(ctx: &mut dyn RenderContext, area: &PlotArea, scale: &dyn Sca
 
 /// Draw the left y-axis: baseline, leftward tick marks, and right-aligned
 /// tick labels.
-pub fn draw_y_axis(ctx: &mut dyn RenderContext, area: &PlotArea, scale: &dyn Scale, theme: &VizTheme, target_ticks: usize) {
+pub fn draw_y_axis(ctx: &mut dyn RenderContext, area: &PlotArea, scale: &dyn Scale, theme: &FigureTheme, target_ticks: usize) {
     let ticks = scale.ticks(target_ticks);
     if ticks.is_empty() {
         return;

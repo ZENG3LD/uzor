@@ -16,7 +16,7 @@ uzor-render-hub       = { workspace = true }
 uzor-render-vello-gpu = { workspace = true }
 uzor-urx-core         = { workspace = true }
 uzor-window-desktop   = { workspace = true }
-uzor-viz              = { path = "../uzor-viz" }
+uzor-figures          = { path = "../uzor-figures" }
 uzor-text             = { path = "../uzor-text" }
 uzor-export           = { path = "../uzor-export" }
 vello                 = "0.9"
@@ -47,11 +47,11 @@ path = "src/l4/dashboard.rs"
 name = "force-graph-demo"
 path = "src/l4/force_graph_demo.rs"
 
-# uzor-viz V1 figures demo — bars/curve/histogram grid, agent-driven
-# reseed/theme/export. See uzor-viz/CLAUDE.md for the crate scope.
+# uzor-figures V1 figures demo — bars/curve/histogram grid, agent-driven
+# reseed/theme/export. See uzor-figures/CLAUDE.md for the crate scope.
 [[bin]]
-name = "viz-charts-demo"
-path = "src/l4/viz_charts_demo.rs"
+name = "figures-demo"
+path = "src/l4/figures_demo.rs"
 
 # `uzor-text` Arc 2 Phase 3 kinetics demo — a fixed seeded paragraph
 # resize-morphing (yoyo loop) between a narrow and a wide max_width.

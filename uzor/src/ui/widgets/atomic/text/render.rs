@@ -61,7 +61,7 @@ pub fn draw_text(
         TextOverflow::Clip | TextOverflow::Wrap => {
             // This atomic widget stays a single-line label by design — real
             // multi-line paragraph wrap lives in `uzor-text` (see
-            // `docs/uzor-viz/uzor_text_arc2_design.md` Q2), not here. `Wrap`
+            // `docs/uzor-engines/uzor_text_arc2_design.md` Q2), not here. `Wrap`
             // falls back to clip until/unless a later arc wires this widget
             // to consume a `uzor-text` layout.
             ctx.fill_text(view.text, x, y);

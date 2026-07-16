@@ -1,11 +1,11 @@
 [package]
-name = "uzor-viz"
+name = "uzor-figures"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Data-visualization engine core for uzor — scales, plot-area coordinates, stateless mark/guide draw functions, and composed V1 figures (bar/curve/histogram)."
+description = "Data-figure engine for uzor — scales, plot-area coordinates, stateless mark/guide draw functions, and composed figures (bar/curve/histogram) over the uzor render stack."
 publish = false
 
 [dependencies]

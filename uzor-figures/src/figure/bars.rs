@@ -5,7 +5,7 @@ use uzor::render::RenderContext;
 use uzor::types::Rect;
 
 use crate::coord::PlotArea;
-use crate::figure::VizOverlay;
+use crate::figure::FigureOverlay;
 use crate::guide::{axis, grid, tooltip};
 use crate::interact::hit::{self, HitZone};
 use crate::mark::rect::draw_bars;
@@ -13,7 +13,7 @@ use crate::mark::text::draw_label_centered;
 use crate::mark::MarkStyle;
 use crate::scale::linear::{format_value, nice_step};
 use crate::scale::{BandScale, LinearScale};
-use crate::theme::VizTheme;
+use crate::theme::FigureTheme;
 
 /// Left margin for the y-axis tick labels; bottom margin for the x-axis
 /// tick labels; top margin reserved for an optional title.
@@ -92,9 +92,9 @@ impl BarFigure {
     }
 
     /// Render into `rect` of `ctx` using `theme`, with no overlay —
-    /// equivalent to `render_with(ctx, rect, theme, &VizOverlay::default())`.
-    pub fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &VizTheme) {
-        self.render_with(ctx, rect, theme, &VizOverlay::default());
+    /// equivalent to `render_with(ctx, rect, theme, &FigureOverlay::default())`.
+    pub fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureTheme) {
+        self.render_with(ctx, rect, theme, &FigureOverlay::default());
     }
 
     /// Render into `rect` of `ctx` using `theme`, reacting to `overlay`'s
@@ -102,8 +102,8 @@ impl BarFigure {
     /// brightens its fill and shows a category/value tooltip;
     /// `overlay.focus`-selected bars get a persistent accent outline.
     /// `overlay.brush` is not consumed by this figure (bars in V2 have no
-    /// brush-linked highlighting — see [`crate::figure::VizOverlay`]).
-    pub fn render_with(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &VizTheme, overlay: &VizOverlay<'_>) {
+    /// brush-linked highlighting — see [`crate::figure::FigureOverlay`]).
+    pub fn render_with(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureTheme, overlay: &FigureOverlay<'_>) {
         ctx.set_fill_color(&theme.background);
         ctx.fill_rect(rect.x, rect.y, rect.width, rect.height);
 

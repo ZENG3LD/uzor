@@ -18,9 +18,9 @@
 use uzor::render::RenderContext;
 
 use crate::coord::PlotArea;
-use crate::interact::action::{VizInputAction, VizOutputAction};
+use crate::interact::action::{FigureInputAction, FigureOutputAction};
 use crate::scale::Scale;
-use crate::theme::VizTheme;
+use crate::theme::FigureTheme;
 
 /// Width (px) of the two edge-handle bars drawn at the brush boundaries.
 const HANDLE_WIDTH: f64 = 3.0;
@@ -93,22 +93,22 @@ impl BrushState {
     /// Feed a semantic action into the brush. Only `DragStart`/`DragMove`/
     /// `DragEnd` are meaningful here — everything else is another
     /// component's concern (crosshair hover, click-select, ...) and
-    /// yields [`VizOutputAction::None`].
-    pub fn handle(&mut self, action: &VizInputAction, area: &PlotArea, scale: &dyn Scale) -> VizOutputAction {
+    /// yields [`FigureOutputAction::None`].
+    pub fn handle(&mut self, action: &FigureInputAction, area: &PlotArea, scale: &dyn Scale) -> FigureOutputAction {
         match *action {
-            VizInputAction::DragStart { x, .. } => {
+            FigureInputAction::DragStart { x, .. } => {
                 self.start(x);
-                VizOutputAction::Redraw
+                FigureOutputAction::Redraw
             }
-            VizInputAction::DragMove { x, .. } if self.active => {
+            FigureInputAction::DragMove { x, .. } if self.active => {
                 self.update(x);
-                VizOutputAction::BrushChanged { interval: self.domain_interval(area, scale) }
+                FigureOutputAction::BrushChanged { interval: self.domain_interval(area, scale) }
             }
-            VizInputAction::DragEnd { x, .. } if self.active => {
+            FigureInputAction::DragEnd { x, .. } if self.active => {
                 self.update(x);
-                VizOutputAction::BrushChanged { interval: self.domain_interval(area, scale) }
+                FigureOutputAction::BrushChanged { interval: self.domain_interval(area, scale) }
             }
-            _ => VizOutputAction::None,
+            _ => FigureOutputAction::None,
         }
     }
 }
@@ -117,7 +117,7 @@ impl BrushState {
 /// `[anchor_px, current_px]` across the plot's full height, plus two thin
 /// edge-handle bars at the selection boundaries. No-op when `state` is
 /// inactive.
-pub fn draw_brush_overlay(ctx: &mut dyn RenderContext, area: &PlotArea, state: &BrushState, theme: &VizTheme) {
+pub fn draw_brush_overlay(ctx: &mut dyn RenderContext, area: &PlotArea, state: &BrushState, theme: &FigureTheme) {
     if !state.active {
         return;
     }
@@ -182,21 +182,21 @@ mod tests {
         let scale = LinearScale::new(0.0, 100.0);
         let mut brush = BrushState::default();
 
-        let out = brush.handle(&VizInputAction::DragStart { x: 50.0, y: 0.0 }, &a, &scale);
-        assert_eq!(out, VizOutputAction::Redraw);
+        let out = brush.handle(&FigureInputAction::DragStart { x: 50.0, y: 0.0 }, &a, &scale);
+        assert_eq!(out, FigureOutputAction::Redraw);
         assert!(brush.is_active());
 
-        let out = brush.handle(&VizInputAction::DragMove { x: 150.0, y: 0.0 }, &a, &scale);
+        let out = brush.handle(&FigureInputAction::DragMove { x: 150.0, y: 0.0 }, &a, &scale);
         match out {
-            VizOutputAction::BrushChanged { interval: Some((d0, d1)) } => {
+            FigureOutputAction::BrushChanged { interval: Some((d0, d1)) } => {
                 assert!((d0 - 25.0).abs() < 1e-9);
                 assert!((d1 - 75.0).abs() < 1e-9);
             }
             other => panic!("expected BrushChanged with an interval, got {other:?}"),
         }
 
-        let out = brush.handle(&VizInputAction::DragEnd { x: 150.0, y: 0.0 }, &a, &scale);
-        assert!(matches!(out, VizOutputAction::BrushChanged { interval: Some(_) }));
+        let out = brush.handle(&FigureInputAction::DragEnd { x: 150.0, y: 0.0 }, &a, &scale);
+        assert!(matches!(out, FigureOutputAction::BrushChanged { interval: Some(_) }));
         assert!(brush.is_active(), "selection persists after drag end");
     }
 
@@ -205,8 +205,8 @@ mod tests {
         let a = area();
         let scale = LinearScale::new(0.0, 100.0);
         let mut brush = BrushState::default();
-        let out = brush.handle(&VizInputAction::Hover { x: 10.0, y: 10.0 }, &a, &scale);
-        assert_eq!(out, VizOutputAction::None);
+        let out = brush.handle(&FigureInputAction::Hover { x: 10.0, y: 10.0 }, &a, &scale);
+        assert_eq!(out, FigureOutputAction::None);
         assert!(!brush.is_active());
     }
 
@@ -215,8 +215,8 @@ mod tests {
         let a = area();
         let scale = LinearScale::new(0.0, 100.0);
         let mut brush = BrushState::default();
-        let out = brush.handle(&VizInputAction::DragMove { x: 50.0, y: 0.0 }, &a, &scale);
-        assert_eq!(out, VizOutputAction::None);
+        let out = brush.handle(&FigureInputAction::DragMove { x: 50.0, y: 0.0 }, &a, &scale);
+        assert_eq!(out, FigureOutputAction::None);
         assert!(!brush.is_active());
     }
 }

@@ -15,7 +15,7 @@
 //!
 //! Moved verbatim from `uzor` core (`uzor::ui::effects::text::cell_shader`)
 //! as Arc 2 Phase 4's hard cutover
-//! (`nemo/docs/uzor-viz/uzor_text_arc2_design.md` §4) — algorithm unchanged,
+//! (`nemo/docs/uzor-engines/uzor_text_arc2_design.md` §4) — algorithm unchanged,
 //! only the `RenderContext`/`TextAlign`/`TextBaseline` import moved from
 //! `crate::render` (uzor core, in-crate) to `uzor::render` (this crate
 //! consumes uzor core as a dependency). [`super::ParagraphAsciiShader`] is

@@ -6,7 +6,7 @@
 //! then PNG-encoded and returned as bytes or written to disk.
 //!
 //! This is the first brick of the uzor data-viz / document engine space
-//! (see `nemo/docs/uzor-viz/uzor_engine_space_map.md`): headless export is
+//! (see `nemo/docs/uzor-engines/uzor_engine_space_map.md`): headless export is
 //! how uzor content becomes a report/document delivery artifact, and how a
 //! CI job can verify rendering output pixel-for-pixel without a display or
 //! GPU (Tier-2 verification tool).

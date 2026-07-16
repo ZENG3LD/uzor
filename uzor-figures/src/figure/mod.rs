@@ -1,8 +1,8 @@
 //! Composed figures — thin, in-crate compositions of scale + coord + mark
 //! + guide. Each figure is a pure `render(&self, ctx, rect, theme)` (V1)
-//! or `render_with(&self, ctx, rect, theme, overlay: &VizOverlay)` (V2)
+//! or `render_with(&self, ctx, rect, theme, overlay: &FigureOverlay)` (V2)
 //! over borrowed data; a figure never retains interaction state itself —
-//! [`VizOverlay`] is borrowed per-frame input, not owned (design law #3).
+//! [`FigureOverlay`] is borrowed per-frame input, not owned (design law #3).
 //! A real registry/IR (mlc's `ChartTypeDef`+`DrawOps` two-table pattern)
 //! is a later milestone — see the crate-root docs.
 
@@ -18,14 +18,14 @@ use uzor::render::{RenderContext, TextAlign, TextBaseline};
 use uzor::types::Rect;
 
 use crate::interact::focus::FocusSet;
-use crate::theme::VizTheme;
+use crate::theme::FigureTheme;
 
 /// Borrowed per-frame interaction state a figure may optionally react to.
 /// The default (`hover_px: None, brush: None, focus: None`) reproduces
 /// exactly the old stateless V1 render — `render(ctx, rect, theme)` is
-/// literally `render_with(ctx, rect, theme, &VizOverlay::default())`.
+/// literally `render_with(ctx, rect, theme, &FigureOverlay::default())`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct VizOverlay<'a> {
+pub struct FigureOverlay<'a> {
     /// Cursor position in the SAME absolute pixel space as the `rect`
     /// passed to `render_with`. A figure hit-tests this against its own
     /// [`crate::coord::PlotArea`] internally (via
@@ -48,7 +48,7 @@ pub struct VizOverlay<'a> {
 
 /// Shared title-bar draw shared by every figure in this module — top-left,
 /// one line, `theme.label_font`/`theme.label_color`.
-pub(crate) fn draw_title(ctx: &mut dyn RenderContext, rect: Rect, title: &str, theme: &VizTheme) {
+pub(crate) fn draw_title(ctx: &mut dyn RenderContext, rect: Rect, title: &str, theme: &FigureTheme) {
     ctx.set_font(&theme.label_font);
     ctx.set_fill_color(&theme.label_color);
     ctx.set_text_align(TextAlign::Left);

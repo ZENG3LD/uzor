@@ -2,7 +2,7 @@
 //!
 //! Arc 2 Phase 3 proof-of-life for `uzor_text::kinetics`
 //! (`build_morph`/`sample`/`sample_layout`, see
-//! `nemo/docs/uzor-viz/uzor_text_arc2_design.md` §4 Phase 3 and
+//! `nemo/docs/uzor-engines/uzor_text_arc2_design.md` §4 Phase 3 and
 //! `uzor-text/CLAUDE.md`'s "Phase 3" section for the exact API + its
 //! divergences from the doc's own sketch). One fixed seeded paragraph,
 //! laid out at a narrow and a wide `max_width`, continuously morphing

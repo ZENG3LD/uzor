@@ -1,9 +1,9 @@
-//! # `uzor-viz` figures demo — bars / curve / histogram in one window
+//! # `uzor-figures` demo — bars / curve / histogram in one window
 //!
 //! Renders three deterministic, seeded synthetic datasets through the
-//! three `uzor-viz` figures (`BarFigure`, `CurveFigure`,
+//! three `uzor-figures` figures (`BarFigure`, `CurveFigure`,
 //! `HistogramFigure`) inside a real uzor window, and wires the V2
-//! interaction plane (`nemo/docs/uzor-viz/uzor_viz_engine_architecture.md`
+//! interaction plane (`nemo/docs/uzor-engines/uzor_figures_engine_architecture.md`
 //! §3 `interact/` block): hover a bar or a point on the curve for a
 //! tooltip, drag on the curve panel to brush an X range — the brush
 //! interval LINKS to the histogram panel, which highlights bins whose
@@ -20,28 +20,28 @@
 //!
 //! Run:
 //! ```sh
-//! cargo run -p uzor-examples --bin viz-charts-demo
+//! cargo run -p uzor-examples --bin figures-demo
 //! ```
 //!
-//! Agent-api control surface, port 17482 — `slot_id = "viz-charts"`:
+//! Agent-api control surface, port 17482 — `slot_id = "figures"`:
 //!
-//! - `GET  /blackbox/viz-charts/state` — same shape as the `snapshot` action
-//! - `POST /blackbox/viz-charts/action {"name":"reseed","args":{"seed":42}}`
+//! - `GET  /blackbox/figures/state` — same shape as the `snapshot` action
+//! - `POST /blackbox/figures/action {"name":"reseed","args":{"seed":42}}`
 //!   — regenerate all three datasets from `seed` (also clears hover/brush/
 //!   selection)
-//! - `POST /blackbox/viz-charts/action {"name":"set_theme","args":{"theme":"light"}}`
-//!   — swap the `VizTheme` (`"dark"` or `"light"`)
-//! - `POST /blackbox/viz-charts/action {"name":"set_hover","args":{"x":640.0,"y":400.0}}`
+//! - `POST /blackbox/figures/action {"name":"set_theme","args":{"theme":"light"}}`
+//!   — swap the `FigureTheme` (`"dark"` or `"light"`)
+//! - `POST /blackbox/figures/action {"name":"set_hover","args":{"x":640.0,"y":400.0}}`
 //!   — inject a synthetic hover position (absolute window pixels) —
 //!   Tier-2 verification without a real mouse
-//! - `POST /blackbox/viz-charts/action {"name":"set_brush","args":{"x0":20.0,"x1":60.0}}`
+//! - `POST /blackbox/figures/action {"name":"set_brush","args":{"x0":20.0,"x1":60.0}}`
 //!   — inject a synthetic linked-brush domain interval
-//! - `POST /blackbox/viz-charts/action {"name":"export_png","args":{"path":"out/custom.png"}}`
+//! - `POST /blackbox/figures/action {"name":"export_png","args":{"path":"out/custom.png"}}`
 //!   — headless-render the CURRENT 3-panel frame (with current
 //!   hover/brush/selection state) at the current window size via
 //!   `uzor_export::render_to_png_file`; `path` is optional (defaults to
-//!   `uzor/out/viz_demo_export.png`); the reply carries the written path
-//! - `POST /blackbox/viz-charts/action {"name":"snapshot"}` — JSON
+//!   `uzor/out/figures_demo_export.png`); the reply carries the written path
+//! - `POST /blackbox/figures/action {"name":"snapshot"}` — JSON
 //!   summary: seed, theme name, dataset sizes, panel rects, current
 //!   hover/brush/bars-selection state
 
@@ -62,13 +62,13 @@ use uzor::types::Rect;
 use uzor_desktop::AppRun as _;
 
 use uzor_export::ExportSpec;
-use uzor_viz::interact::hit;
-use uzor_viz::{
-    BarFigure, BrushState, CurveFigure, FocusSet, HistogramFigure, HitZone, HoverInfo, SelectionBus, VizInputAction, VizOutputAction, VizOverlay, VizTheme,
+use uzor_figures::interact::hit;
+use uzor_figures::{
+    BarFigure, BrushState, CurveFigure, FocusSet, HistogramFigure, HitZone, HoverInfo, SelectionBus, FigureInputAction, FigureOutputAction, FigureOverlay, FigureTheme,
 };
 
 const AGENT_PORT: u16 = 17482;
-const BLACKBOX_SLOT: &str = "viz-charts";
+const BLACKBOX_SLOT: &str = "figures";
 
 /// Fixed default seed — every dataset is reproducible until the agent
 /// calls `reseed`.
@@ -185,7 +185,7 @@ enum PointerCapture {
 /// surface can be locked from the HTTP thread.
 struct DemoState {
     seed: u64,
-    theme: VizTheme,
+    theme: FigureTheme,
     theme_name: &'static str,
     categories: Vec<String>,
     bar_values: Vec<f64>,
@@ -196,7 +196,7 @@ struct DemoState {
     last_frame_size: (f64, f64),
 
     /// Cross-figure interaction state (V2) — hover position + linked
-    /// brush interval. Read by `draw_frame` via `VizOverlay`, written by
+    /// brush interval. Read by `draw_frame` via `FigureOverlay`, written by
     /// pointer routing below (and by the `set_hover`/`set_brush` agent
     /// actions).
     bus: SelectionBus,
@@ -221,7 +221,7 @@ impl DemoState {
     fn new(seed: u64) -> Self {
         let mut state = Self {
             seed,
-            theme: VizTheme::dark(),
+            theme: FigureTheme::dark(),
             theme_name: "dark",
             categories: Vec::new(),
             bar_values: Vec::new(),
@@ -263,12 +263,12 @@ impl DemoState {
     fn set_theme(&mut self, name: &str) -> bool {
         match name {
             "dark" => {
-                self.theme = VizTheme::dark();
+                self.theme = FigureTheme::dark();
                 self.theme_name = "dark";
                 true
             }
             "light" => {
-                self.theme = VizTheme::light();
+                self.theme = FigureTheme::light();
                 self.theme_name = "light";
                 true
             }
@@ -337,11 +337,11 @@ impl DemoState {
 
     // ── Pointer routing (V2) ────────────────────────────────────────
     //
-    // Raw `PlatformEvent`s -> semantic `VizInputAction`s -> per-panel
+    // Raw `PlatformEvent`s -> semantic `FigureInputAction`s -> per-panel
     // handler (`BrushState`/`FocusSet`) -> `SelectionBus`. Mirrors
     // `uzor-graph::GraphEngine::on_event`'s shape (eager capture on
     // pointer-down, `drag_total` decides click vs. drag at release) —
-    // this demo's own app-level composition, not part of the `uzor-viz`
+    // this demo's own app-level composition, not part of the `uzor-figures`
     // engine itself (design doc's own "app-glued, not engine" boundary).
 
     fn handle_platform_event(&mut self, event: &PlatformEvent) -> bool {
@@ -363,7 +363,7 @@ impl DemoState {
             self.capture = PointerCapture::Curve;
             if let Some(x_scale) = build_curve_figure(self.curve_points.clone()).x_scale() {
                 let area = build_curve_figure(self.curve_points.clone()).plot_area(curve_rect);
-                let _ = self.curve_brush.handle(&VizInputAction::DragStart { x, y }, &area, &x_scale);
+                let _ = self.curve_brush.handle(&FigureInputAction::DragStart { x, y }, &area, &x_scale);
             }
             return true;
         }
@@ -386,7 +386,7 @@ impl DemoState {
             let (_bars_rect, _histogram_rect, curve_rect) = self.panel_rects_now();
             if let Some(x_scale) = build_curve_figure(self.curve_points.clone()).x_scale() {
                 let area = build_curve_figure(self.curve_points.clone()).plot_area(curve_rect);
-                if let VizOutputAction::BrushChanged { interval } = self.curve_brush.handle(&VizInputAction::DragMove { x, y }, &area, &x_scale) {
+                if let FigureOutputAction::BrushChanged { interval } = self.curve_brush.handle(&FigureInputAction::DragMove { x, y }, &area, &x_scale) {
                     self.bus.set_brush(interval);
                 }
             }
@@ -401,14 +401,14 @@ impl DemoState {
             PointerCapture::Curve => {
                 if let Some(x_scale) = build_curve_figure(self.curve_points.clone()).x_scale() {
                     let area = build_curve_figure(self.curve_points.clone()).plot_area(curve_rect);
-                    let out = self.curve_brush.handle(&VizInputAction::DragEnd { x, y }, &area, &x_scale);
+                    let out = self.curve_brush.handle(&FigureInputAction::DragEnd { x, y }, &area, &x_scale);
                     if self.drag_total < CLICK_DRAG_THRESHOLD_PX {
                         // Too small a move to count as a brush drag —
                         // clear it so a plain click on the curve doesn't
                         // leave a phantom zero-width selection.
                         self.curve_brush.clear();
                         self.bus.set_brush(None);
-                    } else if let VizOutputAction::BrushChanged { interval } = out {
+                    } else if let FigureOutputAction::BrushChanged { interval } = out {
                         self.bus.set_brush(interval);
                     }
                 }
@@ -443,14 +443,14 @@ fn rect_json(r: Rect) -> Value {
 
 /// `uzor/out/` — the shared human-eyeball drop point every headless
 /// proof render in this workspace writes into (same directory
-/// `uzor-viz`'s own proof tests use). Resolved relative to this crate's
+/// `uzor-figures`'s own proof tests use). Resolved relative to this crate's
 /// manifest dir so it doesn't hardcode a user-specific absolute path.
 fn workspace_out_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("out")
 }
 
 fn default_export_path() -> PathBuf {
-    workspace_out_dir().join("viz_demo_export.png")
+    workspace_out_dir().join("figures_demo_export.png")
 }
 
 // ── BlackboxAgentSurface ─────────────────────────────────────────────
@@ -461,7 +461,7 @@ impl BlackboxAgentSurface for DemoState {
     }
 
     fn agent_kind(&self) -> &str {
-        "viz-charts"
+        "figures"
     }
 
     fn agent_state(&self) -> Value {
@@ -545,15 +545,15 @@ fn draw_frame(ctx: &mut dyn RenderContext, w: f64, h: f64, state: &DemoState) {
     let hover_px = state.bus.hover.map(|h| (h.x, h.y));
 
     let bars = build_bar_figure(state.categories.clone(), state.bar_values.clone());
-    let bars_overlay = VizOverlay { hover_px, brush: None, focus: Some(&state.bars_focus) };
+    let bars_overlay = FigureOverlay { hover_px, brush: None, focus: Some(&state.bars_focus) };
     bars.render_with(ctx, bars_rect, &state.theme, &bars_overlay);
 
     let histogram = build_histogram_figure(state.hist_samples.clone());
-    let histogram_overlay = VizOverlay { hover_px: None, brush: state.bus.brush, focus: None };
+    let histogram_overlay = FigureOverlay { hover_px: None, brush: state.bus.brush, focus: None };
     histogram.render_with(ctx, histogram_rect, &state.theme, &histogram_overlay);
 
     let curve = build_curve_figure(state.curve_points.clone());
-    let curve_overlay = VizOverlay { hover_px, brush: None, focus: None };
+    let curve_overlay = FigureOverlay { hover_px, brush: None, focus: None };
     curve.render_with(ctx, curve_rect, &state.theme, &curve_overlay);
 }
 
@@ -605,7 +605,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     AppBuilder::new(DemoApp::new())
         .agent_api(AGENT_PORT)
         .window(
-            WindowSpec::new(WindowKey::new("main"), "uzor-viz — charts demo")
+            WindowSpec::new(WindowKey::new("main"), "uzor-figures — figures demo")
                 .size(1280, 800)
                 .min_size(960, 600)
                 .decorations(false)
@@ -628,7 +628,7 @@ mod tests {
 
     /// Proves `draw_frame` works headlessly end-to-end (no window, no
     /// GPU) — the same function the live app uses. Writes the result to
-    /// `uzor/out/viz_demo_frame.png` for a human to eyeball.
+    /// `uzor/out/figures_demo_frame.png` for a human to eyeball.
     #[test]
     fn draw_frame_renders_headlessly_to_a_valid_png() {
         let state = DemoState::new(DEFAULT_SEED);
@@ -640,14 +640,14 @@ mod tests {
 
         let dir = workspace_out_dir();
         std::fs::create_dir_all(&dir).expect("create uzor/out/ proof directory");
-        std::fs::write(dir.join("viz_demo_frame.png"), &bytes).expect("write proof PNG");
+        std::fs::write(dir.join("figures_demo_frame.png"), &bytes).expect("write proof PNG");
     }
 
     /// Proves `draw_frame` also renders correctly with a SYNTHETIC
     /// interaction state (hover + linked brush) injected directly into
     /// the `SelectionBus` — exactly what the `set_hover`/`set_brush`
     /// agent actions do, verified here without an HTTP round-trip.
-    /// Writes `uzor/out/viz_demo_frame_interactive.png`.
+    /// Writes `uzor/out/figures_demo_frame_interactive.png`.
     #[test]
     fn draw_frame_with_synthetic_interaction_state_renders_to_a_valid_png() {
         let mut state = DemoState::new(DEFAULT_SEED);
@@ -662,6 +662,6 @@ mod tests {
 
         let dir = workspace_out_dir();
         std::fs::create_dir_all(&dir).expect("create uzor/out/ proof directory");
-        std::fs::write(dir.join("viz_demo_frame_interactive.png"), &bytes).expect("write proof PNG");
+        std::fs::write(dir.join("figures_demo_frame_interactive.png"), &bytes).expect("write proof PNG");
     }
 }

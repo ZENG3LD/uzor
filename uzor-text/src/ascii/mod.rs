@@ -1,5 +1,5 @@
 //! ASCII cell-shader mode (Arc 2 Phase 4 of
-//! `nemo/docs/uzor-viz/uzor_text_arc2_design.md`) — a character-grid
+//! `nemo/docs/uzor-engines/uzor_text_arc2_design.md`) — a character-grid
 //! per-cell-shader engine, absorbed **verbatim** from `uzor` core
 //! (`uzor::ui::effects::text::cell_shader`, hard cutover, §4 Phase 4: no
 //! compat shim left behind in core).

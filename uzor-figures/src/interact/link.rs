@@ -2,7 +2,7 @@
 //! otherwise-independent figures in a multi-panel layout (engine design
 //! doc §3, "linked hover/brush across figures"; the report's #2<->#5
 //! shared-time-brush requirement). A plain struct: figures read it via
-//! [`crate::figure::VizOverlay`] each frame, a demo/app's input routing
+//! [`crate::figure::FigureOverlay`] each frame, a demo/app's input routing
 //! writes it. No channels, no async — the same per-frame "borrowed
 //! snapshot, nothing retained across frames beyond this small bit of
 //! state" discipline every other draw function in this crate follows

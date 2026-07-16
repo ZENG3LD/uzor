@@ -13,7 +13,7 @@ use uzor::render::{RenderContext, TextAlign, TextBaseline};
 
 use crate::coord::PlotArea;
 use crate::scale::Scale;
-use crate::theme::VizTheme;
+use crate::theme::FigureTheme;
 
 const DASH_PATTERN: [f64; 2] = [4.0, 3.0];
 const LABEL_PAD: f64 = 3.0;
@@ -36,7 +36,7 @@ fn axis_step(scale: &dyn Scale) -> f64 {
 /// line spanning the plot's full height, a dashed horizontal line spanning
 /// its full width, and small cursor labels on each axis. No-op if the
 /// resolved screen position falls outside `area`'s own plot rect.
-pub fn draw_crosshair(ctx: &mut dyn RenderContext, area: &PlotArea, theme: &VizTheme, data_x: f64, data_y: f64, xscale: &dyn Scale, yscale: &dyn Scale) {
+pub fn draw_crosshair(ctx: &mut dyn RenderContext, area: &PlotArea, theme: &FigureTheme, data_x: f64, data_y: f64, xscale: &dyn Scale, yscale: &dyn Scale) {
     let x = area.x(xscale, data_x);
     let y = area.y(yscale, data_y);
     if x < area.rect.x || x > area.rect.right() || y < area.rect.y || y > area.rect.bottom() {

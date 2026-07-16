@@ -1,5 +1,5 @@
 //! Axis/grid/crosshair/tooltip guides — read [`crate::scale::Scale::ticks`]
-//! and [`crate::theme::VizTheme`], draw through the same
+//! and [`crate::theme::FigureTheme`], draw through the same
 //! [`crate::coord::PlotArea`] transform every mark uses.
 //!
 //! `crosshair`/`tooltip` are the V2 interaction-plane additions (design
