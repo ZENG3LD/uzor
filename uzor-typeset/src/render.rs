@@ -34,6 +34,7 @@ use uzor::types::Rect;
 use uzor_figures::FigureTheme;
 use uzor_text::draw_paragraph;
 
+use crate::kinetics::FrameBlockState;
 use crate::region::{ListPlacement, PlacedBlock, TablePlacement};
 use crate::scene::Block;
 use crate::slice::{Card, Page, PageNumberPlacement, Slide};
@@ -131,6 +132,41 @@ pub fn draw_slide(ctx: &mut dyn RenderContext, slide: &Slide<'_>, theme: &Theme)
     for placed in &slide.frame.blocks {
         draw_placed_block(ctx, placed, &default_color, &figure_theme);
     }
+    ctx.restore();
+}
+
+/// Paint one [`FrameBlockState`] — [`crate::kinetics::FrameMorph::
+/// sample`]'s own per-block drawable output (design doc §4.3's morph
+/// sampling, Arc 4 Phase P4). Reuses [`draw_placed_block`] UNCHANGED
+/// (design law 1: one paint path) by reconstructing the temporary
+/// [`PlacedBlock`] shape it expects, wrapped in a single `Painter::
+/// {save,set_global_alpha,restore}` bracket for `state.opacity` — the
+/// SAME existing alpha primitive [`draw_slide`]'s own shrink-scale
+/// wrapping already uses (never a new opacity-painting seam), confirmed
+/// (by inspection of `uzor-render-tiny-skia/src/context.rs`) to reach
+/// every block kind's own fill/stroke/text color through that backend's
+/// `effective_fill_color`/`effective_stroke_color`, and to survive a
+/// `Block::Figure`'s own internal `render_with` call under the default,
+/// no-hover/no-focus `FigureOverlay` this crate's `TypesetFigure` blanket
+/// impls always pass (the ONLY paths inside `uzor-figures` that reset
+/// `set_global_alpha(1.0)` mid-draw are hover-highlight/focus-outline
+/// branches, which `FigureOverlay::default()` never enters).
+pub fn draw_frame_state(ctx: &mut dyn RenderContext, state: &FrameBlockState<'_>, theme: &Theme) {
+    let default_color = theme.color_hex(ColorRole::Ink);
+    let figure_theme = theme.figure_theme();
+
+    let placed = PlacedBlock {
+        id: state.id,
+        rect: state.rect,
+        kind: state.kind,
+        paragraph_layout: state.paragraph_layout.clone(),
+        table_placement: state.table_placement.clone(),
+        list_placement: state.list_placement.clone(),
+    };
+
+    ctx.save();
+    ctx.set_global_alpha(state.opacity as f64);
+    draw_placed_block(ctx, &placed, &default_color, &figure_theme);
     ctx.restore();
 }
 
@@ -238,7 +274,7 @@ mod tests {
     use uzor_export::{render_to_png, ExportSpec};
     use uzor_text::{BreakStrategy, CosmicShaper, FontSpec, Hyphenation, Paragraph, ParagraphAlign, StyledRun};
 
-    use super::{draw_card, draw_page, draw_slide};
+    use super::{draw_card, draw_frame_state, draw_page, draw_slide};
     use crate::compose::ComposeStyle;
     use crate::scene::{Block, BlockNode};
     use crate::slice::{slice_pages, Margins, PageMaster};
@@ -813,6 +849,142 @@ mod tests {
                 "draw_slide must paint its own opaque background across the WHOLE fixed viewport"
             );
             write_proof_png(&format!("typeset_p3_slide{i}.png"), &bytes);
+        }
+    }
+
+    /// P4 headless proof (design law 8 + this arc's own build-steps ask):
+    /// a fixed seeded 2-build-step slide — a title (stays fixed the whole
+    /// time), a `BarFigure` (present in both steps, but explicitly
+    /// overridden to sit narrow-and-right in step 0, natural-and-left in
+    /// step 1 — "moves right -> left"), and a bulleted list (present ONLY
+    /// in step 1 -> fades in) — sliced via [`crate::slice::
+    /// slice_build_steps`], morphed via [`crate::kinetics::
+    /// build_frame_morph`], and sampled/painted at `t = 0.0 / 0.5 / 1.0` to
+    /// `uzor/out/typeset_p4_morph_t{0,05,1}.png`.
+    #[test]
+    fn build_step_morph_proof_strip_title_stays_figure_slides_left_list_fades_in() {
+        use uzor::types::Rect;
+        use uzor_figures::BarFigure;
+
+        use crate::kinetics::build_frame_morph;
+        use crate::scene::{BlockId, BlockSizing, FigureBlock, ListBlock, ListItem, MarkerStyle};
+        use crate::slice::{slice_build_steps, BlockOverride, BuildStep};
+
+        const DECK_WIDTH: f64 = 960.0;
+        const DECK_HEIGHT: f64 = 540.0;
+        const MARGIN: f64 = 40.0;
+
+        const TITLE_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 30.0, bold: true, italic: false };
+        const BULLET_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 18.0, bold: false, italic: false };
+
+        let title_id = BlockId(1);
+        let figure_id = BlockId(2);
+        let list_id = BlockId(3);
+
+        let title_run = [StyledRun::new("Build Steps — uzor-typeset P4 Proof", TITLE_FONT)];
+        let bar_figure = BarFigure::new(
+            vec!["Hop 1".to_owned(), "Hop 2".to_owned(), "Hop 3".to_owned()],
+            vec![128_500.0, 640_000.0, 300_000.0],
+        )
+        .with_title("Observed amount per hop (seeded)");
+
+        let li1_run = [StyledRun::new("First reveal bullet.", BULLET_FONT)];
+        let li1_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&li1_run, f64::MAX)))];
+        let li2_run = [StyledRun::new("Second reveal bullet.", BULLET_FONT)];
+        let li2_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&li2_run, f64::MAX)))];
+        let list_items = [ListItem::new(&li1_nodes), ListItem::new(&li2_nodes)];
+
+        // Compose into a MARGIN-inset "body" region (matching this crate's
+        // own page-margin convention elsewhere) — painted translated by
+        // `(MARGIN, MARGIN)` below, so every rect this fixture computes
+        // (including the "right" override) is in body-LOCAL coordinates.
+        let body_width = DECK_WIDTH - 2.0 * MARGIN;
+        let body_height = DECK_HEIGHT - 2.0 * MARGIN;
+
+        let flow = vec![
+            BlockNode::new(Block::Paragraph(Paragraph::new(&title_run, body_width))).with_id(title_id),
+            BlockNode::new(Block::Spacer(20.0)),
+            BlockNode::new(Block::Figure(FigureBlock::new(&bar_figure, BlockSizing::FixedHeight(220.0)))).with_id(figure_id),
+            BlockNode::new(Block::Spacer(20.0)),
+            BlockNode::new(Block::List(ListBlock::new(&list_items, MarkerStyle::Bullet('•'), 24.0))).with_id(list_id),
+        ];
+
+        let style = ComposeStyle::new(10.0, BULLET_FONT);
+        let shaper = CosmicShaper::headless();
+
+        // Probe: compose the WHOLE flow once (every block visible, no
+        // overrides) purely to learn the figure's own NATURAL (left-
+        // aligned) rect — the step-0 override below shifts it right of
+        // that, never a hand-picked number independent of what
+        // `compose()` actually produces.
+        let probe_visible = [title_id, figure_id, list_id];
+        let probe_step = BuildStep::new(&probe_visible, &[]);
+        let probe = slice_build_steps(&flow, std::slice::from_ref(&probe_step), body_width, body_height, &style, &shaper);
+        let natural_figure_rect =
+            probe[0].blocks.iter().find(|b| b.id == figure_id).map(|b| b.rect).expect("probe must place the figure");
+
+        let narrow_width = natural_figure_rect.width * 0.5;
+        let right_rect = Rect::new(body_width - narrow_width, natural_figure_rect.y, narrow_width, natural_figure_rect.height);
+
+        let step0_visible = [title_id, figure_id];
+        let step0_overrides = [(figure_id, BlockOverride { rect: right_rect })];
+        let step0 = BuildStep::new(&step0_visible, &step0_overrides);
+
+        let step1_visible = [title_id, figure_id, list_id];
+        let step1 = BuildStep::new(&step1_visible, &[]);
+
+        let frames = slice_build_steps(&flow, &[step0, step1], body_width, body_height, &style, &shaper);
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].blocks.len(), 2, "step 0 shows only the title + figure, list not yet visible");
+        assert_eq!(frames[1].blocks.len(), 3, "step 1 shows all three blocks");
+        let step0_figure_rect = frames[0].blocks.iter().find(|b| b.id == figure_id).expect("step 0 must place the figure").rect;
+        assert_eq!(step0_figure_rect, right_rect, "step 0's override must place the figure narrow-and-right");
+
+        let morph = build_frame_morph(&frames[0], &frames[1], &[]);
+        assert_eq!(morph.matched_count(), 2, "title and figure match by id across the two steps");
+        assert_eq!(morph.from_only_count(), 0, "nothing disappears between step 0 and step 1");
+        assert_eq!(morph.to_only_count(), 1, "the bullet list is new in step 1 -> fades in, not matched");
+
+        let theme = crate::style::Theme::light_report();
+        let spec = ExportSpec { width_px: DECK_WIDTH as u32, height_px: DECK_HEIGHT as u32, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+
+        for (t, name) in [(0.0, "typeset_p4_morph_t0.png"), (0.5, "typeset_p4_morph_t05.png"), (1.0, "typeset_p4_morph_t1.png")] {
+            let states = morph.sample(t, 0x111111);
+            for state in &states {
+                assert!(
+                    state.rect.x.is_finite() && state.rect.y.is_finite() && state.rect.width.is_finite() && state.rect.height.is_finite(),
+                    "no NaN/inf in any sampled rect at t={t}"
+                );
+                assert!((0.0..=1.0).contains(&state.opacity), "opacity must stay in [0,1] at t={t}, got {}", state.opacity);
+            }
+
+            // The figure must genuinely be mid-flight (strictly between
+            // its two endpoint x positions) at t=0.5, and land exactly on
+            // its own endpoint at t=0/t=1 -- the "moves right -> left"
+            // claim, checked as data, not just eyeballed.
+            let figure_state = states.iter().find(|s| s.id == figure_id).expect("figure state present at every t");
+            if t == 0.0 {
+                assert_eq!(figure_state.rect, right_rect);
+            } else if t == 1.0 {
+                assert_eq!(figure_state.rect, natural_figure_rect);
+            } else {
+                assert!(
+                    figure_state.rect.x < right_rect.x && figure_state.rect.x > natural_figure_rect.x,
+                    "the figure must sit strictly between its right-side start and its natural left-side end at t=0.5"
+                );
+            }
+
+            let bytes = render_to_png(&spec, |ctx| {
+                ctx.save();
+                ctx.translate(MARGIN, MARGIN);
+                for state in &states {
+                    draw_frame_state(ctx, state, &theme);
+                }
+                ctx.restore();
+            })
+            .unwrap_or_else(|e| panic!("build-step morph proof render at t={t} should succeed: {e}"));
+            assert_eq!(decoded_png_dims(&bytes), (DECK_WIDTH as u32, DECK_HEIGHT as u32));
+            write_proof_png(name, &bytes);
         }
     }
 }

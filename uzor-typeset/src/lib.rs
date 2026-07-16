@@ -11,7 +11,7 @@
 //! editing/selection/domain state.
 //!
 //! This crate currently implements **Phase P0 + Phase P1 + Phase P2 +
-//! Phase P3** of the design doc: the scene model's flow-unit
+//! Phase P3 + Phase P4** of the design doc: the scene model's flow-unit
 //! (`scene::Block`/`BlockNode`/`BlockId`, `Paragraph`/`Spacer` from P0
 //! plus `Figure`/`Image`/`Table`/`List` from P1), the region abstraction
 //! (`region::{Region, RegionSequence, PageRegionSequence,
@@ -20,16 +20,24 @@
 //! header/footer/page-number (`slice::{PageMaster, slice_pages}`,
 //! `master::page_master`), masters/placeholders (`master::{SlideMaster,
 //! SlideLayout, PlaceholderKind, PlaceholderSlot, SlideInstance}`), style
-//! resolution (`style::{PropertyState, Theme}`), and — this phase (P3) —
-//! slide slicing: fluid card mode + fixed PowerPoint-viewport mode, both
-//! over ONE content model (`slice::{Card, Slide, slice_cards,
-//! slice_slides, cards_to_slides, slides_to_cards, slice_slide_instance,
-//! SlideOverflow, SliceError}`), painted via `render::{draw_card,
-//! draw_slide}` — see this crate's `CLAUDE.md` for exactly what each
-//! phase built vs. deferred, and where its implementation diverges from
-//! the design doc's own pseudocode.
+//! resolution (`style::{PropertyState, Theme}`), slide slicing (P3) —
+//! fluid card mode + fixed PowerPoint-viewport mode, both over ONE content
+//! model (`slice::{Card, Slide, slice_cards, slice_slides, cards_to_slides,
+//! slides_to_cards, slice_slide_instance, SlideOverflow, SliceError}`),
+//! painted via `render::{draw_card, draw_slide}` — and, this phase (P4),
+//! frames/build-steps + morph: `slice::{BuildStep, BlockOverride,
+//! ComposedFrame, slice_build_steps}` slices a slide's content into a
+//! sequence of build steps, and `kinetics::{build_frame_morph, FrameMorph,
+//! FrameBlockState}` identity-matches two ADJACENT steps by `BlockId`
+//! (author-assigned or structural fallback), delegating a matched
+//! equal-text `Paragraph` pair wholesale to `uzor_text::kinetics` for
+//! glyph-level interpolation, painted via `render::draw_frame_state` — see
+//! this crate's `CLAUDE.md` for exactly what each phase built vs.
+//! deferred, and where its implementation diverges from the design doc's
+//! own pseudocode.
 
 pub mod compose;
+pub mod kinetics;
 pub mod master;
 pub mod region;
 pub mod render;
@@ -38,6 +46,7 @@ pub mod slice;
 pub mod style;
 
 pub use compose::{compose, BreakControl, ComposeStyle};
+pub use kinetics::{build_frame_morph, FrameBlockState, FrameMorph};
 pub use master::{
     LayoutId, MasterId, PlaceholderFill, PlaceholderKind, PlaceholderSlot, PlacedPlaceholder, PageNumberFormat, PageNumberStyle,
     SlideInstance, SlideLayout, SlideMaster,
@@ -46,14 +55,14 @@ pub use region::{
     CardRegionSequence, FixedRegionSequence, Frame, ListPlacement, PageRegionSequence, PlacedBlock, PlacedListItem, PlacedTableCell,
     PlacedTableRow, Region, RegionSequence, TablePlacement,
 };
-pub use render::{draw_card, draw_page, draw_slide};
+pub use render::{draw_card, draw_frame_state, draw_page, draw_slide};
 pub use scene::{
     resolve_block_ids, Block, BlockId, BlockNode, BlockSizing, ColumnSpec, FigureBlock, ImageBlock, ImageFit, ListBlock, ListItem,
     MarkerStyle, TableBlock, TableCell, TableRow, TypesetFigure,
 };
 pub use slice::{
-    cards_to_slides, slice_cards, slice_pages, slice_slide_instance, slice_slides, slides_to_cards, Card, Margins, Page, PageMaster,
-    PageNumberPlacement, SliceError, Slide, SlideOverflow,
+    cards_to_slides, slice_build_steps, slice_cards, slice_pages, slice_slide_instance, slice_slides, slides_to_cards, BlockOverride,
+    BuildStep, Card, ComposedFrame, Margins, Page, PageMaster, PageNumberPlacement, SliceError, Slide, SlideOverflow,
 };
 pub use style::{
     resolve_property_chain, BrandTokens, ColorRole, ComponentStyle, DesignTokens, FigureThemeTokens, FontFileRef, FontRole, PropertyState,
