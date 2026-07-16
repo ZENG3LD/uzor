@@ -1,0 +1,17 @@
+[package]
+name = "uzor-typeset"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Typographic composition + slicing engine for uzor — flows a scene of blocks through regions (compose) and slices composed frames into pages | slides | frames (Arc 4). Phase P0: scene model + single-region compose + page-slicing MVP."
+publish = false
+
+[dependencies]
+uzor = { workspace = true }
+uzor-text = { path = "../uzor-text" }
+
+[dev-dependencies]
+uzor-export = { path = "../uzor-export" }
+png = "0.17"

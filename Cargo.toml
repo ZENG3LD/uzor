@@ -51,6 +51,8 @@ members = [
     "uzor-figures",
     # Pretext-pattern text layout engine (Arc 2 — plain text Phase 1)
     "uzor-text",
+    # Typographic composition + slicing engine (Arc 4 — scene model, compose, pages/slides/frames)
+    "uzor-typeset",
     # Layered demos
     "uzor-examples",
 ]
