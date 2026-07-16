@@ -1,6 +1,7 @@
 //! `BlackboxAgentSurface` impl for [`GraphEngine`] — state (node count,
-//! visible count, selected, camera, alpha/hot) and actions (`select_node`,
-//! `pin_node`/`unpin_node`, `set_camera`, `fit_view`), so the engine is
+//! visible count, selected, camera, alpha/hot, layout mode, clusters)
+//! and actions (`select_node`, `pin_node`/`unpin_node`, `set_camera`,
+//! `fit_view`, `collapse`, `expand`, `set_layout`), so the engine is
 //! driveable/screenshot-verifiable headlessly via `uzor-agent-api`
 //! without the app needing to write any of this itself.
 
@@ -9,9 +10,10 @@ use serde_json::{json, Value};
 use uzor::layout::agent::{AgentAction, AgentActionReply, AgentWidget, BlackboxAgentSurface};
 use uzor::types::Rect;
 
+use crate::cluster::GroupId;
 use crate::engine::GraphEngine;
 use crate::graph::NodeIndex;
-use crate::layout::Layout;
+use crate::layout::{GraphLayoutMode, Layout, LayoutKind};
 
 impl<N, E, L> BlackboxAgentSurface for GraphEngine<N, E, L>
 where
@@ -59,6 +61,12 @@ where
                 "pinned": f.pinned,
             })
         });
+        let layout_mode = layout_mode_name(&self.layout);
+        let clusters: Vec<Value> = self
+            .clusters
+            .iter()
+            .map(|(id, c)| json!({ "id": id.0, "member_count": c.member_count(), "collapsed": c.is_collapsed() }))
+            .collect();
         json!({
             "node_count": self.graph.node_count(),
             "edge_count": self.graph.edge_count(),
@@ -72,6 +80,9 @@ where
             },
             "alpha": self.last_tick().alpha,
             "hot": self.is_hot(),
+            "layout": layout_mode,
+            "clusters": clusters,
+            "collapsed_clusters": self.clusters.collapsed_ids(),
         })
     }
 
@@ -127,6 +138,48 @@ where
                     "zoom": self.camera.zoom,
                 }))
             }
+            "collapse" => {
+                let Some(id) = resolve_cluster(&action) else {
+                    return AgentActionReply::err("collapse requires args.cluster (u32 GroupId)");
+                };
+                if self.collapse_cluster(id) {
+                    AgentActionReply::ok_with_log(json!({ "collapsed": id.0 }))
+                } else {
+                    AgentActionReply::err(format!("cluster {} not found or already collapsed", id.0))
+                }
+            }
+            "expand" => {
+                let Some(id) = resolve_cluster(&action) else {
+                    return AgentActionReply::err("expand requires args.cluster (u32 GroupId)");
+                };
+                if self.expand_cluster(id) {
+                    AgentActionReply::ok_with_log(json!({ "expanded": id.0 }))
+                } else {
+                    AgentActionReply::err(format!("cluster {} not found or not collapsed", id.0))
+                }
+            }
+            "set_layout" => {
+                let Some(mode) = action.args.get("mode").and_then(Value::as_str) else {
+                    return AgentActionReply::err("set_layout requires args.mode (\"force\"|\"hierarchical\"|\"radial\")");
+                };
+                let kind = match mode {
+                    "force" => LayoutKind::Force,
+                    "hierarchical" => LayoutKind::Hierarchical,
+                    "radial" => LayoutKind::Radial,
+                    other => return AgentActionReply::err(format!("unknown layout mode {other:?}")),
+                };
+                // `GraphLayoutMode` is one `Layout` impl among several this
+                // engine can be generic over (`L`) — a runtime `set_layout`
+                // action only makes sense when `L` actually IS the
+                // dispatcher, so this downcasts rather than assuming.
+                let layout_any: &mut dyn std::any::Any = &mut self.layout;
+                let Some(dispatch) = layout_any.downcast_mut::<GraphLayoutMode>() else {
+                    return AgentActionReply::err("set_layout requires GraphEngine<_, _, GraphLayoutMode>");
+                };
+                dispatch.set_kind(kind);
+                self.mark_dirty();
+                AgentActionReply::ok_with_log(json!({ "layout": mode }))
+            }
             other => AgentActionReply::err(format!("unknown action {other:?}")),
         }
     }
@@ -141,4 +194,81 @@ fn resolve_node<N, E, L: Layout>(engine: &GraphEngine<N, E, L>, action: &AgentAc
         return engine.graph.find_by_label(label);
     }
     None
+}
+
+fn resolve_cluster(action: &AgentAction) -> Option<GroupId> {
+    action.args.get("cluster").and_then(Value::as_u64).map(|v| GroupId(v as u32))
+}
+
+/// `Some("force"|"hierarchical"|"radial")` when `L` is the runtime
+/// [`GraphLayoutMode`] dispatcher, `None` for any other concrete
+/// `Layout` (e.g. a bare `ForceDirectedLayout`) — same downcast
+/// approach as the `set_layout` action, read-only.
+fn layout_mode_name<L: Layout + 'static>(layout: &L) -> Option<&'static str> {
+    let layout_any: &dyn std::any::Any = layout;
+    layout_any.downcast_ref::<GraphLayoutMode>().map(|m| match m.kind() {
+        LayoutKind::Force => "force",
+        LayoutKind::Hierarchical => "hierarchical",
+        LayoutKind::Radial => "radial",
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::Graph;
+    use crate::layout::ForceDirectedLayout;
+
+    fn action(name: &str, args: Value) -> AgentAction {
+        AgentAction { name: name.to_owned(), args }
+    }
+
+    fn ring_graph(n: u32) -> (Graph<(), ()>, Vec<NodeIndex>) {
+        let mut graph = Graph::new();
+        let ids: Vec<NodeIndex> = (0..n).map(|i| graph.push_node((), format!("n{i}"), "x", 4.0)).collect();
+        for i in 0..ids.len() {
+            graph.push_edge(ids[i], ids[(i + 1) % ids.len()], 1.0, ());
+        }
+        (graph, ids)
+    }
+
+    #[test]
+    fn layout_mode_name_is_none_for_a_bare_force_directed_layout() {
+        let (graph, _) = ring_graph(3);
+        let engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
+        assert_eq!(engine.agent_state().get("layout").and_then(Value::as_str), None);
+    }
+
+    #[test]
+    fn set_layout_action_switches_mode_and_shows_up_in_agent_state() {
+        let (graph, _) = ring_graph(3);
+        let mut engine: GraphEngine<(), (), GraphLayoutMode> = GraphEngine::new(graph, GraphLayoutMode::default());
+        assert_eq!(engine.agent_state()["layout"], json!("force"));
+
+        let reply = engine.apply_agent_action(action("set_layout", json!({ "mode": "radial" })));
+        assert!(reply.ok);
+        assert_eq!(engine.agent_state()["layout"], json!("radial"));
+
+        let bad = engine.apply_agent_action(action("set_layout", json!({ "mode": "not_a_mode" })));
+        assert!(!bad.ok);
+    }
+
+    #[test]
+    fn collapse_and_expand_actions_round_trip_through_agent_state() {
+        let (graph, ids) = ring_graph(4);
+        let mut engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
+        let id = engine.define_cluster(ids).expect("non-empty cluster");
+
+        let collapse_reply = engine.apply_agent_action(action("collapse", json!({ "cluster": id.0 })));
+        assert!(collapse_reply.ok);
+        assert_eq!(engine.agent_state()["collapsed_clusters"], json!([id.0]));
+
+        // Collapsing an already-collapsed cluster is an error reply, not a panic.
+        let again = engine.apply_agent_action(action("collapse", json!({ "cluster": id.0 })));
+        assert!(!again.ok);
+
+        let expand_reply = engine.apply_agent_action(action("expand", json!({ "cluster": id.0 })));
+        assert!(expand_reply.ok);
+        assert_eq!(engine.agent_state()["collapsed_clusters"], json!([] as [u32; 0]));
+    }
 }

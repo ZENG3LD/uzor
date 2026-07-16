@@ -13,14 +13,15 @@
 //! real batching); swapping in the instanced path later doesn't change
 //! this module's public shape.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use uzor::render::{CircleBatch, LineSegment, RenderContext};
 use uzor::types::Rect;
+use uzor_figures::interact::FocusSet;
 
 use crate::camera::Camera2D;
+use crate::cluster::ClusterRegistry;
 use crate::graph::{Graph, NodeIndex};
-use crate::interaction::focus::FocusSet;
 use crate::particle::Particle;
 
 /// Zoom at/above which node labels start fading in (Obsidian's "Text
@@ -89,21 +90,32 @@ pub struct DrawContext<'a> {
     pub focus: &'a FocusSet,
     pub selected: Option<NodeIndex>,
     pub hovered: Option<NodeIndex>,
+    /// Nodes hidden by a collapsed cluster (every member except that
+    /// cluster's representative — see `crate::cluster`). Empty when no
+    /// cluster is collapsed. Edges touching a hidden node are skipped
+    /// entirely by [`draw_edges`] — [`draw_cluster_edges`] draws the
+    /// aggregated substitute instead.
+    pub hidden: &'a HashSet<NodeIndex>,
 }
 
 /// Draw every visible edge, dimming any edge outside an active
-/// [`FocusSet`]. Returns the number of edges drawn.
+/// [`FocusSet`]. Edges touching a node hidden by cluster collapse
+/// (`ctx.hidden`) are skipped entirely — `draw_cluster_edges` draws the
+/// aggregated substitute for those. Returns the number of edges drawn.
 pub fn draw_edges<N, E>(
     render: &mut dyn RenderContext,
     graph: &Graph<N, E>,
     particles: &[Particle],
     ctx: &DrawContext<'_>,
 ) -> usize {
-    let visible_set: std::collections::HashSet<NodeIndex> = ctx.visible.iter().copied().collect();
+    let visible_set: HashSet<NodeIndex> = ctx.visible.iter().copied().collect();
     let mut segments: Vec<LineSegment> = Vec::new();
     let mut dim_segments: Vec<LineSegment> = Vec::new();
 
     for (eid, edge) in graph.edges() {
+        if ctx.hidden.contains(&edge.from) || ctx.hidden.contains(&edge.to) {
+            continue;
+        }
         if !visible_set.contains(&edge.from) && !visible_set.contains(&edge.to) {
             continue;
         }
@@ -113,7 +125,7 @@ pub fn draw_edges<N, E>(
         let (ax, ay) = ctx.camera.world_to_screen((a.x as f64, a.y as f64), ctx.viewport);
         let (bx, by) = ctx.camera.world_to_screen((b.x as f64, b.y as f64), ctx.viewport);
         let seg = LineSegment { x1: ax, y1: ay, x2: bx, y2: by };
-        if ctx.focus.is_active() && !ctx.focus.contains_edge(eid) {
+        if ctx.focus.is_active() && !ctx.focus.is_selected(u64::from(eid)) {
             dim_segments.push(seg);
         } else {
             segments.push(seg);
@@ -149,7 +161,7 @@ pub fn draw_nodes<N, E>(
         let (sx, sy) = ctx.camera.world_to_screen((p.x as f64, p.y as f64), ctx.viewport);
         let r = ctx.camera.node_screen_radius(node.radius);
         let circle = CircleBatch { cx: sx, cy: sy, r };
-        if ctx.focus.is_active() && !ctx.focus.contains_node(id) {
+        if ctx.focus.is_active() && !ctx.focus.is_selected(u64::from(id)) {
             dim.push(circle);
         } else {
             by_color.entry(category_color(&node.category)).or_default().push(circle);
@@ -197,4 +209,66 @@ pub fn draw_nodes<N, E>(
     }
 
     ctx.visible.len()
+}
+
+const CLUSTER_ACCENT: &str = "#c9a94e";
+
+/// Draw the aggregated cross-cluster edges for every collapsed cluster —
+/// one synthetic line per outside neighbor (summed weight, thicker line
+/// for a heavier aggregate), replacing the N raw overlapping lines
+/// [`draw_edges`] already excludes via `ctx.hidden`. Returns the number
+/// of synthetic edges drawn.
+pub fn draw_cluster_edges(
+    render: &mut dyn RenderContext,
+    particles: &[Particle],
+    ctx: &DrawContext<'_>,
+    clusters: &ClusterRegistry,
+) -> usize {
+    let mut drawn = 0;
+    for cluster in clusters.collapsed_clusters() {
+        let Some(rep) = particles.get(cluster.representative.index()) else { continue };
+        let (rx, ry) = ctx.camera.world_to_screen((rep.x as f64, rep.y as f64), ctx.viewport);
+        for edge in cluster.aggregated_edges() {
+            let Some(other) = particles.get(edge.outside.index()) else { continue };
+            let (ox, oy) = ctx.camera.world_to_screen((other.x as f64, other.y as f64), ctx.viewport);
+            let width = (1.0 + (edge.weight as f64).sqrt()).min(6.0);
+            render.draw_line_batch(&[LineSegment { x1: rx, y1: ry, x2: ox, y2: oy }], CLUSTER_ACCENT, width);
+            drawn += 1;
+        }
+    }
+    drawn
+}
+
+/// Draw a distinct double-ring + member-count label over every collapsed
+/// cluster's representative — the "this circle is actually N nodes"
+/// affordance. Returns the number of super-nodes drawn.
+pub fn draw_cluster_supernodes<N, E>(
+    render: &mut dyn RenderContext,
+    graph: &Graph<N, E>,
+    particles: &[Particle],
+    ctx: &DrawContext<'_>,
+    clusters: &ClusterRegistry,
+) -> usize {
+    let mut drawn = 0;
+    for cluster in clusters.collapsed_clusters() {
+        let rep = cluster.representative;
+        let (Some(p), Some(node)) = (particles.get(rep.index()), graph.get_node(rep)) else { continue };
+        let (sx, sy) = ctx.camera.world_to_screen((p.x as f64, p.y as f64), ctx.viewport);
+        let r = ctx.camera.node_screen_radius(node.radius);
+
+        render.set_stroke_color(CLUSTER_ACCENT);
+        render.set_stroke_width(2.0);
+        render.begin_path();
+        render.arc(sx, sy, r + 3.0, 0.0, std::f64::consts::TAU);
+        render.stroke();
+        render.begin_path();
+        render.arc(sx, sy, r + 7.0, 0.0, std::f64::consts::TAU);
+        render.stroke();
+
+        render.set_fill_color("#f0e6c0");
+        render.set_font("11px sans-serif");
+        render.fill_text(&format!("×{}", cluster.member_count()), sx + r + 10.0, sy + 4.0);
+        drawn += 1;
+    }
+    drawn
 }

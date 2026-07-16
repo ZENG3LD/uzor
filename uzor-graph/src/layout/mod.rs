@@ -2,10 +2,15 @@
 
 pub mod barnes_hut;
 pub mod force_directed;
-pub mod stubs;
+pub mod hierarchical;
+pub mod layering;
+pub mod mode;
+pub mod radial;
 
 pub use force_directed::{ForceDirectedLayout, ForceParams};
-pub use stubs::{HierarchicalLayout, RadialLayout};
+pub use hierarchical::{HierarchicalLayout, HierarchicalParams};
+pub use mode::{GraphLayoutMode, LayoutKind};
+pub use radial::{RadialLayout, RadialParams};
 
 use crate::graph::SimTopology;
 use crate::particle::Particle;
@@ -15,7 +20,8 @@ use crate::particle::Particle;
 pub struct LayoutTickResult {
     /// Current cooling parameter (1.0 = just reheated, `alpha_min` and
     /// below = settled). Algorithms that don't use alpha cooling (e.g.
-    /// [`stubs::HierarchicalLayout`]) report `0.0`.
+    /// [`hierarchical::HierarchicalLayout`]/[`radial::RadialLayout`] —
+    /// one-shot, no cooling schedule) report `0.0`.
     pub alpha: f32,
     /// Largest per-particle displacement this tick, in world units.
     pub max_displacement: f32,
@@ -38,8 +44,10 @@ pub trait Layout {
     fn tick(&mut self, topo: &SimTopology<'_>, particles: &mut [Particle], dt: f32) -> LayoutTickResult;
 
     /// Bump internal cooling back up (e.g. on drag-start or a structural
-    /// change) so the layout "wakes" and resettles. No-op for algorithms
-    /// without a cooling schedule.
+    /// change) so the layout "wakes" and resettles. For a one-shot
+    /// layout (hierarchical/radial) this instead just clears the
+    /// "already computed" flag, forcing a fresh compute on the next
+    /// `tick`.
     fn reheat(&mut self, alpha: f32);
 
     fn is_settled(&self) -> bool;

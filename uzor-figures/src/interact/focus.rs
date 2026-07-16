@@ -1,12 +1,18 @@
 //! `FocusSet` — hover/selection state, generalized from
 //! `uzor-graph::interaction::focus::FocusSet`
-//! (`uzor-graph/src/interaction/focus.rs`): same "one dim/highlight set
-//! instead of three parallel, drifting implementations" idea (engine
-//! design doc §4.3), keyed by a plain `u64` instead of graph's
-//! `NodeIndex`/`EdgeIndex` — a figure casts its own row/category/point
-//! index to `u64`, since uzor-figures has no node-link identity type of its
-//! own (that stays in `uzor-graph`; re-pointing `uzor-graph::FocusSet`
-//! onto this one is a later, separate arc — not done here).
+//! (formerly `uzor-graph/src/interaction/focus.rs`, deleted Phase D
+//! 2026-07-17): same "one dim/highlight set instead of three parallel,
+//! drifting implementations" idea (engine design doc §4.3), keyed by a
+//! plain `u64` instead of graph's `NodeIndex`/`EdgeIndex` — a figure
+//! casts its own row/category/point index to `u64`, since uzor-figures
+//! has no node-link identity type of its own (that stays in
+//! `uzor-graph`). `uzor-graph` is now RE-POINTED onto this `FocusSet`
+//! (Phase D — see `uzor-graph/src/graph.rs`'s `From<NodeIndex/EdgeIndex>
+//! for u64` tag-bit key scheme and `Graph::neighborhood_focus_keys`);
+//! [`FocusSet::select_many`] is the one piece of behavior that
+//! migration needed and this crate lacked (a generic bulk-replace-
+//! selection op — `uzor-graph`'s old fork's "neighborhood" concept,
+//! minus any graph-specific adjacency knowledge, which stays graph-side).
 //!
 //! `generation` bumps on every actual state change so a caller can cheaply
 //! skip redraw when nothing moved (the same alpha/dirty convention
@@ -64,6 +70,20 @@ impl FocusSet {
         } else {
             self.select(id)
         }
+    }
+
+    /// Replace the WHOLE selection with `ids` — e.g. a node plus its
+    /// 1-hop neighborhood, computed by the caller from whatever
+    /// adjacency structure it owns (this crate has no graph type of its
+    /// own; `uzor-graph`'s `Graph::neighborhood_focus_keys` is the
+    /// motivating caller). Unlike `select`/`deselect`'s single-id
+    /// toggle, a bulk replace always bumps `generation` even if the
+    /// resulting set happens to equal the previous one — the caller
+    /// asked for a specific state, not a delta, so there is no
+    /// meaningful "no-op" case to skip.
+    pub fn select_many(&mut self, ids: impl IntoIterator<Item = u64>) {
+        self.selected = ids.into_iter().collect();
+        self.generation += 1;
     }
 
     /// Clear the whole selection. Returns `true` if it was non-empty.
@@ -128,6 +148,25 @@ mod tests {
         assert!(focus.clear_selection());
         assert!(focus.selected.is_empty());
         assert!(focus.generation > gen_before);
+    }
+
+    #[test]
+    fn select_many_replaces_the_whole_selection_and_always_bumps_generation() {
+        let mut focus = FocusSet::empty();
+        focus.select(99); // stale entry `select_many` must NOT preserve
+        let gen_before = focus.generation;
+
+        focus.select_many([1, 2, 3]);
+        assert_eq!(focus.selected, [1u64, 2, 3].into_iter().collect());
+        assert!(!focus.is_selected(99));
+        assert!(focus.generation > gen_before);
+
+        let gen_before2 = focus.generation;
+        // Re-asserting the SAME set still bumps generation — bulk
+        // replace is always caller-intended state, not a click-provoked
+        // no-op check like `select`/`deselect`.
+        focus.select_many([1, 2, 3]);
+        assert!(focus.generation > gen_before2);
     }
 
     #[test]

@@ -5,14 +5,17 @@
 
 use std::time::Instant;
 
+use std::collections::HashSet;
+
 use uzor::input::{MouseButton, PlatformEvent};
 use uzor::render::{RenderContext, RenderRegion, UNCAPPED_FPS};
 use uzor::types::Rect;
+use uzor_figures::interact::FocusSet;
 
 use crate::camera::{Aabb, Camera2D};
+use crate::cluster::{ClusterRegistry, GroupId};
 use crate::graph::{Graph, NodeIndex};
 use crate::interaction::drag::DragController;
-use crate::interaction::focus::FocusSet;
 use crate::interaction::pick;
 use crate::layout::force_directed::ForceDirectedLayout;
 use crate::layout::{Layout, LayoutTickResult};
@@ -62,6 +65,7 @@ pub struct GraphEngine<N, E, L: Layout = ForceDirectedLayout> {
     pub selected: Option<NodeIndex>,
     pub hovered: Option<NodeIndex>,
     pub focus: FocusSet,
+    pub clusters: ClusterRegistry,
 
     pinned: Vec<bool>,
     drag: DragController,
@@ -86,6 +90,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             selected: None,
             hovered: None,
             focus: FocusSet::empty(),
+            clusters: ClusterRegistry::default(),
             pinned: vec![false; n],
             drag: DragController::default(),
             mode: PointerMode::Idle,
@@ -186,17 +191,28 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
     }
 
     fn refresh_visible(&mut self) {
-        self.visible = gr_render::cull_visible(&self.graph, &self.particles, &self.camera, self.canvas_rect);
+        let culled = gr_render::cull_visible(&self.graph, &self.particles, &self.camera, self.canvas_rect);
+        if self.clusters.any_collapsed() {
+            let hidden: HashSet<NodeIndex> = self.clusters.hidden_nodes().collect();
+            self.visible = culled.into_iter().filter(|id| !hidden.contains(id)).collect();
+        } else {
+            self.visible = culled;
+        }
     }
 
     pub fn visible_nodes(&self) -> &[NodeIndex] {
         &self.visible
     }
 
-    /// Refresh the culled/visible set and paint nodes+edges. Call once
-    /// per frame while the canvas is on screen.
+    /// Refresh the culled/visible set and paint nodes+edges (plus, when
+    /// any cluster is collapsed, the aggregated cross-cluster edges and
+    /// the collapsed-supernode double-ring/count-label overlay — see
+    /// `render::{draw_cluster_edges, draw_cluster_supernodes}`). Call
+    /// once per frame while the canvas is on screen.
     pub fn draw(&mut self, render: &mut dyn RenderContext) {
         self.refresh_visible();
+        let hidden: HashSet<NodeIndex> =
+            if self.clusters.any_collapsed() { self.clusters.hidden_nodes().collect() } else { HashSet::new() };
         let ctx = gr_render::DrawContext {
             camera: &self.camera,
             viewport: self.canvas_rect,
@@ -204,9 +220,12 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             focus: &self.focus,
             selected: self.selected,
             hovered: self.hovered,
+            hidden: &hidden,
         };
         gr_render::draw_edges(render, &self.graph, &self.particles, &ctx);
+        gr_render::draw_cluster_edges(render, &self.particles, &ctx, &self.clusters);
         gr_render::draw_nodes(render, &self.graph, &self.particles, &ctx);
+        gr_render::draw_cluster_supernodes(render, &self.graph, &self.particles, &ctx, &self.clusters);
     }
 
     pub fn fit_view(&mut self) {
@@ -219,14 +238,50 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
 
     pub fn select(&mut self, node: NodeIndex) {
         self.selected = Some(node);
-        self.focus = FocusSet::neighborhood(&self.graph, node);
+        self.focus.select_many(self.graph.neighborhood_focus_keys(node));
         self.dirty = true;
     }
 
     pub fn clear_selection(&mut self) {
         self.selected = None;
-        self.focus = FocusSet::empty();
+        self.focus.clear_selection();
         self.dirty = true;
+    }
+
+    /// Declare a cluster over `members` (first member becomes the
+    /// collapse representative — see `cluster.rs` module docs). `None`
+    /// if `members` is empty.
+    pub fn define_cluster(&mut self, members: Vec<NodeIndex>) -> Option<GroupId> {
+        self.clusters.define(&self.graph, members)
+    }
+
+    pub fn is_collapsed(&self, id: GroupId) -> bool {
+        self.clusters.is_collapsed(id)
+    }
+
+    /// Collapse `id` into one super-node — centroid position, member-
+    /// count radius, aggregated cross-cluster edge weights (see
+    /// `cluster.rs`). No-op (`false`) if `id` is unknown or already
+    /// collapsed.
+    pub fn collapse_cluster(&mut self, id: GroupId) -> bool {
+        let ok = self.clusters.collapse(id, &mut self.graph, &mut self.particles);
+        if ok {
+            self.dirty = true;
+        }
+        ok
+    }
+
+    /// Expand `id` back to its individual members, restoring EXACT
+    /// pre-collapse positions (round-trip identity — see `cluster.rs`),
+    /// then reheats so the layout visibly resettles around them (same
+    /// convention as [`GraphEngine::unpin_node`]). No-op (`false`) if
+    /// `id` is unknown or not currently collapsed.
+    pub fn expand_cluster(&mut self, id: GroupId) -> bool {
+        let ok = self.clusters.expand(id, &mut self.graph, &mut self.particles);
+        if ok {
+            self.reheat(DRAG_REHEAT_ALPHA);
+        }
+        ok
     }
 
     pub fn is_pinned(&self, node: NodeIndex) -> bool {
@@ -373,6 +428,17 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
                 self.mode = PointerMode::Idle;
                 if total < CLICK_DRAG_THRESHOLD_PX && self.canvas_rect.contains(x, y) {
                     match pick::nearest_node(&self.graph, &self.particles, &self.camera, self.canvas_rect, (x, y), &self.visible) {
+                        // A collapsed super-node's designated expand
+                        // affordance is a single click on it (this raw-
+                        // `PlatformEvent` canvas path has no double-click
+                        // in its input vocabulary — see `cluster.rs`
+                        // module docs / the demo's `expand` agent action
+                        // for the alternative route).
+                        Some(hit) if self.clusters.cluster_of(hit).is_some_and(|id| self.clusters.is_collapsed(id)) => {
+                            if let Some(id) = self.clusters.cluster_of(hit) {
+                                self.expand_cluster(id);
+                            }
+                        }
                         Some(hit) => self.select(hit),
                         None => self.clear_selection(),
                     }
@@ -392,5 +458,52 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         self.camera.zoom_at(self.last_pointer_screen, self.canvas_rect, factor);
         self.dirty = true;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::Graph;
+
+    type TestEngine = GraphEngine<(), (), ForceDirectedLayout>;
+
+    /// `a - b - c` chain — `b` is `a`'s only 1-hop neighbor, `c` is 2
+    /// hops away (outside the neighborhood `select` focuses on).
+    fn chain_graph() -> (Graph<(), ()>, NodeIndex, NodeIndex, NodeIndex) {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let b = graph.push_node((), "b", "x", 4.0);
+        let c = graph.push_node((), "c", "x", 4.0);
+        graph.push_edge(a, b, 1.0, ());
+        graph.push_edge(b, c, 1.0, ());
+        (graph, a, b, c)
+    }
+
+    #[test]
+    fn select_populates_the_repointed_figures_focus_set_with_neighborhood_keys() {
+        let (graph, a, b, c) = chain_graph();
+        let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.select(a);
+
+        assert!(engine.focus.is_active());
+        assert!(engine.focus.is_selected(u64::from(a)));
+        assert!(engine.focus.is_selected(u64::from(b)));
+        assert!(!engine.focus.is_selected(u64::from(c)), "c is 2 hops away — outside the 1-hop neighborhood");
+
+        engine.clear_selection();
+        assert!(!engine.focus.is_active());
+    }
+
+    #[test]
+    fn reselecting_a_different_node_replaces_the_whole_focus_set() {
+        let (graph, a, _b, c) = chain_graph();
+        let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.select(a);
+        assert!(engine.focus.is_selected(u64::from(a)));
+
+        engine.select(c);
+        assert!(!engine.focus.is_selected(u64::from(a)), "stale selection from the previous select() must not leak");
+        assert!(engine.focus.is_selected(u64::from(c)));
     }
 }

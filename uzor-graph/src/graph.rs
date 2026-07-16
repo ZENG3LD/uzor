@@ -27,6 +27,23 @@ impl EdgeIndex {
     }
 }
 
+/// `uzor_figures::interact::FocusSet` is a flat `u64` key space (it has
+/// no node-link identity type of its own — that stays here). A node and
+/// an edge can share the same raw index (`NodeIndex(3)` / `EdgeIndex(3)`)
+/// without colliding inside one `FocusSet` because the low bit is
+/// tagged: node keys are even, edge keys are odd.
+impl From<NodeIndex> for u64 {
+    fn from(id: NodeIndex) -> u64 {
+        (id.0 as u64) << 1
+    }
+}
+
+impl From<EdgeIndex> for u64 {
+    fn from(id: EdgeIndex) -> u64 {
+        ((id.0 as u64) << 1) | 1
+    }
+}
+
 /// One node's static (non-simulated) data.
 pub struct GraphNode<N> {
     pub payload: N,
@@ -214,5 +231,25 @@ impl<N, E> Graph<N, E> {
             degree: &self.degree,
             radii: self.nodes.iter().map(|n| n.radius).collect(),
         }
+    }
+
+    /// 1-hop neighborhood of `center` as `uzor_figures::interact::FocusSet`
+    /// keys — `center` itself, every incident edge, and the far endpoint
+    /// of each. Built from adjacency already cached at load (not a
+    /// per-frame predicate scan). This is the behavior this crate's old
+    /// `FocusSet::neighborhood` fork had that the generalized
+    /// `uzor-figures` version can't express on its own (no graph type of
+    /// its own) — [`crate::engine::GraphEngine::select`] hands the
+    /// result straight to `FocusSet::select_many`.
+    pub fn neighborhood_focus_keys(&self, center: NodeIndex) -> Vec<u64> {
+        let mut keys = vec![u64::from(center)];
+        for &eid in self.incident_edges(center) {
+            if let Some(edge) = self.get_edge(eid) {
+                keys.push(u64::from(eid));
+                keys.push(u64::from(edge.from));
+                keys.push(u64::from(edge.to));
+            }
+        }
+        keys
     }
 }

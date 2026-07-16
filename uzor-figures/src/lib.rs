@@ -30,11 +30,11 @@
 //! state a figure only ever BORROWS through
 //! [`figure::FigureOverlay`], never retains.
 //!
-//! `uzor-graph`'s own `FocusSet` (`uzor-graph/src/interaction/focus.rs`)
-//! is NOT yet re-pointed onto this crate's [`FocusSet`] — that graph-side
-//! migration is a deferred, separate arc (this task only generalizes the
-//! concept into `uzor-figures`, per its brief; `uzor-graph` itself is
-//! untouched).
+//! `uzor-graph`'s own `FocusSet` (formerly `uzor-graph/src/interaction/
+//! focus.rs`) is now RE-POINTED onto this crate's [`FocusSet`] (Phase D,
+//! 2026-07-17) — `uzor-graph` deleted its fork; [`FocusSet::select_many`]
+//! is the one behavior that migration needed and generalized into this
+//! crate (see `focus.rs`'s own module docs).
 
 pub mod coord;
 pub mod figure;

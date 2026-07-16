@@ -9,4 +9,9 @@ description = "Reusable force-directed graph visualization engine for uzor — g
 
 [dependencies]
 uzor = { workspace = true }
+uzor-figures = { path = "../uzor-figures" }
 serde_json = "1"
+
+[dev-dependencies]
+uzor-export = { path = "../uzor-export" }
+png = "0.17"

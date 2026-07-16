@@ -30,7 +30,7 @@ use uzor::render::{RenderContext, RenderRegion};
 use uzor::types::unsafe_widget_id;
 use uzor_desktop::AppRun as _;
 
-use uzor_graph::{ForceDirectedLayout, Graph, GraphEngine, NodeIndex};
+use uzor_graph::{Graph, GraphEngine, GraphLayoutMode, NodeIndex};
 
 const AGENT_PORT: u16 = 17481;
 const BLACKBOX_SLOT: &str = "graph";
@@ -78,7 +78,12 @@ type DemoGraph = Graph<(), ()>;
 /// out to a subset of its cluster; hubs form a ring — the only
 /// inter-cluster edges, so clusters stay visually separable once
 /// settled (unlike the rejected MVP's hop-depth-0 megacolumn).
-fn build_demo_graph() -> (DemoGraph, Vec<(f32, f32)>) {
+///
+/// Also returns each cluster's member list — `DemoApp::new` declares 3
+/// collapsible clusters (Phase D's "3 clusters x ~8 nodes" fixture) over
+/// the first 8 members of clusters 0/1/2, so the `collapse`/`expand`
+/// agent actions have something concrete to act on in the live demo.
+fn build_demo_graph() -> (DemoGraph, Vec<(f32, f32)>, Vec<Vec<NodeIndex>>) {
     let mut graph = DemoGraph::new();
     let mut positions = Vec::new();
     let mut cluster_members: Vec<Vec<NodeIndex>> = vec![Vec::new(); NUM_CLUSTERS];
@@ -138,7 +143,7 @@ fn build_demo_graph() -> (DemoGraph, Vec<(f32, f32)>) {
         graph.set_radius(id, 3.0 + (degree as f32).sqrt() * 1.6);
     }
 
-    (graph, positions)
+    (graph, positions, cluster_members)
 }
 
 // ── App ───────────────────────────────────────────────────────────────
@@ -151,19 +156,33 @@ struct SelectedFacts {
     pinned: bool,
 }
 
-type Engine = GraphEngine<(), (), ForceDirectedLayout>;
+// `GraphLayoutMode` (not a bare `ForceDirectedLayout`) so the
+// `set_layout` agent action has something to dispatch to — see
+// `uzor-graph/src/layout/mode.rs`.
+type Engine = GraphEngine<(), (), GraphLayoutMode>;
 
 struct DemoApp {
     engine: Arc<Mutex<Engine>>,
     did_init_camera: bool,
 }
 
+/// Cluster indices given a collapsible cluster (Phase D's "3 clusters x
+/// ~8 nodes" fixture) — a subset (first 8 members) of clusters 0/1/2 of
+/// the full demo graph, not a separate graph. Driving
+/// `{"name":"collapse","args":{"cluster":0}}` etc. over agent-api
+/// exercises `GraphEngine::collapse_cluster` on the live demo.
+const COLLAPSIBLE_CLUSTERS: usize = 3;
+const COLLAPSIBLE_CLUSTER_SIZE: usize = 8;
+
 impl DemoApp {
     fn new() -> Self {
-        let (graph, positions) = build_demo_graph();
-        let mut engine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        let (graph, positions, cluster_members) = build_demo_graph();
+        let mut engine = GraphEngine::new(graph, GraphLayoutMode::default());
         engine.seed_positions(&positions);
         engine.set_agent_slot_id(BLACKBOX_SLOT);
+        for members in cluster_members.iter().take(COLLAPSIBLE_CLUSTERS) {
+            engine.define_cluster(members[..COLLAPSIBLE_CLUSTER_SIZE.min(members.len())].to_vec());
+        }
         Self { engine: Arc::new(Mutex::new(engine)), did_init_camera: false }
     }
 

@@ -80,10 +80,32 @@ called from both `GraphEngine::on_event` and
 Unknown actions return `ok:false`:
 
 ```bash
-curl -s -X POST :17481/blackbox/graph/action -d '{"name":"expand_cluster","args":{}}'
-# -> {"ok":false,"message":"unknown action \"expand_cluster\""}
-# (clustering/collapse is explicitly deferred this run — see cluster.rs)
+curl -s -X POST :17481/blackbox/graph/action -d '{"name":"not_a_real_action","args":{}}'
+# -> {"ok":false,"message":"unknown action \"not_a_real_action\""}
 ```
+
+### Phase D — layout mode + cluster collapse (2026-07-17)
+
+`force_graph_demo` declares 3 collapsible clusters (`cluster` ids `0`,
+`1`, `2` — the first 8 members of the demo graph's clusters 0/1/2) and
+runs on `GraphLayoutMode` (runtime dispatch over force/hierarchical/
+radial — see `layout/mode.rs`):
+
+```bash
+curl -s -X POST :17481/blackbox/graph/action -d '{"name":"set_layout","args":{"mode":"hierarchical"}}'
+curl -s :17481/blackbox/graph/state | jq .layout          # -> "hierarchical"
+curl -s -X POST :17481/blackbox/graph/action -d '{"name":"set_layout","args":{"mode":"radial"}}'
+curl -s -X POST :17481/blackbox/graph/action -d '{"name":"set_layout","args":{"mode":"force"}}'
+
+curl -s -X POST :17481/blackbox/graph/action -d '{"name":"collapse","args":{"cluster":0}}'
+curl -s :17481/blackbox/graph/state | jq '{clusters, collapsed_clusters}'
+curl -s -X POST :17481/blackbox/graph/action -d '{"name":"expand","args":{"cluster":0}}'
+```
+
+A single click directly on a collapsed cluster's super-node expands it
+(the canvas's raw `PlatformEvent` path has no double-click in its
+vocabulary — see `cluster.rs`'s module doc for why the click-to-expand
+route was chosen over inventing one).
 
 ## Verify — Tier 2 (visual, before/after screenshot diff)
 
@@ -123,8 +145,8 @@ re-settle around it, then freeze again on release.
 - `interaction::drag` — `DragController` built on native
   `WidgetResponse`/`InputState`/`DragState`/`create_response`, not a
   hand-rolled drag state machine.
-- `interaction::focus::FocusSet` — shared hover-neighborhood
-  dim/highlight set.
+- `uzor_figures::interact::FocusSet` — shared hover-neighborhood
+  dim/highlight set (re-pointed here in Phase D — see below).
 - `render.rs` — node/edge draw via `BatchPainter`, viewport culling,
   zoom-faded labels, deterministic category-color palette.
 - `agent.rs` — `BlackboxAgentSurface` impl: state (node/visible counts,
@@ -138,14 +160,33 @@ re-settle around it, then freeze again on release.
   deterministic ~534-node synthetic clustered graph, `lm::sidebar`
   facts panel, agent-api on `:17481`.
 
+## What Phase D added (2026-07-17)
+
+- **`FocusSet` re-pointed** onto `uzor_figures::interact::FocusSet` —
+  this crate's own fork (`interaction/focus.rs`) is deleted;
+  `NodeIndex`/`EdgeIndex` key into its flat `u64` space via `graph.rs`'s
+  `From` impls (tag-bit scheme: node keys even, edge keys odd).
+- **`HierarchicalLayout` / `RadialLayout`** — real Sugiyama-lite
+  layering (`layout/layering.rs`, shared by both): longest-path layer
+  assignment (cycles broken via one DFS back-edge pass) + a down-sweep/
+  up-sweep barycenter ordering pass. Hierarchical maps layer -> y,
+  slot -> x; radial maps layer -> ring radius, slot -> angle (leaf-
+  count-weighted span, floored so siblings never collide). Both
+  one-shot: compute once on the first `tick`, freeze forever after;
+  `reheat` forces a fresh recompute.
+- **`GraphLayoutMode`** (`layout/mode.rs`) — a fourth `Layout` impl that
+  dispatches to one of the three above at runtime, so a single
+  `GraphEngine` instantiation exposes a `set_layout` agent action.
+- **Cluster collapse** (`cluster.rs`) — `ClusterRegistry` +
+  `GraphEngine::{define_cluster, collapse_cluster, expand_cluster,
+  is_collapsed}`: collapsing replaces a cluster's members with one
+  super-node (centroid position, member-count radius, aggregated
+  cross-cluster edge weights); expanding restores the exact pre-collapse
+  positions. Rendered as a double gold ring + `×N` label
+  (`render::{draw_cluster_edges, draw_cluster_supernodes}`).
+
 ## What's explicitly deferred (see in-tree comments)
 
-- **Clustering / group-collapse** — `cluster.rs` has the `GroupId`/
-  `GroupNode` seam types only; no `ActiveView` projection, no
-  collapse/expand mechanism, nothing constructs or reads them yet.
-- **`HierarchicalLayout` / `RadialLayout`** — trait stubs in
-  `layout/stubs.rs`; both compile and report settled immediately
-  (safe no-op), real algorithms not implemented.
 - **Porting the Yozarest forensic app onto this engine** — separate
   later run; this crate has zero forensic/case-specific types by
   design.
