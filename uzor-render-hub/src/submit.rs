@@ -557,12 +557,16 @@ fn blit_and_present(
 }
 
 /// Convert MSAA count to vello's `AaConfig`.
+///
+/// Unknown counts fall back to `Area`, not `Msaa8`: the default vello
+/// factory compiles area-only shaders, so a stray value (e.g. the
+/// framework `AppConfig` default of `1`) must never select an MSAA mode
+/// the shaders were not built for — that is an instant vello panic.
 fn aa_for(msaa: u8) -> AaConfig {
     match msaa {
-        0 => AaConfig::Area,
         8 => AaConfig::Msaa8,
         16 => AaConfig::Msaa16,
-        _ => AaConfig::Msaa8,
+        _ => AaConfig::Area,
     }
 }
 

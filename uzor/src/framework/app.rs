@@ -229,7 +229,9 @@ impl Default for AppConfig {
             background:      0xFF181820,
             multi_window:    false,
             fps_limit:       0,
-            msaa_samples:    1,
+            // 0 = area AA (vello) — the only AA mode the default GPU factory
+            // compiles shaders for; see uzor-render-hub detect.rs::default_perf.
+            msaa_samples:    0,
             single_instance: None,
             border_color:    None,
             corner_style:    CornerStyle::Default,

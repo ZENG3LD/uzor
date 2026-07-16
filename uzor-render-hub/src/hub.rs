@@ -133,7 +133,10 @@ impl Default for PerfSettings {
     fn default() -> Self {
         Self {
             fps_limit: 60,
-            msaa_samples: 8,
+            // 0 = area AA — matches the default area-only vello factory
+            // (see detect.rs::default_perf doc); non-zero here panicked
+            // every vello-gpu app that didn't carry a .msaa(0) workaround.
+            msaa_samples: 0,
             vsync: true,
             perf_log: false,
             recalc_mode: "on_change".into(),
