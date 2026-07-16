@@ -173,17 +173,17 @@ impl CurveFigure {
                         let marker_style = MarkStyle { color: theme.palette[1].clone(), ..Default::default() };
                         draw_points(ctx, &area, x_scale, &y_scale, &[(data_x, data_y)], HOVER_MARKER_RADIUS, &marker_style);
 
-                        // `nice_step`/`format_value` are plain numeric
-                        // helpers (no LinearScale-specific behavior) —
-                        // `x_scale.domain()` works uniformly whether this
-                        // is the auto-computed LinearScale or an
-                        // overridden scale (e.g. TimeScale, whose domain
-                        // is Unix seconds — a raw-timestamp tooltip label
-                        // is a known Phase B follow-up, not fixed here).
-                        let (x_min, x_max) = x_scale.domain();
+                        // `x` goes through `x_scale.format_value` (the
+                        // `Scale`-provided formatter, `Scale::format_value`)
+                        // rather than the raw numeric `format_value` `y`
+                        // still uses below — correct whether this is the
+                        // auto-computed LinearScale or an overridden scale
+                        // (e.g. TimeScale, whose domain is Unix seconds; a
+                        // raw-timestamp tooltip label was a known Phase B
+                        // gap, closed by `TimeScale`'s own override).
                         let y_step = nice_step(y_scale.max - y_scale.min, TARGET_Y_TICKS as f64);
                         let lines = vec![
-                            ("x".to_owned(), format_value(data_x, nice_step(x_max - x_min, TARGET_X_TICKS as f64))),
+                            ("x".to_owned(), x_scale.format_value(data_x)),
                             ("y".to_owned(), format_value(data_y, y_step)),
                         ];
                         let anchor = (area.x(x_scale, data_x), area.y(&y_scale, data_y));

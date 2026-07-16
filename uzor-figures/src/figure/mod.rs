@@ -9,10 +9,12 @@
 pub mod bars;
 pub mod curve;
 pub mod histogram;
+pub mod timeline;
 
 pub use bars::BarFigure;
 pub use curve::CurveFigure;
 pub use histogram::{bin, Bin, HistogramFigure};
+pub use timeline::{layout_point_labels, PointLabelInput, TimelineEvent, TimelineFigure};
 
 use uzor::render::{RenderContext, TextAlign, TextBaseline};
 use uzor::types::Rect;

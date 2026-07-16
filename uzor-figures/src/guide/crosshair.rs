@@ -59,7 +59,15 @@ pub fn draw_crosshair(ctx: &mut dyn RenderContext, area: &PlotArea, theme: &Figu
 
     ctx.set_line_dash(&[]); // restore solid — every other guide in this crate assumes solid by default
 
-    let x_label = crate::scale::linear::format_value(data_x, axis_step(xscale));
+    // X goes through `xscale.format_value` (the `Scale`-provided
+    // formatter) rather than the raw numeric `format_value`/`axis_step`
+    // pair `y` still uses below: `xscale` is whatever a figure passed in
+    // (e.g. `CurveFigure::with_x_scale`'s `TimeScale` override), and only
+    // the scale itself knows how to format its own domain correctly (a
+    // `TimeScale`'s domain is Unix seconds — formatting it as a plain
+    // number was a known gap, closed by `Scale::format_value`'s default +
+    // `TimeScale`'s calendar override).
+    let x_label = xscale.format_value(data_x);
     let y_label = crate::scale::linear::format_value(data_y, axis_step(yscale));
 
     ctx.set_font(&theme.label_font);

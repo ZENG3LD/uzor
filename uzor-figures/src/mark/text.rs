@@ -24,3 +24,14 @@ pub fn draw_label_right_aligned(ctx: &mut dyn RenderContext, text: &str, x: f64,
     ctx.set_text_baseline(TextBaseline::Middle);
     ctx.fill_text(text, x, y);
 }
+
+/// Draw `text` left-aligned at `(x, y)`, vertically centered — the usual
+/// placement for a label sitting just past a marker/bar (e.g.
+/// [`crate::figure::TimelineFigure`]'s point/interval-event labels).
+pub fn draw_label_left_aligned(ctx: &mut dyn RenderContext, text: &str, x: f64, y: f64, color: &str, font: &str) {
+    ctx.set_font(font);
+    ctx.set_fill_color(color);
+    ctx.set_text_align(TextAlign::Left);
+    ctx.set_text_baseline(TextBaseline::Middle);
+    ctx.fill_text(text, x, y);
+}

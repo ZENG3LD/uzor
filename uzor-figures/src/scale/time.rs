@@ -527,6 +527,19 @@ impl Scale for TimeScale {
         let step_years = super::linear::nice_step(span_years, target as f64).round().max(1.0) as i64;
         walk_years_ticks(min_ts, max_ts, min_secs, max_secs, step_years)
     }
+
+    /// Full "day month hour:minute" calendar label at whole-minute
+    /// precision, regardless of tick weight — overrides [`Scale`]'s
+    /// default numeric-step formatter (which would otherwise print a raw
+    /// Unix-second number for this scale). Unlike [`format_by_weight`]
+    /// (used for AXIS ticks, which intentionally coarsen to e.g. just a
+    /// month name once zoomed out), a hover/tooltip/crosshair label always
+    /// wants full precision for the exact instant under the cursor.
+    fn format_value(&self, v: f64) -> String {
+        let secs = v.floor() as i64;
+        let (_, month, day, hour, minute, _second) = timestamp_to_date(secs);
+        format!("{day} {} {hour:02}:{minute:02}", MONTH_NAMES[(month - 1) as usize])
+    }
 }
 
 #[cfg(test)]
@@ -729,5 +742,12 @@ mod tests {
         let ticks = scale.ticks(5);
         assert_eq!(ticks.len(), 1);
         assert!(ticks[0].value.is_finite());
+    }
+
+    #[test]
+    fn format_value_gives_a_full_calendar_label_not_a_raw_number() {
+        let t = ts(2024, 3, 15, 9, 5, 0);
+        let scale = TimeScale::new(t - 3600.0, t + 3600.0);
+        assert_eq!(scale.format_value(t), "15 Mar 09:05");
     }
 }

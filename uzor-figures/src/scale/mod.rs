@@ -45,4 +45,29 @@ pub trait Scale {
     /// (an aim, not a guarantee — nice-number rounding and, for
     /// [`BandScale`], "one tick per category" both take precedence).
     fn ticks(&self, target_count: usize) -> Vec<Tick>;
+
+    /// Format a domain value `v` as a display label suited to THIS scale's
+    /// own data kind — e.g. a hover/tooltip/crosshair-cursor label for a
+    /// value resolved through [`crate::interact::hit::nearest_point_x`].
+    ///
+    /// Default: derive a display step from this scale's own `ticks(6)`
+    /// (roughly the precision an axis label at this scale would already
+    /// show) and format through [`linear::format_value`]. [`TimeScale`]
+    /// overrides this with a real calendar label instead of a raw
+    /// Unix-second number — the whole point of giving this method a slot
+    /// on the trait: a caller holding only a `&dyn Scale` (e.g.
+    /// [`crate::figure::CurveFigure::with_x_scale`]'s override, or
+    /// [`crate::guide::crosshair`]'s cursor label) can format a resolved
+    /// value correctly without knowing the concrete scale type underneath
+    /// — closes the "TimeScale override shows a raw number" gap flagged
+    /// when `with_x_scale` first landed.
+    fn format_value(&self, v: f64) -> String {
+        let ticks = self.ticks(6);
+        let step = if ticks.len() >= 2 {
+            (ticks[1].value - ticks[0].value).abs().max(f64::EPSILON)
+        } else {
+            1.0
+        };
+        linear::format_value(v, step)
+    }
 }

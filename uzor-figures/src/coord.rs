@@ -39,6 +39,21 @@ impl PlotArea {
         let (t0, t1) = s.band_range(i);
         (self.rect.x + t0 * self.rect.width, self.rect.x + t1 * self.rect.width)
     }
+
+    /// Screen pixel `(top, bottom)` extent of band `i` on `s`, top-to-
+    /// bottom in NATURAL READING ORDER (row/band index 0 sits at the TOP).
+    ///
+    /// Deliberately NOT [`PlotArea::y`]'s convention: `y` inverts a
+    /// continuous scale's domain (larger value plotted higher — the usual
+    /// cartesian-axis rule). A row-indexed categorical axis (e.g.
+    /// [`crate::figure::TimelineFigure`]'s lane rows) has no "larger is
+    /// higher" value semantics to invert — it reads top-down like any
+    /// list, the same way [`PlotArea::x_band`] already reads left-to-right
+    /// for column bands. This is that convention rotated 90 degrees.
+    pub fn y_band(&self, s: &BandScale, i: usize) -> (f64, f64) {
+        let (t0, t1) = s.band_range(i);
+        (self.rect.y + t0 * self.rect.height, self.rect.y + t1 * self.rect.height)
+    }
 }
 
 #[cfg(test)]
@@ -74,5 +89,20 @@ mod tests {
         let (x0, x1) = area.x_band(&band, 1);
         assert!((x0 - 200.0).abs() < 1e-9);
         assert!((x1 - 400.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn y_band_reads_top_down_in_natural_row_order() {
+        let area = PlotArea::new(Rect::new(0.0, 0.0, 100.0, 400.0));
+        let band = BandScale::new(vec!["row-0".to_owned(), "row-1".to_owned()], 0.0);
+        // Row 0 (first category) must land at the TOP of the rect —
+        // opposite of `y`'s inverted-value convention, where index/value 0
+        // would land at the BOTTOM.
+        let (top, bottom) = area.y_band(&band, 0);
+        assert!((top - 0.0).abs() < 1e-9);
+        assert!((bottom - 200.0).abs() < 1e-9);
+        let (top, bottom) = area.y_band(&band, 1);
+        assert!((top - 200.0).abs() < 1e-9);
+        assert!((bottom - 400.0).abs() < 1e-9);
     }
 }

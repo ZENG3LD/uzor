@@ -1,10 +1,10 @@
-//! `uzor-figures` — data-visualization engine core for uzor (V1 + V2).
+//! `uzor-figures` — data-visualization engine core for uzor (V1 + V2 + V3).
 //!
 //! Stateless layout + draw layer: scales (domain -> normalized `[0, 1]` ->
 //! screen px), a single plot-area coordinate transform ([`PlotArea`]),
 //! pure mark draw functions, axis/grid/crosshair/tooltip guides, a small
-//! theme, three composed figures (bar / curve / histogram), and (V2) an
-//! interaction plane — semantic input/output actions, hit-testing,
+//! theme, four composed figures (bar / curve / histogram / timeline), and
+//! (V2) an interaction plane — semantic input/output actions, hit-testing,
 //! hover/selection state, a 1D brush, and a cross-figure selection bus.
 //!
 //! See `nemo/docs/uzor-engines/uzor_figures_engine_architecture.md` §3 (crate
@@ -44,7 +44,7 @@ pub mod scale;
 pub mod theme;
 
 pub use coord::PlotArea;
-pub use figure::{BarFigure, CurveFigure, HistogramFigure, FigureOverlay};
+pub use figure::{BarFigure, CurveFigure, HistogramFigure, FigureOverlay, TimelineEvent, TimelineFigure};
 pub use interact::{BrushState, FocusSet, HitZone, HoverInfo, SelectionBus, FigureInputAction, FigureOutputAction};
 pub use mark::MarkStyle;
 pub use scale::{BandScale, LinearScale, LogScale, Scale, Tick, TimeScale};
@@ -63,13 +63,16 @@ mod proof_tests {
     use uzor_export::{render_to_png, ExportSpec};
 
     use crate::theme::FigureTheme;
-    use crate::{BarFigure, CurveFigure, HistogramFigure, FigureOverlay, TimeScale};
+    use crate::{BarFigure, CurveFigure, FocusSet, HistogramFigure, FigureOverlay, TimeScale, TimelineEvent, TimelineFigure};
 
     const WIDTH: u32 = 800;
     const HEIGHT: u32 = 500;
     // V3 (TimeScale) proof render is a different fixed size per task spec.
     const V3_WIDTH: u32 = 600;
     const V3_HEIGHT: u32 = 400;
+    // V3 (TimelineFigure) proof render size per its own task spec.
+    const TIMELINE_WIDTH: u32 = 800;
+    const TIMELINE_HEIGHT: u32 = 400;
 
     fn export_spec() -> ExportSpec {
         ExportSpec { width_px: WIDTH, height_px: HEIGHT, dpr: 1.0, background: None }
@@ -237,5 +240,95 @@ mod proof_tests {
         .expect("curve figure with TimeScale x-axis should render");
         assert_eq!(decoded_png_dims(&bytes), (V3_WIDTH, V3_HEIGHT));
         write_proof_png("figures_v3_timescale.png", &bytes);
+    }
+
+    // ── V3 (TimelineFigure) proof ────────────────────────────────────────
+
+    /// Deterministic ~12-event fixture spanning 60 days across 3 lanes,
+    /// mixed point + interval events, 3 `kind` values — generic vocabulary
+    /// only (`actor-a/b/c`), no case-specific naming (design law #8:
+    /// seeded, deterministic demos). One pair of nearby point events on
+    /// lane 0 (days 8 and 9) deliberately exercises label collision.
+    fn seeded_timeline_figure() -> TimelineFigure {
+        const ANCHOR_2024_01_01: f64 = 1_704_067_200.0;
+        const DAY_SECS: f64 = 86_400.0;
+
+        let lane_names = vec!["actor-a".to_owned(), "actor-b".to_owned(), "actor-c".to_owned()];
+
+        // (day_offset, lane, duration_days, kind, label).
+        let specs: [(f64, usize, Option<f64>, usize, &str); 12] = [
+            (2.0, 0, None, 0, "first-contact"),
+            (5.0, 1, None, 1, "relay-a"),
+            (8.0, 0, Some(4.0), 2, "burst-window"),
+            (9.0, 0, None, 0, "note"),
+            (14.0, 2, None, 1, "relay-b"),
+            (18.0, 1, Some(6.0), 0, "hold-period"),
+            (25.0, 2, None, 2, "flag-raised"),
+            (30.0, 0, None, 1, "checkpoint"),
+            (34.0, 1, None, 2, "relay-c"),
+            (40.0, 2, Some(10.0), 0, "quiet-window"),
+            (48.0, 0, None, 2, "final-note"),
+            (55.0, 1, None, 1, "close-out"),
+        ];
+
+        let events: Vec<TimelineEvent> = specs
+            .into_iter()
+            .map(|(day_offset, lane, duration_days, kind, label)| {
+                let ts = ANCHOR_2024_01_01 + day_offset * DAY_SECS;
+                let end_ts = duration_days.map(|d| ts + d * DAY_SECS);
+                TimelineEvent { ts, end_ts, lane, label: label.to_owned(), kind }
+            })
+            .collect();
+
+        TimelineFigure::new(events, lane_names).with_title("Timeline (seeded)")
+    }
+
+    #[test]
+    fn timeline_figure_renders_to_a_valid_png() {
+        let figure = seeded_timeline_figure();
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: TIMELINE_WIDTH, height_px: TIMELINE_HEIGHT, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, TIMELINE_WIDTH as f64, TIMELINE_HEIGHT as f64);
+
+        let bytes = render_to_png(&spec, |ctx| {
+            figure.render(ctx, rect, &theme);
+        })
+        .expect("timeline figure should render");
+        assert_eq!(decoded_png_dims(&bytes), (TIMELINE_WIDTH, TIMELINE_HEIGHT));
+        write_proof_png("figures_v3_timeline.png", &bytes);
+    }
+
+    #[test]
+    fn timeline_figure_overlay_renders_hover_crosshair_and_event_highlight_to_a_valid_png() {
+        let figure = seeded_timeline_figure();
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: TIMELINE_WIDTH, height_px: TIMELINE_HEIGHT, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, TIMELINE_WIDTH as f64, TIMELINE_HEIGHT as f64);
+        let area = figure.plot_area(rect);
+        let time_scale = figure.time_scale().expect("seeded fixture has events");
+        let lanes = figure.lane_scale();
+
+        // Hover roughly over the interval event on lane 0 ("burst-window",
+        // day 8-12) — exercises the crosshair + hovered-event highlight +
+        // tooltip render path together, same "roughly centered" proof
+        // discipline as the curve/histogram V2 overlay proofs (pixel-exact
+        // hit-test identity is already covered by `figure::timeline`'s own
+        // unit tests). `focus` additionally pins the SAME event selected
+        // (persistent outline), so the proof also shows the FocusSet path.
+        let hover_ts = 1_704_067_200.0 + 10.0 * 86_400.0;
+        let hx = area.x(&time_scale, hover_ts);
+        let (top, bottom) = area.y_band(&lanes, 0);
+        let hy = (top + bottom) / 2.0;
+
+        let mut focus = FocusSet::empty();
+        focus.select(2); // specs index 2 == "burst-window"
+        let overlay = FigureOverlay { hover_px: Some((hx, hy)), brush: None, focus: Some(&focus) };
+
+        let bytes = render_to_png(&spec, |ctx| {
+            figure.render_with(ctx, rect, &theme, &overlay);
+        })
+        .expect("timeline figure with hover overlay should render");
+        assert_eq!(decoded_png_dims(&bytes), (TIMELINE_WIDTH, TIMELINE_HEIGHT));
+        write_proof_png("figures_v3_timeline_hover.png", &bytes);
     }
 }
