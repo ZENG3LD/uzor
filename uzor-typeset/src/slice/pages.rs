@@ -1,91 +1,116 @@
-//! [`PageMaster`]/[`slice_pages`] — the page slicing target (design doc
-//! §4.1). Uses [`PageRegionSequence`] under the hood: a page body is one
+//! [`Page`]/[`slice_pages`] — the page slicing target (design doc §4.1).
+//! Uses [`PageRegionSequence`] under the hood for the page BODY: one
 //! region per page, shrinking within a page (a block placed 2/3 down a
 //! page only gets the remaining 1/3, then a fresh full region on the next
 //! page) — Typst's own model, adopted directly.
 //!
-//! P0 scope: `width`/`height`/`margins` only — no header/footer margin-box
-//! content, no page-number token (both are P2 additions once
-//! `master/{page_master,placeholder}.rs`/`style/theme.rs` land, per the
-//! design doc's own phase gating).
+//! [`crate::master::PageMaster`] itself (geometry + margins +
+//! header/footer + page-number token) moved to `master::page_master` this
+//! phase (P2) — see that module's own doc comment for why. This module
+//! keeps [`Page`] + [`slice_pages`] + the header/footer/page-number
+//! WIRING: header/footer margin-box content is composed ONCE (via a
+//! [`FixedRegionSequence`] over its own margin band) and reused UNCHANGED
+//! on every page — the ONLY per-page-varying piece is the page-number
+//! STRING, precomputed here at slice time via
+//! [`crate::master::PageNumberStyle::format_for`] (design doc §4.1:
+//! "page_number_token ... resolved per-page during slicing").
 
 use uzor::types::Rect;
 use uzor_text::LineShaper;
 
 use crate::compose::{compose, ComposeStyle};
-use crate::region::{Frame, PageRegionSequence};
+use crate::master::PageMaster;
+use crate::region::{FixedRegionSequence, Frame, PageRegionSequence, Region};
 use crate::scene::BlockNode;
 
-/// Page margins, one value per edge.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Margins {
-    pub top: f64,
-    pub right: f64,
-    pub bottom: f64,
-    pub left: f64,
-}
-
-impl Margins {
-    pub fn new(top: f64, right: f64, bottom: f64, left: f64) -> Self {
-        Self { top, right, bottom, left }
-    }
-
-    /// Same margin on every edge.
-    pub fn uniform(all: f64) -> Self {
-        Self { top: all, right: all, bottom: all, left: all }
-    }
-}
-
-/// Page geometry: physical size + margins. See this module's own doc
-/// comment for what P2 adds on top (header/footer/page-number-token).
-#[derive(Debug, Clone, Copy)]
-pub struct PageMaster {
-    pub width: f64,
-    pub height: f64,
-    pub margins: Margins,
-}
-
-impl PageMaster {
-    pub fn new(width: f64, height: f64, margins: Margins) -> Self {
-        Self { width, height, margins }
-    }
-
-    /// The page body rect (page size, inset by `margins`) — the one region
-    /// [`PageRegionSequence`] hands back on every page.
-    pub fn body_rect(&self) -> Rect {
-        Rect::new(
-            self.margins.left,
-            self.margins.top,
-            (self.width - self.margins.left - self.margins.right).max(0.0),
-            (self.height - self.margins.top - self.margins.bottom).max(0.0),
-        )
-    }
-}
-
-/// One sliced page: its 0-based index + the composed [`Frame`] that landed
-/// on it.
+/// One sliced page: its 0-based index + the composed [`Frame`] that
+/// landed on it, plus (P2) the shared header/footer frames and this
+/// page's own resolved page-number placement.
 pub struct Page<'a> {
     pub index: u32,
+    /// Total pages this `slice_pages` call produced — the SAME value on
+    /// every `Page` it returns, needed for `"n of total"`-style page
+    /// numbering.
+    pub total: u32,
     pub frame: Frame<'a>,
+    /// [`crate::master::PageMaster::header`] composed ONCE, shared
+    /// verbatim across every page (`None` when the master has no header).
+    pub header: Option<Frame<'a>>,
+    /// [`crate::master::PageMaster::footer`] composed ONCE, shared
+    /// verbatim across every page (`None` when the master has no footer).
+    pub footer: Option<Frame<'a>>,
+    /// This page's own resolved page-number text + paint rect (`None`
+    /// when the master has no [`crate::master::PageMaster::
+    /// page_number_token`]).
+    pub page_number: Option<PageNumberPlacement>,
+}
+
+/// A page's own resolved page-number text, ready to paint at `rect`
+/// verbatim (design law 1 — text AND position both resolved once, at
+/// slice time, never re-derived at paint time).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PageNumberPlacement {
+    pub text: String,
+    pub rect: Rect,
 }
 
 /// Compose `flow` over `master`'s page geometry and slice the result into
 /// pages — one [`Page`] per [`Frame`] `compose()` produced. Stops as soon
 /// as every block is placed (never emits a trailing empty page).
+/// [`crate::master::PageMaster::header`]/`footer` (if present) are
+/// composed once against their own margin bands and attached to every
+/// returned `Page` unchanged; [`crate::master::PageMaster::
+/// page_number_token`] (if present) is formatted per-page from this
+/// call's own total page count.
 ///
 /// `style`/`shaper` are not part of the design doc's own abbreviated
-/// `slice_pages(scene, master)` pseudocode (§4.1) — added here for the same
-/// reason [`compose`] needs them (see this crate's `CLAUDE.md`
+/// `slice_pages(scene, master)` pseudocode (§4.1) — added here for the
+/// same reason [`compose`] needs them (see this crate's `CLAUDE.md`
 /// "Divergences from the design doc"), and because P0 does not build
-/// `SceneSpec`/`Theme` (§2.1/§5, not part of P0's own deliverables list),
-/// `flow` is taken directly rather than via a `&SceneSpec`.
-pub fn slice_pages<'a>(flow: &'a [BlockNode<'a>], master: &PageMaster, style: &ComposeStyle, shaper: &dyn LineShaper) -> Vec<Page<'a>> {
+/// `SceneSpec`/`Theme` (§2.1/§5 wasn't part of P0's own deliverables
+/// list), `flow` is taken directly rather than via a `&SceneSpec`. This
+/// signature is UNCHANGED from P0/P1 (additive law: `PageMaster`/`Page`
+/// grew new fields this phase, `slice_pages` needed no new parameter to
+/// wire them — painting a theme onto the result is `crate::render::
+/// draw_page`'s own job, not this function's).
+pub fn slice_pages<'a>(flow: &'a [BlockNode<'a>], master: &PageMaster<'a>, style: &ComposeStyle, shaper: &dyn LineShaper) -> Vec<Page<'a>> {
     let mut regions = PageRegionSequence::new(master.body_rect());
-    compose(flow, &mut regions, style, shaper)
+    let mut pages: Vec<Page<'a>> = compose(flow, &mut regions, style, shaper)
         .into_iter()
         .enumerate()
-        .map(|(i, frame)| Page { index: i as u32, frame })
-        .collect()
+        .map(|(i, frame)| Page { index: i as u32, total: 0, frame, header: None, footer: None, page_number: None })
+        .collect();
+
+    let total = pages.len() as u32;
+    let header_frame = master.header.map(|content| compose_margin_box(content, master.header_rect(), style, shaper));
+    let footer_frame = master.footer.map(|content| compose_margin_box(content, master.footer_content_rect(), style, shaper));
+
+    for page in &mut pages {
+        page.total = total;
+        page.header = header_frame.clone();
+        page.footer = footer_frame.clone();
+        page.page_number = master
+            .page_number_token
+            .as_ref()
+            .map(|token| PageNumberPlacement { text: token.format_for(page.index, total), rect: master.page_number_rect() });
+    }
+
+    pages
+}
+
+/// Compose fixed margin-box content (header/footer) ONCE into a single
+/// [`Frame`] at `rect` — the SAME content painted unchanged on every page
+/// (design doc §4.1). Content that overflows `rect` degrades the same
+/// documented way any atomic overflow elsewhere in this crate does (P0's
+/// own risk note): whatever fits is placed, the remainder is simply not
+/// represented (a margin box has no second region to spill into — a
+/// header/footer is expected to be a couple of short lines).
+fn compose_margin_box<'a>(content: &'a [BlockNode<'a>], rect: Rect, style: &ComposeStyle, shaper: &dyn LineShaper) -> Frame<'a> {
+    let mut regions = FixedRegionSequence::new(rect);
+    compose(content, &mut regions, style, shaper)
+        .into_iter()
+        .next()
+        .unwrap_or(Frame { region: Region { rect }, blocks: Vec::new(), overflow: None })
 }
 
 #[cfg(test)]
@@ -94,6 +119,7 @@ mod tests {
     use uzor::fonts::FontFamily;
     use uzor_text::{layout_paragraph, CosmicShaper, FontSpec, Paragraph, StyledRun};
 
+    use crate::master::{Margins, PageNumberFormat, PageNumberStyle};
     use crate::scene::{Block, BlockNode};
 
     /// A repeated sentence long enough that ~2.5 pages of it wrap to 3
@@ -215,5 +241,59 @@ mod tests {
             full_layout.lines.len(),
             "every line of the paragraph must be conserved across the split, none dropped or duplicated"
         );
+    }
+
+    /// P2: a master's header/footer content + page-number token must be
+    /// attached to EVERY sliced page, with the correct `"n of total"`
+    /// text per page (design doc §4.1: "resolved per-page during
+    /// slicing").
+    #[test]
+    fn header_footer_and_page_number_are_attached_to_every_sliced_page() {
+        let font = body_font();
+        let shaper = CosmicShaper::headless();
+
+        let header_run = [StyledRun::new("Header", font)];
+        let header_flow = [BlockNode::new(Block::Paragraph(Paragraph::new(&header_run, 200.0)))];
+        let footer_run = [StyledRun::new("Footer", font)];
+        let footer_flow = [BlockNode::new(Block::Paragraph(Paragraph::new(&footer_run, 200.0)))];
+
+        let master = PageMaster::new(400.0, 300.0, Margins::uniform(30.0))
+            .with_header(&header_flow)
+            .with_footer(&footer_flow)
+            .with_page_number(PageNumberStyle::new(PageNumberFormat::OfTotal, 1));
+
+        // Enough repeated paragraphs to force at least 2 pages of this
+        // small (400x300, 30px margins) fixture page.
+        let paragraph_texts: Vec<String> = (0..8).map(|i| format!("Paragraph {i}: {SENTENCE}")).collect();
+        let runs: Vec<[StyledRun<'_>; 1]> = paragraph_texts.iter().map(|t| [StyledRun::new(t.as_str(), font)]).collect();
+        let flow: Vec<BlockNode<'_>> =
+            runs.iter().map(|r| BlockNode::new(Block::Paragraph(Paragraph::new(r, master.body_rect().width)))).collect();
+
+        let style = ComposeStyle::new(0.0, font);
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert!(pages.len() >= 2, "fixture must span at least 2 pages to prove the number/total wiring");
+
+        for (i, page) in pages.iter().enumerate() {
+            assert!(page.header.as_ref().is_some_and(|h| !h.blocks.is_empty()), "every page must carry the header");
+            assert!(page.footer.as_ref().is_some_and(|f| !f.blocks.is_empty()), "every page must carry the footer");
+            let number = page.page_number.as_ref().expect("page-number token was configured on the master");
+            assert_eq!(number.text, format!("{} of {}", i + 1, pages.len()));
+        }
+    }
+
+    #[test]
+    fn a_master_without_header_footer_or_page_number_produces_none_for_all_three() {
+        let font = body_font();
+        let shaper = CosmicShaper::headless();
+        let runs = [StyledRun::new("A single short paragraph.", font)];
+        let flow = [BlockNode::new(Block::Paragraph(Paragraph::new(&runs, 400.0)))];
+        let master = PageMaster::new(500.0, 700.0, Margins::uniform(40.0));
+        let style = ComposeStyle::new(0.0, font);
+
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1);
+        assert!(pages[0].header.is_none());
+        assert!(pages[0].footer.is_none());
+        assert!(pages[0].page_number.is_none());
     }
 }

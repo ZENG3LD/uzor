@@ -78,6 +78,7 @@ impl<'a> PlacedBlock<'a> {
 }
 
 /// One region's worth of composed content.
+#[derive(Clone)]
 pub struct Frame<'a> {
     pub region: Region,
     pub blocks: Vec<PlacedBlock<'a>>,

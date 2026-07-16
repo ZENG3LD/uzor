@@ -36,7 +36,8 @@ use uzor_text::draw_paragraph;
 
 use crate::region::{ListPlacement, PlacedBlock, TablePlacement};
 use crate::scene::Block;
-use crate::slice::Page;
+use crate::slice::{Page, PageNumberPlacement};
+use crate::style::{ColorRole, FontRole, Theme};
 
 /// Dashed magenta — the same debug-outline convention
 /// `uzor_text::draw_paragraph`'s own `InlineBox` outline uses, so a
@@ -49,13 +50,55 @@ const IMAGE_PLACEHOLDER_COLOR: &str = "#ff00ffff";
 /// derives its position from the SAME `PlacedBlock::rect`/
 /// `paragraph_layout`/`table_placement`/`list_placement`
 /// [`crate::compose::compose`] already computed, never a second ad hoc
-/// position formula). `figure_theme` is the theme every
-/// [`Block::Figure`] renders with (P2's full `Theme::figure_theme()`
-/// resolution chain doesn't exist yet — see this crate's `CLAUDE.md`).
-pub fn draw_page(ctx: &mut dyn RenderContext, page: &Page<'_>, default_color: &str, figure_theme: &FigureTheme) {
+/// position formula), followed by `page`'s own header/footer (P2 — see
+/// `crate::master::PageMaster`) and page-number text, if present.
+///
+/// `theme` resolves EVERY paint color/font this function uses — the ink
+/// color paragraphs/table gridlines/list markers fall back to
+/// (`ColorRole::Ink`), the figure theme every `Block::Figure` renders
+/// with (`Theme::figure_theme`), and the page-number's own caption
+/// font/color — design doc §5's own closing paragraph: "a theme edit
+/// propagates ... through the SAME master->layout->instance chain."
+/// `draw_page`'s signature changed from P1's `(ctx, page, default_color,
+/// figure_theme)` now that `Theme` exists for real (see this crate's
+/// `CLAUDE.md` — the same "grow the signature to the type the phase
+/// actually needs" pattern P0->P1 already used for this same function).
+pub fn draw_page(ctx: &mut dyn RenderContext, page: &Page<'_>, theme: &Theme) {
+    let default_color = theme.color_hex(ColorRole::Ink);
+    let figure_theme = theme.figure_theme();
+
     for placed in &page.frame.blocks {
-        draw_placed_block(ctx, placed, default_color, figure_theme);
+        draw_placed_block(ctx, placed, &default_color, &figure_theme);
     }
+    if let Some(header) = &page.header {
+        for placed in &header.blocks {
+            draw_placed_block(ctx, placed, &default_color, &figure_theme);
+        }
+    }
+    if let Some(footer) = &page.footer {
+        for placed in &footer.blocks {
+            draw_placed_block(ctx, placed, &default_color, &figure_theme);
+        }
+    }
+    if let Some(number) = &page.page_number {
+        draw_page_number(ctx, number, theme);
+    }
+}
+
+/// Paint a page's own page-number text (design doc §4.1's
+/// `page_number_token`, "resolved per-page during slicing" — the STRING
+/// and its RECT are both already resolved by [`crate::slice::slice_pages`]
+/// at slice time; this function only paints, never re-derives either,
+/// design law 1). Right-aligned + vertically centered within its own
+/// reserved footer slice, in `FontRole::Caption`/`ColorRole::Muted` — the
+/// same small, de-emphasized styling any real word processor gives a
+/// page number.
+fn draw_page_number(ctx: &mut dyn RenderContext, placement: &PageNumberPlacement, theme: &Theme) {
+    ctx.set_font(&theme.font_spec(FontRole::Caption).to_css_font());
+    ctx.set_fill_color(&theme.color_hex(ColorRole::Muted));
+    ctx.set_text_align(TextAlign::Right);
+    ctx.set_text_baseline(TextBaseline::Middle);
+    ctx.fill_text(&placement.text, placement.rect.x + placement.rect.width, placement.rect.y + placement.rect.height / 2.0);
 }
 
 /// Paint ONE placed block — factored out of [`draw_page`] so table/list
@@ -263,15 +306,13 @@ mod tests {
         assert!(head_lines > 0 && tail_lines > 0, "both halves of the split must carry at least one whole line, never an empty placement");
 
         let spec = ExportSpec { width_px: PAGE_WIDTH, height_px: PAGE_HEIGHT, dpr: 1.0, background: Some([255, 255, 255, 255]) };
-        let figure_theme = uzor_figures::FigureTheme::light();
+        let theme = crate::style::Theme::light_report();
 
-        let page1_bytes =
-            render_to_png(&spec, |ctx| draw_page(ctx, &pages[0], "#111111", &figure_theme)).expect("page 1 proof render should succeed");
+        let page1_bytes = render_to_png(&spec, |ctx| draw_page(ctx, &pages[0], &theme)).expect("page 1 proof render should succeed");
         assert_eq!(decoded_png_dims(&page1_bytes), (PAGE_WIDTH, PAGE_HEIGHT));
         write_proof_png("typeset_p0_page1.png", &page1_bytes);
 
-        let page2_bytes =
-            render_to_png(&spec, |ctx| draw_page(ctx, &pages[1], "#111111", &figure_theme)).expect("page 2 proof render should succeed");
+        let page2_bytes = render_to_png(&spec, |ctx| draw_page(ctx, &pages[1], &theme)).expect("page 2 proof render should succeed");
         assert_eq!(decoded_png_dims(&page2_bytes), (PAGE_WIDTH, PAGE_HEIGHT));
         write_proof_png("typeset_p0_page2.png", &page2_bytes);
 
@@ -473,12 +514,110 @@ mod tests {
         }
 
         let spec = ExportSpec { width_px: PAGE_WIDTH, height_px: PAGE_HEIGHT, dpr: 1.0, background: Some([255, 255, 255, 255]) };
-        let figure_theme = uzor_figures::FigureTheme::light();
+        let theme = crate::style::Theme::light_report();
 
         for (i, page) in pages.iter().enumerate() {
-            let bytes = render_to_png(&spec, |ctx| draw_page(ctx, page, "#111111", &figure_theme)).expect("page proof render should succeed");
+            let bytes = render_to_png(&spec, |ctx| draw_page(ctx, page, &theme)).expect("page proof render should succeed");
             assert_eq!(decoded_png_dims(&bytes), (PAGE_WIDTH, PAGE_HEIGHT));
             write_proof_png(&format!("typeset_p1_page{}.png", i + 1), &bytes);
         }
+    }
+
+    /// P2 headless proof (design law 8 + this arc's own "themes visibly
+    /// differ, geometry doesn't" promise, §7 P2 risk note: "theme never
+    /// changes metrics"): the SAME seeded 2-page report, composed once,
+    /// painted under TWO themes (`Theme::light_report`/
+    /// `Theme::dark_deck`) — proves (a) every placed block's rect is
+    /// bit-identical between the two themes (their `DesignTokens` font
+    /// sizes are deliberately equal — a theme must never change layout
+    /// geometry on its own), (b) colors visibly differ (asserted via
+    /// `color_hex`, confirmed by eye in the PNGs), and (c) every page
+    /// shows the master's header/footer + the correct `"n of total"`
+    /// page number (design doc §4.1's `page_number_token`, "resolved
+    /// per-page during slicing").
+    #[test]
+    fn same_scene_under_two_themes_shares_identical_geometry_but_differs_in_paint_with_a_footer_page_number_on_every_page() {
+        use crate::master::{PageNumberFormat, PageNumberStyle};
+        use crate::style::{ColorRole, Theme};
+
+        const CAPTION_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 11.0, bold: false, italic: false };
+
+        let body_width = PageMaster::new(PAGE_WIDTH as f64, PAGE_HEIGHT as f64, Margins::uniform(40.0)).body_rect().width;
+
+        let header_run = [StyledRun::new("Case Report — Confidential (uzor-typeset P2 Proof)", CAPTION_FONT)];
+        let header_flow = [BlockNode::new(Block::Paragraph(Paragraph::new(&header_run, body_width)))];
+        let footer_run = [StyledRun::new("uzor-typeset — Arc 4 Phase P2", CAPTION_FONT)];
+        let footer_flow = [BlockNode::new(Block::Paragraph(Paragraph::new(&footer_run, body_width)))];
+
+        let flow = seeded_flow();
+        let master = PageMaster::new(PAGE_WIDTH as f64, PAGE_HEIGHT as f64, Margins::uniform(40.0))
+            .with_header(&header_flow)
+            .with_footer(&footer_flow)
+            .with_page_number(PageNumberStyle::new(PageNumberFormat::OfTotal, 1));
+
+        let shaper = CosmicShaper::headless();
+        let light = Theme::light_report();
+        let dark = Theme::dark_deck();
+
+        let light_style = ComposeStyle::from_theme(&light, 14.0);
+        let dark_style = ComposeStyle::from_theme(&dark, 14.0);
+        assert_eq!(
+            light_style.default_font.size_px, dark_style.default_font.size_px,
+            "the two proof themes share identical font sizes on purpose — only color may differ"
+        );
+
+        let light_pages = slice_pages(&flow, &master, &light_style, &shaper);
+        let dark_pages = slice_pages(&flow, &master, &dark_style, &shaper);
+
+        assert_eq!(light_pages.len(), 2, "fixture is tuned to land on exactly 2 pages, got {}", light_pages.len());
+        assert_eq!(light_pages.len(), dark_pages.len(), "theme must never change how many pages the SAME content slices into");
+
+        for (l, d) in light_pages.iter().zip(dark_pages.iter()) {
+            assert_eq!(l.frame.blocks.len(), d.frame.blocks.len(), "theme must never change how many blocks land on a page");
+            for (lb, db) in l.frame.blocks.iter().zip(d.frame.blocks.iter()) {
+                assert_eq!(lb.rect, db.rect, "theme must never change a placed block's own geometry when font sizes are identical");
+            }
+        }
+
+        // Every page (both themes) carries the master's header/footer
+        // content and the correct "n of total" page number.
+        for pages in [&light_pages, &dark_pages] {
+            for (i, page) in pages.iter().enumerate() {
+                assert!(page.header.as_ref().is_some_and(|h| !h.blocks.is_empty()), "every page must carry the master's header content");
+                assert!(page.footer.as_ref().is_some_and(|f| !f.blocks.is_empty()), "every page must carry the master's footer content");
+                let number = page.page_number.as_ref().expect("page-number token was configured on the master");
+                assert_eq!(number.text, format!("{} of {}", i + 1, pages.len()));
+            }
+        }
+
+        let light_bg = rgba_from_hex(light.color_rgb(ColorRole::Background));
+        let dark_bg = rgba_from_hex(dark.color_rgb(ColorRole::Background));
+        let spec_light = ExportSpec { width_px: PAGE_WIDTH, height_px: PAGE_HEIGHT, dpr: 1.0, background: Some(light_bg) };
+        let spec_dark = ExportSpec { width_px: PAGE_WIDTH, height_px: PAGE_HEIGHT, dpr: 1.0, background: Some(dark_bg) };
+
+        let light_page1 = render_to_png(&spec_light, |ctx| draw_page(ctx, &light_pages[0], &light)).expect("light page 1 proof render should succeed");
+        assert_eq!(decoded_png_dims(&light_page1), (PAGE_WIDTH, PAGE_HEIGHT));
+        write_proof_png("typeset_p2_light_page1.png", &light_page1);
+
+        let light_page2 = render_to_png(&spec_light, |ctx| draw_page(ctx, &light_pages[1], &light)).expect("light page 2 proof render should succeed");
+        assert_eq!(decoded_png_dims(&light_page2), (PAGE_WIDTH, PAGE_HEIGHT));
+        write_proof_png("typeset_p2_light_page2.png", &light_page2);
+
+        let dark_page1 = render_to_png(&spec_dark, |ctx| draw_page(ctx, &dark_pages[0], &dark)).expect("dark page 1 proof render should succeed");
+        assert_eq!(decoded_png_dims(&dark_page1), (PAGE_WIDTH, PAGE_HEIGHT));
+        write_proof_png("typeset_p2_dark_page1.png", &dark_page1);
+
+        assert_ne!(
+            light.color_hex(ColorRole::Background),
+            dark.color_hex(ColorRole::Background),
+            "the two themes must paint visibly different backgrounds"
+        );
+        assert_ne!(light.color_hex(ColorRole::Ink), dark.color_hex(ColorRole::Ink), "the two themes must paint visibly different ink");
+    }
+
+    /// `0xRRGGBB` -> straight, opaque RGBA bytes — the shape
+    /// `uzor_export::ExportSpec::background` takes.
+    fn rgba_from_hex(rgb: u32) -> [u8; 4] {
+        [((rgb >> 16) & 0xff) as u8, ((rgb >> 8) & 0xff) as u8, (rgb & 0xff) as u8, 255]
     }
 }

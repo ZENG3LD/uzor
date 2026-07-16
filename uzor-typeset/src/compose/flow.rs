@@ -70,6 +70,18 @@ impl ComposeStyle {
     pub fn new(paragraph_spacing: f64, default_font: FontSpec) -> Self {
         Self { paragraph_spacing, default_font }
     }
+
+    /// Build a `ComposeStyle` whose `default_font` resolves through
+    /// `theme`'s own semantic tier (`FontRole::Body`) — design doc §5:
+    /// "paragraph default fonts/colors resolve through [the theme]." The
+    /// per-run/per-paragraph color a `draw_paragraph` fallback paints
+    /// with is a separate, `crate::render::draw_page`-side resolution
+    /// (`Theme::color_hex(ColorRole::Ink)`) — `ComposeStyle` itself only
+    /// ever carries layout-affecting fields (design law 3), never a paint
+    /// color.
+    pub fn from_theme(theme: &crate::style::Theme, paragraph_spacing: f64) -> Self {
+        Self { paragraph_spacing, default_font: theme.font_spec(crate::style::FontRole::Body) }
+    }
 }
 
 /// In-progress split state for whichever flow block `compose`'s loop is
@@ -624,6 +636,18 @@ mod tests {
             page2.blocks.len() >= 2 || page2.overflow.is_some(),
             "the heading's own region must also carry (or be about to carry) the following block"
         );
+    }
+
+    /// `ComposeStyle::from_theme` must resolve `default_font` through the
+    /// theme's own `FontRole::Body`, not some independent hardcoded value
+    /// (design doc §5: "paragraph default fonts ... resolve through the
+    /// theme").
+    #[test]
+    fn compose_style_from_theme_resolves_default_font_through_the_theme() {
+        let theme = crate::style::Theme::light_report();
+        let style = ComposeStyle::from_theme(&theme, 8.0);
+        assert_eq!(style.default_font, theme.font_spec(crate::style::FontRole::Body));
+        assert_eq!(style.paragraph_spacing, 8.0);
     }
 
     /// A table taller than one region must split BETWEEN rows only — every

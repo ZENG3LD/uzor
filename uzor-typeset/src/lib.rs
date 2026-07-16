@@ -10,23 +10,33 @@
 //! rasterize or assemble files (`uzor-export`), and holds no
 //! editing/selection/domain state.
 //!
-//! This crate currently implements **Phase P0 + Phase P1** of the design
-//! doc: the scene model's flow-unit (`scene::Block`/`BlockNode`/`BlockId`,
-//! `Paragraph`/`Spacer` from P0 plus `Figure`/`Image`/`Table`/`List` from
-//! P1), the region abstraction (`region::{Region, RegionSequence,
-//! PageRegionSequence, FixedRegionSequence}`), keep/break-aware compose
-//! (`compose::compose`, `compose::BreakControl`), and page slicing
-//! (`slice::{PageMaster, slice_pages}`) — see this crate's `CLAUDE.md` for
+//! This crate currently implements **Phase P0 + Phase P1 + Phase P2** of
+//! the design doc: the scene model's flow-unit (`scene::Block`/
+//! `BlockNode`/`BlockId`, `Paragraph`/`Spacer` from P0 plus `Figure`/
+//! `Image`/`Table`/`List` from P1), the region abstraction
+//! (`region::{Region, RegionSequence, PageRegionSequence,
+//! FixedRegionSequence}`), keep/break-aware compose (`compose::compose`,
+//! `compose::BreakControl`), page slicing with header/footer/page-number
+//! (`slice::{PageMaster, slice_pages}`, `master::page_master`), masters/
+//! placeholders (`master::{SlideMaster, SlideLayout, PlaceholderKind,
+//! PlaceholderSlot, SlideInstance}`), and style resolution
+//! (`style::{PropertyState, Theme}`) — see this crate's `CLAUDE.md` for
 //! exactly what each phase built vs. deferred, and where its
 //! implementation diverges from the design doc's own pseudocode.
 
 pub mod compose;
+pub mod master;
 pub mod region;
 pub mod render;
 pub mod scene;
 pub mod slice;
+pub mod style;
 
 pub use compose::{compose, BreakControl, ComposeStyle};
+pub use master::{
+    LayoutId, MasterId, PlaceholderFill, PlaceholderKind, PlaceholderSlot, PlacedPlaceholder, PageNumberFormat, PageNumberStyle,
+    SlideInstance, SlideLayout, SlideMaster,
+};
 pub use region::{
     FixedRegionSequence, Frame, ListPlacement, PageRegionSequence, PlacedBlock, PlacedListItem, PlacedTableCell, PlacedTableRow, Region,
     RegionSequence, TablePlacement,
@@ -36,4 +46,8 @@ pub use scene::{
     resolve_block_ids, Block, BlockId, BlockNode, BlockSizing, ColumnSpec, FigureBlock, ImageBlock, ImageFit, ListBlock, ListItem,
     MarkerStyle, TableBlock, TableCell, TableRow, TypesetFigure,
 };
-pub use slice::{slice_pages, Margins, Page, PageMaster};
+pub use slice::{slice_pages, Margins, Page, PageMaster, PageNumberPlacement};
+pub use style::{
+    resolve_property_chain, BrandTokens, ColorRole, ComponentStyle, DesignTokens, FigureThemeTokens, FontFileRef, FontRole, PropertyState,
+    ResolvedProperty, RootPropertyState, TextStyle, Theme,
+};
