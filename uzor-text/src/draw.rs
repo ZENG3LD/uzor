@@ -230,4 +230,126 @@ mod tests {
         assert_eq!(decoded_png_dims(&bytes), (WIDTH_P2, HEIGHT_P2));
         write_proof_png("text_p2_justify.png", &bytes);
     }
+
+    /// Phase 5 headless proof: the SAME fixed two-paragraph text, justified,
+    /// laid out under `Greedy` (left column) vs. `KnuthPlass` (right column)
+    /// side by side — doubles as the visual quality-delta demonstration and
+    /// a regression/parity check (design law 8: a two-column comparison,
+    /// never a single screenshot).
+    #[test]
+    fn greedy_vs_knuth_plass_justified_side_by_side_renders_to_a_valid_png() {
+        use crate::linebreak::BreakStrategy;
+
+        const COL_WIDTH: f64 = 420.0;
+        const MARGIN: f64 = 20.0;
+        const GAP: f64 = 24.0;
+        const HEADER_H: f64 = 30.0;
+        const PARA_GAP: f64 = 16.0;
+        const HEIGHT: u32 = 620;
+
+        let width = (MARGIN * 2.0 + COL_WIDTH * 2.0 + GAP).round() as u32;
+
+        let body_font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let label_font = FontSpec::new(FontFamily::Roboto, 15.0).bold();
+
+        // Fixed seeded two-paragraph fixture — no lorem-ipsum RNG (design
+        // law 8), deliberately describing the very comparison this PNG
+        // renders.
+        const PARA_A: &str = "A disproportionately long word early in a paragraph \
+            can force a first-fit greedy packer into an unevenly loose line, while \
+            the very next line ends up abnormally tight by comparison, which is \
+            precisely the raggedness Knuth-Plass distributes evenly instead.";
+        const PARA_B: &str = "Business documents full of long compound words like \
+            implementation, infrastructure, and accountability often expose this \
+            unevenness, especially inside a narrow justified column where every \
+            extra letter matters more than it first seems to.";
+
+        let shaper = CosmicShaper::headless();
+        let runs_a = [StyledRun::new(PARA_A, body_font)];
+        let runs_b = [StyledRun::new(PARA_B, body_font)];
+
+        let build_column = |strategy: BreakStrategy,
+                             label: &str|
+         -> (ParagraphLayout, ParagraphLayout, ParagraphLayout) {
+            let label_runs = [StyledRun::new(label, label_font)];
+            let label_paragraph = Paragraph::new(&label_runs, COL_WIDTH);
+            let a = Paragraph::new(&runs_a, COL_WIDTH).with_align(ParagraphAlign::Justify).with_break_strategy(strategy);
+            let b = Paragraph::new(&runs_b, COL_WIDTH).with_align(ParagraphAlign::Justify).with_break_strategy(strategy);
+            (layout_paragraph(&label_paragraph, &shaper), layout_paragraph(&a, &shaper), layout_paragraph(&b, &shaper))
+        };
+
+        let (greedy_label, greedy_a, greedy_b) = build_column(BreakStrategy::Greedy, "GREEDY + JUSTIFY");
+        let (kp_label, kp_a, kp_b) = build_column(BreakStrategy::KnuthPlass, "KNUTH-PLASS + JUSTIFY");
+        assert!(greedy_a.lines.len() > 1 && kp_a.lines.len() > 1, "fixture must wrap to multiple lines");
+
+        let spec = ExportSpec { width_px: width, height_px: HEIGHT, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+        let bytes = render_to_png(&spec, |ctx| {
+            let left_x = MARGIN;
+            let right_x = MARGIN + COL_WIDTH + GAP;
+
+            draw_paragraph(ctx, (left_x, 24.0), &greedy_label, "#111111", false);
+            draw_paragraph(ctx, (left_x, 24.0 + HEADER_H), &greedy_a, "#111111", false);
+            let greedy_b_y = 24.0 + HEADER_H + greedy_a.height + PARA_GAP;
+            draw_paragraph(ctx, (left_x, greedy_b_y), &greedy_b, "#111111", false);
+
+            draw_paragraph(ctx, (right_x, 24.0), &kp_label, "#111111", false);
+            draw_paragraph(ctx, (right_x, 24.0 + HEADER_H), &kp_a, "#111111", false);
+            let kp_b_y = 24.0 + HEADER_H + kp_a.height + PARA_GAP;
+            draw_paragraph(ctx, (right_x, kp_b_y), &kp_b, "#111111", false);
+
+            let divider_x = MARGIN + COL_WIDTH + GAP / 2.0;
+            ctx.set_stroke_color("#cccccccc");
+            ctx.set_stroke_width(1.0);
+            ctx.begin_path();
+            ctx.move_to(divider_x, 10.0);
+            ctx.line_to(divider_x, HEIGHT as f64 - 10.0);
+            ctx.stroke();
+        })
+        .expect("greedy-vs-kp side-by-side proof render should succeed");
+
+        assert_eq!(decoded_png_dims(&bytes), (width, HEIGHT));
+        write_proof_png("text_p5_greedy_vs_kp.png", &bytes);
+    }
+
+    /// Phase 5 headless proof: a narrow column (English hyphenation +
+    /// `KnuthPlass`) — the fixture is chosen so at least one long
+    /// hyphenatable word actually breaks mid-word at this width.
+    #[test]
+    fn knuth_plass_hyphenation_narrow_column_renders_to_a_valid_png() {
+        use crate::linebreak::{BreakStrategy, Hyphenation};
+
+        const COL_WIDTH: f64 = 150.0;
+        const MARGIN: f64 = 16.0;
+        const HEIGHT: u32 = 280;
+
+        let width = (COL_WIDTH + MARGIN * 2.0).round() as u32;
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+
+        // Fixed seeded fixture, deliberately dense with this crate's own
+        // Liang v1 test vocabulary (design law 8: deterministic, no RNG).
+        const TEXT: &str = "An understanding of wonderful hyphenation helps a \
+            beautiful narrow column of business text stay even instead of \
+            ragged, even when running and happen show up.";
+        let runs = [StyledRun::new(TEXT, font)];
+        let paragraph = Paragraph::new(&runs, COL_WIDTH)
+            .with_break_strategy(BreakStrategy::KnuthPlass)
+            .with_hyphenation(Hyphenation::English);
+        let shaper = CosmicShaper::headless();
+
+        let layout = layout_paragraph(&paragraph, &shaper);
+        assert!(layout.lines.len() > 1, "fixture must wrap to multiple lines");
+        assert!(
+            layout.glyphs.iter().any(|g| g.cluster == "-"),
+            "narrow column fixture must visibly hyphenate at least one word"
+        );
+
+        let spec = ExportSpec { width_px: width, height_px: HEIGHT, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+        let bytes = render_to_png(&spec, |ctx| {
+            draw_paragraph(ctx, (MARGIN, 24.0), &layout, "#111111", false);
+        })
+        .expect("kp hyphenation proof render should succeed");
+
+        assert_eq!(decoded_png_dims(&bytes), (width, HEIGHT));
+        write_proof_png("text_p5_kp_hyphen.png", &bytes);
+    }
 }

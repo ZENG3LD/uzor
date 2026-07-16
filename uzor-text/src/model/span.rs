@@ -4,6 +4,7 @@
 
 use super::inline_box::InlineBoxSlot;
 use super::font_spec::FontSpec;
+use crate::linebreak::{BreakStrategy, Hyphenation};
 
 /// One styled run of text within a [`Paragraph`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -67,13 +68,30 @@ pub struct Paragraph<'a> {
     /// metrics — see `crate::layout`'s baseline pass).
     pub line_height: Option<f64>,
     pub max_width: f64,
+    /// Which line-breaking algorithm [`crate::layout::layout_paragraph`]
+    /// uses (Phase 5). Defaults to [`BreakStrategy::Greedy`] — every prior
+    /// phase's caller gets byte-identical output without touching this
+    /// field.
+    pub break_strategy: BreakStrategy,
+    /// Hyphenation strategy (Phase 5). Defaults to [`Hyphenation::None`];
+    /// only consulted when `break_strategy` is [`BreakStrategy::KnuthPlass`]
+    /// (see `crate::linebreak`'s module doc).
+    pub hyphenation: Hyphenation,
 }
 
 impl<'a> Paragraph<'a> {
-    /// A plain, left-aligned, natural-line-height paragraph with no
-    /// inline boxes.
+    /// A plain, left-aligned, natural-line-height, greedy-wrapped,
+    /// non-hyphenated paragraph with no inline boxes.
     pub fn new(runs: &'a [StyledRun<'a>], max_width: f64) -> Self {
-        Self { runs, inline_boxes: &[], align: ParagraphAlign::default(), line_height: None, max_width }
+        Self {
+            runs,
+            inline_boxes: &[],
+            align: ParagraphAlign::default(),
+            line_height: None,
+            max_width,
+            break_strategy: BreakStrategy::default(),
+            hyphenation: Hyphenation::default(),
+        }
     }
 
     pub fn with_align(mut self, align: ParagraphAlign) -> Self {
@@ -88,6 +106,21 @@ impl<'a> Paragraph<'a> {
 
     pub fn with_line_height(mut self, line_height: f64) -> Self {
         self.line_height = Some(line_height);
+        self
+    }
+
+    /// Builder: opt into [`BreakStrategy::KnuthPlass`] (or explicitly
+    /// pin `Greedy`, the default).
+    pub fn with_break_strategy(mut self, break_strategy: BreakStrategy) -> Self {
+        self.break_strategy = break_strategy;
+        self
+    }
+
+    /// Builder: opt into [`Hyphenation::English`] (or explicitly pin
+    /// `None`, the default). Only takes effect under
+    /// [`BreakStrategy::KnuthPlass`] — see `crate::linebreak`'s module doc.
+    pub fn with_hyphenation(mut self, hyphenation: Hyphenation) -> Self {
+        self.hyphenation = hyphenation;
         self
     }
 }
@@ -120,6 +153,8 @@ mod tests {
         assert!(p.inline_boxes.is_empty());
         assert_eq!(p.line_height, None);
         assert_eq!(p.max_width, 200.0);
+        assert_eq!(p.break_strategy, BreakStrategy::Greedy, "Phase 5 regression floor: default stays Greedy");
+        assert_eq!(p.hyphenation, Hyphenation::None);
     }
 
     #[test]
@@ -129,5 +164,16 @@ mod tests {
         let p = Paragraph::new(&runs, 200.0).with_align(ParagraphAlign::Justify).with_line_height(30.0);
         assert_eq!(p.align, ParagraphAlign::Justify);
         assert_eq!(p.line_height, Some(30.0));
+    }
+
+    #[test]
+    fn paragraph_with_break_strategy_and_hyphenation_set_the_expected_fields() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let runs = [StyledRun::new("hi", font)];
+        let p = Paragraph::new(&runs, 200.0)
+            .with_break_strategy(BreakStrategy::KnuthPlass)
+            .with_hyphenation(Hyphenation::English);
+        assert_eq!(p.break_strategy, BreakStrategy::KnuthPlass);
+        assert_eq!(p.hyphenation, Hyphenation::English);
     }
 }

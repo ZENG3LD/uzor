@@ -1,6 +1,8 @@
 //! [`layout_paragraph`] — Phase 2 multi-run entry point: rich spans +
 //! [`crate::model::InlineBox`] + baseline pass over a [`Paragraph`].
 
+use crate::linebreak::knuth_plass::GLUE_SHRINK_RATIO;
+use crate::linebreak::BreakStrategy;
 use crate::model::{InlineBox, Paragraph, ParagraphAlign};
 use crate::shape::LineShaper;
 
@@ -15,9 +17,19 @@ use super::greedy::{self, Atom};
 /// `(paragraph, shaper)` — no retained state. [`crate::layout::layout_text`]
 /// is a thin wrapper over this for the single-run case (Phase 1 regression
 /// guard: its own 4-argument signature is unchanged).
+///
+/// `paragraph.break_strategy` (Phase 5) picks which packer turns the shared
+/// atom stream into line groups — [`BreakStrategy::Greedy`] (the default)
+/// is Phase 1/2's original packer, unchanged; [`BreakStrategy::KnuthPlass`]
+/// swaps in `crate::linebreak::knuth_plass`'s total-fit breaker. Every
+/// downstream step below (baseline resolution, alignment/justify, box
+/// placement) is identical either way.
 pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> ParagraphLayout {
     let atoms = greedy::build_atom_stream(paragraph, shaper);
-    let packed = greedy::pack_lines(atoms, paragraph.max_width);
+    let packed = match paragraph.break_strategy {
+        BreakStrategy::Greedy => greedy::pack_lines(atoms, paragraph.max_width),
+        BreakStrategy::KnuthPlass => crate::linebreak::knuth_plass::pack_lines(atoms, paragraph, shaper),
+    };
 
     if packed.is_empty() {
         return ParagraphLayout::default();
@@ -39,8 +51,40 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
             && line_index != last_index
             && glue_count > 0
             && paragraph.max_width.is_finite();
-        let extra_per_glue =
-            if can_justify { ((paragraph.max_width - natural_width) / glue_count as f64).max(0.0) } else { 0.0 };
+        // Shrink (never stretch) applies regardless of alignment: a
+        // `BreakStrategy::KnuthPlass` line may be chosen slightly over
+        // `max_width` on the strength of its interword glue's shrink
+        // capacity (see `crate::linebreak::knuth_plass`'s badness model) —
+        // without actually compressing that glue here, the line would
+        // render wider than `max_width` regardless of `align`. Greedy's
+        // own `pack_lines` never produces an over-full non-last line with
+        // glue on it, so this branch is unreachable for Greedy output
+        // (Phase 1/2's regression floor is unaffected).
+        let needs_shrink =
+            !can_justify && line_index != last_index && glue_count > 0 && paragraph.max_width.is_finite() && natural_width > paragraph.max_width;
+        // Shrink is capped at `GLUE_SHRINK_RATIO` of the line's *narrowest*
+        // glue atom — the same fraction `crate::linebreak::knuth_plass`'s
+        // own badness model assumes is available — never the full glue
+        // width. Capping any tighter than the cost model assumed would
+        // make a line KP scored as "shrink covers the gap" collapse its
+        // interword spaces to nothing (unreadable, words touching) while
+        // still not actually reaching `max_width` any better than a
+        // shallower, legible compression would have.
+        let min_glue_shrink = || {
+            line_atoms
+                .iter()
+                .filter_map(|a| if let Atom::Text(t) = a { t.is_glue.then_some(t.width) } else { None })
+                .fold(f64::MAX, f64::min)
+                * GLUE_SHRINK_RATIO
+        };
+        let extra_per_glue = if can_justify {
+            let raw = (paragraph.max_width - natural_width) / glue_count as f64;
+            if raw < 0.0 { raw.max(-min_glue_shrink()) } else { raw }
+        } else if needs_shrink {
+            ((paragraph.max_width - natural_width) / glue_count as f64).max(-min_glue_shrink())
+        } else {
+            0.0
+        };
         let content_width = natural_width + extra_per_glue * glue_count as f64;
 
         let align_shift = match paragraph.align {
@@ -111,6 +155,7 @@ fn placed_box(inline_box: InlineBox, line_index: usize, x: f64, baseline_y: f64)
 mod tests {
     use super::*;
     use crate::layout::GlyphLayout;
+    use crate::linebreak::Hyphenation;
     use crate::model::{FontSpec, InlineBox, InlineBoxSlot, StyledRun};
     use crate::shape::CosmicShaper;
     use uzor::fonts::FontFamily;
@@ -242,5 +287,111 @@ mod tests {
         let without_box = crate::layout::layout_text("short text", &font, 1000.0, &shaper);
 
         assert!(with_box.lines[0].height > without_box.lines[0].height);
+    }
+
+    /// `BreakStrategy::Greedy` is the default: constructing a `Paragraph`
+    /// via `new()` (never touching `break_strategy`) must produce exactly
+    /// the same layout as an explicit `.with_break_strategy(Greedy)` — the
+    /// Phase 5 regression guard for every prior phase's caller.
+    #[test]
+    fn default_paragraph_is_byte_identical_to_an_explicit_greedy_strategy() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let text = "one two three four five six seven eight nine ten eleven twelve";
+        let runs = [StyledRun::new(text, font)];
+        let shaper = CosmicShaper::headless();
+
+        let default_paragraph = Paragraph::new(&runs, 220.0);
+        let explicit_greedy = Paragraph::new(&runs, 220.0).with_break_strategy(BreakStrategy::Greedy);
+
+        let a = layout_paragraph(&default_paragraph, &shaper);
+        let b = layout_paragraph(&explicit_greedy, &shaper);
+        assert_eq!(a, b);
+    }
+
+    /// Every `KnuthPlass` line must stay within `max_width` (+ tolerance),
+    /// with a chosen discretionary-hyphen break's glyph width folded into
+    /// that measurement (not drawn "for free").
+    #[test]
+    fn knuth_plass_lines_stay_within_max_width_with_hyphen_widths_counted() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let text = "An understanding of wonderful hyphenation helps a beautiful \
+            narrow column of business text stay even instead of ragged.";
+        let runs = [StyledRun::new(text, font)];
+        let max_width = 260.0;
+        let paragraph = Paragraph::new(&runs, max_width)
+            .with_break_strategy(BreakStrategy::KnuthPlass)
+            .with_hyphenation(Hyphenation::English);
+        let shaper = CosmicShaper::headless();
+
+        let layout = layout_paragraph(&paragraph, &shaper);
+        assert!(layout.lines.len() > 1, "fixture must wrap to multiple lines");
+        for line in &layout.lines {
+            assert!(
+                line.content_width <= max_width + 1.0,
+                "line {} width {} exceeds max_width {max_width}",
+                line.line_index,
+                line.content_width
+            );
+        }
+        assert!(
+            layout.glyphs.iter().any(|g| g.cluster == "-"),
+            "this fixture at this width must hit at least one hyphenation break"
+        );
+    }
+
+    /// The hyphen glyph is drawn **only** where a break actually lands —
+    /// the same paragraph laid out wide enough to never wrap must produce
+    /// zero `-` glyphs, even with `Hyphenation::English` turned on.
+    #[test]
+    fn hyphenation_only_draws_a_hyphen_glyph_when_a_break_actually_lands_there() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let text = "An understanding of wonderful hyphenation.";
+        let runs = [StyledRun::new(text, font)];
+        let shaper = CosmicShaper::headless();
+
+        let narrow = Paragraph::new(&runs, 70.0)
+            .with_break_strategy(BreakStrategy::KnuthPlass)
+            .with_hyphenation(Hyphenation::English);
+        let narrow_layout = layout_paragraph(&narrow, &shaper);
+        assert!(narrow_layout.lines.len() > 1, "fixture must wrap at this width");
+        assert!(narrow_layout.glyphs.iter().any(|g| g.cluster == "-"), "narrow column should force a visible hyphen");
+
+        let wide = Paragraph::new(&runs, 1000.0)
+            .with_break_strategy(BreakStrategy::KnuthPlass)
+            .with_hyphenation(Hyphenation::English);
+        let wide_layout = layout_paragraph(&wide, &shaper);
+        assert_eq!(wide_layout.lines.len(), 1, "fixture must fit unwrapped at this width");
+        assert!(!wide_layout.glyphs.iter().any(|g| g.cluster == "-"), "no break landed, so no hyphen should be drawn");
+    }
+
+    /// `Justify` + `KnuthPlass` compose cleanly: every non-last line still
+    /// reaches `max_width` after redistribution, exactly like `Justify`
+    /// already does over the greedy breaker.
+    #[test]
+    fn justify_still_reaches_max_width_under_knuth_plass() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let text = "one two three four five six seven eight nine ten eleven twelve";
+        let runs = [StyledRun::new(text, font)];
+        let max_width = 220.0;
+        let paragraph = Paragraph::new(&runs, max_width)
+            .with_align(ParagraphAlign::Justify)
+            .with_break_strategy(BreakStrategy::KnuthPlass);
+        let shaper = CosmicShaper::headless();
+
+        let layout = layout_paragraph(&paragraph, &shaper);
+        assert!(layout.lines.len() > 1, "fixture must wrap to multiple lines");
+        let last_index = layout.lines.len() - 1;
+
+        for line in &layout.lines {
+            if line.line_index == last_index {
+                continue;
+            }
+            assert!(
+                (line.content_width - max_width).abs() < 1.0,
+                "line {} should reach max_width {max_width} under Justify+KnuthPlass, got {}",
+                line.line_index,
+                line.content_width
+            );
+        }
     }
 }
