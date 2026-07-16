@@ -49,6 +49,8 @@ members = [
     "uzor-export",
     # Data-visualization engine core (scales/coord/marks/guides/figures)
     "uzor-viz",
+    # Pretext-pattern text layout engine (Arc 2 — plain text Phase 1)
+    "uzor-text",
     # Layered demos
     "uzor-examples",
 ]

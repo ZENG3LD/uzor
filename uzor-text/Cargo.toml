@@ -1,0 +1,21 @@
+[package]
+name = "uzor-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Pretext-pattern text layout engine for uzor — plain-text greedy word-wrap over the cosmic-text shaper (Arc 2 Phase 1; rich spans/kinetics/ascii land in later phases)."
+publish = false
+
+[dependencies]
+# `shaper` is a hard, always-on dependency feature here (not an optional
+# passthrough of this crate's own) — `CosmicShaper::headless()` calls
+# `uzor::shaper::measure_glyphs_wrapped` directly, so cosmic-text is
+# unconditionally required.
+uzor = { workspace = true, features = ["shaper"] }
+
+[dev-dependencies]
+uzor-export = { path = "../uzor-export" }
+uzor-render-tiny-skia = { workspace = true }
+png = "0.17"
