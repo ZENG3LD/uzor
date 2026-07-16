@@ -7,11 +7,12 @@ use uzor::render::RenderContext;
 use uzor::types::Rect;
 
 use crate::coord::PlotArea;
+use crate::figure::VizOverlay;
 use crate::guide::{axis, grid};
 use crate::mark::rect::draw_bars;
 use crate::mark::MarkStyle;
 use crate::scale::linear::format_value;
-use crate::scale::{BandScale, LinearScale};
+use crate::scale::{BandScale, LinearScale, Scale};
 use crate::theme::VizTheme;
 
 const MARGIN_LEFT: f64 = 48.0;
@@ -84,18 +85,40 @@ impl HistogramFigure {
         self
     }
 
-    pub fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &VizTheme) {
-        ctx.set_fill_color(&theme.background);
-        ctx.fill_rect(rect.x, rect.y, rect.width, rect.height);
-
+    fn plot_rect(&self, rect: Rect) -> Rect {
         let title_h = if self.title.is_some() { TITLE_HEIGHT } else { 0.0 };
-        let plot_rect = Rect::new(
+        Rect::new(
             rect.x + MARGIN_LEFT,
             rect.y + title_h,
             (rect.width - MARGIN_LEFT - MARGIN_RIGHT).max(0.0),
             (rect.height - title_h - MARGIN_BOTTOM).max(0.0),
-        );
-        let area = PlotArea::new(plot_rect);
+        )
+    }
+
+    /// This figure's plot-area transform for `rect` — exposed for the
+    /// same reason as [`crate::figure::CurveFigure::plot_area`].
+    pub fn plot_area(&self, rect: Rect) -> PlotArea {
+        PlotArea::new(self.plot_rect(rect))
+    }
+
+    /// Render into `rect` of `ctx` using `theme`, with no overlay —
+    /// equivalent to `render_with(ctx, rect, theme, &VizOverlay::default())`.
+    pub fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &VizTheme) {
+        self.render_with(ctx, rect, theme, &VizOverlay::default());
+    }
+
+    /// Render into `rect` of `ctx` using `theme`, reacting to
+    /// `overlay.brush`: bins whose domain-X range overlaps the brush
+    /// interval get redrawn in an accent color — the linked-brush half of
+    /// the report's #2<->#5 shared-time-brush requirement, here linking a
+    /// curve figure's drag to this figure's bins (see
+    /// [`crate::figure::VizOverlay`]). `overlay.hover_px`/`overlay.focus`
+    /// are not consumed by this figure in V2.
+    pub fn render_with(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &VizTheme, overlay: &VizOverlay<'_>) {
+        ctx.set_fill_color(&theme.background);
+        ctx.fill_rect(rect.x, rect.y, rect.width, rect.height);
+
+        let area = self.plot_area(rect);
 
         let bins = bin(&self.samples, self.bin_count);
         if !bins.is_empty() {
@@ -114,6 +137,24 @@ impl HistogramFigure {
             grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
             let style = MarkStyle { color: theme.palette[2].clone(), ..Default::default() };
             draw_bars(ctx, &area, &band, &y_scale, &values, &style);
+
+            if let Some((b0, b1)) = overlay.brush {
+                let (lo, hi) = (b0.min(b1), b0.max(b1));
+                let (y_min, y_max) = y_scale.domain();
+                let baseline_value = 0.0_f64.clamp(y_min.min(y_max), y_min.max(y_max));
+                let baseline_px = area.y(&y_scale, baseline_value);
+                let accent = &theme.palette[3];
+                ctx.set_fill_color(accent);
+                for (i, b) in bins.iter().enumerate() {
+                    if b.range.1 > lo && b.range.0 < hi {
+                        let (x0, x1) = area.x_band(&band, i);
+                        let value_px = area.y(&y_scale, values[i]);
+                        let (top, height) =
+                            if value_px <= baseline_px { (value_px, baseline_px - value_px) } else { (baseline_px, value_px - baseline_px) };
+                        ctx.fill_rect(x0, top, (x1 - x0).max(0.0), height);
+                    }
+                }
+            }
 
             axis::draw_x_axis(ctx, &area, &band, theme, band.len().min(MAX_X_LABELS));
             axis::draw_y_axis(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);

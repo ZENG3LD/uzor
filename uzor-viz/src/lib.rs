@@ -1,39 +1,54 @@
-//! `uzor-viz` — data-visualization engine core for uzor (V1).
+//! `uzor-viz` — data-visualization engine core for uzor (V1 + V2).
 //!
 //! Stateless layout + draw layer: scales (domain -> normalized `[0, 1]` ->
 //! screen px), a single plot-area coordinate transform ([`PlotArea`]),
-//! pure mark draw functions, axis/grid guides, a small theme, and three
-//! composed V1 figures (bar / curve / histogram).
+//! pure mark draw functions, axis/grid/crosshair/tooltip guides, a small
+//! theme, three composed figures (bar / curve / histogram), and (V2) an
+//! interaction plane — semantic input/output actions, hit-testing,
+//! hover/selection state, a 1D brush, and a cross-figure selection bus.
 //!
 //! See `nemo/docs/uzor-viz/uzor_viz_engine_architecture.md` §3 (crate
-//! layout) and §4 (design laws) — this crate is the V1 milestone: scales +
-//! coord + marks + axes, harvested from `mylittlechart`'s chart-engine
-//! machinery per `nemo/docs/uzor-viz/mlc_harvest_inventory.md` §2.
+//! layout) and §4 (design laws). V1 harvested scales/coord/marks/axes from
+//! `mylittlechart`'s chart-engine machinery per
+//! `nemo/docs/uzor-viz/mlc_harvest_inventory.md` §2; V2 harvests the input
+//! pipeline (§4) and promotes `uzor-graph`'s `FocusSet` — see
+//! [`mod@interact`]'s module docs for exactly what was generalized/dropped.
 //!
-//! **NOT in V1** (later milestones — do not add here without a plan doc):
+//! **NOT in this crate yet** (later milestones — do not add here without a
+//! plan doc):
 //! - `TimeScale` — calendar-aware tick generation, harvested from mlc's
-//!   ~1900-line `time_scale.rs`. Its own harvest pass; V1 only ports the
-//!   linear/log nice-number math (a few hundred lines), not the calendar
-//!   system.
+//!   ~1900-line `time_scale.rs`. Its own harvest pass; today only the
+//!   linear/log nice-number math is ported, not the calendar system.
 //! - `ColorScale` (OKLCH ramp).
-//! - Interaction (zoom/pan/hover/crosshair/brush/linked selection) — `V2`.
 //! - A figure registry/IR (mlc's `ChartTypeDef`+`DrawOps` two-table
 //!   pattern) — figures here are hand-composed, not registry-dispatched.
 //! - Animation / keyed data-join (enter/update/exit).
+//! - Zoom/pan (V2 shipped hover + one 1D brush only — see `interact`).
 //!
 //! Every mark/guide/figure function is a pure, stateless draw over
 //! borrowed data (design law #3) — this crate holds no owned render
-//! state anywhere.
+//! state anywhere; the V2 interaction structs ([`FocusSet`],
+//! [`BrushState`], [`SelectionBus`]) are small, explicit, caller-owned
+//! state a figure only ever BORROWS through
+//! [`figure::VizOverlay`], never retains.
+//!
+//! `uzor-graph`'s own `FocusSet` (`uzor-graph/src/interaction/focus.rs`)
+//! is NOT yet re-pointed onto this crate's [`FocusSet`] — that graph-side
+//! migration is a deferred, separate arc (this task only generalizes the
+//! concept into `uzor-viz`, per its brief; `uzor-graph` itself is
+//! untouched).
 
 pub mod coord;
 pub mod figure;
 pub mod guide;
+pub mod interact;
 pub mod mark;
 pub mod scale;
 pub mod theme;
 
 pub use coord::PlotArea;
-pub use figure::{BarFigure, CurveFigure, HistogramFigure};
+pub use figure::{BarFigure, CurveFigure, HistogramFigure, VizOverlay};
+pub use interact::{BrushState, FocusSet, HitZone, HoverInfo, SelectionBus, VizInputAction, VizOutputAction};
 pub use mark::MarkStyle;
 pub use scale::{BandScale, LinearScale, LogScale, Scale, Tick};
 pub use theme::VizTheme;
@@ -51,7 +66,7 @@ mod proof_tests {
     use uzor_export::{render_to_png, ExportSpec};
 
     use crate::theme::VizTheme;
-    use crate::{BarFigure, CurveFigure, HistogramFigure};
+    use crate::{BarFigure, CurveFigure, HistogramFigure, VizOverlay};
 
     const WIDTH: u32 = 800;
     const HEIGHT: u32 = 500;
@@ -142,5 +157,43 @@ mod proof_tests {
         .expect("histogram figure should render");
         assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
         write_proof_png("viz_v1_histogram.png", &bytes);
+    }
+
+    // ── V2 interaction-plane proofs ─────────────────────────────────
+
+    #[test]
+    fn curve_figure_overlay_renders_hover_crosshair_and_marker_to_a_valid_png() {
+        let figure = seeded_curve_figure();
+        let theme = VizTheme::dark();
+        let rect = Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64);
+        // Roughly centered over the plot — exact nearest-point selection
+        // math is already proven by `interact::hit`'s unit tests; this
+        // proof is about the render PATH (hover -> crosshair + marker +
+        // tooltip actually drawing), not pixel-exact point identity.
+        let overlay = VizOverlay { hover_px: Some((rect.width / 2.0, rect.height / 2.0)), brush: None, focus: None };
+
+        let bytes = render_to_png(&export_spec(), |ctx| {
+            figure.render_with(ctx, rect, &theme, &overlay);
+        })
+        .expect("curve figure with hover overlay should render");
+        assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
+        write_proof_png("viz_v2_curve_overlay.png", &bytes);
+    }
+
+    #[test]
+    fn histogram_figure_overlay_renders_brush_highlight_to_a_valid_png() {
+        let figure = seeded_histogram_figure();
+        let theme = VizTheme::dark();
+        let rect = Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64);
+        // Seeded samples span roughly [0, 100) — this interval overlaps a
+        // real subset of bins without covering all of them.
+        let overlay = VizOverlay { hover_px: None, brush: Some((20.0, 60.0)), focus: None };
+
+        let bytes = render_to_png(&export_spec(), |ctx| {
+            figure.render_with(ctx, rect, &theme, &overlay);
+        })
+        .expect("histogram figure with brush overlay should render");
+        assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
+        write_proof_png("viz_v2_histogram_brush.png", &bytes);
     }
 }
