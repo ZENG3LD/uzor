@@ -1162,6 +1162,15 @@ impl TextMetrics for TinySkiaCpuRenderContext {
         uzor::shaper::measure_glyphs(text, font)
     }
 
+    /// Real word-wrap via cosmic-text `Wrap::Word`.
+    ///
+    /// Delegates to [`uzor::shaper::measure_glyphs_wrapped`], which owns its
+    /// own `(font, text, max_width)`-keyed cache separate from the unwrapped
+    /// `measure_glyphs`/`text_to_path` cache.
+    fn measure_text_wrapped(&self, text: &str, font: &str, max_width: f64) -> Vec<uzor::render::WrappedLine> {
+        uzor::shaper::measure_glyphs_wrapped(text, font, max_width)
+    }
+
     /// Glyph outlines as an SVG path `d` string via cosmic-text + swash.
     ///
     /// Delegates to [`uzor::shaper::text_to_path`] which uses a

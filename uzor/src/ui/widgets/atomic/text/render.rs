@@ -59,7 +59,11 @@ pub fn draw_text(
 
     match view.overflow {
         TextOverflow::Clip | TextOverflow::Wrap => {
-            // Wrap not yet implemented — falls back to clip.
+            // This atomic widget stays a single-line label by design — real
+            // multi-line paragraph wrap lives in `uzor-text` (see
+            // `docs/uzor-viz/uzor_text_arc2_design.md` Q2), not here. `Wrap`
+            // falls back to clip until/unless a later arc wires this widget
+            // to consume a `uzor-text` layout.
             ctx.fill_text(view.text, x, y);
         }
         TextOverflow::Ellipsis => {

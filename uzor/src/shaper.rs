@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Wrap};
 
 use crate::fonts::{parse_css_font, FontFamily};
-use crate::render::GlyphMetric;
+use crate::render::{GlyphMetric, WrappedLine};
 
 // ── Process-wide font system ─────────────────────────────────────────────────
 
@@ -79,6 +79,22 @@ fn shape_cache() -> &'static Mutex<HashMap<(String, String), Vec<GlyphMetric>>> 
 
 fn outline_cache() -> &'static Mutex<HashMap<(String, String), String>> {
     static CACHE: OnceLock<Mutex<HashMap<(String, String), String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// ── Per-(font, text, width) wrapped-line cache ───────────────────────────────
+
+/// Own cache for [`measure_glyphs_wrapped`] — keyed `(font, text,
+/// max_width.to_bits())`.
+///
+/// Deliberately **not** shared with [`shape_cache`]/[`outline_cache`]: those
+/// are keyed `(font, text)` only (no width dimension) and are read by every
+/// unwrapped `measure_glyphs`/`text_to_path` call site across all four
+/// shaper-backed backends. Mixing a wrapped result into them would silently
+/// return a stale/wrong-width result to an unwrapped caller.
+fn wrapped_cache() -> &'static Mutex<HashMap<(String, String, u64), Vec<WrappedLine>>> {
+    static CACHE: OnceLock<Mutex<HashMap<(String, String, u64), Vec<WrappedLine>>>> =
+        OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -157,6 +173,51 @@ pub fn text_to_path(text: &str, font: &str) -> String {
 
     // Cache write
     if let Ok(mut cache) = outline_cache().lock() {
+        cache.insert(cache_key, result.clone());
+    }
+
+    result
+}
+
+/// Shape `text` in `font`, word-wrapped to `max_width`, and return one
+/// [`WrappedLine`] per visual line.
+///
+/// Unlike [`measure_glyphs`] (infinite width, `Wrap::None`), this sets a real
+/// width on the `cosmic-text` buffer and enables `Wrap::Word` — cosmic-text's
+/// own line breaker does the wrapping; this function only reads back
+/// `buf.layout_runs()` (one `LayoutRun` per visual line already).
+///
+/// `font` is a CSS shorthand, e.g. `"bold 16px Inter"`. `max_width` is in
+/// logical pixels and is clamped to a 1px minimum internally (never handed
+/// to cosmic-text as zero/negative). A `max_width` at or beyond the text's
+/// natural width degenerates to exactly one line, glyph-for-glyph identical
+/// to [`measure_glyphs`].
+///
+/// Results are cached per `(font, text, max_width.to_bits())` triple in a
+/// cache **owned by this function** — see [`wrapped_cache`] for why this
+/// must never be merged with [`shape_cache`]/[`outline_cache`].
+///
+/// The returned `Vec`'s index order **is** the visual line index; cosmic-
+/// text's `LayoutRun::line_i` is the *source*-line index (increments only on
+/// `\n`) and is never used as a substitute here — see [`WrappedLine`]'s docs.
+pub fn measure_glyphs_wrapped(text: &str, font: &str, max_width: f64) -> Vec<WrappedLine> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    let cache_key = (font.to_string(), text.to_string(), max_width.to_bits());
+
+    // Cache read
+    if let Ok(cache) = wrapped_cache().lock() {
+        if let Some(cached) = cache.get(&cache_key) {
+            return cached.clone();
+        }
+    }
+
+    let result = measure_glyphs_wrapped_uncached(text, font, max_width);
+
+    // Cache write
+    if let Ok(mut cache) = wrapped_cache().lock() {
         cache.insert(cache_key, result.clone());
     }
 
@@ -344,6 +405,152 @@ fn shape_uncached(text: &str, font: &str) -> Vec<GlyphMetric> {
     result
 }
 
+// ── Internal wrapped shaper ────────────────────────────────────────────────────
+
+fn measure_glyphs_wrapped_uncached(text: &str, font: &str, max_width: f64) -> Vec<WrappedLine> {
+    let info = parse_css_font(font);
+    let font_size = info.size;
+
+    // Map FontFamily → cosmic-text Family name
+    let family_name: &str = match info.family {
+        FontFamily::Roboto      => "Roboto",
+        FontFamily::PtRootUi    => "PT Root UI",
+        FontFamily::JetBrainsMono => "JetBrains Mono",
+    };
+
+    let Ok(mut fs) = font_system().lock() else {
+        return fallback_per_char_wrapped(text, font, max_width);
+    };
+
+    let metrics = Metrics::new(font_size, font_size * 1.2);
+    let mut buf = Buffer::new_empty(metrics);
+    // Real width (never zero/negative — cosmic-text's wrap accumulator
+    // expects a sane bound) + no height cap (None behaves as unlimited
+    // scroll, same as the unwrapped path's `Some(f32::MAX)` — every visual
+    // line is shaped and returned, none pruned).
+    let width_f32 = max_width.max(1.0) as f32;
+    buf.set_size(&mut fs, Some(width_f32), None);
+    buf.set_wrap(&mut fs, Wrap::Word);
+
+    let attrs = Attrs::new()
+        .family(Family::Name(family_name))
+        .weight(if info.bold {
+            cosmic_text::Weight::BOLD
+        } else {
+            cosmic_text::Weight::NORMAL
+        })
+        .style(if info.italic {
+            cosmic_text::Style::Italic
+        } else {
+            cosmic_text::Style::Normal
+        });
+
+    buf.set_text(&mut fs, text, attrs, Shaping::Advanced);
+    buf.shape_until_scroll(&mut fs, false);
+
+    let mut result: Vec<WrappedLine> = Vec::new();
+
+    // Enumerate `buf.layout_runs()` in iteration order — this order IS the
+    // visual line index. `run.line_i` is deliberately never read as an
+    // index (see WrappedLine's docs: it's the source-line index).
+    for run in buf.layout_runs() {
+        let line_text = run.text;
+        let mut glyphs: Vec<GlyphMetric> = Vec::new();
+
+        // Same ligature-merge rule as `shape_uncached`, reset per line.
+        let mut last_byte_range: Option<(usize, usize)> = None;
+
+        for glyph in run.glyphs {
+            let cluster_str = &line_text[glyph.start..glyph.end];
+
+            let x_off = glyph.x as f64;
+            let y_off = (glyph.y_offset * glyph.font_size) as f64;
+            let width = glyph.w as f64;
+            let advance = width;
+
+            let same_cluster = last_byte_range == Some((glyph.start, glyph.end));
+            if same_cluster {
+                if let Some(last) = glyphs.last_mut() {
+                    last.advance += advance;
+                    last.width   += width;
+                    continue;
+                }
+            }
+
+            last_byte_range = Some((glyph.start, glyph.end));
+            glyphs.push(GlyphMetric {
+                cluster: cluster_str.to_string(),
+                x_offset: x_off,
+                y_offset: y_off,
+                advance,
+                width,
+            });
+        }
+
+        result.push(WrappedLine {
+            glyphs,
+            line_top: run.line_top as f64,
+            baseline_y: run.line_y as f64,
+            width: run.line_w as f64,
+        });
+    }
+
+    result
+}
+
+/// Fallback used only when the FontSystem mutex is poisoned (should never
+/// happen in practice). Naive greedy word-wrap over the same per-`char`
+/// approximation as [`fallback_per_char`].
+fn fallback_per_char_wrapped(text: &str, font: &str, max_width: f64) -> Vec<WrappedLine> {
+    let info = parse_css_font(font);
+    let char_w = info.size as f64 * 0.6;
+    let line_height = info.size as f64 * 1.2;
+    let ascent = info.size as f64 * 0.9;
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_w = 0.0f64;
+
+    for word in text.split_whitespace() {
+        let word_w = word.chars().count() as f64 * char_w;
+
+        if current.is_empty() {
+            current.push_str(word);
+            current_w = word_w;
+            continue;
+        }
+
+        let candidate_w = current_w + char_w + word_w;
+        if candidate_w > max_width {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(word);
+            current_w = word_w;
+        } else {
+            current.push(' ');
+            current.push_str(word);
+            current_w = candidate_w;
+        }
+    }
+    lines.push(current);
+
+    let mut line_top = 0.0f64;
+    lines
+        .into_iter()
+        .map(|line_text| {
+            let glyphs = fallback_per_char(&line_text, font);
+            let width = line_text.chars().count() as f64 * char_w;
+            let wrapped = WrappedLine {
+                glyphs,
+                line_top,
+                baseline_y: line_top + ascent,
+                width,
+            };
+            line_top += line_height;
+            wrapped
+        })
+        .collect()
+}
+
 /// Fallback used only when the FontSystem mutex is poisoned (should never
 /// happen in practice). Returns one entry per `char` using `text_bounds`-style
 /// approximation.
@@ -366,4 +573,104 @@ fn fallback_per_char(text: &str, font: &str) -> Vec<GlyphMetric> {
             m
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FONT: &str = "16px Roboto";
+    const LONG_SENTENCE: &str = "The quick brown fox jumps over the lazy dog \
+        and then keeps running further down the road without stopping for a \
+        very long time indeed";
+
+    /// Degenerate case: at `f64::MAX` width, `measure_glyphs_wrapped` must
+    /// produce exactly one line, glyph-for-glyph identical to `measure_glyphs`
+    /// — proves the new wrapped path doesn't perturb the unwrapped one.
+    #[test]
+    fn wrapped_at_huge_width_matches_unwrapped_glyph_for_glyph() {
+        let wrapped = measure_glyphs_wrapped(LONG_SENTENCE, FONT, f64::MAX);
+        assert_eq!(
+            wrapped.len(),
+            1,
+            "expected exactly one line at f64::MAX width, got {}",
+            wrapped.len()
+        );
+
+        let unwrapped = measure_glyphs(LONG_SENTENCE, FONT);
+        let wrapped_glyphs = &wrapped[0].glyphs;
+        assert_eq!(wrapped_glyphs.len(), unwrapped.len());
+
+        for (w, u) in wrapped_glyphs.iter().zip(unwrapped.iter()) {
+            assert_eq!(w.cluster, u.cluster);
+            assert!((w.x_offset - u.x_offset).abs() < 0.01);
+            assert!((w.y_offset - u.y_offset).abs() < 0.01);
+            assert!((w.advance - u.advance).abs() < 0.01);
+            assert!((w.width - u.width).abs() < 0.01);
+        }
+    }
+
+    /// A width comfortably larger than the sentence's natural width also
+    /// degenerates to one line (not just `f64::MAX`).
+    #[test]
+    fn wrapped_at_wide_enough_width_is_a_single_line() {
+        let natural_width = measure_glyphs(LONG_SENTENCE, FONT)
+            .iter()
+            .map(|g| g.x_offset + g.advance)
+            .fold(0.0f64, f64::max);
+
+        let lines = measure_glyphs_wrapped(LONG_SENTENCE, FONT, natural_width + 100.0);
+        assert_eq!(lines.len(), 1);
+    }
+
+    /// Narrow width forces wrapping. Every line must stay within `max_width`
+    /// (this fixture's longest word is well short of `max_width`, so no
+    /// unbreakable-overflow tolerance is needed), `line_top` must strictly
+    /// increase one `line_height` at a time, and total height must equal
+    /// `line_count * line_height`.
+    #[test]
+    fn narrow_width_wraps_into_multiple_lines_with_expected_geometry() {
+        let max_width = 150.0;
+        let line_height = 16.0 * 1.2; // Metrics::new(font_size, font_size * 1.2)
+
+        let lines = measure_glyphs_wrapped(LONG_SENTENCE, FONT, max_width);
+        assert!(
+            lines.len() > 1,
+            "expected wrap into multiple lines, got {}",
+            lines.len()
+        );
+
+        for (i, line) in lines.iter().enumerate() {
+            let expected_top = i as f64 * line_height;
+            assert!(
+                (line.line_top - expected_top).abs() < 0.5,
+                "line {i} top {} != expected {expected_top}",
+                line.line_top
+            );
+            assert!(
+                line.width <= max_width + 1.0,
+                "line {i} width {} exceeds max_width {max_width}",
+                line.width
+            );
+            for glyph in &line.glyphs {
+                let end = glyph.x_offset + glyph.advance;
+                assert!(
+                    end <= max_width + 1.0,
+                    "glyph '{}' end {end} exceeds max_width {max_width} on line {i}",
+                    glyph.cluster
+                );
+            }
+        }
+
+        let total_height = lines.len() as f64 * line_height;
+        let last_top = lines.last().map(|l| l.line_top).unwrap_or(0.0);
+        assert!((last_top + line_height - total_height).abs() < 0.5);
+    }
+
+    /// Empty text short-circuits to an empty `Vec`, same convention as
+    /// `measure_glyphs`.
+    #[test]
+    fn wrapped_empty_text_is_empty() {
+        assert!(measure_glyphs_wrapped("", FONT, 100.0).is_empty());
+    }
 }

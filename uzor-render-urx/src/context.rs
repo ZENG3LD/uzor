@@ -765,6 +765,13 @@ impl TextMetrics for UrxRenderContext {
         uzor::shaper::measure_glyphs(text, font)
     }
 
+    /// Real word-wrap via cosmic-text `Wrap::Word` (same delegation as the
+    /// other shaper-backed backends; the trait default is a greedy
+    /// heuristic).
+    fn measure_text_wrapped(&self, text: &str, font: &str, max_width: f64) -> Vec<uzor::render::WrappedLine> {
+        uzor::shaper::measure_glyphs_wrapped(text, font, max_width)
+    }
+
     fn text_to_path(&self, text: &str, font: &str) -> String {
         uzor::shaper::text_to_path(text, font)
     }
