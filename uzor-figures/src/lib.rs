@@ -16,9 +16,6 @@
 //!
 //! **NOT in this crate yet** (later milestones — do not add here without a
 //! plan doc):
-//! - `TimeScale` — calendar-aware tick generation, harvested from mlc's
-//!   ~1900-line `time_scale.rs`. Its own harvest pass; today only the
-//!   linear/log nice-number math is ported, not the calendar system.
 //! - `ColorScale` (OKLCH ramp).
 //! - A figure registry/IR (mlc's `ChartTypeDef`+`DrawOps` two-table
 //!   pattern) — figures here are hand-composed, not registry-dispatched.
@@ -50,7 +47,7 @@ pub use coord::PlotArea;
 pub use figure::{BarFigure, CurveFigure, HistogramFigure, FigureOverlay};
 pub use interact::{BrushState, FocusSet, HitZone, HoverInfo, SelectionBus, FigureInputAction, FigureOutputAction};
 pub use mark::MarkStyle;
-pub use scale::{BandScale, LinearScale, LogScale, Scale, Tick};
+pub use scale::{BandScale, LinearScale, LogScale, Scale, Tick, TimeScale};
 pub use theme::FigureTheme;
 
 #[cfg(test)]
@@ -66,10 +63,13 @@ mod proof_tests {
     use uzor_export::{render_to_png, ExportSpec};
 
     use crate::theme::FigureTheme;
-    use crate::{BarFigure, CurveFigure, HistogramFigure, FigureOverlay};
+    use crate::{BarFigure, CurveFigure, HistogramFigure, FigureOverlay, TimeScale};
 
     const WIDTH: u32 = 800;
     const HEIGHT: u32 = 500;
+    // V3 (TimeScale) proof render is a different fixed size per task spec.
+    const V3_WIDTH: u32 = 600;
+    const V3_HEIGHT: u32 = 400;
 
     fn export_spec() -> ExportSpec {
         ExportSpec { width_px: WIDTH, height_px: HEIGHT, dpr: 1.0, background: None }
@@ -195,5 +195,47 @@ mod proof_tests {
         .expect("histogram figure with brush overlay should render");
         assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
         write_proof_png("figures_v2_histogram_brush.png", &bytes);
+    }
+
+    // ── V3 (TimeScale) proof ─────────────────────────────────────────
+
+    /// Deterministic 90-daily-point dataset (fixed pseudo-sequence, no
+    /// RNG/time) anchored at a real UTC date (2024-01-01) — proves
+    /// [`TimeScale`] wired as a [`CurveFigure`] X-axis end to end via
+    /// [`CurveFigure::with_x_scale`].
+    fn seeded_daily_timescale_curve_figure() -> CurveFigure {
+        const ANCHOR_2024_01_01: f64 = 1_704_067_200.0;
+        const DAY_SECS: f64 = 86_400.0;
+        const DAYS: i64 = 90;
+
+        let mut running = 0.0;
+        let points: Vec<(f64, f64)> = (0..DAYS)
+            .map(|i| {
+                let step = ((i * 41 + 7) % 29) as f64 - 14.0;
+                running += step;
+                (ANCHOR_2024_01_01 + i as f64 * DAY_SECS, running)
+            })
+            .collect();
+
+        let x_min = points[0].0;
+        let x_max = points[points.len() - 1].0;
+        let time_scale = TimeScale::new(x_min, x_max);
+
+        CurveFigure::new(points).with_title("Daily curve over 90 days (TimeScale X-axis)").with_x_scale(time_scale)
+    }
+
+    #[test]
+    fn curve_figure_with_time_scale_x_axis_renders_to_a_valid_png() {
+        let figure = seeded_daily_timescale_curve_figure();
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: V3_WIDTH, height_px: V3_HEIGHT, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, V3_WIDTH as f64, V3_HEIGHT as f64);
+
+        let bytes = render_to_png(&spec, |ctx| {
+            figure.render(ctx, rect, &theme);
+        })
+        .expect("curve figure with TimeScale x-axis should render");
+        assert_eq!(decoded_png_dims(&bytes), (V3_WIDTH, V3_HEIGHT));
+        write_proof_png("figures_v3_timescale.png", &bytes);
     }
 }

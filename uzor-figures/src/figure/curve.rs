@@ -15,7 +15,7 @@ use crate::mark::line::draw_polyline;
 use crate::mark::point::draw_points;
 use crate::mark::MarkStyle;
 use crate::scale::linear::{format_value, nice_step};
-use crate::scale::LinearScale;
+use crate::scale::{LinearScale, Scale};
 use crate::theme::FigureTheme;
 
 const MARGIN_LEFT: f64 = 56.0;
@@ -34,11 +34,16 @@ pub struct CurveFigure {
     pub points: Vec<(f64, f64)>,
     pub title: Option<String>,
     pub fill: bool,
+    /// Caller-supplied X scale (e.g. [`crate::scale::TimeScale`]) used in
+    /// place of the auto-computed nice [`LinearScale`] over `points`' x
+    /// values — set via [`CurveFigure::with_x_scale`]. `None` (the
+    /// default) reproduces the original behavior exactly.
+    x_scale_override: Option<Box<dyn Scale>>,
 }
 
 impl CurveFigure {
     pub fn new(points: Vec<(f64, f64)>) -> Self {
-        Self { points, title: None, fill: false }
+        Self { points, title: None, fill: false, x_scale_override: None }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
@@ -48,6 +53,18 @@ impl CurveFigure {
 
     pub fn with_fill(mut self, fill: bool) -> Self {
         self.fill = fill;
+        self
+    }
+
+    /// Supply a custom X scale (e.g. a [`crate::scale::TimeScale`] over
+    /// UTC-second `points` x values) instead of the auto-computed nice
+    /// [`LinearScale`] domain. Follows this figure's existing builder
+    /// style (`with_title`/`with_fill`) — the minimal option needed for a
+    /// caller to render a time-axis curve without this figure knowing
+    /// anything trading/time-specific itself: every draw call below
+    /// already takes `&dyn Scale`, so any [`Scale`] impl slots in.
+    pub fn with_x_scale(mut self, scale: impl Scale + 'static) -> Self {
+        self.x_scale_override = Some(Box::new(scale));
         self
     }
 
@@ -70,11 +87,19 @@ impl CurveFigure {
         PlotArea::new(self.plot_rect(rect))
     }
 
-    /// This figure's own X domain scale, `None` when there are fewer than
-    /// 2 points (nothing to plot — `render`/`render_with` draw nothing
-    /// either). Exposed for the same reason as [`CurveFigure::plot_area`]:
-    /// a caller driving an external brush drag needs to invert its own
-    /// pixel positions through the EXACT scale this figure renders with.
+    /// This figure's auto-computed nice-linear X domain scale, `None` when
+    /// there are fewer than 2 points (nothing to plot — `render`/
+    /// `render_with` draw nothing either). Exposed for the same reason as
+    /// [`CurveFigure::plot_area`]: a caller driving an external brush drag
+    /// needs to invert its own pixel positions through the EXACT scale
+    /// this figure renders with.
+    ///
+    /// **Does not reflect [`CurveFigure::with_x_scale`]** — when a custom
+    /// X scale override is set, `render`/`render_with` draw through THAT
+    /// scale instead of this one; this accessor always returns the
+    /// auto-computed linear domain regardless. Re-pointing external brush
+    /// callers onto an overridden scale is a Phase B (full V2
+    /// generalization) concern, out of scope for this scale-math port.
     pub fn x_scale(&self) -> Option<LinearScale> {
         if self.points.len() < 2 {
             return None;
@@ -115,35 +140,53 @@ impl CurveFigure {
 
         let area = self.plot_area(rect);
 
-        if let (Some(x_scale), Some(y_scale)) = (self.x_scale(), self.y_scale()) {
-            grid::draw_x_grid(ctx, &area, &x_scale, theme, TARGET_X_TICKS);
+        // The auto-computed nice-linear X domain only needs to exist when
+        // no override was supplied — skip computing it otherwise (it would
+        // be thrown away unused).
+        let computed_x_scale = if self.x_scale_override.is_none() { self.x_scale() } else { None };
+        let x_scale: Option<&dyn Scale> = match (&self.x_scale_override, &computed_x_scale) {
+            (Some(s), _) => Some(s.as_ref()),
+            (None, Some(s)) => Some(s),
+            (None, None) => None,
+        };
+
+        if let (Some(x_scale), Some(y_scale)) = (x_scale, self.y_scale()) {
+            grid::draw_x_grid(ctx, &area, x_scale, theme, TARGET_X_TICKS);
             grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
 
             let style = MarkStyle { color: theme.palette[0].clone(), ..Default::default() };
             if self.fill {
                 let fill_style = MarkStyle { fill_alpha: FILL_ALPHA, ..style.clone() };
-                draw_area(ctx, &area, &x_scale, &y_scale, &self.points, &fill_style);
+                draw_area(ctx, &area, x_scale, &y_scale, &self.points, &fill_style);
             }
-            draw_polyline(ctx, &area, &x_scale, &y_scale, &self.points, &style);
+            draw_polyline(ctx, &area, x_scale, &y_scale, &self.points, &style);
 
-            axis::draw_x_axis(ctx, &area, &x_scale, theme, TARGET_X_TICKS);
+            axis::draw_x_axis(ctx, &area, x_scale, theme, TARGET_X_TICKS);
             axis::draw_y_axis(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
 
             if let Some((hx, hy)) = overlay.hover_px {
                 if hit::hit_zone(&area, hx, hy) == HitZone::Plot {
-                    if let Some(idx) = hit::nearest_point_x(&area, &x_scale, &y_scale, &self.points, hx) {
+                    if let Some(idx) = hit::nearest_point_x(&area, x_scale, &y_scale, &self.points, hx) {
                         let (data_x, data_y) = self.points[idx];
-                        crosshair::draw_crosshair(ctx, &area, theme, data_x, data_y, &x_scale, &y_scale);
+                        crosshair::draw_crosshair(ctx, &area, theme, data_x, data_y, x_scale, &y_scale);
 
                         let marker_style = MarkStyle { color: theme.palette[1].clone(), ..Default::default() };
-                        draw_points(ctx, &area, &x_scale, &y_scale, &[(data_x, data_y)], HOVER_MARKER_RADIUS, &marker_style);
+                        draw_points(ctx, &area, x_scale, &y_scale, &[(data_x, data_y)], HOVER_MARKER_RADIUS, &marker_style);
 
+                        // `nice_step`/`format_value` are plain numeric
+                        // helpers (no LinearScale-specific behavior) —
+                        // `x_scale.domain()` works uniformly whether this
+                        // is the auto-computed LinearScale or an
+                        // overridden scale (e.g. TimeScale, whose domain
+                        // is Unix seconds — a raw-timestamp tooltip label
+                        // is a known Phase B follow-up, not fixed here).
+                        let (x_min, x_max) = x_scale.domain();
                         let y_step = nice_step(y_scale.max - y_scale.min, TARGET_Y_TICKS as f64);
                         let lines = vec![
-                            ("x".to_owned(), format_value(data_x, nice_step(x_scale.max - x_scale.min, TARGET_X_TICKS as f64))),
+                            ("x".to_owned(), format_value(data_x, nice_step(x_max - x_min, TARGET_X_TICKS as f64))),
                             ("y".to_owned(), format_value(data_y, y_step)),
                         ];
-                        let anchor = (area.x(&x_scale, data_x), area.y(&y_scale, data_y));
+                        let anchor = (area.x(x_scale, data_x), area.y(&y_scale, data_y));
                         tooltip::draw_tooltip(ctx, theme, anchor, &lines, area.rect);
                     }
                 }

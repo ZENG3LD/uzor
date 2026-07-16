@@ -1,18 +1,22 @@
 //! Scale layer — domain (data space) <-> normalized `[0, 1]` <-> (via
 //! [`crate::coord::PlotArea`]) screen pixels.
 //!
-//! One [`Scale`] trait, three V1 implementations: [`LinearScale`],
-//! [`LogScale`], [`BandScale`]. `TimeScale` (calendar-aware tick
-//! generation, harvested from mlc's ~1900-line module) and `ColorScale`
-//! are later milestones — not in this crate yet, see the crate-root docs.
+//! One [`Scale`] trait, four implementations: [`LinearScale`],
+//! [`LogScale`], [`BandScale`], [`TimeScale`] (calendar-aware tick
+//! generation, harvested from mlc's ~1900-line module — see
+//! [`mod@time`]'s own docs for exactly what was ported/dropped).
+//! `ColorScale` is a later milestone — not in this crate yet, see the
+//! crate-root docs.
 
 pub mod band;
 pub mod linear;
 pub mod log;
+pub mod time;
 
 pub use band::BandScale;
 pub use linear::LinearScale;
 pub use log::LogScale;
+pub use time::TimeScale;
 
 /// One tick mark: a domain value plus its display label.
 #[derive(Debug, Clone, PartialEq)]
