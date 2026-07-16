@@ -36,7 +36,7 @@ use uzor_text::draw_paragraph;
 
 use crate::region::{ListPlacement, PlacedBlock, TablePlacement};
 use crate::scene::Block;
-use crate::slice::{Page, PageNumberPlacement};
+use crate::slice::{Card, Page, PageNumberPlacement, Slide};
 use crate::style::{ColorRole, FontRole, Theme};
 
 /// Dashed magenta — the same debug-outline convention
@@ -83,6 +83,55 @@ pub fn draw_page(ctx: &mut dyn RenderContext, page: &Page<'_>, theme: &Theme) {
     if let Some(number) = &page.page_number {
         draw_page_number(ctx, number, theme);
     }
+}
+
+/// Paint a composed [`Card`] (design doc §4.2's card/fluid mode) — the
+/// same per-block recursion [`draw_page`] uses (design law 1); no
+/// header/footer/page-number concept (those are `PageMaster`-specific;
+/// a card is content-only). Unlike `draw_page` (which has always relied
+/// on the caller's own `uzor-export::ExportSpec::background`), `draw_card`
+/// paints its OWN background from `theme` explicitly, sized to the
+/// card's own natural extent — this phase's own "slide/card bg from
+/// theme" requirement, with no `PageMaster`-level equivalent to lean on.
+pub fn draw_card(ctx: &mut dyn RenderContext, card: &Card<'_>, theme: &Theme) {
+    let default_color = theme.color_hex(ColorRole::Ink);
+    let figure_theme = theme.figure_theme();
+
+    ctx.set_fill_color(&theme.color_hex(ColorRole::Background));
+    ctx.fill_rect(0.0, 0.0, card.width, card.natural_height);
+
+    for placed in &card.frame.blocks {
+        draw_placed_block(ctx, placed, &default_color, &figure_theme);
+    }
+}
+
+/// Paint a composed [`Slide`] (design doc §4.2's fixed/PowerPoint mode).
+/// The background always fills the FULL fixed viewport regardless of any
+/// content shrink below — the slide's own physical size never changes,
+/// only how much of it the (possibly shrunk) content occupies. When
+/// [`Slide::shrink_scale`] is `Some(factor)` (a [`crate::slice::
+/// SlideOverflow::Shrink`] result), the CONTENT paint pass (never the
+/// background) is wrapped in a single `Painter::scale` transform — ONE
+/// uniform factor for the whole slide, never a per-block rescale (design
+/// doc §7 P3 risk note) — reusing the EXISTING `save`/`scale`/`restore`
+/// primitive (`uzor::render::Painter`, part of the `RenderContext`
+/// supertrait) rather than inventing a new geometry-rewrite pass over
+/// every placed rect.
+pub fn draw_slide(ctx: &mut dyn RenderContext, slide: &Slide<'_>, theme: &Theme) {
+    let default_color = theme.color_hex(ColorRole::Ink);
+    let figure_theme = theme.figure_theme();
+
+    ctx.set_fill_color(&theme.color_hex(ColorRole::Background));
+    ctx.fill_rect(0.0, 0.0, slide.width, slide.height);
+
+    ctx.save();
+    if let Some(factor) = slide.shrink_scale {
+        ctx.scale(factor, factor);
+    }
+    for placed in &slide.frame.blocks {
+        draw_placed_block(ctx, placed, &default_color, &figure_theme);
+    }
+    ctx.restore();
 }
 
 /// Paint a page's own page-number text (design doc §4.1's
@@ -189,7 +238,7 @@ mod tests {
     use uzor_export::{render_to_png, ExportSpec};
     use uzor_text::{BreakStrategy, CosmicShaper, FontSpec, Hyphenation, Paragraph, ParagraphAlign, StyledRun};
 
-    use super::draw_page;
+    use super::{draw_card, draw_page, draw_slide};
     use crate::compose::ComposeStyle;
     use crate::scene::{Block, BlockNode};
     use crate::slice::{slice_pages, Margins, PageMaster};
@@ -215,6 +264,21 @@ mod tests {
         let reader = decoder.read_info().expect("valid PNG header");
         let info = reader.info();
         (info.width, info.height)
+    }
+
+    /// Decode `bytes` and return the RGBA pixel at `(x, y)` — used by the
+    /// P3 deck proof to confirm `draw_card`/`draw_slide` genuinely PAINT
+    /// their own background (opaque alpha) rather than leaving the
+    /// `ExportSpec::background: None` canvas transparent underneath a
+    /// viewer's own white matting.
+    fn decoded_png_pixel(bytes: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let decoder = png::Decoder::new(bytes);
+        let mut reader = decoder.read_info().expect("valid PNG header");
+        let mut buf = vec![0u8; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buf).expect("decode PNG frame");
+        let stride = info.width as usize * 4;
+        let idx = y as usize * stride + x as usize * 4;
+        [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]]
     }
 
     /// Fixed seeded fixture text (design law 8: no lorem-ipsum RNG). Long
@@ -619,5 +683,136 @@ mod tests {
     /// `uzor_export::ExportSpec::background` takes.
     fn rgba_from_hex(rgb: u32) -> [u8; 4] {
         [((rgb >> 16) & 0xff) as u8, ((rgb >> 8) & 0xff) as u8, (rgb & 0xff) as u8, 255]
+    }
+
+    /// P3 headless proof (design law 8 + design doc §4.2's own demo ask:
+    /// "the SAME `SceneSpec` ... sliced three ways ... proving one
+    /// content model / three targets"): a fixed seeded 3-block-group
+    /// deck-ish scene — a title card, a bulleted-list card, and a
+    /// `BarFigure` card — sliced BOTH ways from the exact SAME `flow`:
+    /// (a) card mode (`slice_cards`, fluid, natural per-card height) to
+    /// `uzor/out/typeset_p3_card{0,1,2}.png`, and (b) fixed mode
+    /// (`slice_slides`, a 960x540 PowerPoint-shaped viewport) to
+    /// `uzor/out/typeset_p3_slide{0,1,2}.png`. `ExportSpec::background:
+    /// None` (fully transparent canvas) on every render deliberately
+    /// isolates `draw_card`/`draw_slide`'s OWN theme-background painting
+    /// — if either function forgot to paint its background, the PNG
+    /// would show transparent pixels instead of the theme's chrome
+    /// color, not a silent pass.
+    ///
+    /// This fixture is tuned so every card's natural height sits
+    /// comfortably under 540px — nothing overflows the fixed viewport
+    /// (`SlideOverflow::Report` never fires here); `slice::slides`'s own
+    /// unit tests already cover `Report`/`Shrink` actually firing on
+    /// content that doesn't fit.
+    #[test]
+    fn seeded_three_card_deck_slices_both_as_fluid_cards_and_as_fixed_slides() {
+        use uzor_figures::BarFigure;
+
+        use crate::compose::BreakControl;
+        use crate::scene::{BlockSizing, FigureBlock, ListBlock, ListItem, MarkerStyle};
+        use crate::slice::{slice_cards, slice_slides, SlideOverflow};
+
+        const DECK_WIDTH: u32 = 960;
+        const DECK_HEIGHT: u32 = 540;
+
+        const TITLE_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 32.0, bold: true, italic: false };
+        const SUBTITLE_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 18.0, bold: false, italic: false };
+        const BULLET_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 18.0, bold: false, italic: false };
+
+        let title_run = [StyledRun::new("Case Deck — uzor-typeset P3 Proof", TITLE_FONT)];
+        let subtitle_run = [StyledRun::new("Card mode vs. fixed-slide mode, same content model", SUBTITLE_FONT)];
+
+        let li1_run = [StyledRun::new("Confirmed direct transfer between wallet A and the exchange hot wallet.", BULLET_FONT)];
+        let li1_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&li1_run, f64::MAX)))];
+        let li2_run = [StyledRun::new("Secondary relay observed roughly forty-eight hours later.", BULLET_FONT)];
+        let li2_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&li2_run, f64::MAX)))];
+        let li3_run = [StyledRun::new("Resting balance identified at custodial cold storage.", BULLET_FONT)];
+        let li3_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&li3_run, f64::MAX)))];
+        let list_items = [ListItem::new(&li1_nodes), ListItem::new(&li2_nodes), ListItem::new(&li3_nodes)];
+
+        let bar_figure = BarFigure::new(
+            vec!["Hop 1".to_owned(), "Hop 2".to_owned(), "Hop 3".to_owned(), "Hop 4".to_owned()],
+            vec![128_500.0, 640_000.0, 2_600_000.0, 300_000.0],
+        )
+        .with_title("Observed amount per hop (seeded)");
+        let figure_caption_run = [StyledRun::new("Figure — seeded bar chart, deterministic fixture.", SUBTITLE_FONT)];
+
+        let body_width = DECK_WIDTH as f64 - 80.0; // 40px margin either side, this crate's own convention
+
+        let flow = vec![
+            // Card 0 — title.
+            BlockNode::new(Block::Paragraph(Paragraph::new(&title_run, body_width))),
+            BlockNode::new(Block::Spacer(12.0)),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&subtitle_run, body_width))),
+            // Card 1 — bullets.
+            BlockNode::new(Block::List(ListBlock::new(&list_items, MarkerStyle::Bullet('•'), 24.0)))
+                .with_break_control(BreakControl::ForceBefore),
+            // Card 2 — figure + caption.
+            BlockNode::new(Block::Figure(FigureBlock::new(&bar_figure, BlockSizing::FixedHeight(320.0))))
+                .with_break_control(BreakControl::ForceBefore),
+            BlockNode::new(Block::Spacer(12.0)),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&figure_caption_run, body_width))),
+        ];
+
+        let style = ComposeStyle::new(10.0, BULLET_FONT);
+        let shaper = CosmicShaper::headless();
+
+        let cards = slice_cards(&flow, body_width, &style, &shaper);
+        assert_eq!(cards.len(), 3, "two ForceBefore markers must split the deck into exactly 3 cards");
+        for card in &cards {
+            assert!(
+                card.natural_height < DECK_HEIGHT as f64,
+                "fixture must be tuned so every card fits comfortably under the fixed deck height, got {}",
+                card.natural_height
+            );
+        }
+
+        let slides = slice_slides(&flow, DECK_WIDTH as f64, DECK_HEIGHT as f64, SlideOverflow::Report, &style, &shaper)
+            .expect("fixture is tuned to fit the fixed 960x540 viewport with no overflow");
+        assert_eq!(slides.len(), 3);
+        for slide in &slides {
+            assert!(slide.shrink_scale.is_none(), "fixture must fit without engaging a shrink transform");
+        }
+
+        // "Conversion first-class": every card's own block ids/order match
+        // its slide counterpart's exactly (content fits both ways).
+        for (card, slide) in cards.iter().zip(slides.iter()) {
+            let card_ids: Vec<_> = card.frame.blocks.iter().map(|b| b.id).collect();
+            let slide_ids: Vec<_> = slide.frame.blocks.iter().map(|b| b.id).collect();
+            assert_eq!(card_ids, slide_ids, "card <-> slide conversion must preserve block ids and order");
+        }
+
+        let theme = crate::style::Theme::light_report();
+
+        for (i, card) in cards.iter().enumerate() {
+            let card_height = card.natural_height.ceil().max(1.0) as u32;
+            let spec = ExportSpec { width_px: DECK_WIDTH, height_px: card_height, dpr: 1.0, background: None };
+            let bytes = render_to_png(&spec, |ctx| draw_card(ctx, card, &theme)).expect("card proof render should succeed");
+            assert_eq!(decoded_png_dims(&bytes), (DECK_WIDTH, card_height));
+            // `background: None` means the CANVAS starts fully
+            // transparent — a fully-opaque corner pixel proves
+            // `draw_card` painted its OWN background from the theme
+            // rather than relying on a caller-set export background.
+            assert_eq!(decoded_png_pixel(&bytes, 2, 2)[3], 255, "draw_card must paint its own opaque background from the theme");
+            write_proof_png(&format!("typeset_p3_card{i}.png"), &bytes);
+        }
+
+        let slide_spec = ExportSpec { width_px: DECK_WIDTH, height_px: DECK_HEIGHT, dpr: 1.0, background: None };
+        for (i, slide) in slides.iter().enumerate() {
+            let bytes = render_to_png(&slide_spec, |ctx| draw_slide(ctx, slide, &theme)).expect("slide proof render should succeed");
+            assert_eq!(decoded_png_dims(&bytes), (DECK_WIDTH, DECK_HEIGHT));
+            // Same background-ownership proof, checked far below any
+            // placed content (every card fits well under the fixed
+            // viewport height) — still opaque, so `draw_slide` paints the
+            // FULL fixed viewport's background, not just the content's
+            // own extent.
+            assert_eq!(
+                decoded_png_pixel(&bytes, DECK_WIDTH - 2, DECK_HEIGHT - 2)[3],
+                255,
+                "draw_slide must paint its own opaque background across the WHOLE fixed viewport"
+            );
+            write_proof_png(&format!("typeset_p3_slide{i}.png"), &bytes);
+        }
     }
 }
