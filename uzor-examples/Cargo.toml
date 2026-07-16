@@ -17,6 +17,7 @@ uzor-render-vello-gpu = { workspace = true }
 uzor-urx-core         = { workspace = true }
 uzor-window-desktop   = { workspace = true }
 uzor-viz              = { path = "../uzor-viz" }
+uzor-text             = { path = "../uzor-text" }
 uzor-export           = { path = "../uzor-export" }
 vello                 = "0.9"
 pollster              = "0.4"
@@ -51,6 +52,14 @@ path = "src/l4/force_graph_demo.rs"
 [[bin]]
 name = "viz-charts-demo"
 path = "src/l4/viz_charts_demo.rs"
+
+# `uzor-text` Arc 2 Phase 3 kinetics demo — a fixed seeded paragraph
+# resize-morphing (yoyo loop) between a narrow and a wide max_width.
+# See uzor-text/CLAUDE.md "Phase 3" for the build_morph/sample/
+# sample_layout API this demo exercises.
+[[bin]]
+name = "text-kinetics-demo"
+path = "src/l4/text_kinetics_demo.rs"
 
 # URX render-family profiling rigs (Phase 0+).
 # Pinned reference scene + agent HTTP backend switch + FPS readout.
