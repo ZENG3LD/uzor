@@ -1093,6 +1093,10 @@ pub const ICON_NEW_WINDOW: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" vi
   <path d="M18 13L18 19C18 20.1046 17.1046 21 16 21L5 21C3.89543 21 3 20.1046 3 19L3 8C3 6.89543 3.89543 6 5 6L11 6"/>
 </svg>"##;
 
+pub const ICON_MAXIMIZE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="5" y="5" width="14" height="14" rx="1"/>
+</svg>"##;
+
 // =============================================================================
 // User / Auth / Cloud Icons
 // =============================================================================
