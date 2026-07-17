@@ -91,6 +91,10 @@ where
             "clusters": clusters,
             "collapsed_clusters": self.clusters.collapsed_ids(),
             "forces": self.force_params().map(|p| force_params_json(&p)),
+            "labels": {
+                "density": self.label_density(),
+                "drawn_last_frame": self.labels_drawn_last_frame(),
+            },
         })
     }
 
@@ -241,6 +245,17 @@ where
                 }
                 self.set_force_params(params);
                 AgentActionReply::ok_with_log(json!({ "forces": force_params_json(&params) }))
+            }
+            // Wave 2.3 label LOD — engine setter is `set_label_density`;
+            // exposed as its own action (not folded into `set_forces`,
+            // which is force-model-specific) so a density change is
+            // screenshot-verifiable headlessly.
+            "set_labels" => {
+                let Some(density) = action.args.get("density").and_then(Value::as_f64) else {
+                    return AgentActionReply::err("set_labels requires args.density (f64, labels per 100px cell at zoom 1.0)");
+                };
+                self.set_label_density(density);
+                AgentActionReply::ok_with_log(json!({ "labels": { "density": self.label_density() } }))
             }
             "set_layout" => {
                 let Some(mode) = action.args.get("mode").and_then(Value::as_str) else {
@@ -429,6 +444,23 @@ mod tests {
 
         let forces = engine.agent_state()["forces"].clone();
         assert_eq!(forces["link_distance"].as_f64().unwrap() as f32, bigger_link_distance);
+    }
+
+    #[test]
+    fn set_labels_action_updates_density_and_agent_state_reports_it() {
+        let (graph, _) = ring_graph(3);
+        let mut engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
+
+        assert_eq!(engine.agent_state()["labels"]["density"], json!(crate::label_grid::DEFAULT_LABEL_DENSITY));
+        assert_eq!(engine.agent_state()["labels"]["drawn_last_frame"], json!(0));
+
+        let reply = engine.apply_agent_action(action("set_labels", json!({ "density": 3.0 })));
+        assert!(reply.ok);
+        assert_eq!(engine.label_density(), 3.0);
+        assert_eq!(engine.agent_state()["labels"]["density"], json!(3.0));
+
+        let bad = engine.apply_agent_action(action("set_labels", json!({})));
+        assert!(!bad.ok, "set_labels without args.density must be an error reply, not a silent no-op");
     }
 
     #[test]

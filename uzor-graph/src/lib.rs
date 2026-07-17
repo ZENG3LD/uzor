@@ -30,6 +30,7 @@ pub mod cluster;
 pub mod engine;
 pub mod graph;
 pub mod interaction;
+pub mod label_grid;
 pub mod layout;
 pub mod particle;
 pub mod render;

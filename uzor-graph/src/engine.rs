@@ -17,6 +17,7 @@ use crate::cluster::{ClusterRegistry, GroupId};
 use crate::graph::{Graph, NodeIndex};
 use crate::interaction::drag::DragController;
 use crate::interaction::pick;
+use crate::label_grid;
 use crate::layout::force_directed::ForceDirectedLayout;
 use crate::layout::{ForceParams, GraphLayoutMode, Layout, LayoutTickResult};
 use crate::particle::Particle;
@@ -133,6 +134,13 @@ pub struct GraphEngine<N, E, L: Layout = ForceDirectedLayout> {
     last_hover_pick_screen: Option<(f64, f64)>,
     hover_depth: u8,
     hover_card: bool,
+    /// Label-LOD density param (Wave 2.3 — `crate::label_grid`'s
+    /// `labelDensity`, "labels per 100px cell at zoom 1.0"). See
+    /// [`GraphEngine::label_density`]/[`GraphEngine::set_label_density`].
+    label_density: f64,
+    /// Labels actually drawn on the last [`GraphEngine::draw`] call —
+    /// see [`GraphEngine::labels_drawn_last_frame`].
+    labels_drawn_last_frame: usize,
     visible: Vec<NodeIndex>,
     last_tick: LayoutTickResult,
     last_frame_at: Option<Instant>,
@@ -162,6 +170,8 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             last_hover_pick_screen: None,
             hover_depth: DEFAULT_HOVER_DEPTH,
             hover_card: true,
+            label_density: label_grid::DEFAULT_LABEL_DENSITY,
+            labels_drawn_last_frame: 0,
             visible: Vec::new(),
             last_tick: LayoutTickResult { alpha: 1.0, max_displacement: 0.0, settled: false },
             last_frame_at: None,
@@ -279,6 +289,11 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         self.refresh_visible();
         let hidden: HashSet<NodeIndex> =
             if self.clusters.any_collapsed() { self.clusters.hidden_nodes().collect() } else { HashSet::new() };
+        // Collapsed-cluster representatives always keep their label
+        // (Wave 2.3 forced-label union) — hover/selection-neighbor
+        // forcing needs no entry here, `draw_nodes` derives that
+        // straight from `focus`.
+        let forced_labels: HashSet<NodeIndex> = self.clusters.collapsed_clusters().map(|c| c.representative).collect();
         let ctx = gr_render::DrawContext {
             camera: &self.camera,
             viewport: self.canvas_rect,
@@ -287,10 +302,13 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             selected: self.selected,
             hovered: self.hovered,
             hidden: &hidden,
+            label_density: self.label_density,
+            forced_labels: &forced_labels,
         };
         gr_render::draw_edges(render, &self.graph, &self.particles, &ctx);
         gr_render::draw_cluster_edges(render, &self.particles, &ctx, &self.clusters);
-        gr_render::draw_nodes(render, &self.graph, &self.particles, &ctx);
+        let node_stats = gr_render::draw_nodes(render, &self.graph, &self.particles, &ctx);
+        self.labels_drawn_last_frame = node_stats.labels_drawn;
         gr_render::draw_cluster_supernodes(render, &self.graph, &self.particles, &ctx, &self.clusters);
 
         if self.hover_card {
@@ -364,6 +382,28 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
     pub fn set_hover_card_enabled(&mut self, enabled: bool) {
         self.hover_card = enabled;
         self.dirty = true;
+    }
+
+    /// Label-LOD density param (Wave 2.3 — `crate::label_grid`'s sigma
+    /// `LabelGrid` port). "Labels per 100px grid cell at zoom 1.0" —
+    /// default [`label_grid::DEFAULT_LABEL_DENSITY`].
+    pub fn label_density(&self) -> f64 {
+        self.label_density
+    }
+
+    /// Negative values clamp to `0.0` (an empty per-cell quota — only
+    /// forced labels, e.g. hover/selection/collapsed-cluster
+    /// representatives, would show).
+    pub fn set_label_density(&mut self, density: f64) {
+        self.label_density = density.max(0.0);
+        self.dirty = true;
+    }
+
+    /// Labels actually drawn on the last [`GraphEngine::draw`] call — a
+    /// test/verification aid (Wave 2.3 gate) surfaced in `agent_state`'s
+    /// `labels.drawn_last_frame` field.
+    pub fn labels_drawn_last_frame(&self) -> usize {
+        self.labels_drawn_last_frame
     }
 
     /// The currently hovered node, if any — same value `agent_state`'s
@@ -1089,5 +1129,46 @@ mod tests {
         // trigger a fresh pick, which correctly clears the now-out-of-range hover.
         engine.on_event(&PlatformEvent::PointerMoved { x: 113.0, y: 0.0 });
         assert_eq!(engine.hovered(), None, "a >=2px move re-picks and correctly clears the hover");
+    }
+
+    // ── W2.3 label LOD (sigma LabelGrid port, oss doc §3/§label-lod) ───────
+
+    #[test]
+    fn label_density_defaults_and_set_label_density_updates_the_getter_and_marks_dirty() {
+        let mut engine: TestEngine = GraphEngine::new(Graph::new(), ForceDirectedLayout::default());
+        assert_eq!(engine.label_density(), crate::label_grid::DEFAULT_LABEL_DENSITY);
+        assert_eq!(engine.labels_drawn_last_frame(), 0);
+
+        engine.clear_dirty();
+        engine.set_label_density(2.5);
+        assert_eq!(engine.label_density(), 2.5);
+        assert!(engine.dirty(), "changing label_density must mark the canvas dirty");
+
+        // Negative density clamps to 0.0 (an empty per-cell quota).
+        engine.set_label_density(-4.0);
+        assert_eq!(engine.label_density(), 0.0);
+    }
+
+    /// A real `draw()` call (through `uzor-export`'s headless render path,
+    /// same as `lib.rs`'s `proof_tests`) must populate
+    /// `labels_drawn_last_frame` from what `render::draw_nodes` actually
+    /// drew — not stay stuck at its `0` initial value.
+    #[test]
+    fn draw_populates_labels_drawn_last_frame_from_the_render_pass() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let b = graph.push_node((), "b", "x", 4.0);
+        graph.push_edge(a, b, 1.0, ());
+        let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.set_canvas_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+        engine.seed_positions(&[(0.0, 0.0), (50.0, 0.0)]);
+        engine.camera.zoom = 2.0; // well above LOD_LABEL_FADE_HIGH — labels fully opaque
+
+        let spec = ExportSpec { width_px: 400, height_px: 300, dpr: 1.0, background: None };
+        render_to_png(&spec, |ctx| engine.draw(ctx)).expect("headless render must succeed");
+
+        assert_eq!(engine.labels_drawn_last_frame(), 2, "both nodes sit in separate grid cells and must both draw a label");
     }
 }

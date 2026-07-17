@@ -24,13 +24,13 @@ use uzor_figures::theme::FigureTheme;
 use crate::camera::Camera2D;
 use crate::cluster::ClusterRegistry;
 use crate::graph::{Graph, NodeIndex};
+use crate::label_grid::{self, LabelCandidate};
 use crate::particle::Particle;
 
-/// Zoom at/above which node labels start fading in (Obsidian's "Text
-/// Fade Threshold" precedent — a continuous dial keyed to zoom, not a
-/// binary show/hide).
-pub const LOD_LABEL_FADE_LOW: f64 = 0.45;
-pub const LOD_LABEL_FADE_HIGH: f64 = 0.9;
+/// Re-exported from `label_grid` (Wave 2.3 moved the constants there —
+/// every label-LOD number lives in one module) so any existing
+/// `crate::render::LOD_LABEL_FADE_{LOW,HIGH}` path keeps resolving.
+pub use crate::label_grid::{LOD_LABEL_FADE_HIGH, LOD_LABEL_FADE_LOW};
 
 const DIM_ALPHA: f64 = 0.15;
 
@@ -98,6 +98,17 @@ pub struct DrawContext<'a> {
     /// entirely by [`draw_edges`] — [`draw_cluster_edges`] draws the
     /// aggregated substitute instead.
     pub hidden: &'a HashSet<NodeIndex>,
+    /// Label-LOD density param (Wave 2.3 — `crate::label_grid`'s
+    /// `labelDensity`, "labels per 100px cell at zoom 1.0"). Passed
+    /// through here rather than as a ninth loose argument to
+    /// [`draw_nodes`].
+    pub label_density: f64,
+    /// Nodes that must show their label regardless of the grid quota —
+    /// collapsed-cluster representatives. Hover/selection-neighbor
+    /// forcing does NOT need a separate entry here: it's derived inline
+    /// in [`labels_to_draw`] from `focus`, which already carries the
+    /// full neighborhood key set.
+    pub forced_labels: &'a HashSet<NodeIndex>,
 }
 
 /// Draw every visible edge, dimming any edge outside an active
@@ -153,15 +164,68 @@ pub fn draw_edges<N, E>(
     drawn
 }
 
+/// Per-frame node/label draw counts. [`crate::engine::GraphEngine::draw`]
+/// stashes `labels_drawn` for the `labels.drawn_last_frame` agent-state
+/// field (Wave 2.3 gate — the drawn label count is a test/verification
+/// aid, not just an internal detail).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NodeDrawStats {
+    pub nodes_drawn: usize,
+    pub labels_drawn: usize,
+}
+
+/// The exact set of `NodeIndex` that will draw a label this frame, given
+/// `ctx` — extracted out of [`draw_nodes`] as a pure function (no
+/// `RenderContext` needed) so the wave-2.3 gate's grid-quota/degree-
+/// priority/forced-union/determinism/zoom-ramp tests can exercise it
+/// directly without a mock renderer.
+///
+/// Two disjoint paths (Wave 2.3 dim-interaction fix):
+/// - **`focus` active** (a hover or click-selection is live): the label
+///   cloud must vanish for every dimmed node, not just fade — so the
+///   ENTIRE `label_grid` quota pass is bypassed and the shown set is
+///   exactly the focus-selected nodes (hovered/selected node + its
+///   highlighted neighbors) unioned with `ctx.forced_labels` (a
+///   collapsed-cluster representative stays labeled even while some
+///   unrelated node is focused elsewhere).
+/// - **no active focus**: the ordinary `label_grid::select_labels` LOD
+///   pass, unioned with `ctx.forced_labels`.
+fn labels_to_draw<N, E>(graph: &Graph<N, E>, particles: &[Particle], ctx: &DrawContext<'_>) -> HashSet<NodeIndex> {
+    if ctx.focus.is_active() {
+        let mut shown: HashSet<NodeIndex> =
+            ctx.visible.iter().copied().filter(|&id| ctx.focus.is_selected(u64::from(id))).collect();
+        shown.extend(ctx.forced_labels.iter().copied());
+        return shown;
+    }
+
+    let candidates: Vec<LabelCandidate> = ctx
+        .visible
+        .iter()
+        .filter_map(|&id| {
+            let p = particles.get(id.index())?;
+            let node = graph.get_node(id)?;
+            Some(LabelCandidate {
+                node: id,
+                screen_pos: ctx.camera.world_to_screen((p.x as f64, p.y as f64), ctx.viewport),
+                degree: graph.degree(id),
+                screen_radius: ctx.camera.node_screen_radius(node.radius),
+            })
+        })
+        .collect();
+
+    label_grid::select_labels(&candidates, ctx.viewport, ctx.camera.zoom, ctx.label_density, ctx.forced_labels)
+}
+
 /// Draw every visible node as a circle (radius from `Camera2D::node_screen_radius`,
 /// color from [`category_color`]), plus a selection/hover ring and
-/// zoom-faded labels. Returns the number of nodes drawn.
+/// label-LOD labels (Wave 2.3 — `crate::label_grid`'s sigma `LabelGrid`
+/// port, alpha boosted by degree). Returns node/label draw counts.
 pub fn draw_nodes<N, E>(
     render: &mut dyn RenderContext,
     graph: &Graph<N, E>,
     particles: &[Particle],
     ctx: &DrawContext<'_>,
-) -> usize {
+) -> NodeDrawStats {
     let mut by_color: HashMap<&'static str, Vec<CircleBatch>> = HashMap::new();
     let mut dim: Vec<CircleBatch> = Vec::new();
 
@@ -186,8 +250,13 @@ pub fn draw_nodes<N, E>(
         render.draw_circle_batch(circles, color);
     }
 
-    let label_alpha = ((ctx.camera.zoom - LOD_LABEL_FADE_LOW) / (LOD_LABEL_FADE_HIGH - LOD_LABEL_FADE_LOW))
-        .clamp(0.0, 1.0);
+    let label_set = labels_to_draw(graph, particles, ctx);
+    // Whole-graph max degree (not just the currently-visible subset) —
+    // invariant across pan/zoom, so the same node always normalizes to
+    // the same degree-boost regardless of what else happens to be on
+    // screen this frame (Wave 2.3 determinism gate).
+    let max_degree = graph.nodes().map(|(id, _)| graph.degree(id)).max().unwrap_or(0).max(1);
+    let mut labels_drawn = 0usize;
 
     for &id in ctx.visible {
         let (Some(p), Some(node)) = (particles.get(id.index()), graph.get_node(id)) else { continue };
@@ -208,16 +277,35 @@ pub fn draw_nodes<N, E>(
             render.stroke();
         }
 
-        if label_alpha > 0.01 {
-            render.set_global_alpha(label_alpha);
+        if !label_set.contains(&id) {
+            // Wave 2.3 dim-interaction fix: a dimmed node's label is
+            // skipped entirely (no draw call at all), not just faded —
+            // the label cloud vanishes along with the dimmed circle.
+            continue;
+        }
+
+        // Forced (focus-active highlight, or a collapsed-cluster
+        // representative) always draws at full opacity — the zoom+degree
+        // fade curve only governs the ordinary, non-forced LOD-grid path.
+        let is_forced = ctx.focus.is_active() || ctx.forced_labels.contains(&id);
+        let alpha = if is_forced {
+            1.0
+        } else {
+            let normalized_degree = graph.degree(id) as f64 / max_degree as f64;
+            label_grid::label_alpha(ctx.camera.zoom, normalized_degree)
+        };
+
+        if alpha > 0.01 {
+            render.set_global_alpha(alpha);
             render.set_fill_color("#e6e6ea");
             render.set_font("11px sans-serif");
             render.fill_text(&node.label, sx + r + 4.0, sy + 4.0);
             render.set_global_alpha(1.0);
+            labels_drawn += 1;
         }
     }
 
-    ctx.visible.len()
+    NodeDrawStats { nodes_drawn: ctx.visible.len(), labels_drawn }
 }
 
 const CLUSTER_ACCENT: &str = "#c9a94e";
@@ -312,4 +400,133 @@ pub fn draw_hover_card(render: &mut dyn RenderContext, anchor_px: (f64, f64), in
         ("pinned".to_owned(), info.pinned.to_string()),
     ];
     draw_tooltip(render, &FigureTheme::dark(), anchor_px, &lines, bounds);
+}
+
+#[cfg(test)]
+mod tests {
+    //! `labels_to_draw` exercised at the full `Graph`/`Camera2D`/
+    //! `DrawContext` level (Wave 2.3) — deliberately WITHOUT a
+    //! `RenderContext` mock, since the label-SELECTION logic
+    //! (`labels_to_draw`) never touches the renderer; `label_grid.rs`'s
+    //! own test module covers the pure grid/quota/degree-priority/
+    //! zoom-ramp/determinism math in isolation.
+
+    use super::*;
+    use crate::graph::Graph;
+    use crate::particle::Particle;
+
+    type G = Graph<(), ()>;
+
+    /// A hub with 5 depth-1 neighbors (degree 1 each), plus an unrelated
+    /// 15-node clique (degree 14 each) packed into the SAME screen cell —
+    /// the clique always wins the LOD grid's priority ranking over the
+    /// hub/its neighbors when nothing is forced.
+    fn hub_and_noise_clique() -> (G, NodeIndex, Vec<NodeIndex>, Vec<NodeIndex>) {
+        let mut graph = G::new();
+        let hub = graph.push_node((), "hub", "x", 4.0);
+        let neighbors: Vec<NodeIndex> = (0..5).map(|i| graph.push_node((), format!("nbr{i}"), "x", 4.0)).collect();
+        for &n in &neighbors {
+            graph.push_edge(hub, n, 1.0, ());
+        }
+        let noise: Vec<NodeIndex> = (0..15).map(|i| graph.push_node((), format!("noise{i}"), "x", 4.0)).collect();
+        for i in 0..noise.len() {
+            for j in (i + 1)..noise.len() {
+                graph.push_edge(noise[i], noise[j], 1.0, ());
+            }
+        }
+        (graph, hub, neighbors, noise)
+    }
+
+    /// Every node placed a couple of world units apart, all landing
+    /// inside the SAME single 100px screen cell at the zoom this test
+    /// module uses.
+    fn particles_all_in_one_cell(graph: &G) -> Vec<Particle> {
+        (0..graph.node_count()).map(|i| Particle::at(i as f32 * 2.0, i as f32 * 2.0)).collect()
+    }
+
+    /// Wave 2.3's literal forced-union gate: a hovered node and its
+    /// depth-1 neighbors must keep their labels even when the LOD grid's
+    /// quota is entirely exhausted by unrelated higher-degree candidates
+    /// — AND (the dim-interaction fix) every unrelated, unfocused node
+    /// must NOT show a label at all while the focus is active.
+    #[test]
+    fn hovered_node_and_its_neighbors_keep_labels_even_when_the_grid_quota_is_exhausted() {
+        let (graph, hub, neighbors, noise) = hub_and_noise_clique();
+        let particles = particles_all_in_one_cell(&graph);
+        let camera = Camera2D { pan_x: 0.0, pan_y: 0.0, zoom: 2.0 }; // quota = ceil(1.0 * 2.0^2) = 4
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let visible: Vec<NodeIndex> = graph.nodes().map(|(id, _)| id).collect();
+        let empty_focus = FocusSet::empty();
+        let hidden = HashSet::new();
+        let forced = HashSet::new();
+
+        let ctx_no_focus = DrawContext {
+            camera: &camera,
+            viewport,
+            visible: &visible,
+            focus: &empty_focus,
+            selected: None,
+            hovered: None,
+            hidden: &hidden,
+            label_density: label_grid::DEFAULT_LABEL_DENSITY,
+            forced_labels: &forced,
+        };
+        let shown_no_focus = labels_to_draw(&graph, &particles, &ctx_no_focus);
+        assert_eq!(shown_no_focus.len(), 4, "the quota's 4 slots all go to the degree-14 noise clique");
+        assert!(!shown_no_focus.contains(&hub), "without focus, the hub (degree 5) loses the crowded cell to the noise clique");
+        for &n in &neighbors {
+            assert!(!shown_no_focus.contains(&n), "without focus, a degree-1 neighbor never wins the crowded cell");
+        }
+
+        // Simulate a hover on the hub at depth 1 — the SAME
+        // `neighborhood_focus_keys_depth` + `FocusSet::select_many`
+        // `GraphEngine::set_hovered` drives.
+        let mut focus = FocusSet::empty();
+        focus.select_many(graph.neighborhood_focus_keys_depth(hub, 1));
+        let ctx_focused = DrawContext { focus: &focus, ..ctx_no_focus };
+
+        let shown_focused = labels_to_draw(&graph, &particles, &ctx_focused);
+        assert!(shown_focused.contains(&hub), "the hovered node itself must always show its label");
+        for &n in &neighbors {
+            assert!(shown_focused.contains(&n), "every depth-1 neighbor of the hovered node must show its label");
+        }
+        for &noisy in &noise {
+            assert!(
+                !shown_focused.contains(&noisy),
+                "an unrelated, unfocused node must NOT show a label while focus is active — the dim-interaction fix"
+            );
+        }
+    }
+
+    /// Repeated calls against the exact same `DrawContext`/`Graph`/
+    /// `Particle` state must always produce the identical label set —
+    /// no `HashMap`-iteration-order leak through the full
+    /// `Graph`->`LabelCandidate`->`select_labels` pipeline.
+    #[test]
+    fn labels_to_draw_is_deterministic_across_repeated_calls_with_unchanged_state() {
+        let (graph, _hub, _neighbors, _noise) = hub_and_noise_clique();
+        let particles = particles_all_in_one_cell(&graph);
+        let camera = Camera2D { pan_x: 3.0, pan_y: -7.0, zoom: 1.4 };
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let visible: Vec<NodeIndex> = graph.nodes().map(|(id, _)| id).collect();
+        let empty_focus = FocusSet::empty();
+        let hidden = HashSet::new();
+        let forced = HashSet::new();
+        let ctx = DrawContext {
+            camera: &camera,
+            viewport,
+            visible: &visible,
+            focus: &empty_focus,
+            selected: None,
+            hovered: None,
+            hidden: &hidden,
+            label_density: label_grid::DEFAULT_LABEL_DENSITY,
+            forced_labels: &forced,
+        };
+
+        let first = labels_to_draw(&graph, &particles, &ctx);
+        for _ in 0..5 {
+            assert_eq!(labels_to_draw(&graph, &particles, &ctx), first, "identical state must yield an identical label set every call");
+        }
+    }
 }
