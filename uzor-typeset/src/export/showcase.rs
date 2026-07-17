@@ -408,7 +408,12 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
                 .with_hyphenation(Hyphenation::English),
         )),
         BlockNode::new(Block::Spacer(12.0)),
-        BlockNode::new(Block::Paragraph(Paragraph::new(&intro_ru_run, body_width).with_align(ParagraphAlign::Justify))),
+        BlockNode::new(Block::Paragraph(
+            Paragraph::new(&intro_ru_run, body_width)
+                .with_align(ParagraphAlign::Justify)
+                .with_break_strategy(BreakStrategy::KnuthPlass)
+                .with_hyphenation(Hyphenation::Russian),
+        )),
         BlockNode::new(Block::Spacer(12.0)),
         BlockNode::new(Block::Paragraph(
             Paragraph::new(&intro_b_run, body_width)
@@ -418,6 +423,24 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
         )),
     ];
     let pages_opener = slice_pages(&flow_opener, &master_single, &style_single, &shaper);
+
+    // Typography quality wave: the Russian intro paragraph (the only
+    // Cyrillic content in this fixture, so its own placed glyphs are
+    // unambiguously identifiable) must show a REAL discretionary hyphen
+    // break — checked directly against the composed `ParagraphLayout`
+    // (a stronger, position-independent proof than PDF text extraction,
+    // which legitimately no longer contains a hyphenated word as ONE
+    // contiguous substring once it genuinely breaks across two lines).
+    let russian_paragraph_hyphenates = pages_opener.iter().any(|page| {
+        page.frame.blocks.iter().any(|b| {
+            b.paragraph_layout.as_ref().is_some_and(|layout| {
+                let is_cyrillic = layout.glyphs.iter().any(|g| g.cluster.chars().any(|c| ('а'..='я').contains(&c) || ('А'..='Я').contains(&c)));
+                let has_hyphen = layout.glyphs.iter().any(|g| g.cluster == "-");
+                is_cyrillic && has_hyphen
+            })
+        })
+    });
+    assert!(russian_paragraph_hyphenates, "the Russian intro paragraph must show a real discretionary hyphen break under Hyphenation::Russian");
 
     // ── Section 2: two-column narrative ─────────────────────────────────
     let two_col_heading_run = [StyledRun::new("Composition & Slicing", HEADING_FONT)];
@@ -965,10 +988,19 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     for word in ["uzor-typeset", "uzor-graph", "uzor-figures", "Active", "Showcase"] {
         assert!(extracted.contains(word), "extracted PDF text must contain {word:?} — got a document of {} chars", extracted.len());
     }
-    // Cyrillic end-to-end: the Russian intro sentence's own words must
-    // round-trip verbatim too (export SOTA pass — see this fixture's own
-    // `INTRO_RU` comment).
-    for word in ["показательный", "документ", "кириллического", "экспорте"] {
+    // Cyrillic end-to-end: the Russian intro sentence's own SHORTER words
+    // (never hyphenated at this column width) must round-trip verbatim
+    // (export SOTA pass — see this fixture's own `INTRO_RU` comment).
+    // `"кириллического"` (the longest word in the sentence) is
+    // deliberately NOT checked here anymore: since the typography quality
+    // wave turned on real `Hyphenation::Russian` for this paragraph, that
+    // word now genuinely breaks across two lines with a real hyphen glyph
+    // between them (the whole point of the feature — see the
+    // `russian_paragraph_hyphenates` assertion above, which checks that
+    // directly against the composed layout) — it would no longer extract
+    // as one contiguous PDF-text substring, which is CORRECT, not a
+    // regression.
+    for word in ["показательный", "документ", "экспорте"] {
         assert!(extracted.contains(word), "extracted PDF text must contain Cyrillic word {word:?} — got a document of {} chars", extracted.len());
     }
 
@@ -981,4 +1013,88 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
         assert_eq!(decoded_png_dims(&bytes), (PAGE_W as u32, PAGE_H as u32));
         write_proof(&format!("typeset_showcase_page{}.png", i + 1), &bytes);
     }
+}
+
+/// Typography quality wave — dedicated proof (task's own explicit ask,
+/// separate from the full showcase above): one physical A4 page, a
+/// GENUINELY narrow text column (asymmetric margins carve a ~205px body
+/// out of the 595px-wide page — a real magazine-style narrow column, not
+/// the showcase's own full-width or 2-column body), carrying an English
+/// paragraph AND a Russian paragraph, both `Justify` + `KnuthPlass`, each
+/// with its own real `hypher`-backed [`Hyphenation`] — proving both
+/// languages' hyphenation is visibly breaking words at this narrow width,
+/// not just type-checking.
+#[test]
+fn typography_wave_ru_and_en_hyphenation_in_a_narrow_justified_column() {
+    let theme = Theme::light_report();
+    let shaper = CosmicShaper::headless();
+
+    // Asymmetric margins: a genuinely narrow (~205px) body column on an
+    // otherwise full A4 (595x842) physical page.
+    let margins = Margins::new(50.0, 350.0, 50.0, 40.0);
+    let master = PageMaster::new(PAGE_W, PAGE_H, margins);
+    let body_width = master.body_rect().width;
+    assert!(body_width < 220.0, "fixture must be a genuinely narrow column");
+
+    let heading_run = [StyledRun::new("Typography Quality Wave — Hyphenation Proof", HEADING_FONT)];
+
+    const EN_TEXT: &str = "A narrow justified column of business presentation text quickly exposes uneven \
+        interword spacing unless real hyphenation supplies a mid-word breakpoint near the right margin, \
+        exactly the kind of long compound vocabulary — implementation, infrastructure, reproducibility, \
+        categorical — a narrow column is well suited to demonstrate.";
+    let en_run = [StyledRun::new(EN_TEXT, BODY_FONT)];
+
+    const RU_TEXT: &str = "Показательный документ подтверждает поддержку кириллического текста, а узкая \
+        колонка оправданного текста быстро показывает неравномерные промежутки между словами, если \
+        настоящая расстановка переносов не подсказывает точку разрыва посреди длинного слова.";
+    let ru_run = [StyledRun::new(RU_TEXT, BODY_FONT)];
+
+    let style = ComposeStyle::from_theme(&theme, 10.0);
+    let flow = [
+        BlockNode::new(Block::Paragraph(Paragraph::new(&heading_run, body_width))),
+        BlockNode::new(Block::Spacer(14.0)),
+        BlockNode::new(Block::Paragraph(
+            Paragraph::new(&en_run, body_width)
+                .with_align(ParagraphAlign::Justify)
+                .with_break_strategy(BreakStrategy::KnuthPlass)
+                .with_hyphenation(Hyphenation::English),
+        )),
+        BlockNode::new(Block::Spacer(14.0)),
+        BlockNode::new(Block::Paragraph(
+            Paragraph::new(&ru_run, body_width)
+                .with_align(ParagraphAlign::Justify)
+                .with_break_strategy(BreakStrategy::KnuthPlass)
+                .with_hyphenation(Hyphenation::Russian),
+        )),
+    ];
+
+    let pages = slice_pages(&flow, &master, &style, &shaper);
+    assert_eq!(pages.len(), 1, "this fixture's content must fit on ONE A4 page");
+    let page = &pages[0];
+
+    // Data-level proof (not just eyeballing): a real "-" glyph appears in
+    // BOTH the English (pure-ASCII) paragraph and the Russian (Cyrillic)
+    // paragraph's own placed layout — the Cyrillic check distinguishes the
+    // two paragraphs unambiguously (only the Russian one has Cyrillic
+    // glyphs at all).
+    let mut ascii_hyphenates = false;
+    let mut cyrillic_hyphenates = false;
+    for block in &page.frame.blocks {
+        if let Some(layout) = &block.paragraph_layout {
+            let is_cyrillic = layout.glyphs.iter().any(|g| g.cluster.chars().any(|c| ('а'..='я').contains(&c) || ('А'..='Я').contains(&c)));
+            let has_hyphen = layout.glyphs.iter().any(|g| g.cluster == "-");
+            if has_hyphen && is_cyrillic {
+                cyrillic_hyphenates = true;
+            } else if has_hyphen {
+                ascii_hyphenates = true;
+            }
+        }
+    }
+    assert!(ascii_hyphenates, "the English paragraph must show a real discretionary hyphen break in this narrow column");
+    assert!(cyrillic_hyphenates, "the Russian paragraph must show a real discretionary hyphen break in this narrow column");
+
+    let spec = ExportSpec { width_px: PAGE_W as u32, height_px: PAGE_H as u32, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+    let bytes = render_to_png(&spec, |ctx| crate::render::draw_page(ctx, page, &theme)).expect("parity PNG render should succeed");
+    assert_eq!(decoded_png_dims(&bytes), (PAGE_W as u32, PAGE_H as u32));
+    write_proof("typography_wave.png", &bytes);
 }

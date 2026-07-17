@@ -4,6 +4,20 @@
 //! continuation is only needed when the next region's width differs from
 //! the one the layout was measured at (P0 never hits that branch — see
 //! this crate's `CLAUDE.md` "Divergences from the design doc").
+//!
+//! ## Widow/orphan control (typography quality wave)
+//!
+//! [`widow_orphan_count`] is the lua-widow-control-inspired decision
+//! ladder adapted to this crate's own single-pass, no-backtracking
+//! `compose` loop (research doc §5's "port-algorithm" recommendation,
+//! narrowed to a REGION-LOCAL decision rather than a document-wide
+//! `\looseness` re-search — see this crate's `CLAUDE.md` typography-wave
+//! section for the full ladder and why a local decision is the correct
+//! adaptation here). Consulted only at a genuine paragraph split (never
+//! when the whole remainder already fits): an **orphan** is this split's
+//! own HEAD (what [`lines_fitting`]'s budget would leave behind in the
+//! CURRENT region); a **widow** is this split's own TAIL (what the
+//! continuation would carry into the next region).
 
 use uzor_text::{GlyphLayout, LineBox, ParagraphLayout, PlacedInlineBox};
 
@@ -96,6 +110,69 @@ pub(crate) fn slice_layout_lines(layout: &ParagraphLayout, from_line: usize, to_
     ParagraphLayout { glyphs, lines, boxes, width, height }
 }
 
+/// Widow/orphan-adjusted line count for a paragraph split at a region
+/// boundary. `full_len`/`next_line` describe the paragraph's total line
+/// count and where this split starts; `budget_count` is
+/// [`lines_fitting`]'s own answer (how many lines fit the remaining
+/// space). `0`/either threshold disables that half of the control
+/// entirely (§ task's own "0 disables").
+///
+/// Returns `None` when neither `min_orphan_lines` nor `min_widow_lines`
+/// can be satisfied by narrowing the count — the caller then defers the
+/// WHOLE remaining paragraph, exactly like a `budget_count == 0` overflow.
+///
+/// `allow_defer` is `false` only when the region is otherwise empty
+/// (`lines_fitting`'s own force-at-least-one convention already
+/// guarantees `budget_count >= 1` there, matching every other break
+/// control in this crate's own "existing empty-region force-place
+/// convention" — `compose::flow`'s `AvoidInside`/`AvoidAfter` checks use
+/// the identical `region_has_content` gate). Deferring in that case would
+/// either violate the forced-progress guarantee or loop forever across
+/// same-height regions, so this function only ever NARROWS the count when
+/// `allow_defer` is `false`, never defers.
+pub(crate) fn widow_orphan_count(
+    full_len: usize,
+    next_line: usize,
+    budget_count: usize,
+    min_orphan_lines: usize,
+    min_widow_lines: usize,
+    allow_defer: bool,
+) -> Option<usize> {
+    if budget_count == 0 {
+        return Some(0);
+    }
+    let remaining = full_len - next_line;
+    if budget_count >= remaining {
+        // The whole rest of the paragraph fits in this region — no split
+        // actually happens, nothing to protect.
+        return Some(budget_count);
+    }
+
+    // Orphan: this split's own HEAD (what stays behind in this region).
+    if allow_defer && min_orphan_lines > 0 && budget_count < min_orphan_lines {
+        return None;
+    }
+
+    // Widow: this split's own TAIL (what the continuation would carry).
+    let tail = remaining - budget_count;
+    if min_widow_lines == 0 || tail >= min_widow_lines {
+        return Some(budget_count);
+    }
+
+    // Pull `deficit` lines from the head over to the tail — never below 1
+    // line placed (the forced-progress floor), and never below
+    // `min_orphan_lines` when deferring instead is actually an option.
+    let deficit = min_widow_lines - tail;
+    let floor = if allow_defer { min_orphan_lines.max(1) } else { 1 };
+    if budget_count > deficit && budget_count - deficit >= floor {
+        Some(budget_count - deficit)
+    } else if allow_defer {
+        None
+    } else {
+        Some(budget_count)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +212,57 @@ mod tests {
         let layout = wrapped_layout();
         let count = lines_fitting(&layout, 0, 1.0, false);
         assert_eq!(count, 0, "a non-fresh region must defer the whole block rather than force an overflow");
+    }
+
+    #[test]
+    fn widow_orphan_count_defers_whole_when_the_head_would_be_an_orphan() {
+        // 10-line paragraph, budget fits only 1 line — min_orphan_lines=2
+        // forbids leaving a 1-line orphan behind.
+        assert_eq!(widow_orphan_count(10, 0, 1, 2, 2, true), None);
+    }
+
+    #[test]
+    fn widow_orphan_count_pulls_a_line_over_when_the_tail_would_be_a_widow() {
+        // 10-line paragraph, budget fits 9 lines (tail would be 1 line) —
+        // min_widow_lines=2 pulls 1 line back, leaving head=8/tail=2.
+        assert_eq!(widow_orphan_count(10, 0, 9, 2, 2, true), Some(8));
+    }
+
+    #[test]
+    fn widow_orphan_count_defers_whole_when_pulling_a_line_over_would_violate_the_orphan_floor() {
+        // 3-line paragraph, budget fits 2 (tail=1, a widow). Pulling 1 line
+        // over would leave head=1, which itself violates min_orphan_lines=2
+        // — neither side can be satisfied, so defer whole.
+        assert_eq!(widow_orphan_count(3, 0, 2, 2, 2, true), None);
+    }
+
+    #[test]
+    fn widow_orphan_count_zero_disables_both_controls_reproducing_the_raw_budget() {
+        assert_eq!(widow_orphan_count(10, 0, 1, 0, 0, true), Some(1), "min_orphan_lines=0 never defers an orphan");
+        assert_eq!(widow_orphan_count(10, 0, 9, 0, 0, true), Some(9), "min_widow_lines=0 never pulls a line over");
+    }
+
+    #[test]
+    fn widow_orphan_count_never_defers_when_the_region_is_otherwise_empty() {
+        // Same orphan-triggering shape as the first test above, but
+        // `allow_defer=false` (region has no other content) — must keep
+        // the forced budget rather than defer (would loop forever across
+        // same-height regions otherwise).
+        assert_eq!(widow_orphan_count(10, 0, 1, 2, 2, false), Some(1));
+    }
+
+    #[test]
+    fn widow_orphan_count_still_pulls_a_widow_line_over_even_in_an_otherwise_empty_region() {
+        // Pulling a line over never reduces progress to zero, so it's safe
+        // even when `allow_defer=false`.
+        assert_eq!(widow_orphan_count(10, 0, 9, 2, 2, false), Some(8));
+    }
+
+    #[test]
+    fn widow_orphan_count_places_the_full_budget_when_no_split_actually_happens() {
+        // budget_count >= remaining: the whole rest of the paragraph fits,
+        // nothing to protect.
+        assert_eq!(widow_orphan_count(5, 0, 5, 2, 2, true), Some(5));
     }
 
     #[test]

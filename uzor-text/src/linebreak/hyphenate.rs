@@ -1,47 +1,28 @@
-//! Liang/TeX-style pattern-automaton hyphenation ([`hyphenation_points`]) +
+//! Real hyph-utf8-derived hyphenation ([`hyphenation_points`]) +
 //! [`expand_hyphenation`], the bridge that splits a [`crate::layout::greedy`]
 //! word atom into hyphenation-fragment atoms at those points.
 //!
-//! **v1 scope** (report, not a silent gap): this is a **hand-authored
-//! minimal English pattern set** (`PATTERNS` below), not the full
-//! ~4500-pattern `hyph-en-us.tex` (Liang/Knuth's own public-domain TeX
-//! distribution file) — vendoring that whole table was judged out of scope
-//! for one phase's worth of business-presentation vocabulary (design doc §7
-//! Q3 already flags English-only as the v1 boundary; this narrows further,
-//! to "a real Liang algorithm over a deliberately small pattern list", not
-//! "exhaustive English coverage"). An unmatched word simply doesn't
-//! hyphenate — never a wrong guess, never a panic (no fallible surface on
-//! the hot path). See this crate's `CLAUDE.md` Phase 5 section for the
-//! full pattern-by-pattern rationale and the test vocabulary each one
-//! targets.
+//! **Hard cutover (typography quality wave)**: this module used to carry a
+//! hand-authored ~20-pattern English-only Liang engine (see this crate's
+//! `CLAUDE.md` Phase 5 section for that engine's own history) — fully
+//! superseded now by [`hypher`], Typst's own hyphenator: a byte-trie finite
+//! automaton compiled at hypher's OWN build time from the real hyph-utf8
+//! pattern corpus, covering ~48 permissively-licensed languages (English,
+//! Russian, German, ... — see `nemo/docs/uzor-engines/
+//! research_typesetting_sota_2026.md` §2/§8). `ru`/`en`/`de` are all present
+//! in hypher's own shipped feature set (confirmed directly against its
+//! `Cargo.toml` — no fallback vendoring needed, no missing-language gap).
+//! No hand-rolled pattern table remains in this file.
 
 use crate::layout::greedy::{Atom, AtomGlyph, TextAtom};
-
-/// The v1 pattern set itself (see module doc for the coverage trade-off).
-/// Liang digit-encoding: a digit between two letters is the pattern's
-/// hyphenation weight at that gap (odd = break candidate, even = suppress);
-/// a leading/trailing `.` anchors a pattern to a word boundary.
-const PATTERNS: &[&str] = &[
-    // Prefix/compound anchors (word-start only) — precise, so they never
-    // fire on an unrelated word that merely contains the same letters
-    // mid-word.
-    ".won1d",
-    ".un1d",
-    ".under1s",
-    // Suffix anchors (word-end only).
-    "1ation.",
-    "1ful.",
-    "d1ing.",
-    // General (unanchored) letter-cluster rules.
-    "y1ph",
-    "u1t",
-    // Doubled consonants split between the pair (`hap-pen`, `run-ning`).
-    "b1b", "d1d", "f1f", "g1g", "l1l", "m1m", "n1n", "p1p", "r1r", "s1s", "t1t",
-];
+use crate::linebreak::{Hyphenation, Lang};
 
 /// Minimum letters a hyphenation point must leave on the line before it
 /// (`won-derful`, never `w-onderful`) — matches the conventional TeX
-/// `\lefthyphenmin` default.
+/// `\lefthyphenmin` default. Passed to [`hypher::hyphenate_bounded`] as a
+/// **character** count (not bytes) — correct for multi-byte scripts like
+/// Cyrillic, where the old hand-rolled engine's byte-based bound would have
+/// silently under/over-counted letters.
 const LEFT_MIN: usize = 2;
 /// Minimum letters a hyphenation point must leave after it (`wonder-ful`,
 /// never `wonderfu-l`) — matches the conventional TeX `\righthyphenmin`
@@ -49,87 +30,60 @@ const LEFT_MIN: usize = 2;
 /// where a dictionary syllable break exists there).
 const RIGHT_MIN: usize = 3;
 
-/// One parsed Liang pattern: `letters[i]` is matched literally against the
-/// bounded (`.word.`) string; `weights[i]` is the pattern's hyphenation
-/// weight *before* `letters[i]` (so `weights.len() == letters.len() + 1`,
-/// the trailing entry being the weight after the pattern's last letter).
-struct Pattern {
-    letters: Vec<u8>,
-    weights: Vec<u8>,
-}
-
-/// Parse one Liang pattern spec, e.g. `"1ful."` → letters `f,u,l,.`,
-/// weights `[1,0,0,0,0]` (a digit applies to the gap immediately following
-/// it in the spec string).
-fn parse_pattern(spec: &str) -> Pattern {
-    let mut letters = Vec::new();
-    let mut weights = Vec::new();
-    let mut pending = 0u8;
-    for byte in spec.bytes() {
-        if byte.is_ascii_digit() {
-            pending = byte - b'0';
-        } else {
-            weights.push(pending);
-            pending = 0;
-            letters.push(byte);
-        }
+/// Which [`hypher::Lang`] (if any) `hyphenation` selects — `None` for
+/// [`Hyphenation::None`], otherwise the language [`expand_hyphenation`]
+/// consults.
+fn lang_for(hyphenation: Hyphenation) -> Option<Lang> {
+    match hyphenation {
+        Hyphenation::None => None,
+        Hyphenation::English => Some(Lang::English),
+        Hyphenation::Russian => Some(Lang::Russian),
+        Hyphenation::Lang(lang) => Some(lang),
     }
-    weights.push(pending);
-    Pattern { letters, weights }
 }
 
-/// Liang/TeX hyphenation: candidate break byte-offsets into `word` (a
-/// plain word — no leading/trailing punctuation). Empty for anything
-/// shorter than `LEFT_MIN + RIGHT_MIN` letters, any word containing a
-/// non-ASCII-alphabetic byte (v1 scope, see module doc), or a word no
-/// pattern matches.
-pub(crate) fn hyphenation_points(word: &str) -> Vec<usize> {
-    let len = word.len();
-    if len < LEFT_MIN + RIGHT_MIN || !word.bytes().all(|b| b.is_ascii_alphabetic()) {
+/// Real hyph-utf8 hyphenation via [`hypher`]: candidate break byte-offsets
+/// into `word` (a plain word — no leading/trailing punctuation), bounded by
+/// [`LEFT_MIN`]/[`RIGHT_MIN`] **characters** (not bytes — see their own doc
+/// comments). Empty for anything shorter than `LEFT_MIN + RIGHT_MIN`
+/// characters, any word containing a non-alphabetic character, or a word
+/// `lang`'s own pattern set doesn't break at all.
+pub(crate) fn hyphenation_points(word: &str, lang: Lang) -> Vec<usize> {
+    let char_count = word.chars().count();
+    if char_count < LEFT_MIN + RIGHT_MIN || !word.chars().all(char::is_alphabetic) {
         return Vec::new();
     }
 
-    let lower = word.to_ascii_lowercase();
-    let bounded = format!(".{lower}.");
-    let bytes = bounded.as_bytes();
-    let n = bytes.len();
-    let mut values = vec![0u8; n + 1];
-
-    for spec in PATTERNS {
-        let pattern = parse_pattern(spec);
-        let plen = pattern.letters.len();
-        if plen == 0 || plen > n {
-            continue;
+    let syllables = hypher::hyphenate_bounded(word, lang, LEFT_MIN, RIGHT_MIN);
+    let mut points = Vec::new();
+    let mut consumed = 0usize;
+    for (i, syllable) in syllables.enumerate() {
+        if i > 0 {
+            points.push(consumed);
         }
-        for start in 0..=(n - plen) {
-            if bytes[start..start + plen] == pattern.letters[..] {
-                for (i, &w) in pattern.weights.iter().enumerate() {
-                    let idx = start + i;
-                    if values[idx] < w {
-                        values[idx] = w;
-                    }
-                }
-            }
-        }
+        consumed += syllable.len();
     }
-
-    // `values[p]` is the gap immediately before `bounded[p]`. Word char `j`
-    // (0-indexed) is `bounded[j + 1]`, so "break before word[j]" reads
-    // `values[j + 1]`; odd values are the pattern-tagged break candidates.
-    (LEFT_MIN..=(len - RIGHT_MIN)).filter(|&j| values[j + 1] % 2 == 1).collect()
+    points
 }
 
-/// Expand every plain-ASCII-alphabetic, non-glue word atom in `atoms` into
-/// hyphenation-fragment atoms at its [`hyphenation_points`], each fragment
-/// but the last flagged `hyphen_break: true` (a discretionary breakpoint
+/// Expand every plain-alphabetic, non-glue word atom in `atoms` into
+/// hyphenation-fragment atoms at its [`hyphenation_points`] under
+/// `hyphenation`'s own [`Lang`], each fragment but the last flagged
+/// `hyphen_break: true` (a discretionary breakpoint
 /// [`crate::linebreak::knuth_plass`] may cut at). Atoms that aren't a pure
 /// word (punctuation attached, too short, or no pattern matched) pass
-/// through completely unchanged.
-pub(crate) fn expand_hyphenation(atoms: Vec<Atom>) -> Vec<Atom> {
+/// through completely unchanged. [`Hyphenation::None`] returns `atoms`
+/// verbatim (never called by [`crate::linebreak::knuth_plass::pack_lines`]
+/// in that case anyway, but kept total here too).
+pub(crate) fn expand_hyphenation(atoms: Vec<Atom>, hyphenation: Hyphenation) -> Vec<Atom> {
+    let Some(lang) = lang_for(hyphenation) else {
+        return atoms;
+    };
+
     let mut out = Vec::with_capacity(atoms.len());
     for atom in atoms {
         match atom {
-            Atom::Text(t) if !t.is_glue => out.extend(split_atom(t)),
+            Atom::Text(t) if !t.is_glue => out.extend(split_atom(t, lang)),
             other => out.push(other),
         }
     }
@@ -155,9 +109,9 @@ fn glyph_index_for_offset(glyphs: &[AtomGlyph], offset: usize) -> Option<usize> 
     }
 }
 
-fn split_atom(atom: TextAtom) -> Vec<Atom> {
+fn split_atom(atom: TextAtom, lang: Lang) -> Vec<Atom> {
     let word: String = atom.glyphs.iter().map(|g| g.cluster.as_str()).collect();
-    let points = hyphenation_points(&word);
+    let points = hyphenation_points(&word, lang);
     if points.is_empty() {
         return vec![Atom::Text(atom)];
     }
@@ -214,52 +168,73 @@ mod tests {
     use uzor::fonts::FontFamily;
 
     #[test]
-    fn hyphenation_of_hyphenation_itself_matches_hy_phen_ation() {
-        assert_eq!(hyphenation_points("hyphenation"), vec![2, 6]);
+    fn hyphenation_of_hyphenation_itself_matches_real_hypher_break_points() {
+        // hyph-en-us's own real pattern set breaks "hyphenation" as
+        // "hy-phen-ation" — offsets (chars from the start) are 2, 6.
+        assert_eq!(hyphenation_points("hyphenation", Lang::English), vec![2, 6]);
     }
 
     #[test]
-    fn hyphenation_of_wonderful_matches_won_der_ful() {
-        assert_eq!(hyphenation_points("wonderful"), vec![3, 6]);
-    }
-
-    #[test]
-    fn hyphenation_of_beautiful_matches_beau_ti_ful() {
-        assert_eq!(hyphenation_points("beautiful"), vec![4, 6]);
-    }
-
-    #[test]
-    fn hyphenation_of_understanding_matches_un_der_stand_ing() {
-        assert_eq!(hyphenation_points("understanding"), vec![2, 5, 10]);
-    }
-
-    #[test]
-    fn hyphenation_of_happen_matches_hap_pen_via_the_doubled_p() {
-        assert_eq!(hyphenation_points("happen"), vec![3]);
-    }
-
-    #[test]
-    fn hyphenation_of_running_matches_run_ning_via_the_doubled_n() {
-        assert_eq!(hyphenation_points("running"), vec![3]);
+    fn hyphenation_of_wonderful_matches_real_hypher_break_points() {
+        assert_eq!(hyphenation_points("wonderful", Lang::English), vec![3, 6]);
     }
 
     #[test]
     fn hyphenation_rejects_words_shorter_than_the_minimum() {
-        assert!(hyphenation_points("the").is_empty());
-        assert!(hyphenation_points("it").is_empty());
+        assert!(hyphenation_points("the", Lang::English).is_empty());
+        assert!(hyphenation_points("it", Lang::English).is_empty());
     }
 
     #[test]
     fn hyphenation_rejects_non_alphabetic_words() {
-        assert!(hyphenation_points("don't").is_empty());
-        assert!(hyphenation_points("well-known").is_empty());
+        assert!(hyphenation_points("don't", Lang::English).is_empty());
+        assert!(hyphenation_points("well-known", Lang::English).is_empty());
+    }
+
+    /// Every returned break point is a **byte** offset (since `hyphenate_points`
+    /// walks a UTF-8 string), while `LEFT_MIN`/`RIGHT_MIN` are **char** counts
+    /// (hypher's own bound semantics — correct for multi-byte scripts). This
+    /// helper re-derives the char-position bounds and converts them to byte
+    /// offsets before checking, so the two units are never compared directly.
+    fn assert_points_respect_char_bounds(word: &str, points: &[usize]) {
+        let byte_len = word.len();
+        let left_bound_bytes: usize = word.chars().take(LEFT_MIN).map(char::len_utf8).sum();
+        let right_bound_bytes: usize = word.chars().rev().take(RIGHT_MIN).map(char::len_utf8).sum();
+        let max_offset = byte_len - right_bound_bytes;
+        for &p in points {
+            assert!(
+                p >= left_bound_bytes && p <= max_offset,
+                "break point (byte offset {p}) must respect LEFT_MIN/RIGHT_MIN char bounds ({left_bound_bytes}..={max_offset})"
+            );
+        }
     }
 
     #[test]
-    fn hyphenation_of_an_unmatched_word_is_empty_not_a_guess() {
-        // Long enough to pass the length guard, but no pattern in the v1
-        // set matches any of its letter clusters.
-        assert!(hyphenation_points("quartz").is_empty());
+    fn russian_word_perevodov_yields_a_valid_break_point() {
+        // "переводов" (9 chars) — hyph-utf8's `ru` pattern set breaks it at
+        // real morpheme boundaries; assert a break exists and respects the
+        // char-counted LEFT_MIN/RIGHT_MIN bounds (never inside the first 2
+        // or last 3 characters).
+        let word = "переводов";
+        let points = hyphenation_points(word, Lang::Russian);
+        assert!(!points.is_empty(), "a 9-char Russian word must yield at least one break point");
+        assert_points_respect_char_bounds(word, &points);
+    }
+
+    #[test]
+    fn russian_word_pokazatelnyi_yields_a_valid_break_point() {
+        // "показательный" — long compound-looking word, real test vocabulary
+        // from the task brief.
+        let word = "показательный";
+        let points = hyphenation_points(word, Lang::Russian);
+        assert!(!points.is_empty(), "a long Russian word must yield at least one break point");
+        assert_points_respect_char_bounds(word, &points);
+    }
+
+    #[test]
+    fn hyphenation_of_an_unmatched_short_word_is_empty_not_a_guess() {
+        // Below the length floor — never even consulted.
+        assert!(hyphenation_points("cat", Lang::English).is_empty());
     }
 
     #[test]
@@ -270,15 +245,15 @@ mod tests {
         let shaper = CosmicShaper::headless();
         let atoms = build_atom_stream(&paragraph, &shaper);
 
-        let expanded = expand_hyphenation(atoms);
+        let expanded = expand_hyphenation(atoms, Hyphenation::English);
         let fragments: Vec<&TextAtom> =
             expanded.iter().filter_map(|a| if let Atom::Text(t) = a { Some(t) } else { None }).collect();
 
-        assert_eq!(fragments.len(), 4, "un|der|stand|ing must be 4 fragments");
-        assert!(fragments[0].hyphen_break);
-        assert!(fragments[1].hyphen_break);
-        assert!(fragments[2].hyphen_break);
-        assert!(!fragments[3].hyphen_break, "the final fragment must never itself be a hyphen point");
+        assert!(fragments.len() > 1, "a long, hyphenatable word must split into more than one fragment");
+        assert!(!fragments.last().expect("at least one fragment").hyphen_break, "the final fragment must never itself be a hyphen point");
+        for fragment in fragments.iter().take(fragments.len() - 1) {
+            assert!(fragment.hyphen_break, "every fragment but the last must be flagged as a hyphen break");
+        }
         for fragment in &fragments {
             assert_eq!(fragment.glyphs.first().map(|g| g.x), Some(0.0), "each fragment rebases to x = 0.0");
         }
@@ -292,11 +267,56 @@ mod tests {
         let shaper = CosmicShaper::headless();
         let atoms = build_atom_stream(&paragraph, &shaper);
 
-        let expanded = expand_hyphenation(atoms);
+        let expanded = expand_hyphenation(atoms, Hyphenation::English);
         let words: Vec<&TextAtom> =
             expanded.iter().filter_map(|a| if let Atom::Text(t) = a { if !t.is_glue { Some(t) } else { None } } else { None }).collect();
 
         assert_eq!(words.len(), 1);
         assert!(!words[0].hyphen_break);
+    }
+
+    #[test]
+    fn expand_hyphenation_with_none_returns_atoms_verbatim() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let runs = [StyledRun::new("understanding", font)];
+        let paragraph = Paragraph::new(&runs, f64::MAX);
+        let shaper = CosmicShaper::headless();
+        let atoms = build_atom_stream(&paragraph, &shaper);
+        let before_len = atoms.len();
+
+        let expanded = expand_hyphenation(atoms, Hyphenation::None);
+        assert_eq!(expanded.len(), before_len, "Hyphenation::None must never split any atom");
+    }
+
+    #[test]
+    fn expand_hyphenation_splits_a_russian_word_end_to_end_via_hyphenation_russian() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let runs = [StyledRun::new("показательный", font)];
+        let paragraph = Paragraph::new(&runs, f64::MAX);
+        let shaper = CosmicShaper::headless();
+        let atoms = build_atom_stream(&paragraph, &shaper);
+
+        let expanded = expand_hyphenation(atoms, Hyphenation::Russian);
+        let fragments: Vec<&TextAtom> =
+            expanded.iter().filter_map(|a| if let Atom::Text(t) = a { Some(t) } else { None }).collect();
+
+        assert!(fragments.len() > 1, "a long Russian word must split into more than one fragment under Hyphenation::Russian");
+        assert!(!fragments.last().expect("at least one fragment").hyphen_break);
+    }
+
+    #[test]
+    fn hyphenation_named_variants_agree_with_the_generic_lang_variant() {
+        // `Hyphenation::English`/`Hyphenation::Russian` are named convenience
+        // shapes over the SAME `hypher::Lang` the generic `Hyphenation::
+        // Lang(..)` escape hatch carries — both routes must produce
+        // identical break points for the same word.
+        let via_named = hyphenation_points("wonderful", Lang::English);
+        let via_generic = hyphenation_points("wonderful", Lang::English);
+        assert_eq!(via_named, via_generic);
+
+        assert_eq!(lang_for(Hyphenation::English), Some(Lang::English));
+        assert_eq!(lang_for(Hyphenation::Russian), Some(Lang::Russian));
+        assert_eq!(lang_for(Hyphenation::Lang(Lang::German)), Some(Lang::German));
+        assert_eq!(lang_for(Hyphenation::None), None);
     }
 }

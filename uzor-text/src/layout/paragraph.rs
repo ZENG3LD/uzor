@@ -364,6 +364,36 @@ mod tests {
         assert!(!wide_layout.glyphs.iter().any(|g| g.cluster == "-"), "no break landed, so no hyphen should be drawn");
     }
 
+    /// `Justify` + `KnuthPlass` + `Hyphenation::Russian` compose cleanly on
+    /// Cyrillic text — a narrow column forces at least one real mid-word
+    /// break (a `-` glyph appears) and the paragraph wraps to several lines,
+    /// with every glyph landing at a finite, valid position (no panic, no
+    /// NaN) — the same "KP + hyphenation compose through the existing
+    /// Justify code path with no special-casing" guarantee the English
+    /// fixtures above already prove, now for a non-Latin script. (A single
+    /// glue-less over-long line occasionally still exceeds `max_width` under
+    /// justify — the documented "overfull hbox" fallback every KP line can
+    /// hit — so this test doesn't additionally assert a per-line width
+    /// bound; `knuth_plass_lines_stay_within_max_width_with_hyphen_widths_counted`
+    /// above already covers that guarantee for the common case.)
+    #[test]
+    fn knuth_plass_hyphenates_and_justifies_a_russian_paragraph() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let text = "показательный документ подтверждает поддержку кириллического текста";
+        let runs = [StyledRun::new(text, font)];
+        let max_width = 130.0;
+        let paragraph = Paragraph::new(&runs, max_width)
+            .with_align(ParagraphAlign::Justify)
+            .with_break_strategy(BreakStrategy::KnuthPlass)
+            .with_hyphenation(Hyphenation::Russian);
+        let shaper = CosmicShaper::headless();
+
+        let layout = layout_paragraph(&paragraph, &shaper);
+        assert!(layout.lines.len() > 1, "fixture must wrap to multiple lines at this narrow width");
+        assert!(layout.glyphs.iter().any(|g| g.cluster == "-"), "a narrow Cyrillic column must hit at least one hyphenation break");
+        assert!(layout.glyphs.iter().all(|g| g.x.is_finite() && g.y.is_finite()), "every glyph must land at a finite position");
+    }
+
     /// `Justify` + `KnuthPlass` compose cleanly: every non-last line still
     /// reaches `max_width` after redistribution, exactly like `Justify`
     /// already does over the greedy breaker.

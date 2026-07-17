@@ -81,11 +81,16 @@ use uzor_text::{layout_paragraph, FontSpec, LineShaper, Paragraph, ParagraphLayo
 
 use super::island_layout::{island_placement_rect, island_strip_rects};
 use super::keep_break::BreakControl;
-use super::list_layout::place_list;
+use super::list_layout::{items_fitting, list_total_height, measure_list_items, place_list_items, ComposedListItem};
 use super::table_layout::{measure_and_layout_table, place_table_rows, rows_fitting, table_total_height, ComposedRow};
-use super::{lines_fitting, slice_layout_lines};
+use super::{lines_fitting, slice_layout_lines, widow_orphan_count};
 use crate::region::{Frame, PlacedBlock, RegionSequence};
 use crate::scene::{resolve_block_ids, Block, BlockId, BlockNode};
+
+/// Widow/orphan control's own default minimum line count (both halves) —
+/// the task's own chosen v1 default; `0` disables that half entirely (see
+/// [`ComposeStyle::with_min_orphan_lines`]/[`ComposeStyle::with_min_widow_lines`]).
+const DEFAULT_MIN_WIDOW_ORPHAN_LINES: usize = 2;
 
 /// Composition-wide styling `compose` itself needs (as opposed to a
 /// per-block override, which lives on `BlockNode`/`Block` once P1/P2 land).
@@ -100,11 +105,29 @@ pub struct ComposeStyle {
     /// consumer — every list marker (`•`, `"3."`, ...) paints using this
     /// font (see `compose::list_layout`).
     pub default_font: FontSpec,
+    /// Minimum lines a paragraph split may leave behind in the CURRENT
+    /// region (never fewer, or the whole paragraph defers to the next
+    /// region instead) — the lua-widow-control-inspired orphan half of
+    /// widow/orphan control (typography quality wave). `0` disables.
+    /// Defaults to `2` via [`ComposeStyle::new`]/[`ComposeStyle::from_theme`]
+    /// — override via [`ComposeStyle::with_min_orphan_lines`].
+    pub min_orphan_lines: usize,
+    /// Minimum lines a paragraph split may carry into the CONTINUATION
+    /// region (never fewer — a shorter continuation instead pulls a line
+    /// back from the head, or defers the whole paragraph if that's not
+    /// possible either) — the widow half. `0` disables. Same default/
+    /// override shape as [`ComposeStyle::min_orphan_lines`].
+    pub min_widow_lines: usize,
 }
 
 impl ComposeStyle {
     pub fn new(paragraph_spacing: f64, default_font: FontSpec) -> Self {
-        Self { paragraph_spacing, default_font }
+        Self {
+            paragraph_spacing,
+            default_font,
+            min_orphan_lines: DEFAULT_MIN_WIDOW_ORPHAN_LINES,
+            min_widow_lines: DEFAULT_MIN_WIDOW_ORPHAN_LINES,
+        }
     }
 
     /// Build a `ComposeStyle` whose `default_font` resolves through
@@ -116,20 +139,41 @@ impl ComposeStyle {
     /// ever carries layout-affecting fields (design law 3), never a paint
     /// color.
     pub fn from_theme(theme: &crate::style::Theme, paragraph_spacing: f64) -> Self {
-        Self { paragraph_spacing, default_font: theme.font_spec(crate::style::FontRole::Body) }
+        Self {
+            paragraph_spacing,
+            default_font: theme.font_spec(crate::style::FontRole::Body),
+            min_orphan_lines: DEFAULT_MIN_WIDOW_ORPHAN_LINES,
+            min_widow_lines: DEFAULT_MIN_WIDOW_ORPHAN_LINES,
+        }
+    }
+
+    /// Builder: override the default orphan-control minimum (`0` disables).
+    pub fn with_min_orphan_lines(mut self, min_orphan_lines: usize) -> Self {
+        self.min_orphan_lines = min_orphan_lines;
+        self
+    }
+
+    /// Builder: override the default widow-control minimum (`0` disables).
+    pub fn with_min_widow_lines(mut self, min_widow_lines: usize) -> Self {
+        self.min_widow_lines = min_widow_lines;
+        self
     }
 }
 
 /// In-progress split state for whichever flow block `compose`'s loop is
 /// CURRENTLY placing (persists only across the SAME block's own
 /// continuation into a later region — reset to `None` the moment that
-/// block is fully placed or a different block starts). Atomic block kinds
-/// (`Figure`/`Image`/`List`) never need an entry here — an atomic block is
-/// either placed whole or deferred whole, nothing to resume.
+/// block is fully placed or a different block starts). Genuinely atomic
+/// block kinds (`Figure`/`Image`/`Island`) never need an entry here — an
+/// atomic block is either placed whole or deferred whole, nothing to
+/// resume. `List` gained its own splittable variant this pass (typography
+/// quality wave) — item-atomic, but the list AS A WHOLE now splits BETWEEN
+/// items across regions exactly like `Table` already splits BETWEEN rows.
 enum InProgress<'a> {
     None,
     Paragraph { layout: ParagraphLayout, next_line: usize },
     Table { column_widths: Vec<f64>, rows: Vec<ComposedRow<'a>>, next_row: usize },
+    List { items: Vec<ComposedListItem<'a>>, next_item: usize },
 }
 
 /// The height this node WOULD occupy if placed FULLY (no split) at
@@ -152,19 +196,21 @@ fn full_height_if_whole(kind: &Block<'_>, region_width: f64, remaining_height: f
             table_total_height(&rows)
         }
         Block::List(list) => {
-            let (_, total_height) = place_list(list, Rect::new(0.0, 0.0, region_width, remaining_height), style, shaper);
-            total_height
+            let content_width = (region_width - list.indent_px).max(0.0);
+            let items = measure_list_items(list, content_width, style, shaper);
+            list_total_height(&items, style.paragraph_spacing)
         }
     }
 }
 
 /// Would `next` get to place AT LEAST SOME content within
 /// `remaining_height` — the `AvoidAfter`/keep-with-next lookahead's own
-/// "is there a point in keeping these two together" test. An atomic block
-/// (`Figure`/`Image`/`List`) only ever gets "some" room by fitting
-/// ENTIRELY (there's no partial placement for one); a `Paragraph` gets
-/// "some" room the moment even one line fits; a `Table` gets "some" room
-/// the moment its first row fits.
+/// "is there a point in keeping these two together" test. A genuinely
+/// atomic block (`Figure`/`Image`/`Island`) only ever gets "some" room by
+/// fitting ENTIRELY (there's no partial placement for one); a `Paragraph`
+/// gets "some" room the moment even one line fits; a `Table`/`List` (both
+/// splittable at row/item granularity) get "some" room the moment their
+/// own first row/item fits.
 fn has_room_for_next(next: &Block<'_>, region_width: f64, remaining_height: f64, style: &ComposeStyle, shaper: &dyn LineShaper) -> bool {
     if remaining_height <= 0.0 {
         return false;
@@ -183,8 +229,9 @@ fn has_room_for_next(next: &Block<'_>, region_width: f64, remaining_height: f64,
             rows.first().map_or(true, |r| r.height <= remaining_height)
         }
         Block::List(list) => {
-            let (_, total_height) = place_list(list, Rect::new(0.0, 0.0, region_width, remaining_height), style, shaper);
-            total_height <= remaining_height
+            let content_width = (region_width - list.indent_px).max(0.0);
+            let items = measure_list_items(list, content_width, style, shaper);
+            items.first().map_or(true, |it| it.content_height <= remaining_height)
         }
     }
 }
@@ -384,6 +431,21 @@ fn place_into_region<'a>(
                     break;
                 }
 
+                // Widow/orphan control (typography quality wave): may
+                // narrow `count` (pull a line back from the head to avoid
+                // stranding a too-short continuation) or defer the WHOLE
+                // remaining paragraph (an orphan-violating head, or a
+                // widow that can't be fixed without violating the orphan
+                // floor) — see `compose::paragraph_split::widow_orphan_count`'s
+                // own doc for the full decision ladder.
+                let count = match widow_orphan_count(full.lines.len(), next_line, count, style.min_orphan_lines, style.min_widow_lines, region_has_content) {
+                    Some(n) => n,
+                    None => {
+                        overflow = Some(node);
+                        break;
+                    }
+                };
+
                 let end_line = next_line + count;
                 let placed_layout = slice_layout_lines(full, next_line, end_line);
                 let full_len = full.lines.len();
@@ -481,14 +543,29 @@ fn place_into_region<'a>(
                     }
                 }
 
-                let count = rows_fitting(rows, next_row, remaining_height, !region_has_content);
+                // Header-row repeat (typography quality wave): a
+                // continuation fragment (`next_row > 0`) reserves room for
+                // a re-placed `rows[0]` at its own top when
+                // `table.header_repeat` is on — the table's own FIRST
+                // fragment never reserves (it already starts with the
+                // real header row).
+                let header_reserved =
+                    if table.header_repeat && next_row > 0 { rows.first().map_or(0.0, |r| r.height) } else { 0.0 };
+                let count = rows_fitting(rows, next_row, remaining_height, !region_has_content, header_reserved);
                 if count == 0 {
                     overflow = Some(node);
                     break;
                 }
 
-                let (placed_rows, placed_height) =
-                    place_table_rows(rows, next_row, count, column_widths, table.cell_padding, (region_rect.x, cursor_y));
+                let (placed_rows, placed_height) = place_table_rows(
+                    rows,
+                    next_row,
+                    count,
+                    column_widths,
+                    table.cell_padding,
+                    (region_rect.x, cursor_y),
+                    table.header_repeat,
+                );
                 let total_rows = rows.len();
                 let column_widths_snapshot = column_widths.clone();
                 let rect = Rect::new(region_rect.x, cursor_y, column_widths_snapshot.iter().sum(), placed_height);
@@ -516,25 +593,59 @@ fn place_into_region<'a>(
                 }
             }
             Block::List(list) => {
-                let origin = Rect::new(region_rect.x, cursor_y, region_rect.width, remaining_height);
-                let (items, total_height) = place_list(list, origin, style, shaper);
+                if !matches!(*progress, InProgress::List { .. }) {
+                    let content_width = (region_rect.width - list.indent_px).max(0.0);
+                    let items = measure_list_items(list, content_width, style, shaper);
+                    *progress = InProgress::List { items, next_item: 0 };
+                }
+                let InProgress::List { items, next_item } = &*progress else {
+                    unreachable!("just ensured List progress")
+                };
+                let next_item = *next_item;
 
-                if total_height <= remaining_height || !region_has_content {
-                    let rect = Rect::new(region_rect.x, cursor_y, region_rect.width, total_height);
-                    cursor_y += total_height;
-                    blocks.push(PlacedBlock {
-                        id: ids[*block_idx],
-                        rect,
-                        kind: &node.kind,
-                        paragraph_layout: None,
-                        table_placement: None,
-                        list_placement: Some(crate::region::ListPlacement { items }),
-                    });
+                if items.is_empty() {
+                    *block_idx += 1;
+                    *progress = InProgress::None;
+                    continue;
+                }
+
+                if node.break_control == BreakControl::AvoidInside && next_item == 0 && region_has_content {
+                    let whole_height = list_total_height(items, style.paragraph_spacing);
+                    if whole_height > remaining_height {
+                        overflow = Some(node);
+                        break;
+                    }
+                }
+
+                let count = items_fitting(items, next_item, remaining_height, style.paragraph_spacing, !region_has_content);
+                if count == 0 {
+                    overflow = Some(node);
+                    break;
+                }
+
+                let (placed_items, placed_height) =
+                    place_list_items(items, next_item, count, list.indent_px, style.paragraph_spacing, (region_rect.x, cursor_y));
+                let total_items = items.len();
+                let rect = Rect::new(region_rect.x, cursor_y, region_rect.width, placed_height);
+                cursor_y += placed_height;
+                blocks.push(PlacedBlock {
+                    id: ids[*block_idx],
+                    rect,
+                    kind: &node.kind,
+                    paragraph_layout: None,
+                    table_placement: None,
+                    list_placement: Some(crate::region::ListPlacement { items: placed_items }),
+                });
+
+                if next_item + count >= total_items {
                     cursor_y += style.paragraph_spacing;
                     *block_idx += 1;
                     *progress = InProgress::None;
                     true
                 } else {
+                    if let InProgress::List { next_item, .. } = &mut *progress {
+                        *next_item += count;
+                    }
                     overflow = Some(node);
                     break;
                 }
@@ -668,6 +779,113 @@ mod tests {
         assert_eq!(head.lines.len() + tail.lines.len(), full.lines.len(), "every line must be conserved across the split");
         assert_eq!(head.glyphs.len() + tail.glyphs.len(), full.glyphs.len(), "every glyph must be conserved across the split");
         assert!(head.height <= region_height + 1.0, "the head placement must fit within the region it was split for");
+    }
+
+    /// Widow/orphan control (typography quality wave): a filler spacer
+    /// leaves only ~1 line of room for a paragraph that starts a fresh
+    /// region's remaining space — under the DEFAULT `min_orphan_lines = 2`,
+    /// that 1-line head would be an orphan, so the WHOLE paragraph must
+    /// defer to the next (fresh) region instead of splitting.
+    #[test]
+    fn widow_orphan_control_defers_the_whole_paragraph_when_the_head_would_be_a_1_line_orphan() {
+        let font = uzor_text::FontSpec::new(FontFamily::Roboto, 16.0);
+        let shaper = CosmicShaper::headless();
+        let text = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
+        let runs = [StyledRun::new(text, font)];
+        let narrow_width = 140.0;
+
+        let full = layout_paragraph(&Paragraph::new(&runs, narrow_width), &shaper);
+        assert!(full.lines.len() >= 6, "fixture must wrap to several lines");
+        let one_line = full.lines[0].height;
+
+        // A page tall enough to hold the WHOLE paragraph fresh, but a
+        // filler spacer leaves just over one line's worth of room on page 1.
+        let page_height = full.height + one_line * 3.0;
+        let filler_gap = page_height - (one_line + 0.5);
+
+        let flow = [
+            BlockNode::new(Block::Spacer(filler_gap)),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&runs, narrow_width))),
+        ];
+        let style = ComposeStyle::new(0.0, font);
+        let mut regions = PageRegionSequence::new(Rect::new(0.0, 0.0, narrow_width, page_height));
+        let frames = compose(&flow, &mut regions, &style, &shaper);
+
+        assert_eq!(frames[0].blocks.len(), 1, "page 1 holds only the filler spacer — the paragraph never starts here");
+        assert!(
+            frames[0].blocks.iter().all(|b| !matches!(b.kind, Block::Paragraph(_))),
+            "an orphan-violating 1-line head must never be placed"
+        );
+
+        let page2 = &frames[1];
+        let placed = page2.blocks.iter().find_map(|b| b.paragraph_layout.as_ref()).expect("the paragraph lands on the fresh next region");
+        assert!(placed.lines.len() >= 2, "the deferred paragraph must start with at least min_orphan_lines on its fresh region");
+    }
+
+    /// Widow/orphan control: a region sized to naturally leave exactly ONE
+    /// line for the continuation (a widow) must instead pull one more line
+    /// back from the head under the DEFAULT `min_widow_lines = 2`, so the
+    /// continuation carries 2 lines instead of 1.
+    #[test]
+    fn widow_orphan_control_pulls_a_line_over_when_the_continuation_would_be_a_1_line_widow() {
+        let font = uzor_text::FontSpec::new(FontFamily::Roboto, 16.0);
+        let shaper = CosmicShaper::headless();
+        let text = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
+        let runs = [StyledRun::new(text, font)];
+        let narrow_width = 140.0;
+
+        let full = layout_paragraph(&Paragraph::new(&runs, narrow_width), &shaper);
+        assert!(full.lines.len() >= 6, "fixture must wrap to several lines");
+        let one_line = full.lines[0].height;
+        assert!(full.lines.iter().all(|l| (l.height - one_line).abs() < 1e-6), "fixture lines must be equal height for a predictable split point");
+
+        // Just enough room for (len - 1) lines, not the whole paragraph —
+        // the RAW budget (before widow/orphan control) would leave exactly
+        // 1 line for the continuation.
+        let region_height = one_line * (full.lines.len() - 1) as f64 + 0.5;
+
+        let flow = [BlockNode::new(Block::Paragraph(Paragraph::new(&runs, narrow_width)))];
+        let style = ComposeStyle::new(0.0, font); // default min_orphan/min_widow = 2
+        let mut regions = PageRegionSequence::new(Rect::new(0.0, 0.0, narrow_width, region_height));
+        let frames = compose(&flow, &mut regions, &style, &shaper);
+
+        assert_eq!(frames.len(), 2, "the paragraph must still span exactly 2 regions");
+        let head = frames[0].blocks[0].paragraph_layout.as_ref().expect("head placement carries a layout");
+        let tail = frames[1].blocks[0].paragraph_layout.as_ref().expect("tail placement carries a layout");
+
+        assert_eq!(tail.lines.len(), 2, "the widow-prone 1-line continuation must be widened to 2 lines by pulling a line back from the head");
+        assert_eq!(head.lines.len(), full.lines.len() - 2, "the head shrinks by exactly the 1 line pulled over");
+        assert_eq!(head.lines.len() + tail.lines.len(), full.lines.len(), "every line must still be conserved across the split");
+    }
+
+    /// `min_orphan_lines = 0` / `min_widow_lines = 0` must reproduce the
+    /// OLD (pre-widow/orphan-control) split point byte-identically — the
+    /// exact same fixture/region shape as the widow test above, but with
+    /// both controls disabled: the continuation stays at its RAW 1-line
+    /// budget, never pulled over.
+    #[test]
+    fn widow_orphan_control_disabled_reproduces_the_old_split_point_byte_identically() {
+        let font = uzor_text::FontSpec::new(FontFamily::Roboto, 16.0);
+        let shaper = CosmicShaper::headless();
+        let text = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
+        let runs = [StyledRun::new(text, font)];
+        let narrow_width = 140.0;
+
+        let full = layout_paragraph(&Paragraph::new(&runs, narrow_width), &shaper);
+        let one_line = full.lines[0].height;
+        let region_height = one_line * (full.lines.len() - 1) as f64 + 0.5;
+
+        let flow = [BlockNode::new(Block::Paragraph(Paragraph::new(&runs, narrow_width)))];
+        let style = ComposeStyle::new(0.0, font).with_min_orphan_lines(0).with_min_widow_lines(0);
+        let mut regions = PageRegionSequence::new(Rect::new(0.0, 0.0, narrow_width, region_height));
+        let frames = compose(&flow, &mut regions, &style, &shaper);
+
+        assert_eq!(frames.len(), 2);
+        let head = frames[0].blocks[0].paragraph_layout.as_ref().expect("head placement carries a layout");
+        let tail = frames[1].blocks[0].paragraph_layout.as_ref().expect("tail placement carries a layout");
+
+        assert_eq!(head.lines.len(), full.lines.len() - 1, "disabled controls must reproduce the raw lines_fitting budget exactly");
+        assert_eq!(tail.lines.len(), 1, "disabled controls must leave the raw 1-line widow untouched");
     }
 
     /// A figure ([`crate::scene::BlockSizing::FixedHeight`]) taller than

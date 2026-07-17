@@ -2,17 +2,21 @@
 //! [`crate::layout::layout_paragraph`] between the greedy word-wrap packer
 //! (`crate::layout::greedy`, Phase 1/2) and [`knuth_plass`]'s total-fit
 //! demerits-minimizing dynamic-programming breaker; [`Hyphenation`] opts a
-//! paragraph into [`hyphenate`]'s Liang-pattern discretionary hyphen points.
+//! paragraph into [`hyphenate`]'s real hyph-utf8-derived discretionary
+//! hyphen points (via the [`hypher`] crate — Typst's own hyphenator).
 //!
 //! [`Hyphenation`] is consulted **only** by [`BreakStrategy::KnuthPlass`] —
 //! Phase 1/2's greedy packer (`crate::layout::greedy::pack_lines`) is
 //! unchanged and never reads a word atom's hyphenation opportunities, so
 //! `Greedy` (the still-default strategy) stays byte-identical to every
 //! prior phase's output regardless of what `Hyphenation` a caller sets (see
-//! this crate's `CLAUDE.md` Phase 5 section for the full rationale).
+//! this crate's `CLAUDE.md` Phase 5 section, and its typography-wave
+//! section, for the full rationale).
 
 pub mod hyphenate;
 pub(crate) mod knuth_plass;
+
+pub use hypher::Lang;
 
 /// Which line-breaking algorithm [`crate::layout::layout_paragraph`] uses to
 /// decide where a [`crate::model::Paragraph`]'s lines end.
@@ -32,15 +36,28 @@ pub enum BreakStrategy {
 /// Hyphenation strategy for a [`crate::model::Paragraph`].
 ///
 /// Only consulted by [`BreakStrategy::KnuthPlass`] (see this module's own
-/// doc comment). English-only in v1, per the design doc's own open
-/// question (§7 Q3) — this crate does not claim CJK/Arabic reflow quality.
+/// doc comment). Backed by [`hyphenate`]'s real hyph-utf8-derived pattern
+/// automata (the [`hypher`] crate, Typst's own hyphenator — see this
+/// crate's `CLAUDE.md` typography-wave section for the hard-cutover
+/// rationale, superseding the earlier hand-rolled ~20-pattern English-only
+/// Liang engine).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Hyphenation {
     /// No discretionary hyphen points — the default, matches every prior
     /// phase's behavior exactly.
     #[default]
     None,
-    /// Liang-pattern discretionary hyphen points, English (`en-US`) only —
-    /// see [`hyphenate`] for the pattern set and its v1 coverage scope.
+    /// `en` hyphenation via [`Lang::English`] — kept as its own named
+    /// variant (rather than requiring every caller to spell
+    /// `Hyphenation::Lang(Lang::English)`) since every pre-typography-wave
+    /// caller already writes `Hyphenation::English` — additive, byte-for-
+    /// byte source compatible.
     English,
+    /// `ru` hyphenation via [`Lang::Russian`] — same convenience shape as
+    /// `English`, added this pass.
+    Russian,
+    /// Any other of [`hypher`]'s ~48 permissively-licensed languages —
+    /// the generic escape hatch so this enum never needs a new named
+    /// variant per language.
+    Lang(Lang),
 }

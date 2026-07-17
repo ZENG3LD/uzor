@@ -233,15 +233,19 @@ fn shape_hyphen(font: &FontSpec, shaper: &dyn LineShaper) -> (AtomGlyph, f64) {
 /// over-full one still is — see that function's own doc for why the
 /// distinction matters).
 ///
-/// When `paragraph.hyphenation` is [`Hyphenation::English`], `atoms` is
-/// first expanded via [`hyphenate::expand_hyphenation`] into discretionary
-/// hyphen-fragment atoms before the DP runs.
+/// When `paragraph.hyphenation` is anything but [`Hyphenation::None`],
+/// `atoms` is first expanded via [`hyphenate::expand_hyphenation`] into
+/// discretionary hyphen-fragment atoms (under that language's real
+/// hyph-utf8 pattern automaton, via `hypher`) before the DP runs.
 pub(crate) fn pack_lines(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> Vec<Vec<Atom>> {
     if atoms.is_empty() {
         return Vec::new();
     }
-    let atoms =
-        if paragraph.hyphenation == Hyphenation::English { hyphenate::expand_hyphenation(atoms) } else { atoms };
+    let atoms = if paragraph.hyphenation != Hyphenation::None {
+        hyphenate::expand_hyphenation(atoms, paragraph.hyphenation)
+    } else {
+        atoms
+    };
 
     let max_width = if paragraph.max_width.is_finite() { paragraph.max_width.max(1.0) } else { f64::MAX };
     let candidates = legal_breaks(&atoms);

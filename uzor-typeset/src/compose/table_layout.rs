@@ -186,7 +186,15 @@ pub(crate) fn measure_and_layout_table<'a>(
 /// `remaining_height` (summing each kept row's own `.height`) — row-atomic
 /// splitting's own version of `compose::lines_fitting`, same
 /// force-at-least-one-row-on-a-fresh-region degrade convention.
-pub(crate) fn rows_fitting(rows: &[ComposedRow<'_>], from_row: usize, remaining_height: f64, force_at_least_one: bool) -> usize {
+///
+/// `header_reserved` (typography quality wave: table header-row repeat) is
+/// subtracted from `remaining_height` BEFORE budgeting — the space a
+/// repeated header row would occupy at the top of this fragment, `0.0`
+/// when [`crate::scene::TableBlock::header_repeat`] is off or this is the
+/// table's own FIRST fragment (which already starts with the real
+/// `rows[0]`, never a repeat).
+pub(crate) fn rows_fitting(rows: &[ComposedRow<'_>], from_row: usize, remaining_height: f64, force_at_least_one: bool, header_reserved: f64) -> usize {
+    let remaining_height = (remaining_height - header_reserved).max(0.0);
     let mut used = 0.0_f64;
     let mut count = 0usize;
 
@@ -214,6 +222,32 @@ pub(crate) fn table_total_height(rows: &[ComposedRow<'_>]) -> f64 {
     rows.iter().map(|r| r.height).sum()
 }
 
+/// Place ONE `row` at `(origin_x, row_y)` into a frame-relative
+/// [`PlacedTableRow`] — the shared per-row placement math [`place_table_rows`]
+/// uses both for its ordinary row range AND (typography quality wave) for a
+/// repeated header row, so there is exactly one position formula for a
+/// placed row (design law 1), never a second copy for the header-repeat
+/// case.
+fn place_one_row<'a>(row: &ComposedRow<'a>, column_widths: &[f64], padding: CellPadding, origin_x: f64, row_y: f64) -> PlacedTableRow<'a> {
+    let total_width: f64 = column_widths.iter().sum();
+    let row_rect = Rect::new(origin_x, row_y, total_width, row.height);
+    let mut cells = Vec::with_capacity(row.cells.len());
+    let mut col_x = origin_x;
+
+    for cell in &row.cells {
+        let col_width = column_widths.get(cell.column_index).copied().unwrap_or(0.0);
+        let cell_rect = Rect::new(col_x, row_y, col_width, row.height);
+        let mut content: Vec<PlacedBlock<'a>> = cell.blocks.clone();
+        for placed in &mut content {
+            placed.translate(col_x + padding.h, row_y + padding.v);
+        }
+        cells.push(PlacedTableCell { column_index: cell.column_index, rect: cell_rect, content });
+        col_x += col_width;
+    }
+
+    PlacedTableRow { rect: row_rect, cells }
+}
+
 /// Translate rows `[from_row, from_row + count)` of the cached `rows` into
 /// frame-relative [`PlacedTableRow`]s, stacked starting at `origin`
 /// (`origin.0` = the table's own left edge, `origin.1` = the cursor `y`
@@ -226,6 +260,12 @@ pub(crate) fn table_total_height(rows: &[ComposedRow<'_>]) -> f64 {
 /// side (already measured/wrapped at `column_width - 2*padding.h` by
 /// `layout_table_row`, so it never re-touches the gridline the way a
 /// plain `(col_x, row_y)` translate would).
+///
+/// `repeat_header` (typography quality wave) prepends a re-placed copy of
+/// `rows[0]` at the top of this fragment when `from_row > 0` (a genuine
+/// continuation, never the table's own first fragment, which already
+/// starts with the real header row) — its height is folded into the
+/// returned total, matching `rows_fitting`'s own `header_reserved` budget.
 pub(crate) fn place_table_rows<'a>(
     rows: &[ComposedRow<'a>],
     from_row: usize,
@@ -233,33 +273,26 @@ pub(crate) fn place_table_rows<'a>(
     column_widths: &[f64],
     padding: CellPadding,
     origin: (f64, f64),
+    repeat_header: bool,
 ) -> (Vec<PlacedTableRow<'a>>, f64) {
     let (origin_x, origin_y) = origin;
-    let total_width: f64 = column_widths.iter().sum();
-    let mut placed_rows = Vec::with_capacity(count);
+    let show_header = repeat_header && from_row > 0 && !rows.is_empty();
+    let mut placed_rows = Vec::with_capacity(count + show_header as usize);
     let mut row_y = origin_y;
+    let mut placed_height = 0.0_f64;
 
-    for row in &rows[from_row..from_row + count] {
-        let row_rect = Rect::new(origin_x, row_y, total_width, row.height);
-        let mut cells = Vec::with_capacity(row.cells.len());
-        let mut col_x = origin_x;
-
-        for cell in &row.cells {
-            let col_width = column_widths.get(cell.column_index).copied().unwrap_or(0.0);
-            let cell_rect = Rect::new(col_x, row_y, col_width, row.height);
-            let mut content: Vec<PlacedBlock<'a>> = cell.blocks.clone();
-            for placed in &mut content {
-                placed.translate(col_x + padding.h, row_y + padding.v);
-            }
-            cells.push(PlacedTableCell { column_index: cell.column_index, rect: cell_rect, content });
-            col_x += col_width;
-        }
-
-        placed_rows.push(PlacedTableRow { rect: row_rect, cells });
-        row_y += row.height;
+    if show_header {
+        placed_rows.push(place_one_row(&rows[0], column_widths, padding, origin_x, row_y));
+        row_y += rows[0].height;
+        placed_height += rows[0].height;
     }
 
-    let placed_height: f64 = rows[from_row..from_row + count].iter().map(|r| r.height).sum();
+    for row in &rows[from_row..from_row + count] {
+        placed_rows.push(place_one_row(row, column_widths, padding, origin_x, row_y));
+        row_y += row.height;
+        placed_height += row.height;
+    }
+
     (placed_rows, placed_height)
 }
 
@@ -345,7 +378,7 @@ mod tests {
         let padding = table.cell_padding;
 
         let (column_widths, composed_rows) = measure_and_layout_table(&table, 200.0, &style, &shaper);
-        let (placed_rows, _) = place_table_rows(&composed_rows, 0, 1, &column_widths, padding, (0.0, 0.0));
+        let (placed_rows, _) = place_table_rows(&composed_rows, 0, 1, &column_widths, padding, (0.0, 0.0), false);
 
         let cell = &placed_rows[0].cells[0];
         assert!(!cell.content.is_empty(), "fixture cell must have placed content to check the inset against");
@@ -374,8 +407,83 @@ mod tests {
             ComposedRow { height: 10.0, cells: vec![] },
             ComposedRow { height: 10.0, cells: vec![] },
         ];
-        assert_eq!(rows_fitting(&rows, 0, 25.0, false), 2, "2.5 row-heights of budget fits exactly 2 whole rows");
-        assert_eq!(rows_fitting(&rows, 0, 5.0, false), 0, "nothing fits and the region already has content: defer whole");
-        assert_eq!(rows_fitting(&rows, 0, 5.0, true), 1, "a fresh region must make progress even if the row overflows it");
+        assert_eq!(rows_fitting(&rows, 0, 25.0, false, 0.0), 2, "2.5 row-heights of budget fits exactly 2 whole rows");
+        assert_eq!(rows_fitting(&rows, 0, 5.0, false, 0.0), 0, "nothing fits and the region already has content: defer whole");
+        assert_eq!(rows_fitting(&rows, 0, 5.0, true, 0.0), 1, "a fresh region must make progress even if the row overflows it");
+    }
+
+    #[test]
+    fn rows_fitting_subtracts_the_reserved_header_height_from_the_budget() {
+        let rows = [
+            ComposedRow { height: 10.0, cells: vec![] },
+            ComposedRow { height: 10.0, cells: vec![] },
+            ComposedRow { height: 10.0, cells: vec![] },
+        ];
+        // Same 25.0 budget as above, but 10.0 reserved for a repeated
+        // header row — only 1 whole body row fits, not 2.
+        assert_eq!(rows_fitting(&rows, 0, 25.0, false, 10.0), 1, "the reserved header height must come out of the budget before counting body rows");
+    }
+
+    /// Header-row repeat (typography quality wave): a 10-row table split
+    /// across 2 regions must repeat `rows[0]` (the header) at the TOP of
+    /// the continuation fragment (never the first fragment, which already
+    /// starts with the real header), and the budget for that continuation
+    /// must account for the repeated header's own height.
+    #[test]
+    fn header_row_repeats_at_the_top_of_a_continuation_fragment_and_its_height_is_budgeted() {
+        let shaper = CosmicShaper::headless();
+        let f = font();
+        let style = ComposeStyle::new(0.0, f);
+
+        let header_run = [StyledRun::new("Header", f)];
+        let header_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&header_run, f64::MAX)))];
+        let header_cells = [TableCell::new(&header_nodes)];
+
+        let body_run = [StyledRun::new("cell", f)];
+        let body_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&body_run, f64::MAX)))];
+        let body_cells = [TableCell::new(&body_nodes)];
+
+        let rows: Vec<TableRow<'_>> =
+            std::iter::once(TableRow::new(&header_cells)).chain((0..9).map(|_| TableRow::new(&body_cells))).collect();
+        let columns = [ColumnSpec::Auto];
+        let table = TableBlock::new(&columns, &rows).with_header_repeat(true);
+
+        let (column_widths, composed_rows) = measure_and_layout_table(&table, 200.0, &style, &shaper);
+        let row_height = composed_rows[0].height;
+        assert!(composed_rows.iter().all(|r| (r.height - row_height).abs() < 1e-6), "fixture rows must be equal height");
+
+        // Budget room for exactly 4 rows on the FIRST fragment (header +
+        // 3 body rows), no repeat reserved yet (from_row == 0).
+        let first_count = rows_fitting(&composed_rows, 0, row_height * 4.0 + 0.5, false, 0.0);
+        assert_eq!(first_count, 4, "the first fragment carries the real header + 3 body rows, no reservation needed");
+
+        // The continuation fragment starts at row 4 (0-indexed) — budget
+        // room for exactly 3 more rows PLUS the repeated header's own
+        // height (4 rows' worth of space, but only 3 are real body rows).
+        let header_height = composed_rows[0].height;
+        let continuation_count = rows_fitting(&composed_rows, first_count, row_height * 4.0 + 0.5, false, header_height);
+        assert_eq!(continuation_count, 3, "the repeated header's own height must come out of the continuation's budget");
+
+        let (placed, placed_height) =
+            place_table_rows(&composed_rows, first_count, continuation_count, &column_widths, table.cell_padding, (0.0, 0.0), true);
+
+        assert_eq!(placed.len(), continuation_count + 1, "the continuation fragment must carry the repeated header PLUS its own body rows");
+        let repeated_header_text: String = placed[0].cells[0]
+            .content
+            .iter()
+            .filter_map(|b| b.paragraph_layout.as_ref())
+            .flat_map(|l| l.glyphs.iter().map(|g| g.cluster.as_str()))
+            .collect();
+        assert_eq!(repeated_header_text, "Header", "the continuation's own first placed row must be the repeated header content");
+        assert!(
+            (placed_height - (header_height + row_height * continuation_count as f64)).abs() < 1e-6,
+            "the returned total height must include the repeated header's own height"
+        );
+
+        // Sanity: the FIRST fragment (from_row == 0) never repeats a
+        // header even when `header_repeat` is on — it already starts with
+        // the real one.
+        let (first_placed, _) = place_table_rows(&composed_rows, 0, first_count, &column_widths, table.cell_padding, (0.0, 0.0), true);
+        assert_eq!(first_placed.len(), first_count, "the first fragment must never ALSO get a repeated header on top of the real one");
     }
 }

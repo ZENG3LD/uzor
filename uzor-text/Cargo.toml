@@ -20,6 +20,14 @@ uzor = { workspace = true, features = ["shaper"] }
 # but never re-exported it, so this move needs its own pin. Same major
 # version (2) as uzor core's own `fastrand = "2"` pin.
 fastrand = "2"
+# Typography quality wave: real hyph-utf8-derived hyphenation (Typst's own
+# hyphenator — see `nemo/docs/uzor-engines/research_typesetting_sota_2026.md`
+# §2/§8). Default features (`alloc` + `full`) embed all ~48 permissively-
+# licensed languages (~1.1 MiB) — `uzor-text` is `publish = false` (local
+# dev crate only), so binary size is not a publish concern; ru/en/de are
+# all present in hypher's own shipped set (confirmed by inspecting its
+# Cargo.toml feature list directly — no fallback vendoring needed).
+hypher = "0.1.7"
 
 [dev-dependencies]
 uzor-export = { path = "../uzor-export" }

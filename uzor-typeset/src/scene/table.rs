@@ -96,16 +96,32 @@ pub struct TableBlock<'a> {
     /// Per-cell content inset — [`CellPadding::default`] unless overridden
     /// via [`TableBlock::with_cell_padding`].
     pub cell_padding: CellPadding,
+    /// When `true` and this table splits between rows across regions,
+    /// `rows[0]` (this table's own first/header row) re-renders at the top
+    /// of every CONTINUATION fragment (never the first fragment, which
+    /// already starts with it) — its height is counted in
+    /// `compose::table_layout::rows_fitting`'s own budget for that
+    /// continuation, so a repeated header never causes a fragment to
+    /// overflow its region. Default `false` (additive — every pre-existing
+    /// table is byte-identical). See [`TableBlock::with_header_repeat`].
+    pub header_repeat: bool,
 }
 
 impl<'a> TableBlock<'a> {
     pub fn new(columns: &'a [ColumnSpec], rows: &'a [TableRow<'a>]) -> Self {
-        Self { columns, rows, cell_padding: CellPadding::default() }
+        Self { columns, rows, cell_padding: CellPadding::default(), header_repeat: false }
     }
 
     /// Builder: override the default per-cell content inset.
     pub fn with_cell_padding(mut self, cell_padding: CellPadding) -> Self {
         self.cell_padding = cell_padding;
+        self
+    }
+
+    /// Builder: opt into repeating `rows[0]` at the top of every
+    /// continuation fragment when this table splits across regions.
+    pub fn with_header_repeat(mut self, header_repeat: bool) -> Self {
+        self.header_repeat = header_repeat;
         self
     }
 }

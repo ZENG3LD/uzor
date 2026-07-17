@@ -11,4 +11,4 @@ mod table_layout;
 
 pub use flow::{compose, ComposeStyle};
 pub use keep_break::BreakControl;
-pub(crate) use paragraph_split::{lines_fitting, slice_layout_lines};
+pub(crate) use paragraph_split::{lines_fitting, slice_layout_lines, widow_orphan_count};
