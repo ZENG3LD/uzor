@@ -918,11 +918,6 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         use winit::event::{ElementState, MouseButton as WMouseButton};
 
         match event {
-            WindowEvent::CursorMoved { .. } | WindowEvent::RedrawRequested => {}
-            other => eprintln!("[EVDBG] {other:?}"),
-        }
-
-        match event {
             // ── Cursor moved ─────────────────────────────────────────────────
             WindowEvent::CursorMoved { position, .. } => {
                 let Some(pw) = self.windows.get_mut(&id) else { return };
@@ -973,7 +968,6 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 let Some(pw) = self.windows.get_mut(&id) else { return };
                 let (mx, my) = pw.last_mouse_pos;
                 self.layout.on_pointer_down(mx, my);
-                eprintln!("[CLICKDBG] PRESS-Left arm ({mx:.1},{my:.1}) pressed_widget={:?}", self.layout.last_pressed_widget());
 
                 // Dock-separator drag start.  on_pointer_down already
                 // wrote `last_pressed` via process_drag_press; check it
@@ -1119,7 +1113,6 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             } => {
                 let Some(pw) = self.windows.get_mut(&id) else { return };
                 let (mx, my) = pw.last_mouse_pos;
-                eprintln!("[CLICKDBG] RELEASE-Left arm ({mx:.1},{my:.1})");
                 pw.dock_separator_drag = None;
                 // L3 records the click in last_click; no pw.input write needed.
                 // Route the resolved click to the App dispatch hooks (chrome
