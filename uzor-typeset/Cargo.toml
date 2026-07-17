@@ -12,7 +12,8 @@ publish = false
 uzor = { workspace = true }
 uzor-text = { path = "../uzor-text" }
 uzor-figures = { path = "../uzor-figures" }
+uzor-export = { path = "../uzor-export" }
 
 [dev-dependencies]
-uzor-export = { path = "../uzor-export" }
 png = "0.17"
+lopdf = { version = "0.44", default-features = false }

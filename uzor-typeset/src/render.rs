@@ -46,6 +46,43 @@ use crate::style::{ColorRole, FontRole, Theme};
 /// real content color.
 const IMAGE_PLACEHOLDER_COLOR: &str = "#ff00ffff";
 
+/// Which paint layers [`draw_page_layers`] includes — the "smallest clean
+/// seam" Arc 4 Phase P5 (PDF assembly, `uzor-typeset::export::
+/// pages_to_pdf`) needs: that adapter renders every page's NON-TEXT
+/// content (figures/tables/gridlines/images/list markers/header-footer
+/// chrome) as a raster background, then paints real, selectable/
+/// searchable vector PDF text on top of it — so the raster pass must NOT
+/// also ink paragraph glyphs (that would double-paint the same text once
+/// as pixels, once as vector, and any tiny position mismatch between the
+/// two would read as a visible ghosting artifact).
+///
+/// [`DrawLayers::default`] (`paragraph_ink: true`) is "every layer,
+/// unchanged" — [`draw_page`] is a thin wrapper over [`draw_page_layers`]
+/// at that default, so every pre-P5 caller's own visual output stays
+/// byte-for-byte unchanged (every P0-P4 proof PNG this crate already
+/// ships is unaffected).
+#[derive(Debug, Clone, Copy)]
+pub struct DrawLayers {
+    /// Paint `Block::Paragraph` glyph ink — body text AND header/footer
+    /// text (both are `Block::Paragraph`s, painted through the SAME
+    /// `draw_placed_block` recursion), including nested paragraph content
+    /// inside table cells/list items (the recursion threads this flag
+    /// through unchanged). Table gridlines, list marker glyphs, figures/
+    /// images, and the page-number text are NOT gated by this flag — see
+    /// `uzor-typeset::export`'s own module docs for why those specific
+    /// ad-hoc (non-`ParagraphLayout`, non-alphabetic-baseline) paint calls
+    /// stay raster-only in this phase (reproducing their exact baseline
+    /// position as PDF vector text would need real shaping-backend font
+    /// metrics this crate's own `ParagraphLayout` doesn't carry for them).
+    pub paragraph_ink: bool,
+}
+
+impl Default for DrawLayers {
+    fn default() -> Self {
+        Self { paragraph_ink: true }
+    }
+}
+
 /// Paint every placed block of `page` onto `ctx`, each at its own
 /// frame-relative rect origin (design law 1: one transform — every draw
 /// derives its position from the SAME `PlacedBlock::rect`/
@@ -64,21 +101,30 @@ const IMAGE_PLACEHOLDER_COLOR: &str = "#ff00ffff";
 /// figure_theme)` now that `Theme` exists for real (see this crate's
 /// `CLAUDE.md` — the same "grow the signature to the type the phase
 /// actually needs" pattern P0->P1 already used for this same function).
+///
+/// A thin wrapper over [`draw_page_layers`] at [`DrawLayers::default`]
+/// (every layer painted) — P5's own new entry point.
 pub fn draw_page(ctx: &mut dyn RenderContext, page: &Page<'_>, theme: &Theme) {
+    draw_page_layers(ctx, page, theme, DrawLayers::default());
+}
+
+/// [`draw_page`] with explicit layer control — see [`DrawLayers`]'s own
+/// doc comment for what `layers.paragraph_ink` gates and why.
+pub fn draw_page_layers(ctx: &mut dyn RenderContext, page: &Page<'_>, theme: &Theme, layers: DrawLayers) {
     let default_color = theme.color_hex(ColorRole::Ink);
     let figure_theme = theme.figure_theme();
 
     for placed in &page.frame.blocks {
-        draw_placed_block(ctx, placed, &default_color, &figure_theme);
+        draw_placed_block(ctx, placed, &default_color, &figure_theme, layers);
     }
     if let Some(header) = &page.header {
         for placed in &header.blocks {
-            draw_placed_block(ctx, placed, &default_color, &figure_theme);
+            draw_placed_block(ctx, placed, &default_color, &figure_theme, layers);
         }
     }
     if let Some(footer) = &page.footer {
         for placed in &footer.blocks {
-            draw_placed_block(ctx, placed, &default_color, &figure_theme);
+            draw_placed_block(ctx, placed, &default_color, &figure_theme, layers);
         }
     }
     if let Some(number) = &page.page_number {
@@ -102,7 +148,7 @@ pub fn draw_card(ctx: &mut dyn RenderContext, card: &Card<'_>, theme: &Theme) {
     ctx.fill_rect(0.0, 0.0, card.width, card.natural_height);
 
     for placed in &card.frame.blocks {
-        draw_placed_block(ctx, placed, &default_color, &figure_theme);
+        draw_placed_block(ctx, placed, &default_color, &figure_theme, DrawLayers::default());
     }
 }
 
@@ -130,7 +176,7 @@ pub fn draw_slide(ctx: &mut dyn RenderContext, slide: &Slide<'_>, theme: &Theme)
         ctx.scale(factor, factor);
     }
     for placed in &slide.frame.blocks {
-        draw_placed_block(ctx, placed, &default_color, &figure_theme);
+        draw_placed_block(ctx, placed, &default_color, &figure_theme, DrawLayers::default());
     }
     ctx.restore();
 }
@@ -166,7 +212,7 @@ pub fn draw_frame_state(ctx: &mut dyn RenderContext, state: &FrameBlockState<'_>
 
     ctx.save();
     ctx.set_global_alpha(state.opacity as f64);
-    draw_placed_block(ctx, &placed, &default_color, &figure_theme);
+    draw_placed_block(ctx, &placed, &default_color, &figure_theme, DrawLayers::default());
     ctx.restore();
 }
 
@@ -188,12 +234,15 @@ fn draw_page_number(ctx: &mut dyn RenderContext, placement: &PageNumberPlacement
 
 /// Paint ONE placed block — factored out of [`draw_page`] so table/list
 /// cell content (itself a `Vec<PlacedBlock>`) can recurse through the
-/// exact same paint logic top-level flow blocks use.
-fn draw_placed_block(ctx: &mut dyn RenderContext, placed: &PlacedBlock<'_>, default_color: &str, figure_theme: &FigureTheme) {
+/// exact same paint logic top-level flow blocks use. `layers` (P5) gates
+/// only the `Block::Paragraph` arm — see [`DrawLayers`]'s own doc comment.
+fn draw_placed_block(ctx: &mut dyn RenderContext, placed: &PlacedBlock<'_>, default_color: &str, figure_theme: &FigureTheme, layers: DrawLayers) {
     match placed.kind {
         Block::Paragraph(_) => {
-            if let Some(layout) = &placed.paragraph_layout {
-                draw_paragraph(ctx, (placed.rect.x, placed.rect.y), layout, default_color, false);
+            if layers.paragraph_ink {
+                if let Some(layout) = &placed.paragraph_layout {
+                    draw_paragraph(ctx, (placed.rect.x, placed.rect.y), layout, default_color, false);
+                }
             }
         }
         Block::Figure(figure_block) => {
@@ -204,12 +253,12 @@ fn draw_placed_block(ctx: &mut dyn RenderContext, placed: &PlacedBlock<'_>, defa
         }
         Block::Table(_) => {
             if let Some(table) = &placed.table_placement {
-                draw_table_placement(ctx, table, default_color, figure_theme);
+                draw_table_placement(ctx, table, default_color, figure_theme, layers);
             }
         }
         Block::List(_) => {
             if let Some(list) = &placed.list_placement {
-                draw_list_placement(ctx, list, default_color, figure_theme);
+                draw_list_placement(ctx, list, default_color, figure_theme, layers);
             }
         }
         Block::Spacer(_) => {}
@@ -225,8 +274,10 @@ fn draw_image_placeholder(ctx: &mut dyn RenderContext, rect: Rect) {
 }
 
 /// Draw a table's own row/column gridlines, then recurse into every
-/// cell's already-placed content.
-fn draw_table_placement(ctx: &mut dyn RenderContext, table: &TablePlacement<'_>, default_color: &str, figure_theme: &FigureTheme) {
+/// cell's already-placed content. Gridlines are never gated by `layers`
+/// (see [`DrawLayers`]'s own doc comment) — only nested paragraph content
+/// is.
+fn draw_table_placement(ctx: &mut dyn RenderContext, table: &TablePlacement<'_>, default_color: &str, figure_theme: &FigureTheme, layers: DrawLayers) {
     ctx.set_stroke_color(default_color);
     ctx.set_stroke_width(1.0);
     for row in &table.rows {
@@ -234,15 +285,17 @@ fn draw_table_placement(ctx: &mut dyn RenderContext, table: &TablePlacement<'_>,
         for cell in &row.cells {
             ctx.stroke_rect(cell.rect.x, cell.rect.y, cell.rect.width, cell.rect.height);
             for inner in &cell.content {
-                draw_placed_block(ctx, inner, default_color, figure_theme);
+                draw_placed_block(ctx, inner, default_color, figure_theme, layers);
             }
         }
     }
 }
 
 /// Draw every item's marker text, then recurse into its own already-placed
-/// (already-indented) content.
-fn draw_list_placement(ctx: &mut dyn RenderContext, list: &ListPlacement<'_>, default_color: &str, figure_theme: &FigureTheme) {
+/// (already-indented) content. The marker glyph itself is never gated by
+/// `layers` (see [`DrawLayers`]'s own doc comment) — only nested
+/// paragraph content is.
+fn draw_list_placement(ctx: &mut dyn RenderContext, list: &ListPlacement<'_>, default_color: &str, figure_theme: &FigureTheme, layers: DrawLayers) {
     for item in &list.items {
         if !item.marker_text.is_empty() {
             ctx.set_font(&item.marker_font.to_css_font());
@@ -252,7 +305,7 @@ fn draw_list_placement(ctx: &mut dyn RenderContext, list: &ListPlacement<'_>, de
             ctx.fill_text(&item.marker_text, item.marker_rect.x, item.marker_rect.y);
         }
         for inner in &item.content {
-            draw_placed_block(ctx, inner, default_color, figure_theme);
+            draw_placed_block(ctx, inner, default_color, figure_theme, layers);
         }
     }
 }

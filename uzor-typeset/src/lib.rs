@@ -37,6 +37,7 @@
 //! own pseudocode.
 
 pub mod compose;
+pub mod export;
 pub mod kinetics;
 pub mod master;
 pub mod region;
@@ -46,6 +47,7 @@ pub mod slice;
 pub mod style;
 
 pub use compose::{compose, BreakControl, ComposeStyle};
+pub use export::pages_to_pdf;
 pub use kinetics::{build_frame_morph, FrameBlockState, FrameMorph};
 pub use master::{
     LayoutId, MasterId, PlaceholderFill, PlaceholderKind, PlaceholderSlot, PlacedPlaceholder, PageNumberFormat, PageNumberStyle,
@@ -55,7 +57,7 @@ pub use region::{
     CardRegionSequence, FixedRegionSequence, Frame, ListPlacement, PageRegionSequence, PlacedBlock, PlacedListItem, PlacedTableCell,
     PlacedTableRow, Region, RegionSequence, TablePlacement,
 };
-pub use render::{draw_card, draw_frame_state, draw_page, draw_slide};
+pub use render::{draw_card, draw_frame_state, draw_page, draw_page_layers, draw_slide, DrawLayers};
 pub use scene::{
     resolve_block_ids, Block, BlockId, BlockNode, BlockSizing, ColumnSpec, FigureBlock, ImageBlock, ImageFit, ListBlock, ListItem,
     MarkerStyle, TableBlock, TableCell, TableRow, TypesetFigure,

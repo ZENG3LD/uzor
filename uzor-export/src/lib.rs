@@ -35,6 +35,10 @@ use std::path::Path;
 use uzor::render::RenderContext;
 use uzor_render_tiny_skia::TinySkiaCpuRenderContext;
 
+pub mod pdf;
+
+pub use pdf::{FontId, PdfBuilder, PdfFont, PdfPageSpec, PdfTextRun};
+
 /// Parameters for a single headless render pass.
 #[derive(Debug, Clone, Copy)]
 pub struct ExportSpec {
@@ -67,6 +71,16 @@ pub enum ExportError {
     Encode(String),
     /// Writing the encoded PNG to disk failed.
     Io(std::io::Error),
+    /// (P5, `pdf` module) A [`PdfPageSpec::raster`]'s encoded PNG bytes
+    /// could not be decoded.
+    RasterDecode(String),
+    /// (P5, `pdf` module) A [`PdfPageSpec::raster_px`] didn't match the
+    /// decoded PNG's own header dimensions — never silently trusting one
+    /// over the other.
+    RasterDimensionMismatch {
+        expected: (u32, u32),
+        actual: (u32, u32),
+    },
 }
 
 impl std::fmt::Display for ExportError {
@@ -78,6 +92,12 @@ impl std::fmt::Display for ExportError {
             ExportError::Backend(msg) => write!(f, "render backend error: {msg}"),
             ExportError::Encode(msg) => write!(f, "PNG encode error: {msg}"),
             ExportError::Io(e) => write!(f, "I/O error writing export: {e}"),
+            ExportError::RasterDecode(msg) => write!(f, "PDF raster background decode error: {msg}"),
+            ExportError::RasterDimensionMismatch { expected, actual } => write!(
+                f,
+                "PDF raster background dimension mismatch: spec declared {}x{}, decoded PNG is {}x{}",
+                expected.0, expected.1, actual.0, actual.1
+            ),
         }
     }
 }
@@ -86,7 +106,11 @@ impl std::error::Error for ExportError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ExportError::Io(e) => Some(e),
-            ExportError::ZeroSize | ExportError::Backend(_) | ExportError::Encode(_) => None,
+            ExportError::ZeroSize
+            | ExportError::Backend(_)
+            | ExportError::Encode(_)
+            | ExportError::RasterDecode(_)
+            | ExportError::RasterDimensionMismatch { .. } => None,
         }
     }
 }
