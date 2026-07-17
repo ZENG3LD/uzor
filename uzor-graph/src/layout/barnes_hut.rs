@@ -19,6 +19,20 @@ pub const BRUTE_FORCE_THRESHOLD: usize = 500;
 /// coincident/near-coincident particles.
 const MIN_DIST2: f32 = 1.0;
 
+/// Two points closer (squared) than this can't be meaningfully separated
+/// by subdividing — merged into one heavier leaf on insert. Cluster
+/// collapse pins whole member stacks onto one exact centroid, so the
+/// coincident case is routine, and without this guard `QuadNode::insert`
+/// recurses forever (stack overflow — live-caught via the second
+/// `collapse` action in force-graph-demo).
+const MIN_SPLIT_DIST2: f32 = 1e-8;
+
+/// Subdivision floor: a cell this small is never split further, its
+/// second point merges into the existing leaf. Backstop for
+/// near-coincident (but not equal) floats that would take hundreds of
+/// halvings to separate.
+const MIN_CELL_SIZE: f32 = 1e-3;
+
 /// O(n²) reference implementation. Accumulates repulsion force into
 /// `out[i]` for every particle `i` (does not clear `out` first — caller
 /// combines with other forces in the same buffer).
@@ -103,6 +117,17 @@ impl QuadNode {
                 self.content = NodeContent::Leaf { x, y, mass };
             }
             NodeContent::Leaf { x: lx, y: ly, mass: lmass } => {
+                // Coincident (or indistinguishably close) points can never
+                // be separated by subdividing — cluster collapse pins whole
+                // member stacks onto one centroid, so this is a normal
+                // state, not a degenerate one. Merge into a single heavier
+                // leaf (exactly the "one point mass" equivalence
+                // cluster.rs relies on) instead of recursing forever.
+                let (dx, dy) = (x - *lx, y - *ly);
+                if dx * dx + dy * dy <= MIN_SPLIT_DIST2 || self.bounds.size <= MIN_CELL_SIZE {
+                    *lmass += mass;
+                    return;
+                }
                 let (lx, ly, lmass) = (*lx, *ly, *lmass);
                 let mut children = [
                     QuadNode::new_empty(self.bounds.child_bounds(0)),
@@ -250,5 +275,44 @@ mod tests {
         let mut out = vec![(0f32, 0f32)];
         qt.accumulate_forces(&particles, DEFAULT_THETA, 100.0, &mut out);
         assert_eq!(out[0], (0.0, 0.0));
+    }
+
+    /// Regression: cluster collapse pins every member onto one exact
+    /// centroid, so the quadtree must ingest a stack of coincident
+    /// points without subdividing forever (pre-fix this was a
+    /// deterministic main-thread stack overflow — second `collapse`
+    /// action in force-graph-demo). The merged stack must also act as
+    /// ONE heavier point mass, per cluster.rs's documented equivalence.
+    #[test]
+    fn coincident_particle_stack_builds_and_acts_as_one_point_mass() {
+        // Two collapsed-cluster stacks (8 members each, exact same
+        // coordinates) plus one free probe particle.
+        let mut particles = Vec::new();
+        for _ in 0..8 {
+            particles.push(Particle::at(-50.0, 0.0));
+        }
+        for _ in 0..8 {
+            particles.push(Particle::at(40.0, 30.0));
+        }
+        particles.push(Particle::at(0.0, 0.0));
+
+        let strength = 100.0;
+        let qt = Quadtree::build(&particles); // pre-fix: never returns
+        let mut out = vec![(0f32, 0f32); particles.len()];
+        qt.accumulate_forces(&particles, DEFAULT_THETA, strength, &mut out);
+
+        let probe = out[16];
+        assert!(probe.0.is_finite() && probe.1.is_finite());
+
+        // The probe must feel each stack as an 8x-mass single point.
+        let mut expected = (0.0f32, 0.0f32);
+        apply_point(0.0, 0.0, -50.0, 0.0, 8.0, strength, &mut expected);
+        apply_point(0.0, 0.0, 40.0, 30.0, 8.0, strength, &mut expected);
+        let diff = ((probe.0 - expected.0).powi(2) + (probe.1 - expected.1).powi(2)).sqrt();
+        let mag = (expected.0 * expected.0 + expected.1 * expected.1).sqrt();
+        assert!(
+            diff <= mag * 0.05,
+            "coincident stack should act as one 8-mass point: got {probe:?}, expected {expected:?}"
+        );
     }
 }
