@@ -39,17 +39,6 @@ pub use application::{Application, AppConfig};
 
 pub use winit_provider::{SendSyncHandlePair, WinitSoftbufferPresenter, WinitWindowProvider};
 
-/// Map a winit [`winit::event::WindowEvent`] to a [`uzor::platform::PlatformEvent`].
-///
-/// Convenience free function wrapping [`event_mapper::EventMapper::map_window_event`].
-/// Returns `None` for events that do not have a direct uzor equivalent.
-pub fn map_winit_event(
-    event: &winit::event::WindowEvent,
-    _scale: f64,
-) -> Option<uzor::platform::PlatformEvent> {
-    EventMapper::map_window_event(event)
-}
-
 // =============================================================================
 // Desktop Platform
 // =============================================================================
@@ -75,11 +64,11 @@ struct PlatformState {
 /// Desktop window wrapper
 struct DesktopWindow {
     id: WindowId,
-    #[allow(dead_code)]
     winit_id: WinitWindowId,
     window: Arc<Window>,
-    #[allow(dead_code)]
-    scale_factor: f64,
+    /// Per-window winit → platform event mapper (tracks cursor position and
+    /// scale factor for this window only).
+    mapper: EventMapper,
 }
 
 impl DesktopPlatform {
@@ -190,10 +179,22 @@ impl ApplicationHandler for DesktopApp {
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        _window_id: WinitWindowId,
+        window_id: WinitWindowId,
         event: WindowEvent,
     ) {
-        if let Some(platform_event) = EventMapper::map_window_event(&event) {
+        // Route through the mapper owned by the specific window the event
+        // came from, so cursor position / scale factor tracking never mixes
+        // across windows.
+        let platform_event = {
+            let mut state = self.state.lock().unwrap();
+            state
+                .windows
+                .iter_mut()
+                .find(|w| w.winit_id == window_id)
+                .and_then(|w| w.mapper.map_window_event(&event))
+        };
+
+        if let Some(platform_event) = platform_event {
             let result = (self.callback)(platform_event);
             match result {
                 EventResult::Exit => {
@@ -234,12 +235,12 @@ impl DesktopApp {
             match event_loop.create_window(window_attrs) {
                 Ok(window) => {
                     let winit_id = window.id();
-                    let scale_factor = window.scale_factor();
+                    let mapper = EventMapper::new(window.scale_factor());
                     state.windows.push(DesktopWindow {
                         id: window_id,
                         winit_id,
                         window: Arc::new(window),
-                        scale_factor,
+                        mapper,
                     });
                 }
                 Err(e) => eprintln!("Failed to create window: {}", e),

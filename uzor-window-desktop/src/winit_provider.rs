@@ -31,6 +31,8 @@ use uzor::layout::window::{
     WindowDecorations, WindowProvider,
 };
 
+use crate::event_mapper::EventMapper;
+
 // ─── SendSyncHandlePair ───────────────────────────────────────────────────────
 
 /// Newtype wrapping `(RawWindowHandle, RawDisplayHandle)` with manual `Send +
@@ -62,6 +64,9 @@ pub struct WinitWindowProvider {
     window: Arc<Window>,
     pending_events: Vec<PlatformEvent>,
     should_close: bool,
+    /// Stateful winit → platform event mapper, owned per-window so cursor
+    /// position and scale factor tracking never crosses windows.
+    mapper: EventMapper,
 }
 
 impl WinitWindowProvider {
@@ -70,10 +75,12 @@ impl WinitWindowProvider {
     /// The caller is responsible for continuing to drive the winit `EventLoop`
     /// and feeding events via [`push_winit_event`](Self::push_winit_event).
     pub fn new(window: Arc<Window>) -> Self {
+        let mapper = EventMapper::new(window.scale_factor());
         Self {
             window,
             pending_events: Vec::new(),
             should_close: false,
+            mapper,
         }
     }
 
@@ -82,8 +89,7 @@ impl WinitWindowProvider {
     /// Call this from your `ApplicationHandler::window_event` implementation
     /// before delegating to the framework runtime.
     pub fn push_winit_event(&mut self, event: &WindowEvent) {
-        use crate::event_mapper::EventMapper;
-        if let Some(ev) = EventMapper::map_window_event(event) {
+        if let Some(ev) = self.mapper.map_window_event(event) {
             self.pending_events.push(ev);
         }
     }

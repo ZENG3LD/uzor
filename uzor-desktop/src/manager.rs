@@ -23,6 +23,8 @@ use uzor::layout::window::{WindowDecorations, WindowProvider};
 #[cfg(not(target_arch = "wasm32"))]
 use uzor_window_desktop::WinitWindowProvider;
 #[cfg(not(target_arch = "wasm32"))]
+use uzor_window_desktop::event_mapper::EventMapper;
+#[cfg(not(target_arch = "wasm32"))]
 use winit::event::WindowEvent;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::window::Window;
@@ -121,6 +123,13 @@ pub(crate) struct PerWindow<P: DockPanel> {
     pub render_state:    WindowRenderState,
     /// Last known cursor position in logical pixels.
     pub last_mouse_pos:  (f64, f64),
+    /// Stateful winit → platform event mapper for the app-facing event
+    /// stream (feeds `slot.provider.push_platform_event`). Tracks this
+    /// window's own cursor position and scale factor so `PointerDown`/`Up`
+    /// carry real coordinates and every pointer/touch/scroll coordinate is
+    /// normalized to logical pixels — independent of `last_mouse_pos` above,
+    /// which drives the LM chrome/dock-separator layer.
+    pub event_mapper:    EventMapper,
     pub last_frame:      std::time::Instant,
     pub initialised:     bool,
     pub close_requested: bool,
@@ -845,6 +854,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             window:          std::sync::Arc::clone(&window),
             render_state,
             last_mouse_pos:  (0.0, 0.0),
+            event_mapper:    EventMapper::new(dpr),
             last_frame:      std::time::Instant::now(),
             initialised:     false,
             close_requested: false,
@@ -1441,7 +1451,15 @@ where
                 self.handle_window_winit_event(id, ev);
                 let key = self.windows.get(&id).map(|pw| pw.key.clone());
                 if let Some(key) = key {
-                    if let Some(platform_ev) = uzor_window_desktop::map_winit_event(ev, 1.0) {
+                    // Route through THIS window's own mapper — stamps
+                    // PointerDown/Up with the real last-Moved position and
+                    // normalizes every pointer/touch/scroll coordinate to
+                    // logical pixels using the window's real scale factor
+                    // (was: free fn hardcoding scale 1.0 and the mapper
+                    // stamping button events with (0.0, 0.0)).
+                    let platform_ev = self.windows.get_mut(&id)
+                        .and_then(|pw| pw.event_mapper.map_window_event(ev));
+                    if let Some(platform_ev) = platform_ev {
                         if let Some(slot) = self.layout.window_mut(&key) {
                             slot.provider.push_platform_event(platform_ev);
                         }
@@ -1460,11 +1478,14 @@ where
                             ..
                         }
                     ) {
+                        let (x, y) = self.windows.get(&id)
+                            .map(|pw| pw.last_mouse_pos)
+                            .unwrap_or((0.0, 0.0));
                         if let Some(slot) = self.layout.window_mut(&key) {
                             slot.provider.push_platform_event(
                                 uzor::platform::PlatformEvent::PointerUp {
-                                    x: 0.0,
-                                    y: 0.0,
+                                    x,
+                                    y,
                                     button: uzor::input::state::MouseButton::Left,
                                 },
                             );

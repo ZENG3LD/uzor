@@ -10,12 +10,43 @@ use uzor::input::events::KeyCode;
 use uzor::input::state::{ModifierKeys, MouseButton};
 use uzor::platform::{ImeEvent, PlatformEvent};
 
-/// Maps winit events to platform events
-pub struct EventMapper;
+/// Maps winit events to platform events.
+///
+/// Stateful: tracks the window's current scale factor and the last known
+/// cursor position (in LOGICAL pixels) so that:
+///
+/// - `MouseInput` (winit reports no coordinates of its own for button
+///   press/release) is stamped with the real last-known cursor position
+///   instead of `(0.0, 0.0)`.
+/// - Every pointer/touch/scroll coordinate is normalized from winit's
+///   PHYSICAL pixels into the LOGICAL pixel space the rest of uzor (layout,
+///   widgets, `window_rect()`) operates in.
+///
+/// One instance per window — cursor position and scale factor are
+/// per-window state.
+pub struct EventMapper {
+    /// Device pixel ratio (HiDPI scale factor) of the window this mapper
+    /// tracks. Kept in sync via `WindowEvent::ScaleFactorChanged`.
+    scale_factor: f64,
+    /// Last known cursor position, in LOGICAL pixels. Stays `(0.0, 0.0)`
+    /// until the first `CursorMoved` arrives — a `MouseInput` with no prior
+    /// move stamps that tracked default, which is the correct behavior for
+    /// the never-moved edge case.
+    last_cursor: (f64, f64),
+}
 
 impl EventMapper {
-    /// Map a winit WindowEvent to a PlatformEvent
-    pub fn map_window_event(event: &WindowEvent) -> Option<PlatformEvent> {
+    /// Construct a mapper for a window with the given initial scale factor.
+    pub fn new(scale_factor: f64) -> Self {
+        Self {
+            scale_factor: sanitize_scale(scale_factor),
+            last_cursor: (0.0, 0.0),
+        }
+    }
+
+    /// Map a winit `WindowEvent` to a `PlatformEvent`, updating the
+    /// mapper's internal cursor/scale tracking as a side effect.
+    pub fn map_window_event(&mut self, event: &WindowEvent) -> Option<PlatformEvent> {
         match event {
             WindowEvent::Resized(size) => Some(PlatformEvent::WindowResized {
                 width: size.width,
@@ -33,22 +64,25 @@ impl EventMapper {
 
             WindowEvent::CursorLeft { .. } => Some(PlatformEvent::PointerLeft),
 
-            WindowEvent::CursorMoved { position, .. } => Some(PlatformEvent::PointerMoved {
-                x: position.x,
-                y: position.y,
-            }),
+            WindowEvent::CursorMoved { position, .. } => {
+                let x = position.x / self.scale_factor;
+                let y = position.y / self.scale_factor;
+                self.last_cursor = (x, y);
+                Some(PlatformEvent::PointerMoved { x, y })
+            }
 
             WindowEvent::MouseInput { state, button, .. } => {
                 let mapped_button = map_mouse_button(*button);
+                let (x, y) = self.last_cursor;
                 match state {
                     ElementState::Pressed => Some(PlatformEvent::PointerDown {
-                        x: 0.0, // Position will be updated by cursor moved event
-                        y: 0.0,
+                        x,
+                        y,
                         button: mapped_button,
                     }),
                     ElementState::Released => Some(PlatformEvent::PointerUp {
-                        x: 0.0,
-                        y: 0.0,
+                        x,
+                        y,
                         button: mapped_button,
                     }),
                 }
@@ -57,29 +91,23 @@ impl EventMapper {
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => (*x as f64 * 20.0, *y as f64 * 20.0),
-                    MouseScrollDelta::PixelDelta(pos) => (pos.x, pos.y),
+                    MouseScrollDelta::PixelDelta(pos) => {
+                        (pos.x / self.scale_factor, pos.y / self.scale_factor)
+                    }
                 };
                 Some(PlatformEvent::Scroll { dx, dy })
             }
 
-            WindowEvent::Touch(touch) => match touch.phase {
-                TouchPhase::Started => Some(PlatformEvent::TouchStart {
-                    id: touch.id,
-                    x: touch.location.x,
-                    y: touch.location.y,
-                }),
-                TouchPhase::Moved => Some(PlatformEvent::TouchMove {
-                    id: touch.id,
-                    x: touch.location.x,
-                    y: touch.location.y,
-                }),
-                TouchPhase::Ended => Some(PlatformEvent::TouchEnd {
-                    id: touch.id,
-                    x: touch.location.x,
-                    y: touch.location.y,
-                }),
-                TouchPhase::Cancelled => Some(PlatformEvent::TouchCancel { id: touch.id }),
-            },
+            WindowEvent::Touch(touch) => {
+                let x = touch.location.x / self.scale_factor;
+                let y = touch.location.y / self.scale_factor;
+                match touch.phase {
+                    TouchPhase::Started => Some(PlatformEvent::TouchStart { id: touch.id, x, y }),
+                    TouchPhase::Moved => Some(PlatformEvent::TouchMove { id: touch.id, x, y }),
+                    TouchPhase::Ended => Some(PlatformEvent::TouchEnd { id: touch.id, x, y }),
+                    TouchPhase::Cancelled => Some(PlatformEvent::TouchCancel { id: touch.id }),
+                }
+            }
 
             WindowEvent::KeyboardInput { event, .. } => {
                 map_keyboard_event(event)
@@ -104,6 +132,7 @@ impl EventMapper {
             WindowEvent::HoveredFileCancelled => Some(PlatformEvent::FileCancelled),
 
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.scale_factor = sanitize_scale(*scale_factor);
                 Some(PlatformEvent::ScaleFactorChanged {
                     scale: *scale_factor,
                 })
@@ -128,6 +157,19 @@ impl EventMapper {
             | WindowEvent::DoubleTapGesture { .. }
             | WindowEvent::RotationGesture { .. } => None,
         }
+    }
+}
+
+/// Clamp a winit-reported scale factor to a sane positive value.
+///
+/// Winit always returns a positive finite scale factor in practice, but a
+/// mapper constructed from a stale/placeholder value (or a future platform
+/// quirk) must not divide pointer coordinates by zero or `NaN`.
+fn sanitize_scale(scale: f64) -> f64 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
     }
 }
 
@@ -311,5 +353,103 @@ mod tests {
         assert!(!mapped.ctrl);
         assert!(!mapped.alt);
         assert!(!mapped.meta);
+    }
+
+    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+
+    fn mouse_input(state: ElementState) -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state,
+            button: WinitMouseButton::Left,
+        }
+    }
+
+    /// Gate (a): Down/Up carry the last Moved position, not (0, 0).
+    #[test]
+    fn test_pointer_down_up_carry_last_moved_position() {
+        let mut mapper = EventMapper::new(1.0);
+
+        match mapper.map_window_event(&cursor_moved(123.0, 456.0)) {
+            Some(PlatformEvent::PointerMoved { x, y }) => {
+                assert_eq!((x, y), (123.0, 456.0));
+            }
+            other => panic!("expected PointerMoved, got {other:?}"),
+        }
+
+        match mapper.map_window_event(&mouse_input(ElementState::Pressed)) {
+            Some(PlatformEvent::PointerDown { x, y, button }) => {
+                assert_eq!((x, y), (123.0, 456.0));
+                assert_eq!(button, MouseButton::Left);
+            }
+            other => panic!("expected PointerDown, got {other:?}"),
+        }
+
+        match mapper.map_window_event(&mouse_input(ElementState::Released)) {
+            Some(PlatformEvent::PointerUp { x, y, .. }) => {
+                assert_eq!((x, y), (123.0, 456.0));
+            }
+            other => panic!("expected PointerUp, got {other:?}"),
+        }
+    }
+
+    /// Gate (b): coordinates are logical (physical / scale_factor) at
+    /// dpr 1.0 / 1.25 / 2.0 — covers Moved, the Down/Up stamp it feeds, and
+    /// Touch.
+    #[test]
+    fn test_pointer_and_touch_coords_are_logical_at_various_scale_factors() {
+        for scale in [1.0, 1.25, 2.0] {
+            let mut mapper = EventMapper::new(scale);
+            let (px, py) = (250.0, 500.0);
+            let expected = (px / scale, py / scale);
+
+            match mapper.map_window_event(&cursor_moved(px, py)) {
+                Some(PlatformEvent::PointerMoved { x, y }) => {
+                    assert_eq!((x, y), expected, "PointerMoved at scale {scale}");
+                }
+                other => panic!("expected PointerMoved, got {other:?}"),
+            }
+
+            match mapper.map_window_event(&mouse_input(ElementState::Pressed)) {
+                Some(PlatformEvent::PointerDown { x, y, .. }) => {
+                    assert_eq!((x, y), expected, "PointerDown at scale {scale}");
+                }
+                other => panic!("expected PointerDown, got {other:?}"),
+            }
+
+            let touch = WindowEvent::Touch(winit::event::Touch {
+                device_id: winit::event::DeviceId::dummy(),
+                phase: TouchPhase::Started,
+                location: winit::dpi::PhysicalPosition::new(px, py),
+                force: None,
+                id: 7,
+            });
+            match mapper.map_window_event(&touch) {
+                Some(PlatformEvent::TouchStart { x, y, id }) => {
+                    assert_eq!((x, y), expected, "TouchStart at scale {scale}");
+                    assert_eq!(id, 7);
+                }
+                other => panic!("expected TouchStart, got {other:?}"),
+            }
+        }
+    }
+
+    /// Gate (c): a Down with no prior Move stamps the tracked default
+    /// (0.0, 0.0) — acceptable ONLY in this never-moved case.
+    #[test]
+    fn test_pointer_down_without_prior_move_stamps_default() {
+        let mut mapper = EventMapper::new(1.0);
+
+        match mapper.map_window_event(&mouse_input(ElementState::Pressed)) {
+            Some(PlatformEvent::PointerDown { x, y, .. }) => {
+                assert_eq!((x, y), (0.0, 0.0));
+            }
+            other => panic!("expected PointerDown, got {other:?}"),
+        }
     }
 }

@@ -506,4 +506,89 @@ mod tests {
         assert!(!engine.focus.is_selected(u64::from(a)), "stale selection from the previous select() must not leak");
         assert!(engine.focus.is_selected(u64::from(c)));
     }
+
+    // ── P0 pointer-plumbing gate (uzor-window-desktop mapper fix) ──────────
+    //
+    // These inject a full `PlatformEvent` sequence directly (as the engine
+    // is wired from `App::on_event`), asserting the camera pans by exactly
+    // the moved delta with no jump — the behavior downstream of the fixed
+    // `EventMapper` (which used to stamp `PointerDown`/`Up` at hardcoded
+    // `(0.0, 0.0)`, see `uzor-window-desktop/src/event_mapper.rs`). The
+    // engine's own pan/pick code was already correct; these prove it stays
+    // correct end-to-end once fed real coordinates, and document what the
+    // old stale-zero bug looked like from the engine's point of view.
+
+    fn empty_engine_with_canvas(rect: Rect) -> TestEngine {
+        let mut engine: TestEngine = GraphEngine::new(Graph::new(), ForceDirectedLayout::default());
+        engine.set_canvas_rect(rect);
+        engine
+    }
+
+    /// Down(bg point) -> Moved xN -> Up: each Move pans the camera by
+    /// exactly that step's screen-space delta (zoom stays 1.0, so
+    /// dividing by it is a no-op) — no jump from a stale (0,0) origin.
+    #[test]
+    fn background_drag_sequence_pans_camera_by_exact_per_step_delta() {
+        let canvas = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let mut engine = empty_engine_with_canvas(canvas);
+
+        let grab = (300.0, 300.0);
+        assert!(engine.on_event(&PlatformEvent::PointerDown {
+            x: grab.0,
+            y: grab.1,
+            button: MouseButton::Left,
+        }));
+        assert_eq!((engine.camera.pan_x, engine.camera.pan_y), (0.0, 0.0),
+            "PointerDown alone must not move the camera");
+
+        let moves = [(310.0, 300.0), (325.0, 305.0), (325.0, 320.0)];
+        let mut last = grab;
+        for &(mx, my) in &moves {
+            let before = (engine.camera.pan_x, engine.camera.pan_y);
+            engine.on_event(&PlatformEvent::PointerMoved { x: mx, y: my });
+            let (expected_dx, expected_dy) = (mx - last.0, my - last.1);
+            assert!((engine.camera.pan_x - (before.0 + expected_dx)).abs() < 1e-9);
+            assert!((engine.camera.pan_y - (before.1 + expected_dy)).abs() < 1e-9);
+            last = (mx, my);
+        }
+
+        engine.on_event(&PlatformEvent::PointerUp { x: last.0, y: last.1, button: MouseButton::Left });
+        // Total travel from (300,300) to (325,320): pan_x += 25, pan_y += 20.
+        assert!((engine.camera.pan_x - 25.0).abs() < 1e-9);
+        assert!((engine.camera.pan_y - 20.0).abs() < 1e-9);
+    }
+
+    /// Regression-shaped: a Down at the true grab point followed by a
+    /// +10px Move pans by exactly +10px (screen-space, ÷ zoom == 1.0 here
+    /// so it's a no-op) — contrasted against the OLD bug shape, where
+    /// every `PointerDown` was stamped at `(0.0, 0.0)` regardless of the
+    /// real cursor position, so the same physical move read as a
+    /// multi-hundred-pixel teleport instead of a +10px pan.
+    #[test]
+    fn regression_stale_zero_down_would_teleport_vs_fixed_pipeline_pans_by_delta() {
+        let canvas = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let grab = (300.0, 300.0);
+
+        // Fixed pipeline: Down carries the real grab point (what the
+        // corrected stateful mapper now stamps from the last CursorMoved).
+        let mut fixed = empty_engine_with_canvas(canvas);
+        fixed.on_event(&PlatformEvent::PointerDown { x: grab.0, y: grab.1, button: MouseButton::Left });
+        fixed.on_event(&PlatformEvent::PointerMoved { x: grab.0 + 10.0, y: grab.1 });
+        assert!((fixed.camera.pan_x - 10.0).abs() < 1e-9,
+            "a +10px move after a correctly-stamped Down pans by exactly +10px");
+        assert!((fixed.camera.pan_y - 0.0).abs() < 1e-9);
+
+        // Old bug shape: EventMapper::map_window_event stamped every
+        // PointerDown at (0.0, 0.0) ("position will be updated by cursor
+        // moved event" — nothing did). Reproduce that input shape directly
+        // against the engine to document the failure it caused downstream.
+        let mut buggy = empty_engine_with_canvas(canvas);
+        buggy.on_event(&PlatformEvent::PointerDown { x: 0.0, y: 0.0, button: MouseButton::Left });
+        buggy.on_event(&PlatformEvent::PointerMoved { x: grab.0 + 10.0, y: grab.1 });
+
+        assert!(buggy.camera.pan_x > 100.0,
+            "stale (0,0) Down turns the same +10px physical move into a \
+             camera teleport of ~grab_x pixels — this is the P0 bug: {} \
+             (fixed pipeline pans by exactly 10.0)", buggy.camera.pan_x);
+    }
 }
