@@ -40,6 +40,7 @@ pub mod path;
 mod color;
 mod region;
 pub mod offscreen;
+pub mod retained;
 
 pub use crate::ui::assets::icons;
 
@@ -66,6 +67,9 @@ pub use image_painter::ImagePainter;
 
 // Offscreen render-target types (capability-gated RenderContext extension)
 pub use offscreen::{OffscreenTarget, OffscreenTargetDesc, OffscreenTargetId};
+
+// Retained-cache surface (unifies container/region/fragment caching)
+pub use retained::{InvalidateBits, NoRetainedCache, RetainedCaps, RetainedScope, RetainedSurface, ScopeDecision};
 
 // Existing types (unchanged)
 pub use types::{TextAlign, TextBaseline};
