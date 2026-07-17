@@ -75,7 +75,7 @@ mod proof_tests {
     use std::path::PathBuf;
 
     use uzor::types::Rect;
-    use uzor_export::{render_to_png, ExportSpec};
+    use uzor_export::{render_to_png, render_to_svg, ExportSpec};
 
     use crate::theme::FigureTheme;
     use crate::transform::lttb;
@@ -114,11 +114,50 @@ mod proof_tests {
         std::fs::write(dir.join(name), bytes).expect("write proof PNG");
     }
 
+    fn write_proof_text(name: &str, contents: &str) {
+        let dir = out_dir();
+        std::fs::create_dir_all(&dir).expect("create uzor/out/ proof directory");
+        std::fs::write(dir.join(name), contents).expect("write proof SVG");
+    }
+
     fn decoded_png_dims(bytes: &[u8]) -> (u32, u32) {
         let decoder = png::Decoder::new(bytes);
         let reader = decoder.read_info().expect("valid PNG header");
         let info = reader.info();
         (info.width, info.height)
+    }
+
+    /// Minimal string-level SVG sanity check (no full XML parser
+    /// dependency — `usvg` is heavy for a unit test): a single well-formed
+    /// `<svg>` root, and every open tag has a matching close (or is
+    /// self-closing) — a tiny stack scan, not a validating parser.
+    /// Duplicated (not shared via a test-utils crate) in `uzor-typeset`'s
+    /// own equivalent proof test — a ~20-line helper isn't worth a new
+    /// dev-dependency.
+    fn assert_svg_is_well_formed(svg: &str) {
+        let trimmed = svg.trim();
+        assert!(trimmed.starts_with("<svg"), "SVG must start with the <svg root element");
+        assert!(trimmed.ends_with("</svg>"), "SVG must end with a closed </svg> root");
+
+        let mut stack: Vec<&str> = Vec::new();
+        let mut idx = 0usize;
+        while let Some(rel_start) = svg[idx..].find('<') {
+            let start = idx + rel_start;
+            let Some(rel_end) = svg[start..].find('>') else { break };
+            let end = start + rel_end;
+            let tag = &svg[start + 1..end];
+            idx = end + 1;
+
+            if let Some(name) = tag.strip_prefix('/') {
+                let name = name.split_whitespace().next().unwrap_or("");
+                let top = stack.pop().unwrap_or("");
+                assert_eq!(top, name, "mismatched SVG closing tag </{name}>");
+            } else if !tag.ends_with('/') {
+                let name = tag.split_whitespace().next().unwrap_or("");
+                stack.push(name);
+            }
+        }
+        assert!(stack.is_empty(), "unbalanced SVG tags left open: {stack:?}");
     }
 
     /// Deterministic 10-category bar dataset — fixed values, no RNG.
@@ -159,6 +198,30 @@ mod proof_tests {
         .expect("bar figure should render");
         assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
         write_proof_png("figures_v1_bars.png", &bytes);
+    }
+
+    /// SVG sibling of `bar_figure_renders_to_a_valid_png` above — same
+    /// seeded fixture, `uzor_export::render_to_svg` instead of
+    /// `render_to_png`. Validation is string-level (a lightweight
+    /// balanced-tag scan, not a full XML parser — `usvg` is heavy for a
+    /// unit test per this task's own instruction); the coordinator
+    /// verifies visually by opening the written file.
+    #[test]
+    fn bar_figure_renders_to_a_well_formed_standalone_svg() {
+        let figure = seeded_bar_figure();
+        let theme = FigureTheme::dark();
+        let svg = render_to_svg(&export_spec(), |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64), &theme);
+        })
+        .expect("bar figure should render to SVG");
+
+        assert_svg_is_well_formed(&svg);
+        let rect_count = svg.matches("<rect").count();
+        let path_count = svg.matches("<path").count();
+        assert!(rect_count > 0, "expected at least one <rect> element (bars), got 0");
+        assert!(path_count > 0, "expected at least one <path> element (axis lines/text outlines), got 0");
+
+        write_proof_text("figures_bars.svg", &svg);
     }
 
     #[test]

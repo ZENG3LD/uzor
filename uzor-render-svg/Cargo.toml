@@ -1,0 +1,14 @@
+[package]
+name = "uzor-render-svg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "SVG rendering backend for uzor — serializes RenderContext draw calls into a portable, standalone SVG document (outlined glyph paths + embedded base64 raster images), no rasterizer dependency."
+publish = false
+
+[dependencies]
+uzor = { workspace = true, features = ["shaper"] }
+png = "0.17"
+base64 = "0.22"

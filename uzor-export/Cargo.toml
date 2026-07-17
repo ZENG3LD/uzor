@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 uzor = { workspace = true }
 uzor-render-tiny-skia = { workspace = true }
+uzor-render-svg = { workspace = true }
 tiny-skia = "0.11"
 pdf-writer = "0.15"
 png = "0.17"

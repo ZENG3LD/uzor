@@ -18,6 +18,9 @@ members = [
     "uzor-render-tiny-skia",
     "uzor-render-canvas2d",
     "uzor-render-wgpu-instanced",
+    # Headless SVG serialization backend (incubating, publish = false —
+    # same tier as uzor-export/uzor-figures/uzor-typeset)
+    "uzor-render-svg",
     # URX render family (Phase 1+ — shared core, then siblings: wgpu/cpu/hybrid)
     "uzor-urx-core",
     "uzor-urx-cpu",
@@ -75,6 +78,7 @@ uzor-render-vello-gpu = { version = "1.4.18", path = "./uzor-render-vello-gpu" }
 uzor-render-vello-hybrid = { version = "1.4.18", path = "./uzor-render-vello-hybrid" }
 uzor-render-vello-cpu = { version = "1.4.18", path = "./uzor-render-vello-cpu" }
 uzor-render-tiny-skia = { version = "1.4.18", path = "./uzor-render-tiny-skia" }
+uzor-render-svg = { version = "1.4.18", path = "./uzor-render-svg" }
 uzor-render-wgpu-instanced = { version = "1.4.18", path = "./uzor-render-wgpu-instanced" }
 uzor-render-canvas2d = { version = "1.4.18", path = "./uzor-render-canvas2d" }
 uzor-window-desktop = { version = "1.4.18", path = "./uzor-window-desktop" }

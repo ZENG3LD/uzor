@@ -11,6 +11,15 @@
 //! CI job can verify rendering output pixel-for-pixel without a display or
 //! GPU (Tier-2 verification tool).
 //!
+//! [`render_to_svg`]/[`render_to_svg_file`] are the SVG sibling of
+//! [`render_to_png`]/[`render_to_png_file`] — same `ExportSpec` contract
+//! (background rect painted first, `dpr` surfaced via `ctx.dpr()`), but
+//! serializing through `uzor-render-svg::SvgRenderContext` into a
+//! standalone, portable SVG document string instead of rasterizing into a
+//! `tiny-skia` pixmap. See `nemo/docs/uzor-engines/research_export_sota_2026.md`
+//! §6 for the SVG backend's own design rationale (outlined text,
+//! transform-baked coordinates, base64-embedded raster images).
+//!
 //! # Example
 //!
 //! ```
@@ -33,6 +42,7 @@
 use std::path::Path;
 
 use uzor::render::RenderContext;
+use uzor_render_svg::SvgRenderContext;
 use uzor_render_tiny_skia::TinySkiaCpuRenderContext;
 
 pub mod pdf;
@@ -172,6 +182,50 @@ pub fn render_to_png_file(
     Ok(())
 }
 
+/// Render `draw` headlessly and return a complete, standalone SVG document
+/// string.
+///
+/// Same contract shape as [`render_to_png`]: constructs an
+/// `SvgRenderContext` of `spec.width_px` x `spec.height_px` SVG user units,
+/// paints the background rect FIRST when `spec.background` is `Some` (so
+/// subsequent draw calls composite over it — SVG itself has no implicit
+/// backdrop, unlike a PNG's opaque/transparent pixmap clear), invokes `draw`
+/// exactly once against it, then serializes the accumulated draw calls into
+/// the finished document via `SvgRenderContext::finish`. `spec.dpr` reaches
+/// draw code via `ctx.dpr()` exactly as it would on a real HiDPI display —
+/// it is not otherwise baked into the document's own coordinate space.
+pub fn render_to_svg(
+    spec: &ExportSpec,
+    draw: impl FnOnce(&mut dyn RenderContext),
+) -> Result<String, ExportError> {
+    if spec.width_px == 0 || spec.height_px == 0 {
+        return Err(ExportError::ZeroSize);
+    }
+
+    let mut ctx = SvgRenderContext::new(spec.width_px, spec.height_px, spec.dpr);
+
+    if let Some([r, g, b, a]) = spec.background {
+        let ctx_dyn: &mut dyn RenderContext = &mut ctx;
+        ctx_dyn.set_fill_color(&format!("#{r:02x}{g:02x}{b:02x}{a:02x}"));
+        ctx_dyn.fill_rect(0.0, 0.0, spec.width_px as f64, spec.height_px as f64);
+    }
+
+    draw(&mut ctx);
+
+    Ok(ctx.finish())
+}
+
+/// Same as [`render_to_svg`], but writes the SVG document straight to `path`.
+pub fn render_to_svg_file(
+    path: &Path,
+    spec: &ExportSpec,
+    draw: impl FnOnce(&mut dyn RenderContext),
+) -> Result<(), ExportError> {
+    let svg = render_to_svg(spec, draw)?;
+    std::fs::write(path, svg)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,6 +296,58 @@ mod tests {
         assert_eq!(
             buf[3], 0,
             "pixel (0,0) alpha should be 0 for a transparent background"
+        );
+    }
+
+    /// SVG sibling of `renders_red_rect_on_white_background` — same fixture,
+    /// `render_to_svg` instead of `render_to_png`.
+    #[test]
+    fn renders_red_rect_on_white_background_svg() {
+        let spec = ExportSpec {
+            width_px: 200,
+            height_px: 100,
+            dpr: 1.0,
+            background: Some([255, 255, 255, 255]),
+        };
+        let svg = render_to_svg(&spec, |ctx| {
+            ctx.set_fill_color("#ff0000");
+            ctx.fill_rect(10.0, 10.0, 50.0, 50.0);
+        })
+        .expect("render_to_svg should succeed");
+
+        assert!(svg.starts_with("<svg"), "output should start with the <svg root element");
+        assert!(svg.contains("width=\"200\""));
+        assert!(svg.contains("height=\"100\""));
+        assert!(svg.contains("fill=\"#ff0000\""));
+    }
+
+    /// Zero-size requests are rejected the same way for the SVG path.
+    #[test]
+    fn svg_zero_size_is_rejected() {
+        let spec = ExportSpec {
+            width_px: 0,
+            height_px: 0,
+            dpr: 1.0,
+            background: None,
+        };
+        let err = render_to_svg(&spec, |_ctx| {}).expect_err("zero size must error");
+        assert!(matches!(err, ExportError::ZeroSize));
+    }
+
+    /// `background: Some(..)` paints a full-canvas background rect BEFORE
+    /// `draw` runs — same "background first" contract `render_to_png` has.
+    #[test]
+    fn svg_background_paints_a_rect_before_the_draw_closure() {
+        let spec = ExportSpec {
+            width_px: 20,
+            height_px: 20,
+            dpr: 1.0,
+            background: Some([10, 20, 30, 255]),
+        };
+        let svg = render_to_svg(&spec, |_ctx| {}).expect("render_to_svg should succeed");
+        assert!(
+            svg.contains("fill=\"#0a141e\""),
+            "expected the background color as a fill, got: {svg}"
         );
     }
 }

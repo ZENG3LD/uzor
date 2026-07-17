@@ -359,7 +359,7 @@ mod tests {
     use std::path::PathBuf;
 
     use uzor::fonts::FontFamily;
-    use uzor_export::{render_to_png, ExportSpec};
+    use uzor_export::{render_to_png, render_to_svg, ExportSpec};
     use uzor_text::{BreakStrategy, CosmicShaper, FontSpec, Hyphenation, Paragraph, ParagraphAlign, StyledRun};
 
     use super::{draw_card, draw_frame_state, draw_page, draw_slide};
@@ -381,6 +381,45 @@ mod tests {
         let dir = out_dir();
         std::fs::create_dir_all(&dir).expect("create uzor/out/ proof directory");
         std::fs::write(dir.join(name), bytes).expect("write proof PNG");
+    }
+
+    fn write_proof_text(name: &str, contents: &str) {
+        let dir = out_dir();
+        std::fs::create_dir_all(&dir).expect("create uzor/out/ proof directory");
+        std::fs::write(dir.join(name), contents).expect("write proof SVG");
+    }
+
+    /// Minimal string-level SVG sanity check (no full XML parser
+    /// dependency — `usvg` is heavy for a unit test): a single well-formed
+    /// `<svg>` root, and every open tag has a matching close (or is
+    /// self-closing) — a tiny stack scan, not a validating parser.
+    /// Duplicated (not shared via a test-utils crate) in `uzor-figures`'s
+    /// own equivalent proof test — a ~20-line helper isn't worth a new
+    /// dev-dependency.
+    fn assert_svg_is_well_formed(svg: &str) {
+        let trimmed = svg.trim();
+        assert!(trimmed.starts_with("<svg"), "SVG must start with the <svg root element");
+        assert!(trimmed.ends_with("</svg>"), "SVG must end with a closed </svg> root");
+
+        let mut stack: Vec<&str> = Vec::new();
+        let mut idx = 0usize;
+        while let Some(rel_start) = svg[idx..].find('<') {
+            let start = idx + rel_start;
+            let Some(rel_end) = svg[start..].find('>') else { break };
+            let end = start + rel_end;
+            let tag = &svg[start + 1..end];
+            idx = end + 1;
+
+            if let Some(name) = tag.strip_prefix('/') {
+                let name = name.split_whitespace().next().unwrap_or("");
+                let top = stack.pop().unwrap_or("");
+                assert_eq!(top, name, "mismatched SVG closing tag </{name}>");
+            } else if !tag.ends_with('/') {
+                let name = tag.split_whitespace().next().unwrap_or("");
+                stack.push(name);
+            }
+        }
+        assert!(stack.is_empty(), "unbalanced SVG tags left open: {stack:?}");
     }
 
     fn decoded_png_dims(bytes: &[u8]) -> (u32, u32) {
@@ -513,6 +552,32 @@ mod tests {
                 assert!(placed.rect.x + placed.rect.width <= body.x + body.width + 0.01, "block must not extend past the right margin");
             }
         }
+    }
+
+    /// SVG sibling of the P0 PNG proof above — same seeded fixture, first
+    /// page only, via `uzor_export::render_to_svg` instead of
+    /// `render_to_png`. Validation is string-level (a lightweight
+    /// balanced-tag scan — `usvg` is heavy for a unit test); the
+    /// coordinator verifies visually by opening the written file.
+    #[test]
+    fn seeded_first_page_renders_to_a_well_formed_standalone_svg() {
+        let flow = seeded_flow();
+        let master = PageMaster::new(PAGE_WIDTH as f64, PAGE_HEIGHT as f64, Margins::uniform(40.0));
+        let style = ComposeStyle::new(14.0, FontSpec::new(FontFamily::Roboto, 16.0));
+        let shaper = CosmicShaper::headless();
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert!(!pages.is_empty(), "fixture must produce at least one page");
+
+        let spec = ExportSpec { width_px: PAGE_WIDTH, height_px: PAGE_HEIGHT, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+        let theme = crate::style::Theme::light_report();
+
+        let svg = render_to_svg(&spec, |ctx| draw_page(ctx, &pages[0], &theme)).expect("page proof SVG render should succeed");
+
+        assert_svg_is_well_formed(&svg);
+        let path_count = svg.matches("<path").count();
+        assert!(path_count > 0, "expected at least one <path> element (paragraph glyph outlines), got 0");
+
+        write_proof_text("typeset_page.svg", &svg);
     }
 
     /// P1 headless proof (design law 8 + this arc's own MUST report-figure
