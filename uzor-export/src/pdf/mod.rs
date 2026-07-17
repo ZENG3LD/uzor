@@ -1,91 +1,106 @@
 //! Neutral PDF assembly — Arc 4 Phase P5 (`nemo/docs/uzor-engines/
-//! uzor_typeset_arc4_design.md` §6). This module defines an
-//! **engine-agnostic** content model + builder for a hybrid-fidelity PDF
-//! (real, selectable/searchable vector text + one full-page raster
-//! background per page); it holds no `uzor-text`/`uzor-figures`/
-//! `uzor-typeset` knowledge whatsoever (design law 9 / §6.1's dependency-
-//! boundary constraint) — the adapter that knows `Page`/`ParagraphLayout`
-//! lives in `uzor-typeset::export` instead, and calls exactly the four
-//! types below.
+//! uzor_typeset_arc4_design.md` §6), overhauled per the export SOTA
+//! research pass (`nemo/docs/uzor-engines/research_export_sota_2026.md`,
+//! items 1-4). This module defines an **engine-agnostic** content model +
+//! builder for a hybrid-fidelity PDF (real, selectable/searchable/
+//! **full-Unicode** vector text + one full-page raster background per
+//! page); it holds no `uzor-text`/`uzor-figures`/`uzor-typeset` knowledge
+//! whatsoever (design law 9 / §6.1's dependency-boundary constraint) — the
+//! adapter that knows `Page`/`ParagraphLayout` lives in
+//! `uzor-typeset::export` instead, and calls exactly the same public
+//! surface as before this pass (this rewrite is a drop-in replacement:
+//! [`PdfBuilder`]/[`PdfFont`]/[`PdfTextRun`]/[`PdfPageSpec`]'s public
+//! shapes are byte-for-byte unchanged; only [`PdfBuilder::set_meta`] is
+//! new).
 //!
 //! ## Hybrid fidelity model
 //!
-//! Every page is (up to) two layers, painted back-to-front:
-//! 1. **One full-page raster background** (`PdfPageSpec::raster`) — every
-//!    non-text block (figures, tables, images) plus a caller-suppressed
-//!    paragraph-ink pass (the adapter's job, see its own module docs),
-//!    embedded as ONE opaque `DeviceRGB` Image XObject. Opaque by
-//!    construction (a full-page background always covers every pixel), so
-//!    no alpha/SMask is embedded — decoding drops any alpha channel a
-//!    caller's PNG happens to carry (see [`decode_opaque_rgb`]).
-//! 2. **Real vector text runs** (`PdfPageSpec::text_runs`) painted on top,
-//!    via the embedded font's own glyph outlines — selectable, searchable,
-//!    small (this is the whole point of the hybrid model, design doc §6.2).
+//! Unchanged from the original P5 design: every page is (up to) two
+//! layers, painted back-to-front — one full-page opaque raster background
+//! (figures/tables/images/suppressed paragraph ink), then real vector text
+//! runs on top of it.
 //!
 //! ## Coordinate convention
 //!
-//! Every coordinate this module's own public types take (`PdfTextRun::
-//! {x_pt,y_pt}`, `PdfPageSpec::{width_pt,height_pt}`) is **top-left
-//! origin, y growing downward** — the SAME convention every other
-//! `Rect`/pixel coordinate in this workspace uses (`uzor::types::Rect`,
-//! `uzor-typeset`'s own `Frame`/`PlacedBlock` rects). PDF's own coordinate
-//! system is bottom-left origin, y growing upward; [`PdfBuilder`] converts
-//! **internally** (`pdf_y = page_height_pt - y_pt`) so neither this
-//! module's callers nor its own public API ever have to think in PDF-space
-//! coordinates — see `write_page`'s own doc comment for exactly where that
-//! conversion happens.
+//! Unchanged: every public coordinate is top-left origin, y growing
+//! downward; [`PdfBuilder`] converts to PDF's own bottom-left origin
+//! internally (see `write_page`'s own doc comment).
 //!
-//! ## Font embedding: full font, WinAnsiEncoding simple font, no `subsetter`
+//! ## Font embedding: Type0/CIDFontType2, Identity-H, subsetted, Flate
 //!
-//! The design doc's §6.3 names `subsetter` (the same author/lineage as
-//! `pdf-writer`, Typst's own choice) as the companion crate for font
-//! subsetting, with an explicit escape hatch: **"if `subsetter`'s API is a
-//! poor fit, FULL-font embedding is an acceptable v1 fallback (bigger
-//! files)."** That escape hatch is what got built, for a concrete,
-//! load-bearing reason, not a preference: `subsetter::subset` takes
-//! ALREADY-KNOWN glyph ids (its own doctest hardcodes `&[68, 69, 70]`) — it
-//! has no `cmap`/`hmtx` reader of its own, so USING it at all would have
-//! required a real font-parsing crate first, and this phase's dependency
-//! law scopes new `uzor-export` dependencies to `pdf-writer` (+ `subsetter`
-//! if used) only — no `ttf-parser` et al. This module therefore:
-//! - embeds the **whole, unmodified** TTF byte buffer a caller hands
-//!   [`PdfBuilder::register_font`] as `/FontFile2` (bigger files, as the
-//!   doc's own fallback text warns — acceptable for the `nemo/uzor/out/`
-//!   proof deliverables this phase targets);
-//! - writes it as a PDF **simple** font (`/Subtype /TrueType`, NOT a
-//!   Type0/CID font — a CID font is the shape `subsetter`'s own docs
-//!   assume, and buys nothing once subsetting itself is off the table)
-//!   under the **predefined** `/Encoding /WinAnsiEncoding` name ([`winansi`]
-//!   — Latin-1 plus the `0x80..=0x9F` cp1252 punctuation block; non-Latin1
-//!   characters, e.g. CJK/emoji, encode as `'?'`, a documented v1 scope
-//!   narrowing — this crate's own report/deck consumers are Latin-script
-//!   business text);
-//! - resolves that encoding's own real per-glyph advance widths (the
-//!   `/Widths` array a PDF viewer uses for `Tj` cursor advance) by
-//!   HAND-PARSING the embedded font's own `cmap`/`hmtx`/`head` tables
-//!   ([`ttf`]) — genuinely exact (same bytes that get embedded), not an
-//!   approximation, and the reason this phase needed real font metrics at
-//!   all rather than reusing this crate's own shaper output: [`PdfTextRun`]
-//!   is deliberately NEUTRAL (a plain text string + one origin, no
-//!   per-glyph pixel positions — `uzor-typeset`'s own `ParagraphLayout`
-//!   never crosses this dependency boundary), so this is the ONLY place
-//!   glyph-width information could come from.
+//! **The original P5 phase shipped a hard functional bug for this crate's
+//! own stated purpose**: fonts embedded as PDF **simple** TrueType fonts
+//! under the predefined `/Encoding /WinAnsiEncoding` name can only address
+//! Latin-1 plus the `0x80..=0x9F` cp1252 punctuation block — Cyrillic
+//! (and every other non-Latin script) silently rendered as `'?'`. This
+//! pass replaces that path wholesale with the reference architecture
+//! `typst-pdf` (the same `pdf-writer` author's own consumer) uses:
 //!
-//! No `/ToUnicode` CMap is written — deliberately out of scope, not a
-//! silent gap: `WinAnsiEncoding` is a PDF-predefined name every conformant
-//! reader (Acrobat, most viewers, and `lopdf`'s own [`lopdf::Document::
-//! extract_text`](https://docs.rs/lopdf) used by this crate's own tests)
-//! already knows how to decode WITHOUT a `/ToUnicode` hint; adding one
-//! would be pure belt-and-suspenders for a name-based encoding, not a
-//! correctness requirement here.
+//! 1. **Type0/CIDFontType2, `/Encoding /Identity-H`.** Every font is now a
+//!    composite font: a thin `Type0` wrapper dict referencing a descendant
+//!    `CIDFontType2` dict (`CIDSystemInfo` = Adobe/Identity/0,
+//!    `/CIDToGIDMap /Identity`). A page's content stream shows 2-byte
+//!    codes per glyph (`Content::show`, still `Tj` — `pdf-writer`'s own
+//!    `Str` writer picks hex-vs-literal-with-escapes per string
+//!    automatically, see its own doc comment) instead of the old 1-byte
+//!    WinAnsi codes.
+//! 2. **Full-Unicode `cmap` reader.** [`ttf::TtfMetrics`] now walks its
+//!    preferred `cmap` format-4 subtable in full, building a `char -> gid`
+//!    map over every codepoint that subtable actually covers (still BMP
+//!    only — a documented v1 scope limit, see that module's own doc
+//!    comment — but that's every script this crate's own report/deck
+//!    consumers need, Cyrillic included) instead of a fixed 256-byte
+//!    WinAnsi table.
+//! 3. **Subsetting** via `subsetter` (`typst/subsetter`, same
+//!    author/lineage as `pdf-writer`) — [`subset::build_font_data`]
+//!    collects the actual glyph-id set a font used across the WHOLE
+//!    document, remaps it to a compact CID space, and asks `subsetter` to
+//!    produce a subset font program containing only those glyphs (falling
+//!    back to the full, unmodified font — never a panic — if `subsetter`
+//!    can't handle an exotic font program).
+//! 4. **`/ToUnicode`**, built from the SAME `(gid, char)` pairs the CIDs
+//!    themselves come from (never independently — see `subset`'s own doc
+//!    comment for the exact bug class this avoids), so copy-paste/search
+//!    recovers the original text verbatim.
+//!
+//! `winansi.rs` (the old `WinAnsiEncoding` char<->byte table) is DELETED,
+//! not deprecated — nothing in this crate reads a byte-keyed encoding
+//! anymore (hard cutover, per this workspace's own convention for a
+//! superseded internal module).
+//!
+//! ## Flate compression
+//!
+//! Every stream this module writes (content streams, raster image
+//! XObjects, embedded font programs, `/ToUnicode` CMaps) is now
+//! zlib/DEFLATE-compressed (`Filter::FlateDecode`) via [`flate_compress`].
+//! `pdf-writer` deliberately does no compression itself (`Chunk::stream`'s
+//! own doc comment shows the exact `miniz_oxide` pattern this module
+//! follows) — this was the single largest contributor to the pre-pass
+//! 66MB/11-page file size (a full-page raster background embedded as raw,
+//! undecoded RGB8, 3 bytes/pixel, no filter at all).
+//!
+//! ## Metadata
+//!
+//! [`PdfBuilder::set_meta`] additively accepts a caller-supplied
+//! [`PdfMeta`] (title/producer/creation date) written as the PDF `/Info`
+//! dictionary. This module holds no wall-clock access of its own — a
+//! creation date only appears if the caller supplies one via [`PdfDate`].
+//! XMP metadata (`xmp-writer`) was evaluated and deliberately NOT added
+//! this pass — the research doc's own escape hatch ("XMP only if trivial,
+//! else skip") — `/Info` alone already satisfies "professional polish, no
+//! new correctness risk" without a second metadata representation that
+//! could drift from the first.
 
+mod subset;
 mod ttf;
-mod winansi;
 
-use pdf_writer::types::FontFlags;
-use pdf_writer::{Content, Name, Pdf, Rect as PdfRect, Ref, Str};
+use std::collections::HashMap;
+
+use pdf_writer::types::{CidFontType, FontFlags, SystemInfo};
+use pdf_writer::{Content, Date, Filter, Name, Pdf, Rect as PdfRect, Ref, Str, TextStr};
 
 use crate::ExportError;
+use subset::{build_font_data, FontData, ADOBE_IDENTITY_UCS};
 
 /// Opaque handle to a font registered via [`PdfBuilder::register_font`].
 /// Deliberately a lightweight `Copy` id, not a borrowed `&PdfFont` — a
@@ -96,8 +111,8 @@ use crate::ExportError;
 pub struct FontId(u32);
 
 /// A font registered with a [`PdfBuilder`] — its handle plus the (full,
-/// unsubsetted — see this module's own doc comment) TTF bytes that will be
-/// embedded verbatim as this font's `/FontFile2`.
+/// unmodified — subsetting happens once at [`PdfBuilder::finish`] time,
+/// see this module's own doc comment) TTF bytes that will be embedded.
 pub struct PdfFont {
     pub id: FontId,
     pub ttf_bytes: Vec<u8>,
@@ -105,8 +120,10 @@ pub struct PdfFont {
 
 /// One run of same-font, same-color text painted starting at a single
 /// baseline origin `(x_pt, y_pt)` (top-left page coordinates — see this
-/// module's own doc comment). `text` is encoded via [`winansi::encode`]
-/// when the page is added; unencodable characters become `'?'`.
+/// module's own doc comment). `text` is resolved to this run's own font's
+/// real glyph ids when the page is added ([`ttf::TtfMetrics::gid_for_char`]);
+/// a character with no glyph in the font falls back to glyph id `0`
+/// (`.notdef`) rather than being dropped.
 pub struct PdfTextRun<'a> {
     pub font: FontId,
     pub size_pt: f64,
@@ -134,6 +151,37 @@ pub struct PdfPageSpec<'a> {
     pub text_runs: Vec<PdfTextRun<'a>>,
 }
 
+/// Caller-supplied document metadata for the PDF `/Info` dictionary
+/// ([`PdfBuilder::set_meta`]). Every field is optional; whichever the
+/// caller supplies is the ONLY thing written. This crate holds no
+/// wall-clock access of its own (design law: no clocks inside a neutral
+/// library) — [`Self::creation_date`] must come from the caller if wanted
+/// at all.
+#[derive(Debug, Clone, Default)]
+pub struct PdfMeta {
+    pub title: Option<String>,
+    pub producer: Option<String>,
+    pub creation_date: Option<PdfDate>,
+}
+
+/// A caller-supplied point in time for [`PdfMeta::creation_date`] — plain
+/// calendar fields, never resolved from a system clock inside this crate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PdfDate {
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+}
+
+impl PdfDate {
+    fn to_pdf_writer_date(self) -> Date {
+        Date::new(self.year).month(self.month).day(self.day).hour(self.hour).minute(self.minute).second(self.second)
+    }
+}
+
 struct FontEntry {
     font: PdfFont,
     metrics: ttf::TtfMetrics,
@@ -145,7 +193,13 @@ struct PageTextRun {
     x_pt: f64,
     y_pt: f64,
     rgb: u32,
-    bytes: Vec<u8>,
+    /// `(original glyph id in the FULL, pre-subsetting font, source
+    /// Unicode scalar)` pairs, one per rendered character, in run order.
+    /// Resolved eagerly here at [`PdfBuilder::add_page`] time (every font
+    /// this run references is already registered by then), not deferred
+    /// to [`PdfBuilder::finish`] — subsetting/CID-remapping is the only
+    /// thing that waits until every page is known.
+    glyphs: Vec<(u16, char)>,
 }
 
 struct PageRecord {
@@ -159,15 +213,13 @@ struct PageRecord {
 
 /// Accumulates registered fonts + added pages, then assembles one PDF byte
 /// buffer via [`PdfBuilder::finish`]. Deliberately builds nothing with
-/// `pdf-writer` until `finish()` — every font's `/Widths` array spans the
-/// SAME fixed `WinAnsiEncoding` byte range (32..=255) regardless of which
-/// bytes a given document actually uses (simpler than tracking per-font
-/// usage, and harmless: an unused byte code's width is simply never
-/// queried by a real PDF viewer), so no page-order dependency exists
-/// either.
+/// `pdf-writer` until `finish()` — subsetting needs every page's own glyph
+/// usage known first (see [`subset::build_font_data`]), so no font/page
+/// object can be written before the whole document is known.
 pub struct PdfBuilder {
     fonts: Vec<FontEntry>,
     pages: Vec<PageRecord>,
+    meta: Option<PdfMeta>,
 }
 
 impl Default for PdfBuilder {
@@ -178,7 +230,7 @@ impl Default for PdfBuilder {
 
 impl PdfBuilder {
     pub fn new() -> Self {
-        Self { fonts: Vec::new(), pages: Vec::new() }
+        Self { fonts: Vec::new(), pages: Vec::new(), meta: None }
     }
 
     /// Register a font's raw TTF/OpenType bytes, returning a handle to
@@ -200,11 +252,20 @@ impl PdfBuilder {
         id
     }
 
+    /// Attach document metadata, written as the PDF `/Info` dictionary at
+    /// [`Self::finish`] time. Additive — a [`PdfBuilder`] that never calls
+    /// this writes no `/Info` dict at all, byte-identical to this pass's
+    /// predecessor.
+    pub fn set_meta(&mut self, meta: PdfMeta) {
+        self.meta = Some(meta);
+    }
+
     /// Add one page. Decodes `spec.raster` (if present) into a tightly
-    /// packed, alpha-dropped `RGB8` buffer up front and WinAnsi-encodes
-    /// every text run's own bytes up front too — `finish()` therefore does
-    /// no fallible work at all, every error this builder can produce
-    /// surfaces here, at the call site closest to its actual cause.
+    /// packed, alpha-dropped `RGB8` buffer and resolves every text run's
+    /// own characters to this run's font's real glyph ids up front —
+    /// `finish()` therefore does no fallible work at all, every error this
+    /// builder can produce surfaces here, at the call site closest to its
+    /// actual cause.
     pub fn add_page(&mut self, spec: PdfPageSpec<'_>) -> Result<(), ExportError> {
         let raster_rgb = match spec.raster {
             Some(png_bytes) => Some(decode_opaque_rgb(png_bytes, spec.raster_px)?),
@@ -214,13 +275,10 @@ impl PdfBuilder {
         let runs = spec
             .text_runs
             .iter()
-            .map(|run| PageTextRun {
-                font_id: run.font,
-                size_pt: run.size_pt,
-                x_pt: run.x_pt,
-                y_pt: run.y_pt,
-                rgb: run.rgb,
-                bytes: text_to_winansi_bytes(run.text),
+            .map(|run| {
+                let metrics = &self.fonts[run.font.0 as usize].metrics;
+                let glyphs = run.text.chars().map(|ch| (metrics.gid_for_char(ch).unwrap_or(0), ch)).collect();
+                PageTextRun { font_id: run.font, size_pt: run.size_pt, x_pt: run.x_pt, y_pt: run.y_pt, rgb: run.rgb, glyphs }
             })
             .collect();
 
@@ -237,30 +295,62 @@ impl PdfBuilder {
         let catalog_id = refs.next();
         let page_tree_id = refs.next();
 
-        let font_refs: Vec<FontRefs> = self.fonts.iter().map(|_| FontRefs { font: refs.next(), descriptor: refs.next(), file: refs.next() }).collect();
+        // Per-font Type0/CID data: used-glyph collection -> subsetting ->
+        // widths/ToUnicode/CID-remap tables. Must happen before any page's
+        // content stream is written (page writing needs each font's own
+        // `orig_to_new` table to translate glyph runs into CIDs).
+        let font_data: Vec<FontData> =
+            self.fonts.iter().enumerate().map(|(i, entry)| build_font_data(i as u32, &entry.font.ttf_bytes, &entry.metrics, &self.pages)).collect();
+
+        let font_refs: Vec<FontRefs> = self
+            .fonts
+            .iter()
+            .map(|_| FontRefs { type0: refs.next(), cid: refs.next(), descriptor: refs.next(), file: refs.next(), to_unicode: refs.next() })
+            .collect();
+
         let page_refs: Vec<PageRefs> = self
             .pages
             .iter()
             .map(|page| PageRefs { page: refs.next(), content: refs.next(), image: page.raster_rgb.as_ref().map(|_| refs.next()) })
             .collect();
 
+        let info_ref = self.meta.as_ref().map(|_| refs.next());
+
         let font_names: Vec<String> = (0..self.fonts.len()).map(|i| format!("F{i}")).collect();
-        let base_font_names: Vec<String> = (0..self.fonts.len()).map(|i| format!("EmbeddedFont{i}")).collect();
+        let base_font_names: Vec<String> = font_data
+            .iter()
+            .enumerate()
+            .map(|(i, data)| match &data.subset_tag {
+                Some(tag) => format!("{tag}+EmbeddedFont{i}"),
+                None => format!("EmbeddedFont{i}"),
+            })
+            .collect();
         let image_names: Vec<String> = (0..self.pages.len()).map(|i| format!("Im{i}")).collect();
 
         pdf.catalog(catalog_id).pages(page_tree_id);
         pdf.pages(page_tree_id).kids(page_refs.iter().map(|r| r.page)).count(page_refs.len() as i32);
 
-        for (entry, (refs, base_font_name)) in self.fonts.iter().zip(font_refs.iter().zip(base_font_names.iter())) {
-            write_font(&mut pdf, refs, base_font_name, entry);
+        for (entry, refs, data, base_font_name) in izip(&self.fonts, &font_refs, &font_data, &base_font_names) {
+            write_font(&mut pdf, refs, base_font_name, entry, data);
         }
 
         for (i, page) in self.pages.iter().enumerate() {
-            write_page(&mut pdf, page_tree_id, &page_refs[i], &font_names, &font_refs, page, image_names[i].as_str());
+            write_page(&mut pdf, page_tree_id, &page_refs[i], &font_names, &font_refs, page, image_names[i].as_str(), &font_data);
+        }
+
+        if let (Some(meta), Some(info_id)) = (&self.meta, info_ref) {
+            write_info(&mut pdf, info_id, meta);
         }
 
         pdf.finish()
     }
+}
+
+/// A tiny 4-way zip — `Iterator::zip` only nests two at a time and
+/// `((a, b), c, d)` tuple-destructuring in a `for` loop reads worse than
+/// this at every one of `finish()`'s own call sites below.
+fn izip<'a, A, B, C, D>(a: &'a [A], b: &'a [B], c: &'a [C], d: &'a [D]) -> impl Iterator<Item = (&'a A, &'a B, &'a C, &'a D)> {
+    a.iter().zip(b.iter()).zip(c.iter()).zip(d.iter()).map(|(((a, b), c), d)| (a, b, c, d))
 }
 
 struct RefAllocator(i32);
@@ -278,9 +368,16 @@ impl RefAllocator {
 }
 
 struct FontRefs {
-    font: Ref,
+    /// The Type0 (composite) font dict — this is what a page's own
+    /// `/Resources /Font` entry points at.
+    type0: Ref,
+    /// The descendant CIDFontType2 dict.
+    cid: Ref,
     descriptor: Ref,
+    /// The embedded (subset, when possible) font program (`/FontFile2`).
     file: Ref,
+    /// The `/ToUnicode` CMap stream.
+    to_unicode: Ref,
 }
 
 struct PageRefs {
@@ -289,26 +386,38 @@ struct PageRefs {
     image: Option<Ref>,
 }
 
-/// The fixed `WinAnsiEncoding` byte range this builder always writes a
-/// `/Widths` entry for, regardless of which bytes a document actually
-/// uses (see [`PdfBuilder`]'s own doc comment for why that's simpler and
-/// harmless).
-const FIRST_CHAR: u16 = 32;
-const LAST_CHAR: u16 = 255;
+/// `/CIDSystemInfo` for the CIDFont itself — `Adobe-Identity-0`: a direct
+/// GID-as-CID scheme with no predefined character-collection re-encoding,
+/// matching the `/Encoding /Identity-H` chosen on the parent Type0 font.
+const ADOBE_IDENTITY_0: SystemInfo<'static> = SystemInfo { registry: Str(b"Adobe"), ordering: Str(b"Identity"), supplement: 0 };
 
-fn write_font(pdf: &mut Pdf, refs: &FontRefs, base_font_name: &str, entry: &FontEntry) {
-    let widths: Vec<f32> = (FIRST_CHAR..=LAST_CHAR).map(|b| entry.metrics.width_1000(b as u8) as f32).collect();
+/// Flate/zlib-compress `data` at a balanced compression level — this
+/// crate's one shared compression entry point. Content streams, raster
+/// image XObjects, embedded (subset) font programs, and `/ToUnicode` CMap
+/// streams all go through this SAME function; `pdf-writer` itself does no
+/// compression (`Chunk::stream`'s own doc comment shows this exact
+/// `miniz_oxide` call as its recommended pattern — see this module's own
+/// doc comment for why `miniz_oxide` directly, not `flate2`).
+fn flate_compress(data: &[u8]) -> Vec<u8> {
+    miniz_oxide::deflate::compress_to_vec_zlib(data, 6)
+}
+
+fn write_font(pdf: &mut Pdf, refs: &FontRefs, base_font_name: &str, entry: &FontEntry, data: &FontData) {
     let bbox = entry.metrics.bbox_1000();
 
     {
         let mut descriptor = pdf.font_descriptor(refs.descriptor);
         descriptor.name(Name(base_font_name.as_bytes()));
-        descriptor.flags(FontFlags::NON_SYMBOLIC);
+        // A CID font addresses glyphs by CID, never through
+        // StandardEncoding/WinAnsiEncoding character codes — `SYMBOLIC`
+        // (not `NON_SYMBOLIC`) is the spec-correct flag for an embedded
+        // Identity-H CID font (matches `typst-pdf`'s own convention for
+        // this exact font shape).
+        descriptor.flags(FontFlags::SYMBOLIC);
         descriptor.bbox(PdfRect::new(bbox[0] as f32, bbox[1] as f32, bbox[2] as f32, bbox[3] as f32));
         // Not parsed from the font's own `post` table (out of this
-        // module's narrow scope, see its own doc comment) — `0.0` never
-        // affects the embedded glyph outlines' actual rendered shape,
-        // only cosmetic/heuristic PDF metadata.
+        // module's narrow scope) — `0.0` never affects the embedded glyph
+        // outlines' actual rendered shape, only cosmetic PDF metadata.
         descriptor.italic_angle(0.0);
         descriptor.ascent(entry.metrics.ascent_1000() as f32);
         descriptor.descent(entry.metrics.descent_1000() as f32);
@@ -321,26 +430,48 @@ fn write_font(pdf: &mut Pdf, refs: &FontRefs, base_font_name: &str, entry: &Font
     }
 
     {
-        let mut file = pdf.stream(refs.file, &entry.font.ttf_bytes);
-        file.pair(Name(b"Length1"), entry.font.ttf_bytes.len() as i32);
+        let compressed = flate_compress(&data.subset_bytes);
+        let mut file = pdf.stream(refs.file, &compressed);
+        file.filter(Filter::FlateDecode);
+        // `/Length1` is always the UNCOMPRESSED byte length (PDF spec
+        // requirement for `/FontFile2`) — deliberately NOT the compressed
+        // stream body's own length (`/Length`, written automatically).
+        file.pair(Name(b"Length1"), data.subset_bytes.len() as i32);
     }
 
     {
-        // Hand-built, not `pdf.type1_font(..)` — that writer hardcodes
-        // `/Subtype /Type1`; a TrueType simple font needs `/Subtype
-        // /TrueType` instead (no dedicated writer for that subtype exists
-        // in `pdf-writer` 0.15 — the generic `Dict` writer covers it
-        // exactly, since a simple TrueType font dictionary's shape is
-        // otherwise identical to Type1's).
-        let mut dict = pdf.indirect(refs.font).dict();
-        dict.pair(Name(b"Type"), Name(b"Font"));
-        dict.pair(Name(b"Subtype"), Name(b"TrueType"));
-        dict.pair(Name(b"BaseFont"), Name(base_font_name.as_bytes()));
-        dict.pair(Name(b"FirstChar"), i32::from(FIRST_CHAR));
-        dict.pair(Name(b"LastChar"), i32::from(LAST_CHAR));
-        dict.insert(Name(b"Widths")).array().items(widths.iter().copied());
-        dict.pair(Name(b"FontDescriptor"), refs.descriptor);
-        dict.pair(Name(b"Encoding"), Name(b"WinAnsiEncoding"));
+        let mut cid = pdf.cid_font(refs.cid);
+        cid.subtype(CidFontType::Type2);
+        cid.base_font(Name(base_font_name.as_bytes()));
+        cid.system_info(ADOBE_IDENTITY_0);
+        cid.font_descriptor(refs.descriptor);
+        {
+            let mut widths = cid.widths();
+            for &(cid_value, width) in &data.widths {
+                widths.consecutive(cid_value, [width]);
+            }
+        }
+        // `subsetter::subset`'s own contract: the remapped glyph id IS the
+        // CID for every font it produces, regardless of the source font's
+        // original CID/GID relationship — so `/CIDToGIDMap /Identity` is
+        // always correct here, subsetted or (fallback path) not.
+        cid.cid_to_gid_map_predefined(Name(b"Identity"));
+    }
+
+    {
+        let mut type0 = pdf.type0_font(refs.type0);
+        type0.base_font(Name(base_font_name.as_bytes()));
+        type0.encoding_predefined(Name(b"Identity-H"));
+        type0.descendant_font(refs.cid);
+        type0.to_unicode(refs.to_unicode);
+    }
+
+    {
+        let compressed = flate_compress(&data.to_unicode);
+        let mut cmap = pdf.cmap(refs.to_unicode, &compressed);
+        cmap.filter(Filter::FlateDecode);
+        cmap.name(Name(b"Adobe-Identity-UCS"));
+        cmap.system_info(ADOBE_IDENTITY_UCS);
     }
 }
 
@@ -352,9 +483,20 @@ fn write_font(pdf: &mut Pdf, refs: &FontRefs, base_font_name: &str, entry: &Font
 /// they share the same origin corner horizontally and the image itself is
 /// placed spanning the WHOLE page (`0,0` to `width_pt,height_pt` in BOTH
 /// coordinate systems).
-fn write_page(pdf: &mut Pdf, page_tree_id: Ref, refs: &PageRefs, font_names: &[String], font_refs: &[FontRefs], page: &PageRecord, image_name: &str) {
+fn write_page(
+    pdf: &mut Pdf,
+    page_tree_id: Ref,
+    refs: &PageRefs,
+    font_names: &[String],
+    font_refs: &[FontRefs],
+    page: &PageRecord,
+    image_name: &str,
+    font_data: &[FontData],
+) {
     if let (Some(image_ref), Some((rgb, width, height))) = (refs.image, page.raster_rgb.as_ref()) {
-        let mut image = pdf.image_xobject(image_ref, rgb);
+        let compressed = flate_compress(rgb);
+        let mut image = pdf.image_xobject(image_ref, &compressed);
+        image.filter(Filter::FlateDecode);
         image.width(*width as i32);
         image.height(*height as i32);
         image.color_space().device_rgb();
@@ -376,11 +518,15 @@ fn write_page(pdf: &mut Pdf, page_tree_id: Ref, refs: &PageRefs, font_names: &[S
                 content.set_fill_rgb(r, g, b);
                 content.set_font(Name(font_names[run.font_id.0 as usize].as_bytes()), run.size_pt as f32);
                 content.set_text_matrix([1.0, 0.0, 0.0, 1.0, run.x_pt as f32, (page.height_pt - run.y_pt) as f32]);
-                content.show(Str(&run.bytes));
+                let orig_to_new = &font_data[run.font_id.0 as usize].orig_to_new;
+                content.show(Str(&cid_bytes(&run.glyphs, orig_to_new)));
             }
             content.end_text();
         }
-        pdf.stream(refs.content, &content.finish());
+        let raw = content.finish();
+        let compressed = flate_compress(&raw);
+        let mut stream = pdf.stream(refs.content, &compressed);
+        stream.filter(Filter::FlateDecode);
     }
 
     {
@@ -393,7 +539,7 @@ fn write_page(pdf: &mut Pdf, page_tree_id: Ref, refs: &PageRefs, font_names: &[S
         {
             let mut fonts_dict = resources.fonts();
             for (name, refs) in font_names.iter().zip(font_refs.iter()) {
-                fonts_dict.pair(Name(name.as_bytes()), refs.font);
+                fonts_dict.pair(Name(name.as_bytes()), refs.type0);
             }
         }
         if let Some(image_ref) = refs.image {
@@ -403,18 +549,41 @@ fn write_page(pdf: &mut Pdf, page_tree_id: Ref, refs: &PageRefs, font_names: &[S
     }
 }
 
+/// Encode one text run's own `(gid, char)` pairs as a 2-byte-per-glyph,
+/// big-endian CID string (`/Encoding /Identity-H`'s own wire format) —
+/// each original glyph id is translated through its font's own
+/// `orig_to_new` table (built once per font at [`PdfBuilder::finish`]
+/// time, see [`subset::build_font_data`]); a glyph absent from that table
+/// (shouldn't happen — every glyph a run resolved at [`PdfBuilder::
+/// add_page`] time was collected into the SAME font's used-glyph set)
+/// falls back to CID `0` (`.notdef`) rather than panicking.
+fn cid_bytes(glyphs: &[(u16, char)], orig_to_new: &HashMap<u16, u16>) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(glyphs.len() * 2);
+    for &(gid, _) in glyphs {
+        let cid = orig_to_new.get(&gid).copied().unwrap_or(0);
+        bytes.extend_from_slice(&cid.to_be_bytes());
+    }
+    bytes
+}
+
+fn write_info(pdf: &mut Pdf, info_id: Ref, meta: &PdfMeta) {
+    let mut info = pdf.document_info(info_id);
+    if let Some(title) = &meta.title {
+        info.title(TextStr(title));
+    }
+    if let Some(producer) = &meta.producer {
+        info.producer(TextStr(producer));
+    }
+    if let Some(date) = meta.creation_date {
+        info.creation_date(date.to_pdf_writer_date());
+    }
+}
+
 fn rgb_components(rgb: u32) -> (f32, f32, f32) {
     let r = ((rgb >> 16) & 0xFF) as f32 / 255.0;
     let g = ((rgb >> 8) & 0xFF) as f32 / 255.0;
     let b = (rgb & 0xFF) as f32 / 255.0;
     (r, g, b)
-}
-
-/// Encode `text` as `WinAnsiEncoding` bytes, substituting `'?'` for any
-/// character outside that table (see [`winansi`]'s own doc comment) —
-/// deliberate and visible, never a silently dropped character.
-fn text_to_winansi_bytes(text: &str) -> Vec<u8> {
-    text.chars().map(|ch| winansi::encode(ch).unwrap_or(b'?')).collect()
 }
 
 /// Decode `png_bytes` into a tightly packed `RGB8` buffer, dropping any
@@ -486,6 +655,35 @@ mod tests {
         buf
     }
 
+    /// A solid, flat-color square — deliberately highly compressible
+    /// synthetic raster content (the report-page backgrounds this hybrid
+    /// model paints are typically flat/text-heavy, per the export SOTA
+    /// research's own size analysis), used by the Flate-compression size
+    /// test below.
+    fn solid_rgba_png(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut buf, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().expect("write PNG header");
+            let pixel_count = (width * height) as usize;
+            let mut data = Vec::with_capacity(pixel_count * 4);
+            for _ in 0..pixel_count {
+                data.extend_from_slice(&rgba);
+            }
+            writer.write_image_data(&data).expect("write PNG pixels");
+        }
+        buf
+    }
+
+    fn find_stream_with_key<'a>(doc: &'a lopdf::Document, key: &[u8]) -> Option<&'a lopdf::Stream> {
+        doc.objects.values().find_map(|obj| match obj {
+            lopdf::Object::Stream(stream) if stream.dict.has(key) => Some(stream),
+            _ => None,
+        })
+    }
+
     #[test]
     fn finished_pdf_starts_with_the_pdf_magic_bytes() {
         let mut builder = PdfBuilder::new();
@@ -505,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn one_page_one_run_pdf_contains_a_page_object_and_a_font_object() {
+    fn one_page_one_run_pdf_contains_a_page_object_and_a_type0_font_object() {
         let mut builder = PdfBuilder::new();
         let font = builder.register_font(ROBOTO_REGULAR);
         builder
@@ -521,12 +719,14 @@ mod tests {
         let bytes = builder.finish();
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("/Type /Page"), "must contain a page object");
-        assert!(text.contains("/Type /Font"), "must contain a font object");
-        assert!(text.contains("/Subtype /TrueType"), "font must be a simple TrueType font");
+        assert!(text.contains("/Subtype /Type0"), "font must be a composite Type0 font");
+        assert!(text.contains("/CIDFontType2"), "the descendant font must be a CIDFontType2 (TrueType outlines)");
+        assert!(text.contains("/Encoding /Identity-H"), "the Type0 font must use Identity-H encoding");
+        assert!(!text.contains("WinAnsiEncoding"), "the old simple-font WinAnsi path must be fully gone");
     }
 
     #[test]
-    fn a_raster_page_contains_an_image_xobject() {
+    fn a_raster_page_contains_a_flate_compressed_image_xobject() {
         let mut builder = PdfBuilder::new();
         let png_bytes = one_pixel_rgba_png([255, 0, 0, 255]);
         builder
@@ -537,6 +737,7 @@ mod tests {
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.contains("/Subtype /Image"), "must contain an image XObject");
         assert!(text.contains("/DeviceRGB"), "the raster must embed as DeviceRGB");
+        assert!(text.contains("/FlateDecode"), "the raster must be Flate-compressed");
     }
 
     #[test]
@@ -550,8 +751,169 @@ mod tests {
     }
 
     #[test]
-    fn unencodable_characters_become_a_visible_question_mark() {
-        assert_eq!(text_to_winansi_bytes("A\u{4e2d}B"), vec![b'A', b'?', b'B']);
+    fn an_unmapped_character_falls_back_to_notdef_rather_than_a_question_mark() {
+        // Post-Type0-migration behavior replaces the old
+        // `unencodable_characters_become_a_visible_question_mark` WinAnsi
+        // test: a codepoint this font has no glyph for resolves to glyph
+        // id 0 (`.notdef`) — a private-use-area codepoint no real font
+        // maps to anything is used here as ground truth.
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 200.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "A\u{F8FF}B" }],
+            })
+            .expect("add_page should succeed");
+
+        // Must not panic, and must still produce a well-formed PDF.
+        let bytes = builder.finish();
+        assert!(bytes.starts_with(b"%PDF-"));
+        lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output even with a .notdef glyph present");
+    }
+
+    /// Cyrillic — the SOTA research pass's own #1-ranked, "do-now,
+    /// CRITICAL" item: a Russian-language run must render AND
+    /// round-trip through text extraction verbatim, not render as `'?'`.
+    #[test]
+    fn cyrillic_text_round_trips_through_lopdf_extraction() {
+        let cyrillic = "Отчёт о переводах";
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 300.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun { font, size_pt: 14.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: cyrillic }],
+            })
+            .expect("add_page should succeed");
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+        let pages = doc.get_pages();
+        let page_numbers: Vec<u32> = pages.keys().copied().collect();
+        let extracted = doc.extract_text(&page_numbers).expect("lopdf text extraction must succeed");
+        assert_eq!(extracted.trim(), cyrillic, "Cyrillic text must round-trip verbatim via ToUnicode, got {extracted:?}");
+
+        // Structural proof: the content stream really uses `Tj` (real
+        // vector text operators), decompressing cleanly (Flate) in the
+        // process.
+        let page_id = *pages.values().next().expect("one page");
+        let content = doc.get_page_content(page_id);
+        let content_str = String::from_utf8_lossy(&content);
+        assert!(content_str.contains("Tj"), "content stream must contain a Tj text-showing operator, got {content_str:?}");
+    }
+
+    /// Subsetting: the embedded font stream must be smaller than the full
+    /// TTF, and extraction must still work (via `/ToUnicode`) against the
+    /// SUBSET font's own remapped CIDs.
+    #[test]
+    fn embedded_font_subset_is_smaller_than_the_full_ttf_and_still_extracts() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 200.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Hi" }],
+            })
+            .expect("add_page should succeed");
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+
+        let font_file = find_stream_with_key(&doc, b"Length1").expect("a subset FontFile2 stream must be present");
+        let subset_decompressed = font_file.decompressed_content().expect("FontFile2 must decompress cleanly");
+        assert!(
+            subset_decompressed.len() < ROBOTO_REGULAR.len(),
+            "a 2-glyph subset ({} bytes decompressed) must be far smaller than the full font ({} bytes)",
+            subset_decompressed.len(),
+            ROBOTO_REGULAR.len()
+        );
+        // The RAW (still Flate-compressed) stream, as physically stored,
+        // must be smaller too — proves the size win survives both stages.
+        assert!(font_file.content.len() < ROBOTO_REGULAR.len());
+
+        let pages = doc.get_pages();
+        let page_numbers: Vec<u32> = pages.keys().copied().collect();
+        let extracted = doc.extract_text(&page_numbers).expect("lopdf text extraction must succeed");
+        assert!(extracted.contains("Hi"), "ToUnicode must recover the original text verbatim against the SUBSET font, got {extracted:?}");
+    }
+
+    /// Flate: a raster page's image XObject must compress at least 5x
+    /// smaller than the raw, uncompressed RGB8 equivalent.
+    #[test]
+    fn raster_image_xobject_is_flate_compressed_at_least_5x_smaller_than_raw_rgb() {
+        let (width, height) = (64u32, 64u32);
+        let png_bytes = solid_rgba_png(width, height, [30, 60, 90, 255]);
+
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(PdfPageSpec { width_pt: width as f64, height_pt: height as f64, raster: Some(&png_bytes), raster_px: (width, height), text_runs: Vec::new() })
+            .expect("add_page with a raster should succeed");
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+
+        let image_stream = find_stream_with_key(&doc, b"Width").expect("the raster page must embed exactly one Image XObject stream");
+        let filter = image_stream.dict.get(b"Filter").and_then(|f| f.as_name()).expect("the image XObject must declare a /Filter");
+        assert_eq!(filter, b"FlateDecode");
+
+        let raw_rgb_len = width as usize * height as usize * 3;
+        let compressed_len = image_stream.content.len();
+        assert!(
+            raw_rgb_len as f64 / compressed_len as f64 >= 5.0,
+            "expected >=5x reduction on a flat-color raster (raw {raw_rgb_len} bytes vs compressed {compressed_len} bytes)"
+        );
+    }
+
+    /// `/Info` metadata: additive, opt-in, and never present unless the
+    /// caller calls [`PdfBuilder::set_meta`].
+    #[test]
+    fn info_dict_is_absent_unless_meta_is_set_then_present_with_the_given_fields() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 100.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "x" }],
+            })
+            .expect("add_page should succeed");
+        let bytes_without_meta = builder.finish();
+        assert!(!String::from_utf8_lossy(&bytes_without_meta).contains("/Producer"), "no /Info dict must be written when set_meta was never called");
+
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 100.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "x" }],
+            })
+            .expect("add_page should succeed");
+        builder.set_meta(PdfMeta {
+            title: Some("Case Report".to_owned()),
+            producer: Some("uzor-export".to_owned()),
+            creation_date: Some(PdfDate { year: 2026, month: 7, day: 17, hour: 12, minute: 0, second: 0 }),
+        });
+        let bytes_with_meta = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes_with_meta).expect("lopdf must parse this crate's own PDF output");
+        let info_dict = doc.trailer.get(b"Info").ok().and_then(|obj| doc.get_dictionary(obj.as_reference().ok()?).ok()).expect("trailer must reference an /Info dict");
+        assert_eq!(info_dict.get(b"Title").ok().and_then(|o| o.as_str().ok()), Some(b"Case Report".as_slice()));
+        assert_eq!(info_dict.get(b"Producer").ok().and_then(|o| o.as_str().ok()), Some(b"uzor-export".as_slice()));
+        assert!(info_dict.has(b"CreationDate"));
     }
 
     /// `lopdf` (dev-dep) actually PARSES this crate's own output — the gate

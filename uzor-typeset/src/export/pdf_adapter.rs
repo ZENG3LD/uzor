@@ -314,11 +314,14 @@ mod tests {
     //! Adapter proof (design law 8 + this phase's own gate): a 2-page P0-
     //! style fixture -> `pages_to_pdf` -> `lopdf` (dev-dep): 2 pages,
     //! extractable text contains a known fixture word (`lopdf::Document::
-    //! extract_text` — this crate's own text IS real WinAnsi-encoded PDF
-    //! text operators against an embedded, subset-free TrueType font, so a
-    //! standard PDF text-extraction path recovers it verbatim, proving the
-    //! text is genuinely vector/selectable, not a raster). Also the real
-    //! deliverable: the P1 report-page fixture (figures/table/list) ->
+    //! extract_text` — this crate's own text IS real Type0/CID (Identity-H)
+    //! PDF text operators against an embedded, subsetted TrueType font
+    //! (`uzor-export`'s export SOTA pass — see its own `CLAUDE.md`/
+    //! `pdf/mod.rs` doc comment), with a `/ToUnicode` CMap driving
+    //! extraction, so a standard PDF text-extraction path recovers it
+    //! verbatim, proving the text is genuinely vector/selectable, not a
+    //! raster). Also the real deliverable: the P1 report-page fixture
+    //! (figures/table/list) ->
     //! `out/typeset_p5_report.pdf` + a raster parity PNG.
 
     use std::path::PathBuf;

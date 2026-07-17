@@ -384,7 +384,16 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
         deterministic data — nothing here depends on network access, wall-clock time, or random sampling, so \
         the same input always produces the identical output byte-for-byte, an important property for \
         reproducible documentation and automated verification alike.";
+    // Cyrillic end-to-end proof (export SOTA pass — `uzor-export`'s Type0/
+    // CID + `/ToUnicode` migration, see its own `CLAUDE.md`): a Russian
+    // intro sentence flowing through the SAME `pages_to_pdf`/`PdfTextRun`
+    // path as every other paragraph in this fixture, never a special-cased
+    // text run — proves full-Unicode vector text end to end, not just at
+    // the `uzor-export` unit-test level.
+    const INTRO_RU: &str = "Этот показательный документ также подтверждает поддержку кириллического текста \
+        в PDF-экспорте библиотеки uzor.";
     let intro_a_run = [StyledRun::new(INTRO_A, BODY_FONT)];
+    let intro_ru_run = [StyledRun::new(INTRO_RU, BODY_FONT)];
     let intro_b_run = [StyledRun::new(INTRO_B, BODY_FONT)];
 
     let flow_opener: Vec<BlockNode<'_>> = vec![
@@ -398,6 +407,8 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
                 .with_break_strategy(BreakStrategy::KnuthPlass)
                 .with_hyphenation(Hyphenation::English),
         )),
+        BlockNode::new(Block::Spacer(12.0)),
+        BlockNode::new(Block::Paragraph(Paragraph::new(&intro_ru_run, body_width).with_align(ParagraphAlign::Justify))),
         BlockNode::new(Block::Spacer(12.0)),
         BlockNode::new(Block::Paragraph(
             Paragraph::new(&intro_b_run, body_width)
@@ -953,6 +964,12 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let extracted = doc.extract_text(&page_numbers).expect("lopdf text extraction must succeed");
     for word in ["uzor-typeset", "uzor-graph", "uzor-figures", "Active", "Showcase"] {
         assert!(extracted.contains(word), "extracted PDF text must contain {word:?} — got a document of {} chars", extracted.len());
+    }
+    // Cyrillic end-to-end: the Russian intro sentence's own words must
+    // round-trip verbatim too (export SOTA pass — see this fixture's own
+    // `INTRO_RU` comment).
+    for word in ["показательный", "документ", "кириллического", "экспорте"] {
+        assert!(extracted.contains(word), "extracted PDF text must contain Cyrillic word {word:?} — got a document of {} chars", extracted.len());
     }
 
     // Raster parity reference (the task's own gate) — one PNG per page,

@@ -14,6 +14,21 @@ uzor-render-tiny-skia = { workspace = true }
 tiny-skia = "0.11"
 pdf-writer = "0.15"
 png = "0.17"
+# Type0/CID font subsetting (Arc 4 Phase P5 SOTA pass) — same
+# author/lineage as `pdf-writer` itself. `variable-fonts` (the default
+# feature) pulls in `skrifa`/`write-fonts`/`kurbo` for variable-font
+# instancing (`subset_with_variations`); this crate only calls the plain
+# `subset` entry point, so the feature is off to keep the dependency
+# light (see `pdf/subset.rs`'s own doc comment).
+subsetter = { version = "0.2", default-features = false }
+# Flate (zlib/DEFLATE) compression for content streams + raster image
+# XObjects (research doc §2) — pure-Rust, no C toolchain dependency.
+# Depended on DIRECTLY rather than via `flate2` (which would only
+# wrap this same crate as its default backend): `pdf-writer`'s own
+# `Chunk::stream` doc example already calls
+# `miniz_oxide::deflate::compress_to_vec_zlib` verbatim, so this is the
+# reference implementation's own choice, not a narrower substitute.
+miniz_oxide = "0.8"
 
 [dev-dependencies]
 lopdf = { version = "0.44", default-features = false }
