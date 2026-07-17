@@ -13,7 +13,7 @@ use uzor::types::Rect;
 use crate::cluster::GroupId;
 use crate::engine::GraphEngine;
 use crate::graph::NodeIndex;
-use crate::layout::{GraphLayoutMode, Layout, LayoutKind};
+use crate::layout::{ForceParams, GraphLayoutMode, Layout, LayoutKind};
 
 impl<N, E, L> BlackboxAgentSurface for GraphEngine<N, E, L>
 where
@@ -83,6 +83,7 @@ where
             "layout": layout_mode,
             "clusters": clusters,
             "collapsed_clusters": self.clusters.collapsed_ids(),
+            "forces": self.force_params().map(|p| force_params_json(&p)),
         })
     }
 
@@ -158,6 +159,61 @@ where
                     AgentActionReply::err(format!("cluster {} not found or not collapsed", id.0))
                 }
             }
+            // Wave 2.1 owner order — "хочу иметь возможность изменять
+            // силу притяжения". Partial update: only keys present in
+            // `args` change, everything else carries over from the
+            // engine's current `force_params()` snapshot. Requires the
+            // active layout to have a force model (bare
+            // `ForceDirectedLayout`, or `GraphLayoutMode` — see
+            // `GraphEngine::force_params`'s doc comment).
+            "set_forces" => {
+                let Some(mut params) = self.force_params() else {
+                    return AgentActionReply::err(
+                        "set_forces requires GraphEngine<_, _, ForceDirectedLayout> or GraphEngine<_, _, GraphLayoutMode>",
+                    );
+                };
+                if let Some(v) = action.args.get("charge").and_then(Value::as_f64) {
+                    params.charge_strength = v as f32;
+                }
+                if let Some(v) = action.args.get("link_strength").and_then(Value::as_f64) {
+                    params.link_strength = v as f32;
+                }
+                if let Some(v) = action.args.get("link_distance").and_then(Value::as_f64) {
+                    params.link_distance = v as f32;
+                }
+                if let Some(v) = action.args.get("center_gravity").and_then(Value::as_f64) {
+                    params.center_strength = v as f32;
+                }
+                if let Some(v) = action.args.get("center_x").and_then(Value::as_f64) {
+                    params.center.0 = v as f32;
+                }
+                if let Some(v) = action.args.get("center_y").and_then(Value::as_f64) {
+                    params.center.1 = v as f32;
+                }
+                if let Some(v) = action.args.get("velocity_decay").and_then(Value::as_f64) {
+                    params.velocity_decay = v as f32;
+                }
+                if let Some(v) = action.args.get("alpha_decay").and_then(Value::as_f64) {
+                    params.alpha_decay = v as f32;
+                }
+                if let Some(v) = action.args.get("alpha_min").and_then(Value::as_f64) {
+                    params.alpha_min = v as f32;
+                }
+                if let Some(v) = action.args.get("theta").and_then(Value::as_f64) {
+                    params.theta = v as f32;
+                }
+                if let Some(v) = action.args.get("collision").and_then(Value::as_bool) {
+                    params.collision = v;
+                }
+                if let Some(v) = action.args.get("collision_strength").and_then(Value::as_f64) {
+                    params.collision_strength = v as f32;
+                }
+                if let Some(v) = action.args.get("brute_force_threshold").and_then(Value::as_u64) {
+                    params.brute_force_threshold = v as usize;
+                }
+                self.set_force_params(params);
+                AgentActionReply::ok_with_log(json!({ "forces": force_params_json(&params) }))
+            }
             "set_layout" => {
                 let Some(mode) = action.args.get("mode").and_then(Value::as_str) else {
                     return AgentActionReply::err("set_layout requires args.mode (\"force\"|\"hierarchical\"|\"radial\")");
@@ -198,6 +254,27 @@ fn resolve_node<N, E, L: Layout>(engine: &GraphEngine<N, E, L>, action: &AgentAc
 
 fn resolve_cluster(action: &AgentAction) -> Option<GroupId> {
     action.args.get("cluster").and_then(Value::as_u64).map(|v| GroupId(v as u32))
+}
+
+/// Full [`ForceParams`] snapshot as JSON — shared by `agent_state`'s
+/// `forces` field and the `set_forces` action's reply, so both report
+/// the exact same key names a caller would use to partially update them.
+fn force_params_json(p: &ForceParams) -> Value {
+    json!({
+        "charge": p.charge_strength,
+        "link_strength": p.link_strength,
+        "link_distance": p.link_distance,
+        "center_gravity": p.center_strength,
+        "center_x": p.center.0,
+        "center_y": p.center.1,
+        "velocity_decay": p.velocity_decay,
+        "alpha_decay": p.alpha_decay,
+        "alpha_min": p.alpha_min,
+        "theta": p.theta,
+        "collision": p.collision,
+        "collision_strength": p.collision_strength,
+        "brute_force_threshold": p.brute_force_threshold,
+    })
 }
 
 /// `Some("force"|"hierarchical"|"radial")` when `L` is the runtime
@@ -270,5 +347,59 @@ mod tests {
         let expand_reply = engine.apply_agent_action(action("expand", json!({ "cluster": id.0 })));
         assert!(expand_reply.ok);
         assert_eq!(engine.agent_state()["collapsed_clusters"], json!([] as [u32; 0]));
+    }
+
+    fn settle(engine: &mut GraphEngine<(), (), ForceDirectedLayout>) {
+        for _ in 0..3000 {
+            if engine.tick(1.0 / 60.0).settled {
+                break;
+            }
+        }
+    }
+
+    fn two_node_chain() -> (Graph<(), ()>, NodeIndex, NodeIndex) {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let b = graph.push_node((), "b", "x", 4.0);
+        graph.push_edge(a, b, 1.0, ());
+        (graph, a, b)
+    }
+
+    #[test]
+    fn set_forces_action_partially_updates_params_and_grows_the_settled_edge_length() {
+        let (graph, a, b) = two_node_chain();
+        let mut engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.seed_positions(&[(-20.0, 0.0), (20.0, 0.0)]);
+        settle(&mut engine);
+
+        let edge_len = |e: &GraphEngine<(), (), ForceDirectedLayout>| {
+            let dx = e.particles[b.index()].x - e.particles[a.index()].x;
+            let dy = e.particles[b.index()].y - e.particles[a.index()].y;
+            (dx * dx + dy * dy).sqrt()
+        };
+        let baseline_dist = edge_len(&engine);
+
+        let before = engine.force_params().expect("bare ForceDirectedLayout has force params");
+        let bigger_link_distance = before.link_distance * 4.0;
+
+        let reply = engine.apply_agent_action(action("set_forces", json!({ "link_distance": bigger_link_distance })));
+        assert!(reply.ok);
+        let after = engine.force_params().expect("still force-capable after set_forces");
+        assert_eq!(after.link_distance, bigger_link_distance);
+        // Untouched keys must survive the partial update.
+        assert_eq!(after.charge_strength, before.charge_strength);
+        assert_eq!(after.velocity_decay, before.velocity_decay);
+
+        settle(&mut engine);
+        let grown_dist = edge_len(&engine);
+        assert!(
+            grown_dist > baseline_dist * 1.2,
+            "growing link_distance {} -> {} must grow the settled edge length: {baseline_dist} -> {grown_dist}",
+            before.link_distance,
+            bigger_link_distance
+        );
+
+        let forces = engine.agent_state()["forces"].clone();
+        assert_eq!(forces["link_distance"].as_f64().unwrap() as f32, bigger_link_distance);
     }
 }

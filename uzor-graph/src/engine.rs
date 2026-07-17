@@ -18,7 +18,7 @@ use crate::graph::{Graph, NodeIndex};
 use crate::interaction::drag::DragController;
 use crate::interaction::pick;
 use crate::layout::force_directed::ForceDirectedLayout;
-use crate::layout::{Layout, LayoutTickResult};
+use crate::layout::{ForceParams, GraphLayoutMode, Layout, LayoutTickResult};
 use crate::particle::Particle;
 use crate::render as gr_render;
 
@@ -26,16 +26,50 @@ use crate::render as gr_render;
 /// while panning the camera and still count as a click-to-deselect.
 const CLICK_DRAG_THRESHOLD_PX: f64 = 4.0;
 const ZOOM_SENSITIVITY: f64 = 0.0015;
-/// Alpha to reheat the sim to when a node starts being dragged/unpinned
-/// — enough to visibly resettle the local neighborhood without a full
-/// restart-from-scratch jolt.
+/// Alpha to reheat the sim to when a node is unpinned, a cluster
+/// expands, or force params change — enough to visibly resettle the
+/// local neighborhood without a full restart-from-scratch jolt. NOT used
+/// for drag-start any more — see [`DRAG_ALPHA_TARGET`] for the sustained
+/// (not one-shot) reheat an active drag holds.
 const DRAG_REHEAT_ALPHA: f32 = 0.35;
+
+/// Sustained "`alphaTarget`"-equivalent held for the whole duration of an
+/// active node drag (Wave 2.1 drag-physics contract — d3-force canon
+/// range 0.1-0.3, obsidian doc §drag/d3-canon; picked the top of that
+/// range so the local neighborhood keeps visibly simmering for the
+/// entire gesture, not just at drag-start). Set via
+/// [`Layout::set_alpha_target`] on drag-start, cleared back to `0.0` on
+/// drag-end so alpha eases back down instead of free-decaying from
+/// wherever it happened to be — the one-shot [`DRAG_REHEAT_ALPHA`] bump
+/// this replaces for the drag path didn't hold a target, it just bumped
+/// once and let ordinary decay take back over immediately.
+const DRAG_ALPHA_TARGET: f32 = 0.3;
 
 #[derive(Debug, Clone, Copy)]
 enum PointerMode {
     Idle,
     PanningCamera { last: (f64, f64), total: f64 },
     DraggingNode,
+}
+
+/// What happens to a node's pin state when a drag ends. Wave 2.1 owner
+/// order (2026-07-18): the DEFAULT is [`DragEndPolicy::Sticky`] ("хочу
+/// вывести и оставить" — drag a node out, release, it stays exactly
+/// there); [`DragEndPolicy::RestorePrior`] is the classic d3-force
+/// convention (obsidian doc §drag/d3-canon) kept available as the
+/// explicit non-default mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DragEndPolicy {
+    /// Drag-end always pins the node at the release position — an
+    /// explicit unpin ([`GraphEngine::unpin_node`] / the `unpin_node`
+    /// agent action) is required to rejoin the simulation.
+    #[default]
+    Sticky,
+    /// Drag-end unfixes the node UNLESS it was already explicitly pinned
+    /// (via [`GraphEngine::pin_node`]) before the drag started — pin
+    /// composes with drag (a pre-pinned node stays pinned, now at the
+    /// drag's release position) instead of every drag producing a pin.
+    RestorePrior,
 }
 
 /// Generic facts about one node, for a caller's sidebar/inspector —
@@ -69,6 +103,11 @@ pub struct GraphEngine<N, E, L: Layout = ForceDirectedLayout> {
 
     pinned: Vec<bool>,
     drag: DragController,
+    /// Snapshot of [`GraphEngine::is_pinned`] for the node currently
+    /// being dragged, taken at drag-start — what
+    /// [`DragEndPolicy::RestorePrior`] restores on release.
+    drag_prior_pinned: bool,
+    drag_end_policy: DragEndPolicy,
     mode: PointerMode,
     canvas_rect: Rect,
     last_pointer_screen: (f64, f64),
@@ -93,6 +132,8 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             clusters: ClusterRegistry::default(),
             pinned: vec![false; n],
             drag: DragController::default(),
+            drag_prior_pinned: false,
+            drag_end_policy: DragEndPolicy::default(),
             mode: PointerMode::Idle,
             canvas_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             last_pointer_screen: (0.0, 0.0),
@@ -288,6 +329,16 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         self.pinned.get(node.index()).copied().unwrap_or(false)
     }
 
+    /// Current drag-release behavior — see [`DragEndPolicy`]. Defaults
+    /// to [`DragEndPolicy::Sticky`].
+    pub fn drag_end_policy(&self) -> DragEndPolicy {
+        self.drag_end_policy
+    }
+
+    pub fn set_drag_end_policy(&mut self, policy: DragEndPolicy) {
+        self.drag_end_policy = policy;
+    }
+
     /// Persistently pin `node` at its current position (survives drag
     /// release — Obsidian's explicit-pin affordance, distinct from
     /// "drag holds position while the button is down").
@@ -312,6 +363,56 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             *flag = false;
         }
         self.reheat(DRAG_REHEAT_ALPHA);
+    }
+
+    /// Current force-model parameters, if the engine's active layout has
+    /// one — a bare [`ForceDirectedLayout`] (`L = ForceDirectedLayout`),
+    /// or a [`GraphLayoutMode`] dispatcher (`L = GraphLayoutMode`,
+    /// regardless of which concrete mode is currently active — the force
+    /// instance persists even while hierarchical/radial is selected,
+    /// same as `GraphLayoutMode::hierarchical_params`/`radial_params`).
+    /// `None` for any other `L` (hierarchical/radial layouts have their
+    /// own differently-shaped `*Params`, not this one).
+    pub fn force_params(&self) -> Option<ForceParams>
+    where
+        L: 'static,
+    {
+        let layout_any: &dyn std::any::Any = &self.layout;
+        if let Some(force) = layout_any.downcast_ref::<ForceDirectedLayout>() {
+            return Some(*force.params());
+        }
+        if let Some(mode) = layout_any.downcast_ref::<GraphLayoutMode>() {
+            return Some(*mode.force_params());
+        }
+        None
+    }
+
+    /// Replace the active force-model parameters wholesale (Wave 2.1
+    /// owner order — "хочу иметь возможность изменять силу притяжения")
+    /// and reheat so the change is visible instead of sitting inert
+    /// until the next unrelated wake. Returns `false` (no-op) if `L`
+    /// isn't one of the two force-capable shapes
+    /// [`GraphEngine::force_params`] documents.
+    pub fn set_force_params(&mut self, params: ForceParams) -> bool
+    where
+        L: 'static,
+    {
+        let applied = {
+            let layout_any: &mut dyn std::any::Any = &mut self.layout;
+            if let Some(force) = layout_any.downcast_mut::<ForceDirectedLayout>() {
+                force.set_params(params);
+                true
+            } else if let Some(mode) = layout_any.downcast_mut::<GraphLayoutMode>() {
+                mode.set_force_params(params);
+                true
+            } else {
+                false
+            }
+        };
+        if applied {
+            self.reheat(DRAG_REHEAT_ALPHA);
+        }
+        applied
     }
 
     pub fn node_facts(&self, node: NodeIndex) -> Option<NodeFacts<'_>> {
@@ -350,13 +451,25 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         }
         if let Some(hit) = pick::nearest_node(&self.graph, &self.particles, &self.camera, self.canvas_rect, (x, y), &self.visible) {
             self.mode = PointerMode::DraggingNode;
+            self.drag_prior_pinned = self.is_pinned(hit);
             self.drag.start(hit, (x, y));
+            // Pin-during-drag: fix the node at the pointer's world
+            // position for the whole gesture (d3-force canon — `fx`/`fy`
+            // are the ONLY pin primitive, drag-in-progress and an
+            // explicit persistent pin share the same mechanism).
             let world = self.camera.screen_to_world((x, y), self.canvas_rect);
             if let Some(p) = self.particles.get_mut(hit.index()) {
                 p.fx = Some(world.0 as f32);
                 p.fy = Some(world.1 as f32);
             }
-            self.reheat(DRAG_REHEAT_ALPHA);
+            // Sustained reheat (obsidian doc §drag/d3-canon): hold alpha
+            // at the drag target for the whole gesture instead of a
+            // one-shot bump that starts cooling right away. `reheat`
+            // jumps alpha straight to the target NOW; `set_alpha_target`
+            // holds it there every subsequent tick until drag-end clears
+            // it back to 0.0.
+            self.layout.set_alpha_target(DRAG_ALPHA_TARGET);
+            self.reheat(DRAG_ALPHA_TARGET);
         } else {
             self.mode = PointerMode::PanningCamera { last: (x, y), total: 0.0 };
         }
@@ -372,6 +485,11 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             PointerMode::DraggingNode => {
                 self.drag.update((x, y));
                 if let Some(node) = self.drag.dragging_node() {
+                    // Screen -> world through the camera's own inverse
+                    // transform (divides by `zoom` internally) — this IS
+                    // the "delta ÷ zoom" canon, expressed as an absolute
+                    // re-projection each tick instead of an accumulated
+                    // delta (no drift, same result at zoom == 1).
                     let world = self.camera.screen_to_world((x, y), self.canvas_rect);
                     if let Some(p) = self.particles.get_mut(node.index()) {
                         p.fx = Some(world.0 as f32);
@@ -413,11 +531,29 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         match self.mode {
             PointerMode::DraggingNode => {
                 if let Some((node, _response)) = self.drag.stop() {
-                    if !self.is_pinned(node) {
+                    let stay_pinned = match self.drag_end_policy {
+                        DragEndPolicy::Sticky => true,
+                        DragEndPolicy::RestorePrior => self.drag_prior_pinned,
+                    };
+                    if stay_pinned {
+                        // `fx`/`fy` already hold the release-time world
+                        // position from the last drag-move tick — just
+                        // flip the persistent-pin bookkeeping flag so
+                        // `is_pinned`/`unpin_node` see it correctly.
+                        if let Some(flag) = self.pinned.get_mut(node.index()) {
+                            *flag = true;
+                        }
+                    } else {
                         if let Some(p) = self.particles.get_mut(node.index()) {
                             p.unpin();
                         }
+                        if let Some(flag) = self.pinned.get_mut(node.index()) {
+                            *flag = false;
+                        }
                     }
+                    // Drag-end: alphaTarget -> 0 so alpha eases back down
+                    // instead of free-decaying from wherever it was held.
+                    self.layout.set_alpha_target(0.0);
                     self.select(node);
                 }
                 self.mode = PointerMode::Idle;
@@ -590,5 +726,139 @@ mod tests {
             "stale (0,0) Down turns the same +10px physical move into a \
              camera teleport of ~grab_x pixels — this is the P0 bug: {} \
              (fixed pipeline pans by exactly 10.0)", buggy.camera.pan_x);
+    }
+
+    // ── W2.1 drag-physics contract (sticky drag + alphaTarget) ─────────────
+    //
+    // A 2-node chain, camera left at its identity default (pan (0,0),
+    // zoom 1.0) so screen == world and picking a node is just "click at
+    // its seeded position". `refresh_visible()` (private, but reachable
+    // here since `tests` is a descendant of this module) stands in for
+    // the `draw()` call a real frame would make to populate the pick
+    // candidate list.
+
+    fn two_node_chain_engine() -> (TestEngine, NodeIndex, NodeIndex) {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let b = graph.push_node((), "b", "x", 4.0);
+        graph.push_edge(a, b, 1.0, ());
+        let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.set_canvas_rect(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.seed_positions(&[(100.0, 100.0), (300.0, 100.0)]);
+        engine.refresh_visible();
+        (engine, a, b)
+    }
+
+    #[test]
+    fn sticky_drag_is_the_default_and_pins_the_node_at_the_release_position() {
+        let (mut engine, a, _b) = two_node_chain_engine();
+        assert_eq!(engine.drag_end_policy(), DragEndPolicy::Sticky, "Sticky must be the default policy");
+        assert!(!engine.is_pinned(a));
+
+        engine.on_event(&PlatformEvent::PointerDown { x: 100.0, y: 100.0, button: MouseButton::Left });
+        engine.on_event(&PlatformEvent::PointerMoved { x: 250.0, y: 220.0 });
+        engine.on_event(&PlatformEvent::PointerUp { x: 250.0, y: 220.0, button: MouseButton::Left });
+        // `x`/`y` only resync from the held `fx`/`fy` on the next
+        // `tick()` (same as a real render frame would do) — one tick to
+        // observe the release position land.
+        engine.tick(1.0 / 60.0);
+
+        assert!(engine.is_pinned(a), "a node dragged and released must be reported pinned under Sticky");
+        let released = engine.particles[a.index()];
+        assert!((released.x - 250.0).abs() < 1e-6);
+        assert!((released.y - 220.0).abs() < 1e-6);
+
+        // The pin must hold across many subsequent ticks, even with a
+        // linked neighbor still under active force influence.
+        for _ in 0..120 {
+            engine.tick(1.0 / 60.0);
+        }
+        assert_eq!(engine.particles[a.index()].x, released.x);
+        assert_eq!(engine.particles[a.index()].y, released.y);
+    }
+
+    #[test]
+    fn restore_prior_policy_unfixes_a_previously_free_node_but_keeps_a_pre_pinned_one_pinned() {
+        let (mut engine, a, b) = two_node_chain_engine();
+        engine.set_drag_end_policy(DragEndPolicy::RestorePrior);
+
+        // `a` was free before the drag -> released back into the sim.
+        engine.on_event(&PlatformEvent::PointerDown { x: 100.0, y: 100.0, button: MouseButton::Left });
+        engine.on_event(&PlatformEvent::PointerMoved { x: 250.0, y: 220.0 });
+        engine.on_event(&PlatformEvent::PointerUp { x: 250.0, y: 220.0, button: MouseButton::Left });
+        assert!(!engine.is_pinned(a), "a node that was free before the drag must NOT stay pinned under RestorePrior");
+
+        // `b` was explicitly pinned BEFORE the drag -> stays pinned
+        // afterward, at the drag's release position (pin composes with
+        // drag instead of the drag clobbering it).
+        engine.pin_node(b);
+        engine.on_event(&PlatformEvent::PointerDown { x: 300.0, y: 100.0, button: MouseButton::Left });
+        engine.on_event(&PlatformEvent::PointerMoved { x: 400.0, y: 150.0 });
+        engine.on_event(&PlatformEvent::PointerUp { x: 400.0, y: 150.0, button: MouseButton::Left });
+        engine.tick(1.0 / 60.0);
+        assert!(engine.is_pinned(b), "a node pinned before the drag must stay pinned under RestorePrior");
+        assert!((engine.particles[b.index()].x - 400.0).abs() < 1e-6);
+        assert!((engine.particles[b.index()].y - 150.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn drag_holds_alpha_near_the_sustained_target_and_decays_after_release() {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let b = graph.push_node((), "b", "x", 4.0);
+        graph.push_edge(a, b, 1.0, ());
+        let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        // Centered on the world origin: `center_strength` pulls the
+        // settling pair toward world `(0, 0)`, so a canvas centered
+        // there (rather than cornered at it) guarantees the click point
+        // computed below — from wherever the pair actually settles —
+        // stays inside the canvas regardless of drift direction.
+        let canvas = Rect::new(-400.0, -300.0, 800.0, 600.0);
+        engine.set_canvas_rect(canvas);
+        engine.seed_positions(&[(100.0, 100.0), (300.0, 100.0)]);
+
+        // Fully settle first — the "sustained, not one-shot" contract
+        // only bites from a cold/settled start (a one-shot bump also
+        // looks fine on the very first frame after seeding). Settling
+        // moves `a` away from its seeded position, so the drag below
+        // clicks its ACTUAL (post-settle) screen position, computed
+        // through the real camera transform, not the stale seed.
+        for _ in 0..600 {
+            engine.tick(1.0 / 60.0);
+        }
+        assert!(!engine.is_hot(), "fixture must settle before the drag starts");
+        engine.refresh_visible();
+        let click = {
+            let p = engine.particles[a.index()];
+            engine.camera.world_to_screen((p.x as f64, p.y as f64), canvas)
+        };
+
+        engine.on_event(&PlatformEvent::PointerDown { x: click.0, y: click.1, button: MouseButton::Left });
+        let mut min_alpha = f32::MAX;
+        let mut max_alpha = f32::MIN;
+        for i in 0..90 {
+            if i % 10 == 0 {
+                engine.on_event(&PlatformEvent::PointerMoved { x: click.0 + i as f64, y: click.1 });
+            }
+            let r = engine.tick(1.0 / 60.0);
+            min_alpha = min_alpha.min(r.alpha);
+            max_alpha = max_alpha.max(r.alpha);
+        }
+        assert!(
+            (min_alpha - DRAG_ALPHA_TARGET).abs() < 0.01 && (max_alpha - DRAG_ALPHA_TARGET).abs() < 0.01,
+            "alpha must hold near the sustained drag target for the whole gesture: min {min_alpha} max {max_alpha} (target {DRAG_ALPHA_TARGET})"
+        );
+
+        engine.on_event(&PlatformEvent::PointerUp { x: click.0 + 80.0, y: click.1, button: MouseButton::Left });
+        let post_release = engine.tick(1.0 / 60.0);
+        assert!(
+            post_release.alpha < DRAG_ALPHA_TARGET - 1e-4,
+            "alpha must start decaying immediately after drag-end clears alpha_target: {}",
+            post_release.alpha
+        );
+        for _ in 0..600 {
+            engine.tick(1.0 / 60.0);
+        }
+        assert!(!engine.is_hot(), "alpha must decay all the way back down once alpha_target is cleared");
     }
 }

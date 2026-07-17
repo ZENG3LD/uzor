@@ -51,4 +51,22 @@ pub trait Layout {
     fn reheat(&mut self, alpha: f32);
 
     fn is_settled(&self) -> bool;
+
+    /// Sustained-reheat target ("`alphaTarget`" in d3-force parlance —
+    /// Wave 2.1 drag-physics contract, obsidian doc §drag/d3-canon):
+    /// while set above `0.0`, [`Layout::tick`] eases `alpha` TOWARD this
+    /// value each tick instead of decaying it all the way to `0.0`. This
+    /// is what keeps an interaction (e.g. an active node drag) feeling
+    /// "warm" for its whole duration instead of a one-shot [`Layout::reheat`]
+    /// bump that starts cooling back down immediately. Layouts without
+    /// an alpha-decay schedule (hierarchical/radial — one-shot, no
+    /// cooling) leave this the default no-op.
+    fn set_alpha_target(&mut self, _target: f32) {}
+
+    /// Current sustained-reheat target — see [`Layout::set_alpha_target`].
+    /// Default `0.0` for layouts that don't override
+    /// [`Layout::set_alpha_target`].
+    fn alpha_target(&self) -> f32 {
+        0.0
+    }
 }

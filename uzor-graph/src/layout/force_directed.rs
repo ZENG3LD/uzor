@@ -231,6 +231,14 @@ impl Layout for ForceDirectedLayout {
     fn is_settled(&self) -> bool {
         self.alpha < self.params.alpha_min
     }
+
+    fn set_alpha_target(&mut self, target: f32) {
+        self.alpha_target = target.clamp(0.0, 1.0);
+    }
+
+    fn alpha_target(&self) -> f32 {
+        self.alpha_target
+    }
 }
 
 #[cfg(test)]

@@ -109,6 +109,22 @@ impl Layout for GraphLayoutMode {
             LayoutKind::Radial => self.radial.is_settled(),
         }
     }
+
+    fn set_alpha_target(&mut self, target: f32) {
+        match self.kind {
+            LayoutKind::Force => self.force.set_alpha_target(target),
+            LayoutKind::Hierarchical => self.hierarchical.set_alpha_target(target),
+            LayoutKind::Radial => self.radial.set_alpha_target(target),
+        }
+    }
+
+    fn alpha_target(&self) -> f32 {
+        match self.kind {
+            LayoutKind::Force => self.force.alpha_target(),
+            LayoutKind::Hierarchical => self.hierarchical.alpha_target(),
+            LayoutKind::Radial => self.radial.alpha_target(),
+        }
+    }
 }
 
 #[cfg(test)]
