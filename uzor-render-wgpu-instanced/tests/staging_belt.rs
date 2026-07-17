@@ -11,7 +11,7 @@ const H: u32 = 64;
 
 /// Initialise a headless wgpu device, or return `None` if no adapter is available.
 fn init_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference:       wgpu::PowerPreference::LowPower,
         force_fallback_adapter: false,

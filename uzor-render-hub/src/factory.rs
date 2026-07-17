@@ -1075,16 +1075,13 @@ impl WindowRenderState {
                     // Reset draw_commands for the new frame. (Walker is
                     // about to push fresh commands into it.)
                     c.clear();
-                    // Recreate the context if the surface resized — the
-                    // screen_w/screen_h are baked into the transform and
-                    // root clip rect at construction time, so a stale
-                    // context paints at the old size.
-                    //
-                    // NOTE: InstancedRenderContext has no setter for
-                    // these fields today, so we replace the whole
-                    // context when the size changes. Add a `resize()`
-                    // method upstream if this becomes a hot path.
-                    let _ = (w, h); // size-aware resize TBD
+                    // Re-baseline root clip/transform if the surface
+                    // resized — `resize()` reuses the context's existing
+                    // allocations instead of reconstructing it.
+                    let (cur_w, cur_h) = c.screen_size();
+                    if cur_w != w as f32 || cur_h != h as f32 {
+                        c.resize(w as f32, h as f32, 0.0, 0.0);
+                    }
                     f(c)
                 })
             }

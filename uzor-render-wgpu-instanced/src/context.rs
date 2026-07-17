@@ -4,6 +4,7 @@
 //! `TriangleInstance` / `TextAreaData` vectors during a frame.  At the end of the
 //! frame the caller passes these vectors to `InstancedRenderer::render()`.
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use lyon_tessellation::{
@@ -13,14 +14,16 @@ use lyon_tessellation::{
 use lyon_path::math::point;
 use skrifa::MetadataProvider;
 use uzor::render::{
-    BatchPainter, Effects, GradientPainter, Masking, Painter, RenderContext, RenderContextExt,
+    BatchPainter, Effects, GradientPainter, Masking, OffscreenTarget, OffscreenTargetDesc,
+    OffscreenTargetId, Painter, RenderContext, RenderContextExt,
     ShapeHelpers, TextBounds, TextMetrics, TextRenderer,
     TextAlign, TextBaseline,
 };
+use uzor::core::types::Rect as UzorRect;
 
 use uzor::fonts::{self, FontFamily};
 
-use crate::instances::{DrawCmd, QuadInstance, TriangleInstance};
+use crate::instances::{DrawCmd, LineInstance, QuadInstance, TriangleInstance};
 use crate::text::TextAreaData;
 
 /// Lazily-loaded skrifa font data (regular, bold, italic, bold-italic).
@@ -217,6 +220,43 @@ pub struct InstancedRenderContext {
     // Screen size for the "infinite" default clip rect
     screen_w: f32,
     screen_h: f32,
+
+    // Offscreen-target support — an instance-list recording swap, the
+    // same shape as the CPU/vello backends' "swap current surface" save
+    // stack, applied at `DrawCmd` granularity instead of a pixmap/scene
+    // object (this backend has neither — see the `RenderContext` impl
+    // doc comment below for the full rationale).
+    offscreen_targets: HashMap<OffscreenTargetId, CachedTarget>,
+    next_offscreen_id: u64,
+    offscreen_stack: Vec<SavedRecording>,
+}
+
+/// Recording state swapped out while painting into an offscreen target.
+/// Mirrors `VelloCpuRenderContext`'s `SavedRecording`: the previously
+/// active `draw_commands` list (plus the root-baseline state it needs
+/// restored) is stashed here while a fresh, empty list accumulates the
+/// offscreen subtree's commands.
+struct SavedRecording {
+    id:           OffscreenTargetId,
+    draw_commands: Vec<DrawCmd>,
+    transform:    [f32; 6],
+    clip_stack:   Vec<[f32; 4]>,
+    state_stack:  Vec<SavedState>,
+    path:         Vec<PathCmd>,
+    screen_w:     f32,
+    screen_h:     f32,
+}
+
+/// Cached offscreen-target content — the recorded `DrawCmd` list captured
+/// between `push_offscreen_target`/`pop_offscreen_target`, replayed by
+/// `draw_cached_target` via per-instance position translation (every
+/// `DrawCmd` variant already carries device-pixel positions baked in at
+/// emission time — see the impl doc comment for why this is the honest
+/// equivalent of `vello::Scene::append`, not a raster texture).
+struct CachedTarget {
+    commands: Vec<DrawCmd>,
+    width:    f32,
+    height:   f32,
 }
 
 impl InstancedRenderContext {
@@ -247,12 +287,57 @@ impl InstancedRenderContext {
             path: Vec::new(),
             screen_w,
             screen_h,
+            offscreen_targets: HashMap::new(),
+            next_offscreen_id: 0,
+            offscreen_stack: Vec::new(),
         }
     }
 
     /// Clear all accumulated draw calls (call at the start of each frame).
     pub fn clear(&mut self) {
         self.draw_commands.clear();
+    }
+
+    /// Current baked surface size — same "read back what `new`/`resize`
+    /// set" accessor shape as `TinySkiaCpuRenderContext::width()/height()`,
+    /// used by consumers (e.g. `uzor-render-hub`) to detect a surface
+    /// resize before deciding whether to call [`Self::resize`].
+    pub fn screen_size(&self) -> (f32, f32) {
+        (self.screen_w, self.screen_h)
+    }
+
+    /// Re-baseline the context for a new surface size / origin offset,
+    /// reusing the existing allocations (`draw_commands`, `clip_stack`,
+    /// `state_stack`) instead of constructing a fresh `InstancedRenderContext`.
+    ///
+    /// `screen_w`/`screen_h`/the initial offset transform were baked into
+    /// the root clip rect and transform at construction time with no way
+    /// to update them afterward — every consumer (e.g.
+    /// `uzor-render-hub`'s `factory.rs`) had to replace the whole context
+    /// on any surface resize. This is the real prerequisite gap the
+    /// offscreen-target work depends on: `push_offscreen_target` below
+    /// reuses this same "re-baseline root state" logic to reset a fresh
+    /// recording's local origin/clip, so it must exist first.
+    ///
+    /// Must be called with an empty save/restore stack (i.e. not between
+    /// a `save()`/`restore()` pair or `push_offscreen_target`/
+    /// `pop_offscreen_target` pair) — same "call at frame boundaries"
+    /// contract `clear()` already has. Resizing invalidates any
+    /// in-flight path/clip state, matching every other backend's
+    /// `begin_frame` reset convention (transform, clip, save stack, path
+    /// all reset).
+    pub fn resize(&mut self, screen_w: f32, screen_h: f32, offset_x: f32, offset_y: f32) {
+        self.transform = [1.0, 0.0, 0.0, 1.0, offset_x, offset_y];
+        self.screen_w = screen_w;
+        self.screen_h = screen_h;
+        self.clip_stack.clear();
+        self.clip_stack.push([0.0, 0.0, screen_w, screen_h]);
+        self.state_stack.clear();
+        self.path.clear();
+        self.fill_color = [1.0, 1.0, 1.0, 1.0];
+        self.stroke_color = [1.0, 1.0, 1.0, 1.0];
+        self.stroke_width = 1.0;
+        self.global_alpha = 1.0;
     }
 
     // ── Internals ──────────────────────────────────────────────────────────
@@ -1037,10 +1122,197 @@ impl uzor::render::UiEffectHelpers for InstancedRenderContext {}
 
 impl BatchPainter for InstancedRenderContext {}
 
-// ── RenderContext (dpr only) ───────────────────────────────────────────────
-
+// ── RenderContext — offscreen targets are an instance-list recording swap ──
+//
+// `InstancedRenderContext` has neither a pixmap (tiny-skia) nor a
+// `vello::Scene`-style encoding tree (vello-cpu/vello-gpu) — it is a flat
+// `Vec<DrawCmd>` of already-transformed instance data (every `QuadInstance`/
+// `LineInstance`/`TriangleInstance`/`TextAreaData` carries device-pixel
+// positions + a resolved `clip_rect`, baked in via `apply(&self.transform,
+// …)` at emission time — confirmed by reading `tessellate_stroke`/
+// `stroke_rounded_rect`/etc. above). The actual GPU device/queue live in the
+// separate `InstancedRenderer` (`renderer.rs`), never inside this context.
+//
+// That shape makes the honest cache mechanism an INSTANCE-LIST recording
+// swap: `push_offscreen_target` swaps `draw_commands` for a fresh, empty
+// `Vec` (same "swap current surface" discipline as tiny-skia's pixmap swap
+// and vello-gpu's `CurrentScene` swap); `pop_offscreen_target` stashes the
+// recorded list under the target's id; `draw_cached_target` replays it by
+// translating every recorded instance's position/clip fields by the
+// destination offset and appending them into the currently-active list —
+// the instance-list equivalent of `vello::Scene::append`, not a GPU texture
+// (no `wgpu::Device`/`Queue` is available inside this context to rasterise
+// one, and none is needed: replay is just data movement, same as vello-gpu's
+// vector-fragment append).
 impl RenderContext for InstancedRenderContext {
     fn dpr(&self) -> f64 { 1.0 }
+
+    fn supports_offscreen_targets(&self) -> bool {
+        true
+    }
+
+    fn push_offscreen_target(&mut self, desc: OffscreenTargetDesc) -> OffscreenTarget {
+        let w = (desc.width_px.max(1)) as f32;
+        let h = (desc.height_px.max(1)) as f32;
+
+        let id = OffscreenTargetId(self.next_offscreen_id);
+        self.next_offscreen_id += 1;
+
+        let saved_commands = std::mem::take(&mut self.draw_commands);
+        let saved_transform = self.transform;
+        let saved_clip_stack = std::mem::replace(&mut self.clip_stack, vec![[0.0, 0.0, w, h]]);
+        let saved_state_stack = std::mem::take(&mut self.state_stack);
+        let saved_path = std::mem::take(&mut self.path);
+        let saved_screen_w = self.screen_w;
+        let saved_screen_h = self.screen_h;
+
+        self.offscreen_stack.push(SavedRecording {
+            id,
+            draw_commands: saved_commands,
+            transform:     saved_transform,
+            clip_stack:    saved_clip_stack,
+            state_stack:   saved_state_stack,
+            path:          saved_path,
+            screen_w:      saved_screen_w,
+            screen_h:      saved_screen_h,
+        });
+
+        // The offscreen subtree paints at its own local origin — reset
+        // transform exactly like every other backend's `push_offscreen_target`.
+        self.transform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        self.screen_w = w;
+        self.screen_h = h;
+
+        Some(id)
+    }
+
+    fn pop_offscreen_target(&mut self) {
+        let Some(saved) = self.offscreen_stack.pop() else {
+            return;
+        };
+        let recorded = std::mem::replace(&mut self.draw_commands, saved.draw_commands);
+        let (width, height) = (self.screen_w, self.screen_h);
+
+        self.transform   = saved.transform;
+        self.clip_stack  = saved.clip_stack;
+        self.state_stack = saved.state_stack;
+        self.path        = saved.path;
+        self.screen_w    = saved.screen_w;
+        self.screen_h    = saved.screen_h;
+
+        self.offscreen_targets.insert(saved.id, CachedTarget {
+            commands: recorded,
+            width,
+            height,
+        });
+    }
+
+    fn draw_cached_target(&mut self, id: OffscreenTargetId, dst_rect: UzorRect) -> bool {
+        if dst_rect.width <= 0.0 || dst_rect.height <= 0.0 {
+            return false;
+        }
+        let Some(target) = self.offscreen_targets.get(&id) else {
+            return false;
+        };
+
+        // `push_offscreen_target` resets `self.transform` to identity for
+        // the recording, so every position baked into `target.commands` is
+        // in LOCAL coordinates relative to the boundary's own origin —
+        // exactly the space `fill_rect(x, y, …)` receives its `x`/`y` in
+        // for a normal draw call. Replaying the fragment is therefore the
+        // SAME `apply(&self.transform, local_x, local_y)` every other draw
+        // call already does, just applied per recorded instance instead of
+        // per fresh path point — `dst_rect.x/y` is the local-space offset
+        // to add before transforming (matches the trait's documented
+        // convention: caller has already `translate`d for anything outside
+        // this call's own responsibility).
+        let effective_transform = translate_transform(
+            &self.transform, dst_rect.x as f32, dst_rect.y as f32,
+        );
+
+        for cmd in &target.commands {
+            self.draw_commands.push(transform_draw_cmd(cmd, &effective_transform));
+        }
+        true
+    }
+
+    fn resize_offscreen_target(&mut self, id: OffscreenTargetId, desc: OffscreenTargetDesc) -> bool {
+        // Recorded instance lists don't need reallocation on resize (no
+        // backing buffer sized to the target) — but content painted at the
+        // OLD size is stale, same "report success only for a no-op resize"
+        // contract the CPU backend uses; callers otherwise `free` + `push`
+        // a new target at the new size.
+        self.offscreen_targets
+            .get(&id)
+            .is_some_and(|t| {
+                t.width == desc.width_px.max(1) as f32 && t.height == desc.height_px.max(1) as f32
+            })
+    }
+
+    fn free_offscreen_target(&mut self, id: OffscreenTargetId) {
+        self.offscreen_targets.remove(&id);
+    }
+}
+
+/// Re-project every position field of a recorded `DrawCmd` through
+/// `transform` — the replay half of the offscreen-target instance-list
+/// cache. `target.commands` were captured with the recording's transform
+/// reset to identity (see `push_offscreen_target`), so every position is a
+/// LOCAL coordinate; `transform` here is the current surface's active
+/// transform composed with the `dst_rect` placement offset (built by the
+/// caller via `translate_transform`), i.e. exactly what `apply(&self.
+/// transform, local_x, local_y)` would compute for a fresh draw call at
+/// that same local position.
+///
+/// `clip_rect` fields are always axis-aligned screen-space `[x, y, w, h]`
+/// throughout this backend (see `current_clip()` — never rotated), so only
+/// the rect's origin is re-projected through `transform`'s translation +
+/// uniform-scale component, matching how every existing draw call already
+/// treats clip rects (untouched by rotation).
+fn transform_draw_cmd(cmd: &DrawCmd, transform: &[f32; 6]) -> DrawCmd {
+    let scale = ((transform[0].abs() + transform[3].abs()) * 0.5).max(0.001);
+    let shift_rect = |r: [f32; 4]| {
+        let (ox, oy) = apply(transform, r[0], r[1]);
+        [ox, oy, r[2] * scale, r[3] * scale]
+    };
+    match cmd {
+        DrawCmd::Quad(q) => {
+            let mut q = *q;
+            q.pos = apply(transform, q.pos[0], q.pos[1]).into();
+            q.size = [q.size[0] * scale, q.size[1] * scale];
+            q.corner_radius *= scale;
+            q.border_width *= scale;
+            q.clip_rect = shift_rect(q.clip_rect);
+            DrawCmd::Quad(q)
+        }
+        DrawCmd::Triangle(t) => {
+            let mut t = *t;
+            t.v0 = apply(transform, t.v0[0], t.v0[1]).into();
+            t.v1 = apply(transform, t.v1[0], t.v1[1]).into();
+            t.v2 = apply(transform, t.v2[0], t.v2[1]).into();
+            t.clip_rect = shift_rect(t.clip_rect);
+            DrawCmd::Triangle(t)
+        }
+        DrawCmd::Line(l) => {
+            let mut l: LineInstance = *l;
+            l.start = apply(transform, l.start[0], l.start[1]).into();
+            l.end = apply(transform, l.end[0], l.end[1]).into();
+            l.width *= scale;
+            l.clip_rect = shift_rect(l.clip_rect);
+            DrawCmd::Line(l)
+        }
+        DrawCmd::Text(ta) => {
+            let mut ta = ta.clone();
+            let (px, py) = apply(transform, ta.x, ta.y);
+            ta.x = px;
+            ta.y = py;
+            ta.font_size *= scale;
+            ta.estimated_width *= scale;
+            ta.estimated_height *= scale;
+            ta.clip = shift_rect(ta.clip);
+            DrawCmd::Text(ta)
+        }
+    }
 }
 
 impl RenderContextExt for InstancedRenderContext {
@@ -1436,6 +1708,161 @@ fn strip_bounds_for_t(
         let y_at_t1 = (sy1 + t1 * gdy).clamp(top, bottom);
         let (st, sb) = if y_at_t0 <= y_at_t1 { (y_at_t0, y_at_t1) } else { (y_at_t1, y_at_t0) };
         (left, st.max(top), right, sb.min(bottom))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — resize() gap-closer + offscreen-target instance-list round trip
+// ---------------------------------------------------------------------------
+//
+// `InstancedRenderContext` is pure CPU-side accumulation (no `wgpu::Device`
+// involved), so unlike the wgpu-backed vello-hybrid backend, the FULL
+// push/pop/draw/resize/free round trip is headlessly testable here — same
+// as tiny-skia's/vello-cpu's own offscreen-target tests.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uzor::render::ShapeHelpers;
+
+    #[test]
+    fn resize_rebaselines_root_clip_and_transform_without_reallocating() {
+        let mut ctx = InstancedRenderContext::new(100.0, 100.0, 0.0, 0.0);
+        assert_eq!(ctx.screen_size(), (100.0, 100.0));
+        assert_eq!(ctx.clip_stack, vec![[0.0, 0.0, 100.0, 100.0]]);
+
+        ctx.resize(200.0, 150.0, 5.0, 7.0);
+        assert_eq!(ctx.screen_size(), (200.0, 150.0));
+        assert_eq!(ctx.clip_stack, vec![[0.0, 0.0, 200.0, 150.0]]);
+        assert_eq!(ctx.transform, [1.0, 0.0, 0.0, 1.0, 5.0, 7.0]);
+    }
+
+    #[test]
+    fn offscreen_targets_are_supported_unconditionally() {
+        let ctx = InstancedRenderContext::new(64.0, 64.0, 0.0, 0.0);
+        assert!(ctx.supports_offscreen_targets());
+    }
+
+    #[test]
+    fn offscreen_target_round_trip_appends_translated_commands() {
+        let mut ctx = InstancedRenderContext::new(64.0, 64.0, 0.0, 0.0);
+
+        let desc = OffscreenTargetDesc { width_px: 32, height_px: 32, dpr: 1.0 };
+        let id = ctx
+            .push_offscreen_target(desc)
+            .expect("wgpu-instanced backend must support offscreen targets");
+
+        // Paint something into the offscreen recording, at local origin.
+        ctx.set_fill_color("#ff0000");
+        ctx.fill_rect(2.0, 3.0, 10.0, 10.0);
+
+        ctx.pop_offscreen_target();
+
+        // Root command list must still be untouched immediately after pop —
+        // the recorded content lives only in `offscreen_targets` until an
+        // explicit `draw_cached_target` call.
+        assert!(ctx.draw_commands.is_empty(), "pop must not leak into the root list");
+
+        let drew = ctx.draw_cached_target(
+            id,
+            UzorRect { x: 10.0, y: 20.0, width: 32.0, height: 32.0 },
+        );
+        assert!(drew, "draw_cached_target must succeed for a freshly-popped id");
+        assert_eq!(ctx.draw_commands.len(), 1, "exactly the one recorded quad must be replayed");
+
+        let DrawCmd::Quad(q) = &ctx.draw_commands[0] else {
+            panic!("expected the recorded fill_rect to replay as a Quad");
+        };
+        // Recorded locally at (2,3); replay offset is dst_rect (10,20) with
+        // no additional outer transform (identity) — expect (12, 23).
+        assert_eq!(q.pos, [12.0, 23.0]);
+        assert_eq!(q.size, [10.0, 10.0]);
+    }
+
+    #[test]
+    fn draw_cached_target_unknown_id_returns_false() {
+        let mut ctx = InstancedRenderContext::new(64.0, 64.0, 0.0, 0.0);
+        let bogus = OffscreenTargetId(9999);
+        let drew = ctx.draw_cached_target(
+            bogus,
+            UzorRect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 },
+        );
+        assert!(!drew, "unknown target id must report false, not panic");
+    }
+
+    #[test]
+    fn resize_offscreen_target_reports_success_only_for_matching_size() {
+        let mut ctx = InstancedRenderContext::new(64.0, 64.0, 0.0, 0.0);
+
+        let desc = OffscreenTargetDesc { width_px: 16, height_px: 16, dpr: 1.0 };
+        let id = ctx.push_offscreen_target(desc).expect("push must succeed");
+        ctx.pop_offscreen_target();
+
+        // Same size — no-op resize succeeds.
+        assert!(ctx.resize_offscreen_target(id, desc));
+
+        // Different size — stale content, contract says report failure so
+        // the caller frees + re-pushes at the new size.
+        let bigger = OffscreenTargetDesc { width_px: 128, height_px: 128, dpr: 2.0 };
+        assert!(!ctx.resize_offscreen_target(id, bigger));
+
+        let unknown = OffscreenTargetId(id.0 + 1);
+        assert!(!ctx.resize_offscreen_target(unknown, desc));
+    }
+
+    #[test]
+    fn free_offscreen_target_removes_cached_commands() {
+        let mut ctx = InstancedRenderContext::new(64.0, 64.0, 0.0, 0.0);
+
+        let desc = OffscreenTargetDesc { width_px: 8, height_px: 8, dpr: 1.0 };
+        let id = ctx.push_offscreen_target(desc).expect("push must succeed");
+        ctx.pop_offscreen_target();
+        assert!(ctx.offscreen_targets.contains_key(&id));
+
+        ctx.free_offscreen_target(id);
+        assert!(!ctx.offscreen_targets.contains_key(&id));
+
+        let drew = ctx.draw_cached_target(
+            id,
+            UzorRect { x: 0.0, y: 0.0, width: 8.0, height: 8.0 },
+        );
+        assert!(!drew, "freed target must no longer be drawable");
+    }
+
+    #[test]
+    fn nested_offscreen_targets_stack_correctly() {
+        let mut ctx = InstancedRenderContext::new(64.0, 64.0, 0.0, 0.0);
+
+        let outer_desc = OffscreenTargetDesc { width_px: 32, height_px: 32, dpr: 1.0 };
+        let outer_id = ctx.push_offscreen_target(outer_desc).expect("outer push must succeed");
+
+        let inner_desc = OffscreenTargetDesc { width_px: 16, height_px: 16, dpr: 1.0 };
+        let inner_id = ctx.push_offscreen_target(inner_desc).expect("inner push must succeed");
+        assert_ne!(outer_id, inner_id);
+
+        ctx.set_fill_color("#00ff00");
+        ctx.fill_rect(0.0, 0.0, 4.0, 4.0);
+        ctx.pop_offscreen_target(); // pops inner
+
+        // Back in the outer recording — draw the (now-cached) inner target.
+        let drew_inner = ctx.draw_cached_target(
+            inner_id,
+            UzorRect { x: 1.0, y: 1.0, width: 16.0, height: 16.0 },
+        );
+        assert!(drew_inner);
+
+        ctx.pop_offscreen_target(); // pops outer
+
+        // Root list is still untouched — everything is stashed under
+        // outer_id until an explicit draw_cached_target(outer_id, ...).
+        assert!(ctx.draw_commands.is_empty());
+
+        let drew_outer = ctx.draw_cached_target(
+            outer_id,
+            UzorRect { x: 5.0, y: 5.0, width: 32.0, height: 32.0 },
+        );
+        assert!(drew_outer);
+        // Outer's cached content included the inner target's replayed quad.
+        assert_eq!(ctx.draw_commands.len(), 1);
     }
 }
 

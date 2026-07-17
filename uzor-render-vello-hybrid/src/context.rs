@@ -37,6 +37,7 @@
 //! queue.submit([encoder.finish()]);
 //! ```
 
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 // ---------------------------------------------------------------------------
@@ -61,7 +62,9 @@ use skrifa::{
 // vello_hybrid — Scene (geometry encoder) and GPU Renderer
 // ---------------------------------------------------------------------------
 
-use vello_hybrid::{RenderSize, Scene};
+use vello_hybrid::{
+    RenderSize, RenderTargetConfig, Renderer, Scene, TextureBindings, TextureId,
+};
 
 // ---------------------------------------------------------------------------
 // wgpu — GPU device/queue/encoder/view handles
@@ -77,9 +80,11 @@ use uzor::fonts::{self, FontFamily};
 use uzor::render::{
     BatchPainter, BlendMode as UzorBlendMode, CircleBatch,
     Effects, GradientPainter, LineSegment, Masking, Painter,
+    OffscreenTarget, OffscreenTargetDesc, OffscreenTargetId,
     RenderContext as UzorRenderContext, RenderContextExt, ShapeHelpers,
     TextBounds, TextMetrics, TextRenderer, TextAlign, TextBaseline,
 };
+use uzor::core::types::Rect as UzorRect;
 
 // ---------------------------------------------------------------------------
 // Cached vello_hybrid FontData (one per process)
@@ -383,6 +388,48 @@ pub struct VelloHybridRenderContext {
     shadow:        Option<ShadowState>,
     /// M6-P3: Blend mode.
     blend_mode:    UzorBlendMode,
+
+    // Offscreen-target support — capability-gated on `set_gpu_handles`
+    // (see the `RenderContext` impl below for the full rationale). Both
+    // handles are populated together by `set_gpu_handles`; `None` means
+    // "backend not yet wired to a GPU device", the honest default.
+    gpu_device: Option<Arc<Device>>,
+    gpu_queue:  Option<Arc<Queue>>,
+
+    // Rasterised offscreen-target cache — each entry owns the `wgpu::Texture`
+    // it was rendered into plus the `TextureView` bound for replay via
+    // `Scene::draw_texture_rects`.
+    offscreen_targets: HashMap<OffscreenTargetId, CachedTarget>,
+    // Monotonic counter for allocating new `OffscreenTargetId`s (and,
+    // paired 1:1, the `vello_hybrid::TextureId` bound for that target).
+    next_offscreen_id: u64,
+    // Stack of saved recording state, swapped out by
+    // `push_offscreen_target`; `pop_offscreen_target` restores the top
+    // entry and rasterises the just-finished scene into the target's texture.
+    offscreen_stack: Vec<SavedRecording>,
+}
+
+/// Recording state swapped out while painting into an offscreen target.
+struct SavedRecording {
+    id:     OffscreenTargetId,
+    scene:  Option<Scene>,
+    width:  u32,
+    height: u32,
+}
+
+/// Rasterised offscreen-target content — a GPU texture rendered once at
+/// `pop_offscreen_target` time and replayed via `draw_texture_rects` on
+/// every subsequent `draw_cached_target` call, no re-rasterisation needed.
+///
+/// `wgpu::TextureView` (wgpu 29) already holds a `Clone`-able internal
+/// reference to the `Texture` it was created from (`TextureView::texture()`)
+/// — a separate `texture` field here would be a redundant, dead-weight
+/// keep-alive handle, not extra safety.
+struct CachedTarget {
+    view:       TextureView,
+    texture_id: TextureId,
+    width:      u32,
+    height:     u32,
 }
 
 impl VelloHybridRenderContext {
@@ -414,7 +461,34 @@ impl VelloHybridRenderContext {
             state_stack:   Vec::new(),
             shadow:        None,
             blend_mode:    UzorBlendMode::Normal,
+            gpu_device:    None,
+            gpu_queue:     None,
+            offscreen_targets: HashMap::new(),
+            next_offscreen_id: 0,
+            offscreen_stack:   Vec::new(),
         }
+    }
+
+    /// Provide the GPU device/queue handles this backend needs to actually
+    /// rasterise offscreen targets.
+    ///
+    /// `vello_hybrid::Scene` has no CPU-only raster path and no
+    /// `vello::Scene::append`-equivalent for merging encodings (see the
+    /// `RenderContext` impl doc comment below) — the only way to turn a
+    /// recorded `Scene` into replayable content is `Renderer::render()`,
+    /// which needs a `Device`/`Queue`. This context is constructed
+    /// GPU-handle-free (`new(dpr: f64)`) on purpose so it stays usable
+    /// before a device exists; call this setter once the caller has one
+    /// (same "declare it via a setter, not the constructor" precedent as
+    /// `set_blur_image` on the vello-gpu backend).
+    ///
+    /// `supports_offscreen_targets()` reports `true` only once both
+    /// handles are present — a capability that is conditionally true is
+    /// honest; unconditionally claiming `true` before a device exists
+    /// would not be.
+    pub fn set_gpu_handles(&mut self, device: Arc<Device>, queue: Arc<Queue>) {
+        self.gpu_device = Some(device);
+        self.gpu_queue  = Some(queue);
     }
 
     /// Begin a new frame.
@@ -466,7 +540,13 @@ impl VelloHybridRenderContext {
             return Ok(());
         };
         // vello_hybrid 0.0.9: render() takes &mut Resources + &TextureBindings.
-        let texture_bindings = vello_hybrid::TextureBindings::default();
+        // Bind every live cached offscreen target so any `draw_texture_rects`
+        // call this scene emitted (via `draw_cached_target`) resolves —
+        // `Renderer::render` errors with `MissingTextureBinding` otherwise.
+        // Built before the `&mut self.resources` borrow below (both are
+        // disjoint fields, but the local avoids borrowing `self` twice at
+        // the call site).
+        let bindings = self.cached_target_bindings();
         renderer.render(
             scene,
             &mut self.resources,
@@ -478,8 +558,21 @@ impl VelloHybridRenderContext {
                 height: self.height,
             },
             view,
-            &texture_bindings,
+            &bindings,
         )
+    }
+
+    /// Build the `TextureBindings` set for every currently-live cached
+    /// offscreen target, keyed by the `TextureId` `draw_cached_target`
+    /// bound it under. Used both by `render()` above (so a root-scene
+    /// draw referencing a cached target resolves) and internally by
+    /// `pop_offscreen_target`/`draw_cached_target`'s own bookkeeping.
+    fn cached_target_bindings(&self) -> TextureBindings {
+        let mut bindings = TextureBindings::new();
+        for target in self.offscreen_targets.values() {
+            bindings.insert(target.texture_id, target.view.clone());
+        }
+        bindings
     }
 
     // ------------------------------------------------------------------
@@ -1129,34 +1222,202 @@ impl GradientPainter for VelloHybridRenderContext {
 impl uzor::render::UiEffectHelpers for VelloHybridRenderContext {}
 
 // ---------------------------------------------------------------------------
-// RenderContext (dpr only)
+// RenderContext — offscreen targets are a rasterised-texture cache,
+// capability-gated on `set_gpu_handles`
 // ---------------------------------------------------------------------------
-//
-// Offscreen-target support — NOT implemented, documented divergence
-// (render-cache-parity-2026-07-12 plan, §5 Step 2):
 //
 // `vello_hybrid::Scene` has no `vello::Scene::append`-equivalent: it is a
 // CPU-side sparse-strips command encoder feeding a GPU fragment shader
 // (`render/{wgpu,webgl}.rs`), not an encoding tree that can be merged with
 // another scene's encoding. There is also no CPU-only raster path (unlike
 // `vello_cpu`, which is fully self-contained) — the only way to turn a
-// `Scene` into reusable pixels is `Renderer::render()`, which needs a
-// `Device`/`Queue`/`TextureBindings` this context does not own (`render()`
-// takes them as call-site arguments, on purpose, so this struct stays
-// GPU-handle-free per its `new(dpr: f64)` constructor).
+// `Scene` into reusable content is `Renderer::render()`, which needs a
+// `Device`/`Queue` this context does not own by default (`new(dpr: f64)`
+// stays GPU-handle-free so the context is usable before a device exists).
 //
-// A texture-level cache is possible in principle (bind a persistent
-// `wgpu::Texture` + `TextureId`, populate it once via `Renderer::render()`,
-// replay via `Scene::draw_texture_rects`), but that requires holding
-// `Device`/`Queue` (or a `Renderer`) inside `VelloHybridRenderContext` —
-// exactly the constructor-shape change this plan's scope forbids. Per the
-// `set_blur_image`/`set_gpu_handles` setter precedent (vello-gpu, same
-// plan §4), that would be a legitimate ADDITIVE follow-up (a
-// `set_gpu_handles(device, queue)` setter, capability gated on whether it
-// was called) — not built here; `supports_offscreen_targets` stays at the
-// trait's default `false` until that follow-up lands.
+// The implementation below is the texture-level cache the divergence note
+// (formerly here) predicted as the legitimate follow-up: `set_gpu_handles`
+// (setter, not a constructor change — same precedent as vello-gpu's
+// `set_blur_image`) supplies `Device`/`Queue`; `push_offscreen_target`
+// swaps in a fresh `Scene` recording exactly like the CPU/GPU backends;
+// `pop_offscreen_target` allocates a `wgpu::Texture` (RENDER_ATTACHMENT |
+// TEXTURE_BINDING, `Rgba8Unorm`) sized to the target, builds a scratch
+// `Renderer` for that render-target format/size, and rasterises the
+// recorded scene into it via `Renderer::render()` + a locally-submitted
+// `CommandEncoder`. `draw_cached_target` binds the texture's view into a
+// `TextureBindings` and replays it with `Scene::draw_texture_rects` — no
+// re-rasterisation on every draw, matching the "cache" contract.
+//
+// `supports_offscreen_targets()` reports `true` only when both GPU
+// handles are present — a capability that is conditionally true is
+// honest; a stub that unconditionally claims `true` is not.
 impl UzorRenderContext for VelloHybridRenderContext {
     fn dpr(&self) -> f64 { self.dpr }
+
+    fn supports_offscreen_targets(&self) -> bool {
+        self.gpu_device.is_some() && self.gpu_queue.is_some()
+    }
+
+    fn push_offscreen_target(&mut self, desc: OffscreenTargetDesc) -> OffscreenTarget {
+        if !self.supports_offscreen_targets() {
+            return None;
+        }
+        let w = desc.width_px.max(1);
+        let h = desc.height_px.max(1);
+        let w16 = w.min(u16::MAX as u32) as u16;
+        let h16 = h.min(u16::MAX as u32) as u16;
+
+        let id = OffscreenTargetId(self.next_offscreen_id);
+        self.next_offscreen_id += 1;
+
+        let fresh_scene = Scene::new(w16, h16);
+        let saved_scene = std::mem::replace(&mut self.scene, Some(fresh_scene));
+        let saved_width = std::mem::replace(&mut self.width, w);
+        let saved_height = std::mem::replace(&mut self.height, h);
+
+        self.offscreen_stack.push(SavedRecording {
+            id,
+            scene:  saved_scene,
+            width:  saved_width,
+            height: saved_height,
+        });
+
+        // The offscreen subtree paints at its own local origin — reset
+        // per-frame drawing state exactly like `begin_frame` does.
+        self.transform   = Affine::IDENTITY;
+        self.clip_active = false;
+        self.state_stack.clear();
+        self.path        = None;
+
+        Some(id)
+    }
+
+    fn pop_offscreen_target(&mut self) {
+        let Some(saved) = self.offscreen_stack.pop() else {
+            return;
+        };
+        let recorded_scene = std::mem::replace(&mut self.scene, saved.scene);
+        let recorded_width = std::mem::replace(&mut self.width, saved.width);
+        let recorded_height = std::mem::replace(&mut self.height, saved.height);
+
+        let (Some(scene), Some(device), Some(queue)) =
+            (recorded_scene, self.gpu_device.clone(), self.gpu_queue.clone())
+        else {
+            // Handles were revoked mid-recording (should not happen given
+            // the `push` gate, but stay total rather than panicking) —
+            // drop the recording, nothing to cache.
+            return;
+        };
+
+        let w = recorded_width.max(1);
+        let h = recorded_height.max(1);
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("uzor-vello-hybrid-offscreen-target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut renderer = Renderer::new(&device, &RenderTargetConfig {
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            width:  w,
+            height: h,
+        });
+        let mut resources = vello_hybrid::Resources::new();
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("uzor-vello-hybrid-offscreen-target-encoder"),
+        });
+        // Bind any already-cached targets this recording itself referenced
+        // via `draw_cached_target` (nested offscreen boundaries) — without
+        // this, `Renderer::render` would fail with `MissingTextureBinding`
+        // for a target-of-a-target.
+        let render_result = renderer.render(
+            &scene,
+            &mut resources,
+            &device,
+            &queue,
+            &mut encoder,
+            &RenderSize { width: w, height: h },
+            &view,
+            &self.cached_target_bindings(),
+        );
+        if render_result.is_err() {
+            // Rasterisation failed (e.g. slot exhaustion on a pathological
+            // scene) — nothing to cache; the target simply stays absent
+            // and `draw_cached_target` reports `false` for this id.
+            return;
+        }
+        queue.submit([encoder.finish()]);
+
+        // `desc` (the caller-requested logical size/dpr) is intentionally
+        // not stored — the actual raster size (`w`, `h`, already clamped
+        // to >=1) is what the texture was allocated at and what
+        // `resize_offscreen_target` compares against; keeping a second,
+        // possibly-divergent copy would invite drift.
+        let texture_id = TextureId(saved.id.0);
+        self.offscreen_targets.insert(saved.id, CachedTarget {
+            view,
+            texture_id,
+            width: w,
+            height: h,
+        });
+    }
+
+    fn draw_cached_target(&mut self, id: OffscreenTargetId, dst_rect: UzorRect) -> bool {
+        if dst_rect.width <= 0.0 || dst_rect.height <= 0.0 {
+            return false;
+        }
+        let Some(target) = self.offscreen_targets.get(&id) else {
+            return false;
+        };
+        let Some(ref mut scene) = self.scene else {
+            return false;
+        };
+
+        // `draw_texture_rects` samples via an externally-bound `TextureId`
+        // — the binding itself is call-site state (`TextureBindings`)
+        // consulted only at `Renderer::render()` time, not stored on the
+        // `Scene`. `render()` above builds that binding set via
+        // `cached_target_bindings()`, covering every id this call could
+        // have referenced (root or nested recording).
+        let source_region = vello_common::geometry::RectU16::new(
+            0, 0,
+            target.width.min(u16::MAX as u32) as u16,
+            target.height.min(u16::MAX as u32) as u16,
+        );
+        let scale_x = dst_rect.width / f64::from(target.width.max(1));
+        let scale_y = dst_rect.height / f64::from(target.height.max(1));
+        let rect_transform = Affine::translate((dst_rect.x, dst_rect.y))
+            * Affine::scale_non_uniform(scale_x, scale_y);
+
+        scene.set_transform(self.transform);
+        scene.draw_texture_rects(
+            target.texture_id,
+            vello_common::peniko::ImageQuality::Medium,
+            [vello_hybrid::SampleRect { source_region, transform: rect_transform }],
+        );
+        true
+    }
+
+    fn resize_offscreen_target(&mut self, id: OffscreenTargetId, desc: OffscreenTargetDesc) -> bool {
+        // Rasterised content no longer matches the requested size once
+        // resized — same "report success only for a no-op resize"
+        // contract `VelloCpuRenderContext::resize_offscreen_target` uses;
+        // callers otherwise `free` + `push` a new target at the new size.
+        self.offscreen_targets
+            .get(&id)
+            .is_some_and(|t| t.width == desc.width_px.max(1) && t.height == desc.height_px.max(1))
+    }
+
+    fn free_offscreen_target(&mut self, id: OffscreenTargetId) {
+        self.offscreen_targets.remove(&id);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1177,23 +1438,24 @@ impl RenderContextExt for VelloHybridRenderContext {
 }
 
 // ---------------------------------------------------------------------------
-// Tests — offscreen-target divergence is an honest, total no-op
+// Tests — capability gate on `set_gpu_handles`
 // ---------------------------------------------------------------------------
 //
-// No fragment-cache/raster-cache implementation exists for this backend
-// (documented divergence above). These tests are regression coverage for
-// that documented state: every offscreen-target call must behave exactly
-// like the trait's default (capability `false`, `push` → `None`, every
-// other call a safe no-op / `false`), never panic, so the kernel walker's
-// `supports_offscreen_targets()` gate (checked once per backend instance)
-// stays the only thing callers need to consult.
+// A real push/pop/draw round trip needs an actual `wgpu::Device`/`Queue`
+// (adapter request is async and requires a live backend — not something a
+// headless unit test can construct deterministically, unlike tiny-skia's
+// `Pixmap`/vello-cpu's/`vello`'s pure-CPU/pure-vector paths). What IS real
+// and headlessly testable is the capability gate itself: `false` before
+// `set_gpu_handles`, every method a total (never-panics) no-op in that
+// state — exactly the honest-`None`-until-wired contract this backend's
+// `RenderContext` impl documents above.
 #[cfg(test)]
 mod tests {
     use super::*;
     use uzor::render::{OffscreenTargetDesc, OffscreenTargetId};
 
     #[test]
-    fn offscreen_targets_are_unsupported_and_total_no_op() {
+    fn offscreen_targets_unsupported_before_gpu_handles_are_set() {
         let mut ctx = VelloHybridRenderContext::new(1.0);
         ctx.begin_frame(64, 64);
 

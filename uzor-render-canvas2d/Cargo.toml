@@ -23,6 +23,8 @@ features = [
     "CanvasRenderingContext2d",
     "DomMatrix",
     "HtmlCanvasElement",
+    "OffscreenCanvas",
+    "OffscreenCanvasRenderingContext2d",
     "Path2d",
     "TextMetrics",
 ]
