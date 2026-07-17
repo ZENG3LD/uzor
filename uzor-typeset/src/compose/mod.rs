@@ -3,6 +3,7 @@
 //! [`crate::region::Frame`] per region consumed (design doc §3.2).
 
 mod flow;
+mod island_layout;
 pub mod keep_break;
 mod list_layout;
 mod paragraph_split;

@@ -17,6 +17,7 @@ use uzor_text::Paragraph;
 use crate::compose::keep_break::BreakControl;
 use crate::scene::figure_block::FigureBlock;
 use crate::scene::image_block::ImageBlock;
+use crate::scene::island::AnchoredIsland;
 use crate::scene::list::ListBlock;
 use crate::scene::table::TableBlock;
 
@@ -69,6 +70,13 @@ pub enum Block<'a> {
     /// A raster image + its required sizing/fit — ATOMIC, same
     /// all-or-nothing placement as [`Block::Figure`].
     Image(ImageBlock<'a>),
+    /// An image anchored in the flow, with the flow content immediately
+    /// following it running beside it in a side strip (design doc §2.3,
+    /// adapted — see `scene::island`'s own module docs for the
+    /// divergence from the doc's free-canvas original). ATOMIC — never
+    /// split across regions, same all-or-nothing placement as
+    /// [`Block::Figure`]/[`Block::Image`].
+    Island(AnchoredIsland<'a>),
     /// A two-pass column-sized table — row-atomic splitting across
     /// regions (design doc §3.5).
     Table(TableBlock<'a>),

@@ -9,11 +9,13 @@
 pub mod block;
 pub mod figure_block;
 pub mod image_block;
+pub mod island;
 pub mod list;
 pub mod table;
 
 pub use block::{resolve_block_ids, Block, BlockId, BlockNode};
 pub use figure_block::{BlockSizing, FigureBlock, TypesetFigure};
 pub use image_block::{ImageBlock, ImageFit};
+pub use island::{AnchoredIsland, IslandAnchor};
 pub use list::{ListBlock, ListItem, MarkerStyle};
 pub use table::{CellPadding, ColumnSpec, TableBlock, TableCell, TableRow};

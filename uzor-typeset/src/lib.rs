@@ -31,10 +31,21 @@
 //! FrameBlockState}` identity-matches two ADJACENT steps by `BlockId`
 //! (author-assigned or structural fallback), delegating a matched
 //! equal-text `Paragraph` pair wholesale to `uzor_text::kinetics` for
-//! glyph-level interpolation, painted via `render::draw_frame_state` — see
-//! this crate's `CLAUDE.md` for exactly what each phase built vs.
-//! deferred, and where its implementation diverges from the design doc's
-//! own pseudocode.
+//! glyph-level interpolation, painted via `render::draw_frame_state`.
+//!
+//! Also implements **Phase P5** (PDF assembly, `export::pdf_adapter::
+//! pages_to_pdf`) plus a later feature pass building real multi-column
+//! pages (`region::ColumnRegionSequence`/`region::PageRegionSequence::
+//! with_columns`, `master::PageMaster::with_columns`, `slice::Page::
+//! extra_frames`) and anchored islands — images anchored in the flow with
+//! text running beside them in a side strip (`scene::{AnchoredIsland,
+//! IslandAnchor}`, `Block::Island`) — and closes the `ImagePainter` paint
+//! gap for real (`Block::Image`/`Block::Island` composite real pixels
+//! through `RenderContext::image_painter()` now, dashed-magenta
+//! placeholder as a documented fallback only). See this crate's
+//! `CLAUDE.md` for exactly what each phase/pass built vs. deferred, and
+//! where its implementation diverges from the design doc's own
+//! pseudocode.
 
 pub mod compose;
 pub mod export;
@@ -54,13 +65,13 @@ pub use master::{
     SlideInstance, SlideLayout, SlideMaster,
 };
 pub use region::{
-    CardRegionSequence, FixedRegionSequence, Frame, ListPlacement, PageRegionSequence, PlacedBlock, PlacedListItem, PlacedTableCell,
-    PlacedTableRow, Region, RegionSequence, TablePlacement,
+    CardRegionSequence, ColumnRegionSequence, FixedRegionSequence, Frame, ListPlacement, PageRegionSequence, PlacedBlock, PlacedListItem,
+    PlacedTableCell, PlacedTableRow, Region, RegionSequence, TablePlacement,
 };
 pub use render::{draw_card, draw_frame_state, draw_page, draw_page_layers, draw_slide, DrawLayers};
 pub use scene::{
-    resolve_block_ids, Block, BlockId, BlockNode, BlockSizing, CellPadding, ColumnSpec, FigureBlock, ImageBlock, ImageFit, ListBlock,
-    ListItem, MarkerStyle, TableBlock, TableCell, TableRow, TypesetFigure,
+    resolve_block_ids, AnchoredIsland, Block, BlockId, BlockNode, BlockSizing, CellPadding, ColumnSpec, FigureBlock, ImageBlock, ImageFit,
+    IslandAnchor, ListBlock, ListItem, MarkerStyle, TableBlock, TableCell, TableRow, TypesetFigure,
 };
 pub use slice::{
     cards_to_slides, slice_build_steps, slice_cards, slice_pages, slice_slide_instance, slice_slides, slides_to_cards, BlockOverride,

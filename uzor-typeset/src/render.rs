@@ -4,30 +4,31 @@
 //! `TypesetFigure::render`, neither is a new drawing primitive this crate
 //! invented.
 //!
-//! ## Image blocks — the `ImagePainter` seam is not reachable here (report)
+//! ## Image blocks — the `ImagePainter` seam IS reachable now (P1 gap
+//! CLOSED)
 //!
 //! Design law 4 says images paint through `ImagePainter::draw_image_rgba`.
-//! Two independent gaps make that seam unreachable from THIS crate's own
-//! headless proof path:
-//! 1. `ImagePainter` is declared opt-in, NOT part of the `RenderContext`
-//!    supertrait (`uzor/src/core/render/context.rs`) — a `&mut dyn
-//!    RenderContext` alone cannot reach it, and this crate has no `Any`-
-//!    style downcast primitive to recover it (none exists anywhere in
-//!    `uzor` core yet — confirmed by inspection, not assumed).
-//! 2. Even the ONE backend that also implements `ImagePainter` in this
-//!    crate's own dependency chain (`uzor-render-tiny-skia`, the backend
-//!    `uzor-export::render_to_png` uses) declares `draw_image_rgba` a
-//!    documented no-op (`uzor-render-tiny-skia/src/context.rs:1617-1645`:
-//!    "tiny-skia does not load URL-based images... no wgpu texture
-//!    support in the CPU path") — so even a hypothetical downcast would
-//!    paint nothing.
+//! This crate's own P1 divergence log flagged that seam unreachable for
+//! two reasons — BOTH now closed upstream, not in this crate:
+//! 1. `RenderContext::image_painter()` is now a real capability-query
+//!    accessor on the `RenderContext` supertrait itself
+//!    (`uzor/src/core/render/context.rs`) — a `&mut dyn RenderContext`
+//!    reaches `Option<&mut dyn ImagePainter>` directly, no downcast
+//!    needed.
+//! 2. `uzor-render-tiny-skia`'s own `draw_image_rgba` is now a REAL
+//!    bilinear blit (`uzor-render-tiny-skia/src/context.rs`) — the
+//!    caller's straight-alpha RGBA bytes are premultiplied and composited
+//!    via `Pixmap::draw_pixmap`'s own Pattern-shader resampling, the same
+//!    backend `uzor-export::render_to_png` uses.
 //!
-//! [`draw_page`] therefore paints a deterministic, visibly-labeled
-//! placeholder rect for [`crate::scene::Block::Image`] (never silently
-//! skipped) instead of pretending to composite pixels no reachable
-//! backend can actually draw. `crate::scene::image_block`'s own fit-rect
-//! geometry (`ImageBlock::content_rect`) is real, tested, backend-
-//! independent math — only the FINAL pixel blit is the gap.
+//! [`crate::scene::Block::Image`]/[`crate::scene::Block::Island`] both
+//! paint real pixels through [`draw_image_content`]: `ctx.image_painter()`
+//! queried first; `Some` composites the block's own RGBA at its already-
+//! computed `ImageBlock::content_rect` (fit-mode geometry unchanged —
+//! only the FINAL blit was ever the gap); `None` (a backend that genuinely
+//! cannot composite images) falls back to the SAME deterministic dashed-
+//! magenta placeholder this crate always painted, now a documented
+//! fallback rather than the only path.
 
 use uzor::render::{RenderContext, TextAlign, TextBaseline};
 use uzor::types::Rect;
@@ -43,7 +44,9 @@ use crate::style::{ColorRole, FontRole, Theme};
 /// Dashed magenta — the same debug-outline convention
 /// `uzor_text::draw_paragraph`'s own `InlineBox` outline uses, so a
 /// reserved-but-unpainted rect always reads as "placeholder," never as a
-/// real content color.
+/// real content color. Fallback-only now (see this module's own "Image
+/// blocks" doc comment) — painted only when `ctx.image_painter()` is
+/// `None`.
 const IMAGE_PLACEHOLDER_COLOR: &str = "#ff00ffff";
 
 /// Which paint layers [`draw_page_layers`] includes — the "smallest clean
@@ -88,8 +91,11 @@ impl Default for DrawLayers {
 /// derives its position from the SAME `PlacedBlock::rect`/
 /// `paragraph_layout`/`table_placement`/`list_placement`
 /// [`crate::compose::compose`] already computed, never a second ad hoc
-/// position formula), followed by `page`'s own header/footer (P2 — see
-/// `crate::master::PageMaster`) and page-number text, if present.
+/// position formula), THEN every block in `page.extra_frames` (columns
+/// 2..N when [`crate::master::PageMaster::columns`] is `> 1` — see
+/// `crate::slice::pages`'s own "Multi-column pages" doc comment), followed
+/// by `page`'s own header/footer (P2 — see `crate::master::PageMaster`)
+/// and page-number text, if present.
 ///
 /// `theme` resolves EVERY paint color/font this function uses — the ink
 /// color paragraphs/table gridlines/list markers fall back to
@@ -116,6 +122,11 @@ pub fn draw_page_layers(ctx: &mut dyn RenderContext, page: &Page<'_>, theme: &Th
 
     for placed in &page.frame.blocks {
         draw_placed_block(ctx, placed, &default_color, &figure_theme, layers);
+    }
+    for extra in &page.extra_frames {
+        for placed in &extra.blocks {
+            draw_placed_block(ctx, placed, &default_color, &figure_theme, layers);
+        }
     }
     if let Some(header) = &page.header {
         for placed in &header.blocks {
@@ -248,8 +259,13 @@ fn draw_placed_block(ctx: &mut dyn RenderContext, placed: &PlacedBlock<'_>, defa
         Block::Figure(figure_block) => {
             figure_block.figure.render(ctx, placed.rect, figure_theme);
         }
-        Block::Image(_) => {
-            draw_image_placeholder(ctx, placed.rect);
+        Block::Image(image) => {
+            let content_rect = image.content_rect(placed.rect.width, placed.rect.height);
+            draw_image_content(ctx, image.rgba, image.intrinsic_width, image.intrinsic_height, content_rect, placed.rect);
+        }
+        Block::Island(island) => {
+            let content_rect = island.image.content_rect(placed.rect.width, placed.rect.height);
+            draw_image_content(ctx, island.image.rgba, island.image.intrinsic_width, island.image.intrinsic_height, content_rect, placed.rect);
         }
         Block::Table(_) => {
             if let Some(table) = &placed.table_placement {
@@ -262,6 +278,25 @@ fn draw_placed_block(ctx: &mut dyn RenderContext, placed: &PlacedBlock<'_>, defa
             }
         }
         Block::Spacer(_) => {}
+    }
+}
+
+/// Real image composite, shared by [`Block::Image`]/[`Block::Island`]
+/// (design law 4/6: one image-blit seam, no bespoke second one for
+/// islands). Queries [`RenderContext::image_painter`] — `Some` composites
+/// `rgba` at `content_rect` (already-computed `ImageBlock::content_rect`
+/// fit-mode geometry, origin-relative to `rect`, translated here into
+/// absolute frame coordinates — design law 1, no new position math);
+/// `None` (a backend that cannot composite raster images) falls back to
+/// the SAME deterministic dashed-magenta placeholder this crate always
+/// painted (this module's own documented fallback, not silently skipped).
+fn draw_image_content(ctx: &mut dyn RenderContext, rgba: &[u8], intrinsic_width: u32, intrinsic_height: u32, content_rect: (f64, f64, f64, f64), rect: Rect) {
+    let (cx, cy, cw, ch) = content_rect;
+    match ctx.image_painter() {
+        Some(painter) if cw > 0.0 && ch > 0.0 => {
+            painter.draw_image_rgba(rgba, intrinsic_width, intrinsic_height, rect.x + cx, rect.y + cy, cw, ch);
+        }
+        _ => draw_image_placeholder(ctx, rect),
     }
 }
 
@@ -1039,5 +1074,361 @@ mod tests {
             assert_eq!(decoded_png_dims(&bytes), (DECK_WIDTH as u32, DECK_HEIGHT as u32));
             write_proof_png(name, &bytes);
         }
+    }
+
+    /// A deterministic, generated "photo" RGBA buffer — layered gradients
+    /// + two circles so it reads as a real picture in the multi-column/
+    /// island proof PNGs below (design law 8: no binary assets, no RNG —
+    /// every pixel is a pure function of its own `(x, y)` and the
+    /// caller's own `seed`, which only shifts the palette a little so two
+    /// islands on the same page/demo don't look identical).
+    fn generated_photo_rgba(width: u32, height: u32, seed: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; (width as usize) * (height as usize) * 4];
+        let hue_shift = (seed % 3) as f64 * 40.0;
+        let (cx1, cy1, r1) = (width as f64 * 0.35, height as f64 * 0.38, width.min(height) as f64 * 0.30);
+        let (cx2, cy2, r2) = (width as f64 * 0.7, height as f64 * 0.65, width.min(height) as f64 * 0.22);
+
+        for y in 0..height {
+            for x in 0..width {
+                let fx = x as f64 / (width.max(1) as f64);
+                let fy = y as f64 / (height.max(1) as f64);
+                let r = (30.0 + 150.0 * fx + hue_shift).clamp(0.0, 255.0) as u8;
+                let g = (60.0 + 130.0 * fy).clamp(0.0, 255.0) as u8;
+                let b = (150.0 + 90.0 * (1.0 - fx) - hue_shift).clamp(0.0, 255.0) as u8;
+                let mut pixel = [r, g, b, 255u8];
+
+                let d1 = ((x as f64 - cx1).powi(2) + (y as f64 - cy1).powi(2)).sqrt();
+                if d1 < r1 {
+                    pixel = [235, 205, 90, 255];
+                }
+                let d2 = ((x as f64 - cx2).powi(2) + (y as f64 - cy2).powi(2)).sqrt();
+                if d2 < r2 {
+                    pixel = [60, 140, 95, 255];
+                }
+
+                let idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
+                buf[idx..idx + 4].copy_from_slice(&pixel);
+            }
+        }
+        buf
+    }
+
+    /// Test 5 (task gate): a headless render of a `Block::Image` must
+    /// paint REAL pixels — `RenderContext::image_painter()` is real on the
+    /// `uzor-export::render_to_png` backend now (P1 gap CLOSED, see this
+    /// module's own "Image blocks" doc comment) — proven as data: a pixel
+    /// inside the image's own `content_rect` must be the image's OWN
+    /// color (not the white export background), and a pixel along the
+    /// image's own rect edge must NOT be the old dashed-magenta
+    /// placeholder color (`0xff00ffff`) — the placeholder never fills,
+    /// only strokes a border, so this distinguishes a real composite from
+    /// the old fallback unambiguously.
+    #[test]
+    fn image_block_paints_real_pixels_not_the_placeholder() {
+        use crate::scene::{BlockSizing, ImageBlock, ImageFit};
+
+        const IMG_W: u32 = 40;
+        const IMG_H: u32 = 40;
+        // A solid, deliberately non-background, non-placeholder-magenta
+        // color (opaque teal) — a real composite paints this at every
+        // interior pixel.
+        let mut rgba = vec![0u8; (IMG_W * IMG_H * 4) as usize];
+        for px in rgba.chunks_mut(4) {
+            px.copy_from_slice(&[20, 180, 200, 255]);
+        }
+
+        let image = ImageBlock::new(&rgba, IMG_W, IMG_H, BlockSizing::FixedHeight(120.0), ImageFit::Stretch);
+        let flow = [BlockNode::new(Block::Image(image))];
+
+        let master = PageMaster::new(300.0, 300.0, Margins::uniform(20.0));
+        let style = ComposeStyle::new(0.0, FontSpec::new(FontFamily::Roboto, 14.0));
+        let shaper = CosmicShaper::headless();
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        let placed = pages[0].frame.blocks.first().expect("image placed");
+
+        let spec = ExportSpec { width_px: 300, height_px: 300, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+        let theme = crate::style::Theme::light_report();
+        let bytes = render_to_png(&spec, |ctx| draw_page(ctx, &pages[0], &theme)).expect("image proof render should succeed");
+        write_proof_png("typeset_image_real_paint_proof.png", &bytes);
+
+        let cx = (placed.rect.x + placed.rect.width / 2.0).round() as u32;
+        let cy = (placed.rect.y + placed.rect.height / 2.0).round() as u32;
+        let center = decoded_png_pixel(&bytes, cx, cy);
+        assert_ne!(center, [255, 255, 255, 255], "a real image composite must paint OVER the white export background at the image's own center");
+        assert!(
+            center[2] > center[1] && center[0] < 100,
+            "center pixel must read as the image's own teal-ish color (low red, blue > green), got {center:?}"
+        );
+
+        let edge_x = placed.rect.x.round() as u32;
+        let edge_y = (placed.rect.y + 2.0).round() as u32;
+        let edge = decoded_png_pixel(&bytes, edge_x, edge_y);
+        assert_ne!(edge, [255, 0, 255, 255], "the old dashed-magenta placeholder must never appear once a real image composite is available");
+    }
+
+    /// Demo proof (multi-column layout): one A4 page, a full-width
+    /// heading (painted via `PageMaster::with_header`'s own top margin
+    /// band, sized generously) above body text flowing in 2 columns
+    /// (justified, hyphenation on, ~18px column gap) —
+    /// `out/typeset_layout_columns.png`.
+    #[test]
+    fn two_column_page_with_full_width_heading_demo() {
+        const PAGE_W: u32 = 595;
+        const PAGE_H: u32 = 842;
+        const HEADING_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 26.0, bold: true, italic: false };
+        const BODY_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 13.0, bold: false, italic: false };
+
+        // A generous top margin band (90px) gives the full-width heading
+        // real room, painted via the master's own header margin-box —
+        // the SAME production `slice_pages`/`draw_page` pipeline every
+        // other proof in this file already uses, not a bespoke one.
+        let margins = crate::master::Margins::new(90.0, 40.0, 40.0, 40.0);
+        let master = PageMaster::new(PAGE_W as f64, PAGE_H as f64, margins).with_columns(2, 18.0);
+        let body_width = master.column_width();
+
+        let heading_run = [StyledRun::new("Case Report — Two-Column Layout", HEADING_FONT)];
+        let heading_flow = [BlockNode::new(Block::Paragraph(Paragraph::new(&heading_run, master.body_rect().width)))];
+        let master = master.with_header(&heading_flow);
+
+        const FILLER_A: &str = "The confidence-matrix narrative for this section walks through every traced hop in \
+            order, noting timestamps, counterparties, and the amount observed at each step of the flow, so a \
+            reader can follow the chain of custody from the initial deposit all the way through to the resting \
+            balance without needing a separate table for cross-reference.";
+        const FILLER_B: &str = "Business documents full of long compound words like implementation, infrastructure, \
+            counterparty, and accountability often expose uneven interword spacing in a narrow justified column, \
+            especially once hyphenation is enabled and a break lands mid-word near the right margin, which is \
+            exactly the case this fixture is built to show.";
+
+        let filler_a_run = [StyledRun::new(FILLER_A, BODY_FONT)];
+        let filler_b_run = [StyledRun::new(FILLER_B, BODY_FONT)];
+
+        let mut flow: Vec<BlockNode<'_>> = Vec::new();
+        for i in 0..6 {
+            let run: &[StyledRun<'_>; 1] = if i % 2 == 0 { &filler_a_run } else { &filler_b_run };
+            flow.push(BlockNode::new(Block::Paragraph(
+                Paragraph::new(run, body_width)
+                    .with_align(ParagraphAlign::Justify)
+                    .with_break_strategy(BreakStrategy::KnuthPlass)
+                    .with_hyphenation(Hyphenation::English),
+            )));
+            flow.push(BlockNode::new(Block::Spacer(12.0)));
+        }
+
+        let style = ComposeStyle::new(10.0, BODY_FONT);
+        let shaper = CosmicShaper::headless();
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1, "fixture must be tuned to fit ONE A4 page across 2 columns, got {}", pages.len());
+        assert!(!pages[0].extra_frames.is_empty(), "content must actually spill from column 1 into column 2");
+
+        // Column 1 and column 2 must never overlap horizontally, and
+        // neither ever exceeds its own column's width.
+        let col1_width = pages[0].frame.region.rect.width;
+        let col2_rect = pages[0].extra_frames[0].region.rect;
+        assert!(col2_rect.x >= pages[0].frame.region.rect.x + col1_width, "column 2 must sit to the right of column 1, past its own gap");
+        for placed in &pages[0].frame.blocks {
+            assert!(placed.rect.width <= col1_width + 0.01, "column 1 text must never exceed column 1's own width");
+        }
+        for placed in &pages[0].extra_frames[0].blocks {
+            assert!(placed.rect.width <= col2_rect.width + 0.01, "column 2 text must never exceed column 2's own width");
+        }
+
+        let theme = crate::style::Theme::light_report();
+        let spec = ExportSpec { width_px: PAGE_W, height_px: PAGE_H, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+        let bytes = render_to_png(&spec, |ctx| draw_page(ctx, &pages[0], &theme)).expect("columns demo render should succeed");
+        assert_eq!(decoded_png_dims(&bytes), (PAGE_W, PAGE_H));
+        write_proof_png("typeset_layout_columns.png", &bytes);
+    }
+
+    /// Demo proof (THE money shot): a centered image anchored in the flow
+    /// via [`crate::scene::Block::Island`] — text flows down the LEFT
+    /// strip beside it, then the RIGHT strip, then resumes at FULL body
+    /// width below the image — `out/typeset_layout_island_center.png`.
+    /// Island margin ~10px, matching the task's own professional-margins
+    /// ask.
+    #[test]
+    fn island_center_anchor_text_wraps_both_strips_then_resumes_full_width_demo() {
+        use uzor_text::layout_paragraph;
+
+        use crate::scene::{AnchoredIsland, BlockSizing, ImageBlock, ImageFit, IslandAnchor};
+
+        const PAGE_W: u32 = 595;
+        const PAGE_H: u32 = 842;
+        const BODY_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 14.0, bold: false, italic: false };
+        const TITLE_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 24.0, bold: true, italic: false };
+        const PARAGRAPH_SPACING: f64 = 10.0;
+
+        let master = PageMaster::new(PAGE_W as f64, PAGE_H as f64, Margins::uniform(40.0));
+        let body_width = master.body_rect().width;
+        let shaper = CosmicShaper::headless();
+
+        const ISLAND_W: f64 = 220.0;
+        const ISLAND_MARGIN: f64 = 10.0;
+        let strip_width = (body_width - ISLAND_W - 2.0 * ISLAND_MARGIN) / 2.0;
+
+        const STRIP_A: &str = "Every wallet observed in this section routes through a single custodial exchange before resting.";
+        const STRIP_B: &str = "Layering activity across several intermediate wallets is consistent with an attempt to obscure origin.";
+        const STRIP_C: &str = "Two relay hops separated by roughly forty eight hours moved a comparable fraction of the total.";
+        const STRIP_D: &str = "The final resting balance sits in cold storage pending a subpoena response from the custodian.";
+        const BELOW: &str = "Once the centered figure's own vertical band ends, the remaining narrative resumes at the FULL \
+            body width below it, exactly as an ordinary paragraph would — no strip constraint carries past the \
+            image's own bottom edge, and every line here spans the entire page body from margin to margin.";
+
+        let strip_a_run = [StyledRun::new(STRIP_A, BODY_FONT)];
+        let strip_b_run = [StyledRun::new(STRIP_B, BODY_FONT)];
+        let strip_c_run = [StyledRun::new(STRIP_C, BODY_FONT)];
+        let strip_d_run = [StyledRun::new(STRIP_D, BODY_FONT)];
+
+        // Size the island's own band so the LEFT strip holds (A + B) and
+        // the RIGHT strip holds (C + D) almost exactly — measured via the
+        // SAME `layout_paragraph` compose itself uses, never guessed —
+        // leaving too little slack for the "below" paragraph to sneak
+        // even one more line into either strip.
+        let h_a = layout_paragraph(&Paragraph::new(&strip_a_run, strip_width), &shaper).height;
+        let h_b = layout_paragraph(&Paragraph::new(&strip_b_run, strip_width), &shaper).height;
+        let h_c = layout_paragraph(&Paragraph::new(&strip_c_run, strip_width), &shaper).height;
+        let h_d = layout_paragraph(&Paragraph::new(&strip_d_run, strip_width), &shaper).height;
+        let island_height = (h_a + PARAGRAPH_SPACING + h_b).max(h_c + PARAGRAPH_SPACING + h_d) + 2.0;
+
+        let photo = generated_photo_rgba(220, island_height.round().max(1.0) as u32, 0);
+        let island = AnchoredIsland::new(
+            ImageBlock::new(&photo, 220, island_height.round().max(1.0) as u32, BlockSizing::FixedHeight(island_height), ImageFit::Cover),
+            IslandAnchor::Center,
+            ISLAND_W,
+            ISLAND_MARGIN,
+        );
+
+        let title_run = [StyledRun::new("Centered Island — Text Wraps Both Sides", TITLE_FONT)];
+        let below_run = [StyledRun::new(BELOW, BODY_FONT)];
+
+        let flow = vec![
+            BlockNode::new(Block::Paragraph(Paragraph::new(&title_run, body_width))),
+            BlockNode::new(Block::Spacer(16.0)),
+            BlockNode::new(Block::Island(island)),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&strip_a_run, body_width))),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&strip_b_run, body_width))),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&strip_c_run, body_width))),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&strip_d_run, body_width))),
+            BlockNode::new(Block::Spacer(16.0)),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&below_run, body_width))),
+        ];
+
+        let style = ComposeStyle::new(PARAGRAPH_SPACING, BODY_FONT);
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1, "fixture must be tuned to fit on ONE page, got {}", pages.len());
+
+        let island_placement = pages[0].frame.blocks.iter().find(|b| matches!(b.kind, Block::Island(_))).expect("island placed");
+        let below_placement = pages[0]
+            .frame
+            .blocks
+            .iter()
+            .find(|b| matches!(b.kind, Block::Paragraph(p) if p.runs[0].text == BELOW))
+            .expect("below-the-island paragraph placed");
+        assert!(
+            below_placement.rect.y >= island_placement.rect.y + island_placement.rect.height - 0.5,
+            "content must resume below the island's own bottom edge, got y={} vs island bottom={}",
+            below_placement.rect.y,
+            island_placement.rect.y + island_placement.rect.height
+        );
+        assert!((below_placement.rect.width - body_width).abs() < 1e-6, "content below the island must resume at full body width, got {}", below_placement.rect.width);
+
+        // Neither strip paragraph ever overlaps the island's own rect.
+        for text in [STRIP_A, STRIP_B, STRIP_C, STRIP_D] {
+            if let Some(placed) = pages[0].frame.blocks.iter().find(|b| matches!(b.kind, Block::Paragraph(p) if p.runs[0].text == text)) {
+                let inside_left = placed.rect.x + placed.rect.width <= island_placement.rect.x + 0.5;
+                let inside_right = placed.rect.x >= island_placement.rect.x + island_placement.rect.width - 0.5;
+                assert!(inside_left || inside_right, "strip text {text:?} must sit beside the island, never overlapping it (rect {:?})", placed.rect);
+            }
+        }
+
+        let theme = crate::style::Theme::light_report();
+        let spec = ExportSpec { width_px: PAGE_W, height_px: PAGE_H, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+        let bytes = render_to_png(&spec, |ctx| draw_page(ctx, &pages[0], &theme)).expect("island center demo render should succeed");
+        assert_eq!(decoded_png_dims(&bytes), (PAGE_W, PAGE_H));
+        write_proof_png("typeset_layout_island_center.png", &bytes);
+    }
+
+    /// Demo proof: one page, an image anchored LEFT (text runs in a
+    /// strip to its right) followed further down the page by a second
+    /// image anchored RIGHT (text runs in a strip to its left) —
+    /// `out/typeset_layout_island_left_right.png`.
+    #[test]
+    fn island_left_and_right_anchor_demo() {
+        use crate::scene::{AnchoredIsland, BlockSizing, ImageBlock, ImageFit, IslandAnchor};
+
+        const PAGE_W: u32 = 595;
+        const PAGE_H: u32 = 842;
+        const BODY_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 14.0, bold: false, italic: false };
+        const TITLE_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 22.0, bold: true, italic: false };
+
+        let master = PageMaster::new(PAGE_W as f64, PAGE_H as f64, Margins::uniform(40.0));
+        let body_width = master.body_rect().width;
+
+        const ISLAND_W: f64 = 190.0;
+        const ISLAND_MARGIN: f64 = 10.0;
+        const ISLAND_H: f64 = 190.0;
+
+        let photo_left = generated_photo_rgba(190, 190, 1);
+        let photo_right = generated_photo_rgba(190, 190, 2);
+
+        let island_left = AnchoredIsland::new(
+            ImageBlock::new(&photo_left, 190, 190, BlockSizing::FixedHeight(ISLAND_H), ImageFit::Cover),
+            IslandAnchor::Left,
+            ISLAND_W,
+            ISLAND_MARGIN,
+        );
+        let island_right = AnchoredIsland::new(
+            ImageBlock::new(&photo_right, 190, 190, BlockSizing::FixedHeight(ISLAND_H), ImageFit::Cover),
+            IslandAnchor::Right,
+            ISLAND_W,
+            ISLAND_MARGIN,
+        );
+
+        let title_run = [StyledRun::new("Left- and Right-Anchored Islands on One Page", TITLE_FONT)];
+        const BESIDE_LEFT: &str = "Text belonging to this exhibit flows down the strip to the RIGHT of the left-anchored \
+            image, wrapping naturally within its own narrower column while the image sits fixed at the page's own \
+            left margin.";
+        const AFTER_LEFT: &str = "Once the left-anchored image's own vertical band ends, the narrative resumes at the \
+            full page width below it, continuing the exhibit's own description without any further column constraint.";
+        const BESIDE_RIGHT: &str = "This second exhibit anchors its own image to the RIGHT margin instead, so the \
+            accompanying text now flows down the strip to its LEFT, mirroring the layout above.";
+        const AFTER_RIGHT: &str = "And, symmetrically, once the right-anchored image's own band ends, the remaining \
+            narrative again resumes at the full page width below it.";
+
+        let beside_left_run = [StyledRun::new(BESIDE_LEFT, BODY_FONT)];
+        let after_left_run = [StyledRun::new(AFTER_LEFT, BODY_FONT)];
+        let beside_right_run = [StyledRun::new(BESIDE_RIGHT, BODY_FONT)];
+        let after_right_run = [StyledRun::new(AFTER_RIGHT, BODY_FONT)];
+
+        let flow = vec![
+            BlockNode::new(Block::Paragraph(Paragraph::new(&title_run, body_width))),
+            BlockNode::new(Block::Spacer(16.0)),
+            BlockNode::new(Block::Island(island_left)),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&beside_left_run, body_width))),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&after_left_run, body_width))),
+            BlockNode::new(Block::Spacer(28.0)),
+            BlockNode::new(Block::Island(island_right)),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&beside_right_run, body_width))),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&after_right_run, body_width))),
+        ];
+
+        let style = ComposeStyle::new(10.0, BODY_FONT);
+        let shaper = CosmicShaper::headless();
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1, "fixture must be tuned to fit on ONE page, got {}", pages.len());
+
+        let islands: Vec<_> = pages[0].frame.blocks.iter().filter(|b| matches!(b.kind, Block::Island(_))).collect();
+        assert_eq!(islands.len(), 2, "both islands must be placed on the SAME page");
+        assert!(islands[1].rect.y > islands[0].rect.y, "the right-anchored island must sit further down the page than the left-anchored one");
+        assert_eq!(islands[0].rect.x, master.body_rect().x, "the Left-anchored island must sit at the body's own left edge");
+        assert!(
+            (islands[1].rect.x + islands[1].rect.width - (master.body_rect().x + master.body_rect().width)).abs() < 1e-6,
+            "the Right-anchored island must sit flush with the body's own right edge"
+        );
+
+        let theme = crate::style::Theme::light_report();
+        let spec = ExportSpec { width_px: PAGE_W, height_px: PAGE_H, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+        let bytes = render_to_png(&spec, |ctx| draw_page(ctx, &pages[0], &theme)).expect("island left/right demo render should succeed");
+        assert_eq!(decoded_png_dims(&bytes), (PAGE_W, PAGE_H));
+        write_proof_png("typeset_layout_island_left_right.png", &bytes);
     }
 }

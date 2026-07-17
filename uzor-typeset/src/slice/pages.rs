@@ -14,6 +14,24 @@
 //! STRING, precomputed here at slice time via
 //! [`crate::master::PageNumberStyle::format_for`] (design doc §4.1:
 //! "page_number_token ... resolved per-page during slicing").
+//!
+//! ## Multi-column pages — `Page` holds N column frames (coordinator
+//! decision, report)
+//!
+//! When [`crate::master::PageMaster::columns`] is `> 1`,
+//! [`PageRegionSequence::with_columns`] yields `columns` region PULLS per
+//! physical page (column 1, column 2, ..., then the next page's column 1,
+//! ...) — [`compose`] therefore returns `columns` [`Frame`]s per page
+//! instead of one. Rather than refactor `Page::frame: Frame<'a>` into a
+//! `Vec` (which would touch every existing caller of that field —
+//! `render.rs`, `export/pdf_adapter.rs`, and this crate's own P0-P4
+//! proofs), [`Page`] gains an ADDITIVE [`Page::extra_frames`] field:
+//! `frame` stays column 1 (byte-identical to the pre-column single-frame
+//! shape when `columns == 1`, since `extra_frames` is simply empty then),
+//! `extra_frames` holds columns 2..N. `crate::render::draw_page_layers`/
+//! `export::pdf_adapter::pages_to_pdf` both walk `extra_frames` the SAME
+//! way they already walk `frame`/`header`/`footer` (design law 1 — same
+//! paint/collection recursion, just one more frame list).
 
 use uzor::types::Rect;
 use uzor_text::LineShaper;
@@ -32,7 +50,15 @@ pub struct Page<'a> {
     /// every `Page` it returns, needed for `"n of total"`-style page
     /// numbering.
     pub total: u32,
+    /// This page's own FIRST column (column 1 when
+    /// [`crate::master::PageMaster::columns`] is `> 1`; the WHOLE body
+    /// when it's `1`, unchanged from every pre-column phase).
     pub frame: Frame<'a>,
+    /// This page's remaining columns (2..N), in order — always empty
+    /// when `columns <= 1` (see this module's own "Multi-column pages"
+    /// doc comment for why this is additive rather than a `frame: Vec`
+    /// refactor).
+    pub extra_frames: Vec<Frame<'a>>,
     /// [`crate::master::PageMaster::header`] composed ONCE, shared
     /// verbatim across every page (`None` when the master has no header).
     pub header: Option<Frame<'a>>,
@@ -74,12 +100,24 @@ pub struct PageNumberPlacement {
 /// wire them — painting a theme onto the result is `crate::render::
 /// draw_page`'s own job, not this function's).
 pub fn slice_pages<'a>(flow: &'a [BlockNode<'a>], master: &PageMaster<'a>, style: &ComposeStyle, shaper: &dyn LineShaper) -> Vec<Page<'a>> {
-    let mut regions = PageRegionSequence::new(master.body_rect());
-    let mut pages: Vec<Page<'a>> = compose(flow, &mut regions, style, shaper)
-        .into_iter()
-        .enumerate()
-        .map(|(i, frame)| Page { index: i as u32, total: 0, frame, header: None, footer: None, page_number: None })
-        .collect();
+    let mut regions = PageRegionSequence::new(master.body_rect()).with_columns(master.columns, master.column_gap);
+    let raw_frames = compose(flow, &mut regions, style, shaper);
+    let columns = master.columns.max(1);
+
+    let mut pages: Vec<Page<'a>> = Vec::new();
+    let mut raw_frames = raw_frames.into_iter();
+    let mut index = 0u32;
+    while let Some(frame) = raw_frames.next() {
+        let mut extra_frames = Vec::new();
+        for _ in 1..columns {
+            match raw_frames.next() {
+                Some(f) => extra_frames.push(f),
+                None => break,
+            }
+        }
+        pages.push(Page { index, total: 0, frame, extra_frames, header: None, footer: None, page_number: None });
+        index += 1;
+    }
 
     let total = pages.len() as u32;
     let header_frame = master.header.map(|content| compose_margin_box(content, master.header_rect(), style, shaper));
@@ -295,5 +333,87 @@ mod tests {
         assert!(pages[0].header.is_none());
         assert!(pages[0].footer.is_none());
         assert!(pages[0].page_number.is_none());
+    }
+
+    /// `PageMaster::with_columns`: content that overflows a single column
+    /// lands in `Page::frame` (column 1) THEN `Page::extra_frames[0]`
+    /// (column 2), both on the SAME physical page (`Page::index == 0`) —
+    /// never spilling to a second `Page` while column 2 still has room.
+    /// Column 1 must fill BEFORE column 2 (every column-1 block's own `y`
+    /// stays within column 1's own vertical span before column 2 gets any
+    /// content), and every placed block's rect must stay within its own
+    /// column's width — never the full body width.
+    #[test]
+    fn two_column_master_fills_column_one_before_column_two_on_the_same_page() {
+        let font = body_font();
+        let shaper = CosmicShaper::headless();
+        let master = PageMaster::new(600.0, 500.0, Margins::uniform(20.0)).with_columns(2, 18.0);
+        let column_width = master.column_width();
+        assert!(column_width < master.body_rect().width, "a 2-column body must be narrower per column than the full body");
+
+        // Enough repeated short paragraphs that column 1 fills up and
+        // content spills into column 2, but not so much that it spills
+        // onto a second physical page.
+        let paragraph_texts: Vec<String> = (0..14).map(|i| format!("Column paragraph number {i} of the fixture.")).collect();
+        let runs: Vec<[StyledRun<'_>; 1]> = paragraph_texts.iter().map(|t| [StyledRun::new(t.as_str(), font)]).collect();
+        let flow: Vec<BlockNode<'_>> = runs.iter().map(|r| BlockNode::new(Block::Paragraph(Paragraph::new(r, column_width)))).collect();
+
+        let style = ComposeStyle::new(6.0, font);
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1, "fixture must be tuned to fit within column 1 + column 2 of ONE page");
+        assert!(!pages[0].frame.blocks.is_empty(), "column 1 must carry content");
+        assert!(!pages[0].extra_frames.is_empty(), "column 2 must carry the overflow from column 1");
+
+        let col1_width = pages[0].frame.region.rect.width;
+        let col2_width = pages[0].extra_frames[0].region.rect.width;
+        assert!((col1_width - column_width).abs() < 1e-6);
+        assert!((col2_width - column_width).abs() < 1e-6);
+
+        // Every block placed in column 1 must never exceed column 1's own
+        // width, and likewise for column 2 — text never crosses into the
+        // other column or the gap between them.
+        for placed in &pages[0].frame.blocks {
+            assert!(placed.rect.width <= col1_width + 0.01, "column 1 content must never exceed column 1's own width");
+        }
+        for placed in &pages[0].extra_frames[0].blocks {
+            assert!(placed.rect.width <= col2_width + 0.01, "column 2 content must never exceed column 2's own width");
+        }
+
+        // Column 1 must be FULLY consumed (its own frame reports
+        // overflow — content continued into column 2) before column 2
+        // received anything at all — proving "fills column 1 before
+        // column 2," not an arbitrary split.
+        assert!(pages[0].frame.overflow.is_some(), "column 1 must report overflow into column 2 for this fixture to be meaningful");
+    }
+
+    /// A table placed inside a 2-column master sizes its own columns to
+    /// the CONTAINING column's width, never the full (wider) page body.
+    #[test]
+    fn a_table_inside_a_column_is_sized_to_the_column_width_not_the_full_body() {
+        use crate::scene::{Block, ColumnSpec, TableBlock, TableCell, TableRow};
+
+        let font = body_font();
+        let shaper = CosmicShaper::headless();
+        let master = PageMaster::new(600.0, 500.0, Margins::uniform(20.0)).with_columns(2, 18.0);
+        let column_width = master.column_width();
+
+        let cell_run = [StyledRun::new("cell", font)];
+        let cell_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&cell_run, f64::MAX)))];
+        let cells = [TableCell::new(&cell_nodes)];
+        let rows = [TableRow::new(&cells)];
+        let columns = [ColumnSpec::Fraction(1.0)];
+        let table = TableBlock::new(&columns, &rows);
+        let flow = [BlockNode::new(Block::Table(table))];
+
+        let style = ComposeStyle::new(6.0, font);
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        let placed = pages[0].frame.blocks.first().expect("table must be placed in column 1");
+        let table_width: f64 = placed.table_placement.as_ref().expect("table placement present").column_widths.iter().sum();
+
+        assert!(
+            (table_width - column_width).abs() < 1e-6,
+            "a Fraction(1.0) column inside a table must fill the CONTAINING column's width ({column_width}), got {table_width}"
+        );
+        assert!(table_width < master.body_rect().width - 1.0, "the table must be narrower than the full (un-columned) body width");
     }
 }

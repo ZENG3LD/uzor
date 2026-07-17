@@ -166,6 +166,9 @@ pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) 
 
         let mut collected = Vec::new();
         collect_text_runs_from_frame(&page.frame, theme, &mut fonts, &mut builder, &mut collected);
+        for extra in &page.extra_frames {
+            collect_text_runs_from_frame(extra, theme, &mut fonts, &mut builder, &mut collected);
+        }
         if let Some(header) = &page.header {
             collect_text_runs_from_frame(header, theme, &mut fonts, &mut builder, &mut collected);
         }
@@ -234,9 +237,11 @@ fn collect_text_runs_from_placed(placed: &PlacedBlock<'_>, theme: &Theme, fonts:
                 }
             }
         }
-        // Figures/images paint their own raster content only (design doc
-        // §6.2 — figures stay raster this phase); a spacer paints nothing.
-        Block::Figure(_) | Block::Image(_) | Block::Spacer(_) => {}
+        // Figures/images/islands paint their own raster content only
+        // (design doc §6.2 — figures stay raster this phase, and an
+        // island's own image is raster for the SAME reason); a spacer
+        // paints nothing.
+        Block::Figure(_) | Block::Image(_) | Block::Island(_) | Block::Spacer(_) => {}
     }
 }
 

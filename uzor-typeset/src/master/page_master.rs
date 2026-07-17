@@ -109,6 +109,14 @@ pub struct PageMaster<'a> {
     /// Margin-box content painted inside the BOTTOM margin band.
     pub footer: Option<&'a [BlockNode<'a>]>,
     pub page_number_token: Option<PageNumberStyle>,
+    /// Number of equal-width sub-columns [`crate::slice::slice_pages`]
+    /// splits the page BODY into (design doc §3.1's "N equal sub-columns
+    /// per page-row") — `1` (the default set by [`PageMaster::new`]) is
+    /// the pre-column single-body-rect-per-page behavior, unchanged.
+    pub columns: usize,
+    /// Horizontal gap between adjacent columns, in the same units as
+    /// every other rect in this crate — unread when `columns <= 1`.
+    pub column_gap: f64,
 }
 
 impl<'a> PageMaster<'a> {
@@ -116,7 +124,7 @@ impl<'a> PageMaster<'a> {
     /// (P0's own constructor, kept byte-for-byte so every existing call
     /// site compiles unchanged; additive law).
     pub fn new(width: f64, height: f64, margins: Margins) -> Self {
-        Self { width, height, margins, header: None, footer: None, page_number_token: None }
+        Self { width, height, margins, header: None, footer: None, page_number_token: None, columns: 1, column_gap: 0.0 }
     }
 
     /// Builder: attach top-margin-box header content.
@@ -135,6 +143,34 @@ impl<'a> PageMaster<'a> {
     pub fn with_page_number(mut self, token: PageNumberStyle) -> Self {
         self.page_number_token = Some(token);
         self
+    }
+
+    /// Builder: split the page body into `columns` equal sub-columns
+    /// separated by `gap` (design doc §3.1) — the SAME builder shape
+    /// every other `PageMaster` extension in this crate already uses
+    /// (`with_header`/`with_footer`/`with_page_number`). `columns <= 1`
+    /// reproduces the pre-column single-body-rect-per-page behavior
+    /// exactly (see [`crate::region::PageRegionSequence::with_columns`]).
+    pub fn with_columns(mut self, columns: usize, gap: f64) -> Self {
+        self.columns = columns.max(1);
+        self.column_gap = gap;
+        self
+    }
+
+    /// This master's own column `index` (0-based) rect within
+    /// [`PageMaster::body_rect`] — the SAME geometry
+    /// [`crate::region::PageRegionSequence::with_columns`] drives
+    /// internally, exposed here so a caller building column-width-sized
+    /// content (e.g. a `Paragraph` at exactly one column's own width)
+    /// never has to duplicate the split-column formula.
+    pub fn column_rect(&self, index: usize) -> Rect {
+        crate::region::column_rect(self.body_rect(), self.columns, self.column_gap, index)
+    }
+
+    /// This master's own per-column width — `column_rect(0).width`,
+    /// which is identical for every column index (equal-width columns).
+    pub fn column_width(&self) -> f64 {
+        self.column_rect(0).width
     }
 
     /// The page body rect (page size, inset by `margins`) — the one
@@ -249,5 +285,27 @@ mod tests {
         let of_total = PageNumberStyle::new(PageNumberFormat::OfTotal, 10);
         assert_eq!(of_total.format_for(0, 3), "10 of 12");
         assert_eq!(of_total.format_for(2, 3), "12 of 12");
+    }
+
+    #[test]
+    fn default_columns_is_one_and_column_rect_reproduces_the_body_rect() {
+        let master = PageMaster::new(400.0, 600.0, Margins::uniform(40.0));
+        assert_eq!(master.columns, 1);
+        assert_eq!(master.column_rect(0), master.body_rect());
+        assert_eq!(master.column_width(), master.body_rect().width);
+    }
+
+    #[test]
+    fn with_columns_splits_the_body_into_equal_width_columns_with_the_gap_between_them() {
+        let master = PageMaster::new(424.0 + 80.0, 600.0, Margins::uniform(40.0)).with_columns(2, 24.0);
+        let body = master.body_rect();
+        assert_eq!(body.width, 424.0);
+
+        let col0 = master.column_rect(0);
+        let col1 = master.column_rect(1);
+        assert_eq!(col0.width, 200.0);
+        assert_eq!(col1.width, 200.0);
+        assert_eq!(master.column_width(), 200.0);
+        assert!((col1.x - (col0.x + col0.width + 24.0)).abs() < 1e-9, "column 1 must sit exactly one gap past column 0's own right edge");
     }
 }

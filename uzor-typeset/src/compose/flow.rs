@@ -40,16 +40,52 @@
 //! frame so the NEXT node starts fresh), and `AvoidInside`/`AvoidAfter`
 //! (both need to peek ahead — see [`full_height_if_whole`]/
 //! [`has_room_for_next`]'s own docs).
+//!
+//! ## Anchored islands — text running beside an image (design brief,
+//! adapted from §2.3)
+//!
+//! [`crate::scene::Block::Island`] reserves its own
+//! [`crate::scene::AnchoredIsland`] image rect at the CURRENT flow cursor
+//! (left/right/centered per its own [`crate::scene::IslandAnchor`]), then
+//! hands the flow blocks immediately following it a NARROWED side-strip
+//! rect (or two, left-then-right, for `IslandAnchor::Center`) for the
+//! island's own vertical band, before resuming full region width below it.
+//! Implemented as [`place_into_region`] calling ITSELF once per strip rect
+//! — "a compose-level transform, an island-aware wrapper around the
+//! CURRENT region" (this feature's own brief), never a new global
+//! [`crate::region::RegionSequence`] impl: a strip is still part of the
+//! SAME page/column region the island itself sits in (design doc's own
+//! "one frame per region consumed" still holds one level up from here —
+//! only [`crate::region::ColumnRegionSequence`]/[`crate::region::
+//! PageRegionSequence::with_columns`] pull genuinely NEW regions).
+//! Islands are ATOMIC exactly like [`crate::scene::Block::Figure`]/
+//! [`crate::scene::Block::Image`] — one taller than the remaining region
+//! space defers WHOLE to the next region, never split.
+//!
+//! Because [`place_into_region`]'s own recursive strip calls share the
+//! SAME `block_idx`/`progress` state the outer call is threading, a
+//! `Paragraph`/`Table` block that starts inside a strip and doesn't fully
+//! fit there CONTINUES exactly as it would across any ordinary region
+//! boundary (`InProgress`'s own cross-region cache, §3.3) — free for
+//! `IslandAnchor::Center`'s own left-then-right strips (equal width, so no
+//! re-wrap is ever needed), but ALSO reachable when the LAST available
+//! strip runs out and placement resumes at the region's own (wider, or
+//! narrower) full width below the island — an accepted, ALREADY-documented
+//! divergence (§3.3/this crate's own P0 divergence 7: a block's
+//! continuation is never re-wrapped at a later region's different width),
+//! now also reachable via an island's strip-to-full-width transition, not
+//! a new gap this feature invents.
 
 use uzor::types::Rect;
 use uzor_text::{layout_paragraph, FontSpec, LineShaper, Paragraph, ParagraphLayout};
 
+use super::island_layout::{island_placement_rect, island_strip_rects};
 use super::keep_break::BreakControl;
 use super::list_layout::place_list;
 use super::table_layout::{measure_and_layout_table, place_table_rows, rows_fitting, table_total_height, ComposedRow};
 use super::{lines_fitting, slice_layout_lines};
 use crate::region::{Frame, PlacedBlock, RegionSequence};
-use crate::scene::{resolve_block_ids, Block, BlockNode};
+use crate::scene::{resolve_block_ids, Block, BlockId, BlockNode};
 
 /// Composition-wide styling `compose` itself needs (as opposed to a
 /// per-block override, which lives on `BlockNode`/`Block` once P1/P2 land).
@@ -106,6 +142,11 @@ fn full_height_if_whole(kind: &Block<'_>, region_width: f64, remaining_height: f
         Block::Paragraph(p) => layout_paragraph(&Paragraph { max_width: region_width, ..*p }, shaper).height,
         Block::Figure(fb) => fb.sizing.resolve_height(region_width, remaining_height),
         Block::Image(ib) => ib.sizing.resolve_height(region_width, remaining_height),
+        // The lookahead only cares about the island's OWN reserved band
+        // height (its width is a caller choice, independent of
+        // `region_width`) — the side-strip content beside it is a
+        // separate concern real placement handles, never this lookahead.
+        Block::Island(island) => island.image.sizing.resolve_height(island.width, remaining_height),
         Block::Table(table) => {
             let (_, rows) = measure_and_layout_table(table, region_width, style, shaper);
             table_total_height(&rows)
@@ -136,6 +177,7 @@ fn has_room_for_next(next: &Block<'_>, region_width: f64, remaining_height: f64,
         }
         Block::Figure(fb) => fb.sizing.resolve_height(region_width, remaining_height) <= remaining_height,
         Block::Image(ib) => ib.sizing.resolve_height(region_width, remaining_height) <= remaining_height,
+        Block::Island(island) => island.image.sizing.resolve_height(island.width, remaining_height) <= remaining_height,
         Block::Table(table) => {
             let (_, rows) = measure_and_layout_table(table, region_width, style, shaper);
             rows.first().map_or(true, |r| r.height <= remaining_height)
@@ -165,271 +207,346 @@ pub fn compose<'a>(flow: &'a [BlockNode<'a>], regions: &mut dyn RegionSequence, 
 
     while block_idx < flow.len() {
         let Some(region) = regions.next() else { break };
-        let region_bottom = region.rect.y + region.rect.height;
-        let mut cursor_y = region.rect.y;
-        let mut blocks: Vec<PlacedBlock<'a>> = Vec::new();
-        let mut overflow = None;
-
-        while block_idx < flow.len() {
-            let node = &flow[block_idx];
-            let remaining_height = (region_bottom - cursor_y).max(0.0);
-            let region_has_content = !blocks.is_empty();
-
-            // `ForceBefore`: never re-triggers on a node's own
-            // continuation into a later region — a continuing block is
-            // always the very first thing considered in its fresh frame,
-            // where `region_has_content` is already `false`.
-            if node.break_control == BreakControl::ForceBefore && region_has_content {
-                overflow = Some(node);
-                break;
-            }
-
-            // `AvoidAfter` (keep-with-next): only applies the FIRST time
-            // this node is considered in a region that already holds
-            // other content — deferring a node that's already first in
-            // its own fresh region would risk looping forever if this
-            // node can never coexist with what follows within one
-            // region's fixed size (see this module's own risk note,
-            // mirrored from P0's `lines_fitting` force-degrade).
-            if node.break_control == BreakControl::AvoidAfter && region_has_content && block_idx + 1 < flow.len() {
-                let trial_height = full_height_if_whole(&node.kind, region.rect.width, remaining_height, style, shaper);
-                if trial_height <= remaining_height {
-                    let remaining_after = (remaining_height - trial_height - style.paragraph_spacing).max(0.0);
-                    let next_fits = has_room_for_next(&flow[block_idx + 1].kind, region.rect.width, remaining_after, style, shaper);
-                    if !next_fits {
-                        overflow = Some(node);
-                        break;
-                    }
-                }
-            }
-
-            // `true` when `node` was FULLY placed this iteration (never a
-            // pre-declared default — every arm below either diverges via
-            // `break`/`continue` or ends in a real `bool`, so there is no
-            // dead initial value to satisfy the unused-assignments lint).
-            let node_fully_placed = match &node.kind {
-                Block::Spacer(gap) => {
-                    if *gap <= remaining_height || !region_has_content {
-                        let rect = Rect::new(region.rect.x, cursor_y, region.rect.width, *gap);
-                        blocks.push(PlacedBlock {
-                            id: ids[block_idx],
-                            rect,
-                            kind: &node.kind,
-                            paragraph_layout: None,
-                            table_placement: None,
-                            list_placement: None,
-                        });
-                        // No extra `style.paragraph_spacing` on top of an
-                        // explicit Spacer's own gap — a Spacer already IS
-                        // the author's deliberate gap.
-                        cursor_y += gap;
-                        block_idx += 1;
-                        progress = InProgress::None;
-                        true
-                    } else {
-                        overflow = Some(node);
-                        break;
-                    }
-                }
-                Block::Paragraph(paragraph) => {
-                    if !matches!(progress, InProgress::Paragraph { .. }) {
-                        let measured = layout_paragraph(&Paragraph { max_width: region.rect.width, ..*paragraph }, shaper);
-                        progress = InProgress::Paragraph { layout: measured, next_line: 0 };
-                    }
-                    let InProgress::Paragraph { layout: full, next_line } = &progress else {
-                        unreachable!("just ensured Paragraph progress")
-                    };
-                    let next_line = *next_line;
-
-                    if full.lines.is_empty() {
-                        block_idx += 1;
-                        progress = InProgress::None;
-                        continue;
-                    }
-
-                    // `AvoidInside` ("keep-together"): only gates the
-                    // FIRST placement attempt — once a prior region's
-                    // fresh-but-too-small degrade already split this
-                    // paragraph, there's no benefit to blocking further
-                    // splits of what remains.
-                    if node.break_control == BreakControl::AvoidInside && next_line == 0 && region_has_content {
-                        let whole_height: f64 = full.lines.iter().map(|l| l.height).sum();
-                        if whole_height > remaining_height {
-                            overflow = Some(node);
-                            break;
-                        }
-                    }
-
-                    let count = lines_fitting(full, next_line, remaining_height, !region_has_content);
-                    if count == 0 {
-                        overflow = Some(node);
-                        break;
-                    }
-
-                    let end_line = next_line + count;
-                    let placed_layout = slice_layout_lines(full, next_line, end_line);
-                    let full_len = full.lines.len();
-                    let rect = Rect::new(region.rect.x, cursor_y, region.rect.width, placed_layout.height);
-                    cursor_y += placed_layout.height;
-                    blocks.push(PlacedBlock {
-                        id: ids[block_idx],
-                        rect,
-                        kind: &node.kind,
-                        paragraph_layout: Some(placed_layout),
-                        table_placement: None,
-                        list_placement: None,
-                    });
-
-                    if end_line >= full_len {
-                        cursor_y += style.paragraph_spacing;
-                        block_idx += 1;
-                        progress = InProgress::None;
-                        true
-                    } else {
-                        if let InProgress::Paragraph { next_line, .. } = &mut progress {
-                            *next_line = end_line;
-                        }
-                        overflow = Some(node);
-                        break;
-                    }
-                }
-                Block::Figure(fb) => {
-                    let content_height = fb.sizing.resolve_height(region.rect.width, remaining_height);
-                    if content_height <= remaining_height || !region_has_content {
-                        let rect = Rect::new(region.rect.x, cursor_y, region.rect.width, content_height);
-                        cursor_y += content_height;
-                        blocks.push(PlacedBlock {
-                            id: ids[block_idx],
-                            rect,
-                            kind: &node.kind,
-                            paragraph_layout: None,
-                            table_placement: None,
-                            list_placement: None,
-                        });
-                        cursor_y += style.paragraph_spacing;
-                        block_idx += 1;
-                        progress = InProgress::None;
-                        true
-                    } else {
-                        overflow = Some(node);
-                        break;
-                    }
-                }
-                Block::Image(ib) => {
-                    let content_height = ib.sizing.resolve_height(region.rect.width, remaining_height);
-                    if content_height <= remaining_height || !region_has_content {
-                        let rect = Rect::new(region.rect.x, cursor_y, region.rect.width, content_height);
-                        cursor_y += content_height;
-                        blocks.push(PlacedBlock {
-                            id: ids[block_idx],
-                            rect,
-                            kind: &node.kind,
-                            paragraph_layout: None,
-                            table_placement: None,
-                            list_placement: None,
-                        });
-                        cursor_y += style.paragraph_spacing;
-                        block_idx += 1;
-                        progress = InProgress::None;
-                        true
-                    } else {
-                        overflow = Some(node);
-                        break;
-                    }
-                }
-                Block::Table(table) => {
-                    if !matches!(progress, InProgress::Table { .. }) {
-                        let (column_widths, rows) = measure_and_layout_table(table, region.rect.width, style, shaper);
-                        progress = InProgress::Table { column_widths, rows, next_row: 0 };
-                    }
-                    let InProgress::Table { column_widths, rows, next_row } = &progress else {
-                        unreachable!("just ensured Table progress")
-                    };
-                    let next_row = *next_row;
-
-                    if rows.is_empty() {
-                        block_idx += 1;
-                        progress = InProgress::None;
-                        continue;
-                    }
-
-                    if node.break_control == BreakControl::AvoidInside && next_row == 0 && region_has_content {
-                        let whole_height = table_total_height(rows);
-                        if whole_height > remaining_height {
-                            overflow = Some(node);
-                            break;
-                        }
-                    }
-
-                    let count = rows_fitting(rows, next_row, remaining_height, !region_has_content);
-                    if count == 0 {
-                        overflow = Some(node);
-                        break;
-                    }
-
-                    let (placed_rows, placed_height) =
-                        place_table_rows(rows, next_row, count, column_widths, table.cell_padding, (region.rect.x, cursor_y));
-                    let total_rows = rows.len();
-                    let column_widths_snapshot = column_widths.clone();
-                    let rect = Rect::new(region.rect.x, cursor_y, column_widths_snapshot.iter().sum(), placed_height);
-                    cursor_y += placed_height;
-                    blocks.push(PlacedBlock {
-                        id: ids[block_idx],
-                        rect,
-                        kind: &node.kind,
-                        paragraph_layout: None,
-                        table_placement: Some(crate::region::TablePlacement { column_widths: column_widths_snapshot, rows: placed_rows }),
-                        list_placement: None,
-                    });
-
-                    if next_row + count >= total_rows {
-                        cursor_y += style.paragraph_spacing;
-                        block_idx += 1;
-                        progress = InProgress::None;
-                        true
-                    } else {
-                        if let InProgress::Table { next_row, .. } = &mut progress {
-                            *next_row += count;
-                        }
-                        overflow = Some(node);
-                        break;
-                    }
-                }
-                Block::List(list) => {
-                    let origin = Rect::new(region.rect.x, cursor_y, region.rect.width, remaining_height);
-                    let (items, total_height) = place_list(list, origin, style, shaper);
-
-                    if total_height <= remaining_height || !region_has_content {
-                        let rect = Rect::new(region.rect.x, cursor_y, region.rect.width, total_height);
-                        cursor_y += total_height;
-                        blocks.push(PlacedBlock {
-                            id: ids[block_idx],
-                            rect,
-                            kind: &node.kind,
-                            paragraph_layout: None,
-                            table_placement: None,
-                            list_placement: Some(crate::region::ListPlacement { items }),
-                        });
-                        cursor_y += style.paragraph_spacing;
-                        block_idx += 1;
-                        progress = InProgress::None;
-                        true
-                    } else {
-                        overflow = Some(node);
-                        break;
-                    }
-                }
-            };
-
-            if node_fully_placed && node.break_control == BreakControl::ForceAfter {
-                break;
-            }
-        }
-
+        let (blocks, overflow) = place_into_region(flow, &ids, &mut block_idx, &mut progress, region.rect, style, shaper);
         frames.push(Frame { region, blocks, overflow });
     }
 
     frames
+}
+
+/// Fills `region_rect` with as much of `flow` (starting at `*block_idx`,
+/// carrying `*progress`'s own in-flight continuation state) as fits — the
+/// exact body of [`compose`]'s own per-region loop, factored out so an
+/// encountered [`Block::Island`] can recurse into THIS SAME function for
+/// its own side-strip band (this module's own "Anchored islands" doc
+/// comment above) without duplicating this match statement. Returns this
+/// region's own placed blocks + the block that overflowed it (if any) —
+/// [`compose`] wraps this into one [`Frame`] per REAL region pulled from
+/// its own [`RegionSequence`]; a recursive strip call instead merges its
+/// own returned blocks directly into the CALLER's own blocks list (a strip
+/// is not a separate [`Frame`] — it's still the SAME page/region, just
+/// narrower for a while).
+#[allow(clippy::too_many_arguments)]
+fn place_into_region<'a>(
+    flow: &'a [BlockNode<'a>],
+    ids: &[BlockId],
+    block_idx: &mut usize,
+    progress: &mut InProgress<'a>,
+    region_rect: Rect,
+    style: &ComposeStyle,
+    shaper: &dyn LineShaper,
+) -> (Vec<PlacedBlock<'a>>, Option<&'a BlockNode<'a>>) {
+    let region_bottom = region_rect.y + region_rect.height;
+    let mut cursor_y = region_rect.y;
+    let mut blocks: Vec<PlacedBlock<'a>> = Vec::new();
+    let mut overflow = None;
+
+    while *block_idx < flow.len() {
+        let node = &flow[*block_idx];
+        let remaining_height = (region_bottom - cursor_y).max(0.0);
+        let region_has_content = !blocks.is_empty();
+
+        // `ForceBefore`: never re-triggers on a node's own
+        // continuation into a later region — a continuing block is
+        // always the very first thing considered in its fresh frame,
+        // where `region_has_content` is already `false`.
+        if node.break_control == BreakControl::ForceBefore && region_has_content {
+            overflow = Some(node);
+            break;
+        }
+
+        // `AvoidAfter` (keep-with-next): only applies the FIRST time
+        // this node is considered in a region that already holds
+        // other content — deferring a node that's already first in
+        // its own fresh region would risk looping forever if this
+        // node can never coexist with what follows within one
+        // region's fixed size (see this module's own risk note,
+        // mirrored from P0's `lines_fitting` force-degrade).
+        if node.break_control == BreakControl::AvoidAfter && region_has_content && *block_idx + 1 < flow.len() {
+            let trial_height = full_height_if_whole(&node.kind, region_rect.width, remaining_height, style, shaper);
+            if trial_height <= remaining_height {
+                let remaining_after = (remaining_height - trial_height - style.paragraph_spacing).max(0.0);
+                let next_fits = has_room_for_next(&flow[*block_idx + 1].kind, region_rect.width, remaining_after, style, shaper);
+                if !next_fits {
+                    overflow = Some(node);
+                    break;
+                }
+            }
+        }
+
+        // Islands need their OWN control flow — they recurse into THIS
+        // SAME function for their own side strip(s) before this loop's
+        // next iteration, which doesn't fit the "was this node fully
+        // placed" bool the match below produces for every other block
+        // kind. Handled BEFORE that match (see this module's own
+        // "Anchored islands" doc comment for the full mechanics).
+        if let Block::Island(island) = &node.kind {
+            let island_height = island.image.sizing.resolve_height(island.width, remaining_height);
+            if island_height <= remaining_height || !region_has_content {
+                let island_rect = island_placement_rect(island, region_rect, cursor_y, island_height);
+                blocks.push(PlacedBlock {
+                    id: ids[*block_idx],
+                    rect: island_rect,
+                    kind: &node.kind,
+                    paragraph_layout: None,
+                    table_placement: None,
+                    list_placement: None,
+                });
+                let band_bottom = cursor_y + island_height;
+                let force_after = node.break_control == BreakControl::ForceAfter;
+                *block_idx += 1;
+                *progress = InProgress::None;
+
+                for strip in island_strip_rects(island, region_rect, island_rect, band_bottom) {
+                    if *block_idx >= flow.len() {
+                        break;
+                    }
+                    let (strip_blocks, _strip_overflow) = place_into_region(flow, ids, block_idx, progress, strip, style, shaper);
+                    blocks.extend(strip_blocks);
+                    // Whether or not THIS strip's own content overflowed,
+                    // move on to the NEXT strip (if any) — an overflowing
+                    // strip only means "this strip is full," never "stop
+                    // trying further strips" (Center anchor's own
+                    // left-then-right fill order).
+                }
+
+                cursor_y = band_bottom + style.paragraph_spacing;
+                if force_after {
+                    break;
+                }
+                continue;
+            } else {
+                overflow = Some(node);
+                break;
+            }
+        }
+
+        // `true` when `node` was FULLY placed this iteration (never a
+        // pre-declared default — every arm below either diverges via
+        // `break`/`continue` or ends in a real `bool`, so there is no
+        // dead initial value to satisfy the unused-assignments lint).
+        let node_fully_placed = match &node.kind {
+            Block::Spacer(gap) => {
+                if *gap <= remaining_height || !region_has_content {
+                    let rect = Rect::new(region_rect.x, cursor_y, region_rect.width, *gap);
+                    blocks.push(PlacedBlock {
+                        id: ids[*block_idx],
+                        rect,
+                        kind: &node.kind,
+                        paragraph_layout: None,
+                        table_placement: None,
+                        list_placement: None,
+                    });
+                    // No extra `style.paragraph_spacing` on top of an
+                    // explicit Spacer's own gap — a Spacer already IS
+                    // the author's deliberate gap.
+                    cursor_y += gap;
+                    *block_idx += 1;
+                    *progress = InProgress::None;
+                    true
+                } else {
+                    overflow = Some(node);
+                    break;
+                }
+            }
+            Block::Paragraph(paragraph) => {
+                if !matches!(*progress, InProgress::Paragraph { .. }) {
+                    let measured = layout_paragraph(&Paragraph { max_width: region_rect.width, ..*paragraph }, shaper);
+                    *progress = InProgress::Paragraph { layout: measured, next_line: 0 };
+                }
+                let InProgress::Paragraph { layout: full, next_line } = &*progress else {
+                    unreachable!("just ensured Paragraph progress")
+                };
+                let next_line = *next_line;
+
+                if full.lines.is_empty() {
+                    *block_idx += 1;
+                    *progress = InProgress::None;
+                    continue;
+                }
+
+                // `AvoidInside` ("keep-together"): only gates the
+                // FIRST placement attempt — once a prior region's
+                // fresh-but-too-small degrade already split this
+                // paragraph, there's no benefit to blocking further
+                // splits of what remains.
+                if node.break_control == BreakControl::AvoidInside && next_line == 0 && region_has_content {
+                    let whole_height: f64 = full.lines.iter().map(|l| l.height).sum();
+                    if whole_height > remaining_height {
+                        overflow = Some(node);
+                        break;
+                    }
+                }
+
+                let count = lines_fitting(full, next_line, remaining_height, !region_has_content);
+                if count == 0 {
+                    overflow = Some(node);
+                    break;
+                }
+
+                let end_line = next_line + count;
+                let placed_layout = slice_layout_lines(full, next_line, end_line);
+                let full_len = full.lines.len();
+                let rect = Rect::new(region_rect.x, cursor_y, region_rect.width, placed_layout.height);
+                cursor_y += placed_layout.height;
+                blocks.push(PlacedBlock {
+                    id: ids[*block_idx],
+                    rect,
+                    kind: &node.kind,
+                    paragraph_layout: Some(placed_layout),
+                    table_placement: None,
+                    list_placement: None,
+                });
+
+                if end_line >= full_len {
+                    cursor_y += style.paragraph_spacing;
+                    *block_idx += 1;
+                    *progress = InProgress::None;
+                    true
+                } else {
+                    if let InProgress::Paragraph { next_line, .. } = &mut *progress {
+                        *next_line = end_line;
+                    }
+                    overflow = Some(node);
+                    break;
+                }
+            }
+            Block::Figure(fb) => {
+                let content_height = fb.sizing.resolve_height(region_rect.width, remaining_height);
+                if content_height <= remaining_height || !region_has_content {
+                    let rect = Rect::new(region_rect.x, cursor_y, region_rect.width, content_height);
+                    cursor_y += content_height;
+                    blocks.push(PlacedBlock {
+                        id: ids[*block_idx],
+                        rect,
+                        kind: &node.kind,
+                        paragraph_layout: None,
+                        table_placement: None,
+                        list_placement: None,
+                    });
+                    cursor_y += style.paragraph_spacing;
+                    *block_idx += 1;
+                    *progress = InProgress::None;
+                    true
+                } else {
+                    overflow = Some(node);
+                    break;
+                }
+            }
+            Block::Image(ib) => {
+                let content_height = ib.sizing.resolve_height(region_rect.width, remaining_height);
+                if content_height <= remaining_height || !region_has_content {
+                    let rect = Rect::new(region_rect.x, cursor_y, region_rect.width, content_height);
+                    cursor_y += content_height;
+                    blocks.push(PlacedBlock {
+                        id: ids[*block_idx],
+                        rect,
+                        kind: &node.kind,
+                        paragraph_layout: None,
+                        table_placement: None,
+                        list_placement: None,
+                    });
+                    cursor_y += style.paragraph_spacing;
+                    *block_idx += 1;
+                    *progress = InProgress::None;
+                    true
+                } else {
+                    overflow = Some(node);
+                    break;
+                }
+            }
+            // Handled above, before this match — never reached.
+            Block::Island(_) => unreachable!("Block::Island is handled before this match, via its own recursive strip-fill branch"),
+            Block::Table(table) => {
+                if !matches!(*progress, InProgress::Table { .. }) {
+                    let (column_widths, rows) = measure_and_layout_table(table, region_rect.width, style, shaper);
+                    *progress = InProgress::Table { column_widths, rows, next_row: 0 };
+                }
+                let InProgress::Table { column_widths, rows, next_row } = &*progress else {
+                    unreachable!("just ensured Table progress")
+                };
+                let next_row = *next_row;
+
+                if rows.is_empty() {
+                    *block_idx += 1;
+                    *progress = InProgress::None;
+                    continue;
+                }
+
+                if node.break_control == BreakControl::AvoidInside && next_row == 0 && region_has_content {
+                    let whole_height = table_total_height(rows);
+                    if whole_height > remaining_height {
+                        overflow = Some(node);
+                        break;
+                    }
+                }
+
+                let count = rows_fitting(rows, next_row, remaining_height, !region_has_content);
+                if count == 0 {
+                    overflow = Some(node);
+                    break;
+                }
+
+                let (placed_rows, placed_height) =
+                    place_table_rows(rows, next_row, count, column_widths, table.cell_padding, (region_rect.x, cursor_y));
+                let total_rows = rows.len();
+                let column_widths_snapshot = column_widths.clone();
+                let rect = Rect::new(region_rect.x, cursor_y, column_widths_snapshot.iter().sum(), placed_height);
+                cursor_y += placed_height;
+                blocks.push(PlacedBlock {
+                    id: ids[*block_idx],
+                    rect,
+                    kind: &node.kind,
+                    paragraph_layout: None,
+                    table_placement: Some(crate::region::TablePlacement { column_widths: column_widths_snapshot, rows: placed_rows }),
+                    list_placement: None,
+                });
+
+                if next_row + count >= total_rows {
+                    cursor_y += style.paragraph_spacing;
+                    *block_idx += 1;
+                    *progress = InProgress::None;
+                    true
+                } else {
+                    if let InProgress::Table { next_row, .. } = &mut *progress {
+                        *next_row += count;
+                    }
+                    overflow = Some(node);
+                    break;
+                }
+            }
+            Block::List(list) => {
+                let origin = Rect::new(region_rect.x, cursor_y, region_rect.width, remaining_height);
+                let (items, total_height) = place_list(list, origin, style, shaper);
+
+                if total_height <= remaining_height || !region_has_content {
+                    let rect = Rect::new(region_rect.x, cursor_y, region_rect.width, total_height);
+                    cursor_y += total_height;
+                    blocks.push(PlacedBlock {
+                        id: ids[*block_idx],
+                        rect,
+                        kind: &node.kind,
+                        paragraph_layout: None,
+                        table_placement: None,
+                        list_placement: Some(crate::region::ListPlacement { items }),
+                    });
+                    cursor_y += style.paragraph_spacing;
+                    *block_idx += 1;
+                    *progress = InProgress::None;
+                    true
+                } else {
+                    overflow = Some(node);
+                    break;
+                }
+            }
+        };
+
+        if node_fully_placed && node.break_control == BreakControl::ForceAfter {
+            break;
+        }
+    }
+
+    (blocks, overflow)
 }
 
 #[cfg(test)]
@@ -707,5 +824,162 @@ mod tests {
         for placed_row in page1_table.rows.iter().chain(page2_table.rows.iter()) {
             assert!((placed_row.rect.height - row_height).abs() < 1e-6, "every placed row keeps its own full, whole height — never split mid-row");
         }
+    }
+
+    fn stub_island<'a>(rgba: &'a [u8], anchor: crate::scene::IslandAnchor, width: f64, margin: f64, height: f64) -> crate::scene::AnchoredIsland<'a> {
+        use crate::scene::{BlockSizing, ImageBlock, ImageFit};
+        crate::scene::AnchoredIsland::new(ImageBlock::new(rgba, 100, 100, BlockSizing::FixedHeight(height), ImageFit::Cover), anchor, width, margin)
+    }
+
+    /// An island ([`crate::scene::BlockSizing::FixedHeight`]) taller than
+    /// the remaining space in its current region must defer WHOLE to the
+    /// next region — same atomic degrade `Block::Figure`/`Block::Image`
+    /// already prove.
+    #[test]
+    fn an_island_taller_than_the_remaining_region_lands_whole_on_the_next_region() {
+        use crate::scene::IslandAnchor;
+
+        let shaper = CosmicShaper::headless();
+        let font = uzor_text::FontSpec::new(FontFamily::Roboto, 16.0);
+        let style = ComposeStyle::new(0.0, font);
+
+        const PAGE_HEIGHT: f64 = 300.0;
+        const FILLER_GAP: f64 = 250.0; // leaves only 50px remaining
+        const ISLAND_HEIGHT: f64 = 120.0; // taller than the 50px remaining
+
+        let rgba = [0u8; 4];
+        let island = stub_island(&rgba, IslandAnchor::Left, 150.0, 10.0, ISLAND_HEIGHT);
+        let flow = [BlockNode::new(Block::Spacer(FILLER_GAP)), BlockNode::new(Block::Island(island))];
+
+        let mut regions = PageRegionSequence::new(Rect::new(0.0, 0.0, 400.0, PAGE_HEIGHT));
+        let frames = compose(&flow, &mut regions, &style, &shaper);
+
+        assert_eq!(frames.len(), 2, "the island must land on a fresh second region, never split");
+        assert_eq!(frames[0].blocks.len(), 1, "page 1 holds only the filler spacer");
+        assert_eq!(frames[1].blocks.len(), 1, "the island is placed WHOLE on page 2 (no strip content follows it here)");
+        let island_placement = &frames[1].blocks[0];
+        assert!(matches!(island_placement.kind, Block::Island(_)));
+        assert_eq!(island_placement.rect.height, ISLAND_HEIGHT, "a deferred island is never squashed to fit — full height preserved");
+        assert_eq!(island_placement.rect.y, 0.0, "the island starts at the top of the fresh region");
+    }
+
+    /// `IslandAnchor::Left` yields exactly ONE strip, to the RIGHT of the
+    /// image; `IslandAnchor::Right` yields exactly ONE strip, to the LEFT.
+    #[test]
+    fn island_left_anchor_fills_a_single_right_strip_and_right_anchor_fills_a_single_left_strip() {
+        use crate::scene::IslandAnchor;
+
+        let shaper = CosmicShaper::headless();
+        let font = uzor_text::FontSpec::new(FontFamily::Roboto, 14.0);
+        let style = ComposeStyle::new(4.0, font);
+        const REGION_W: f64 = 400.0;
+        const ISLAND_W: f64 = 150.0;
+        const MARGIN: f64 = 10.0;
+        const ISLAND_H: f64 = 100.0;
+
+        let rgba = [0u8; 4];
+
+        // Left anchor: strip content must sit strictly to the RIGHT of
+        // the island (never overlapping it), within the island's own
+        // vertical band.
+        let left_island = stub_island(&rgba, IslandAnchor::Left, ISLAND_W, MARGIN, ISLAND_H);
+        let strip_run = [StyledRun::new("beside the left-anchored image", font)];
+        let flow = [
+            BlockNode::new(Block::Island(left_island)),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&strip_run, REGION_W))),
+        ];
+        let mut regions = PageRegionSequence::new(Rect::new(0.0, 0.0, REGION_W, 500.0));
+        let frames = compose(&flow, &mut regions, &style, &shaper);
+        assert_eq!(frames.len(), 1);
+        let island_placement = frames[0].blocks.iter().find(|b| matches!(b.kind, Block::Island(_))).expect("island placed");
+        let text_placement = frames[0].blocks.iter().find(|b| matches!(b.kind, Block::Paragraph(_))).expect("strip text placed");
+        assert!(text_placement.rect.x >= island_placement.rect.x + island_placement.rect.width, "Left anchor: text must sit at/right of the island's own right edge (plus margin)");
+        assert!(
+            (text_placement.rect.y - island_placement.rect.y).abs() < 1e-6,
+            "strip content starts at the SAME y as the island's own top — beside it, not below it"
+        );
+
+        // Right anchor: strip content must sit strictly to the LEFT of
+        // the island.
+        let right_island = stub_island(&rgba, IslandAnchor::Right, ISLAND_W, MARGIN, ISLAND_H);
+        let flow2 = [
+            BlockNode::new(Block::Island(right_island)),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&strip_run, REGION_W))),
+        ];
+        let mut regions2 = PageRegionSequence::new(Rect::new(0.0, 0.0, REGION_W, 500.0));
+        let frames2 = compose(&flow2, &mut regions2, &style, &shaper);
+        let island_placement2 = frames2[0].blocks.iter().find(|b| matches!(b.kind, Block::Island(_))).expect("island placed");
+        let text_placement2 = frames2[0].blocks.iter().find(|b| matches!(b.kind, Block::Paragraph(_))).expect("strip text placed");
+        assert!(
+            text_placement2.rect.x + text_placement2.rect.width <= island_placement2.rect.x + 0.01,
+            "Right anchor: text must sit at/left of the island's own left edge (minus margin)"
+        );
+    }
+
+    /// `IslandAnchor::Center`: side-strip widths must match this feature's
+    /// own formula `(region_width - island.width - 2*margin) / 2`; text
+    /// fills the LEFT strip first, then the RIGHT strip, never overlapping
+    /// the island's own rect; once both strips are exhausted (an island
+    /// band sized to hold exactly ONE short line per strip — measured,
+    /// never guessed), the third paragraph resumes at FULL region width,
+    /// starting at/below the island's own bottom edge.
+    #[test]
+    fn island_center_anchor_flows_text_down_left_strip_then_right_strip_then_resumes_full_width_below() {
+        use crate::scene::IslandAnchor;
+
+        let shaper = CosmicShaper::headless();
+        let font = uzor_text::FontSpec::new(FontFamily::Roboto, 14.0);
+        let style = ComposeStyle::new(4.0, font);
+        const REGION_W: f64 = 500.0;
+        const ISLAND_W: f64 = 200.0;
+        const MARGIN: f64 = 10.0;
+        let expected_side_width = (REGION_W - ISLAND_W - 2.0 * MARGIN) / 2.0;
+
+        let left_run = [StyledRun::new("Left.", font)];
+        let right_run = [StyledRun::new("Right.", font)];
+        let below_run = [StyledRun::new("Below.", font)];
+
+        // Measure a single short line's REAL height at the strip's own
+        // width (never guessed), and size the island's own band to hold
+        // exactly ONE such line per strip — a second flow paragraph is
+        // therefore forced to move on (left -> right -> full width
+        // below), proving the fill order as data.
+        let left_layout = layout_paragraph(&Paragraph::new(&left_run, expected_side_width), &shaper);
+        assert_eq!(left_layout.lines.len(), 1, "fixture text must stay on one line at the strip's own width");
+        let island_height = left_layout.height + 2.0; // room for exactly one line, not two
+
+        let rgba = [0u8; 4];
+        let island = stub_island(&rgba, IslandAnchor::Center, ISLAND_W, MARGIN, island_height);
+
+        let flow = [
+            BlockNode::new(Block::Island(island)),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&left_run, REGION_W))),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&right_run, REGION_W))),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&below_run, REGION_W))),
+        ];
+
+        let mut regions = PageRegionSequence::new(Rect::new(0.0, 0.0, REGION_W, 600.0));
+        let frames = compose(&flow, &mut regions, &style, &shaper);
+        assert_eq!(frames.len(), 1);
+        let blocks = &frames[0].blocks;
+        assert_eq!(blocks.len(), 4, "island + 3 paragraphs, all on ONE page");
+
+        let island_placement = blocks.iter().find(|b| matches!(b.kind, Block::Island(_))).expect("island placed");
+        let left_placed = blocks.iter().find(|b| matches!(b.kind, Block::Paragraph(p) if p.runs[0].text == "Left.")).expect("left text placed");
+        let right_placed = blocks.iter().find(|b| matches!(b.kind, Block::Paragraph(p) if p.runs[0].text == "Right.")).expect("right text placed");
+        let below_placed = blocks.iter().find(|b| matches!(b.kind, Block::Paragraph(p) if p.runs[0].text == "Below.")).expect("below text placed");
+
+        assert!((left_placed.rect.width - expected_side_width).abs() < 1e-6, "left-strip text must be measured at the left strip's own width");
+        assert!(left_placed.rect.x + left_placed.rect.width <= island_placement.rect.x + 0.01, "left-strip text must never overlap the island rect");
+
+        assert!((right_placed.rect.width - expected_side_width).abs() < 1e-6, "right-strip text must be measured at the right strip's own width");
+        assert!(right_placed.rect.x >= island_placement.rect.x + island_placement.rect.width - 0.01, "right-strip text must never overlap the island rect");
+        assert!(right_placed.rect.x > left_placed.rect.x, "the right strip must sit to the right of the left strip");
+
+        assert!((below_placed.rect.width - REGION_W).abs() < 1e-6, "content after the island's own band must resume at FULL region width");
+        assert!(
+            below_placed.rect.y >= island_placement.rect.y + island_placement.rect.height - 0.01,
+            "full-width content must resume at/below the island's own bottom edge"
+        );
     }
 }
