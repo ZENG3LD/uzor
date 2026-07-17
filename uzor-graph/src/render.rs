@@ -133,14 +133,21 @@ pub fn draw_edges<N, E>(
     }
 
     let drawn = segments.len() + dim_segments.len();
+    // Round caps + >=1.5px width: sub-1.5px butt-capped hairlines at an
+    // angle read as a beaded staircase on a standard-DPI display even
+    // with correct AA (live-verified 2026-07-18); industry engines
+    // (d3/sigma/obsidian) stroke edges at 1.5-2px for exactly this
+    // reason.
+    render.set_line_cap("round");
     if !dim_segments.is_empty() {
         render.set_global_alpha(DIM_ALPHA);
-        render.draw_line_batch(&dim_segments, "#5a6070", 1.0);
+        render.draw_line_batch(&dim_segments, "#5a6070", 1.3);
         render.set_global_alpha(1.0);
     }
     if !segments.is_empty() {
-        render.draw_line_batch(&segments, "#7c8496", 1.2);
+        render.draw_line_batch(&segments, "#7c8496", 1.7);
     }
+    render.set_line_cap("butt");
     drawn
 }
 
