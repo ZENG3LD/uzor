@@ -12,8 +12,8 @@ pub mod histogram;
 pub mod sankey;
 pub mod timeline;
 
-pub use bars::BarFigure;
-pub use curve::CurveFigure;
+pub use bars::{BarFigure, BarMode, BarSeries};
+pub use curve::{CurveFigure, CurveSeries};
 pub use histogram::{bin, Bin, HistogramFigure};
 pub use sankey::{hit_test_node, layout_sankey, LabelSide, RibbonGeom, SankeyFigure, SankeyLayout, SankeyLink, SankeyNode};
 pub use timeline::{layout_point_labels, PointLabelInput, TimelineEvent, TimelineFigure};

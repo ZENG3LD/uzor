@@ -45,7 +45,11 @@ pub mod scale;
 pub mod theme;
 
 pub use coord::PlotArea;
-pub use figure::{BarFigure, CurveFigure, HistogramFigure, FigureOverlay, SankeyFigure, SankeyLink, SankeyNode, TimelineEvent, TimelineFigure};
+pub use figure::{
+    BarFigure, BarMode, BarSeries, CurveFigure, CurveSeries, HistogramFigure, FigureOverlay, SankeyFigure, SankeyLink, SankeyNode,
+    TimelineEvent, TimelineFigure,
+};
+pub use guide::legend::{LegendEntry, LegendPosition};
 pub use interact::{BrushState, FocusSet, HitZone, HoverInfo, SelectionBus, FigureInputAction, FigureOutputAction};
 pub use mark::MarkStyle;
 pub use scale::{BandScale, LinearScale, LogScale, Scale, Tick, TimeScale};
@@ -65,8 +69,8 @@ mod proof_tests {
 
     use crate::theme::FigureTheme;
     use crate::{
-        BarFigure, CurveFigure, FocusSet, HistogramFigure, FigureOverlay, SankeyFigure, SankeyLink, SankeyNode, TimeScale, TimelineEvent,
-        TimelineFigure,
+        BarFigure, BarMode, BarSeries, CurveFigure, CurveSeries, FocusSet, HistogramFigure, FigureOverlay, LegendPosition, SankeyFigure,
+        SankeyLink, SankeyNode, TimeScale, TimelineEvent, TimelineFigure,
     };
 
     const WIDTH: u32 = 800;
@@ -407,5 +411,108 @@ mod proof_tests {
         .expect("sankey figure with hover overlay should render");
         assert_eq!(decoded_png_dims(&bytes), (SANKEY_WIDTH, SANKEY_HEIGHT));
         write_proof_png("figures_v3_sankey_hover.png", &bytes);
+    }
+
+    // ── multi-series + legend proofs ──────────────────────────────────
+
+    const MULTISERIES_WIDTH: u32 = 800;
+    const MULTISERIES_HEIGHT: u32 = 500;
+
+    /// Deterministic 3-series x 5-category grouped-bar fixture — fixed
+    /// formula, no RNG/time.
+    fn seeded_grouped_bar_figure() -> BarFigure {
+        let categories: Vec<String> = (0..5).map(|i| format!("cat-{i}")).collect();
+        let series = vec![
+            BarSeries { name: "alpha".to_owned(), values: (0..5).map(|i| 10.0 + (i as f64 * 6.0) % 30.0).collect() },
+            BarSeries { name: "beta".to_owned(), values: (0..5).map(|i| 18.0 + (i as f64 * 9.0) % 40.0).collect() },
+            BarSeries { name: "gamma".to_owned(), values: (0..5).map(|i| 6.0 + (i as f64 * 13.0) % 25.0).collect() },
+        ];
+        BarFigure::with_series(categories, series, BarMode::Grouped)
+            .with_title("Grouped bars (seeded, 3 series)")
+            .with_legend(LegendPosition::Top)
+    }
+
+    #[test]
+    fn grouped_bar_figure_renders_to_a_valid_png() {
+        let figure = seeded_grouped_bar_figure();
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: MULTISERIES_WIDTH, height_px: MULTISERIES_HEIGHT, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, MULTISERIES_WIDTH as f64, MULTISERIES_HEIGHT as f64);
+
+        let bytes = render_to_png(&spec, |ctx| {
+            figure.render(ctx, rect, &theme);
+        })
+        .expect("grouped bar figure should render");
+        assert_eq!(decoded_png_dims(&bytes), (MULTISERIES_WIDTH, MULTISERIES_HEIGHT));
+        write_proof_png("figures_multiseries_grouped.png", &bytes);
+    }
+
+    /// Deterministic 3-series x 5-category stacked-bar fixture with some
+    /// negative values (deliberately exercises downward stacking below the
+    /// zero baseline) — fixed formula, no RNG/time.
+    fn seeded_stacked_bar_figure() -> BarFigure {
+        let categories: Vec<String> = (0..5).map(|i| format!("cat-{i}")).collect();
+        let series = vec![
+            BarSeries { name: "revenue".to_owned(), values: vec![20.0, 15.0, 30.0, 10.0, 25.0] },
+            BarSeries { name: "cost".to_owned(), values: vec![-8.0, -12.0, -5.0, -15.0, -6.0] },
+            BarSeries { name: "adjustment".to_owned(), values: vec![5.0, -3.0, 4.0, -2.0, 6.0] },
+        ];
+        BarFigure::with_series(categories, series, BarMode::Stacked).with_title("Stacked bars (seeded, negatives)")
+    }
+
+    #[test]
+    fn stacked_bar_figure_renders_to_a_valid_png() {
+        let figure = seeded_stacked_bar_figure();
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: MULTISERIES_WIDTH, height_px: MULTISERIES_HEIGHT, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, MULTISERIES_WIDTH as f64, MULTISERIES_HEIGHT as f64);
+
+        let bytes = render_to_png(&spec, |ctx| {
+            figure.render(ctx, rect, &theme);
+        })
+        .expect("stacked bar figure should render");
+        assert_eq!(decoded_png_dims(&bytes), (MULTISERIES_WIDTH, MULTISERIES_HEIGHT));
+        write_proof_png("figures_multiseries_stacked.png", &bytes);
+    }
+
+    /// Deterministic 3-line curve fixture (independent seeded pseudo-walks,
+    /// one fixed multiplier per series) — fixed formula, no RNG/time.
+    fn seeded_multi_curve_figure() -> CurveFigure {
+        let build = |seed: i64| -> Vec<(f64, f64)> {
+            let mut running = 0.0;
+            (0..40)
+                .map(|i| {
+                    let step = ((i * seed + 11) % 17) as f64 - 8.0;
+                    running += step;
+                    (i as f64, running)
+                })
+                .collect()
+        };
+        let series = vec![
+            CurveSeries { name: "series-a".to_owned(), points: build(31) },
+            CurveSeries { name: "series-b".to_owned(), points: build(47) },
+            CurveSeries { name: "series-c".to_owned(), points: build(59) },
+        ];
+        CurveFigure::with_series(series).with_title("Multi-line curve (seeded, 3 series)").with_legend(LegendPosition::Right)
+    }
+
+    #[test]
+    fn multi_curve_figure_overlay_renders_hover_and_series_tooltip_to_a_valid_png() {
+        let figure = seeded_multi_curve_figure();
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: MULTISERIES_WIDTH, height_px: MULTISERIES_HEIGHT, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, MULTISERIES_WIDTH as f64, MULTISERIES_HEIGHT as f64);
+        // Roughly centered over the plot — exact nearest-point-across-
+        // series selection is already proven by `interact::hit`'s own unit
+        // tests; this proof is about the render PATH (hover -> crosshair +
+        // marker + series-aware tooltip + legend all drawing together).
+        let overlay = FigureOverlay { hover_px: Some((rect.width / 2.0, rect.height / 2.0)), brush: None, focus: None };
+
+        let bytes = render_to_png(&spec, |ctx| {
+            figure.render_with(ctx, rect, &theme, &overlay);
+        })
+        .expect("multi curve figure with hover overlay should render");
+        assert_eq!(decoded_png_dims(&bytes), (MULTISERIES_WIDTH, MULTISERIES_HEIGHT));
+        write_proof_png("figures_multicurve.png", &bytes);
     }
 }
