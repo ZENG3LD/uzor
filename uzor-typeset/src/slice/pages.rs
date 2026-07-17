@@ -33,13 +33,15 @@
 //! way they already walk `frame`/`header`/`footer` (design law 1 — same
 //! paint/collection recursion, just one more frame list).
 
+use std::collections::{HashMap, HashSet};
+
 use uzor::types::Rect;
 use uzor_text::LineShaper;
 
 use crate::compose::{compose, ComposeStyle};
-use crate::master::PageMaster;
+use crate::master::{PageMaster, PageNumberStyle};
 use crate::region::{FixedRegionSequence, Frame, PageRegionSequence, Region};
-use crate::scene::BlockNode;
+use crate::scene::{resolve_block_ids, BlockId, BlockNode};
 
 /// One sliced page: its 0-based index + the composed [`Frame`] that
 /// landed on it, plus (P2) the shared header/footer frames and this
@@ -69,6 +71,62 @@ pub struct Page<'a> {
     /// when the master has no [`crate::master::PageMaster::
     /// page_number_token`]).
     pub page_number: Option<PageNumberPlacement>,
+    /// Every [`crate::scene::BlockNode::with_outline`]-tagged block that
+    /// landed on THIS page (document order), each already resolved to
+    /// `page_index == self.index` at [`slice_pages`] time — document
+    /// navigation feature pass. Additive shape decision (report): rather
+    /// than a second `slice_pages_with_outline(..) -> (Vec<Page>,
+    /// Vec<OutlineEntry>)` entry point, entries attach directly to the
+    /// `Page` they landed on — matching this module's own established
+    /// convention (`header`/`footer`/`page_number` already attach to
+    /// `Page` rather than growing `slice_pages`'s own return shape).
+    /// [`renumber_pages`] is the "merge outlines across a multi-run
+    /// concatenation" helper this attachment shape needs: it re-derives
+    /// every contained entry's own `page_index` from its containing
+    /// page's (possibly renumbered) `Page::index` — always correct
+    /// regardless of how many independent `slice_pages` calls were
+    /// concatenated beforehand, since it's recomputed fresh from the
+    /// FINAL page positions, never carried forward stale.
+    pub outline: Vec<OutlineEntry>,
+    /// Every [`crate::scene::BlockNode::with_link_target`]-tagged block's
+    /// own placed rect(s) on THIS page — one [`LinkEntry`] per placed
+    /// FRAGMENT (a block split across pages gets one entry per fragment,
+    /// each covering only that fragment's own on-page rect; unlike
+    /// [`Page::outline`], this is intentionally NOT deduplicated to "first
+    /// occurrence only" — every visible fragment is a real clickable
+    /// area). `target_page` is expected to ALREADY be expressed in
+    /// whatever the FINAL concatenated document's page-index space will
+    /// be (the same expectation `crate::toc::compose_document_with_toc`'s
+    /// own generated rows satisfy via `OutlineEntry::page_index`) —
+    /// [`renumber_pages`] deliberately does NOT rewrite `target_page`
+    /// (unlike `OutlineEntry::page_index`, which is self-referential to
+    /// the page it's attached to and therefore always safe to overwrite;
+    /// a link's target is a DIFFERENT page, which `renumber_pages` has no
+    /// way to remap without knowing the caller's own pre-concatenation
+    /// section boundaries).
+    pub links: Vec<LinkEntry>,
+}
+
+/// One document-outline/TOC entry, resolved to a concrete page (design
+/// doc: counter-introspection multi-pass fixpoint — this is the
+/// "introspection index" half: `slice_pages` is the one pass that knows
+/// where every tagged block actually landed). `page_index` is 0-based,
+/// matching [`Page::index`]'s own convention.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutlineEntry {
+    pub level: u8,
+    pub title: String,
+    pub page_index: u32,
+}
+
+/// One internal-link (GoTo) source rect, resolved at [`slice_pages`] time
+/// from a [`crate::scene::BlockNode::with_link_target`]-tagged block's own
+/// placed [`crate::region::PlacedBlock::rect`] (design law 1 — no second
+/// position formula: the SAME rect the block itself painted at).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinkEntry {
+    pub rect: Rect,
+    pub target_page: u32,
 }
 
 /// A page's own resolved page-number text, ready to paint at `rect`
@@ -115,7 +173,7 @@ pub fn slice_pages<'a>(flow: &'a [BlockNode<'a>], master: &PageMaster<'a>, style
                 None => break,
             }
         }
-        pages.push(Page { index, total: 0, frame, extra_frames, header: None, footer: None, page_number: None });
+        pages.push(Page { index, total: 0, frame, extra_frames, header: None, footer: None, page_number: None, outline: Vec::new(), links: Vec::new() });
         index += 1;
     }
 
@@ -133,6 +191,83 @@ pub fn slice_pages<'a>(flow: &'a [BlockNode<'a>], master: &PageMaster<'a>, style
             .map(|token| PageNumberPlacement { text: token.format_for(page.index, total), rect: master.page_number_rect() });
     }
 
+    attach_navigation_entries(flow, &mut pages);
+
+    pages
+}
+
+/// Walk `flow`'s own `.with_outline()`/`.with_link_target()`-tagged nodes
+/// and attach the resulting [`OutlineEntry`]/[`LinkEntry`]s to whichever
+/// [`Page`]s their placed content appears on — never header/footer (a
+/// SEPARATE flow/id namespace, see [`compose_margin_box`]'s own call
+/// sites: cross-referencing `flow`'s ids against header/footer
+/// `PlacedBlock`s would be comparing [`BlockId`]s from two UNRELATED
+/// [`resolve_block_ids`] calls, which could coincidentally collide). An
+/// outline-tagged block is attached to its FIRST page only (`emitted`
+/// guards against a duplicate entry for a later fragment sharing the same
+/// id) — a link-tagged block is attached on EVERY page its own fragments
+/// land on (see [`Page::links`]'s own doc comment for why the two differ).
+fn attach_navigation_entries<'a>(flow: &'a [BlockNode<'a>], pages: &mut [Page<'a>]) {
+    let ids = resolve_block_ids(flow);
+    let mut outline_tags: HashMap<BlockId, &crate::scene::OutlineTag> = HashMap::new();
+    let mut link_targets: HashMap<BlockId, u32> = HashMap::new();
+    for (node, id) in flow.iter().zip(ids.iter()) {
+        if let Some(tag) = &node.outline {
+            outline_tags.insert(*id, tag);
+        }
+        if let Some(target) = node.link_target {
+            link_targets.insert(*id, target);
+        }
+    }
+    if outline_tags.is_empty() && link_targets.is_empty() {
+        return;
+    }
+
+    let mut emitted: HashSet<BlockId> = HashSet::new();
+    for page in pages.iter_mut() {
+        let mut outline_entries = Vec::new();
+        let mut link_entries = Vec::new();
+        for placed in page.frame.blocks.iter().chain(page.extra_frames.iter().flat_map(|f| f.blocks.iter())) {
+            if let Some(tag) = outline_tags.get(&placed.id) {
+                if emitted.insert(placed.id) {
+                    outline_entries.push(OutlineEntry { level: tag.level, title: tag.title.clone(), page_index: page.index });
+                }
+            }
+            if let Some(&target_page) = link_targets.get(&placed.id) {
+                link_entries.push(LinkEntry { rect: placed.rect, target_page });
+            }
+        }
+        page.outline = outline_entries;
+        page.links = link_entries;
+    }
+}
+
+/// Renumber a concatenation of several independently-sliced [`Page`]
+/// sections into one continuous document (the showcase's own 3-run
+/// concat pattern, and [`crate::toc::compose_document_with_toc`]'s own
+/// TOC-pages-then-body-pages concatenation) — fixes up `Page::index`/
+/// `Page::total`, every contained [`OutlineEntry::page_index`] (so a
+/// generated TOC/PDF-outline built from a LATER `pages[i].outline` read
+/// always matches this call's own FINAL page positions, never a stale
+/// per-section index), and — when `page_number_style` is given —
+/// re-formats every already-attached [`PageNumberPlacement::text`]. Only
+/// TEXT/index bookkeeping is rewritten; every already-baked geometry
+/// field (frame/extra_frames/header/footer content, the page-number's own
+/// paint rect) is untouched.
+pub fn renumber_pages<'a>(mut pages: Vec<Page<'a>>, page_number_style: Option<&PageNumberStyle>) -> Vec<Page<'a>> {
+    let total = pages.len() as u32;
+    for (i, page) in pages.iter_mut().enumerate() {
+        page.index = i as u32;
+        page.total = total;
+        for entry in &mut page.outline {
+            entry.page_index = page.index;
+        }
+        if let Some(style) = page_number_style {
+            if let Some(number) = &mut page.page_number {
+                number.text = style.format_for(page.index, total);
+            }
+        }
+    }
     pages
 }
 

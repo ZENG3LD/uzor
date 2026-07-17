@@ -56,6 +56,7 @@ pub mod render;
 pub mod scene;
 pub mod slice;
 pub mod style;
+pub mod toc;
 
 pub use compose::{compose, BreakControl, ComposeStyle};
 pub use export::pages_to_pdf;
@@ -71,13 +72,15 @@ pub use region::{
 pub use render::{draw_card, draw_frame_state, draw_page, draw_page_layers, draw_slide, DrawLayers};
 pub use scene::{
     resolve_block_ids, AnchoredIsland, Block, BlockId, BlockNode, BlockSizing, CellPadding, ColumnSpec, FigureBlock, ImageBlock, ImageFit,
-    IslandAnchor, ListBlock, ListItem, MarkerStyle, TableBlock, TableCell, TableRow, TypesetFigure,
+    IslandAnchor, ListBlock, ListItem, MarkerStyle, OutlineTag, TableBlock, TableCell, TableRow, TypesetFigure,
 };
 pub use slice::{
-    cards_to_slides, slice_build_steps, slice_cards, slice_pages, slice_slide_instance, slice_slides, slides_to_cards, BlockOverride,
-    BuildStep, Card, ComposedFrame, Margins, Page, PageMaster, PageNumberPlacement, SliceError, Slide, SlideOverflow,
+    cards_to_slides, renumber_pages, slice_build_steps, slice_cards, slice_pages, slice_slide_instance, slice_slides, slides_to_cards,
+    BlockOverride, BuildStep, Card, ComposedFrame, LinkEntry, Margins, OutlineEntry, Page, PageMaster, PageNumberPlacement, SliceError,
+    Slide, SlideOverflow,
 };
 pub use style::{
     resolve_property_chain, BrandTokens, ColorRole, ComponentStyle, DesignTokens, FigureThemeTokens, FontFileRef, FontRole, PropertyState,
     ResolvedProperty, RootPropertyState, TextStyle, Theme,
 };
+pub use toc::{build_toc, build_toc_rows, compose_document_with_toc, dotted_leader, TocRow, TocStyle};

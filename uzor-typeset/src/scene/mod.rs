@@ -13,7 +13,7 @@ pub mod island;
 pub mod list;
 pub mod table;
 
-pub use block::{resolve_block_ids, Block, BlockId, BlockNode};
+pub use block::{resolve_block_ids, Block, BlockId, BlockNode, OutlineTag};
 pub use figure_block::{BlockSizing, FigureBlock, TypesetFigure};
 pub use image_block::{ImageBlock, ImageFit};
 pub use island::{AnchoredIsland, IslandAnchor};

@@ -89,19 +89,50 @@ pub enum Block<'a> {
     Spacer(f64),
 }
 
+/// A [`BlockNode`] tagged as a document-outline / table-of-contents entry
+/// via [`BlockNode::with_outline`] (document-navigation feature pass —
+/// `nemo/docs/uzor-engines/research_typesetting_sota_2026.md`'s
+/// counter-introspection item: one mechanism powers counters/TOC/
+/// cross-refs, this crate's own narrow slice of that is "collect every
+/// tagged block's own resolved page number," the page-slicing pass
+/// itself being the counter). `title` is explicit, never derived from the
+/// tagged block's own content — the design doc's own outline/TOC sketch
+/// names `(numbering, title, page-number)` triples resolved from
+/// introspection, but a heading's PAINTED text and its OUTLINE label are
+/// legitimately different strings in general (e.g. a numbered heading
+/// like `"3. Results"` vs. an outline entry that drops the number) — an
+/// explicit title keeps the caller in control rather than this crate
+/// guessing by walking a `Paragraph`'s own runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutlineTag {
+    pub level: u8,
+    pub title: String,
+}
+
 /// One node in a [`crate::compose::compose`] flow: a [`Block`] plus its
 /// (possibly author-assigned) identity and its keep/break preference.
 pub struct BlockNode<'a> {
     pub id: Option<BlockId>,
     pub kind: Block<'a>,
     pub break_control: BreakControl,
+    /// `Some` when this node is a document-outline/TOC entry — see
+    /// [`OutlineTag`]/[`BlockNode::with_outline`]. `None` (the default)
+    /// for every ordinary flow block.
+    pub outline: Option<OutlineTag>,
+    /// `Some(page_index)` when this node's own placed rect(s) should
+    /// become an internal-link (GoTo) source pointing at `page_index`
+    /// (0-based) — see [`BlockNode::with_link_target`]. Used by
+    /// `crate::toc::build_toc`'s own generated rows (a TOC row links to
+    /// the heading it names), but not restricted to TOC rows — any block
+    /// can be tagged. `None` (the default) for every ordinary flow block.
+    pub link_target: Option<u32>,
 }
 
 impl<'a> BlockNode<'a> {
     /// An unlabeled, `BreakControl::Auto` node — gets a structural id
     /// from [`resolve_block_ids`].
     pub fn new(kind: Block<'a>) -> Self {
-        Self { id: None, kind, break_control: BreakControl::Auto }
+        Self { id: None, kind, break_control: BreakControl::Auto, outline: None, link_target: None }
     }
 
     /// Builder: assign an explicit author id.
@@ -113,6 +144,24 @@ impl<'a> BlockNode<'a> {
     /// Builder: set this node's keep/break preference.
     pub fn with_break_control(mut self, break_control: BreakControl) -> Self {
         self.break_control = break_control;
+        self
+    }
+
+    /// Builder: tag this node as a document-outline/TOC entry at `level`
+    /// (1-based, matching heading-level convention: `1` = top-level
+    /// section) with an explicit `title` (usually the heading paragraph's
+    /// own text, but the caller decides — see [`OutlineTag`]'s own doc
+    /// comment for why).
+    pub fn with_outline(mut self, level: u8, title: impl Into<String>) -> Self {
+        self.outline = Some(OutlineTag { level, title: title.into() });
+        self
+    }
+
+    /// Builder: tag this node's own placed rect(s) as an internal-link
+    /// (GoTo) source pointing at `page_index` (0-based) — see
+    /// [`BlockNode::link_target`]'s own doc comment.
+    pub fn with_link_target(mut self, page_index: u32) -> Self {
+        self.link_target = Some(page_index);
         self
     }
 }

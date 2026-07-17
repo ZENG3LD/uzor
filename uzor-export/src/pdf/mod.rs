@@ -91,15 +91,17 @@
 //! new correctness risk" without a second metadata representation that
 //! could drift from the first.
 
+mod outline;
 mod subset;
 mod ttf;
 
 use std::collections::HashMap;
 
-use pdf_writer::types::{CidFontType, FontFlags, SystemInfo};
+use pdf_writer::types::{ActionType, AnnotationType, CidFontType, FontFlags, SystemInfo};
 use pdf_writer::{Content, Date, Filter, Name, Pdf, Rect as PdfRect, Ref, Str, TextStr};
 
 use crate::ExportError;
+use outline::write_outline_tree;
 use subset::{build_font_data, FontData, ADOBE_IDENTITY_UCS};
 
 /// Opaque handle to a font registered via [`PdfBuilder::register_font`].
@@ -135,7 +137,8 @@ pub struct PdfTextRun<'a> {
 }
 
 /// One PDF page: its physical size, an optional full-page opaque raster
-/// background, and every vector text run painted on top of it.
+/// background, every vector text run painted on top of it, and every
+/// internal link annotation on it (document-navigation feature pass).
 pub struct PdfPageSpec<'a> {
     pub width_pt: f64,
     pub height_pt: f64,
@@ -149,6 +152,42 @@ pub struct PdfPageSpec<'a> {
     /// silently trusting one over the other).
     pub raster_px: (u32, u32),
     pub text_runs: Vec<PdfTextRun<'a>>,
+    /// Internal-link (`GoTo`) rectangles on this page — additive,
+    /// defaults to empty for every pre-existing caller. See [`PdfLink`].
+    pub links: Vec<PdfLink>,
+}
+
+/// One document-outline (bookmark) entry — a caller-resolved heading
+/// already tied to its own PDF page index (0-based, matching this
+/// module's own per-`add_page`-call ordering). Plain, engine-agnostic
+/// data (design law: this module holds no `uzor-typeset`/`Page`
+/// knowledge — the adapter that knows `Page::outline` is the only place
+/// allowed to construct this, same dependency-boundary convention
+/// [`PdfTextRun`]/[`PdfPageSpec`] already follow).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PdfOutlineEntry {
+    /// 1-based, matching heading-level convention (`1` = top-level
+    /// section) — see [`outline::write_outline_tree`]'s own doc comment
+    /// for how nesting/open-by-default is derived from this.
+    pub level: u8,
+    pub title: String,
+    pub page_index: u32,
+}
+
+/// One internal-link (`GoTo`) rectangle on a page — `rect` in the SAME
+/// top-left-origin coordinate convention every other public coordinate in
+/// this module already uses (`x_pt`/`y_pt` = top-left corner). URI
+/// (external) links are explicitly NOT in scope this pass — see this
+/// crate's own `CLAUDE.md`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PdfLink {
+    pub x_pt: f64,
+    pub y_pt: f64,
+    pub width_pt: f64,
+    pub height_pt: f64,
+    /// 0-based target page index, matching [`PdfOutlineEntry::page_index`]'s
+    /// own convention.
+    pub target_page: u32,
 }
 
 /// Caller-supplied document metadata for the PDF `/Info` dictionary
@@ -209,6 +248,11 @@ struct PageRecord {
     /// `(width, height)` — `None` for a text-only page.
     raster_rgb: Option<(Vec<u8>, u32, u32)>,
     runs: Vec<PageTextRun>,
+    /// Owned verbatim from [`PdfPageSpec::links`] — [`PdfLink`] borrows
+    /// nothing, so no resolution work is needed at [`PdfBuilder::add_page`]
+    /// time (unlike `runs`, which resolves characters to glyph ids
+    /// eagerly).
+    links: Vec<PdfLink>,
 }
 
 /// Accumulates registered fonts + added pages, then assembles one PDF byte
@@ -220,6 +264,7 @@ pub struct PdfBuilder {
     fonts: Vec<FontEntry>,
     pages: Vec<PageRecord>,
     meta: Option<PdfMeta>,
+    outline: Vec<PdfOutlineEntry>,
 }
 
 impl Default for PdfBuilder {
@@ -230,7 +275,7 @@ impl Default for PdfBuilder {
 
 impl PdfBuilder {
     pub fn new() -> Self {
-        Self { fonts: Vec::new(), pages: Vec::new(), meta: None }
+        Self { fonts: Vec::new(), pages: Vec::new(), meta: None, outline: Vec::new() }
     }
 
     /// Register a font's raw TTF/OpenType bytes, returning a handle to
@@ -260,6 +305,19 @@ impl PdfBuilder {
         self.meta = Some(meta);
     }
 
+    /// Attach a document-outline (bookmark) tree, written as the PDF
+    /// `/Outlines` entry at [`Self::finish`] time. Additive — a
+    /// [`PdfBuilder`] that never calls this writes no `/Outlines` entry
+    /// at all (same opt-in convention as [`Self::set_meta`]). `entries`
+    /// is a FLAT, level-tagged list in document order — nesting is
+    /// derived from consecutive levels (see [`outline::write_outline_tree`]'s
+    /// own doc comment); an entry whose `page_index` doesn't correspond
+    /// to any page added via [`Self::add_page`] by [`Self::finish`] time
+    /// is silently skipped (never a panic).
+    pub fn set_outline(&mut self, entries: Vec<PdfOutlineEntry>) {
+        self.outline = entries;
+    }
+
     /// Add one page. Decodes `spec.raster` (if present) into a tightly
     /// packed, alpha-dropped `RGB8` buffer and resolves every text run's
     /// own characters to this run's font's real glyph ids up front —
@@ -282,7 +340,7 @@ impl PdfBuilder {
             })
             .collect();
 
-        self.pages.push(PageRecord { width_pt: spec.width_pt, height_pt: spec.height_pt, raster_rgb, runs });
+        self.pages.push(PageRecord { width_pt: spec.width_pt, height_pt: spec.height_pt, raster_rgb, runs, links: spec.links });
         Ok(())
     }
 
@@ -311,10 +369,23 @@ impl PdfBuilder {
         let page_refs: Vec<PageRefs> = self
             .pages
             .iter()
-            .map(|page| PageRefs { page: refs.next(), content: refs.next(), image: page.raster_rgb.as_ref().map(|_| refs.next()) })
+            .map(|page| PageRefs {
+                page: refs.next(),
+                content: refs.next(),
+                image: page.raster_rgb.as_ref().map(|_| refs.next()),
+                annotations: page.links.iter().map(|_| refs.next()).collect(),
+            })
             .collect();
 
         let info_ref = self.meta.as_ref().map(|_| refs.next());
+
+        // Document-outline (bookmark) tree — allocates its OWN item/root
+        // refs internally; needs every page's own `Ref` + physical height
+        // already known (page-top `/XYZ` destinations), so it runs AFTER
+        // `page_refs` above but before anything is actually WRITTEN.
+        let page_only_refs: Vec<Ref> = page_refs.iter().map(|r| r.page).collect();
+        let page_heights_pt: Vec<f64> = self.pages.iter().map(|p| p.height_pt).collect();
+        let outline_root_ref = write_outline_tree(&mut pdf, &mut refs, &self.outline, &page_only_refs, &page_heights_pt);
 
         let font_names: Vec<String> = (0..self.fonts.len()).map(|i| format!("F{i}")).collect();
         let base_font_names: Vec<String> = font_data
@@ -327,7 +398,13 @@ impl PdfBuilder {
             .collect();
         let image_names: Vec<String> = (0..self.pages.len()).map(|i| format!("Im{i}")).collect();
 
-        pdf.catalog(catalog_id).pages(page_tree_id);
+        {
+            let mut catalog = pdf.catalog(catalog_id);
+            catalog.pages(page_tree_id);
+            if let Some(root) = outline_root_ref {
+                catalog.outlines(root);
+            }
+        }
         pdf.pages(page_tree_id).kids(page_refs.iter().map(|r| r.page)).count(page_refs.len() as i32);
 
         for (entry, refs, data, base_font_name) in izip(&self.fonts, &font_refs, &font_data, &base_font_names) {
@@ -335,7 +412,7 @@ impl PdfBuilder {
         }
 
         for (i, page) in self.pages.iter().enumerate() {
-            write_page(&mut pdf, page_tree_id, &page_refs[i], &font_names, &font_refs, page, image_names[i].as_str(), &font_data);
+            write_page(&mut pdf, page_tree_id, &page_refs[i], &font_names, &font_refs, page, image_names[i].as_str(), &font_data, &page_only_refs, &page_heights_pt);
         }
 
         if let (Some(meta), Some(info_id)) = (&self.meta, info_ref) {
@@ -384,6 +461,9 @@ struct PageRefs {
     page: Ref,
     content: Ref,
     image: Option<Ref>,
+    /// One [`Ref`] per this page's own [`PdfLink`] (same order as
+    /// [`PageRecord::links`]).
+    annotations: Vec<Ref>,
 }
 
 /// `/CIDSystemInfo` for the CIDFont itself — `Adobe-Identity-0`: a direct
@@ -483,6 +563,7 @@ fn write_font(pdf: &mut Pdf, refs: &FontRefs, base_font_name: &str, entry: &Font
 /// they share the same origin corner horizontally and the image itself is
 /// placed spanning the WHOLE page (`0,0` to `width_pt,height_pt` in BOTH
 /// coordinate systems).
+#[allow(clippy::too_many_arguments)]
 fn write_page(
     pdf: &mut Pdf,
     page_tree_id: Ref,
@@ -492,6 +573,8 @@ fn write_page(
     page: &PageRecord,
     image_name: &str,
     font_data: &[FontData],
+    page_refs_by_index: &[Ref],
+    page_heights_pt: &[f64],
 ) {
     if let (Some(image_ref), Some((rgb, width, height))) = (refs.image, page.raster_rgb.as_ref()) {
         let compressed = flate_compress(rgb);
@@ -529,11 +612,41 @@ fn write_page(
         stream.filter(Filter::FlateDecode);
     }
 
+    // Internal link annotations — one `/Subtype /Link` object per
+    // `PdfLink`, GoTo-ing a page-top `/XYZ` destination on its own
+    // `target_page` (same page-top convention `outline::write_outline_tree`
+    // uses for bookmarks). A link whose `target_page` is out of range is
+    // skipped (never a panic) — same defensive backstop as the outline
+    // tree's own out-of-range guard.
+    for (link, &annot_ref) in page.links.iter().zip(refs.annotations.iter()) {
+        let (Some(&target_page_ref), Some(&target_height)) =
+            (page_refs_by_index.get(link.target_page as usize), page_heights_pt.get(link.target_page as usize))
+        else {
+            continue;
+        };
+        let x1 = link.x_pt as f32;
+        let x2 = (link.x_pt + link.width_pt) as f32;
+        let y1 = (page.height_pt - (link.y_pt + link.height_pt)) as f32;
+        let y2 = (page.height_pt - link.y_pt) as f32;
+
+        let mut annot = pdf.annotation(annot_ref);
+        annot.subtype(AnnotationType::Link);
+        annot.rect(PdfRect::new(x1, y1, x2, y2));
+        // Suppress the default visible border most viewers draw for a
+        // Link annotation (export SOTA research pass, item 5's own API
+        // sketch: "`BorderStyle` to suppress the default visible border").
+        annot.border_style().width(0.0);
+        annot.action().action_type(ActionType::GoTo).destination().page(target_page_ref).xyz(0.0, target_height as f32, None);
+    }
+
     {
         let mut page_writer = pdf.page(refs.page);
         page_writer.parent(page_tree_id);
         page_writer.media_box(PdfRect::new(0.0, 0.0, page.width_pt as f32, page.height_pt as f32));
         page_writer.contents(refs.content);
+        if !refs.annotations.is_empty() {
+            page_writer.annotations(refs.annotations.iter().copied());
+        }
 
         let mut resources = page_writer.resources();
         {
@@ -695,6 +808,7 @@ mod tests {
                 raster: None,
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Hello PDF" }],
+                links: Vec::new(),
             })
             .expect("add_page should succeed");
 
@@ -713,6 +827,7 @@ mod tests {
                 raster: None,
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Hello PDF" }],
+                links: Vec::new(),
             })
             .expect("add_page should succeed");
 
@@ -730,7 +845,7 @@ mod tests {
         let mut builder = PdfBuilder::new();
         let png_bytes = one_pixel_rgba_png([255, 0, 0, 255]);
         builder
-            .add_page(PdfPageSpec { width_pt: 50.0, height_pt: 50.0, raster: Some(&png_bytes), raster_px: (1, 1), text_runs: Vec::new() })
+            .add_page(PdfPageSpec { width_pt: 50.0, height_pt: 50.0, raster: Some(&png_bytes), raster_px: (1, 1), text_runs: Vec::new(), links: Vec::new() })
             .expect("add_page with a raster should succeed");
 
         let bytes = builder.finish();
@@ -745,7 +860,7 @@ mod tests {
         let mut builder = PdfBuilder::new();
         let png_bytes = one_pixel_rgba_png([0, 255, 0, 255]);
         let err = builder
-            .add_page(PdfPageSpec { width_pt: 50.0, height_pt: 50.0, raster: Some(&png_bytes), raster_px: (2, 2), text_runs: Vec::new() })
+            .add_page(PdfPageSpec { width_pt: 50.0, height_pt: 50.0, raster: Some(&png_bytes), raster_px: (2, 2), text_runs: Vec::new(), links: Vec::new() })
             .expect_err("a wrong raster_px must be rejected");
         assert!(matches!(err, ExportError::RasterDimensionMismatch { expected: (2, 2), actual: (1, 1) }));
     }
@@ -766,6 +881,7 @@ mod tests {
                 raster: None,
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "A\u{F8FF}B" }],
+                links: Vec::new(),
             })
             .expect("add_page should succeed");
 
@@ -790,6 +906,7 @@ mod tests {
                 raster: None,
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 14.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: cyrillic }],
+                links: Vec::new(),
             })
             .expect("add_page should succeed");
 
@@ -823,6 +940,7 @@ mod tests {
                 raster: None,
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Hi" }],
+                links: Vec::new(),
             })
             .expect("add_page should succeed");
 
@@ -856,7 +974,7 @@ mod tests {
 
         let mut builder = PdfBuilder::new();
         builder
-            .add_page(PdfPageSpec { width_pt: width as f64, height_pt: height as f64, raster: Some(&png_bytes), raster_px: (width, height), text_runs: Vec::new() })
+            .add_page(PdfPageSpec { width_pt: width as f64, height_pt: height as f64, raster: Some(&png_bytes), raster_px: (width, height), text_runs: Vec::new(), links: Vec::new() })
             .expect("add_page with a raster should succeed");
 
         let bytes = builder.finish();
@@ -887,6 +1005,7 @@ mod tests {
                 raster: None,
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "x" }],
+                links: Vec::new(),
             })
             .expect("add_page should succeed");
         let bytes_without_meta = builder.finish();
@@ -901,6 +1020,7 @@ mod tests {
                 raster: None,
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "x" }],
+                links: Vec::new(),
             })
             .expect("add_page should succeed");
         builder.set_meta(PdfMeta {
@@ -931,6 +1051,7 @@ mod tests {
                     raster: None,
                     raster_px: (0, 0),
                     text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Hello lopdf" }],
+                    links: Vec::new(),
                 })
                 .unwrap_or_else(|e| panic!("add_page {i} should succeed: {e}"));
         }
@@ -955,7 +1076,7 @@ mod tests {
         let mut builder = PdfBuilder::new();
         let png_bytes = one_pixel_rgba_png([10, 20, 30, 255]);
         builder
-            .add_page(PdfPageSpec { width_pt: 50.0, height_pt: 50.0, raster: Some(&png_bytes), raster_px: (1, 1), text_runs: Vec::new() })
+            .add_page(PdfPageSpec { width_pt: 50.0, height_pt: 50.0, raster: Some(&png_bytes), raster_px: (1, 1), text_runs: Vec::new(), links: Vec::new() })
             .expect("add_page with a raster should succeed");
 
         let bytes = builder.finish();
@@ -969,5 +1090,134 @@ mod tests {
         let resources = resources.expect("this page's Resources dict is written inline, not indirect");
         let x_objects = resources.get(b"XObject").and_then(lopdf::Object::as_dict).expect("XObject dict must be present");
         assert!(!x_objects.is_empty(), "the raster page's XObject dict must carry the embedded image");
+    }
+
+    /// Decode a PDF text-string's raw bytes (as returned by
+    /// `lopdf::Object::as_str()`) per the SAME convention `pdf_writer`'s
+    /// own `TextStr` writes: bare ASCII, or a `U+FEFF` byte-order-mark
+    /// followed by UTF-16BE code units. Test-only — production code never
+    /// needs to DECODE a `TextStr` it just wrote.
+    fn decode_pdf_text_string(bytes: &[u8]) -> String {
+        if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
+            let units: Vec<u16> = bytes[2..].chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            String::from_utf16_lossy(&units)
+        } else {
+            String::from_utf8_lossy(bytes).into_owned()
+        }
+    }
+
+    /// Document-navigation feature pass: the `/Outlines` tree has the
+    /// right STRUCTURE (task gate: "assert via lopdf: /Outlines count,
+    /// nested child, Cyrillic title extracts") — two top-level entries,
+    /// the second carrying one nested (level-2) child, and a Cyrillic
+    /// title round-trips through `/Title` verbatim (proves `TextStr`'s
+    /// own UTF-16BE-with-BOM path, not just ASCII).
+    #[test]
+    fn outline_tree_has_the_right_structure_and_a_cyrillic_title_round_trips() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        for _ in 0..2 {
+            builder
+                .add_page(PdfPageSpec {
+                    width_pt: 200.0,
+                    height_pt: 300.0,
+                    raster: None,
+                    raster_px: (0, 0),
+                    text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Page" }],
+                    links: Vec::new(),
+                })
+                .expect("add_page should succeed");
+        }
+        builder.set_outline(vec![
+            PdfOutlineEntry { level: 1, title: "Introduction".to_owned(), page_index: 0 },
+            PdfOutlineEntry { level: 1, title: "Отчёт".to_owned(), page_index: 1 },
+            PdfOutlineEntry { level: 2, title: "Отчёт — подраздел".to_owned(), page_index: 1 },
+        ]);
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+
+        let catalog = doc.catalog().expect("catalog must be present");
+        let outlines_ref = catalog.get(b"Outlines").and_then(lopdf::Object::as_reference).expect("catalog must reference an /Outlines dict");
+        let outlines = doc.get_dictionary(outlines_ref).expect("must resolve the /Outlines dict");
+        assert_eq!(outlines.get(b"Type").and_then(|o| o.as_name()).expect("/Type must be present"), b"Outlines".as_slice());
+
+        let first_ref = outlines.get(b"First").and_then(lopdf::Object::as_reference).expect("/Outlines must have a /First top-level item");
+        let first_item = doc.get_dictionary(first_ref).expect("must resolve the first top-level item");
+        assert_eq!(decode_pdf_text_string(first_item.get(b"Title").and_then(|o| o.as_str()).expect("first item must have a /Title")), "Introduction");
+        assert!(first_item.get(b"First").is_err(), "the Introduction item has no children");
+
+        let second_ref = first_item.get(b"Next").and_then(lopdf::Object::as_reference).expect("the first item must link to a second top-level sibling via /Next");
+        let second_item = doc.get_dictionary(second_ref).expect("must resolve the second top-level item");
+        assert_eq!(
+            decode_pdf_text_string(second_item.get(b"Title").and_then(|o| o.as_str()).expect("second item must have a /Title")),
+            "Отчёт",
+            "a Cyrillic outline title must round-trip verbatim through /Title"
+        );
+        assert!(second_item.get(b"Next").is_err(), "there must be exactly 2 top-level items");
+
+        // The second item's own nested child (level 2).
+        let child_ref = second_item.get(b"First").and_then(lopdf::Object::as_reference).expect("the second item must have a nested child");
+        let child_item = doc.get_dictionary(child_ref).expect("must resolve the nested child item");
+        assert_eq!(
+            decode_pdf_text_string(child_item.get(b"Title").and_then(|o| o.as_str()).expect("child item must have a /Title")),
+            "Отчёт — подраздел"
+        );
+        assert_eq!(child_item.get(b"Parent").and_then(lopdf::Object::as_reference).expect("child must reference its own /Parent"), second_ref);
+
+        // Level-1 items must be OPEN by default (positive /Count on the
+        // parent that has children); the level-2 child itself is a leaf.
+        let second_count = second_item.get(b"Count").and_then(lopdf::Object::as_i64).expect("an item with children must declare /Count");
+        assert!(second_count > 0, "a level-1 item with children must default OPEN (positive /Count), got {second_count}");
+
+        // The root /Outlines dict's own /Count sums every initially-
+        // visible entry: 2 top-level items + 1 open child = 3.
+        assert_eq!(outlines.get(b"Count").and_then(lopdf::Object::as_i64).expect("/Count must be present"), 3);
+    }
+
+    /// Document-navigation feature pass: a link annotation is present on
+    /// the correct page, with a real `/GoTo` `/Dest` resolving to the
+    /// intended TARGET page object (task gate: "link annots present with
+    /// correct /Dest page refs").
+    #[test]
+    fn link_annotation_is_present_with_a_goto_dest_to_the_correct_target_page() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 200.0,
+                height_pt: 300.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "See page 2" }],
+                links: vec![PdfLink { x_pt: 10.0, y_pt: 20.0, width_pt: 80.0, height_pt: 16.0, target_page: 1 }],
+            })
+            .expect("add_page should succeed");
+        builder
+            .add_page(PdfPageSpec { width_pt: 200.0, height_pt: 300.0, raster: None, raster_px: (0, 0), text_runs: Vec::new(), links: Vec::new() })
+            .expect("add_page should succeed");
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+
+        let pages = doc.get_pages();
+        assert_eq!(pages.len(), 2);
+        let page1_id = *pages.get(&1).expect("page 1 must exist");
+        let page2_id = *pages.get(&2).expect("page 2 must exist");
+
+        let page1 = doc.get_dictionary(page1_id).expect("must resolve page 1");
+        let annots = page1.get(b"Annots").and_then(lopdf::Object::as_array).expect("page 1 must carry an /Annots array");
+        assert_eq!(annots.len(), 1, "page 1 must carry exactly the one link this test added");
+
+        let annot_ref = annots[0].as_reference().expect("annotation must be an indirect reference");
+        let annot = doc.get_dictionary(annot_ref).expect("must resolve the annotation dict");
+        assert_eq!(annot.get(b"Subtype").and_then(|o| o.as_name()).expect("/Subtype must be present"), b"Link".as_slice());
+
+        let action = annot.get(b"A").and_then(lopdf::Object::as_dict).expect("a Link annotation must carry an /A action dict");
+        assert_eq!(action.get(b"S").and_then(|o| o.as_name()).expect("/S must be present"), b"GoTo".as_slice());
+
+        let dest = action.get(b"D").and_then(lopdf::Object::as_array).expect("a GoTo action must carry a /D destination array");
+        let dest_page_ref = dest[0].as_reference().expect("the destination's first item must be the target page reference");
+        assert_eq!(dest_page_ref, page2_id, "the link's own GoTo destination must resolve to the TARGET page object (page 2), not page 1 or any other page");
     }
 }

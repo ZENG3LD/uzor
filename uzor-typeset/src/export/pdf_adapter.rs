@@ -77,7 +77,7 @@
 
 use uzor::fonts::FontFamily;
 use uzor::types::Rect;
-use uzor_export::{render_to_png, ExportSpec, FontId, PdfBuilder, PdfPageSpec, PdfTextRun};
+use uzor_export::{render_to_png, ExportSpec, FontId, PdfBuilder, PdfLink, PdfOutlineEntry, PdfPageSpec, PdfTextRun};
 use uzor_text::ParagraphLayout;
 
 use crate::master::PageMaster;
@@ -142,9 +142,35 @@ struct CollectedRun {
 /// established convention doesn't keep (see this crate's `CLAUDE.md` —
 /// every prior phase's own divergence log reports a brief/doc mismatch
 /// like this rather than carrying an unused parameter).
+///
+/// ## Document navigation (bookmarks + internal links)
+///
+/// No new parameter here either — `pages`' own already-attached
+/// [`crate::slice::Page::outline`]/[`crate::slice::Page::links`] (filled
+/// by `slice_pages`/`crate::toc::compose_document_with_toc` from
+/// `.with_outline()`/`.with_link_target()`-tagged blocks) carry
+/// everything this function needs: every page's own `outline` entries are
+/// concatenated in document order and handed to
+/// `uzor_export::PdfBuilder::set_outline` (skipped entirely when no page
+/// carries any — additive, zero-cost for every pre-existing caller);
+/// every page's own `links` become that SAME page's
+/// `uzor_export::PdfPageSpec::links`. Both convert 1:1 (this module's own
+/// "1pt = 1px" convention, unaffected by [`RASTER_SCALE`] — a link/
+/// outline-destination rect lives in the SAME page-pt coordinate space
+/// [`PdfTextRun`] positions already do, never the raster background's own
+/// scaled pixel space).
 pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) -> Vec<u8> {
     let mut builder = PdfBuilder::new();
     let mut fonts = FontCache::new();
+
+    let outline_entries: Vec<PdfOutlineEntry> = pages
+        .iter()
+        .flat_map(|page| page.outline.iter())
+        .map(|entry| PdfOutlineEntry { level: entry.level, title: entry.title.clone(), page_index: entry.page_index })
+        .collect();
+    if !outline_entries.is_empty() {
+        builder.set_outline(outline_entries);
+    }
 
     for page in pages {
         let width_px = (master.width * RASTER_SCALE).round().max(1.0) as u32;
@@ -180,9 +206,14 @@ pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) 
             .iter()
             .map(|run| PdfTextRun { font: run.font, size_pt: run.size_pt, x_pt: run.x_pt, y_pt: run.y_pt, rgb: run.rgb, text: run.text.as_str() })
             .collect();
+        let links: Vec<PdfLink> = page
+            .links
+            .iter()
+            .map(|link| PdfLink { x_pt: link.rect.x, y_pt: link.rect.y, width_pt: link.rect.width, height_pt: link.rect.height, target_page: link.target_page })
+            .collect();
 
         builder
-            .add_page(PdfPageSpec { width_pt: master.width, height_pt: master.height, raster: Some(&png_bytes), raster_px: (width_px, height_px), text_runs })
+            .add_page(PdfPageSpec { width_pt: master.width, height_pt: master.height, raster: Some(&png_bytes), raster_px: (width_px, height_px), text_runs, links })
             .unwrap_or_else(|e| {
                 panic!(
                     "pages_to_pdf: assembling page {} failed unexpectedly (raster_px is \

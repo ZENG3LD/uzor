@@ -13,5 +13,5 @@ pub mod slides;
 
 pub use crate::master::{Margins, PageMaster};
 pub use frames::{slice_build_steps, BlockOverride, BuildStep, ComposedFrame};
-pub use pages::{slice_pages, Page, PageNumberPlacement};
+pub use pages::{renumber_pages, slice_pages, LinkEntry, OutlineEntry, Page, PageNumberPlacement};
 pub use slides::{cards_to_slides, slice_cards, slice_slide_instance, slice_slides, slides_to_cards, Card, SliceError, Slide, SlideOverflow};

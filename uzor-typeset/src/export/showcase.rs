@@ -47,8 +47,9 @@ use crate::scene::{
     AnchoredIsland, Block, BlockNode, BlockSizing, CellPadding, ColumnSpec, FigureBlock, ImageBlock, ImageFit, IslandAnchor, ListBlock, ListItem,
     MarkerStyle, TableBlock, TableCell, TableRow,
 };
-use crate::slice::{slice_pages, Margins, Page, PageMaster};
+use crate::slice::{renumber_pages, slice_pages, Margins, Page, PageMaster};
 use crate::style::Theme;
+use crate::toc::{compose_document_with_toc, TocStyle};
 
 const PAGE_W: f64 = 595.0;
 const PAGE_H: f64 = 842.0;
@@ -304,25 +305,6 @@ fn kinetics_frame_rgba(width: u32, height: u32, t: f64) -> Vec<u8> {
     })
 }
 
-/// Renumber a concatenation of several independent `slice_pages` runs into
-/// one continuous document — see this module's own "master/columns seam"
-/// doc comment above for why this, not a `pages_to_pdf` signature change,
-/// is the correct seam. Only `Page::index`/`Page::total`/
-/// `Page::page_number`'s own TEXT are rewritten; every other already-baked
-/// field (frame/extra_frames/header/footer geometry, the page-number's own
-/// RECT) is untouched.
-fn renumber_pages<'a>(mut pages: Vec<Page<'a>>, style: &PageNumberStyle) -> Vec<Page<'a>> {
-    let total = pages.len() as u32;
-    for (i, page) in pages.iter_mut().enumerate() {
-        page.index = i as u32;
-        page.total = total;
-        if let Some(number) = &mut page.page_number {
-            number.text = style.format_for(page.index, total);
-        }
-    }
-    pages
-}
-
 /// Decode a PNG's dimensions only (used by the per-page parity render
 /// loop's own sanity assertion).
 fn decoded_png_dims(bytes: &[u8]) -> (u32, u32) {
@@ -494,7 +476,17 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let two_col_10_run = [StyledRun::new(TWO_COL_10, COLUMN_BODY_FONT)];
 
     let flow_two_col: Vec<BlockNode<'_>> = vec![
-        BlockNode::new(Block::Paragraph(Paragraph::new(&two_col_heading_run, column_width))).with_break_control(BreakControl::AvoidAfter),
+        BlockNode::new(Block::Paragraph(Paragraph::new(&two_col_heading_run, column_width)))
+            .with_break_control(BreakControl::AvoidAfter)
+            // Document-navigation feature pass: this outline entry's own
+            // TITLE carries a Cyrillic translation alongside the English
+            // heading actually PAINTED on the page — proves the PDF
+            // bookmark tree's own `/Title` round-trips Unicode (`TextStr`'s
+            // UTF-16BE-with-BOM path), independent of the printed heading
+            // text (an outline entry's title is always explicit, never
+            // derived from the heading paragraph's own runs — see
+            // `crate::scene::OutlineTag`'s own doc comment).
+            .with_outline(1, "Composition & Slicing / Компоновка и разбиение"),
         BlockNode::new(Block::Spacer(8.0)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&two_col_1_run, column_width).with_align(ParagraphAlign::Justify))),
         BlockNode::new(Block::Spacer(10.0)),
@@ -616,7 +608,8 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
 
     let flow_figures: Vec<BlockNode<'_>> = vec![
         BlockNode::new(Block::Paragraph(Paragraph::new(&fig_a_heading_run, body_width)))
-            .with_break_control(BreakControl::ForceBefore),
+            .with_break_control(BreakControl::ForceBefore)
+            .with_outline(1, "Figure Exhibits"),
         BlockNode::new(Block::Spacer(10.0)),
         BlockNode::new(Block::Figure(FigureBlock::new(&bar_figure, BlockSizing::FixedHeight(FIGURE_HEIGHT))))
             .with_break_control(BreakControl::AvoidAfter),
@@ -647,7 +640,9 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
         BlockNode::new(Block::Spacer(6.0)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&sankey_caption_run, body_width))),
         BlockNode::new(Block::Spacer(20.0)),
-        BlockNode::new(Block::Paragraph(Paragraph::new(&graph_intro_heading_run, body_width))).with_break_control(BreakControl::AvoidAfter),
+        BlockNode::new(Block::Paragraph(Paragraph::new(&graph_intro_heading_run, body_width)))
+            .with_break_control(BreakControl::AvoidAfter)
+            .with_outline(1, "Graph Engine Family"),
         BlockNode::new(Block::Spacer(8.0)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&graph_intro_run, body_width))),
     ];
@@ -675,7 +670,9 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let collapsed_caption_run = [StyledRun::new("Exhibit 4 — collapsed-cluster layout (uzor-graph).", CAPTION_FONT)];
 
     let flow_graphs: Vec<BlockNode<'_>> = vec![
-        BlockNode::new(Block::Paragraph(Paragraph::new(&graph_a_heading_run, body_width))).with_break_control(BreakControl::ForceBefore),
+        BlockNode::new(Block::Paragraph(Paragraph::new(&graph_a_heading_run, body_width)))
+            .with_break_control(BreakControl::ForceBefore)
+            .with_outline(1, "Graph Exhibits"),
         BlockNode::new(Block::Spacer(10.0)),
         BlockNode::new(Block::Image(force_directed_image)).with_break_control(BreakControl::AvoidAfter),
         BlockNode::new(Block::Spacer(6.0)),
@@ -723,13 +720,17 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let kinetics_t1_caption_run = [StyledRun::new("Kinetics exhibit — t = 1.0 (wide).", CAPTION_FONT)];
 
     let flow_ascii_kinetics: Vec<BlockNode<'_>> = vec![
-        BlockNode::new(Block::Paragraph(Paragraph::new(&ascii_heading_run, body_width))).with_break_control(BreakControl::ForceBefore),
+        BlockNode::new(Block::Paragraph(Paragraph::new(&ascii_heading_run, body_width)))
+            .with_break_control(BreakControl::ForceBefore)
+            .with_outline(1, "ASCII Text Mode"),
         BlockNode::new(Block::Spacer(10.0)),
         BlockNode::new(Block::Image(ascii_image)).with_break_control(BreakControl::AvoidAfter),
         BlockNode::new(Block::Spacer(6.0)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&ascii_caption_run, body_width))),
         BlockNode::new(Block::Spacer(20.0)),
-        BlockNode::new(Block::Paragraph(Paragraph::new(&kinetics_heading_run, body_width))).with_break_control(BreakControl::AvoidAfter),
+        BlockNode::new(Block::Paragraph(Paragraph::new(&kinetics_heading_run, body_width)))
+            .with_break_control(BreakControl::AvoidAfter)
+            .with_outline(2, "Kinetics — Paragraph Morph"),
         BlockNode::new(Block::Spacer(8.0)),
         BlockNode::new(Block::Image(kinetics_t0_image)).with_break_control(BreakControl::AvoidAfter),
         BlockNode::new(Block::Spacer(4.0)),
@@ -786,7 +787,9 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let island_center_title_run = [StyledRun::new("Layout — Centered Island, Text Both Sides", SUBHEADING_FONT)];
 
     let flow_island_center: Vec<BlockNode<'_>> = vec![
-        BlockNode::new(Block::Paragraph(Paragraph::new(&island_center_title_run, body_width))).with_break_control(BreakControl::ForceBefore),
+        BlockNode::new(Block::Paragraph(Paragraph::new(&island_center_title_run, body_width)))
+            .with_break_control(BreakControl::ForceBefore)
+            .with_outline(1, "Layout — Anchored Islands"),
         BlockNode::new(Block::Spacer(14.0)),
         BlockNode::new(Block::Island(center_island)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&strip_a_run, body_width))),
@@ -829,7 +832,9 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let after_right_run = [StyledRun::new(AFTER_RIGHT, BODY_FONT)];
 
     let flow_island_sides: Vec<BlockNode<'_>> = vec![
-        BlockNode::new(Block::Paragraph(Paragraph::new(&island_side_title_run, body_width))).with_break_control(BreakControl::ForceBefore),
+        BlockNode::new(Block::Paragraph(Paragraph::new(&island_side_title_run, body_width)))
+            .with_break_control(BreakControl::ForceBefore)
+            .with_outline(2, "Layout — Left- and Right-Anchored Islands"),
         BlockNode::new(Block::Spacer(14.0)),
         BlockNode::new(Block::Island(island_left)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&beside_left_run, body_width))),
@@ -937,11 +942,15 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     ];
 
     let flow_data: Vec<BlockNode<'_>> = vec![
-        BlockNode::new(Block::Paragraph(Paragraph::new(&table_heading_run, body_width))).with_break_control(BreakControl::ForceBefore),
+        BlockNode::new(Block::Paragraph(Paragraph::new(&table_heading_run, body_width)))
+            .with_break_control(BreakControl::ForceBefore)
+            .with_outline(1, "Summary — Engine Family at a Glance"),
         BlockNode::new(Block::Spacer(8.0)),
         BlockNode::new(Block::Table(table)),
         BlockNode::new(Block::Spacer(20.0)),
-        BlockNode::new(Block::Paragraph(Paragraph::new(&list_heading_run, body_width))).with_break_control(BreakControl::AvoidAfter),
+        BlockNode::new(Block::Paragraph(Paragraph::new(&list_heading_run, body_width)))
+            .with_break_control(BreakControl::AvoidAfter)
+            .with_outline(2, "Capabilities Demonstrated in This Document"),
         BlockNode::new(Block::Spacer(8.0)),
         BlockNode::new(Block::List(ListBlock::new(&list_items, MarkerStyle::Bullet('•'), 20.0))),
     ];
@@ -958,11 +967,26 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     flow_rest.extend(flow_data);
     let pages_rest = slice_pages(&flow_rest, &master_single, &style_single, &shaper);
 
+    // ── Document navigation: a generated table of contents inserted
+    // AFTER the opener (task's own explicit ask), covering every
+    // `.with_outline()`-tagged heading in the two-column section + the
+    // rest — never the opener itself (a TOC conventionally lists what
+    // follows it, not the cover/intro page it sits on). `compose_document_
+    // with_toc`'s own bounded 2-3-pass fixpoint (`crate::toc`) resolves
+    // each heading's FINAL global page number (accounting for however
+    // many pages the TOC itself ends up occupying) before the TOC's own
+    // rows are ever painted.
+    let mut body_after_opener: Vec<Page<'_>> = Vec::new();
+    body_after_opener.extend(pages_two_col);
+    body_after_opener.extend(pages_rest);
+
+    let toc_style = TocStyle { font: BODY_FONT, dot_char: '.', level_indent_px: 16.0, row_gap_px: 10.0 };
+    let with_toc = compose_document_with_toc(body_after_opener, &master_single, &toc_style, &shaper, Some(&page_number_style));
+
     let mut all_pages: Vec<Page<'_>> = Vec::new();
     all_pages.extend(pages_opener);
-    all_pages.extend(pages_two_col);
-    all_pages.extend(pages_rest);
-    let all_pages = renumber_pages(all_pages, &page_number_style);
+    all_pages.extend(with_toc);
+    let all_pages = renumber_pages(all_pages, Some(&page_number_style));
 
     assert!(all_pages.len() >= 9, "the showcase must span at least the 9 distinct single-column exhibit groups plus the opener/two-column sections, got {} pages", all_pages.len());
     for page in &all_pages {
@@ -975,6 +999,43 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
         assert_eq!(page.page_number.as_ref().expect("checked above").text, expected, "page numbers must be continuous across the concatenated sections");
     }
 
+    // Every outline entry's own resolved page must match a REAL page in
+    // the final document, and its 1-based number must be exactly what the
+    // TOC's own generated row prints (proves the fixpoint actually
+    // converged to the FINAL page positions, not a stale pre-TOC guess).
+    let all_outline_entries: Vec<_> = all_pages.iter().flat_map(|p| p.outline.iter()).collect();
+    assert!(all_outline_entries.len() >= 8, "the showcase must carry every one of its own tagged section headings, got {}", all_outline_entries.len());
+    for entry in &all_outline_entries {
+        assert!((entry.page_index as usize) < all_pages.len(), "every outline entry's own page_index must reference a real page in the final document");
+    }
+
+    // TOC page-number accuracy (task gate: "TOC page numbers match actual
+    // pages") — verified as DATA, not by eyeballing: every generated TOC
+    // row (a `Block::Paragraph` that is BOTH the source of a
+    // `Page::links` entry AND carries a real `paragraph_layout`) must
+    // PAINT the exact 1-based page number its own `LinkEntry::target_page`
+    // resolves to in this FINAL, fully-renumbered document.
+    let mut checked_toc_rows = 0usize;
+    for page in &all_pages {
+        for link in &page.links {
+            let row_text: String = page
+                .frame
+                .blocks
+                .iter()
+                .find(|b| b.rect == link.rect)
+                .and_then(|b| b.paragraph_layout.as_ref())
+                .map(|layout| layout.glyphs.iter().map(|g| g.cluster.as_str()).collect::<String>())
+                .expect("every link-tagged TOC row must have a matching placed paragraph with a real layout");
+            let expected_number = (link.target_page + 1).to_string();
+            assert!(
+                row_text.ends_with(&expected_number) || row_text.contains(&format!("{expected_number} ")),
+                "TOC row {row_text:?} must print its own target page's FINAL number {expected_number:?}"
+            );
+            checked_toc_rows += 1;
+        }
+    }
+    assert_eq!(checked_toc_rows, all_outline_entries.len(), "every tagged heading must have a corresponding, correctly-numbered TOC row");
+
     let pdf_bytes = pages_to_pdf(&all_pages, &master_single, &theme);
     assert!(pdf_bytes.starts_with(b"%PDF-"));
     write_proof("typeset_showcase.pdf", &pdf_bytes);
@@ -983,11 +1044,74 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let lopdf_pages = doc.get_pages();
     assert_eq!(lopdf_pages.len(), all_pages.len(), "the PDF must carry every composed page");
 
+    // Document-navigation feature pass: the PDF's own `/Outlines` tree is
+    // present and structurally sound (every entry's own page target
+    // resolves to a real page object) — the outline tree itself is built
+    // entirely from `Page::outline`, wired automatically by `pages_to_pdf`
+    // (no extra call needed at this call site).
+    let catalog = doc.catalog().expect("catalog must be present");
+    let outlines_ref = catalog.get(b"Outlines").and_then(lopdf::Object::as_reference).expect("the showcase's own tagged headings must produce a real /Outlines entry");
+    let outlines_dict = doc.get_dictionary(outlines_ref).expect("must resolve the /Outlines dict");
+    assert!(outlines_dict.get(b"First").is_ok(), "the /Outlines root must have at least one top-level item");
+
+    // Internal links: every TOC row is a real `/Subtype /Link` annotation
+    // with a `GoTo` `/Dest` pointing at a real page object (proves
+    // `crate::toc::build_toc`'s own `.with_link_target()` tagging survives
+    // all the way through `slice_pages`'s collection pass into the PDF).
+    let mut total_link_annots = 0usize;
+    for (_, page_id) in doc.get_pages() {
+        let page_dict = doc.get_dictionary(page_id).expect("must resolve a page dict");
+        if let Ok(annots) = page_dict.get(b"Annots").and_then(lopdf::Object::as_array) {
+            for annot_ref in annots {
+                let annot_ref = annot_ref.as_reference().expect("annotation must be an indirect reference");
+                let annot = doc.get_dictionary(annot_ref).expect("must resolve the annotation dict");
+                assert_eq!(annot.get(b"Subtype").and_then(|o| o.as_name()).expect("/Subtype must be present"), b"Link".as_slice());
+                let action = annot.get(b"A").and_then(lopdf::Object::as_dict).expect("a Link annotation must carry an /A action dict");
+                assert_eq!(action.get(b"S").and_then(|o| o.as_name()).expect("/S must be present"), b"GoTo".as_slice());
+                let dest = action.get(b"D").and_then(lopdf::Object::as_array).expect("a GoTo action must carry a /D destination array");
+                dest[0].as_reference().expect("the destination's first item must be a real page reference");
+                total_link_annots += 1;
+            }
+        }
+    }
+    assert!(total_link_annots >= 8, "every TOC row must be a real clickable link annotation, got {total_link_annots}");
+
     let page_numbers: Vec<u32> = lopdf_pages.keys().copied().collect();
     let extracted = doc.extract_text(&page_numbers).expect("lopdf text extraction must succeed");
     for word in ["uzor-typeset", "uzor-graph", "uzor-figures", "Active", "Showcase"] {
         assert!(extracted.contains(word), "extracted PDF text must contain {word:?} — got a document of {} chars", extracted.len());
     }
+    // A Cyrillic OUTLINE title (not just Cyrillic BODY text, already
+    // proven below) round-trips through the PDF bookmark tree's own
+    // `/Title` — the "incl. the Russian one" outline entry this fixture's
+    // own two-column heading carries.
+    let outline_titles_extracted = {
+        fn collect_titles(doc: &lopdf::Document, dict: &lopdf::Dictionary, out: &mut Vec<String>) {
+            let Ok(first_ref) = dict.get(b"First").and_then(lopdf::Object::as_reference) else { return };
+            let mut current = Some(first_ref);
+            while let Some(item_ref) = current {
+                let Ok(item) = doc.get_dictionary(item_ref) else { break };
+                if let Ok(bytes) = item.get(b"Title").and_then(|o| o.as_str()) {
+                    let text = if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
+                        let units: Vec<u16> = bytes[2..].chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+                        String::from_utf16_lossy(&units)
+                    } else {
+                        String::from_utf8_lossy(bytes).into_owned()
+                    };
+                    out.push(text);
+                }
+                collect_titles(doc, item, out);
+                current = item.get(b"Next").and_then(lopdf::Object::as_reference).ok();
+            }
+        }
+        let mut titles = Vec::new();
+        collect_titles(&doc, outlines_dict, &mut titles);
+        titles
+    };
+    assert!(
+        outline_titles_extracted.iter().any(|t| t.contains("Компоновка и разбиение")),
+        "a Cyrillic outline title must round-trip through the PDF bookmark tree, got {outline_titles_extracted:?}"
+    );
     // Cyrillic end-to-end: the Russian intro sentence's own SHORTER words
     // (never hyphenated at this column width) must round-trip verbatim
     // (export SOTA pass — see this fixture's own `INTRO_RU` comment).
