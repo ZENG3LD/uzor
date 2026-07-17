@@ -262,3 +262,141 @@ mod shaper_tests {
         assert!(glyphs.is_empty(), "empty string should return empty Vec");
     }
 }
+
+// ---------------------------------------------------------------------------
+// ImagePainter::draw_image_rgba — real blit proof
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod image_blit_tests {
+    //! Proves `draw_image_rgba` is a REAL raster blit (scale + transform +
+    //! alpha composite), not the old documented no-op, and that the
+    //! `RenderContext::image_painter()` capability accessor reaches this
+    //! backend's own `ImagePainter` impl.
+
+    use tiny_skia::Color;
+    use uzor::render::{ImagePainter, Painter, RenderContext, ShapeHelpers};
+
+    use super::TinySkiaCpuRenderContext;
+
+    fn pixel(ctx: &TinySkiaCpuRenderContext, x: u32, y: u32) -> [u8; 4] {
+        let w = ctx.width();
+        let data = ctx.pixels();
+        let idx = (y * w + x) as usize * 4;
+        [data[idx], data[idx + 1], data[idx + 2], data[idx + 3]]
+    }
+
+    fn assert_close(actual: [u8; 4], expected: [u8; 4], tol: i32, what: &str) {
+        for i in 0..4 {
+            let d = (actual[i] as i32 - expected[i] as i32).abs();
+            assert!(
+                d <= tol,
+                "{what}: channel {i} mismatch — got {actual:?}, expected {expected:?} (tol {tol})"
+            );
+        }
+    }
+
+    /// `image_painter()` reaches this backend's `ImagePainter` impl through
+    /// a `&mut dyn RenderContext` — the accessor this task adds to core.
+    #[test]
+    fn image_painter_accessor_reaches_the_tiny_skia_backend() {
+        let mut ctx = TinySkiaCpuRenderContext::new(4, 4, 1.0);
+        let dyn_ctx: &mut dyn RenderContext = &mut ctx;
+        assert!(dyn_ctx.image_painter().is_some());
+    }
+
+    /// A 2x2 source (4 distinct opaque colors, row-major top-to-bottom)
+    /// blitted into an 8x8 white target must reproduce each quadrant's own
+    /// color. Sample points (1,1)/(6,1)/(1,6)/(6,6) sit strictly outside
+    /// tiny-skia's bilinear interpolation zone for a 4x integer scale (that
+    /// zone is exactly pixel columns/rows 2..6 of each 8px axis — the two
+    /// texel centers land at device coordinate 2.0 and 6.0, so any pixel
+    /// center below 2.0 or above 6.0 samples its own texel's color with
+    /// zero blend after `SpreadMode::Pad` clamping), so this is an EXACT
+    /// match, not just "close enough."
+    #[test]
+    fn blits_2x2_source_into_8x8_target_reproducing_quadrant_colors() {
+        #[rustfmt::skip]
+        let rgba: [u8; 16] = [
+            255,   0,   0, 255,      0, 255,   0, 255, // row0: (0,0)=red   (1,0)=green
+              0,   0, 255, 255,    255, 255,   0, 255, // row1: (0,1)=blue  (1,1)=yellow
+        ];
+
+        let mut ctx = TinySkiaCpuRenderContext::new(8, 8, 1.0);
+        ctx.clear(Color::WHITE);
+        ctx.draw_image_rgba(&rgba, 2, 2, 0.0, 0.0, 8.0, 8.0);
+
+        assert_close(pixel(&ctx, 1, 1), [255, 0, 0, 255], 4, "top-left quadrant (texel 0,0 = red)");
+        assert_close(pixel(&ctx, 6, 1), [0, 255, 0, 255], 4, "top-right quadrant (texel 1,0 = green)");
+        assert_close(pixel(&ctx, 1, 6), [0, 0, 255, 255], 4, "bottom-left quadrant (texel 0,1 = blue)");
+        assert_close(pixel(&ctx, 6, 6), [255, 255, 0, 255], 4, "bottom-right quadrant (texel 1,1 = yellow)");
+    }
+
+    /// Row scan at a y sitting inside both painted rects, counting pixels
+    /// whose color reads as the painted solid red (vs. the white background).
+    fn red_row_extent(ctx: &TinySkiaCpuRenderContext, y: u32) -> u32 {
+        let w = ctx.width();
+        (0..w)
+            .filter(|&x| {
+                let p = pixel(ctx, x, y);
+                p[0] > 200 && p[1] < 80 && p[2] < 80
+            })
+            .count() as u32
+    }
+
+    /// `ctx.scale(2, 2)` must double the painted extent — the same
+    /// transform every other draw call on this backend already applies
+    /// (`translate`/`fill_rect`/`fill_text`), proven here for the image
+    /// blit's own transform composition.
+    #[test]
+    fn scale_2x_doubles_the_painted_extent() {
+        #[rustfmt::skip]
+        let rgba: [u8; 16] = [
+            255, 0, 0, 255,  255, 0, 0, 255,
+            255, 0, 0, 255,  255, 0, 0, 255,
+        ]; // solid opaque red 2x2 — no internal structure needed for this test
+
+        let mut ctx1 = TinySkiaCpuRenderContext::new(20, 20, 1.0);
+        ctx1.clear(Color::WHITE);
+        ctx1.draw_image_rgba(&rgba, 2, 2, 2.0, 2.0, 4.0, 4.0);
+        let width1 = red_row_extent(&ctx1, 5);
+        assert_eq!(width1, 4, "unscaled 4x4 rect at row 5 must read exactly 4px wide, got {width1}");
+
+        let mut ctx2 = TinySkiaCpuRenderContext::new(20, 20, 1.0);
+        ctx2.clear(Color::WHITE);
+        ctx2.scale(2.0, 2.0);
+        ctx2.draw_image_rgba(&rgba, 2, 2, 2.0, 2.0, 4.0, 4.0);
+        let width2 = red_row_extent(&ctx2, 5);
+
+        assert_eq!(
+            width2,
+            2 * width1,
+            "ctx.scale(2, 2) must double the painted extent, got {width1}px -> {width2}px"
+        );
+    }
+
+    /// A semi-transparent (alpha=128) source pixel composited over an
+    /// opaque, differently-colored background must land strictly between
+    /// the two colors (real alpha-over), never fully overwriting the
+    /// background and never leaving it untouched.
+    #[test]
+    fn semi_transparent_source_composites_not_overwrites() {
+        let mut ctx = TinySkiaCpuRenderContext::new(4, 4, 1.0);
+        ctx.set_fill_color("#0000ff");
+        ctx.fill_rect(0.0, 0.0, 4.0, 4.0);
+
+        let rgba: [u8; 4] = [255, 0, 0, 128]; // half-opaque red, straight alpha
+        ctx.draw_image_rgba(&rgba, 1, 1, 0.0, 0.0, 4.0, 4.0);
+
+        let p = pixel(&ctx, 2, 2);
+        assert_ne!(p, [0, 0, 255, 255], "source alpha must not be dropped (pure background survived)");
+        assert_ne!(p, [255, 0, 0, 255], "source alpha must be respected (source must not fully overwrite)");
+        // Straight src (255,0,0,128) premultiplies to (128,0,0,128)
+        // (255*128/255 == 128 exactly — the straight red channel is
+        // already at max, so premultiplying only rescales by alpha, it
+        // doesn't halve an already-mid channel). SourceOver over opaque
+        // premultiplied dst=(0,0,255,255): out = src + dst*(1 - src_a/255)
+        // = (128,0,0,128) + (0,0,255,255)*(127/255) = (128,0,127,255).
+        assert_close(p, [128, 0, 127, 255], 10, "semi-transparent red over opaque blue");
+    }
+}

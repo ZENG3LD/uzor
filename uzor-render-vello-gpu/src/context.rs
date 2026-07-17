@@ -1483,6 +1483,10 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
         1.0
     }
 
+    fn image_painter(&mut self) -> Option<&mut dyn ImagePainter> {
+        Some(self)
+    }
+
     fn supports_offscreen_targets(&self) -> bool {
         true
     }

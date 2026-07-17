@@ -1621,8 +1621,13 @@ impl BackdropBlur for TinySkiaCpuRenderContext {
 }
 
 // ---------------------------------------------------------------------------
-// ImagePainter — tiny-skia does not load URL-based images; draw_image_rgba
-// is a no-op (no wgpu texture support in the CPU path).
+// ImagePainter — tiny-skia does not load URL-based images (`draw_image` stays
+// `false`), but `draw_image_rgba` is a REAL blit: the caller's straight-alpha
+// RGBA bytes are premultiplied once, wrapped in a `tiny_skia::PixmapRef`, and
+// composited via `Pixmap::draw_pixmap`'s own Pattern-shader resampling — the
+// exact same transform-composition + `PixmapPaint` shape `draw_cached_target`
+// already uses to place a cached offscreen target (see `UzorRenderContext`
+// impl below), just with a caller-supplied pixmap instead of a cached one.
 // ---------------------------------------------------------------------------
 
 impl ImagePainter for TinySkiaCpuRenderContext {
@@ -1639,16 +1644,64 @@ impl ImagePainter for TinySkiaCpuRenderContext {
 
     fn draw_image_rgba(
         &mut self,
-        _data: &[u8],
-        _img_width: u32,
-        _img_height: u32,
-        _x: f64,
-        _y: f64,
-        _width: f64,
-        _height: f64,
+        data: &[u8],
+        img_width: u32,
+        img_height: u32,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
     ) {
-        // No-op: tiny-skia CPU backend does not support raw RGBA image blitting
-        // via the ImagePainter interface (use draw_pixmap_over internally instead).
+        if img_width == 0 || img_height == 0 || width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let expected_len = img_width as usize * img_height as usize * 4;
+        if data.len() != expected_len {
+            return;
+        }
+
+        // `tiny_skia::Pixmap`/`PixmapRef` require PREMULTIPLIED alpha, while
+        // `ImagePainter::draw_image_rgba`'s own contract (see its doc
+        // comment) is straight alpha, row-major, top-to-bottom — premultiply
+        // once into a scratch buffer before handing it to the Pattern shader.
+        let mut premultiplied = vec![0u8; expected_len];
+        for (src, dst) in data.chunks_exact(4).zip(premultiplied.chunks_exact_mut(4)) {
+            let a = src[3] as u32;
+            dst[0] = ((src[0] as u32 * a + 127) / 255) as u8;
+            dst[1] = ((src[1] as u32 * a + 127) / 255) as u8;
+            dst[2] = ((src[2] as u32 * a + 127) / 255) as u8;
+            dst[3] = src[3];
+        }
+
+        let Some(src_pixmap) =
+            tiny_skia::PixmapRef::from_bytes(&premultiplied, img_width, img_height)
+        else {
+            return;
+        };
+
+        // Scale from source-pixel space to the target rect's size, then
+        // translate to the target rect's origin, then apply whatever
+        // canvas transform is currently active — same translate-then-scale
+        // composition order `draw_cached_target` uses below for a cached
+        // target, so `ctx.scale(..)`/`ctx.translate(..)` affect an RGBA
+        // blit exactly the same way they affect every other draw call.
+        let scale_x = width as f32 / img_width as f32;
+        let scale_y = height as f32 / img_height as f32;
+        let transform = self
+            .transform
+            .pre_translate(x as f32, y as f32)
+            .pre_scale(scale_x, scale_y);
+
+        let paint = tiny_skia::PixmapPaint {
+            opacity: self.global_alpha,
+            quality: tiny_skia::FilterQuality::Bilinear,
+            blend_mode: self.blend_mode,
+            ..tiny_skia::PixmapPaint::default()
+        };
+
+        let clip = self.current_clip.clone();
+        self.pixmap
+            .draw_pixmap(0, 0, src_pixmap, &paint, transform, clip.as_ref());
     }
 }
 
@@ -1659,6 +1712,10 @@ impl ImagePainter for TinySkiaCpuRenderContext {
 impl UzorRenderContext for TinySkiaCpuRenderContext {
     fn dpr(&self) -> f64 {
         self.dpr
+    }
+
+    fn image_painter(&mut self) -> Option<&mut dyn ImagePainter> {
+        Some(self)
     }
 
     fn supports_offscreen_targets(&self) -> bool {
