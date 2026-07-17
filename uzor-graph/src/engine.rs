@@ -45,6 +45,21 @@ const DRAG_REHEAT_ALPHA: f32 = 0.35;
 /// once and let ordinary decay take back over immediately.
 const DRAG_ALPHA_TARGET: f32 = 0.3;
 
+/// Screen-space distance the pointer must travel since the last hover
+/// pick before `nearest_node` is re-run on `PointerMoved` (Wave 2.2 perf
+/// guard — cosmos.gl/sigma's "skip the readback if the mouse hasn't
+/// moved" idiom, adapted for CPU distance-scan picking: at 534+ nodes a
+/// re-pick on every single-pixel jitter is wasted work the render loop
+/// doesn't need). Below this threshold the previous hover result is kept
+/// as-is.
+const HOVER_PICK_MIN_MOVE_PX: f64 = 2.0;
+
+/// Default hover-neighbor-highlight depth (Wave 2.2 — oss doc §2.1: "no
+/// surveyed engine ships depth-2 as a built-in option... depth is a free
+/// parameter"). `0` highlights only the hovered node itself; `1` (this
+/// default) adds its direct neighbors + connecting edges.
+const DEFAULT_HOVER_DEPTH: u8 = 1;
+
 #[derive(Debug, Clone, Copy)]
 enum PointerMode {
     Idle,
@@ -111,6 +126,13 @@ pub struct GraphEngine<N, E, L: Layout = ForceDirectedLayout> {
     mode: PointerMode,
     canvas_rect: Rect,
     last_pointer_screen: (f64, f64),
+    /// Screen position at the last `nearest_node` hover pick — `None`
+    /// once the pointer has left the canvas (so re-entering always picks
+    /// again immediately, regardless of where it left off). See
+    /// [`HOVER_PICK_MIN_MOVE_PX`].
+    last_hover_pick_screen: Option<(f64, f64)>,
+    hover_depth: u8,
+    hover_card: bool,
     visible: Vec<NodeIndex>,
     last_tick: LayoutTickResult,
     last_frame_at: Option<Instant>,
@@ -137,6 +159,9 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             mode: PointerMode::Idle,
             canvas_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             last_pointer_screen: (0.0, 0.0),
+            last_hover_pick_screen: None,
+            hover_depth: DEFAULT_HOVER_DEPTH,
+            hover_card: true,
             visible: Vec::new(),
             last_tick: LayoutTickResult { alpha: 1.0, max_displacement: 0.0, settled: false },
             last_frame_at: None,
@@ -267,6 +292,21 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         gr_render::draw_cluster_edges(render, &self.particles, &ctx, &self.clusters);
         gr_render::draw_nodes(render, &self.graph, &self.particles, &ctx);
         gr_render::draw_cluster_supernodes(render, &self.graph, &self.particles, &ctx, &self.clusters);
+
+        if self.hover_card {
+            if let Some(id) = self.hovered {
+                if let Some(facts) = self.node_facts(id) {
+                    let anchor = self.camera.world_to_screen((facts.position.0 as f64, facts.position.1 as f64), self.canvas_rect);
+                    let info = gr_render::HoverCardInfo {
+                        label: facts.label,
+                        category: facts.category,
+                        degree: facts.degree,
+                        pinned: facts.pinned,
+                    };
+                    gr_render::draw_hover_card(render, anchor, &info, self.canvas_rect);
+                }
+            }
+        }
     }
 
     pub fn fit_view(&mut self) {
@@ -283,10 +323,85 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         self.dirty = true;
     }
 
+    /// Clears the persistent click-selection. A hover already in
+    /// progress (the pointer never left the hovered node) resumes
+    /// driving the highlight/dim focus set immediately — click-selection
+    /// and hover share one `focus`, click just takes precedence while
+    /// it's active (Orb's `isStateOverride` precedent, oss doc §2.1).
     pub fn clear_selection(&mut self) {
         self.selected = None;
-        self.focus.clear_selection();
+        self.refresh_focus_from_hover();
         self.dirty = true;
+    }
+
+    /// Hover-neighbor-highlight depth (Wave 2.2 — oss doc §2.1). `0`
+    /// highlights only the hovered node; `1` (default) adds its direct
+    /// neighbors + connecting edges; higher values walk further hops
+    /// (see [`Graph::neighborhood_focus_keys_depth`]).
+    pub fn hover_depth(&self) -> u8 {
+        self.hover_depth
+    }
+
+    /// Change the hover-neighbor-highlight depth, immediately
+    /// recomputing the focus set from the CURRENT hover (if any and if
+    /// no click-selection is overriding it) so the new depth is visible
+    /// without waiting for the next pointer move.
+    pub fn set_hover_depth(&mut self, depth: u8) {
+        self.hover_depth = depth;
+        if self.selected.is_none() {
+            self.refresh_focus_from_hover();
+            self.dirty = true;
+        }
+    }
+
+    /// Whether [`GraphEngine::draw`] paints the floating hover info card
+    /// (label/category/degree/pinned) near the hovered node. Default
+    /// `true`.
+    pub fn hover_card_enabled(&self) -> bool {
+        self.hover_card
+    }
+
+    pub fn set_hover_card_enabled(&mut self, enabled: bool) {
+        self.hover_card = enabled;
+        self.dirty = true;
+    }
+
+    /// The currently hovered node, if any — same value `agent_state`'s
+    /// `hover` field and [`GraphEngine::draw`]'s info card read.
+    pub fn hovered(&self) -> Option<NodeIndex> {
+        self.hovered
+    }
+
+    /// Set (or clear, `None`) the hovered node directly — the same path
+    /// `on_pointer_moved`'s picking drives, exposed so the `hover_node`
+    /// agent action (and any other headless driver) can reach the exact
+    /// same behavior, including the reducer-style focus-set replace and
+    /// the sigma-style "already this node — no-op" dedup guard.
+    pub(crate) fn set_hovered(&mut self, hit: Option<NodeIndex>) {
+        if hit == self.hovered {
+            return;
+        }
+        self.hovered = hit;
+        if self.selected.is_none() {
+            self.refresh_focus_from_hover();
+        }
+        self.dirty = true;
+    }
+
+    /// Reducer-style paint override (oss doc §2.1: sigma `nodeReducer`/
+    /// `edgeReducer`, replace-not-merge): recompute the WHOLE `focus`
+    /// selection from `self.hovered` at `self.hover_depth` — pure
+    /// function of current state, never an incremental patch. Only
+    /// called where the caller has already confirmed no click-selection
+    /// is overriding hover (`select`/click-selection always wins — see
+    /// [`GraphEngine::clear_selection`]'s doc comment).
+    fn refresh_focus_from_hover(&mut self) {
+        match self.hovered {
+            Some(node) => self.focus.select_many(self.graph.neighborhood_focus_keys_depth(node, self.hover_depth)),
+            None => {
+                self.focus.clear_selection();
+            }
+        }
     }
 
     /// Declare a cluster over `members` (first member becomes the
@@ -510,15 +625,28 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         }
 
         if self.canvas_rect.contains(x, y) {
-            let hit = pick::nearest_node(&self.graph, &self.particles, &self.camera, self.canvas_rect, (x, y), &self.visible);
-            if hit != self.hovered {
-                self.hovered = hit;
-                self.dirty = true;
+            // Perf guard (Wave 2.2 §4): re-run the O(visible) nearest-node
+            // scan only once the pointer has actually moved
+            // `HOVER_PICK_MIN_MOVE_PX` since the last pick — a hot loop of
+            // sub-pixel `PointerMoved` jitter at 534+ nodes must not
+            // re-scan every single event.
+            let moved_enough = match self.last_hover_pick_screen {
+                Some((lx, ly)) => {
+                    let dx = x - lx;
+                    let dy = y - ly;
+                    (dx * dx + dy * dy).sqrt() >= HOVER_PICK_MIN_MOVE_PX
+                }
+                None => true,
+            };
+            if moved_enough {
+                self.last_hover_pick_screen = Some((x, y));
+                let hit = pick::nearest_node(&self.graph, &self.particles, &self.camera, self.canvas_rect, (x, y), &self.visible);
+                self.set_hovered(hit);
             }
             handled = true;
         } else if self.hovered.is_some() {
-            self.hovered = None;
-            self.dirty = true;
+            self.set_hovered(None);
+            self.last_hover_pick_screen = None;
         }
 
         if handled {
@@ -860,5 +988,106 @@ mod tests {
             engine.tick(1.0 / 60.0);
         }
         assert!(!engine.is_hot(), "alpha must decay all the way back down once alpha_target is cleared");
+    }
+
+    // ── W2.2 hover system (reducer-style neighbor highlight, oss doc §2.1) ─
+
+    /// `a - b - c - d` chain laid out on a line, 100 world units apart —
+    /// with the default camera (pan (0,0), zoom 1.0) screen == world, so
+    /// picking a node is just "hover at its seeded x".
+    fn chain4_engine_on_a_line() -> (TestEngine, [NodeIndex; 4]) {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let b = graph.push_node((), "b", "x", 4.0);
+        let c = graph.push_node((), "c", "x", 4.0);
+        let d = graph.push_node((), "d", "x", 4.0);
+        graph.push_edge(a, b, 1.0, ());
+        graph.push_edge(b, c, 1.0, ());
+        graph.push_edge(c, d, 1.0, ());
+        let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.set_canvas_rect(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.seed_positions(&[(0.0, 0.0), (100.0, 0.0), (200.0, 0.0), (300.0, 0.0)]);
+        engine.refresh_visible();
+        (engine, [a, b, c, d])
+    }
+
+    #[test]
+    fn pointer_moved_over_a_node_hovers_it_and_moving_to_empty_space_clears_it() {
+        let (mut engine, [a, b, _c, _d]) = chain4_engine_on_a_line();
+        assert!(engine.hovered().is_none());
+        assert!(!engine.focus.is_active());
+
+        engine.on_event(&PlatformEvent::PointerMoved { x: 100.0, y: 0.0 }); // exactly on b
+        assert_eq!(engine.hovered(), Some(b));
+        assert!(engine.focus.is_active());
+        assert!(engine.focus.is_selected(u64::from(b)));
+        assert!(engine.focus.is_selected(u64::from(a)), "b's depth-1 neighbor a must be highlighted too");
+
+        engine.on_event(&PlatformEvent::PointerMoved { x: 700.0, y: 500.0 }); // empty space, far from every node
+        assert!(engine.hovered().is_none());
+        assert!(!engine.focus.is_active(), "moving off every node must clear the highlight entirely");
+    }
+
+    #[test]
+    fn hover_neighborhood_highlights_exactly_the_hovered_node_and_its_depth_one_adjacency() {
+        let (mut engine, [a, b, c, d]) = chain4_engine_on_a_line();
+        engine.on_event(&PlatformEvent::PointerMoved { x: 100.0, y: 0.0 }); // b
+        assert_eq!(engine.hovered(), Some(b));
+
+        assert!(engine.focus.is_selected(u64::from(a)));
+        assert!(engine.focus.is_selected(u64::from(b)));
+        assert!(engine.focus.is_selected(u64::from(c)));
+        assert!(!engine.focus.is_selected(u64::from(d)), "d is 2 hops from b — outside a depth-1 hover neighborhood");
+    }
+
+    #[test]
+    fn hover_depth_zero_highlights_only_the_hovered_node_itself() {
+        let (mut engine, [a, b, c, _d]) = chain4_engine_on_a_line();
+        engine.set_hover_depth(0);
+        assert_eq!(engine.hover_depth(), 0);
+
+        engine.on_event(&PlatformEvent::PointerMoved { x: 100.0, y: 0.0 }); // b
+        assert!(engine.focus.is_selected(u64::from(b)));
+        assert!(!engine.focus.is_selected(u64::from(a)));
+        assert!(!engine.focus.is_selected(u64::from(c)));
+    }
+
+    #[test]
+    fn click_selection_takes_precedence_over_a_concurrent_hover_and_resumes_on_clear() {
+        let (mut engine, [_a, b, _c, d]) = chain4_engine_on_a_line();
+        engine.select(d); // click-select d — its 1-hop neighborhood is {c, d}
+        assert!(engine.focus.is_selected(u64::from(d)));
+
+        engine.on_event(&PlatformEvent::PointerMoved { x: 100.0, y: 0.0 }); // hover b, unrelated to the selection
+        assert_eq!(engine.hovered(), Some(b));
+        assert!(engine.focus.is_selected(u64::from(d)), "click-selection must win over a concurrent hover");
+        assert!(!engine.focus.is_selected(u64::from(b)), "hover must not override an active click-selection");
+
+        engine.clear_selection();
+        // The pointer never left `b` — hover resumes driving the focus
+        // set the instant the click-selection is no longer overriding it.
+        assert!(engine.focus.is_selected(u64::from(b)), "clearing the selection must resume hover-driven focus for the node still under the cursor");
+        assert!(!engine.focus.is_selected(u64::from(d)));
+    }
+
+    #[test]
+    fn hover_pick_skips_recompute_for_sub_threshold_pointer_moves() {
+        let (mut engine, [_a, b, _c, _d]) = chain4_engine_on_a_line();
+        // b sits at world/screen (100, 0). `node_screen_radius(4.0)` at
+        // zoom 1.0 is 4.0px, + `pick::HOVER_TOLERANCE_PX` (6.0) = a 10px
+        // hit radius.
+        engine.on_event(&PlatformEvent::PointerMoved { x: 109.9, y: 0.0 }); // 9.9px from b — inside
+        assert_eq!(engine.hovered(), Some(b));
+
+        // A <2px move that would, if re-picked, land JUST outside the hit
+        // radius (10.9px from b) — the perf guard must keep the stale
+        // hover instead of immediately re-scanning and clearing it.
+        engine.on_event(&PlatformEvent::PointerMoved { x: 110.9, y: 0.0 });
+        assert_eq!(engine.hovered(), Some(b), "a <2px move must not trigger a re-pick — stale hover kept");
+
+        // A >=2px move (measured from the LAST PICK position, 109.9) does
+        // trigger a fresh pick, which correctly clears the now-out-of-range hover.
+        engine.on_event(&PlatformEvent::PointerMoved { x: 113.0, y: 0.0 });
+        assert_eq!(engine.hovered(), None, "a >=2px move re-picks and correctly clears the hover");
     }
 }

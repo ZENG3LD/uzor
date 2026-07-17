@@ -67,12 +67,19 @@ where
             .iter()
             .map(|(id, c)| json!({ "id": id.0, "member_count": c.member_count(), "collapsed": c.is_collapsed() }))
             .collect();
+        let hover = self.hovered.and_then(|id| self.node_facts(id)).map(|f| {
+            json!({
+                "index": f.index.index(),
+                "label": f.label,
+            })
+        });
         json!({
             "node_count": self.graph.node_count(),
             "edge_count": self.graph.edge_count(),
             "visible_node_count": self.visible_nodes().len(),
             "selected": selected,
             "hovered": self.hovered.map(|id| id.index()),
+            "hover": hover,
             "camera": {
                 "pan_x": self.camera.pan_x,
                 "pan_y": self.camera.pan_y,
@@ -99,6 +106,27 @@ where
             "clear_selection" => {
                 self.clear_selection();
                 AgentActionReply::ok_with_log(json!({ "selected": Value::Null }))
+            }
+            // Wave 2.2 — drives the exact same `set_hovered` path
+            // `on_pointer_moved`'s picking uses, so the reducer-style
+            // neighbor-highlight + hover card are screenshot-verifiable
+            // headlessly. `{}`/`{"index": null}` clears the hover; an
+            // out-of-range `index` or an unknown `label` is an error, not
+            // a silent clear (distinguishes "caller meant to clear" from
+            // "caller made a typo").
+            "hover_node" => {
+                let index_arg = action.args.get("index");
+                let explicit_clear = matches!(index_arg, Some(Value::Null))
+                    || (index_arg.is_none() && action.args.get("label").is_none());
+                if explicit_clear {
+                    self.set_hovered(None);
+                    return AgentActionReply::ok_with_log(json!({ "hover": Value::Null }));
+                }
+                let Some(node) = resolve_node(self, &action) else {
+                    return AgentActionReply::err("hover_node requires args.index (u32), args.label (string), or {} / null to clear");
+                };
+                self.set_hovered(Some(node));
+                AgentActionReply::ok_with_log(json!({ "hover": { "index": node.index() } }))
             }
             "pin_node" => {
                 let Some(node) = resolve_node(self, &action) else {
@@ -401,5 +429,37 @@ mod tests {
 
         let forces = engine.agent_state()["forces"].clone();
         assert_eq!(forces["link_distance"].as_f64().unwrap() as f32, bigger_link_distance);
+    }
+
+    #[test]
+    fn hover_node_action_drives_the_same_reducer_pipeline_pointer_hover_uses() {
+        let (graph, ids) = ring_graph(4);
+        let mut engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
+
+        let reply = engine.apply_agent_action(action("hover_node", json!({ "index": ids[0].index() })));
+        assert!(reply.ok);
+        assert_eq!(engine.agent_state()["hover"]["index"], json!(ids[0].index()));
+        assert_eq!(engine.agent_state()["hover"]["label"], json!("n0"));
+        assert!(engine.focus.is_active());
+        assert!(engine.focus.is_selected(u64::from(ids[0])));
+        assert!(engine.focus.is_selected(u64::from(ids[1])), "ring neighbor of node 0 must be highlighted too");
+
+        // `{}` (no index, no label) clears the hover — same convention
+        // `select_node`/`clear_selection` already use for "nothing".
+        let cleared = engine.apply_agent_action(action("hover_node", json!({})));
+        assert!(cleared.ok);
+        assert_eq!(engine.agent_state()["hover"], Value::Null);
+        assert!(!engine.focus.is_active());
+
+        // Explicit `null` is the same as `{}`.
+        engine.apply_agent_action(action("hover_node", json!({ "index": ids[2].index() })));
+        assert!(engine.focus.is_active());
+        let cleared_explicit = engine.apply_agent_action(action("hover_node", json!({ "index": Value::Null })));
+        assert!(cleared_explicit.ok);
+        assert!(!engine.focus.is_active());
+
+        // An out-of-range index is an error reply, not a silent clear.
+        let bad = engine.apply_agent_action(action("hover_node", json!({ "index": 999 })));
+        assert!(!bad.ok);
     }
 }

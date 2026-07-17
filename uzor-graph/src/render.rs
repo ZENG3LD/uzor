@@ -17,7 +17,9 @@ use std::collections::{HashMap, HashSet};
 
 use uzor::render::{CircleBatch, LineSegment, RenderContext};
 use uzor::types::Rect;
+use uzor_figures::guide::tooltip::draw_tooltip;
 use uzor_figures::interact::FocusSet;
+use uzor_figures::theme::FigureTheme;
 
 use crate::camera::Camera2D;
 use crate::cluster::ClusterRegistry;
@@ -278,4 +280,36 @@ pub fn draw_cluster_supernodes<N, E>(
         drawn += 1;
     }
     drawn
+}
+
+/// Plain display fields for [`draw_hover_card`] — deliberately NOT
+/// `crate::engine::NodeFacts` itself (this module stays the lower layer
+/// `engine.rs` calls into, not the reverse): `GraphEngine::draw` builds
+/// this fresh each frame from the exact same `node_facts()` data source
+/// the demo's own sidebar facts panel already reads, so the hover card
+/// and the click-select sidebar can never disagree about what a node's
+/// facts are.
+pub struct HoverCardInfo<'a> {
+    pub label: &'a str,
+    pub category: &'a str,
+    pub degree: u32,
+    pub pinned: bool,
+}
+
+/// Floating hover info card (Wave 2.2 — «справка»): label/category/
+/// degree/pinned, anchored near `anchor_px` (the hovered node's screen
+/// position). Flips to stay inside `bounds` exactly like
+/// `uzor_figures::guide::tooltip::draw_tooltip` (the SAME function,
+/// reused verbatim — one flip-to-fit implementation for the whole demo
+/// suite, not a second one invented here) already does for figures'
+/// hover tooltips; `bounds` is the graph canvas's own viewport, so the
+/// card never clips past the canvas edge even in a multi-panel layout.
+pub fn draw_hover_card(render: &mut dyn RenderContext, anchor_px: (f64, f64), info: &HoverCardInfo<'_>, bounds: Rect) {
+    let lines = [
+        ("label".to_owned(), info.label.to_owned()),
+        ("category".to_owned(), info.category.to_owned()),
+        ("degree".to_owned(), info.degree.to_string()),
+        ("pinned".to_owned(), info.pinned.to_string()),
+    ];
+    draw_tooltip(render, &FigureTheme::dark(), anchor_px, &lines, bounds);
 }

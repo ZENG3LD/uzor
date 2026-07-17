@@ -6,6 +6,8 @@
 //! collapse-predicate seam, see [`crate::cluster`]), and `radius`/
 //! `weight`. Callers stash whatever domain data they want in `payload`.
 
+use std::collections::HashSet;
+
 /// Index of a node inside a [`Graph`]. Stable for the lifetime of the
 /// graph (nodes are append-only this run — see [`Graph::push_node`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -251,5 +253,110 @@ impl<N, E> Graph<N, E> {
             }
         }
         keys
+    }
+
+    /// `depth`-hop neighborhood of `center` as `FocusSet` keys — the
+    /// configurable-depth generalization of [`Graph::neighborhood_focus_keys`]
+    /// (which stays frozen at its exact old depth-1-only behavior for
+    /// `GraphEngine::select`'s click path — see that method's doc
+    /// comment). Built for `GraphEngine`'s hover-neighbor-highlight
+    /// (Wave 2.2): `depth = 0` yields just `center` itself (no edges);
+    /// `depth = 1` yields the same node/edge set
+    /// `neighborhood_focus_keys` would for a center with no parallel
+    /// edges (every edge incident to `center`, plus its far endpoint);
+    /// `depth >= 2` additionally walks each newly-reached layer's own
+    /// incident edges, which — as a side effect of the BFS frontier scan
+    /// — also picks up edges directly BETWEEN two nodes in an earlier
+    /// layer (e.g. a triangle through `center`), so the highlighted set
+    /// at depth N is the full induced-subgraph edge set reachable by
+    /// walking N hops, not just the BFS tree's own edges.
+    pub fn neighborhood_focus_keys_depth(&self, center: NodeIndex, depth: u8) -> Vec<u64> {
+        let mut keys = vec![u64::from(center)];
+        let mut visited: HashSet<NodeIndex> = HashSet::new();
+        visited.insert(center);
+        let mut frontier = vec![center];
+
+        for _ in 0..depth {
+            if frontier.is_empty() {
+                break;
+            }
+            let mut next = Vec::new();
+            for &node in &frontier {
+                for &eid in self.incident_edges(node) {
+                    let Some(edge) = self.get_edge(eid) else { continue };
+                    let other = if edge.from == node { edge.to } else { edge.from };
+                    keys.push(u64::from(eid));
+                    keys.push(u64::from(other));
+                    if visited.insert(other) {
+                        next.push(other);
+                    }
+                }
+            }
+            frontier = next;
+        }
+
+        keys
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `a - b - c - d` chain — `b`'s depth-1 neighborhood is exactly
+    /// `{a, b, c}` + the two edges touching `b`; `a` and `d` sit at
+    /// depth 2 from `b` on either side.
+    fn chain4() -> (Graph<(), ()>, [NodeIndex; 4]) {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let b = graph.push_node((), "b", "x", 4.0);
+        let c = graph.push_node((), "c", "x", 4.0);
+        let d = graph.push_node((), "d", "x", 4.0);
+        graph.push_edge(a, b, 1.0, ());
+        graph.push_edge(b, c, 1.0, ());
+        graph.push_edge(c, d, 1.0, ());
+        (graph, [a, b, c, d])
+    }
+
+    #[test]
+    fn depth_zero_yields_only_the_center_node() {
+        let (graph, [_a, b, _c, _d]) = chain4();
+        let keys = graph.neighborhood_focus_keys_depth(b, 0);
+        assert_eq!(keys, vec![u64::from(b)]);
+    }
+
+    #[test]
+    fn depth_one_yields_exactly_center_plus_adjacency() {
+        let (graph, [a, b, c, d]) = chain4();
+        let keys: HashSet<u64> = graph.neighborhood_focus_keys_depth(b, 1).into_iter().collect();
+
+        assert!(keys.contains(&u64::from(a)));
+        assert!(keys.contains(&u64::from(b)));
+        assert!(keys.contains(&u64::from(c)));
+        assert!(!keys.contains(&u64::from(d)), "d is 2 hops from b — outside a depth-1 neighborhood");
+
+        let ab = graph.incident_edges(a).iter().find(|&&e| graph.edge(e).to == b || graph.edge(e).from == b).copied().unwrap();
+        let bc = graph.incident_edges(c).iter().find(|&&e| graph.edge(e).to == b || graph.edge(e).from == b).copied().unwrap();
+        assert!(keys.contains(&u64::from(ab)));
+        assert!(keys.contains(&u64::from(bc)));
+    }
+
+    #[test]
+    fn depth_two_reaches_the_second_hop() {
+        let (graph, [a, b, c, d]) = chain4();
+        let keys: HashSet<u64> = graph.neighborhood_focus_keys_depth(b, 2).into_iter().collect();
+        for id in [a, b, c, d] {
+            assert!(keys.contains(&u64::from(id)), "depth 2 from b must reach every node in a 4-chain");
+        }
+    }
+
+    #[test]
+    fn depth_beyond_graph_extent_does_not_panic_or_loop() {
+        let (graph, [_a, b, _c, _d]) = chain4();
+        let keys = graph.neighborhood_focus_keys_depth(b, 200);
+        // Every node key present exactly once as a member, regardless of
+        // the requested depth vastly exceeding the graph's actual reach.
+        let node_keys: HashSet<u64> = keys.into_iter().filter(|k| k % 2 == 0).collect();
+        assert_eq!(node_keys.len(), 4);
     }
 }
