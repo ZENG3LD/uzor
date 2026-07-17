@@ -679,6 +679,7 @@ mod tests {
             urx_offscreen_3d:     None,
             urx_capture_3d:       None,
             capture_3d_enabled:   false,
+            retained_cache:       crate::retained::RetainedCache::new(),
         };
 
         let outcome = submit_frame(
@@ -768,6 +769,7 @@ mod tests {
             urx_offscreen_3d:      None,
             urx_capture_3d:        None,
             capture_3d_enabled:    false,
+            retained_cache:        crate::retained::RetainedCache::new(),
         };
 
         let outcome = submit_frame(

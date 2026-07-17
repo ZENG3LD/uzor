@@ -306,6 +306,14 @@ pub struct WindowRenderState {
     /// Arms the capture mirror above. Set by the consumer's screenshot
     /// pipeline on first request for a window.
     pub(crate) capture_3d_enabled: bool,
+
+    /// Retained-cache surface for this window — one instance covering
+    /// container/region/fragment scopes uniformly (see
+    /// `crate::retained::RetainedCache`). Owned here for the same
+    /// reason `urx_engine` is: per-window retained state belongs on
+    /// the hub, not the kernel (`docs/uzor-tessera/plans/
+    /// retained-render-unification-2026-07-18.md` §2).
+    pub(crate) retained_cache: crate::retained::RetainedCache,
 }
 
 /// Backing for the 3D screenshot capture mirror — see
@@ -379,6 +387,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
+            retained_cache: crate::retained::RetainedCache::new(),
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -424,6 +433,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
+            retained_cache: crate::retained::RetainedCache::new(),
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -497,6 +507,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
+            retained_cache: crate::retained::RetainedCache::new(),
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -540,6 +551,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
+            retained_cache: crate::retained::RetainedCache::new(),
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
             active: RenderBackend::TinySkia,
@@ -581,6 +593,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
+            retained_cache: crate::retained::RetainedCache::new(),
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
             active: RenderBackend::VelloCpu,
@@ -670,6 +683,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
+            retained_cache: crate::retained::RetainedCache::new(),
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -714,6 +728,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
+            retained_cache: crate::retained::RetainedCache::new(),
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -777,6 +792,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             capture_3d_enabled: false,
+            retained_cache: crate::retained::RetainedCache::new(),
             canvas2d_ctx: Some(ctx),
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
@@ -1119,6 +1135,109 @@ impl WindowRenderState {
         }
     }
 
+    /// Mutable borrow of this window's retained-cache surface, for
+    /// call sites that need to drive it directly (invalidation drain,
+    /// despawn-free, backend-switch `clear`) without also wanting a
+    /// paint context — see
+    /// `docs/uzor-tessera/plans/retained-render-unification-2026-07-18.md`
+    /// §6.
+    pub fn retained_cache_mut(&mut self) -> &mut crate::retained::RetainedCache {
+        &mut self.retained_cache
+    }
+
+    /// Like [`Self::with_render_context`] but ALSO hands the caller
+    /// this window's retained-cache surface — the walker's single
+    /// entry point for scopes it wants to cache. Additive sibling:
+    /// `with_render_context` stays unchanged for the many non-walker
+    /// consumers (L3 dashboard buttons, widget registration helpers)
+    /// that have no retained-cache concept and should not be forced to
+    /// thread one (plan §2/§7). Identical per-arm structure to
+    /// `with_render_context` — `cache` is a disjoint field borrow
+    /// threaded alongside each arm's context slot.
+    pub fn with_render_context_and_cache<R>(
+        &mut self,
+        f: impl FnOnce(&mut dyn uzor::render::RenderContext, &mut dyn uzor::core::render::retained::RetainedSurface) -> R,
+    ) -> Option<R> {
+        match self.active {
+            RenderBackend::VelloGpu => {
+                let mut ctx = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
+                Some(f(&mut ctx, &mut self.retained_cache))
+            }
+            RenderBackend::VelloHybrid => {
+                Some(f(&mut self.vello_hybrid_ctx, &mut self.retained_cache))
+            }
+            RenderBackend::VelloCpu => {
+                let (w, h) = self.gpu_handles()
+                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
+                    .unwrap_or((1, 1));
+                let Self { vello_cpu_ctx, retained_cache, .. } = self;
+                vello_cpu_ctx.as_mut().map(|c| {
+                    c.begin_frame(w, h);
+                    f(c, retained_cache)
+                })
+            }
+            RenderBackend::TinySkia => {
+                let (w, h) = self.gpu_handles()
+                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
+                    .unwrap_or((1, 1));
+                let Self { tiny_skia_ctx, retained_cache, .. } = self;
+                tiny_skia_ctx.as_mut().map(|c| {
+                    if c.width() != w || c.height() != h {
+                        c.resize(w, h);
+                    }
+                    f(c, retained_cache)
+                })
+            }
+            RenderBackend::InstancedWgpu => {
+                let (w, h) = self.gpu_handles()
+                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
+                    .unwrap_or((1, 1));
+                if self.instanced_ctx.is_none() {
+                    self.instanced_ctx = Some(InstancedRenderContext::new(
+                        w as f32, h as f32, 0.0, 0.0,
+                    ));
+                }
+                let Self { instanced_ctx, retained_cache, .. } = self;
+                instanced_ctx.as_mut().map(|c| {
+                    c.clear();
+                    let (cur_w, cur_h) = c.screen_size();
+                    if cur_w != w as f32 || cur_h != h as f32 {
+                        c.resize(w as f32, h as f32, 0.0, 0.0);
+                    }
+                    f(c, retained_cache)
+                })
+            }
+            #[cfg(target_arch = "wasm32")]
+            RenderBackend::Canvas2d => {
+                let Self { canvas2d_ctx, retained_cache, .. } = self;
+                canvas2d_ctx.as_mut().map(|c| f(c, retained_cache))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            RenderBackend::Canvas2d => None,
+
+            RenderBackend::UrxCpu
+            | RenderBackend::UrxWgpu
+            | RenderBackend::UrxHybrid
+            | RenderBackend::UrxWgpuFull => {
+                let (w, h) = self.gpu_handles()
+                    .map(|(_, _, s)| (s.config.width.max(1), s.config.height.max(1)))
+                    .unwrap_or_else(|| match &self.surface {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        SurfaceMode::Software { width, height, .. } => (*width, *height),
+                        _ => (1, 1),
+                    });
+                if self.urx_ctx.is_none() {
+                    self.urx_ctx = Some(uzor_render_urx::UrxRenderContext::new(1.0));
+                }
+                let Self { urx_ctx, retained_cache, .. } = self;
+                urx_ctx.as_mut().map(|c| {
+                    c.begin_frame(w, h);
+                    f(c, retained_cache)
+                })
+            }
+        }
+    }
+
     // ── Surface lifecycle ─────────────────────────────────────────────────────
 
     /// Block the CPU until every GPU submission on this surface's
@@ -1390,6 +1509,7 @@ impl WindowRenderState {
             height,
             dpr,
             frame_idx: 0, // Stage 5 wires real counter.
+            retained: &mut self.retained_cache,
         };
         Some(f(&mut handle))
     }

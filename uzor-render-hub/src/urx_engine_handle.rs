@@ -21,6 +21,7 @@
 //! Consumers who only paint primitives use `h.render_ctx` and ignore
 //! the rest, identical to the legacy `with_render_context` ergonomics.
 
+use uzor::core::render::retained::RetainedSurface;
 use uzor::render::RenderContext;
 use uzor_urx_engine::UrxEngine;
 
@@ -60,6 +61,14 @@ pub struct UrxEngineHandle<'a> {
     pub dpr: f64,
     /// Monotonic frame counter for this window.
     pub frame_idx: u64,
+
+    /// This window's retained-cache surface (`uzor-render-hub::retained::
+    /// RetainedCache`, dyn-dispatched behind the `uzor` L0 trait) —
+    /// added by the retained-render unification (`docs/uzor-tessera/
+    /// plans/retained-render-unification-2026-07-18.md` §2). Consumers
+    /// that only paint primitives ignore this field exactly as they
+    /// ignore `engine` today.
+    pub retained: &'a mut dyn RetainedSurface,
     // ── Stage 4+ fields (currently absent) ────────────────────────────────
     //
     // Stage 4 will add:

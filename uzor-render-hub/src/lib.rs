@@ -23,6 +23,7 @@ pub mod compose;
 pub mod runtime;
 pub mod surface;
 pub mod factories;
+pub mod retained;
 pub mod urx_engine_handle;
 
 pub use backend::RenderBackend;
@@ -35,6 +36,7 @@ pub use uzor_urx_core::{SkeletonSpec, SkeletonFrame};
 pub use hub::{BackendPool, HubError, PerfSettings, RenderHub};
 pub use metrics::RenderMetrics;
 pub use factory::{BackendContext, GpuDevicePool, Submit3DError, UrxCapture3D, WindowRenderState};
+pub use retained::RetainedCache;
 pub use compose::{
     Compose3DJob, ComposeParticlesJob, ComposedOutcome,
     submit_urx_composed, submit_particles_composed,
