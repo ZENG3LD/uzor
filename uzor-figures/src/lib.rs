@@ -49,6 +49,7 @@ pub mod interact;
 pub mod mark;
 pub mod scale;
 pub mod theme;
+pub mod transform;
 
 pub use coord::PlotArea;
 pub use figure::{
@@ -56,11 +57,13 @@ pub use figure::{
     SankeyFigure, SankeyLink, SankeyNode, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind,
 };
 pub use guide::colorbar::{draw_colorbar, measure_colorbar, ColorbarSize};
+pub use guide::labeler::{anchor_candidates, place_labels, OccupancyBitmap};
 pub use guide::legend::{LegendEntry, LegendPosition};
 pub use interact::{BrushState, FocusSet, HitZone, HoverInfo, SelectionBus, FigureInputAction, FigureOutputAction};
 pub use mark::MarkStyle;
 pub use scale::{BandScale, ColorScale, LinearScale, LogScale, Scale, Tick, TimeScale};
 pub use theme::FigureTheme;
+pub use transform::lttb;
 
 #[cfg(test)]
 mod proof_tests {
@@ -75,6 +78,7 @@ mod proof_tests {
     use uzor_export::{render_to_png, ExportSpec};
 
     use crate::theme::FigureTheme;
+    use crate::transform::lttb;
     use crate::{
         BarFigure, BarMode, BarSeries, CurveFigure, CurveSeries, FocusSet, HeatmapFigure, HistogramFigure, FigureOverlay, LegendPosition,
         PieFigure, PieSlice, SankeyFigure, SankeyLink, SankeyNode, TimeScale, TimelineEvent, TimelineFigure, WaterfallFigure,
@@ -616,5 +620,64 @@ mod proof_tests {
         .expect("heatmap figure should render");
         assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
         write_proof_png("figures_heatmap.png", &bytes);
+    }
+
+    // ── LTTB downsampling proof (harvest wave) ────────────────────────
+
+    /// Deterministic 2000-point noisy series (fixed pseudo-noise formula,
+    /// no RNG) with ONE deliberate spike (index 1337, value 400.0 — far
+    /// outside the noise band) planted deep in the interior — the exact
+    /// fixture [`crate::transform::lttb`]'s own spike-survival test uses,
+    /// reused here so the visual proof and the data-level assertion below
+    /// are provably the same series.
+    fn seeded_noisy_curve_with_spike() -> Vec<(f64, f64)> {
+        const N: usize = 2000;
+        const SPIKE_INDEX: usize = 1337;
+        const SPIKE_Y: f64 = 400.0;
+        (0..N)
+            .map(|i| {
+                let noise = ((i * 97 + 13) % 23) as f64 - 11.0;
+                let wave = ((i as f64) * 0.05).sin() * 15.0;
+                if i == SPIKE_INDEX { (i as f64, SPIKE_Y) } else { (i as f64, wave + noise) }
+            })
+            .collect()
+    }
+
+    const LTTB_WIDTH: u32 = 900;
+    const LTTB_HEIGHT: u32 = 400;
+    const LTTB_DOWNSAMPLE_TO: usize = 100;
+
+    #[test]
+    fn lttb_downsampled_curve_preserves_shape_and_the_spike_survives() {
+        let points = seeded_noisy_curve_with_spike();
+
+        // Data-level proof (design law 8: not just eyeballing) — the
+        // spike must be one of the points LTTB actually keeps.
+        let downsampled = lttb(&points, LTTB_DOWNSAMPLE_TO);
+        assert_eq!(downsampled.len(), LTTB_DOWNSAMPLE_TO);
+        assert!(
+            downsampled.iter().any(|&(x, y)| (x - 1337.0).abs() < 1e-9 && (y - 400.0).abs() < 1e-9),
+            "the planted spike must survive a 2000 -> {LTTB_DOWNSAMPLE_TO} LTTB downsample"
+        );
+
+        // Visual proof — two panels side by side on ONE canvas: raw
+        // (2000 pts, every point drawn) on the left, the SAME series
+        // downsampled to 100 pts (via `CurveFigure::with_downsample`,
+        // exercising the real render-time integration, not just the
+        // pure `lttb` fn) on the right — labeled which is which.
+        let theme = FigureTheme::dark();
+        let raw_figure = CurveFigure::new(points.clone()).with_title(format!("raw ({} pts)", points.len()));
+        let downsampled_figure =
+            CurveFigure::new(points.clone()).with_downsample(LTTB_DOWNSAMPLE_TO).with_title(format!("LTTB-downsampled ({LTTB_DOWNSAMPLE_TO} pts)"));
+
+        let spec = ExportSpec { width_px: LTTB_WIDTH, height_px: LTTB_HEIGHT, dpr: 1.0, background: None };
+        let bytes = render_to_png(&spec, |ctx| {
+            let panel_w = LTTB_WIDTH as f64 / 2.0;
+            raw_figure.render(ctx, Rect::new(0.0, 0.0, panel_w, LTTB_HEIGHT as f64), &theme);
+            downsampled_figure.render(ctx, Rect::new(panel_w, 0.0, panel_w, LTTB_HEIGHT as f64), &theme);
+        })
+        .expect("LTTB downsample proof should render");
+        assert_eq!(decoded_png_dims(&bytes), (LTTB_WIDTH, LTTB_HEIGHT));
+        write_proof_png("figures_lttb.png", &bytes);
     }
 }

@@ -62,30 +62,12 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
         // (Phase 1/2's regression floor is unaffected).
         let needs_shrink =
             !can_justify && line_index != last_index && glue_count > 0 && paragraph.max_width.is_finite() && natural_width > paragraph.max_width;
-        // Shrink is capped at `GLUE_SHRINK_RATIO` of the line's *narrowest*
-        // glue atom — the same fraction `crate::linebreak::knuth_plass`'s
-        // own badness model assumes is available — never the full glue
-        // width. Capping any tighter than the cost model assumed would
-        // make a line KP scored as "shrink covers the gap" collapse its
-        // interword spaces to nothing (unreadable, words touching) while
-        // still not actually reaching `max_width` any better than a
-        // shallower, legible compression would have.
-        let min_glue_shrink = || {
-            line_atoms
-                .iter()
-                .filter_map(|a| if let Atom::Text(t) = a { t.is_glue.then_some(t.width) } else { None })
-                .fold(f64::MAX, f64::min)
-                * GLUE_SHRINK_RATIO
-        };
-        let extra_per_glue = if can_justify {
-            let raw = (paragraph.max_width - natural_width) / glue_count as f64;
-            if raw < 0.0 { raw.max(-min_glue_shrink()) } else { raw }
-        } else if needs_shrink {
-            ((paragraph.max_width - natural_width) / glue_count as f64).max(-min_glue_shrink())
+        let glue_extras = if can_justify || needs_shrink {
+            glue_extras_for_line(&line_atoms, glue_count, (paragraph.max_width - natural_width) / glue_count as f64)
         } else {
-            0.0
+            vec![0.0; glue_count]
         };
-        let content_width = natural_width + extra_per_glue * glue_count as f64;
+        let content_width = natural_width + glue_extras.iter().sum::<f64>();
 
         let align_shift = match paragraph.align {
             ParagraphAlign::Left | ParagraphAlign::Justify => 0.0,
@@ -99,6 +81,7 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
 
         let baseline_y = y_top + line_metrics.ascent;
         let mut pen_x = align_shift;
+        let mut glue_ordinal = 0usize;
 
         for atom in &line_atoms {
             match atom {
@@ -119,7 +102,8 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
                     }
                     pen_x += t.width;
                     if t.is_glue {
-                        pen_x += extra_per_glue;
+                        pen_x += glue_extras[glue_ordinal];
+                        glue_ordinal += 1;
                     }
                 }
                 Atom::Box(inline_box) => {
@@ -138,6 +122,94 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
     let height = lines.last().map(|l| l.y_top + l.height).unwrap_or(0.0);
 
     ParagraphLayout { glyphs, lines, boxes, width, height }
+}
+
+/// `true` for a non-glue [`Atom::Text`] spanning exactly one glyph — a
+/// genuine one-letter word (e.g. Russian "а"/"и"/"в"/"с"/"у"/"о", the
+/// single-letter prepositions/conjunctions this fn exists for).
+/// [`crate::linebreak::hyphenate`]'s own `LEFT_MIN`/`RIGHT_MIN` guards
+/// (never break inside the first 2 or last 3 letters of a word) mean a
+/// real hyphenation FRAGMENT is never a single glyph either — so this
+/// check can never misfire on a word fragment, only on an actual
+/// one-letter word.
+fn is_single_glyph_word(atom: &Atom) -> bool {
+    matches!(atom, Atom::Text(t) if !t.is_glue && t.glyphs.len() == 1)
+}
+/// Which of `line_atoms`' own glue atoms sit immediately beside a
+/// one-letter word (either side) — parallel to glue-occurrence order
+/// (index `i` here corresponds to the `i`-th `Atom::Text` with
+/// `is_glue == true`, walking `line_atoms` left to right), matching
+/// [`glue_extras_for_line`]'s own indexing.
+fn protected_glue_mask(line_atoms: &[Atom]) -> Vec<bool> {
+    let mut mask = Vec::new();
+    for (i, atom) in line_atoms.iter().enumerate() {
+        if !matches!(atom, Atom::Text(t) if t.is_glue) {
+            continue;
+        }
+        let before = i > 0 && is_single_glyph_word(&line_atoms[i - 1]);
+        let after = i + 1 < line_atoms.len() && is_single_glyph_word(&line_atoms[i + 1]);
+        mask.push(before || after);
+    }
+    mask
+}
+
+/// Per-glue `pen_x` adjustment for one packed line (Justify stretch, or
+/// shrink for an over-full line regardless of alignment — see
+/// [`layout_paragraph`]'s own call site docs) — `raw` is the naive
+/// "spread `max_width - natural_width` evenly across every glue" value
+/// the pre-fix code always applied uniformly.
+///
+/// **The one-letter-word fix**: a NEGATIVE `raw` (the line must shrink)
+/// no longer shrinks every glue by the same amount. A glue immediately
+/// beside a one-letter word ([`protected_glue_mask`]) is exempt —
+/// pinned at its own full natural width — and the whole deficit is
+/// redistributed across the REMAINING glues only (still capped at
+/// [`GLUE_SHRINK_RATIO`] of their own narrowest natural width, same
+/// floor the pre-fix code already used, just scoped to the regular
+/// glues now). Known, previously-unfixed bug this closes: uniformly
+/// shrinking every glue by an equal fraction is fine in general, but for
+/// a short, common one-letter conjunction ("а"/"и"/"в") sitting between
+/// two ordinary, ink-dense letters, that SAME fractional shrink reads as
+/// a full visual collapse (the two words touching, e.g. "текста, а
+/// узкая" rendering as "текста, аузкая") even though the pixel math is
+/// perfectly uniform with every other glue on the line — confirmed by
+/// rendering `uzor-typeset`'s own `typography_wave` proof and inspecting
+/// the resulting pixels directly (see this module's
+/// `single_letter_word_glue_is_never_shrunk_even_on_a_tight_justified_line`
+/// regression test, using the exact same fixture text/width). Positive
+/// `raw` (stretch) is untouched: a WIDER gap around a short word never
+/// collapses anything, so every glue — protected or not — stretches
+/// identically, exactly like the pre-fix behavior.
+fn glue_extras_for_line(line_atoms: &[Atom], glue_count: usize, raw: f64) -> Vec<f64> {
+    if raw >= 0.0 {
+        return vec![raw; glue_count];
+    }
+
+    let protected = protected_glue_mask(line_atoms);
+    debug_assert_eq!(protected.len(), glue_count);
+    let glue_widths: Vec<f64> = line_atoms
+        .iter()
+        .filter_map(|a| if let Atom::Text(t) = a { t.is_glue.then_some(t.width) } else { None })
+        .collect();
+
+    let regular_count = protected.iter().filter(|&&p| !p).count();
+    let deficit = raw * glue_count as f64; // == max_width - natural_width, negative
+    if regular_count == 0 {
+        // Degenerate: every glue on this line is one-letter-word-
+        // adjacent (an extremely short line) — protecting all of them
+        // would leave the deficit nowhere to go, so fall back to the
+        // ORIGINAL uniform-shrink behavior rather than leaving an
+        // over-full line completely un-shrunk.
+        let floor = -(glue_widths.iter().copied().fold(f64::MAX, f64::min) * GLUE_SHRINK_RATIO);
+        return vec![raw.max(floor); glue_count];
+    }
+
+    let min_regular_width =
+        glue_widths.iter().zip(&protected).filter_map(|(&w, &p)| (!p).then_some(w)).fold(f64::MAX, f64::min);
+    let floor = -(min_regular_width * GLUE_SHRINK_RATIO);
+    let per_regular = (deficit / regular_count as f64).max(floor);
+
+    protected.iter().map(|&p| if p { 0.0 } else { per_regular }).collect()
 }
 
 fn placed_box(inline_box: InlineBox, line_index: usize, x: f64, baseline_y: f64) -> PlacedInlineBox {
@@ -392,6 +464,91 @@ mod tests {
         assert!(layout.lines.len() > 1, "fixture must wrap to multiple lines at this narrow width");
         assert!(layout.glyphs.iter().any(|g| g.cluster == "-"), "a narrow Cyrillic column must hit at least one hyphenation break");
         assert!(layout.glyphs.iter().all(|g| g.x.is_finite() && g.y.is_finite()), "every glyph must land at a finite position");
+    }
+
+    /// Regression fixture (verbatim, incl. width, from
+    /// `uzor-typeset`'s own `typography_wave_ru_and_en_hyphenation_in_a_
+    /// narrow_justified_column` proof): a shrunk, justified line whose
+    /// single-letter conjunction "а" sits between "текста," and "узкая"
+    /// used to render with its OWN surrounding glue shrunk by the exact
+    /// same uniform fraction as every other glue on the line — which,
+    /// for this specific letter pairing, visually read as a full
+    /// collapse ("текста, аузкая", the two words touching) even though
+    /// the pixel math was perfectly uniform. Both glue atoms immediately
+    /// beside the one-letter "а" must now render at their own full,
+    /// UNSHRUNK natural width (`glue.advance`, exactly — the fix's own
+    /// floor is "0 shrink", not "less shrink"), while at least one OTHER
+    /// (non-adjacent) glue on the same line is still measurably
+    /// compressed below its own natural width — proving the fix
+    /// actually engaged (redistributed the deficit elsewhere) rather
+    /// than becoming a no-op that silently stopped shrinking anything.
+    #[test]
+    fn single_letter_word_glue_is_never_shrunk_even_on_a_tight_justified_line() {
+        let font = FontSpec::new(FontFamily::Roboto, 14.0);
+        const RU_TEXT: &str = "Показательный документ подтверждает поддержку кириллического текста, а узкая \
+            колонка оправданного текста быстро показывает неравномерные промежутки между словами, если \
+            настоящая расстановка переносов не подсказывает точку разрыва посреди длинного слова.";
+        let runs = [StyledRun::new(RU_TEXT, font)];
+        let max_width = 205.0; // uzor-typeset's typography_wave body width (595 - 40 - 350)
+        let paragraph = Paragraph::new(&runs, max_width)
+            .with_align(ParagraphAlign::Justify)
+            .with_break_strategy(BreakStrategy::KnuthPlass)
+            .with_hyphenation(Hyphenation::Russian);
+        let shaper = CosmicShaper::headless();
+        let layout = layout_paragraph(&paragraph, &shaper);
+
+        // Find the line carrying the standalone one-letter "а" (never
+        // the "а" inside "текста"/"казывает"/etc — a glyph run whose OWN
+        // line-relative neighbors are glue on both sides).
+        let target_line = layout
+            .lines
+            .iter()
+            .find(|line| {
+                let glyphs: Vec<&GlyphLayout> = layout.glyphs.iter().filter(|g| g.line_index == line.line_index).collect();
+                glyphs.windows(3).any(|w| w[0].cluster == " " && w[1].cluster == "а" && w[2].cluster == " ")
+            })
+            .expect("fixture must wrap the standalone \"а\" onto some line");
+
+        let mut glyphs: Vec<&GlyphLayout> = layout.glyphs.iter().filter(|g| g.line_index == target_line.line_index).collect();
+        glyphs.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap());
+        let a_pos = glyphs.windows(3).position(|w| w[0].cluster == " " && w[1].cluster == "а" && w[2].cluster == " ").unwrap();
+        let glue_before = glyphs[a_pos];
+        let a_glyph = glyphs[a_pos + 1];
+        let glue_after = glyphs[a_pos + 2];
+        let next_glyph = glyphs[a_pos + 3];
+
+        // Both glues touching the one-letter word render at their own
+        // full natural advance — the effective on-screen gap (next
+        // glyph's x minus this glue's own x) must equal `glue.advance`
+        // (not `glue.advance` minus a shrink amount).
+        let gap_before = a_glyph.x - glue_before.x;
+        let gap_after = next_glyph.x - glue_after.x;
+        assert!(
+            (gap_before - glue_before.advance).abs() < 1e-6,
+            "glue before the one-letter word must render unshrunk: gap={gap_before} advance={}",
+            glue_before.advance
+        );
+        assert!(
+            (gap_after - glue_after.advance).abs() < 1e-6,
+            "glue after the one-letter word must render unshrunk: gap={gap_after} advance={}",
+            glue_after.advance
+        );
+        assert!(gap_after > 0.0, "the rendered gap after a one-letter word must be a real, positive advance");
+
+        // The fix must have actually engaged: some OTHER glue on the
+        // same line is measurably shrunk below its own natural width
+        // (this line needs compression overall — proving the deficit
+        // was redistributed elsewhere, not simply dropped).
+        let mut glue_pairs: Vec<(f64, f64)> = Vec::new(); // (gap, natural_advance)
+        for w in glyphs.windows(2) {
+            if w[0].cluster == " " {
+                glue_pairs.push((w[1].x - w[0].x, w[0].advance));
+            }
+        }
+        assert!(
+            glue_pairs.iter().any(|&(gap, natural)| gap + 1e-6 < natural),
+            "line must still contain at least one genuinely shrunk glue elsewhere, proving the fix redistributed the deficit rather than dropping it: {glue_pairs:?}"
+        );
     }
 
     /// `Justify` + `KnuthPlass` compose cleanly: every non-last line still

@@ -13,6 +13,7 @@ use uzor::types::Rect;
 
 use crate::coord::PlotArea;
 use crate::figure::FigureOverlay;
+use crate::guide::labeler::{self, OccupancyBitmap};
 use crate::guide::{axis, tooltip};
 use crate::interact::hit::{self, HitZone};
 use crate::mark::text::{draw_label_centered, draw_label_left_aligned, draw_label_right_aligned};
@@ -45,9 +46,6 @@ const BAR_HEIGHT: f64 = 14.0;
 const BAR_CORNER_RADIUS: f64 = 4.0;
 /// Horizontal gap (px) between a marker/bar edge and its beside-label.
 const LABEL_GAP: f64 = 6.0;
-/// Minimum horizontal gap (px) required between two point-event labels in
-/// the same lane before the second is skipped — see [`layout_point_labels`].
-const LABEL_COLLISION_GAP: f64 = 4.0;
 const HOVER_HIGHLIGHT_ALPHA: f64 = 0.28;
 const SELECTED_STROKE_WIDTH: f64 = 2.0;
 /// Screen-pixel slack added around a marker/bar's own geometry for
@@ -282,8 +280,48 @@ impl TimelineFigure {
         }
     }
 
+    /// Point-event markers + labels. Label placement is the bitmap-
+    /// occupancy 2D placer ([`labeler`], research doc §2, arXiv
+    /// 2405.10953): ONE [`OccupancyBitmap`] spans the whole plot rect,
+    /// pre-marked with every interval bar's AND every point marker's own
+    /// footprint (so an alternate label position never lands on top of a
+    /// mark either, not just another label), then each label tries its
+    /// existing Fix-D-resolved natural position FIRST — reproducing the
+    /// pre-labeler behavior exactly when nothing else is contested — and
+    /// only reaches for [`labeler::anchor_candidates`]'s alternate
+    /// offsets (mirrored side, above, below, diagonals) when that natural
+    /// slot is already claimed. A label with every candidate exhausted
+    /// still degrades to a skip, same never-overlap convention this
+    /// crate's greedy collision passes have always used — augmenting,
+    /// not replacing, the skip-is-the-last-resort rule.
+    ///
+    /// Processing stays lane-by-lane, ts-ascending (same order as
+    /// before) — the shared bitmap is threaded across lanes too, so a
+    /// later lane's label additionally avoids an earlier lane's
+    /// already-placed label, a correctness improvement the old
+    /// per-lane-only greedy skip couldn't offer.
     fn draw_points(&self, ctx: &mut dyn RenderContext, area: &PlotArea, time_scale: &TimeScale, lanes: &BandScale, theme: &FigureTheme) {
         ctx.set_font(&theme.label_font);
+
+        let mut occupancy = OccupancyBitmap::new(area.rect, labeler::DEFAULT_CELL_PX);
+        for e in &self.events {
+            if e.lane >= lanes.len() {
+                continue;
+            }
+            let (top, bottom) = area.y_band(lanes, e.lane);
+            match e.end_ts {
+                Some(end_ts) => {
+                    let (left, right, bar_y, bar_h) = interval_bar_geometry(area, time_scale, e.ts, end_ts, top, bottom);
+                    occupancy.mark(Rect::new(left, bar_y, (right - left).max(0.0), bar_h));
+                }
+                None => {
+                    let cy = (top + bottom) / 2.0;
+                    let x = area.x(time_scale, e.ts);
+                    occupancy.mark(Rect::new(x - POINT_RADIUS, cy - POINT_RADIUS, POINT_RADIUS * 2.0, POINT_RADIUS * 2.0));
+                }
+            }
+        }
+
         for lane_idx in 0..lanes.len() {
             let mut indices: Vec<usize> = self
                 .events
@@ -301,14 +339,9 @@ impl TimelineFigure {
             let cy = (top + bottom) / 2.0;
 
             // Fix D: resolve each label's FINAL (post-right-edge-flip)
-            // left edge BEFORE running collision layout, not after — the
-            // collision pass must see where a label will ACTUALLY paint.
-            // Deciding visibility from the natural (unflipped) position
-            // and only flipping afterward would let a flipped label
-            // (mirrored to the LEFT of its own marker) land on top of the
-            // PRECEDING label's own extent without either ever being
-            // skipped — exactly the kind of new collision this fix must
-            // not introduce while closing the original right-edge clip.
+            // left edge as the candidate list's OWN first (natural)
+            // entry, exactly as before — a label that already fits there
+            // paints identically to pre-labeler output.
             let inputs: Vec<PointLabelInput> = indices
                 .iter()
                 .map(|&i| {
@@ -319,7 +352,20 @@ impl TimelineFigure {
                     PointLabelInput { label_left, label_width }
                 })
                 .collect();
-            let visible = layout_point_labels(&inputs, LABEL_COLLISION_GAP);
+            let label_height = indices
+                .iter()
+                .map(|&i| ctx.text_bounds(&self.events[i].label, &theme.label_font).h)
+                .fold(0.0_f64, f64::max)
+                .max(1.0);
+            let natural_rects: Vec<Rect> =
+                inputs.iter().map(|inp| Rect::new(inp.label_left, cy - label_height / 2.0, inp.label_width, label_height)).collect();
+
+            let placed = labeler::place_labels(&mut occupancy, &natural_rects, |pos, natural| {
+                let x = area.x(time_scale, self.events[indices[pos]].ts);
+                let mut candidates = vec![natural];
+                candidates.extend(labeler::anchor_candidates((x, cy), (natural.width, natural.height), POINT_RADIUS, LABEL_GAP));
+                candidates
+            });
 
             for (pos, &i) in indices.iter().enumerate() {
                 let e = &self.events[i];
@@ -329,8 +375,10 @@ impl TimelineFigure {
                 ctx.arc(x, cy, POINT_RADIUS, 0.0, std::f64::consts::TAU);
                 ctx.fill();
 
-                if visible[pos] && !e.label.is_empty() {
-                    draw_label_left_aligned(ctx, &e.label, inputs[pos].label_left, cy, &theme.label_color, &theme.label_font);
+                if let Some(rect) = placed[pos] {
+                    if !e.label.is_empty() {
+                        draw_label_left_aligned(ctx, &e.label, rect.x, rect.center_y(), &theme.label_color, &theme.label_font);
+                    }
                 }
             }
         }
@@ -561,6 +609,13 @@ pub fn layout_point_labels(inputs: &[PointLabelInput], gap: f64) -> Vec<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// [`layout_point_labels`]'s own gap parameter, exercised directly by
+    /// its unit tests below — the render path (`draw_points`) no longer
+    /// calls this pure fn itself (superseded by the bitmap-occupancy
+    /// placer, see `draw_points`'s own module docs), but the fn/gap
+    /// convention stays exported+tested for external callers.
+    const LABEL_COLLISION_GAP: f64 = 4.0;
 
     fn evt(ts: f64, end_ts: Option<f64>, lane: usize, label: &str, kind: usize) -> TimelineEvent {
         TimelineEvent { ts, end_ts, lane, label: label.to_owned(), kind }

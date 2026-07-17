@@ -64,6 +64,10 @@ pub struct CurveFigure {
     /// default) reproduces the original behavior exactly.
     x_scale_override: Option<Box<dyn Scale>>,
     legend_position: Option<LegendPosition>,
+    /// Per-series LTTB downsample budget — set via
+    /// [`CurveFigure::with_downsample`]. `None` (the default) reproduces
+    /// the original behavior exactly (every raw point drawn/hit-tested).
+    downsample_max: Option<usize>,
 }
 
 impl CurveFigure {
@@ -82,7 +86,7 @@ impl CurveFigure {
     /// [`LegendPosition::Right`] unless overridden via
     /// [`CurveFigure::with_legend`].
     pub fn with_series(series: Vec<CurveSeries>) -> Self {
-        Self { series, title: None, fill: false, x_scale_override: None, legend_position: None }
+        Self { series, title: None, fill: false, x_scale_override: None, legend_position: None, downsample_max: None }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
@@ -113,6 +117,43 @@ impl CurveFigure {
     pub fn with_legend(mut self, position: LegendPosition) -> Self {
         self.legend_position = Some(position);
         self
+    }
+
+    /// Downsample each series independently via LTTB
+    /// ([`crate::transform::lttb`]) whenever its own point count exceeds
+    /// `max_points`, applied at RENDER time — a series at or under the
+    /// budget is untouched (byte-identical to not calling this at all).
+    ///
+    /// **Downsampling is a VISUAL transform only.** The auto-computed X/Y
+    /// domain ([`CurveFigure::x_scale`]/`y_scale`) always folds over the
+    /// FULL raw series regardless of this setting, so downsampling never
+    /// shrinks or reflows this figure's own layout/axes.
+    ///
+    /// **Hit-testing decision (one-transform law, design law #1):**
+    /// crosshair/tooltip nearest-point hit-testing resolves against the
+    /// SAME downsampled point set the render pass actually draws — never
+    /// the raw, undrawn points. The alternative (hit-test on raw points,
+    /// draw downsampled ones) would let a hover snap to a point that
+    /// isn't even on screen, which is a strictly worse and more confusing
+    /// failure mode than "hover resolves to whichever nearby point LTTB
+    /// kept" — the same principle [`crate::coord::PlotArea`]'s own docs
+    /// state for paint vs. hit-test geometry, applied one level up (data
+    /// selection) instead of screen-space transform.
+    pub fn with_downsample(mut self, max_points: usize) -> Self {
+        self.downsample_max = Some(max_points);
+        self
+    }
+
+    /// The exact point set this figure draws AND hit-tests for `s` this
+    /// render — LTTB-downsampled to [`CurveFigure::downsample_max`] when
+    /// `s` exceeds that budget, borrowed verbatim otherwise (see
+    /// [`CurveFigure::with_downsample`]'s own docs for why render and
+    /// hit-test always agree).
+    fn rendered_points<'a>(&self, s: &'a CurveSeries) -> std::borrow::Cow<'a, [(f64, f64)]> {
+        match self.downsample_max {
+            Some(max) if s.points.len() > max => std::borrow::Cow::Owned(crate::transform::lttb(&s.points, max)),
+            _ => std::borrow::Cow::Borrowed(&s.points),
+        }
     }
 
     /// Resolved legend position for this render: an explicit
@@ -259,14 +300,20 @@ impl CurveFigure {
             grid::draw_x_grid(ctx, &area, x_scale, theme, TARGET_X_TICKS);
             grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
 
-            for (i, s) in self.series.iter().enumerate() {
+            // Per-series LTTB-downsampled (or borrowed verbatim) point
+            // set — the SAME set drawn below AND hit-tested against
+            // (see `with_downsample`'s own docs: one-transform law, a
+            // hover never resolves to a point that isn't actually drawn).
+            let rendered: Vec<std::borrow::Cow<'_, [(f64, f64)]>> = self.series.iter().map(|s| self.rendered_points(s)).collect();
+
+            for (i, s) in rendered.iter().enumerate() {
                 let color = theme.palette[i % theme.palette.len()].clone();
                 let style = MarkStyle { color, ..Default::default() };
                 if self.fill {
                     let fill_style = MarkStyle { fill_alpha: FILL_ALPHA, ..style.clone() };
-                    draw_area(ctx, &area, x_scale, &y_scale, &s.points, &fill_style);
+                    draw_area(ctx, &area, x_scale, &y_scale, s, &fill_style);
                 }
-                draw_polyline(ctx, &area, x_scale, &y_scale, &s.points, &style);
+                draw_polyline(ctx, &area, x_scale, &y_scale, s, &style);
             }
 
             axis::draw_x_axis(ctx, &area, x_scale, theme, TARGET_X_TICKS);
@@ -274,9 +321,9 @@ impl CurveFigure {
 
             if let Some((hx, hy)) = overlay.hover_px {
                 if hit::hit_zone(&area, hx, hy) == HitZone::Plot {
-                    let series_points: Vec<&[(f64, f64)]> = self.series.iter().map(|s| s.points.as_slice()).collect();
+                    let series_points: Vec<&[(f64, f64)]> = rendered.iter().map(|s| s.as_ref()).collect();
                     if let Some((si, pi)) = hit::nearest_point_x_multi(&area, x_scale, &y_scale, &series_points, hx) {
-                        let (data_x, data_y) = self.series[si].points[pi];
+                        let (data_x, data_y) = rendered[si][pi];
                         crosshair::draw_crosshair(ctx, &area, theme, data_x, data_y, x_scale, &y_scale);
 
                         // Single-series: the ORIGINAL accent marker color
