@@ -347,11 +347,20 @@ pub struct VelloCpuRenderContext {
 
 /// Recording state swapped out while painting into an offscreen target.
 struct SavedRecording {
-    id:         OffscreenTargetId,
-    render_ctx: Option<VelloCpuCtx>,
-    resources:  Resources,
-    width:      u32,
-    height:     u32,
+    id:          OffscreenTargetId,
+    render_ctx:  Option<VelloCpuCtx>,
+    resources:   Resources,
+    width:       u32,
+    height:      u32,
+    // Outer per-frame drawing state — the recording paints at its own
+    // local origin with fresh state; the outer walk continues afterwards
+    // with ITS state intact (without the restore, one mid-walk recording
+    // clobbers the caller's translate/clip/save stack for the rest of
+    // the frame).
+    transform:   Affine,
+    clip_active: bool,
+    state_stack: Vec<SavedState>,
+    path:        Option<BezPath>,
 }
 
 /// Rendered offscreen target content — premultiplied RGBA8 pixels.
@@ -1291,18 +1300,19 @@ impl UzorRenderContext for VelloCpuRenderContext {
 
         self.offscreen_stack.push(SavedRecording {
             id,
-            render_ctx: saved_ctx,
-            resources:  saved_resources,
-            width:      saved_width,
-            height:     saved_height,
+            render_ctx:  saved_ctx,
+            resources:   saved_resources,
+            width:       saved_width,
+            height:      saved_height,
+            transform:   self.transform,
+            clip_active: std::mem::take(&mut self.clip_active),
+            state_stack: std::mem::take(&mut self.state_stack),
+            path:        self.path.take(),
         });
 
-        // The offscreen subtree paints at its own local origin — reset
-        // per-frame drawing state exactly like `begin_frame` does.
-        self.transform   = Affine::IDENTITY;
-        self.clip_active = false;
-        self.state_stack.clear();
-        self.path        = None;
+        // The offscreen subtree paints at its own local origin — fresh
+        // state, exactly like `begin_frame`.
+        self.transform = Affine::IDENTITY;
 
         Some(id)
     }
@@ -1326,10 +1336,14 @@ impl UzorRenderContext for VelloCpuRenderContext {
             CachedTarget { pixels, width: self.width, height: self.height },
         );
 
-        self.render_ctx = saved.render_ctx;
-        self.resources  = saved.resources;
-        self.width      = saved.width;
-        self.height     = saved.height;
+        self.render_ctx  = saved.render_ctx;
+        self.resources   = saved.resources;
+        self.width       = saved.width;
+        self.height      = saved.height;
+        self.transform   = saved.transform;
+        self.clip_active = saved.clip_active;
+        self.state_stack = saved.state_stack;
+        self.path        = saved.path;
     }
 
     fn draw_cached_target(&mut self, id: OffscreenTargetId, dst_rect: UzorRect) -> bool {

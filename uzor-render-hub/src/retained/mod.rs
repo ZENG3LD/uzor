@@ -126,15 +126,17 @@ impl RetainedSurface for RetainedCache {
             height_px: (size.1 * ctx.dpr()).max(1.0) as u32,
             dpr: ctx.dpr(),
         };
-        // Existing entry at a different size — try an in-place resize
-        // first so the backend can reuse its storage; failure falls
-        // through to a fresh acquire below (matches the kernel's
-        // `try_paint_boundary` resize-then-acquire order).
+        // Existing entry at a different size — release the old target
+        // and record into a fresh one. `begin_record` must ALWAYS leave
+        // a recording pushed (its `end_record` pairing pops
+        // unconditionally, and the caller's paint between the two must
+        // land in the recording, not the live surface) — an in-place
+        // resize cannot satisfy that, it only reshapes stored content.
         if let Some(slot) = self.slots.get(&scope) {
-            if slot.size != size && ctx.resize_offscreen_target(slot.id, desc) {
-                let id = slot.id;
-                self.slots.insert(scope, Slot { id, size, valid: false });
-                return;
+            if slot.size != size {
+                let old = slot.id;
+                self.slots.remove(&scope);
+                ctx.free_offscreen_target(old);
             }
         }
         match ctx.push_offscreen_target(desc) {

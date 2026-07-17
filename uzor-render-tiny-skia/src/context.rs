@@ -549,10 +549,25 @@ pub struct TinySkiaCpuRenderContext {
     offscreen_targets: HashMap<OffscreenTargetId, Pixmap>,
     // Monotonic counter for allocating new `OffscreenTargetId`s.
     next_offscreen_id: u64,
-    // Stack of (id, saved screen pixmap) entries swapped out by
-    // `push_offscreen_target`; `pop_offscreen_target` swaps the top
-    // entry back in and stores the painted pixmap under its id.
-    offscreen_stack: Vec<(OffscreenTargetId, Pixmap)>,
+    // Stack of entries swapped out by `push_offscreen_target`;
+    // `pop_offscreen_target` swaps the top entry back in and stores the
+    // painted pixmap under its id. Carries the outer per-frame drawing
+    // state (transform / clip / save stack / path) — the recording
+    // paints at its own local origin with fresh state, and the outer
+    // walk continues afterwards with ITS state intact.
+    offscreen_stack: Vec<OffscreenRecording>,
+}
+
+/// One level of the offscreen-recording stack for
+/// [`TinySkiaCpuRenderContext`].
+struct OffscreenRecording {
+    id:             OffscreenTargetId,
+    pixmap:         Pixmap,
+    transform:      Transform,
+    current_clip:   Option<Mask>,
+    state_stack:    Vec<SavedState>,
+    path_builder:   Option<PathBuilder>,
+    path_has_point: bool,
 }
 
 impl TinySkiaCpuRenderContext {
@@ -1735,23 +1750,39 @@ impl UzorRenderContext for TinySkiaCpuRenderContext {
 
         // Swap the fresh (transparent) offscreen pixmap in; stash the
         // previously-active pixmap (screen or an outer offscreen target,
-        // for nested boundaries) on the stack keyed by the new id.
+        // for nested boundaries) plus the outer drawing state.
         let previous = std::mem::replace(&mut self.pixmap, fresh);
-        self.offscreen_stack.push((id, previous));
-        self.current_clip = None;
+        self.offscreen_stack.push(OffscreenRecording {
+            id,
+            pixmap:         previous,
+            transform:      self.transform,
+            current_clip:   self.current_clip.take(),
+            state_stack:    std::mem::take(&mut self.state_stack),
+            path_builder:   self.path_builder.take(),
+            path_has_point: std::mem::take(&mut self.path_has_point),
+        });
+
+        // The offscreen subtree paints at its own local origin — fresh
+        // state, unclipped, identity transform.
+        self.transform = Transform::identity();
 
         Some(id)
     }
 
     fn pop_offscreen_target(&mut self) {
-        let Some((id, previous)) = self.offscreen_stack.pop() else {
+        let Some(saved) = self.offscreen_stack.pop() else {
             return;
         };
         // The pixmap just painted into `self.pixmap` becomes the cached
-        // target content; restore the previously-active surface.
-        let painted = std::mem::replace(&mut self.pixmap, previous);
-        self.offscreen_targets.insert(id, painted);
-        self.current_clip = None;
+        // target content; restore the previously-active surface and the
+        // outer drawing state.
+        let painted = std::mem::replace(&mut self.pixmap, saved.pixmap);
+        self.offscreen_targets.insert(saved.id, painted);
+        self.transform      = saved.transform;
+        self.current_clip   = saved.current_clip;
+        self.state_stack    = saved.state_stack;
+        self.path_builder   = saved.path_builder;
+        self.path_has_point = saved.path_has_point;
     }
 
     fn draw_cached_target(&mut self, id: OffscreenTargetId, dst_rect: UzorRect) -> bool {

@@ -680,6 +680,7 @@ mod tests {
             urx_capture_3d:       None,
             capture_3d_enabled:   false,
             retained_cache:       crate::retained::RetainedCache::new(),
+            vello_fragment_store: Default::default(),
         };
 
         let outcome = submit_frame(
@@ -770,6 +771,7 @@ mod tests {
             urx_capture_3d:        None,
             capture_3d_enabled:    false,
             retained_cache:        crate::retained::RetainedCache::new(),
+            vello_fragment_store:  Default::default(),
         };
 
         let outcome = submit_frame(

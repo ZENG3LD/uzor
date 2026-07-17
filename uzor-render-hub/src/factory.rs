@@ -314,6 +314,10 @@ pub struct WindowRenderState {
     /// the hub, not the kernel (`docs/uzor-tessera/plans/
     /// retained-render-unification-2026-07-18.md` §2).
     pub(crate) retained_cache: crate::retained::RetainedCache,
+    // Persistent vello-gpu fragment store - the VelloGpu context is
+    // rebuilt per frame, so cross-frame fragment reuse requires the
+    // table to live here and move in/out around each cached paint.
+    pub(crate) vello_fragment_store: uzor_render_vello_gpu::VelloFragmentStore,
 }
 
 /// Backing for the 3D screenshot capture mirror — see
@@ -388,6 +392,7 @@ impl WindowRenderState {
             urx_capture_3d: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
+            vello_fragment_store: Default::default(),
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -434,6 +439,7 @@ impl WindowRenderState {
             urx_capture_3d: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
+            vello_fragment_store: Default::default(),
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -508,6 +514,7 @@ impl WindowRenderState {
             urx_capture_3d: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
+            vello_fragment_store: Default::default(),
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -552,6 +559,7 @@ impl WindowRenderState {
             urx_capture_3d: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
+            vello_fragment_store: Default::default(),
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
             active: RenderBackend::TinySkia,
@@ -594,6 +602,7 @@ impl WindowRenderState {
             urx_capture_3d: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
+            vello_fragment_store: Default::default(),
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(dpr),
             active: RenderBackend::VelloCpu,
@@ -684,6 +693,7 @@ impl WindowRenderState {
             urx_capture_3d: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
+            vello_fragment_store: Default::default(),
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -729,6 +739,7 @@ impl WindowRenderState {
             urx_capture_3d: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
+            vello_fragment_store: Default::default(),
             #[cfg(target_arch = "wasm32")]
             canvas2d_ctx: None,
             scene: Scene::new(),
@@ -793,6 +804,7 @@ impl WindowRenderState {
             urx_capture_3d: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
+            vello_fragment_store: Default::default(),
             canvas2d_ctx: Some(ctx),
             scene: Scene::new(),
             vello_hybrid_ctx: VelloHybridRenderContext::new(1.0),
@@ -849,6 +861,7 @@ impl WindowRenderState {
     /// renderer / context is ready before the next frame.
     pub fn set_active(&mut self, backend: RenderBackend) {
         self.active = backend;
+        self.vello_fragment_store = Default::default();
         self.ensure_backend_slot(backend);
     }
 
@@ -1161,7 +1174,10 @@ impl WindowRenderState {
         match self.active {
             RenderBackend::VelloGpu => {
                 let mut ctx = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
-                Some(f(&mut ctx, &mut self.retained_cache))
+                ctx.install_fragment_store(std::mem::take(&mut self.vello_fragment_store));
+                let out = f(&mut ctx, &mut self.retained_cache);
+                self.vello_fragment_store = ctx.take_fragment_store();
+                Some(out)
             }
             RenderBackend::VelloHybrid => {
                 Some(f(&mut self.vello_hybrid_ctx, &mut self.retained_cache))

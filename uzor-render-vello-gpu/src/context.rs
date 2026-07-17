@@ -366,11 +366,20 @@ impl<'a> CurrentScene<'a> {
 
 /// One level of the offscreen-recording stack: the previously-current
 /// scene (root or an outer recording, for nested boundaries) saved while
-/// a fresh recording is active for the target being painted.
+/// a fresh recording is active for the target being painted, plus the
+/// outer per-frame drawing state (transform / path / clip counter /
+/// save stack). The recording paints at its own local origin with fresh
+/// state; the outer walk continues afterwards with ITS state intact —
+/// without the restore, one mid-walk recording would clobber the
+/// caller's whole translate/clip/save stack for the rest of the frame.
 struct RecordingSlot<'a> {
     id: OffscreenTargetId,
     desc: OffscreenTargetDesc,
     saved: CurrentScene<'a>,
+    transform: Affine,
+    path_builder: Option<BezPath>,
+    open_clip_layers: usize,
+    state_stack: Vec<SavedState>,
 }
 
 /// Vello-specific render context wrapping vello::Scene
@@ -417,15 +426,29 @@ pub struct VelloGpuRenderContext<'a> {
     // M6-P3: Blend mode (applied via push_layer when non-Normal)
     blend_mode: UzorBlendMode,
 
-    // Offscreen fragment cache — resolution-independent recorded Scenes,
-    // keyed by handle. See `uzor::render::offscreen` for the trait contract.
-    offscreen_fragments: HashMap<OffscreenTargetId, CachedFragment>,
-    // Monotonic counter for allocating new `OffscreenTargetId`s.
-    next_offscreen_id: u64,
+    // Offscreen fragment cache. Ephemeral by default (dies with this
+    // context instance); a caller that owns per-window state installs a
+    // persistent store via `install_fragment_store` before painting and
+    // takes it back after, so fragment ids survive across frames even
+    // though the context itself is rebuilt per frame.
+    frag_store: VelloFragmentStore,
     // Stack of saved recording state, swapped out by
     // `push_offscreen_target`; `pop_offscreen_target` restores the top
     // entry and stashes the recorded fragment under the target's id.
     offscreen_stack: Vec<RecordingSlot<'a>>,
+}
+
+/// Offscreen fragment cache — resolution-independent recorded Scenes,
+/// keyed by handle, plus the monotonic id allocator. Owned by whoever
+/// wants fragments to OUTLIVE one context instance (the render hub keeps
+/// one per window and moves it in/out around each paint); a context
+/// constructed without an installed store still works, its fragments
+/// just die with it. See `uzor::render::offscreen` for the trait
+/// contract.
+#[derive(Default)]
+pub struct VelloFragmentStore {
+    fragments: HashMap<OffscreenTargetId, CachedFragment>,
+    next_id: u64,
 }
 
 /// Recorded offscreen fragment — a resolution-independent `Scene`
@@ -472,10 +495,25 @@ impl<'a> VelloGpuRenderContext<'a> {
             use_convex_glass_buttons: false,
             shadow: None,
             blend_mode: UzorBlendMode::Normal,
-            offscreen_fragments: HashMap::new(),
-            next_offscreen_id: 0,
+            frag_store: VelloFragmentStore::default(),
             offscreen_stack: Vec::new(),
         }
+    }
+
+    /// Install a persistent fragment store for this paint pass. The
+    /// context is rebuilt per frame by its hub caller, so without this
+    /// every recorded fragment id goes stale at frame end and
+    /// `draw_cached_target` can never hit across frames. Take it back
+    /// with [`Self::take_fragment_store`] after painting.
+    pub fn install_fragment_store(&mut self, store: VelloFragmentStore) {
+        self.frag_store = store;
+    }
+
+    /// Move the fragment store back out (see
+    /// [`Self::install_fragment_store`]). Leaves an empty ephemeral
+    /// store behind.
+    pub fn take_fragment_store(&mut self) -> VelloFragmentStore {
+        std::mem::take(&mut self.frag_store)
     }
 
     /// Access the scene currently receiving draw calls — the root surface,
@@ -1502,20 +1540,25 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
     /// drawing state (transform, active path, clip/save stack) is reset
     /// exactly like a fresh frame.
     fn push_offscreen_target(&mut self, desc: OffscreenTargetDesc) -> OffscreenTarget {
-        let id = OffscreenTargetId(self.next_offscreen_id);
-        self.next_offscreen_id += 1;
+        let id = OffscreenTargetId(self.frag_store.next_id);
+        self.frag_store.next_id += 1;
 
         let fresh = CurrentScene::Recording(Scene::new());
         let saved = std::mem::replace(&mut self.scene, fresh);
 
-        self.offscreen_stack.push(RecordingSlot { id, desc, saved });
+        self.offscreen_stack.push(RecordingSlot {
+            id,
+            desc,
+            saved,
+            transform: self.transform,
+            path_builder: self.path_builder.take(),
+            open_clip_layers: std::mem::take(&mut self.open_clip_layers),
+            state_stack: std::mem::take(&mut self.state_stack),
+        });
 
-        // Fresh coordinate space for the offscreen recording — same reset
-        // `begin_frame`/`VelloCpuRenderContext::push_offscreen_target` do.
+        // Fresh coordinate space for the offscreen recording — content
+        // paints at its own local origin, like a fresh frame.
         self.transform = Affine::IDENTITY;
-        self.path_builder = None;
-        self.open_clip_layers = 0;
-        self.state_stack.clear();
 
         Some(id)
     }
@@ -1527,6 +1570,10 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
             return;
         };
         let recorded = std::mem::replace(&mut self.scene, slot.saved);
+        self.transform = slot.transform;
+        self.path_builder = slot.path_builder;
+        self.open_clip_layers = slot.open_clip_layers;
+        self.state_stack = slot.state_stack;
         let CurrentScene::Recording(scene) = recorded else {
             // Root scenes are never pushed onto `offscreen_stack` as the
             // *current* value being popped here — `push_offscreen_target`
@@ -1534,7 +1581,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
             // practice; treat defensively as "nothing to stash".
             return;
         };
-        self.offscreen_fragments.insert(
+        self.frag_store.fragments.insert(
             slot.id,
             CachedFragment { scene, desc: slot.desc },
         );
@@ -1556,15 +1603,15 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
     /// draw call (caller has already `translate`d/scaled via `self.transform`
     /// for any dpr/viewport scaling that applies to the CURRENT surface).
     fn draw_cached_target(&mut self, id: OffscreenTargetId, dst_rect: UzorRect) -> bool {
-        if !self.offscreen_fragments.contains_key(&id) {
+        if !self.frag_store.fragments.contains_key(&id) {
             return false;
         }
         let transform = self.transform
             * Affine::translate(kurbo::Vec2::new(dst_rect.x, dst_rect.y));
-        // Split borrow: `offscreen_fragments` and `scene` are disjoint
+        // Split borrow: `frag_store` and `scene` are disjoint
         // fields, so both can be borrowed mutably/immutably at once —
         // avoids cloning the fragment's recorded `Scene` on every draw.
-        let fragment = self.offscreen_fragments.get(&id).map(|f| &f.scene);
+        let fragment = self.frag_store.fragments.get(&id).map(|f| &f.scene);
         if let Some(fragment_scene) = fragment {
             self.scene.get_mut().append(fragment_scene, Some(transform));
         }
@@ -1575,7 +1622,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
     /// reallocate) — update the recorded size/dpr bookkeeping and report
     /// success. Returns `false` only when `id` is unknown, per contract.
     fn resize_offscreen_target(&mut self, id: OffscreenTargetId, desc: OffscreenTargetDesc) -> bool {
-        let Some(fragment) = self.offscreen_fragments.get_mut(&id) else {
+        let Some(fragment) = self.frag_store.fragments.get_mut(&id) else {
             return false;
         };
         fragment.desc = desc;
@@ -1583,7 +1630,7 @@ impl<'a> UzorRenderContext for VelloGpuRenderContext<'a> {
     }
 
     fn free_offscreen_target(&mut self, id: OffscreenTargetId) {
-        self.offscreen_fragments.remove(&id);
+        self.frag_store.fragments.remove(&id);
     }
 }
 
@@ -1654,6 +1701,41 @@ mod tests {
     }
 
     #[test]
+    fn pop_offscreen_target_restores_outer_drawing_state() {
+        let mut root = Scene::new();
+        let mut ctx = VelloGpuRenderContext::new(&mut root, 0.0, 0.0);
+
+        // Build up mid-walk state the way the paint walker does: nested
+        // save + translate + clip.
+        ctx.save();
+        ctx.translate(50.0, 30.0);
+        ctx.clip_rect(0.0, 0.0, 200.0, 100.0);
+        let outer_transform = ctx.transform;
+        let outer_stack_depth = ctx.state_stack.len();
+        let outer_clip_layers = ctx.open_clip_layers;
+        assert!(outer_clip_layers > 0, "clip_rect must open a layer");
+
+        let desc = OffscreenTargetDesc { width_px: 16, height_px: 16, dpr: 1.0 };
+        ctx.push_offscreen_target(desc).expect("push must succeed");
+        // Recording starts with fresh local-origin state.
+        assert_eq!(ctx.transform, Affine::IDENTITY);
+        assert_eq!(ctx.state_stack.len(), 0);
+        assert_eq!(ctx.open_clip_layers, 0);
+        ctx.fill_rect(0.0, 0.0, 8.0, 8.0);
+        ctx.pop_offscreen_target();
+
+        // The outer walk continues after the recording — its transform,
+        // save stack, and clip-layer accounting must be exactly as they
+        // were, or every subsequent restore()/draw in the frame is
+        // misbalanced (the mid-walk-recording black-frame incident).
+        assert_eq!(ctx.transform, outer_transform);
+        assert_eq!(ctx.state_stack.len(), outer_stack_depth);
+        assert_eq!(ctx.open_clip_layers, outer_clip_layers);
+
+        ctx.restore();
+    }
+
+    #[test]
     fn draw_cached_target_unknown_id_returns_false() {
         let mut root = Scene::new();
         let mut ctx = VelloGpuRenderContext::new(&mut root, 0.0, 0.0);
@@ -1678,7 +1760,7 @@ mod tests {
         let bigger = OffscreenTargetDesc { width_px: 128, height_px: 128, dpr: 2.0 };
         assert!(ctx.resize_offscreen_target(id, bigger));
         assert_eq!(
-            ctx.offscreen_fragments.get(&id).map(|f| f.desc),
+            ctx.frag_store.fragments.get(&id).map(|f| f.desc),
             Some(bigger)
         );
 
@@ -1694,10 +1776,10 @@ mod tests {
         let desc = OffscreenTargetDesc { width_px: 8, height_px: 8, dpr: 1.0 };
         let id = ctx.push_offscreen_target(desc).expect("push must succeed");
         ctx.pop_offscreen_target();
-        assert!(ctx.offscreen_fragments.contains_key(&id));
+        assert!(ctx.frag_store.fragments.contains_key(&id));
 
         ctx.free_offscreen_target(id);
-        assert!(!ctx.offscreen_fragments.contains_key(&id));
+        assert!(!ctx.frag_store.fragments.contains_key(&id));
 
         let drew = ctx.draw_cached_target(
             id,

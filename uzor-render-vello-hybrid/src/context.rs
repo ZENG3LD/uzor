@@ -415,6 +415,15 @@ struct SavedRecording {
     scene:  Option<Scene>,
     width:  u32,
     height: u32,
+    // Outer per-frame drawing state — the recording paints at its own
+    // local origin with fresh state; the outer walk continues afterwards
+    // with ITS state intact (without the restore, one mid-walk recording
+    // clobbers the caller's translate/clip/save stack for the rest of
+    // the frame).
+    transform:   Affine,
+    clip_active: bool,
+    state_stack: Vec<SavedState>,
+    path:        Option<BezPath>,
 }
 
 /// Rasterised offscreen-target content — a GPU texture rendered once at
@@ -1277,17 +1286,18 @@ impl UzorRenderContext for VelloHybridRenderContext {
 
         self.offscreen_stack.push(SavedRecording {
             id,
-            scene:  saved_scene,
-            width:  saved_width,
-            height: saved_height,
+            scene:       saved_scene,
+            width:       saved_width,
+            height:      saved_height,
+            transform:   self.transform,
+            clip_active: std::mem::take(&mut self.clip_active),
+            state_stack: std::mem::take(&mut self.state_stack),
+            path:        self.path.take(),
         });
 
-        // The offscreen subtree paints at its own local origin — reset
-        // per-frame drawing state exactly like `begin_frame` does.
-        self.transform   = Affine::IDENTITY;
-        self.clip_active = false;
-        self.state_stack.clear();
-        self.path        = None;
+        // The offscreen subtree paints at its own local origin — fresh
+        // state, exactly like `begin_frame`.
+        self.transform = Affine::IDENTITY;
 
         Some(id)
     }
@@ -1299,6 +1309,10 @@ impl UzorRenderContext for VelloHybridRenderContext {
         let recorded_scene = std::mem::replace(&mut self.scene, saved.scene);
         let recorded_width = std::mem::replace(&mut self.width, saved.width);
         let recorded_height = std::mem::replace(&mut self.height, saved.height);
+        self.transform   = saved.transform;
+        self.clip_active = saved.clip_active;
+        self.state_stack = saved.state_stack;
+        self.path        = saved.path;
 
         let (Some(scene), Some(device), Some(queue)) =
             (recorded_scene, self.gpu_device.clone(), self.gpu_queue.clone())
