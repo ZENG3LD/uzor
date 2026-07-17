@@ -5,18 +5,32 @@
 //! [`FigureOverlay`] is borrowed per-frame input, not owned (design law #3).
 //! A real registry/IR (mlc's `ChartTypeDef`+`DrawOps` two-table pattern)
 //! is a later milestone — see the crate-root docs.
+//!
+//! `pie`/`waterfall`/`heatmap` (V4, business-chart set) apply the FT/
+//! Economist chart-hygiene rules from
+//! `nemo/docs/uzor-engines/research_dataviz_sota_2026.md` §6 as DEFAULT
+//! behavior, not opt-in flags — see each module's own docs.
 
 pub mod bars;
 pub mod curve;
+pub mod heatmap;
 pub mod histogram;
+pub mod pie;
 pub mod sankey;
 pub mod timeline;
+pub mod waterfall;
 
 pub use bars::{BarFigure, BarMode, BarSeries};
 pub use curve::{CurveFigure, CurveSeries};
+pub use heatmap::{hit_test_cell, layout_heatmap, HeatmapCell, HeatmapFigure, HeatmapLayout};
 pub use histogram::{bin, Bin, HistogramFigure};
+pub use pie::{hit_test_slice, layout_pie, resolve_slices, PieFigure, PieLayout, PieSlice, PieSliceGeom};
 pub use sankey::{hit_test_node, layout_sankey, LabelSide, RibbonGeom, SankeyFigure, SankeyLayout, SankeyLink, SankeyNode};
 pub use timeline::{layout_point_labels, PointLabelInput, TimelineEvent, TimelineFigure};
+pub use waterfall::{
+    compute_steps, layout_bars, layout_connectors, WaterfallBar, WaterfallConnector, WaterfallFigure, WaterfallItem, WaterfallKind,
+    WaterfallStep,
+};
 
 use uzor::render::{RenderContext, TextAlign, TextBaseline};
 use uzor::types::Rect;

@@ -225,8 +225,10 @@ fn arc_to_cubics(pb: &mut PathBuilder, cx: f32, cy: f32, r: f32, start: f32, end
 
     let n_segs = ((sweep.abs() / (PI / 2.0)).ceil() as u32).max(1);
     let seg_angle = sweep / n_segs as f32;
-    // Cubic bezier magic constant for arc approximation
-    let k = (4.0 / 3.0) * ((seg_angle / 2.0).abs().tan());
+    // Cubic bezier magic constant for arc approximation: k = 4/3 * tan(θ/4)
+    // (θ/2 here was a real bug — wide sweeps rendered visibly faceted;
+    // for θ=90° correct k ≈ 0.5523, the θ/2 form gave 1.333).
+    let k = (4.0 / 3.0) * ((seg_angle / 4.0).abs().tan());
 
     let mut a = start;
     let start_x = cx + r * a.cos();
@@ -282,7 +284,8 @@ fn ellipse_to_cubics(
 
     let n_segs = ((sweep.abs() / (PI / 2.0)).ceil() as u32).max(1);
     let seg_angle = sweep / n_segs as f32;
-    let k = (4.0 / 3.0) * ((seg_angle / 2.0).abs().tan());
+    // Same k = 4/3 * tan(θ/4) fix as arc_to_cubics above.
+    let k = (4.0 / 3.0) * ((seg_angle / 4.0).abs().tan());
 
     let mut a = start;
     let start_x = cx + rx * a.cos();

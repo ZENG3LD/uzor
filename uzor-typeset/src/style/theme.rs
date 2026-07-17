@@ -241,6 +241,14 @@ impl Theme {
             label_color: self.color_hex(tokens.label_color),
             label_font: label_spec.to_css_font(),
             palette: self.brand.categorical_palette.iter().map(|c| format!("#{:06x}", c & 0xff_ffff)).collect(),
+            // `positive`/`negative` (business-chart semantic colors, added
+            // additively to `uzor_figures::FigureTheme` for
+            // `WaterfallFigure`) bridge through the SAME shared
+            // categorical palette this theme already mirrors verbatim
+            // (`shared_categorical_palette`, indices 2/7 are the
+            // green/red hues) — never a second, unrelated color source.
+            positive: self.brand.categorical_palette.get(2).map(|c| format!("#{:06x}", c & 0xff_ffff)).unwrap_or_else(|| "#5cb87a".to_owned()),
+            negative: self.brand.categorical_palette.get(7).map(|c| format!("#{:06x}", c & 0xff_ffff)).unwrap_or_else(|| "#e0555a".to_owned()),
         }
     }
 

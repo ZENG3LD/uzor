@@ -1,19 +1,26 @@
 //! Scale layer — domain (data space) <-> normalized `[0, 1]` <-> (via
 //! [`crate::coord::PlotArea`]) screen pixels.
 //!
-//! One [`Scale`] trait, four implementations: [`LinearScale`],
-//! [`LogScale`], [`BandScale`], [`TimeScale`] (calendar-aware tick
-//! generation, harvested from mlc's ~1900-line module — see
-//! [`mod@time`]'s own docs for exactly what was ported/dropped).
-//! `ColorScale` is a later milestone — not in this crate yet, see the
-//! crate-root docs.
+//! One [`Scale`] trait, four domain<->normalized-range implementations:
+//! [`LinearScale`], [`LogScale`], [`BandScale`], [`TimeScale`]
+//! (calendar-aware tick generation, harvested from mlc's ~1900-line module
+//! — see [`mod@time`]'s own docs for exactly what was ported/dropped).
+//!
+//! [`color::ColorScale`] is a DIFFERENT kind of scale — continuous value
+//! -> CSS hex color (not -> normalized `[0, 1]`), so it does not implement
+//! [`Scale`] itself; it lives in this module because it's still a
+//! domain-mapping primitive over the same "figures need a value ->
+//! something" shape, driving heatmap/business-chart color encoding (see
+//! `color`'s own module docs for the OKLCH machinery it reuses).
 
 pub mod band;
+pub mod color;
 pub mod linear;
 pub mod log;
 pub mod time;
 
 pub use band::BandScale;
+pub use color::ColorScale;
 pub use linear::LinearScale;
 pub use log::LogScale;
 pub use time::TimeScale;

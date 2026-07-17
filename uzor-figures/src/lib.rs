@@ -1,12 +1,13 @@
-//! `uzor-figures` — data-visualization engine core for uzor (V1 + V2 + V3).
+//! `uzor-figures` — data-visualization engine core for uzor (V1 + V2 + V3 + V4).
 //!
 //! Stateless layout + draw layer: scales (domain -> normalized `[0, 1]` ->
-//! screen px), a single plot-area coordinate transform ([`PlotArea`]),
-//! pure mark draw functions, axis/grid/crosshair/tooltip guides, a small
-//! theme, five composed figures (bar / curve / histogram / timeline /
-//! sankey), and (V2) an interaction plane — semantic input/output actions,
-//! hit-testing, hover/selection state, a 1D brush, and a cross-figure
-//! selection bus.
+//! screen px, plus [`scale::ColorScale`]: domain value -> CSS hex color),
+//! a single plot-area coordinate transform ([`PlotArea`]), pure mark draw
+//! functions, axis/grid/crosshair/tooltip/legend/colorbar guides, a small
+//! theme, eight composed figures (bar / curve / histogram / timeline /
+//! sankey / pie / waterfall / heatmap), and (V2) an interaction plane —
+//! semantic input/output actions, hit-testing, hover/selection state, a 1D
+//! brush, and a cross-figure selection bus.
 //!
 //! See `nemo/docs/uzor-engines/uzor_figures_engine_architecture.md` §3 (crate
 //! layout) and §4 (design laws). V1 harvested scales/coord/marks/axes from
@@ -14,10 +15,15 @@
 //! `nemo/docs/uzor-engines/mlc_harvest_inventory.md` §2; V2 harvests the input
 //! pipeline (§4) and promotes `uzor-graph`'s `FocusSet` — see
 //! [`mod@interact`]'s module docs for exactly what was generalized/dropped.
+//! V4 (`scale::color`, `figure::{pie, waterfall, heatmap}`,
+//! `guide::colorbar`) is the business-chart set — reuses
+//! `uzor::ui::animation::math::color::Color`'s existing OKLCH lerp
+//! machinery verbatim (no color math reimplemented) and bakes in the FT/
+//! Economist chart-hygiene defaults from
+//! `nemo/docs/uzor-engines/research_dataviz_sota_2026.md` §6.
 //!
 //! **NOT in this crate yet** (later milestones — do not add here without a
 //! plan doc):
-//! - `ColorScale` (OKLCH ramp).
 //! - A figure registry/IR (mlc's `ChartTypeDef`+`DrawOps` two-table
 //!   pattern) — figures here are hand-composed, not registry-dispatched.
 //! - Animation / keyed data-join (enter/update/exit).
@@ -46,13 +52,14 @@ pub mod theme;
 
 pub use coord::PlotArea;
 pub use figure::{
-    BarFigure, BarMode, BarSeries, CurveFigure, CurveSeries, HistogramFigure, FigureOverlay, SankeyFigure, SankeyLink, SankeyNode,
-    TimelineEvent, TimelineFigure,
+    BarFigure, BarMode, BarSeries, CurveFigure, CurveSeries, HeatmapFigure, HistogramFigure, FigureOverlay, PieFigure, PieSlice,
+    SankeyFigure, SankeyLink, SankeyNode, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind,
 };
+pub use guide::colorbar::{draw_colorbar, measure_colorbar, ColorbarSize};
 pub use guide::legend::{LegendEntry, LegendPosition};
 pub use interact::{BrushState, FocusSet, HitZone, HoverInfo, SelectionBus, FigureInputAction, FigureOutputAction};
 pub use mark::MarkStyle;
-pub use scale::{BandScale, LinearScale, LogScale, Scale, Tick, TimeScale};
+pub use scale::{BandScale, ColorScale, LinearScale, LogScale, Scale, Tick, TimeScale};
 pub use theme::FigureTheme;
 
 #[cfg(test)]
@@ -69,8 +76,9 @@ mod proof_tests {
 
     use crate::theme::FigureTheme;
     use crate::{
-        BarFigure, BarMode, BarSeries, CurveFigure, CurveSeries, FocusSet, HistogramFigure, FigureOverlay, LegendPosition, SankeyFigure,
-        SankeyLink, SankeyNode, TimeScale, TimelineEvent, TimelineFigure,
+        BarFigure, BarMode, BarSeries, CurveFigure, CurveSeries, FocusSet, HeatmapFigure, HistogramFigure, FigureOverlay, LegendPosition,
+        PieFigure, PieSlice, SankeyFigure, SankeyLink, SankeyNode, TimeScale, TimelineEvent, TimelineFigure, WaterfallFigure,
+        WaterfallItem, WaterfallKind,
     };
 
     const WIDTH: u32 = 800;
@@ -514,5 +522,99 @@ mod proof_tests {
         .expect("multi curve figure with hover overlay should render");
         assert_eq!(decoded_png_dims(&bytes), (MULTISERIES_WIDTH, MULTISERIES_HEIGHT));
         write_proof_png("figures_multicurve.png", &bytes);
+    }
+
+    // ── V4 (business-chart set) proofs ────────────────────────────────
+
+    /// Deterministic 6-slice fixture — fixed values, no RNG.
+    fn seeded_pie_slices() -> Vec<PieSlice> {
+        vec![
+            PieSlice { label: "product-a".to_owned(), value: 420.0 },
+            PieSlice { label: "product-b".to_owned(), value: 260.0 },
+            PieSlice { label: "product-c".to_owned(), value: 180.0 },
+            PieSlice { label: "product-d".to_owned(), value: 90.0 },
+            PieSlice { label: "product-e".to_owned(), value: 35.0 },
+            PieSlice { label: "product-f".to_owned(), value: 15.0 },
+        ]
+    }
+
+    #[test]
+    fn pie_figure_renders_to_a_valid_png() {
+        let figure = PieFigure::new(seeded_pie_slices()).with_title("Revenue by product (seeded)").with_legend(LegendPosition::Right);
+        let theme = FigureTheme::dark();
+        let bytes = render_to_png(&export_spec(), |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64), &theme);
+        })
+        .expect("pie figure should render");
+        assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
+        write_proof_png("figures_pie.png", &bytes);
+    }
+
+    #[test]
+    fn donut_figure_renders_to_a_valid_png() {
+        let figure = PieFigure::new(seeded_pie_slices())
+            .donut(0.55)
+            .with_title("Revenue by product — donut (seeded)")
+            .with_legend(LegendPosition::Right);
+        let theme = FigureTheme::dark();
+        let bytes = render_to_png(&export_spec(), |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64), &theme);
+        })
+        .expect("donut figure should render");
+        assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
+        write_proof_png("figures_donut.png", &bytes);
+    }
+
+    /// Deterministic "revenue walk" fixture: opening total, two gains, one
+    /// loss, a checkpoint subtotal, another gain/loss pair, and a closing
+    /// grand total — fixed values, no RNG.
+    fn seeded_waterfall_figure() -> WaterfallFigure {
+        let items = vec![
+            WaterfallItem { label: "opening".to_owned(), value: 120.0, kind: WaterfallKind::Total },
+            WaterfallItem { label: "new deals".to_owned(), value: 45.0, kind: WaterfallKind::Delta },
+            WaterfallItem { label: "upsells".to_owned(), value: 22.0, kind: WaterfallKind::Delta },
+            WaterfallItem { label: "churn".to_owned(), value: -30.0, kind: WaterfallKind::Delta },
+            WaterfallItem { label: "Q1 subtotal".to_owned(), value: 0.0, kind: WaterfallKind::Subtotal },
+            WaterfallItem { label: "renewals".to_owned(), value: 38.0, kind: WaterfallKind::Delta },
+            WaterfallItem { label: "refunds".to_owned(), value: -18.0, kind: WaterfallKind::Delta },
+            WaterfallItem { label: "closing".to_owned(), value: 0.0, kind: WaterfallKind::Total },
+        ];
+        WaterfallFigure::new(items).with_title("Revenue walk (seeded)")
+    }
+
+    #[test]
+    fn waterfall_figure_renders_to_a_valid_png() {
+        let figure = seeded_waterfall_figure();
+        let theme = FigureTheme::dark();
+        let bytes = render_to_png(&export_spec(), |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64), &theme);
+        })
+        .expect("waterfall figure should render");
+        assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
+        write_proof_png("figures_waterfall.png", &bytes);
+    }
+
+    /// Deterministic 8x6 grid (fixed pseudo-formula, no RNG) — spans
+    /// negative and positive values so the default sequential ramp shows a
+    /// real low-to-high spread across the whole colorbar.
+    fn seeded_heatmap_figure() -> HeatmapFigure {
+        let x_labels: Vec<String> = (0..8).map(|i| format!("wk-{i}")).collect();
+        let y_labels: Vec<String> = (0..6).map(|i| format!("region-{i}")).collect();
+        let values: Vec<Vec<f64>> = (0..6)
+            .map(|row| (0..8).map(|col| (((row * 7 + col * 3) % 17) as f64 - 8.0) * 4.5).collect())
+            .collect();
+        HeatmapFigure::new(x_labels, y_labels, values).with_title("Regional activity (seeded)")
+    }
+
+    #[test]
+    fn heatmap_figure_renders_to_a_valid_png() {
+        let figure = seeded_heatmap_figure();
+        let theme = FigureTheme::dark();
+        let bytes = render_to_png(&export_spec(), |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64), &theme);
+        })
+        .expect("heatmap figure should render");
+        assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
+        write_proof_png("figures_heatmap.png", &bytes);
     }
 }
