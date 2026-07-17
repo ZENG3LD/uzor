@@ -20,6 +20,7 @@ use std::collections::{BTreeSet, HashMap};
 use pdf_writer::types::{SystemInfo, UnicodeCmap};
 use pdf_writer::{Name, Str};
 
+use super::render_context::PdfOp;
 use super::ttf::TtfMetrics;
 use super::PageRecord;
 
@@ -80,6 +81,25 @@ pub(super) fn build_font_data(font_index: u32, ttf_bytes: &[u8], metrics: &TtfMe
                 used_gids.insert(gid);
                 if gid != 0 {
                     gid_to_char.entry(gid).or_insert(ch);
+                }
+            }
+        }
+        // Figures/tables/chrome text (typography-gap WAVE 1) resolves its
+        // own glyphs the SAME way `run.glyphs` above already does (see
+        // `render_context::PdfRenderContext::fill_text`'s own doc
+        // comment) — walked here too so a font used ONLY by a figure axis
+        // label (never by any paragraph run) still gets subsetted
+        // correctly rather than silently keeping an empty glyph set.
+        for op in &page.content_ops {
+            if let PdfOp::Text { font, glyphs, .. } = op {
+                if font.0 != font_index {
+                    continue;
+                }
+                for &(gid, ch) in glyphs {
+                    used_gids.insert(gid);
+                    if gid != 0 {
+                        gid_to_char.entry(gid).or_insert(ch);
+                    }
                 }
             }
         }
@@ -155,6 +175,7 @@ mod tests {
             raster_rgb: None,
             runs: vec![PageTextRun { font_id: FontId(font_index), size_pt: 12.0, x_pt: 0.0, y_pt: 0.0, rgb: 0, glyphs }],
             links: Vec::new(),
+            content_ops: Vec::new(),
         }
     }
 

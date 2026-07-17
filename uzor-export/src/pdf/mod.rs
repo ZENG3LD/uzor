@@ -91,7 +91,9 @@
 //! new correctness risk" without a second metadata representation that
 //! could drift from the first.
 
+mod font_cache;
 mod outline;
+mod render_context;
 mod subset;
 mod ttf;
 
@@ -103,6 +105,10 @@ use pdf_writer::{Content, Date, Filter, Name, Pdf, Rect as PdfRect, Ref, Str, Te
 use crate::ExportError;
 use outline::write_outline_tree;
 use subset::{build_font_data, FontData, ADOBE_IDENTITY_UCS};
+
+pub use font_cache::PdfFontCache;
+pub use render_context::{PdfContentStream, PdfRenderContext};
+use render_context::{emit_ops, PdfOp};
 
 /// Opaque handle to a font registered via [`PdfBuilder::register_font`].
 /// Deliberately a lightweight `Copy` id, not a borrowed `&PdfFont` — a
@@ -155,6 +161,15 @@ pub struct PdfPageSpec<'a> {
     /// Internal-link (`GoTo`) rectangles on this page — additive,
     /// defaults to empty for every pre-existing caller. See [`PdfLink`].
     pub links: Vec<PdfLink>,
+    /// Real PDF content-stream ops (paths/fills/strokes/clips/text/images/
+    /// gradients) accumulated by a [`PdfRenderContext`] — typography-gap
+    /// WAVE 1: figures/tables/page chrome render THROUGH this instead of
+    /// the whole-page raster background. Additive (`PdfContentStream::
+    /// empty()` for every pre-existing caller); painted AFTER `raster`
+    /// (if any) and BEFORE `text_runs`, in recorded order (see
+    /// [`render_context`]'s own module doc for the paint-order
+    /// reasoning).
+    pub content: PdfContentStream,
 }
 
 /// One document-outline (bookmark) entry — a caller-resolved heading
@@ -253,6 +268,13 @@ struct PageRecord {
     /// time (unlike `runs`, which resolves characters to glyph ids
     /// eagerly).
     links: Vec<PdfLink>,
+    /// Moved verbatim from [`PdfPageSpec::content`] — every [`PdfOp::Text`]
+    /// op already carries its own resolved `(gid, char)` pairs (a
+    /// [`PdfRenderContext`] resolves them eagerly at `fill_text` call
+    /// time, the SAME timing `runs` above uses), so no further work is
+    /// needed here either; [`subset::build_font_data`]'s glyph-usage walk
+    /// reads this field too (see that function's own doc comment).
+    content_ops: Vec<PdfOp>,
 }
 
 /// Accumulates registered fonts + added pages, then assembles one PDF byte
@@ -340,8 +362,19 @@ impl PdfBuilder {
             })
             .collect();
 
-        self.pages.push(PageRecord { width_pt: spec.width_pt, height_pt: spec.height_pt, raster_rgb, runs, links: spec.links });
+        self.pages.push(PageRecord { width_pt: spec.width_pt, height_pt: spec.height_pt, raster_rgb, runs, links: spec.links, content_ops: spec.content.0 });
         Ok(())
+    }
+
+    /// This font's own [`ttf::TtfMetrics`] — [`PdfRenderContext::fill_text`]'s
+    /// own read access to the SAME per-font metrics [`Self::add_page`]
+    /// already uses to resolve a [`PdfTextRun`]'s characters to glyph ids,
+    /// so a figure/chrome `fill_text` call and a paragraph text run
+    /// resolve identically. `id` is always one this builder itself handed
+    /// out via [`Self::register_font`] (a [`PdfFontCache`] never
+    /// fabricates one), so the index is always in range.
+    fn font_metrics(&self, id: FontId) -> &ttf::TtfMetrics {
+        &self.fonts[id.0 as usize].metrics
     }
 
     /// Assemble every registered font + added page into one complete,
@@ -412,7 +445,7 @@ impl PdfBuilder {
         }
 
         for (i, page) in self.pages.iter().enumerate() {
-            write_page(&mut pdf, page_tree_id, &page_refs[i], &font_names, &font_refs, page, image_names[i].as_str(), &font_data, &page_only_refs, &page_heights_pt);
+            write_page(&mut pdf, &mut refs, page_tree_id, &page_refs[i], &font_names, &font_refs, page, image_names[i].as_str(), &font_data, &page_only_refs, &page_heights_pt);
         }
 
         if let (Some(meta), Some(info_id)) = (&self.meta, info_ref) {
@@ -566,6 +599,7 @@ fn write_font(pdf: &mut Pdf, refs: &FontRefs, base_font_name: &str, entry: &Font
 #[allow(clippy::too_many_arguments)]
 fn write_page(
     pdf: &mut Pdf,
+    ref_alloc: &mut RefAllocator,
     page_tree_id: Ref,
     refs: &PageRefs,
     font_names: &[String],
@@ -586,7 +620,12 @@ fn write_page(
         image.bits_per_component(8);
     }
 
-    {
+    // `op_resources` collects whatever patterns/gstates/inline images
+    // `emit_ops` allocates ON DEMAND while building the content stream
+    // below — merged into this page's own `/Resources` dict at the very
+    // end of this function (see this crate's own `render_context`
+    // module doc for why this ordering costs nothing).
+    let op_resources = {
         let mut content = Content::new();
         if refs.image.is_some() {
             content.save_state();
@@ -594,6 +633,7 @@ fn write_page(
             content.x_object(Name(image_name.as_bytes()));
             content.restore_state();
         }
+        let op_resources = emit_ops(pdf, ref_alloc, &mut content, &page.content_ops, page.height_pt, font_data, font_names);
         if !page.runs.is_empty() {
             content.begin_text();
             for run in &page.runs {
@@ -610,7 +650,8 @@ fn write_page(
         let compressed = flate_compress(&raw);
         let mut stream = pdf.stream(refs.content, &compressed);
         stream.filter(Filter::FlateDecode);
-    }
+        op_resources
+    };
 
     // Internal link annotations — one `/Subtype /Link` object per
     // `PdfLink`, GoTo-ing a page-top `/XYZ` destination on its own
@@ -655,9 +696,26 @@ fn write_page(
                 fonts_dict.pair(Name(name.as_bytes()), refs.type0);
             }
         }
-        if let Some(image_ref) = refs.image {
+        if refs.image.is_some() || !op_resources.images.is_empty() {
             let mut x_objects = resources.x_objects();
-            x_objects.pair(Name(image_name.as_bytes()), image_ref);
+            if let Some(image_ref) = refs.image {
+                x_objects.pair(Name(image_name.as_bytes()), image_ref);
+            }
+            for (name, image_ref) in &op_resources.images {
+                x_objects.pair(Name(name.as_bytes()), *image_ref);
+            }
+        }
+        if !op_resources.patterns.is_empty() {
+            let mut patterns = resources.patterns();
+            for (name, pattern_ref) in &op_resources.patterns {
+                patterns.pair(Name(name.as_bytes()), *pattern_ref);
+            }
+        }
+        if !op_resources.ext_gstates.is_empty() {
+            let mut ext_g_states = resources.ext_g_states();
+            for (name, gstate_ref) in &op_resources.ext_gstates {
+                ext_g_states.pair(Name(name.as_bytes()), *gstate_ref);
+            }
         }
     }
 }
@@ -809,6 +867,7 @@ mod tests {
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Hello PDF" }],
                 links: Vec::new(),
+                content: PdfContentStream::empty(),
             })
             .expect("add_page should succeed");
 
@@ -828,6 +887,7 @@ mod tests {
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Hello PDF" }],
                 links: Vec::new(),
+                content: PdfContentStream::empty(),
             })
             .expect("add_page should succeed");
 
@@ -845,7 +905,7 @@ mod tests {
         let mut builder = PdfBuilder::new();
         let png_bytes = one_pixel_rgba_png([255, 0, 0, 255]);
         builder
-            .add_page(PdfPageSpec { width_pt: 50.0, height_pt: 50.0, raster: Some(&png_bytes), raster_px: (1, 1), text_runs: Vec::new(), links: Vec::new() })
+            .add_page(PdfPageSpec { width_pt: 50.0, height_pt: 50.0, raster: Some(&png_bytes), raster_px: (1, 1), text_runs: Vec::new(), links: Vec::new(), content: PdfContentStream::empty() })
             .expect("add_page with a raster should succeed");
 
         let bytes = builder.finish();
@@ -860,7 +920,7 @@ mod tests {
         let mut builder = PdfBuilder::new();
         let png_bytes = one_pixel_rgba_png([0, 255, 0, 255]);
         let err = builder
-            .add_page(PdfPageSpec { width_pt: 50.0, height_pt: 50.0, raster: Some(&png_bytes), raster_px: (2, 2), text_runs: Vec::new(), links: Vec::new() })
+            .add_page(PdfPageSpec { width_pt: 50.0, height_pt: 50.0, raster: Some(&png_bytes), raster_px: (2, 2), text_runs: Vec::new(), links: Vec::new(), content: PdfContentStream::empty() })
             .expect_err("a wrong raster_px must be rejected");
         assert!(matches!(err, ExportError::RasterDimensionMismatch { expected: (2, 2), actual: (1, 1) }));
     }
@@ -882,6 +942,7 @@ mod tests {
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "A\u{F8FF}B" }],
                 links: Vec::new(),
+                content: PdfContentStream::empty(),
             })
             .expect("add_page should succeed");
 
@@ -907,6 +968,7 @@ mod tests {
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 14.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: cyrillic }],
                 links: Vec::new(),
+                content: PdfContentStream::empty(),
             })
             .expect("add_page should succeed");
 
@@ -941,6 +1003,7 @@ mod tests {
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Hi" }],
                 links: Vec::new(),
+                content: PdfContentStream::empty(),
             })
             .expect("add_page should succeed");
 
@@ -974,7 +1037,7 @@ mod tests {
 
         let mut builder = PdfBuilder::new();
         builder
-            .add_page(PdfPageSpec { width_pt: width as f64, height_pt: height as f64, raster: Some(&png_bytes), raster_px: (width, height), text_runs: Vec::new(), links: Vec::new() })
+            .add_page(PdfPageSpec { width_pt: width as f64, height_pt: height as f64, raster: Some(&png_bytes), raster_px: (width, height), text_runs: Vec::new(), links: Vec::new(), content: PdfContentStream::empty() })
             .expect("add_page with a raster should succeed");
 
         let bytes = builder.finish();
@@ -1006,6 +1069,7 @@ mod tests {
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "x" }],
                 links: Vec::new(),
+                content: PdfContentStream::empty(),
             })
             .expect("add_page should succeed");
         let bytes_without_meta = builder.finish();
@@ -1021,6 +1085,7 @@ mod tests {
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "x" }],
                 links: Vec::new(),
+                content: PdfContentStream::empty(),
             })
             .expect("add_page should succeed");
         builder.set_meta(PdfMeta {
@@ -1052,6 +1117,7 @@ mod tests {
                     raster_px: (0, 0),
                     text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Hello lopdf" }],
                     links: Vec::new(),
+                content: PdfContentStream::empty(),
                 })
                 .unwrap_or_else(|e| panic!("add_page {i} should succeed: {e}"));
         }
@@ -1076,7 +1142,7 @@ mod tests {
         let mut builder = PdfBuilder::new();
         let png_bytes = one_pixel_rgba_png([10, 20, 30, 255]);
         builder
-            .add_page(PdfPageSpec { width_pt: 50.0, height_pt: 50.0, raster: Some(&png_bytes), raster_px: (1, 1), text_runs: Vec::new(), links: Vec::new() })
+            .add_page(PdfPageSpec { width_pt: 50.0, height_pt: 50.0, raster: Some(&png_bytes), raster_px: (1, 1), text_runs: Vec::new(), links: Vec::new(), content: PdfContentStream::empty() })
             .expect("add_page with a raster should succeed");
 
         let bytes = builder.finish();
@@ -1125,6 +1191,7 @@ mod tests {
                     raster_px: (0, 0),
                     text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Page" }],
                     links: Vec::new(),
+                content: PdfContentStream::empty(),
                 })
                 .expect("add_page should succeed");
         }
@@ -1191,10 +1258,11 @@ mod tests {
                 raster_px: (0, 0),
                 text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "See page 2" }],
                 links: vec![PdfLink { x_pt: 10.0, y_pt: 20.0, width_pt: 80.0, height_pt: 16.0, target_page: 1 }],
+                content: PdfContentStream::empty(),
             })
             .expect("add_page should succeed");
         builder
-            .add_page(PdfPageSpec { width_pt: 200.0, height_pt: 300.0, raster: None, raster_px: (0, 0), text_runs: Vec::new(), links: Vec::new() })
+            .add_page(PdfPageSpec { width_pt: 200.0, height_pt: 300.0, raster: None, raster_px: (0, 0), text_runs: Vec::new(), links: Vec::new(), content: PdfContentStream::empty() })
             .expect("add_page should succeed");
 
         let bytes = builder.finish();

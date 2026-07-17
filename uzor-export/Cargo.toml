@@ -9,7 +9,12 @@ description = "Headless render-to-file for uzor — render draw code into a PNG 
 publish = false
 
 [dependencies]
-uzor = { workspace = true }
+# `shaper` (cosmic-text) is required directly by `pdf::render_context::
+# PdfRenderContext` (figure/chrome text measurement) — previously only
+# transitively enabled via `uzor-render-svg`'s own dependency; made
+# explicit here so this crate's own manifest is self-sufficient
+# regardless of sibling dependency shape.
+uzor = { workspace = true, features = ["shaper"] }
 uzor-render-tiny-skia = { workspace = true }
 uzor-render-svg = { workspace = true }
 tiny-skia = "0.11"

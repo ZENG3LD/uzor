@@ -5,17 +5,24 @@
 //! produce PDF content — `uzor-export` itself never imports this crate
 //! (§6.1's dependency-boundary law).
 //!
-//! ## Hybrid fidelity, in two passes per page
+//! ## Vector fidelity, in two passes per page (typography-gap WAVE 1)
 //!
-//! 1. **Raster background** — the WHOLE page is rendered at
-//!    [`RASTER_SCALE`] via the existing, already-proven
-//!    `uzor_export::render_to_png` offscreen path, through
+//! 1. **Figures/tables/page chrome — real PDF vector ops.** Every
+//!    non-paragraph block (figures, tables, images, list-marker glyphs,
+//!    header/footer chrome OTHER than its own paragraph text, the
+//!    page-number) paints THROUGH a fresh per-page
+//!    [`uzor_export::PdfRenderContext`], via the SAME
 //!    [`crate::render::draw_page_layers`] with
-//!    `DrawLayers { paragraph_ink: false }` — every non-text block
-//!    (figures, tables, images, list-marker glyphs, header/footer chrome
-//!    OTHER than its own paragraph text) paints into this raster; real
-//!    paragraph glyph ink is deliberately suppressed here so it isn't
-//!    painted twice.
+//!    `DrawLayers { paragraph_ink: false }` this adapter has always used
+//!    (real paragraph glyph ink is deliberately suppressed here so it
+//!    isn't painted twice — see pass 2 below) — but now `ctx` IS the real
+//!    PDF page's own content stream, not an offscreen raster pixmap. This
+//!    is the WAVE 1 cutover this module's own history predates: the
+//!    previous phase (P5) rendered this same `DrawLayers`-suppressed pass
+//!    into a whole-page raster background at `2x` via
+//!    `uzor_export::render_to_png`; that whole-page raster is GONE — a
+//!    page with no [`crate::scene::Block::Image`]/[`crate::scene::
+//!    Block::Island`] content now carries no raster at all.
 //! 2. **Real vector text runs** — every `Block::Paragraph`'s own
 //!    `ParagraphLayout` (body flow AND header/footer content — both are
 //!    `Block::Paragraph`s, walked by the SAME recursive collector) is
@@ -36,22 +43,25 @@
 //!    over long lines since a single run's advance is never re-anchored
 //!    against the shaper's own resolved positions mid-run.
 //!
-//! ## What stays raster-only (report, not silent — task's own escape
-//! hatch: "or raster v1 if the chrome path resists the layer split")
+//! ## What stayed raster-only under P5 — now vector too (WAVE 1 closes it)
 //!
 //! Table gridlines, list-item MARKER glyphs (`•`, `1.`, ...), and the
-//! page-number text are never converted to vector runs. All three paint
-//! via ad-hoc `ctx.fill_text`/`ctx.stroke_rect` calls using
-//! `TextBaseline::Top`/`TextBaseline::Middle` (`crate::render`'s own
-//! `draw_list_placement`/`draw_page_number`) rather than a real, already-
-//! shaped `ParagraphLayout` with `TextBaseline::Alphabetic` glyph
-//! positions — reproducing their exact rendered baseline as PDF vector
-//! text would need the SAME font-shaping-backend metrics
-//! (ascent-at-this-size) `uzor-text`'s own `layout_paragraph` resolves for
-//! a real paragraph but that these ad-hoc calls never compute or expose.
-//! `Block::Paragraph` content is the only content this crate ever hands a
-//! real, per-glyph-positioned `ParagraphLayout` — exactly the content this
-//! adapter converts to vector text.
+//! page-number text used to bake into the P5 whole-page raster (a
+//! documented v1 escape hatch — "reproducing their exact rendered
+//! baseline as PDF vector text would need the SAME font-shaping-backend
+//! metrics a real `ParagraphLayout` resolves but these ad-hoc
+//! `TextBaseline::Top`/`TextBaseline::Middle` calls never compute or
+//! expose"). That reasoning is now MOOT: [`uzor_export::
+//! PdfRenderContext::fill_text`] resolves its OWN real font metrics
+//! (ascent, glyph ids) at call time regardless of `TextBaseline` variant
+//! — `crate::render::draw_list_placement`'s marker glyphs and
+//! `crate::render::draw_page_number`'s own `fill_text` call now emit REAL
+//! `Tj` text through the exact same call these figures/tables already go
+//! through, no special-casing needed at either call site. `Block::
+//! Paragraph` content remains the only content converted through the
+//! SEPARATE per-word merged-run path (pass 2) rather than `fill_text`
+//! directly — see that pass's own reasoning below (justified-text
+//! interword stretch).
 //!
 //! ## Coordinate + unit convention
 //!
@@ -60,24 +70,26 @@
 //! directly). `uzor_export::pdf`'s own doc comment already documents the
 //! bottom-left-vs-top-left PDF coordinate flip; this adapter never
 //! reasons about it directly (`PdfTextRun`/`PdfPageSpec` are already
-//! top-left, same as every rect in this crate).
+//! top-left, same as every rect in this crate — and so is
+//! [`PdfRenderContext`]'s own accumulated op list, per that type's own
+//! module doc).
 //!
 //! ## Font handling (design doc §6.1: "one embedded font resource per
 //! unique `FontSpec` ... deduped, never re-embedded per page")
 //!
-//! [`FontCache`] registers each distinct `(FontFamily, bold, italic)`
-//! combination with the SAME `uzor_export::PdfBuilder` exactly once
-//! across the WHOLE document (never per-page) via `uzor::fonts::
-//! font_bytes` — the SAME family->bytes resolution every render backend
-//! in this workspace already shares (`uzor/src/ui/assets/fonts/fonts.rs`),
-//! reused here rather than inventing a second one. A small `Vec` (not a
-//! `HashMap`): `uzor::fonts::FontFamily` derives `PartialEq` but not
-//! `Hash`, and a document realistically registers only a handful of
-//! distinct fonts, so linear search is simpler and cheap enough.
+//! [`PdfFontCache`] (moved to `uzor-export` this pass — see that type's
+//! own doc comment for why) registers each distinct `(FontFamily, bold,
+//! italic)` combination with the SAME `uzor_export::PdfBuilder` exactly
+//! once across the WHOLE document (never per-page), shared between this
+//! module's own paragraph-run resolution below AND every
+//! [`PdfRenderContext::fill_text`] call a figure/table/chrome draw issues
+//! — a figure's axis-label font and a paragraph's body font never
+//! register the same logical font twice under two different `/Font`
+//! resource names on the same page.
 
-use uzor::fonts::FontFamily;
+use uzor::render::{Painter, ShapeHelpers};
 use uzor::types::Rect;
-use uzor_export::{render_to_png, ExportSpec, FontId, PdfBuilder, PdfLink, PdfOutlineEntry, PdfPageSpec, PdfTextRun};
+use uzor_export::{FontId, PdfBuilder, PdfFontCache, PdfLink, PdfOutlineEntry, PdfPageSpec, PdfRenderContext, PdfTextRun};
 use uzor_text::ParagraphLayout;
 
 use crate::master::PageMaster;
@@ -86,35 +98,6 @@ use crate::render::{draw_page_layers, DrawLayers};
 use crate::scene::Block;
 use crate::slice::Page;
 use crate::style::{ColorRole, Theme};
-
-/// Physical page raster scale (design doc §6.2: "rasterized once at print
-/// DPI"). `2.0` is this phase's own chosen v1 value — sharp enough to read
-/// as press-quality on a normal viewer zoom without producing an
-/// unreasonably large file for the `nemo/uzor/out/` proof deliverables
-/// this phase targets (no press-DPI unit system exists in this crate yet
-/// — see this module's own "Coordinate + unit convention" doc comment).
-const RASTER_SCALE: f64 = 2.0;
-
-/// One dedup'd font registration, keyed by the SAME `(family, bold,
-/// italic)` triple `uzor::fonts::font_bytes` itself takes.
-struct FontCache(Vec<((FontFamily, bool, bool), FontId)>);
-
-impl FontCache {
-    fn new() -> Self {
-        Self(Vec::new())
-    }
-
-    fn id_for(&mut self, family: FontFamily, bold: bool, italic: bool, builder: &mut PdfBuilder) -> FontId {
-        let key = (family, bold, italic);
-        if let Some(&(_, id)) = self.0.iter().find(|&&(k, _)| k == key) {
-            return id;
-        }
-        let bytes = uzor::fonts::font_bytes(family, bold, italic);
-        let id = builder.register_font(bytes);
-        self.0.push((key, id));
-        id
-    }
-}
 
 /// One collected vector text run, owning its own merged text string until
 /// [`pages_to_pdf`] hands a borrowed `&str` to `uzor_export::PdfTextRun`.
@@ -155,13 +138,11 @@ struct CollectedRun {
 /// carries any — additive, zero-cost for every pre-existing caller);
 /// every page's own `links` become that SAME page's
 /// `uzor_export::PdfPageSpec::links`. Both convert 1:1 (this module's own
-/// "1pt = 1px" convention, unaffected by [`RASTER_SCALE`] — a link/
-/// outline-destination rect lives in the SAME page-pt coordinate space
-/// [`PdfTextRun`] positions already do, never the raster background's own
-/// scaled pixel space).
+/// "1pt = 1px" convention — a link/outline-destination rect lives in the
+/// SAME page-pt coordinate space [`PdfTextRun`] positions already do).
 pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) -> Vec<u8> {
     let mut builder = PdfBuilder::new();
-    let mut fonts = FontCache::new();
+    let mut fonts = PdfFontCache::new();
 
     let outline_entries: Vec<PdfOutlineEntry> = pages
         .iter()
@@ -173,22 +154,19 @@ pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) 
     }
 
     for page in pages {
-        let width_px = (master.width * RASTER_SCALE).round().max(1.0) as u32;
-        let height_px = (master.height * RASTER_SCALE).round().max(1.0) as u32;
-
-        let raster_spec = ExportSpec { width_px, height_px, dpr: 1.0, background: Some(background_rgba(theme)) };
-        let png_bytes = render_to_png(&raster_spec, |ctx| {
-            ctx.scale(RASTER_SCALE, RASTER_SCALE);
-            draw_page_layers(ctx, page, theme, DrawLayers { paragraph_ink: false });
-        })
-        .unwrap_or_else(|e| {
-            panic!(
-                "pages_to_pdf: rendering page {}'s raster background failed unexpectedly \
-                 (master dimensions are always positive here, so this indicates a real \
-                 adapter bug, not caller input): {e}",
-                page.index
-            )
-        });
+        // Figures/tables/images/list markers/header-footer chrome/page
+        // number — everything `DrawLayers { paragraph_ink: false }`
+        // still paints — now render THROUGH a real PDF content stream
+        // (typography-gap WAVE 1), not an offscreen raster pixmap. The
+        // page's own opaque background is painted explicitly first (the
+        // whole-page raster this used to ride along with is gone).
+        let content = {
+            let mut pdf_ctx = PdfRenderContext::new(1.0, &mut builder, &mut fonts);
+            pdf_ctx.set_fill_color(&theme.color_hex(ColorRole::Background));
+            pdf_ctx.fill_rect(0.0, 0.0, master.width, master.height);
+            draw_page_layers(&mut pdf_ctx, page, theme, DrawLayers { paragraph_ink: false });
+            pdf_ctx.finish()
+        };
 
         let mut collected = Vec::new();
         collect_text_runs_from_frame(&page.frame, theme, &mut fonts, &mut builder, &mut collected);
@@ -213,12 +191,13 @@ pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) 
             .collect();
 
         builder
-            .add_page(PdfPageSpec { width_pt: master.width, height_pt: master.height, raster: Some(&png_bytes), raster_px: (width_px, height_px), text_runs, links })
+            .add_page(PdfPageSpec { width_pt: master.width, height_pt: master.height, raster: None, raster_px: (0, 0), text_runs, links, content })
             .unwrap_or_else(|e| {
                 panic!(
-                    "pages_to_pdf: assembling page {} failed unexpectedly (raster_px is \
-                     computed from the SAME render_to_png call above, so a dimension \
-                     mismatch here is an adapter bug, not caller input): {e}",
+                    "pages_to_pdf: assembling page {} failed unexpectedly (this adapter never \
+                     supplies PdfPageSpec::raster, so the only fallible path in add_page — a \
+                     raster dimension mismatch — can never trigger here; a failure indicates a \
+                     real adapter bug, not caller input): {e}",
                     page.index
                 )
             });
@@ -227,21 +206,13 @@ pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) 
     builder.finish()
 }
 
-/// `ColorRole::Background` as straight, opaque RGBA bytes — the shape
-/// `uzor_export::ExportSpec::background` takes (matches this crate's own
-/// `render.rs` test-module convention for the same conversion).
-fn background_rgba(theme: &Theme) -> [u8; 4] {
-    let rgb = theme.color_rgb(ColorRole::Background);
-    [((rgb >> 16) & 0xFF) as u8, ((rgb >> 8) & 0xFF) as u8, (rgb & 0xFF) as u8, 255]
-}
-
-fn collect_text_runs_from_frame(frame: &Frame<'_>, theme: &Theme, fonts: &mut FontCache, builder: &mut PdfBuilder, out: &mut Vec<CollectedRun>) {
+fn collect_text_runs_from_frame(frame: &Frame<'_>, theme: &Theme, fonts: &mut PdfFontCache, builder: &mut PdfBuilder, out: &mut Vec<CollectedRun>) {
     for placed in &frame.blocks {
         collect_text_runs_from_placed(placed, theme, fonts, builder, out);
     }
 }
 
-fn collect_text_runs_from_placed(placed: &PlacedBlock<'_>, theme: &Theme, fonts: &mut FontCache, builder: &mut PdfBuilder, out: &mut Vec<CollectedRun>) {
+fn collect_text_runs_from_placed(placed: &PlacedBlock<'_>, theme: &Theme, fonts: &mut PdfFontCache, builder: &mut PdfBuilder, out: &mut Vec<CollectedRun>) {
     match placed.kind {
         Block::Paragraph(_) => {
             if let Some(layout) = &placed.paragraph_layout {
@@ -268,10 +239,10 @@ fn collect_text_runs_from_placed(placed: &PlacedBlock<'_>, theme: &Theme, fonts:
                 }
             }
         }
-        // Figures/images/islands paint their own raster content only
-        // (design doc §6.2 — figures stay raster this phase, and an
-        // island's own image is raster for the SAME reason); a spacer
-        // paints nothing.
+        // Figures/images/islands contribute NO paragraph-style text runs:
+        // their ink (including figure axis/label text) is emitted by the
+        // page's own `PdfRenderContext` pass in `add_document` — vector
+        // ops in the content stream since WAVE 1. A spacer paints nothing.
         Block::Figure(_) | Block::Image(_) | Block::Island(_) | Block::Spacer(_) => {}
     }
 }
@@ -292,7 +263,7 @@ fn collect_text_runs_from_placed(placed: &PlacedBlock<'_>, theme: &Theme, fonts:
 /// Justify`'s interword stretch (which lives in the resolved `x` values
 /// themselves, not in any run's own natural advance) and prevents kerning
 /// drift from accumulating across a long line's worth of merged glyphs.
-fn collect_from_layout(layout: &ParagraphLayout, rect: Rect, theme: &Theme, fonts: &mut FontCache, builder: &mut PdfBuilder, out: &mut Vec<CollectedRun>) {
+fn collect_from_layout(layout: &ParagraphLayout, rect: Rect, theme: &Theme, fonts: &mut PdfFontCache, builder: &mut PdfBuilder, out: &mut Vec<CollectedRun>) {
     let glyphs = &layout.glyphs;
     let mut i = 0;
     while i < glyphs.len() {
@@ -438,6 +409,17 @@ mod tests {
             "extracted PDF text must contain the fixture's own distinctive word verbatim \
              (proves real, searchable vector text, not a raster) — got: {extracted:?}"
         );
+
+        // Typography-gap WAVE 1: this fixture places no figure/table/
+        // image at all — its own page background is now painted as a
+        // real vector `fill_rect` through `PdfRenderContext`, so neither
+        // page may carry an `/XObject` entry at all (no whole-page
+        // raster left to inherit one from).
+        for (page_num, page_id) in &lopdf_pages {
+            let (resources, _) = doc.get_page_resources(*page_id).expect("get_page_resources should succeed");
+            let has_xobjects = resources.and_then(|r| r.get(b"XObject").and_then(lopdf::Object::as_dict).ok()).is_some_and(|d| !d.is_empty());
+            assert!(!has_xobjects, "page {page_num} must carry NO XObject on a fixture with no raster background left");
+        }
     }
 
     /// Fix B proof: `collect_from_layout` breaks a `Justify`-aligned
@@ -450,7 +432,8 @@ mod tests {
     fn justified_paragraph_words_position_at_their_own_resolved_glyph_xy() {
         use uzor_text::{layout_paragraph, ParagraphAlign};
 
-        use super::{collect_from_layout, FontCache};
+        use super::collect_from_layout;
+        use uzor_export::PdfFontCache;
 
         let font = FontSpec { family: FontFamily::Roboto, size_px: 16.0, bold: false, italic: false };
         let text = "one two three four five six seven eight nine ten eleven twelve";
@@ -462,7 +445,7 @@ mod tests {
 
         let theme = Theme::light_report();
         let mut builder = uzor_export::PdfBuilder::new();
-        let mut fonts = FontCache::new();
+        let mut fonts = PdfFontCache::new();
         let mut collected = Vec::new();
         let rect = uzor::types::Rect { x: 10.0, y: 20.0, width: 260.0, height: 400.0 };
         collect_from_layout(&layout, rect, &theme, &mut fonts, &mut builder, &mut collected);
@@ -826,6 +809,40 @@ mod tests {
             "both 'Section 1' and 'Section 2' headings must be extractable — got: {extracted:?}"
         );
 
+        // Typography-gap WAVE 1 proof: figure axis/category labels are now
+        // REAL vector text too (painted through `PdfRenderContext`, not
+        // baked into a whole-page raster background as they were pre-
+        // WAVE-1) — "Hop 1"/"Hop 5" are the BarFigure's own category axis
+        // labels, extractable verbatim exactly like a paragraph word.
+        for word in ["Hop 1", "Hop 5"] {
+            assert!(extracted.contains(word), "figure axis label {word:?} must be extractable as real vector text — got: {extracted:?}");
+        }
+
+        // This fixture places no `Block::Image`/`Block::Island` at all —
+        // WAVE 1's own promise ("the 2x raster background layer remains
+        // ONLY for ImageBlocks ... or disappears entirely on pages
+        // without images") means NOT ONE page's `/Resources` dict may
+        // carry an `/XObject` entry: every figure/table/chrome pixel this
+        // fixture paints is now real vector content-stream ops, not a
+        // raster image XObject.
+        for (page_num, page_id) in &lopdf_pages {
+            let (resources, _) = doc.get_page_resources(*page_id).expect("get_page_resources should succeed");
+            let has_xobjects = resources.and_then(|r| r.get(b"XObject").and_then(lopdf::Object::as_dict).ok()).is_some_and(|d| !d.is_empty());
+            assert!(!has_xobjects, "page {page_num} must carry NO XObject (no whole-page raster, no ImageBlock on this fixture)");
+        }
+
+        // Every page's own content stream must contain REAL vector path
+        // ops (figures draw curves/bars/axis lines, tables draw
+        // gridlines) — a `c` (cubic bezier) token proves at least the
+        // curve/timeline/sankey figures' own arcs/lines reached the
+        // content stream as real PDF path geometry, not raster pixels.
+        for (_, page_id) in &lopdf_pages {
+            let content_bytes = doc.get_page_content(*page_id);
+            let content_str = String::from_utf8_lossy(&content_bytes);
+            let has_vector_path_op = content_str.split_whitespace().any(|tok| tok == "c" || tok == "l" || tok == "S");
+            assert!(has_vector_path_op, "every page must carry at least one real vector path/stroke operator, got: {content_str}");
+        }
+
         // Raster parity reference (the task's own gate) — EVERY page, not
         // just page 1: the SAME content, painted via the ordinary
         // `draw_page` (every layer, unsuppressed) at the SAME physical
@@ -837,5 +854,58 @@ mod tests {
             let png_bytes = export_render_to_png(&png_spec, |ctx| draw_page(ctx, page, &theme)).expect("parity PNG render should succeed");
             write_proof(&format!("typeset_p5_report_page{}.png", i + 1), &png_bytes);
         }
+    }
+
+    /// Typography-gap WAVE 1's own "page chrome" promise: a page-number
+    /// footer (`crate::render::draw_page_number`) and a table's own
+    /// gridlines (`crate::render::draw_table_placement`) both used to
+    /// paint into the P5 whole-page raster background — neither reproduced
+    /// its exact baseline as PDF vector text, and neither was individually
+    /// checkable via `lopdf`. Both now paint through `PdfRenderContext`
+    /// directly: the page number is real, extractable `Tj` text, and the
+    /// gridlines are real `re`/`S` vector stroke ops — proven directly
+    /// here, independent of the bigger multi-figure fixture above.
+    #[test]
+    fn page_number_footer_and_table_gridlines_are_real_vector_content_not_raster() {
+        use crate::master::{PageNumberFormat, PageNumberStyle};
+        use crate::scene::{ColumnSpec, TableBlock, TableCell, TableRow};
+
+        const CELL_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 13.0, bold: false, italic: false };
+
+        let master = PageMaster::new(PAGE_WIDTH, PAGE_HEIGHT, Margins::uniform(40.0)).with_page_number(PageNumberStyle::new(PageNumberFormat::OfTotal, 1));
+
+        let c_a = [StyledRun::new("Alpha", CELL_FONT)];
+        let n_a = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_a, f64::MAX)))];
+        let c_b = [StyledRun::new("Beta", CELL_FONT)];
+        let n_b = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_b, f64::MAX)))];
+        let cells = [TableCell::new(&n_a), TableCell::new(&n_b)];
+        let rows = [TableRow::new(&cells)];
+        let columns = [ColumnSpec::Auto, ColumnSpec::Fraction(1.0)];
+
+        let flow = vec![BlockNode::new(Block::Table(TableBlock::new(&columns, &rows)))];
+
+        let theme = Theme::light_report();
+        let style = ComposeStyle::from_theme(&theme, 12.0);
+        let shaper = CosmicShaper::headless();
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1, "single small table must land on exactly 1 page");
+
+        let pdf_bytes = pages_to_pdf(&pages, &master, &theme);
+        let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
+        let lopdf_pages = doc.get_pages();
+        let page_id = *lopdf_pages.values().next().expect("one page");
+
+        let (resources, _) = doc.get_page_resources(page_id).expect("get_page_resources should succeed");
+        let has_xobjects = resources.and_then(|r| r.get(b"XObject").and_then(lopdf::Object::as_dict).ok()).is_some_and(|d| !d.is_empty());
+        assert!(!has_xobjects, "a table-only, image-free page must carry NO XObject at all");
+
+        let page_numbers: Vec<u32> = lopdf_pages.keys().copied().collect();
+        let extracted = doc.extract_text(&page_numbers).expect("lopdf text extraction must succeed");
+        assert!(extracted.contains("1 of 1"), "the page-number footer must be real, extractable vector text — got: {extracted:?}");
+
+        let content_bytes = doc.get_page_content(page_id);
+        let content_str = String::from_utf8_lossy(&content_bytes);
+        let toks: Vec<&str> = content_str.split_whitespace().collect();
+        assert!(toks.contains(&"S"), "the table's own gridlines must be a real stroke 'S' operator, got: {content_str}");
     }
 }

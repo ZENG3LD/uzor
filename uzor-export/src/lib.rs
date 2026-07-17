@@ -47,7 +47,9 @@ use uzor_render_tiny_skia::TinySkiaCpuRenderContext;
 
 pub mod pdf;
 
-pub use pdf::{FontId, PdfBuilder, PdfDate, PdfFont, PdfLink, PdfMeta, PdfOutlineEntry, PdfPageSpec, PdfTextRun};
+pub use pdf::{
+    FontId, PdfBuilder, PdfContentStream, PdfDate, PdfFont, PdfFontCache, PdfLink, PdfMeta, PdfOutlineEntry, PdfPageSpec, PdfRenderContext, PdfTextRun,
+};
 
 /// Parameters for a single headless render pass.
 #[derive(Debug, Clone, Copy)]
