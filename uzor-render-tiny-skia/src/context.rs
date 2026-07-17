@@ -1040,8 +1040,15 @@ impl TextRenderer for TinySkiaCpuRenderContext {
         let mut pen_x = (x as f32 + x_off) * sx + tx;
         let     pen_y = (y as f32 + y_off) * sy + ty;
 
+        // Glyphs are rasterized at `render_scale` (clamped to >= 1x so small
+        // scale factors don't blur the bitmap), so `metrics.advance_width` is
+        // already expressed in device pixels at that scale. The pen must
+        // therefore un-scale by `render_scale` before re-applying `sx`, or
+        // advances get scaled twice (glyph bitmap at Nx, pen walk at N*sx).
+        let render_scale = sx.max(sy).max(1.0);
+
         for ch in text.chars() {
-            let render_px = px * sx.max(sy).max(1.0);
+            let render_px = px * render_scale;
             let (primary_metrics, primary_bitmap) = font.rasterize(ch, render_px);
 
             // Fallback chain: NerdFont → Symbols2 → CJK SC → Arabic → Devanagari
@@ -1112,7 +1119,7 @@ impl TextRenderer for TinySkiaCpuRenderContext {
                 }
             }
 
-            pen_x += metrics.advance_width * sx;
+            pen_x += metrics.advance_width * (sx / render_scale);
         }
     }
 

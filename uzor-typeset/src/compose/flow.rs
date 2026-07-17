@@ -367,7 +367,8 @@ pub fn compose<'a>(flow: &'a [BlockNode<'a>], regions: &mut dyn RegionSequence, 
                         break;
                     }
 
-                    let (placed_rows, placed_height) = place_table_rows(rows, next_row, count, column_widths, (region.rect.x, cursor_y));
+                    let (placed_rows, placed_height) =
+                        place_table_rows(rows, next_row, count, column_widths, table.cell_padding, (region.rect.x, cursor_y));
                     let total_rows = rows.len();
                     let column_widths_snapshot = column_widths.clone();
                     let rect = Rect::new(region.rect.x, cursor_y, column_widths_snapshot.iter().sum(), placed_height);

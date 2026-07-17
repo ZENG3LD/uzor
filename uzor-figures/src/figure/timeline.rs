@@ -272,7 +272,12 @@ impl TimelineFigure {
                 // filled-button label.
                 draw_label_centered(ctx, &e.label, left + width / 2.0, cy, &theme.background, &theme.label_font);
             } else {
-                draw_label_left_aligned(ctx, &e.label, right + LABEL_GAP, cy, &theme.label_color, &theme.label_font);
+                // Fix D: a beside-label naturally drawn past the bar's own
+                // right edge would clip past the PLOT's right edge for an
+                // interval ending near it — mirror to the bar's own LEFT
+                // edge instead when that would happen.
+                let beside_left = beside_label_left_edge(right + LABEL_GAP, label_w, left - LABEL_GAP, area.rect.right());
+                draw_label_left_aligned(ctx, &e.label, beside_left, cy, &theme.label_color, &theme.label_font);
             }
         }
     }
@@ -295,12 +300,22 @@ impl TimelineFigure {
             let (top, bottom) = area.y_band(lanes, lane_idx);
             let cy = (top + bottom) / 2.0;
 
+            // Fix D: resolve each label's FINAL (post-right-edge-flip)
+            // left edge BEFORE running collision layout, not after — the
+            // collision pass must see where a label will ACTUALLY paint.
+            // Deciding visibility from the natural (unflipped) position
+            // and only flipping afterward would let a flipped label
+            // (mirrored to the LEFT of its own marker) land on top of the
+            // PRECEDING label's own extent without either ever being
+            // skipped — exactly the kind of new collision this fix must
+            // not introduce while closing the original right-edge clip.
             let inputs: Vec<PointLabelInput> = indices
                 .iter()
                 .map(|&i| {
                     let x = area.x(time_scale, self.events[i].ts);
-                    let label_left = x + POINT_RADIUS + LABEL_GAP;
+                    let natural_left = x + POINT_RADIUS + LABEL_GAP;
                     let label_width = ctx.measure_text(&self.events[i].label);
+                    let label_left = beside_label_left_edge(natural_left, label_width, x - POINT_RADIUS - LABEL_GAP, area.rect.right());
                     PointLabelInput { label_left, label_width }
                 })
                 .collect();
@@ -493,6 +508,29 @@ pub struct PointLabelInput {
     pub label_width: f64,
 }
 
+/// Fix D — right-edge label flip: resolve a beside-label's own paint LEFT
+/// edge, given its NATURAL (unflipped, drawn to the right of its own
+/// marker/bar) left-aligned position (`natural_left`), the label's
+/// measured `width`, this same event's own MIRRORED anchor (the position
+/// that keeps the identical gap on the OTHER side of the marker/bar —
+/// e.g. `marker_x - POINT_RADIUS - LABEL_GAP` for a point event, or
+/// `bar_left - LABEL_GAP` for an interval bar's beside-label), and the
+/// plot's own right bound.
+///
+/// If painting left-aligned at `natural_left` would clip past
+/// `plot_right`, the label mirrors to the LEFT of the marker/bar instead
+/// (same `gap`, on the other side) — the caller always paints the
+/// returned left edge via [`draw_label_left_aligned`], never a separate
+/// right-aligned call site, so there is exactly one paint call per label
+/// regardless of which side it ultimately lands on.
+fn beside_label_left_edge(natural_left: f64, width: f64, mirrored_anchor: f64, plot_right: f64) -> f64 {
+    if natural_left + width > plot_right {
+        mirrored_anchor - width
+    } else {
+        natural_left
+    }
+}
+
 /// Greedy left-to-right label collision within one lane, resolved in
 /// INPUT order (not resorted by position): if the next label's left edge
 /// would overlap the last VISIBLE label's extent (plus `gap`), it's
@@ -617,6 +655,75 @@ mod tests {
             PointLabelInput { label_left: 100.0, label_width: 20.0 }, // far clear of [0, 30] -> visible
         ];
         assert_eq!(layout_point_labels(&inputs, LABEL_COLLISION_GAP), vec![true, false, true]);
+    }
+
+    // ── Right-edge label flip (Fix D) ─────────────────────────────────────
+
+    #[test]
+    fn beside_label_stays_at_its_natural_position_when_it_already_fits() {
+        // Natural placement [10, 60] comfortably inside a 100px-right plot.
+        let left_edge = beside_label_left_edge(10.0, 50.0, -40.0, 100.0);
+        assert_eq!(left_edge, 10.0, "a label that already fits must never move");
+    }
+
+    #[test]
+    fn beside_label_mirrors_to_the_other_side_when_it_would_clip_the_plot_right_edge() {
+        // Natural placement [90, 140] clips a 100px-wide plot; the mirrored
+        // anchor (this event's own left-side edge) is 20.0, so the flipped
+        // label's own right edge must land exactly there.
+        let width = 50.0;
+        let mirrored_anchor = 20.0;
+        let left_edge = beside_label_left_edge(90.0, width, mirrored_anchor, 100.0);
+        assert!((left_edge - (mirrored_anchor - width)).abs() < 1e-9, "flipped label's right edge must sit exactly at the mirrored anchor");
+        assert!(left_edge + width <= 100.0, "flipped label must fit within the plot's own right edge");
+    }
+
+    /// End-to-end proof against REAL geometry (not just the pure helper in
+    /// isolation): a point event placed near the tail of a genuinely wide
+    /// seeded time domain (so its own marker sits close to the plot's
+    /// right edge) with a long label — an UNFLIPPED, right-of-marker
+    /// placement would clip well past the plot's own right bound; the
+    /// resolved (flipped) placement must not.
+    #[test]
+    fn point_event_label_near_the_right_edge_does_not_clip_past_the_plot_right_edge() {
+        let long_label = "resting balance identified at custodial cold storage pending review";
+        const DAY_SECS: f64 = 86_400.0;
+        let near_edge_ts = 30.0 * DAY_SECS;
+        let events = vec![evt(0.0, None, 0, "start", 0), evt(near_edge_ts, None, 0, long_label, 0)];
+        let figure = TimelineFigure::new(events, lanes(1));
+        let rect = Rect::new(0.0, 0.0, 500.0, 150.0);
+        let area = figure.plot_area(rect);
+        let time_scale = figure.time_scale().expect("events present");
+        let theme = FigureTheme::dark();
+
+        let x = area.x(&time_scale, near_edge_ts);
+        let natural_left = x + POINT_RADIUS + LABEL_GAP;
+
+        let spec = uzor_export::ExportSpec { width_px: 500, height_px: 150, dpr: 1.0, background: None };
+        let mut label_width = 0.0_f64;
+        uzor_export::render_to_png(&spec, |ctx| {
+            ctx.set_font(&theme.label_font);
+            label_width = ctx.measure_text(long_label);
+        })
+        .expect("probe render must succeed");
+
+        // Sanity: this fixture's own natural (unflipped) placement WOULD
+        // clip past the plot's right edge — otherwise the flip branch
+        // below is never actually exercised by this test.
+        assert!(
+            natural_left + label_width > area.rect.right(),
+            "fixture must exercise the flip (tune the near-edge ts/label if this ever fails): \
+             natural_left={natural_left}, label_width={label_width}, plot_right={}",
+            area.rect.right()
+        );
+
+        let left_edge = beside_label_left_edge(natural_left, label_width, x - POINT_RADIUS - LABEL_GAP, area.rect.right());
+        assert!(
+            left_edge + label_width <= area.rect.right() + 1e-6,
+            "flipped label must fit within the plot's own right edge: left_edge={left_edge}, width={label_width}, plot_right={}",
+            area.rect.right()
+        );
+        assert!(left_edge < x, "the flipped label must move to the LEFT of the marker, not stay in place");
     }
 
     // ── Empty / single event (requirement 4) ─────────────────────────────

@@ -59,8 +59,8 @@ pub use region::{
 };
 pub use render::{draw_card, draw_frame_state, draw_page, draw_page_layers, draw_slide, DrawLayers};
 pub use scene::{
-    resolve_block_ids, Block, BlockId, BlockNode, BlockSizing, ColumnSpec, FigureBlock, ImageBlock, ImageFit, ListBlock, ListItem,
-    MarkerStyle, TableBlock, TableCell, TableRow, TypesetFigure,
+    resolve_block_ids, Block, BlockId, BlockNode, BlockSizing, CellPadding, ColumnSpec, FigureBlock, ImageBlock, ImageFit, ListBlock,
+    ListItem, MarkerStyle, TableBlock, TableCell, TableRow, TypesetFigure,
 };
 pub use slice::{
     cards_to_slides, slice_build_steps, slice_cards, slice_pages, slice_slide_instance, slice_slides, slides_to_cards, BlockOverride,

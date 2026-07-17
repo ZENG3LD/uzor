@@ -16,4 +16,4 @@ pub use block::{resolve_block_ids, Block, BlockId, BlockNode};
 pub use figure_block::{BlockSizing, FigureBlock, TypesetFigure};
 pub use image_block::{ImageBlock, ImageFit};
 pub use list::{ListBlock, ListItem, MarkerStyle};
-pub use table::{ColumnSpec, TableBlock, TableCell, TableRow};
+pub use table::{CellPadding, ColumnSpec, TableBlock, TableCell, TableRow};

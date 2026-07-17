@@ -57,6 +57,35 @@ impl<'a> TableRow<'a> {
     }
 }
 
+/// Horizontal + vertical inset applied INSIDE every cell, on all four
+/// sides — content never composes/paints flush against a cell's own
+/// gridlines (readability defect fix: cramped tables). Applied in BOTH
+/// `compose::table_layout`'s measure pass (an `Auto` column's intrinsic
+/// width grows by `2*h` to make room for the inset) and its placement
+/// pass (each cell's content is composed at `column_width - 2*h` and
+/// translated by `(h, v)` off the cell's own top-left corner) — gridlines
+/// themselves are drawn at the UN-inset cell rect (`render::
+/// draw_table_placement` is unchanged), only the CONTENT rect insets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellPadding {
+    pub h: f64,
+    pub v: f64,
+}
+
+impl CellPadding {
+    pub const fn new(h: f64, v: f64) -> Self {
+        Self { h, v }
+    }
+}
+
+impl Default for CellPadding {
+    /// ~6px horizontal / ~4px vertical — a sensible v1 default so cell
+    /// content is never composed flush against a gridline out of the box.
+    fn default() -> Self {
+        Self { h: 6.0, v: 4.0 }
+    }
+}
+
 /// A flow-participating table: two-pass column sizing (design doc §3.5),
 /// row-atomic splitting across regions (a row never splits mid-row; the
 /// table splits BETWEEN rows when it spans more than one region — see
@@ -64,11 +93,20 @@ impl<'a> TableRow<'a> {
 pub struct TableBlock<'a> {
     pub columns: &'a [ColumnSpec],
     pub rows: &'a [TableRow<'a>],
+    /// Per-cell content inset — [`CellPadding::default`] unless overridden
+    /// via [`TableBlock::with_cell_padding`].
+    pub cell_padding: CellPadding,
 }
 
 impl<'a> TableBlock<'a> {
     pub fn new(columns: &'a [ColumnSpec], rows: &'a [TableRow<'a>]) -> Self {
-        Self { columns, rows }
+        Self { columns, rows, cell_padding: CellPadding::default() }
+    }
+
+    /// Builder: override the default per-cell content inset.
+    pub fn with_cell_padding(mut self, cell_padding: CellPadding) -> Self {
+        self.cell_padding = cell_padding;
+        self
     }
 }
 

@@ -27,7 +27,7 @@ use uzor_text::{layout_paragraph, LineShaper, Paragraph};
 use super::flow::compose;
 use super::ComposeStyle;
 use crate::region::{FixedRegionSequence, PlacedBlock, PlacedTableCell, PlacedTableRow};
-use crate::scene::{Block, BlockNode, ColumnSpec, TableBlock, TableRow};
+use crate::scene::{Block, BlockNode, CellPadding, ColumnSpec, TableBlock, TableRow};
 
 /// One row's cells, already composed at their FINAL column widths — cached
 /// across region continuations by `compose::flow` exactly like a
@@ -69,19 +69,23 @@ fn cell_natural_and_min_width(content: &[BlockNode<'_>], shaper: &dyn LineShaper
 
 /// Pass 1: resolve every column's final width for a table placed at
 /// `available_width`. `Fixed` columns are unaffected; `Auto` columns get
-/// exactly their widest cell's natural width when there's room, otherwise
-/// shrink proportionally (never below their own min-content width);
-/// `Fraction` columns split whatever's left after `Fixed` + `Auto`.
+/// exactly their widest cell's natural width (PLUS `2 * cell_padding.h`,
+/// so the eventual inset content still fits without re-wrapping tighter
+/// than its own natural measurement — Fix C: table cell padding) when
+/// there's room, otherwise shrink proportionally (never below their own
+/// min-content width, also padded); `Fraction` columns split whatever's
+/// left after `Fixed` + `Auto`.
 pub(crate) fn measure_table_columns(table: &TableBlock<'_>, available_width: f64, shaper: &dyn LineShaper) -> Vec<f64> {
     let n = table.columns.len();
     let mut natural = vec![0.0_f64; n];
     let mut min_width = vec![0.0_f64; n];
+    let pad_w = 2.0 * table.cell_padding.h;
 
     for row in table.rows {
         for (col_idx, cell) in row.cells.iter().enumerate().take(n) {
             let (cell_natural, cell_min) = cell_natural_and_min_width(cell.content, shaper);
-            natural[col_idx] = natural[col_idx].max(cell_natural);
-            min_width[col_idx] = min_width[col_idx].max(cell_min);
+            natural[col_idx] = natural[col_idx].max(cell_natural + pad_w);
+            min_width[col_idx] = min_width[col_idx].max(cell_min + pad_w);
         }
     }
 
@@ -139,19 +143,23 @@ pub(crate) fn measure_table_columns(table: &TableBlock<'_>, available_width: f64
 }
 
 /// Pass 2 (one row): lay out every cell for real at its own final column
-/// width, via a [`FixedRegionSequence`] per cell (design doc §3.5,
-/// followed verbatim for this half).
-fn layout_table_row<'a>(row: &'a TableRow<'a>, column_widths: &[f64], style: &ComposeStyle, shaper: &dyn LineShaper) -> ComposedRow<'a> {
+/// width MINUS `2 * padding.h` (Fix C: content is measured/wrapped at the
+/// INSET width, never the full column width, so it never touches the
+/// eventual gridline), via a [`FixedRegionSequence`] per cell (design doc
+/// §3.5, followed verbatim for this half, padding aside). The row's own
+/// height is the tallest cell's content height plus `2 * padding.v`.
+fn layout_table_row<'a>(row: &'a TableRow<'a>, column_widths: &[f64], padding: CellPadding, style: &ComposeStyle, shaper: &dyn LineShaper) -> ComposedRow<'a> {
     let mut cells = Vec::with_capacity(row.cells.len());
     let mut row_height = 0.0_f64;
 
     for (col_idx, cell) in row.cells.iter().enumerate().take(column_widths.len()) {
         let col_width = column_widths[col_idx];
-        let mut regions = FixedRegionSequence::new(Rect::new(0.0, 0.0, col_width, f64::MAX));
+        let content_width = (col_width - 2.0 * padding.h).max(0.0);
+        let mut regions = FixedRegionSequence::new(Rect::new(0.0, 0.0, content_width, f64::MAX));
         let mut frames = compose(cell.content, &mut regions, style, shaper);
         let blocks = frames.pop().map(|f| f.blocks).unwrap_or_default();
-        let cell_height = blocks.iter().map(|b| b.rect.bottom()).fold(0.0_f64, f64::max);
-        row_height = row_height.max(cell_height);
+        let cell_content_height = blocks.iter().map(|b| b.rect.bottom()).fold(0.0_f64, f64::max);
+        row_height = row_height.max(cell_content_height + 2.0 * padding.v);
         cells.push(ComposedCell { column_index: col_idx, blocks });
     }
 
@@ -170,7 +178,7 @@ pub(crate) fn measure_and_layout_table<'a>(
     shaper: &dyn LineShaper,
 ) -> (Vec<f64>, Vec<ComposedRow<'a>>) {
     let column_widths = measure_table_columns(table, available_width, shaper);
-    let rows = table.rows.iter().map(|row| layout_table_row(row, &column_widths, style, shaper)).collect();
+    let rows = table.rows.iter().map(|row| layout_table_row(row, &column_widths, table.cell_padding, style, shaper)).collect();
     (column_widths, rows)
 }
 
@@ -211,12 +219,19 @@ pub(crate) fn table_total_height(rows: &[ComposedRow<'_>]) -> f64 {
 /// (`origin.0` = the table's own left edge, `origin.1` = the cursor `y`
 /// this placement starts at) — the SAME cell content
 /// `layout_table_row` already computed, just shifted into place (design
-/// law 1: no second position formula).
+/// law 1: no second position formula). `PlacedTableCell::rect` stays the
+/// FULL, un-inset cell rect (gridlines paint flush against it, unchanged
+/// by Fix C); the cell's own `content` is translated by `(padding.h,
+/// padding.v)` off the cell's own top-left corner, INSET from it on every
+/// side (already measured/wrapped at `column_width - 2*padding.h` by
+/// `layout_table_row`, so it never re-touches the gridline the way a
+/// plain `(col_x, row_y)` translate would).
 pub(crate) fn place_table_rows<'a>(
     rows: &[ComposedRow<'a>],
     from_row: usize,
     count: usize,
     column_widths: &[f64],
+    padding: CellPadding,
     origin: (f64, f64),
 ) -> (Vec<PlacedTableRow<'a>>, f64) {
     let (origin_x, origin_y) = origin;
@@ -234,7 +249,7 @@ pub(crate) fn place_table_rows<'a>(
             let cell_rect = Rect::new(col_x, row_y, col_width, row.height);
             let mut content: Vec<PlacedBlock<'a>> = cell.blocks.clone();
             for placed in &mut content {
-                placed.translate(col_x, row_y);
+                placed.translate(col_x + padding.h, row_y + padding.v);
             }
             cells.push(PlacedTableCell { column_index: cell.column_index, rect: cell_rect, content });
             col_x += col_width;
@@ -281,7 +296,14 @@ mod tests {
         let widths = measure_table_columns(&table, 600.0, &shaper);
 
         assert_eq!(widths[0], 40.0, "Fixed column is unaffected by measurement");
-        assert!((widths[1] - expected_natural).abs() < 1e-6, "Auto column must match its widest cell's intrinsic width exactly");
+        // Fix C: an Auto column's measured width is its widest cell's own
+        // intrinsic width PLUS `2 * cell_padding.h` (the default inset),
+        // never the bare content width alone.
+        let expected_padded = expected_natural + 2.0 * table.cell_padding.h;
+        assert!(
+            (widths[1] - expected_padded).abs() < 1e-6,
+            "Auto column must match its widest cell's intrinsic width plus 2x cell padding exactly"
+        );
     }
 
     #[test]
@@ -302,6 +324,47 @@ mod tests {
         let widths = measure_table_columns(&table, 30.0, &shaper);
         let (_, min_width) = cell_natural_and_min_width(&nodes, &shaper);
         assert!(widths[0] >= min_width - 1e-6, "an Auto column must never shrink below its own min-content width");
+    }
+
+    /// Fix C proof: a placed cell's own CONTENT rect (its paragraph's
+    /// `PlacedBlock::rect`) sits inset from the cell's own `rect` by
+    /// exactly `cell_padding` on every side — never flush against the
+    /// gridline the un-inset `cell.rect` is drawn at.
+    #[test]
+    fn placed_cell_content_rect_is_inset_from_the_cell_rect_on_every_side() {
+        let shaper = CosmicShaper::headless();
+        let f = font();
+        let style = ComposeStyle::new(0.0, f);
+
+        let cell_run = [StyledRun::new("padded cell text", f)];
+        let cell_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&cell_run, f64::MAX)))];
+        let cells = [TableCell::new(&cell_nodes)];
+        let rows = [TableRow::new(&cells)];
+        let columns = [ColumnSpec::Fixed(200.0)];
+        let table = TableBlock::new(&columns, &rows);
+        let padding = table.cell_padding;
+
+        let (column_widths, composed_rows) = measure_and_layout_table(&table, 200.0, &style, &shaper);
+        let (placed_rows, _) = place_table_rows(&composed_rows, 0, 1, &column_widths, padding, (0.0, 0.0));
+
+        let cell = &placed_rows[0].cells[0];
+        assert!(!cell.content.is_empty(), "fixture cell must have placed content to check the inset against");
+
+        let content_left = cell.content.iter().map(|b| b.rect.x).fold(f64::MAX, f64::min);
+        let content_top = cell.content.iter().map(|b| b.rect.y).fold(f64::MAX, f64::min);
+        let content_right = cell.content.iter().map(|b| b.rect.x + b.rect.width).fold(0.0_f64, f64::max);
+        let content_bottom = cell.content.iter().map(|b| b.rect.bottom()).fold(0.0_f64, f64::max);
+
+        assert!((content_left - (cell.rect.x + padding.h)).abs() < 1e-6, "content left edge must be inset by cell_padding.h");
+        assert!((content_top - (cell.rect.y + padding.v)).abs() < 1e-6, "content top edge must be inset by cell_padding.v");
+        assert!(
+            (cell.rect.x + cell.rect.width - content_right - padding.h).abs() < 1e-6,
+            "content right edge must be inset by cell_padding.h"
+        );
+        assert!(
+            (cell.rect.y + cell.rect.height - content_bottom - padding.v).abs() < 1e-6,
+            "content bottom edge must be inset by cell_padding.v"
+        );
     }
 
     #[test]
