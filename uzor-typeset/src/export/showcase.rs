@@ -3,9 +3,11 @@
 //! its sibling engines (`uzor-text`, `uzor-figures`, `uzor-graph`,
 //! `uzor-export`) ship: multi-page composition with header/footer/page
 //! numbers, single- AND two-column body layout, the full figure family,
-//! all four `uzor-graph` layout looks (embedded as real `ImageBlock`s),
-//! ASCII-grid text rendering, glyph-level paragraph kinetics, anchored-
-//! island wrap layout, and a padded table + bulleted list.
+//! all four `uzor-graph` layout looks (drawn as real vector
+//! [`crate::scene::TypesetFigure`]s straight into the page's own render
+//! context, never rasterized into an `ImageBlock` — see [`GraphExhibit`]
+//! below), ASCII-grid text rendering, glyph-level paragraph kinetics,
+//! anchored-island wrap layout, and a padded table + bulleted list.
 //!
 //! ## The master/columns seam (report — the task's own explicit ask)
 //!
@@ -29,14 +31,15 @@
 //! reads as one continuous, correctly-numbered artifact even though it was
 //! assembled from three independent `slice_pages` calls.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 
 use uzor::fonts::FontFamily;
 use uzor::render::RenderContext;
 use uzor::types::Rect;
 use uzor_export::{render_to_png, ExportSpec};
-use uzor_figures::{BarFigure, CurveFigure, HistogramFigure, SankeyFigure, SankeyLink, SankeyNode, TimeScale, TimelineEvent, TimelineFigure};
-use uzor_graph::{ForceDirectedLayout, Graph, GraphEngine, HierarchicalLayout, HierarchicalParams, NodeIndex, RadialLayout, RadialParams};
+use uzor_figures::{BarFigure, CurveFigure, FigureTheme, HistogramFigure, SankeyFigure, SankeyLink, SankeyNode, TimeScale, TimelineEvent, TimelineFigure};
+use uzor_graph::{ForceDirectedLayout, Graph, GraphEngine, HierarchicalLayout, HierarchicalParams, Layout, NodeIndex, RadialLayout, RadialParams};
 use uzor_text::ascii::{build_ascii_grid, draw_ascii_grid, AsciiGridStyle};
 use uzor_text::{build_morph, draw_paragraph, layout_text, sample_layout, BreakStrategy, CosmicShaper, FontSpec, Hyphenation, Paragraph, ParagraphAlign, StyledRun};
 
@@ -45,7 +48,7 @@ use crate::export::pages_to_pdf;
 use crate::master::{PageNumberFormat, PageNumberStyle};
 use crate::scene::{
     AnchoredIsland, Block, BlockNode, BlockSizing, CellPadding, ColumnSpec, FigureBlock, ImageBlock, ImageFit, IslandAnchor, ListBlock, ListItem,
-    MarkerStyle, TableBlock, TableCell, TableRow,
+    MarkerStyle, TableBlock, TableCell, TableRow, TypesetFigure,
 };
 use crate::slice::{renumber_pages, slice_pages, Margins, Page, PageMaster};
 use crate::style::Theme;
@@ -95,12 +98,16 @@ fn decode_rgba8(bytes: &[u8]) -> (Vec<u8>, u32, u32) {
 }
 
 /// Render `draw` headlessly at `width`x`height` and return a straight RGBA8
-/// buffer — the shared bridge every `uzor-graph`/ASCII/kinetics exhibit
-/// below uses to become a real [`ImageBlock`] (there is no
-/// `render_to_rgba` in `uzor-export` — only `render_to_png` — so this
-/// decodes the PNG straight back via the `png` crate, dev-dep already,
-/// matching this workspace's own existing decode-back-out convention, e.g.
-/// `crate::render::tests::decoded_png_pixel`).
+/// buffer — the shared bridge the ASCII/kinetics exhibits below use to
+/// become a real [`ImageBlock`] (there is no `render_to_rgba` in
+/// `uzor-export` — only `render_to_png` — so this decodes the PNG straight
+/// back via the `png` crate, dev-dep already, matching this workspace's
+/// own existing decode-back-out convention, e.g.
+/// `crate::render::tests::decoded_png_pixel`). The four `uzor-graph`
+/// layout exhibits do NOT go through this bridge anymore — see
+/// [`GraphExhibit`] below, which paints them directly into whatever
+/// `RenderContext` the page itself is using (real vector ops in the PDF,
+/// not a rasterized pixmap).
 fn render_rgba(width: u32, height: u32, background: [u8; 4], draw: impl FnOnce(&mut dyn RenderContext)) -> Vec<u8> {
     let spec = ExportSpec { width_px: width, height_px: height, dpr: 1.0, background: Some(background) };
     let bytes = render_to_png(&spec, draw).unwrap_or_else(|e| panic!("showcase fixture rgba render failed: {e}"));
@@ -109,13 +116,49 @@ fn render_rgba(width: u32, height: u32, background: [u8; 4], draw: impl FnOnce(&
     rgba
 }
 
+/// How much denser than the placed logical size the generated "photo"
+/// buffer below is rendered — the raster/XObject path's own proof fixture
+/// (see [`generated_photo_rgba`]'s own doc comment) needs a source buffer
+/// genuinely denser than its display rect, or no amount of downstream
+/// embedding care can make it hold up at PDF zoom (`uzor-export`'s own
+/// WAVE 1 convention: an image XObject embeds at the source data's own
+/// native pixel resolution, never artificially upsampled).
+const PHOTO_OVERSAMPLE: u32 = 3;
+
+/// Alpha-blend `color` over `base` by `coverage` (`0.0` = `base`
+/// untouched, `1.0` = fully `color`) — the one shared compositing step
+/// [`generated_photo_rgba`]'s own anti-aliased circle edges use.
+fn blend_over(base: [u8; 4], color: [u8; 3], coverage: f64) -> [u8; 4] {
+    let coverage = coverage.clamp(0.0, 1.0);
+    let inv = 1.0 - coverage;
+    [
+        (color[0] as f64 * coverage + base[0] as f64 * inv).round() as u8,
+        (color[1] as f64 * coverage + base[1] as f64 * inv).round() as u8,
+        (color[2] as f64 * coverage + base[2] as f64 * inv).round() as u8,
+        255,
+    ]
+}
+
 /// A deterministic, generated "photo" RGBA buffer — layered gradients +
-/// two circles, no binary asset, no RNG/time (matches
-/// `crate::render::tests::generated_photo_rgba` verbatim — this fixture
-/// keeps its own copy per this workspace's own established convention of
-/// each proof module owning its small render/decode helpers rather than
-/// sharing test-only code across `#[cfg(test)]` boundaries).
-fn generated_photo_rgba(width: u32, height: u32, seed: u32) -> Vec<u8> {
+/// two ANTI-ALIASED circles, no binary asset, no RNG/time. Diverges from
+/// `crate::render::tests::generated_photo_rgba` on purpose now (this
+/// fixture used to match it verbatim — see that function's own doc
+/// comment, unchanged): the owner's own screenshot review found this
+/// PDF-embedded copy specifically showing "a giant pixel staircase on a
+/// yellow circle" at PDF zoom, traced to two causes fixed here — (a) a
+/// binary `if d < r` hard cut with zero edge smoothing, now a real
+/// coverage-based alpha blend (`blend_over`) falling off over ~1.5px of
+/// this function's OWN buffer resolution, and (b) the buffer was
+/// generated at exactly its placed display size (1x), so no embedding
+/// discipline downstream could add detail that was never captured in the
+/// first place — this function now renders at [`PHOTO_OVERSAMPLE`]x the
+/// caller's LOGICAL `width`/`height` (the `ImageBlock`'s own display rect
+/// is unaffected — callers pass the RETURNED, denser `(w, h)` as the
+/// block's intrinsic size, keeping `BlockSizing`/`ImageFit` driven by the
+/// original logical size). Returns `(rgba, actual_width, actual_height)`.
+fn generated_photo_rgba(logical_width: u32, logical_height: u32, seed: u32) -> (Vec<u8>, u32, u32) {
+    let width = logical_width.saturating_mul(PHOTO_OVERSAMPLE).max(1);
+    let height = logical_height.saturating_mul(PHOTO_OVERSAMPLE).max(1);
     let mut buf = vec![0u8; (width as usize) * (height as usize) * 4];
     let hue_shift = (seed % 3) as f64 * 40.0;
     let (cx1, cy1, r1) = (width as f64 * 0.35, height as f64 * 0.38, width.min(height) as f64 * 0.30);
@@ -130,20 +173,26 @@ fn generated_photo_rgba(width: u32, height: u32, seed: u32) -> Vec<u8> {
             let b = (150.0 + 90.0 * (1.0 - fx) - hue_shift).clamp(0.0, 255.0) as u8;
             let mut pixel = [r, g, b, 255u8];
 
-            let d1 = ((x as f64 - cx1).powi(2) + (y as f64 - cy1).powi(2)).sqrt();
-            if d1 < r1 {
-                pixel = [235, 205, 90, 255];
+            // Coverage falloff over ~1.5px of THIS buffer's own
+            // resolution (denser than the display rect thanks to
+            // `PHOTO_OVERSAMPLE`, so the edge reads smooth even after
+            // downscaling back to the placed logical size).
+            let d1 = ((x as f64 + 0.5 - cx1).powi(2) + (y as f64 + 0.5 - cy1).powi(2)).sqrt();
+            let coverage1 = r1 - d1 + 0.75;
+            if coverage1 > 0.0 {
+                pixel = blend_over(pixel, [235, 205, 90], coverage1);
             }
-            let d2 = ((x as f64 - cx2).powi(2) + (y as f64 - cy2).powi(2)).sqrt();
-            if d2 < r2 {
-                pixel = [60, 140, 95, 255];
+            let d2 = ((x as f64 + 0.5 - cx2).powi(2) + (y as f64 + 0.5 - cy2).powi(2)).sqrt();
+            let coverage2 = r2 - d2 + 0.75;
+            if coverage2 > 0.0 {
+                pixel = blend_over(pixel, [60, 140, 95], coverage2);
             }
 
             let idx = ((y as usize) * (width as usize) + (x as usize)) * 4;
             buf[idx..idx + 4].copy_from_slice(&pixel);
         }
     }
-    buf
+    (buf, width, height)
 }
 
 // ── uzor-graph fixtures (public API only — same shape as
@@ -206,39 +255,90 @@ fn seed_cluster_positions() -> Vec<(f32, f32)> {
     positions
 }
 
-const GRAPH_BG: [u8; 4] = [13, 15, 20, 255];
+const GRAPH_BG_HEX: &str = "#0d0f14";
 
-fn force_directed_rgba(width: u32, height: u32) -> Vec<u8> {
+/// Adapter turning a fully-settled `uzor-graph` [`GraphEngine`] into a
+/// [`TypesetFigure`] — the vector-PDF replacement for the former
+/// render-to-RGBA-then-`ImageBlock` bridge every graph exhibit used below
+/// (kills the "every uzor-graph exhibit rasterized at 1x, jagged diagonal
+/// edges at PDF zoom" raster shakal the owner flagged: graph exhibits now
+/// go through `Block::Figure` -> `PdfRenderContext`, the SAME real-vector
+/// path every other figure in this document already uses, instead of
+/// `Block::Image`'s raster/XObject path).
+///
+/// `TypesetFigure::render` only ever hands out `&self`, but
+/// `GraphEngine::draw`/`set_canvas_rect`/`fit_view` are all `&mut self`
+/// (they cache the culled `visible` set / re-fit the camera on every
+/// call) — a `RefCell` is the smallest interior-mutability seam that
+/// keeps this fixture's own graph-BUILDING code (seed positions, tick the
+/// layout to settle it — done ONCE ahead of time, byte-identical to the
+/// deleted `*_rgba` helpers this replaces) completely separate from the
+/// PAINT call, which now happens directly against whatever `RenderContext`
+/// the page itself is using (`PdfRenderContext` for the real PDF, plain
+/// `tiny-skia` for the raster parity-PNG pass at the bottom of this file)
+/// instead of an offscreen 1x pixmap.
+///
+/// No new "fit camera to rect" helper was needed in `uzor-graph` itself:
+/// `GraphEngine::set_canvas_rect` + `GraphEngine::fit_view` together
+/// already ARE that helper — `Camera2D::fit_view` computes pan/zoom
+/// purely from the particle-position `Aabb` and whatever `viewport` rect
+/// it's handed, never from any PREVIOUSLY set canvas_rect — so calling
+/// both again at THIS figure's own placed `rect` re-fits the camera
+/// exactly the way the old code fit it to a fixed 700x500 offscreen
+/// buffer, just against the real placement rect instead.
+struct GraphExhibit<L: Layout> {
+    engine: RefCell<GraphEngine<(), (), L>>,
+    background: &'static str,
+}
+
+impl<L: Layout> GraphExhibit<L> {
+    fn new(engine: GraphEngine<(), (), L>, background: &'static str) -> Self {
+        Self { engine: RefCell::new(engine), background }
+    }
+}
+
+impl<L: Layout> TypesetFigure for GraphExhibit<L> {
+    fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, _theme: &FigureTheme) {
+        ctx.set_fill_color(self.background);
+        ctx.fill_rect(rect.x, rect.y, rect.width, rect.height);
+        let mut engine = self.engine.borrow_mut();
+        engine.set_canvas_rect(rect);
+        engine.fit_view();
+        engine.draw(ctx);
+    }
+}
+
+/// Settle a force-directed layout over the 3-cluster/hub fixture — same
+/// 200-tick warm-up the deleted `force_directed_rgba` used, just never
+/// touching `canvas_rect`/`fit_view` here (both are resolved lazily, at
+/// paint time, against this figure's own real placed rect — see
+/// [`GraphExhibit`]'s own doc comment for why that's exact, not an
+/// approximation).
+fn build_force_directed_exhibit() -> GraphExhibit<ForceDirectedLayout> {
     let (graph, _clusters) = build_cluster_graph();
     let mut engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
     engine.seed_positions(&seed_cluster_positions());
-    engine.set_canvas_rect(Rect::new(0.0, 0.0, width as f64, height as f64));
     for _ in 0..200 {
         engine.tick(1.0 / 60.0);
     }
-    engine.fit_view();
-    render_rgba(width, height, GRAPH_BG, |ctx| engine.draw(ctx))
+    GraphExhibit::new(engine, GRAPH_BG_HEX)
 }
 
-fn hierarchical_rgba(width: u32, height: u32) -> Vec<u8> {
+fn build_hierarchical_exhibit() -> GraphExhibit<HierarchicalLayout> {
     let graph = build_tree_graph();
     let mut engine: GraphEngine<(), (), HierarchicalLayout> = GraphEngine::new(graph, HierarchicalLayout::new(HierarchicalParams::default()));
-    engine.set_canvas_rect(Rect::new(0.0, 0.0, width as f64, height as f64));
     engine.tick(1.0 / 60.0);
-    engine.fit_view();
-    render_rgba(width, height, GRAPH_BG, |ctx| engine.draw(ctx))
+    GraphExhibit::new(engine, GRAPH_BG_HEX)
 }
 
-fn radial_rgba(width: u32, height: u32) -> Vec<u8> {
+fn build_radial_exhibit() -> GraphExhibit<RadialLayout> {
     let graph = build_tree_graph();
     let mut engine: GraphEngine<(), (), RadialLayout> = GraphEngine::new(graph, RadialLayout::new(RadialParams::default()));
-    engine.set_canvas_rect(Rect::new(0.0, 0.0, width as f64, height as f64));
     engine.tick(1.0 / 60.0);
-    engine.fit_view();
-    render_rgba(width, height, GRAPH_BG, |ctx| engine.draw(ctx))
+    GraphExhibit::new(engine, GRAPH_BG_HEX)
 }
 
-fn collapsed_cluster_rgba(width: u32, height: u32) -> Vec<u8> {
+fn build_collapsed_cluster_exhibit() -> GraphExhibit<ForceDirectedLayout> {
     let (graph, clusters) = build_cluster_graph();
     let mut engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
     engine.seed_positions(&seed_cluster_positions());
@@ -247,15 +347,13 @@ fn collapsed_cluster_rgba(width: u32, height: u32) -> Vec<u8> {
     engine.define_cluster(clusters[1].clone());
     engine.define_cluster(clusters[2].clone());
 
-    engine.set_canvas_rect(Rect::new(0.0, 0.0, width as f64, height as f64));
     for _ in 0..200 {
         engine.tick(1.0 / 60.0);
     }
     if let Some(group_a) = group_a {
         engine.collapse_cluster(group_a);
     }
-    engine.fit_view();
-    render_rgba(width, height, GRAPH_BG, |ctx| engine.draw(ctx))
+    GraphExhibit::new(engine, GRAPH_BG_HEX)
 }
 
 // ── uzor-text ASCII + kinetics exhibits ─────────────────────────────────
@@ -600,10 +698,11 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let sankey_caption_run = [StyledRun::new("Figure 5 — a staged flow diagram with one clearly dominant path.", CAPTION_FONT)];
 
     let graph_intro_heading_run = [StyledRun::new("Graph Engine Family", SUBHEADING_FONT)];
-    const GRAPH_INTRO: &str = "The following pages embed real headless renders from uzor-graph, the reusable \
-        force-directed graph visualization engine, as ordinary images inside this composed document — the \
-        SAME per-layout draw path uzor-graph's own headless proof tests use, only rasterized once and \
-        placed as an ImageBlock rather than left as a standalone PNG.";
+    const GRAPH_INTRO: &str = "The following pages draw real, live layouts from uzor-graph, the reusable \
+        force-directed graph visualization engine, directly into this composed document as vector figures — \
+        the SAME per-layout draw path uzor-graph's own headless proof tests use, painted straight into the \
+        page's own render context (real paths and strokes in the PDF) rather than rasterized once and placed \
+        as an image.";
     let graph_intro_run = [StyledRun::new(GRAPH_INTRO, BODY_FONT)];
 
     let flow_figures: Vec<BlockNode<'_>> = vec![
@@ -647,20 +746,20 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
         BlockNode::new(Block::Paragraph(Paragraph::new(&graph_intro_run, body_width))),
     ];
 
-    // ── Section 4: uzor-graph's 4 layout looks, real ImageBlocks ────────
-    const GRAPH_RENDER_W: u32 = 700;
-    const GRAPH_RENDER_H: u32 = 500;
+    // ── Section 4: uzor-graph's 4 layout looks, real vector TypesetFigures
+    // (killed the graph-exhibit raster shakal — see GraphExhibit's own
+    // doc comment above for the mechanism) ──────────────────────────────
     const GRAPH_DISPLAY_H: f64 = 240.0;
 
-    let force_directed_pixels = force_directed_rgba(GRAPH_RENDER_W, GRAPH_RENDER_H);
-    let hierarchical_pixels = hierarchical_rgba(GRAPH_RENDER_W, GRAPH_RENDER_H);
-    let radial_pixels = radial_rgba(GRAPH_RENDER_W, GRAPH_RENDER_H);
-    let collapsed_pixels = collapsed_cluster_rgba(GRAPH_RENDER_W, GRAPH_RENDER_H);
+    let force_directed_exhibit = build_force_directed_exhibit();
+    let hierarchical_exhibit = build_hierarchical_exhibit();
+    let radial_exhibit = build_radial_exhibit();
+    let collapsed_exhibit = build_collapsed_cluster_exhibit();
 
-    let force_directed_image = ImageBlock::new(&force_directed_pixels, GRAPH_RENDER_W, GRAPH_RENDER_H, BlockSizing::FixedHeight(GRAPH_DISPLAY_H), ImageFit::Contain);
-    let hierarchical_image = ImageBlock::new(&hierarchical_pixels, GRAPH_RENDER_W, GRAPH_RENDER_H, BlockSizing::FixedHeight(GRAPH_DISPLAY_H), ImageFit::Contain);
-    let radial_image = ImageBlock::new(&radial_pixels, GRAPH_RENDER_W, GRAPH_RENDER_H, BlockSizing::FixedHeight(GRAPH_DISPLAY_H), ImageFit::Contain);
-    let collapsed_image = ImageBlock::new(&collapsed_pixels, GRAPH_RENDER_W, GRAPH_RENDER_H, BlockSizing::FixedHeight(GRAPH_DISPLAY_H), ImageFit::Contain);
+    let force_directed_figure = FigureBlock::new(&force_directed_exhibit, BlockSizing::FixedHeight(GRAPH_DISPLAY_H));
+    let hierarchical_figure = FigureBlock::new(&hierarchical_exhibit, BlockSizing::FixedHeight(GRAPH_DISPLAY_H));
+    let radial_figure = FigureBlock::new(&radial_exhibit, BlockSizing::FixedHeight(GRAPH_DISPLAY_H));
+    let collapsed_figure = FigureBlock::new(&collapsed_exhibit, BlockSizing::FixedHeight(GRAPH_DISPLAY_H));
 
     let graph_a_heading_run = [StyledRun::new("Graph Exhibits — Force-Directed & Hierarchical", SUBHEADING_FONT)];
     let graph_b_heading_run = [StyledRun::new("Graph Exhibits — Radial & Collapsed-Cluster", SUBHEADING_FONT)];
@@ -674,20 +773,20 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
             .with_break_control(BreakControl::ForceBefore)
             .with_outline(1, "Graph Exhibits"),
         BlockNode::new(Block::Spacer(10.0)),
-        BlockNode::new(Block::Image(force_directed_image)).with_break_control(BreakControl::AvoidAfter),
+        BlockNode::new(Block::Figure(force_directed_figure)).with_break_control(BreakControl::AvoidAfter),
         BlockNode::new(Block::Spacer(6.0)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&force_caption_run, body_width))),
         BlockNode::new(Block::Spacer(18.0)),
-        BlockNode::new(Block::Image(hierarchical_image)).with_break_control(BreakControl::AvoidAfter),
+        BlockNode::new(Block::Figure(hierarchical_figure)).with_break_control(BreakControl::AvoidAfter),
         BlockNode::new(Block::Spacer(6.0)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&hierarchical_caption_run, body_width))),
         BlockNode::new(Block::Paragraph(Paragraph::new(&graph_b_heading_run, body_width))).with_break_control(BreakControl::ForceBefore),
         BlockNode::new(Block::Spacer(10.0)),
-        BlockNode::new(Block::Image(radial_image)).with_break_control(BreakControl::AvoidAfter),
+        BlockNode::new(Block::Figure(radial_figure)).with_break_control(BreakControl::AvoidAfter),
         BlockNode::new(Block::Spacer(6.0)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&radial_caption_run, body_width))),
         BlockNode::new(Block::Spacer(18.0)),
-        BlockNode::new(Block::Image(collapsed_image)).with_break_control(BreakControl::AvoidAfter),
+        BlockNode::new(Block::Figure(collapsed_figure)).with_break_control(BreakControl::AvoidAfter),
         BlockNode::new(Block::Spacer(6.0)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&collapsed_caption_run, body_width))),
     ];
@@ -770,15 +869,10 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let h_d = uzor_text::layout_paragraph(&Paragraph::new(&strip_d_run, strip_width), &shaper).height;
     let island_center_height = (h_a + 10.0 + h_b).max(h_c + 10.0 + h_d) + 4.0;
 
-    let center_photo = generated_photo_rgba(ISLAND_CENTER_W.round() as u32, island_center_height.round().max(1.0) as u32, 0);
+    let (center_photo, center_photo_w, center_photo_h) =
+        generated_photo_rgba(ISLAND_CENTER_W.round() as u32, island_center_height.round().max(1.0) as u32, 0);
     let center_island = AnchoredIsland::new(
-        ImageBlock::new(
-            &center_photo,
-            ISLAND_CENTER_W.round() as u32,
-            island_center_height.round().max(1.0) as u32,
-            BlockSizing::FixedHeight(island_center_height),
-            ImageFit::Cover,
-        ),
+        ImageBlock::new(&center_photo, center_photo_w, center_photo_h, BlockSizing::FixedHeight(island_center_height), ImageFit::Cover),
         IslandAnchor::Center,
         ISLAND_CENTER_W,
         ISLAND_CENTER_MARGIN,
@@ -805,16 +899,16 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     const ISLAND_SIDE_MARGIN: f64 = 10.0;
     const ISLAND_SIDE_H: f64 = 170.0;
 
-    let left_photo = generated_photo_rgba(170, 170, 1);
-    let right_photo = generated_photo_rgba(170, 170, 2);
+    let (left_photo, left_photo_w, left_photo_h) = generated_photo_rgba(170, 170, 1);
+    let (right_photo, right_photo_w, right_photo_h) = generated_photo_rgba(170, 170, 2);
     let island_left = AnchoredIsland::new(
-        ImageBlock::new(&left_photo, 170, 170, BlockSizing::FixedHeight(ISLAND_SIDE_H), ImageFit::Cover),
+        ImageBlock::new(&left_photo, left_photo_w, left_photo_h, BlockSizing::FixedHeight(ISLAND_SIDE_H), ImageFit::Cover),
         IslandAnchor::Left,
         ISLAND_SIDE_W,
         ISLAND_SIDE_MARGIN,
     );
     let island_right = AnchoredIsland::new(
-        ImageBlock::new(&right_photo, 170, 170, BlockSizing::FixedHeight(ISLAND_SIDE_H), ImageFit::Cover),
+        ImageBlock::new(&right_photo, right_photo_w, right_photo_h, BlockSizing::FixedHeight(ISLAND_SIDE_H), ImageFit::Cover),
         IslandAnchor::Right,
         ISLAND_SIDE_W,
         ISLAND_SIDE_MARGIN,
@@ -1221,4 +1315,49 @@ fn typography_wave_ru_and_en_hyphenation_in_a_narrow_justified_column() {
     let bytes = render_to_png(&spec, |ctx| crate::render::draw_page(ctx, page, &theme)).expect("parity PNG render should succeed");
     assert_eq!(decoded_png_dims(&bytes), (PAGE_W as u32, PAGE_H as u32));
     write_proof("typography_wave.png", &bytes);
+}
+
+/// Raster-shakal gate (task's own explicit ask): a page carrying ONLY a
+/// [`GraphExhibit`] must show NO `/XObject` at all (the old
+/// `render_rgba`-into-`ImageBlock` bridge every graph exhibit used is
+/// gone — `Block::Figure` never touches the raster/XObject path) AND its
+/// content stream must carry real vector path/stroke/fill operators
+/// (`GraphExhibit::render` paints edges/nodes straight through
+/// `PdfRenderContext`'s own `Painter`/`BatchPainter` primitives — edges
+/// stroke ("S"), node circles fill ("f") via bezier-approximated arcs
+/// ("c")).
+#[test]
+fn graph_exhibit_page_carries_real_vector_ops_and_no_image_xobject() {
+    let theme = Theme::light_report();
+    let shaper = CosmicShaper::headless();
+    let master = PageMaster::new(PAGE_W, PAGE_H, Margins::uniform(40.0));
+    let body_width = master.body_rect().width;
+
+    let exhibit = build_force_directed_exhibit();
+    let figure = FigureBlock::new(&exhibit, BlockSizing::FixedHeight(240.0));
+    let flow = [BlockNode::new(Block::Figure(figure))];
+
+    let style = ComposeStyle::from_theme(&theme, 12.0);
+    let pages = slice_pages(&flow, &master, &style, &shaper);
+    assert_eq!(pages.len(), 1, "a single graph exhibit must land on exactly 1 page");
+    assert!(body_width > 0.0, "sanity: the page must have a real body width");
+
+    let pdf_bytes = pages_to_pdf(&pages, &master, &theme);
+    assert!(pdf_bytes.starts_with(b"%PDF-"));
+
+    let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
+    let lopdf_pages = doc.get_pages();
+    assert_eq!(lopdf_pages.len(), 1);
+    let page_id = *lopdf_pages.values().next().expect("exactly one page");
+
+    let (resources, _) = doc.get_page_resources(page_id).expect("get_page_resources should succeed");
+    let has_xobjects = resources.and_then(|r| r.get(b"XObject").and_then(lopdf::Object::as_dict).ok()).is_some_and(|d| !d.is_empty());
+    assert!(!has_xobjects, "a graph-exhibit-only page must carry NO image XObject — the render_rgba-into-ImageBlock bridge is gone for graph exhibits");
+
+    let content_bytes = doc.get_page_content(page_id);
+    let content_str = String::from_utf8_lossy(&content_bytes);
+    let toks: Vec<&str> = content_str.split_whitespace().collect();
+    assert!(toks.iter().any(|&t| t == "S"), "the graph's own edges must be real stroke 'S' operators, got: {content_str}");
+    assert!(toks.iter().any(|&t| t == "f"), "the graph's own node circles must be real fill 'f' operators, got: {content_str}");
+    assert!(toks.iter().any(|&t| t == "c"), "the graph's own node circles are bezier-approximated arcs, must carry a 'c' curve operator, got: {content_str}");
 }
