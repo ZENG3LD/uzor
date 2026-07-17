@@ -55,6 +55,11 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
             ctx.fill();
         }
         if path_info.stroked {
+            // Per-element stroke-width override (e.g. thin construction lines).
+            let override_width = path_info.stroke_width.map(|w| scaled_stroke_width_override(w, scale));
+            if let Some(w) = override_width {
+                ctx.set_stroke_width(w);
+            }
             // Apply dash array if present (scaled)
             if let Some(ref dash) = path_info.dash_array {
                 let scaled_dash: Vec<f64> = dash.iter().map(|d| d * scale).collect();
@@ -65,11 +70,14 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
             if path_info.dash_array.is_some() {
                 ctx.set_line_dash(&[]);
             }
+            if override_width.is_some() {
+                ctx.set_stroke_width(stroke_width);
+            }
         }
     }
 
     // Parse and render all circle elements
-    for (cx, cy, r, filled) in parse_svg_circles(svg, default_filled) {
+    for (cx, cy, r, filled, elem_stroke_width) in parse_svg_circles(svg, default_filled) {
         let tx = snap_half(eff_offset_x + cx * eff_scale_x);
         let ty = snap_half(eff_offset_y + cy * eff_scale_y);
         let tr = r * scale;
@@ -84,12 +92,19 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
             ctx.set_fill_color(color);
             ctx.fill();
         } else {
+            let override_width = elem_stroke_width.map(|w| scaled_stroke_width_override(w, scale));
+            if let Some(w) = override_width {
+                ctx.set_stroke_width(w);
+            }
             ctx.stroke();
+            if override_width.is_some() {
+                ctx.set_stroke_width(stroke_width);
+            }
         }
     }
 
     // Parse and render all rect elements
-    for (rx, ry, rw, rh, rounding, filled) in parse_svg_rects(svg, default_filled) {
+    for (rx, ry, rw, rh, rounding, filled, elem_stroke_width) in parse_svg_rects(svg, default_filled) {
         let tx = snap_half(eff_offset_x + rx * eff_scale_x);
         let ty = snap_half(eff_offset_y + ry * eff_scale_y);
         let tw = rw * eff_scale_x;
@@ -103,15 +118,24 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
             } else {
                 ctx.fill_rect(tx, ty, tw, th);
             }
-        } else if tr > 0.0 {
-            ctx.stroke_rounded_rect(tx, ty, tw, th, tr);
         } else {
-            ctx.stroke_rect(tx, ty, tw, th);
+            let override_width = elem_stroke_width.map(|w| scaled_stroke_width_override(w, scale));
+            if let Some(w) = override_width {
+                ctx.set_stroke_width(w);
+            }
+            if tr > 0.0 {
+                ctx.stroke_rounded_rect(tx, ty, tw, th, tr);
+            } else {
+                ctx.stroke_rect(tx, ty, tw, th);
+            }
+            if override_width.is_some() {
+                ctx.set_stroke_width(stroke_width);
+            }
         }
     }
 
     // Parse and render all line elements
-    for (x1, y1, x2, y2) in parse_svg_lines(svg) {
+    for (x1, y1, x2, y2, elem_stroke_width) in parse_svg_lines(svg) {
         let tx1 = eff_offset_x + x1 * eff_scale_x;
         let ty1 = eff_offset_y + y1 * eff_scale_y;
         let tx2 = eff_offset_x + x2 * eff_scale_x;
@@ -120,11 +144,18 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
         ctx.begin_path();
         ctx.move_to(tx1, ty1);
         ctx.line_to(tx2, ty2);
+        let override_width = elem_stroke_width.map(|w| scaled_stroke_width_override(w, scale));
+        if let Some(w) = override_width {
+            ctx.set_stroke_width(w);
+        }
         ctx.stroke();
+        if override_width.is_some() {
+            ctx.set_stroke_width(stroke_width);
+        }
     }
 
     // Parse and render all polyline elements
-    for (points, closed) in parse_svg_polylines(svg) {
+    for (points, closed, elem_stroke_width) in parse_svg_polylines(svg) {
         if points.len() >= 2 {
             ctx.begin_path();
             let (px, py) = points[0];
@@ -135,7 +166,14 @@ pub fn draw_svg_icon(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f64, wid
             if closed {
                 ctx.close_path();
             }
+            let override_width = elem_stroke_width.map(|w| scaled_stroke_width_override(w, scale));
+            if let Some(w) = override_width {
+                ctx.set_stroke_width(w);
+            }
             ctx.stroke();
+            if override_width.is_some() {
+                ctx.set_stroke_width(stroke_width);
+            }
         }
     }
 }
@@ -404,6 +442,14 @@ fn arc_to_points(
 #[inline]
 fn snap_half(v: f64) -> f64 {
     (v * 2.0).round() / 2.0
+}
+
+/// Scale a per-element `stroke-width` override into device pixels, matching the
+/// fixed default formula `(1.5 * scale * 2.0).round() / 2.0` for the Lucide root
+/// default of `stroke-width="2"` (0.75 * 2 == 1.5), clamped to a visible minimum.
+#[inline]
+fn scaled_stroke_width_override(w: f64, scale: f64) -> f64 {
+    (((0.75 * w * scale) * 2.0).round() / 2.0).max(0.5)
 }
 
 /// Draw a circle using 4 cubic Bézier curves (backend-agnostic).
@@ -847,9 +893,9 @@ fn svg_root_has_fill_none(svg: &str) -> bool {
 }
 
 /// Parse all <circle> elements from SVG
-/// Returns Vec of (cx, cy, r, filled)
+/// Returns Vec of (cx, cy, r, filled, stroke_width)
 /// `default_filled` is inherited from parent SVG element
-fn parse_svg_circles(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, bool)> {
+fn parse_svg_circles(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, bool, Option<f64>)> {
     let mut circles = Vec::new();
     let mut search_from = 0;
 
@@ -862,9 +908,10 @@ fn parse_svg_circles(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, boo
             let cy = extract_svg_attr(tag_content, "cy").unwrap_or(0.0);
             let r = extract_svg_attr(tag_content, "r").unwrap_or(0.0);
             let filled = is_svg_filled_with_default(tag_content, default_filled);
+            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
 
             if r > 0.0 {
-                circles.push((cx, cy, r, filled));
+                circles.push((cx, cy, r, filled, stroke_width));
             }
             search_from = abs_start + end + 2;
         } else if let Some(end) = svg[abs_start..].find('>') {
@@ -873,9 +920,10 @@ fn parse_svg_circles(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, boo
             let cy = extract_svg_attr(tag_content, "cy").unwrap_or(0.0);
             let r = extract_svg_attr(tag_content, "r").unwrap_or(0.0);
             let filled = is_svg_filled_with_default(tag_content, default_filled);
+            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
 
             if r > 0.0 {
-                circles.push((cx, cy, r, filled));
+                circles.push((cx, cy, r, filled, stroke_width));
             }
             search_from = abs_start + end + 1;
         } else {
@@ -887,9 +935,9 @@ fn parse_svg_circles(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, boo
 }
 
 /// Parse all <rect> elements from SVG
-/// Returns Vec of (x, y, width, height, rx/rounding, filled)
+/// Returns Vec of (x, y, width, height, rx/rounding, filled, stroke_width)
 /// `default_filled` is inherited from parent SVG element
-fn parse_svg_rects(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, f64, f64, bool)> {
+fn parse_svg_rects(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, f64, f64, bool, Option<f64>)> {
     let mut rects = Vec::new();
     let mut search_from = 0;
 
@@ -904,9 +952,10 @@ fn parse_svg_rects(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, f64, 
             let h = extract_svg_attr(tag_content, "height").unwrap_or(0.0);
             let rx = extract_svg_attr(tag_content, "rx").unwrap_or(0.0);
             let filled = is_svg_filled_with_default(tag_content, default_filled);
+            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
 
             if w > 0.0 && h > 0.0 {
-                rects.push((x, y, w, h, rx, filled));
+                rects.push((x, y, w, h, rx, filled, stroke_width));
             }
             search_from = abs_start + end + 2;
         } else if let Some(end) = svg[abs_start..].find('>') {
@@ -917,9 +966,10 @@ fn parse_svg_rects(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, f64, 
             let h = extract_svg_attr(tag_content, "height").unwrap_or(0.0);
             let rx = extract_svg_attr(tag_content, "rx").unwrap_or(0.0);
             let filled = is_svg_filled_with_default(tag_content, default_filled);
+            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
 
             if w > 0.0 && h > 0.0 {
-                rects.push((x, y, w, h, rx, filled));
+                rects.push((x, y, w, h, rx, filled, stroke_width));
             }
             search_from = abs_start + end + 1;
         } else {
@@ -931,8 +981,8 @@ fn parse_svg_rects(svg: &str, default_filled: bool) -> Vec<(f64, f64, f64, f64, 
 }
 
 /// Parse all <line> elements from SVG
-/// Returns Vec of (x1, y1, x2, y2)
-fn parse_svg_lines(svg: &str) -> Vec<(f64, f64, f64, f64)> {
+/// Returns Vec of (x1, y1, x2, y2, stroke_width)
+fn parse_svg_lines(svg: &str) -> Vec<(f64, f64, f64, f64, Option<f64>)> {
     let mut lines = Vec::new();
     let mut search_from = 0;
 
@@ -945,8 +995,9 @@ fn parse_svg_lines(svg: &str) -> Vec<(f64, f64, f64, f64)> {
             let y1 = extract_svg_attr(tag_content, "y1").unwrap_or(0.0);
             let x2 = extract_svg_attr(tag_content, "x2").unwrap_or(0.0);
             let y2 = extract_svg_attr(tag_content, "y2").unwrap_or(0.0);
+            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
 
-            lines.push((x1, y1, x2, y2));
+            lines.push((x1, y1, x2, y2, stroke_width));
             search_from = abs_start + end + 2;
         } else if let Some(end) = svg[abs_start..].find('>') {
             let tag_content = &svg[abs_start..abs_start + end + 1];
@@ -954,8 +1005,9 @@ fn parse_svg_lines(svg: &str) -> Vec<(f64, f64, f64, f64)> {
             let y1 = extract_svg_attr(tag_content, "y1").unwrap_or(0.0);
             let x2 = extract_svg_attr(tag_content, "x2").unwrap_or(0.0);
             let y2 = extract_svg_attr(tag_content, "y2").unwrap_or(0.0);
+            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
 
-            lines.push((x1, y1, x2, y2));
+            lines.push((x1, y1, x2, y2, stroke_width));
             search_from = abs_start + end + 1;
         } else {
             break;
@@ -1031,8 +1083,8 @@ fn extract_svg_points(content: &str) -> Vec<(f64, f64)> {
 }
 
 /// Parse all <polyline> and <polygon> elements from SVG
-/// Returns Vec of (points, closed)
-fn parse_svg_polylines(svg: &str) -> Vec<(Vec<(f64, f64)>, bool)> {
+/// Returns Vec of (points, closed, stroke_width)
+fn parse_svg_polylines(svg: &str) -> Vec<(Vec<(f64, f64)>, bool, Option<f64>)> {
     let mut polylines = Vec::new();
 
     // Parse polylines (not closed)
@@ -1042,15 +1094,17 @@ fn parse_svg_polylines(svg: &str) -> Vec<(Vec<(f64, f64)>, bool)> {
         if let Some(end) = svg[abs_start..].find("/>") {
             let tag_content = &svg[abs_start..abs_start + end + 2];
             let points = extract_svg_points(tag_content);
+            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
             if !points.is_empty() {
-                polylines.push((points, false));
+                polylines.push((points, false, stroke_width));
             }
             search_from = abs_start + end + 2;
         } else if let Some(end) = svg[abs_start..].find('>') {
             let tag_content = &svg[abs_start..abs_start + end + 1];
             let points = extract_svg_points(tag_content);
+            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
             if !points.is_empty() {
-                polylines.push((points, false));
+                polylines.push((points, false, stroke_width));
             }
             search_from = abs_start + end + 1;
         } else {
@@ -1065,15 +1119,17 @@ fn parse_svg_polylines(svg: &str) -> Vec<(Vec<(f64, f64)>, bool)> {
         if let Some(end) = svg[abs_start..].find("/>") {
             let tag_content = &svg[abs_start..abs_start + end + 2];
             let points = extract_svg_points(tag_content);
+            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
             if !points.is_empty() {
-                polylines.push((points, true));
+                polylines.push((points, true, stroke_width));
             }
             search_from = abs_start + end + 2;
         } else if let Some(end) = svg[abs_start..].find('>') {
             let tag_content = &svg[abs_start..abs_start + end + 1];
             let points = extract_svg_points(tag_content);
+            let stroke_width = extract_svg_attr(tag_content, "stroke-width");
             if !points.is_empty() {
-                polylines.push((points, true));
+                polylines.push((points, true, stroke_width));
             }
             search_from = abs_start + end + 1;
         } else {
@@ -1422,7 +1478,7 @@ pub fn draw_svg_icon_rotated(
     }
 
     // Circles - rotate center point
-    for (ccx, ccy, r, filled) in parse_svg_circles(svg, default_filled) {
+    for (ccx, ccy, r, filled, _stroke_width) in parse_svg_circles(svg, default_filled) {
         let tx = offset_x + ccx * scale;
         let ty = offset_y + ccy * scale;
         let (rtx, rty) = rotate_pt(tx, ty, cx, cy, sin_a, cos_a);
@@ -1438,7 +1494,7 @@ pub fn draw_svg_icon_rotated(
     }
 
     // Rects - convert to 4 rotated corner points
-    for (rect_x, rect_y, rw, rh, _rounding, filled) in parse_svg_rects(svg, default_filled) {
+    for (rect_x, rect_y, rw, rh, _rounding, filled, _stroke_width) in parse_svg_rects(svg, default_filled) {
         let tx = offset_x + rect_x * scale;
         let ty = offset_y + rect_y * scale;
         let tw = rw * scale;
@@ -1471,7 +1527,7 @@ pub fn draw_svg_icon_rotated(
     }
 
     // Lines - rotate both endpoints
-    for (x1, y1, x2, y2) in parse_svg_lines(svg) {
+    for (x1, y1, x2, y2, _stroke_width) in parse_svg_lines(svg) {
         let tx1 = offset_x + x1 * scale;
         let ty1 = offset_y + y1 * scale;
         let tx2 = offset_x + x2 * scale;
@@ -1485,7 +1541,7 @@ pub fn draw_svg_icon_rotated(
     }
 
     // Polylines - rotate each point
-    for (points, closed) in parse_svg_polylines(svg) {
+    for (points, closed, _stroke_width) in parse_svg_polylines(svg) {
         if points.len() >= 2 {
             ctx.begin_path();
             let (px, py) = points[0];
@@ -1789,7 +1845,7 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
     }
 
     // Render rect elements (skip full-size background rects)
-    for (rx, ry, rw, rh, rounding, filled) in parse_svg_rects(svg, default_filled) {
+    for (rx, ry, rw, rh, rounding, filled, _stroke_width) in parse_svg_rects(svg, default_filled) {
         if filled {
             // Skip full-size background rects that cover the entire viewbox
             if rw >= vb_width * 0.95 && rh >= vb_height * 0.95 {
@@ -1809,7 +1865,7 @@ pub fn draw_svg_multicolor(ctx: &mut dyn RenderContext, svg: &str, x: f64, y: f6
     }
 
     // Render circle elements
-    for (cx_val, cy_val, r, filled) in parse_svg_circles(svg, default_filled) {
+    for (cx_val, cy_val, r, filled, _stroke_width) in parse_svg_circles(svg, default_filled) {
         if filled {
             let tx = eff_offset_x + cx_val * eff_scale_x;
             let ty = eff_offset_y + cy_val * eff_scale_y;
@@ -1995,7 +2051,7 @@ mod tests {
         fn set_fill_color(&mut self, _color: &str) { self.ops.push("set_fill_color".to_string()); }
         fn set_global_alpha(&mut self, _alpha: f64) { self.ops.push("set_global_alpha".to_string()); }
         fn set_stroke_color(&mut self, _color: &str) { self.ops.push("set_stroke_color".to_string()); }
-        fn set_stroke_width(&mut self, _w: f64) { self.ops.push("set_stroke_width".to_string()); }
+        fn set_stroke_width(&mut self, w: f64) { self.ops.push(format!("set_stroke_width({:.2})", w)); }
         fn set_line_cap(&mut self, _cap: &str) { self.ops.push("set_line_cap".to_string()); }
         fn set_line_join(&mut self, _join: &str) { self.ops.push("set_line_join".to_string()); }
         fn set_line_dash(&mut self, _pattern: &[f64]) { self.ops.push("set_line_dash".to_string()); }
@@ -2156,5 +2212,49 @@ mod tests {
             assert!(line_count < 200, "{} should not have excessive line segments", name);
         }
         println!("All Maki icons with XML entities render successfully!");
+    }
+
+    #[test]
+    fn test_path_stroke_width_override_thinner_line() {
+        // Lucide idiom: root stroke-width="2" (default), one construction path
+        // overrides to stroke-width="1.2" (thinner). At scale=1.0 the default
+        // width is (1.5*1.0*2.0).round()/2.0 == 1.5; the override must produce
+        // a strictly thinner scaled width: (0.75*1.2*1.0*2.0).round()/2.0 == 1.0.
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 1L23 23" stroke-width="1.2"/></svg>"#;
+
+        let mut ctx = MockContext::new();
+        draw_svg_icon(&mut ctx, svg, 0.0, 0.0, 24.0, 24.0, "#000000");
+
+        println!("Override-width ops:");
+        for (i, op) in ctx.ops.iter().enumerate() {
+            println!("  [{:3}] {}", i, op);
+        }
+
+        // The default width is set once up-front.
+        assert!(ctx.ops.contains(&"set_stroke_width(1.50)".to_string()), "Should set the default 1.5 stroke width up-front");
+        // The per-element override (thinner) must appear before the stroke() it applies to.
+        let override_idx = ctx.ops.iter().position(|op| op == "set_stroke_width(1.00)");
+        assert!(override_idx.is_some(), "Should set the thinner overridden stroke width (1.0) for the path with stroke-width=\"1.2\"");
+        let stroke_idx = ctx.ops.iter().position(|op| op == "stroke");
+        assert!(stroke_idx.is_some(), "Should call stroke");
+        assert!(override_idx.unwrap() < stroke_idx.unwrap(), "Override width must be set before stroke() is called");
+
+        // Width must be restored to the default afterward (no permanent width change).
+        let restore_idx = ctx.ops.iter().skip(stroke_idx.unwrap()).position(|op| op == "set_stroke_width(1.50)");
+        assert!(restore_idx.is_some(), "Should restore the default stroke width after the overridden stroke");
+    }
+
+    #[test]
+    fn test_icon_without_per_element_widths_uses_single_default_width() {
+        // No per-element stroke-width anywhere — must produce exactly one
+        // set_stroke_width call (the fixed default), with no overrides.
+        let cloud_svg = crate::render::icons::weather::CLOUD;
+
+        let mut ctx = MockContext::new();
+        draw_svg_icon(&mut ctx, cloud_svg, 100.0, 100.0, 22.0, 22.0, "#ffa726");
+
+        let width_calls: Vec<&String> = ctx.ops.iter().filter(|op| op.starts_with("set_stroke_width")).collect();
+        println!("CLOUD set_stroke_width calls: {:?}", width_calls);
+        assert_eq!(width_calls.len(), 1, "Icon without per-element stroke-width overrides should call set_stroke_width exactly once (the default)");
     }
 }
