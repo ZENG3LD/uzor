@@ -17,3 +17,4 @@ uzor-export = { path = "../uzor-export" }
 [dev-dependencies]
 png = "0.17"
 lopdf = { version = "0.44", default-features = false }
+uzor-graph = { workspace = true }

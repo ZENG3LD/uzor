@@ -11,4 +11,7 @@
 
 pub mod pdf_adapter;
 
+#[cfg(test)]
+mod showcase;
+
 pub use pdf_adapter::pages_to_pdf;
