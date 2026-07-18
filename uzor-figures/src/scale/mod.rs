@@ -12,15 +12,24 @@
 //! domain-mapping primitive over the same "figures need a value ->
 //! something" shape, driving heatmap/business-chart color encoding (see
 //! `color`'s own module docs for the OKLCH machinery it reuses).
+//!
+//! [`format::NumberFormat`] is a THIRD kind of primitive again — value ->
+//! display STRING (not -> `[0, 1]`, not -> color) — used by axis tick
+//! labels ([`crate::guide::axis::draw_x_axis_formatted`]/
+//! `draw_y_axis_formatted`) and any other caller wanting Si/Percent/
+//! Currency-formatted numbers instead of this crate's default thousands-
+//! grouped decimal (see `format`'s own module docs).
 
 pub mod band;
 pub mod color;
+pub mod format;
 pub mod linear;
 pub mod log;
 pub mod time;
 
 pub use band::BandScale;
 pub use color::ColorScale;
+pub use format::NumberFormat;
 pub use linear::LinearScale;
 pub use log::LogScale;
 pub use time::TimeScale;

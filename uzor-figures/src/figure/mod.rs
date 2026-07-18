@@ -10,22 +10,37 @@
 //! Economist chart-hygiene rules from
 //! `nemo/docs/uzor-engines/research_dataviz_sota_2026.md` §6 as DEFAULT
 //! behavior, not opt-in flags — see each module's own docs.
+//!
+//! `scatter`/`boxplot`/`kpi` (typography-gap WAVE 4, statistical/business
+//! set) round out the crate: [`scatter::ScatterFigure`] (x/y point cloud,
+//! deterministic uniform-stride thinning — NOT LTTB, see its own module
+//! docs for why), [`boxplot::BoxplotFigure`] (Tukey `1.5 * IQR` quartile
+//! summary), and [`kpi::KpiFigure`] (dashboard number tile) — all three
+//! opt into [`crate::guide::annotation`]'s reference lines/bands/callouts
+//! where applicable (curve/bars gained the SAME opt-in `annotations`
+//! field this wave).
 
 pub mod bars;
+pub mod boxplot;
 pub mod curve;
 pub mod heatmap;
 pub mod histogram;
+pub mod kpi;
 pub mod pie;
 pub mod sankey;
+pub mod scatter;
 pub mod timeline;
 pub mod waterfall;
 
 pub use bars::{BarFigure, BarMode, BarSeries};
+pub use boxplot::{boxplot_stats, quartile, BoxplotFigure, BoxplotStats, WHISKER_IQR_MULTIPLIER};
 pub use curve::{CurveFigure, CurveSeries};
 pub use heatmap::{hit_test_cell, layout_heatmap, HeatmapCell, HeatmapFigure, HeatmapLayout};
 pub use histogram::{bin, Bin, HistogramFigure};
+pub use kpi::KpiFigure;
 pub use pie::{hit_test_slice, layout_pie, resolve_slices, PieFigure, PieLayout, PieSlice, PieSliceGeom};
 pub use sankey::{hit_test_node, layout_sankey, LabelSide, RibbonGeom, SankeyFigure, SankeyLayout, SankeyLink, SankeyNode};
+pub use scatter::{uniform_thin_indices, PointRadius, ScatterFigure, ScatterPoint};
 pub use timeline::{layout_point_labels, PointLabelInput, TimelineEvent, TimelineFigure};
 pub use waterfall::{
     compute_steps, layout_bars, layout_connectors, WaterfallBar, WaterfallConnector, WaterfallFigure, WaterfallItem, WaterfallKind,

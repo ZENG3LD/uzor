@@ -19,6 +19,7 @@ use uzor::types::Rect;
 
 use crate::coord::PlotArea;
 use crate::figure::FigureOverlay;
+use crate::guide::annotation::{draw_annotations, Annotation};
 use crate::guide::legend::{self, LegendEntry, LegendPosition};
 use crate::guide::{axis, crosshair, grid, tooltip};
 use crate::interact::hit::{self, HitZone};
@@ -68,6 +69,11 @@ pub struct CurveFigure {
     /// [`CurveFigure::with_downsample`]. `None` (the default) reproduces
     /// the original behavior exactly (every raw point drawn/hit-tested).
     downsample_max: Option<usize>,
+    /// Reference lines/bands/callouts drawn over this figure's marks — set
+    /// via [`CurveFigure::with_annotations`]. Empty (the default)
+    /// reproduces the original behavior exactly (see
+    /// [`crate::guide::annotation`]).
+    annotations: Vec<Annotation>,
 }
 
 impl CurveFigure {
@@ -86,7 +92,7 @@ impl CurveFigure {
     /// [`LegendPosition::Right`] unless overridden via
     /// [`CurveFigure::with_legend`].
     pub fn with_series(series: Vec<CurveSeries>) -> Self {
-        Self { series, title: None, fill: false, x_scale_override: None, legend_position: None, downsample_max: None }
+        Self { series, title: None, fill: false, x_scale_override: None, legend_position: None, downsample_max: None, annotations: Vec::new() }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
@@ -141,6 +147,14 @@ impl CurveFigure {
     /// selection) instead of screen-space transform.
     pub fn with_downsample(mut self, max_points: usize) -> Self {
         self.downsample_max = Some(max_points);
+        self
+    }
+
+    /// Reference lines/bands/callouts drawn over this figure's marks — see
+    /// [`crate::guide::annotation`]. Same additive-builder shape as every
+    /// other optional capability on this figure.
+    pub fn with_annotations(mut self, annotations: Vec<Annotation>) -> Self {
+        self.annotations = annotations;
         self
     }
 
@@ -300,6 +314,13 @@ impl CurveFigure {
             grid::draw_x_grid(ctx, &area, x_scale, theme, TARGET_X_TICKS);
             grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
 
+            // Reference lines/bands paint UNDER the series (over the grid,
+            // under the data) — the typical "shaded zone sits behind the
+            // line" convention; callouts still land on top since they're
+            // drawn last within `draw_annotations` itself when supplied
+            // after a band/line in the caller's own `annotations` order.
+            draw_annotations(ctx, &area, x_scale, &y_scale, theme, &self.annotations);
+
             // Per-series LTTB-downsampled (or borrowed verbatim) point
             // set — the SAME set drawn below AND hit-tested against
             // (see `with_downsample`'s own docs: one-transform law, a
@@ -437,6 +458,23 @@ mod tests {
         let x = figure.x_scale().expect("non-empty fixture");
         let (x_min, x_max) = points.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), &(px, _)| (mn.min(px), mx.max(px)));
         assert!(x.min <= x_min && x.max >= x_max);
+    }
+
+    #[test]
+    fn with_annotations_default_is_empty_and_render_still_succeeds() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let figure = CurveFigure::new(vec![(0.0, 0.0), (1.0, 1.0), (2.0, 0.5)]).with_annotations(vec![
+            crate::guide::annotation::Annotation::HLine { value: 0.5, color: None, label: Some("mid".to_owned()) },
+            crate::guide::annotation::Annotation::Callout { x: 1.0, y: 1.0, text: "peak".to_owned() },
+        ]);
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let result = render_to_png(&spec, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, 300.0, 200.0), &theme);
+        });
+        assert!(result.is_ok());
+        assert!(CurveFigure::new(vec![(0.0, 0.0), (1.0, 1.0)]).annotations.is_empty());
     }
 
     #[test]

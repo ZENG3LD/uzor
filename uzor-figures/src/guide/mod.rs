@@ -16,6 +16,7 @@
 //! label rects, used by [`crate::figure::TimelineFigure`]'s point labels
 //! and exposed generically for future figures.
 
+pub mod annotation;
 pub mod axis;
 pub mod colorbar;
 pub mod crosshair;

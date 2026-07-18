@@ -17,6 +17,7 @@ use uzor::types::Rect;
 
 use crate::coord::PlotArea;
 use crate::figure::FigureOverlay;
+use crate::guide::annotation::{draw_annotations, Annotation};
 use crate::guide::legend::{self, LegendEntry, LegendPosition};
 use crate::guide::{axis, grid, tooltip};
 use crate::interact::hit::{self, HitZone};
@@ -76,6 +77,10 @@ pub struct BarFigure {
     pub title: Option<String>,
     pub show_value_labels: bool,
     legend_position: Option<LegendPosition>,
+    /// Reference lines/bands/callouts drawn over this figure's bars — set
+    /// via [`BarFigure::with_annotations`]. Empty (the default) reproduces
+    /// the original behavior exactly (see [`crate::guide::annotation`]).
+    annotations: Vec<Annotation>,
 }
 
 impl BarFigure {
@@ -92,7 +97,7 @@ impl BarFigure {
     /// [`LegendPosition::Top`] unless overridden via
     /// [`BarFigure::with_legend`].
     pub fn with_series(categories: Vec<String>, series: Vec<BarSeries>, mode: BarMode) -> Self {
-        Self { categories, series, mode, title: None, show_value_labels: false, legend_position: None }
+        Self { categories, series, mode, title: None, show_value_labels: false, legend_position: None, annotations: Vec::new() }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
@@ -110,6 +115,18 @@ impl BarFigure {
     /// one series — see [`BarFigure::resolved_legend_position`]).
     pub fn with_legend(mut self, position: LegendPosition) -> Self {
         self.legend_position = Some(position);
+        self
+    }
+
+    /// Reference lines/bands/callouts drawn over this figure's bars — see
+    /// [`crate::guide::annotation`]. Only [`crate::guide::annotation::
+    /// Annotation::HLine`] makes real sense here (this figure's X axis is
+    /// a [`crate::scale::BandScale`], not a continuous domain — a
+    /// `VLine`/`Callout`'s own `x` would map through the band's own
+    /// fractional-index domain, which is a valid but unusual call); the
+    /// draw function itself doesn't forbid it.
+    pub fn with_annotations(mut self, annotations: Vec<Annotation>) -> Self {
+        self.annotations = annotations;
         self
     }
 
@@ -292,6 +309,11 @@ impl BarFigure {
             let band = self.band_scale();
 
             grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
+
+            // Reference lines/bands paint UNDER the bars (over the grid,
+            // under the data) — same ordering `CurveFigure::render_with`
+            // uses.
+            draw_annotations(ctx, &area, &band, &y_scale, theme, &self.annotations);
 
             if self.series.len() <= 1 {
                 if let Some(single) = self.series.first() {
@@ -539,6 +561,21 @@ mod tests {
         let seg0_bottom = segments[0].1.max(segments[0].0);
         let seg1_bottom = segments[1].1.max(segments[1].0);
         assert!(seg1_bottom > seg0_bottom, "later negative segments must stack FURTHER from the baseline, not overlap the first");
+    }
+
+    #[test]
+    fn with_annotations_default_is_empty_and_render_still_succeeds() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let figure = BarFigure::new(cats(3), vec![5.0, 10.0, 15.0])
+            .with_annotations(vec![crate::guide::annotation::Annotation::HLine { value: 8.0, color: None, label: Some("target".to_owned()) }]);
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let result = render_to_png(&spec, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, 300.0, 200.0), &theme);
+        });
+        assert!(result.is_ok());
+        assert!(BarFigure::new(cats(2), vec![1.0, 2.0]).annotations.is_empty());
     }
 
     #[test]

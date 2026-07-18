@@ -53,15 +53,18 @@ pub mod transform;
 
 pub use coord::PlotArea;
 pub use figure::{
-    BarFigure, BarMode, BarSeries, CurveFigure, CurveSeries, HeatmapFigure, HistogramFigure, FigureOverlay, PieFigure, PieSlice,
-    SankeyFigure, SankeyLink, SankeyNode, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind,
+    boxplot_stats, quartile, uniform_thin_indices, BarFigure, BarMode, BarSeries, BoxplotFigure, BoxplotStats, CurveFigure, CurveSeries,
+    HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, PieFigure, PieSlice, PointRadius, SankeyFigure, SankeyLink, SankeyNode,
+    ScatterFigure, ScatterPoint, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind, WHISKER_IQR_MULTIPLIER,
 };
+pub use guide::annotation::{draw_annotations, Annotation};
+pub use guide::axis::{draw_x_axis_formatted, draw_y_axis_formatted};
 pub use guide::colorbar::{draw_colorbar, measure_colorbar, ColorbarSize};
 pub use guide::labeler::{anchor_candidates, place_labels, OccupancyBitmap};
 pub use guide::legend::{LegendEntry, LegendPosition};
 pub use interact::{BrushState, FocusSet, HitZone, HoverInfo, SelectionBus, FigureInputAction, FigureOutputAction};
 pub use mark::MarkStyle;
-pub use scale::{BandScale, ColorScale, LinearScale, LogScale, Scale, Tick, TimeScale};
+pub use scale::{BandScale, ColorScale, LinearScale, LogScale, NumberFormat, Scale, Tick, TimeScale};
 pub use theme::FigureTheme;
 pub use transform::lttb;
 
@@ -80,9 +83,9 @@ mod proof_tests {
     use crate::theme::FigureTheme;
     use crate::transform::lttb;
     use crate::{
-        BarFigure, BarMode, BarSeries, CurveFigure, CurveSeries, FocusSet, HeatmapFigure, HistogramFigure, FigureOverlay, LegendPosition,
-        PieFigure, PieSlice, SankeyFigure, SankeyLink, SankeyNode, TimeScale, TimelineEvent, TimelineFigure, WaterfallFigure,
-        WaterfallItem, WaterfallKind,
+        Annotation, BarFigure, BarMode, BarSeries, BoxplotFigure, CurveFigure, CurveSeries, FocusSet, HeatmapFigure, HistogramFigure,
+        FigureOverlay, KpiFigure, LegendPosition, NumberFormat, PieFigure, PieSlice, PointRadius, SankeyFigure, SankeyLink, SankeyNode,
+        ScatterFigure, ScatterPoint, TimeScale, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind,
     };
 
     const WIDTH: u32 = 800;
@@ -742,5 +745,104 @@ mod proof_tests {
         .expect("LTTB downsample proof should render");
         assert_eq!(decoded_png_dims(&bytes), (LTTB_WIDTH, LTTB_HEIGHT));
         write_proof_png("figures_lttb.png", &bytes);
+    }
+
+    // ── typography-gap WAVE 4 (statistical/business set) proofs ─────────
+
+    /// Deterministic ~180-point cloud (fixed pseudo-formula, no RNG),
+    /// value-mapped radius, an `HBand` "target range" + a `Callout` on a
+    /// real plotted point — proves scatter + value-mapped sizing +
+    /// annotations end to end.
+    fn seeded_scatter_figure() -> ScatterFigure {
+        let points: Vec<ScatterPoint> = (0..180)
+            .map(|i| {
+                let fi = i as f64;
+                let x = fi * 1.3 + ((i * 11) % 6) as f64 * 0.5;
+                let y = 30.0 + (fi * 0.25) + ((i * 17) % 23) as f64 - 11.0;
+                let value = 3.0 + ((i * 13) % 18) as f64;
+                ScatterPoint::with_value(x, y, value)
+            })
+            .collect();
+        let callout_point = points[140];
+        ScatterFigure::new(points)
+            .with_title("Sample metric vs. index (seeded, size-mapped)")
+            .with_radius(PointRadius::ValueMapped { min_radius: 2.0, max_radius: 8.0 })
+            .with_annotations(vec![
+                Annotation::HBand { low: 30.0, high: 55.0, color: None, label: Some("target range".to_owned()) },
+                Annotation::Callout { x: callout_point.x, y: callout_point.y, text: "notable reading".to_owned() },
+            ])
+    }
+
+    #[test]
+    fn scatter_figure_renders_to_a_valid_png() {
+        let figure = seeded_scatter_figure();
+        let theme = FigureTheme::dark();
+        let bytes = render_to_png(&export_spec(), |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64), &theme);
+        })
+        .expect("scatter figure should render");
+        assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
+        write_proof_png("figures_scatter.png", &bytes);
+    }
+
+    /// Deterministic 4-category fixture: two normal-ish groups, one group
+    /// with a deliberate high outlier, and one `n == 3` edge-case group —
+    /// proves the quartile math's own small-`n` handling end to end
+    /// alongside the outlier-detection convention.
+    fn seeded_boxplot_figure() -> BoxplotFigure {
+        let categories: Vec<String> = ["group-a", "group-b", "group-c", "group-d"].iter().map(|s| (*s).to_owned()).collect();
+        let group_a: Vec<f64> = (0..30).map(|i| 40.0 + ((i * 7) % 25) as f64).collect();
+        let group_b: Vec<f64> = (0..25).map(|i| 55.0 + ((i * 11) % 30) as f64).collect();
+        let mut group_c: Vec<f64> = (0..28).map(|i| 35.0 + ((i * 5) % 20) as f64).collect();
+        group_c.push(140.0); // deliberate high outlier
+        let group_d: Vec<f64> = (0..3).map(|i| 60.0 + i as f64 * 5.0).collect(); // n == 3 edge case
+        BoxplotFigure::new(categories, vec![group_a, group_b, group_c, group_d]).with_title("Sample distributions by group (seeded)")
+    }
+
+    #[test]
+    fn boxplot_figure_renders_to_a_valid_png() {
+        let figure = seeded_boxplot_figure();
+        let theme = FigureTheme::dark();
+        let bytes = render_to_png(&export_spec(), |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64), &theme);
+        })
+        .expect("boxplot figure should render");
+        assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
+        write_proof_png("figures_boxplot.png", &bytes);
+    }
+
+    const KPI_TILE_WIDTH: u32 = 260;
+    const KPI_TILE_HEIGHT: u32 = 150;
+    const KPI_ROW_WIDTH: u32 = KPI_TILE_WIDTH * 3;
+
+    /// Three seeded KPI tiles side by side on one canvas — big number +
+    /// colored delta (one up, one down, one flat) + an optional trailing
+    /// sparkline, proving the "dashboard grid" use case end to end.
+    #[test]
+    fn kpi_tile_row_renders_to_a_valid_png() {
+        let theme = FigureTheme::dark();
+
+        let sparkline: Vec<f64> = (0..24).map(|i| 100.0 + ((i * 7) % 22) as f64 - ((i as f64) * 0.4)).collect();
+        let revenue = KpiFigure::new("Revenue", 128_430.0)
+            .with_previous_value(110_000.0)
+            .with_format(NumberFormat::Currency("$"))
+            .with_sparkline(sparkline);
+        // `NumberFormat::Percent` multiplies by 100 (it expects the
+        // underlying FRACTION, see that variant's own docs) — a churn rate
+        // already expressed as "4.8%"/"6.1%" is stored as 0.048/0.061.
+        let churn = KpiFigure::new("Churn Rate", 0.048).with_previous_value(0.061).with_format(NumberFormat::Percent);
+        let active_users = KpiFigure::new("Active Users", 48_213.0).with_previous_value(48_213.0).with_format(NumberFormat::Si);
+
+        let spec = ExportSpec { width_px: KPI_ROW_WIDTH, height_px: KPI_TILE_HEIGHT, dpr: 1.0, background: None };
+        let bytes = render_to_png(&spec, |ctx| {
+            let w = KPI_TILE_WIDTH as f64;
+            let h = KPI_TILE_HEIGHT as f64;
+            revenue.render(ctx, Rect::new(0.0, 0.0, w, h), &theme);
+            churn.render(ctx, Rect::new(w, 0.0, w, h), &theme);
+            active_users.render(ctx, Rect::new(2.0 * w, 0.0, w, h), &theme);
+        })
+        .expect("KPI tile row should render");
+        assert_eq!(decoded_png_dims(&bytes), (KPI_ROW_WIDTH, KPI_TILE_HEIGHT));
+        write_proof_png("figures_kpi.png", &bytes);
     }
 }

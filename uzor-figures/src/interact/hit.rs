@@ -85,6 +85,35 @@ pub fn bar_index_at(area: &PlotArea, band: &BandScale, px: f64) -> Option<usize>
     })
 }
 
+/// 2D counterpart of [`nearest_point_x`] — the index of the `points` entry
+/// whose SCREEN position (both x AND y, not just x) is nearest `(px, py)`.
+/// [`nearest_point_x`] snaps along X only, which is correct for a curve
+/// (a line has exactly one point per X, so the crosshair only ever needs
+/// to disambiguate horizontally) — a scatter cloud has no such ordering
+/// (many points can share nearly the same X at very different Y), so
+/// [`crate::figure::ScatterFigure`]'s own hover needs a real 2D nearest-
+/// neighbor instead. No distance cap here (matches [`nearest_point_x`]'s
+/// own unbounded-nearest convention) — a caller wanting "only within this
+/// marker's own visible radius" (which [`ScatterFigure`] does want) applies
+/// that check itself against the returned index's own resolved screen
+/// position, the same "hit-test resolves the candidate, the caller decides
+/// whether it's close enough to react to" split [`hit_zone`] already uses
+/// one level up. Returns `None` for an empty `points`.
+///
+/// [`ScatterFigure`]: crate::figure::ScatterFigure
+pub fn nearest_point_xy(area: &PlotArea, xscale: &dyn Scale, yscale: &dyn Scale, points: &[(f64, f64)], px: f64, py: f64) -> Option<usize> {
+    let mut best: Option<(usize, f64)> = None;
+    for (i, &(dx, dy)) in points.iter().enumerate() {
+        let sx = area.x(xscale, dx);
+        let sy = area.y(yscale, dy);
+        let dist = ((sx - px).powi(2) + (sy - py).powi(2)).sqrt();
+        if best.map_or(true, |(_, best_dist)| dist < best_dist) {
+            best = Some((i, dist));
+        }
+    }
+    best.map(|(i, _)| i)
+}
+
 /// Multi-series counterpart of [`nearest_point_x`] — the `(series_index,
 /// point_index)` whose mapped screen-x is nearest `px`, picked GLOBALLY
 /// across every series (never per-series-then-merged — a point in a
@@ -241,6 +270,30 @@ mod tests {
         assert_eq!(nearest_point_x_multi(&a, &xscale, &yscale, &[], 50.0), None);
         let empty: Vec<(f64, f64)> = Vec::new();
         assert_eq!(nearest_point_x_multi(&a, &xscale, &yscale, &[&empty], 50.0), None);
+    }
+
+    #[test]
+    fn nearest_point_xy_picks_the_true_2d_nearest_not_just_nearest_by_x() {
+        let a = PlotArea::new(Rect::new(0.0, 0.0, 200.0, 100.0));
+        let xscale = LinearScale::new(0.0, 20.0);
+        let yscale = LinearScale::new(0.0, 10.0);
+        // Two points share nearly the same X (10 and 11) but very
+        // different Y (0 and 9) — the true nearest 2D neighbor to
+        // (x=10.5, y=9) must be the point with the CLOSE Y, even though a
+        // 1D-by-X-only test (`nearest_point_x`) would treat them as
+        // roughly equidistant.
+        let points = [(10.0, 0.0), (11.0, 9.0)];
+        let px = a.x(&xscale, 10.5);
+        let py = a.y(&yscale, 9.0);
+        assert_eq!(nearest_point_xy(&a, &xscale, &yscale, &points, px, py), Some(1));
+    }
+
+    #[test]
+    fn nearest_point_xy_empty_points_is_none() {
+        let a = PlotArea::new(Rect::new(0.0, 0.0, 200.0, 100.0));
+        let xscale = LinearScale::new(0.0, 20.0);
+        let yscale = LinearScale::new(0.0, 10.0);
+        assert_eq!(nearest_point_xy(&a, &xscale, &yscale, &[], 50.0, 50.0), None);
     }
 
     #[test]

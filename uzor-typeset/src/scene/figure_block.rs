@@ -53,8 +53,10 @@ impl BlockSizing {
 
 /// The figure-block adapter: figures render into a rect, they don't shape
 /// glyphs or compute their own layout — `uzor-typeset` never invents a new
-/// figure-drawing primitive (design law 4), it only erases over the five
-/// concrete `uzor-figures` figure kinds at this one call site.
+/// figure-drawing primitive (design law 4), it only erases over the
+/// concrete `uzor-figures` figure kinds at this one call site (bar/curve/
+/// histogram/timeline/sankey, plus — typography-gap WAVE 4 — scatter/
+/// boxplot/kpi).
 pub trait TypesetFigure {
     /// Paint this figure into `rect` of `ctx` using `theme`.
     fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureTheme);
@@ -93,6 +95,24 @@ impl TypesetFigure for uzor_figures::TimelineFigure {
 }
 
 impl TypesetFigure for uzor_figures::SankeyFigure {
+    fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureTheme) {
+        self.render_with(ctx, rect, theme, &uzor_figures::FigureOverlay::default());
+    }
+}
+
+impl TypesetFigure for uzor_figures::ScatterFigure {
+    fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureTheme) {
+        self.render_with(ctx, rect, theme, &uzor_figures::FigureOverlay::default());
+    }
+}
+
+impl TypesetFigure for uzor_figures::BoxplotFigure {
+    fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureTheme) {
+        self.render_with(ctx, rect, theme, &uzor_figures::FigureOverlay::default());
+    }
+}
+
+impl TypesetFigure for uzor_figures::KpiFigure {
     fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureTheme) {
         self.render_with(ctx, rect, theme, &uzor_figures::FigureOverlay::default());
     }

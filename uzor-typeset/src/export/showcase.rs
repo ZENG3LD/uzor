@@ -38,7 +38,10 @@ use uzor::fonts::FontFamily;
 use uzor::render::RenderContext;
 use uzor::types::Rect;
 use uzor_export::{render_to_png, ExportSpec};
-use uzor_figures::{BarFigure, CurveFigure, FigureTheme, HistogramFigure, SankeyFigure, SankeyLink, SankeyNode, TimeScale, TimelineEvent, TimelineFigure};
+use uzor_figures::{
+    Annotation, BarFigure, BoxplotFigure, CurveFigure, FigureTheme, HistogramFigure, KpiFigure, NumberFormat, PointRadius, SankeyFigure,
+    SankeyLink, SankeyNode, ScatterFigure, ScatterPoint, TimeScale, TimelineEvent, TimelineFigure,
+};
 use uzor_graph::{ForceDirectedLayout, Graph, GraphEngine, HierarchicalLayout, HierarchicalParams, Layout, NodeIndex, RadialLayout, RadialParams};
 use uzor_text::ascii::{build_ascii_grid, draw_ascii_grid, AsciiGridStyle};
 use uzor_text::{
@@ -695,6 +698,7 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let fig_a_heading_run = [StyledRun::new("Figure Exhibits — Categorical & Time-Series", SUBHEADING_FONT)];
     let fig_b_heading_run = [StyledRun::new("Figure Exhibits — Distribution & Timeline", SUBHEADING_FONT)];
     let fig_c_heading_run = [StyledRun::new("Figure Exhibits — Staged Flow", SUBHEADING_FONT)];
+    let fig_d_heading_run = [StyledRun::new("Figure Exhibits — Statistical & Business", SUBHEADING_FONT)];
 
     // Typography-gap WAVE 3: the bar figure's own caption is now the AUTO-
     // NUMBERED path (`.with_caption` + `attach_captions`, below) instead of
@@ -708,6 +712,24 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     // before it in the real document (`flow_figures` is the FIRST section
     // extended into `flow_rest` below).
     const BAR_FIGURE_ID: BlockId = BlockId(9_001);
+    // Typography-gap WAVE 4: curve/histogram/timeline/sankey/scatter/
+    // boxplot/kpi-row ALL moved onto the SAME auto-numbering path this
+    // wave (previously only the bar figure did — the other four carried
+    // hand-typed "Figure 2"/"3"/"4"/"5" strings). Adding 3 more real
+    // auto-tagged figures makes a mixed hand/auto numbering scheme
+    // unmaintainable (a hand-typed number has no way to know how many
+    // auto-tagged captions land before it) — converting every figure
+    // caption in this section to `.with_caption()` is the correct fix,
+    // not a workaround: numbers are now GUARANTEED correct regardless of
+    // future insertions, matching `crate::caption`'s own module doc
+    // ("resolution depends only on document order").
+    const CURVE_FIGURE_ID: BlockId = BlockId(9_002);
+    const HISTOGRAM_FIGURE_ID: BlockId = BlockId(9_003);
+    const TIMELINE_FIGURE_ID: BlockId = BlockId(9_004);
+    const SANKEY_FIGURE_ID: BlockId = BlockId(9_005);
+    const SCATTER_FIGURE_ID: BlockId = BlockId(9_006);
+    const BOXPLOT_FIGURE_ID: BlockId = BlockId(9_007);
+    const KPI_ROW_ID: BlockId = BlockId(9_008);
     let caption_style = CaptionStyle::default();
     let bar_probe = [BlockNode::new(Block::Figure(FigureBlock::new(&bar_figure, BlockSizing::FixedHeight(FIGURE_HEIGHT))))
         .with_id(BAR_FIGURE_ID)
@@ -725,10 +747,55 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let bar_ref_text: &'static str = Box::leak(bar_ref_text.into_boxed_str());
     let bar_ref_run = [StyledRun::new(bar_ref_text, BODY_FONT)];
 
-    let curve_caption_run = [StyledRun::new("Figure 2 — a cumulative curve plotted against a calendar TimeScale X-axis.", CAPTION_FONT)];
-    let histogram_caption_run = [StyledRun::new("Figure 3 — a histogram of 500 seeded samples grouped into 20 bins.", CAPTION_FONT)];
-    let timeline_caption_run = [StyledRun::new("Figure 4 — a timeline of point and interval events across 3 lanes.", CAPTION_FONT)];
-    let sankey_caption_run = [StyledRun::new("Figure 5 — a staged flow diagram with one clearly dominant path.", CAPTION_FONT)];
+    // ── Statistical & Business figures (typography-gap WAVE 4) ──────────
+    let scatter_points: Vec<ScatterPoint> = (0..180)
+        .map(|i| {
+            let fi = i as f64;
+            let x = fi * 1.3 + ((i * 11) % 6) as f64 * 0.5;
+            let y = 30.0 + (fi * 0.25) + ((i * 17) % 23) as f64 - 11.0;
+            let value = 3.0 + ((i * 13) % 18) as f64;
+            ScatterPoint::with_value(x, y, value)
+        })
+        .collect();
+    let scatter_callout_point = scatter_points[140];
+    let scatter_figure = ScatterFigure::new(scatter_points)
+        .with_title("Sample metric vs. index (seeded, size-mapped)")
+        .with_radius(PointRadius::ValueMapped { min_radius: 2.0, max_radius: 8.0 })
+        .with_annotations(vec![
+            Annotation::HBand { low: 30.0, high: 55.0, color: None, label: Some("target range".to_owned()) },
+            Annotation::Callout { x: scatter_callout_point.x, y: scatter_callout_point.y, text: "notable reading".to_owned() },
+        ]);
+
+    let boxplot_categories: Vec<String> = ["group-a", "group-b", "group-c", "group-d"].iter().map(|s| (*s).to_owned()).collect();
+    let boxplot_group_a: Vec<f64> = (0..30).map(|i| 40.0 + ((i * 7) % 25) as f64).collect();
+    let boxplot_group_b: Vec<f64> = (0..25).map(|i| 55.0 + ((i * 11) % 30) as f64).collect();
+    let boxplot_group_c: Vec<f64> = {
+        let mut v: Vec<f64> = (0..28).map(|i| 35.0 + ((i * 5) % 20) as f64).collect();
+        v.push(140.0); // deliberate high outlier
+        v
+    };
+    let boxplot_group_d: Vec<f64> = (0..3).map(|i| 60.0 + i as f64 * 5.0).collect(); // n == 3 edge case
+    let boxplot_figure = BoxplotFigure::new(boxplot_categories, vec![boxplot_group_a, boxplot_group_b, boxplot_group_c, boxplot_group_d])
+        .with_title("Sample distributions by group (seeded)");
+
+    const KPI_TILE_HEIGHT: f64 = 110.0;
+    let kpi_sparkline: Vec<f64> = (0..24).map(|i| 100.0 + ((i * 7) % 22) as f64 - (i as f64) * 0.4).collect();
+    let kpi_revenue = KpiFigure::new("Revenue", 128_430.0)
+        .with_previous_value(110_000.0)
+        .with_format(NumberFormat::Currency("$"))
+        .with_sparkline(kpi_sparkline);
+    // `NumberFormat::Percent` multiplies by 100 (it expects the underlying
+    // FRACTION, per that variant's own docs) — a churn rate already
+    // expressed as "4.8%"/"6.1%" is stored as 0.048/0.061.
+    let kpi_churn = KpiFigure::new("Churn Rate", 0.048).with_previous_value(0.061).with_format(NumberFormat::Percent);
+    let kpi_active_users = KpiFigure::new("Active Users", 48_213.0).with_previous_value(48_213.0).with_format(NumberFormat::Si);
+    let kpi_revenue_nodes = [BlockNode::new(Block::Figure(FigureBlock::new(&kpi_revenue, BlockSizing::FixedHeight(KPI_TILE_HEIGHT))))];
+    let kpi_churn_nodes = [BlockNode::new(Block::Figure(FigureBlock::new(&kpi_churn, BlockSizing::FixedHeight(KPI_TILE_HEIGHT))))];
+    let kpi_active_nodes = [BlockNode::new(Block::Figure(FigureBlock::new(&kpi_active_users, BlockSizing::FixedHeight(KPI_TILE_HEIGHT))))];
+    let kpi_cells = [TableCell::new(&kpi_revenue_nodes), TableCell::new(&kpi_churn_nodes), TableCell::new(&kpi_active_nodes)];
+    let kpi_rows = [TableRow::new(&kpi_cells)];
+    let kpi_columns = [ColumnSpec::Fraction(1.0), ColumnSpec::Fraction(1.0), ColumnSpec::Fraction(1.0)];
+    let kpi_table = TableBlock::new(&kpi_columns, &kpi_rows);
 
     let graph_intro_heading_run = [StyledRun::new("Graph Engine Family", SUBHEADING_FONT)];
     const GRAPH_INTRO: &str = "The following pages draw real, live layouts from uzor-graph, the reusable \
@@ -751,28 +818,45 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
             .with_caption(CaptionKind::Figure, "a categorical bar chart over 5 seeded categories."),
         BlockNode::new(Block::Spacer(18.0)),
         BlockNode::new(Block::Figure(FigureBlock::new(&curve_figure, BlockSizing::FixedHeight(FIGURE_HEIGHT))))
-            .with_break_control(BreakControl::AvoidAfter),
-        BlockNode::new(Block::Spacer(6.0)),
-        BlockNode::new(Block::Paragraph(Paragraph::new(&curve_caption_run, body_width))),
+            .with_id(CURVE_FIGURE_ID)
+            .with_break_control(BreakControl::AvoidAfter)
+            .with_caption(CaptionKind::Figure, "a cumulative curve plotted against a calendar TimeScale X-axis."),
         BlockNode::new(Block::Paragraph(Paragraph::new(&fig_b_heading_run, body_width)))
             .with_break_control(BreakControl::ForceBefore),
         BlockNode::new(Block::Spacer(10.0)),
         BlockNode::new(Block::Figure(FigureBlock::new(&histogram_figure, BlockSizing::FixedHeight(FIGURE_HEIGHT))))
-            .with_break_control(BreakControl::AvoidAfter),
-        BlockNode::new(Block::Spacer(6.0)),
-        BlockNode::new(Block::Paragraph(Paragraph::new(&histogram_caption_run, body_width))),
+            .with_id(HISTOGRAM_FIGURE_ID)
+            .with_break_control(BreakControl::AvoidAfter)
+            .with_caption(CaptionKind::Figure, "a histogram of 500 seeded samples grouped into 20 bins."),
         BlockNode::new(Block::Spacer(18.0)),
         BlockNode::new(Block::Figure(FigureBlock::new(&timeline_figure, BlockSizing::FixedHeight(FIGURE_HEIGHT))))
-            .with_break_control(BreakControl::AvoidAfter),
-        BlockNode::new(Block::Spacer(6.0)),
-        BlockNode::new(Block::Paragraph(Paragraph::new(&timeline_caption_run, body_width))),
+            .with_id(TIMELINE_FIGURE_ID)
+            .with_break_control(BreakControl::AvoidAfter)
+            .with_caption(CaptionKind::Figure, "a timeline of point and interval events across 3 lanes."),
         BlockNode::new(Block::Paragraph(Paragraph::new(&fig_c_heading_run, body_width)))
             .with_break_control(BreakControl::ForceBefore),
         BlockNode::new(Block::Spacer(10.0)),
         BlockNode::new(Block::Figure(FigureBlock::new(&sankey_figure, BlockSizing::FixedHeight(FIGURE_HEIGHT))))
-            .with_break_control(BreakControl::AvoidAfter),
-        BlockNode::new(Block::Spacer(6.0)),
-        BlockNode::new(Block::Paragraph(Paragraph::new(&sankey_caption_run, body_width))),
+            .with_id(SANKEY_FIGURE_ID)
+            .with_break_control(BreakControl::AvoidAfter)
+            .with_caption(CaptionKind::Figure, "a staged flow diagram with one clearly dominant path."),
+        BlockNode::new(Block::Paragraph(Paragraph::new(&fig_d_heading_run, body_width)))
+            .with_break_control(BreakControl::ForceBefore),
+        BlockNode::new(Block::Spacer(10.0)),
+        BlockNode::new(Block::Figure(FigureBlock::new(&scatter_figure, BlockSizing::FixedHeight(FIGURE_HEIGHT))))
+            .with_id(SCATTER_FIGURE_ID)
+            .with_break_control(BreakControl::AvoidAfter)
+            .with_caption(CaptionKind::Figure, "a size-mapped scatter cloud with a target-range band and a callout."),
+        BlockNode::new(Block::Spacer(18.0)),
+        BlockNode::new(Block::Figure(FigureBlock::new(&boxplot_figure, BlockSizing::FixedHeight(FIGURE_HEIGHT))))
+            .with_id(BOXPLOT_FIGURE_ID)
+            .with_break_control(BreakControl::AvoidAfter)
+            .with_caption(CaptionKind::Figure, "a quartile summary across 4 groups, including a Tukey-fence outlier."),
+        BlockNode::new(Block::Spacer(18.0)),
+        BlockNode::new(Block::Table(kpi_table))
+            .with_id(KPI_ROW_ID)
+            .with_break_control(BreakControl::AvoidAfter)
+            .with_caption(CaptionKind::Figure, "a 3-tile KPI dashboard row — big number, colored delta, trailing sparkline."),
         BlockNode::new(Block::Spacer(20.0)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&graph_intro_heading_run, body_width)))
             .with_break_control(BreakControl::AvoidAfter)
