@@ -656,7 +656,28 @@ impl Scene3DApp<NoPanel> for DemoApp {
         let scene = engine3d.build_scene();
         let aspect = surf_w as f32 / (surf_h.max(1) as f32);
         let camera = engine3d.camera(aspect);
-        Some(Scene3DFrame { scene, camera })
+        drop(engine3d);
+
+        // Wave 4 (W3D arc plan §1.3 label-overlay gap, closed here): hand
+        // `Manager` a real 2D overlay closure — node labels + the hover
+        // info card, painted ON TOP of the composed 3D frame this same
+        // tick via `GraphEngine3D::draw_overlay`. See
+        // `uzor-graph/CLAUDE.md`'s Wave 4 divergence log for why this
+        // couldn't land in Wave 3 (no post-3D render-hub surface existed
+        // yet — `uzor-render-hub::compose`'s new Phase 4.5 is that
+        // surface). The closure re-locks `engine3d` when `Manager`
+        // actually calls it (immediately after this `scene3d()` call
+        // returns, same tick, before the next frame) — `camera` is
+        // `Copy` so capturing it here doesn't disturb the `camera` value
+        // returned below in `Scene3DFrame`.
+        let engine3d_for_overlay = self.engine3d.clone();
+        let overlay_viewport = Rect::new(0.0, 0.0, surf_w as f64, surf_h as f64);
+        let overlay: Box<dyn FnMut(&mut dyn RenderContext)> = Box::new(move |ctx: &mut dyn RenderContext| {
+            let engine3d = Self::lock3d(&engine3d_for_overlay);
+            engine3d.draw_overlay(ctx, &camera, overlay_viewport);
+        });
+
+        Some(Scene3DFrame { scene, camera, overlay: Some(overlay) })
     }
 }
 

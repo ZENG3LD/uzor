@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use glam::Vec3;
 use uzor::input::{ModifierKeys, MouseButton, PlatformEvent};
+use uzor::render::RenderContext;
 use uzor::types::Rect;
 use uzor_urx_3d::{MeshLit, PerspectiveCamera, Scene3D};
 
@@ -36,6 +37,7 @@ use crate::label_grid;
 use crate::layout::force_directed_3d::ForceDirectedLayout3D;
 use crate::layout::{Layout, LayoutTickResult};
 use crate::particle::Particle;
+use crate::render::{draw_hover_card, HoverCardInfo};
 
 /// Wheel-to-dolly screen-delta sensitivity — mirrors
 /// [`crate::engine::GraphEngine`]'s own `ZOOM_SENSITIVITY` (`engine.rs`)
@@ -129,6 +131,19 @@ const NODE_SPHERE_RINGS: u32 = 12;
 const NODE_SPHERE_SLICES: u32 = 16;
 /// Shared unit-cylinder edge mesh geometry (plan §1.3).
 const EDGE_CYLINDER_SLICES: u32 = 8;
+
+/// Label text offset from its node's projected screen position (Wave 4
+/// — [`GraphEngine3D::draw_overlay`]). The 2D engine's own
+/// `render::draw_nodes` offsets by `node_screen_radius + 4.0` (a
+/// per-node value); 3D's `visible_labels` doesn't expose each node's
+/// own projected screen radius (only `label_grid::select_labels`'s
+/// internal tie-break sees it, per that method's own doc comment) —
+/// recomputing the pinhole-projection formula a second time here, only
+/// for a text offset, is more machinery than this wave's "labels + card
+/// are the deliverable" scope needs. A fixed offset is the documented
+/// Wave 4 simplification; see `uzor-graph/CLAUDE.md`'s divergence log.
+const OVERLAY_LABEL_OFFSET_X: f64 = 6.0;
+const OVERLAY_LABEL_OFFSET_Y: f64 = 4.0;
 
 /// The 3D sibling of [`crate::engine::GraphEngine`] — see the module doc.
 pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
@@ -533,12 +548,173 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     pub fn set_label_density(&mut self, density: f64) {
         self.label_density = density.max(0.0);
     }
+
+    /// Paint the label overlay + hover info card for `camera`/`viewport`
+    /// this frame (Wave 4 / W3D arc plan §1.3 label-overlay gap, closed
+    /// here — `uzor-graph/CLAUDE.md`'s Wave 3 divergence log has the full
+    /// grounding for why the actual DRAW call was deferred to this wave).
+    /// `render` is an ordinary 2D `RenderContext` in the SAME logical
+    /// pixel space as `viewport` (screen-space overlay, no z-test — the
+    /// plan's own §1.3 "industry standard for 3D graph labels" call, same
+    /// approach vasturiano's `3d-force-graph` uses) — a caller wires this
+    /// via `uzor-desktop::Scene3DFrame::overlay`, see that field's own
+    /// doc comment for the exact composition point.
+    ///
+    /// Labels: every `(node, screen_x, screen_y)` [`GraphEngine3D::visible_labels`]
+    /// returns (which already culls anything behind the camera via
+    /// [`crate::interaction::pick3d::project_world_to_screen`] returning
+    /// `None`, and applies the LOD grid quota) is drawn with the SAME
+    /// font/fill-color/alpha-fade convention `crate::render::draw_nodes`
+    /// uses for the 2D engine's own labels (`label_grid::label_alpha`,
+    /// degree-boosted fade) — "same quality as 2D mode's labels" per the
+    /// plan's own goal — just at a fixed text offset (see
+    /// [`OVERLAY_LABEL_OFFSET_X`]/[`OVERLAY_LABEL_OFFSET_Y`]'s own doc
+    /// comment for why, unlike 2D, this isn't `node_screen_radius`-based).
+    ///
+    /// Hover card: reuses [`crate::render::draw_hover_card`] (the SAME
+    /// function the 2D engine's own hover card calls) anchored at the
+    /// hovered node's projected screen position, built from
+    /// [`GraphEngine3D::node_facts`] — one hover-card implementation for
+    /// both dimensions, not a second one invented here.
+    ///
+    /// **Selection ring deliberately NOT drawn** — no 3D-side selected/
+    /// hovered highlight exists yet (`render3d.rs::build_scene` tints
+    /// every node by category only, confirmed by direct read — no
+    /// selection-aware branch), and adding a screen-space ring around a
+    /// selected node's projected position (without the matching 3D-side
+    /// glow 2D's own selection ring visually pairs with) was explicitly
+    /// scoped out by this task's own instruction ("if not, skip — labels
+    /// + card are the deliverable"). A natural Wave 5+ follow-up once a
+    /// 3D-side highlight exists to pair it with.
+    pub fn draw_overlay(&self, render: &mut dyn RenderContext, camera: &PerspectiveCamera, viewport: Rect) -> OverlayDrawStats {
+        let max_degree = self.graph.nodes().map(|(id, _)| self.graph.degree(id)).max().unwrap_or(0).max(1);
+        let zoom_analog = (Camera3D::default().distance / self.camera.distance.max(1e-3)) as f64;
+
+        let mut labels_drawn = 0usize;
+        for (id, sx, sy) in self.visible_labels(camera, viewport) {
+            let Some(node) = self.graph.get_node(id) else { continue };
+            let normalized_degree = self.graph.degree(id) as f64 / max_degree as f64;
+            let alpha = label_grid::label_alpha(zoom_analog, normalized_degree);
+            if alpha <= 0.01 {
+                continue;
+            }
+            render.set_global_alpha(alpha);
+            render.set_fill_color("#e6e6ea");
+            render.set_font("11px sans-serif");
+            render.fill_text(&node.label, sx + OVERLAY_LABEL_OFFSET_X, sy + OVERLAY_LABEL_OFFSET_Y);
+            render.set_global_alpha(1.0);
+            labels_drawn += 1;
+        }
+
+        let mut hover_card_drawn = false;
+        if let Some(hovered) = self.hovered {
+            if let (Some(facts), Some(p)) = (self.node_facts(hovered), self.particles.get(hovered.index())) {
+                let world = Vec3::new(p.x, p.y, p.z);
+                if let Some(anchor) = pick3d::project_world_to_screen(camera, world, viewport) {
+                    let info = HoverCardInfo { label: facts.label, category: facts.category, degree: facts.degree, pinned: facts.pinned };
+                    draw_hover_card(render, anchor, &info, viewport);
+                    hover_card_drawn = true;
+                }
+            }
+        }
+
+        OverlayDrawStats { labels_drawn, hover_card_drawn }
+    }
+}
+
+/// Per-frame draw counts for [`GraphEngine3D::draw_overlay`] — a
+/// test/verification aid (mirrors [`crate::render::NodeDrawStats`]'s own
+/// role for the 2D engine), not consumed by any production call site.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OverlayDrawStats {
+    pub labels_drawn: usize,
+    pub hover_card_drawn: bool,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::graph::Graph;
+
+    // ── `RecordingRenderContext` — Wave 4's `draw_overlay` test double ──
+    //
+    // Same boilerplate-minimal "implement every RenderContext supertrait
+    // with a no-op body" pattern already used throughout the workspace
+    // (`uzor/src/core/render/context.rs`'s own `NoImageContext` test,
+    // `uzor/src/ui/themes/macos/widgets/switch_toggle.rs`'s own
+    // `MockContext`) — the ONE addition here is recording every
+    // `fill_text` call (text + position), since `draw_overlay`'s own
+    // gate is "assert via a recording RenderContext mock", not just
+    // "compiles against a mock".
+
+    struct RecordingRenderContext {
+        fill_texts: Vec<(String, f64, f64)>,
+    }
+
+    impl RecordingRenderContext {
+        fn new() -> Self {
+            Self { fill_texts: Vec::new() }
+        }
+    }
+
+    impl uzor::render::Painter for RecordingRenderContext {
+        fn save(&mut self) {}
+        fn restore(&mut self) {}
+        fn translate(&mut self, _x: f64, _y: f64) {}
+        fn rotate(&mut self, _angle: f64) {}
+        fn scale(&mut self, _x: f64, _y: f64) {}
+        fn set_fill_color(&mut self, _color: &str) {}
+        fn set_global_alpha(&mut self, _alpha: f64) {}
+        fn set_stroke_color(&mut self, _color: &str) {}
+        fn set_stroke_width(&mut self, _width: f64) {}
+        fn set_line_dash(&mut self, _pattern: &[f64]) {}
+        fn set_line_cap(&mut self, _cap: &str) {}
+        fn set_line_join(&mut self, _join: &str) {}
+        fn begin_path(&mut self) {}
+        fn move_to(&mut self, _x: f64, _y: f64) {}
+        fn line_to(&mut self, _x: f64, _y: f64) {}
+        fn close_path(&mut self) {}
+        fn rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+        fn arc(&mut self, _cx: f64, _cy: f64, _r: f64, _s: f64, _e: f64) {}
+        fn ellipse(&mut self, _cx: f64, _cy: f64, _rx: f64, _ry: f64, _rot: f64, _s: f64, _e: f64) {}
+        fn quadratic_curve_to(&mut self, _cpx: f64, _cpy: f64, _x: f64, _y: f64) {}
+        fn bezier_curve_to(&mut self, _cp1x: f64, _cp1y: f64, _cp2x: f64, _cp2y: f64, _x: f64, _y: f64) {}
+        fn stroke(&mut self) {}
+        fn fill(&mut self) {}
+    }
+    impl uzor::render::TextRenderer for RecordingRenderContext {
+        fn set_font(&mut self, _font: &str) {}
+        fn set_text_align(&mut self, _align: uzor::render::TextAlign) {}
+        fn set_text_baseline(&mut self, _baseline: uzor::render::TextBaseline) {}
+        fn fill_text(&mut self, text: &str, x: f64, y: f64) {
+            self.fill_texts.push((text.to_owned(), x, y));
+        }
+        fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {}
+    }
+    impl uzor::render::TextMetrics for RecordingRenderContext {
+        fn measure_text(&self, _text: &str) -> f64 {
+            0.0
+        }
+        fn text_bounds(&self, _text: &str, _font: &str) -> uzor::render::TextBounds {
+            uzor::render::TextBounds { x: 0.0, y: 0.0, w: 0.0, h: 0.0, ascent: 0.0, descent: 0.0 }
+        }
+    }
+    impl uzor::render::Masking for RecordingRenderContext {
+        fn clip(&mut self) {}
+    }
+    impl uzor::render::Effects for RecordingRenderContext {}
+    impl uzor::render::ShapeHelpers for RecordingRenderContext {
+        fn fill_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+        fn stroke_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+    }
+    impl uzor::render::GradientPainter for RecordingRenderContext {}
+    impl uzor::render::UiEffectHelpers for RecordingRenderContext {}
+    impl uzor::render::BatchPainter for RecordingRenderContext {}
+    impl uzor::render::RenderContext for RecordingRenderContext {
+        fn dpr(&self) -> f64 {
+            1.0
+        }
+    }
 
     type DemoGraph = Graph<(), ()>;
 
@@ -866,5 +1042,95 @@ mod tests {
             GraphEngine3D::new(triangle(), ForceDirectedLayout3D::default());
         let persp = engine.camera(16.0 / 9.0);
         assert!((persp.eye - engine.camera.eye()).length() < 1e-4);
+    }
+
+    // ── Wave 4: `draw_overlay` — label + hover-card overlay draw calls ──
+
+    #[test]
+    fn draw_overlay_paints_label_text_for_every_visible_node_in_a_deterministic_fixture() {
+        let mut engine = spread_triangle_engine();
+        // Same "remove the LOD quota as a confound" convention as
+        // `visible_labels_returns_a_screen_position_for_every_unoccluded_node`
+        // — this test's own job is proving the paint plumbing, not
+        // re-proving `label_grid.rs`'s already-covered quota math.
+        engine.set_label_density(100.0);
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        let mut ctx = RecordingRenderContext::new();
+
+        let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
+
+        assert_eq!(stats.labels_drawn, 3, "all 3 well-separated triangle nodes must get a painted label at this camera/density");
+        assert_eq!(ctx.fill_texts.len(), 3, "draw_overlay must issue exactly one fill_text draw call per shown label");
+        let drawn_labels: HashSet<&str> = ctx.fill_texts.iter().map(|(t, _, _)| t.as_str()).collect();
+        assert_eq!(drawn_labels, HashSet::from(["a", "b", "c"]), "every fixture node's own label text must be drawn");
+        assert!(!stats.hover_card_drawn, "nothing is hovered in this fixture, so no hover card should be painted");
+    }
+
+    #[test]
+    fn draw_overlay_culls_a_label_for_a_node_behind_the_camera() {
+        let mut engine = spread_triangle_engine();
+        engine.set_label_density(100.0);
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+
+        // Move node 0 directly behind the camera eye, opposite the view
+        // direction — `project_world_to_screen`'s own behind-the-eye
+        // guard (`clip.w <= 1e-5`) must reject it, and `visible_labels`
+        // (which `draw_overlay` iterates) must therefore never surface
+        // it as a label candidate.
+        let forward = (camera.target - camera.eye).normalize();
+        let behind = camera.eye - forward * 50.0;
+        engine.particles[0] = Particle::at3(behind.x, behind.y, behind.z);
+        assert!(
+            pick3d::project_world_to_screen(&camera, behind, viewport).is_none(),
+            "fixture sanity check: the behind-camera point must itself fail to project"
+        );
+
+        let mut ctx = RecordingRenderContext::new();
+        let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
+
+        assert_eq!(stats.labels_drawn, 2, "the behind-camera node's label must be culled, the other two must still draw");
+        assert!(
+            !ctx.fill_texts.iter().any(|(t, _, _)| t == "a"),
+            "node 0's own label text must never be drawn while it sits behind the camera"
+        );
+    }
+
+    #[test]
+    fn draw_overlay_paints_a_hover_card_for_the_hovered_node() {
+        let mut engine = spread_triangle_engine();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        engine.hovered = Some(NodeIndex(0));
+
+        let mut ctx = RecordingRenderContext::new();
+        let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
+
+        assert!(stats.hover_card_drawn, "a hovered node with a valid projection must paint a hover card");
+        // `draw_hover_card` (`crate::render::draw_hover_card`, reused
+        // verbatim from the 2D engine) issues a key/value `fill_text`
+        // pair per `NodeFacts` field — the hovered node's own label
+        // text must show up among the card's drawn text.
+        assert!(
+            ctx.fill_texts.iter().any(|(t, _, _)| t == "a"),
+            "the hover card must show the hovered node's own label text"
+        );
+    }
+
+    #[test]
+    fn draw_overlay_draws_no_hover_card_when_nothing_is_hovered() {
+        let engine = spread_triangle_engine();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+
+        let mut ctx = RecordingRenderContext::new();
+        let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
+
+        assert!(!stats.hover_card_drawn, "no hover, no card — draw_overlay must not paint a hover card without a hovered node");
     }
 }

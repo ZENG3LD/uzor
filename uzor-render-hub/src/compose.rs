@@ -18,12 +18,34 @@
 //!   `Scene3D` is read from the hub's `urx_scene_3d` slot — caller
 //!   pushes the scene before each job).
 //! - [`submit_urx_composed`] — single-acquire / single-present submit
-//!   that does 2D first, then N×3D, all in one encoder.
+//!   that does 2D first, then N×3D, then an optional post-3D 2D
+//!   overlay, all in one encoder.
+//!
+//! ## Post-3D 2D overlay (label/hover-card gap, closed here)
+//!
+//! `submit_urx_composed`'s Phase 3 2D pass reads exclusively from
+//! `state.urx_ctx`/`state.active_urx` — a channel a `Scene3D`-driven
+//! consumer (e.g. `uzor-desktop::Manager`'s `run_with_3d` path) never
+//! populates (that consumer skips the whole 2D chrome pass on a
+//! 3D-active frame — see `uzor-desktop/CLAUDE.md`'s divergence log).
+//! There was therefore no way to paint real 2D content (node labels, a
+//! hover info card) ON TOP of a composed 3D viewport. The optional
+//! `overlay` parameter below closes that gap: an additive Phase 4.5,
+//! painted AFTER every [`Compose3DJob`]'s copy into `swap_view`, so it
+//! composites over whatever the 3D pass drew, not under it — using an
+//! entirely separate, self-contained CPU `RenderContext`
+//! ([`uzor_render_tiny_skia::TinySkiaCpuRenderContext`]), not the
+//! `urx_ctx` channel Phase 3 uses (that channel's own `Scene`-graph API
+//! is a different shape than the `&mut dyn RenderContext` immediate-mode
+//! draw calls `uzor-graph`'s label/hover-card drawing already uses).
 //!
 //! Co-existence rule (doctrine): this path is opt-in. Consumers that
 //! want fullscreen 3D keep calling `submit_3d_frame_to_rect`;
 //! consumers that want fullscreen 2D keep calling `submit_frame`; this
 //! new path is for the COMPOSE case.
+
+use uzor::render::RenderContext;
+use uzor_render_tiny_skia::TinySkiaCpuRenderContext;
 
 use crate::factory::{Submit3DError, SurfaceMode, WindowRenderState};
 
@@ -101,11 +123,27 @@ pub struct ComposedOutcome {
 ///    target with the job's camera, then `copy_texture_to_texture`
 ///    that result into `swap_view` at the job's rect — in the SAME
 ///    encoder as the 2D pass.
-/// 4. One `queue.submit`, one `present`.
+/// 4. If `overlay` is `Some`, paint it into a fresh, fully-transparent
+///    CPU `RenderContext` sized to the swapchain and alpha-composite
+///    the result ON TOP of `swap_view` (module doc has the full
+///    rationale/gap this closes).
+/// 5. One `queue.submit`, one `present`.
+///
+/// `overlay` is taken BY VALUE (owned `Box`, not a borrowed
+/// `&mut dyn FnMut(...)`) — this call is the only place it's ever
+/// invoked, so an owned closure sidesteps threading a borrowed trait
+/// object's lifetime back out through this function's signature. It
+/// receives `&mut dyn RenderContext` in the SAME logical/physical 1:1
+/// pixel space as `surf_w`/`surf_h` (no dpr scaling is applied here) —
+/// the same space `uzor-graph`'s `GraphEngine3D::visible_labels`/
+/// `draw_overlay` already project against via the job's own
+/// `camera`/viewport, so a caller building the overlay from that engine
+/// needs no coordinate translation.
 pub fn submit_urx_composed(
     state:      &mut WindowRenderState,
     base_color: [f32; 4],
     jobs:       &[Compose3DJob],
+    mut overlay: Option<Box<dyn FnMut(&mut dyn RenderContext)>>,
 ) -> Result<ComposedOutcome, Submit3DError> {
     // Resolve surface kind + size + format up front.
     let (surf_w, surf_h, surface_format) = match &state.surface {
@@ -302,6 +340,21 @@ pub fn submit_urx_composed(
             );
         }
         jobs_rendered += 1;
+    }
+
+    // ── Phase 4.5: optional 2D overlay, painted OVER the 3D result ──
+    // Painted ONCE into a CPU pixmap + uploaded ONCE into a sampleable
+    // texture, then alpha-blitted into `swap_view` (and, when armed, the
+    // capture mirror) — re-running `overlay_fn` a second time for the
+    // mirror would double the app's draw-call cost for identical output
+    // (the overlay content doesn't depend on which target it lands on).
+    if let Some(overlay_fn) = overlay.as_mut() {
+        if let Some(overlay_view) = build_overlay_texture(&device, &queue, surf_w, surf_h, overlay_fn.as_mut()) {
+            blit_overlay_onto(&device, &mut encoder, &overlay_view, &swap_view, surface_format);
+            if let Some(cap) = state.urx_capture_3d.as_ref() {
+                blit_overlay_onto(&device, &mut encoder, &overlay_view, &cap.view, surface_format);
+            }
+        }
     }
 
     // ── Phase 5: one submit, one present ────────────────────────────
@@ -650,4 +703,105 @@ fn compose_urx_wgpu_into_swap(
         ctx.draw_commands = taken;
     }
     let _ = encoder; // Wgpu path doesn't use our encoder for 2D in 1.4.9.
+}
+
+// ── Post-3D 2D overlay pass ──────────────────────────────────────────
+
+/// Sampleable texture format the overlay pixmap uploads into. Doesn't
+/// need to match the swapchain format — [`wgpu::util::TextureBlitter`]'s
+/// fragment shader just samples it as `texture_2d<f32>`; only the BLIT
+/// TARGET has to match the format the blitter's pipeline was built for
+/// (see [`blit_overlay_onto`]).
+const OVERLAY_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+/// Paint `overlay_fn` into a fresh, fully-transparent
+/// [`TinySkiaCpuRenderContext`] sized `surf_w × surf_h` (1:1 physical
+/// pixels, no dpr scaling — see [`submit_urx_composed`]'s own doc
+/// comment) and upload the result into a sampleable texture. Returns
+/// `None` for a zero-sized surface (nothing to paint).
+///
+/// `TinySkiaCpuRenderContext::new`'s pixmap starts fully transparent
+/// (`tiny_skia::Pixmap::new` zero-fills) — the overlay never needs an
+/// explicit clear, unlike the base 2D chrome pass which owns the
+/// background color (Phase 3, `compose_urx_cpu_into_swap`). The pixmap
+/// data is PREMULTIPLIED alpha (tiny-skia's own convention) — see
+/// [`blit_overlay_onto`] for why that dictates the blend function.
+fn build_overlay_texture(
+    device: &wgpu::Device,
+    queue:  &wgpu::Queue,
+    surf_w: u32,
+    surf_h: u32,
+    overlay_fn: &mut dyn FnMut(&mut dyn RenderContext),
+) -> Option<wgpu::TextureView> {
+    if surf_w == 0 || surf_h == 0 {
+        return None;
+    }
+    let mut ctx = TinySkiaCpuRenderContext::new(surf_w, surf_h, 1.0);
+    overlay_fn(&mut ctx);
+
+    let (w, h) = (ctx.width(), ctx.height());
+    if w == 0 || h == 0 {
+        return None;
+    }
+
+    let overlay_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("uzor-render-hub:compose-overlay"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: OVERLAY_TEXTURE_FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture:   &overlay_tex,
+            mip_level: 0,
+            origin:    wgpu::Origin3d::ZERO,
+            aspect:    wgpu::TextureAspect::All,
+        },
+        ctx.pixels(),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * w),
+            rows_per_image: Some(h),
+        },
+        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+    );
+    Some(overlay_tex.create_view(&wgpu::TextureViewDescriptor::default()))
+}
+
+/// Alpha-composite `overlay_view` ON TOP of whatever is already in
+/// `target_view` (`wgpu::util::TextureBlitter::copy`'s own render pass
+/// uses `LoadOp::Load`, never `Clear` — confirmed by direct read of
+/// `wgpu::util::texture_blitter`) — this is what makes the overlay a
+/// true OVER composite against the already-drawn 3D result rather than
+/// an opaque overwrite.
+///
+/// `PREMULTIPLIED_ALPHA_BLENDING`, not the default straight-alpha
+/// blend: [`build_overlay_texture`]'s source pixmap is tiny-skia's own
+/// premultiplied RGBA8, and the blit shader is a plain
+/// `textureSample`-and-output pass-through (no unpremultiply step) —
+/// straight-alpha blending against already-premultiplied source data
+/// would double-apply the alpha and darken every translucent pixel.
+///
+/// Built fresh every call — no per-`WindowRenderState` cache for this
+/// pipeline/sampler/bind-group-layout (unlike `urx_offscreen_3d`'s own
+/// cached texture). A real, documented perf cost (one `RenderPipeline`
+/// build per composed-3D frame that actually paints an overlay), the
+/// same "accept the cost now, cache it later" tradeoff
+/// `compose_urx_wgpu_into_swap` already documents above for the
+/// identical reason — flagged as a follow-up, not silently dropped.
+fn blit_overlay_onto(
+    device:       &wgpu::Device,
+    encoder:      &mut wgpu::CommandEncoder,
+    overlay_view: &wgpu::TextureView,
+    target_view:  &wgpu::TextureView,
+    target_format: wgpu::TextureFormat,
+) {
+    let blitter = wgpu::util::TextureBlitterBuilder::new(device, target_format)
+        .blend_state(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)
+        .build();
+    blitter.copy(device, encoder, overlay_view, target_view);
 }

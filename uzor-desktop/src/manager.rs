@@ -1441,12 +1441,21 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             // Clear one-shot input flags AFTER app.ui consumed them.
             self.layout.end_frame_inputs();
 
-            let outcome = if let Some(frame) = scene3d_frame {
+            let outcome = if let Some(mut frame) = scene3d_frame {
                 let (surf_w, surf_h) = surf_wh.expect("scene3d_frame is Some only when surf_wh was already Some");
                 pw.render_state.with_renderer_3d(|_, scene| *scene = frame.scene);
                 pw.render_state.set_capture_3d(true);
                 let job = Compose3DJob { camera: frame.camera, dst_x: 0, dst_y: 0, dst_w: surf_w, dst_h: surf_h };
-                match submit_urx_composed(&mut pw.render_state, bg_color.components, std::slice::from_ref(&job)) {
+                // Wave 4 (W3D arc plan §1.3 label-overlay gap): forward the
+                // app's optional 2D overlay closure into the new post-3D
+                // Phase 4.5 — see `uzor-render-hub::compose`'s own doc
+                // comment for exactly where it lands in the composed frame.
+                // Taken by VALUE (not `&mut`) — `submit_urx_composed` only
+                // ever needs it for this one call and never hands it back,
+                // so an owned `Box` sidesteps threading a borrowed
+                // `&mut dyn FnMut(...)` reference's lifetime through a
+                // generic function boundary entirely.
+                match submit_urx_composed(&mut pw.render_state, bg_color.components, std::slice::from_ref(&job), frame.overlay.take()) {
                     Ok(composed) => SubmitOutcome { metrics: Default::default(), surface_lost: composed.surface_lost },
                     Err(e) => {
                         eprintln!("[uzor-desktop] submit_urx_composed failed: {e:?}");

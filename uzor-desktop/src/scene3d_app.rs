@@ -25,6 +25,18 @@ use uzor::layout::docking::DockPanel;
 pub struct Scene3DFrame {
     pub scene: uzor_urx_3d::Scene3D,
     pub camera: uzor_urx_3d::PerspectiveCamera,
+    /// Optional 2D overlay painted ON TOP of the composed 3D frame this
+    /// same tick (Wave 4 / W3D arc plan §1.3 label-overlay gap, closed
+    /// here — see `crate::manager`'s divergence log for exactly how this
+    /// forwards into `submit_urx_composed`'s new post-3D Phase 4.5).
+    /// Receives `&mut dyn RenderContext` in the SAME 1:1 physical-pixel
+    /// space as the `surf_w`/`surf_h` this `scene3d()` call was invoked
+    /// with — a `uzor-graph::GraphEngine3D::draw_overlay` caller needs no
+    /// coordinate translation between `project_world_to_screen`'s output
+    /// and where it draws. `None` (the common case — 2D-chrome-free 3D
+    /// content with nothing to overlay) skips Phase 4.5 entirely; a
+    /// window that never sets this pays zero extra cost.
+    pub overlay: Option<Box<dyn FnMut(&mut dyn uzor::render::RenderContext)>>,
 }
 
 /// Additive sibling of [`App`] for windows that want a 3D viewport.
