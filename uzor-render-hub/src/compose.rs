@@ -262,9 +262,21 @@ pub fn submit_urx_composed(
 
         // Lazy-init renderer + scene (mirrors submit_3d_frame_to_rect).
         if state.urx_renderer_3d.is_none() {
-            state.urx_renderer_3d = Some(uzor_urx_3d::Renderer3D::new(
-                &device, &queue, surface_format, (dw, dh), 1024,
-            ));
+            let mut r3d = uzor_urx_3d::Renderer3D::new(&device, &queue, surface_format, (dw, dh), 1024);
+            // Owner-ordered live fix ("линии глитчуют") — this is the
+            // ONE live compose path a visible 3D window actually renders
+            // through (confirmed against `uzor-desktop`'s own divergence
+            // log: `Manager` calls `submit_urx_composed`, never the
+            // `with_renderer_3d`/`submit_3d_frame`/`submit_3d_frame_to_rect`
+            // sibling entry points in `factory.rs`), so arming the
+            // owner's own requested default (4x MSAA) here, once, at
+            // lazy-init, is the smallest real path that actually
+            // improves what's on screen. Falls back to single-sample
+            // automatically for any scene `Renderer3D::render_inner`'s
+            // own MSAA gate doesn't cover (transparent/textured/pbr
+            // content) — never a crash, just no AA for that frame.
+            r3d.set_sample_count(&device, 4);
+            state.urx_renderer_3d = Some(r3d);
         }
         if state.urx_scene_3d.is_none() {
             state.urx_scene_3d = Some(uzor_urx_3d::Scene3D::new());

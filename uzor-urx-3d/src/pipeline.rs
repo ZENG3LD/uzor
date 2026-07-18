@@ -273,6 +273,33 @@ pub struct Renderer3D {
     /// target between the transparent pass and bloom/composite so
     /// particles get tonemapped + bloomed with the rest of the scene.
     particle_renderer: Option<std::sync::Arc<crate::particles::ParticleRenderer>>,
+
+    // Wave B (owner-ordered MSAA quality fix) — see
+    // `Renderer3D::set_sample_count`'s own doc comment for the full
+    // design: an OPT-IN, per-instance sample count (default `1`, zero
+    // behavior change for every pre-existing caller/test), scoped to
+    // the Unlit + Lit/Phong instanced opaque pass ONLY (the path
+    // `uzor-graph`'s node spheres/edge cylinders actually draw
+    // through) — Textured/Pbr/transparent/particle content in the same
+    // frame silently falls back to the single-sample path rather than
+    // risk a sample-count mismatch panic against those pipelines'
+    // still-single-sample variants.
+    pipeline_instanced_msaa: wgpu::RenderPipeline,
+    pipeline_phong_msaa: wgpu::RenderPipeline,
+    /// Current sample count (`1` = MSAA disabled, the default;
+    /// [`MSAA_SAMPLE_COUNT`] = armed). Never any other value — see
+    /// [`Renderer3D::set_sample_count`].
+    sample_count: u32,
+    /// `Some` only while `sample_count > 1` — freed back to `None` when
+    /// disarmed so a caller that never touches MSAA pays zero extra
+    /// GPU memory beyond the two extra (tiny, empty until armed)
+    /// pipeline objects above.
+    msaa_hdr_view: Option<wgpu::TextureView>,
+    msaa_depth_view: Option<wgpu::TextureView>,
+    /// Size the current `msaa_hdr_view`/`msaa_depth_view` were built
+    /// at — [`Renderer3D::resize`] rebuilds them when this drifts from
+    /// the new size, mirroring `depth_size`'s own role for `depth_view`.
+    msaa_size: (u32, u32),
 }
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -284,6 +311,16 @@ pub const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// Wave 12 — bloom pyramid levels (downsample × N).
 const BLOOM_LEVELS: u32 = 5;
+
+/// Wave B (owner-ordered MSAA quality fix) — the ONE non-1 sample count
+/// [`Renderer3D::set_sample_count`] supports. `wgpu::RenderPipeline`
+/// bakes its `sample_count` in at creation (it can't be re-targeted
+/// per-draw), so supporting an arbitrary caller-chosen count would mean
+/// building a pipeline variant per distinct value ever requested — this
+/// crate instead pre-builds exactly ONE MSAA variant per relevant
+/// pipeline (`pipeline_instanced_msaa`/`pipeline_phong_msaa`) at this
+/// fixed count, the owner's own explicit default ("Default 4x").
+const MSAA_SAMPLE_COUNT: u32 = 4;
 
 impl Renderer3D {
     pub fn new(
@@ -455,6 +492,57 @@ impl Renderer3D {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        // Wave B (owner-ordered MSAA quality fix) — MSAA-sample-count
+        // sibling of `pipeline_instanced`, SAME shader module/pipeline
+        // layout, only `multisample` differs. wgpu bakes `sample_count`
+        // into a `RenderPipeline` at creation time (it can't be toggled
+        // per-draw), so a genuinely optional MSAA path needs a second
+        // pipeline object, not a single mutable one — this keeps the
+        // ORIGINAL single-sample `pipeline_instanced` (and therefore
+        // every pre-existing caller/test that never touches
+        // `set_sample_count`) byte-for-byte unchanged.
+        let pipeline_instanced_msaa = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urx3d.pipeline_instanced_msaa"),
+            layout: Some(&pipeline_layout_inst),
+            vertex: wgpu::VertexState {
+                module: &shader_inst,
+                entry_point: Some("vs_main"),
+                buffers: &[
+                    Vertex::vertex_buffer_layout(),
+                    InstanceRaw::vertex_buffer_layout(),
+                ],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader_inst,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState { count: MSAA_SAMPLE_COUNT, ..Default::default() },
             multiview_mask: None,
             cache: None,
         });
@@ -744,6 +832,51 @@ impl Renderer3D {
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        // Wave B MSAA sibling of `pipeline_phong` — see
+        // `pipeline_instanced_msaa`'s own doc comment for why a second
+        // pipeline object, not a toggle on the existing one. This is the
+        // pipeline that actually matters for the owner's own complaint
+        // ("линии глитчуют") — `uzor-graph`'s edge cylinders draw
+        // through the Lit/Phong instanced path.
+        let pipeline_phong_msaa = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urx3d.pipeline_phong_msaa"),
+            layout: Some(&pipeline_layout_phong_v2),
+            vertex: wgpu::VertexState {
+                module: &shader_phong,
+                entry_point: Some("vs_main"),
+                buffers: &[VertexLit::vertex_buffer_layout(), InstanceLitRaw::vertex_buffer_layout()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader_phong,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState { count: MSAA_SAMPLE_COUNT, ..Default::default() },
             multiview_mask: None,
             cache: None,
         });
@@ -1351,6 +1484,12 @@ impl Renderer3D {
             mesh_uv_cache: crate::mesh_cache::MeshUvCache::new(),
             mesh_pbr_cache: crate::mesh_cache::MeshPbrCache::new(),
             particle_renderer: None,
+            pipeline_instanced_msaa,
+            pipeline_phong_msaa,
+            sample_count: 1,
+            msaa_hdr_view: None,
+            msaa_depth_view: None,
+            msaa_size: (0, 0),
         }
     }
 
@@ -1482,6 +1621,39 @@ impl Renderer3D {
         (view, sampler)
     }
 
+    /// Wave B — multisampled color + depth render-attachment pair for
+    /// the opaque Unlit/Lit pass ([`MSAA_SAMPLE_COUNT`] fixed). Neither
+    /// needs `TEXTURE_BINDING` — the color target only ever gets
+    /// hardware-`resolve_target`-resolved (never sampled directly) and
+    /// the depth target is never read downstream (SSAO reads the
+    /// ORDINARY single-sample `depth_view`, which the MSAA path doesn't
+    /// touch — see [`Renderer3D::render_inner`]'s own MSAA-gate doc).
+    fn create_msaa_targets(device: &wgpu::Device, size: (u32, u32)) -> (wgpu::TextureView, wgpu::TextureView) {
+        let w = size.0.max(1);
+        let h = size.1.max(1);
+        let color_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("urx3d.msaa_hdr_target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: MSAA_SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: HDR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let depth_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("urx3d.msaa_depth_target"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: MSAA_SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        (color_tex.create_view(&wgpu::TextureViewDescriptor::default()), depth_tex.create_view(&wgpu::TextureViewDescriptor::default()))
+    }
+
     fn create_depth(device: &wgpu::Device, size: (u32, u32)) -> wgpu::TextureView {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("urx3d.depth"),
@@ -1520,6 +1692,54 @@ impl Renderer3D {
         self.ssao_view = ssao_view;
         self.ssao_sampler = ssao_sampler;
         self.depth_size = size;
+        // Wave B — MSAA targets follow the swapchain too, but only
+        // while actually armed (`sample_count > 1`); a caller that
+        // never touches MSAA never pays for these.
+        if self.sample_count > 1 {
+            let (msaa_hdr, msaa_depth) = Self::create_msaa_targets(device, size);
+            self.msaa_hdr_view = Some(msaa_hdr);
+            self.msaa_depth_view = Some(msaa_depth);
+            self.msaa_size = size;
+        }
+    }
+
+    /// Wave B (owner-ordered live fix — "линии глитчуют": cylinder
+    /// edges alias hard at 1 sample/pixel) — arm/disarm MSAA for the
+    /// opaque Unlit + Lit/Phong instanced pass. `n <= 1` disarms MSAA
+    /// (frees the MSAA color/depth targets, falls back to the
+    /// EXACT pre-Wave-B single-sample render path — the required
+    /// "keep a single-sample path available" guarantee, since the
+    /// future GPU id-pass must never resolve/blend distinct per-node id
+    /// colors together). Any `n > 1` arms MSAA at the one fixed
+    /// [`MSAA_SAMPLE_COUNT`] this crate pre-built pipeline variants
+    /// for (see [`MSAA_SAMPLE_COUNT`]'s own doc comment for why an
+    /// arbitrary per-call count isn't supported) — `sample_count` is a
+    /// per-`Renderer3D`-INSTANCE field, not a global: a caller can run
+    /// one `Renderer3D` at 4x MSAA (the visible 3D pass) and a
+    /// SEPARATE `Renderer3D` instance at the default `1` (the GPU
+    /// color-ID id-pass) side by side, at the same time.
+    pub fn set_sample_count(&mut self, device: &wgpu::Device, n: u32) {
+        let target = if n > 1 { MSAA_SAMPLE_COUNT } else { 1 };
+        if target == self.sample_count {
+            return;
+        }
+        self.sample_count = target;
+        if target > 1 {
+            let (msaa_hdr, msaa_depth) = Self::create_msaa_targets(device, self.depth_size);
+            self.msaa_hdr_view = Some(msaa_hdr);
+            self.msaa_depth_view = Some(msaa_depth);
+            self.msaa_size = self.depth_size;
+        } else {
+            self.msaa_hdr_view = None;
+            self.msaa_depth_view = None;
+            self.msaa_size = (0, 0);
+        }
+    }
+
+    /// Current sample count (`1` = MSAA disabled) — see
+    /// [`Renderer3D::set_sample_count`].
+    pub fn sample_count(&self) -> u32 {
+        self.sample_count
     }
 
     /// Wave 20 — tunable SSAO strength (0 = disabled, 1 = full crease
@@ -2143,11 +2363,49 @@ impl Renderer3D {
         //    the end of the frame. We open an explicit block so the
         //    encoder borrow ends before run_bloom_and_composite below.
         {
+        // Wave B (owner-ordered MSAA quality fix) — MSAA is scoped to a
+        // PURE Unlit+Lit opaque frame (no transparency, no textured/pbr
+        // nodes this SAME frame). `uzor-graph`'s own scenes always
+        // satisfy this (it never emits transparent/textured/pbr nodes —
+        // confirmed by direct read of `render3d.rs`/`Node::new`/
+        // `Node::new_lit` being its only two constructors in use), and
+        // this scoping means the opaque pass's ONE shared color+depth
+        // attachment pair never has to bind an MSAA-armed pipeline
+        // alongside a still-single-sample one — wgpu requires every
+        // pipeline bound within a render pass to match that pass's own
+        // attachment sample count exactly; mixing would panic. A frame
+        // that doesn't satisfy this scope simply renders through the
+        // ORIGINAL single-sample path this tick, even with MSAA armed —
+        // a safe, silent, always-available fallback (`Renderer3D`'s own
+        // "keep a single-sample path available" requirement — the GPU
+        // color-ID id-pass, a SEPARATE `Renderer3D` instance that never
+        // calls `set_sample_count`, is unaffected either way).
+        let msaa_active = self.sample_count > 1 && transparent_order.is_empty() && tex_draws.is_empty() && pbr_draws.is_empty();
+        let (color_view, color_resolve): (&wgpu::TextureView, Option<&wgpu::TextureView>) = if msaa_active {
+            (
+                self.msaa_hdr_view.as_ref().expect("msaa_active implies set_sample_count already built the MSAA color target"),
+                Some(&self.hdr_view),
+            )
+        } else {
+            (&self.hdr_view, None)
+        };
+        let depth_view_for_pass: &wgpu::TextureView = if msaa_active {
+            self.msaa_depth_view.as_ref().expect("msaa_active implies set_sample_count already built the MSAA depth target")
+        } else {
+            &self.depth_view
+        };
+        // The raw multisampled texture contents are never read again
+        // once resolved (SSAO reads the ORDINARY single-sample
+        // `depth_view`, untouched by MSAA; no transparent pass runs
+        // this frame per the `msaa_active` gate above) — `Discard`
+        // avoids paying to store data nothing consumes.
+        let opaque_store = if msaa_active { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store };
+
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("urx3d.pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.hdr_view,
-                resolve_target: None,
+                view: color_view,
+                resolve_target: color_resolve,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
                         r: scene.clear_color[0] as f64,
@@ -2155,15 +2413,15 @@ impl Renderer3D {
                         b: scene.clear_color[2] as f64,
                         a: scene.clear_color[3] as f64,
                     }),
-                    store: wgpu::StoreOp::Store,
+                    store: opaque_store,
                 },
                 depth_slice: None,
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth_view,
+                view: depth_view_for_pass,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
+                    store: opaque_store,
                 }),
                 stencil_ops: None,
             }),
@@ -2174,7 +2432,7 @@ impl Renderer3D {
 
         // Unlit pass
         if !unlit_draws.is_empty() {
-            pass.set_pipeline(&self.pipeline_instanced);
+            pass.set_pipeline(if msaa_active { &self.pipeline_instanced_msaa } else { &self.pipeline_instanced });
             pass.set_bind_group(0, &self.frame_bg_inst, &[]);
             pass.set_vertex_buffer(1, self.instance_buf.slice(..));
             for g in &unlit_draws {
@@ -2187,7 +2445,7 @@ impl Renderer3D {
 
         // Lit (Phong) pass
         if !lit_draws.is_empty() {
-            pass.set_pipeline(&self.pipeline_phong);
+            pass.set_pipeline(if msaa_active { &self.pipeline_phong_msaa } else { &self.pipeline_phong });
             pass.set_bind_group(0, &self.frame_bg_phong, &[]);
             pass.set_bind_group(1, &self.shadow_bg, &[]);
             pass.set_vertex_buffer(1, self.instance_lit_buf.slice(..));

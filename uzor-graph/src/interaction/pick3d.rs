@@ -12,10 +12,11 @@
 use glam::{Vec3, Vec4};
 
 use uzor::types::Rect;
-use uzor_urx_3d::PerspectiveCamera;
+use uzor_urx_3d::{PerspectiveCamera, Renderer3D, Scene3D, Texture3D};
 
 use crate::graph::{Graph, NodeIndex};
 use crate::particle::Particle;
+use crate::render3d;
 
 /// Project a world-space point through `camera`'s view-projection into
 /// screen-space pixel coordinates within `viewport`. `None` when the
@@ -145,6 +146,228 @@ pub fn nearest_node_3d<N, E>(
         }
     }
     best.map(|(id, _)| id)
+}
+
+/// Ray/plane intersection — the 3D node-drag primitive
+/// ([`crate::engine3d::GraphEngine3D::on_event`]'s `Dragging` mode,
+/// vasturiano `3d-force-graph`'s own convention): a dragged node moves
+/// along a plane through its OWN current world position, with the plane
+/// normal set to the camera's view direction ("camera-parallel drag") so
+/// the node tracks the cursor at its own fixed depth instead of snapping
+/// to whatever world surface the ray happens to cross first. `None` when
+/// the ray is (near-)parallel to the plane, or when the intersection
+/// falls behind the ray origin (`t < 0`).
+pub fn ray_plane_intersection(ray_origin: Vec3, ray_dir: Vec3, plane_point: Vec3, plane_normal: Vec3) -> Option<Vec3> {
+    let denom = ray_dir.dot(plane_normal);
+    if denom.abs() < 1e-6 {
+        return None;
+    }
+    let t = (plane_point - ray_origin).dot(plane_normal) / denom;
+    if t < 0.0 {
+        return None;
+    }
+    Some(ray_origin + ray_dir * t)
+}
+
+// ── GPU color-ID picking escalation (Wave 4, plan §1.5/§4) ─────────────
+//
+// [`crate::engine3d::GraphEngine3D`] escalates from this module's own CPU
+// ray-vs-sphere picking (above) to GPU color-ID picking once
+// `graph.node_count()` exceeds [`GPU_PICK_NODE_THRESHOLD`] — the id-pass
+// scene itself lives in [`crate::render3d::build_id_pass_scene`] (its own
+// module doc has the full tonemap/encode writeup); this module owns the
+// DEFERRED readback plumbing: a pure, `wgpu`-free state machine
+// ([`GpuPickPipeline`], fully unit-testable) plus the real `wgpu`-driving
+// functions ([`request_gpu_pick`]/[`poll_gpu_pick`]) that feed it,
+// following the plan's own "non-blocking, result may land 1-2 frames
+// late" design — a live pick must never stall the render loop.
+
+/// Node-count threshold above which [`crate::engine3d::GraphEngine3D`]
+/// escalates hover picking to the GPU color-ID pass (plan §1.5) — a
+/// `const` DEFAULT, not a hard rule:
+/// [`crate::engine3d::GraphEngine3D::set_gpu_pick_threshold`] overrides
+/// it per-engine so a test can exercise the switch without a literal
+/// >10k-node fixture.
+pub const GPU_PICK_NODE_THRESHOLD: usize = 10_000;
+
+/// In-progress/-resolved GPU pick request state (private — see
+/// [`GpuPickPipeline`]'s own public surface).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum GpuPickPhase {
+    Idle,
+    InFlight { cursor: (f64, f64) },
+    Ready { cursor: (f64, f64), result: Option<NodeIndex> },
+}
+
+impl Default for GpuPickPhase {
+    fn default() -> Self {
+        GpuPickPhase::Idle
+    }
+}
+
+/// Deferred GPU color-ID pick request/result state machine (plan §1.5's
+/// "non-blocking... result may land 1-2 frames late" design) —
+/// deliberately holds NO `wgpu` resources of its own (no `Buffer`, no
+/// `Receiver`) so it's fully unit-testable without a GPU: a test drives
+/// it end-to-end via [`GpuPickPipeline::request`]/[`GpuPickPipeline::complete`]/
+/// [`GpuPickPipeline::poll_consume`] directly (mocked/synchronous
+/// completion). The real `wgpu` I/O ([`request_gpu_pick`]/[`poll_gpu_pick`])
+/// owns its own [`GpuPickReadback`] handle SEPARATELY and calls
+/// [`GpuPickPipeline::complete`] once its `map_async` callback has
+/// actually fired.
+#[derive(Debug, Default)]
+pub struct GpuPickPipeline {
+    phase: GpuPickPhase,
+    requests_started: usize,
+}
+
+impl GpuPickPipeline {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_in_flight(&self) -> bool {
+        matches!(self.phase, GpuPickPhase::InFlight { .. })
+    }
+
+    pub fn is_ready(&self) -> bool {
+        matches!(self.phase, GpuPickPhase::Ready { .. })
+    }
+
+    /// Total number of requests [`GpuPickPipeline::request`] actually
+    /// STARTED (not counting no-ops while already in flight) — the
+    /// threshold-switch test's own call-counter probe.
+    pub fn requests_started(&self) -> usize {
+        self.requests_started
+    }
+
+    /// Begin a new request at `cursor`. `false` (no-op) while a previous
+    /// request is still [`GpuPickPipeline::is_in_flight`] — one
+    /// outstanding GPU readback at a time.
+    pub fn request(&mut self, cursor: (f64, f64)) -> bool {
+        if self.is_in_flight() {
+            return false;
+        }
+        self.phase = GpuPickPhase::InFlight { cursor };
+        self.requests_started += 1;
+        true
+    }
+
+    /// Resolve the in-flight request (`InFlight -> Ready`) — the seam
+    /// [`poll_gpu_pick`] calls once a real readback has actually
+    /// completed, and a state-machine test drives directly with a
+    /// synthetic result (no GPU needed). A no-op while not
+    /// [`GpuPickPipeline::is_in_flight`].
+    pub fn complete(&mut self, result: Option<NodeIndex>) {
+        if let GpuPickPhase::InFlight { cursor } = self.phase {
+            self.phase = GpuPickPhase::Ready { cursor, result };
+        }
+    }
+
+    /// Consume a [`GpuPickPipeline::is_ready`] result (`Ready -> Idle`).
+    /// The OUTER `Option` is "nothing to consume yet" (`Idle`/`InFlight`);
+    /// the INNER `Option<NodeIndex>` is the GPU pick's own answer (`None`
+    /// = background/no node under the cursor).
+    pub fn poll_consume(&mut self) -> Option<Option<NodeIndex>> {
+        if let GpuPickPhase::Ready { result, .. } = self.phase {
+            self.phase = GpuPickPhase::Idle;
+            Some(result)
+        } else {
+            None
+        }
+    }
+}
+
+/// Live `wgpu` resources for one in-flight GPU pick readback — owned by
+/// the CALLER (not [`GpuPickPipeline`], which stays `wgpu`-free for
+/// testability, see its own doc comment), kept alive across frames until
+/// [`poll_gpu_pick`] resolves it.
+pub struct GpuPickReadback {
+    staging: wgpu::Buffer,
+    rx: std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
+}
+
+/// Minimum `wgpu` row-copy alignment (`COPY_BYTES_PER_ROW_ALIGNMENT`) —
+/// the id-pass 1x1 readback still needs a full aligned row's worth of
+/// staging space even though only the first 4 bytes (one RGBA pixel) are
+/// ever read.
+const READBACK_ROW_BYTES: u64 = 256;
+
+/// Kick off a new GPU color-ID pick (plan §1.5/§4 Wave 4): renders
+/// `id_scene` (see [`crate::render3d::build_id_pass_scene`]) into a
+/// `viewport_px`-sized offscreen target, then copies ONLY the pixel under
+/// `cursor` into a tiny staging buffer and issues a NON-BLOCKING
+/// `map_async` — this call does not stall the render loop; poll
+/// [`poll_gpu_pick`] on subsequent frames until it resolves. Disarms
+/// bloom/SSAO on `renderer` first — see `render3d.rs`'s own id-pass
+/// module doc for why (bloom bleed/AO darkening would corrupt the flat
+/// per-node id color).
+pub fn request_gpu_pick(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &mut Renderer3D,
+    id_scene: &Scene3D,
+    camera: &PerspectiveCamera,
+    viewport_px: (u32, u32),
+    cursor: (f64, f64),
+) -> GpuPickReadback {
+    let (w, h) = (viewport_px.0.max(1), viewport_px.1.max(1));
+    let px = (cursor.0.round() as i64).clamp(0, w as i64 - 1) as u32;
+    let py = (cursor.1.round() as i64).clamp(0, h as i64 - 1) as u32;
+
+    renderer.set_bloom_strength(0.0);
+    renderer.set_ssao_strength(0.0);
+
+    let target = Texture3D::render_target(device, w, h);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("uzor-graph.gpu_pick.encoder") });
+    renderer.render_to_texture(device, queue, &mut encoder, &target, camera, id_scene);
+
+    let staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("uzor-graph.gpu_pick.staging"),
+        size: READBACK_ROW_BYTES,
+        usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo { texture: &target.texture, mip_level: 0, origin: wgpu::Origin3d { x: px, y: py, z: 0 }, aspect: wgpu::TextureAspect::All },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &staging,
+            layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(READBACK_ROW_BYTES as u32), rows_per_image: Some(1) },
+        },
+        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+    );
+    queue.submit(Some(encoder.finish()));
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    staging.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    GpuPickReadback { staging, rx }
+}
+
+/// Non-blocking poll — call once per frame with the handle
+/// [`request_gpu_pick`] returned. `device.poll(PollType::Poll)` never
+/// blocks (the plan's own "must never stall the render loop"
+/// requirement); returns `Some(decoded)` once the readback has actually
+/// completed (decoded via [`crate::render3d::decode_gpu_pick_pixel`],
+/// `None` inner meaning "background/no node"), or the outer `None` while
+/// still in flight. A `map_async`/device-poll error also resolves as
+/// `Some(None)` — a failed readback degrades to "no pick this cycle"
+/// rather than panicking or hanging the caller forever.
+pub fn poll_gpu_pick(device: &wgpu::Device, readback: &GpuPickReadback, node_count: u32) -> Option<Option<NodeIndex>> {
+    let _ = device.poll(wgpu::PollType::Poll);
+    match readback.rx.try_recv() {
+        Ok(Ok(())) => {
+            let slice = readback.staging.slice(..);
+            let data = slice.get_mapped_range();
+            let rgba = [data[0], data[1], data[2], data[3]];
+            drop(data);
+            readback.staging.unmap();
+            Some(render3d::decode_gpu_pick_pixel(rgba, node_count))
+        }
+        Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
+        Err(std::sync::mpsc::TryRecvError::Empty) => None,
+    }
 }
 
 #[cfg(test)]
@@ -308,5 +531,110 @@ mod tests {
         let hit = nearest_node_3d(&graph, &particles, origin, dir, &candidates);
 
         assert_eq!(hit, Some(NodeIndex(0)), "projecting a node then ray-picking at its own screen position must recover it");
+    }
+
+    // ── Node drag: ray_plane_intersection ───────────────────────────────
+
+    #[test]
+    fn ray_plane_intersection_hits_a_plane_head_on() {
+        // Ray straight down -Z from (0,0,10); plane at z=3, normal +Z.
+        let hit = ray_plane_intersection(Vec3::new(0.0, 0.0, 10.0), Vec3::new(0.0, 0.0, -1.0), Vec3::new(0.0, 0.0, 3.0), Vec3::Z);
+        assert_eq!(hit, Some(Vec3::new(0.0, 0.0, 3.0)));
+    }
+
+    #[test]
+    fn ray_plane_intersection_returns_none_for_a_ray_parallel_to_the_plane() {
+        // Ray travels along +X; plane normal is +Z (perpendicular to the
+        // ray direction) — the ray never crosses the plane.
+        let hit = ray_plane_intersection(Vec3::new(0.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), Vec3::new(5.0, 0.0, 3.0), Vec3::Z);
+        assert_eq!(hit, None);
+    }
+
+    #[test]
+    fn ray_plane_intersection_returns_none_when_the_plane_is_behind_the_ray_origin() {
+        let hit = ray_plane_intersection(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, -1.0), Vec3::new(0.0, 0.0, 5.0), Vec3::Z);
+        assert_eq!(hit, None, "the plane sits behind the ray's own direction of travel");
+    }
+
+    #[test]
+    fn ray_plane_intersection_at_an_oblique_angle_lands_on_the_plane() {
+        let origin = Vec3::new(0.0, 0.0, 10.0);
+        let dir = Vec3::new(1.0, 1.0, -2.0).normalize();
+        let plane_point = Vec3::new(0.0, 0.0, 0.0);
+        let plane_normal = Vec3::Z;
+        let hit = ray_plane_intersection(origin, dir, plane_point, plane_normal).expect("an oblique ray toward the plane must hit it");
+        assert!((hit.z - 0.0).abs() < 1e-4, "the hit point must lie exactly on the plane (z=0)");
+        // t = 5 along this specific direction (dz = -2/len over t=5*len -> dz=-10 matches origin.z=10 -> 0).
+        assert!((hit - Vec3::new(5.0, 5.0, 0.0)).length() < 1e-3);
+    }
+
+    // ── Wave 4: GpuPickPipeline deferred-readback state machine ────────
+    // Pure — no `wgpu`/GPU involved, per the task's own "mocked/
+    // synchronous completion where GPU isn't needed" gate.
+
+    #[test]
+    fn gpu_pick_pipeline_starts_idle() {
+        let p = GpuPickPipeline::new();
+        assert!(!p.is_in_flight());
+        assert!(!p.is_ready());
+        assert_eq!(p.requests_started(), 0);
+    }
+
+    #[test]
+    fn request_transitions_idle_to_in_flight_and_counts_the_request() {
+        let mut p = GpuPickPipeline::new();
+        assert!(p.request((10.0, 20.0)));
+        assert!(p.is_in_flight());
+        assert_eq!(p.requests_started(), 1);
+    }
+
+    #[test]
+    fn a_second_request_while_already_in_flight_is_a_no_op_and_does_not_double_count() {
+        let mut p = GpuPickPipeline::new();
+        assert!(p.request((0.0, 0.0)));
+        assert!(!p.request((5.0, 5.0)), "a request while already in flight must be rejected");
+        assert_eq!(p.requests_started(), 1);
+    }
+
+    #[test]
+    fn complete_then_poll_consume_resolves_the_result_and_resets_to_idle() {
+        let mut p = GpuPickPipeline::new();
+        p.request((1.0, 2.0));
+        assert!(!p.is_ready());
+
+        p.complete(Some(NodeIndex(7)));
+        assert!(p.is_ready());
+        assert!(!p.is_in_flight());
+
+        assert_eq!(p.poll_consume(), Some(Some(NodeIndex(7))));
+        assert!(!p.is_in_flight() && !p.is_ready(), "consuming a ready result must return to Idle");
+        assert_eq!(p.poll_consume(), None, "nothing left to consume after the first poll_consume");
+    }
+
+    #[test]
+    fn complete_with_none_resolves_to_a_background_pick_not_a_missing_result() {
+        let mut p = GpuPickPipeline::new();
+        p.request((0.0, 0.0));
+        p.complete(None);
+        assert_eq!(p.poll_consume(), Some(None), "a resolved-but-empty GPU pick must be Some(None), distinct from still-pending None");
+    }
+
+    #[test]
+    fn complete_while_idle_is_a_no_op() {
+        let mut p = GpuPickPipeline::new();
+        p.complete(Some(NodeIndex(1)));
+        assert!(!p.is_ready(), "completing with nothing in flight must not fabricate a ready result");
+        assert_eq!(p.poll_consume(), None);
+    }
+
+    #[test]
+    fn a_new_request_can_start_again_after_a_ready_result_is_consumed() {
+        let mut p = GpuPickPipeline::new();
+        p.request((0.0, 0.0));
+        p.complete(None);
+        p.poll_consume();
+
+        assert!(p.request((1.0, 1.0)), "Idle after consuming Ready must accept a fresh request");
+        assert_eq!(p.requests_started(), 2);
     }
 }

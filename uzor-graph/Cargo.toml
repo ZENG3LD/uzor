@@ -13,14 +13,21 @@ uzor-figures = { path = "../uzor-figures" }
 uzor-urx-3d = { workspace = true }
 glam = "0.29"
 serde_json = "1"
+# W3D Wave 4 (GPU color-ID picking) — `interaction/pick3d.rs`'s
+# `request_gpu_pick`/`poll_gpu_pick` take `&wgpu::Device`/`&wgpu::Queue`
+# directly (plan §2's own signature), so `wgpu` moved from dev-only to a
+# real dependency this wave. Pinned to the same "29" `uzor-urx-3d` itself
+# uses so both crates resolve to the identical `wgpu` instance (required
+# for `Renderer3D::render_to_texture`'s own `&wgpu::Device` param to
+# type-check against what this crate constructs and passes through).
+wgpu = "29"
 
 [dev-dependencies]
 uzor-export = { path = "../uzor-export" }
 png = "0.17"
 # W3D Wave 2 headless GPU test (`tests/render3d_gpu.rs`) — own
 # `wgpu::Instance`/`Device`, mirrors `uzor-urx-3d/tests/cube_render.rs`'s
-# pattern exactly. Pinned to the same versions `uzor-urx-3d` itself uses
-# so the `wgpu` types this test constructs (`Device`/`Queue`/`Texture`)
-# are the identical crate instance `Renderer3D::render` expects.
-wgpu = "29"
+# pattern exactly. `wgpu` itself moved to `[dependencies]` above in Wave
+# 4; `pollster` stays dev-only (blocking `request_adapter`/`request_device`
+# setup is a test-only convenience, production code never blocks).
 pollster = "0.4"

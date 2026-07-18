@@ -27,7 +27,7 @@ use glam::Vec3;
 use uzor::input::{ModifierKeys, MouseButton, PlatformEvent};
 use uzor::render::RenderContext;
 use uzor::types::Rect;
-use uzor_urx_3d::{MeshLit, PerspectiveCamera, Scene3D};
+use uzor_urx_3d::{Mesh, MeshLit, PerspectiveCamera, Scene3D};
 
 use crate::camera3d::Camera3D;
 use crate::engine::NodeFacts;
@@ -120,7 +120,26 @@ enum Pointer3DMode {
     /// NOT resolve a click-select on release — shift-drag is a
     /// dedicated pan gesture, not the plain-drag/click gesture.
     Panning { last: (f64, f64) },
+    /// 3D node drag (owner-ordered live fix — previously EVERY plain
+    /// drag orbited the camera, even one starting directly on a node;
+    /// vasturiano `3d-force-graph`'s own convention). `node` is the hit
+    /// resolved once at `PointerDown` (CPU `nearest_node_3d`, never
+    /// re-resolved mid-drag — same "resolved once" idiom every other
+    /// `Pointer3DMode` variant already follows); `plane_point`/
+    /// `plane_normal` are the CAMERA-PARALLEL drag plane
+    /// (`plane_point` = the node's world position AT DRAG-START,
+    /// `plane_normal` = the camera's view direction at drag-start) that
+    /// [`GraphEngine3D::on_pointer_moved`] intersects every move — see
+    /// [`pick3d::ray_plane_intersection`]'s own doc comment for why a
+    /// camera-parallel plane, not the ray's first world-surface hit.
+    Dragging { node: NodeIndex, plane_point: Vec3, plane_normal: Vec3 },
 }
+
+/// Sustained `alphaTarget` a node drag holds the sim at while active
+/// (owner's own spec: "~0.3", mirrors 2D's own `DRAG_ALPHA_TARGET`
+/// convention in spirit though not value — 2D's engine.rs constant is
+/// private and 3D's drag physics needs its own tuning pass regardless).
+const NODE_DRAG_ALPHA_TARGET: f32 = 0.3;
 
 /// Shared unit-sphere node mesh geometry (plan §1.3) — latitude/longitude
 /// resolution tuned for a smooth silhouette at typical node screen sizes
@@ -184,6 +203,23 @@ pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     /// [`GraphEngine3D::visible_labels`]. Defaults to
     /// `label_grid::DEFAULT_LABEL_DENSITY`, same as the 2D engine.
     label_density: f64,
+    /// Shared unit sphere for the GPU color-ID id-pass (Wave 4) — plain
+    /// `Unlit` geometry, distinct from `node_mesh`'s `MeshLit` sphere
+    /// (same tessellation, different vertex format — see
+    /// [`crate::render3d::build_id_pass_mesh`]'s own doc comment).
+    id_pass_mesh: Arc<Mesh>,
+    /// Node-count threshold above which hover picking escalates to the
+    /// GPU color-ID pass (Wave 4, plan §1.5) — defaults to
+    /// [`pick3d::GPU_PICK_NODE_THRESHOLD`], overridable via
+    /// [`GraphEngine3D::set_gpu_pick_threshold`] so a test can exercise
+    /// the switch without a literal >10k-node fixture.
+    gpu_pick_threshold: usize,
+    /// Deferred GPU pick request/result state machine (Wave 4) — see
+    /// [`pick3d::GpuPickPipeline`]'s own doc comment. Driving the real
+    /// `wgpu` I/O ([`pick3d::request_gpu_pick`]/[`pick3d::poll_gpu_pick`])
+    /// is the CALLER's job (this engine owns no `wgpu::Device`); see
+    /// [`GraphEngine3D::apply_gpu_pick_result`].
+    gpu_pick_pipeline: pick3d::GpuPickPipeline,
 }
 
 impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
@@ -205,6 +241,9 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             all_node_ids,
             last_hover_pick_screen: None,
             label_density: label_grid::DEFAULT_LABEL_DENSITY,
+            id_pass_mesh: Arc::new(crate::render3d::build_id_pass_mesh(NODE_SPHERE_RINGS, NODE_SPHERE_SLICES)),
+            gpu_pick_threshold: pick3d::GPU_PICK_NODE_THRESHOLD,
+            gpu_pick_pipeline: pick3d::GpuPickPipeline::new(),
         }
     }
 
@@ -318,20 +357,48 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         }
     }
 
-    /// Plain left-drag orbits; shift-held left-drag pans instead (plan
-    /// §1.4) — the drag KIND is resolved once here, at drag-start, and
-    /// held for the whole gesture (mirrors the 2D engine's own
-    /// box-select-mode resolution, `box_select_mode_for` in `engine.rs`).
-    /// `false` (event not consumed) if `(x, y)` lands outside `viewport`.
+    /// Shift-held left-drag pans; a plain left-drag starting ON a node
+    /// drags THAT node (owner-ordered live fix — see [`Pointer3DMode::Dragging`]'s
+    /// own doc comment), everything else orbits the camera — the drag
+    /// KIND is resolved once here, at drag-start, and held for the whole
+    /// gesture (mirrors the 2D engine's own box-select-mode resolution,
+    /// `box_select_mode_for` in `engine.rs`). `false` (event not
+    /// consumed) if `(x, y)` lands outside `viewport`.
     fn on_pointer_down(&mut self, x: f64, y: f64, viewport: Rect) -> bool {
         if !viewport.contains(x, y) {
             return false;
         }
-        self.mode = if self.modifiers.shift {
-            Pointer3DMode::Panning { last: (x, y) }
-        } else {
-            Pointer3DMode::Orbiting { last: (x, y), total: 0.0 }
-        };
+        if self.modifiers.shift {
+            self.mode = Pointer3DMode::Panning { last: (x, y) };
+            return true;
+        }
+        // Node-drag ray-pick — ALWAYS the CPU path (`nearest_node_3d`),
+        // never the GPU color-ID pass, regardless of
+        // `should_use_gpu_pick()`: drag-start needs a synchronous,
+        // same-frame answer, and the plan's GPU escalation is scoped to
+        // hover refinement only (see `GraphEngine3D::apply_gpu_pick_result`'s
+        // own doc comment).
+        let aspect = (viewport.width / viewport.height.max(1.0)) as f32;
+        let camera = self.camera.to_perspective(aspect);
+        let (ray_origin, ray_dir) = pick3d::screen_to_ray(&camera, viewport, (x, y));
+        if let Some(hit) = pick3d::nearest_node_3d(&self.graph, &self.particles, ray_origin, ray_dir, &self.all_node_ids) {
+            if let Some(p) = self.particles.get(hit.index()) {
+                let plane_point = Vec3::new(p.x, p.y, p.z);
+                let plane_normal = (camera.target - camera.eye).normalize_or_zero();
+                self.mode = Pointer3DMode::Dragging { node: hit, plane_point, plane_normal };
+                if let Some(pm) = self.particles.get_mut(hit.index()) {
+                    pm.pin3(plane_point.x, plane_point.y, plane_point.z);
+                }
+                // Sustained reheat (mirrors 2D's own drag contract,
+                // `engine.rs`): hold alpha at the drag target for the
+                // whole gesture instead of a one-shot bump that starts
+                // cooling right away.
+                self.layout.set_alpha_target(NODE_DRAG_ALPHA_TARGET);
+                self.layout.reheat(NODE_DRAG_ALPHA_TARGET);
+                return true;
+            }
+        }
+        self.mode = Pointer3DMode::Orbiting { last: (x, y), total: 0.0 };
         true
     }
 
@@ -350,6 +417,25 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             Pointer3DMode::Panning { last } => {
                 self.camera.pan((x - last.0) as f32, (y - last.1) as f32);
                 self.mode = Pointer3DMode::Panning { last: (x, y) };
+                handled = true;
+            }
+            Pointer3DMode::Dragging { node, plane_point, plane_normal } => {
+                // Camera-parallel drag plane, fixed at drag-start (the
+                // camera itself never orbits/pans/dollies during a node
+                // drag — `on_pointer_down` chose `Dragging` INSTEAD of
+                // `Orbiting`/`Panning`, so `self.camera` is frozen for
+                // the whole gesture) — recompute the ray fresh from the
+                // CURRENT cursor position every move and intersect it
+                // against that same plane (see
+                // `pick3d::ray_plane_intersection`'s own doc comment).
+                let aspect = (viewport.width / viewport.height.max(1.0)) as f32;
+                let camera = self.camera.to_perspective(aspect);
+                let (ray_origin, ray_dir) = pick3d::screen_to_ray(&camera, viewport, (x, y));
+                if let Some(world) = pick3d::ray_plane_intersection(ray_origin, ray_dir, plane_point, plane_normal) {
+                    if let Some(p) = self.particles.get_mut(node.index()) {
+                        p.pin3(world.x, world.y, world.z);
+                    }
+                }
                 handled = true;
             }
             Pointer3DMode::Idle => {}
@@ -374,7 +460,18 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             };
             if moved_enough {
                 self.last_hover_pick_screen = Some((x, y));
+                // CPU ray-pick is ALWAYS the same-frame answer (plan §4
+                // Wave 4: "the CPU ray pick as the same-frame answer
+                // while a GPU result is in flight") — above the GPU-pick
+                // threshold this ALSO kicks off a deferred GPU color-ID
+                // request (see `GraphEngine3D::apply_gpu_pick_result`),
+                // which refines `hovered` a frame or two later once it
+                // resolves. Below the threshold the GPU pipeline is
+                // never touched at all.
                 self.hovered = self.pick_at(x, y, viewport);
+                if self.should_use_gpu_pick() {
+                    self.gpu_pick_pipeline.request((x, y));
+                }
             }
             handled = true;
         } else if self.hovered.is_some() {
@@ -385,13 +482,22 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         handled
     }
 
-    /// Ends the in-progress drag/orbit/pan gesture; a plain orbit-drag
-    /// that travelled less than [`CLICK_DRAG_THRESHOLD_PX`] since
-    /// `PointerDown` resolves as a click — a Replace-select ray-pick at
-    /// the release point (`None` on empty space deselects, mirroring
-    /// 2D's own `clear_selection()` on a background click). Shift-drag
-    /// pan never resolves a click (see [`Pointer3DMode::Panning`]'s doc
-    /// comment).
+    /// Ends the in-progress drag/orbit/pan/node-drag gesture; a plain
+    /// orbit-drag that travelled less than [`CLICK_DRAG_THRESHOLD_PX`]
+    /// since `PointerDown` resolves as a click — a Replace-select
+    /// ray-pick at the release point (`None` on empty space deselects,
+    /// mirroring 2D's own `clear_selection()` on a background click).
+    /// Shift-drag pan never resolves a click (see [`Pointer3DMode::Panning`]'s
+    /// doc comment). A node drag ALWAYS selects the dragged node on
+    /// release (a plain click on a node and a click-and-drag both end in
+    /// the node being selected — there's no ambiguous "was this a click
+    /// or a drag" question for a node hit the way there is for
+    /// background) and applies the STICKY drag-end policy (owner order,
+    /// same default [`crate::engine::DragEndPolicy::Sticky`] the 2D
+    /// engine uses): the node stays pinned exactly where the last
+    /// `PointerMoved` left it — `fx`/`fy`/`fz` already hold that
+    /// position via `pin3`, nothing further to do here beyond releasing
+    /// `alpha_target`.
     fn on_pointer_up(&mut self, x: f64, y: f64, viewport: Rect) -> bool {
         let mode = self.mode;
         self.mode = Pointer3DMode::Idle;
@@ -403,6 +509,11 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 true
             }
             Pointer3DMode::Panning { .. } => true,
+            Pointer3DMode::Dragging { node, .. } => {
+                self.layout.set_alpha_target(0.0);
+                self.selected = Some(node);
+                true
+            }
             Pointer3DMode::Idle => false,
         }
     }
@@ -443,6 +554,73 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// visually-distinct pixels.
     pub fn build_scene(&self) -> Scene3D {
         crate::render3d::build_scene(&self.graph, &self.particles, &self.node_mesh, &self.edge_mesh, crate::render3d::DEFAULT_EDGE_WIDTH)
+    }
+
+    /// Shared id-pass sphere mesh (Wave 4) — see
+    /// [`GraphEngine3D::build_id_pass_scene`].
+    pub fn id_pass_mesh(&self) -> &Arc<Mesh> {
+        &self.id_pass_mesh
+    }
+
+    /// GPU color-ID id-pass scene (Wave 4, plan §1.5/§4) — wires into
+    /// [`crate::render3d::build_id_pass_scene`]. A caller with a live
+    /// `wgpu::Device`/`Renderer3D` renders this via
+    /// [`pick3d::request_gpu_pick`] instead of the ordinary
+    /// [`GraphEngine3D::build_scene`] Lit scene.
+    pub fn build_id_pass_scene(&self) -> Scene3D {
+        crate::render3d::build_id_pass_scene(&self.graph, &self.particles, &self.id_pass_mesh)
+    }
+
+    /// Current GPU-pick escalation threshold (Wave 4) — see
+    /// [`GraphEngine3D::should_use_gpu_pick`].
+    pub fn gpu_pick_threshold(&self) -> usize {
+        self.gpu_pick_threshold
+    }
+
+    /// Override the GPU-pick escalation threshold — see the field's own
+    /// doc comment. `0` forces GPU picking for any non-empty graph; a
+    /// very large value pins the engine to CPU-only picking regardless
+    /// of graph size.
+    pub fn set_gpu_pick_threshold(&mut self, threshold: usize) {
+        self.gpu_pick_threshold = threshold;
+    }
+
+    /// `true` once `graph.node_count()` exceeds
+    /// [`GraphEngine3D::gpu_pick_threshold`] (plan §1.5's own escalation
+    /// rule) — the "which path" probe a test/caller can read without
+    /// touching any `wgpu` state.
+    pub fn should_use_gpu_pick(&self) -> bool {
+        self.graph.node_count() > self.gpu_pick_threshold
+    }
+
+    /// Total number of GPU pick requests [`GraphEngine3D::on_event`] has
+    /// actually started (Wave 4's own call-counter/probe gate — see
+    /// [`pick3d::GpuPickPipeline::requests_started`]).
+    pub fn gpu_pick_requests_started(&self) -> usize {
+        self.gpu_pick_pipeline.requests_started()
+    }
+
+    /// `true` while a GPU pick request is outstanding (see
+    /// [`pick3d::GpuPickPipeline::is_in_flight`]).
+    pub fn gpu_pick_pending(&self) -> bool {
+        self.gpu_pick_pipeline.is_in_flight()
+    }
+
+    /// Feed back a resolved GPU pick result (Wave 4) — the caller drives
+    /// the real `wgpu` readback externally via
+    /// [`pick3d::request_gpu_pick`]/[`pick3d::poll_gpu_pick`] (this
+    /// engine owns no `wgpu::Device`) and calls this once
+    /// [`pick3d::poll_gpu_pick`] returns `Some(_)`. Refines `hovered`
+    /// ONLY — click-select stays CPU-only/synchronous always, so a click
+    /// never changes retroactively after the fact once the user has
+    /// already acted on it (a deliberate Wave 4 scope decision, see
+    /// `uzor-graph/CLAUDE.md`'s own divergence log). A no-op if no GPU
+    /// pick is currently in flight (stale/duplicate feed).
+    pub fn apply_gpu_pick_result(&mut self, result: Option<NodeIndex>) {
+        self.gpu_pick_pipeline.complete(result);
+        if let Some(r) = self.gpu_pick_pipeline.poll_consume() {
+            self.hovered = r;
+        }
     }
 
     /// Fresh `PerspectiveCamera` for the current orbit-camera state.
@@ -842,18 +1020,23 @@ mod tests {
     }
 
     #[test]
-    fn on_event_a_drag_past_the_click_threshold_orbits_but_does_not_select() {
+    fn on_event_a_background_drag_past_the_click_threshold_orbits_but_does_not_select() {
+        // Node-drag (added later in this same file's Wave 4/5 test
+        // block below) means a `PointerDown` ON a node no longer
+        // orbits at all — it ALWAYS drags that node and ALWAYS selects
+        // it on release, regardless of drag distance (there's no
+        // ambiguous "was this a click or a drag" question for a node
+        // hit the way there is for background). This test now starts
+        // on EMPTY SPACE, the only case the click-vs-drag distance
+        // threshold still governs.
         let mut engine = spread_triangle_engine();
         let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
-        let aspect = (viewport.width / viewport.height) as f32;
-        let camera = engine.camera(aspect);
-        let (sx, sy) = pick3d::project_world_to_screen(&camera, Vec3::new(-40.0, 0.0, 0.0), viewport).expect("node 0 must project inside the view");
 
-        engine.on_event(&PlatformEvent::PointerDown { x: sx, y: sy, button: uzor::input::MouseButton::Left }, viewport);
-        engine.on_event(&PlatformEvent::PointerMoved { x: sx + 60.0, y: sy }, viewport);
-        engine.on_event(&PlatformEvent::PointerUp { x: sx + 60.0, y: sy, button: uzor::input::MouseButton::Left }, viewport);
+        engine.on_event(&PlatformEvent::PointerDown { x: 5.0, y: 5.0, button: uzor::input::MouseButton::Left }, viewport);
+        engine.on_event(&PlatformEvent::PointerMoved { x: 65.0, y: 5.0 }, viewport);
+        engine.on_event(&PlatformEvent::PointerUp { x: 65.0, y: 5.0, button: uzor::input::MouseButton::Left }, viewport);
 
-        assert_eq!(engine.selected(), None, "a drag past the click-drag threshold must orbit, not select");
+        assert_eq!(engine.selected(), None, "a background drag past the click-drag threshold must orbit, not select");
     }
 
     #[test]
@@ -1132,5 +1315,160 @@ mod tests {
         let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
 
         assert!(!stats.hover_card_drawn, "no hover, no card — draw_overlay must not paint a hover card without a hovered node");
+    }
+
+    // ── Wave 4: GPU color-ID picking escalation ─────────────────────────
+
+    #[test]
+    fn should_use_gpu_pick_reflects_the_threshold_override() {
+        let mut engine = spread_triangle_engine(); // 3 nodes
+        assert_eq!(engine.gpu_pick_threshold(), pick3d::GPU_PICK_NODE_THRESHOLD);
+        assert!(!engine.should_use_gpu_pick(), "3 nodes must stay under the default 10_000 threshold");
+
+        engine.set_gpu_pick_threshold(2);
+        assert_eq!(engine.gpu_pick_threshold(), 2);
+        assert!(engine.should_use_gpu_pick(), "3 nodes > an overridden threshold of 2 must flip to the GPU path");
+    }
+
+    #[test]
+    fn hover_above_the_gpu_pick_threshold_starts_exactly_one_gpu_pick_request() {
+        let mut engine = spread_triangle_engine();
+        engine.set_gpu_pick_threshold(2);
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+
+        assert_eq!(engine.gpu_pick_requests_started(), 0);
+        engine.on_event(&PlatformEvent::PointerMoved { x: 200.0, y: 150.0 }, viewport);
+        assert_eq!(engine.gpu_pick_requests_started(), 1, "an above-threshold hover move must start a GPU pick request");
+        assert!(engine.gpu_pick_pending());
+    }
+
+    #[test]
+    fn hover_below_the_gpu_pick_threshold_never_touches_the_gpu_pick_pipeline() {
+        let mut engine = spread_triangle_engine(); // default threshold, 3 nodes well under it
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+
+        engine.on_event(&PlatformEvent::PointerMoved { x: 200.0, y: 150.0 }, viewport);
+        assert_eq!(engine.gpu_pick_requests_started(), 0);
+        assert!(!engine.gpu_pick_pending());
+    }
+
+    #[test]
+    fn hover_still_resolves_via_cpu_pick_as_the_same_frame_answer_even_above_the_gpu_pick_threshold() {
+        let mut engine = spread_triangle_engine();
+        engine.set_gpu_pick_threshold(2);
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        let (sx, sy) = pick3d::project_world_to_screen(&camera, Vec3::new(-40.0, 0.0, 0.0), viewport).expect("node 0 projects inside the view");
+
+        engine.on_event(&PlatformEvent::PointerMoved { x: sx, y: sy }, viewport);
+
+        assert_eq!(engine.hovered(), Some(NodeIndex(0)), "even in GPU-pick mode, the CPU ray-pick must still resolve this SAME frame");
+        assert!(engine.gpu_pick_pending(), "a GPU refinement request must also be in flight in parallel");
+    }
+
+    #[test]
+    fn apply_gpu_pick_result_refines_hovered_once_the_deferred_readback_resolves() {
+        let mut engine = spread_triangle_engine();
+        engine.set_gpu_pick_threshold(2);
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        engine.on_event(&PlatformEvent::PointerMoved { x: 200.0, y: 150.0 }, viewport);
+        assert!(engine.gpu_pick_pending());
+
+        engine.apply_gpu_pick_result(Some(NodeIndex(2)));
+
+        assert!(!engine.gpu_pick_pending(), "applying the result must consume the in-flight request");
+        assert_eq!(engine.hovered(), Some(NodeIndex(2)), "the resolved GPU pick result must refine hovered");
+    }
+
+    #[test]
+    fn apply_gpu_pick_result_with_nothing_in_flight_is_a_no_op() {
+        let mut engine = spread_triangle_engine();
+        let before = engine.hovered();
+
+        engine.apply_gpu_pick_result(Some(NodeIndex(1)));
+
+        assert_eq!(engine.hovered(), before, "feeding a stray GPU result with no request in flight must not touch hovered");
+    }
+
+    #[test]
+    fn build_id_pass_scene_emits_one_unlit_node_per_graph_node() {
+        let engine = spread_triangle_engine();
+
+        let scene = engine.build_id_pass_scene();
+
+        assert_eq!(scene.nodes.len(), 3);
+        assert!(scene.nodes.iter().all(|n| !n.is_lit()), "the id-pass must use Unlit geometry");
+        assert_eq!(scene.clear_color, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    // ── Owner-ordered live fix: 3D node drag ────────────────────────────
+
+    #[test]
+    fn pointer_down_on_a_node_drags_it_along_the_camera_parallel_plane_and_it_stays_pinned_after_release() {
+        let mut engine = spread_triangle_engine();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        let (sx, sy) = pick3d::project_world_to_screen(&camera, Vec3::new(-40.0, 0.0, 0.0), viewport).expect("node 0 must project inside the default orbit view");
+
+        assert!(engine.on_event(&PlatformEvent::PointerDown { x: sx, y: sy, button: uzor::input::MouseButton::Left }, viewport));
+        assert!(engine.particles[0].is_pinned_3d(), "drag-start must pin the grabbed node immediately");
+
+        let move_x = sx + 30.0;
+        let move_y = sy + 15.0;
+        assert!(engine.on_event(&PlatformEvent::PointerMoved { x: move_x, y: move_y }, viewport));
+
+        // Independently recompute the expected ray-plane intersection —
+        // NOT copy-pasted from `on_pointer_moved`'s own implementation —
+        // to actually prove the production wiring, not just restate it.
+        let (origin, dir) = pick3d::screen_to_ray(&camera, viewport, (move_x, move_y));
+        let plane_point = Vec3::new(-40.0, 0.0, 0.0);
+        let plane_normal = (camera.target - camera.eye).normalize_or_zero();
+        let expected = pick3d::ray_plane_intersection(origin, dir, plane_point, plane_normal).expect("the moved cursor ray must still cross the drag plane");
+
+        let p = engine.particles[0];
+        assert!(
+            (p.x - expected.x).abs() < 1e-3 && (p.y - expected.y).abs() < 1e-3 && (p.z - expected.z).abs() < 1e-3,
+            "dragged node must move to the exact ray-plane intersection: got ({}, {}, {}), expected {expected:?}",
+            p.x,
+            p.y,
+            p.z
+        );
+        assert!(p.is_pinned_3d(), "a node being actively dragged must stay pinned so the sim doesn't fight the drag");
+
+        assert!(engine.on_event(&PlatformEvent::PointerUp { x: move_x, y: move_y, button: uzor::input::MouseButton::Left }, viewport));
+        assert_eq!(engine.selected(), Some(NodeIndex(0)), "releasing a node drag must select the dragged node");
+
+        let released_pos = (engine.particles[0].x, engine.particles[0].y, engine.particles[0].z);
+        for _ in 0..30 {
+            engine.tick(1.0 / 60.0);
+        }
+        let after = engine.particles[0];
+        assert_eq!(
+            (after.x, after.y, after.z),
+            released_pos,
+            "Sticky drag-end policy: the node must stay exactly where it was released, unaffected by subsequent ticks"
+        );
+        assert!(after.is_pinned_3d(), "Sticky policy must leave the node pinned after release");
+    }
+
+    #[test]
+    fn pointer_down_on_empty_space_still_orbits_the_camera_and_drags_no_node() {
+        let mut engine = spread_triangle_engine();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let before_positions: Vec<Particle> = engine.particles.clone();
+        let before_yaw = engine.camera.yaw;
+
+        // Far from every fixture node's projected screen position —
+        // background.
+        assert!(engine.on_event(&PlatformEvent::PointerDown { x: 5.0, y: 5.0, button: uzor::input::MouseButton::Left }, viewport));
+        assert!(engine.on_event(&PlatformEvent::PointerMoved { x: 105.0, y: 5.0 }, viewport));
+
+        assert!(engine.camera.yaw != before_yaw, "a miss on pointer-down must fall back to orbiting the camera exactly as before this fix");
+        for (before, after) in before_positions.iter().zip(engine.particles.iter()) {
+            assert_eq!((before.x, before.y, before.z), (after.x, after.y, after.z), "no node position may move from an orbit drag");
+            assert!(!after.is_pinned_3d(), "no node may become pinned from an orbit drag");
+        }
     }
 }

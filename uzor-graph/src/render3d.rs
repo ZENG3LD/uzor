@@ -33,9 +33,9 @@
 use std::sync::Arc;
 
 use glam::{Quat, Vec3};
-use uzor_urx_3d::{Light, MeshLit, Node, Scene3D};
+use uzor_urx_3d::{Light, Mesh, MeshLit, Node, Scene3D, Vertex};
 
-use crate::graph::Graph;
+use crate::graph::{Graph, NodeIndex};
 use crate::particle::Particle;
 use crate::render::category_color;
 
@@ -145,6 +145,252 @@ pub fn build_scene<N, E>(
     scene
 }
 
+// ── Wave 4 — GPU color-ID picking escalation (plan §1.5/§4) ────────────
+//
+// The id-pass renders every node as a `NodeMesh::Unlit` sphere whose flat
+// vertex color IS the tint (white vertex color * tint, per
+// `unlit_instanced.wgsl`'s `out.color = in.color * in.tint`) — no lighting,
+// no per-fragment gradient, so a pixel deep inside a node's silhouette
+// reads back exactly `tint`... EXCEPT `tint` does NOT survive the render
+// pipeline unchanged. `Renderer3D::render` (and therefore
+// `render_to_texture`, which just calls it, `pipeline.rs:2726`)
+// unconditionally runs `run_bloom_and_composite` at the end of every
+// frame — even an Unlit-only, zero-light scene goes through the SAME HDR
+// -> bloom -> ACES-filmic-tonemap -> gamma(1/2.2) composite chain the
+// Wave 2 divergence log already caught for the LIT node/edge test. On TOP
+// of that, `Texture3D`'s only public constructors (`render_target`/
+// `from_rgba8`/etc, `uzor-urx-3d/src/texture.rs`) are ALL hardcoded to
+// `wgpu::TextureFormat::Rgba8UnormSrgb` — so the offscreen id-pass target
+// the composite pass writes into is itself an sRGB-format render
+// attachment, and the GPU auto-encodes linear->sRGB on write to any
+// `*Srgb` target (the SAME behavior `texture.rs`'s own
+// `from_rgba8_mipped` doc comment already documents: "wgpu treats
+// Rgba8UnormSrgb as gamma-encoded"). The composite shader's OWN
+// `pow(tonemapped, 1/2.2)` gamma step is therefore followed by a SECOND,
+// GPU-automatic sRGB encode — a genuine three-stage compound transform
+// (ACES filmic -> manual gamma 2.2 -> GPU sRGB auto-encode) between a
+// node's `color_tint` and the byte a readback actually observes. None of
+// this is fixable here (zero `uzor-urx-3d` changes, plan §1.5's own
+// constraint) — pre-existing shared-substrate behavior.
+//
+// Rather than derive one closed-form symbolic inverse of the full
+// three-stage chain (real, but fragile — a real GPU/driver's hardware
+// sRGB encode need not match a textbook formula to the ULP), the fix
+// here is an EXACT, per-channel, bisection-derived inverse mapping TABLE
+// (the plan's own explicitly-sanctioned alternative, §4: "either an
+// exact inverse mapping table or encode in a tonemap-surviving way")
+// combined with a coarse discrete LEVEL grid (`GPU_PICK_ID_LEVELS` per
+// channel, spaced evenly across the full 0..=255 output byte range) so
+// DECODE is a simple "snap to nearest grid line" — robust to a few bytes
+// of real-hardware drift around this module's own `forward_channel_byte`
+// model, not just to zero drift. `encode_node_id_tint` computes, for the
+// TARGET output byte of each channel's level, the exact pre-tonemap
+// linear `x` that THIS MODULE'S OWN forward model maps to that byte
+// (bisection over `forward_channel_byte`, monotonic non-decreasing in
+// `x`) — the inverse is computed ONCE, at encode time, so `decode_*`
+// never inverts anything at all, it just reads the byte back and snaps
+// it to the nearest known grid line. Proven correct two ways (this
+// module's own tests): a pure-Rust round-trip property test (encode ->
+// this module's own forward simulation -> decode, no GPU needed) AND a
+// headless `wgpu` test (`tests/render3d_gpu.rs`) that renders a real
+// id-pass scene and decodes the REAL readback bytes — "PROVE, don't
+// assume."
+
+/// Discrete levels per color channel the GPU id-pass encodes a
+/// [`NodeIndex`] into — R,G,B only. The composite pass hardcodes output
+/// alpha to `1.0` (`uzor-urx-3d/src/shaders/composite_aces.wgsl`'s own
+/// `fs_main`: `return vec4<f32>(gamma, 1.0);`), so a node's tint alpha
+/// never survives to a readback at all.
+pub const GPU_PICK_ID_LEVELS: u32 = 32;
+
+/// Largest [`NodeIndex`] the GPU id-pass can represent
+/// (`GPU_PICK_ID_LEVELS^3 - 1`) — ALSO the reserved "background/no hit"
+/// sentinel [`decode_gpu_pick_pixel`] excludes defensively. **The REAL
+/// background/no-hit protection is [`decode_gpu_pick_pixel`]'s
+/// `node_count` bounds check, not this literal value** — empirically
+/// (headless GPU-verified, `tests/render3d_gpu.rs`), [`build_id_pass_scene`]'s
+/// white (`[1,1,1,1]`) clear color does NOT decode to exactly this
+/// top grid line: a raw linear `1.0` is well below the `~7.24` input
+/// where `aces_filmic` actually saturates to its clamped ceiling (a
+/// literal `1.0` tonemaps to only `~0.80`, observed real-hardware
+/// readback ~`244`, which snaps to grid level `30` of `0..=31`, not
+/// `31`). The exact `MAX_GPU_PICKABLE_NODE_INDEX` case is therefore only
+/// reachable by a REAL node whose assigned index lands there — an
+/// astronomically large graph (`>= GPU_PICK_ID_LEVELS^3` nodes) that has
+/// already exhausted every other encodable index too, well past any
+/// realistic GPU-pick-eligible graph size.
+pub const MAX_GPU_PICKABLE_NODE_INDEX: u32 = GPU_PICK_ID_LEVELS * GPU_PICK_ID_LEVELS * GPU_PICK_ID_LEVELS - 1;
+
+// ACES Narkowicz-fit constants — MUST mirror
+// `uzor-urx-3d/src/shaders/composite_aces.wgsl`'s own `aces_filmic` exactly.
+const ACES_A: f32 = 2.51;
+const ACES_B: f32 = 0.03;
+const ACES_C: f32 = 2.43;
+const ACES_D: f32 = 0.59;
+const ACES_E: f32 = 0.14;
+
+fn aces_filmic(x: f32) -> f32 {
+    let x = x.max(0.0);
+    ((x * (ACES_A * x + ACES_B)) / (x * (ACES_C * x + ACES_D) + ACES_E)).clamp(0.0, 1.0)
+}
+
+/// The GPU auto-encode a `*Srgb`-format render target applies on write —
+/// same standard sRGB OETF `uzor-urx-3d/src/texture.rs`'s own (private)
+/// `linear_to_srgb` reproduces for its mip-chain math; duplicated here
+/// rather than reaching into that unrelated module's private helper
+/// (same small-helper-duplication convention this file's own
+/// `category_tint` already follows).
+fn srgb_encode(linear: f32) -> f32 {
+    let l = linear.clamp(0.0, 1.0);
+    if l <= 0.0031308 {
+        l * 12.92
+    } else {
+        1.055 * l.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// This module's own forward-model simulation of the full compound
+/// transform a node's `color_tint` channel goes through before a
+/// readback observes it (module doc above): ACES filmic tonemap ->
+/// manual gamma-2.2 encode (`composite_aces.wgsl`'s own `pow`) -> GPU
+/// automatic sRGB encode (writing into a `*Srgb`-format target).
+fn forward_channel_byte(x: f32) -> u8 {
+    let tonemapped = aces_filmic(x);
+    let gamma = tonemapped.powf(1.0 / 2.2);
+    let encoded = srgb_encode(gamma);
+    (encoded * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// Upper bound of [`linear_for_target_byte`]'s bisection search domain —
+/// comfortably past the `x` where `aces_filmic` saturates to its clamped
+/// `1.0` ceiling (~7.24, solved analytically in `uzor-graph/CLAUDE.md`'s
+/// own Wave 4 divergence log), so every target byte in `0..=255` has a
+/// reachable root inside `[0, ACES_INVERSE_SEARCH_MAX]`.
+const ACES_INVERSE_SEARCH_MAX: f32 = 16.0;
+const ACES_INVERSE_SEARCH_ITERS: u32 = 40;
+
+/// The exact inverse the module doc above talks about — computed ONCE
+/// per encoded channel via bisection ([`forward_channel_byte`] is
+/// monotonic non-decreasing in `x`, so bisection converges to the unique
+/// `x` whose forward byte is `target_byte`, up to `f32` precision).
+fn linear_for_target_byte(target_byte: u8) -> f32 {
+    let mut lo = 0.0f32;
+    let mut hi = ACES_INVERSE_SEARCH_MAX;
+    for _ in 0..ACES_INVERSE_SEARCH_ITERS {
+        let mid = (lo + hi) * 0.5;
+        if forward_channel_byte(mid) < target_byte {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    hi
+}
+
+/// Evenly-spaced grid point in `0..=255` for `level` (`level 0 -> byte
+/// 0`, `level (GPU_PICK_ID_LEVELS - 1) -> byte 255`).
+fn level_to_byte(level: u32) -> u8 {
+    let level = level.min(GPU_PICK_ID_LEVELS - 1);
+    ((level * 255) / (GPU_PICK_ID_LEVELS - 1)) as u8
+}
+
+/// Nearest-grid-line snap for an observed byte — robust to a few bytes
+/// of drift between this module's own [`forward_channel_byte`] model and
+/// whatever the real GPU/driver actually produced (module doc above).
+fn byte_to_level(byte: u8) -> u32 {
+    let numerator = byte as u32 * (GPU_PICK_ID_LEVELS - 1);
+    // Round-to-nearest via integer math: round(n/255) == (n*2+255)/(255*2).
+    ((numerator * 2 + 255) / (255 * 2)).min(GPU_PICK_ID_LEVELS - 1)
+}
+
+/// Encode `id` into an opaque `color_tint` such that, after the id-pass
+/// render pipeline's full forward transform (module doc above), a
+/// readback of the resulting pixel decodes back to `id` via
+/// [`decode_node_id_pixel`]. Indices at/above [`MAX_GPU_PICKABLE_NODE_INDEX`]
+/// clamp to that cap (documented ambiguity, see its own doc comment).
+pub fn encode_node_id_tint(id: NodeIndex) -> [f32; 4] {
+    let idx = id.0.min(MAX_GPU_PICKABLE_NODE_INDEX);
+    let r_level = idx % GPU_PICK_ID_LEVELS;
+    let g_level = (idx / GPU_PICK_ID_LEVELS) % GPU_PICK_ID_LEVELS;
+    let b_level = (idx / (GPU_PICK_ID_LEVELS * GPU_PICK_ID_LEVELS)) % GPU_PICK_ID_LEVELS;
+    [
+        linear_for_target_byte(level_to_byte(r_level)),
+        linear_for_target_byte(level_to_byte(g_level)),
+        linear_for_target_byte(level_to_byte(b_level)),
+        1.0,
+    ]
+}
+
+/// Raw decode of an observed RGBA readback byte quad back into a
+/// [`NodeIndex`] — no background/bounds check; see
+/// [`decode_gpu_pick_pixel`] for the checked version an actual GPU pick
+/// call site should use.
+pub fn decode_node_id_pixel(rgba: [u8; 4]) -> NodeIndex {
+    let r = byte_to_level(rgba[0]);
+    let g = byte_to_level(rgba[1]);
+    let b = byte_to_level(rgba[2]);
+    NodeIndex(r + g * GPU_PICK_ID_LEVELS + b * GPU_PICK_ID_LEVELS * GPU_PICK_ID_LEVELS)
+}
+
+/// [`decode_node_id_pixel`] plus the two checks a real GPU pick call site
+/// needs. The PRIMARY guard is the `node_count` bounds check — a
+/// background pixel (or any hardware-noise byte quad) almost always
+/// decodes to SOME grid combination, but that combination is essentially
+/// never a real, currently-assigned [`NodeIndex`], so bounding against
+/// the live graph size is what actually filters it out (see
+/// [`MAX_GPU_PICKABLE_NODE_INDEX`]'s own doc comment — [`build_id_pass_scene`]'s
+/// white clear color decodes NEAR, not exactly at, that top grid line).
+/// The explicit `== MAX_GPU_PICKABLE_NODE_INDEX` check is a secondary,
+/// belt-and-suspenders exclusion for the one case the bounds check alone
+/// can't catch (a real node whose index happens to land exactly there).
+pub fn decode_gpu_pick_pixel(rgba: [u8; 4], node_count: u32) -> Option<NodeIndex> {
+    let id = decode_node_id_pixel(rgba);
+    if id.0 >= node_count || id.0 == MAX_GPU_PICKABLE_NODE_INDEX {
+        None
+    } else {
+        Some(id)
+    }
+}
+
+/// Build the id-pass unlit sphere mesh — the SAME UV-sphere tessellation
+/// [`MeshLit::sphere`] uses (rings/slices math not duplicated), just
+/// re-packed into the flat [`Vertex`] format `NodeMesh::Unlit` needs (no
+/// normal — the unlit fragment shader never reads one,
+/// `unlit_instanced.wgsl`).
+pub fn build_id_pass_mesh(rings: u32, slices: u32) -> Mesh {
+    let lit = MeshLit::sphere(1.0, rings, slices, [1.0, 1.0, 1.0, 1.0]);
+    let vertices = lit.vertices.iter().map(|v| Vertex { pos: v.pos, _pad0: 0.0, color: v.color }).collect();
+    Mesh { vertices, indices: lit.indices }
+}
+
+/// Build the GPU color-ID pass scene (plan §1.5/§4 Wave 4): every node as
+/// an instanced `NodeMesh::Unlit` sphere sharing `id_pass_mesh`, tinted
+/// by [`encode_node_id_tint`] instead of its category color. No edges
+/// (picking is node-only, mirrors 2D's own `pick::nearest_node`) and no
+/// lights (the unlit pipeline ignores them entirely). Clear color is
+/// pure white — deliberately as far as possible from every real node's
+/// tint on the shared 0..255 grid, though [`decode_gpu_pick_pixel`]'s own
+/// `node_count` bounds check (not exact byte alignment) is what actually
+/// guarantees a background pixel is never mistaken for a real node — see
+/// that function's own doc comment.
+pub fn build_id_pass_scene<N, E>(graph: &Graph<N, E>, particles: &[Particle], id_pass_mesh: &Arc<Mesh>) -> Scene3D {
+    let mut scene = Scene3D::new();
+    scene.clear_color = [1.0, 1.0, 1.0, 1.0];
+    scene.nodes = graph
+        .nodes()
+        .filter_map(|(id, node)| {
+            let p = particles.get(id.index())?;
+            Some(
+                Node::new(id_pass_mesh.clone())
+                    .with_translation(Vec3::new(p.x, p.y, p.z))
+                    .with_scale(Vec3::splat(node.radius.max(0.01)))
+                    .with_tint(encode_node_id_tint(id)),
+            )
+        })
+        .collect();
+    scene
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +482,63 @@ mod tests {
 
         assert_eq!(scene.nodes.len(), 1);
         assert!(!scene.lights.is_empty());
+    }
+
+    // ── Wave 4: GPU color-ID picking encode/decode ─────────────────────
+
+    #[test]
+    fn forward_channel_byte_round_trips_through_linear_for_target_byte_at_every_level_boundary() {
+        for level in 0..GPU_PICK_ID_LEVELS {
+            let target = level_to_byte(level);
+            let x = linear_for_target_byte(target);
+            let observed = forward_channel_byte(x);
+            assert!(
+                observed.abs_diff(target) <= 1,
+                "level {level}: target byte {target}, bisection-derived x={x} forward-simulated back to {observed}"
+            );
+        }
+    }
+
+    #[test]
+    fn encode_decode_node_id_round_trips_through_this_modules_own_forward_model_across_the_index_range() {
+        let mut ids: Vec<u32> = vec![0, 1, 2, 10_000, MAX_GPU_PICKABLE_NODE_INDEX - 1, MAX_GPU_PICKABLE_NODE_INDEX];
+        ids.extend((0..=MAX_GPU_PICKABLE_NODE_INDEX).step_by(97));
+        for id in ids {
+            let tint = encode_node_id_tint(NodeIndex(id));
+            let rgba = [forward_channel_byte(tint[0]), forward_channel_byte(tint[1]), forward_channel_byte(tint[2]), 255];
+            let decoded = decode_node_id_pixel(rgba);
+            assert_eq!(decoded, NodeIndex(id), "round trip failed for id={id}, tint={tint:?}, rgba={rgba:?}");
+        }
+    }
+
+    #[test]
+    fn decode_gpu_pick_pixel_rejects_the_white_background_sentinel_and_out_of_bounds_indices() {
+        let white_rgba = [255u8, 255, 255, 255];
+        assert_eq!(decode_node_id_pixel(white_rgba).0, MAX_GPU_PICKABLE_NODE_INDEX, "a pure white readback must decode to the reserved sentinel index");
+        assert_eq!(decode_gpu_pick_pixel(white_rgba, 50), None, "the sentinel index must never be reported as a real pick, regardless of node_count");
+
+        let tint = encode_node_id_tint(NodeIndex(5));
+        let rgba = [forward_channel_byte(tint[0]), forward_channel_byte(tint[1]), forward_channel_byte(tint[2]), 255];
+        assert_eq!(decode_gpu_pick_pixel(rgba, 50), Some(NodeIndex(5)), "an in-bounds real id must decode through cleanly");
+        assert_eq!(decode_gpu_pick_pixel(rgba, 3), None, "the SAME bytes must be rejected once node_count no longer covers that index");
+    }
+
+    #[test]
+    fn build_id_pass_scene_emits_one_unlit_node_per_graph_node_tinted_by_its_encoded_id_with_a_white_clear_color() {
+        let mut graph = DemoGraph::new();
+        let a = graph.push_node((), "a", "x", 2.0);
+        let b = graph.push_node((), "b", "x", 2.0);
+        let particles = vec![Particle::at3(1.0, 2.0, 3.0), Particle::at3(-4.0, 0.0, 5.0)];
+        let id_pass_mesh = Arc::new(build_id_pass_mesh(4, 4));
+
+        let scene = build_id_pass_scene(&graph, &particles, &id_pass_mesh);
+
+        assert_eq!(scene.clear_color, [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(scene.nodes.len(), 2);
+        assert!(scene.nodes.iter().all(|n| !n.is_lit()), "the id-pass must use Unlit geometry, not the Lit/Phong pipeline");
+        assert_eq!(scene.nodes[0].color_tint, encode_node_id_tint(a));
+        assert_eq!(scene.nodes[0].translation, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(scene.nodes[1].color_tint, encode_node_id_tint(b));
+        assert_eq!(scene.nodes[1].translation, Vec3::new(-4.0, 0.0, 5.0));
     }
 }

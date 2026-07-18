@@ -10,6 +10,16 @@
 //! 2. `camera_orbit_changes_pixels` — orbiting `Camera3D` changes the
 //!    rendered frame substantially (mirrors `cube_render.rs`'s own
 //!    `camera_move_changes_pixels`).
+//! 3. `id_pass_scene_produces_exactly_decodable_node_ids_at_known_pixels`
+//!    (Wave 4) — `GraphEngine3D::build_id_pass_scene()` renders to a real
+//!    id-pass frame and `render3d::decode_gpu_pick_pixel` recovers the
+//!    EXACT `NodeIndex` at each node's own pixel, and `None` at a
+//!    background pixel — the "PROVE, don't assume" gate for
+//!    `render3d.rs`'s tonemap-survival encode/decode scheme.
+//! 4. `request_and_poll_gpu_pick_resolves_the_correct_node_via_deferred_readback`
+//!    (Wave 4) — exercises the REAL `pick3d::request_gpu_pick`/
+//!    `pick3d::poll_gpu_pick` async plumbing end-to-end (blocking poll
+//!    loop, acceptable in tests per the task's own instruction).
 //!
 //! Run:
 //!   cargo test -p uzor-graph --test render3d_gpu -- --include-ignored --nocapture
@@ -18,9 +28,12 @@ use uzor::types::Rect;
 use uzor_graph::camera3d::Camera3D;
 use uzor_graph::engine3d::GraphEngine3D;
 use uzor_graph::graph::Graph;
+use uzor_graph::interaction::pick3d;
 use uzor_graph::interaction::pick3d::project_world_to_screen;
 use uzor_graph::layout::force_directed_3d::ForceDirectedLayout3D;
 use uzor_graph::particle::Particle;
+use uzor_graph::render3d;
+use uzor_graph::NodeIndex;
 use uzor_urx_3d::{Renderer3D, Vec3};
 
 const W: u32 = 128;
@@ -250,4 +263,163 @@ fn camera_orbit_changes_pixels() {
     let pct = (diff as f32 / total as f32) * 100.0;
     eprintln!("differing pixels: {diff}/{total} ({pct:.1}%)");
     assert!(pct > 5.0, "expected Camera3D::orbit to change >5% of pixels, got {pct:.1}%");
+}
+
+// ── Owner-ordered live fix: MSAA render quality ─────────────────────────
+
+#[test]
+#[ignore]
+fn build_scene_renders_correctly_with_msaa_armed_at_sample_count_4() {
+    let Some((device, queue)) = init_device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+
+    let engine = head_on_engine();
+    let scene = engine.build_scene();
+    assert_eq!(scene.nodes.len(), 3, "2 node spheres + 1 edge cylinder — pure Unlit+Lit, MSAA's own supported scope");
+
+    let aspect = W as f32 / H as f32;
+    let camera = engine.camera(aspect);
+
+    let mut r = Renderer3D::new(&device, &queue, COLOR_FORMAT, (W, H), 64);
+    r.set_sample_count(&device, 4);
+    assert_eq!(r.sample_count(), 4, "set_sample_count(4) must actually arm MSAA");
+
+    let (tex, view) = make_target(&device);
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    r.render(&device, &queue, &mut enc, &view, &camera, &scene);
+    queue.submit(Some(enc.finish()));
+    let px = readback_rgba(&device, &queue, &tex);
+
+    let viewport = Rect::new(0.0, 0.0, W as f64, H as f64);
+    let (ax, ay) = project_world_to_screen(&camera, Vec3::new(-6.0, 0.0, 0.0), viewport).expect("node a is in front of the eye");
+    let (bx, by) = project_world_to_screen(&camera, Vec3::new(6.0, 0.0, 0.0), viewport).expect("node b is in front of the eye");
+    let (mx, my) = project_world_to_screen(&camera, Vec3::ZERO, viewport).expect("edge midpoint is in front of the eye");
+
+    let a_px = at(&px, ax.round() as u32, ay.round() as u32);
+    let b_px = at(&px, bx.round() as u32, by.round() as u32);
+    let mid_px = at(&px, mx.round() as u32, my.round() as u32);
+    let corner_px = at(&px, 2, 2);
+    let far_corner_px = at(&px, W - 3, H - 3);
+
+    eprintln!("MSAA sample_count=4: a={a_px:?} b={b_px:?} mid={mid_px:?} corner={corner_px:?} far_corner={far_corner_px:?}");
+
+    // Same correctness assertions as the sample_count=1 gate above — the
+    // MSAA path must still render the SAME scene correctly (right
+    // nodes/edge visible, right background), not just "not crash."
+    assert_eq!(corner_px, far_corner_px, "MSAA-armed background corners must still both be pure (resolved+tonemapped) background: {corner_px:?} vs {far_corner_px:?}");
+    assert!(brightness(a_px) > brightness(corner_px) + 30, "node a must still be visually distinct under MSAA: {a_px:?} vs {corner_px:?}");
+    assert!(brightness(b_px) > brightness(corner_px) + 30, "node b must still be visually distinct under MSAA: {b_px:?} vs {corner_px:?}");
+    assert!(brightness(mid_px) > brightness(corner_px) + 20, "the edge cylinder must still be visible at its midpoint under MSAA: {mid_px:?} vs {corner_px:?}");
+
+    // Disarming must restore the exact pre-MSAA single-sample path —
+    // the "keep a single-sample path available" requirement, proven by
+    // actually round-tripping it, not just documenting it.
+    r.set_sample_count(&device, 1);
+    assert_eq!(r.sample_count(), 1, "set_sample_count(1) must disarm MSAA");
+    let (tex2, view2) = make_target(&device);
+    let mut enc2 = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    r.render(&device, &queue, &mut enc2, &view2, &camera, &scene);
+    queue.submit(Some(enc2.finish()));
+    let px2 = readback_rgba(&device, &queue, &tex2);
+    let a_px2 = at(&px2, ax.round() as u32, ay.round() as u32);
+    assert!(brightness(a_px2) > brightness(at(&px2, 2, 2)) + 30, "the disarmed single-sample path must still render node a correctly");
+}
+
+// ── Wave 4: GPU color-ID picking escalation ─────────────────────────────
+
+#[test]
+#[ignore]
+fn id_pass_scene_produces_exactly_decodable_node_ids_at_known_pixels() {
+    let Some((device, queue)) = init_device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+
+    let engine = head_on_engine();
+    let id_scene = engine.build_id_pass_scene();
+    assert_eq!(id_scene.nodes.len(), 2, "the id-pass is node-only — no edge cylinders");
+    assert_eq!(id_scene.clear_color, [1.0, 1.0, 1.0, 1.0], "the id-pass background must be the reserved white sentinel");
+
+    let aspect = W as f32 / H as f32;
+    let camera = engine.camera(aspect);
+
+    let mut r = Renderer3D::new(&device, &queue, COLOR_FORMAT, (W, H), 64);
+    // Bloom bleed / SSAO darkening would corrupt the flat per-node id
+    // color — see `render3d.rs`'s own id-pass module doc.
+    r.set_bloom_strength(0.0);
+    r.set_ssao_strength(0.0);
+    let (tex, view) = make_target(&device);
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    r.render(&device, &queue, &mut enc, &view, &camera, &id_scene);
+    queue.submit(Some(enc.finish()));
+    let px = readback_rgba(&device, &queue, &tex);
+
+    let viewport = Rect::new(0.0, 0.0, W as f64, H as f64);
+    let (ax, ay) = project_world_to_screen(&camera, Vec3::new(-6.0, 0.0, 0.0), viewport).expect("node a is in front of the eye");
+    let (bx, by) = project_world_to_screen(&camera, Vec3::new(6.0, 0.0, 0.0), viewport).expect("node b is in front of the eye");
+
+    let a_px = at(&px, ax.round() as u32, ay.round() as u32);
+    let b_px = at(&px, bx.round() as u32, by.round() as u32);
+    // Far corner, well outside both node silhouettes — background.
+    let corner_px = at(&px, 2, 2);
+
+    eprintln!("a={a_px:?} b={b_px:?} corner={corner_px:?}");
+
+    assert_eq!(
+        render3d::decode_gpu_pick_pixel(a_px, 2),
+        Some(NodeIndex(0)),
+        "node a's own pixel must decode back to its exact NodeIndex through the real render pipeline"
+    );
+    assert_eq!(
+        render3d::decode_gpu_pick_pixel(b_px, 2),
+        Some(NodeIndex(1)),
+        "node b's own pixel must decode back to its exact NodeIndex through the real render pipeline"
+    );
+    assert_eq!(
+        render3d::decode_gpu_pick_pixel(corner_px, 2),
+        None,
+        "a background pixel (white clear color, tonemapped) must decode to no hit, never a node"
+    );
+}
+
+#[test]
+#[ignore]
+fn request_and_poll_gpu_pick_resolves_the_correct_node_via_deferred_readback() {
+    let Some((device, queue)) = init_device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+
+    let engine = head_on_engine();
+    let id_scene = engine.build_id_pass_scene();
+    let aspect = W as f32 / H as f32;
+    let camera = engine.camera(aspect);
+    let mut r = Renderer3D::new(&device, &queue, COLOR_FORMAT, (W, H), 64);
+
+    let viewport = Rect::new(0.0, 0.0, W as f64, H as f64);
+    let (ax, ay) = project_world_to_screen(&camera, Vec3::new(-6.0, 0.0, 0.0), viewport).expect("node a is in front of the eye");
+
+    let readback = pick3d::request_gpu_pick(&device, &queue, &mut r, &id_scene, &camera, (W, H), (ax, ay));
+
+    // Blocking poll loop — acceptable IN TESTS (the task's own
+    // instruction); `GraphEngine3D`'s LIVE hover path never blocks like
+    // this, it just re-polls next frame via `pick3d::poll_gpu_pick`.
+    let mut result = None;
+    for _ in 0..10_000 {
+        match pick3d::poll_gpu_pick(&device, &readback, 2) {
+            Some(r) => {
+                result = Some(r);
+                break;
+            }
+            None => std::hint::spin_loop(),
+        }
+    }
+
+    assert_eq!(
+        result,
+        Some(Some(NodeIndex(0))),
+        "the deferred GPU pick must resolve to node a's own NodeIndex at its exact screen position"
+    );
 }
