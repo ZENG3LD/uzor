@@ -761,4 +761,29 @@ impl Mesh {
 
         Self { vertices, indices }
     }
+
+    /// Unit line segment along `+Y` — base at `y=0`, top at `y=1`
+    /// (mirrors `MeshLit::cylinder`'s own base/top convention, NOT
+    /// centred, so the SAME `translation=from` / `scale.y=length` /
+    /// `rotation=Quat::from_rotation_arc(Vec3::Y, dir)` instance-transform
+    /// math a cylinder-edge used still applies unchanged when this mesh
+    /// is swapped in instead — see `uzor-graph::render3d`'s own module
+    /// doc for the full edge-instancing convention this mesh is built
+    /// for). Two vertices, drawn as `LineList` (`Renderer3D`'s dedicated
+    /// [line pipeline](crate::pipeline) — see that module's own doc
+    /// comment): no cross-section geometry at all, so there is nothing
+    /// for the model matrix's `x`/`z` scale to stretch — GPU-native line
+    /// rasterization (1 device pixel, hardware-antialiased under MSAA)
+    /// supplies the actual on-screen width instead of a world-space
+    /// cylinder radius that would otherwise vanish to sub-pixel at any
+    /// realistic camera distance (the owner-reported "dotted/stippled at
+    /// distance" defect this mesh replaces the cylinder-edge approach
+    /// to fix — full pixel evidence in `uzor-graph/CLAUDE.md`'s
+    /// divergence log).
+    pub fn unit_line(color: [f32; 4]) -> Self {
+        Self {
+            vertices: vec![Vertex::new(Vec3::ZERO, color), Vertex::new(Vec3::Y, color)],
+            indices: vec![0, 1],
+        }
+    }
 }

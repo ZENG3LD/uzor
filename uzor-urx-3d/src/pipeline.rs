@@ -286,6 +286,29 @@ pub struct Renderer3D {
     // still-single-sample variants.
     pipeline_instanced_msaa: wgpu::RenderPipeline,
     pipeline_phong_msaa: wgpu::RenderPipeline,
+
+    // Wave C (owner-ordered edge-quality overhaul) — dedicated
+    // `LineList`-topology, always-alpha-blended, depth-write-disabled
+    // pipeline for `NodeMesh::Line` nodes (see that variant's own doc
+    // comment, `scene3d.rs`). Same shader module/bind group layout as
+    // `pipeline_instanced` (`unlit_instanced.wgsl` — topology is a
+    // pipeline-level `PrimitiveState` property, not shader logic, so no
+    // new WGSL file is needed), only `primitive.topology`,
+    // `primitive.cull_mode` (lines have no back face), and
+    // `depth_stencil.depth_write_enabled` differ. An MSAA sibling exists
+    // for the same reason `pipeline_instanced_msaa` does: `wgpu` bakes
+    // `sample_count` into a pipeline at creation, so a genuinely optional
+    // MSAA path needs a second pipeline object.
+    pipeline_line_instanced: wgpu::RenderPipeline,
+    pipeline_line_instanced_msaa: wgpu::RenderPipeline,
+    /// Instance buffer for `NodeMesh::Line` nodes — kept SEPARATE from
+    /// `instance_buf` (Unlit) even though both use `InstanceRaw`: both
+    /// groups are built and uploaded in the SAME frame, so sharing one
+    /// buffer would have the Line upload overwrite (or be overwritten
+    /// by) the Unlit upload.
+    instance_line_buf: wgpu::Buffer,
+    instance_line_capacity: u32,
+
     /// Current sample count (`1` = MSAA disabled, the default;
     /// [`MSAA_SAMPLE_COUNT`] = armed). Never any other value — see
     /// [`Renderer3D::set_sample_count`].
@@ -546,6 +569,87 @@ impl Renderer3D {
             multiview_mask: None,
             cache: None,
         });
+
+        // Wave C (owner-ordered edge-quality overhaul) — `LineList`
+        // sibling of `pipeline_instanced`: SAME shader/layout, only
+        // topology + cull_mode + depth_write differ. `depth_write_enabled:
+        // false` — translucent lines shouldn't fight each other (or a
+        // future opaque draw ordered after them) for the depth buffer;
+        // `depth_compare: Less` stays ON so opaque nodes still correctly
+        // occlude edges behind them.
+        let line_primitive = wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::LineList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        };
+        let line_depth_stencil = wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        };
+        let pipeline_line_instanced = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urx3d.pipeline_line_instanced"),
+            layout: Some(&pipeline_layout_inst),
+            vertex: wgpu::VertexState {
+                module: &shader_inst,
+                entry_point: Some("vs_main"),
+                buffers: &[
+                    Vertex::vertex_buffer_layout(),
+                    InstanceRaw::vertex_buffer_layout(),
+                ],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader_inst,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: line_primitive,
+            depth_stencil: Some(line_depth_stencil.clone()),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let pipeline_line_instanced_msaa = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urx3d.pipeline_line_instanced_msaa"),
+            layout: Some(&pipeline_layout_inst),
+            vertex: wgpu::VertexState {
+                module: &shader_inst,
+                entry_point: Some("vs_main"),
+                buffers: &[
+                    Vertex::vertex_buffer_layout(),
+                    InstanceRaw::vertex_buffer_layout(),
+                ],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader_inst,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: line_primitive,
+            depth_stencil: Some(line_depth_stencil),
+            multisample: wgpu::MultisampleState { count: MSAA_SAMPLE_COUNT, ..Default::default() },
+            multiview_mask: None,
+            cache: None,
+        });
+
         let frame_bg_inst = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("urx3d.frame_bg_inst"),
             layout: &frame_bgl_inst,
@@ -559,6 +663,15 @@ impl Renderer3D {
         let instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("urx3d.instance_buf"),
             size: std::mem::size_of::<InstanceRaw>() as u64 * instance_capacity as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Wave C — dedicated Line instance buffer, sized like `instance_buf`.
+        let instance_line_capacity = node_capacity.max(64);
+        let instance_line_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_line_buf"),
+            size: std::mem::size_of::<InstanceRaw>() as u64 * instance_line_capacity as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1486,6 +1599,10 @@ impl Renderer3D {
             particle_renderer: None,
             pipeline_instanced_msaa,
             pipeline_phong_msaa,
+            pipeline_line_instanced,
+            pipeline_line_instanced_msaa,
+            instance_line_buf,
+            instance_line_capacity,
             sample_count: 1,
             msaa_hdr_view: None,
             msaa_depth_view: None,
@@ -1787,6 +1904,20 @@ impl Renderer3D {
         self.instance_capacity = new_cap;
     }
 
+    fn grow_instance_line_buf(&mut self, device: &wgpu::Device, needed: u32) {
+        if needed <= self.instance_line_capacity {
+            return;
+        }
+        let new_cap = needed.next_power_of_two().max(64);
+        self.instance_line_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_line_buf"),
+            size: std::mem::size_of::<InstanceRaw>() as u64 * new_cap as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.instance_line_capacity = new_cap;
+    }
+
     fn grow_instance_lit_buf(&mut self, device: &wgpu::Device, needed: u32) {
         if needed <= self.instance_lit_capacity {
             return;
@@ -2021,6 +2152,11 @@ impl Renderer3D {
                 Vec<usize>,
             ),
         > = BTreeMap::new();
+        // Wave C — Line groups, keyed on Arc<Mesh> identity exactly like
+        // groups_unlit (same underlying Mesh/Vertex type — reuses
+        // `self.mesh_cache`, no dedicated cache needed).
+        let mut groups_line: BTreeMap<usize, (Arc<crate::mesh::Mesh>, Vec<usize>)> =
+            BTreeMap::new();
         // Wave 18 — transparent nodes collected separately and sorted
         // back-to-front by camera distance. They draw in a second pass
         // after the opaque draw. Each entry remembers its node index;
@@ -2029,6 +2165,17 @@ impl Renderer3D {
         let mut transparent_order: Vec<(usize, f32)> = Vec::new();
 
         for (i, n) in scene.nodes.iter().enumerate() {
+            // Wave C — `Line` nodes are pulled out BEFORE the
+            // `is_transparent()` check: their alpha blending is baked
+            // into the dedicated line pipeline's own fixed blend state,
+            // not gated by tint alpha, so they stay batched into ONE
+            // instanced draw call regardless of how many edges the scene
+            // has (see `NodeMesh::Line`'s own doc comment, `scene3d.rs`).
+            if let NodeMesh::Line(m) = &n.geometry {
+                let k = Arc::as_ptr(m) as usize;
+                groups_line.entry(k).or_insert_with(|| (m.clone(), Vec::new())).1.push(i);
+                continue;
+            }
             if n.is_transparent() {
                 let d = (n.translation - camera.eye).length_squared();
                 transparent_order.push((i, d));
@@ -2064,6 +2211,7 @@ impl Renderer3D {
                         .3
                         .push(i);
                 }
+                NodeMesh::Line(_) => unreachable!("Line nodes are pulled out before this match — see the `if let` above"),
             }
         }
         // Sort back-to-front (farthest first). Distance comparison is
@@ -2104,6 +2252,36 @@ impl Renderer3D {
         }
         if !unlit_instances.is_empty() {
             queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(&unlit_instances));
+        }
+
+        // 5b. Build Line instance buffer (Wave C) — same InstanceRaw
+        // shape/build as unlit, dedicated buffer (see `instance_line_buf`'s
+        // own doc comment for why it can't share `instance_buf`).
+        let total_line: u32 = groups_line.values().map(|(_, v)| v.len() as u32).sum();
+        self.grow_instance_line_buf(device, total_line.max(1));
+        let mut line_instances: Vec<InstanceRaw> = Vec::with_capacity(total_line as usize);
+        let mut line_draws: Vec<GroupDraw> = Vec::with_capacity(groups_line.len());
+        for (_k, (mesh, node_indices)) in groups_line.iter() {
+            let entry = self.mesh_cache.get_or_upload(device, mesh);
+            let first = line_instances.len() as u32;
+            for &idx in node_indices {
+                let n = &scene.nodes[idx];
+                line_instances.push(InstanceRaw {
+                    model: n.model_matrix().to_cols_array_2d(),
+                    tint: n.color_tint,
+                });
+            }
+            let count = line_instances.len() as u32 - first;
+            line_draws.push(GroupDraw {
+                vb: entry.vb.clone(),
+                ib: entry.ib.clone(),
+                index_count: entry.index_count,
+                first_instance: first,
+                instance_count: count,
+            });
+        }
+        if !line_instances.is_empty() {
+            queue.write_buffer(&self.instance_line_buf, 0, bytemuck::cast_slice(&line_instances));
         }
 
         // 6. Build lit instance buffer.
@@ -2488,6 +2666,25 @@ impl Renderer3D {
             }
         }
 
+        // Line (Wave C — edge-quality overhaul) pass — drawn AFTER every
+        // opaque pass (Unlit/Lit/Textured/Pbr) so translucent edges are
+        // correctly occluded by whatever opaque geometry already wrote
+        // the depth buffer this frame, still WITHIN the same pass/same
+        // sample-count-matched pipeline set the `msaa_active` gate above
+        // already governs (this pipeline has its own MSAA sibling, same
+        // as Unlit/Lit).
+        if !line_draws.is_empty() {
+            pass.set_pipeline(if msaa_active { &self.pipeline_line_instanced_msaa } else { &self.pipeline_line_instanced });
+            pass.set_bind_group(0, &self.frame_bg_inst, &[]);
+            pass.set_vertex_buffer(1, self.instance_line_buf.slice(..));
+            for g in &line_draws {
+                pass.set_vertex_buffer(0, g.vb.slice(..));
+                pass.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
+                let end = g.first_instance + g.instance_count;
+                pass.draw_indexed(0..g.index_count, 0, g.first_instance..end);
+            }
+        }
+
         // ── Wave 18 — transparent pass: one draw per sorted node ──
         // We reuse the existing instance buffers by APPENDING the
         // transparent-node records past the opaque region. Each
@@ -2588,6 +2785,7 @@ impl Renderer3D {
                         ));
                         pbr_n += 1;
                     }
+                    NodeMesh::Line(_) => unreachable!("Line nodes never enter transparent_order — see the grouping pass's own `if let` above"),
                 }
             }
             drop(pass);
@@ -2768,6 +2966,7 @@ impl Renderer3D {
                         tpass.set_index_buffer(entry.ib.slice(..), wgpu::IndexFormat::Uint32);
                         tpass.draw_indexed(0..entry.index_count, 0, *slot..(*slot + 1));
                     }
+                    NodeMesh::Line(_) => unreachable!("Line nodes never enter transparent_order — see the grouping pass's own `if let` above"),
                 }
             }
         }

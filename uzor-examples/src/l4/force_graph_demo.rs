@@ -17,7 +17,7 @@
 //!
 //! Agent-api verification: see `uzor-graph/RUN.md`.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde_json::{json, Value};
@@ -77,6 +77,16 @@ impl DetRng {
 
 type DemoGraph = Graph<(), ()>;
 
+/// Overwrite every node's radius from its own degree (once all edges
+/// are known) — the one radius formula every fixture below shares.
+fn apply_degree_radius(graph: &mut DemoGraph) {
+    let ids: Vec<NodeIndex> = graph.nodes().map(|(id, _)| id).collect();
+    for id in ids {
+        let degree = graph.degree(id);
+        graph.set_radius(id, 3.0 + (degree as f32).sqrt() * 1.6);
+    }
+}
+
 /// 6 clusters of `CLUSTER_SIZE` members each, plus one hub node per
 /// cluster. Intra-cluster edges are deterministic-random; the hub fans
 /// out to a subset of its cluster; hubs form a ring — the only
@@ -87,7 +97,9 @@ type DemoGraph = Graph<(), ()>;
 /// collapsible clusters (Phase D's "3 clusters x ~8 nodes" fixture) over
 /// the first 8 members of clusters 0/1/2, so the `collapse`/`expand`
 /// agent actions have something concrete to act on in the live demo.
-fn build_demo_graph() -> (DemoGraph, Vec<(f32, f32)>, Vec<Vec<NodeIndex>>) {
+/// The `clusters` [`Fixture`] (default, matches the original ~534-node
+/// shape) — see [`build_fixture`] for the other 3.
+fn build_clusters_graph() -> (DemoGraph, Vec<(f32, f32)>, Vec<Vec<NodeIndex>>) {
     let mut graph = DemoGraph::new();
     let mut positions = Vec::new();
     let mut cluster_members: Vec<Vec<NodeIndex>> = vec![Vec::new(); NUM_CLUSTERS];
@@ -140,14 +152,245 @@ fn build_demo_graph() -> (DemoGraph, Vec<(f32, f32)>, Vec<Vec<NodeIndex>>) {
         graph.push_edge(hubs[cluster], hubs[next], 0.6, ());
     }
 
-    // Radius by degree, computed after all edges are known.
-    let ids: Vec<NodeIndex> = graph.nodes().map(|(id, _)| id).collect();
-    for id in ids {
-        let degree = graph.degree(id);
-        graph.set_radius(id, 3.0 + (degree as f32).sqrt() * 1.6);
-    }
+    apply_degree_radius(&mut graph);
 
     (graph, positions, cluster_members)
+}
+
+// ── Wave (owner order: "хочу более древовидные визуализации, не только
+// пятиугольник") — 3 additional deterministic fixtures ──────────────────
+
+const TREE_NODE_BUDGET: usize = 300;
+/// Every node below this depth always branches — guarantees the tree
+/// actually reaches its target depth before the budget/taper can choke
+/// it off early (a "few hundred nodes, deep" shape, not a shallow bush).
+const TREE_MIN_BRANCH_DEPTH: u32 = 4;
+/// Hard depth cap — with `TREE_MIN_BRANCH_DEPTH` this produces 5-6
+/// branching levels beneath the root ("хочу более древовидные... branching
+/// 4-5 levels").
+const TREE_MAX_DEPTH: u32 = 6;
+
+/// Root + branch-and-taper tree generator shared by the `tree` and
+/// `hierarchy` fixtures — deterministic (index-seeded `DetRng`, same
+/// convention as [`build_clusters_graph`]), stack-based (DFS) growth
+/// capped by `node_budget`/[`TREE_MAX_DEPTH`]. Branching tapers from
+/// `2..=4` children per node below [`TREE_MIN_BRANCH_DEPTH`] to `1..=3`
+/// beyond it, so the tree keeps growing DEEPER as the budget is consumed,
+/// not just wider at the root. Returns each node's own depth alongside
+/// the usual graph/position pair — [`build_hierarchy_graph`] needs it to
+/// pick same-depth cross-links.
+fn build_tree_internal(node_budget: usize, category_prefix: &str) -> (DemoGraph, Vec<(f32, f32)>, Vec<u32>) {
+    let mut graph = DemoGraph::new();
+    let mut positions = Vec::with_capacity(node_budget);
+    let mut depths = Vec::with_capacity(node_budget);
+
+    let root = graph.push_node((), format!("{category_prefix}-root"), format!("{category_prefix}-0"), 6.0);
+    positions.push((0.0, 0.0));
+    depths.push(0u32);
+
+    let mut stack: Vec<(NodeIndex, u32, f32, f32)> = vec![(root, 0, 0.0, 0.0)];
+    let mut count = 1usize;
+    let mut seq = 0u64;
+    while let Some((parent, depth, px, py)) = stack.pop() {
+        if depth >= TREE_MAX_DEPTH || count >= node_budget {
+            continue;
+        }
+        let mut rng = DetRng::new(0xC0FF_EE01 ^ ((depth as u64) << 40) ^ seq);
+        seq += 1;
+        let children = if depth < TREE_MIN_BRANCH_DEPTH { 2 + rng.range_usize(3) } else { 1 + rng.range_usize(3) };
+        for c in 0..children {
+            if count >= node_budget {
+                break;
+            }
+            let angle = (c as f32 / children as f32) * std::f32::consts::TAU + depth as f32 * 0.7;
+            let step = 70.0 + depth as f32 * 12.0;
+            let x = px + angle.cos() * step;
+            let y = py + angle.sin() * step;
+            let child_depth = depth + 1;
+            let label = format!("{category_prefix}-{child_depth}-{count}");
+            let category = format!("{category_prefix}-{}", child_depth.min(6));
+            let child = graph.push_node((), label, category, 4.0);
+            graph.push_edge(parent, child, 1.0, ());
+            positions.push((x, y));
+            depths.push(child_depth);
+            stack.push((child, child_depth, x, y));
+            count += 1;
+        }
+    }
+
+    apply_degree_radius(&mut graph);
+    (graph, positions, depths)
+}
+
+/// The `tree` [`Fixture`] — a deep rooted tree, no cross-links (a pure
+/// hierarchy). See [`build_tree_internal`]'s own doc comment.
+fn build_tree_graph() -> (DemoGraph, Vec<(f32, f32)>, Vec<Vec<NodeIndex>>) {
+    let (graph, positions, _depths) = build_tree_internal(TREE_NODE_BUDGET, "tree");
+    (graph, positions, Vec::new())
+}
+
+/// Fraction of nodes that get one extra same-depth "shortcut" edge on
+/// top of the underlying tree — the owner's own spec ("tree + cross-links
+/// ~5% — DAG-ish").
+const HIERARCHY_CROSS_LINK_RATIO: f32 = 0.05;
+
+/// The `hierarchy` [`Fixture`] — [`build_tree_internal`]'s SAME tree,
+/// plus a deterministic ~5% pass of extra same-depth cross-links (a
+/// shortcut between two siblings-of-siblings, never back to an ancestor)
+/// so the result reads as a DAG-ish hierarchy with shortcuts, not a
+/// random web.
+fn build_hierarchy_graph() -> (DemoGraph, Vec<(f32, f32)>, Vec<Vec<NodeIndex>>) {
+    let (mut graph, positions, depths) = build_tree_internal(TREE_NODE_BUDGET, "hier");
+    let n = graph.node_count();
+
+    let mut by_depth: std::collections::BTreeMap<u32, Vec<NodeIndex>> = std::collections::BTreeMap::new();
+    for (i, &d) in depths.iter().enumerate() {
+        by_depth.entry(d).or_default().push(NodeIndex(i as u32));
+    }
+
+    for i in 0..n {
+        let mut rng = DetRng::new(0xDEC0_DE55 ^ i as u64);
+        if rng.next_f32() >= HIERARCHY_CROSS_LINK_RATIO {
+            continue;
+        }
+        let depth = depths[i];
+        let candidates = by_depth.get(&depth).map(Vec::as_slice).unwrap_or(&[]);
+        if candidates.len() < 2 {
+            continue;
+        }
+        let j = candidates[rng.range_usize(candidates.len())];
+        if j.index() != i {
+            graph.push_edge(NodeIndex(i as u32), j, 0.6, ());
+        }
+    }
+
+    (graph, positions, Vec::new())
+}
+
+const SPARSE_NODE_COUNT: usize = 360;
+/// Probability each node originates one random long-range edge —
+/// contributes an average degree around ~1.1 (low-degree, per spec),
+/// most nodes end up with 0-2 edges total once both origination and
+/// incoming edges are counted.
+const SPARSE_LONG_RANGE_EDGE_PROBABILITY: f32 = 0.55;
+
+/// The `sparse` [`Fixture`] — low-degree random graph, nodes spread
+/// uniformly (by AREA, not radius — `sqrt(u)` sampling) over a wide disk
+/// with edges wired to a RANDOM other node (not a nearest neighbor), so
+/// the typical edge spans a large fraction of the whole layout — "shows
+/// long-range structure," and not incidentally the fixture that most
+/// directly exercises the Wave C edge-quality overhaul's own target case
+/// (long, generically-angled edges).
+fn build_sparse_graph() -> (DemoGraph, Vec<(f32, f32)>, Vec<Vec<NodeIndex>>) {
+    let mut graph = DemoGraph::new();
+    let mut positions = Vec::with_capacity(SPARSE_NODE_COUNT);
+    let mut ids = Vec::with_capacity(SPARSE_NODE_COUNT);
+    for i in 0..SPARSE_NODE_COUNT {
+        let mut rng = DetRng::new(0xBADC_0FFE ^ i as u64);
+        let r = rng.next_f32().sqrt() * 900.0;
+        let a = rng.next_f32() * std::f32::consts::TAU;
+        let x = a.cos() * r;
+        let y = a.sin() * r;
+        let category = format!("sparse-{}", i % 8);
+        let id = graph.push_node((), format!("s{i}"), category, 3.5);
+        ids.push(id);
+        positions.push((x, y));
+    }
+    for i in 0..SPARSE_NODE_COUNT {
+        let mut rng = DetRng::new(0xFACE_B00C ^ ((i as u64) << 16));
+        if rng.next_f32() >= SPARSE_LONG_RANGE_EDGE_PROBABILITY {
+            continue;
+        }
+        let j = rng.range_usize(SPARSE_NODE_COUNT);
+        if j != i {
+            graph.push_edge(ids[i], ids[j], 1.0, ());
+        }
+    }
+    apply_degree_radius(&mut graph);
+    (graph, positions, Vec::new())
+}
+
+/// Which deterministic demo graph shape is currently loaded — the
+/// owner's own live-verdict order ("хочу более древовидные
+/// визуализации, не только пятиугольник"). `Clusters` is the ORIGINAL
+/// ~534-node fixture (unchanged) and stays the default at launch.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Fixture {
+    Clusters,
+    Tree,
+    Hierarchy,
+    Sparse,
+}
+
+impl Fixture {
+    fn as_str(self) -> &'static str {
+        match self {
+            Fixture::Clusters => "clusters",
+            Fixture::Tree => "tree",
+            Fixture::Hierarchy => "hierarchy",
+            Fixture::Sparse => "sparse",
+        }
+    }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "clusters" => Some(Fixture::Clusters),
+            "tree" => Some(Fixture::Tree),
+            "hierarchy" => Some(Fixture::Hierarchy),
+            "sparse" => Some(Fixture::Sparse),
+            _ => None,
+        }
+    }
+
+    fn code(self) -> u8 {
+        match self {
+            Fixture::Clusters => 0,
+            Fixture::Tree => 1,
+            Fixture::Hierarchy => 2,
+            Fixture::Sparse => 3,
+        }
+    }
+
+    fn from_code(code: u8) -> Self {
+        match code {
+            1 => Fixture::Tree,
+            2 => Fixture::Hierarchy,
+            3 => Fixture::Sparse,
+            _ => Fixture::Clusters,
+        }
+    }
+}
+
+/// One dispatcher every fixture-consuming call site goes through — see
+/// each generator's own doc comment for its shape.
+fn build_fixture(fixture: Fixture) -> (DemoGraph, Vec<(f32, f32)>, Vec<Vec<NodeIndex>>) {
+    match fixture {
+        Fixture::Clusters => build_clusters_graph(),
+        Fixture::Tree => build_tree_graph(),
+        Fixture::Hierarchy => build_hierarchy_graph(),
+        Fixture::Sparse => build_sparse_graph(),
+    }
+}
+
+/// Shared, thread-safe current-fixture flag — same `Arc<AtomicU8>`
+/// cross-thread convention [`DimState`] already established (`state()`/
+/// `set_fixture` run on the agent-api HTTP thread; `DemoApp` reads it
+/// from the winit thread only for the initial `new()` build).
+#[derive(Clone)]
+struct FixtureState(Arc<AtomicU8>);
+
+impl FixtureState {
+    fn new() -> Self {
+        Self(Arc::new(AtomicU8::new(Fixture::Clusters.code())))
+    }
+
+    fn get(&self) -> Fixture {
+        Fixture::from_code(self.0.load(Ordering::Relaxed))
+    }
+
+    fn set(&self, fixture: Fixture) {
+        self.0.store(fixture.code(), Ordering::Relaxed);
+    }
 }
 
 // ── App ───────────────────────────────────────────────────────────────
@@ -230,11 +473,69 @@ fn full_window_viewport() -> Rect {
     Rect::new(-1.0e9, -1.0e9, 2.0e9, 2.0e9)
 }
 
+/// Shared "the 2D camera needs an initial `fit_view()`" flag — same
+/// cross-thread `Arc<Atomic*>` convention [`DimState`] already
+/// established. Was a private `DemoApp`-only `bool` before `set_fixture`
+/// needed to request a re-fit from the AGENT thread after a live graph
+/// rebuild (`DemoBlackbox::apply_agent_action` runs on the agent-api
+/// HTTP thread; `ui()`'s own `fit_view()` call runs on the winit thread).
+#[derive(Clone)]
+struct CameraFitFlag(Arc<AtomicBool>);
+
+impl CameraFitFlag {
+    fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(true)))
+    }
+
+    fn needs_fit(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn request(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    fn clear(&self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
+/// Rebuild BOTH the 2D and 3D engines IN PLACE from `fixture` —
+/// `set_fixture`'s own implementation, also used by `DemoApp::new()` for
+/// the initial build (exactly ONE "build a fixture into these engines"
+/// code path). Replaces the `Mutex`-guarded VALUE, not the `Arc` itself,
+/// so every existing clone of these Arcs (`DemoBlackbox`'s own,
+/// registered once in `init()`) keeps pointing at the rebuilt engine
+/// transparently — no re-registration needed.
+fn rebuild_engines(engine: &Arc<Mutex<Engine>>, engine3d: &Arc<Mutex<Engine3D>>, fixture: Fixture, camera_fit: &CameraFitFlag) {
+    let (graph, positions, cluster_members) = build_fixture(fixture);
+    let mut new_engine = Engine::new(graph, GraphLayoutMode::default());
+    new_engine.seed_positions(&positions);
+    new_engine.set_agent_slot_id(BLACKBOX_SLOT);
+    for members in cluster_members.iter().take(COLLAPSIBLE_CLUSTERS) {
+        new_engine.define_cluster(members[..COLLAPSIBLE_CLUSTER_SIZE.min(members.len())].to_vec());
+    }
+
+    // Same fixture, called a SECOND time (deterministic — `DetRng`'s own
+    // doc comment) for the independent 3D engine, mirroring
+    // `DemoApp::new()`'s original Wave 2 convention.
+    let (graph3d, positions3d, _cluster_members3d) = build_fixture(fixture);
+    let mut new_engine3d = Engine3D::new(graph3d, ForceDirectedLayout3D::default());
+    new_engine3d.seed_positions(&positions3d);
+
+    *DemoApp::lock(engine) = new_engine;
+    *DemoApp::lock3d(engine3d) = new_engine3d;
+    camera_fit.request();
+}
+
 struct DemoApp {
     engine: Arc<Mutex<Engine>>,
     engine3d: Arc<Mutex<Engine3D>>,
     dim: DimState,
-    did_init_camera: bool,
+    /// Which deterministic graph shape is currently loaded — see
+    /// [`Fixture`]/[`rebuild_engines`].
+    fixture: FixtureState,
+    camera_fit: CameraFitFlag,
     /// Wall-clock timestamp of the last `scene3d()` tick — mirrors
     /// `GraphEngine::tick_real_time`'s own clamped-dt convention so the
     /// 3D sim settles at a real-time rate regardless of the render
@@ -271,6 +572,8 @@ struct DemoBlackbox {
     engine: Arc<Mutex<Engine>>,
     engine3d: Arc<Mutex<Engine3D>>,
     dim: DimState,
+    fixture: FixtureState,
+    camera_fit: CameraFitFlag,
 }
 
 /// `NodeIndex` resolution for the 3D agent-forwarding path (Wave 3) —
@@ -315,38 +618,29 @@ const COLLAPSIBLE_CLUSTER_SIZE: usize = 8;
 
 impl DemoApp {
     fn new() -> Self {
-        let (graph, positions, cluster_members) = build_demo_graph();
-        let mut engine = GraphEngine::new(graph, GraphLayoutMode::default());
-        engine.seed_positions(&positions);
-        engine.set_agent_slot_id(BLACKBOX_SLOT);
-        for members in cluster_members.iter().take(COLLAPSIBLE_CLUSTERS) {
-            engine.define_cluster(members[..COLLAPSIBLE_CLUSTER_SIZE.min(members.len())].to_vec());
-        }
-
-        // Wave 2 (W3D arc plan §1.6) — the SAME graph fixture, seeded
-        // into a second, independent 3D engine. `build_demo_graph` is
-        // deterministic (index-seeded `DetRng`, no time/RNG), so calling
-        // it a second time reproduces the byte-identical topology;
-        // `Graph` itself isn't `Clone` (no coordinate state, but no
-        // derived `Clone` either — `graph.rs`), so a fresh construction
-        // is the straightforward way to get a second independent value.
-        let (graph3d, positions3d, _cluster_members3d) = build_demo_graph();
-        let mut engine3d = Engine3D::new(graph3d, ForceDirectedLayout3D::default());
-        // `seed_positions` (not a manual `p.x = x; p.y = y;` loop) — the
-        // engine-level fix for a live-caught defect: `build_demo_graph`'s
-        // positions are 2D-only (`z` stays at `Particle::default()`'s
-        // `0.0` for every node), and every 3D force is z-symmetric, so a
-        // manual x/y-only seed left the sim permanently confined to the
-        // z = 0 plane. `seed_positions` detects that degenerate z-extent
-        // and jitters it deterministically — see `uzor-graph/CLAUDE.md`'s
-        // divergence log and `GraphEngine3D::ensure_z_variance`.
-        engine3d.seed_positions(&positions3d);
+        // Placeholder empty graphs — immediately overwritten by
+        // `rebuild_engines` below, which is also `set_fixture`'s own
+        // implementation (exactly ONE "build a fixture into these
+        // engines" code path, see its own doc comment). `seed_positions`
+        // fixes the z-plane-degeneracy defect that a manual `p.x = x;
+        // p.y = y;` loop would reintroduce — `build_fixture`'s positions
+        // are 2D-only (`z` stays at `Particle::default()`'s `0.0` for
+        // every node), and every 3D force is z-symmetric, so a naive
+        // x/y-only seed would leave the sim permanently confined to the
+        // z = 0 plane. See `uzor-graph/CLAUDE.md`'s divergence log and
+        // `GraphEngine3D::ensure_z_variance`.
+        let engine = Arc::new(Mutex::new(GraphEngine::new(DemoGraph::new(), GraphLayoutMode::default())));
+        let engine3d = Arc::new(Mutex::new(Engine3D::new(DemoGraph::new(), ForceDirectedLayout3D::default())));
+        let camera_fit = CameraFitFlag::new();
+        let fixture = FixtureState::new();
+        rebuild_engines(&engine, &engine3d, fixture.get(), &camera_fit);
 
         Self {
-            engine: Arc::new(Mutex::new(engine)),
-            engine3d: Arc::new(Mutex::new(engine3d)),
+            engine,
+            engine3d,
             dim: DimState::new(),
-            did_init_camera: false,
+            fixture,
+            camera_fit,
             last_3d_frame_at: None,
             last_3d_surface_px: None,
         }
@@ -423,6 +717,7 @@ impl BlackboxAgentSurface for DemoBlackbox {
         };
         if let Value::Object(ref mut map) = state {
             map.insert("dimension".to_owned(), json!(self.dim.get().code()));
+            map.insert("fixture".to_owned(), json!(self.fixture.get().as_str()));
         }
         state
     }
@@ -440,6 +735,14 @@ impl BlackboxAgentSurface for DemoBlackbox {
                 }
                 _ => AgentActionReply::err("set_dimension requires args.dim to be 2 or 3"),
             };
+        }
+        if action.name == "set_fixture" {
+            let Some(fixture) = action.args.get("name").and_then(Value::as_str).and_then(Fixture::from_str) else {
+                return AgentActionReply::err("set_fixture requires args.name to be one of: clusters, tree, hierarchy, sparse");
+            };
+            self.fixture.set(fixture);
+            rebuild_engines(&self.engine, &self.engine3d, fixture, &self.camera_fit);
+            return AgentActionReply::ok_with_log(json!({ "fixture": fixture.as_str() }));
         }
         match self.dim.get() {
             Dimension::TwoD => DemoApp::lock(&self.engine).apply_agent_action(action),
@@ -513,7 +816,13 @@ impl App<NoPanel> for DemoApp {
         // Wave 2 (W3D arc plan §1.6): register the `DemoBlackbox`
         // dimension-aware wrapper instead of `self.engine` directly —
         // see that struct's own doc comment.
-        let blackbox = DemoBlackbox { engine: self.engine.clone(), engine3d: self.engine3d.clone(), dim: self.dim.clone() };
+        let blackbox = DemoBlackbox {
+            engine: self.engine.clone(),
+            engine3d: self.engine3d.clone(),
+            dim: self.dim.clone(),
+            fixture: self.fixture.clone(),
+            camera_fit: self.camera_fit.clone(),
+        };
         layout.register_blackbox_agent(BLACKBOX_SLOT, Arc::new(Mutex::new(blackbox)));
     }
 
@@ -542,9 +851,9 @@ impl App<NoPanel> for DemoApp {
             let mut engine = Self::lock(&self.engine);
             engine.set_canvas_rect(canvas_rect);
 
-            if !self.did_init_camera && canvas_rect.width > 0.0 {
+            if self.camera_fit.needs_fit() && canvas_rect.width > 0.0 {
                 engine.fit_view();
-                self.did_init_camera = true;
+                self.camera_fit.clear();
             }
 
             engine.tick_real_time();
@@ -700,4 +1009,134 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // {"dim": 3}` over agent-api switches live.
         .run_with_3d()?;
     Ok(())
+}
+
+// ── Tests: demo fixture builders (deterministic shapes) ────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clusters_fixture_matches_the_original_534_node_shape() {
+        let (graph, positions, cluster_members) = build_clusters_graph();
+        // NUM_CLUSTERS * (CLUSTER_SIZE members + 1 hub) = 6 * 89 = 534.
+        assert_eq!(graph.node_count(), NUM_CLUSTERS * (CLUSTER_SIZE + 1));
+        assert_eq!(positions.len(), graph.node_count());
+        assert_eq!(cluster_members.len(), NUM_CLUSTERS);
+        assert!(cluster_members.iter().all(|m| m.len() == CLUSTER_SIZE));
+    }
+
+    #[test]
+    fn tree_fixture_is_connected_acyclic_and_reaches_the_requested_depth() {
+        let (graph, positions, depths) = build_tree_internal(TREE_NODE_BUDGET, "t");
+        assert!(graph.node_count() > 100, "expected a few hundred nodes, got {}", graph.node_count());
+        assert!(graph.node_count() <= TREE_NODE_BUDGET);
+        assert_eq!(positions.len(), graph.node_count());
+        assert_eq!(depths.len(), graph.node_count());
+        // A tree has exactly n-1 edges — no cross-links yet.
+        assert_eq!(graph.edge_count(), graph.node_count() - 1, "the plain tree fixture must have zero cross-links (n-1 edges)");
+        let max_depth = depths.iter().copied().max().unwrap_or(0);
+        assert!(
+            max_depth >= TREE_MIN_BRANCH_DEPTH,
+            "expected the tree to reach at least {TREE_MIN_BRANCH_DEPTH} branching levels, got max depth {max_depth}"
+        );
+        assert!(max_depth <= TREE_MAX_DEPTH);
+        // Root is depth 0 and unique.
+        assert_eq!(depths.iter().filter(|&&d| d == 0).count(), 1);
+    }
+
+    #[test]
+    fn tree_fixture_via_build_fixture_has_no_collapsible_clusters() {
+        let (graph, positions, cluster_members) = build_tree_graph();
+        assert!(graph.node_count() > 100);
+        assert_eq!(positions.len(), graph.node_count());
+        assert!(cluster_members.is_empty(), "the tree fixture has no cluster-collapse concept");
+    }
+
+    #[test]
+    fn hierarchy_fixture_adds_roughly_5_percent_cross_links_over_the_underlying_tree() {
+        let (graph, positions, cluster_members) = build_hierarchy_graph();
+        assert_eq!(positions.len(), graph.node_count());
+        assert!(cluster_members.is_empty());
+        let n = graph.node_count();
+        let tree_edges = n - 1;
+        let cross_links = graph.edge_count() - tree_edges;
+        // HIERARCHY_CROSS_LINK_RATIO applies per-node with a coin flip,
+        // some flips land on leaves/singleton depth levels with no valid
+        // candidate and are skipped — a generous ±60% tolerance band
+        // around the nominal ratio proves cross-links actually landed
+        // (not zero, not close to every node) without over-fitting the
+        // exact RNG sequence.
+        let expected = n as f32 * HIERARCHY_CROSS_LINK_RATIO;
+        assert!(
+            (cross_links as f32) > expected * 0.4 && (cross_links as f32) < expected * 1.6,
+            "expected roughly {expected:.0} cross-link edges (~{:.0}% of {n} nodes), got {cross_links}",
+            HIERARCHY_CROSS_LINK_RATIO * 100.0
+        );
+    }
+
+    #[test]
+    fn sparse_fixture_has_low_average_degree_and_a_wide_spatial_spread() {
+        let (graph, positions, cluster_members) = build_sparse_graph();
+        assert_eq!(graph.node_count(), SPARSE_NODE_COUNT);
+        assert_eq!(positions.len(), SPARSE_NODE_COUNT);
+        assert!(cluster_members.is_empty());
+
+        let total_degree: u32 = (0..graph.node_count()).map(|i| graph.degree(NodeIndex(i as u32))).sum();
+        let avg_degree = total_degree as f32 / graph.node_count() as f32;
+        assert!(avg_degree < 2.0, "sparse fixture should be low-degree, got avg degree {avg_degree:.2}");
+
+        // "shows long-range structure" — at least one edge must span a
+        // large fraction of the whole layout's own spatial extent (not
+        // just nearest-neighbor links).
+        let max_extent = positions
+            .iter()
+            .flat_map(|&(x, y)| [x.abs(), y.abs()])
+            .fold(0.0_f32, f32::max);
+        let mut longest_edge = 0.0_f32;
+        for (_, edge) in graph.edges() {
+            let (ax, ay) = positions[edge.from.index()];
+            let (bx, by) = positions[edge.to.index()];
+            let d = ((ax - bx).powi(2) + (ay - by).powi(2)).sqrt();
+            longest_edge = longest_edge.max(d);
+        }
+        assert!(
+            longest_edge > max_extent * 0.5,
+            "expected at least one long-range edge spanning >50% of the layout's own extent ({max_extent:.1}), longest was {longest_edge:.1}"
+        );
+    }
+
+    #[test]
+    fn every_fixture_is_deterministic_across_repeated_calls() {
+        for fixture in [Fixture::Clusters, Fixture::Tree, Fixture::Hierarchy, Fixture::Sparse] {
+            let (g1, p1, _) = build_fixture(fixture);
+            let (g2, p2, _) = build_fixture(fixture);
+            assert_eq!(g1.node_count(), g2.node_count(), "{fixture:?} node_count must be deterministic");
+            assert_eq!(g1.edge_count(), g2.edge_count(), "{fixture:?} edge_count must be deterministic");
+            assert_eq!(p1, p2, "{fixture:?} positions must be byte-identical across repeated calls");
+            for (id, node) in g1.nodes() {
+                let other = g2.nodes().nth(id.index()).expect("same node_count implies same index range").1;
+                assert_eq!(node.label, other.label, "{fixture:?} label must be deterministic at index {}", id.index());
+                assert_eq!(node.category, other.category, "{fixture:?} category must be deterministic at index {}", id.index());
+            }
+        }
+    }
+
+    #[test]
+    fn fixture_name_round_trips_through_as_str_and_from_str() {
+        for fixture in [Fixture::Clusters, Fixture::Tree, Fixture::Hierarchy, Fixture::Sparse] {
+            assert_eq!(Fixture::from_str(fixture.as_str()), Some(fixture));
+            assert_eq!(Fixture::from_code(fixture.code()), fixture);
+        }
+        assert_eq!(Fixture::from_str("not-a-real-fixture"), None);
+    }
+
+    #[test]
+    fn fixture_state_defaults_to_clusters_and_get_reflects_the_last_set() {
+        let state = FixtureState::new();
+        assert_eq!(state.get(), Fixture::Clusters);
+        state.set(Fixture::Sparse);
+        assert_eq!(state.get(), Fixture::Sparse);
+    }
 }

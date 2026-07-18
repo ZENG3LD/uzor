@@ -148,8 +148,6 @@ const NODE_DRAG_ALPHA_TARGET: f32 = 0.3;
 /// once per engine, not once per node.
 const NODE_SPHERE_RINGS: u32 = 12;
 const NODE_SPHERE_SLICES: u32 = 16;
-/// Shared unit-cylinder edge mesh geometry (plan §1.3).
-const EDGE_CYLINDER_SLICES: u32 = 8;
 
 /// Label text offset from its node's projected screen position (Wave 4
 /// — [`GraphEngine3D::draw_overlay`]). The 2D engine's own
@@ -175,8 +173,11 @@ pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     /// Shared unit sphere every node instances from (plan §1.3) — built
     /// once at construction, never mutated.
     node_mesh: Arc<MeshLit>,
-    /// Shared unit cylinder every edge instances from (plan §1.3).
-    edge_mesh: Arc<MeshLit>,
+    /// Shared unit line segment every edge instances from (Wave C —
+    /// see `crate::render3d`'s own module doc for why edges are
+    /// `LineList` geometry, not a cylinder, as of the edge-quality
+    /// overhaul).
+    edge_mesh: Arc<Mesh>,
     /// Held keyboard-modifier state (Wave 2) — mirrors the 2D engine's
     /// own `PlatformEvent::ModifiersChanged` tracking pattern
     /// (`engine.rs`), read by [`GraphEngine3D::on_pointer_down`] to pick
@@ -234,7 +235,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             hovered: None,
             selected: None,
             node_mesh: Arc::new(MeshLit::sphere(1.0, NODE_SPHERE_RINGS, NODE_SPHERE_SLICES, [1.0, 1.0, 1.0, 1.0])),
-            edge_mesh: Arc::new(MeshLit::cylinder(1.0, 1.0, EDGE_CYLINDER_SLICES, [1.0, 1.0, 1.0, 1.0])),
+            edge_mesh: Arc::new(Mesh::unit_line([1.0, 1.0, 1.0, 1.0])),
             modifiers: ModifierKeys::default(),
             mode: Pointer3DMode::Idle,
             last_pointer_screen: (0.0, 0.0),
@@ -253,8 +254,8 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         &self.node_mesh
     }
 
-    /// Shared edge-cylinder mesh — see [`GraphEngine3D::node_mesh`].
-    pub fn edge_mesh(&self) -> &Arc<MeshLit> {
+    /// Shared edge-line mesh — see [`GraphEngine3D::node_mesh`].
+    pub fn edge_mesh(&self) -> &Arc<Mesh> {
         &self.edge_mesh
     }
 
@@ -553,7 +554,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// for the headless-GPU proof that the result actually renders
     /// visually-distinct pixels.
     pub fn build_scene(&self) -> Scene3D {
-        crate::render3d::build_scene(&self.graph, &self.particles, &self.node_mesh, &self.edge_mesh, crate::render3d::DEFAULT_EDGE_WIDTH)
+        crate::render3d::build_scene(&self.graph, &self.particles, &self.node_mesh, &self.edge_mesh)
     }
 
     /// Shared id-pass sphere mesh (Wave 4) — see

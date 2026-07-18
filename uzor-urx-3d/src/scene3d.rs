@@ -13,12 +13,30 @@ use std::sync::Arc;
 /// `Textured`  → Wave 5 `textured_instanced`  (Arc<MeshUv> + Texture3D)
 /// `Pbr`       → Wave 6 `pbr_instanced`       (Arc<MeshPbr> + PbrMaterial:
 ///                albedo, metalness, roughness, ao, optional normal map)
+/// `Line`      → Wave C (owner-ordered edge-quality overhaul)
+///                `Renderer3D`'s dedicated always-alpha-blended
+///                `LineList` pipeline (`Arc<Mesh>`, same vertex format
+///                Unlit reuses — see [`crate::mesh::Mesh::unit_line`]).
+///                **Bypasses [`Node::is_transparent`] entirely** — a
+///                `Line` node's tint alpha almost always sits inside
+///                the ~0.35-0.6 translucent range the industry-standard
+///                "graph reads as a cloud of nodes, edges recede"
+///                aesthetic wants, but that alpha is baked into the
+///                dedicated line pipeline's own fixed blend state, not
+///                routed through the generic per-node transparent slow
+///                path (`Renderer3D::render_inner`'s own doc comment
+///                explains why: that path draws ONE instance per node,
+///                which would tank perf at thousands of edges — the
+///                line pipeline stays batched into ONE instanced draw
+///                call regardless of edge count, exactly like the
+///                opaque Unlit/Lit paths).
 #[derive(Clone)]
 pub enum NodeMesh {
     Unlit(Arc<Mesh>),
     Lit(Arc<MeshLit>),
     Textured(Arc<MeshUv>, Arc<Texture3D>),
     Pbr(Arc<MeshPbr>, PbrMaterial),
+    Line(Arc<Mesh>),
 }
 
 #[derive(Clone)]
@@ -133,6 +151,19 @@ impl Node {
         }
     }
 
+    /// Wave C — a `LineList`-topology node (see [`NodeMesh::Line`]'s own
+    /// doc comment for why this bypasses [`Node::is_transparent`]).
+    pub fn new_line(mesh: Arc<Mesh>) -> Self {
+        Self {
+            geometry: NodeMesh::Line(mesh),
+            translation: Vec3::ZERO,
+            rotation: Quat::IDENTITY,
+            scale: Vec3::ONE,
+            color_tint: [1.0, 1.0, 1.0, 1.0],
+            material: PhongMaterial::default(), // unused for Line; keeps API uniform
+        }
+    }
+
     pub fn with_translation(mut self, t: Vec3) -> Self {
         self.translation = t;
         self
@@ -169,6 +200,15 @@ impl Node {
     /// Wave 18 — node is treated as transparent if its tint alpha drops
     /// below 1.0. Renderer3D sorts these back-to-front and draws them
     /// AFTER all opaque nodes for correct alpha blending.
+    ///
+    /// **`NodeMesh::Line` nodes never reach this check in
+    /// `Renderer3D::render_inner`** — they're pulled into their own
+    /// dedicated instanced group BEFORE this per-node test runs, even
+    /// though a typical line tint's alpha (~0.35-0.6) would otherwise
+    /// read `true` here. Calling this method directly on a `Line` node
+    /// still returns whatever its tint alpha implies — it's just not
+    /// CONSULTED by the render loop for that variant. See
+    /// [`NodeMesh::Line`]'s own doc comment.
     pub fn is_transparent(&self) -> bool {
         self.color_tint[3] < 0.999
     }

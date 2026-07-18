@@ -5,7 +5,7 @@
 //!
 //! 1. `build_scene_renders_visually_distinct_node_and_edge_pixels` —
 //!    `GraphEngine3D::build_scene()` for a small deterministic 2-node
-//!    graph produces node-sphere and edge-cylinder pixels that are
+//!    graph produces node-sphere and edge-line pixels that are
 //!    clearly brighter than the background clear color.
 //! 2. `camera_orbit_changes_pixels` — orbiting `Camera3D` changes the
 //!    rendered frame substantially (mirrors `cube_render.rs`'s own
@@ -34,7 +34,9 @@ use uzor_graph::layout::force_directed_3d::ForceDirectedLayout3D;
 use uzor_graph::particle::Particle;
 use uzor_graph::render3d;
 use uzor_graph::NodeIndex;
-use uzor_urx_3d::{Renderer3D, Vec3};
+use uzor_urx_3d::{Mesh, MeshLit, PerspectiveCamera, Renderer3D, Vec3};
+
+use std::sync::Arc;
 
 const W: u32 = 128;
 const H: u32 = 128;
@@ -129,6 +131,37 @@ fn brightness(p: [u8; 4]) -> u32 {
     p[0] as u32 + p[1] as u32 + p[2] as u32
 }
 
+/// Brightest pixel within a small box around `(cx, cy)` — a genuinely
+/// required sampling change for the Wave C edge-quality overhaul
+/// (`uzor-graph/CLAUDE.md`'s divergence log): edges are now a true
+/// GPU-native 1-device-pixel `LineList` line (see `uzor_urx_3d::NodeMesh::Line`),
+/// not a several-pixel-wide cylinder — WITHOUT MSAA armed (this specific
+/// test's own configuration), an unantialiased hairline can rasterize
+/// into a row/column adjacent to a naive `round()`-projected pixel
+/// rather than that exact pixel. A small-neighborhood "is a lit pixel
+/// near here" check is the correct way to verify a hairline is visible
+/// near a projected point — it does not weaken the underlying claim
+/// (the edge is genuinely drawn near its midpoint), only the SAMPLING
+/// method, which has to change now that the geometry has zero width
+/// tolerance for exact single-pixel rounding.
+fn brightest_near(buf: &[u8], cx: u32, cy: u32, radius: i64) -> [u8; 4] {
+    let mut best = at(buf, cx, cy);
+    let mut best_b = brightness(best);
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            let x = (cx as i64 + dx).clamp(0, (W - 1) as i64) as u32;
+            let y = (cy as i64 + dy).clamp(0, (H - 1) as i64) as u32;
+            let p = at(buf, x, y);
+            let b = brightness(p);
+            if b > best_b {
+                best = p;
+                best_b = b;
+            }
+        }
+    }
+    best
+}
+
 type DemoGraph = Graph<(), ()>;
 
 /// 2 well-separated nodes joined by one edge, positioned directly (not
@@ -161,7 +194,7 @@ fn build_scene_renders_visually_distinct_node_and_edge_pixels() {
 
     let engine = head_on_engine();
     let scene = engine.build_scene();
-    assert_eq!(scene.nodes.len(), 3, "2 node spheres + 1 edge cylinder");
+    assert_eq!(scene.nodes.len(), 3, "2 node spheres + 1 edge line");
 
     let aspect = W as f32 / H as f32;
     let camera = engine.camera(aspect);
@@ -180,7 +213,12 @@ fn build_scene_renders_visually_distinct_node_and_edge_pixels() {
 
     let a_px = at(&px, ax.round() as u32, ay.round() as u32);
     let b_px = at(&px, bx.round() as u32, by.round() as u32);
-    let mid_px = at(&px, mx.round() as u32, my.round() as u32);
+    // Wave C — edges are now a true GPU-native 1-device-pixel `LineList`
+    // line, not a several-pixel-wide cylinder; this test never arms MSAA,
+    // so an unantialiased hairline needs a small-neighborhood check to
+    // reliably prove visibility near its midpoint (see `brightest_near`'s
+    // own doc comment — a sampling-method fix, not a weakened claim).
+    let mid_px = brightest_near(&px, mx.round() as u32, my.round() as u32, 2);
     // Two corners far from every node/edge — background reference
     // points. `Renderer3D` runs an HDR + ACES tonemap + gamma composite
     // (`uzor-urx-3d/src/shaders/composite_aces.wgsl`) even over the
@@ -209,11 +247,11 @@ fn build_scene_renders_visually_distinct_node_and_edge_pixels() {
     );
     assert!(
         brightness(mid_px) > brightness(corner_px) + 20,
-        "the edge cylinder should be visible at its midpoint: {mid_px:?} vs {corner_px:?}"
+        "the edge line should be visible near its midpoint: {mid_px:?} vs {corner_px:?}"
     );
     assert!(
         a_px != mid_px || b_px != mid_px,
-        "node spheres and the edge cylinder should not be pixel-identical (both are drawn, not just one covering the other): a={a_px:?} b={b_px:?} mid={mid_px:?}"
+        "node spheres and the edge line should not be pixel-identical (both are drawn, not just one covering the other): a={a_px:?} b={b_px:?} mid={mid_px:?}"
     );
 }
 
@@ -277,7 +315,7 @@ fn build_scene_renders_correctly_with_msaa_armed_at_sample_count_4() {
 
     let engine = head_on_engine();
     let scene = engine.build_scene();
-    assert_eq!(scene.nodes.len(), 3, "2 node spheres + 1 edge cylinder — pure Unlit+Lit, MSAA's own supported scope");
+    assert_eq!(scene.nodes.len(), 3, "2 node spheres (Lit) + 1 edge line (Line) — MSAA covers Unlit+Lit+Line, all sample-count-matched pipeline pairs");
 
     let aspect = W as f32 / H as f32;
     let camera = engine.camera(aspect);
@@ -299,7 +337,9 @@ fn build_scene_renders_correctly_with_msaa_armed_at_sample_count_4() {
 
     let a_px = at(&px, ax.round() as u32, ay.round() as u32);
     let b_px = at(&px, bx.round() as u32, by.round() as u32);
-    let mid_px = at(&px, mx.round() as u32, my.round() as u32);
+    // Wave C — same small-neighborhood sampling fix as the sample_count=1
+    // gate above (see `brightest_near`'s own doc comment).
+    let mid_px = brightest_near(&px, mx.round() as u32, my.round() as u32, 2);
     let corner_px = at(&px, 2, 2);
     let far_corner_px = at(&px, W - 3, H - 3);
 
@@ -311,7 +351,7 @@ fn build_scene_renders_correctly_with_msaa_armed_at_sample_count_4() {
     assert_eq!(corner_px, far_corner_px, "MSAA-armed background corners must still both be pure (resolved+tonemapped) background: {corner_px:?} vs {far_corner_px:?}");
     assert!(brightness(a_px) > brightness(corner_px) + 30, "node a must still be visually distinct under MSAA: {a_px:?} vs {corner_px:?}");
     assert!(brightness(b_px) > brightness(corner_px) + 30, "node b must still be visually distinct under MSAA: {b_px:?} vs {corner_px:?}");
-    assert!(brightness(mid_px) > brightness(corner_px) + 20, "the edge cylinder must still be visible at its midpoint under MSAA: {mid_px:?} vs {corner_px:?}");
+    assert!(brightness(mid_px) > brightness(corner_px) + 20, "the edge line must still be visible near its midpoint under MSAA: {mid_px:?} vs {corner_px:?}");
 
     // Disarming must restore the exact pre-MSAA single-sample path —
     // the "keep a single-sample path available" requirement, proven by
@@ -327,6 +367,114 @@ fn build_scene_renders_correctly_with_msaa_armed_at_sample_count_4() {
     assert!(brightness(a_px2) > brightness(at(&px2, 2, 2)) + 30, "the disarmed single-sample path must still render node a correctly");
 }
 
+// ── Wave C — edge-quality overhaul: dotted/stippled edge fix ────────────
+
+/// The task's own explicit gate: "a NEW test proving a long thin edge
+/// renders CONTINUOUS pixels (sample along the projected line — no
+/// gaps) at a glancing angle." "Glancing angle" here means the edge's
+/// own ON-SCREEN (projected) angle is oblique/diagonal, not screen-axis-
+/// aligned — this is what a headless-GPU diagnostic (full pixel evidence
+/// in `uzor-graph/CLAUDE.md`'s divergence log) actually isolated as the
+/// second necessary ingredient for the owner-reported stipple defect: a
+/// perfectly horizontal thin cylinder rasterized continuously even
+/// sub-pixel-wide, but the IDENTICAL radius on a DIAGONAL edge left
+/// ~96% of its exact-centerline samples at background brightness — a
+/// camera-side 3D grazing angle relative to the edge's own axis was
+/// tried too and did NOT reproduce the defect (documented, ruled out).
+/// This fixture uses the SAME diagonal-edge geometry and the engine's
+/// own DEFAULT orbit distance (`Camera3D::default().distance = 500.0`,
+/// `uzor-graph/src/camera3d.rs`) that reproduced the defect against the
+/// OLD cylinder-edge geometry — proving the NEW `NodeMesh::Line` path
+/// fixes the EXACT reported case, not a strawman.
+#[test]
+#[ignore]
+fn long_thin_diagonal_edge_at_the_engines_default_distance_renders_with_continuous_coverage() {
+    let Some((device, queue)) = init_device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+
+    let mut graph: Graph<(), ()> = Graph::new();
+    let a = graph.push_node((), "a", "cat-a", 2.5);
+    let b = graph.push_node((), "b", "cat-b", 2.5);
+    graph.push_edge(a, b, 1.0, ());
+    let from = Vec3::new(-260.0, -140.0, 0.0);
+    let to = Vec3::new(260.0, 170.0, 0.0);
+    let particles = vec![Particle::at3(from.x, from.y, from.z), Particle::at3(to.x, to.y, to.z)];
+
+    let node_mesh = Arc::new(MeshLit::sphere(1.0, 8, 8, [1.0, 1.0, 1.0, 1.0]));
+    let edge_mesh = Arc::new(Mesh::unit_line([1.0, 1.0, 1.0, 1.0]));
+    let scene = render3d::build_scene(&graph, &particles, &node_mesh, &edge_mesh);
+
+    let d = 500.0f32;
+    let mut camera = PerspectiveCamera::new(Vec3::new(0.0, 0.0, d), Vec3::ZERO, W as f32 / H as f32);
+    camera.z_near = (d * 0.001).max(0.05);
+    camera.z_far = (d * 4.0).max(2_000.0);
+
+    let mut r = Renderer3D::new(&device, &queue, COLOR_FORMAT, (W, H), 64);
+    // Production's own live configuration
+    // (`uzor-render-hub/src/compose.rs::submit_urx_composed`) — MSAA
+    // helps but, against the OLD cylinder geometry, could not fix this
+    // on its own (also documented in the divergence log).
+    r.set_sample_count(&device, 4);
+    let (tex, view) = make_target(&device);
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    r.render(&device, &queue, &mut enc, &view, &camera, &scene);
+    queue.submit(Some(enc.finish()));
+    let px = readback_rgba(&device, &queue, &tex);
+    let bg = brightness(at(&px, 2, 2));
+
+    let viewport = Rect::new(0.0, 0.0, W as f64, H as f64);
+    let delta = to - from;
+
+    // Sample densely along the edge's own world-space length, excluding
+    // a margin at each end (the node spheres themselves cover those
+    // ends) — require near-total coverage AND bound the longest run of
+    // consecutive dark samples, the actual "no gaps" gate.
+    let steps = 200;
+    let margin = 0.08;
+    let mut lit_flags: Vec<bool> = Vec::with_capacity(steps + 1);
+    for i in 0..=steps {
+        let t = margin + (1.0 - 2.0 * margin) * (i as f32 / steps as f32);
+        let p = from + delta * t;
+        let lit = match project_world_to_screen(&camera, p, viewport) {
+            Some((sx, sy)) if sx >= 2.0 && sy >= 2.0 && sx < (W - 2) as f64 && sy < (H - 2) as f64 => {
+                // A small perpendicular box (not just the exact
+                // centerline) — proving the LINE is continuous, not
+                // hunting for exact sub-pixel rounding luck (same
+                // reasoning as `brightest_near`'s own doc comment).
+                let px_here = brightest_near(&px, sx.round() as u32, sy.round() as u32, 1);
+                brightness(px_here) > bg + 15
+            }
+            _ => false,
+        };
+        lit_flags.push(lit);
+    }
+
+    let lit_count = lit_flags.iter().filter(|&&l| l).count();
+    let mut max_gap = 0usize;
+    let mut cur_gap = 0usize;
+    for &lit in &lit_flags {
+        if lit {
+            cur_gap = 0;
+        } else {
+            cur_gap += 1;
+            max_gap = max_gap.max(cur_gap);
+        }
+    }
+    eprintln!("long thin diagonal edge: samples={} lit={lit_count} max_gap={max_gap}", lit_flags.len());
+
+    assert!(
+        (lit_count as f32 / lit_flags.len() as f32) > 0.95,
+        "the new LineList edge pipeline must render CONTINUOUS coverage along a diagonal edge at the engine's own default distance — only {lit_count}/{} samples were lit (the OLD cylinder-edge path left only ~4% lit on this exact fixture, see the divergence log)",
+        lit_flags.len()
+    );
+    assert!(
+        max_gap <= 2,
+        "no run of more than 2 consecutive dark samples is allowed — a longer run IS the dotted/stippled defect this wave fixed; max_gap={max_gap}"
+    );
+}
+
 // ── Wave 4: GPU color-ID picking escalation ─────────────────────────────
 
 #[test]
@@ -339,7 +487,7 @@ fn id_pass_scene_produces_exactly_decodable_node_ids_at_known_pixels() {
 
     let engine = head_on_engine();
     let id_scene = engine.build_id_pass_scene();
-    assert_eq!(id_scene.nodes.len(), 2, "the id-pass is node-only — no edge cylinders");
+    assert_eq!(id_scene.nodes.len(), 2, "the id-pass is node-only — no edge lines");
     assert_eq!(id_scene.clear_color, [1.0, 1.0, 1.0, 1.0], "the id-pass background must be the reserved white sentinel");
 
     let aspect = W as f32 / H as f32;
