@@ -1,7 +1,5 @@
-//! `Camera3D` — orbit-camera state for 3D graph mode, producing a fresh
-//! `uzor_urx_3d::PerspectiveCamera` each frame. Pure math this wave (W3D
-//! arc plan §1.4/§4 Wave 1) — event wiring (drag/wheel/pan input
-//! dispatch) lands in Wave 2.
+//! `Camera3D` — shared orbit and free-look state for 3D graph mode,
+//! producing a fresh `uzor_urx_3d::PerspectiveCamera` each frame.
 //!
 //! `Camera2D` is the house precedent for this split (plan §1.4's own
 //! reasoning): interaction state lives in `uzor-graph`, the render
@@ -32,8 +30,10 @@ const MAX_DISTANCE: f32 = 100_000.0;
 /// pan feels the same speed regardless of current zoom/distance.
 const PAN_UNITS_PER_PX_PER_DISTANCE: f32 = 0.002;
 
-/// Orbit-camera state: `target` is the look-at point, `distance` the
-/// orbit radius, `yaw`/`pitch` the spherical angles (radians) around it.
+/// Camera state shared by orbit and fly-style controls. In orbit use,
+/// `target` is the fixed center and `distance` is the radius. In free-look
+/// use, `eye()` is the fixed camera position and `target` is an aim point
+/// on its forward axis at `distance`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Camera3D {
     pub target: Vec3,
@@ -61,6 +61,17 @@ impl Camera3D {
     /// World-space eye position for the current orbit state.
     pub fn eye(&self) -> Vec3 {
         self.target + self.orbit_offset()
+    }
+
+    /// Unit vector from the camera position through the center of the
+    /// viewport. This is the axis a captured-mouse crosshair represents.
+    pub fn forward(&self) -> Vec3 {
+        -self.orbit_offset().normalize_or_zero()
+    }
+
+    /// Camera-local right axis with world-Y kept as the stable up reference.
+    pub fn right(&self) -> Vec3 {
+        self.forward().cross(Vec3::Y).normalize_or_zero()
     }
 
     /// Fresh `PerspectiveCamera` for the current orbit state — `up` stays
@@ -97,6 +108,24 @@ impl Camera3D {
         self.pitch = (self.pitch + delta_y * ORBIT_RADIANS_PER_PX).clamp(-PITCH_LIMIT, PITCH_LIMIT);
     }
 
+    /// Captured-mouse free look. Unlike [`Self::orbit`], this preserves the
+    /// camera's world-space eye position and rotates the forward axis through
+    /// it. `target` becomes the moving aim point at the existing `distance`.
+    pub fn free_look(&mut self, delta_x: f32, delta_y: f32) {
+        let eye = self.eye();
+        self.orbit(delta_x, delta_y);
+        self.target = eye - self.orbit_offset();
+    }
+
+    /// Translate the complete camera frame in local units. Eye and aim point
+    /// move by the same vector, so orientation and focus distance are stable.
+    pub fn translate_local(&mut self, right: f32, up: f32, forward: f32) {
+        let forward_axis = self.forward();
+        let right_axis = self.right();
+        let up_axis = right_axis.cross(forward_axis).normalize_or_zero();
+        self.target += right_axis * right + up_axis * up + forward_axis * forward;
+    }
+
     /// Wheel-to-dolly: multiplicative distance change, clamped to
     /// [`MIN_DISTANCE`, `MAX_DISTANCE`] (plan §1.4).
     pub fn dolly(&mut self, factor: f32) {
@@ -107,8 +136,8 @@ impl Camera3D {
     /// right/up plane (plan §1.4), scaled by `distance` so pan speed
     /// feels zoom-independent (see [`PAN_UNITS_PER_PX_PER_DISTANCE`]).
     pub fn pan(&mut self, delta_x: f32, delta_y: f32) {
-        let forward = -self.orbit_offset().normalize_or_zero();
-        let right = forward.cross(Vec3::Y).normalize_or_zero();
+        let forward = self.forward();
+        let right = self.right();
         let up = right.cross(forward).normalize_or_zero();
         let scale = PAN_UNITS_PER_PX_PER_DISTANCE * self.distance;
         self.target -= right * (delta_x * scale);
@@ -138,6 +167,47 @@ mod tests {
         camera.pitch = 0.0;
         camera.orbit(0.0, -100_000.0);
         assert!(camera.pitch >= -PITCH_LIMIT - 1e-6);
+    }
+
+    #[test]
+    fn free_look_rotates_forward_axis_without_orbiting_the_eye() {
+        let mut camera = Camera3D {
+            target: Vec3::new(12.0, -4.0, 8.0),
+            distance: 25.0,
+            yaw: 0.3,
+            pitch: -0.2,
+        };
+        let eye_before = camera.eye();
+        let target_before = camera.target;
+        let forward_before = camera.forward();
+
+        camera.free_look(40.0, -15.0);
+
+        assert!((camera.eye() - eye_before).length() < 1e-4, "free look must preserve camera position");
+        assert!((camera.target - target_before).length() > 1.0, "the aim point must move with orientation");
+        assert!((camera.forward() - forward_before).length() > 0.1, "the forward axis must rotate");
+        assert!(((camera.target - camera.eye()).length() - camera.distance).abs() < 1e-4);
+    }
+
+    #[test]
+    fn local_translation_moves_eye_and_aim_together() {
+        let mut camera = Camera3D {
+            target: Vec3::new(-3.0, 5.0, 9.0),
+            distance: 18.0,
+            yaw: 0.7,
+            pitch: 0.25,
+        };
+        let eye_before = camera.eye();
+        let target_before = camera.target;
+        let forward_before = camera.forward();
+
+        camera.translate_local(6.0, -2.0, 11.0);
+
+        let eye_delta = camera.eye() - eye_before;
+        let target_delta = camera.target - target_before;
+        assert!((eye_delta - target_delta).length() < 1e-4);
+        assert!((camera.forward() - forward_before).length() < 1e-6);
+        assert!(((camera.target - camera.eye()).length() - camera.distance).abs() < 1e-4);
     }
 
     #[test]
