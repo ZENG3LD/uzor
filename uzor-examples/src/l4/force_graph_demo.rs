@@ -217,14 +217,15 @@ impl DimState {
     }
 }
 
-/// The whole window is the 3D viewport while `Dimension::ThreeD` is
-/// active (no 2D chrome is drawn alongside it this wave — see
-/// `uzor-desktop`'s `Manager` divergence log). `GraphEngine3D::on_event`
-/// only uses its `viewport` argument for a `contains()` gate (never for
-/// coordinate math), so a maximal rect is the honest "the whole window,
-/// no narrower rect to check against" answer — cheaper and just as
-/// correct as tracking live window size through a second event path
-/// purely to reconstruct the same always-true gate.
+/// Wave 2's placeholder: `GraphEngine3D::on_event` used its `viewport`
+/// argument ONLY for a `contains()` gate (never for coordinate math), so
+/// a maximal rect was the honest "whole window, no narrower rect to
+/// check against" answer. **Wave 3 divergence**: hover/click picking
+/// (`pick3d::screen_to_ray`/`project_world_to_screen`) needs the REAL
+/// pixel viewport to build a correct NDC mapping — this placeholder's
+/// `2e9`-wide extent would compress every real cursor position to
+/// `ndc ~= (0, 0)` and break picking outright. Kept only as the
+/// before-the-first-3D-frame fallback (see [`DemoApp::dim3d_viewport`]).
 fn full_window_viewport() -> Rect {
     Rect::new(-1.0e9, -1.0e9, 2.0e9, 2.0e9)
 }
@@ -240,6 +241,14 @@ struct DemoApp {
     /// loop's actual frame rate. Reset to `None` whenever 3D goes
     /// inactive so re-activating doesn't apply one huge stale-dt jump.
     last_3d_frame_at: Option<std::time::Instant>,
+    /// Last real 3D surface size in px, set every `scene3d()` call
+    /// (Wave 3) — `on_event`'s picking math (`GraphEngine3D::on_event` ->
+    /// `pick3d::screen_to_ray`/`project_world_to_screen`) needs the
+    /// ACTUAL rendered pixel dimensions, unlike Wave 2's pure-gating
+    /// `viewport.contains()` use, which tolerated
+    /// [`full_window_viewport`]'s placeholder extent. See
+    /// [`DemoApp::dim3d_viewport`].
+    last_3d_surface_px: Option<(u32, u32)>,
 }
 
 /// Thin `BlackboxAgentSurface` wrapper the demo registers instead of
@@ -250,17 +259,50 @@ struct DemoApp {
 /// concern, per the plan's own reasoning for why dimension state lives
 /// here and not inside `uzor-graph`.
 ///
-/// **Wave 2 scope note**: `GraphEngine3D` does not implement
-/// `BlackboxAgentSurface` yet (no 3D agent-action vocabulary exists
-/// beyond what this wrapper itself already exposes — Wave 2's own scope
-/// is render/camera/Manager wiring, not a 3D agent surface). While 3D is
-/// active, every action OTHER than `set_dimension` is a clean, typed
-/// rejection (`AgentActionReply::err`), not a silent no-op — a future
-/// wave that gives `GraphEngine3D` its own agent surface only needs to
-/// change this one match arm.
+/// **Wave 3**: `GraphEngine3D` still does not implement
+/// `BlackboxAgentSurface` itself (a full 3D agent-action vocabulary —
+/// pin/cluster/filter/etc-equivalents — is out of this arc's scope, plan
+/// §5) — but the plan's own Wave 3 item 4 asks for "hover_node/
+/// select_node equivalents working in 3D", so THIS wrapper now forwards
+/// exactly `hover_node`/`select_node`/`clear_selection` straight onto
+/// `engine3d` while 3D is active (see [`DemoBlackbox::apply_3d_agent_action`]).
+/// Every other action while 3D is active stays a clean, typed rejection.
 struct DemoBlackbox {
     engine: Arc<Mutex<Engine>>,
+    engine3d: Arc<Mutex<Engine3D>>,
     dim: DimState,
+}
+
+/// `NodeIndex` resolution for the 3D agent-forwarding path (Wave 3) —
+/// mirrors `uzor_graph::agent`'s own private `resolve_node` (index or
+/// label lookup), re-implemented here since that helper isn't exported
+/// (`GraphEngine3D` has its own `graph`/`particles`, not a `GraphEngine`,
+/// so the 2D helper doesn't apply directly).
+fn resolve_node_3d(engine3d: &Engine3D, action: &AgentAction) -> Option<NodeIndex> {
+    if let Some(idx) = action.args.get("index").and_then(Value::as_u64) {
+        let node = NodeIndex(idx as u32);
+        return (node.index() < engine3d.graph.node_count()).then_some(node);
+    }
+    if let Some(label) = action.args.get("label").and_then(Value::as_str) {
+        return engine3d.graph.find_by_label(label);
+    }
+    None
+}
+
+/// JSON facts for one 3D node — mirrors `uzor_graph::agent`'s own
+/// 2D-engine `selected`/`hover` shape closely enough for a caller driving
+/// both dimensions to expect the same field names.
+fn node_facts_json_3d(engine3d: &Engine3D, id: NodeIndex) -> Option<Value> {
+    engine3d.node_facts(id).map(|f| {
+        json!({
+            "index": f.index.index(),
+            "label": f.label,
+            "category": f.category,
+            "degree": f.degree,
+            "position": { "x": f.position.0, "y": f.position.1 },
+            "pinned": f.pinned,
+        })
+    })
 }
 
 /// Cluster indices given a collapsible cluster (Phase D's "3 clusters x
@@ -290,10 +332,15 @@ impl DemoApp {
         // is the straightforward way to get a second independent value.
         let (graph3d, positions3d, _cluster_members3d) = build_demo_graph();
         let mut engine3d = Engine3D::new(graph3d, ForceDirectedLayout3D::default());
-        for (p, &(x, y)) in engine3d.particles.iter_mut().zip(positions3d.iter()) {
-            p.x = x;
-            p.y = y;
-        }
+        // `seed_positions` (not a manual `p.x = x; p.y = y;` loop) — the
+        // engine-level fix for a live-caught defect: `build_demo_graph`'s
+        // positions are 2D-only (`z` stays at `Particle::default()`'s
+        // `0.0` for every node), and every 3D force is z-symmetric, so a
+        // manual x/y-only seed left the sim permanently confined to the
+        // z = 0 plane. `seed_positions` detects that degenerate z-extent
+        // and jitters it deterministically — see `uzor-graph/CLAUDE.md`'s
+        // divergence log and `GraphEngine3D::ensure_z_variance`.
+        engine3d.seed_positions(&positions3d);
 
         Self {
             engine: Arc::new(Mutex::new(engine)),
@@ -301,6 +348,7 @@ impl DemoApp {
             dim: DimState::new(),
             did_init_camera: false,
             last_3d_frame_at: None,
+            last_3d_surface_px: None,
         }
     }
 
@@ -317,6 +365,19 @@ impl DemoApp {
             Err(poisoned) => poisoned.into_inner(),
         }
     }
+
+    /// The REAL 3D viewport (Wave 3) — the last surface size `scene3d()`
+    /// was actually called with, or [`full_window_viewport`]'s
+    /// placeholder before the very first 3D frame has rendered (there's
+    /// nothing better to gate `on_pointer_down`'s `contains()` check
+    /// against yet, and no picking has anything to hit before then
+    /// either).
+    fn dim3d_viewport(&self) -> Rect {
+        match self.last_3d_surface_px {
+            Some((w, h)) => Rect::new(0.0, 0.0, w as f64, h as f64),
+            None => full_window_viewport(),
+        }
+    }
 }
 
 impl BlackboxAgentSurface for DemoBlackbox {
@@ -331,8 +392,13 @@ impl BlackboxAgentSurface for DemoBlackbox {
     fn list_agent_widgets(&self) -> Vec<AgentWidget> {
         match self.dim.get() {
             Dimension::TwoD => DemoApp::lock(&self.engine).list_agent_widgets(),
-            // 3D picking (the thing that would give a node an
-            // agent-addressable rect) is Wave 3.
+            // Agent-addressable node RECTS in 3D would need a live
+            // camera/viewport threaded into this wrapper (this struct
+            // only holds `engine3d`/`dim`, not `DemoApp`'s own
+            // `last_3d_surface_px`) — a real but small follow-up, not
+            // this wave's own item 4 ask (hover_node/select_node
+            // equivalents + agent_state reporting, both done below).
+            // Flagged for Wave 4+.
             Dimension::ThreeD => Vec::new(),
         }
     }
@@ -340,7 +406,20 @@ impl BlackboxAgentSurface for DemoBlackbox {
     fn agent_state(&self) -> Value {
         let mut state = match self.dim.get() {
             Dimension::TwoD => DemoApp::lock(&self.engine).agent_state(),
-            Dimension::ThreeD => json!({}),
+            // Wave 3: report the same hover/selected shape the 2D engine
+            // does (plan §4 item 4: "state() while 3D reports
+            // hovered/selected/dimension").
+            Dimension::ThreeD => {
+                let engine3d = DemoApp::lock3d(&self.engine3d);
+                json!({
+                    "node_count": engine3d.graph.node_count(),
+                    "edge_count": engine3d.graph.edge_count(),
+                    "hovered": engine3d.hovered().map(NodeIndex::index),
+                    "hover": engine3d.hovered().and_then(|id| node_facts_json_3d(&engine3d, id)),
+                    "selected": engine3d.selected().map(NodeIndex::index),
+                    "selected_facts": engine3d.selected().and_then(|id| node_facts_json_3d(&engine3d, id)),
+                })
+            }
         };
         if let Value::Object(ref mut map) = state {
             map.insert("dimension".to_owned(), json!(self.dim.get().code()));
@@ -364,9 +443,51 @@ impl BlackboxAgentSurface for DemoBlackbox {
         }
         match self.dim.get() {
             Dimension::TwoD => DemoApp::lock(&self.engine).apply_agent_action(action),
-            Dimension::ThreeD => {
-                AgentActionReply::err("3D dimension has no agent actions yet besides set_dimension (Wave 3+)")
+            Dimension::ThreeD => self.apply_3d_agent_action(action),
+        }
+    }
+}
+
+impl DemoBlackbox {
+    /// Wave 3 — `hover_node`/`select_node`/`clear_selection` forwarded
+    /// straight onto `engine3d` (plan §4 item 4: "hover_node/select_node
+    /// equivalents working in 3D"). Mirrors `uzor_graph::agent`'s own 2D
+    /// `hover_node` convention exactly: `{}`/explicit `null` clears the
+    /// hover, an out-of-range index or unknown label is an error reply,
+    /// not a silent clear. Everything else stays a typed rejection — a
+    /// full 3D agent vocabulary (pin/cluster/filter-equivalents) is out
+    /// of this arc (plan §5).
+    fn apply_3d_agent_action(&mut self, action: AgentAction) -> AgentActionReply {
+        let mut engine3d = DemoApp::lock3d(&self.engine3d);
+        match action.name.as_str() {
+            "hover_node" => {
+                let index_arg = action.args.get("index");
+                let explicit_clear =
+                    matches!(index_arg, Some(Value::Null)) || (index_arg.is_none() && action.args.get("label").is_none());
+                if explicit_clear {
+                    engine3d.hovered = None;
+                    return AgentActionReply::ok_with_log(json!({ "hover": Value::Null }));
+                }
+                let Some(node) = resolve_node_3d(&engine3d, &action) else {
+                    return AgentActionReply::err("hover_node requires args.index (u32), args.label (string), or {} / null to clear");
+                };
+                engine3d.hovered = Some(node);
+                AgentActionReply::ok_with_log(json!({ "hover": { "index": node.index() } }))
             }
+            "select_node" => {
+                let Some(node) = resolve_node_3d(&engine3d, &action) else {
+                    return AgentActionReply::err("select_node requires args.index (u32) or args.label (string)");
+                };
+                engine3d.selected = Some(node);
+                AgentActionReply::ok_with_log(json!({ "selected": node.index() }))
+            }
+            "clear_selection" => {
+                engine3d.selected = None;
+                AgentActionReply::ok_with_log(json!({ "selected": Value::Null }))
+            }
+            _ => AgentActionReply::err(
+                "3D dimension only supports hover_node/select_node/clear_selection besides set_dimension (Wave 3)",
+            ),
         }
     }
 }
@@ -392,7 +513,7 @@ impl App<NoPanel> for DemoApp {
         // Wave 2 (W3D arc plan §1.6): register the `DemoBlackbox`
         // dimension-aware wrapper instead of `self.engine` directly —
         // see that struct's own doc comment.
-        let blackbox = DemoBlackbox { engine: self.engine.clone(), dim: self.dim.clone() };
+        let blackbox = DemoBlackbox { engine: self.engine.clone(), engine3d: self.engine3d.clone(), dim: self.dim.clone() };
         layout.register_blackbox_agent(BLACKBOX_SLOT, Arc::new(Mutex::new(blackbox)));
     }
 
@@ -500,7 +621,7 @@ impl App<NoPanel> for DemoApp {
             }
             Dimension::ThreeD => {
                 let mut engine3d = Self::lock3d(&self.engine3d);
-                engine3d.on_event(event, full_window_viewport())
+                engine3d.on_event(event, self.dim3d_viewport())
             }
         }
     }
@@ -519,6 +640,10 @@ impl Scene3DApp<NoPanel> for DemoApp {
             self.last_3d_frame_at = None;
             return None;
         }
+        // Wave 3: record the REAL surface size so `on_event`'s picking
+        // math (`dim3d_viewport`) uses the actual rendered viewport
+        // instead of `full_window_viewport`'s placeholder.
+        self.last_3d_surface_px = Some((surf_w, surf_h));
         let now = std::time::Instant::now();
         let dt = match self.last_3d_frame_at {
             Some(prev) => now.duration_since(prev).as_secs_f32().min(0.1),

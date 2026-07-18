@@ -103,6 +103,30 @@ impl ForceDirectedLayout3D {
     }
 }
 
+/// Deterministic (index-pair-seeded, no `Math::random`/wall-clock time —
+/// same splitmix/LCG convention this module's own tests use) unit-ish
+/// nudge direction for two exactly-coincident particles. **Live-caught
+/// Wave 2 defect, fixed in Wave 3** (`uzor-graph/CLAUDE.md`'s divergence
+/// log): the 2D `force_directed.rs::apply_collision`'s coincident-nudge
+/// only perturbs `x` — carried over verbatim here for Wave 1, this
+/// nudged ONLY the x-axis in 3D too, which can never break a shared
+/// z-plane symmetry (every coincident pair would separate along x,
+/// staying at whatever z they started at). Spreads DIFFERENT coincident
+/// pairs across DIFFERENT directions on the unit sphere (not a single
+/// fixed axis) so a stack of coincident 3D nodes can't reconverge onto
+/// one shared symmetry plane either.
+fn coincident_nudge_direction(i: usize, j: usize) -> (f32, f32, f32) {
+    let seed = ((i as u64) << 32 | j as u64) ^ 0x9E37_79B9_7F4A_7C15;
+    let mut state = seed;
+    let mut next = || {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (((state >> 40) as u32) as f32 / (1u32 << 24) as f32) * 2.0 - 1.0
+    };
+    let (x, y, z) = (next(), next(), next());
+    let len = (x * x + y * y + z * z).sqrt().max(1e-6);
+    (x / len, y / len, z / len)
+}
+
 fn apply_collision_3d(particles: &[Particle], radii: &[f32], strength: f32, force: &mut [(f32, f32, f32)]) {
     let n = particles.len();
     for i in 0..n {
@@ -113,10 +137,18 @@ fn apply_collision_3d(particles: &[Particle], radii: &[f32], strength: f32, forc
             let dist2 = dx * dx + dy * dy + dz * dz;
             let min_dist = radii.get(i).copied().unwrap_or(1.0) + radii.get(j).copied().unwrap_or(1.0);
             if dist2 <= 1e-6 {
-                // Coincident positions — deterministic nudge so they
-                // don't stay locked together forever.
-                force[i].0 -= 0.5;
-                force[j].0 += 0.5;
+                // Coincident positions — deterministic nudge across ALL
+                // THREE axes (see `coincident_nudge_direction`'s own doc
+                // comment for why the 2D-derived x-only nudge this
+                // replaced was a live-caught 3D defect) so they don't
+                // stay locked together forever.
+                let (nx, ny, nz) = coincident_nudge_direction(i, j);
+                force[i].0 -= nx * 0.5;
+                force[i].1 -= ny * 0.5;
+                force[i].2 -= nz * 0.5;
+                force[j].0 += nx * 0.5;
+                force[j].1 += ny * 0.5;
+                force[j].2 += nz * 0.5;
                 continue;
             }
             if dist2 < min_dist * min_dist {
@@ -334,6 +366,36 @@ mod tests {
         assert!(layout.is_settled());
         layout.reheat(0.5);
         assert!(!layout.is_settled());
+    }
+
+    /// Live-caught Wave 2 defect, fixed in Wave 3: the coincident-particle
+    /// collision nudge must break symmetry on ALL THREE axes, not just
+    /// `x` (a pure-x nudge can never separate two z-coincident nodes off
+    /// their shared z-plane).
+    #[test]
+    fn coincident_particle_collision_nudge_perturbs_all_three_axes() {
+        let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(0.0, 0.0, 0.0)];
+        let radii = vec![4.0, 4.0];
+        let mut force = vec![(0f32, 0f32, 0f32); 2];
+
+        apply_collision_3d(&particles, &radii, 0.7, &mut force);
+
+        assert_ne!(force[0].1, 0.0, "the y-axis component must be perturbed too, not left at 0.0");
+        assert_ne!(force[0].2, 0.0, "the z-axis component must be perturbed too — this is the exact bug the owner caught live");
+        // Newton's third law — the pair separates in opposite directions.
+        assert_eq!(force[0].0, -force[1].0);
+        assert_eq!(force[0].1, -force[1].1);
+        assert_eq!(force[0].2, -force[1].2);
+    }
+
+    /// Two DIFFERENT coincident pairs must not nudge along the identical
+    /// direction — otherwise a larger coincident stack would still
+    /// collapse back onto one shared plane pair-by-pair.
+    #[test]
+    fn different_coincident_pairs_nudge_along_different_directions() {
+        let dir_a = coincident_nudge_direction(0, 1);
+        let dir_b = coincident_nudge_direction(2, 3);
+        assert_ne!(dir_a, dir_b, "distinct index pairs must not collapse onto the same nudge direction");
     }
 
     #[test]
