@@ -11,7 +11,7 @@ use uzor::layout::agent::{AgentAction, AgentActionReply, AgentWidget, BlackboxAg
 use uzor::types::Rect;
 
 use crate::cluster::GroupId;
-use crate::engine::{GraphEngine, SelectMode};
+use crate::engine::{FilterSpec, GraphEngine, SelectMode, DEFAULT_FIT_PADDING_PX, DEFAULT_TRANSITION_MS};
 use crate::graph::NodeIndex;
 use crate::layout::{ForceParams, GraphLayoutMode, Layout, LayoutKind};
 
@@ -81,11 +81,7 @@ where
             "selection": selection_json(self),
             "hovered": self.hovered.map(|id| id.index()),
             "hover": hover,
-            "camera": {
-                "pan_x": self.camera.pan_x,
-                "pan_y": self.camera.pan_y,
-                "zoom": self.camera.zoom,
-            },
+            "camera": camera_json(self),
             "alpha": self.last_tick().alpha,
             "hot": self.is_hot(),
             "layout": layout_mode,
@@ -96,6 +92,13 @@ where
                 "density": self.label_density(),
                 "drawn_last_frame": self.labels_drawn_last_frame(),
             },
+            // Wave 2.6 — see `GraphEngine::{local_root, filter}`.
+            "local_root": self.local_root().map(|(node, depth)| json!({ "index": node.index(), "depth": depth })),
+            "filter": self.filter().map(filter_json),
+            // Wave 2.5 — whether an animated `zoom_to_fit`/`zoom_to_node`
+            // move is still in flight; `camera` above already reports the
+            // live pan/zoom every frame of that animation.
+            "camera_transitioning": self.camera_transitioning(),
         })
     }
 
@@ -214,19 +217,11 @@ where
                     self.camera.zoom = z.clamp(crate::camera::ZOOM_MIN, crate::camera::ZOOM_MAX);
                 }
                 self.mark_dirty();
-                AgentActionReply::ok_with_log(json!({
-                    "pan_x": self.camera.pan_x,
-                    "pan_y": self.camera.pan_y,
-                    "zoom": self.camera.zoom,
-                }))
+                AgentActionReply::ok_with_log(camera_json(self))
             }
             "fit_view" => {
                 self.fit_view();
-                AgentActionReply::ok_with_log(json!({
-                    "pan_x": self.camera.pan_x,
-                    "pan_y": self.camera.pan_y,
-                    "zoom": self.camera.zoom,
-                }))
+                AgentActionReply::ok_with_log(camera_json(self))
             }
             "collapse" => {
                 let Some(id) = resolve_cluster(&action) else {
@@ -314,6 +309,62 @@ where
                 self.set_label_density(density);
                 AgentActionReply::ok_with_log(json!({ "labels": { "density": self.label_density() } }))
             }
+            // Wave 2.5 navigation — animated zoom-to-fit over whichever
+            // nodes are currently effective (local-subgraph ∩ filter).
+            "zoom_to_fit" => {
+                let duration_ms = action.args.get("duration_ms").and_then(Value::as_f64).unwrap_or(DEFAULT_TRANSITION_MS);
+                let padding = action.args.get("padding").and_then(Value::as_f64).unwrap_or(DEFAULT_FIT_PADDING_PX);
+                self.zoom_to_fit(duration_ms, padding);
+                AgentActionReply::ok_with_log(camera_json(self))
+            }
+            // Wave 2.5 navigation — animated pan(+zoom) to center a node.
+            "zoom_to_node" => {
+                let Some(node) = resolve_node(self, &action) else {
+                    return AgentActionReply::err("zoom_to_node requires args.index (u32) or args.label (string)");
+                };
+                let duration_ms = action.args.get("duration_ms").and_then(Value::as_f64).unwrap_or(DEFAULT_TRANSITION_MS);
+                let target_zoom = action.args.get("zoom").and_then(Value::as_f64);
+                self.zoom_to_node(node, duration_ms, target_zoom);
+                AgentActionReply::ok_with_log(camera_json(self))
+            }
+            // Wave 2.6 local subgraph — `{}`/`{"index": null}` restores
+            // the full view (same "nothing means clear" convention
+            // `hover_node`/`select_node` already use).
+            "set_local_root" => {
+                let index_arg = action.args.get("index");
+                let explicit_clear = matches!(index_arg, Some(Value::Null))
+                    || (index_arg.is_none() && action.args.get("label").is_none());
+                if explicit_clear {
+                    self.set_local_root(None, None);
+                    return AgentActionReply::ok_with_log(json!({ "local_root": Value::Null }));
+                }
+                let Some(node) = resolve_node(self, &action) else {
+                    return AgentActionReply::err("set_local_root requires args.index (u32), args.label (string), or {} / null to clear");
+                };
+                let depth = action.args.get("depth").and_then(Value::as_u64).map(|d| d as u8);
+                self.set_local_root(Some(node), depth);
+                AgentActionReply::ok_with_log(json!({
+                    "local_root": self.local_root().map(|(n, d)| json!({ "index": n.index(), "depth": d })),
+                }))
+            }
+            // Wave 2.6 query filter — an args object with none of the 3
+            // recognized clauses (`{}`) clears the filter, same
+            // convention `hover_node`'s bare `{}` uses.
+            "set_filter" => {
+                let has_clause = ["label_substring", "categories", "min_degree"].iter().any(|k| action.args.get(*k).is_some());
+                if !has_clause {
+                    self.set_filter(None);
+                    return AgentActionReply::ok_with_log(json!({ "filter": Value::Null }));
+                }
+                let label_substring = action.args.get("label_substring").and_then(Value::as_str).map(str::to_owned);
+                let categories = action.args.get("categories").and_then(Value::as_array).map(|arr| {
+                    arr.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect::<Vec<String>>()
+                });
+                let min_degree = action.args.get("min_degree").and_then(Value::as_u64).map(|v| v as u32);
+                let spec = FilterSpec { label_substring, categories, min_degree };
+                self.set_filter(Some(spec));
+                AgentActionReply::ok_with_log(json!({ "filter": self.filter().map(filter_json) }))
+            }
             "set_layout" => {
                 let Some(mode) = action.args.get("mode").and_then(Value::as_str) else {
                     return AgentActionReply::err("set_layout requires args.mode (\"force\"|\"hierarchical\"|\"radial\")");
@@ -382,6 +433,27 @@ fn selection_json<N, E, L: Layout>(engine: &GraphEngine<N, E, L>) -> Value {
         "count": engine.selection.len(),
         "indices": indices,
         "collapsed_group": engine.selection_collapsed_group().map(|id| id.0),
+    })
+}
+
+/// Camera pan/zoom snapshot — shared by `agent_state`'s `camera` field and
+/// the `set_camera`/`fit_view`/`zoom_to_fit`/`zoom_to_node` action
+/// replies, so a caller reads back the exact same JSON shape either way.
+fn camera_json<N, E, L: Layout>(engine: &GraphEngine<N, E, L>) -> Value {
+    json!({
+        "pan_x": engine.camera.pan_x,
+        "pan_y": engine.camera.pan_y,
+        "zoom": engine.camera.zoom,
+    })
+}
+
+/// [`FilterSpec`] snapshot as JSON — shared by `agent_state`'s `filter`
+/// field and the `set_filter` action's reply (Wave 2.6).
+fn filter_json(filter: &FilterSpec) -> Value {
+    json!({
+        "label_substring": filter.label_substring,
+        "categories": filter.categories,
+        "min_degree": filter.min_degree,
     })
 }
 
@@ -674,5 +746,92 @@ mod tests {
         assert!(collapse.ok);
         let group_id = collapse.log_payload.as_ref().and_then(|d| d.get("collapsed")).and_then(Value::as_u64).expect("collapse reply carries the new GroupId");
         assert_eq!(engine.agent_state()["selection"]["collapsed_group"], json!(group_id));
+    }
+
+    // ── W2.5/W2.6 agent surface (zoom_to_fit, zoom_to_node, set_local_root, set_filter) ─
+
+    #[test]
+    fn zoom_to_fit_action_starts_an_animated_transition_reported_via_camera_transitioning() {
+        let mut graph = Graph::new();
+        graph.push_node((), "a", "x", 4.0);
+        graph.push_node((), "b", "x", 4.0);
+        let mut engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.set_canvas_rect(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.seed_positions(&[(-50.0, 0.0), (50.0, 0.0)]);
+
+        assert!(!engine.agent_state()["camera_transitioning"].as_bool().unwrap());
+        let reply = engine.apply_agent_action(action("zoom_to_fit", json!({ "duration_ms": 300.0, "padding": 20.0 })));
+        assert!(reply.ok);
+        assert!(engine.camera_transitioning());
+        assert!(engine.agent_state()["camera_transitioning"].as_bool().unwrap());
+
+        for _ in 0..40 {
+            engine.tick(1.0 / 60.0);
+        }
+        assert!(!engine.camera_transitioning(), "a 300ms transition must finish within 40 ticks at 60fps");
+    }
+
+    #[test]
+    fn zoom_to_node_action_resolves_by_index_and_animates_the_camera_toward_it() {
+        let (graph, ids) = ring_graph(3);
+        let mut engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.set_canvas_rect(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.seed_positions(&[(120.0, 0.0), (0.0, 120.0), (-120.0, -120.0)]);
+
+        let reply = engine.apply_agent_action(action("zoom_to_node", json!({ "index": ids[0].index(), "duration_ms": 100.0, "zoom": 2.0 })));
+        assert!(reply.ok);
+        assert!(engine.camera_transitioning());
+
+        for _ in 0..20 {
+            engine.tick(1.0 / 60.0);
+        }
+        assert!(!engine.camera_transitioning());
+        assert!((engine.agent_state()["camera"]["zoom"].as_f64().unwrap() - 2.0).abs() < 1e-6);
+
+        let bad = engine.apply_agent_action(action("zoom_to_node", json!({})));
+        assert!(!bad.ok, "zoom_to_node requires an index or label");
+    }
+
+    #[test]
+    fn set_local_root_action_reports_local_root_in_agent_state_and_clears_on_null() {
+        let (graph, ids) = ring_graph(4);
+        let mut engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.set_canvas_rect(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.seed_positions(&[(0.0, 0.0), (50.0, 0.0), (50.0, 50.0), (0.0, 50.0)]);
+
+        assert_eq!(engine.agent_state()["local_root"], Value::Null);
+
+        let reply = engine.apply_agent_action(action("set_local_root", json!({ "index": ids[0].index(), "depth": 1 })));
+        assert!(reply.ok);
+        assert_eq!(
+            engine.agent_state()["local_root"],
+            json!({ "index": ids[0].index(), "depth": 1 })
+        );
+
+        let cleared = engine.apply_agent_action(action("set_local_root", json!({ "index": Value::Null })));
+        assert!(cleared.ok);
+        assert_eq!(engine.agent_state()["local_root"], Value::Null);
+
+        let bad = engine.apply_agent_action(action("set_local_root", json!({ "index": 999 })));
+        assert!(!bad.ok, "an out-of-range index is an error reply, not a silent clear");
+    }
+
+    #[test]
+    fn set_filter_action_reports_filter_in_agent_state_and_clears_on_empty_args() {
+        let (graph, _ids) = ring_graph(4);
+        let mut engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
+
+        assert_eq!(engine.agent_state()["filter"], Value::Null);
+
+        let reply = engine.apply_agent_action(action("set_filter", json!({ "min_degree": 2, "categories": ["x"] })));
+        assert!(reply.ok);
+        let filter_state = engine.agent_state()["filter"].clone();
+        assert_eq!(filter_state["min_degree"], json!(2));
+        assert_eq!(filter_state["categories"], json!(["x"]));
+        assert_eq!(filter_state["label_substring"], Value::Null);
+
+        let cleared = engine.apply_agent_action(action("set_filter", json!({})));
+        assert!(cleared.ok);
+        assert_eq!(engine.agent_state()["filter"], Value::Null);
     }
 }

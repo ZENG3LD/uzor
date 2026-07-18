@@ -7,14 +7,14 @@ use std::time::Instant;
 
 use std::collections::{BTreeSet, HashSet};
 
-use uzor::input::{ModifierKeys, MouseButton, PlatformEvent};
+use uzor::input::{KeyCode, ModifierKeys, MouseButton, PlatformEvent};
 use uzor::render::{RenderContext, RenderRegion, UNCAPPED_FPS};
 use uzor::types::Rect;
 use uzor_figures::interact::FocusSet;
 
 use crate::camera::{Aabb, Camera2D};
 use crate::cluster::{ClusterRegistry, GroupId};
-use crate::graph::{Graph, NodeIndex};
+use crate::graph::{Graph, NodeIndex, SimEdge, SimTopology};
 use crate::interaction::drag::DragController;
 use crate::interaction::pick;
 use crate::label_grid;
@@ -60,6 +60,175 @@ const HOVER_PICK_MIN_MOVE_PX: f64 = 2.0;
 /// parameter"). `0` highlights only the hovered node itself; `1` (this
 /// default) adds its direct neighbors + connecting edges.
 const DEFAULT_HOVER_DEPTH: u8 = 1;
+
+/// Wave 2.5 default transition duration (ms) for `zoom_to_fit`/
+/// `zoom_to_node` when the caller doesn't specify one. `pub(crate)` so
+/// `agent.rs`'s `zoom_to_fit`/`zoom_to_node` actions default to the exact
+/// same value the engine API itself would use for an omitted argument.
+pub(crate) const DEFAULT_TRANSITION_MS: f64 = 400.0;
+/// Wave 2.5 default screen-space padding (px) for `zoom_to_fit` —
+/// `pub(crate)` for the same reason as [`DEFAULT_TRANSITION_MS`].
+pub(crate) const DEFAULT_FIT_PADDING_PX: f64 = 40.0;
+/// Wave 2.6 default local-subgraph BFS depth ("Depth default 2" — the
+/// task's own spec).
+const DEFAULT_LOCAL_DEPTH: u8 = 2;
+/// Wave 2.5 keyboard-nav pan speed, screen px/sec — scaled by the real
+/// per-tick `dt` (framerate-independent, vis-network's own "tie the
+/// repeat rate to the render loop" idiom, oss doc §2.15) rather than a
+/// fixed px-per-tick amount.
+const KEY_PAN_SPEED_PX_PER_S: f64 = 480.0;
+/// Wave 2.5 keyboard-nav zoom rate, multiplicative fraction per second
+/// (e.g. holding zoom-in for 1s multiplies zoom by roughly `1.0 +
+/// KEY_ZOOM_RATE_PER_S`).
+const KEY_ZOOM_RATE_PER_S: f64 = 1.2;
+
+/// Wave 2.5 keyboard nav — logical pan/zoom directions, decoupled from
+/// the specific physical [`KeyCode`] that triggers them (several
+/// physical keys can map to the same logical zoom direction, see
+/// [`nav_key_for`] — vis-network's own "multiple physical keys per
+/// logical action" robustness convention, oss doc §2.15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum NavKey {
+    PanUp,
+    PanDown,
+    PanLeft,
+    PanRight,
+    ZoomIn,
+    ZoomOut,
+}
+
+/// Physical key -> logical nav direction. Arrows pan; `+`/`-` zoom, with
+/// `BracketRight`/`PageUp` and `BracketLeft`/`PageDown` as extra physical
+/// aliases for zoom-in/zoom-out respectively (vis-network binds 4
+/// physical keys per logical zoom action for keyboard-layout robustness —
+/// this crate's `KeyCode` enum only has 3 candidates per direction, so
+/// that's what's bound). Any other key is `None` (not a nav key at all).
+fn nav_key_for(key: KeyCode) -> Option<NavKey> {
+    match key {
+        KeyCode::ArrowUp => Some(NavKey::PanUp),
+        KeyCode::ArrowDown => Some(NavKey::PanDown),
+        KeyCode::ArrowLeft => Some(NavKey::PanLeft),
+        KeyCode::ArrowRight => Some(NavKey::PanRight),
+        KeyCode::Plus | KeyCode::BracketRight | KeyCode::PageUp => Some(NavKey::ZoomIn),
+        KeyCode::Minus | KeyCode::BracketLeft | KeyCode::PageDown => Some(NavKey::ZoomOut),
+        _ => None,
+    }
+}
+
+/// Ease-in-out cubic, monotonically increasing on `[0, 1]` (`t=0 -> 0`,
+/// `t=1 -> 1`) — sigma.js `Camera.animate`'s own convention (oss doc
+/// §2.6): only the PROGRESS FRACTION is eased; pan and zoom are then each
+/// linearly interpolated in transform-space against that same eased
+/// fraction (see [`CameraTransition::step`]), not a curved "fly-to" path
+/// through zoom-space (d3's optional `interpolateZoom`/Van Wijk-Nuij
+/// convention is a heavier alternative this crate doesn't need at demo
+/// scale — the research doc explicitly allows "simple linear-in-
+/// transform-space" here).
+fn ease_in_out_cubic(t: f64) -> f64 {
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        1.0 - (-2.0 * t + 2.0).powi(3) / 2.0
+    }
+}
+
+/// An in-flight animated camera move (Wave 2.5 — `GraphEngine::
+/// zoom_to_fit`/`zoom_to_node`), ticked once per [`GraphEngine::tick`]
+/// call via [`GraphEngine::advance_camera_transition`]. d3-zoom's own
+/// "translate-then-scale" ordering (oss doc §2.6) is honored
+/// structurally by `Camera2D` itself (`world_to_screen` already applies
+/// pan THEN scale in that exact order) — this transition interpolates
+/// pan and zoom TOGETHER, each field linearly against the SAME eased
+/// progress fraction, so the target node/AABB stays visually anchored at
+/// every intermediate frame rather than the pan and zoom drifting out of
+/// sync with each other.
+#[derive(Debug, Clone, Copy)]
+struct CameraTransition {
+    start_pan: (f64, f64),
+    start_zoom: f64,
+    target_pan: (f64, f64),
+    target_zoom: f64,
+    elapsed_s: f32,
+    duration_s: f32,
+}
+
+impl CameraTransition {
+    fn new(camera: Camera2D, target_pan: (f64, f64), target_zoom: f64, duration_ms: f64) -> Self {
+        Self {
+            start_pan: (camera.pan_x, camera.pan_y),
+            start_zoom: camera.zoom,
+            target_pan,
+            target_zoom: target_zoom.clamp(crate::camera::ZOOM_MIN, crate::camera::ZOOM_MAX),
+            elapsed_s: 0.0,
+            duration_s: (duration_ms.max(0.0) / 1000.0) as f32,
+        }
+    }
+
+    /// Advance by `dt` seconds. Returns the eased `(pan, zoom)` for this
+    /// frame and whether the transition just reached its target — sigma's
+    /// own "on `t>=1` snap to the exact final state" (the caller assigns
+    /// the returned values straight to the camera every step, including
+    /// the final one, so there's no separate snap needed: at `t==1` the
+    /// eased lerp already lands EXACTLY on `target_pan`/`target_zoom`).
+    /// `duration_s <= 0.0` (an explicit instant snap) short-circuits `t`
+    /// to `1.0` on the very first call.
+    fn step(&mut self, dt: f32) -> ((f64, f64), f64, bool) {
+        self.elapsed_s += dt.max(0.0);
+        let t = if self.duration_s <= 0.0 { 1.0 } else { (self.elapsed_s / self.duration_s).clamp(0.0, 1.0) as f64 };
+        let eased = ease_in_out_cubic(t);
+        let pan = (
+            self.start_pan.0 + (self.target_pan.0 - self.start_pan.0) * eased,
+            self.start_pan.1 + (self.target_pan.1 - self.start_pan.1) * eased,
+        );
+        let zoom = self.start_zoom + (self.target_zoom - self.start_zoom) * eased;
+        (pan, zoom, t >= 1.0)
+    }
+}
+
+/// Wave 2.6 query filter (obsidian doc §12 — DELIBERATELY decoupled from
+/// color groups, which this engine doesn't even have yet: this is the
+/// "filter" half of Obsidian's own Filters-vs-Groups split, ready for a
+/// future color-group feature to sit alongside it on the same query
+/// grammar without the two ever being conflated). Typed AND-semantics
+/// predicate — no query-language strings inside the engine; a caller/
+/// agent boundary is free to compile one of these from a string DSL, but
+/// that translation lives OUTSIDE this crate (`agent.rs`'s JSON args are
+/// already exactly that kind of boundary, and take the fields directly,
+/// no string grammar). A `None` field means "don't filter on this axis";
+/// every `Some` field must pass for a node to remain visible.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FilterSpec {
+    pub label_substring: Option<String>,
+    pub categories: Option<Vec<String>>,
+    pub min_degree: Option<u32>,
+}
+
+impl FilterSpec {
+    /// Whether `id` passes every `Some` clause. Label matching is
+    /// case-insensitive substring (the common "search box" convention);
+    /// category matching is exact-string equality against any entry in
+    /// the list. `false` for an out-of-range `id` (fails closed, not
+    /// open).
+    fn matches<N, E>(&self, graph: &Graph<N, E>, id: NodeIndex) -> bool {
+        let Some(node) = graph.get_node(id) else { return false };
+        if let Some(sub) = &self.label_substring {
+            if !node.label.to_lowercase().contains(&sub.to_lowercase()) {
+                return false;
+            }
+        }
+        if let Some(categories) = &self.categories {
+            if !categories.iter().any(|c| c == &node.category) {
+                return false;
+            }
+        }
+        if let Some(min_degree) = self.min_degree {
+            if graph.degree(id) < min_degree {
+                return false;
+            }
+        }
+        true
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 enum PointerMode {
@@ -280,6 +449,20 @@ pub struct GraphEngine<N, E, L: Layout = ForceDirectedLayout> {
     last_tick: LayoutTickResult,
     last_frame_at: Option<Instant>,
     dirty: bool,
+    /// Wave 2.5 — in-flight animated `zoom_to_fit`/`zoom_to_node` move,
+    /// ticked from [`GraphEngine::tick`]. `None` when idle.
+    camera_transition: Option<CameraTransition>,
+    /// Wave 2.5 keyboard-nav hold-to-repeat state (vis-network pattern) —
+    /// every currently-held nav key gets its per-frame pan/zoom delta
+    /// applied every [`GraphEngine::tick`] for as long as it stays in
+    /// this set (inserted on `KeyDown`, removed on `KeyUp`).
+    held_nav_keys: HashSet<NavKey>,
+    /// Wave 2.6 local subgraph root + BFS depth — `None` shows the full
+    /// graph. See [`GraphEngine::set_local_root`].
+    local_root: Option<(NodeIndex, u8)>,
+    /// Wave 2.6 query filter — `None` shows every node. See
+    /// [`GraphEngine::set_filter`].
+    filter: Option<FilterSpec>,
     pub(crate) agent_slot_id: String,
 }
 
@@ -314,6 +497,10 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             last_tick: LayoutTickResult { alpha: 1.0, max_displacement: 0.0, settled: false },
             last_frame_at: None,
             dirty: true,
+            camera_transition: None,
+            held_nav_keys: HashSet::new(),
+            local_root: None,
+            filter: None,
             agent_slot_id: "graph".to_owned(),
         }
     }
@@ -341,8 +528,13 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         self.canvas_rect
     }
 
+    /// Whether the render loop should keep redrawing every frame — the
+    /// unsettled-physics case ([`GraphEngine::last_tick`]), PLUS (Wave
+    /// 2.5) an in-flight animated camera transition or a held keyboard-nav
+    /// key: both need continuous ticking to actually animate/repeat even
+    /// while the sim itself is fully settled.
     pub fn is_hot(&self) -> bool {
-        !self.last_tick.settled
+        !self.last_tick.settled || self.camera_transition.is_some() || !self.held_nav_keys.is_empty()
     }
 
     pub fn last_tick(&self) -> LayoutTickResult {
@@ -369,11 +561,36 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         }
     }
 
-    /// Advance the simulation by `dt` real seconds.
+    /// Advance the simulation by `dt` real seconds — also advances any
+    /// in-flight camera transition (Wave 2.5) and applies held keyboard-
+    /// nav keys (Wave 2.5), then ticks the layout against either the raw
+    /// topology or, when [`GraphEngine::filter`] is active (Wave 2.6), a
+    /// FILTERED one: an edge is dropped the instant EITHER endpoint fails
+    /// the filter, so the link-force no longer pulls surviving nodes
+    /// toward an excluded one (`GraphEngine::set_filter`'s own doc
+    /// comment covers the full "removed from the sim" contract).
     pub fn tick(&mut self, dt: f32) -> LayoutTickResult {
-        let topo = self.graph.topology();
         let was_hot = self.is_hot();
-        self.last_tick = self.layout.tick(&topo, &mut self.particles, dt);
+
+        self.apply_held_nav_keys(dt);
+        self.advance_camera_transition(dt);
+
+        let topo = self.graph.topology();
+        self.last_tick = match &self.filter {
+            Some(filter) => {
+                let filtered_edges: Vec<SimEdge> = topo
+                    .edges
+                    .iter()
+                    .copied()
+                    .filter(|e| filter.matches(&self.graph, e.from) && filter.matches(&self.graph, e.to))
+                    .collect();
+                let filtered_topo =
+                    SimTopology { node_count: topo.node_count, edges: &filtered_edges, degree: topo.degree, radii: topo.radii };
+                self.layout.tick(&filtered_topo, &mut self.particles, dt)
+            }
+            None => self.layout.tick(&topo, &mut self.particles, dt),
+        };
+
         if was_hot || self.is_hot() {
             self.dirty = true;
         }
@@ -404,14 +621,113 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         self.dirty = true;
     }
 
+    /// Apply the per-frame pan/zoom delta for every currently-held
+    /// keyboard-nav key (Wave 2.5 — vis-network's hold-to-repeat pattern,
+    /// oss doc §2.15, re-expressed in Rust as "loop over the held-key set
+    /// every tick" instead of JS's "register/unregister a per-frame
+    /// closure on the render loop" — same net effect, tied to the actual
+    /// render loop's own `dt` either way, so it auto-adapts to frame rate
+    /// with no separate timer). Direction convention: an arrow key pans
+    /// exactly like a simulated background drag toward that same screen
+    /// direction (`ArrowRight` == `pan_x += step`, matching a real
+    /// rightward drag's sign — see `on_pointer_moved`'s `PanningCamera`
+    /// arm). Zoom keys zoom around the CANVAS CENTER (keyboard input has
+    /// no cursor position of its own to anchor on, unlike wheel-zoom).
+    fn apply_held_nav_keys(&mut self, dt: f32) {
+        if self.held_nav_keys.is_empty() {
+            return;
+        }
+        let dt = dt.max(0.0) as f64;
+        let pan_step = KEY_PAN_SPEED_PX_PER_S * dt;
+        let mut dx = 0.0;
+        let mut dy = 0.0;
+        let mut zoom_factor = 1.0;
+        for nav in &self.held_nav_keys {
+            match nav {
+                NavKey::PanUp => dy -= pan_step,
+                NavKey::PanDown => dy += pan_step,
+                NavKey::PanLeft => dx -= pan_step,
+                NavKey::PanRight => dx += pan_step,
+                NavKey::ZoomIn => zoom_factor *= 1.0 + KEY_ZOOM_RATE_PER_S * dt,
+                NavKey::ZoomOut => zoom_factor /= 1.0 + KEY_ZOOM_RATE_PER_S * dt,
+            }
+        }
+        self.camera.pan_x += dx;
+        self.camera.pan_y += dy;
+        if (zoom_factor - 1.0).abs() > f64::EPSILON {
+            let center = (self.canvas_rect.center_x(), self.canvas_rect.center_y());
+            self.camera.zoom_at(center, self.canvas_rect, zoom_factor);
+        }
+        self.dirty = true;
+    }
+
+    /// Step the in-flight [`CameraTransition`], if any, and clear it once
+    /// it reaches its target (Wave 2.5).
+    fn advance_camera_transition(&mut self, dt: f32) {
+        let Some(transition) = self.camera_transition.as_mut() else { return };
+        let (pan, zoom, finished) = transition.step(dt);
+        self.camera.pan_x = pan.0;
+        self.camera.pan_y = pan.1;
+        self.camera.zoom = zoom.clamp(crate::camera::ZOOM_MIN, crate::camera::ZOOM_MAX);
+        self.dirty = true;
+        if finished {
+            self.camera_transition = None;
+        }
+    }
+
+    /// Nodes hidden this frame — cluster-collapsed members (existing
+    /// behavior) UNIONED with Wave 2.6's two new exclusion sources: the
+    /// local-subgraph restriction ([`GraphEngine::local_root`]) and the
+    /// query filter ([`GraphEngine::filter`]). Single source of truth for
+    /// [`GraphEngine::refresh_visible`] (render/pick/label eligibility —
+    /// exclusion is a hard GONE, not a dim, per the task's own spec) AND
+    /// [`GraphEngine::draw`]'s `DrawContext::hidden` (drops edges touching
+    /// an excluded node) — the SAME set feeds both, so a node can never
+    /// be invisible yet still edge-connected on screen, or vice versa.
+    fn compute_excluded_nodes(&self) -> HashSet<NodeIndex> {
+        let mut excluded: HashSet<NodeIndex> =
+            if self.clusters.any_collapsed() { self.clusters.hidden_nodes().collect() } else { HashSet::new() };
+
+        if let Some((root, depth)) = self.local_root {
+            let local_set = self.local_bfs_nodes(root, depth);
+            for (id, _) in self.graph.nodes() {
+                if !local_set.contains(&id) {
+                    excluded.insert(id);
+                }
+            }
+        }
+
+        if let Some(filter) = &self.filter {
+            for (id, _) in self.graph.nodes() {
+                if !filter.matches(&self.graph, id) {
+                    excluded.insert(id);
+                }
+            }
+        }
+
+        excluded
+    }
+
+    /// BFS depth-`depth` node set from `root` (Wave 2.6 local subgraph) —
+    /// reuses [`Graph::neighborhood_focus_keys_depth`]'s existing BFS
+    /// (W2.2) rather than a parallel walk, converting its tagged
+    /// `FocusSet` keys back to plain `NodeIndex` via the even/odd
+    /// convention `graph.rs`'s `From<NodeIndex> for u64` already
+    /// established (node keys are even).
+    fn local_bfs_nodes(&self, root: NodeIndex, depth: u8) -> HashSet<NodeIndex> {
+        self.graph
+            .neighborhood_focus_keys_depth(root, depth)
+            .into_iter()
+            .filter(|k| k % 2 == 0)
+            .map(|k| NodeIndex((k >> 1) as u32))
+            .collect()
+    }
+
     fn refresh_visible(&mut self) {
         let culled = gr_render::cull_visible(&self.graph, &self.particles, &self.camera, self.canvas_rect);
-        if self.clusters.any_collapsed() {
-            let hidden: HashSet<NodeIndex> = self.clusters.hidden_nodes().collect();
-            self.visible = culled.into_iter().filter(|id| !hidden.contains(id)).collect();
-        } else {
-            self.visible = culled;
-        }
+        let excluded = self.compute_excluded_nodes();
+        self.visible =
+            if excluded.is_empty() { culled } else { culled.into_iter().filter(|id| !excluded.contains(id)).collect() };
     }
 
     pub fn visible_nodes(&self) -> &[NodeIndex] {
@@ -425,8 +741,12 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
     /// once per frame while the canvas is on screen.
     pub fn draw(&mut self, render: &mut dyn RenderContext) {
         self.refresh_visible();
-        let hidden: HashSet<NodeIndex> =
-            if self.clusters.any_collapsed() { self.clusters.hidden_nodes().collect() } else { HashSet::new() };
+        // Wave 2.6: the SAME exclusion set `refresh_visible` just used
+        // (cluster-hidden ∪ local-subgraph ∪ filter) — `draw_edges` skips
+        // any edge touching a member of this set, which is exactly how
+        // Wave 2.6's "edges to filtered/local-excluded nodes drop" is
+        // satisfied, with zero new render-side logic.
+        let hidden = self.compute_excluded_nodes();
         // Collapsed-cluster representatives always keep their label
         // (Wave 2.3 forced-label union) — hover/selection-neighbor
         // forcing needs no entry here, `draw_nodes` derives that
@@ -479,6 +799,102 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             self.camera.fit_view(aabb, self.canvas_rect);
         }
         self.dirty = true;
+    }
+
+    /// Animated zoom-to-fit (Wave 2.5 — oss doc §2.6, d3-zoom/sigma
+    /// `Camera.animate` convention). Fits whichever nodes are currently
+    /// EFFECTIVE (local-subgraph ∩ filter — [`GraphEngine::
+    /// compute_excluded_nodes`]'s complement), NOT literally every
+    /// particle like the existing instant [`GraphEngine::fit_view`],
+    /// which stays untouched (a new sibling, not a replacement — the task
+    /// itself says "keep it"). `padding_px` is a literal screen-space
+    /// margin on every side ([`crate::camera::fit_target`]'s convention),
+    /// unlike `fit_view`'s existing ratio-based margin. No-op if every
+    /// node is currently excluded (an empty AABB has nothing to fit).
+    pub fn zoom_to_fit(&mut self, duration_ms: f64, padding_px: f64) {
+        let excluded = self.compute_excluded_nodes();
+        let points: Vec<(f64, f64)> = self
+            .graph
+            .nodes()
+            .filter(|(id, _)| !excluded.contains(id))
+            .filter_map(|(id, _)| self.particles.get(id.index()).map(|p| (p.x as f64, p.y as f64)))
+            .collect();
+        let Some(aabb) = Aabb::from_points(&points) else { return };
+        let (target_pan, target_zoom) = crate::camera::fit_target(aabb, self.canvas_rect, padding_px);
+        self.start_camera_transition(target_pan, target_zoom, duration_ms);
+    }
+
+    /// Animated pan(+zoom) to center `node` in the viewport (Wave 2.5).
+    /// `target_zoom` `None` keeps the CURRENT zoom (a pure pan-to-center);
+    /// `Some(z)` animates zoom too. Returns `false` (no-op, camera
+    /// untouched) if `node` has no particle (out of range).
+    pub fn zoom_to_node(&mut self, node: NodeIndex, duration_ms: f64, target_zoom: Option<f64>) -> bool {
+        let Some(p) = self.particles.get(node.index()) else { return false };
+        let zoom = target_zoom.unwrap_or(self.camera.zoom).clamp(crate::camera::ZOOM_MIN, crate::camera::ZOOM_MAX);
+        let target_pan =
+            (self.canvas_rect.width / 2.0 - p.x as f64 * zoom, self.canvas_rect.height / 2.0 - p.y as f64 * zoom);
+        self.start_camera_transition(target_pan, zoom, duration_ms);
+        true
+    }
+
+    fn start_camera_transition(&mut self, target_pan: (f64, f64), target_zoom: f64, duration_ms: f64) {
+        self.camera_transition = Some(CameraTransition::new(self.camera, target_pan, target_zoom, duration_ms));
+        self.dirty = true;
+    }
+
+    /// Whether an animated camera transition is currently in flight —
+    /// `agent_state`'s `camera` block and [`GraphEngine::is_hot`] both
+    /// read this indirectly; exposed directly for tests/callers that want
+    /// to assert an animation is (or isn't) still running.
+    pub fn camera_transitioning(&self) -> bool {
+        self.camera_transition.is_some()
+    }
+
+    /// Wave 2.6 local subgraph mode (Juggl-proven hairball answer,
+    /// obsidian doc §9): restrict the visible/pick/label set to the BFS
+    /// depth-`depth` neighborhood of `root` — everything else is
+    /// EXCLUDED entirely (not dimmed) from render/pick/labels, the same
+    /// mechanism a collapsed cluster's hidden members already use. The
+    /// simulation itself is UNTOUCHED — every particle keeps ticking
+    /// under the full, unrestricted force topology; this is a VIEW
+    /// restriction only (contrast [`GraphEngine::set_filter`], which DOES
+    /// change the force topology). `depth` defaults to
+    /// [`DEFAULT_LOCAL_DEPTH`] (`2`) when `None`. `root = None` restores
+    /// the full view. Either way, animates the camera to fit the
+    /// resulting effective set — activation frames the local
+    /// neighborhood, clearing frames the whole graph again ("restores
+    /// full view" read literally as restoring the camera too, not just
+    /// the node set).
+    pub fn set_local_root(&mut self, root: Option<NodeIndex>, depth: Option<u8>) {
+        self.local_root = root.map(|node| (node, depth.unwrap_or(DEFAULT_LOCAL_DEPTH)));
+        self.mark_dirty();
+        self.zoom_to_fit(DEFAULT_TRANSITION_MS, DEFAULT_FIT_PADDING_PX);
+    }
+
+    /// Current local-subgraph root + depth, if active. See
+    /// [`GraphEngine::set_local_root`].
+    pub fn local_root(&self) -> Option<(NodeIndex, u8)> {
+        self.local_root
+    }
+
+    /// Wave 2.6 query filter (obsidian doc §12 — decoupled from color
+    /// groups per that section's own finding): filtered-out nodes are
+    /// EXCLUDED from render/pick/labels (the same mechanism
+    /// [`GraphEngine::set_local_root`] uses) AND from the force topology
+    /// fed to `Layout::tick` every subsequent [`GraphEngine::tick`] call —
+    /// an edge is dropped from the topology the instant EITHER endpoint
+    /// fails the filter, so surviving nodes' link-force no longer pulls
+    /// toward an excluded one (`tick`'s own filtered-topology branch).
+    /// Reheats so the re-settle under the new topology is visible, not
+    /// frozen wherever alpha happened to land.
+    pub fn set_filter(&mut self, filter: Option<FilterSpec>) {
+        self.filter = filter;
+        self.reheat(DRAG_REHEAT_ALPHA);
+    }
+
+    /// Current query filter, if active. See [`GraphEngine::set_filter`].
+    pub fn filter(&self) -> Option<&FilterSpec> {
+        self.filter.as_ref()
     }
 
     /// A CLICK (or a solo drag-then-release — `on_pointer_up`'s
@@ -903,8 +1319,40 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
                 self.modifiers = *modifiers;
                 true
             }
+            // Wave 2.5 keyboard nav — hold-to-repeat pan/zoom, applied
+            // every `tick()` for as long as the key stays held (see
+            // `apply_held_nav_keys`).
+            PlatformEvent::KeyDown { key, modifiers } => {
+                self.modifiers = *modifiers;
+                self.on_key_down(*key)
+            }
+            PlatformEvent::KeyUp { key, modifiers } => {
+                self.modifiers = *modifiers;
+                self.on_key_up(*key)
+            }
             _ => false,
         }
+    }
+
+    /// A mapped nav key going down (Wave 2.5): a direct user key-press is
+    /// real-time input, so it wins over any in-flight PROGRAMMATIC camera
+    /// transition (`zoom_to_fit`/`zoom_to_node`) — the same "a new
+    /// animation supersedes an old one" precedent sigma's own
+    /// `Camera.animate` documents, generalized here to "live user input
+    /// supersedes a running animation." Returns `false` (event not
+    /// consumed) for any key that isn't a mapped nav key.
+    fn on_key_down(&mut self, key: KeyCode) -> bool {
+        let Some(nav) = nav_key_for(key) else { return false };
+        self.camera_transition = None;
+        self.held_nav_keys.insert(nav);
+        self.dirty = true;
+        true
+    }
+
+    fn on_key_up(&mut self, key: KeyCode) -> bool {
+        let Some(nav) = nav_key_for(key) else { return false };
+        self.held_nav_keys.remove(&nav);
+        true
     }
 
     /// Apply the Wave 2.4 group-drag shared-delta shift to every member
@@ -1798,5 +2246,225 @@ mod tests {
         assert!(engine.focus.is_selected(u64::from(q2)));
         assert!(!engine.focus.is_selected(u64::from(p1)));
         assert!(!engine.focus.is_selected(u64::from(p2)));
+    }
+
+    // ── W2.5 navigation (animated transition + keyboard hold-to-repeat) ────
+
+    /// `zoom_to_node` over simulated ticks converges to the exact target
+    /// zoom/pan, with the distance-to-target shrinking monotonically every
+    /// tick (never overshoots then backtracks) — the literal easing gate.
+    /// The node is pinned so the physics tick can't itself perturb the
+    /// position `zoom_to_node` centered on (the transition and the sim
+    /// are independent concerns; pinning isolates the camera-only math
+    /// this test is actually about).
+    #[test]
+    fn zoom_to_node_transition_converges_to_the_target_with_monotonic_easing() {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        let canvas = Rect::new(0.0, 0.0, 800.0, 600.0);
+        engine.set_canvas_rect(canvas);
+        engine.seed_positions(&[(120.0, 40.0)]);
+        engine.pin_node(a);
+
+        let target_zoom = 3.0;
+        let target_pan = (canvas.width / 2.0 - 120.0 * target_zoom, canvas.height / 2.0 - 40.0 * target_zoom);
+
+        assert!(engine.zoom_to_node(a, 500.0, Some(target_zoom)));
+        assert!(engine.camera_transitioning());
+
+        let mut prev_zoom_dist = f64::MAX;
+        let mut prev_pan_dist = f64::MAX;
+        for _ in 0..40 {
+            engine.tick(1.0 / 60.0);
+            let zoom_dist = (engine.camera.zoom - target_zoom).abs();
+            let pan_dist =
+                ((engine.camera.pan_x - target_pan.0).powi(2) + (engine.camera.pan_y - target_pan.1).powi(2)).sqrt();
+            assert!(zoom_dist <= prev_zoom_dist + 1e-9, "zoom must converge monotonically: {zoom_dist} > {prev_zoom_dist}");
+            assert!(pan_dist <= prev_pan_dist + 1e-9, "pan must converge monotonically: {pan_dist} > {prev_pan_dist}");
+            prev_zoom_dist = zoom_dist;
+            prev_pan_dist = pan_dist;
+        }
+
+        assert!(!engine.camera_transitioning(), "a 500ms transition at 60fps must finish within 40 ticks");
+        assert!((engine.camera.zoom - target_zoom).abs() < 1e-6);
+        let (sx, sy) = engine.camera.world_to_screen((120.0, 40.0), canvas);
+        assert!((sx - canvas.width / 2.0).abs() < 1e-6, "the node must land exactly centered once the transition completes");
+        assert!((sy - canvas.height / 2.0).abs() < 1e-6);
+    }
+
+    /// A held nav key keeps the render loop hot and pans a fixed amount
+    /// every tick for as long as it's held; releasing it lets the loop go
+    /// idle again and pan stops changing.
+    #[test]
+    fn keydown_arrow_pans_the_camera_every_tick_while_held_and_stops_on_keyup() {
+        let mut engine = empty_engine_with_canvas(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.tick(1.0 / 60.0); // settle the (empty) sim so `is_hot` starts false
+        assert!(!engine.is_hot(), "an idle graph with nothing held must not be hot");
+
+        assert!(engine.on_event(&PlatformEvent::KeyDown { key: KeyCode::ArrowRight, modifiers: ModifierKeys::none() }));
+        assert!(engine.is_hot(), "a held nav key alone must keep the render loop hot");
+
+        let mut prev_pan_x = engine.camera.pan_x;
+        for _ in 0..5 {
+            engine.tick(1.0 / 60.0);
+            assert!(engine.camera.pan_x > prev_pan_x, "each tick while ArrowRight is held must pan further right");
+            prev_pan_x = engine.camera.pan_x;
+        }
+
+        assert!(engine.on_event(&PlatformEvent::KeyUp { key: KeyCode::ArrowRight, modifiers: ModifierKeys::none() }));
+        assert!(!engine.is_hot(), "releasing the only held nav key must let the loop go idle again");
+        let pan_after_release = engine.camera.pan_x;
+        engine.tick(1.0 / 60.0);
+        assert_eq!(engine.camera.pan_x, pan_after_release, "pan must stop changing once the key is released");
+    }
+
+    // ── W2.6 local subgraph + filter ────────────────────────────────────────
+
+    /// `set_local_root` restricts the visible/pick set to EXACTLY the BFS
+    /// depth-k neighborhood of the root; `set_local_root(None, _)` restores
+    /// the full node set.
+    #[test]
+    fn set_local_root_restricts_the_visible_set_to_exactly_the_bfs_depth_k_neighborhood_and_restores_on_clear() {
+        let (mut engine, [a, b, c, d]) = chain4_engine_on_a_line();
+        engine.refresh_visible();
+        assert_eq!(engine.visible_nodes().len(), 4, "sanity: all 4 nodes visible with no restriction");
+
+        engine.set_local_root(Some(b), Some(1));
+        engine.refresh_visible();
+        let visible: HashSet<NodeIndex> = engine.visible_nodes().iter().copied().collect();
+        assert_eq!(visible, [a, b, c].into_iter().collect(), "depth-1 from b in a 4-chain is exactly {{a,b,c}}");
+        assert_eq!(engine.local_root(), Some((b, 1)));
+
+        engine.set_local_root(None, None);
+        engine.refresh_visible();
+        let visible_full: HashSet<NodeIndex> = engine.visible_nodes().iter().copied().collect();
+        assert_eq!(visible_full, [a, b, c, d].into_iter().collect(), "clearing local_root restores the full node set");
+        assert!(engine.local_root().is_none());
+    }
+
+    /// `set_local_root` with a default (omitted) depth uses depth 2.
+    #[test]
+    fn set_local_root_default_depth_is_two() {
+        let (mut engine, [a, b, _c, d]) = chain4_engine_on_a_line();
+        engine.set_local_root(Some(a), None);
+        assert_eq!(engine.local_root(), Some((a, 2)));
+        engine.refresh_visible();
+        let visible: HashSet<NodeIndex> = engine.visible_nodes().iter().copied().collect();
+        assert!(!visible.contains(&d), "d is 3 hops from a — outside a depth-2 neighborhood");
+        assert!(visible.contains(&b));
+    }
+
+    /// `a - b - c` chain where `b` is given a DIFFERENT category from `a`/
+    /// `c` — the fixture the filter tests exclude `b` with.
+    fn three_node_chain_with_a_hideable_middle() -> (Graph<(), ()>, NodeIndex, NodeIndex, NodeIndex) {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let b = graph.push_node((), "b", "hidden", 4.0);
+        let c = graph.push_node((), "c", "x", 4.0);
+        graph.push_edge(a, b, 1.0, ());
+        graph.push_edge(b, c, 1.0, ());
+        (graph, a, b, c)
+    }
+
+    /// A filtered-out node is excluded from render/pick (the visible set)
+    /// AND from the force topology fed to the layout: dropping its edges
+    /// measurably changes where the SURVIVING nodes settle, compared to an
+    /// otherwise-identical unfiltered run — the literal "settled positions
+    /// differ" gate.
+    #[test]
+    fn filter_removes_a_node_from_render_and_from_the_force_topology_so_settled_positions_differ() {
+        let settle = |engine: &mut TestEngine| {
+            for _ in 0..400 {
+                engine.tick(1.0 / 60.0);
+            }
+        };
+
+        let (graph, a, _b, _c) = three_node_chain_with_a_hideable_middle();
+        let mut baseline: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        baseline.set_canvas_rect(Rect::new(-400.0, -300.0, 800.0, 600.0));
+        baseline.seed_positions(&[(-40.0, 0.0), (0.0, 0.0), (40.0, 0.0)]);
+        settle(&mut baseline);
+        let baseline_a = baseline.particles[a.index()];
+
+        let (graph2, a2, b2, c2) = three_node_chain_with_a_hideable_middle();
+        let mut filtered: TestEngine = GraphEngine::new(graph2, ForceDirectedLayout::default());
+        filtered.set_canvas_rect(Rect::new(-400.0, -300.0, 800.0, 600.0));
+        filtered.seed_positions(&[(-40.0, 0.0), (0.0, 0.0), (40.0, 0.0)]);
+        filtered.set_filter(Some(FilterSpec { categories: Some(vec!["x".to_owned()]), ..Default::default() }));
+
+        filtered.refresh_visible();
+        assert!(!filtered.visible_nodes().contains(&b2), "the filtered-out node must be excluded from render/pick");
+        assert!(filtered.visible_nodes().contains(&a2), "surviving nodes stay visible");
+        assert!(filtered.visible_nodes().contains(&c2));
+
+        settle(&mut filtered);
+        let filtered_a = filtered.particles[a2.index()];
+
+        let dist = ((baseline_a.x - filtered_a.x).powi(2) + (baseline_a.y - filtered_a.y).powi(2)).sqrt();
+        assert!(
+            dist > 1.0,
+            "losing the link-force pull toward the filtered-out node must measurably change where `a` settles: \
+             baseline ({}, {}) vs filtered ({}, {}), dist {dist}",
+            baseline_a.x,
+            baseline_a.y,
+            filtered_a.x,
+            filtered_a.y
+        );
+    }
+
+    /// `set_filter(None)` clears a previously-set filter and restores the
+    /// full visible set.
+    #[test]
+    fn set_filter_none_clears_a_previous_filter() {
+        let (graph, _a, b, _c) = three_node_chain_with_a_hideable_middle();
+        let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.set_canvas_rect(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.seed_positions(&[(-40.0, 0.0), (0.0, 0.0), (40.0, 0.0)]);
+
+        engine.set_filter(Some(FilterSpec { categories: Some(vec!["x".to_owned()]), ..Default::default() }));
+        engine.refresh_visible();
+        assert!(!engine.visible_nodes().contains(&b));
+
+        engine.set_filter(None);
+        assert!(engine.filter().is_none());
+        engine.refresh_visible();
+        assert!(engine.visible_nodes().contains(&b), "clearing the filter must restore the excluded node");
+    }
+
+    /// Star graph — root + 4 leaves, alternating categories `"keep"`/
+    /// `"drop"` — the fixture the filter+local-mode composition test uses.
+    fn star_graph_with_categories() -> (Graph<(), ()>, NodeIndex, [NodeIndex; 4]) {
+        let mut graph = Graph::new();
+        let root = graph.push_node((), "root", "keep", 4.0);
+        let mut leaves = Vec::with_capacity(4);
+        for i in 0..4 {
+            let category = if i % 2 == 0 { "keep" } else { "drop" };
+            let leaf = graph.push_node((), format!("leaf{i}"), category, 4.0);
+            graph.push_edge(root, leaf, 1.0, ());
+            leaves.push(leaf);
+        }
+        (graph, root, [leaves[0], leaves[1], leaves[2], leaves[3]])
+    }
+
+    /// Filter and local-subgraph mode compose as an INTERSECTION: a node
+    /// must pass both to stay visible.
+    #[test]
+    fn filter_and_local_mode_compose_as_an_intersection() {
+        let (graph, root, [l0, l1, l2, l3]) = star_graph_with_categories();
+        let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.set_canvas_rect(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.seed_positions(&[(0.0, 0.0), (50.0, 0.0), (0.0, 50.0), (-50.0, 0.0), (0.0, -50.0)]);
+
+        engine.set_local_root(Some(root), Some(1));
+        engine.set_filter(Some(FilterSpec { categories: Some(vec!["keep".to_owned()]), ..Default::default() }));
+        engine.refresh_visible();
+
+        let visible: HashSet<NodeIndex> = engine.visible_nodes().iter().copied().collect();
+        // BFS depth-1 from root = {root, l0, l1, l2, l3}; filter keeps only
+        // category "keep" = {root, l0, l2}. Intersection = {root, l0, l2}.
+        assert_eq!(visible, [root, l0, l2].into_iter().collect());
+        assert!(!visible.contains(&l1), "l1 fails the filter even though it's in the local BFS set");
+        assert!(!visible.contains(&l3));
     }
 }
