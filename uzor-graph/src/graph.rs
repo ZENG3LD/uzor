@@ -10,7 +10,10 @@ use std::collections::HashSet;
 
 /// Index of a node inside a [`Graph`]. Stable for the lifetime of the
 /// graph (nodes are append-only this run — see [`Graph::push_node`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// `Ord`/`PartialOrd` (Wave 2.4) back
+/// [`crate::engine::GraphEngine::selection`]'s `BTreeSet<NodeIndex>` —
+/// deterministic ascending-index iteration for render/agent-state output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeIndex(pub u32);
 
 /// Index of an edge inside a [`Graph`].

@@ -11,7 +11,7 @@ use uzor::layout::agent::{AgentAction, AgentActionReply, AgentWidget, BlackboxAg
 use uzor::types::Rect;
 
 use crate::cluster::GroupId;
-use crate::engine::GraphEngine;
+use crate::engine::{GraphEngine, SelectMode};
 use crate::graph::NodeIndex;
 use crate::layout::{ForceParams, GraphLayoutMode, Layout, LayoutKind};
 
@@ -78,6 +78,7 @@ where
             "edge_count": self.graph.edge_count(),
             "visible_node_count": self.visible_nodes().len(),
             "selected": selected,
+            "selection": selection_json(self),
             "hovered": self.hovered.map(|id| id.index()),
             "hover": hover,
             "camera": {
@@ -110,6 +111,62 @@ where
             "clear_selection" => {
                 self.clear_selection();
                 AgentActionReply::ok_with_log(json!({ "selected": Value::Null }))
+            }
+            // Wave 2.4 — combine an explicit index list into the current
+            // multi-selection per `args.mode` (drives the SAME
+            // `apply_selection` pipeline `box_select`/the pointer path
+            // use). `mode` defaults to `"replace"` when omitted.
+            "select_nodes" => {
+                let Some(indices) = action.args.get("indices").and_then(Value::as_array) else {
+                    return AgentActionReply::err("select_nodes requires args.indices (array of u32 node indices)");
+                };
+                let mode = match parse_select_mode(&action) {
+                    Ok(m) => m,
+                    Err(e) => return AgentActionReply::err(e),
+                };
+                let mut nodes = Vec::with_capacity(indices.len());
+                for v in indices {
+                    let Some(idx) = v.as_u64() else {
+                        return AgentActionReply::err("select_nodes args.indices entries must all be u32");
+                    };
+                    let node = NodeIndex(idx as u32);
+                    if node.index() >= self.graph.node_count() {
+                        return AgentActionReply::err(format!("select_nodes index {idx} out of range"));
+                    }
+                    nodes.push(node);
+                }
+                self.apply_selection(nodes, mode);
+                AgentActionReply::ok_with_log(json!({ "selection": selection_json(self) }))
+            }
+            // Wave 2.4 — screen-space rectangle box-select, driving the
+            // EXACT same pipeline a real Shift/Ctrl+Shift/Alt+Shift+drag
+            // does (see `GraphEngine::box_select`), so it's
+            // screenshot-verifiable headlessly.
+            "box_select" => {
+                let coord = |k: &str| action.args.get(k).and_then(Value::as_f64);
+                let (Some(x0), Some(y0), Some(x1), Some(y1)) = (coord("x0"), coord("y0"), coord("x1"), coord("y1")) else {
+                    return AgentActionReply::err("box_select requires args.x0/y0/x1/y1 (f64 screen coords)");
+                };
+                let mode = match parse_select_mode(&action) {
+                    Ok(m) => m,
+                    Err(e) => return AgentActionReply::err(e),
+                };
+                self.box_select((x0, y0), (x1, y1), mode);
+                AgentActionReply::ok_with_log(json!({ "selection": selection_json(self) }))
+            }
+            // Wave 2.4 — the interactive-grouping path: define a cluster
+            // over the CURRENT selection and collapse it in one step.
+            "collapse_selection" => match self.collapse_selection() {
+                Some(id) => AgentActionReply::ok_with_log(json!({ "collapsed": id.0 })),
+                None => AgentActionReply::err("collapse_selection requires a non-empty selection"),
+            },
+            "pin_selection" => {
+                self.pin_selection();
+                AgentActionReply::ok_with_log(json!({ "selection": selection_json(self) }))
+            }
+            "unpin_selection" => {
+                self.unpin_selection();
+                AgentActionReply::ok_with_log(json!({ "selection": selection_json(self) }))
             }
             // Wave 2.2 — drives the exact same `set_hovered` path
             // `on_pointer_moved`'s picking uses, so the reducer-style
@@ -297,6 +354,35 @@ fn resolve_node<N, E, L: Layout>(engine: &GraphEngine<N, E, L>, action: &AgentAc
 
 fn resolve_cluster(action: &AgentAction) -> Option<GroupId> {
     action.args.get("cluster").and_then(Value::as_u64).map(|v| GroupId(v as u32))
+}
+
+/// Parse `args.mode` (`"replace"`/`"union"`/`"diff"`) for `select_nodes`/
+/// `box_select` — strings only at THIS agent JSON boundary (the Rust API
+/// itself, `GraphEngine::{apply_selection,box_select}`, always takes the
+/// typed [`SelectMode`] enum). Missing `mode` defaults to
+/// [`SelectMode::Replace`]; an unrecognized string is an error, not a
+/// silent fallback.
+fn parse_select_mode(action: &AgentAction) -> Result<SelectMode, String> {
+    match action.args.get("mode").and_then(Value::as_str) {
+        None | Some("replace") => Ok(SelectMode::Replace),
+        Some("union") => Ok(SelectMode::Union),
+        Some("diff") => Ok(SelectMode::Diff),
+        Some(other) => Err(format!("unknown select mode {other:?} (expected \"replace\"|\"union\"|\"diff\")")),
+    }
+}
+
+/// `agent_state`'s `selection` field shape, shared with every selection-
+/// mutating action's reply so a caller reads back the exact same JSON
+/// either way. `indices` is capped at 50 (task gate) — `count` always
+/// reports the TRUE selection size even when `indices` is truncated.
+fn selection_json<N, E, L: Layout>(engine: &GraphEngine<N, E, L>) -> Value {
+    const MAX_REPORTED_INDICES: usize = 50;
+    let indices: Vec<u32> = engine.selection.iter().take(MAX_REPORTED_INDICES).map(|n| n.0).collect();
+    json!({
+        "count": engine.selection.len(),
+        "indices": indices,
+        "collapsed_group": engine.selection_collapsed_group().map(|id| id.0),
+    })
 }
 
 /// Full [`ForceParams`] snapshot as JSON — shared by `agent_state`'s
@@ -493,5 +579,100 @@ mod tests {
         // An out-of-range index is an error reply, not a silent clear.
         let bad = engine.apply_agent_action(action("hover_node", json!({ "index": 999 })));
         assert!(!bad.ok);
+    }
+
+    // ── W2.4 selection model (agent surface) ────────────────────────────────
+
+    #[test]
+    fn select_nodes_action_supports_replace_union_and_diff_modes() {
+        let (graph, ids) = ring_graph(4);
+        let mut engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
+
+        let reply = engine.apply_agent_action(action("select_nodes", json!({ "indices": [ids[0].index(), ids[1].index()] })));
+        assert!(reply.ok);
+        assert_eq!(engine.selection, [ids[0], ids[1]].into_iter().collect());
+        assert_eq!(engine.agent_state()["selection"]["count"], json!(2));
+
+        let union = engine.apply_agent_action(action("select_nodes", json!({ "indices": [ids[2].index()], "mode": "union" })));
+        assert!(union.ok);
+        assert_eq!(engine.selection, [ids[0], ids[1], ids[2]].into_iter().collect());
+
+        let diff = engine.apply_agent_action(action("select_nodes", json!({ "indices": [ids[0].index()], "mode": "diff" })));
+        assert!(diff.ok);
+        assert_eq!(engine.selection, [ids[1], ids[2]].into_iter().collect());
+
+        let bad_mode = engine.apply_agent_action(action("select_nodes", json!({ "indices": [ids[0].index()], "mode": "intersect" })));
+        assert!(!bad_mode.ok, "an unrecognized mode string is an error reply, not a silent fallback");
+
+        let out_of_range = engine.apply_agent_action(action("select_nodes", json!({ "indices": [999] })));
+        assert!(!out_of_range.ok);
+
+        let missing_indices = engine.apply_agent_action(action("select_nodes", json!({})));
+        assert!(!missing_indices.ok);
+    }
+
+    #[test]
+    fn box_select_action_selects_nodes_within_the_screen_rect() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let b = graph.push_node((), "b", "x", 4.0);
+        let c = graph.push_node((), "c", "x", 4.0);
+        let mut engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.set_canvas_rect(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.seed_positions(&[(0.0, 0.0), (50.0, 0.0), (500.0, 500.0)]);
+
+        // Populate the visible/pick candidate set the same way a real
+        // frame would — `draw()`'s internal `refresh_visible` is private
+        // to `engine.rs`; a headless render is the public way to trigger
+        // it from this module's own test scope.
+        let spec = ExportSpec { width_px: 800, height_px: 600, dpr: 1.0, background: None };
+        render_to_png(&spec, |ctx| engine.draw(ctx)).expect("headless render must succeed");
+
+        let reply = engine.apply_agent_action(action("box_select", json!({ "x0": -10.0, "y0": -10.0, "x1": 60.0, "y1": 10.0 })));
+        assert!(reply.ok);
+        assert_eq!(engine.selection, [a, b].into_iter().collect());
+        assert_eq!(engine.agent_state()["selection"]["count"], json!(2));
+        let reported: Vec<u32> =
+            engine.agent_state()["selection"]["indices"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as u32).collect();
+        assert_eq!(reported, vec![a.0, b.0]);
+
+        // Union mode adds `c` on top without dropping a/b.
+        let union = engine.apply_agent_action(action(
+            "box_select",
+            json!({ "x0": 490.0, "y0": 490.0, "x1": 510.0, "y1": 510.0, "mode": "union" }),
+        ));
+        assert!(union.ok);
+        assert_eq!(engine.selection, [a, b, c].into_iter().collect());
+
+        let missing_coord = engine.apply_agent_action(action("box_select", json!({ "x0": 0.0, "y0": 0.0, "x1": 10.0 })));
+        assert!(!missing_coord.ok, "box_select requires all 4 corner coords");
+    }
+
+    #[test]
+    fn collapse_selection_pin_selection_and_unpin_selection_actions_round_trip() {
+        let (graph, ids) = ring_graph(4);
+        let mut engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
+
+        let empty = engine.apply_agent_action(action("collapse_selection", json!({})));
+        assert!(!empty.ok, "collapse_selection with nothing selected is an error reply");
+
+        engine.apply_agent_action(action("select_nodes", json!({ "indices": [ids[0].index(), ids[1].index()] })));
+
+        let pin = engine.apply_agent_action(action("pin_selection", json!({})));
+        assert!(pin.ok);
+        assert!(engine.is_pinned(ids[0]));
+        assert!(engine.is_pinned(ids[1]));
+
+        let unpin = engine.apply_agent_action(action("unpin_selection", json!({})));
+        assert!(unpin.ok);
+        assert!(!engine.is_pinned(ids[0]));
+        assert!(!engine.is_pinned(ids[1]));
+
+        let collapse = engine.apply_agent_action(action("collapse_selection", json!({})));
+        assert!(collapse.ok);
+        let group_id = collapse.log_payload.as_ref().and_then(|d| d.get("collapsed")).and_then(Value::as_u64).expect("collapse reply carries the new GroupId");
+        assert_eq!(engine.agent_state()["selection"]["collapsed_group"], json!(group_id));
     }
 }

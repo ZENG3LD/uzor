@@ -13,7 +13,7 @@
 //! real batching); swapping in the instanced path later doesn't change
 //! this module's public shape.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use uzor::render::{CircleBatch, LineSegment, RenderContext};
 use uzor::types::Rect;
@@ -90,7 +90,16 @@ pub struct DrawContext<'a> {
     pub viewport: Rect,
     pub visible: &'a [NodeIndex],
     pub focus: &'a FocusSet,
-    pub selected: Option<NodeIndex>,
+    /// Every node in the current multi-selection (Wave 2.4) — every
+    /// member gets `draw_nodes`'s white selection ring. Supersedes the
+    /// old `Option<NodeIndex>` `selected` field: a single click still
+    /// lands here as a one-element set (`GraphEngine::select` sets
+    /// BOTH `selected` and `selection`), so the visible ring behavior for
+    /// a plain single click is unchanged — [`crate::engine::GraphEngine::
+    /// selected`] (the "last individually clicked" facts-panel value)
+    /// no longer needs its own `DrawContext` slot since ring-drawing
+    /// generalized to the whole set.
+    pub selection: &'a BTreeSet<NodeIndex>,
     pub hovered: Option<NodeIndex>,
     /// Nodes hidden by a collapsed cluster (every member except that
     /// cluster's representative — see `crate::cluster`). Empty when no
@@ -263,7 +272,7 @@ pub fn draw_nodes<N, E>(
         let (sx, sy) = ctx.camera.world_to_screen((p.x as f64, p.y as f64), ctx.viewport);
         let r = ctx.camera.node_screen_radius(node.radius);
 
-        if Some(id) == ctx.selected {
+        if ctx.selection.contains(&id) {
             render.set_stroke_color("#ffffff");
             render.set_stroke_width(2.0);
             render.begin_path();
@@ -402,6 +411,26 @@ pub fn draw_hover_card(render: &mut dyn RenderContext, anchor_px: (f64, f64), in
     draw_tooltip(render, &FigureTheme::dark(), anchor_px, &lines, bounds);
 }
 
+const BOX_SELECT_FILL: &str = "#4d90fe";
+const BOX_SELECT_FILL_ALPHA: f64 = 0.15;
+const BOX_SELECT_BORDER: &str = "#7fb2ff";
+const BOX_SELECT_BORDER_WIDTH: f64 = 1.0;
+
+/// Live rubber-band overlay for an in-progress box-select drag (Wave 2.4
+/// — oss doc §2.3: "a translucent rectangle overlay drawn from
+/// `select[0..3]` each frame"). `rect` is already corner-normalized
+/// screen-space (see [`crate::engine::GraphEngine::box_select_rect`]) —
+/// this function is pure paint, no selection logic of its own.
+pub fn draw_box_select_rect(render: &mut dyn RenderContext, rect: Rect) {
+    render.set_global_alpha(BOX_SELECT_FILL_ALPHA);
+    render.set_fill_color(BOX_SELECT_FILL);
+    render.fill_rect(rect.x, rect.y, rect.width, rect.height);
+    render.set_global_alpha(1.0);
+    render.set_stroke_color(BOX_SELECT_BORDER);
+    render.set_stroke_width(BOX_SELECT_BORDER_WIDTH);
+    render.stroke_rect(rect.x, rect.y, rect.width, rect.height);
+}
+
 #[cfg(test)]
 mod tests {
     //! `labels_to_draw` exercised at the full `Graph`/`Camera2D`/
@@ -459,13 +488,14 @@ mod tests {
         let empty_focus = FocusSet::empty();
         let hidden = HashSet::new();
         let forced = HashSet::new();
+        let empty_selection = BTreeSet::new();
 
         let ctx_no_focus = DrawContext {
             camera: &camera,
             viewport,
             visible: &visible,
             focus: &empty_focus,
-            selected: None,
+            selection: &empty_selection,
             hovered: None,
             hidden: &hidden,
             label_density: label_grid::DEFAULT_LABEL_DENSITY,
@@ -512,12 +542,13 @@ mod tests {
         let empty_focus = FocusSet::empty();
         let hidden = HashSet::new();
         let forced = HashSet::new();
+        let empty_selection = BTreeSet::new();
         let ctx = DrawContext {
             camera: &camera,
             viewport,
             visible: &visible,
             focus: &empty_focus,
-            selected: None,
+            selection: &empty_selection,
             hovered: None,
             hidden: &hidden,
             label_density: label_grid::DEFAULT_LABEL_DENSITY,

@@ -5,9 +5,9 @@
 
 use std::time::Instant;
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
-use uzor::input::{MouseButton, PlatformEvent};
+use uzor::input::{ModifierKeys, MouseButton, PlatformEvent};
 use uzor::render::{RenderContext, RenderRegion, UNCAPPED_FPS};
 use uzor::types::Rect;
 use uzor_figures::interact::FocusSet;
@@ -66,6 +66,110 @@ enum PointerMode {
     Idle,
     PanningCamera { last: (f64, f64), total: f64 },
     DraggingNode,
+    /// Wave 2.4 box-select drag — `origin` is the fixed down-point,
+    /// `current` tracks the live cursor (updated every `PointerMoved`,
+    /// what [`GraphEngine::box_select_rect`] reads for the live rubber-
+    /// band overlay); `mode` was resolved ONCE at drag-start from the
+    /// held modifiers (see [`box_select_mode_for`]) and never changes for
+    /// the rest of the gesture, even if the user releases/re-holds a
+    /// modifier mid-drag (matches every surveyed engine's own convention
+    /// — the activating chord is read at mousedown, not mouseup).
+    BoxSelecting { origin: (f64, f64), current: (f64, f64), mode: SelectMode },
+}
+
+/// How [`GraphEngine::apply_selection`]/[`GraphEngine::box_select`]
+/// combine newly-hit nodes with the EXISTING [`GraphEngine::selection`]
+/// (AntV G6's box-select mode model, oss doc §2.3 — narrowed to the 3
+/// modes this engine's own modifier scheme reaches, see
+/// [`box_select_mode_for`]'s doc comment for the full mapping; G6's 4th
+/// mode, `intersect`, has no modifier chord assigned and is deliberately
+/// not ported — nothing in the task's own gate list exercises it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectMode {
+    /// Selection becomes EXACTLY the new node set (everything outside it
+    /// is deselected) — G6's "default" mode.
+    Replace,
+    /// New nodes are ADDED to the existing selection; anything already
+    /// selected stays selected.
+    Union,
+    /// Each new node TOGGLES: removed if already selected, added
+    /// otherwise (G6's own "invert" framing).
+    Diff,
+}
+
+/// Wave 2.4 modifier -> box-select-mode mapping. Shift is the box-select
+/// ACTIVATION key and, held alone, ALWAYS wins over node-grab dispatch at
+/// `on_pointer_down` — even when the down-point lands directly on a node
+/// (the oss doc's own cytoscape-issue-1583 note: "modifier-held mousedown
+/// should win over node-grab, regardless of node type"). An additional
+/// modifier on top of Shift selects which of the 3 combine-modes applies:
+/// - **Shift alone** -> [`SelectMode::Replace`] — G6 names its own
+///   no-extra-decoration case "default"; Shift here plays only the
+///   activation role (distinguishing box-select from camera pan, which
+///   owns plain drag), so the undecorated chord maps to the undecorated
+///   mode.
+/// - **Shift+Ctrl** -> [`SelectMode::Union`] (Ctrl = "additive" — the
+///   same role cytoscape/vis-network already give Ctrl for their own
+///   additive gestures).
+/// - **Shift+Alt** -> [`SelectMode::Diff`].
+///
+/// Divergence note: the wave-2 spec's own illustrative text paired bare
+/// "Shift+drag" with Union, which is unreachable as written — SOME
+/// modifier beyond plain drag is mandatory just to enter box-select mode
+/// at all (plain drag is already camera pan), so "no extra modifier"
+/// (the literal wording for Replace) and "Shift held" (the literal
+/// wording for Union) can't both mean "Shift alone." This mapping keeps
+/// Shift-alone for the undecorated (Replace) mode and reserves the two
+/// two-key chords for Union/Diff — see `uzor-graph/CLAUDE.md`'s
+/// divergence log for the full reasoning.
+fn box_select_mode_for(modifiers: ModifierKeys) -> Option<SelectMode> {
+    if !modifiers.shift {
+        return None;
+    }
+    Some(if modifiers.ctrl {
+        SelectMode::Union
+    } else if modifiers.alt {
+        SelectMode::Diff
+    } else {
+        SelectMode::Replace
+    })
+}
+
+/// Corner-normalize two arbitrary screen points into a non-negative-size
+/// `Rect` — shared by [`GraphEngine::box_select_rect`] (live overlay) and
+/// [`GraphEngine::box_select`] (final containment test), so the drawn
+/// rectangle and the actually-tested area can never diverge.
+fn normalized_rect(a: (f64, f64), b: (f64, f64)) -> Rect {
+    let x = a.0.min(b.0);
+    let y = a.1.min(b.1);
+    Rect::new(x, y, (a.0 - b.0).abs(), (a.1 - b.1).abs())
+}
+
+/// One member of an in-progress drag gesture (Wave 2.4 group drag),
+/// captured at drag-start. `offset_from_anchor` is a FIXED world-space
+/// offset from the grabbed (anchor) node's own position at grab time —
+/// every subsequent tick (including the very first, at mousedown itself)
+/// recomputes this member's `fx`/`fy` as `anchor_world_now +
+/// offset_from_anchor` (see `GraphEngine::apply_drag_shift`). This is the
+/// single-shared-shift convention cytoscape's own `silentShift` applies
+/// to a whole collection at once (oss doc §2.4) — relative offsets
+/// between drag-set members are preserved EXACTLY by construction (never
+/// incrementally accumulated from a stale per-tick delta, which is where
+/// per-node drift would creep in). For a solo drag (drag set = `{anchor}`
+/// only) `offset_from_anchor` is `(0, 0)`, which reproduces the engine's
+/// pre-Wave-2.4 single-node behavior byte-for-byte: the anchor still
+/// snaps to be centered exactly under the cursor at grab, regardless of
+/// where inside the hit-tolerance radius the down-point landed.
+#[derive(Debug, Clone, Copy)]
+struct DragMember {
+    node: NodeIndex,
+    offset_from_anchor: (f32, f32),
+    /// Snapshot of [`GraphEngine::is_pinned`] for this member at
+    /// drag-start — what [`DragEndPolicy::RestorePrior`] restores on
+    /// release, now per-member instead of the old single-node bool (Wave
+    /// 2.1's `drag_prior_pinned`, superseded here since a group drag can
+    /// release many nodes at once, each with its own prior pin state).
+    prior_pinned: bool,
 }
 
 /// What happens to a node's pin state when a drag ends. Wave 2.1 owner
@@ -112,18 +216,49 @@ pub struct GraphEngine<N, E, L: Layout = ForceDirectedLayout> {
     pub particles: Vec<Particle>,
     pub camera: Camera2D,
     pub layout: L,
+    /// The last node an actual CLICK (or a solo drag-then-release — see
+    /// `on_pointer_up`'s `DraggingNode` arm) selected — the facts-panel
+    /// value (Wave 2.4: this stays a plain `Option`, superseded for
+    /// FOCUS/RING purposes by [`GraphEngine::selection`] below, but kept
+    /// as-is for "what should the sidebar show" — see that field's own
+    /// doc comment for exactly which gestures update it).
     pub selected: Option<NodeIndex>,
     pub hovered: Option<NodeIndex>,
+    /// The current multi-selection (Wave 2.4), iterated in deterministic
+    /// ascending `NodeIndex` order. Superset of the single-selection
+    /// concept `selected` used to carry alone: a click/solo-drag-release
+    /// still ends up here as a one-element set (`select` sets BOTH
+    /// `selected` and `selection`), but box-select
+    /// ([`GraphEngine::box_select`]/[`GraphEngine::apply_selection`]) and
+    /// the `select_nodes`/`box_select` agent actions mutate ONLY this
+    /// field, deliberately leaving `selected` (the "last individually
+    /// clicked" value) untouched — see `apply_selection`'s doc comment.
+    /// Render (`draw_nodes`'s selection ring) and the hover/selection
+    /// dim-highlight reducer (`refresh_focus`) both derive from this SET,
+    /// not from `selected`.
+    pub selection: BTreeSet<NodeIndex>,
     pub focus: FocusSet,
     pub clusters: ClusterRegistry,
 
     pinned: Vec<bool>,
     drag: DragController,
-    /// Snapshot of [`GraphEngine::is_pinned`] for the node currently
-    /// being dragged, taken at drag-start — what
-    /// [`DragEndPolicy::RestorePrior`] restores on release.
-    drag_prior_pinned: bool,
+    /// Every node moved by the in-progress drag gesture, captured at
+    /// drag-start (Wave 2.4 group drag) — empty when nothing is being
+    /// dragged. See [`DragMember`].
+    drag_group: Vec<DragMember>,
+    /// Whether the grabbed (anchor) node was ALREADY in `selection` at
+    /// drag-start — decides `on_pointer_up`'s DraggingNode arm: `true`
+    /// means the whole multi-selection just moved together and stays
+    /// selected as-is; `false` means a single un-selected node was
+    /// dragged solo and Replace-selects itself on release (see
+    /// `on_pointer_down`'s doc comment).
+    drag_was_group: bool,
     drag_end_policy: DragEndPolicy,
+    /// Current keyboard-modifier state (Wave 2.4) — updated from
+    /// `PlatformEvent::ModifiersChanged`, read by `on_pointer_down` to
+    /// decide box-select vs. camera-pan/node-drag (see
+    /// [`box_select_mode_for`]).
+    modifiers: ModifierKeys,
     mode: PointerMode,
     canvas_rect: Rect,
     last_pointer_screen: (f64, f64),
@@ -158,12 +293,15 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             layout,
             selected: None,
             hovered: None,
+            selection: BTreeSet::new(),
             focus: FocusSet::empty(),
             clusters: ClusterRegistry::default(),
             pinned: vec![false; n],
             drag: DragController::default(),
-            drag_prior_pinned: false,
+            drag_group: Vec::new(),
+            drag_was_group: false,
             drag_end_policy: DragEndPolicy::default(),
+            modifiers: ModifierKeys::default(),
             mode: PointerMode::Idle,
             canvas_rect: Rect::new(0.0, 0.0, 0.0, 0.0),
             last_pointer_screen: (0.0, 0.0),
@@ -299,7 +437,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             viewport: self.canvas_rect,
             visible: &self.visible,
             focus: &self.focus,
-            selected: self.selected,
+            selection: &self.selection,
             hovered: self.hovered,
             hidden: &hidden,
             label_density: self.label_density,
@@ -310,6 +448,14 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         let node_stats = gr_render::draw_nodes(render, &self.graph, &self.particles, &ctx);
         self.labels_drawn_last_frame = node_stats.labels_drawn;
         gr_render::draw_cluster_supernodes(render, &self.graph, &self.particles, &ctx, &self.clusters);
+
+        // Wave 2.4 live rubber-band overlay — drawn LAST so it always
+        // sits on top of nodes/edges/cluster supernodes, matching every
+        // surveyed engine's own convention (the selection box is always
+        // the topmost overlay while dragging).
+        if let Some(rect) = self.box_select_rect() {
+            gr_render::draw_box_select_rect(render, rect);
+        }
 
         if self.hover_card {
             if let Some(id) = self.hovered {
@@ -335,21 +481,164 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         self.dirty = true;
     }
 
+    /// A CLICK (or a solo drag-then-release — `on_pointer_up`'s
+    /// `DraggingNode` arm) always Replace-selects: `selected` (facts
+    /// panel) AND `selection` (the multi-select set focus/render derive
+    /// from) both become exactly `{node}` — Wave 2.4 scope item 1's
+    /// literal "Click = Replace-select {node}."
     pub fn select(&mut self, node: NodeIndex) {
         self.selected = Some(node);
-        self.focus.select_many(self.graph.neighborhood_focus_keys(node));
+        self.selection = std::iter::once(node).collect();
+        self.refresh_focus();
         self.dirty = true;
     }
 
-    /// Clears the persistent click-selection. A hover already in
-    /// progress (the pointer never left the hovered node) resumes
-    /// driving the highlight/dim focus set immediately — click-selection
-    /// and hover share one `focus`, click just takes precedence while
-    /// it's active (Orb's `isStateOverride` precedent, oss doc §2.1).
+    /// Clears BOTH the persistent click-selection and the multi-selection
+    /// set. A hover already in progress (the pointer never left the
+    /// hovered node) resumes driving the highlight/dim focus set
+    /// immediately — selection and hover share one `focus`, selection
+    /// just takes precedence while it's active (Orb's `isStateOverride`
+    /// precedent, oss doc §2.1; Wave 2.4 generalizes this to "a
+    /// non-empty `selection`, not just a single `selected`, wins").
     pub fn clear_selection(&mut self) {
         self.selected = None;
-        self.refresh_focus_from_hover();
+        self.selection.clear();
+        self.refresh_focus();
         self.dirty = true;
+    }
+
+    /// Combine `nodes` into the current [`GraphEngine::selection`] per
+    /// `mode` (Wave 2.4 — G6's box-select mode model). Drives
+    /// [`GraphEngine::box_select`] AND the `select_nodes`/`box_select`
+    /// agent actions — one pipeline for both the pointer path and
+    /// headless callers. Deliberately does NOT touch
+    /// [`GraphEngine::selected`] (the "last individually clicked"
+    /// facts-panel value): a bulk selection op is a different gesture
+    /// from a click, and only [`GraphEngine::select`]/
+    /// [`GraphEngine::clear_selection`] (an actual click, or a solo-node
+    /// drag-release) ever change what the facts panel shows.
+    pub fn apply_selection(&mut self, nodes: impl IntoIterator<Item = NodeIndex>, mode: SelectMode) {
+        match mode {
+            SelectMode::Replace => self.selection = nodes.into_iter().collect(),
+            SelectMode::Union => self.selection.extend(nodes),
+            SelectMode::Diff => {
+                for node in nodes {
+                    if !self.selection.remove(&node) {
+                        self.selection.insert(node);
+                    }
+                }
+            }
+        }
+        self.refresh_focus();
+        self.dirty = true;
+    }
+
+    /// Screen-space rectangle box-select (Wave 2.4) — drives BOTH the
+    /// pointer path (Shift/Ctrl+Shift/Alt+Shift+drag, see
+    /// [`box_select_mode_for`]) and the `box_select` agent action, so a
+    /// headless caller reaches the exact same selection pipeline a real
+    /// drag does. `corner_a`/`corner_b` are any two opposite corners in
+    /// screen px, order-independent (corner-normalized internally).
+    /// Candidates are drawn from [`GraphEngine::visible_nodes`] — matches
+    /// every other pick/render pass in this crate, an off-screen node
+    /// can't be box-selected; containment is a node's SCREEN CENTER
+    /// falling inside the rect (cytoscape's own simpler default, oss doc
+    /// §2.3 — not full node-bounds overlap).
+    pub fn box_select(&mut self, corner_a: (f64, f64), corner_b: (f64, f64), mode: SelectMode) {
+        let rect = normalized_rect(corner_a, corner_b);
+        let nodes = self.nodes_in_screen_rect(rect);
+        self.apply_selection(nodes, mode);
+    }
+
+    fn nodes_in_screen_rect(&self, rect: Rect) -> Vec<NodeIndex> {
+        self.visible
+            .iter()
+            .copied()
+            .filter(|&id| match self.particles.get(id.index()) {
+                Some(p) => {
+                    let (sx, sy) = self.camera.world_to_screen((p.x as f64, p.y as f64), self.canvas_rect);
+                    rect.contains(sx, sy)
+                }
+                None => false,
+            })
+            .collect()
+    }
+
+    /// Live screen-space rectangle of an in-progress box-select drag,
+    /// already corner-normalized — `None` when no box-select is active.
+    /// [`GraphEngine::draw`] paints the rubber-band overlay from this
+    /// every frame; `on_pointer_up`'s `BoxSelecting` arm resolves the
+    /// FINAL node set from the exact same corners via
+    /// [`GraphEngine::box_select`], so the drawn rectangle and the
+    /// actually-selected area can never diverge.
+    pub fn box_select_rect(&self) -> Option<Rect> {
+        match self.mode {
+            PointerMode::BoxSelecting { origin, current, .. } => Some(normalized_rect(origin, current)),
+            _ => None,
+        }
+    }
+
+    /// Current keyboard-modifier state (Wave 2.4) — see
+    /// [`box_select_mode_for`] for how `on_pointer_down` reads it.
+    pub fn modifiers(&self) -> ModifierKeys {
+        self.modifiers
+    }
+
+    /// Define a cluster over the CURRENT [`GraphEngine::selection`] and
+    /// immediately collapse it (Wave 2.4 — the interactive-grouping path
+    /// the spec promised: [`ClusterRegistry::define`]/
+    /// [`GraphEngine::collapse_cluster`] already existed, this is the
+    /// "from whatever's currently selected" entry point). Members are the
+    /// selection's CURRENT contents in `BTreeSet`'s deterministic
+    /// ascending-`NodeIndex` order — the same selection always yields the
+    /// same collapse representative (the lowest index) regardless of
+    /// click/box-select order. `None` if the selection is empty.
+    pub fn collapse_selection(&mut self) -> Option<GroupId> {
+        if self.selection.is_empty() {
+            return None;
+        }
+        let members: Vec<NodeIndex> = self.selection.iter().copied().collect();
+        let id = self.define_cluster(members)?;
+        self.collapse_cluster(id);
+        Some(id)
+    }
+
+    /// The [`GroupId`] whose FULL member set is EXACTLY the current
+    /// selection and which is currently collapsed — backs `agent_state`'s
+    /// `selection.collapsed_group`. Purely derived (no separate "which
+    /// cluster did I last collapse" bookkeeping needed): `None` once
+    /// expanded, if the selection was never turned into a cluster, or if
+    /// the selection has since changed.
+    pub fn selection_collapsed_group(&self) -> Option<GroupId> {
+        if self.selection.is_empty() {
+            return None;
+        }
+        self.clusters.iter().find_map(|(id, cluster)| {
+            if !cluster.is_collapsed() {
+                return None;
+            }
+            let members: BTreeSet<NodeIndex> = cluster.members.iter().copied().collect();
+            (members == self.selection).then_some(id)
+        })
+    }
+
+    /// Persistently pin every node in the current selection at its
+    /// current position (Wave 2.4 group op — see
+    /// [`GraphEngine::pin_node`]).
+    pub fn pin_selection(&mut self) {
+        let nodes: Vec<NodeIndex> = self.selection.iter().copied().collect();
+        for node in nodes {
+            self.pin_node(node);
+        }
+    }
+
+    /// Release the persistent pin on every node in the current selection
+    /// (Wave 2.4 group op — see [`GraphEngine::unpin_node`]).
+    pub fn unpin_selection(&mut self) {
+        let nodes: Vec<NodeIndex> = self.selection.iter().copied().collect();
+        for node in nodes {
+            self.unpin_node(node);
+        }
     }
 
     /// Hover-neighbor-highlight depth (Wave 2.2 — oss doc §2.1). `0`
@@ -366,8 +655,8 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
     /// without waiting for the next pointer move.
     pub fn set_hover_depth(&mut self, depth: u8) {
         self.hover_depth = depth;
-        if self.selected.is_none() {
-            self.refresh_focus_from_hover();
+        if self.selection.is_empty() {
+            self.refresh_focus();
             self.dirty = true;
         }
     }
@@ -422,20 +711,31 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             return;
         }
         self.hovered = hit;
-        if self.selected.is_none() {
-            self.refresh_focus_from_hover();
+        if self.selection.is_empty() {
+            self.refresh_focus();
         }
         self.dirty = true;
     }
 
     /// Reducer-style paint override (oss doc §2.1: sigma `nodeReducer`/
-    /// `edgeReducer`, replace-not-merge): recompute the WHOLE `focus`
-    /// selection from `self.hovered` at `self.hover_depth` — pure
-    /// function of current state, never an incremental patch. Only
-    /// called where the caller has already confirmed no click-selection
-    /// is overriding hover (`select`/click-selection always wins — see
-    /// [`GraphEngine::clear_selection`]'s doc comment).
-    fn refresh_focus_from_hover(&mut self) {
+    /// `edgeReducer`, replace-not-merge), Wave 2.4-generalized to a SET:
+    /// recompute the WHOLE `focus` from `self.selection` (if non-empty —
+    /// the UNION of every selected node's 1-hop neighborhood) else
+    /// `self.hovered` at `self.hover_depth` — pure function of current
+    /// state, never an incremental patch. A non-empty selection (single
+    /// OR multi) always wins over a concurrent hover (Orb's
+    /// `isStateOverride` precedent, unchanged from W2.2 — "a
+    /// multi-selection counts as selection" is the literal
+    /// generalization of that same precedence rule, not a new one).
+    fn refresh_focus(&mut self) {
+        if !self.selection.is_empty() {
+            let mut keys: Vec<u64> = Vec::new();
+            for &node in &self.selection {
+                keys.extend(self.graph.neighborhood_focus_keys(node));
+            }
+            self.focus.select_many(keys);
+            return;
+        }
         match self.hovered {
             Some(node) => self.focus.select_many(self.graph.neighborhood_focus_keys_depth(node, self.hover_depth)),
             None => {
@@ -596,7 +896,33 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             PlatformEvent::PointerMoved { x, y } => self.on_pointer_moved(*x, *y),
             PlatformEvent::PointerUp { x, y, button: MouseButton::Left } => self.on_pointer_up(*x, *y),
             PlatformEvent::Scroll { dy, .. } => self.on_scroll(*dy),
+            // Wave 2.4 modifier tracking — `on_pointer_down` reads
+            // `self.modifiers` to decide box-select vs. camera-pan/
+            // node-drag (see `box_select_mode_for`).
+            PlatformEvent::ModifiersChanged { modifiers } => {
+                self.modifiers = *modifiers;
+                true
+            }
             _ => false,
+        }
+    }
+
+    /// Apply the Wave 2.4 group-drag shared-delta shift to every member
+    /// of `self.drag_group`: each member's `fx`/`fy` becomes the
+    /// anchor's current world position (re-projected from `screen`
+    /// through the camera's own inverse transform — the existing
+    /// "delta ÷ zoom, absolute reprojection, no drift" convention, W2.1)
+    /// PLUS that member's own FIXED `offset_from_anchor` captured at
+    /// drag-start — see [`DragMember`]'s doc comment for why this
+    /// preserves relative offsets exactly and reproduces the pre-Wave-2.4
+    /// solo-drag behavior byte-for-byte when the drag set has one member.
+    fn apply_drag_shift(&mut self, screen: (f64, f64)) {
+        let world = self.camera.screen_to_world(screen, self.canvas_rect);
+        for member in &self.drag_group {
+            if let Some(p) = self.particles.get_mut(member.node.index()) {
+                p.fx = Some(world.0 as f32 + member.offset_from_anchor.0);
+                p.fy = Some(world.1 as f32 + member.offset_from_anchor.1);
+            }
         }
     }
 
@@ -604,19 +930,44 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         if !self.canvas_rect.contains(x, y) {
             return false;
         }
+        // Wave 2.4: a held Shift ALWAYS starts a box-select, even when
+        // the down-point lands directly on a node (the oss doc's own
+        // cytoscape-issue-1583 note — modifier-held mousedown wins over
+        // node-grab dispatch). See `box_select_mode_for`'s doc comment
+        // for the full modifier -> mode mapping.
+        if let Some(mode) = box_select_mode_for(self.modifiers) {
+            self.mode = PointerMode::BoxSelecting { origin: (x, y), current: (x, y), mode };
+            self.dirty = true;
+            return true;
+        }
         if let Some(hit) = pick::nearest_node(&self.graph, &self.particles, &self.camera, self.canvas_rect, (x, y), &self.visible) {
+            // Wave 2.4 group drag: dragging a node already IN the
+            // multi-selection moves the WHOLE selection together;
+            // dragging anything else drags just that one node (and, on
+            // release, Replace-selects it — see `on_pointer_up`).
+            let was_selected = self.selection.contains(&hit);
+            self.drag_was_group = was_selected;
+            let group: Vec<NodeIndex> = if was_selected { self.selection.iter().copied().collect() } else { vec![hit] };
+            let anchor_pos = self.particles.get(hit.index()).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0));
+            self.drag_group = group
+                .into_iter()
+                .map(|node| {
+                    let pos = self.particles.get(node.index()).map(|p| (p.x, p.y)).unwrap_or((0.0, 0.0));
+                    DragMember {
+                        node,
+                        offset_from_anchor: (pos.0 - anchor_pos.0, pos.1 - anchor_pos.1),
+                        prior_pinned: self.is_pinned(node),
+                    }
+                })
+                .collect();
+
             self.mode = PointerMode::DraggingNode;
-            self.drag_prior_pinned = self.is_pinned(hit);
             self.drag.start(hit, (x, y));
-            // Pin-during-drag: fix the node at the pointer's world
-            // position for the whole gesture (d3-force canon — `fx`/`fy`
-            // are the ONLY pin primitive, drag-in-progress and an
-            // explicit persistent pin share the same mechanism).
-            let world = self.camera.screen_to_world((x, y), self.canvas_rect);
-            if let Some(p) = self.particles.get_mut(hit.index()) {
-                p.fx = Some(world.0 as f32);
-                p.fy = Some(world.1 as f32);
-            }
+            // Pin-during-drag for EVERY moved member (d3-force canon —
+            // `fx`/`fy` are the ONLY pin primitive, drag-in-progress and
+            // an explicit persistent pin share the same mechanism),
+            // shared-delta shifted from the very first frame.
+            self.apply_drag_shift((x, y));
             // Sustained reheat (obsidian doc §drag/d3-canon): hold alpha
             // at the drag target for the whole gesture instead of a
             // one-shot bump that starts cooling right away. `reheat`
@@ -639,17 +990,8 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         match self.mode {
             PointerMode::DraggingNode => {
                 self.drag.update((x, y));
-                if let Some(node) = self.drag.dragging_node() {
-                    // Screen -> world through the camera's own inverse
-                    // transform (divides by `zoom` internally) — this IS
-                    // the "delta ÷ zoom" canon, expressed as an absolute
-                    // re-projection each tick instead of an accumulated
-                    // delta (no drift, same result at zoom == 1).
-                    let world = self.camera.screen_to_world((x, y), self.canvas_rect);
-                    if let Some(p) = self.particles.get_mut(node.index()) {
-                        p.fx = Some(world.0 as f32);
-                        p.fy = Some(world.1 as f32);
-                    }
+                if self.drag.dragging_node().is_some() {
+                    self.apply_drag_shift((x, y));
                 }
                 handled = true;
             }
@@ -659,6 +1001,10 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
                 self.camera.pan_x += dx;
                 self.camera.pan_y += dy;
                 self.mode = PointerMode::PanningCamera { last: (x, y), total: total + (dx * dx + dy * dy).sqrt() };
+                handled = true;
+            }
+            PointerMode::BoxSelecting { origin, mode, .. } => {
+                self.mode = PointerMode::BoxSelecting { origin, current: (x, y), mode };
                 handled = true;
             }
             PointerMode::Idle => {}
@@ -698,31 +1044,51 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
     fn on_pointer_up(&mut self, x: f64, y: f64) -> bool {
         match self.mode {
             PointerMode::DraggingNode => {
-                if let Some((node, _response)) = self.drag.stop() {
-                    let stay_pinned = match self.drag_end_policy {
-                        DragEndPolicy::Sticky => true,
-                        DragEndPolicy::RestorePrior => self.drag_prior_pinned,
-                    };
-                    if stay_pinned {
-                        // `fx`/`fy` already hold the release-time world
-                        // position from the last drag-move tick — just
-                        // flip the persistent-pin bookkeeping flag so
-                        // `is_pinned`/`unpin_node` see it correctly.
-                        if let Some(flag) = self.pinned.get_mut(node.index()) {
-                            *flag = true;
-                        }
-                    } else {
-                        if let Some(p) = self.particles.get_mut(node.index()) {
-                            p.unpin();
-                        }
-                        if let Some(flag) = self.pinned.get_mut(node.index()) {
-                            *flag = false;
+                if let Some((anchor, _response)) = self.drag.stop() {
+                    let policy = self.drag_end_policy;
+                    let was_group = self.drag_was_group;
+                    // Wave 2.4: every MEMBER of the drag set pins/unpins
+                    // per the drag-end policy (Sticky pins all of them;
+                    // RestorePrior restores each member's OWN prior-pinned
+                    // state — not just the anchor's).
+                    for member in std::mem::take(&mut self.drag_group) {
+                        let stay_pinned = match policy {
+                            DragEndPolicy::Sticky => true,
+                            DragEndPolicy::RestorePrior => member.prior_pinned,
+                        };
+                        if stay_pinned {
+                            // `fx`/`fy` already hold the release-time world
+                            // position from the last drag-move tick — just
+                            // flip the persistent-pin bookkeeping flag so
+                            // `is_pinned`/`unpin_node` see it correctly.
+                            if let Some(flag) = self.pinned.get_mut(member.node.index()) {
+                                *flag = true;
+                            }
+                        } else {
+                            if let Some(p) = self.particles.get_mut(member.node.index()) {
+                                p.unpin();
+                            }
+                            if let Some(flag) = self.pinned.get_mut(member.node.index()) {
+                                *flag = false;
+                            }
                         }
                     }
                     // Drag-end: alphaTarget -> 0 so alpha eases back down
                     // instead of free-decaying from wherever it was held.
                     self.layout.set_alpha_target(0.0);
-                    self.select(node);
+                    if was_group {
+                        // The whole multi-selection just moved together —
+                        // it STAYS selected as-is (Wave 2.4 scope item 3);
+                        // only the facts-panel "last clicked" value moves
+                        // to the physically-grabbed anchor.
+                        self.selected = Some(anchor);
+                        self.refresh_focus();
+                    } else {
+                        // A single un-selected node was dragged solo —
+                        // Replace-selects itself on release (matches the
+                        // pre-Wave-2.4 behavior exactly for this case).
+                        self.select(anchor);
+                    }
                 }
                 self.mode = PointerMode::Idle;
                 self.dirty = true;
@@ -747,6 +1113,12 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
                         None => self.clear_selection(),
                     }
                 }
+                self.dirty = true;
+                true
+            }
+            PointerMode::BoxSelecting { origin, mode, .. } => {
+                self.mode = PointerMode::Idle;
+                self.box_select(origin, (x, y), mode);
                 self.dirty = true;
                 true
             }
@@ -1170,5 +1542,261 @@ mod tests {
         render_to_png(&spec, |ctx| engine.draw(ctx)).expect("headless render must succeed");
 
         assert_eq!(engine.labels_drawn_last_frame(), 2, "both nodes sit in separate grid cells and must both draw a label");
+    }
+
+    // ── W2.4 selection model (box-select, group drag, cluster-from-selection) ─
+    //
+    // 4 nodes at the corners of a 100x100 square (screen == world at the
+    // default camera) — `a`=(0,0) `b`=(100,0) `c`=(0,100) `d`=(100,100),
+    // wired into a ring so `neighborhood_focus_keys` has something to
+    // walk. `refresh_visible()` stands in for a real `draw()` frame.
+
+    fn four_corner_square_engine() -> (TestEngine, [NodeIndex; 4]) {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let b = graph.push_node((), "b", "x", 4.0);
+        let c = graph.push_node((), "c", "x", 4.0);
+        let d = graph.push_node((), "d", "x", 4.0);
+        graph.push_edge(a, b, 1.0, ());
+        graph.push_edge(b, d, 1.0, ());
+        graph.push_edge(d, c, 1.0, ());
+        graph.push_edge(c, a, 1.0, ());
+        let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.set_canvas_rect(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.seed_positions(&[(0.0, 0.0), (100.0, 0.0), (0.0, 100.0), (100.0, 100.0)]);
+        engine.refresh_visible();
+        (engine, [a, b, c, d])
+    }
+
+    /// The literal gate: Replace/Union/Diff each produce the EXACT
+    /// expected set (not just "something changed").
+    #[test]
+    fn box_select_modes_produce_exact_expected_sets() {
+        let (mut engine, [a, b, c, d]) = four_corner_square_engine();
+
+        // Replace: box over the LEFT column (a, c) only.
+        engine.box_select((-10.0, -10.0), (10.0, 110.0), SelectMode::Replace);
+        assert_eq!(engine.selection, [a, c].into_iter().collect());
+
+        // Union: box over the RIGHT column (b, d) ADDS to the existing {a, c}.
+        engine.box_select((90.0, -10.0), (110.0, 110.0), SelectMode::Union);
+        assert_eq!(engine.selection, [a, b, c, d].into_iter().collect());
+
+        // Diff: box over the TOP row (a, b) toggles them OFF (both already selected).
+        engine.box_select((-10.0, -10.0), (110.0, 10.0), SelectMode::Diff);
+        assert_eq!(engine.selection, [c, d].into_iter().collect());
+
+        // The SAME top-row box, Diff again, toggles a/b back ON (they
+        // aren't currently selected) without touching c/d.
+        engine.box_select((-10.0, -10.0), (110.0, 10.0), SelectMode::Diff);
+        assert_eq!(engine.selection, [a, b, c, d].into_iter().collect());
+
+        // Replace with an empty box clears the whole selection — the
+        // natural generalization, no special-casing needed.
+        engine.box_select((300.0, 300.0), (310.0, 310.0), SelectMode::Replace);
+        assert!(engine.selection.is_empty());
+    }
+
+    /// Dragging a node that IS in the current multi-selection moves the
+    /// WHOLE selection by one shared world-space delta — relative offsets
+    /// between the two selected members must be preserved EXACTLY, and a
+    /// node outside the selection must not move (or even get pinned) at
+    /// all. Checked via `fx`/`fy` directly (set synchronously by
+    /// `on_pointer_moved`, no `tick()` needed) so an unrelated node's own
+    /// free-physics drift from an intervening tick can never confound the
+    /// "did it move" assertion.
+    #[test]
+    fn group_drag_preserves_relative_offsets_via_a_single_shared_delta() {
+        let (mut engine, [a, b, c, _d]) = four_corner_square_engine();
+        engine.apply_selection([a, b], SelectMode::Replace);
+
+        let a0 = engine.particles[a.index()];
+        let b0 = engine.particles[b.index()];
+        let c0 = engine.particles[c.index()];
+
+        // Grab `a` (a selected member) and drag by (+30, -20).
+        engine.on_event(&PlatformEvent::PointerDown { x: 0.0, y: 0.0, button: MouseButton::Left });
+        engine.on_event(&PlatformEvent::PointerMoved { x: 30.0, y: -20.0 });
+
+        let a_fx = engine.particles[a.index()].fx.expect("a must be pinned mid-drag");
+        let a_fy = engine.particles[a.index()].fy.expect("a must be pinned mid-drag");
+        let b_fx = engine.particles[b.index()].fx.expect("b (also in the drag set) must be pinned too");
+        let b_fy = engine.particles[b.index()].fy.expect("b (also in the drag set) must be pinned too");
+
+        assert!((a_fx - (a0.x + 30.0)).abs() < 1e-4);
+        assert!((a_fy - (a0.y - 20.0)).abs() < 1e-4);
+        assert!((b_fx - (b0.x + 30.0)).abs() < 1e-4);
+        assert!((b_fy - (b0.y - 20.0)).abs() < 1e-4);
+
+        let rel_before = (b0.x - a0.x, b0.y - a0.y);
+        let rel_after = (b_fx - a_fx, b_fy - a_fy);
+        assert!((rel_after.0 - rel_before.0).abs() < 1e-4, "relative x-offset must be preserved exactly");
+        assert!((rel_after.1 - rel_before.1).abs() < 1e-4, "relative y-offset must be preserved exactly");
+
+        // c is NOT in the drag set — never pinned, position untouched.
+        assert!(engine.particles[c.index()].fx.is_none());
+        assert_eq!(engine.particles[c.index()].x, c0.x);
+        assert_eq!(engine.particles[c.index()].y, c0.y);
+
+        engine.on_event(&PlatformEvent::PointerUp { x: 30.0, y: -20.0, button: MouseButton::Left });
+        // A group-drag release keeps the WHOLE selection — it does not
+        // collapse down to just the grabbed anchor.
+        assert_eq!(engine.selection, [a, b].into_iter().collect());
+        assert_eq!(engine.selected, Some(a), "the physically-grabbed anchor becomes the facts-panel value");
+    }
+
+    /// Dragging a node OUTSIDE the current selection drags just it (not
+    /// the rest of the pre-existing selection) and Replace-selects it on
+    /// release.
+    #[test]
+    fn dragging_a_non_selected_node_drags_just_it_and_replace_selects_it() {
+        let (mut engine, [a, b, c, _d]) = four_corner_square_engine();
+        engine.apply_selection([a, b], SelectMode::Replace);
+
+        engine.on_event(&PlatformEvent::PointerDown { x: 0.0, y: 100.0, button: MouseButton::Left }); // c's position
+        engine.on_event(&PlatformEvent::PointerMoved { x: 50.0, y: 150.0 });
+        engine.on_event(&PlatformEvent::PointerUp { x: 50.0, y: 150.0, button: MouseButton::Left });
+        engine.tick(1.0 / 60.0);
+
+        assert_eq!(engine.selection, [c].into_iter().collect(), "selection replaces to just the dragged node");
+        assert_eq!(engine.selected, Some(c));
+
+        assert!(engine.particles[a.index()].fx.is_none(), "a (previously selected) must never have been pinned by this gesture");
+        assert!(engine.particles[b.index()].fx.is_none(), "b (previously selected) must never have been pinned by this gesture");
+        assert!(engine.is_pinned(c));
+        let cp = engine.particles[c.index()];
+        assert!((cp.x - 50.0).abs() < 1e-4);
+        assert!((cp.y - 150.0).abs() < 1e-4);
+    }
+
+    /// Wave 2.4 modifier-tracking gate: Shift held at mousedown starts a
+    /// box-select drag (camera pan suppressed) — clearing the modifier
+    /// afterward lets a plain drag pan again, unaffected.
+    #[test]
+    fn shift_held_starts_a_box_select_drag_instead_of_panning_the_camera() {
+        let mut engine = empty_engine_with_canvas(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.on_event(&PlatformEvent::ModifiersChanged { modifiers: ModifierKeys::shift() });
+
+        let before_pan = (engine.camera.pan_x, engine.camera.pan_y);
+        engine.on_event(&PlatformEvent::PointerDown { x: 100.0, y: 100.0, button: MouseButton::Left });
+        assert!(engine.box_select_rect().is_some(), "Shift+mousedown on empty background must start a box-select, not a pan");
+
+        engine.on_event(&PlatformEvent::PointerMoved { x: 250.0, y: 220.0 });
+        assert_eq!((engine.camera.pan_x, engine.camera.pan_y), before_pan, "camera must not pan while box-selecting");
+        let rect = engine.box_select_rect().expect("still box-selecting mid-drag");
+        assert!((rect.x - 100.0).abs() < 1e-9);
+        assert!((rect.y - 100.0).abs() < 1e-9);
+        assert!((rect.width - 150.0).abs() < 1e-9);
+        assert!((rect.height - 120.0).abs() < 1e-9);
+
+        engine.on_event(&PlatformEvent::PointerUp { x: 250.0, y: 220.0, button: MouseButton::Left });
+        assert!(engine.box_select_rect().is_none(), "the rubber-band rect clears once the drag ends");
+        assert_eq!((engine.camera.pan_x, engine.camera.pan_y), before_pan, "camera must still not have panned");
+
+        // Clearing the modifier lets a plain drag pan again, unaffected.
+        engine.on_event(&PlatformEvent::ModifiersChanged { modifiers: ModifierKeys::none() });
+        engine.on_event(&PlatformEvent::PointerDown { x: 300.0, y: 300.0, button: MouseButton::Left });
+        engine.on_event(&PlatformEvent::PointerMoved { x: 310.0, y: 300.0 });
+        assert!((engine.camera.pan_x - (before_pan.0 + 10.0)).abs() < 1e-9, "plain drag (no modifier) still pans the camera");
+    }
+
+    /// `collapse_selection` round-trip: define+collapse a cluster from
+    /// the CURRENT selection, then expand restores the exact pre-collapse
+    /// positions (the underlying `ClusterRegistry` round-trip is already
+    /// proven in `cluster.rs` — this proves the NEW selection-driven
+    /// entry point wires into it correctly).
+    #[test]
+    fn collapse_selection_round_trip_via_expand() {
+        let (mut engine, [a, b, c, d]) = four_corner_square_engine();
+        engine.apply_selection([b, d], SelectMode::Replace);
+        assert!(engine.selection_collapsed_group().is_none(), "nothing collapsed yet");
+
+        let b0 = engine.particles[b.index()];
+        let d0 = engine.particles[d.index()];
+
+        let id = engine.collapse_selection().expect("a non-empty selection collapses");
+        assert!(engine.is_collapsed(id));
+        assert_eq!(engine.selection_collapsed_group(), Some(id));
+
+        // `b` (lowest `NodeIndex` in the selection) is the collapse
+        // representative and stays visible; `d` is hidden.
+        engine.refresh_visible();
+        assert!(engine.visible_nodes().contains(&b));
+        assert!(!engine.visible_nodes().contains(&d));
+        assert!(engine.visible_nodes().contains(&a), "untouched nodes stay visible");
+        assert!(engine.visible_nodes().contains(&c));
+
+        assert!(engine.expand_cluster(id));
+        assert!(engine.selection_collapsed_group().is_none(), "collapsed_group clears once expanded");
+
+        let b1 = engine.particles[b.index()];
+        let d1 = engine.particles[d.index()];
+        assert_eq!((b1.x, b1.y), (b0.x, b0.y), "expand restores the EXACT pre-collapse position");
+        assert_eq!((d1.x, d1.y), (d0.x, d0.y));
+    }
+
+    /// `clear_selection`/`pin_selection`/`unpin_selection` group ops.
+    #[test]
+    fn pin_selection_and_unpin_selection_apply_to_every_member() {
+        let (mut engine, [a, b, _c, _d]) = four_corner_square_engine();
+        engine.apply_selection([a, b], SelectMode::Replace);
+        assert!(!engine.is_pinned(a) && !engine.is_pinned(b));
+
+        engine.pin_selection();
+        assert!(engine.is_pinned(a));
+        assert!(engine.is_pinned(b));
+
+        engine.unpin_selection();
+        assert!(!engine.is_pinned(a));
+        assert!(!engine.is_pinned(b));
+
+        engine.clear_selection();
+        assert!(engine.selection.is_empty());
+        assert!(engine.selected.is_none());
+    }
+
+    /// Wave 2.4 generalization of the W2.2 precedence rule: a
+    /// MULTI-selection (not just a single `selected`) also wins over a
+    /// concurrent hover, and clearing it resumes hover-driven focus —
+    /// added alongside (not replacing) the existing single-selection
+    /// precedence test, which already covers the single-node case
+    /// unchanged. Uses two DISJOINT edges (not the corner-square ring
+    /// fixture) so a selection over one pair's neighborhood can never
+    /// accidentally overlap a hover on the other, unrelated pair — the
+    /// square's own ring connectivity would make every node reachable
+    /// from any 2-node selection at depth 1, masking exactly the
+    /// precedence behavior this test exists to prove.
+    #[test]
+    fn multi_selection_also_takes_precedence_over_a_concurrent_hover_and_resumes_on_clear() {
+        let mut graph = Graph::new();
+        let p1 = graph.push_node((), "p1", "x", 4.0);
+        let p2 = graph.push_node((), "p2", "x", 4.0);
+        let q1 = graph.push_node((), "q1", "x", 4.0);
+        let q2 = graph.push_node((), "q2", "x", 4.0);
+        graph.push_edge(p1, p2, 1.0, ());
+        graph.push_edge(q1, q2, 1.0, ());
+        let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        engine.set_canvas_rect(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.seed_positions(&[(0.0, 0.0), (100.0, 0.0), (500.0, 0.0), (600.0, 0.0)]);
+        engine.refresh_visible();
+
+        engine.apply_selection([p1, p2], SelectMode::Replace);
+        assert!(engine.focus.is_selected(u64::from(p1)));
+        assert!(engine.focus.is_selected(u64::from(p2)));
+
+        engine.on_event(&PlatformEvent::PointerMoved { x: 500.0, y: 0.0 }); // hover q1, unrelated to the selection
+        assert_eq!(engine.hovered(), Some(q1));
+        assert!(engine.focus.is_selected(u64::from(p1)), "multi-selection must win over a concurrent hover");
+        assert!(engine.focus.is_selected(u64::from(p2)));
+        assert!(!engine.focus.is_selected(u64::from(q1)), "hover must not override an active multi-selection");
+        assert!(!engine.focus.is_selected(u64::from(q2)));
+
+        engine.clear_selection();
+        // The pointer never left `q1` — hover resumes driving the focus
+        // set the instant the multi-selection is no longer overriding it.
+        assert!(engine.focus.is_selected(u64::from(q1)), "clearing a multi-selection must resume hover-driven focus");
+        assert!(engine.focus.is_selected(u64::from(q2)));
+        assert!(!engine.focus.is_selected(u64::from(p1)));
+        assert!(!engine.focus.is_selected(u64::from(p2)));
     }
 }

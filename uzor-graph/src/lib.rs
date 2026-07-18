@@ -37,7 +37,7 @@ pub mod render;
 
 pub use camera::{Aabb, Camera2D};
 pub use cluster::{AggregatedEdge, ClusterRegistry, ClusterState, GroupId};
-pub use engine::{DragEndPolicy, GraphEngine, NodeFacts};
+pub use engine::{DragEndPolicy, GraphEngine, NodeFacts, SelectMode};
 pub use graph::{EdgeIndex, Graph, GraphEdge, GraphNode, NodeIndex, SimEdge, SimTopology};
 pub use layout::{
     ForceDirectedLayout, ForceParams, GraphLayoutMode, HierarchicalLayout, HierarchicalParams, Layout, LayoutKind,
