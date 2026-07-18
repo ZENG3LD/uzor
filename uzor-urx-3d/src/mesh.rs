@@ -762,28 +762,51 @@ impl Mesh {
         Self { vertices, indices }
     }
 
-    /// Unit line segment along `+Y` — base at `y=0`, top at `y=1`
-    /// (mirrors `MeshLit::cylinder`'s own base/top convention, NOT
-    /// centred, so the SAME `translation=from` / `scale.y=length` /
-    /// `rotation=Quat::from_rotation_arc(Vec3::Y, dir)` instance-transform
-    /// math a cylinder-edge used still applies unchanged when this mesh
-    /// is swapped in instead — see `uzor-graph::render3d`'s own module
-    /// doc for the full edge-instancing convention this mesh is built
-    /// for). Two vertices, drawn as `LineList` (`Renderer3D`'s dedicated
-    /// [line pipeline](crate::pipeline) — see that module's own doc
-    /// comment): no cross-section geometry at all, so there is nothing
-    /// for the model matrix's `x`/`z` scale to stretch — GPU-native line
-    /// rasterization (1 device pixel, hardware-antialiased under MSAA)
-    /// supplies the actual on-screen width instead of a world-space
-    /// cylinder radius that would otherwise vanish to sub-pixel at any
-    /// realistic camera distance (the owner-reported "dotted/stippled at
-    /// distance" defect this mesh replaces the cylinder-edge approach
-    /// to fix — full pixel evidence in `uzor-graph/CLAUDE.md`'s
-    /// divergence log).
-    pub fn unit_line(color: [f32; 4]) -> Self {
+    /// Screen-space billboarded edge quad — round-2 edge-quality fix,
+    /// replacing the earlier hardware `LineList` unit-line approach
+    /// (`uzor-graph/CLAUDE.md`'s divergence log: wgpu/DX12/Vulkan line
+    /// rasterization is BINARY coverage with no analytic AA of its own,
+    /// and MSAA-on-lines is implementation-defined per the wgpu/D3D/Vulkan
+    /// specs — the prior wave's hardware `LineList` edges stayed visibly
+    /// aliased/crooked up close no matter how MSAA was tuned). 4 vertices
+    /// forming ONE quad per edge (2 triangles, `TriangleList` — see
+    /// `crate::pipeline::Renderer3D`'s dedicated `pipeline_edge_quad_instanced`),
+    /// expanded to a constant PIXEL width in screen space by the vertex
+    /// shader (`edge_quad_instanced.wgsl`), not by any world-space
+    /// cross-section here — there IS none.
+    ///
+    /// Each vertex packs `(side, endpoint)` into `pos.xy` instead of a
+    /// literal position: `pos.x` ∈ `{-1, +1}` selects which SIDE of the
+    /// segment's screen-space perpendicular this corner expands toward;
+    /// `pos.y` ∈ `{0, 1}` selects which ENDPOINT (`0` = the segment's
+    /// `from` end, `1` = `to`) — the SAME base/top convention the old
+    /// `unit_line`/`MeshLit::cylinder` meshes used, so the identical
+    /// `translation = from` / `rotation = Quat::from_rotation_arc(Vec3::Y,
+    /// dir)` / `scale.y = length` instance-transform math
+    /// `uzor-graph::render3d::build_edge_instances` already builds
+    /// carries over byte-for-byte unchanged — only the mesh Arc and the
+    /// pipeline that draws it changed. `pos.z` and `color` are otherwise
+    /// unused placeholders here (color kept as a per-vertex multiplier
+    /// for API parity with every other `Mesh` constructor; callers pass
+    /// plain white so the per-instance tint alone determines the edge's
+    /// final color, same convention the old mesh used).
+    ///
+    /// Single straight 2-endpoint segment only — no join geometry. Graph
+    /// edges are independent point-to-point segments (never a connected
+    /// polyline sharing a vertex with another edge's own quad), so the
+    /// three.js `Line2`/cosmos.gl join-handling machinery a prior wave
+    /// explicitly declined for this reason doesn't apply here either —
+    /// this mesh still needs none of it.
+    pub fn unit_edge_quad(color: [f32; 4]) -> Self {
+        let corner = |side: f32, endpoint: f32| Vertex::new(Vec3::new(side, endpoint, 0.0), color);
         Self {
-            vertices: vec![Vertex::new(Vec3::ZERO, color), Vertex::new(Vec3::Y, color)],
-            indices: vec![0, 1],
+            vertices: vec![
+                corner(-1.0, 0.0), // from, left
+                corner(1.0, 0.0),  // from, right
+                corner(-1.0, 1.0), // to, left
+                corner(1.0, 1.0),  // to, right
+            ],
+            indices: vec![0, 1, 2, 1, 3, 2],
         }
     }
 }

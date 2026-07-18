@@ -1,7 +1,11 @@
-//! `build_scene` helpers — instanced sphere nodes + `LineList` edges
-//! (W3D arc plan §1.3, Wave 2; edges rebuilt onto a dedicated GPU line
-//! pipeline in the Wave C edge-quality overhaul — see the divergence
-//! note below). [`GraphEngine3D::build_scene`](crate::engine3d::GraphEngine3D::build_scene)
+//! `build_scene` helpers — instanced sphere nodes + screen-space
+//! billboarded edge quads (W3D arc plan §1.3, Wave 2; edges rebuilt
+//! twice since — a GPU-native `LineList` pipeline in the Wave C
+//! edge-quality overhaul, then REPLACED again by a billboarded
+//! screen-space quad pipeline in Wave D, round 2 of the same overhaul,
+//! after the LineList approach turned out to still alias/crook up close
+//! — see both divergence notes below).
+//! [`GraphEngine3D::build_scene`](crate::engine3d::GraphEngine3D::build_scene)
 //! wires straight into [`build_scene`] here; the split exists so the
 //! node/edge instance-construction logic is unit-testable without a
 //! `GraphEngine3D` (or a GPU) at all.
@@ -14,12 +18,73 @@
 //! convention to the `[f32; 4]` `uzor_urx_3d::Node::color_tint` needs).
 //!
 //! **Edges**: one `Node::new_line` per graph edge, sharing the
-//! caller-supplied unit-line `edge_mesh` — `uzor_urx_3d`'s dedicated
-//! always-alpha-blended `LineList` pipeline (`NodeMesh::Line`, Wave C).
+//! caller-supplied unit-edge-quad `edge_mesh` — `uzor_urx_3d`'s
+//! dedicated always-alpha-blended, analytically-antialiased edge-quad
+//! pipeline (`NodeMesh::Line`, Wave D — see
+//! [`uzor_urx_3d::Mesh::unit_edge_quad`]'s own doc comment for the full
+//! shader-level mechanics).
 //!
-//! ## Wave C — edge-quality overhaul (owner live-verdict: cylinder edges
-//! were "пиздец хуйня" — fat lit pipes up close, dotted/stippled
-//! breakup at distance)
+//! ## Wave D — round 2 of the edge-quality overhaul (owner close-up
+//! verdict: round-1's hardware `LineList` edges are still
+//! ALIASED-crooked; large spheres show visible FACETING)
+//!
+//! **Diagnosis, no new headless GPU harness needed — this is a
+//! documented property of the graphics APIs themselves, not something
+//! this crate's own readback could have caught differently than round 1
+//! already did.** wgpu's `PrimitiveTopology::LineList` compiles down to
+//! the underlying platform's native line rasterizer (DX12/Vulkan/Metal
+//! depending on backend) — that rasterizer's coverage decision for a
+//! line is BINARY (a sample is either fully inside the 1-device-pixel
+//! line or fully outside; there is no partial-coverage/analytic-AA
+//! contribution from the line-fill rule itself, unlike a filled
+//! triangle's edge, which DOES get antialiased by MSAA sample coverage).
+//! Whether/how MSAA even TOUCHES line primitives at all is
+//! IMPLEMENTATION-DEFINED per the D3D12/Vulkan specs (some drivers
+//! multisample the 1px-wide coverage mask, some don't touch lines
+//! specially at all) — this is exactly why round 1's own MSAA-armed
+//! headless test still passed its coverage gate (a hardware line IS
+//! continuously drawn) while the owner's own close-up visual verdict
+//! still reported aliasing: "continuous coverage" and "antialiased
+//! edge" are different properties, and round 1 only ever measured the
+//! former.
+//!
+//! **Fix, round 2: screen-space billboarded quads with analytic AA in
+//! the fragment shader — the three.js `Line2` / cosmos.gl approach,
+//! previously declined in round 1 for its join-handling machinery.**
+//! That objection is VOID here: graph edges are independent, single
+//! straight 2-endpoint segments (never a connected polyline sharing a
+//! vertex with another edge's own quad), so there is no join geometry
+//! to build at all — [`uzor_urx_3d::Mesh::unit_edge_quad`]'s own doc
+//! comment states this explicitly. [`build_edge_instances`] is
+//! UNCHANGED from round 1 (same `Node::new_line`, same `translation =
+//! from` / `rotation = Quat::from_rotation_arc(Vec3::Y, dir)` / `scale.y
+//! = length` instance-transform convention) — only the shared mesh's
+//! OWN constructor (`unit_edge_quad` instead of `unit_line`) and the
+//! `uzor_urx_3d`-side pipeline/shader it draws through changed. The new
+//! pipeline expands an ordinary `TriangleList` quad to a constant PIXEL
+//! width in the VERTEX shader (viewport size + `width_px` uniform,
+//! default `~1.75px`), then applies a smoothstep alpha falloff over a
+//! ~1px feather band straddling the nominal edge in the FRAGMENT
+//! shader, premultiplied-blended — genuinely antialiased regardless of
+//! what any given driver's hardware line rasterizer would have done.
+//! `DEFAULT_EDGE_WIDTH`/[`EDGE_ALPHA`] are re-tuned this wave (see
+//! [`EDGE_ALPHA`]'s own doc comment) — `~0.45` alpha / `~1.75px` width
+//! so the 534-node `clusters` demo fixture reads clean (thin enough
+//! that the edge mass "recedes" behind the nodes, thick enough not to
+//! vanish to a near-invisible hairline once the analytic feather is
+//! applied).
+//!
+//! **Sphere faceting, same wave**: [`crate::engine3d`]'s shared
+//! node-sphere tessellation (`NODE_SPHERE_RINGS`/`NODE_SPHERE_SLICES`)
+//! is bumped for a smoother silhouette on large/close spheres — see
+//! that module's own doc comment on those constants; normals were
+//! already per-vertex (smooth), confirmed by direct read of
+//! `MeshLit::sphere`, so this is a pure tessellation-density change, not
+//! a shading-model change.
+//!
+//! ## Wave C — round 1 of the edge-quality overhaul (owner live-verdict:
+//! cylinder edges were "пиздец хуйня" — fat lit pipes up close,
+//! dotted/stippled breakup at distance)
 //!
 //! **Root cause, headless-GPU-proven** (full pixel evidence in
 //! `uzor-graph/CLAUDE.md`'s divergence log): the old edge geometry was a
@@ -52,38 +117,44 @@
 //! on-screen ORIENTATION toggled the defect, which a color-space effect
 //! cannot do.
 //!
-//! **Fix**: edges no longer carry ANY world-space cross-section at all.
-//! [`build_edge_instances`] now builds `Node::new_line` instances over a
-//! shared [`uzor_urx_3d::Mesh::unit_line`] — GPU-native `LineList`
-//! rasterization draws a constant, hardware-antialiased-under-MSAA
+//! **Fix, round 1 (SUPERSEDED by Wave D above — kept here as the
+//! historical record; the "still aliased up close" round-2 diagnosis is
+//! precisely why a hardware line, despite satisfying every gate this
+//! round's own headless test checked, wasn't actually the end of the
+//! story):** edges no longer carried ANY world-space cross-section at
+//! all. `build_edge_instances` built `Node::new_line` instances over a
+//! shared unit-line mesh — GPU-native `LineList`
+//! rasterization draws a constant, hardware-line-rasterized
 //! device-pixel-width line regardless of distance or on-screen angle
 //! (three.js `LineBasicMaterial`'s own approach — vasturiano
 //! `3d-force-graph`'s actual default edge renderer). Candidates NOT
-//! chosen: (b) screen-space billboarded constant-pixel-width quads
-//! (three Line2/cosmos.gl style) — genuinely the best-looking option,
-//! but needs new per-edge screen-space expansion geometry (join
-//! handling, doubled vertex count, clip-space direction math in the
-//! vertex shader) for a QUALITY-ONLY wave that (a) already had zero
-//! budget for new interaction/architecture surface and (b) doesn't need
-//! it: a hardware `LineList` line already satisfies every stated
-//! requirement (constant ~1px apparent width, alpha-blended,
-//! consistent brightness, zero stipple, MSAA-compatible) at this scale
-//! (534-50k edges); (c) keeping cylinders but unlit + distance-
-//! compensated screen-constant radius — still pays a per-frame
-//! trig/projection cost per edge to keep the radius screen-constant AND
-//! still rasterizes actual triangle geometry (so still has SOME residual
-//! sub-pixel risk at extreme angles/very small radii), strictly more
-//! machinery than (a) for a worse worst-case guarantee. `DEFAULT_EDGE_WIDTH`
+//! chosen at the time: (b) screen-space billboarded constant-pixel-width
+//! quads (three Line2/cosmos.gl style) — genuinely the best-looking
+//! option even then, declined only because it needed new per-edge
+//! screen-space expansion geometry (join handling, doubled vertex
+//! count, clip-space direction math in the vertex shader) that a
+//! QUALITY-ONLY wave judged out of budget — **this is exactly the
+//! option Wave D above adopted once the join-handling objection was
+//! recognized as void for single straight graph-edge segments**; (c)
+//! keeping cylinders but unlit + distance-compensated screen-constant
+//! radius — still paid a per-frame trig/projection cost per edge to
+//! keep the radius screen-constant AND still rasterized actual triangle
+//! geometry (so still had SOME residual sub-pixel risk at extreme
+//! angles/very small radii), strictly more machinery than (a) for a
+//! worse worst-case guarantee, and STILL wouldn't have solved round 2's
+//! binary-coverage/no-analytic-AA diagnosis either. `DEFAULT_EDGE_WIDTH`
 //! (a world-space cylinder radius) is gone — nothing left to scale.
 //!
-//! **Translation-is-the-FROM-endpoint convention preserved unchanged**
-//! from the original cylinder-edge divergence note: [`uzor_urx_3d::Mesh::unit_line`]
-//! is deliberately built with the SAME NOT-centred base/top convention
-//! `MeshLit::cylinder` used (base at local `y = 0`, top at local
-//! `y = height`) specifically so this crate's own instance-transform
-//! math (`translation = from`, `rotation = Quat::from_rotation_arc(Vec3::Y,
-//! dir)`, `scale.y = length`) carries over byte-for-byte from the old
-//! cylinder path — only the mesh Arc and node constructor changed.
+//! **Translation-is-the-FROM-endpoint convention preserved unchanged
+//! across BOTH edge-mesh replacements** — from the original
+//! cylinder-edge divergence note through round 1's unit-line mesh to
+//! round 2's [`uzor_urx_3d::Mesh::unit_edge_quad`] (current): each
+//! mesh in turn was deliberately built so this crate's own
+//! instance-transform math (`translation = from`, `rotation =
+//! Quat::from_rotation_arc(Vec3::Y, dir)`, `scale.y = length`) carries
+//! over byte-for-byte unchanged — only the mesh Arc's own constructor
+//! and the pipeline/shader that draws it have ever changed;
+//! `build_edge_instances` itself has been untouched since Wave 2.
 
 use std::sync::Arc;
 
@@ -99,15 +170,23 @@ use crate::render::category_color;
 /// `"#7c8496"`), for visual parity between the 2D and 3D modes.
 pub const EDGE_TINT_RGB: [f32; 3] = [0.486, 0.518, 0.588];
 
-/// Edge alpha — the owner's own spec: "apparent width ~1.5-2px... alpha
-/// ~0.35-0.6... the graph reads as a cloud of nodes, edges recede."
-/// Picked the middle of that range.
-pub const EDGE_ALPHA: f32 = 0.5;
+/// Edge alpha — the owner's original spec range was "apparent width
+/// ~1.5-2px... alpha ~0.35-0.6... the graph reads as a cloud of nodes,
+/// edges recede," originally set to the range's midpoint (`0.5`).
+/// Re-tuned DOWN to `0.45` in Wave D (round 2 of the edge-quality
+/// overhaul) — the owner's own round-2 target, so the 534-node
+/// `clusters` demo fixture's edge mass reads a touch further back
+/// behind the node spheres now that the edges themselves are crisper
+/// (analytically antialiased instead of a binary-coverage hardware
+/// line) and would otherwise read slightly more prominent at the same
+/// alpha than round 1's softer hardware-line edges did.
+pub const EDGE_ALPHA: f32 = 0.45;
 
 /// [`EDGE_TINT_RGB`]/[`EDGE_ALPHA`] packed into the `[f32; 4]`
-/// `Node::color_tint` every edge instance shares (`uzor_urx_3d::Mesh::unit_line`'s
+/// `Node::color_tint` every edge instance shares (`uzor_urx_3d::Mesh::unit_edge_quad`'s
 /// own vertex color is plain white, so this tint IS the edge's final
-/// color — `unlit_instanced.wgsl`'s `out.color = in.color * in.tint`).
+/// color — `edge_quad_instanced.wgsl`'s `out.color = in.color * in.tint`,
+/// premultiplied by its own analytic-AA coverage in the fragment stage).
 pub const EDGE_TINT: [f32; 4] = [EDGE_TINT_RGB[0], EDGE_TINT_RGB[1], EDGE_TINT_RGB[2], EDGE_ALPHA];
 
 /// Convert [`category_color`]'s fixed `"#rrggbb"` palette into an opaque
@@ -168,13 +247,14 @@ pub fn build_node_instances<N, E>(graph: &Graph<N, E>, particles: &[Particle], m
         .collect()
 }
 
-/// One instanced `Node::new_line` per graph edge (Wave C — see the
-/// module doc's edge-quality-overhaul section) — see the module doc's
+/// One instanced `Node::new_line` per graph edge (Wave C/D — see the
+/// module doc's edge-quality-overhaul sections) — see the module doc's
 /// original divergence note for why `translation` is the FROM endpoint,
-/// not the midpoint (still true for [`uzor_urx_3d::Mesh::unit_line`],
-/// built with the SAME not-centred base/top convention). A coincident
-/// (zero-length) edge has no well-defined direction and is skipped
-/// rather than emitting a NaN rotation.
+/// not the midpoint (still true for [`uzor_urx_3d::Mesh::unit_edge_quad`],
+/// built with the SAME not-centred base/top convention — this function
+/// itself is byte-for-byte unchanged across both edge-mesh
+/// replacements). A coincident (zero-length) edge has no well-defined
+/// direction and is skipped rather than emitting a NaN rotation.
 pub fn build_edge_instances<N, E>(graph: &Graph<N, E>, particles: &[Particle], mesh: &Arc<Mesh>) -> Vec<Node> {
     graph
         .edges()
@@ -491,8 +571,8 @@ mod tests {
         Arc::new(MeshLit::sphere(1.0, 4, 4, [1.0, 1.0, 1.0, 1.0]))
     }
 
-    fn unit_line_mesh() -> Arc<Mesh> {
-        Arc::new(Mesh::unit_line([1.0, 1.0, 1.0, 1.0]))
+    fn unit_edge_quad_mesh() -> Arc<Mesh> {
+        Arc::new(Mesh::unit_edge_quad([1.0, 1.0, 1.0, 1.0]))
     }
 
     #[test]
@@ -519,7 +599,7 @@ mod tests {
         let b = graph.push_node((), "b", "x", 1.0);
         graph.push_edge(a, b, 1.0, ());
         let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(0.0, 5.0, 0.0)];
-        let mesh = unit_line_mesh();
+        let mesh = unit_edge_quad_mesh();
 
         let edges = build_edge_instances(&graph, &particles, &mesh);
 
@@ -527,7 +607,7 @@ mod tests {
         assert_eq!(edges[0].translation, Vec3::ZERO, "translation must be the FROM endpoint, not the midpoint — see the module doc");
         assert!((edges[0].scale.y - 5.0).abs() < 1e-5);
         assert_eq!(edges[0].color_tint, EDGE_TINT);
-        assert!(matches!(edges[0].geometry, uzor_urx_3d::NodeMesh::Line(_)), "edges must use the dedicated LineList geometry, not a cylinder");
+        assert!(matches!(edges[0].geometry, uzor_urx_3d::NodeMesh::Line(_)), "edges must use the dedicated edge-quad geometry, not a cylinder");
         // b - a is already +Y, the line mesh's own local axis, so the
         // rotation should be (near-)identity.
         let rotated_axis = edges[0].rotation * Vec3::Y;
@@ -541,7 +621,7 @@ mod tests {
         let b = graph.push_node((), "b", "x", 1.0);
         graph.push_edge(a, b, 1.0, ());
         let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(3.0, 4.0, 0.0)];
-        let mesh = unit_line_mesh();
+        let mesh = unit_edge_quad_mesh();
 
         let edges = build_edge_instances(&graph, &particles, &mesh);
 
@@ -558,7 +638,7 @@ mod tests {
         let b = graph.push_node((), "b", "x", 1.0);
         graph.push_edge(a, b, 1.0, ());
         let particles = vec![Particle::at3(2.0, 2.0, 2.0), Particle::at3(2.0, 2.0, 2.0)];
-        let mesh = unit_line_mesh();
+        let mesh = unit_edge_quad_mesh();
 
         let edges = build_edge_instances(&graph, &particles, &mesh);
 
@@ -571,7 +651,7 @@ mod tests {
         graph.push_node((), "a", "x", 1.0);
         let particles = vec![Particle::at3(0.0, 0.0, 0.0)];
         let node_mesh = unit_mesh();
-        let edge_mesh = unit_line_mesh();
+        let edge_mesh = unit_edge_quad_mesh();
 
         let scene = build_scene(&graph, &particles, &node_mesh, &edge_mesh);
 

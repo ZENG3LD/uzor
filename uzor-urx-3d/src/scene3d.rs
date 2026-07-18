@@ -13,10 +13,18 @@ use std::sync::Arc;
 /// `Textured`  → Wave 5 `textured_instanced`  (Arc<MeshUv> + Texture3D)
 /// `Pbr`       → Wave 6 `pbr_instanced`       (Arc<MeshPbr> + PbrMaterial:
 ///                albedo, metalness, roughness, ao, optional normal map)
-/// `Line`      → Wave C (owner-ordered edge-quality overhaul)
+/// `Line`      → Wave C/D (owner-ordered edge-quality overhaul, round 2)
 ///                `Renderer3D`'s dedicated always-alpha-blended
-///                `LineList` pipeline (`Arc<Mesh>`, same vertex format
-///                Unlit reuses — see [`crate::mesh::Mesh::unit_line`]).
+///                screen-space billboarded edge-quad pipeline
+///                (`Arc<Mesh>`, same vertex format Unlit reuses — see
+///                [`crate::mesh::Mesh::unit_edge_quad`]). Round 2
+///                replaced the round-1 hardware `LineList` approach:
+///                wgpu/DX12/Vulkan line rasterization is BINARY
+///                coverage (no analytic AA of its own) and MSAA-on-lines
+///                is implementation-defined, so hardware lines stayed
+///                visibly aliased/crooked up close no matter how MSAA
+///                was tuned — full diagnosis in `uzor-graph/CLAUDE.md`'s
+///                divergence log.
 ///                **Bypasses [`Node::is_transparent`] entirely** — a
 ///                `Line` node's tint alpha almost always sits inside
 ///                the ~0.35-0.6 translucent range the industry-standard
@@ -151,8 +159,9 @@ impl Node {
         }
     }
 
-    /// Wave C — a `LineList`-topology node (see [`NodeMesh::Line`]'s own
-    /// doc comment for why this bypasses [`Node::is_transparent`]).
+    /// Wave C/D — a screen-space billboarded edge-quad node (see
+    /// [`NodeMesh::Line`]'s own doc comment for why this bypasses
+    /// [`Node::is_transparent`]).
     pub fn new_line(mesh: Arc<Mesh>) -> Self {
         Self {
             geometry: NodeMesh::Line(mesh),

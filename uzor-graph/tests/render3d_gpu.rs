@@ -20,6 +20,14 @@
 //!    (Wave 4) — exercises the REAL `pick3d::request_gpu_pick`/
 //!    `pick3d::poll_gpu_pick` async plumbing end-to-end (blocking poll
 //!    loop, acceptable in tests per the task's own instruction).
+//! 5. `long_thin_diagonal_edge_at_the_engines_default_distance_renders_with_continuous_coverage`
+//!    (Wave C, re-verified on the round-2 edge-quad geometry) — the
+//!    original stipple-defect fixture still renders continuous coverage.
+//! 6. `edge_quad_analytic_aa_feathers_the_line_edge_instead_of_a_binary_hard_step`
+//!    (Wave D, round 2) — samples perpendicular to a broadside edge's
+//!    own centerline (no MSAA, no bloom/SSAO) and proves the shader's
+//!    OWN coverage function produces intermediate (partially-covered)
+//!    brightness values on both sides, not a binary hard edge.
 //!
 //! Run:
 //!   cargo test -p uzor-graph --test render3d_gpu -- --include-ignored --nocapture
@@ -34,7 +42,7 @@ use uzor_graph::layout::force_directed_3d::ForceDirectedLayout3D;
 use uzor_graph::particle::Particle;
 use uzor_graph::render3d;
 use uzor_graph::NodeIndex;
-use uzor_urx_3d::{Mesh, MeshLit, PerspectiveCamera, Renderer3D, Vec3};
+use uzor_urx_3d::{Mesh, MeshLit, PerspectiveCamera, Renderer3D, Scene3D, Vec3};
 
 use std::sync::Arc;
 
@@ -384,8 +392,11 @@ fn build_scene_renders_correctly_with_msaa_armed_at_sample_count_4() {
 /// This fixture uses the SAME diagonal-edge geometry and the engine's
 /// own DEFAULT orbit distance (`Camera3D::default().distance = 500.0`,
 /// `uzor-graph/src/camera3d.rs`) that reproduced the defect against the
-/// OLD cylinder-edge geometry — proving the NEW `NodeMesh::Line` path
-/// fixes the EXACT reported case, not a strawman.
+/// ORIGINAL cylinder-edge geometry — proving the CURRENT `NodeMesh::Line`
+/// path (round 2's screen-space billboarded edge-quad — see
+/// `render3d.rs`'s own Wave D module doc) still fixes the EXACT reported
+/// case, not a strawman. This is the task's own "the continuous-coverage
+/// regression test must survive on quads" gate.
 #[test]
 #[ignore]
 fn long_thin_diagonal_edge_at_the_engines_default_distance_renders_with_continuous_coverage() {
@@ -403,7 +414,7 @@ fn long_thin_diagonal_edge_at_the_engines_default_distance_renders_with_continuo
     let particles = vec![Particle::at3(from.x, from.y, from.z), Particle::at3(to.x, to.y, to.z)];
 
     let node_mesh = Arc::new(MeshLit::sphere(1.0, 8, 8, [1.0, 1.0, 1.0, 1.0]));
-    let edge_mesh = Arc::new(Mesh::unit_line([1.0, 1.0, 1.0, 1.0]));
+    let edge_mesh = Arc::new(Mesh::unit_edge_quad([1.0, 1.0, 1.0, 1.0]));
     let scene = render3d::build_scene(&graph, &particles, &node_mesh, &edge_mesh);
 
     let d = 500.0f32;
@@ -466,12 +477,168 @@ fn long_thin_diagonal_edge_at_the_engines_default_distance_renders_with_continuo
 
     assert!(
         (lit_count as f32 / lit_flags.len() as f32) > 0.95,
-        "the new LineList edge pipeline must render CONTINUOUS coverage along a diagonal edge at the engine's own default distance — only {lit_count}/{} samples were lit (the OLD cylinder-edge path left only ~4% lit on this exact fixture, see the divergence log)",
+        "the edge-quad pipeline must render CONTINUOUS coverage along a diagonal edge at the engine's own default distance — only {lit_count}/{} samples were lit (the ORIGINAL cylinder-edge path left only ~4% lit on this exact fixture, see the divergence log)",
         lit_flags.len()
     );
     assert!(
         max_gap <= 2,
         "no run of more than 2 consecutive dark samples is allowed — a longer run IS the dotted/stippled defect this wave fixed; max_gap={max_gap}"
+    );
+}
+
+// ── Wave D (round 2): screen-space billboarded edge quads + analytic AA ──
+
+/// Round 2's own explicit gate: "a new test proving ANALYTIC AA —
+/// sample pixels perpendicular to an edge's centerline and assert
+/// intermediate alpha/brightness values exist on both sides (feather),
+/// not a binary hard edge." Built from `render3d::build_edge_instances`
+/// alone — no node spheres in the scene — so there is zero risk of a
+/// node's own coverage confounding the perpendicular sweep. Deliberately
+/// renders WITHOUT MSAA (`Renderer3D::sample_count` stays at its default
+/// `1`) and with bloom/SSAO both disabled: this isolates the SHADER's
+/// own per-fragment coverage function as the thing under test, not any
+/// incidental smoothing MSAA or bloom bleed might otherwise contribute
+/// — this crate's own round-1 diagnosis explicitly established that
+/// whether/how MSAA even touches a hardware line is
+/// implementation-defined, so a gate that only passed WITH MSAA armed
+/// wouldn't actually prove the NEW shader's own analytic AA is real.
+///
+/// **Sweeps `Renderer3D::set_edge_width_px` across many values, not a
+/// single fixed width — a real finding from developing this test, not
+/// incidental.** The shader's own feather band is deliberately narrow
+/// (~1 device pixel, matching a crisp AA line rather than a blurry one —
+/// see `edge_quad_instanced.wgsl`'s own `FEATHER_PX`), which is
+/// comparable to this test's OWN exact-integer-pixel sampling grid
+/// spacing (1px). At a SINGLE fixed width, whether an integer pixel ROW
+/// happens to land inside that ~1px-wide transition band is a matter of
+/// sub-pixel phase luck — a genuinely continuous analytic function can
+/// still produce an apparent binary step at exact-pixel sampling
+/// resolution if the whole transition happens to fall between two
+/// adjacent sample rows (confirmed empirically: the FIRST version of
+/// this test, at the crate's own default `1.75px` width alone, hit
+/// exactly that unlucky phase and failed even though the shader is
+/// correct). Sweeping the on-screen width shifts the transition band's
+/// own phase relative to the fixed pixel grid by design (`set_edge_width_px`
+/// is a real, already-public per-`Renderer3D` knob, not test-only
+/// scaffolding) — across enough distinct widths the band's phase must
+/// eventually land astride a sample row on each side (a >1px total
+/// half-width sweep range guarantees this by the pigeonhole principle,
+/// since the band period is exactly 1px). This is a MORE rigorous proof
+/// that the coverage function is analytic than a single lucky sample
+/// would have been: it stresses the shader across many (width,
+/// grid-phase) combinations, not just one.
+#[test]
+#[ignore]
+fn edge_quad_analytic_aa_feathers_the_line_edge_instead_of_a_binary_hard_step() {
+    let Some((device, queue)) = init_device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+
+    // A screen-broadside (on-screen-horizontal) edge — the camera looks
+    // straight down -Z at a segment lying along world X, so the
+    // perpendicular sweep below is a simple vertical pixel column at a
+    // fixed x. The edge-quad's screen-space perpendicular expansion
+    // doesn't care which world axis the segment lies along (computed
+    // fresh from projected screen positions every frame — see
+    // `edge_quad_instanced.wgsl`), so this is a representative, not a
+    // special-cased, edge.
+    let mut graph: Graph<(), ()> = Graph::new();
+    let a = graph.push_node((), "a", "cat-a", 1.0);
+    let b = graph.push_node((), "b", "cat-b", 1.0);
+    graph.push_edge(a, b, 1.0, ());
+    let particles = vec![Particle::at3(-10.0, 0.0, 0.0), Particle::at3(10.0, 0.0, 0.0)];
+    let edge_mesh = Arc::new(Mesh::unit_edge_quad([1.0, 1.0, 1.0, 1.0]));
+    let edges = render3d::build_edge_instances(&graph, &particles, &edge_mesh);
+    assert_eq!(edges.len(), 1, "exactly one edge, no node spheres, in this scene");
+    let mut scene = Scene3D::new();
+    scene.nodes = edges;
+
+    let d = 60.0f32;
+    let mut camera = PerspectiveCamera::new(Vec3::new(0.0, 0.0, d), Vec3::ZERO, W as f32 / H as f32);
+    camera.z_near = (d * 0.001).max(0.05);
+    camera.z_far = (d * 4.0).max(2_000.0);
+
+    let mut r = Renderer3D::new(&device, &queue, COLOR_FORMAT, (W, H), 64);
+    // Isolate the shader's own analytic AA — no bloom bleed, no SSAO
+    // darkening (the SAME isolation `id_pass_scene_produces_exactly_decodable_node_ids_at_known_pixels`
+    // below already needs for its own flat-color readback requirement).
+    // `r.sample_count()` is left at its default `1` — no MSAA armed.
+    r.set_bloom_strength(0.0);
+    r.set_ssao_strength(0.0);
+
+    let viewport = Rect::new(0.0, 0.0, W as f64, H as f64);
+    let (mx, my) = project_world_to_screen(&camera, Vec3::ZERO, viewport).expect("edge midpoint is in front of the eye");
+    let cx = (mx.round() as i64).clamp(0, (W - 1) as i64) as u32;
+    let cy = my.round() as i64;
+
+    let mut positive_side_found = false;
+    let mut negative_side_found = false;
+    let mut last_bg = 0u32;
+
+    // Half-width sweeps from `1.75/2 = 0.875px` up to `~2.5px` in
+    // `0.2px` steps (12 widths, `2.4px` of half-width range) — well
+    // over the `~1px` feather-band period, guaranteeing phase coverage.
+    for i in 0..12 {
+        let width_px = 1.75 + i as f32 * 0.4;
+        r.set_edge_width_px(width_px);
+
+        let (tex, view) = make_target(&device);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        r.render(&device, &queue, &mut enc, &view, &camera, &scene);
+        queue.submit(Some(enc.finish()));
+        let px = readback_rgba(&device, &queue, &tex);
+
+        let bg = brightness(at(&px, 2, 2));
+        last_bg = bg;
+
+        // Sample EXACT pixels along a vertical strip PERPENDICULAR to
+        // the (screen-horizontal) edge at the fixed column `cx` — not a
+        // max-in-neighborhood search, which would mask the very
+        // gradient this test needs to observe. `peak_dy` (rather than
+        // assuming the rounded projection lands exactly on the true
+        // center row) is found FROM the sweep itself.
+        let sweep: Vec<(i64, u32)> = (-10..=10)
+            .map(|dy: i64| {
+                let y = (cy + dy).clamp(0, (H - 1) as i64) as u32;
+                (dy, brightness(at(&px, cx, y)))
+            })
+            .collect();
+        let (peak_dy, core) = *sweep.iter().max_by_key(|(_, b)| *b).expect("sweep is non-empty");
+        if core <= bg + 20 {
+            eprintln!("width_px={width_px:.2}: line not clearly visible (core={core} bg={bg}) — skipping this width");
+            continue;
+        }
+        // "Intermediate" = strictly between background and the line's
+        // own core brightness — the actual feathered transition, not a
+        // binary in/out step. Checked within a tight ±1..=3-pixel
+        // window on each side of the detected peak.
+        let lo = bg + 8;
+        let hi = core.saturating_sub(8);
+        if lo >= hi {
+            continue;
+        }
+        let pos_here = (1..=3).any(|off| {
+            sweep.iter().find(|(dy, _)| *dy == peak_dy + off).is_some_and(|(_, b)| *b > lo && *b < hi)
+        });
+        let neg_here = (1..=3).any(|off| {
+            sweep.iter().find(|(dy, _)| *dy == peak_dy - off).is_some_and(|(_, b)| *b > lo && *b < hi)
+        });
+        eprintln!("width_px={width_px:.2} peak_dy={peak_dy} core={core} bg={bg} pos_intermediate={pos_here} neg_intermediate={neg_here} sweep={sweep:?}");
+        positive_side_found |= pos_here;
+        negative_side_found |= neg_here;
+        if positive_side_found && negative_side_found {
+            break;
+        }
+    }
+
+    assert!(
+        positive_side_found,
+        "across a sweep of on-screen line widths, at least one configuration must show an INTERMEDIATE (partially-covered) brightness sample on the +dy side of the edge's centerline — a binary hard edge would NEVER produce one at ANY width/phase; bg={last_bg}"
+    );
+    assert!(
+        negative_side_found,
+        "across a sweep of on-screen line widths, at least one configuration must show an INTERMEDIATE (partially-covered) brightness sample on the -dy side of the edge's centerline — a binary hard edge would NEVER produce one at ANY width/phase; bg={last_bg}"
     );
 }
 

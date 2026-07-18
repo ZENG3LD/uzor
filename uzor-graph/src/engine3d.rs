@@ -146,8 +146,19 @@ const NODE_DRAG_ALPHA_TARGET: f32 = 0.3;
 /// without an excessive vertex count. One shared mesh serves every node
 /// via `uzor-urx-3d`'s Arc-identity instancing, so this cost is paid
 /// once per engine, not once per node.
-const NODE_SPHERE_RINGS: u32 = 12;
-const NODE_SPHERE_SLICES: u32 = 16;
+///
+/// Bumped from `12`/`16` (round-1 visual-quality wave — owner: large
+/// spheres showed visible FACETING/low tessellation up close). `rings`
+/// = latitude bands (pole-to-pole steps), `slices` = longitude bands
+/// (segments around the equator) — `MeshLit::sphere`'s own vertex/index
+/// generation already emits per-vertex (not per-face) normals (each
+/// `(ring, slice)` grid point gets its own shared vertex, normal =
+/// unit-sphere position direction — verified by direct read, no change
+/// needed there), so this is a pure tessellation-density bump: cost is
+/// `(rings+1)*(slices+1)` vertices for ONE shared instanced mesh (paid
+/// once per engine, not once per node) — negligible at these numbers.
+const NODE_SPHERE_RINGS: u32 = 22;
+const NODE_SPHERE_SLICES: u32 = 30;
 
 /// Label text offset from its node's projected screen position (Wave 4
 /// — [`GraphEngine3D::draw_overlay`]). The 2D engine's own
@@ -173,10 +184,10 @@ pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     /// Shared unit sphere every node instances from (plan §1.3) — built
     /// once at construction, never mutated.
     node_mesh: Arc<MeshLit>,
-    /// Shared unit line segment every edge instances from (Wave C —
-    /// see `crate::render3d`'s own module doc for why edges are
-    /// `LineList` geometry, not a cylinder, as of the edge-quality
-    /// overhaul).
+    /// Shared unit edge-quad every edge instances from (Wave C/D — see
+    /// `crate::render3d`'s own module doc for why edges are a
+    /// screen-space billboarded quad, not a cylinder or a hardware
+    /// `LineList`, as of the edge-quality overhaul).
     edge_mesh: Arc<Mesh>,
     /// Held keyboard-modifier state (Wave 2) — mirrors the 2D engine's
     /// own `PlatformEvent::ModifiersChanged` tracking pattern
@@ -235,7 +246,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             hovered: None,
             selected: None,
             node_mesh: Arc::new(MeshLit::sphere(1.0, NODE_SPHERE_RINGS, NODE_SPHERE_SLICES, [1.0, 1.0, 1.0, 1.0])),
-            edge_mesh: Arc::new(Mesh::unit_line([1.0, 1.0, 1.0, 1.0])),
+            edge_mesh: Arc::new(Mesh::unit_edge_quad([1.0, 1.0, 1.0, 1.0])),
             modifiers: ModifierKeys::default(),
             mode: Pointer3DMode::Idle,
             last_pointer_screen: (0.0, 0.0),
@@ -547,7 +558,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         true
     }
 
-    /// Instanced sphere nodes + cylinder edges (plan §1.3) — wires
+    /// Instanced sphere nodes + billboarded edge quads (plan §1.3) — wires
     /// straight into [`crate::render3d::build_scene`], which is
     /// independently unit-tested (no GPU needed) for the node/edge
     /// instance construction itself; see `uzor-graph/tests/render3d_gpu.rs`
@@ -918,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn build_scene_returns_one_instanced_sphere_per_node_and_one_cylinder_per_edge() {
+    fn build_scene_returns_one_instanced_sphere_per_node_and_one_edge_quad_per_edge() {
         let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> =
             GraphEngine3D::new(triangle(), ForceDirectedLayout3D::default());
         // `new()` seeds every particle at the origin — non-coincident
@@ -1470,6 +1481,49 @@ mod tests {
         for (before, after) in before_positions.iter().zip(engine.particles.iter()) {
             assert_eq!((before.x, before.y, before.z), (after.x, after.y, after.z), "no node position may move from an orbit drag");
             assert!(!after.is_pinned_3d(), "no node may become pinned from an orbit drag");
+        }
+    }
+
+    // ── Round 2 of the edge-quality overhaul: sphere tessellation bump ──
+
+    /// A headless-GPU pixel-level "no long straight facet run" silhouette
+    /// check turned out too fiddly to make robust at this crate's own
+    /// 128×128 test-target resolution (a facet edge's own screen-space
+    /// length depends on camera distance/fov in a way that's easy to
+    /// mistune into either a flaky test or a vacuously-passing one) — per
+    /// the task's own "if too fiddly headlessly, document and leave to
+    /// the coordinator's visual check" allowance, that's what this test
+    /// does NOT attempt. What it DOES prove, cheaply and robustly: the
+    /// actual tessellation density the owner asked for
+    /// ("28-32 longitudinal / 18-24 latitudinal") is really wired into
+    /// the shared node-sphere mesh every graph node instances from — a
+    /// regression that silently dropped `NODE_SPHERE_RINGS`/`SLICES`
+    /// back down would otherwise pass every other test in this file
+    /// (none of them inspect mesh density).
+    #[test]
+    fn shared_node_sphere_mesh_uses_the_re_tuned_tessellation_density() {
+        let engine: GraphEngine3D<(), (), ForceDirectedLayout3D> =
+            GraphEngine3D::new(triangle(), ForceDirectedLayout3D::default());
+
+        assert_eq!(NODE_SPHERE_SLICES, 30, "longitudinal segments must land in the owner's requested 28-32 band");
+        assert!((18..=24).contains(&NODE_SPHERE_RINGS), "latitudinal bands must land in the owner's requested 18-24 band");
+
+        let mesh = engine.node_mesh();
+        let expected_vertices = ((NODE_SPHERE_RINGS + 1) * (NODE_SPHERE_SLICES + 1)) as usize;
+        let expected_indices = (NODE_SPHERE_RINGS * NODE_SPHERE_SLICES * 6) as usize;
+        assert_eq!(mesh.vertices.len(), expected_vertices, "the shared node-sphere mesh's own vertex grid must match rings/slices exactly");
+        assert_eq!(mesh.indices.len(), expected_indices, "the shared node-sphere mesh's own index count must match rings/slices exactly");
+
+        // Every vertex's own normal must equal its (unit-radius) position
+        // direction — the per-vertex, not per-face, smoothness [`crate::render3d`]'s
+        // own module doc already asserted from a direct code read; this
+        // re-confirms it holds at the NEW, bumped density too (a
+        // regression that duplicated vertices per-face, breaking smooth
+        // shading, wouldn't show up in the count assertions above).
+        for v in &mesh.vertices {
+            let p = glam::Vec3::from_array(v.pos);
+            let n = glam::Vec3::from_array(v.normal);
+            assert!((p.normalize() - n).length() < 1e-4, "vertex normal must equal its own unit-sphere position direction: pos={p:?} normal={n:?}");
         }
     }
 }

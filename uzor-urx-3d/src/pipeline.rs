@@ -287,27 +287,60 @@ pub struct Renderer3D {
     pipeline_instanced_msaa: wgpu::RenderPipeline,
     pipeline_phong_msaa: wgpu::RenderPipeline,
 
-    // Wave C (owner-ordered edge-quality overhaul) — dedicated
-    // `LineList`-topology, always-alpha-blended, depth-write-disabled
-    // pipeline for `NodeMesh::Line` nodes (see that variant's own doc
-    // comment, `scene3d.rs`). Same shader module/bind group layout as
-    // `pipeline_instanced` (`unlit_instanced.wgsl` — topology is a
-    // pipeline-level `PrimitiveState` property, not shader logic, so no
-    // new WGSL file is needed), only `primitive.topology`,
-    // `primitive.cull_mode` (lines have no back face), and
-    // `depth_stencil.depth_write_enabled` differ. An MSAA sibling exists
-    // for the same reason `pipeline_instanced_msaa` does: `wgpu` bakes
-    // `sample_count` into a pipeline at creation, so a genuinely optional
-    // MSAA path needs a second pipeline object.
-    pipeline_line_instanced: wgpu::RenderPipeline,
-    pipeline_line_instanced_msaa: wgpu::RenderPipeline,
+    // Wave D (round 2 of the owner-ordered edge-quality overhaul) —
+    // dedicated screen-space billboarded edge-quad pipeline for
+    // `NodeMesh::Line` nodes (see that variant's own doc comment,
+    // `scene3d.rs`, and `edge_quad_instanced.wgsl`'s own module doc for
+    // the full diagnosis of why round 1's hardware `LineList` pipeline
+    // was replaced: wgpu/DX12/Vulkan line rasterization is BINARY
+    // coverage and MSAA-on-lines is implementation-defined, so hardware
+    // lines stayed visibly aliased/crooked up close no matter how MSAA
+    // was tuned). `TriangleList` topology, its OWN shader module (needs
+    // a second uniform — viewport size + width_px — `pipeline_instanced`
+    // has no use for), always-alpha-blended (now genuinely
+    // premultiplied, matching the shader's own premultiplied output),
+    // depth-write-disabled (translucent edges shouldn't fight each other
+    // — or later opaque geometry — for the depth buffer; depth TEST
+    // stays on so opaque nodes still correctly occlude edges behind
+    // them). An MSAA sibling exists for the same reason
+    // `pipeline_instanced_msaa` does: `wgpu` bakes `sample_count` into a
+    // pipeline at creation, so a genuinely optional MSAA path needs a
+    // second pipeline object — MSAA here is a geometric-silhouette
+    // smoother on top of (not a replacement for) this shader's own
+    // analytic per-fragment alpha falloff, which is what actually
+    // delivers the antialiased line edge.
+    pipeline_edge_quad: wgpu::RenderPipeline,
+    pipeline_edge_quad_msaa: wgpu::RenderPipeline,
+    /// Combined `Frame` (binding 0, reuses the SAME `frame_buf` every
+    /// other pipeline's frame uniform points at) + `edge_params`
+    /// (binding 1, viewport size + width_px, VERTEX_FRAGMENT visibility
+    /// — the fragment stage needs `width_px` too, to place its analytic
+    /// AA feather at the right pixel distance) bind group for the
+    /// edge-quad pipeline — mirrors `frame_bg_phong`'s own "one BG, two
+    /// uniforms" shape. Built once at construction and never rebuilt
+    /// (unlike `ssao_bg`/the composite BG, neither of its two buffers
+    /// ever changes identity across a resize, only `edge_params_buf`'s
+    /// CONTENTS via `write_buffer` each frame) — its own bind group
+    /// LAYOUT is therefore only needed transiently at construction and
+    /// isn't stored as a field.
+    edge_bg: wgpu::BindGroup,
+    /// `[viewport_w, viewport_h, width_px, 0.0]` — written once per
+    /// frame in `render_inner`, same raw-`[f32;4]`-uniform convention
+    /// `bloom_params_buf`/`ssao_params_buf`/`composite_params_buf`
+    /// already use (no WGSL struct-alignment bookkeeping needed).
+    edge_params_buf: wgpu::Buffer,
+    /// Full on-screen line width in device pixels (`width_px` in
+    /// `edge_quad_instanced.wgsl`) — see
+    /// [`Renderer3D::set_edge_width_px`]'s own doc comment for the
+    /// default.
+    edge_width_px: f32,
     /// Instance buffer for `NodeMesh::Line` nodes — kept SEPARATE from
     /// `instance_buf` (Unlit) even though both use `InstanceRaw`: both
     /// groups are built and uploaded in the SAME frame, so sharing one
-    /// buffer would have the Line upload overwrite (or be overwritten
-    /// by) the Unlit upload.
-    instance_line_buf: wgpu::Buffer,
-    instance_line_capacity: u32,
+    /// buffer would have the edge-quad upload overwrite (or be
+    /// overwritten by) the Unlit upload.
+    instance_edge_buf: wgpu::Buffer,
+    instance_edge_capacity: u32,
 
     /// Current sample count (`1` = MSAA disabled, the default;
     /// [`MSAA_SAMPLE_COUNT`] = armed). Never any other value — see
@@ -344,6 +377,16 @@ const BLOOM_LEVELS: u32 = 5;
 /// pipeline (`pipeline_instanced_msaa`/`pipeline_phong_msaa`) at this
 /// fixed count, the owner's own explicit default ("Default 4x").
 const MSAA_SAMPLE_COUNT: u32 = 4;
+
+/// Wave D — default full on-screen edge-quad line width in device
+/// pixels, applied at [`Renderer3D::new`] so a caller that never touches
+/// [`Renderer3D::set_edge_width_px`] still gets a sane, already-tuned
+/// value. `~1.75px` is the owner's own re-tuned default for round 2 of
+/// the edge-quality overhaul — thin enough that a 534-node graph's mass
+/// of edges still "recedes" behind the nodes, thick enough to read as a
+/// clean line (not a near-invisible hairline) once the analytic AA
+/// feather is applied on top of it.
+const DEFAULT_EDGE_WIDTH_PX: f32 = 1.75;
 
 impl Renderer3D {
     pub fn new(
@@ -570,15 +613,74 @@ impl Renderer3D {
             cache: None,
         });
 
-        // Wave C (owner-ordered edge-quality overhaul) — `LineList`
-        // sibling of `pipeline_instanced`: SAME shader/layout, only
-        // topology + cull_mode + depth_write differ. `depth_write_enabled:
-        // false` — translucent lines shouldn't fight each other (or a
-        // future opaque draw ordered after them) for the depth buffer;
-        // `depth_compare: Less` stays ON so opaque nodes still correctly
-        // occlude edges behind them.
-        let line_primitive = wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::LineList,
+        // Wave D (round 2 of the owner-ordered edge-quality overhaul) —
+        // screen-space billboarded edge-quad pipeline, replacing round
+        // 1's hardware `LineList` pipeline (see `edge_quad_instanced.wgsl`'s
+        // own module doc for the full diagnosis: wgpu/DX12/Vulkan line
+        // rasterization is BINARY coverage and MSAA-on-lines is
+        // implementation-defined, so hardware lines stayed visibly
+        // aliased/crooked up close). `TriangleList` (an ordinary quad),
+        // its OWN shader module + bind group layout (needs a second
+        // uniform — viewport size + width_px — the Unlit/Line-round-1
+        // shader had no use for), `cull_mode: None` (the vertex shader
+        // can flip a quad's screen-space winding depending on view
+        // direction; there's no meaningful "back face" here), `depth_write_enabled:
+        // false` — translucent edges shouldn't fight each other (or a
+        // later opaque draw) for the depth buffer; `depth_compare: Less`
+        // stays ON so opaque nodes still correctly occlude edges behind
+        // them. Blend is genuinely `PREMULTIPLIED_ALPHA_BLENDING` now —
+        // the shader's own analytic-AA fragment output is premultiplied
+        // (`color.rgb * alpha, alpha`), not straight alpha.
+        let shader_edge = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("urx3d.edge_quad_instanced"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/edge_quad_instanced.wgsl").into()),
+        });
+        let edge_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("urx3d.edge_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pipeline_layout_edge = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("urx3d.pipeline_layout_edge"),
+            bind_group_layouts: &[Some(&edge_bgl)],
+            immediate_size: 0,
+        });
+        let edge_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.edge_params_buf"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let edge_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("urx3d.edge_bg"),
+            layout: &edge_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: frame_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: edge_params_buf.as_entire_binding() },
+            ],
+        });
+        let edge_primitive = wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
             strip_index_format: None,
             front_face: wgpu::FrontFace::Ccw,
             cull_mode: None,
@@ -586,18 +688,18 @@ impl Renderer3D {
             polygon_mode: wgpu::PolygonMode::Fill,
             conservative: false,
         };
-        let line_depth_stencil = wgpu::DepthStencilState {
+        let edge_depth_stencil = wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
             depth_write_enabled: Some(false),
             depth_compare: Some(wgpu::CompareFunction::Less),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         };
-        let pipeline_line_instanced = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("urx3d.pipeline_line_instanced"),
-            layout: Some(&pipeline_layout_inst),
+        let pipeline_edge_quad = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urx3d.pipeline_edge_quad"),
+            layout: Some(&pipeline_layout_edge),
             vertex: wgpu::VertexState {
-                module: &shader_inst,
+                module: &shader_edge,
                 entry_point: Some("vs_main"),
                 buffers: &[
                     Vertex::vertex_buffer_layout(),
@@ -606,26 +708,26 @@ impl Renderer3D {
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader_inst,
+                module: &shader_edge,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: HDR_FORMAT,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
             }),
-            primitive: line_primitive,
-            depth_stencil: Some(line_depth_stencil.clone()),
+            primitive: edge_primitive,
+            depth_stencil: Some(edge_depth_stencil.clone()),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
         });
-        let pipeline_line_instanced_msaa = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("urx3d.pipeline_line_instanced_msaa"),
-            layout: Some(&pipeline_layout_inst),
+        let pipeline_edge_quad_msaa = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("urx3d.pipeline_edge_quad_msaa"),
+            layout: Some(&pipeline_layout_edge),
             vertex: wgpu::VertexState {
-                module: &shader_inst,
+                module: &shader_edge,
                 entry_point: Some("vs_main"),
                 buffers: &[
                     Vertex::vertex_buffer_layout(),
@@ -634,17 +736,17 @@ impl Renderer3D {
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &shader_inst,
+                module: &shader_edge,
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: HDR_FORMAT,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
             }),
-            primitive: line_primitive,
-            depth_stencil: Some(line_depth_stencil),
+            primitive: edge_primitive,
+            depth_stencil: Some(edge_depth_stencil),
             multisample: wgpu::MultisampleState { count: MSAA_SAMPLE_COUNT, ..Default::default() },
             multiview_mask: None,
             cache: None,
@@ -667,11 +769,11 @@ impl Renderer3D {
             mapped_at_creation: false,
         });
 
-        // Wave C — dedicated Line instance buffer, sized like `instance_buf`.
-        let instance_line_capacity = node_capacity.max(64);
-        let instance_line_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("urx3d.instance_line_buf"),
-            size: std::mem::size_of::<InstanceRaw>() as u64 * instance_line_capacity as u64,
+        // Wave D — dedicated edge-quad instance buffer, sized like `instance_buf`.
+        let instance_edge_capacity = node_capacity.max(64);
+        let instance_edge_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_edge_buf"),
+            size: std::mem::size_of::<InstanceRaw>() as u64 * instance_edge_capacity as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1599,10 +1701,13 @@ impl Renderer3D {
             particle_renderer: None,
             pipeline_instanced_msaa,
             pipeline_phong_msaa,
-            pipeline_line_instanced,
-            pipeline_line_instanced_msaa,
-            instance_line_buf,
-            instance_line_capacity,
+            pipeline_edge_quad,
+            pipeline_edge_quad_msaa,
+            edge_bg,
+            edge_params_buf,
+            edge_width_px: DEFAULT_EDGE_WIDTH_PX,
+            instance_edge_buf,
+            instance_edge_capacity,
             sample_count: 1,
             msaa_hdr_view: None,
             msaa_depth_view: None,
@@ -1879,6 +1984,18 @@ impl Renderer3D {
     /// HDR before tonemap). 0 = disabled, 0.04 = default sweet spot.
     pub fn set_bloom_strength(&mut self, s: f32) { self.bloom_strength = s.max(0.0); }
 
+    /// Wave D (round 2 of the edge-quality overhaul) — full on-screen
+    /// edge-quad line width in device pixels, applied at `render_inner`'s
+    /// own `edge_params_buf` upload each frame. Defaults to
+    /// [`DEFAULT_EDGE_WIDTH_PX`] (`~1.75px`, the owner's own re-tuned
+    /// value); a caller that never touches this setter still gets that
+    /// default.
+    pub fn set_edge_width_px(&mut self, px: f32) { self.edge_width_px = px.max(0.0); }
+
+    /// Current edge-quad line width in device pixels — see
+    /// [`Renderer3D::set_edge_width_px`].
+    pub fn edge_width_px(&self) -> f32 { self.edge_width_px }
+
     pub fn grow_node_ring(&mut self, device: &wgpu::Device, needed: u32) {
         if needed <= self.node_capacity {
             return;
@@ -1904,18 +2021,18 @@ impl Renderer3D {
         self.instance_capacity = new_cap;
     }
 
-    fn grow_instance_line_buf(&mut self, device: &wgpu::Device, needed: u32) {
-        if needed <= self.instance_line_capacity {
+    fn grow_instance_edge_buf(&mut self, device: &wgpu::Device, needed: u32) {
+        if needed <= self.instance_edge_capacity {
             return;
         }
         let new_cap = needed.next_power_of_two().max(64);
-        self.instance_line_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("urx3d.instance_line_buf"),
+        self.instance_edge_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("urx3d.instance_edge_buf"),
             size: std::mem::size_of::<InstanceRaw>() as u64 * new_cap as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        self.instance_line_capacity = new_cap;
+        self.instance_edge_capacity = new_cap;
     }
 
     fn grow_instance_lit_buf(&mut self, device: &wgpu::Device, needed: u32) {
@@ -2123,6 +2240,21 @@ impl Renderer3D {
         let lights = LightArrayRaw::from_lights(&scene.lights, scene.ambient);
         queue.write_buffer(&self.lights_buf, 0, bytemuck::bytes_of(&lights));
 
+        // 2b. Wave D — edge-quad params (viewport size in device pixels +
+        // width_px), uploaded every frame regardless of whether this
+        // scene actually has any Line nodes (same "always write, cheap"
+        // convention `frame_buf`/`lights_buf` already follow). Viewport
+        // size is `self.depth_size` — the render target's own pixel
+        // dimensions, kept in sync by `Renderer3D::resize`, the SAME
+        // assumption the HDR/bloom/SSAO buffers already rest on.
+        let edge_params = [
+            self.depth_size.0 as f32,
+            self.depth_size.1 as f32,
+            self.edge_width_px,
+            0.0,
+        ];
+        queue.write_buffer(&self.edge_params_buf, 0, bytemuck::bytes_of(&edge_params));
+
         // 3. Refresh mesh caches.
         self.mesh_cache.begin_frame();
         self.mesh_lit_cache.begin_frame();
@@ -2152,10 +2284,10 @@ impl Renderer3D {
                 Vec<usize>,
             ),
         > = BTreeMap::new();
-        // Wave C — Line groups, keyed on Arc<Mesh> identity exactly like
-        // groups_unlit (same underlying Mesh/Vertex type — reuses
+        // Wave D — edge-quad groups, keyed on Arc<Mesh> identity exactly
+        // like groups_unlit (same underlying Mesh/Vertex type — reuses
         // `self.mesh_cache`, no dedicated cache needed).
-        let mut groups_line: BTreeMap<usize, (Arc<crate::mesh::Mesh>, Vec<usize>)> =
+        let mut groups_edge: BTreeMap<usize, (Arc<crate::mesh::Mesh>, Vec<usize>)> =
             BTreeMap::new();
         // Wave 18 — transparent nodes collected separately and sorted
         // back-to-front by camera distance. They draw in a second pass
@@ -2165,15 +2297,16 @@ impl Renderer3D {
         let mut transparent_order: Vec<(usize, f32)> = Vec::new();
 
         for (i, n) in scene.nodes.iter().enumerate() {
-            // Wave C — `Line` nodes are pulled out BEFORE the
+            // Wave D — `Line` (edge-quad) nodes are pulled out BEFORE the
             // `is_transparent()` check: their alpha blending is baked
-            // into the dedicated line pipeline's own fixed blend state,
-            // not gated by tint alpha, so they stay batched into ONE
-            // instanced draw call regardless of how many edges the scene
-            // has (see `NodeMesh::Line`'s own doc comment, `scene3d.rs`).
+            // into the dedicated edge-quad pipeline's own fixed blend
+            // state (and its own per-fragment analytic AA), not gated by
+            // tint alpha, so they stay batched into ONE instanced draw
+            // call regardless of how many edges the scene has (see
+            // `NodeMesh::Line`'s own doc comment, `scene3d.rs`).
             if let NodeMesh::Line(m) = &n.geometry {
                 let k = Arc::as_ptr(m) as usize;
-                groups_line.entry(k).or_insert_with(|| (m.clone(), Vec::new())).1.push(i);
+                groups_edge.entry(k).or_insert_with(|| (m.clone(), Vec::new())).1.push(i);
                 continue;
             }
             if n.is_transparent() {
@@ -2254,25 +2387,25 @@ impl Renderer3D {
             queue.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(&unlit_instances));
         }
 
-        // 5b. Build Line instance buffer (Wave C) — same InstanceRaw
-        // shape/build as unlit, dedicated buffer (see `instance_line_buf`'s
+        // 5b. Build edge-quad instance buffer (Wave D) — same InstanceRaw
+        // shape/build as unlit, dedicated buffer (see `instance_edge_buf`'s
         // own doc comment for why it can't share `instance_buf`).
-        let total_line: u32 = groups_line.values().map(|(_, v)| v.len() as u32).sum();
-        self.grow_instance_line_buf(device, total_line.max(1));
-        let mut line_instances: Vec<InstanceRaw> = Vec::with_capacity(total_line as usize);
-        let mut line_draws: Vec<GroupDraw> = Vec::with_capacity(groups_line.len());
-        for (_k, (mesh, node_indices)) in groups_line.iter() {
+        let total_edge: u32 = groups_edge.values().map(|(_, v)| v.len() as u32).sum();
+        self.grow_instance_edge_buf(device, total_edge.max(1));
+        let mut edge_instances: Vec<InstanceRaw> = Vec::with_capacity(total_edge as usize);
+        let mut edge_draws: Vec<GroupDraw> = Vec::with_capacity(groups_edge.len());
+        for (_k, (mesh, node_indices)) in groups_edge.iter() {
             let entry = self.mesh_cache.get_or_upload(device, mesh);
-            let first = line_instances.len() as u32;
+            let first = edge_instances.len() as u32;
             for &idx in node_indices {
                 let n = &scene.nodes[idx];
-                line_instances.push(InstanceRaw {
+                edge_instances.push(InstanceRaw {
                     model: n.model_matrix().to_cols_array_2d(),
                     tint: n.color_tint,
                 });
             }
-            let count = line_instances.len() as u32 - first;
-            line_draws.push(GroupDraw {
+            let count = edge_instances.len() as u32 - first;
+            edge_draws.push(GroupDraw {
                 vb: entry.vb.clone(),
                 ib: entry.ib.clone(),
                 index_count: entry.index_count,
@@ -2280,8 +2413,8 @@ impl Renderer3D {
                 instance_count: count,
             });
         }
-        if !line_instances.is_empty() {
-            queue.write_buffer(&self.instance_line_buf, 0, bytemuck::cast_slice(&line_instances));
+        if !edge_instances.is_empty() {
+            queue.write_buffer(&self.instance_edge_buf, 0, bytemuck::cast_slice(&edge_instances));
         }
 
         // 6. Build lit instance buffer.
@@ -2666,18 +2799,21 @@ impl Renderer3D {
             }
         }
 
-        // Line (Wave C — edge-quality overhaul) pass — drawn AFTER every
-        // opaque pass (Unlit/Lit/Textured/Pbr) so translucent edges are
-        // correctly occluded by whatever opaque geometry already wrote
-        // the depth buffer this frame, still WITHIN the same pass/same
-        // sample-count-matched pipeline set the `msaa_active` gate above
-        // already governs (this pipeline has its own MSAA sibling, same
-        // as Unlit/Lit).
-        if !line_draws.is_empty() {
-            pass.set_pipeline(if msaa_active { &self.pipeline_line_instanced_msaa } else { &self.pipeline_line_instanced });
-            pass.set_bind_group(0, &self.frame_bg_inst, &[]);
-            pass.set_vertex_buffer(1, self.instance_line_buf.slice(..));
-            for g in &line_draws {
+        // Edge-quad (Wave D — round 2 of the edge-quality overhaul) pass
+        // — drawn AFTER every opaque pass (Unlit/Lit/Textured/Pbr) so
+        // translucent edges are correctly occluded by whatever opaque
+        // geometry already wrote the depth buffer this frame, still
+        // WITHIN the same pass/same sample-count-matched pipeline set
+        // the `msaa_active` gate above already governs (this pipeline
+        // has its own MSAA sibling, same as Unlit/Lit). Uses its OWN
+        // `edge_bg` (frame + edge_params), not `frame_bg_inst` — the
+        // fragment shader's analytic AA needs `width_px`, which
+        // `frame_bg_inst`'s bind group layout has no binding for.
+        if !edge_draws.is_empty() {
+            pass.set_pipeline(if msaa_active { &self.pipeline_edge_quad_msaa } else { &self.pipeline_edge_quad });
+            pass.set_bind_group(0, &self.edge_bg, &[]);
+            pass.set_vertex_buffer(1, self.instance_edge_buf.slice(..));
+            for g in &edge_draws {
                 pass.set_vertex_buffer(0, g.vb.slice(..));
                 pass.set_index_buffer(g.ib.slice(..), wgpu::IndexFormat::Uint32);
                 let end = g.first_instance + g.instance_count;
