@@ -32,7 +32,7 @@ pub(crate) mod agent;
 
 pub use manager::{Manager, ManagerError};
 pub use builder_run::{AppRun, AppRun3D, run_closure};
-pub use scene3d_app::{Scene3DApp, Scene3DFrame};
+pub use scene3d_app::{CachedOverlayJob, Scene3DApp, Scene3DFrame};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use tray::{TrayBuilder, TrayError, TrayEvent, TrayHandle};

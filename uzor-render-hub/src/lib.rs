@@ -38,7 +38,7 @@ pub use metrics::RenderMetrics;
 pub use factory::{BackendContext, GpuDevicePool, Submit3DError, UrxCapture3D, WindowRenderState};
 pub use retained::RetainedCache;
 pub use compose::{
-    Compose3DJob, ComposeParticlesJob, ComposedOutcome,
+    CachedOverlayJob, Compose3DJob, ComposeParticlesJob, ComposedOutcome,
     submit_urx_composed, submit_particles_composed,
 };
 pub use urx_engine_handle::UrxEngineHandle;

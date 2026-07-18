@@ -1487,7 +1487,13 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 // so an owned `Box` sidesteps threading a borrowed
                 // `&mut dyn FnMut(...)` reference's lifetime through a
                 // generic function boundary entirely.
-                match submit_urx_composed(&mut pw.render_state, bg_color.components, std::slice::from_ref(&job), frame.overlay.take()) {
+                match submit_urx_composed(
+                    &mut pw.render_state,
+                    bg_color.components,
+                    std::slice::from_ref(&job),
+                    frame.overlay.take(),
+                    frame.cached_overlay.take(),
+                ) {
                     Ok(composed) => SubmitOutcome { metrics: Default::default(), surface_lost: composed.surface_lost },
                     Err(e) => {
                         eprintln!("[uzor-desktop] submit_urx_composed failed: {e:?}");

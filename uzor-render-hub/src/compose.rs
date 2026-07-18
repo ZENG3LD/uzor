@@ -47,7 +47,9 @@
 use uzor::render::RenderContext;
 use uzor_render_tiny_skia::TinySkiaCpuRenderContext;
 
-use crate::factory::{Submit3DError, SurfaceMode, WindowRenderState};
+use crate::factory::{
+    Submit3DError, SurfaceMode, UrxComposeOverlayCache, WindowRenderState,
+};
 
 /// One 3D viewport contribution to a composed frame.
 ///
@@ -82,6 +84,16 @@ pub struct ComposeParticlesJob {
     pub dst_y: u32,
     pub dst_w: u32,
     pub dst_h: u32,
+}
+
+/// Cache-keyed overlay contribution for composed 3D windows.
+///
+/// `paint` is invoked only when `key` changes or the surface is resized.
+/// Use it for stable chrome such as toolbars and legends; keep animated or
+/// selection-dependent content in `submit_urx_composed`'s ordinary overlay.
+pub struct CachedOverlayJob {
+    pub key: u64,
+    pub paint: Box<dyn FnMut(&mut dyn RenderContext)>,
 }
 
 /// Outcome of [`submit_urx_composed`].
@@ -123,10 +135,10 @@ pub struct ComposedOutcome {
 ///    target with the job's camera, then `copy_texture_to_texture`
 ///    that result into `swap_view` at the job's rect — in the SAME
 ///    encoder as the 2D pass.
-/// 4. If `overlay` is `Some`, paint it into a fresh, fully-transparent
-///    CPU `RenderContext` sized to the swapchain and alpha-composite
-///    the result ON TOP of `swap_view` (module doc has the full
-///    rationale/gap this closes).
+/// 4. If `cached_overlay` is `Some`, reuse its retained texture while
+///    its key and surface size match; otherwise paint and upload it once.
+///    Then paint `overlay`, when present, into a fresh transparent CPU
+///    `RenderContext` and alpha-composite it above the cached layer.
 /// 5. One `queue.submit`, one `present`.
 ///
 /// `overlay` is taken BY VALUE (owned `Box`, not a borrowed
@@ -144,6 +156,7 @@ pub fn submit_urx_composed(
     base_color: [f32; 4],
     jobs:       &[Compose3DJob],
     mut overlay: Option<Box<dyn FnMut(&mut dyn RenderContext)>>,
+    mut cached_overlay: Option<CachedOverlayJob>,
 ) -> Result<ComposedOutcome, Submit3DError> {
     // Resolve surface kind + size + format up front.
     let (surf_w, surf_h, surface_format) = match &state.surface {
@@ -354,17 +367,70 @@ pub fn submit_urx_composed(
         jobs_rendered += 1;
     }
 
-    // ── Phase 4.5: optional 2D overlay, painted OVER the 3D result ──
-    // Painted ONCE into a CPU pixmap + uploaded ONCE into a sampleable
-    // texture, then alpha-blitted into `swap_view` (and, when armed, the
-    // capture mirror) — re-running `overlay_fn` a second time for the
-    // mirror would double the app's draw-call cost for identical output
-    // (the overlay content doesn't depend on which target it lands on).
-    if let Some(overlay_fn) = overlay.as_mut() {
-        if let Some(overlay_view) = build_overlay_texture(&device, &queue, surf_w, surf_h, overlay_fn.as_mut()) {
-            blit_overlay_onto(&device, &mut encoder, &overlay_view, &swap_view, surface_format);
+    // ── Phase 4.5: optional cached + dynamic 2D overlays over 3D ─────
+    // Stable chrome is rasterized/uploaded only on cache miss or resize.
+    // Dynamic content is painted after it so labels, selection cards and
+    // crosshairs remain on top. One retained blitter handles both layers.
+    if let Some(cached_job) = cached_overlay.as_mut() {
+        let needs_refresh = state.urx_compose_overlay_cache.as_ref().is_none_or(|cache| {
+            cache.key != cached_job.key || cache.width != surf_w || cache.height != surf_h
+        });
+        if needs_refresh {
+            state.urx_compose_overlay_cache = build_overlay_texture(
+                &device,
+                &queue,
+                surf_w,
+                surf_h,
+                cached_job.paint.as_mut(),
+            ).map(|uploaded| UrxComposeOverlayCache {
+                key: cached_job.key,
+                texture: uploaded.texture,
+                view: uploaded.view,
+                width: surf_w,
+                height: surf_h,
+            });
+        }
+        if let Some(cache) = state.urx_compose_overlay_cache.as_ref() {
+            blit_overlay_onto(
+                &device,
+                &mut encoder,
+                &cache.view,
+                &swap_view,
+                surface_format,
+                &mut state.urx_compose_overlay_blitter,
+            );
             if let Some(cap) = state.urx_capture_3d.as_ref() {
-                blit_overlay_onto(&device, &mut encoder, &overlay_view, &cap.view, surface_format);
+                blit_overlay_onto(
+                    &device,
+                    &mut encoder,
+                    &cache.view,
+                    &cap.view,
+                    surface_format,
+                    &mut state.urx_compose_overlay_blitter,
+                );
+            }
+        }
+    }
+
+    if let Some(overlay_fn) = overlay.as_mut() {
+        if let Some(uploaded) = build_overlay_texture(&device, &queue, surf_w, surf_h, overlay_fn.as_mut()) {
+            blit_overlay_onto(
+                &device,
+                &mut encoder,
+                &uploaded.view,
+                &swap_view,
+                surface_format,
+                &mut state.urx_compose_overlay_blitter,
+            );
+            if let Some(cap) = state.urx_capture_3d.as_ref() {
+                blit_overlay_onto(
+                    &device,
+                    &mut encoder,
+                    &uploaded.view,
+                    &cap.view,
+                    surface_format,
+                    &mut state.urx_compose_overlay_blitter,
+                );
             }
         }
     }
@@ -726,6 +792,11 @@ fn compose_urx_wgpu_into_swap(
 /// (see [`blit_overlay_onto`]).
 const OVERLAY_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
+struct UploadedOverlay {
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
 /// Paint `overlay_fn` into a fresh, fully-transparent
 /// [`TinySkiaCpuRenderContext`] sized `surf_w × surf_h` (1:1 physical
 /// pixels, no dpr scaling — see [`submit_urx_composed`]'s own doc
@@ -744,7 +815,7 @@ fn build_overlay_texture(
     surf_w: u32,
     surf_h: u32,
     overlay_fn: &mut dyn FnMut(&mut dyn RenderContext),
-) -> Option<wgpu::TextureView> {
+) -> Option<UploadedOverlay> {
     if surf_w == 0 || surf_h == 0 {
         return None;
     }
@@ -781,7 +852,8 @@ fn build_overlay_texture(
         },
         wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
     );
-    Some(overlay_tex.create_view(&wgpu::TextureViewDescriptor::default()))
+    let view = overlay_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    Some(UploadedOverlay { texture: overlay_tex, view })
 }
 
 /// Alpha-composite `overlay_view` ON TOP of whatever is already in
@@ -798,22 +870,24 @@ fn build_overlay_texture(
 /// straight-alpha blending against already-premultiplied source data
 /// would double-apply the alpha and darken every translucent pixel.
 ///
-/// Built fresh every call — no per-`WindowRenderState` cache for this
-/// pipeline/sampler/bind-group-layout (unlike `urx_offscreen_3d`'s own
-/// cached texture). A real, documented perf cost (one `RenderPipeline`
-/// build per composed-3D frame that actually paints an overlay), the
-/// same "accept the cost now, cache it later" tradeoff
-/// `compose_urx_wgpu_into_swap` already documents above for the
-/// identical reason — flagged as a follow-up, not silently dropped.
+/// The blitter and its render pipeline are retained per window and rebuilt
+/// only when the target format changes.
 fn blit_overlay_onto(
     device:       &wgpu::Device,
     encoder:      &mut wgpu::CommandEncoder,
     overlay_view: &wgpu::TextureView,
     target_view:  &wgpu::TextureView,
     target_format: wgpu::TextureFormat,
+    cached_blitter: &mut Option<(wgpu::TextureFormat, wgpu::util::TextureBlitter)>,
 ) {
-    let blitter = wgpu::util::TextureBlitterBuilder::new(device, target_format)
-        .blend_state(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)
-        .build();
-    blitter.copy(device, encoder, overlay_view, target_view);
+    let needs_rebuild = cached_blitter.as_ref().is_none_or(|(format, _)| *format != target_format);
+    if needs_rebuild {
+        let blitter = wgpu::util::TextureBlitterBuilder::new(device, target_format)
+            .blend_state(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)
+            .build();
+        *cached_blitter = Some((target_format, blitter));
+    }
+    if let Some((_, blitter)) = cached_blitter.as_ref() {
+        blitter.copy(device, encoder, overlay_view, target_view);
+    }
 }

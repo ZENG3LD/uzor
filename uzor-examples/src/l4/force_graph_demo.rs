@@ -986,7 +986,7 @@ impl Scene3DApp<NoPanel> for DemoApp {
             engine3d.draw_overlay(ctx, &camera, overlay_viewport);
         });
 
-        Some(Scene3DFrame { scene, camera, overlay: Some(overlay) })
+        Some(Scene3DFrame { scene, camera, cached_overlay: None, overlay: Some(overlay) })
     }
 }
 

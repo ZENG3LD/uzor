@@ -303,6 +303,12 @@ pub struct WindowRenderState {
     /// can read back. `None` + disarmed by default — zero overhead
     /// until a screenshot is actually requested.
     pub(crate) urx_capture_3d: Option<UrxCapture3D>,
+    /// Retained CPU-rasterized texture for a cache-keyed composed 3D
+    /// overlay (toolbars, legends, and other mostly-static chrome).
+    pub(crate) urx_compose_overlay_cache: Option<UrxComposeOverlayCache>,
+    /// Reused overlay blitter. Building its render pipeline per frame is
+    /// expensive on DX12, so it follows the window/surface lifetime.
+    pub(crate) urx_compose_overlay_blitter: Option<(wgpu::TextureFormat, wgpu::util::TextureBlitter)>,
     /// Arms the capture mirror above. Set by the consumer's screenshot
     /// pipeline on first request for a window.
     pub(crate) capture_3d_enabled: bool,
@@ -328,6 +334,15 @@ pub struct UrxCapture3D {
     pub width:   u32,
     pub height:  u32,
     pub format:  wgpu::TextureFormat,
+}
+
+/// Cached uploaded overlay texture for `submit_urx_composed`.
+pub struct UrxComposeOverlayCache {
+    pub key:     u64,
+    pub texture: wgpu::Texture,
+    pub view:    wgpu::TextureView,
+    pub width:   u32,
+    pub height:  u32,
 }
 
 /// Backing for the offscreen 3D render target — see
@@ -390,6 +405,8 @@ impl WindowRenderState {
             urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
+            urx_compose_overlay_cache: None,
+            urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
@@ -437,6 +454,8 @@ impl WindowRenderState {
             urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
+            urx_compose_overlay_cache: None,
+            urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
@@ -512,6 +531,8 @@ impl WindowRenderState {
             urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
+            urx_compose_overlay_cache: None,
+            urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
@@ -557,6 +578,8 @@ impl WindowRenderState {
             urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
+            urx_compose_overlay_cache: None,
+            urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
@@ -600,6 +623,8 @@ impl WindowRenderState {
             urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
+            urx_compose_overlay_cache: None,
+            urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
@@ -691,6 +716,8 @@ impl WindowRenderState {
             urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
+            urx_compose_overlay_cache: None,
+            urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
@@ -737,6 +764,8 @@ impl WindowRenderState {
             urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
+            urx_compose_overlay_cache: None,
+            urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
@@ -802,6 +831,8 @@ impl WindowRenderState {
             urx_high_hz_hint: false,
             urx_offscreen_3d: None,
             urx_capture_3d: None,
+            urx_compose_overlay_cache: None,
+            urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),

@@ -17,6 +17,8 @@
 use uzor::framework::app::{App, NoPanel};
 use uzor::layout::docking::DockPanel;
 
+pub use uzor_render_hub::CachedOverlayJob;
+
 /// One composed 3D frame — the scene to render plus the camera to view
 /// it through. Built fresh by the app every call to
 /// [`Scene3DApp::scene3d`]; `Manager` pushes `scene` into the window's
@@ -25,6 +27,9 @@ use uzor::layout::docking::DockPanel;
 pub struct Scene3DFrame {
     pub scene: uzor_urx_3d::Scene3D,
     pub camera: uzor_urx_3d::PerspectiveCamera,
+    /// Cache-keyed static chrome. Its paint closure runs only when the key
+    /// changes or the surface is resized, before the dynamic overlay.
+    pub cached_overlay: Option<CachedOverlayJob>,
     /// Optional 2D overlay painted ON TOP of the composed 3D frame this
     /// same tick (Wave 4 / W3D arc plan §1.3 label-overlay gap, closed
     /// here — see `crate::manager`'s divergence log for exactly how this
