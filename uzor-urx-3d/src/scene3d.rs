@@ -223,12 +223,29 @@ impl Node {
     }
 }
 
+/// Optional cinematic passes applied after the base 3D geometry pass.
+/// Defaults preserve the existing renderer behavior. Analytical scenes can
+/// disable passes that add cost without carrying information.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SceneEffects {
+    pub shadows: bool,
+    pub bloom: bool,
+    pub ssao: bool,
+}
+
+impl Default for SceneEffects {
+    fn default() -> Self {
+        Self { shadows: true, bloom: true, ssao: true }
+    }
+}
+
 #[derive(Clone)]
 pub struct Scene3D {
     pub nodes: Vec<Node>,
     pub clear_color: [f32; 4],
     pub lights: Vec<Light>,
     pub ambient: [f32; 3],
+    pub effects: SceneEffects,
 }
 
 impl Default for Scene3D {
@@ -244,6 +261,7 @@ impl Scene3D {
             clear_color: [0.04, 0.04, 0.08, 1.0],
             lights: Vec::new(),
             ambient: [0.08, 0.08, 0.10],
+            effects: SceneEffects::default(),
         }
     }
 
@@ -253,5 +271,19 @@ impl Scene3D {
 
     pub fn push_light(&mut self, light: Light) {
         self.lights.push(light);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scene_effects_default_preserves_all_existing_passes() {
+        let scene = Scene3D::new();
+        assert_eq!(
+            scene.effects,
+            SceneEffects { shadows: true, bloom: true, ssao: true },
+        );
     }
 }

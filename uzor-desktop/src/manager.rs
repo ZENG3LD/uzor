@@ -29,7 +29,7 @@ use winit::event::WindowEvent;
 #[cfg(not(target_arch = "wasm32"))]
 use winit::window::Window;
 
-use uzor::framework::app::{App, AppConfig};
+use uzor::framework::app::{App, AppConfig, CursorCaptureMode};
 use uzor::framework::builder::{AnyFactory, BuildError, BuiltApp, TraySpec};
 use uzor::framework::multi_window::{WindowCtx, WindowKey};
 use uzor::framework::render_control::RenderControl;
@@ -168,6 +168,10 @@ pub(crate) struct PerWindow<P: DockPanel> {
     /// drawn" from "3D was drawn at some point in the past, then the app
     /// switched back to 2D." This flag is the actual per-frame truth.
     pub last_frame_was_3d: bool,
+
+    /// Applied OS cursor state. Kept per window so the runtime only calls
+    /// winit when the application changes its capture request.
+    pub cursor_capture_active: bool,
 
     pub _phantom: std::marker::PhantomData<P>,
 }
@@ -915,6 +919,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             region_scenes:   std::collections::HashMap::new(),
             dock_separator_drag: None,
             last_frame_was_3d: false,
+            cursor_capture_active: false,
             _phantom:        std::marker::PhantomData,
         };
         self.windows.insert(id, pw);
@@ -1222,7 +1227,34 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
                 }
             }
         }
-        self.tick_window_inner(id)
+        let result = self.tick_window_inner(id);
+        self.sync_cursor_capture(id);
+        result
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn sync_cursor_capture(&mut self, id: winit::window::WindowId) {
+        use winit::window::CursorGrabMode;
+
+        let requested = self.app.cursor_capture_mode() == CursorCaptureMode::LockedHidden;
+        let Some(pw) = self.windows.get_mut(&id) else { return };
+        if requested == pw.cursor_capture_active {
+            return;
+        }
+
+        if requested {
+            let captured = pw.window.set_cursor_grab(CursorGrabMode::Locked)
+                .or_else(|_| pw.window.set_cursor_grab(CursorGrabMode::Confined))
+                .is_ok();
+            if captured {
+                pw.window.set_cursor_visible(false);
+                pw.cursor_capture_active = true;
+            }
+        } else {
+            let _ = pw.window.set_cursor_grab(CursorGrabMode::None);
+            pw.window.set_cursor_visible(true);
+            pw.cursor_capture_active = false;
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1596,6 +1628,23 @@ where
                         }
                     }
                 }
+            }
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        let winit::event::DeviceEvent::MouseMotion { delta: (dx, dy) } = event else { return };
+        if !self.windows.values().any(|window| window.cursor_capture_active) {
+            return;
+        }
+        if self.app.on_event(&uzor::platform::PlatformEvent::PointerDelta { dx, dy }) {
+            for window in self.windows.values().filter(|window| window.cursor_capture_active) {
+                window.window.request_redraw();
             }
         }
     }

@@ -2183,7 +2183,7 @@ impl Renderer3D {
                 break;
             }
         }
-        let has_shadow = shadow_light_dir.is_some();
+        let has_shadow = scene.effects.shadows && shadow_light_dir.is_some();
         // 1b. Build a light_view_proj from the first directional light.
         //     Orthographic projection covers an axis-aligned cube around
         //     the scene origin sized to a fixed half-extent. Good enough
@@ -3126,7 +3126,7 @@ impl Renderer3D {
         }
 
         // ── Wave 12 — bloom pyramid + ACES composite ──────────────
-        self.run_bloom_and_composite(device, queue, encoder, target_view, camera);
+        self.run_bloom_and_composite(device, queue, encoder, target_view, camera, scene.effects);
     }
 
     /// Wave 12 — downsample HDR → bloom pyramid (with bright-pass at
@@ -3139,6 +3139,7 @@ impl Renderer3D {
         encoder: &mut wgpu::CommandEncoder,
         target_view: &wgpu::TextureView,
         camera: &PerspectiveCamera,
+        effects: crate::scene3d::SceneEffects,
     ) {
         // Bright-pass params for the FIRST downsample (level 0 reads
         // the HDR target, applies the threshold while shrinking).
@@ -3159,103 +3160,112 @@ impl Renderer3D {
         };
 
         // Downsample: HDR → bloom[0] (with bright-pass), bloom[i] → bloom[i+1].
-        for level in 0..(BLOOM_LEVELS as usize) {
-            let src_view = if level == 0 { &self.hdr_view } else { &self.bloom_views[level - 1] };
-            let params = if level == 0 { &self.bloom_params_buf } else { &self.bloom_zero_params_buf };
-            let bg = make_bloom_bg(src_view, params);
-            let mut p = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("urx3d.bloom_down"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.bloom_views[level],
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
-            p.set_pipeline(&self.pipeline_bloom_down);
-            p.set_bind_group(0, &bg, &[]);
-            p.draw(0..3, 0..1);
-        }
+        if effects.bloom {
+            for level in 0..(BLOOM_LEVELS as usize) {
+                let src_view = if level == 0 { &self.hdr_view } else { &self.bloom_views[level - 1] };
+                let params = if level == 0 { &self.bloom_params_buf } else { &self.bloom_zero_params_buf };
+                let bg = make_bloom_bg(src_view, params);
+                let mut p = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("urx3d.bloom_down"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.bloom_views[level],
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                });
+                p.set_pipeline(&self.pipeline_bloom_down);
+                p.set_bind_group(0, &bg, &[]);
+                p.draw(0..3, 0..1);
+            }
 
         // Upsample: starting from the smallest mip, blend additively
         // back up the chain. bloom[i+1] → bloom[i] (LoadOp::Load +
         // additive blend).
-        for level in (0..(BLOOM_LEVELS as usize - 1)).rev() {
-            let bg = make_bloom_bg(&self.bloom_views[level + 1], &self.bloom_zero_params_buf);
-            let mut p = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("urx3d.bloom_up"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.bloom_views[level],
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
-            p.set_pipeline(&self.pipeline_bloom_up);
-            p.set_bind_group(0, &bg, &[]);
-            p.draw(0..3, 0..1);
+            for level in (0..(BLOOM_LEVELS as usize - 1)).rev() {
+                let bg = make_bloom_bg(&self.bloom_views[level + 1], &self.bloom_zero_params_buf);
+                let mut p = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("urx3d.bloom_up"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.bloom_views[level],
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                });
+                p.set_pipeline(&self.pipeline_bloom_up);
+                p.set_bind_group(0, &bg, &[]);
+                p.draw(0..3, 0..1);
+            }
         }
 
         // ── Wave 20 — SSAO pass: depth → half-res AO map ───────
         // Skip the SSAO render if strength = 0 (consumer disabled it):
         // clear the AO target to white so the composite multiplier
         // becomes a no-op for that pixel set.
-        let ssao_bp = [
-            camera.z_near, camera.z_far,
-            self.ssao_radius_px, self.ssao_max_delta,
-        ];
-        queue.write_buffer(&self.ssao_params_buf, 0, bytemuck::bytes_of(&ssao_bp));
-        let ssao_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("urx3d.ssao_bg"),
-            layout: &self.ssao_bgl,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.depth_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.ssao_sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: self.ssao_params_buf.as_entire_binding() },
-            ],
-        });
-        {
-            let mut sp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("urx3d.ssao_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.ssao_view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
+        if effects.ssao {
+            let ssao_bp = [
+                camera.z_near, camera.z_far,
+                self.ssao_radius_px, self.ssao_max_delta,
+            ];
+            queue.write_buffer(&self.ssao_params_buf, 0, bytemuck::bytes_of(&ssao_bp));
+            let ssao_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("urx3d.ssao_bg"),
+                layout: &self.ssao_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.depth_view) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.ssao_sampler) },
+                    wgpu::BindGroupEntry { binding: 2, resource: self.ssao_params_buf.as_entire_binding() },
+                ],
             });
-            if self.ssao_strength > 0.0 {
-                sp.set_pipeline(&self.pipeline_ssao);
-                sp.set_bind_group(0, &ssao_bg, &[]);
-                sp.draw(0..3, 0..1);
+            {
+                let mut sp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("urx3d.ssao_pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &self.ssao_view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                            store: wgpu::StoreOp::Store,
+                        },
+                        depth_slice: None,
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                });
+                if self.ssao_strength > 0.0 {
+                    sp.set_pipeline(&self.pipeline_ssao);
+                    sp.set_bind_group(0, &ssao_bg, &[]);
+                    sp.draw(0..3, 0..1);
+                }
             }
         }
 
         // Composite — write bloom_strength + ssao_strength into params
         // then run HDR + bloom[0] + ssao through the ACES composite
         // shader into the user-facing swapchain.
-        let cp = [self.bloom_strength, self.ssao_strength, 0.0, 0.0];
+        let cp = [
+            if effects.bloom { self.bloom_strength } else { 0.0 },
+            if effects.ssao { self.ssao_strength } else { 0.0 },
+            0.0,
+            0.0,
+        ];
         queue.write_buffer(&self.composite_params_buf, 0, bytemuck::bytes_of(&cp));
 
         let composite_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {

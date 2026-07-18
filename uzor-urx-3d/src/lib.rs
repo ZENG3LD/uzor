@@ -38,5 +38,5 @@ pub use mesh_cache::{
 };
 pub use particles::{EmitterConfig, Particle, ParticleRenderer, ParticleSystem};
 pub use pipeline::{Renderer3D, DEPTH_FORMAT, HDR_FORMAT};
-pub use scene3d::{Node, NodeMesh, PbrMaterial, PhongMaterial, Scene3D};
+pub use scene3d::{Node, NodeMesh, PbrMaterial, PhongMaterial, Scene3D, SceneEffects};
 pub use texture::{Texture3D, TextureCache, TextureCube};

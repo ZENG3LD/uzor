@@ -7,6 +7,18 @@ use super::builder::RgbaIcon;
 use super::multi_window::{WindowCtx, WindowKey, WindowSpec};
 use crate::platform::types::CornerStyle;
 
+/// Native pointer policy requested by an application.
+///
+/// `LockedHidden` is intended for first-person camera control: the desktop
+/// runtime hides and locks the OS cursor and forwards raw mouse deltas as
+/// `PlatformEvent::PointerDelta`. Other targets may leave this as `Free`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CursorCaptureMode {
+    #[default]
+    Free,
+    LockedHidden,
+}
+
 // ── NoPanel ───────────────────────────────────────────────────────────────────
 
 /// Empty dock-panel type for apps that do not use dockable panels.
@@ -62,6 +74,11 @@ pub trait App<P: DockPanel = NoPanel>: Sized + 'static {
     }
 
     fn on_event(&mut self, _event: &PlatformEvent) -> bool { false }
+
+    /// Current native cursor-capture request. The runtime polls this after
+    /// each frame, so applications can enter or leave mouse-look from
+    /// ordinary pointer events without owning a platform window handle.
+    fn cursor_capture_mode(&self) -> CursorCaptureMode { CursorCaptureMode::Free }
 
     fn shutdown(&mut self) {}
 

@@ -112,14 +112,12 @@ enum Pointer3DMode {
     /// equivalent this arc, plan §5, so EVERY plain drag is the
     /// "background" gesture 2D's `total` tracking already models).
     Orbiting { last: (f64, f64), total: f64 },
-    /// Shift-drag pan (plan §1.4) — middle-drag is not wired this wave
-    /// (the `PlatformEvent` stream this engine consumes only carries a
-    /// `MouseButton::Left`-gated `PointerDown`/`Up`, matching the 2D
-    /// engine's own `on_event` match arms; a middle-button chord is a
-    /// natural, small follow-up if ever requested). Deliberately does
-    /// NOT resolve a click-select on release — shift-drag is a
-    /// dedicated pan gesture, not the plain-drag/click gesture.
-    Panning { last: (f64, f64) },
+    /// Middle-drag or Shift+left-drag pan (plan §1.4). The initiating
+    /// button is retained so releasing another held button cannot end
+    /// the active pan. Deliberately does NOT resolve a click-select on
+    /// release — pan is a dedicated camera gesture, not the plain
+    /// left-drag/click gesture.
+    Panning { last: (f64, f64), button: MouseButton },
     /// 3D node drag (owner-ordered live fix — previously EVERY plain
     /// drag orbited the camera, even one starting directly on a node;
     /// vasturiano `3d-force-graph`'s own convention). `node` is the hit
@@ -344,8 +342,8 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         self.layout.reheat(Z_JITTER_REHEAT_ALPHA);
     }
 
-    /// Raw `PlatformEvent` handler — orbit-drag, wheel-dolly, shift-drag
-    /// pan (plan §1.4), hover on `PointerMoved` and click-to-select on a
+    /// Raw `PlatformEvent` handler — orbit-drag, wheel-dolly,
+    /// middle-drag/shift-drag pan (plan §1.4), hover on `PointerMoved` and click-to-select on a
     /// low-movement `PointerDown`->`PointerUp` pair (Wave 3, plan §1.5).
     /// Wire this from the app's 3D dispatch (see
     /// `uzor-desktop::scene3d_app`'s divergence log for how
@@ -354,8 +352,16 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     pub fn on_event(&mut self, event: &PlatformEvent, viewport: Rect) -> bool {
         match event {
             PlatformEvent::PointerDown { x, y, button: MouseButton::Left } => self.on_pointer_down(*x, *y, viewport),
+            PlatformEvent::PointerDown { x, y, button: MouseButton::Middle } => {
+                self.on_pan_pointer_down(*x, *y, MouseButton::Middle, viewport)
+            }
             PlatformEvent::PointerMoved { x, y } => self.on_pointer_moved(*x, *y, viewport),
-            PlatformEvent::PointerUp { x, y, button: MouseButton::Left } => self.on_pointer_up(*x, *y, viewport),
+            PlatformEvent::PointerUp { x, y, button: MouseButton::Left } => {
+                self.on_pointer_up(*x, *y, MouseButton::Left, viewport)
+            }
+            PlatformEvent::PointerUp { x, y, button: MouseButton::Middle } => {
+                self.on_pointer_up(*x, *y, MouseButton::Middle, viewport)
+            }
             PlatformEvent::Scroll { dy, .. } => self.on_scroll(*dy, viewport),
             PlatformEvent::ModifiersChanged { modifiers } => {
                 self.modifiers = *modifiers;
@@ -381,8 +387,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             return false;
         }
         if self.modifiers.shift {
-            self.mode = Pointer3DMode::Panning { last: (x, y) };
-            return true;
+            return self.on_pan_pointer_down(x, y, MouseButton::Left, viewport);
         }
         // Node-drag ray-pick — ALWAYS the CPU path (`nearest_node_3d`),
         // never the GPU color-ID pass, regardless of
@@ -414,6 +419,20 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         true
     }
 
+    fn on_pan_pointer_down(
+        &mut self,
+        x: f64,
+        y: f64,
+        button: MouseButton,
+        viewport: Rect,
+    ) -> bool {
+        if !viewport.contains(x, y) {
+            return false;
+        }
+        self.mode = Pointer3DMode::Panning { last: (x, y), button };
+        true
+    }
+
     fn on_pointer_moved(&mut self, x: f64, y: f64, viewport: Rect) -> bool {
         self.last_pointer_screen = (x, y);
         let mut handled = false;
@@ -426,9 +445,9 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 self.mode = Pointer3DMode::Orbiting { last: (x, y), total: total + (dx * dx + dy * dy).sqrt() };
                 handled = true;
             }
-            Pointer3DMode::Panning { last } => {
+            Pointer3DMode::Panning { last, button } => {
                 self.camera.pan((x - last.0) as f32, (y - last.1) as f32);
-                self.mode = Pointer3DMode::Panning { last: (x, y) };
+                self.mode = Pointer3DMode::Panning { last: (x, y), button };
                 handled = true;
             }
             Pointer3DMode::Dragging { node, plane_point, plane_normal } => {
@@ -510,8 +529,13 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// `PointerMoved` left it — `fx`/`fy`/`fz` already hold that
     /// position via `pin3`, nothing further to do here beyond releasing
     /// `alpha_target`.
-    fn on_pointer_up(&mut self, x: f64, y: f64, viewport: Rect) -> bool {
+    fn on_pointer_up(&mut self, x: f64, y: f64, button: MouseButton, viewport: Rect) -> bool {
         let mode = self.mode;
+        if let Pointer3DMode::Panning { button: active_button, .. } = mode {
+            if button != active_button {
+                return false;
+            }
+        }
         self.mode = Pointer3DMode::Idle;
         match mode {
             Pointer3DMode::Orbiting { total, .. } => {
@@ -978,6 +1002,30 @@ mod tests {
 
         assert_eq!(engine.camera.yaw, before_yaw, "shift-drag must pan, not orbit — yaw stays put");
         assert!(engine.camera.target != before_target, "shift-drag must move the pan target");
+    }
+
+    #[test]
+    fn on_event_middle_drag_pans_camera_target() {
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> =
+            GraphEngine3D::new(triangle(), ForceDirectedLayout3D::default());
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let before_yaw = engine.camera.yaw;
+        let before_target = engine.camera.target;
+
+        assert!(engine.on_event(&PlatformEvent::PointerDown {
+            x: 50.0,
+            y: 50.0,
+            button: uzor::input::MouseButton::Middle,
+        }, viewport));
+        assert!(engine.on_event(&PlatformEvent::PointerMoved { x: 150.0, y: 90.0 }, viewport));
+
+        assert_eq!(engine.camera.yaw, before_yaw, "middle-drag must pan, not orbit");
+        assert!(engine.camera.target != before_target, "middle-drag must move the camera target");
+        assert!(engine.on_event(&PlatformEvent::PointerUp {
+            x: 150.0,
+            y: 90.0,
+            button: uzor::input::MouseButton::Middle,
+        }, viewport));
     }
 
     #[test]

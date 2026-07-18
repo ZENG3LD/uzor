@@ -33,6 +33,9 @@ pub enum PlatformEvent {
     PointerEntered,
     PointerLeft,
     PointerMoved { x: f64, y: f64 },
+    /// Raw device motion while the native cursor is captured. Unlike
+    /// `PointerMoved`, this remains relative and is not clamped to a window.
+    PointerDelta { dx: f64, dy: f64 },
     PointerDown { x: f64, y: f64, button: MouseButton },
     PointerUp { x: f64, y: f64, button: MouseButton },
     TouchStart { id: u64, x: f64, y: f64 },
@@ -150,7 +153,8 @@ impl EventProcessor {
             | PlatformEvent::FileCancelled
             | PlatformEvent::Ime(_)
             | PlatformEvent::ThemeChanged { .. }
-            | PlatformEvent::ScaleFactorChanged { .. } => false,
+            | PlatformEvent::ScaleFactorChanged { .. }
+            | PlatformEvent::PointerDelta { .. } => false,
 
             // Pointer events
             PlatformEvent::PointerMoved { x, y } => {
