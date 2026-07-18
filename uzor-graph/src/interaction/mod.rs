@@ -13,3 +13,4 @@
 
 pub mod drag;
 pub mod pick;
+pub mod pick3d;

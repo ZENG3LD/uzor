@@ -64,10 +64,28 @@ impl Camera3D {
     }
 
     /// Fresh `PerspectiveCamera` for the current orbit state — `up` stays
-    /// world-`Y` (`PerspectiveCamera::new`'s own default), fov/near/far
-    /// also default; only `eye`/`target`/`aspect` vary per frame.
+    /// world-`Y` (`PerspectiveCamera::new`'s own default), fov also
+    /// default; `eye`/`target`/`aspect` vary per frame, and so do
+    /// `z_near`/`z_far` (see the divergence note below).
+    ///
+    /// **Wave 2 divergence (`uzor-graph/CLAUDE.md`)**: `PerspectiveCamera::new`
+    /// hardcodes `z_near = 0.1` / `z_far = 100.0` — tuned for
+    /// `uzor-urx-3d`'s own small-scene demos (every example/test camera
+    /// sits 3-7 world units from the origin). Graph world-space spans
+    /// hundreds of units at this crate's default `distance = 500.0`
+    /// (`[MIN_DISTANCE, MAX_DISTANCE]` = `[1.0, 100_000.0]`) — a fixed
+    /// `z_far = 100.0` would clip the orbit TARGET itself the moment
+    /// `distance` exceeds ~100, well inside this camera's normal range.
+    /// `PerspectiveCamera`'s fields are `pub` (`uzor-urx-3d/src/camera.rs`),
+    /// so both planes are overridden here, scaled to `distance`, with no
+    /// `uzor-urx-3d` change: `z_far` comfortably contains the target plus
+    /// a margin for nodes spread around it, `z_near` shrinks with `distance`
+    /// so dollying in close never clips the target either.
     pub fn to_perspective(&self, aspect: f32) -> PerspectiveCamera {
-        PerspectiveCamera::new(self.eye(), self.target, aspect)
+        let mut camera = PerspectiveCamera::new(self.eye(), self.target, aspect);
+        camera.z_near = (self.distance * 0.001).max(0.05);
+        camera.z_far = (self.distance * 4.0).max(2_000.0);
+        camera
     }
 
     /// Drag-to-orbit: `delta_x`/`delta_y` are raw screen-pixel deltas,

@@ -16,7 +16,7 @@ use uzor::layout::{LayoutManager, WindowHost};
 use uzor::framework::multi_window::WindowSpec;
 use uzor_render_hub::{
     RenderBackend, RenderHub, RenderSurfaceFactory, SurfaceSize, WindowRenderState,
-    submit_frame, SubmitParams,
+    submit_frame, SubmitParams, Compose3DJob, submit_urx_composed, SubmitOutcome,
 };
 use uzor::layout::window::{WindowDecorations, WindowProvider};
 
@@ -33,6 +33,8 @@ use uzor::framework::app::{App, AppConfig};
 use uzor::framework::builder::{AnyFactory, BuildError, BuiltApp, TraySpec};
 use uzor::framework::multi_window::{WindowCtx, WindowKey};
 use uzor::framework::render_control::RenderControl;
+
+use crate::scene3d_app::Scene3DFrame;
 
 // ── HubControl ────────────────────────────────────────────────────────────────
 
@@ -155,6 +157,18 @@ pub(crate) struct PerWindow<P: DockPanel> {
     /// `panels_mut().drag_separator(idx, delta, w, h)`.
     pub dock_separator_drag: Option<DockSeparatorDrag>,
 
+    /// Whether the LAST frame rendered for this window went through the
+    /// 3D compose path (Wave 2, W3D arc plan §1.7) — `true` only for the
+    /// one tick after `Manager::scene3d_hook` returned `Some`. Gates
+    /// `capture_window_png`'s screenshot-source choice: `render_state
+    /// .capture_3d()` stays armed (non-`None`) FOREVER once a window has
+    /// ever shown a 3D frame (`set_capture_3d` is never disarmed on a
+    /// dimension flip back to 2D — see `tick_window_inner`'s divergence
+    /// log), so `capture_3d().is_some()` alone can't tell "was 3D just
+    /// drawn" from "3D was drawn at some point in the past, then the app
+    /// switched back to 2D." This flag is the actual per-frame truth.
+    pub last_frame_was_3d: bool,
+
     pub _phantom: std::marker::PhantomData<P>,
 }
 
@@ -255,6 +269,18 @@ pub struct Manager<A: App<P>, P: DockPanel> {
     /// overlays, edges, AND the registered windows (`layout.attach_window`).
     pub(crate) layout: LayoutManager<P>,
 
+    /// 3D dispatch hook (W3D arc plan §1.7, Wave 2) — `None` for every
+    /// ordinary `.run()`-started app (zero behavior change);
+    /// `crate::builder_run::AppRun3D::run_with_3d` sets it to
+    /// `<A as Scene3DApp<P>>::scene3d` before calling `Manager::run`. A
+    /// bare `fn` pointer (not a boxed closure) so this field can live on
+    /// `Manager<A, P>` — which is generic over `A: App<P>` ONLY — without
+    /// requiring every instantiation to also satisfy the narrower
+    /// `Scene3DApp<P>` bound; only `AppRun3D::run_with_3d`'s own impl
+    /// block carries that bound, at the one call site that produces the
+    /// function pointer.
+    pub(crate) scene3d_hook: Option<fn(&mut A, u32, u32) -> Option<Scene3DFrame>>,
+
     /// Per-window state, keyed by `winit::WindowId` for fast event routing.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) windows: HashMap<winit::window::WindowId, PerWindow<P>>,
@@ -304,6 +330,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             factory: None,
             start: std::time::Instant::now(),
             layout: LayoutManager::<P>::new(),
+            scene3d_hook: None,
             #[cfg(not(target_arch = "wasm32"))]
             windows: HashMap::new(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -664,11 +691,36 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
     #[cfg(not(target_arch = "wasm32"))]
     fn capture_window_png(&mut self, window: &str) -> Option<Vec<u8>> {
         use crate::utils::screenshot::{
-            add_copy_src_to_target_texture, capture_screenshot, encode_png,
+            add_copy_src_to_target_texture, capture_screenshot, capture_screenshot_texture, encode_png,
         };
         let key = uzor::framework::multi_window::WindowKey::new(window);
         let id = self.window_id_for(&key)?;
         let pw = self.windows.get_mut(&id)?;
+
+        // Wave 2 (W3D arc plan §0 gap #2 / §1.6/§1.7): when the LAST
+        // frame rendered for this window went through the 3D compose
+        // path, `target_texture` (the ordinary 2D vello path below) is
+        // stale or blank for it — `submit_urx_composed` wrote the real
+        // pixels into `render_state.capture_3d()`'s mirror instead.
+        // `pw.last_frame_was_3d` (not just `capture_3d().is_some()`) is
+        // the correct gate — see that field's own doc comment for why.
+        if pw.last_frame_was_3d {
+            if let Some(cap) = pw.render_state.capture_3d() {
+                let format = cap.format;
+                let (device, queue, _) = pw.render_state.gpu_handles()?;
+                let (mut pixels, w, h) = capture_screenshot_texture(device, queue, &cap.texture, None)?;
+                // The mirror is in the swapchain's native format, often
+                // Bgra8 (`UrxCapture3D`'s own doc comment) — PNG needs
+                // RGBA channel order.
+                if matches!(format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
+                    for px in pixels.chunks_exact_mut(4) {
+                        px.swap(0, 2);
+                    }
+                }
+                return encode_png(&pixels, w, h);
+            }
+        }
+
         // Patch the target texture lazily — once it has COPY_SRC the
         // flag persists across resizes (until vello replaces the
         // surface itself, in which case we re-patch).
@@ -862,6 +914,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             region_states:   std::collections::HashMap::new(),
             region_scenes:   std::collections::HashMap::new(),
             dock_separator_drag: None,
+            last_frame_was_3d: false,
             _phantom:        std::marker::PhantomData,
         };
         self.windows.insert(id, pw);
@@ -1264,6 +1317,22 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             let regions = self.app.regions();
             let now_inst = std::time::Instant::now();
 
+            // Wave 2 (W3D arc plan §1.7): a `run_with_3d`-armed app can
+            // take over this window's swapchain-writing path for the
+            // frame. `scene3d_hook` is `None` for every ordinary
+            // `.run()` app (zero behavior change below); a `Some(hook)`
+            // app still falls through to the untouched 2D path whenever
+            // `hook` returns `None` (2D dimension currently active).
+            let surf_wh = pw.render_state.gpu_handles().map(|(_, _, surface)| (surface.config.width, surface.config.height));
+            let scene3d_frame = match (self.scene3d_hook, surf_wh) {
+                (Some(hook), Some((w, h))) if w > 0 && h > 0 => hook(&mut self.app, w, h),
+                _ => None,
+            };
+            // See `PerWindow::last_frame_was_3d`'s own doc comment for
+            // why `capture_window_png` needs this per-frame flag rather
+            // than trusting `render_state.capture_3d().is_some()` alone.
+            pw.last_frame_was_3d = scene3d_frame.is_some();
+
             // Pick path:
             // - VelloGpu: per-region scene + composite (mlc pattern).
             // - CPU rasterisers (VelloCpu, TinySkia) and others:
@@ -1271,14 +1340,26 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             //   declaration order — pixmap accumulates, no scene
             //   compositing.  Without this dock leaves and other
             //   region-only widgets stay invisible on CPU backends.
+            //
+            // Skipped entirely on a 3D-active frame (`scene3d_frame` is
+            // `Some`, forced divergence from the plan's literal "build
+            // the 2D scene exactly as today" — `submit_urx_composed`'s
+            // own 2D pass reads `state.urx_ctx`, a channel this Manager
+            // never populates (confirmed: no `set_active_urx` call
+            // anywhere in this crate), so there is no 2D content for it
+            // to merge with `app.ui()`'s vello `render_state.scene` — a
+            // DIFFERENT render channel `submit_urx_composed` never
+            // touches. Painting 2D content nobody will see this frame
+            // would just be wasted work; a 3D-active window shows the
+            // composed 3D viewport full-window instead.
             let active_backend = pw.render_state.backend();
             let supports_scene_compose = matches!(
                 active_backend, uzor::platform::types::RenderBackend::VelloGpu,
             );
-            let use_regions_compose = !regions.is_empty() && supports_scene_compose;
-            let use_regions_inline  = !regions.is_empty() && !supports_scene_compose;
+            let use_regions_compose = scene3d_frame.is_none() && !regions.is_empty() && supports_scene_compose;
+            let use_regions_inline  = scene3d_frame.is_none() && !regions.is_empty() && !supports_scene_compose;
 
-            {
+            if scene3d_frame.is_none() {
                 let key = &pw.key;
                 let layout = &mut self.layout;
                 let render_state = &mut pw.render_state;
@@ -1360,10 +1441,24 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             // Clear one-shot input flags AFTER app.ui consumed them.
             self.layout.end_frame_inputs();
 
-            let outcome = submit_frame(
-                &mut pw.render_state,
-                SubmitParams { base_color: bg_color, msaa_samples: msaa },
-            );
+            let outcome = if let Some(frame) = scene3d_frame {
+                let (surf_w, surf_h) = surf_wh.expect("scene3d_frame is Some only when surf_wh was already Some");
+                pw.render_state.with_renderer_3d(|_, scene| *scene = frame.scene);
+                pw.render_state.set_capture_3d(true);
+                let job = Compose3DJob { camera: frame.camera, dst_x: 0, dst_y: 0, dst_w: surf_w, dst_h: surf_h };
+                match submit_urx_composed(&mut pw.render_state, bg_color.components, std::slice::from_ref(&job)) {
+                    Ok(composed) => SubmitOutcome { metrics: Default::default(), surface_lost: composed.surface_lost },
+                    Err(e) => {
+                        eprintln!("[uzor-desktop] submit_urx_composed failed: {e:?}");
+                        SubmitOutcome { metrics: Default::default(), surface_lost: false }
+                    }
+                }
+            } else {
+                submit_frame(
+                    &mut pw.render_state,
+                    SubmitParams { base_color: bg_color, msaa_samples: msaa },
+                )
+            };
 
             let now_inst = std::time::Instant::now();
             pw.last_frame = now_inst;

@@ -105,7 +105,26 @@ pub fn capture_screenshot(
     surface: &RenderSurface<'_>,
     crop: Option<(u32, u32, u32, u32)>,
 ) -> Option<(Vec<u8>, u32, u32)> {
-    let texture = &surface.target_texture;
+    capture_screenshot_texture(device, queue, &surface.target_texture, crop)
+}
+
+/// The same synchronous GPU readback as [`capture_screenshot`], but
+/// parameterised over an arbitrary [`wgpu::Texture`] instead of a
+/// `vello` [`RenderSurface`]'s own `target_texture` (Wave 2, W3D arc
+/// plan §1.6/§1.7 — `Manager::capture_window_png` reads
+/// `WindowRenderState::capture_3d()`'s mirror texture for a window
+/// currently showing a composed 3D frame, which is not `target_texture`
+/// and has no `RenderSurface` wrapping it at all).
+///
+/// Returns raw RGBA pixels (after optional crop) and the final `(width, height)`,
+/// or `None` on failure. `crop` is `Some((x, y, w, h))` in texture-pixel
+/// coordinates.
+pub fn capture_screenshot_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    crop: Option<(u32, u32, u32, u32)>,
+) -> Option<(Vec<u8>, u32, u32)> {
     let size = texture.size();
     let full_width = size.width;
     let full_height = size.height;

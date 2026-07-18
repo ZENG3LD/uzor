@@ -17,3 +17,10 @@ serde_json = "1"
 [dev-dependencies]
 uzor-export = { path = "../uzor-export" }
 png = "0.17"
+# W3D Wave 2 headless GPU test (`tests/render3d_gpu.rs`) — own
+# `wgpu::Instance`/`Device`, mirrors `uzor-urx-3d/tests/cube_render.rs`'s
+# pattern exactly. Pinned to the same versions `uzor-urx-3d` itself uses
+# so the `wgpu` types this test constructs (`Device`/`Queue`/`Texture`)
+# are the identical crate instance `Renderer3D::render` expects.
+wgpu = "29"
+pollster = "0.4"

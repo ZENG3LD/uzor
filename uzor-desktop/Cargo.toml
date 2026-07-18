@@ -10,6 +10,7 @@ description = "uzor-desktop: winit-based desktop runtime for uzor apps. Implemen
 [dependencies]
 uzor = { workspace = true }
 uzor-render-hub = { workspace = true }
+uzor-urx-3d = { workspace = true }
 uzor-window-desktop = { workspace = true }
 vello = "0.9"
 wgpu = "29"

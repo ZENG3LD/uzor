@@ -17,20 +17,24 @@
 //!
 //! Agent-api verification: see `uzor-graph/RUN.md`.
 
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+
+use serde_json::{json, Value};
 
 use uzor::core::types::Rect;
 use uzor::framework::app::{App, NoPanel};
 use uzor::framework::builder::AppBuilder;
 use uzor::framework::multi_window::{WindowCtx, WindowKey, WindowSpec};
 use uzor::input::PlatformEvent;
+use uzor::layout::agent::{AgentAction, AgentActionReply, AgentWidget, BlackboxAgentSurface};
 use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager};
 use uzor::platform::types::CornerStyle;
 use uzor::render::{RenderContext, RenderRegion};
 use uzor::types::unsafe_widget_id;
-use uzor_desktop::AppRun as _;
+use uzor_desktop::{AppRun3D as _, Scene3DApp, Scene3DFrame};
 
-use uzor_graph::{Graph, GraphEngine, GraphLayoutMode, NodeIndex};
+use uzor_graph::{ForceDirectedLayout3D, Graph, GraphEngine, GraphEngine3D, GraphLayoutMode, NodeIndex};
 
 const AGENT_PORT: u16 = 17481;
 const BLACKBOX_SLOT: &str = "graph";
@@ -160,10 +164,103 @@ struct SelectedFacts {
 // `set_layout` agent action has something to dispatch to — see
 // `uzor-graph/src/layout/mode.rs`.
 type Engine = GraphEngine<(), (), GraphLayoutMode>;
+type Engine3D = GraphEngine3D<(), (), ForceDirectedLayout3D>;
+
+// ── Dimension switching (W3D arc plan §1.6, Wave 2) ──────────────────────
+
+/// Which engine currently owns rendering/event dispatch — decided at the
+/// DEMO layer, not inside `uzor-graph` itself (`GraphEngine`/
+/// `GraphEngine3D` stay fully independent library types, per the plan's
+/// own §1.2/§1.6 reasoning).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Dimension {
+    TwoD,
+    ThreeD,
+}
+
+impl Dimension {
+    fn from_code(code: u8) -> Self {
+        if code == 3 { Dimension::ThreeD } else { Dimension::TwoD }
+    }
+
+    fn code(self) -> u8 {
+        match self {
+            Dimension::TwoD => 2,
+            Dimension::ThreeD => 3,
+        }
+    }
+}
+
+/// Shared, thread-safe active-dimension flag — cloned into both
+/// `DemoApp` (read every frame on the winit thread) and `DemoBlackbox`
+/// (read/written from the agent-api HTTP thread, see
+/// `uzor::layout::agent::blackbox`'s own "Threading" doc section: the
+/// registry stores `Arc<Mutex<dyn BlackboxAgentSurface>>`, but the flag
+/// itself needs to be readable from `DemoApp::on_event`/`scene3d`
+/// without going through that same lock). `Relaxed` ordering is
+/// sufficient — this is a single independent flag, not synchronizing
+/// access to any other shared data.
+#[derive(Clone)]
+struct DimState(Arc<AtomicU8>);
+
+impl DimState {
+    fn new() -> Self {
+        Self(Arc::new(AtomicU8::new(Dimension::TwoD.code())))
+    }
+
+    fn get(&self) -> Dimension {
+        Dimension::from_code(self.0.load(Ordering::Relaxed))
+    }
+
+    fn set(&self, dim: Dimension) {
+        self.0.store(dim.code(), Ordering::Relaxed);
+    }
+}
+
+/// The whole window is the 3D viewport while `Dimension::ThreeD` is
+/// active (no 2D chrome is drawn alongside it this wave — see
+/// `uzor-desktop`'s `Manager` divergence log). `GraphEngine3D::on_event`
+/// only uses its `viewport` argument for a `contains()` gate (never for
+/// coordinate math), so a maximal rect is the honest "the whole window,
+/// no narrower rect to check against" answer — cheaper and just as
+/// correct as tracking live window size through a second event path
+/// purely to reconstruct the same always-true gate.
+fn full_window_viewport() -> Rect {
+    Rect::new(-1.0e9, -1.0e9, 2.0e9, 2.0e9)
+}
 
 struct DemoApp {
     engine: Arc<Mutex<Engine>>,
+    engine3d: Arc<Mutex<Engine3D>>,
+    dim: DimState,
     did_init_camera: bool,
+    /// Wall-clock timestamp of the last `scene3d()` tick — mirrors
+    /// `GraphEngine::tick_real_time`'s own clamped-dt convention so the
+    /// 3D sim settles at a real-time rate regardless of the render
+    /// loop's actual frame rate. Reset to `None` whenever 3D goes
+    /// inactive so re-activating doesn't apply one huge stale-dt jump.
+    last_3d_frame_at: Option<std::time::Instant>,
+}
+
+/// Thin `BlackboxAgentSurface` wrapper the demo registers instead of
+/// `engine` directly (W3D arc plan §1.6) — forwards `set_dimension
+/// {"dim": 2|3}` to flip `DimState` locally, forwards every other action
+/// to the 2D engine while it's active. This keeps `GraphEngine`'s own
+/// agent vocabulary clean and dimension-switching entirely a demo
+/// concern, per the plan's own reasoning for why dimension state lives
+/// here and not inside `uzor-graph`.
+///
+/// **Wave 2 scope note**: `GraphEngine3D` does not implement
+/// `BlackboxAgentSurface` yet (no 3D agent-action vocabulary exists
+/// beyond what this wrapper itself already exposes — Wave 2's own scope
+/// is render/camera/Manager wiring, not a 3D agent surface). While 3D is
+/// active, every action OTHER than `set_dimension` is a clean, typed
+/// rejection (`AgentActionReply::err`), not a silent no-op — a future
+/// wave that gives `GraphEngine3D` its own agent surface only needs to
+/// change this one match arm.
+struct DemoBlackbox {
+    engine: Arc<Mutex<Engine>>,
+    dim: DimState,
 }
 
 /// Cluster indices given a collapsible cluster (Phase D's "3 clusters x
@@ -183,13 +280,93 @@ impl DemoApp {
         for members in cluster_members.iter().take(COLLAPSIBLE_CLUSTERS) {
             engine.define_cluster(members[..COLLAPSIBLE_CLUSTER_SIZE.min(members.len())].to_vec());
         }
-        Self { engine: Arc::new(Mutex::new(engine)), did_init_camera: false }
+
+        // Wave 2 (W3D arc plan §1.6) — the SAME graph fixture, seeded
+        // into a second, independent 3D engine. `build_demo_graph` is
+        // deterministic (index-seeded `DetRng`, no time/RNG), so calling
+        // it a second time reproduces the byte-identical topology;
+        // `Graph` itself isn't `Clone` (no coordinate state, but no
+        // derived `Clone` either — `graph.rs`), so a fresh construction
+        // is the straightforward way to get a second independent value.
+        let (graph3d, positions3d, _cluster_members3d) = build_demo_graph();
+        let mut engine3d = Engine3D::new(graph3d, ForceDirectedLayout3D::default());
+        for (p, &(x, y)) in engine3d.particles.iter_mut().zip(positions3d.iter()) {
+            p.x = x;
+            p.y = y;
+        }
+
+        Self {
+            engine: Arc::new(Mutex::new(engine)),
+            engine3d: Arc::new(Mutex::new(engine3d)),
+            dim: DimState::new(),
+            did_init_camera: false,
+            last_3d_frame_at: None,
+        }
     }
 
     fn lock(engine: &Arc<Mutex<Engine>>) -> MutexGuard<'_, Engine> {
         match engine.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn lock3d(engine3d: &Arc<Mutex<Engine3D>>) -> MutexGuard<'_, Engine3D> {
+        match engine3d.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+}
+
+impl BlackboxAgentSurface for DemoBlackbox {
+    fn agent_slot_id(&self) -> &str {
+        BLACKBOX_SLOT
+    }
+
+    fn agent_kind(&self) -> &str {
+        "graph"
+    }
+
+    fn list_agent_widgets(&self) -> Vec<AgentWidget> {
+        match self.dim.get() {
+            Dimension::TwoD => DemoApp::lock(&self.engine).list_agent_widgets(),
+            // 3D picking (the thing that would give a node an
+            // agent-addressable rect) is Wave 3.
+            Dimension::ThreeD => Vec::new(),
+        }
+    }
+
+    fn agent_state(&self) -> Value {
+        let mut state = match self.dim.get() {
+            Dimension::TwoD => DemoApp::lock(&self.engine).agent_state(),
+            Dimension::ThreeD => json!({}),
+        };
+        if let Value::Object(ref mut map) = state {
+            map.insert("dimension".to_owned(), json!(self.dim.get().code()));
+        }
+        state
+    }
+
+    fn apply_agent_action(&mut self, action: AgentAction) -> AgentActionReply {
+        if action.name == "set_dimension" {
+            return match action.args.get("dim").and_then(Value::as_u64) {
+                Some(2) => {
+                    self.dim.set(Dimension::TwoD);
+                    AgentActionReply::ok_with_log(json!({ "dimension": 2 }))
+                }
+                Some(3) => {
+                    self.dim.set(Dimension::ThreeD);
+                    AgentActionReply::ok_with_log(json!({ "dimension": 3 }))
+                }
+                _ => AgentActionReply::err("set_dimension requires args.dim to be 2 or 3"),
+            };
+        }
+        match self.dim.get() {
+            Dimension::TwoD => DemoApp::lock(&self.engine).apply_agent_action(action),
+            Dimension::ThreeD => {
+                AgentActionReply::err("3D dimension has no agent actions yet besides set_dimension (Wave 3+)")
+            }
         }
     }
 }
@@ -212,7 +389,11 @@ fn draw_row(
 
 impl App<NoPanel> for DemoApp {
     fn init(&mut self, _key: &WindowKey, layout: &mut LayoutManager<NoPanel>) {
-        layout.register_blackbox_agent(BLACKBOX_SLOT, self.engine.clone());
+        // Wave 2 (W3D arc plan §1.6): register the `DemoBlackbox`
+        // dimension-aware wrapper instead of `self.engine` directly —
+        // see that struct's own doc comment.
+        let blackbox = DemoBlackbox { engine: self.engine.clone(), dim: self.dim.clone() };
+        layout.register_blackbox_agent(BLACKBOX_SLOT, Arc::new(Mutex::new(blackbox)));
     }
 
     fn ui(&mut self, win: &mut WindowCtx<'_, NoPanel>) {
@@ -304,9 +485,53 @@ impl App<NoPanel> for DemoApp {
         vec![engine.render_region("force-graph-demo:main")]
     }
 
+    /// Dispatches to whichever dimension is currently active (W3D arc
+    /// plan §1.6) — `ui()`/`draw_region()` above are ONLY ever called by
+    /// `Manager` while 2D is active (`scene3d()` returning `None` is
+    /// exactly what routes the frame there — see `uzor-desktop`'s
+    /// `Manager` divergence log), so they don't need their own dimension
+    /// check; `on_event` is called every tick regardless of which
+    /// dimension is rendering, so it does.
     fn on_event(&mut self, event: &PlatformEvent) -> bool {
-        let mut engine = Self::lock(&self.engine);
-        engine.on_event(event)
+        match self.dim.get() {
+            Dimension::TwoD => {
+                let mut engine = Self::lock(&self.engine);
+                engine.on_event(event)
+            }
+            Dimension::ThreeD => {
+                let mut engine3d = Self::lock3d(&self.engine3d);
+                engine3d.on_event(event, full_window_viewport())
+            }
+        }
+    }
+}
+
+impl Scene3DApp<NoPanel> for DemoApp {
+    /// `None` while 2D is active — the 2D `App::ui` path (unchanged
+    /// above) keeps rendering the window. `Some(frame)` while 3D is
+    /// active ticks the 3D sim at a real-time rate (mirrors
+    /// `GraphEngine::tick_real_time`'s own clamped-dt convention, which
+    /// `GraphEngine3D` doesn't have its own copy of — Wave 2's own scope
+    /// is `tick(dt)`, not a real-time wrapper) and builds the composed
+    /// frame `Manager` will paint this tick.
+    fn scene3d(&mut self, surf_w: u32, surf_h: u32) -> Option<Scene3DFrame> {
+        if self.dim.get() != Dimension::ThreeD {
+            self.last_3d_frame_at = None;
+            return None;
+        }
+        let now = std::time::Instant::now();
+        let dt = match self.last_3d_frame_at {
+            Some(prev) => now.duration_since(prev).as_secs_f32().min(0.1),
+            None => 1.0 / 60.0,
+        };
+        self.last_3d_frame_at = Some(now);
+
+        let mut engine3d = Self::lock3d(&self.engine3d);
+        engine3d.tick(dt);
+        let scene = engine3d.build_scene();
+        let aspect = surf_w as f32 / (surf_h.max(1) as f32);
+        let camera = engine3d.camera(aspect);
+        Some(Scene3DFrame { scene, camera })
     }
 }
 
@@ -323,6 +548,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .border_color(0x00_4d_90_fe),
         )
         .icon_from_png(include_bytes!("../../assets/icon.png"))?
-        .run()?;
+        // Wave 2 (W3D arc plan §1.6/§1.7): `.run_with_3d()` instead of
+        // `.run()` — additive entry point, 2D remains the default at
+        // launch (`Dimension::TwoD`, `DimState::new()`); `set_dimension
+        // {"dim": 3}` over agent-api switches live.
+        .run_with_3d()?;
     Ok(())
 }

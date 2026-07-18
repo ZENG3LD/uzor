@@ -23,9 +23,12 @@
 //! A 3D graph mode ([`camera3d::Camera3D`] orbit camera,
 //! [`engine3d::GraphEngine3D`] facade,
 //! [`layout::force_directed_3d::ForceDirectedLayout3D`] force sim over
-//! an octree — see `docs/uzor-engines/uzor_graph_3d_arc_plan.md`) is
-//! under active wave-by-wave build-out alongside the 2D engine above;
-//! Wave 1 lands the physics core.
+//! an octree, [`render3d`] instanced sphere/cylinder scene-building —
+//! see `docs/uzor-engines/uzor_graph_3d_arc_plan.md`) is under active
+//! wave-by-wave build-out alongside the 2D engine above; Wave 1 landed
+//! the physics core, Wave 2 lands the render path, orbit/dolly/pan
+//! camera controls, and desktop `Manager`/`App` wiring
+//! (`uzor-desktop::scene3d_app`).
 //!
 //! See `RUN.md` for the runnable demo (`uzor-examples --bin force-graph-demo`)
 //! and agent-api verification steps.
@@ -42,6 +45,7 @@ pub mod label_grid;
 pub mod layout;
 pub mod particle;
 pub mod render;
+pub mod render3d;
 
 pub use camera::{Aabb, Camera2D};
 pub use camera3d::Camera3D;
