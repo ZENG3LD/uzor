@@ -1,13 +1,16 @@
 //! Pluggable layout algorithms over a [`crate::particle::Particle`] slice.
 
 pub mod barnes_hut;
+pub mod barnes_hut_3d;
 pub mod force_directed;
+pub mod force_directed_3d;
 pub mod hierarchical;
 pub mod layering;
 pub mod mode;
 pub mod radial;
 
 pub use force_directed::{ForceDirectedLayout, ForceParams};
+pub use force_directed_3d::{ForceDirectedLayout3D, ForceParams3D};
 pub use hierarchical::{HierarchicalLayout, HierarchicalParams};
 pub use mode::{GraphLayoutMode, LayoutKind};
 pub use radial::{RadialLayout, RadialParams};

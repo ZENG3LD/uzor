@@ -18,16 +18,24 @@
 //!
 //! `FocusSet` is re-pointed onto [`uzor_figures::interact::FocusSet`]
 //! (Phase D, 2026-07-17) — see [`interaction`]'s module doc and
-//! `graph.rs`'s `From<NodeIndex/EdgeIndex> for u64` key scheme. 3D stays
-//! explicitly out of scope (2D only, per the engine design doc).
+//! `graph.rs`'s `From<NodeIndex/EdgeIndex> for u64` key scheme.
+//!
+//! A 3D graph mode ([`camera3d::Camera3D`] orbit camera,
+//! [`engine3d::GraphEngine3D`] facade,
+//! [`layout::force_directed_3d::ForceDirectedLayout3D`] force sim over
+//! an octree — see `docs/uzor-engines/uzor_graph_3d_arc_plan.md`) is
+//! under active wave-by-wave build-out alongside the 2D engine above;
+//! Wave 1 lands the physics core.
 //!
 //! See `RUN.md` for the runnable demo (`uzor-examples --bin force-graph-demo`)
 //! and agent-api verification steps.
 
 pub mod agent;
 pub mod camera;
+pub mod camera3d;
 pub mod cluster;
 pub mod engine;
+pub mod engine3d;
 pub mod graph;
 pub mod interaction;
 pub mod label_grid;
@@ -36,12 +44,14 @@ pub mod particle;
 pub mod render;
 
 pub use camera::{Aabb, Camera2D};
+pub use camera3d::Camera3D;
 pub use cluster::{AggregatedEdge, ClusterRegistry, ClusterState, GroupId};
 pub use engine::{DragEndPolicy, FilterSpec, GraphEngine, NodeFacts, SelectMode};
+pub use engine3d::GraphEngine3D;
 pub use graph::{EdgeIndex, Graph, GraphEdge, GraphNode, NodeIndex, SimEdge, SimTopology};
 pub use layout::{
-    ForceDirectedLayout, ForceParams, GraphLayoutMode, HierarchicalLayout, HierarchicalParams, Layout, LayoutKind,
-    LayoutTickResult, RadialLayout, RadialParams,
+    ForceDirectedLayout, ForceDirectedLayout3D, ForceParams, ForceParams3D, GraphLayoutMode, HierarchicalLayout,
+    HierarchicalParams, Layout, LayoutKind, LayoutTickResult, RadialLayout, RadialParams,
 };
 pub use particle::Particle;
 pub use uzor_figures::interact::FocusSet;
