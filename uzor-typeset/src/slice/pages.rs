@@ -36,12 +36,12 @@
 use std::collections::{HashMap, HashSet};
 
 use uzor::types::Rect;
-use uzor_text::LineShaper;
+use uzor_text::{LineShaper, Paragraph, StyledRun};
 
 use crate::compose::{compose, ComposeStyle};
-use crate::master::{PageMaster, PageNumberStyle};
+use crate::master::{HeaderPlaceholder, PageMaster, PageNumberStyle};
 use crate::region::{FixedRegionSequence, Frame, PageRegionSequence, Region};
-use crate::scene::{resolve_block_ids, BlockId, BlockNode};
+use crate::scene::{resolve_block_ids, Block, BlockId, BlockNode, Footnote, ListBlock, ListItem, MarkerStyle};
 
 /// One sliced page: its 0-based index + the composed [`Frame`] that
 /// landed on it, plus (P2) the shared header/footer frames and this
@@ -105,6 +105,35 @@ pub struct Page<'a> {
     /// way to remap without knowing the caller's own pre-concatenation
     /// section boundaries).
     pub links: Vec<LinkEntry>,
+    /// This page's own resolved footnote zone (typography-gap WAVE 3) —
+    /// `None` when [`crate::master::PageMaster::footnote_zone_height`] is
+    /// unset OR no footnote marker landed on this specific page. See
+    /// [`FootnotePlacement`]/this module's own "Footnotes" doc section.
+    pub footnotes: Option<FootnotePlacement<'a>>,
+}
+
+/// This page's own resolved footnote zone content (typography-gap WAVE 3)
+/// — see this module's own "Footnotes" doc section for the resolution
+/// mechanism.
+pub struct FootnotePlacement<'a> {
+    /// The footnote zone's own composed content (a single
+    /// [`crate::scene::Block::List`], `MarkerStyle::Numbered`, reusing the
+    /// EXISTING list-splitting/marker/paint/PDF-export machinery wholesale
+    /// — no new render/export code needed for footnote numbering or
+    /// marker glyphs). `Frame::region.rect` equals [`crate::master::
+    /// PageMaster::footnote_zone_rect`] exactly.
+    pub frame: Frame<'a>,
+    /// `true` when at least one footnote on this page didn't fully fit
+    /// [`crate::master::PageMaster::footnote_zone_height`]'s own reserved
+    /// band — v1 honest limit: NO multi-page footnote splitting (a
+    /// footnote's own content never spills onto a second page's own
+    /// zone); the overflowing remainder is placed visibly past the
+    /// zone's own reserved height rather than silently dropped (this
+    /// crate's own established "overflow returned as data, never silent"
+    /// convention — the SAME degrade [`PageMaster::header`]/
+    /// [`PageMaster::footer`]'s own margin-box overflow already uses,
+    /// applied here to the footnote zone).
+    pub clamped: bool,
 }
 
 /// One document-outline/TOC entry, resolved to a concrete page (design
@@ -173,13 +202,34 @@ pub fn slice_pages<'a>(flow: &'a [BlockNode<'a>], master: &PageMaster<'a>, style
                 None => break,
             }
         }
-        pages.push(Page { index, total: 0, frame, extra_frames, header: None, footer: None, page_number: None, outline: Vec::new(), links: Vec::new() });
+        pages.push(Page {
+            index,
+            total: 0,
+            frame,
+            extra_frames,
+            header: None,
+            footer: None,
+            page_number: None,
+            outline: Vec::new(),
+            links: Vec::new(),
+            footnotes: None,
+        });
         index += 1;
     }
 
     let total = pages.len() as u32;
-    let header_frame = master.header.map(|content| compose_margin_box(content, master.header_rect(), style, shaper));
-    let footer_frame = master.footer.map(|content| compose_margin_box(content, master.footer_content_rect(), style, shaper));
+
+    // Running headers (typography-gap WAVE 3): whichever of header/footer
+    // carries NO `.with_header_placeholder()`-tagged node keeps the
+    // ORIGINAL "compose once, shared verbatim across every page" path
+    // byte-identical to every pre-WAVE-3 caller. A placeholder-bearing
+    // side is left `None` here and resolved per-page BELOW, once
+    // `attach_navigation_entries` has populated `Page::outline` (the
+    // running title's own source of truth).
+    let header_has_placeholder = master.header.is_some_and(header_uses_placeholder);
+    let footer_has_placeholder = master.footer.is_some_and(header_uses_placeholder);
+    let header_frame = if header_has_placeholder { None } else { master.header.map(|content| compose_margin_box(content, master.header_rect(), style, shaper)) };
+    let footer_frame = if footer_has_placeholder { None } else { master.footer.map(|content| compose_margin_box(content, master.footer_content_rect(), style, shaper)) };
 
     for page in &mut pages {
         page.total = total;
@@ -193,7 +243,126 @@ pub fn slice_pages<'a>(flow: &'a [BlockNode<'a>], master: &PageMaster<'a>, style
 
     attach_navigation_entries(flow, &mut pages);
 
+    if header_has_placeholder || footer_has_placeholder {
+        let titles = resolve_running_titles(&pages);
+        for (page, title) in pages.iter_mut().zip(titles.iter()) {
+            if header_has_placeholder {
+                if let Some(content) = master.header {
+                    page.header = Some(compose_placeholder_margin_box(content, master.header_rect(), style, shaper, title));
+                }
+            }
+            if footer_has_placeholder {
+                if let Some(content) = master.footer {
+                    page.footer = Some(compose_placeholder_margin_box(content, master.footer_content_rect(), style, shaper, title));
+                }
+            }
+        }
+    }
+
+    attach_footnotes(flow, &mut pages, master, style, shaper);
+
     pages
+}
+
+/// `true` when any node in `content` is tagged
+/// [`crate::scene::BlockNode::with_header_placeholder`] — the guard
+/// deciding whether [`slice_pages`] takes the ORIGINAL "compose once"
+/// path or the per-page [`compose_placeholder_margin_box`] path for that
+/// side (header or footer).
+fn header_uses_placeholder(content: &[BlockNode<'_>]) -> bool {
+    content.iter().any(|n| n.header_placeholder.is_some())
+}
+
+/// This page's own "current chapter" running-header title: the title of
+/// the LAST [`OutlineEntry`] on/before this page (an outline entry from a
+/// LATER page never counts) — `""` on every page before the document's
+/// first `.with_outline()`-tagged block. A single forward pass over
+/// `pages` (already in final document order) carrying the most recent
+/// title seen so far.
+fn resolve_running_titles(pages: &[Page<'_>]) -> Vec<String> {
+    let mut current = String::new();
+    pages
+        .iter()
+        .map(|page| {
+            if let Some(last) = page.outline.last() {
+                current = last.title.clone();
+            }
+            current.clone()
+        })
+        .collect()
+}
+
+/// Reconstruct a `BlockNode<'a>` sharing `node`'s own non-`kind` fields
+/// with a NEW `kind` — [`Block`] carries no blanket `#[derive(Clone)]` (a
+/// deliberate choice, see `crate::caption::reborrow`'s own doc comment for
+/// the full rationale), so [`resolve_header_content`] reconstructs
+/// field-by-field instead of a generic clone.
+fn rebuild_simple_node<'a>(node: &BlockNode<'a>, kind: Block<'a>) -> BlockNode<'a> {
+    BlockNode {
+        id: node.id,
+        kind,
+        break_control: node.break_control,
+        outline: node.outline.clone(),
+        link_target: node.link_target,
+        caption: node.caption.clone(),
+        footnotes: node.footnotes,
+        header_placeholder: node.header_placeholder,
+    }
+}
+
+/// Build a PER-PAGE substituted copy of placeholder-bearing margin-box
+/// `content`: a [`HeaderPlaceholder::CurrentOutlineTitle`]-tagged
+/// `Block::Paragraph` node has its own runs REPLACED (never appended to)
+/// by a single run carrying `title` verbatim, in the SAME font its own
+/// first authored run used (falling back to `style.default_font` for an
+/// empty-runs paragraph) — `title`'s owned text is leaked to `'static`
+/// (`crate::toc::build_toc`'s own established "synthesized text needs
+/// owned backing" convention), which trivially coerces to this function's
+/// own `'a` via reference covariance.
+///
+/// **v1 scope limit (report, not silent):** only `Block::Paragraph`/
+/// `Block::Spacer` nodes may share a placeholder-bearing header/footer — a
+/// header/footer carrying any OTHER block kind (a figure/table/list/
+/// image/island) alongside a placeholder tag has that OTHER node silently
+/// DROPPED from this page's own per-page recompose (never a panic; the
+/// SAME-content non-placeholder side of the SAME header/footer keeps
+/// working normally via the unaffected "compose once" path). Margin-box
+/// content in every fixture this crate ships is already paragraph/spacer-
+/// only (a header/footer is expected to be a couple of short lines), so
+/// this is a genuine, narrow, documented v1 limit, not an observed
+/// regression.
+fn resolve_header_content<'a>(content: &'a [BlockNode<'a>], title: &str, style: &ComposeStyle) -> Vec<BlockNode<'a>> {
+    content
+        .iter()
+        .filter_map(|node| {
+            if node.header_placeholder == Some(HeaderPlaceholder::CurrentOutlineTitle) {
+                let Block::Paragraph(p) = &node.kind else { return None };
+                let leaked_text: &'static str = Box::leak(title.to_owned().into_boxed_str());
+                let font = p.runs.first().map(|r| r.font).unwrap_or(style.default_font);
+                let run: &'static [StyledRun<'static>] = &*vec![StyledRun::new(leaked_text, font)].leak();
+                let substituted = Paragraph { runs: run, ..*p };
+                return Some(rebuild_simple_node(node, Block::Paragraph(substituted)));
+            }
+            match &node.kind {
+                Block::Paragraph(p) => Some(rebuild_simple_node(node, Block::Paragraph(*p))),
+                Block::Spacer(g) => Some(rebuild_simple_node(node, Block::Spacer(*g))),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Compose placeholder-bearing margin-box `content` for ONE specific page
+/// (`title` already resolved via [`resolve_running_titles`]) — the per-page
+/// counterpart to [`compose_margin_box`]'s own "compose once, shared
+/// verbatim" path. The substituted flow's own backing `Vec` is leaked
+/// (bounded: one leak per page per placeholder-bearing side, the same
+/// documented trade-off `crate::toc::compose_document_with_toc`'s own
+/// per-iteration leak already uses) so the returned `Frame<'a>` can borrow
+/// from it.
+fn compose_placeholder_margin_box<'a>(content: &'a [BlockNode<'a>], rect: Rect, style: &ComposeStyle, shaper: &dyn LineShaper, title: &str) -> Frame<'a> {
+    let substituted: &'a [BlockNode<'a>] = resolve_header_content(content, title, style).leak();
+    compose_margin_box(substituted, rect, style, shaper)
 }
 
 /// Walk `flow`'s own `.with_outline()`/`.with_link_target()`-tagged nodes
@@ -284,6 +453,122 @@ fn compose_margin_box<'a>(content: &'a [BlockNode<'a>], rect: Rect, style: &Comp
         .into_iter()
         .next()
         .unwrap_or(Frame { region: Region { rect }, blocks: Vec::new(), overflow: None })
+}
+
+/// Marker-gutter width the footnote zone's own generated
+/// [`crate::scene::ListBlock`] uses — this feature's own v1 fixed choice
+/// (footnote lists are short, numbered `"1."`.."99."`-ish; no per-document
+/// config knob this pass adds, matching [`crate::compose::list_layout`]'s
+/// own marker font reuse of `ComposeStyle::default_font` for the identical
+/// "no new style field this phase needs" reasoning).
+const FOOTNOTE_MARKER_INDENT: f64 = 20.0;
+
+/// **Footnotes (typography-gap WAVE 3).** A footnote is authored as an
+/// INLINE MARKER inside a `Block::Paragraph`'s own runs — see
+/// [`crate::scene::Footnote`]'s own doc comment for the exact
+/// `uzor_text::InlineBox`-splicing convention. This function is the
+/// resolution pass: walk every already-composed [`Page`]'s own placed
+/// paragraph blocks, recover which footnote marker (if any) landed on
+/// THIS page (via `ParagraphLayout::boxes`, correlated back to
+/// [`crate::scene::BlockNode::footnotes`] by the marker's own local
+/// index), and compose the matched footnotes into
+/// [`crate::master::PageMaster::footnote_zone_rect`] as a real
+/// [`crate::scene::ListBlock`] (`MarkerStyle::Numbered`, numbered
+/// CONTINUOUSLY across the WHOLE document — a pure function of flow
+/// order, resolved once up front, the identical "no fixpoint needed, no
+/// circular dependency on pagination" reasoning `crate::caption::
+/// resolve_caption_numbers`'s own doc comment already gives for caption
+/// numbers).
+///
+/// A no-op (every `Page::footnotes` stays `None`) when
+/// [`crate::master::PageMaster::footnote_zone_height`] is unset — the
+/// SAME "additive, zero cost when not configured" guard
+/// [`header_uses_placeholder`] uses for running headers.
+fn attach_footnotes<'a>(flow: &'a [BlockNode<'a>], pages: &mut [Page<'a>], master: &PageMaster<'a>, style: &ComposeStyle, shaper: &dyn LineShaper) {
+    if master.footnote_zone_height.is_none() {
+        return;
+    }
+
+    let ids = resolve_block_ids(flow);
+    let mut registry: HashMap<BlockId, &'a [Footnote<'a>]> = HashMap::new();
+    for (node, id) in flow.iter().zip(ids.iter()) {
+        if !node.footnotes.is_empty() {
+            registry.insert(*id, node.footnotes);
+        }
+    }
+    if registry.is_empty() {
+        return;
+    }
+
+    // Global, continuous numbering — a pure function of flow order (which
+    // paragraph, which local marker index within it), never of page
+    // assignment (that's what THIS function is still in the middle of
+    // discovering) — no circularity, no fixpoint.
+    let mut numbers: HashMap<(BlockId, u64), u32> = HashMap::new();
+    let mut next_number = 1u32;
+    for (node, id) in flow.iter().zip(ids.iter()) {
+        for local_index in 0..node.footnotes.len() {
+            numbers.insert((*id, local_index as u64), next_number);
+            next_number += 1;
+        }
+    }
+
+    let zone_rect = master.footnote_zone_rect();
+    for page in pages.iter_mut() {
+        let mut found: Vec<(u32, &'a [BlockNode<'a>])> = Vec::new();
+        for placed in page.frame.blocks.iter().chain(page.extra_frames.iter().flat_map(|f| f.blocks.iter())) {
+            let Some(footnotes) = registry.get(&placed.id) else { continue };
+            let Some(layout) = &placed.paragraph_layout else { continue };
+            for placed_box in &layout.boxes {
+                let Some(footnote) = footnotes.get(placed_box.id as usize) else { continue };
+                let number = numbers.get(&(placed.id, placed_box.id)).copied().unwrap_or(0);
+                found.push((number, footnote.content));
+            }
+        }
+        if found.is_empty() {
+            continue;
+        }
+        let (frame, clamped) = compose_footnote_zone(&found, zone_rect, style, shaper);
+        page.footnotes = Some(FootnotePlacement { frame, clamped });
+    }
+}
+
+/// Compose `footnotes` (already resolved to `(global_number, content)`
+/// pairs, in the order their own markers were encountered — flow order,
+/// hence globally-consecutive numbers on any one page) into `zone_rect` as
+/// ONE [`crate::scene::ListBlock`] — reuses list splitting/marker/paint/
+/// PDF-export machinery wholesale (design law 1). `clamped` is `true` when
+/// [`Frame::overflow`] reports the list didn't fully fit — v1 honest limit:
+/// no second page for the overflow, see [`FootnotePlacement::clamped`]'s
+/// own doc comment.
+fn compose_footnote_zone<'a>(footnotes: &[(u32, &'a [BlockNode<'a>])], zone_rect: Rect, style: &ComposeStyle, shaper: &dyn LineShaper) -> (Frame<'a>, bool) {
+    let empty_frame = || Frame { region: Region { rect: zone_rect }, blocks: Vec::new(), overflow: None };
+    if footnotes.is_empty() || zone_rect.height <= 0.0 {
+        return (empty_frame(), false);
+    }
+
+    let start = footnotes[0].0;
+    let items: Vec<ListItem<'a>> = footnotes.iter().map(|(_, content)| ListItem::new(content)).collect();
+    let items: &'a [ListItem<'a>] = items.leak();
+    let list = ListBlock::new(items, MarkerStyle::numbered(start), FOOTNOTE_MARKER_INDENT);
+    let list_flow: &'a [BlockNode<'a>] = vec![BlockNode::new(Block::List(list))].leak();
+
+    let mut regions = FixedRegionSequence::new(zone_rect);
+    let frame = compose(list_flow, &mut regions, style, shaper).into_iter().next().unwrap_or_else(empty_frame);
+
+    // `Frame::overflow` alone under-detects: a SINGLE footnote taller than
+    // the WHOLE (otherwise-empty) zone force-places via `compose::
+    // list_layout::items_fitting`'s own "a fresh region must make
+    // progress even if the item overflows it" degrade — which reports
+    // `next_item + count >= total_items` (fully placed, `overflow: None`)
+    // even though the placed item's own rect plainly exceeds the zone's
+    // bottom edge. The SAME fix `crate::slice::slides`'s own P3 divergence
+    // #2 already documents for fixed-slide overflow detection applies
+    // here verbatim: also check whether any placed block's own bottom
+    // edge exceeds the target bound.
+    let overflows_bottom_edge = frame.blocks.iter().any(|b| b.rect.y + b.rect.height > zone_rect.y + zone_rect.height + 1e-6);
+    let clamped = frame.overflow.is_some() || overflows_bottom_edge;
+    (frame, clamped)
 }
 
 #[cfg(test)]
@@ -550,5 +835,275 @@ mod tests {
             "a Fraction(1.0) column inside a table must fill the CONTAINING column's width ({column_width}), got {table_width}"
         );
         assert!(table_width < master.body_rect().width - 1.0, "the table must be narrower than the full (un-columned) body width");
+    }
+
+    /// Typography-gap WAVE 3: `HeaderPlaceholder::CurrentOutlineTitle`
+    /// resolves per page to the LATEST `.with_outline()`-tagged heading on
+    /// or before that page — empty before the first heading appears,
+    /// updates on the SAME page a new heading lands on, and carries
+    /// forward unchanged across every page without a heading of its own.
+    #[test]
+    fn running_header_resolves_the_current_outline_title_per_page() {
+        use crate::master::HeaderPlaceholder;
+
+        let font = body_font();
+        let shaper = CosmicShaper::headless();
+
+        let filler_run = [StyledRun::new(SENTENCE, font)];
+        let heading_a_run = [StyledRun::new("Chapter One", font)];
+        let heading_b_run = [StyledRun::new("Chapter Two", font)];
+
+        let mut flow: Vec<BlockNode<'_>> = Vec::new();
+        for _ in 0..6 {
+            flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(&filler_run, 400.0))));
+        }
+        flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(&heading_a_run, 400.0))).with_outline(1, "Chapter One"));
+        for _ in 0..6 {
+            flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(&filler_run, 400.0))));
+        }
+        flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(&heading_b_run, 400.0))).with_outline(1, "Chapter Two"));
+        for _ in 0..6 {
+            flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(&filler_run, 400.0))));
+        }
+
+        let placeholder_run = [StyledRun::new("placeholder", font)];
+        let header_flow =
+            [BlockNode::new(Block::Paragraph(Paragraph::new(&placeholder_run, 400.0))).with_header_placeholder(HeaderPlaceholder::CurrentOutlineTitle)];
+
+        let master = PageMaster::new(500.0, 250.0, Margins::uniform(30.0)).with_header(&header_flow);
+        let style = ComposeStyle::new(6.0, font);
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert!(pages.len() >= 4, "fixture must be tuned to span several pages, got {}", pages.len());
+
+        fn header_text(page: &Page<'_>) -> String {
+            page.header
+                .as_ref()
+                .map(|h| h.blocks.iter().filter_map(|b| b.paragraph_layout.as_ref()).flat_map(|l| l.glyphs.iter().map(|g| g.cluster.clone())).collect::<String>())
+                .unwrap_or_default()
+        }
+
+        let idx_a = pages.iter().position(|p| p.outline.iter().any(|e| e.title == "Chapter One")).expect("Chapter One must land on some page");
+        let idx_b = pages.iter().position(|p| p.outline.iter().any(|e| e.title == "Chapter Two")).expect("Chapter Two must land on some page");
+        assert!(idx_a < idx_b, "fixture must be tuned so Chapter One precedes Chapter Two");
+
+        for (i, page) in pages.iter().enumerate() {
+            let text = header_text(page);
+            if i < idx_a {
+                assert!(text.is_empty(), "page {i} (before any heading) must have an EMPTY running header, got {text:?}");
+            } else if i < idx_b {
+                assert!(text.contains("Chapter One"), "page {i} must show the running title \"Chapter One\", got {text:?}");
+            } else {
+                assert!(text.contains("Chapter Two"), "page {i} must show the running title \"Chapter Two\", got {text:?}");
+            }
+        }
+    }
+
+    /// A header/footer with NO placeholder-tagged node must keep the
+    /// ORIGINAL "compose once, shared verbatim" behavior byte-identical —
+    /// this is the regression floor `running_header_resolves_the_current_
+    /// outline_title_per_page` above depends on staying additive.
+    #[test]
+    fn a_plain_header_with_no_placeholder_is_unaffected_by_the_running_header_machinery() {
+        let font = body_font();
+        let shaper = CosmicShaper::headless();
+        let header_run = [StyledRun::new("Static Header", font)];
+        let header_flow = [BlockNode::new(Block::Paragraph(Paragraph::new(&header_run, 400.0)))];
+        let runs = [StyledRun::new("A single short paragraph.", font)];
+        let flow = [BlockNode::new(Block::Paragraph(Paragraph::new(&runs, 400.0)))];
+        let master = PageMaster::new(500.0, 300.0, Margins::uniform(30.0)).with_header(&header_flow);
+        let style = ComposeStyle::new(0.0, font);
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1);
+        assert!(pages[0].header.as_ref().is_some_and(|h| !h.blocks.is_empty()));
+    }
+
+    /// Typography-gap WAVE 3: a `Block::Paragraph` carrying one footnote
+    /// marker (a superscript `"1"` run + a zero-size correlation
+    /// `InlineBox`) produces a real, numbered entry in the reserved
+    /// footnote zone — the zone's own rect matches
+    /// `PageMaster::footnote_zone_rect` exactly, and the marker text is
+    /// `"1."` (`MarkerStyle::numbered`'s own trailing-dot convention).
+    #[test]
+    fn a_footnote_marker_produces_a_numbered_entry_in_the_reserved_footnote_zone() {
+        use uzor_text::{InlineBox, InlineBoxSlot, VerticalAlign};
+
+        use crate::scene::Footnote;
+
+        let font = body_font();
+        let shaper = CosmicShaper::headless();
+
+        let footnote_body_run = [StyledRun::new("This is the footnote body text.", font)];
+        let footnote_content = [BlockNode::new(Block::Paragraph(Paragraph::new(&footnote_body_run, 300.0)))];
+        let footnotes = [Footnote::new(&footnote_content)];
+
+        let body_text = "Body text with a marker here";
+        let marker_text = "1";
+        let body_run = StyledRun::new(body_text, font);
+        let marker_run = StyledRun::new(marker_text, font).with_vertical_align(VerticalAlign::Super);
+        let runs = [body_run, marker_run];
+        let marker_box = InlineBox::out_of_flow(0); // local index 0 -> footnotes[0]
+        let slots = [InlineBoxSlot::new(1, marker_text.len(), marker_box)];
+        let paragraph = Paragraph::new(&runs, 400.0).with_inline_boxes(&slots);
+        let node = BlockNode::new(Block::Paragraph(paragraph)).with_footnotes(&footnotes);
+        let flow = [node];
+
+        let master = PageMaster::new(500.0, 400.0, Margins::uniform(30.0)).with_footnote_zone(100.0);
+        let style = ComposeStyle::new(6.0, font);
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1);
+
+        let fp = pages[0].footnotes.as_ref().expect("footnote zone must be populated");
+        assert!(!fp.clamped, "a short footnote inside a generous zone must never report clamped");
+        assert_eq!(fp.frame.region.rect, master.footnote_zone_rect(), "the footnote frame's own region must be the master's own reserved zone rect exactly");
+
+        let list_placement = fp.frame.blocks.first().and_then(|b| b.list_placement.as_ref()).expect("footnote zone content is a real Block::List placement");
+        assert_eq!(list_placement.items.len(), 1);
+        assert_eq!(list_placement.items[0].marker_text, "1.");
+        let body_text_joined: String = list_placement.items[0]
+            .content
+            .iter()
+            .filter_map(|b| b.paragraph_layout.as_ref())
+            .flat_map(|l| l.glyphs.iter().map(|g| g.cluster.clone()))
+            .collect();
+        assert!(body_text_joined.contains("footnote body"), "the footnote's own authored content must render inside the zone, got {body_text_joined:?}");
+    }
+
+    /// A `PageMaster` with NO `footnote_zone_height` configured must never
+    /// attach a `Page::footnotes` — additive, zero cost when unused (same
+    /// convention every other WAVE-3 addition uses).
+    #[test]
+    fn no_footnote_zone_configured_means_page_footnotes_is_always_none() {
+        use uzor_text::{InlineBox, InlineBoxSlot, VerticalAlign};
+
+        use crate::scene::Footnote;
+
+        let font = body_font();
+        let shaper = CosmicShaper::headless();
+        let footnote_body_run = [StyledRun::new("body", font)];
+        let footnote_content = [BlockNode::new(Block::Paragraph(Paragraph::new(&footnote_body_run, 300.0)))];
+        let footnotes = [Footnote::new(&footnote_content)];
+        let body_run = StyledRun::new("text", font);
+        let marker_run = StyledRun::new("1", font).with_vertical_align(VerticalAlign::Super);
+        let runs = [body_run, marker_run];
+        let slots = [InlineBoxSlot::new(1, "1".len(), InlineBox::out_of_flow(0))];
+        let paragraph = Paragraph::new(&runs, 400.0).with_inline_boxes(&slots);
+        let flow = [BlockNode::new(Block::Paragraph(paragraph)).with_footnotes(&footnotes)];
+
+        let master = PageMaster::new(500.0, 400.0, Margins::uniform(30.0)); // no with_footnote_zone
+        let style = ComposeStyle::new(6.0, font);
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert!(pages[0].footnotes.is_none());
+    }
+
+    /// Typography-gap WAVE 3 (task gate): a paragraph whose own lines
+    /// split across a page boundary carries its footnote markers with
+    /// whichever FRAGMENT they actually landed on — an early marker's
+    /// footnote appears on page 1, a late marker's footnote (same source
+    /// paragraph) appears on page 2, and the GLOBAL numbering continues
+    /// across the split (`"1."` then `"2."`, never restarting).
+    #[test]
+    fn a_footnote_follows_its_own_markers_paragraph_fragment_across_a_page_split() {
+        use uzor_text::{InlineBox, InlineBoxSlot};
+
+        use crate::scene::Footnote;
+
+        let font = body_font();
+        let shaper = CosmicShaper::headless();
+
+        let footnote_a_run = [StyledRun::new("Early footnote body.", font)];
+        let footnote_a_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&footnote_a_run, 300.0)))];
+        let footnote_b_run = [StyledRun::new("Late footnote body.", font)];
+        let footnote_b_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&footnote_b_run, 300.0)))];
+        let footnotes = [Footnote::new(&footnote_a_nodes), Footnote::new(&footnote_b_nodes)];
+
+        const TEXT: &str = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron";
+        const NARROW_WIDTH: f64 = 120.0;
+        const MARKER_A_OFFSET: usize = 16; // right after "alpha beta gamma"
+        let body_run = StyledRun::new(TEXT, font);
+        let marker_a = InlineBox::out_of_flow(0);
+        let marker_b = InlineBox::out_of_flow(1);
+        let slots = [InlineBoxSlot::new(0, MARKER_A_OFFSET, marker_a), InlineBoxSlot::new(0, TEXT.len(), marker_b)];
+        let runs = [body_run];
+        let paragraph_template = Paragraph::new(&runs, NARROW_WIDTH).with_inline_boxes(&slots);
+
+        let full = layout_paragraph(&paragraph_template, &shaper);
+        assert!(full.lines.len() >= 6, "fixture must wrap to several lines, got {}", full.lines.len());
+        assert_eq!(full.boxes.len(), 2, "both markers must be placed");
+        let box_a_line = full.boxes.iter().find(|b| b.id == 0).expect("marker A placed").line_index;
+        let box_b_line = full.boxes.iter().find(|b| b.id == 1).expect("marker B placed").line_index;
+        assert!(box_a_line < box_b_line, "fixture must place the two markers on DIFFERENT lines, marker A earlier");
+
+        let split_line = box_a_line + 1;
+        assert!(split_line <= box_b_line, "fixture must be tuned so marker B's own line lands AFTER the split point");
+        // The SAME body height repeats on every page (an infinite
+        // `PageRegionSequence`) — pick a height that fits BOTH halves
+        // (head lines `[0, split_line)` AND tail lines `[split_line, end)`)
+        // so the split lands at exactly `split_line` on page 1 and the
+        // WHOLE remainder finishes on page 2, never spilling to a 3rd.
+        let head_height: f64 = full.lines[..split_line].iter().map(|l| l.height).sum();
+        let tail_height: f64 = full.lines[split_line..].iter().map(|l| l.height).sum();
+        let region_height = head_height.max(tail_height) + 0.5;
+
+        let node = BlockNode::new(Block::Paragraph(paragraph_template)).with_footnotes(&footnotes);
+        let flow = [node];
+
+        let margins = Margins::uniform(20.0);
+        const FOOTNOTE_ZONE: f64 = 80.0;
+        let page_height = region_height + margins.top + margins.bottom + FOOTNOTE_ZONE;
+        let master = PageMaster::new(NARROW_WIDTH + margins.left + margins.right, page_height, margins).with_footnote_zone(FOOTNOTE_ZONE);
+        let style = ComposeStyle::new(0.0, font).with_min_orphan_lines(0).with_min_widow_lines(0);
+
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 2, "fixture must be tuned to split across exactly 2 pages, got {}", pages.len());
+
+        fn marker_texts(fp: &FootnotePlacement<'_>) -> Vec<String> {
+            fp.frame.blocks.first().and_then(|b| b.list_placement.as_ref()).map(|lp| lp.items.iter().map(|i| i.marker_text.clone()).collect()).unwrap_or_default()
+        }
+
+        let page1_fn = pages[0].footnotes.as_ref().expect("page 1 must carry the early marker's footnote");
+        let page2_fn = pages[1].footnotes.as_ref().expect("page 2 must carry the late marker's footnote");
+        assert_eq!(marker_texts(page1_fn), vec!["1."], "page 1's footnote zone must hold ONLY the early marker's own footnote");
+        assert_eq!(marker_texts(page2_fn), vec!["2."], "page 2's footnote zone must hold the late marker's footnote, continuing the GLOBAL numbering");
+    }
+
+    /// Typography-gap WAVE 3 (task gate — "no multi-page footnote
+    /// splitting"): a footnote whose own body content is taller than the
+    /// ENTIRE reserved zone must report `clamped: true` (never silently
+    /// fit, never spill onto a second page — this crate has no
+    /// `slice_pages` call here that could even represent "the next page's
+    /// zone continues this footnote") while still being VISIBLY placed
+    /// (the SAME "overflow returned as data, content never silently
+    /// dropped" convention this crate's own P0 risk note already
+    /// establishes elsewhere).
+    #[test]
+    fn a_footnote_taller_than_its_own_zone_is_clamped_never_spilling_to_a_second_page() {
+        use uzor_text::{InlineBox, InlineBoxSlot, VerticalAlign};
+
+        use crate::scene::Footnote;
+
+        let font = body_font();
+        let shaper = CosmicShaper::headless();
+
+        let long_run = [StyledRun::new(SENTENCE, font)];
+        let footnote_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&long_run, 300.0)))];
+        let footnotes = [Footnote::new(&footnote_nodes)];
+
+        let body_run = StyledRun::new("Body text.", font);
+        let marker_run = StyledRun::new("1", font).with_vertical_align(VerticalAlign::Super);
+        let runs = [body_run, marker_run];
+        let slots = [InlineBoxSlot::new(1, "1".len(), InlineBox::out_of_flow(0))];
+        let paragraph = Paragraph::new(&runs, 300.0).with_inline_boxes(&slots);
+        let node = BlockNode::new(Block::Paragraph(paragraph)).with_footnotes(&footnotes);
+        let flow = [node];
+
+        const TINY_ZONE: f64 = 20.0; // room for roughly one short line only
+        let master = PageMaster::new(400.0, 300.0, Margins::uniform(20.0)).with_footnote_zone(TINY_ZONE);
+        let style = ComposeStyle::new(0.0, font);
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1, "the body content itself is short — only the footnote zone is deliberately tight");
+
+        let fp = pages[0].footnotes.as_ref().expect("footnote zone must still be populated");
+        assert!(fp.clamped, "a footnote taller than its own reserved zone must report clamped, never silently fit");
+        assert!(!fp.frame.blocks.is_empty(), "the overflowing footnote must still be VISIBLY placed, never dropped");
     }
 }

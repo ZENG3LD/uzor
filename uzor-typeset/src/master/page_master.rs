@@ -86,6 +86,35 @@ impl PageNumberStyle {
     }
 }
 
+/// A token inside header/footer margin-box content, resolved PER PAGE at
+/// [`crate::slice::slice_pages`] time (typography-gap WAVE 3) — the
+/// "current chapter in the header" running-header mechanism. A
+/// [`crate::scene::BlockNode`] tagged via
+/// [`crate::scene::BlockNode::with_header_placeholder`] has its own
+/// `Block::Paragraph` text REPLACED (not appended to) with the resolved
+/// value for whichever page it's being composed into, per page — see
+/// `slice::pages`'s own "Running headers" doc section for the resolution
+/// rule and the v1 scope limit (only `Block::Paragraph`/`Block::Spacer`
+/// nodes may share a placeholder-bearing header/footer).
+///
+/// Named `HeaderPlaceholder`, not the bare `Placeholder` this feature's own
+/// task brief uses — this crate already has an UNRELATED `PlaceholderKind`/
+/// `PlaceholderSlot` pair (`master::placeholder`, a `SlideMaster`/
+/// `SlideLayout` slot-fill concept, a totally different mechanism: "any
+/// block kind fills this named region"). Reusing the bare name for a
+/// second, unrelated concept would collide at the crate-root export list
+/// and read as the same feature to a caller skimming the public API —
+/// `HeaderPlaceholder` keeps the two conceptually and syntactically
+/// distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderPlaceholder {
+    /// The title of the [`crate::slice::OutlineEntry`] active on (or most
+    /// recently preceding) the page being composed — resolves to `""` on
+    /// every page before the document's first `.with_outline()`-tagged
+    /// block (never a placeholder string, never a panic).
+    CurrentOutlineTitle,
+}
+
 /// Width reserved at the right edge of [`PageMaster::footer_rect`] for the
 /// page-number text, when [`PageMaster::page_number_token`] is `Some` —
 /// keeps the number from ever overlapping footer BLOCK content, which
@@ -117,6 +146,19 @@ pub struct PageMaster<'a> {
     /// Horizontal gap between adjacent columns, in the same units as
     /// every other rect in this crate — unread when `columns <= 1`.
     pub column_gap: f64,
+    /// Fixed height (typography-gap WAVE 3) reserved at the BOTTOM of
+    /// [`PageMaster::body_rect`] (directly above the bottom margin band —
+    /// [`PageMaster::footnote_zone_rect`]) for footnote content on EVERY
+    /// page, whether or not that specific page carries any footnotes —
+    /// the SAME "static per-page budget, never a dynamic per-page
+    /// negotiation" simplification [`PageMaster::header`]/
+    /// [`PageMaster::footer`] already use, deliberately chosen over a
+    /// dynamic reservation loop (the design doc's own §3.7 note this
+    /// crate already quotes elsewhere: a bolt-on relayout loop for
+    /// footnotes is exactly what that note argues against building).
+    /// `None` (the default) reserves nothing — [`PageMaster::body_rect`]
+    /// is then BYTE-IDENTICAL to every pre-WAVE-3 caller.
+    pub footnote_zone_height: Option<f64>,
 }
 
 impl<'a> PageMaster<'a> {
@@ -124,7 +166,17 @@ impl<'a> PageMaster<'a> {
     /// (P0's own constructor, kept byte-for-byte so every existing call
     /// site compiles unchanged; additive law).
     pub fn new(width: f64, height: f64, margins: Margins) -> Self {
-        Self { width, height, margins, header: None, footer: None, page_number_token: None, columns: 1, column_gap: 0.0 }
+        Self {
+            width,
+            height,
+            margins,
+            header: None,
+            footer: None,
+            page_number_token: None,
+            columns: 1,
+            column_gap: 0.0,
+            footnote_zone_height: None,
+        }
     }
 
     /// Builder: attach top-margin-box header content.
@@ -157,6 +209,14 @@ impl<'a> PageMaster<'a> {
         self
     }
 
+    /// Builder: reserve `height` at the bottom of [`PageMaster::body_rect`]
+    /// on EVERY page for footnote content (typography-gap WAVE 3) — see
+    /// [`PageMaster::footnote_zone_height`]'s own doc comment.
+    pub fn with_footnote_zone(mut self, height: f64) -> Self {
+        self.footnote_zone_height = Some(height.max(0.0));
+        self
+    }
+
     /// This master's own column `index` (0-based) rect within
     /// [`PageMaster::body_rect`] — the SAME geometry
     /// [`crate::region::PageRegionSequence::with_columns`] drives
@@ -173,18 +233,48 @@ impl<'a> PageMaster<'a> {
         self.column_rect(0).width
     }
 
-    /// The page body rect (page size, inset by `margins`) — the one
-    /// region [`crate::region::PageRegionSequence`] hands back on every
-    /// page. UNCHANGED by header/footer — margin-box content lives
-    /// INSIDE the margin band, never subtracted from the body (this
-    /// module's own doc comment).
-    pub fn body_rect(&self) -> Rect {
+    /// Page-size-and-margins-only body rect — the shape [`PageMaster::
+    /// body_rect`] had before [`PageMaster::footnote_zone_height`] existed,
+    /// kept as its own function so [`PageMaster::footnote_zone_rect`] can
+    /// compute the zone's own position relative to the UNREDUCED body
+    /// (never relative to itself, which would be circular).
+    fn full_body_rect(&self) -> Rect {
         Rect::new(
             self.margins.left,
             self.margins.top,
             (self.width - self.margins.left - self.margins.right).max(0.0),
             (self.height - self.margins.top - self.margins.bottom).max(0.0),
         )
+    }
+
+    /// The page body rect (page size, inset by `margins`, minus
+    /// [`PageMaster::footnote_zone_height`] when configured — typography-
+    /// gap WAVE 3) — the one region [`crate::region::PageRegionSequence`]
+    /// hands back on every page. UNCHANGED by header/footer — margin-box
+    /// content lives INSIDE the margin band, never subtracted from the
+    /// body (this module's own doc comment) — the footnote zone is
+    /// different on purpose: it's carved OUT of body content, exactly the
+    /// "compose reserves bottom-of-page space" this feature asks for.
+    /// `footnote_zone_height: None` (the default) reproduces the pre-
+    /// WAVE-3 body rect byte-for-byte.
+    pub fn body_rect(&self) -> Rect {
+        let full = self.full_body_rect();
+        match self.footnote_zone_height {
+            Some(fz) if fz > 0.0 => Rect::new(full.x, full.y, full.width, (full.height - fz).max(0.0)),
+            _ => full,
+        }
+    }
+
+    /// The reserved footnote zone — a fixed-height band at the BOTTOM of
+    /// the UNREDUCED body rect, directly above the bottom margin (so the
+    /// natural reading order top-to-bottom is: body content, footnote
+    /// separator + numbered notes, bottom margin/footer/page-number).
+    /// Zero-height (never a negative rect) when [`PageMaster::
+    /// footnote_zone_height`] is `None`.
+    pub fn footnote_zone_rect(&self) -> Rect {
+        let full = self.full_body_rect();
+        let fz = self.footnote_zone_height.unwrap_or(0.0).max(0.0).min(full.height);
+        Rect::new(full.x, full.y + full.height - fz, full.width, fz)
     }
 
     /// The top margin band — [`PageMaster::header`]'s own margin box.
@@ -307,5 +397,48 @@ mod tests {
         assert_eq!(col1.width, 200.0);
         assert_eq!(master.column_width(), 200.0);
         assert!((col1.x - (col0.x + col0.width + 24.0)).abs() < 1e-9, "column 1 must sit exactly one gap past column 0's own right edge");
+    }
+
+    /// Typography-gap WAVE 3: `footnote_zone_height: None` (the default)
+    /// must reproduce `body_rect`/`footnote_zone_rect` byte-identically to
+    /// every pre-WAVE-3 caller — a zero-height footnote zone.
+    #[test]
+    fn default_footnote_zone_is_none_and_body_rect_is_unchanged() {
+        let master = PageMaster::new(400.0, 600.0, Margins::uniform(40.0));
+        assert_eq!(master.footnote_zone_height, None);
+        let zone = master.footnote_zone_rect();
+        assert_eq!(zone.height, 0.0, "no footnote zone configured must reserve zero height");
+    }
+
+    /// `with_footnote_zone` reserves EXACTLY `height` off the bottom of the
+    /// body rect (never off the margin bands, never affecting header/footer
+    /// rects), directly above the bottom margin.
+    #[test]
+    fn with_footnote_zone_reserves_the_requested_height_off_the_bottom_of_the_body() {
+        let master = PageMaster::new(400.0, 600.0, Margins::uniform(40.0)).with_footnote_zone(80.0);
+        let body = master.body_rect();
+        let zone = master.footnote_zone_rect();
+
+        assert_eq!(body.height, 600.0 - 40.0 - 40.0 - 80.0, "body_rect must shrink by exactly the footnote zone height");
+        assert_eq!(zone.height, 80.0);
+        assert!((zone.y - (body.y + body.height)).abs() < 1e-9, "the footnote zone must sit directly below the (already-shrunk) body");
+        assert!((zone.y + zone.height - master.footer_rect().y).abs() < 1e-9, "the footnote zone's own bottom edge must sit exactly at the footer's own top edge");
+        assert_eq!(zone.width, body.width, "the footnote zone spans the full body width");
+
+        // Header/footer geometry (a SEPARATE margin-box system) must be
+        // completely unaffected by the footnote zone.
+        assert_eq!(master.header_rect().height, 40.0);
+        assert_eq!(master.footer_rect().height, 40.0);
+    }
+
+    /// A footnote zone taller than the available (margins-only) body never
+    /// produces a negative-height rect — clamped, not a fallible surface.
+    #[test]
+    fn an_oversized_footnote_zone_clamps_rather_than_going_negative() {
+        let master = PageMaster::new(200.0, 150.0, Margins::uniform(20.0)).with_footnote_zone(5000.0);
+        let body = master.body_rect();
+        let zone = master.footnote_zone_rect();
+        assert!(body.height >= 0.0);
+        assert!(zone.height >= 0.0);
     }
 }

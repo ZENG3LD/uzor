@@ -8,14 +8,16 @@
 
 pub mod block;
 pub mod figure_block;
+pub mod footnote;
 pub mod image_block;
 pub mod island;
 pub mod list;
 pub mod table;
 
-pub use block::{resolve_block_ids, Block, BlockId, BlockNode, OutlineTag};
+pub use block::{resolve_block_ids, Block, BlockId, BlockNode, Caption, CaptionKind, OutlineTag};
 pub use figure_block::{BlockSizing, FigureBlock, TypesetFigure};
+pub use footnote::Footnote;
 pub use image_block::{ImageBlock, ImageFit};
 pub use island::{AnchoredIsland, IslandAnchor};
-pub use list::{ListBlock, ListItem, MarkerStyle};
+pub use list::{ListBlock, ListItem, MarkerStyle, NumberScheme};
 pub use table::{CellPadding, ColumnSpec, TableBlock, TableCell, TableRow};

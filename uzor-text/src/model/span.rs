@@ -108,6 +108,19 @@ pub struct Paragraph<'a> {
     /// only consulted when `break_strategy` is [`BreakStrategy::KnuthPlass`]
     /// (see `crate::linebreak`'s module doc).
     pub hyphenation: Hyphenation,
+    /// Hard cap on CONSECUTIVE lines allowed to end in a discretionary
+    /// hyphen (typography-gap WAVE 3) — a genuine feasibility constraint on
+    /// [`crate::linebreak::knuth_plass::pack_lines`]'s own dynamic program
+    /// (a breakpoint sequence exceeding the limit is INFEASIBLE, never
+    /// merely demerit-discouraged the way [`crate::linebreak::knuth_plass`]'s
+    /// own `\doublehyphendemerits`-equivalent already discourages exactly
+    /// two in a row), not consulted anywhere else. `Some(0)` forbids a
+    /// hyphen break entirely (any hyphen-ending line already violates a
+    /// zero-length allowed run). `None` (the default) disables the
+    /// constraint — every pre-WAVE-3 caller's own layout is byte-for-byte
+    /// unchanged (see that module's own doc comment for why the
+    /// unconstrained code path is untouched, not merely reproduced).
+    pub max_consecutive_hyphens: Option<u8>,
 }
 
 impl<'a> Paragraph<'a> {
@@ -122,6 +135,7 @@ impl<'a> Paragraph<'a> {
             max_width,
             break_strategy: BreakStrategy::default(),
             hyphenation: Hyphenation::default(),
+            max_consecutive_hyphens: None,
         }
     }
 
@@ -152,6 +166,15 @@ impl<'a> Paragraph<'a> {
     /// [`BreakStrategy::KnuthPlass`] — see `crate::linebreak`'s module doc.
     pub fn with_hyphenation(mut self, hyphenation: Hyphenation) -> Self {
         self.hyphenation = hyphenation;
+        self
+    }
+
+    /// Builder: cap the number of CONSECUTIVE discretionary-hyphen lines
+    /// [`crate::linebreak::knuth_plass::pack_lines`]'s DP may choose (a hard
+    /// feasibility constraint, typography-gap WAVE 3) — see
+    /// [`Paragraph::max_consecutive_hyphens`]'s own doc comment.
+    pub fn with_max_consecutive_hyphens(mut self, max: u8) -> Self {
+        self.max_consecutive_hyphens = Some(max);
         self
     }
 }

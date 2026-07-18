@@ -10,6 +10,6 @@ pub mod page_master;
 pub mod placeholder;
 pub mod slide_master;
 
-pub use page_master::{Margins, PageMaster, PageNumberFormat, PageNumberStyle};
+pub use page_master::{HeaderPlaceholder, Margins, PageMaster, PageNumberFormat, PageNumberStyle};
 pub use placeholder::{PlaceholderKind, PlaceholderSlot};
 pub use slide_master::{LayoutId, MasterId, PlaceholderFill, PlacedPlaceholder, SlideInstance, SlideLayout, SlideMaster};

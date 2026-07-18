@@ -47,6 +47,7 @@
 //! where its implementation diverges from the design doc's own
 //! pseudocode.
 
+pub mod caption;
 pub mod compose;
 pub mod export;
 pub mod kinetics;
@@ -58,12 +59,13 @@ pub mod slice;
 pub mod style;
 pub mod toc;
 
+pub use caption::{attach_captions, default_caption_label, default_caption_ref_label, resolve_caption_numbers, resolve_refs, CaptionStyle, RefSegment};
 pub use compose::{compose, BreakControl, ComposeStyle};
 pub use export::pages_to_pdf;
 pub use kinetics::{build_frame_morph, FrameBlockState, FrameMorph};
 pub use master::{
-    LayoutId, MasterId, PlaceholderFill, PlaceholderKind, PlaceholderSlot, PlacedPlaceholder, PageNumberFormat, PageNumberStyle,
-    SlideInstance, SlideLayout, SlideMaster,
+    HeaderPlaceholder, LayoutId, MasterId, PlaceholderFill, PlaceholderKind, PlaceholderSlot, PlacedPlaceholder, PageNumberFormat,
+    PageNumberStyle, SlideInstance, SlideLayout, SlideMaster,
 };
 pub use region::{
     CardRegionSequence, ColumnRegionSequence, FixedRegionSequence, Frame, ListPlacement, PageRegionSequence, PlacedBlock, PlacedListItem,
@@ -71,13 +73,14 @@ pub use region::{
 };
 pub use render::{draw_card, draw_frame_state, draw_page, draw_page_layers, draw_slide, DrawLayers};
 pub use scene::{
-    resolve_block_ids, AnchoredIsland, Block, BlockId, BlockNode, BlockSizing, CellPadding, ColumnSpec, FigureBlock, ImageBlock, ImageFit,
-    IslandAnchor, ListBlock, ListItem, MarkerStyle, OutlineTag, TableBlock, TableCell, TableRow, TypesetFigure,
+    resolve_block_ids, AnchoredIsland, Block, BlockId, BlockNode, BlockSizing, Caption, CaptionKind, CellPadding, ColumnSpec, FigureBlock,
+    Footnote, ImageBlock, ImageFit, IslandAnchor, ListBlock, ListItem, MarkerStyle, NumberScheme, OutlineTag, TableBlock, TableCell,
+    TableRow, TypesetFigure,
 };
 pub use slice::{
     cards_to_slides, renumber_pages, slice_build_steps, slice_cards, slice_pages, slice_slide_instance, slice_slides, slides_to_cards,
-    BlockOverride, BuildStep, Card, ComposedFrame, LinkEntry, Margins, OutlineEntry, Page, PageMaster, PageNumberPlacement, SliceError,
-    Slide, SlideOverflow,
+    BlockOverride, BuildStep, Card, ComposedFrame, FootnotePlacement, LinkEntry, Margins, OutlineEntry, Page, PageMaster,
+    PageNumberPlacement, SliceError, Slide, SlideOverflow,
 };
 pub use style::{
     resolve_property_chain, BrandTokens, ColorRole, ComponentStyle, DesignTokens, FigureThemeTokens, FontFileRef, FontRole, PropertyState,

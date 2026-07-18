@@ -200,7 +200,7 @@ mod tests {
         let run = [StyledRun::new("item text", font)];
         let nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&run, 200.0)))];
         let items = [ListItem::new(&nodes), ListItem::new(&nodes), ListItem::new(&nodes)];
-        let list = ListBlock::new(&items, MarkerStyle::Numbered { start: 1 }, 24.0);
+        let list = ListBlock::new(&items, MarkerStyle::numbered(1), 24.0);
         let style = style();
 
         let composed = measure_list_items(&list, 300.0, &style, &shaper);
@@ -253,7 +253,7 @@ mod tests {
         let item_run = [StyledRun::new("list item text", font)];
         let item_nodes = [SceneBlockNode::new(Block::Paragraph(Paragraph::new(&item_run, f64::MAX)))];
         let items: Vec<ListItem<'_>> = (0..8).map(|_| ListItem::new(&item_nodes)).collect();
-        let list = ListBlock::new(&items, MarkerStyle::Numbered { start: 1 }, 24.0);
+        let list = ListBlock::new(&items, MarkerStyle::numbered(1), 24.0);
 
         const REGION_W: f64 = 300.0;
         let content_width = REGION_W - list.indent_px;
@@ -284,5 +284,81 @@ mod tests {
         let page2_markers: Vec<&str> = page2_list.items.iter().map(|it| it.marker_text.as_str()).collect();
         assert_eq!(page1_markers, vec!["1.", "2.", "3.", "4.", "5."]);
         assert_eq!(page2_markers, vec!["6.", "7.", "8."], "the continuation's markers must continue counting, never restart at 1.");
+    }
+
+    /// Nested lists (typography-gap WAVE 3): a list item's own content
+    /// containing ANOTHER `Block::List` composes with zero new engine code
+    /// (see `scene::list`'s own module doc) — this test proves it as data,
+    /// not just by inspection. The nested list uses
+    /// [`crate::scene::NumberScheme::LowerRoman`] to also prove a non-decimal
+    /// scheme survives a nesting depth.
+    #[test]
+    fn a_nested_list_indents_past_both_gutters_and_renders_its_own_roman_markers() {
+        use crate::region::PageRegionSequence;
+        use crate::scene::{BlockNode as SceneBlockNode, NumberScheme};
+
+        let shaper = CosmicShaper::headless();
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let style = ComposeStyle::new(4.0, font);
+
+        const OUTER_INDENT: f64 = 20.0;
+        const INNER_INDENT: f64 = 18.0;
+        const REGION_W: f64 = 400.0;
+
+        let inner_run_a = [StyledRun::new("nested first", font)];
+        let inner_run_b = [StyledRun::new("nested second", font)];
+        let inner_nodes_a = [SceneBlockNode::new(Block::Paragraph(Paragraph::new(&inner_run_a, f64::MAX)))];
+        let inner_nodes_b = [SceneBlockNode::new(Block::Paragraph(Paragraph::new(&inner_run_b, f64::MAX)))];
+        let inner_items = [ListItem::new(&inner_nodes_a), ListItem::new(&inner_nodes_b)];
+        let inner_list = ListBlock::new(&inner_items, MarkerStyle::Numbered { start: 1, scheme: NumberScheme::LowerRoman }, INNER_INDENT);
+        let inner_flow = [SceneBlockNode::new(Block::List(inner_list))];
+
+        let outer_run_a = [StyledRun::new("outer item one heading", font)];
+        let outer_item_a_nodes = [SceneBlockNode::new(Block::Paragraph(Paragraph::new(&outer_run_a, f64::MAX)))];
+        let outer_run_b = [StyledRun::new("outer item two", font)];
+        let outer_item_b_nodes = [SceneBlockNode::new(Block::Paragraph(Paragraph::new(&outer_run_b, f64::MAX)))];
+
+        // Item 0's own content is [paragraph, nested list]; item 1 is a
+        // plain paragraph-only item (proves nesting is per-item, not
+        // list-wide).
+        let outer_items = [ListItem::new(&outer_item_a_nodes), ListItem::new(&inner_flow), ListItem::new(&outer_item_b_nodes)];
+        let outer_list = ListBlock::new(&outer_items, MarkerStyle::Bullet('•'), OUTER_INDENT);
+        let flow = [SceneBlockNode::new(Block::List(outer_list))];
+
+        let mut regions = PageRegionSequence::new(Rect::new(0.0, 0.0, REGION_W, 2000.0));
+        let frames = compose(&flow, &mut regions, &style, &shaper);
+        assert_eq!(frames.len(), 1, "fixture must fit on one page");
+
+        let outer_placement = frames[0].blocks[0].list_placement.as_ref().expect("outer list placement present");
+        assert_eq!(outer_placement.items.len(), 3, "every outer item (incl. the nested-list-only one) must be conserved");
+
+        let nested_item = &outer_placement.items[1];
+        let nested_block = nested_item.content.first().expect("the nested list itself is item 1's own sole content block");
+        assert!(matches!(nested_block.kind, Block::List(_)), "item 1's own content must resolve to a real Block::List placement");
+        let inner_placement = nested_block.list_placement.as_ref().expect("nested list must carry its own list_placement");
+        assert_eq!(inner_placement.items.len(), 2);
+
+        // Indentation compounds: the OUTER list's own item content starts
+        // at `region.x + OUTER_INDENT`; the NESTED list's own item content
+        // must start `INNER_INDENT` further right than that — never the
+        // same x, never re-based to 0.
+        let outer_content_x = nested_item.content[0].rect.x; // the nested Block::List's own top-level rect
+        assert!((outer_content_x - OUTER_INDENT).abs() < 1e-6, "the nested list's own top-level rect must sit exactly at the outer gutter");
+        let inner_item_x = inner_placement.items[0].content[0].rect.x;
+        assert!(
+            (inner_item_x - (OUTER_INDENT + INNER_INDENT)).abs() < 1e-6,
+            "a doubly-indented item's content must sit at outer + inner indent exactly, got {inner_item_x}"
+        );
+
+        // The nested list's own roman markers render correctly at this
+        // nesting depth — never silently falling back to decimal.
+        let inner_markers: Vec<&str> = inner_placement.items.iter().map(|it| it.marker_text.as_str()).collect();
+        assert_eq!(inner_markers, vec!["i.", "ii."]);
+
+        // Sibling outer items (0 and 2, plain paragraphs) are unaffected by
+        // the nested list sitting between them — same top-level indent as
+        // any ordinary item.
+        let sibling_x = outer_placement.items[0].content[0].rect.x;
+        assert!((sibling_x - OUTER_INDENT).abs() < 1e-6);
     }
 }

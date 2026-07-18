@@ -41,14 +41,18 @@ use uzor_export::{render_to_png, ExportSpec};
 use uzor_figures::{BarFigure, CurveFigure, FigureTheme, HistogramFigure, SankeyFigure, SankeyLink, SankeyNode, TimeScale, TimelineEvent, TimelineFigure};
 use uzor_graph::{ForceDirectedLayout, Graph, GraphEngine, HierarchicalLayout, HierarchicalParams, Layout, NodeIndex, RadialLayout, RadialParams};
 use uzor_text::ascii::{build_ascii_grid, draw_ascii_grid, AsciiGridStyle};
-use uzor_text::{build_morph, draw_paragraph, layout_text, sample_layout, BreakStrategy, CosmicShaper, FontSpec, Hyphenation, Paragraph, ParagraphAlign, StyledRun};
+use uzor_text::{
+    build_morph, draw_paragraph, layout_text, sample_layout, BreakStrategy, CosmicShaper, FontSpec, Hyphenation, InlineBox, InlineBoxSlot,
+    Paragraph, ParagraphAlign, StyledRun, VerticalAlign,
+};
 
+use crate::caption::{attach_captions, resolve_caption_numbers, resolve_refs, CaptionStyle, RefSegment};
 use crate::compose::{BreakControl, ComposeStyle};
 use crate::export::pages_to_pdf;
 use crate::master::{PageNumberFormat, PageNumberStyle};
 use crate::scene::{
-    AnchoredIsland, Block, BlockNode, BlockSizing, CellPadding, ColumnSpec, FigureBlock, ImageBlock, ImageFit, IslandAnchor, ListBlock, ListItem,
-    MarkerStyle, TableBlock, TableCell, TableRow, TypesetFigure,
+    AnchoredIsland, Block, BlockId, BlockNode, BlockSizing, CaptionKind, CellPadding, ColumnSpec, FigureBlock, Footnote, ImageBlock, ImageFit,
+    IslandAnchor, ListBlock, ListItem, MarkerStyle, NumberScheme, TableBlock, TableCell, TableRow, TypesetFigure,
 };
 use crate::slice::{renumber_pages, slice_pages, Margins, Page, PageMaster};
 use crate::style::Theme;
@@ -691,7 +695,36 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let fig_a_heading_run = [StyledRun::new("Figure Exhibits — Categorical & Time-Series", SUBHEADING_FONT)];
     let fig_b_heading_run = [StyledRun::new("Figure Exhibits — Distribution & Timeline", SUBHEADING_FONT)];
     let fig_c_heading_run = [StyledRun::new("Figure Exhibits — Staged Flow", SUBHEADING_FONT)];
-    let bar_caption_run = [StyledRun::new("Figure 1 — a categorical bar chart over 5 seeded categories.", CAPTION_FONT)];
+
+    // Typography-gap WAVE 3: the bar figure's own caption is now the AUTO-
+    // NUMBERED path (`.with_caption` + `attach_captions`, below) instead of
+    // a hand-typed "Figure 1 — ..." paragraph — the task's own "replace at
+    // least one hand-typed caption" gate. A real in-text cross-reference
+    // (`RefSegment::Ref`) resolves "Figure 1" back from `BAR_FIGURE_ID` via
+    // the SAME `resolve_caption_numbers`/`resolve_refs` pipeline this
+    // crate's own unit tests already prove — a probe flow holding just the
+    // tagged node is enough since this showcase's own construction order
+    // guarantees no earlier `CaptionKind::Figure` caption exists anywhere
+    // before it in the real document (`flow_figures` is the FIRST section
+    // extended into `flow_rest` below).
+    const BAR_FIGURE_ID: BlockId = BlockId(9_001);
+    let caption_style = CaptionStyle::default();
+    let bar_probe = [BlockNode::new(Block::Figure(FigureBlock::new(&bar_figure, BlockSizing::FixedHeight(FIGURE_HEIGHT))))
+        .with_id(BAR_FIGURE_ID)
+        .with_caption(CaptionKind::Figure, "a categorical bar chart over 5 seeded categories.")];
+    let bar_numbers = resolve_caption_numbers(&bar_probe);
+    let bar_ref_text = resolve_refs(
+        &[
+            RefSegment::Text("The chart below (see "),
+            RefSegment::Ref(BAR_FIGURE_ID),
+            RefSegment::Text(") demonstrates this engine's auto-numbering and in-text cross-reference machinery end to end."),
+        ],
+        &bar_numbers,
+        &caption_style,
+    );
+    let bar_ref_text: &'static str = Box::leak(bar_ref_text.into_boxed_str());
+    let bar_ref_run = [StyledRun::new(bar_ref_text, BODY_FONT)];
+
     let curve_caption_run = [StyledRun::new("Figure 2 — a cumulative curve plotted against a calendar TimeScale X-axis.", CAPTION_FONT)];
     let histogram_caption_run = [StyledRun::new("Figure 3 — a histogram of 500 seeded samples grouped into 20 bins.", CAPTION_FONT)];
     let timeline_caption_run = [StyledRun::new("Figure 4 — a timeline of point and interval events across 3 lanes.", CAPTION_FONT)];
@@ -710,10 +743,12 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
             .with_break_control(BreakControl::ForceBefore)
             .with_outline(1, "Figure Exhibits"),
         BlockNode::new(Block::Spacer(10.0)),
+        BlockNode::new(Block::Paragraph(Paragraph::new(&bar_ref_run, body_width))),
+        BlockNode::new(Block::Spacer(8.0)),
         BlockNode::new(Block::Figure(FigureBlock::new(&bar_figure, BlockSizing::FixedHeight(FIGURE_HEIGHT))))
-            .with_break_control(BreakControl::AvoidAfter),
-        BlockNode::new(Block::Spacer(6.0)),
-        BlockNode::new(Block::Paragraph(Paragraph::new(&bar_caption_run, body_width))),
+            .with_id(BAR_FIGURE_ID)
+            .with_break_control(BreakControl::AvoidAfter)
+            .with_caption(CaptionKind::Figure, "a categorical bar chart over 5 seeded categories."),
         BlockNode::new(Block::Spacer(18.0)),
         BlockNode::new(Block::Figure(FigureBlock::new(&curve_figure, BlockSizing::FixedHeight(FIGURE_HEIGHT))))
             .with_break_control(BreakControl::AvoidAfter),
@@ -1026,6 +1061,24 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let li5_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&li5_run, f64::MAX)))];
     let li6_run = [StyledRun::new("Images anchored in the flow with wrapping body text on either side.", BODY_FONT)];
     let li6_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&li6_run, f64::MAX)))];
+
+    // Typography-gap WAVE 3: a 7th top-level item whose OWN content is
+    // ANOTHER list (roman-numbered) — nested lists (see `scene::list`'s own
+    // module doc: this mechanism already worked structurally before this
+    // wave, this item exists to SHOW it, per the task's own showcase gate).
+    let li7_run = [StyledRun::new("Nested list numbering styles, demonstrated by this very sub-list:", BODY_FONT)];
+    let nested_a_run = [StyledRun::new("Decimal, alpha, and roman schemes, selectable per list.", BODY_FONT)];
+    let nested_a_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&nested_a_run, f64::MAX)))];
+    let nested_b_run = [StyledRun::new("Indentation compounds automatically with nesting depth.", BODY_FONT)];
+    let nested_b_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&nested_b_run, f64::MAX)))];
+    let nested_items = [ListItem::new(&nested_a_nodes), ListItem::new(&nested_b_nodes)];
+    let nested_list = ListBlock::new(&nested_items, MarkerStyle::Numbered { start: 1, scheme: NumberScheme::LowerRoman }, 20.0);
+    let li7_nodes = [
+        BlockNode::new(Block::Paragraph(Paragraph::new(&li7_run, f64::MAX))),
+        BlockNode::new(Block::Spacer(4.0)),
+        BlockNode::new(Block::List(nested_list)),
+    ];
+
     let list_items = [
         ListItem::new(&li1_nodes),
         ListItem::new(&li2_nodes),
@@ -1033,6 +1086,7 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
         ListItem::new(&li4_nodes),
         ListItem::new(&li5_nodes),
         ListItem::new(&li6_nodes),
+        ListItem::new(&li7_nodes),
     ];
 
     let flow_data: Vec<BlockNode<'_>> = vec![
@@ -1040,7 +1094,7 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
             .with_break_control(BreakControl::ForceBefore)
             .with_outline(1, "Summary — Engine Family at a Glance"),
         BlockNode::new(Block::Spacer(8.0)),
-        BlockNode::new(Block::Table(table)),
+        BlockNode::new(Block::Table(table)).with_caption(CaptionKind::Table, "engine family summary — role, capability, and status per crate."),
         BlockNode::new(Block::Spacer(20.0)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&list_heading_run, body_width)))
             .with_break_control(BreakControl::AvoidAfter)
@@ -1048,6 +1102,51 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
         BlockNode::new(Block::Spacer(8.0)),
         BlockNode::new(Block::List(ListBlock::new(&list_items, MarkerStyle::Bullet('•'), 20.0))),
     ];
+
+    // ── Section: Footnotes (typography-gap WAVE 3) — own dedicated master
+    // (`with_footnote_zone`, reserving bottom-of-page space on every page
+    // this ONE section slices), sliced independently and concatenated
+    // below, matching the SAME "separate master per section" pattern this
+    // fixture already uses for the two-column section — never applied
+    // globally to `master_single`, so every other section's own pagination
+    // stays byte-identical to before this wave.
+    let footnote_heading_run = [StyledRun::new("Footnotes", SUBHEADING_FONT)];
+    const FOOTNOTE_INTRO: &str = "This engine reserves a fixed band at the bottom of every page for numbered \
+        footnotes, separated from the body by a short rule, with numbering continuing across the whole document.";
+    let footnote_intro_run = [StyledRun::new(FOOTNOTE_INTRO, BODY_FONT)];
+
+    let fn1_body_run = [StyledRun::new("A seeded footnote proving the reserved bottom-of-page zone composes real content.", BODY_FONT)];
+    let fn1_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&fn1_body_run, f64::MAX)))];
+    let fn2_body_run = [StyledRun::new("A second footnote on the same paragraph, numbered continuously after the first.", BODY_FONT)];
+    let fn2_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&fn2_body_run, f64::MAX)))];
+    let footnotes_demo = [Footnote::new(&fn1_nodes), Footnote::new(&fn2_nodes)];
+
+    let fn_body_a = StyledRun::new("Reserved bottom-of-page space for footnotes", BODY_FONT);
+    let fn_marker_1 = StyledRun::new("1", CAPTION_FONT).with_vertical_align(VerticalAlign::Super);
+    let fn_body_b = StyledRun::new(" is a real engine mechanism", BODY_FONT);
+    let fn_marker_2 = StyledRun::new("2", CAPTION_FONT).with_vertical_align(VerticalAlign::Super);
+    let fn_body_c = StyledRun::new(", not a hand-typed footer line.", BODY_FONT);
+    let fn_runs = [fn_body_a, fn_marker_1, fn_body_b, fn_marker_2, fn_body_c];
+    let fn_slots = [InlineBoxSlot::new(1, "1".len(), InlineBox::out_of_flow(0)), InlineBoxSlot::new(3, "2".len(), InlineBox::out_of_flow(1))];
+    let fn_paragraph = Paragraph::new(&fn_runs, body_width).with_inline_boxes(&fn_slots);
+    let fn_marked_node = BlockNode::new(Block::Paragraph(fn_paragraph)).with_footnotes(&footnotes_demo);
+
+    let master_footnotes = PageMaster::new(PAGE_W, PAGE_H, Margins::uniform(40.0))
+        .with_header(&header_flow)
+        .with_footer(&footer_flow)
+        .with_page_number(page_number_style)
+        .with_footnote_zone(90.0);
+    let flow_footnotes: Vec<BlockNode<'_>> = vec![
+        BlockNode::new(Block::Paragraph(Paragraph::new(&footnote_heading_run, body_width)))
+            .with_break_control(BreakControl::ForceBefore)
+            .with_outline(1, "Footnotes"),
+        BlockNode::new(Block::Spacer(10.0)),
+        BlockNode::new(Block::Paragraph(Paragraph::new(&footnote_intro_run, body_width))),
+        BlockNode::new(Block::Spacer(14.0)),
+        fn_marked_node,
+    ];
+    let pages_footnotes = slice_pages(&flow_footnotes, &master_footnotes, &style_single, &shaper);
+    assert!(pages_footnotes[0].footnotes.is_some(), "the footnote demo page must carry a real, non-empty footnote zone");
 
     // ── slice every single-column section as ONE flow (ForceBefore pins
     // each exhibit group to its own fresh page), then concatenate with the
@@ -1059,6 +1158,11 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     flow_rest.extend(flow_island_center);
     flow_rest.extend(flow_island_sides);
     flow_rest.extend(flow_data);
+    // Typography-gap WAVE 3: resolve every `.with_caption()`-tagged node in
+    // this concatenated flow into a real, auto-numbered caption paragraph
+    // BEFORE composing — see `crate::caption`'s own module doc for why this
+    // needs no fixpoint (a pure, single-pass function of flow order).
+    let flow_rest = attach_captions(&flow_rest, &caption_style);
     let pages_rest = slice_pages(&flow_rest, &master_single, &style_single, &shaper);
 
     // ── Document navigation: a generated table of contents inserted
@@ -1073,6 +1177,7 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let mut body_after_opener: Vec<Page<'_>> = Vec::new();
     body_after_opener.extend(pages_two_col);
     body_after_opener.extend(pages_rest);
+    body_after_opener.extend(pages_footnotes);
 
     let toc_style = TocStyle { font: BODY_FONT, dot_char: '.', level_indent_px: 16.0, row_gap_px: 10.0 };
     let with_toc = compose_document_with_toc(body_after_opener, &master_single, &toc_style, &shaper, Some(&page_number_style));

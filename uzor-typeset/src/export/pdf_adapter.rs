@@ -185,6 +185,16 @@ pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) 
         if let Some(footer) = &page.footer {
             collect_text_runs_from_frame(footer, theme, &mut fonts, &mut builder, &mut collected);
         }
+        if let Some(footnotes) = &page.footnotes {
+            // The footnote zone's own content is a real `Block::List`
+            // (typography-gap WAVE 3) — walked by the SAME
+            // `collect_text_runs_from_frame`/`collect_text_runs_from_placed`
+            // recursion every other list in this crate already goes
+            // through (design law 1); its numbered marker glyphs paint via
+            // the page's own `PdfRenderContext` pass above (`draw_page_layers`
+            // already walks `Page::footnotes` there), never a second path.
+            collect_text_runs_from_frame(&footnotes.frame, theme, &mut fonts, &mut builder, &mut collected);
+        }
 
         let text_runs: Vec<PdfTextRun<'_>> = collected
             .iter()

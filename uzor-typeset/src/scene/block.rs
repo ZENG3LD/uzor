@@ -15,7 +15,9 @@
 use uzor_text::Paragraph;
 
 use crate::compose::keep_break::BreakControl;
+use crate::master::page_master::HeaderPlaceholder;
 use crate::scene::figure_block::FigureBlock;
+use crate::scene::footnote::Footnote;
 use crate::scene::image_block::ImageBlock;
 use crate::scene::island::AnchoredIsland;
 use crate::scene::list::ListBlock;
@@ -109,6 +111,31 @@ pub struct OutlineTag {
     pub title: String,
 }
 
+/// Which kind of auto-numbered caption a [`Caption`] labels (typography-gap
+/// WAVE 3) — a closed, small set (figures/tables), matching the design
+/// doc's own counter-introspection item's own worked example
+/// ("Figure 1 — ...", "Table 2 — ...").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CaptionKind {
+    Figure,
+    Table,
+}
+
+/// A [`BlockNode`] tagged as an auto-numbered figure/table caption via
+/// [`BlockNode::with_caption`] (typography-gap WAVE 3 — extends the same
+/// counter-introspection mechanism [`OutlineTag`]/`crate::toc` already
+/// implement for the document outline/TOC to figures/tables). `text` is
+/// the caption's own BODY text ONLY (e.g. `"a categorical bar chart..."`)
+/// — never including the auto-assigned `"Figure N — "` label prefix, which
+/// `crate::caption::attach_captions` resolves and prepends per this
+/// document's own [`crate::caption::CaptionStyle::label`] (configurable,
+/// never hardcoded in the engine — see that module's own doc comment).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Caption {
+    pub kind: CaptionKind,
+    pub text: String,
+}
+
 /// One node in a [`crate::compose::compose`] flow: a [`Block`] plus its
 /// (possibly author-assigned) identity and its keep/break preference.
 pub struct BlockNode<'a> {
@@ -126,13 +153,42 @@ pub struct BlockNode<'a> {
     /// the heading it names), but not restricted to TOC rows — any block
     /// can be tagged. `None` (the default) for every ordinary flow block.
     pub link_target: Option<u32>,
+    /// `Some` when this node (typically a `Block::Figure`/`Block::Table`)
+    /// gets an auto-numbered caption — see [`Caption`]/
+    /// [`BlockNode::with_caption`]. `None` (the default) for every
+    /// ordinary flow block (typography-gap WAVE 3).
+    pub caption: Option<Caption>,
+    /// Footnotes whose own inline marker lives somewhere inside THIS
+    /// node's own `Block::Paragraph` runs (typography-gap WAVE 3) — see
+    /// [`Footnote`]/[`BlockNode::with_footnotes`]'s own doc comment for the
+    /// marker-splicing convention. Empty (the default) for every ordinary
+    /// flow block.
+    pub footnotes: &'a [Footnote<'a>],
+    /// `Some` when this node's own `Block::Paragraph` text is a running-
+    /// header/footer placeholder, resolved PER PAGE at
+    /// `crate::slice::slice_pages` time (typography-gap WAVE 3) — see
+    /// [`HeaderPlaceholder`]/[`BlockNode::with_header_placeholder`]. `None`
+    /// (the default) for every ordinary flow block — including every
+    /// ordinary BODY-flow block, since this tag is only ever consulted for
+    /// [`crate::master::PageMaster::header`]/[`crate::master::PageMaster::
+    /// footer`] content.
+    pub header_placeholder: Option<HeaderPlaceholder>,
 }
 
 impl<'a> BlockNode<'a> {
     /// An unlabeled, `BreakControl::Auto` node — gets a structural id
     /// from [`resolve_block_ids`].
     pub fn new(kind: Block<'a>) -> Self {
-        Self { id: None, kind, break_control: BreakControl::Auto, outline: None, link_target: None }
+        Self {
+            id: None,
+            kind,
+            break_control: BreakControl::Auto,
+            outline: None,
+            link_target: None,
+            caption: None,
+            footnotes: &[],
+            header_placeholder: None,
+        }
     }
 
     /// Builder: assign an explicit author id.
@@ -162,6 +218,30 @@ impl<'a> BlockNode<'a> {
     /// [`BlockNode::link_target`]'s own doc comment.
     pub fn with_link_target(mut self, page_index: u32) -> Self {
         self.link_target = Some(page_index);
+        self
+    }
+
+    /// Builder: tag this node as an auto-numbered `kind` caption with
+    /// body `text` — see [`Caption`]'s own doc comment for what `text`
+    /// does and does not include.
+    pub fn with_caption(mut self, kind: CaptionKind, text: impl Into<String>) -> Self {
+        self.caption = Some(Caption { kind, text: text.into() });
+        self
+    }
+
+    /// Builder: attach the footnotes whose own inline markers live inside
+    /// this node's own `Block::Paragraph` runs — see [`Footnote`]'s own
+    /// doc comment for the marker-splicing convention.
+    pub fn with_footnotes(mut self, footnotes: &'a [Footnote<'a>]) -> Self {
+        self.footnotes = footnotes;
+        self
+    }
+
+    /// Builder: mark this node's own `Block::Paragraph` text as a running-
+    /// header/footer placeholder, resolved per page — see
+    /// [`HeaderPlaceholder`]'s own doc comment.
+    pub fn with_header_placeholder(mut self, placeholder: HeaderPlaceholder) -> Self {
+        self.header_placeholder = Some(placeholder);
         self
     }
 }

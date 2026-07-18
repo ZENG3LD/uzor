@@ -249,6 +249,13 @@ fn shape_hyphen(font: &FontSpec, shaper: &dyn LineShaper) -> (AtomGlyph, f64) {
 /// `atoms` is first expanded via [`hyphenate::expand_hyphenation`] into
 /// discretionary hyphen-fragment atoms (under that language's real
 /// hyph-utf8 pattern automaton, via `hypher`) before the DP runs.
+///
+/// [`Paragraph::max_consecutive_hyphens`] (typography-gap WAVE 3) dispatches
+/// to a genuinely separate DP ([`pack_lines_with_hyphen_limit`]) rather than
+/// being folded into this one — see that function's own doc comment for
+/// why a single shared implementation can't satisfy both "byte-identical
+/// when unset" and "a hard feasibility constraint, not just a demerit,
+/// when set" at once.
 pub(crate) fn pack_lines(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> Vec<Vec<Atom>> {
     if atoms.is_empty() {
         return Vec::new();
@@ -259,6 +266,18 @@ pub(crate) fn pack_lines(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &d
         atoms
     };
 
+    match paragraph.max_consecutive_hyphens {
+        Some(limit) => pack_lines_with_hyphen_limit(atoms, paragraph, shaper, limit),
+        None => pack_lines_unconstrained(atoms, paragraph, shaper),
+    }
+}
+
+/// The original (pre-WAVE-3) single-state DP — kept verbatim, byte-for-byte,
+/// as its own function so [`Paragraph::max_consecutive_hyphens`]'s documented
+/// "`None` (the default) ... byte-for-byte unchanged" guarantee is
+/// structural (the SAME code path runs, not a re-derivation that merely
+/// happens to agree), not just an empirically-tested claim.
+fn pack_lines_unconstrained(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> Vec<Vec<Atom>> {
     let max_width = if paragraph.max_width.is_finite() { paragraph.max_width.max(1.0) } else { f64::MAX };
     let candidates = legal_breaks(&atoms);
     let n = candidates.len();
@@ -318,6 +337,127 @@ pub(crate) fn pack_lines(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &d
     }
     path.reverse();
 
+    reconstruct_lines(&atoms, &candidates, &path, &mut hyphens)
+}
+
+/// Hard-constrained DP (typography-gap WAVE 3): a breakpoint sequence in
+/// which more than `limit` CONSECUTIVE lines end in a discretionary hyphen
+/// is INFEASIBLE — never reachable by the search, not merely
+/// demerit-discouraged the way [`DOUBLE_HYPHEN_DEMERIT`] already discourages
+/// exactly two in a row for the unconstrained case.
+///
+/// This needs a genuinely different DP shape, not a post-hoc filter over
+/// [`pack_lines_unconstrained`]'s own output: the single-state DP only ever
+/// tracks ONE path (the min-cost predecessor) per position, so it has no way
+/// to reject a min-cost path that violates the limit in favor of a
+/// slightly-more-expensive one that doesn't — the state must be extended to
+/// `(position, trailing consecutive-hyphen run length)`, exploring every
+/// feasible run length `0..=limit` at each position and keeping the best
+/// cost per state. `limit` is small in every realistic use (a handful at
+/// most), so this stays `O(n^2 * limit)` — the same asymptotic class as the
+/// unconstrained `O(n^2)` DP, just a small constant-factor multiplier
+/// bounded by a caller-chosen value, not `O(n)` (which would make an
+/// unconstrained default's `run_states == 1` a special case of this same
+/// function needing careful edge-handling for `limit == 0`'s own "reset to
+/// 0" transition — kept as two separate functions instead, per this
+/// function's own top doc comment, so that edge case never has to be
+/// reasoned about jointly with the untouched default path).
+///
+/// State `0` is always reachable at every position (every legal breakpoint
+/// has a NON-hyphen path reaching it — the paragraph's own mandatory final
+/// breakpoint and every interword-glue breakpoint are hyphen-independent),
+/// so this DP never runs out of feasible states regardless of `limit`
+/// (including `limit == 0`, which forbids hyphen breaks entirely) — no
+/// fallible surface, matching this crate's own "no panic on the hot path"
+/// convention.
+fn pack_lines_with_hyphen_limit(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &dyn LineShaper, limit: u8) -> Vec<Vec<Atom>> {
+    let max_width = if paragraph.max_width.is_finite() { paragraph.max_width.max(1.0) } else { f64::MAX };
+    let candidates = legal_breaks(&atoms);
+    let n = candidates.len();
+    let mut hyphens = HyphenCache::new(paragraph, shaper);
+
+    let run_states = limit as usize + 1;
+    let mut best = vec![vec![f64::INFINITY; run_states]; n];
+    let mut via = vec![vec![(0usize, 0usize); run_states]; n];
+    best[0][0] = 0.0;
+
+    for j in 1..n {
+        let c_j = candidates[j];
+        let is_final = c_j == atoms.len();
+        for i in 0..j {
+            let c_i = candidates[i];
+            if spans_a_break(&atoms, c_i, c_j) {
+                continue;
+            }
+
+            let slice = &atoms[c_i..c_j];
+            let ends_in_hyphen = matches!(slice.last(), Some(Atom::Text(t)) if t.hyphen_break);
+            let hyphen_width =
+                if ends_in_hyphen { hyphens.get(run_index_of(&slice[slice.len() - 1])).1 } else { 0.0 };
+            let (width, stretch, shrink) = span_metrics(slice, hyphen_width, ends_in_hyphen);
+
+            let b = if is_final { last_line_badness(width, max_width, shrink) } else { badness(width, max_width, stretch, shrink) };
+            let penalty = if ends_in_hyphen { HYPHEN_PENALTY } else { 0.0 };
+            let base_d = demerits(b, penalty);
+
+            for r in 0..run_states {
+                if !best[i][r].is_finite() {
+                    continue;
+                }
+
+                let new_r = if ends_in_hyphen {
+                    let candidate_r = r + 1;
+                    if candidate_r > limit as usize {
+                        continue; // INFEASIBLE — hard reject, never a demerit
+                    }
+                    candidate_r
+                } else {
+                    0
+                };
+
+                let mut d = base_d;
+                if ends_in_hyphen && r > 0 {
+                    d += DOUBLE_HYPHEN_DEMERIT;
+                }
+
+                let total = best[i][r] + d;
+                if total < best[j][new_r] {
+                    best[j][new_r] = total;
+                    via[j][new_r] = (i, r);
+                }
+            }
+        }
+    }
+
+    let last = n - 1;
+    let best_r = (0..run_states)
+        .filter(|&r| best[last][r].is_finite())
+        .min_by(|&a, &b| best[last][a].partial_cmp(&best[last][b]).unwrap_or(std::cmp::Ordering::Equal));
+
+    let Some(best_r) = best_r else {
+        // Never reached — state 0 is always feasible at every position (see
+        // this function's own top doc comment) — a single-line fallback
+        // keeps this function total regardless.
+        return vec![trim_trailing_discardables(&atoms).to_vec()];
+    };
+
+    let mut path = vec![last];
+    let mut cur = (last, best_r);
+    while cur.0 != 0 {
+        cur = via[cur.0][cur.1];
+        path.push(cur.0);
+    }
+    path.reverse();
+
+    reconstruct_lines(&atoms, &candidates, &path, &mut hyphens)
+}
+
+/// Turn a chosen candidate-index `path` (both DP shapes' own reconstruction
+/// step, factored out so [`pack_lines_unconstrained`]/
+/// [`pack_lines_with_hyphen_limit`] share ONE line-materialization pass —
+/// design law 1) into real line groups, appending the shaped hyphen glyph
+/// atom to any line whose own chosen break lands on a discretionary hyphen.
+fn reconstruct_lines(atoms: &[Atom], candidates: &[usize], path: &[usize], hyphens: &mut HyphenCache<'_>) -> Vec<Vec<Atom>> {
     let mut lines = Vec::with_capacity(path.len().saturating_sub(1));
     for w in path.windows(2) {
         let c_i = candidates[w[0]];
@@ -389,6 +529,8 @@ fn score_lines(lines: &[Vec<Atom>], max_width: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::layout_paragraph;
+    use crate::linebreak::BreakStrategy;
     use crate::model::{FontSpec, StyledRun};
     use crate::shape::CosmicShaper;
     use uzor::fonts::FontFamily;
@@ -446,5 +588,134 @@ mod tests {
             kp_score <= greedy_score + 1e-6,
             "KP ({kp_score}) must be at most as costly as greedy's grouping ({greedy_score})"
         );
+    }
+
+    /// Fixed fixture (a dense run of long, real-word hyphenation candidates
+    /// at a deliberately narrow column) that reliably produces SEVERAL
+    /// consecutive hyphen-ending lines under the unconstrained DP — the
+    /// regression floor every `max_consecutive_hyphens` test below measures
+    /// against (probed directly: this exact `(text, width)` pair produces
+    /// `max_consec == 8` unconstrained, comfortably more than any tested
+    /// limit).
+    const HYPHEN_DENSE_TEXT: &str = "Understanding internationalization and interoperability requires extraordinary \
+        counterproductive administrative documentation, particularly regarding \
+        responsibility, accountability, and extraordinary characterization \
+        of multidimensional configuration parameters across implementations.";
+    const HYPHEN_DENSE_WIDTH: f64 = 150.0;
+
+    /// Longest run of CONSECUTIVE lines whose own last glyph is the shaped
+    /// hyphen ("-") — the same "trailing consecutive hyphen count" the hard
+    /// constraint itself tracks, recomputed independently here directly from
+    /// `ParagraphLayout::lines`/`glyphs` (never trusting the DP's own
+    /// internal state) so this test proves the OUTPUT layout genuinely
+    /// respects the limit, not just that the DP's search space did.
+    fn max_consecutive_hyphen_lines(layout: &crate::layout::ParagraphLayout) -> usize {
+        let mut max_consec = 0usize;
+        let mut cur = 0usize;
+        for line in &layout.lines {
+            let ends_hyphen = layout.glyphs.iter().filter(|g| g.line_index == line.line_index).last().is_some_and(|g| g.cluster == "-");
+            if ends_hyphen {
+                cur += 1;
+                max_consec = max_consec.max(cur);
+            } else {
+                cur = 0;
+            }
+        }
+        max_consec
+    }
+
+    fn hyphen_dense_paragraph<'a>(runs: &'a [StyledRun<'a>], max_consecutive_hyphens: Option<u8>) -> Paragraph<'a> {
+        let mut p = Paragraph::new(runs, HYPHEN_DENSE_WIDTH).with_break_strategy(BreakStrategy::KnuthPlass).with_hyphenation(Hyphenation::English);
+        if let Some(limit) = max_consecutive_hyphens {
+            p = p.with_max_consecutive_hyphens(limit);
+        }
+        p
+    }
+
+    /// `max_consecutive_hyphens: None` (the default) must reproduce
+    /// [`pack_lines_unconstrained`]'s own output byte-for-byte — the SAME
+    /// code path runs (this test calls both entry points directly against
+    /// the identical atom stream), not merely an output that happens to
+    /// agree.
+    #[test]
+    fn default_max_consecutive_hyphens_is_byte_identical_to_the_unconstrained_path() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let runs = [StyledRun::new(HYPHEN_DENSE_TEXT, font)];
+        let paragraph = hyphen_dense_paragraph(&runs, None);
+        assert_eq!(paragraph.max_consecutive_hyphens, None);
+        let shaper = CosmicShaper::headless();
+
+        let atoms_a = greedy::build_atom_stream(&paragraph, &shaper);
+        let atoms_b = greedy::build_atom_stream(&paragraph, &shaper);
+        let expanded_a = hyphenate::expand_hyphenation(atoms_a, paragraph.hyphenation);
+        let expanded_b = hyphenate::expand_hyphenation(atoms_b, paragraph.hyphenation);
+
+        let via_dispatch = pack_lines(expanded_a.clone(), &paragraph, &shaper);
+        let via_direct = pack_lines_unconstrained(expanded_b, &paragraph, &shaper);
+
+        assert_eq!(via_dispatch.len(), via_direct.len());
+        for (a, b) in via_dispatch.iter().zip(via_direct.iter()) {
+            assert_eq!(a.len(), b.len());
+        }
+
+        // Sanity: the fixture is genuinely hyphen-dense unconstrained —
+        // otherwise the hard-limit tests below wouldn't be exercising
+        // anything real.
+        let layout = layout_paragraph(&paragraph, &shaper);
+        assert!(max_consecutive_hyphen_lines(&layout) >= 3, "fixture must be hyphen-dense enough to prove the hard constraint actually engages");
+    }
+
+    /// `max_consecutive_hyphens: Some(1)` (never two adjacent hyphen-ending
+    /// lines) is a HARD constraint on the fixture proven hyphen-dense above
+    /// — the resulting layout must contain ZERO adjacent hyphen-ending line
+    /// pairs, not merely fewer than the unconstrained case.
+    #[test]
+    fn hard_limit_of_one_forbids_any_two_adjacent_hyphen_ending_lines() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let runs = [StyledRun::new(HYPHEN_DENSE_TEXT, font)];
+        let paragraph = hyphen_dense_paragraph(&runs, Some(1));
+        let shaper = CosmicShaper::headless();
+
+        let layout = layout_paragraph(&paragraph, &shaper);
+        assert!(layout.lines.len() > 1, "fixture must still wrap to multiple lines under the constraint");
+        assert_eq!(max_consecutive_hyphen_lines(&layout), 1, "a limit of 1 must cap the longest consecutive-hyphen run at exactly 1 (never 0 lines simply refusing to hyphenate, and never 2+)");
+        assert!(layout.glyphs.iter().any(|g| g.cluster == "-"), "a limit of 1 still permits isolated (non-adjacent) hyphen breaks");
+    }
+
+    /// `max_consecutive_hyphens: Some(0)` forbids hyphen breaks ENTIRELY (a
+    /// run of at most 0 consecutive hyphens is, definitionally, zero) —
+    /// never a panic, never an infeasible-DP fallback, just plain word-glue
+    /// breaks throughout.
+    #[test]
+    fn hard_limit_of_zero_forbids_every_hyphen_break() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let runs = [StyledRun::new(HYPHEN_DENSE_TEXT, font)];
+        let paragraph = hyphen_dense_paragraph(&runs, Some(0));
+        let shaper = CosmicShaper::headless();
+
+        let layout = layout_paragraph(&paragraph, &shaper);
+        assert!(layout.lines.len() > 1, "fixture must still wrap (via ordinary word breaks) with hyphenation fully suppressed");
+        assert!(!layout.glyphs.iter().any(|g| g.cluster == "-"), "a limit of 0 must produce ZERO hyphen glyphs anywhere in the layout");
+    }
+
+    /// A limit tighter than the unconstrained fixture's own natural run
+    /// length (proven `>= 3` above) genuinely changes the chosen
+    /// breakpoints — `Some(2)` must strictly reduce the longest consecutive
+    /// run relative to the unconstrained layout, proving the constraint is
+    /// load-bearing, not a no-op that happens to already hold.
+    #[test]
+    fn a_tighter_limit_than_the_natural_run_length_strictly_reduces_it() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let runs = [StyledRun::new(HYPHEN_DENSE_TEXT, font)];
+        let shaper = CosmicShaper::headless();
+
+        let unconstrained = layout_paragraph(&hyphen_dense_paragraph(&runs, None), &shaper);
+        let limited = layout_paragraph(&hyphen_dense_paragraph(&runs, Some(2)), &shaper);
+
+        let unconstrained_run = max_consecutive_hyphen_lines(&unconstrained);
+        let limited_run = max_consecutive_hyphen_lines(&limited);
+        assert!(unconstrained_run > 2, "fixture's own unconstrained run must exceed the limit under test");
+        assert!(limited_run <= 2, "limited layout must never exceed the hard cap, got {limited_run}");
+        assert!(limited_run < unconstrained_run, "the constraint must genuinely change the chosen breakpoints, got limited={limited_run} unconstrained={unconstrained_run}");
     }
 }

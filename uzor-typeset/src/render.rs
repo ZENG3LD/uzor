@@ -154,9 +154,32 @@ pub fn draw_page_layers(ctx: &mut dyn RenderContext, page: &Page<'_>, theme: &Th
             draw_placed_block(ctx, placed, &default_color, &figure_theme, layers);
         }
     }
+    if let Some(footnotes) = &page.footnotes {
+        draw_footnote_separator(ctx, footnotes.frame.region.rect, &default_color);
+        for placed in &footnotes.frame.blocks {
+            draw_placed_block(ctx, placed, &default_color, &figure_theme, layers);
+        }
+    }
     if let Some(number) = &page.page_number {
         draw_page_number(ctx, number, theme);
     }
+}
+
+/// A short horizontal rule at the TOP of the footnote zone (typography-gap
+/// WAVE 3) — the classic footnote-separator convention (a rule shorter than
+/// the full text measure, never a full-width divider that would read as a
+/// section break). Painted via the EXISTING `RenderContext::fill_rect`
+/// primitive (design law 6 — no new drawing primitive), the SAME "paint a
+/// decoration as a filled rect" convention `uzor_text::draw_decorations`
+/// already uses for underline/strikethrough rules.
+fn draw_footnote_separator(ctx: &mut dyn RenderContext, zone_rect: Rect, default_color: &str) {
+    const RULE_HEIGHT: f64 = 1.0;
+    const RULE_WIDTH_FRACTION: f64 = 0.35;
+    if zone_rect.height <= 0.0 {
+        return;
+    }
+    ctx.set_fill_color(default_color);
+    ctx.fill_rect(zone_rect.x, zone_rect.y, zone_rect.width * RULE_WIDTH_FRACTION, RULE_HEIGHT);
 }
 
 /// Paint a composed [`Card`] (design doc §4.2's card/fluid mode) — the
