@@ -18,6 +18,10 @@ use crate::layout::ParagraphLayout;
 /// against a specific [`crate::model::FontSpec`]; the caller must have
 /// already set that same font on `ctx` (Phase 1's `GlyphLayout` carries no
 /// per-glyph font to read one back from — single font per paragraph).
+///
+/// Also paints `layout.decorations` (typography-gap WAVE 2), if any, using
+/// `color` as every span's own fallback (a span's own `color` override, if
+/// set, wins — same convention [`draw_paragraph`] uses for glyph ink).
 pub fn draw_layout(ctx: &mut dyn RenderContext, origin: (f64, f64), layout: &ParagraphLayout, color: &str) {
     ctx.set_text_align(TextAlign::Left);
     ctx.set_text_baseline(TextBaseline::Alphabetic);
@@ -28,6 +32,31 @@ pub fn draw_layout(ctx: &mut dyn RenderContext, origin: (f64, f64), layout: &Par
             continue;
         }
         ctx.fill_text(&glyph.cluster, origin.0 + glyph.x, origin.1 + glyph.y);
+    }
+
+    draw_decorations(ctx, origin, layout, color);
+}
+
+/// Paint `layout.decorations` (typography-gap WAVE 2: underline/
+/// strikethrough) as filled rects via the existing [`RenderContext::
+/// fill_rect`] primitive (design law 6: no new drawing primitive) —
+/// `(origin.0 + span.x_start, origin.1 + span.y, span.x_end - span.x_start,
+/// span.thickness)`, one `fill_rect` call per span. A standalone entry
+/// point (not folded into [`draw_paragraph`] alone) so a caller painting
+/// glyph ink and decoration rects through TWO SEPARATE render-context
+/// passes (`uzor-typeset::export::pdf_adapter`'s hybrid vector-text model —
+/// glyph ink as real `Tj` runs, decoration rects as real vector-content
+/// `fill_rect` ops, both against the SAME already-resolved layout) can
+/// paint decorations without also re-painting glyph ink a second time.
+/// [`draw_paragraph`]/[`draw_layout`] both already call this internally —
+/// a caller using either of those never needs to call this separately.
+pub fn draw_decorations(ctx: &mut dyn RenderContext, origin: (f64, f64), layout: &ParagraphLayout, default_color: &str) {
+    for span in &layout.decorations {
+        match span.color {
+            Some(rgba) => ctx.set_fill_color(&rgba_hex(rgba)),
+            None => ctx.set_fill_color(default_color),
+        }
+        ctx.fill_rect(origin.0 + span.x_start, origin.1 + span.y, span.x_end - span.x_start, span.thickness);
     }
 }
 
@@ -63,6 +92,8 @@ pub fn draw_paragraph(
         }
         ctx.fill_text(&glyph.cluster, origin.0 + glyph.x, origin.1 + glyph.y);
     }
+
+    draw_decorations(ctx, origin, layout, default_color);
 
     if debug_outline_boxes {
         ctx.set_stroke_color("#ff00ffff");
@@ -351,5 +382,43 @@ mod tests {
 
         assert_eq!(decoded_png_dims(&bytes), (width, HEIGHT));
         write_proof_png("text_p5_kp_hyphen.png", &bytes);
+    }
+
+    /// Typography-gap WAVE 2 headless proof: one paragraph exercising
+    /// every new per-run attribute side by side — an underlined run, a
+    /// strikethrough run, a wide-letter-spaced run, and `x` + superscript
+    /// `2` + subscript `n` — confirmed by eye (design law 8).
+    #[test]
+    fn typography_wave_2_decorations_spacing_and_script_render_to_a_valid_png() {
+        use crate::model::{TextDecoration, VerticalAlign};
+
+        const WIDTH: u32 = 520;
+        const HEIGHT: u32 = 160;
+
+        let font = FontSpec::new(FontFamily::Roboto, 22.0);
+        let runs = [
+            StyledRun::new("Underlined", font).with_decoration(TextDecoration::underline()),
+            StyledRun::new(" ", font),
+            StyledRun::new("Struck", font).with_decoration(TextDecoration::strikethrough()),
+            StyledRun::new(" ", font),
+            StyledRun::new("Spaced", font).with_letter_spacing(6.0),
+            StyledRun::new(" x", font),
+            StyledRun::new("2", font).with_vertical_align(VerticalAlign::Super),
+            StyledRun::new(" + a", font),
+            StyledRun::new("n", font).with_vertical_align(VerticalAlign::Sub),
+        ];
+        let paragraph = Paragraph::new(&runs, (WIDTH as f64) - 40.0);
+        let shaper = CosmicShaper::headless();
+        let layout = layout_paragraph(&paragraph, &shaper);
+        assert!(!layout.decorations.is_empty(), "fixture must exercise at least one decoration span");
+
+        let spec = ExportSpec { width_px: WIDTH, height_px: HEIGHT, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+        let bytes = render_to_png(&spec, |ctx| {
+            draw_paragraph(ctx, (20.0, 60.0), &layout, "#111111", false);
+        })
+        .expect("typography-wave-2 proof render should succeed");
+
+        assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
+        write_proof_png("text_wave2_decorations_spacing_script.png", &bytes);
     }
 }

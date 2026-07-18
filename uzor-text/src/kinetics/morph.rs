@@ -264,7 +264,13 @@ pub fn sample_layout(morph: &MorphTransition, t: f64, base_rgb: u32) -> Paragrap
     let width = morph.from.width.lerp(&morph.to.width, t);
     let height = morph.from.height.lerp(&morph.to.height, t);
 
-    ParagraphLayout { glyphs, lines: Vec::new(), boxes: Vec::new(), width, height }
+    // Typography-gap WAVE 2: decoration spans are NOT sampled through the
+    // morph — `GlyphState` carries no decoration/run-index-stable identity
+    // to interpolate a span's own x-extent against (the SAME "no fade for
+    // spans" gap this module's own `lines`/`boxes: Vec::new()` above
+    // already documents for line/box geometry), a documented, minor scope
+    // limit rather than a silent drop of a feature this phase never wired.
+    ParagraphLayout { glyphs, lines: Vec::new(), boxes: Vec::new(), decorations: Vec::new(), width, height }
 }
 
 /// Clone `source`'s non-positional fields onto `sampled`'s interpolated

@@ -19,7 +19,7 @@
 //! CURRENT region); a **widow** is this split's own TAIL (what the
 //! continuation would carry into the next region).
 
-use uzor_text::{GlyphLayout, LineBox, ParagraphLayout, PlacedInlineBox};
+use uzor_text::{DecorationSpan, GlyphLayout, LineBox, ParagraphLayout, PlacedInlineBox};
 
 /// How many of `layout`'s lines, starting at `from_line`, fit within
 /// `remaining_height` (summing each kept line's own `.height`).
@@ -104,10 +104,26 @@ pub(crate) fn slice_layout_lines(layout: &ParagraphLayout, from_line: usize, to_
         })
         .collect();
 
+    let decorations: Vec<DecorationSpan> = layout
+        .decorations
+        .iter()
+        .filter(|d| d.line_index >= from_line && d.line_index < to_line)
+        .map(|d| DecorationSpan {
+            run_index: d.run_index,
+            line_index: d.line_index - from_line,
+            kind: d.kind,
+            x_start: d.x_start,
+            x_end: d.x_end,
+            y: d.y - y_shift,
+            thickness: d.thickness,
+            color: d.color,
+        })
+        .collect();
+
     let width = lines.iter().map(|l| l.content_width).fold(0.0_f64, f64::max);
     let height = lines.last().map(|l| l.y_top + l.height).unwrap_or(0.0);
 
-    ParagraphLayout { glyphs, lines, boxes, width, height }
+    ParagraphLayout { glyphs, lines, boxes, decorations, width, height }
 }
 
 /// Widow/orphan-adjusted line count for a paragraph split at a region
@@ -295,5 +311,48 @@ mod tests {
         let empty = slice_layout_lines(&layout, 5, 5);
         assert!(empty.lines.is_empty());
         assert!(empty.glyphs.is_empty());
+    }
+
+    /// Typography-gap WAVE 2: a decoration span belonging to a kept line
+    /// survives the split, rebased the SAME way `lines`/`glyphs` are (line
+    /// index shifted, `y` rebased by the same `y_shift`); a span belonging
+    /// to a dropped line never leaks into the wrong half.
+    #[test]
+    fn slice_rebases_decoration_spans_the_same_way_as_lines_and_glyphs() {
+        use uzor::fonts::FontFamily;
+        use uzor_text::{layout_paragraph, CosmicShaper, FontSpec, Paragraph, StyledRun, TextDecoration};
+
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let runs = [StyledRun::new(WRAPPING_TEXT, font).with_decoration(TextDecoration::underline())];
+        let paragraph = Paragraph::new(&runs, 150.0);
+        let shaper = CosmicShaper::headless();
+        let layout = layout_paragraph(&paragraph, &shaper);
+        assert!(layout.lines.len() > 3, "fixture must wrap to several lines");
+        assert!(!layout.decorations.is_empty(), "the fully-underlined fixture must produce at least one span per line");
+
+        let split_at = layout.lines.len() / 2;
+        let head = slice_layout_lines(&layout, 0, split_at);
+        let tail = slice_layout_lines(&layout, split_at, layout.lines.len());
+
+        assert_eq!(
+            head.decorations.len() + tail.decorations.len(),
+            layout.decorations.len(),
+            "every decoration span must land in exactly one side"
+        );
+        for d in &head.decorations {
+            assert!(d.line_index < split_at, "head span line_index must be re-indexed within the head's own range");
+        }
+        for d in &tail.decorations {
+            assert!(d.line_index < layout.lines.len() - split_at, "tail span line_index must be re-indexed starting at 0");
+        }
+
+        // The tail's first-line decoration `y` must be rebased by the SAME
+        // `y_shift` the tail's own first `LineBox::y_top` (already 0.0,
+        // per the existing regression test above) was rebased by — i.e.
+        // it must sit at a SMALLER absolute `y` than the source layout's
+        // own corresponding span.
+        let source_tail_span = layout.decorations.iter().find(|d| d.line_index == split_at).expect("source must have a span on the split line");
+        let rebased_span = tail.decorations.iter().find(|d| d.line_index == 0).expect("tail must have a span on its own first line");
+        assert!(rebased_span.y < source_tail_span.y, "tail span y must be rebased upward (smaller) after the split");
     }
 }

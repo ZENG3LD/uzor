@@ -33,7 +33,7 @@
 use uzor::render::{RenderContext, TextAlign, TextBaseline};
 use uzor::types::Rect;
 use uzor_figures::FigureTheme;
-use uzor_text::draw_paragraph;
+use uzor_text::{draw_decorations, draw_paragraph};
 
 use crate::kinetics::FrameBlockState;
 use crate::region::{ListPlacement, PlacedBlock, TablePlacement};
@@ -78,11 +78,27 @@ pub struct DrawLayers {
     /// position as PDF vector text would need real shaping-backend font
     /// metrics this crate's own `ParagraphLayout` doesn't carry for them).
     pub paragraph_ink: bool,
+    /// Paint `Block::Paragraph` underline/strikethrough rects
+    /// (`uzor_text::draw_decorations`, typography-gap WAVE 2) —
+    /// independent of `paragraph_ink` so a caller can paint decoration
+    /// rects into a REAL PDF vector content stream (real `fill_rect` ops)
+    /// while the SAME pass suppresses raster glyph ink
+    /// (`uzor-typeset::export::pdf_adapter`'s pass 1 does exactly this:
+    /// `paragraph_ink: false, paragraph_decorations: true` — the glyphs
+    /// themselves paint separately as real `Tj` text in pass 2, but there
+    /// is no separate vector pass for decoration rects, so this flag lets
+    /// pass 1 emit them once, into the real content stream, without also
+    /// re-painting glyph ink a second time). `draw_placed_block`'s own
+    /// Paragraph arm never double-paints: when `paragraph_ink` is `true`
+    /// it paints ink+decorations together via `draw_paragraph` (which
+    /// already calls `draw_decorations` internally); `paragraph_decorations`
+    /// is only separately consulted when `paragraph_ink` is `false`.
+    pub paragraph_decorations: bool,
 }
 
 impl Default for DrawLayers {
     fn default() -> Self {
-        Self { paragraph_ink: true }
+        Self { paragraph_ink: true, paragraph_decorations: true }
     }
 }
 
@@ -250,9 +266,14 @@ fn draw_page_number(ctx: &mut dyn RenderContext, placement: &PageNumberPlacement
 fn draw_placed_block(ctx: &mut dyn RenderContext, placed: &PlacedBlock<'_>, default_color: &str, figure_theme: &FigureTheme, layers: DrawLayers) {
     match placed.kind {
         Block::Paragraph(_) => {
-            if layers.paragraph_ink {
-                if let Some(layout) = &placed.paragraph_layout {
+            if let Some(layout) = &placed.paragraph_layout {
+                if layers.paragraph_ink {
+                    // `draw_paragraph` already paints decorations
+                    // internally — never also call `draw_decorations`
+                    // here, or a decoration rect would paint twice.
                     draw_paragraph(ctx, (placed.rect.x, placed.rect.y), layout, default_color, false);
+                } else if layers.paragraph_decorations {
+                    draw_decorations(ctx, (placed.rect.x, placed.rect.y), layout, default_color);
                 }
             }
         }
@@ -461,18 +482,18 @@ mod tests {
         // by both the layout-count assertions and the PNG render closure
         // below without lifetime friction.
         static TITLE_RUN: [StyledRun<'static>; 1] =
-            [StyledRun { text: "Case Report — uzor-typeset P0 Proof", font: TITLE_FONT, color: None }];
-        static LEFT_A_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER_A, font: BODY_FONT, color: None }];
-        static LEFT_B_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER_B, font: BODY_FONT, color: None }];
+            [StyledRun { text: "Case Report — uzor-typeset P0 Proof", font: TITLE_FONT, color: None, decoration: uzor_text::TextDecoration::NONE, letter_spacing: 0.0, vertical_align: uzor_text::VerticalAlign::Baseline }];
+        static LEFT_A_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER_A, font: BODY_FONT, color: None, decoration: uzor_text::TextDecoration::NONE, letter_spacing: 0.0, vertical_align: uzor_text::VerticalAlign::Baseline }];
+        static LEFT_B_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER_B, font: BODY_FONT, color: None, decoration: uzor_text::TextDecoration::NONE, letter_spacing: 0.0, vertical_align: uzor_text::VerticalAlign::Baseline }];
         static CENTER_RUN: [StyledRun<'static>; 1] =
-            [StyledRun { text: "Section II — Centered Summary Heading", font: BODY_FONT, color: None }];
+            [StyledRun { text: "Section II — Centered Summary Heading", font: BODY_FONT, color: None, decoration: uzor_text::TextDecoration::NONE, letter_spacing: 0.0, vertical_align: uzor_text::VerticalAlign::Baseline }];
         static RIGHT_RUN: [StyledRun<'static>; 1] =
-            [StyledRun { text: "— Exhibit reference, right-aligned —", font: BODY_FONT, color: None }];
-        static JUSTIFY_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER_B, font: BODY_FONT, color: None }];
-        static TAIL_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER_A, font: BODY_FONT, color: None }];
-        static EXTRA_A_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER_B, font: BODY_FONT, color: None }];
-        static EXTRA_B_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER_A, font: BODY_FONT, color: None }];
-        static EXTRA_C_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER_B, font: BODY_FONT, color: None }];
+            [StyledRun { text: "— Exhibit reference, right-aligned —", font: BODY_FONT, color: None, decoration: uzor_text::TextDecoration::NONE, letter_spacing: 0.0, vertical_align: uzor_text::VerticalAlign::Baseline }];
+        static JUSTIFY_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER_B, font: BODY_FONT, color: None, decoration: uzor_text::TextDecoration::NONE, letter_spacing: 0.0, vertical_align: uzor_text::VerticalAlign::Baseline }];
+        static TAIL_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER_A, font: BODY_FONT, color: None, decoration: uzor_text::TextDecoration::NONE, letter_spacing: 0.0, vertical_align: uzor_text::VerticalAlign::Baseline }];
+        static EXTRA_A_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER_B, font: BODY_FONT, color: None, decoration: uzor_text::TextDecoration::NONE, letter_spacing: 0.0, vertical_align: uzor_text::VerticalAlign::Baseline }];
+        static EXTRA_B_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER_A, font: BODY_FONT, color: None, decoration: uzor_text::TextDecoration::NONE, letter_spacing: 0.0, vertical_align: uzor_text::VerticalAlign::Baseline }];
+        static EXTRA_C_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER_B, font: BODY_FONT, color: None, decoration: uzor_text::TextDecoration::NONE, letter_spacing: 0.0, vertical_align: uzor_text::VerticalAlign::Baseline }];
 
         const TITLE_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 22.0, bold: true, italic: false };
         const BODY_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 16.0, bold: false, italic: false };

@@ -13,9 +13,11 @@
 //!    page-number) paints THROUGH a fresh per-page
 //!    [`uzor_export::PdfRenderContext`], via the SAME
 //!    [`crate::render::draw_page_layers`] with
-//!    `DrawLayers { paragraph_ink: false }` this adapter has always used
-//!    (real paragraph glyph ink is deliberately suppressed here so it
-//!    isn't painted twice — see pass 2 below) — but now `ctx` IS the real
+//!    `DrawLayers { paragraph_ink: false, paragraph_decorations: true }`
+//!    this adapter uses (real paragraph glyph ink is deliberately
+//!    suppressed here so it isn't painted twice — see pass 2 below — but
+//!    underline/strikethrough decoration RECTS paint here, as real vector
+//!    `fill_rect` ops, typography-gap WAVE 2) — but now `ctx` IS the real
 //!    PDF page's own content stream, not an offscreen raster pixmap. This
 //!    is the WAVE 1 cutover this module's own history predates: the
 //!    previous phase (P5) rendered this same `DrawLayers`-suppressed pass
@@ -108,6 +110,10 @@ struct CollectedRun {
     y_pt: f64,
     rgb: u32,
     text: String,
+    /// Real shaped per-glyph advance (px == pt), one entry per `char` in
+    /// `text` — typography-gap WAVE 2 per-glyph PDF kerning. Fed straight
+    /// into `uzor_export::PdfTextRun::glyph_advances_pt`.
+    glyph_advances_pt: Vec<f64>,
 }
 
 /// Convert `pages` (already composed + sliced via [`crate::slice::
@@ -164,7 +170,7 @@ pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) 
             let mut pdf_ctx = PdfRenderContext::new(1.0, &mut builder, &mut fonts);
             pdf_ctx.set_fill_color(&theme.color_hex(ColorRole::Background));
             pdf_ctx.fill_rect(0.0, 0.0, master.width, master.height);
-            draw_page_layers(&mut pdf_ctx, page, theme, DrawLayers { paragraph_ink: false });
+            draw_page_layers(&mut pdf_ctx, page, theme, DrawLayers { paragraph_ink: false, paragraph_decorations: true });
             pdf_ctx.finish()
         };
 
@@ -182,7 +188,15 @@ pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) 
 
         let text_runs: Vec<PdfTextRun<'_>> = collected
             .iter()
-            .map(|run| PdfTextRun { font: run.font, size_pt: run.size_pt, x_pt: run.x_pt, y_pt: run.y_pt, rgb: run.rgb, text: run.text.as_str() })
+            .map(|run| PdfTextRun {
+                font: run.font,
+                size_pt: run.size_pt,
+                x_pt: run.x_pt,
+                y_pt: run.y_pt,
+                rgb: run.rgb,
+                text: run.text.as_str(),
+                glyph_advances_pt: Some(run.glyph_advances_pt.clone()),
+            })
             .collect();
         let links: Vec<PdfLink> = page
             .links
@@ -261,8 +275,28 @@ fn collect_text_runs_from_placed(placed: &PlacedBlock<'_>, theme: &Theme, fonts:
 /// glyph `x`, so the PDF viewer never needs to re-advance a space to
 /// place the next word: this is exactly what preserves `ParagraphAlign::
 /// Justify`'s interword stretch (which lives in the resolved `x` values
-/// themselves, not in any run's own natural advance) and prevents kerning
-/// drift from accumulating across a long line's worth of merged glyphs.
+/// themselves, not in any run's own natural advance).
+///
+/// **Typography-gap WAVE 2 (per-glyph PDF kerning)**: every collected
+/// run's own `glyph_advances_pt` records `GlyphLayout::advance` — the
+/// shaper's OWN real per-glyph advance, not the embedded font's static
+/// declared width — one entry per `char` in the merged `text`, matching
+/// `uzor_export::PdfTextRun::glyph_advances_pt`'s own per-char contract.
+/// `uzor_export::pdf::show_run` then emits a real `TJ` array (never a
+/// plain `Tj`) whenever any glyph pair's real advance genuinely differs
+/// from the font's static width by more than its own documented threshold
+/// — this is what prevents kerning drift from accumulating across a
+/// multi-glyph word's worth of merged glyphs (a plain `Tj` alone would
+/// silently re-advance every glyph after the first using the STATIC
+/// width, which is exactly what this pass fixes). A cluster spanning MORE
+/// than one `char` (a ligature — rare in the fonts this workspace embeds)
+/// assigns its own full real advance to the cluster's FIRST char and `0.0`
+/// to every subsequent char in that same cluster — the existing, pre-WAVE-
+/// 2 `gid_for_char`-per-char resolution already treats a ligature as
+/// several independent glyphs (a documented, pre-existing simplification
+/// this pass doesn't newly introduce), so a `0.0` continuation advance is
+/// the correct value to keep those glyphs visually coincident rather than
+/// spread across the ligature's own combined width.
 fn collect_from_layout(layout: &ParagraphLayout, rect: Rect, theme: &Theme, fonts: &mut PdfFontCache, builder: &mut PdfBuilder, out: &mut Vec<CollectedRun>) {
     let glyphs = &layout.glyphs;
     let mut i = 0;
@@ -281,6 +315,7 @@ fn collect_from_layout(layout: &ParagraphLayout, rect: Rect, theme: &Theme, font
         let start_y = first.y;
 
         let mut text = String::new();
+        let mut glyph_advances_pt: Vec<f64> = Vec::new();
         let mut j = i;
         while j < glyphs.len() {
             let g = &glyphs[j];
@@ -298,13 +333,18 @@ fn collect_from_layout(layout: &ParagraphLayout, rect: Rect, theme: &Theme, font
                 break;
             }
             text.push_str(&g.cluster);
+            let mut chars = g.cluster.chars();
+            if chars.next().is_some() {
+                glyph_advances_pt.push(g.advance);
+            }
+            glyph_advances_pt.extend(chars.map(|_| 0.0));
             j += 1;
         }
 
         if !text.is_empty() {
             let font_id = fonts.id_for(font.family, font.bold, font.italic, builder);
             let rgb = color.map(|rgba| (rgba >> 8) & 0x00FF_FFFF).unwrap_or_else(|| theme.color_rgb(ColorRole::Ink));
-            out.push(CollectedRun { font: font_id, size_pt: font.size_px, x_pt: rect.x + start_x, y_pt: rect.y + start_y, rgb, text });
+            out.push(CollectedRun { font: font_id, size_pt: font.size_px, x_pt: rect.x + start_x, y_pt: rect.y + start_y, rgb, text, glyph_advances_pt });
         }
 
         i = j.max(i + 1);
@@ -357,10 +397,10 @@ mod tests {
     /// occurring by accident) this test's own extraction assertion looks
     /// for.
     fn two_page_fixture(body_width: f64) -> Vec<BlockNode<'static>> {
-        static TITLE_RUN: [StyledRun<'static>; 1] = [StyledRun { text: "PDF Adapter Proof", font: TITLE_FONT, color: None }];
+        static TITLE_RUN: [StyledRun<'static>; 1] = [StyledRun { text: "PDF Adapter Proof", font: TITLE_FONT, color: None, decoration: uzor_text::TextDecoration::NONE, letter_spacing: 0.0, vertical_align: uzor_text::VerticalAlign::Baseline }];
         static MARKER_RUN: [StyledRun<'static>; 1] =
-            [StyledRun { text: "The fixture's own distinctive word is Zephyrine.", font: BODY_FONT, color: None }];
-        static FILLER_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER, font: BODY_FONT, color: None }];
+            [StyledRun { text: "The fixture's own distinctive word is Zephyrine.", font: BODY_FONT, color: None, decoration: uzor_text::TextDecoration::NONE, letter_spacing: 0.0, vertical_align: uzor_text::VerticalAlign::Baseline }];
+        static FILLER_RUN: [StyledRun<'static>; 1] = [StyledRun { text: FILLER, font: BODY_FONT, color: None, decoration: uzor_text::TextDecoration::NONE, letter_spacing: 0.0, vertical_align: uzor_text::VerticalAlign::Baseline }];
 
         const TITLE_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 22.0, bold: true, italic: false };
         const BODY_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 16.0, bold: false, italic: false };
@@ -495,6 +535,126 @@ mod tests {
             assert!((got.y_pt - (rect.y + exp.1)).abs() < 1e-6, "run {:?} y_pt {} != expected {}", got.text, got.y_pt, rect.y + exp.1);
             assert_eq!(&got.text, &exp.2);
         }
+    }
+
+    /// Typography-gap WAVE 2 (per-glyph PDF kerning): `collect_from_layout`
+    /// must record each collected word's own REAL shaped per-glyph
+    /// advances (`GlyphLayout::advance`), not the embedded font's static
+    /// declared widths — proven directly by comparing `CollectedRun::
+    /// glyph_advances_pt` against the source `ParagraphLayout::glyphs`
+    /// verbatim, independent of `PdfBuilder`'s own internal TJ-vs-Tj
+    /// decision (that decision is `uzor-export`'s own gate, see
+    /// `pdf::tests::a_run_whose_real_advances_differ_from_static_widths_
+    /// emits_a_tj_array_with_adjustments`).
+    #[test]
+    fn collect_from_layout_records_the_real_shaped_advance_per_glyph() {
+        use super::collect_from_layout;
+        use uzor_export::PdfFontCache;
+        use uzor_text::layout_paragraph;
+
+        let font = FontSpec { family: FontFamily::Roboto, size_px: 20.0, bold: false, italic: false };
+        let runs = [StyledRun::new("Word", font)];
+        let paragraph = Paragraph::new(&runs, 1000.0);
+        let shaper = CosmicShaper::headless();
+        let layout = layout_paragraph(&paragraph, &shaper);
+        assert_eq!(layout.lines.len(), 1);
+
+        let theme = Theme::light_report();
+        let mut builder = uzor_export::PdfBuilder::new();
+        let mut fonts = PdfFontCache::new();
+        let mut collected = Vec::new();
+        let rect = uzor::types::Rect { x: 0.0, y: 0.0, width: 1000.0, height: 100.0 };
+        collect_from_layout(&layout, rect, &theme, &mut fonts, &mut builder, &mut collected);
+        assert_eq!(collected.len(), 1, "single unbroken word must collect into exactly one run");
+
+        let word_glyph_advances: Vec<f64> = layout.glyphs.iter().filter(|g| !g.cluster.trim().is_empty()).map(|g| g.advance).collect();
+        assert_eq!(
+            collected[0].glyph_advances_pt, word_glyph_advances,
+            "collected glyph_advances_pt must equal GlyphLayout::advance verbatim, in order"
+        );
+    }
+
+    /// Typography-gap WAVE 2 end-to-end proof: a letter-spaced word's real
+    /// shaped advances are GUARANTEED to differ from the embedded font's
+    /// own static declared widths by exactly `letter_spacing` per glyph
+    /// (deterministic, unlike relying on Roboto's own real kerning-table
+    /// contents for an ordinary word) — `pages_to_pdf` must therefore emit
+    /// a real `TJ` array (never a plain `Tj`) for that run, AND the word
+    /// must still round-trip verbatim through `/ToUnicode` text
+    /// extraction (position-adjusted text is still real, searchable text).
+    #[test]
+    fn a_letter_spaced_word_round_trips_through_a_real_tj_array() {
+        let font = FontSpec { family: FontFamily::Roboto, size_px: 24.0, bold: false, italic: false };
+        let master = PageMaster::new(PAGE_WIDTH, PAGE_HEIGHT, Margins::uniform(40.0));
+        let body_width = master.body_rect().width;
+
+        let spaced_run = [StyledRun::new("Spacing", font).with_letter_spacing(5.0)];
+        let flow = vec![BlockNode::new(Block::Paragraph(Paragraph::new(&spaced_run, body_width)))];
+
+        let theme = Theme::light_report();
+        let style = ComposeStyle::from_theme(&theme, 12.0);
+        let shaper = CosmicShaper::headless();
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1);
+
+        let pdf_bytes = pages_to_pdf(&pages, &master, &theme);
+        let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
+        let lopdf_pages = doc.get_pages();
+        let page_id = *lopdf_pages.values().next().expect("one page");
+
+        let content_bytes = doc.get_page_content(page_id);
+        let content_str = String::from_utf8_lossy(&content_bytes);
+        assert!(
+            content_str.contains("TJ"),
+            "a letter-spaced word's real advances must differ enough from static widths to force a real TJ array, got: {content_str}"
+        );
+
+        let page_numbers: Vec<u32> = lopdf_pages.keys().copied().collect();
+        let extracted = doc.extract_text(&page_numbers).expect("lopdf text extraction must succeed");
+        assert!(extracted.contains("Spacing"), "TJ-positioned, letter-spaced text must still extract verbatim — got: {extracted:?}");
+    }
+
+    /// Typography-gap WAVE 2: an underlined paragraph's decoration rect
+    /// paints as a REAL vector `re`/`f` fill operator in the PDF content
+    /// stream (through `PdfRenderContext`'s pass-1 pipeline, gated by
+    /// `DrawLayers::paragraph_decorations`), never baked into a raster —
+    /// this fixture places no `Block::Image`/`Block::Island`, so NO page
+    /// may carry an `/XObject` at all (WAVE 1's own promise, still true
+    /// here).
+    #[test]
+    fn underlined_paragraph_decoration_rect_is_real_vector_content_not_raster() {
+        use uzor_text::TextDecoration;
+
+        let font = FontSpec { family: FontFamily::Roboto, size_px: 18.0, bold: false, italic: false };
+        let master = PageMaster::new(PAGE_WIDTH, PAGE_HEIGHT, Margins::uniform(40.0));
+        let body_width = master.body_rect().width;
+
+        let underlined_run = [StyledRun::new("Underlined heading", font).with_decoration(TextDecoration::underline())];
+        let flow = vec![BlockNode::new(Block::Paragraph(Paragraph::new(&underlined_run, body_width)))];
+
+        let theme = Theme::light_report();
+        let style = ComposeStyle::from_theme(&theme, 12.0);
+        let shaper = CosmicShaper::headless();
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1);
+
+        let pdf_bytes = pages_to_pdf(&pages, &master, &theme);
+        let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
+        let lopdf_pages = doc.get_pages();
+        let page_id = *lopdf_pages.values().next().expect("one page");
+
+        let (resources, _) = doc.get_page_resources(page_id).expect("get_page_resources should succeed");
+        let has_xobjects = resources.and_then(|r| r.get(b"XObject").and_then(lopdf::Object::as_dict).ok()).is_some_and(|d| !d.is_empty());
+        assert!(!has_xobjects, "an underline-only, image-free page must carry NO XObject at all");
+
+        let content_bytes = doc.get_page_content(page_id);
+        let content_str = String::from_utf8_lossy(&content_bytes);
+        let toks: Vec<&str> = content_str.split_whitespace().collect();
+        assert!(toks.contains(&"f") || toks.contains(&"re"), "the underline rect must be a real fill operator, got: {content_str}");
+
+        let page_numbers: Vec<u32> = lopdf_pages.keys().copied().collect();
+        let extracted = doc.extract_text(&page_numbers).expect("lopdf text extraction must succeed");
+        assert!(extracted.contains("Underlined"), "the underlined text itself must still extract verbatim — got: {extracted:?}");
     }
 
     /// The real deliverable this phase exists to produce (design law 8 —

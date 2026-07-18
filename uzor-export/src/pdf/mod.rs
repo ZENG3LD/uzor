@@ -140,6 +140,19 @@ pub struct PdfTextRun<'a> {
     /// Packed `0xRRGGBB`.
     pub rgb: u32,
     pub text: &'a str,
+    /// Real per-glyph shaped advance (px == pt, this module's own "1pt =
+    /// 1px" convention), one entry per `char` in `text` (typography-gap
+    /// WAVE 2 — per-glyph PDF kerning). `None` trusts the embedded font's
+    /// own static declared widths verbatim for every glyph in this run —
+    /// byte-identical to this field's pre-WAVE-2 absence, the default for
+    /// EVERY figure/chrome text call (`PdfRenderContext::fill_text` never
+    /// has a real shaper's own advances to hand — see `render_context.rs`)
+    /// and for a caller that genuinely doesn't know its own real advances.
+    /// `Some(advances)` shorter than `text`'s own char count is padded
+    /// with the font's own static width for the missing tail (never a
+    /// panic, never silently truncates the run); a LONGER `advances` has
+    /// its extra entries ignored.
+    pub glyph_advances_pt: Option<Vec<f64>>,
 }
 
 /// One PDF page: its physical size, an optional full-page opaque raster
@@ -254,6 +267,13 @@ struct PageTextRun {
     /// to [`PdfBuilder::finish`] — subsetting/CID-remapping is the only
     /// thing that waits until every page is known.
     glyphs: Vec<(u16, char)>,
+    /// Moved verbatim from [`PdfTextRun::glyph_advances_pt`] — typography-
+    /// gap WAVE 2 per-glyph PDF kerning. Resolved into real `TJ` array
+    /// adjustments at [`write_page`] time (needs each font's own static
+    /// declared widths, only fully known once every page's glyph usage is
+    /// collected — same timing every other subsetting-dependent value in
+    /// this module already waits for).
+    real_advances_pt: Option<Vec<f64>>,
 }
 
 struct PageRecord {
@@ -354,11 +374,19 @@ impl PdfBuilder {
 
         let runs = spec
             .text_runs
-            .iter()
+            .into_iter()
             .map(|run| {
                 let metrics = &self.fonts[run.font.0 as usize].metrics;
                 let glyphs = run.text.chars().map(|ch| (metrics.gid_for_char(ch).unwrap_or(0), ch)).collect();
-                PageTextRun { font_id: run.font, size_pt: run.size_pt, x_pt: run.x_pt, y_pt: run.y_pt, rgb: run.rgb, glyphs }
+                PageTextRun {
+                    font_id: run.font,
+                    size_pt: run.size_pt,
+                    x_pt: run.x_pt,
+                    y_pt: run.y_pt,
+                    rgb: run.rgb,
+                    glyphs,
+                    real_advances_pt: run.glyph_advances_pt,
+                }
             })
             .collect();
 
@@ -445,7 +473,20 @@ impl PdfBuilder {
         }
 
         for (i, page) in self.pages.iter().enumerate() {
-            write_page(&mut pdf, &mut refs, page_tree_id, &page_refs[i], &font_names, &font_refs, page, image_names[i].as_str(), &font_data, &page_only_refs, &page_heights_pt);
+            write_page(
+                &mut pdf,
+                &mut refs,
+                page_tree_id,
+                &page_refs[i],
+                &font_names,
+                &font_refs,
+                page,
+                image_names[i].as_str(),
+                &font_data,
+                &page_only_refs,
+                &page_heights_pt,
+                &self.fonts,
+            );
         }
 
         if let (Some(meta), Some(info_id)) = (&self.meta, info_ref) {
@@ -609,6 +650,7 @@ fn write_page(
     font_data: &[FontData],
     page_refs_by_index: &[Ref],
     page_heights_pt: &[f64],
+    fonts: &[FontEntry],
 ) {
     if let (Some(image_ref), Some((rgb, width, height))) = (refs.image, page.raster_rgb.as_ref()) {
         let compressed = flate_compress(rgb);
@@ -642,7 +684,8 @@ fn write_page(
                 content.set_font(Name(font_names[run.font_id.0 as usize].as_bytes()), run.size_pt as f32);
                 content.set_text_matrix([1.0, 0.0, 0.0, 1.0, run.x_pt as f32, (page.height_pt - run.y_pt) as f32]);
                 let orig_to_new = &font_data[run.font_id.0 as usize].orig_to_new;
-                content.show(Str(&cid_bytes(&run.glyphs, orig_to_new)));
+                let metrics = &fonts[run.font_id.0 as usize].metrics;
+                show_run(&mut content, run, orig_to_new, metrics);
             }
             content.end_text();
         }
@@ -735,6 +778,75 @@ fn cid_bytes(glyphs: &[(u16, char)], orig_to_new: &HashMap<u16, u16>) -> Vec<u8>
         bytes.extend_from_slice(&cid.to_be_bytes());
     }
     bytes
+}
+
+/// Minimum `|adjustment|` (thousandths-of-text-space units, `TJ`'s own
+/// scale) worth emitting as a real gap — typography-gap WAVE 2 per-glyph
+/// PDF kerning. Below this a real PDF viewer's own sub-unit rounding makes
+/// the difference visually imperceptible, so the glyph simply joins the
+/// current string segment uninterrupted.
+const MIN_TJ_ADJUST_UNITS: f32 = 1.0;
+
+/// Show one text run's glyphs (typography-gap WAVE 2). `run.real_advances_pt
+/// == None` (every figure/chrome [`crate::pdf::render_context::
+/// PdfRenderContext::fill_text`] call, and any [`PdfTextRun`] caller that
+/// doesn't know its own real shaped advances) degrades to the EXACT
+/// pre-WAVE-2 single `Tj` — byte-identical output for every caller that
+/// never opts in (existing `content_str.contains("Tj")`-style assertions
+/// stay true). `Some(real)` replaces `Tj` with a `TJ` array carrying a real
+/// per-glyph positioning adjustment (`static_width_pt - target_pt`,
+/// converted to `TJ`'s own thousandths-of-text-space scale) between any
+/// two glyphs whose difference clears [`MIN_TJ_ADJUST_UNITS`] — but ONLY
+/// when at least one glyph pair in the run actually needs one; a run whose
+/// real advances happen to already match the font's own static widths
+/// closely still emits the smaller, byte-identical plain `Tj`.
+fn show_run(content: &mut Content, run: &PageTextRun, orig_to_new: &HashMap<u16, u16>, metrics: &ttf::TtfMetrics) {
+    let Some(real) = run.real_advances_pt.as_deref() else {
+        content.show(Str(&cid_bytes(&run.glyphs, orig_to_new)));
+        return;
+    };
+
+    // Adjustment (TJ units) to insert AFTER glyph `i` (between it and
+    // glyph `i + 1`) — none after the last glyph, nothing follows it in
+    // this run. A `real` shorter than `run.glyphs` pads the missing tail
+    // with the font's own static width (documented `PdfTextRun::
+    // glyph_advances_pt` contract — `target_pt == static_width_pt` there
+    // yields a zero adjustment, never a truncated run).
+    let glyph_count = run.glyphs.len();
+    let mut adjustments: Vec<f32> = Vec::with_capacity(glyph_count.saturating_sub(1));
+    for (i, &(gid, _)) in run.glyphs.iter().enumerate() {
+        if i + 1 >= glyph_count {
+            break;
+        }
+        let static_width_pt = metrics.advance_1000_for_gid(gid) / 1000.0 * run.size_pt;
+        let target_pt = real.get(i).copied().unwrap_or(static_width_pt);
+        let adjust_pt = static_width_pt - target_pt;
+        adjustments.push((adjust_pt * 1000.0 / run.size_pt) as f32);
+    }
+
+    if adjustments.iter().all(|a| a.abs() < MIN_TJ_ADJUST_UNITS) {
+        content.show(Str(&cid_bytes(&run.glyphs, orig_to_new)));
+        return;
+    }
+
+    let mut positioned = content.show_positioned();
+    let mut items = positioned.items();
+    let mut segment: Vec<u8> = Vec::new();
+    for (i, &(gid, _)) in run.glyphs.iter().enumerate() {
+        let cid = orig_to_new.get(&gid).copied().unwrap_or(0);
+        segment.extend_from_slice(&cid.to_be_bytes());
+
+        if let Some(&adjust_units) = adjustments.get(i) {
+            if adjust_units.abs() >= MIN_TJ_ADJUST_UNITS {
+                items.show(Str(&segment));
+                segment.clear();
+                items.adjust(adjust_units);
+            }
+        }
+    }
+    if !segment.is_empty() {
+        items.show(Str(&segment));
+    }
 }
 
 fn write_info(pdf: &mut Pdf, info_id: Ref, meta: &PdfMeta) {
@@ -865,7 +977,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Hello PDF" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "Hello PDF" }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -885,7 +997,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Hello PDF" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "Hello PDF" }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -940,7 +1052,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "A\u{F8FF}B" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "A\u{F8FF}B" }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -966,7 +1078,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 14.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: cyrillic }],
+                text_runs: vec![PdfTextRun { font, size_pt: 14.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: cyrillic }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -988,6 +1100,135 @@ mod tests {
         assert!(content_str.contains("Tj"), "content stream must contain a Tj text-showing operator, got {content_str:?}");
     }
 
+    /// Typography-gap WAVE 2 (per-glyph PDF kerning): a run with
+    /// `glyph_advances_pt: None` (the pre-WAVE-2, every-figure/chrome-call
+    /// default) must still emit the plain, byte-identical `Tj` — never a
+    /// `TJ` array — even though this test's own gate cares about the
+    /// SIBLING test below actually engaging `TJ`.
+    #[test]
+    fn a_run_with_no_real_advances_still_emits_a_plain_tj() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 200.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun { font, size_pt: 24.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "Kerning" }],
+                links: Vec::new(),
+                content: PdfContentStream::empty(),
+            })
+            .expect("add_page should succeed");
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+        let pages = doc.get_pages();
+        let page_id = *pages.values().next().expect("one page");
+        let content_bytes = doc.get_page_content(page_id);
+        let content_str = String::from_utf8_lossy(&content_bytes);
+        assert!(content_str.contains("Tj"), "no real advances -> plain Tj, got {content_str:?}");
+        assert!(!content_str.contains("TJ"), "no real advances must never produce a TJ array, got {content_str:?}");
+    }
+
+    /// Typography-gap WAVE 2 (per-glyph PDF kerning): a run whose
+    /// `glyph_advances_pt` genuinely differ from the embedded font's own
+    /// static declared widths must emit a real `TJ` array with at least
+    /// one non-zero adjustment number, AND every glyph must still be
+    /// individually extractable (position-adjusted `Tj`/`TJ` text is still
+    /// real, searchable text — `/ToUnicode` doesn't care how the glyphs
+    /// were positioned).
+    #[test]
+    fn a_run_whose_real_advances_differ_from_static_widths_emits_a_tj_array_with_adjustments() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        let text = "Kerning";
+        let size_pt = 24.0;
+        // Deliberately, wildly different from Roboto's own static glyph
+        // widths at 24pt (every glyph advances a flat 40pt) — guarantees
+        // at least one adjustment clears `MIN_TJ_ADJUST_UNITS`.
+        let fake_advances: Vec<f64> = vec![40.0; text.chars().count()];
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 400.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun {
+                    font,
+                    size_pt,
+                    x_pt: 10.0,
+                    y_pt: 20.0,
+                    rgb: 0x111111,
+                    glyph_advances_pt: Some(fake_advances),
+                    text,
+                }],
+                links: Vec::new(),
+                content: PdfContentStream::empty(),
+            })
+            .expect("add_page should succeed");
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+        let pages = doc.get_pages();
+        let page_id = *pages.values().next().expect("one page");
+        let content_bytes = doc.get_page_content(page_id);
+        let content_str = String::from_utf8_lossy(&content_bytes);
+        assert!(content_str.contains("TJ"), "wildly different real advances must produce a real TJ array, got {content_str:?}");
+
+        let page_numbers: Vec<u32> = pages.keys().copied().collect();
+        let extracted = doc.extract_text(&page_numbers).expect("lopdf text extraction must succeed");
+        assert!(extracted.contains(text), "TJ-positioned text must still extract verbatim via ToUnicode, got {extracted:?}");
+    }
+
+    /// A run whose `glyph_advances_pt` happen to already match the
+    /// embedded font's own static widths (within `MIN_TJ_ADJUST_UNITS`)
+    /// still degrades to a plain `Tj` — `Some(..)` alone never forces a
+    /// `TJ` array; only a genuinely significant per-glyph difference does.
+    #[test]
+    fn a_run_whose_real_advances_match_static_widths_still_emits_a_plain_tj() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        let text = "Hi";
+        let size_pt = 12.0;
+
+        // Resolve each char's REAL static width the same way this crate's
+        // own `ttf::TtfMetrics` would, so the supplied advances are
+        // (within floating-point noise) identical to what `show_run`
+        // would have used anyway.
+        let metrics = ttf::TtfMetrics::parse(ROBOTO_REGULAR);
+        let matching_advances: Vec<f64> =
+            text.chars().map(|ch| metrics.advance_1000_for_gid(metrics.gid_for_char(ch).unwrap_or(0)) / 1000.0 * size_pt).collect();
+
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 200.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun {
+                    font,
+                    size_pt,
+                    x_pt: 10.0,
+                    y_pt: 20.0,
+                    rgb: 0x111111,
+                    glyph_advances_pt: Some(matching_advances),
+                    text,
+                }],
+                links: Vec::new(),
+                content: PdfContentStream::empty(),
+            })
+            .expect("add_page should succeed");
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+        let pages = doc.get_pages();
+        let page_id = *pages.values().next().expect("one page");
+        let content_bytes = doc.get_page_content(page_id);
+        let content_str = String::from_utf8_lossy(&content_bytes);
+        assert!(!content_str.contains("TJ"), "advances matching the static widths must never force a TJ array, got {content_str:?}");
+    }
+
     /// Subsetting: the embedded font stream must be smaller than the full
     /// TTF, and extraction must still work (via `/ToUnicode`) against the
     /// SUBSET font's own remapped CIDs.
@@ -1001,7 +1242,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Hi" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "Hi" }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -1067,7 +1308,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "x" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "x" }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -1083,7 +1324,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "x" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "x" }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -1115,7 +1356,7 @@ mod tests {
                     height_pt: 100.0,
                     raster: None,
                     raster_px: (0, 0),
-                    text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Hello lopdf" }],
+                    text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "Hello lopdf" }],
                     links: Vec::new(),
                 content: PdfContentStream::empty(),
                 })
@@ -1189,7 +1430,7 @@ mod tests {
                     height_pt: 300.0,
                     raster: None,
                     raster_px: (0, 0),
-                    text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "Page" }],
+                    text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "Page" }],
                     links: Vec::new(),
                 content: PdfContentStream::empty(),
                 })
@@ -1256,7 +1497,7 @@ mod tests {
                 height_pt: 300.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, text: "See page 2" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "See page 2" }],
                 links: vec![PdfLink { x_pt: 10.0, y_pt: 20.0, width_pt: 80.0, height_pt: 16.0, target_page: 1 }],
                 content: PdfContentStream::empty(),
             })

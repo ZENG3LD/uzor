@@ -32,10 +32,13 @@ pub mod measure;
 pub mod model;
 pub mod shape;
 
-pub use draw::{draw_layout, draw_paragraph};
+pub use draw::{draw_decorations, draw_layout, draw_paragraph};
 pub use kinetics::{build_morph, sample, sample_layout, GlyphState, MorphTransition};
-pub use layout::{align_lines, layout_paragraph, layout_text, Align, GlyphLayout, LineBox, ParagraphLayout, PlacedInlineBox};
+pub use layout::{
+    align_lines, layout_paragraph, layout_text, Align, DecorationKind, DecorationSpan, GlyphLayout, LineBox, ParagraphLayout,
+    PlacedInlineBox,
+};
 pub use linebreak::{BreakStrategy, Hyphenation};
 pub use measure::paragraph_intrinsic_size;
-pub use model::{FontSpec, InlineBox, InlineBoxKind, InlineBoxSlot, Paragraph, ParagraphAlign, StyledRun};
+pub use model::{FontSpec, InlineBox, InlineBoxKind, InlineBoxSlot, Paragraph, ParagraphAlign, StyledRun, TextDecoration, VerticalAlign};
 pub use shape::{CosmicShaper, LineShaper};

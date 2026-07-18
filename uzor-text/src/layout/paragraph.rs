@@ -3,11 +3,11 @@
 
 use crate::linebreak::knuth_plass::GLUE_SHRINK_RATIO;
 use crate::linebreak::BreakStrategy;
-use crate::model::{InlineBox, Paragraph, ParagraphAlign};
+use crate::model::{InlineBox, Paragraph, ParagraphAlign, StyledRun};
 use crate::shape::LineShaper;
 
 use super::baseline::resolve_line_metrics;
-use super::glyph_layout::{GlyphLayout, LineBox, ParagraphLayout, PlacedInlineBox};
+use super::glyph_layout::{DecorationKind, DecorationSpan, GlyphLayout, LineBox, ParagraphLayout, PlacedInlineBox};
 use super::greedy::{self, Atom};
 
 /// Lay out `paragraph`'s runs (+ any spliced [`InlineBox`]es), word-wrapped
@@ -87,16 +87,30 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
             match atom {
                 Atom::Text(t) => {
                     let run = &paragraph.runs[t.run_index];
+                    // Typography-gap WAVE 2 (sub/superscript): shift is
+                    // resolved against the run's own NOMINAL font size
+                    // (never `t.shape_font`, which is already shrunk under
+                    // `Super`/`Sub` — em-ratios are defined against the
+                    // unscaled size, matching standard OpenType script-
+                    // metric convention, see `VerticalAlign::baseline_shift`'s
+                    // own doc comment).
+                    let vshift = run.vertical_align.baseline_shift(run.font.size_px);
                     for g in &t.glyphs {
                         glyphs.push(GlyphLayout {
                             cluster: g.cluster.clone(),
                             run_index: t.run_index,
                             line_index,
                             x: pen_x + g.x,
-                            y: baseline_y + g.y_offset,
+                            y: baseline_y + g.y_offset + vshift,
                             advance: g.advance,
                             width: g.width,
-                            font: run.font,
+                            // The font glyphs were ACTUALLY shaped at (see
+                            // `TextAtom::shape_font`'s own doc comment) —
+                            // never `run.font` directly, so a painter that
+                            // trusts `GlyphLayout::font` for `set_font`
+                            // never mismatches a shrunk sub/superscript
+                            // glyph's already-resolved position/width.
+                            font: t.shape_font,
                             color: run.color,
                         });
                     }
@@ -120,8 +134,9 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
 
     let width = lines.iter().map(|l| l.content_width).fold(0.0_f64, f64::max);
     let height = lines.last().map(|l| l.y_top + l.height).unwrap_or(0.0);
+    let decorations = build_decoration_spans(&glyphs, paragraph.runs);
 
-    ParagraphLayout { glyphs, lines, boxes, width, height }
+    ParagraphLayout { glyphs, lines, boxes, decorations, width, height }
 }
 
 /// `true` for a non-glue [`Atom::Text`] spanning exactly one glyph — a
@@ -210,6 +225,117 @@ fn glue_extras_for_line(line_atoms: &[Atom], glue_count: usize, raw: f64) -> Vec
     let per_regular = (deficit / regular_count as f64).max(floor);
 
     protected.iter().map(|&p| if p { 0.0 } else { per_regular }).collect()
+}
+
+/// Underline offset below the baseline, in em (fraction of the owning
+/// run's own `font.size_px`) — typography-gap WAVE 2. A sane fixed
+/// fallback, not a real font-embedded `underlinePosition` (see
+/// [`crate::model::VerticalAlign`]'s own doc comment for the identical
+/// "no in-crate path to a real font's own metrics" reasoning — same
+/// dependency-boundary law applies here).
+const UNDERLINE_OFFSET_EM: f64 = 0.08;
+
+/// Strikethrough offset ABOVE the baseline, in em — roughly mid x-height,
+/// matching the common CSS/OpenType convention closely enough to read
+/// correctly in every embedded font this workspace ships.
+const STRIKETHROUGH_OFFSET_EM: f64 = 0.30;
+
+/// Decoration rule thickness, in em, floored at [`MIN_DECORATION_THICKNESS_PX`].
+const DECORATION_THICKNESS_EM: f64 = 0.06;
+
+/// Minimum decoration rule thickness in px — keeps a rule visible even for
+/// a very small font size.
+const MIN_DECORATION_THICKNESS_PX: f64 = 1.0;
+
+/// Build [`DecorationSpan`]s from `glyphs` (already placed, in the SAME
+/// line-major, left-to-right order [`layout_paragraph`]'s own glyph-push
+/// loop produces) + `runs` (for each glyph's own
+/// [`crate::model::StyledRun::decoration`]/`font`/`color`).
+///
+/// A span is a maximal run of consecutive glyphs sharing `(line_index,
+/// run_index)` under a non-[`crate::model::TextDecoration::is_none`] run,
+/// WITH NO POSITION GAP between consecutive glyphs (`next.x` must equal
+/// `prev.x + prev.advance`, within a small epsilon) — the gap check is
+/// what correctly breaks a span across a spliced [`InlineBox`] landing
+/// mid-run (the box itself produces no glyph, so two glyphs either side of
+/// it share the same `(line_index, run_index)` but are NOT adjacent in x),
+/// without this function needing any visibility into the atom stream's own
+/// `Atom::Box` entries.
+///
+/// `y`/`thickness` are resolved directly from each span's own FIRST
+/// glyph's already-absolute `y` (which already folds in
+/// [`crate::model::VerticalAlign::baseline_shift`] for a `Super`/`Sub`
+/// run — so a decorated superscript's own rule tracks ITS OWN raised
+/// baseline, never the line's shared one) — no second baseline lookup.
+fn build_decoration_spans(glyphs: &[GlyphLayout], runs: &[StyledRun<'_>]) -> Vec<DecorationSpan> {
+    const GAP_EPSILON: f64 = 0.01;
+
+    let mut spans = Vec::new();
+    // (line_index, run_index, x_start, x_end, baseline_y — the span's own
+    // first glyph's already-absolute y)
+    let mut current: Option<(usize, usize, f64, f64, f64)> = None;
+
+    for g in glyphs {
+        if g.cluster.is_empty() {
+            continue; // ligature continuation — carries no independent extent
+        }
+        let Some(run) = runs.get(g.run_index) else { continue };
+        if run.decoration.is_none() {
+            flush_decoration_span(current.take(), runs, &mut spans);
+            continue;
+        }
+
+        let continues = current
+            .is_some_and(|(line, run_idx, _, end_x, _)| line == g.line_index && run_idx == g.run_index && (g.x - end_x).abs() < GAP_EPSILON);
+
+        if continues {
+            if let Some(span) = &mut current {
+                span.3 = g.x + g.advance;
+            }
+        } else {
+            flush_decoration_span(current.take(), runs, &mut spans);
+            current = Some((g.line_index, g.run_index, g.x, g.x + g.advance, g.y));
+        }
+    }
+    flush_decoration_span(current.take(), runs, &mut spans);
+    spans
+}
+
+/// Flush `current` (if any) into `spans` — looks the owning run back up by
+/// `current`'s own stored `run_index` (never the caller's "whatever glyph
+/// triggered this flush" run, which may belong to a DIFFERENT, just-
+/// started span when a decorated run transitions directly into another
+/// decorated run with no gap in between).
+fn flush_decoration_span(current: Option<(usize, usize, f64, f64, f64)>, runs: &[StyledRun<'_>], spans: &mut Vec<DecorationSpan>) {
+    let Some((line_index, run_index, x_start, x_end, baseline_y)) = current else { return };
+    let Some(run) = runs.get(run_index) else { return };
+    let size = run.font.size_px;
+    let thickness = (size * DECORATION_THICKNESS_EM).max(MIN_DECORATION_THICKNESS_PX);
+
+    if run.decoration.underline {
+        spans.push(DecorationSpan {
+            run_index,
+            line_index,
+            kind: DecorationKind::Underline,
+            x_start,
+            x_end,
+            y: baseline_y + size * UNDERLINE_OFFSET_EM,
+            thickness,
+            color: run.color,
+        });
+    }
+    if run.decoration.strikethrough {
+        spans.push(DecorationSpan {
+            run_index,
+            line_index,
+            kind: DecorationKind::Strikethrough,
+            x_start,
+            x_end,
+            y: baseline_y - size * STRIKETHROUGH_OFFSET_EM,
+            thickness,
+            color: run.color,
+        });
+    }
 }
 
 fn placed_box(inline_box: InlineBox, line_index: usize, x: f64, baseline_y: f64) -> PlacedInlineBox {
@@ -580,5 +706,95 @@ mod tests {
                 line.content_width
             );
         }
+    }
+
+    /// Typography-gap WAVE 2: an underlined run produces exactly one
+    /// [`crate::layout::DecorationSpan`] whose `y` sits BELOW the line's
+    /// own `baseline_y` by the documented fallback offset, spanning the
+    /// run's own first-to-last glyph extent; an undecorated run in the
+    /// same paragraph produces none.
+    #[test]
+    fn underlined_run_produces_a_decoration_span_at_the_expected_baseline_offset() {
+        use crate::model::TextDecoration;
+
+        let font = FontSpec::new(FontFamily::Roboto, 20.0);
+        let plain = StyledRun::new("plain ", font);
+        let underlined = StyledRun::new("underlined", font).with_decoration(TextDecoration::underline());
+        let runs = [plain, underlined];
+        let paragraph = Paragraph::new(&runs, 1000.0);
+        let shaper = CosmicShaper::headless();
+
+        let layout = layout_paragraph(&paragraph, &shaper);
+        assert_eq!(layout.lines.len(), 1);
+        assert_eq!(layout.decorations.len(), 1, "only the decorated run may produce a span");
+
+        let span = &layout.decorations[0];
+        assert_eq!(span.run_index, 1);
+        assert_eq!(span.kind, crate::layout::DecorationKind::Underline);
+        assert!(span.thickness > 0.0);
+
+        let baseline_y = layout.lines[0].baseline_y;
+        let expected_y = baseline_y + font.size_px * UNDERLINE_OFFSET_EM;
+        assert!((span.y - expected_y).abs() < 1e-6, "underline y {} must equal baseline + fallback offset {expected_y}", span.y);
+
+        // The span covers exactly the "underlined" run's own glyph extent.
+        let underlined_glyphs: Vec<&GlyphLayout> = layout.glyphs.iter().filter(|g| g.run_index == 1).collect();
+        let expected_start = underlined_glyphs.first().unwrap().x;
+        let last = underlined_glyphs.last().unwrap();
+        let expected_end = last.x + last.advance;
+        assert!((span.x_start - expected_start).abs() < 1e-6);
+        assert!((span.x_end - expected_end).abs() < 1e-6);
+    }
+
+    /// A strikethrough span sits ABOVE the baseline (smaller `y`, roughly
+    /// mid x-height) — the opposite direction from underline.
+    #[test]
+    fn strikethrough_span_sits_above_the_baseline() {
+        use crate::model::TextDecoration;
+
+        let font = FontSpec::new(FontFamily::Roboto, 20.0);
+        let runs = [StyledRun::new("struck", font).with_decoration(TextDecoration::strikethrough())];
+        let paragraph = Paragraph::new(&runs, 1000.0);
+        let shaper = CosmicShaper::headless();
+
+        let layout = layout_paragraph(&paragraph, &shaper);
+        assert_eq!(layout.decorations.len(), 1);
+        let span = &layout.decorations[0];
+        assert_eq!(span.kind, crate::layout::DecorationKind::Strikethrough);
+        assert!(span.y < layout.lines[0].baseline_y, "strikethrough must sit above the baseline");
+    }
+
+    /// A paragraph with no decorated runs at all produces zero spans —
+    /// never a stray empty/degenerate entry.
+    #[test]
+    fn undecorated_paragraph_produces_no_decoration_spans() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let runs = [StyledRun::new("plain text, nothing decorated", font)];
+        let paragraph = Paragraph::new(&runs, 1000.0);
+        let shaper = CosmicShaper::headless();
+        let layout = layout_paragraph(&paragraph, &shaper);
+        assert!(layout.decorations.is_empty());
+    }
+
+    /// A decorated run that has an [`InlineBox`] spliced INTO it produces
+    /// TWO separate decoration spans (never one span painted straight
+    /// through the box's own reserved gap).
+    #[test]
+    fn decoration_span_breaks_across_a_spliced_inline_box() {
+        use crate::model::{InlineBox, InlineBoxSlot, TextDecoration};
+
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let text = "before after";
+        let split_at = "before".len();
+        let runs = [StyledRun::new(text, font).with_decoration(TextDecoration::underline())];
+        let icon = InlineBox::in_flow(9, 30.0, 10.0);
+        let slots = [InlineBoxSlot::new(0, split_at, icon)];
+        let paragraph = Paragraph::new(&runs, 1000.0).with_inline_boxes(&slots);
+        let shaper = CosmicShaper::headless();
+
+        let layout = layout_paragraph(&paragraph, &shaper);
+        assert_eq!(layout.decorations.len(), 2, "the box must split the underline into two spans, never one span crossing its gap");
+        assert!(layout.decorations[0].x_end <= layout.boxes[0].x + 1e-6, "the first span must end at/before the box");
+        assert!(layout.decorations[1].x_start >= layout.boxes[0].x + layout.boxes[0].width - 1e-6, "the second span must start at/after the box");
     }
 }

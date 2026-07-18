@@ -6,10 +6,12 @@
 //! doc's crate-architecture section for the full module layout, and this
 //! crate's `CLAUDE.md` for what Phase 2 actually built vs. deferred.
 
+mod decoration;
 mod font_spec;
 mod inline_box;
 mod span;
 
+pub use decoration::{TextDecoration, VerticalAlign};
 pub use font_spec::FontSpec;
 pub use inline_box::{InlineBox, InlineBoxKind, InlineBoxSlot};
 pub use span::{Paragraph, ParagraphAlign, StyledRun};

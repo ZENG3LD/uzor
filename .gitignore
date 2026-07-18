@@ -1,4 +1,5 @@
 target/
+/target-typo/
 Cargo.lock
 /_deprecated/
 _author_rights/

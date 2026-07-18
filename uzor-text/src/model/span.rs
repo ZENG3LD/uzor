@@ -2,6 +2,7 @@
 //! input model (parley's simplest "ranged_builder" tier: a flat run list,
 //! no tree-builder, no nested-style support — none is needed yet).
 
+use super::decoration::{TextDecoration, VerticalAlign};
 use super::inline_box::InlineBoxSlot;
 use super::font_spec::FontSpec;
 use crate::linebreak::{BreakStrategy, Hyphenation};
@@ -14,17 +15,47 @@ pub struct StyledRun<'a> {
     /// Fill color packed `0xRRGGBBAA`; `None` defers to whatever default
     /// color [`crate::draw::draw_paragraph`]'s caller passes in.
     pub color: Option<u32>,
+    /// Underline/strikethrough (typography-gap WAVE 2). Default
+    /// [`TextDecoration::NONE`] — every pre-wave caller is unaffected.
+    pub decoration: TextDecoration,
+    /// Extra advance (px) added after every shaped glyph cluster in this
+    /// run (typography-gap WAVE 2) — see [`crate::layout::greedy`]'s own
+    /// doc comment for exactly where it's applied (post-shaping, per
+    /// cluster, never inside a ligature-merged cluster). Default `0.0`.
+    pub letter_spacing: f64,
+    /// Sub/superscript (typography-gap WAVE 2). Default
+    /// [`VerticalAlign::Baseline`] — every pre-wave caller is unaffected.
+    pub vertical_align: VerticalAlign,
 }
 
 impl<'a> StyledRun<'a> {
-    /// A run with no color override (paints with the caller's default).
+    /// A run with no color override, no decoration, no letter-spacing, and
+    /// baseline vertical alignment (paints with the caller's default).
     pub fn new(text: &'a str, font: FontSpec) -> Self {
-        Self { text, font, color: None }
+        Self { text, font, color: None, decoration: TextDecoration::NONE, letter_spacing: 0.0, vertical_align: VerticalAlign::Baseline }
     }
 
     /// Builder: set this run's fill color (packed `0xRRGGBBAA`).
     pub fn with_color(mut self, color: u32) -> Self {
         self.color = Some(color);
+        self
+    }
+
+    /// Builder: set this run's underline/strikethrough flags.
+    pub fn with_decoration(mut self, decoration: TextDecoration) -> Self {
+        self.decoration = decoration;
+        self
+    }
+
+    /// Builder: set this run's extra per-cluster letter-spacing (px).
+    pub fn with_letter_spacing(mut self, letter_spacing: f64) -> Self {
+        self.letter_spacing = letter_spacing;
+        self
+    }
+
+    /// Builder: set this run's sub/superscript vertical alignment.
+    pub fn with_vertical_align(mut self, vertical_align: VerticalAlign) -> Self {
+        self.vertical_align = vertical_align;
         self
     }
 }
@@ -135,6 +166,21 @@ mod tests {
         let font = FontSpec::default();
         let run = StyledRun::new("hi", font);
         assert_eq!(run.color, None);
+        assert!(run.decoration.is_none(), "styled_run::new must default to no decoration");
+        assert_eq!(run.letter_spacing, 0.0);
+        assert_eq!(run.vertical_align, VerticalAlign::Baseline);
+    }
+
+    #[test]
+    fn styled_run_builders_set_decoration_letter_spacing_and_vertical_align() {
+        let font = FontSpec::default();
+        let run = StyledRun::new("hi", font)
+            .with_decoration(TextDecoration::underline())
+            .with_letter_spacing(2.5)
+            .with_vertical_align(VerticalAlign::Super);
+        assert_eq!(run.decoration, TextDecoration::underline());
+        assert_eq!(run.letter_spacing, 2.5);
+        assert_eq!(run.vertical_align, VerticalAlign::Super);
     }
 
     #[test]

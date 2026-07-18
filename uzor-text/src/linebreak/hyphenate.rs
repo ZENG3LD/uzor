@@ -154,6 +154,7 @@ fn make_fragment(atom: &TextAtom, start: usize, end: usize, hyphen_break: bool) 
         width,
         ascent: atom.ascent,
         descent: atom.descent,
+        shape_font: atom.shape_font,
         is_glue: false,
         hyphen_break,
     })

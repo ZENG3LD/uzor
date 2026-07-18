@@ -190,7 +190,7 @@ fn run_index_of(atom: &Atom) -> usize {
 struct HyphenCache<'a> {
     paragraph: &'a Paragraph<'a>,
     shaper: &'a dyn LineShaper,
-    cache: HashMap<usize, (AtomGlyph, f64)>,
+    cache: HashMap<usize, (AtomGlyph, f64, FontSpec)>,
 }
 
 impl<'a> HyphenCache<'a> {
@@ -198,13 +198,25 @@ impl<'a> HyphenCache<'a> {
         Self { paragraph, shaper, cache: HashMap::new() }
     }
 
-    /// `(glyph, advance)` for the hyphen glyph in `run_index`'s own font.
-    fn get(&mut self, run_index: usize) -> (AtomGlyph, f64) {
+    /// `(glyph, advance, shape_font)` for the hyphen glyph in `run_index`'s
+    /// own font — `shape_font` resolves through the SAME
+    /// `VerticalAlign::shape_font` a run's other atoms already use
+    /// (typography-gap WAVE 2: a hyphen appended to a `Super`/`Sub` run's
+    /// own last line shapes at that run's own shrunk size too, never the
+    /// nominal one).
+    fn get(&mut self, run_index: usize) -> (AtomGlyph, f64, FontSpec) {
         if let Some(entry) = self.cache.get(&run_index) {
             return entry.clone();
         }
-        let font = self.paragraph.runs.get(run_index).map(|r| r.font).unwrap_or_default();
-        let entry = shape_hyphen(&font, self.shaper);
+        let (font, vertical_align) = self
+            .paragraph
+            .runs
+            .get(run_index)
+            .map(|r| (r.font, r.vertical_align))
+            .unwrap_or_default();
+        let shape_font = vertical_align.shape_font(font);
+        let (glyph, advance) = shape_hyphen(&shape_font, self.shaper);
+        let entry = (glyph, advance, shape_font);
         self.cache.insert(run_index, entry.clone());
         entry
     }
@@ -316,7 +328,7 @@ pub(crate) fn pack_lines(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &d
         let mut line: Vec<Atom> = trim_trailing_discardables(slice).to_vec();
         if ends_in_hyphen {
             let run_index = run_index_of(&slice[slice.len() - 1]);
-            let (glyph, advance) = hyphens.get(run_index);
+            let (glyph, advance, shape_font) = hyphens.get(run_index);
             let (ascent, descent) = match slice.last() {
                 Some(Atom::Text(t)) => (t.ascent, t.descent),
                 _ => (0.0, 0.0),
@@ -327,6 +339,7 @@ pub(crate) fn pack_lines(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &d
                 width: advance,
                 ascent,
                 descent,
+                shape_font,
                 is_glue: false,
                 hyphen_break: false,
             }));
@@ -387,6 +400,7 @@ mod tests {
             width: 10.0,
             ascent: 12.0,
             descent: 4.0,
+            shape_font: FontSpec::default(),
             is_glue: false,
             hyphen_break,
         })

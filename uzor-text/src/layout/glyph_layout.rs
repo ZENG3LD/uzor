@@ -71,8 +71,44 @@ pub struct PlacedInlineBox {
     pub height: f64,
 }
 
-/// Positioned glyphs + line boxes (+ placed inline boxes) for one
-/// laid-out paragraph.
+/// Which decoration a [`DecorationSpan`] paints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecorationKind {
+    Underline,
+    Strikethrough,
+}
+
+/// One resolved underline/strikethrough segment (typography-gap WAVE 2) —
+/// a maximal run of consecutive same-line, same-run, contiguous (no gap —
+/// e.g. never spans across a spliced [`crate::model::InlineBox`]) glyphs
+/// whose own [`crate::model::StyledRun::decoration`] is non-[`crate::model::TextDecoration::NONE`].
+///
+/// `y`/`thickness` are already resolved (paragraph-relative, absolute —
+/// same convention as [`GlyphLayout::y`]) via
+/// [`crate::model::VerticalAlign`]'s sane-fallback ratios (see that type's
+/// own doc comment for why: no real font-embedded underline metric is
+/// reachable from this crate's production code). A caller paints this as a
+/// filled rect: `(x_start, y, x_end - x_start, thickness)`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DecorationSpan {
+    /// Which source run ([`crate::model::Paragraph::runs`]) this span came
+    /// from — echoes [`GlyphLayout::run_index`]'s own convention.
+    pub run_index: usize,
+    pub line_index: usize,
+    pub kind: DecorationKind,
+    pub x_start: f64,
+    pub x_end: f64,
+    /// Absolute paragraph-relative y of the painted rule's TOP edge.
+    pub y: f64,
+    pub thickness: f64,
+    /// Echoes the owning run's own color override — `None` defers to
+    /// whatever default color the caller paints with (matches
+    /// [`GlyphLayout::color`]'s own convention).
+    pub color: Option<u32>,
+}
+
+/// Positioned glyphs + line boxes (+ placed inline boxes + decoration
+/// spans) for one laid-out paragraph.
 ///
 /// Produced by [`layout_text`]/[`layout_paragraph`]. Immutable except
 /// through [`align_lines`], which is the only supported post-process
@@ -83,6 +119,10 @@ pub struct ParagraphLayout {
     pub glyphs: Vec<GlyphLayout>,
     pub lines: Vec<LineBox>,
     pub boxes: Vec<PlacedInlineBox>,
+    /// Underline/strikethrough segments (typography-gap WAVE 2) — empty
+    /// for every paragraph whose runs never set
+    /// [`crate::model::StyledRun::decoration`].
+    pub decorations: Vec<DecorationSpan>,
     /// Widest line's content width.
     pub width: f64,
     /// Total vertical extent (last line's `y_top + height`).
@@ -147,6 +187,10 @@ pub fn align_lines(layout: &mut ParagraphLayout, box_width: f64, align: Align) {
         }
         for b in layout.boxes.iter_mut().filter(|b| b.line_index == line.line_index) {
             b.x += shift;
+        }
+        for d in layout.decorations.iter_mut().filter(|d| d.line_index == line.line_index) {
+            d.x_start += shift;
+            d.x_end += shift;
         }
     }
 }
@@ -307,5 +351,33 @@ mod tests {
             }
             assert!(expected_shift.is_finite());
         }
+    }
+
+    /// Typography-gap WAVE 2: `align_lines(Center)` shifts a decoration
+    /// span's `x_start`/`x_end` by the SAME per-line amount it shifts that
+    /// line's glyphs — a decoration must never desync from the text it
+    /// underlines/strikes through after alignment.
+    #[test]
+    fn align_lines_shifts_decoration_spans_by_the_same_amount_as_glyphs() {
+        use crate::model::TextDecoration;
+
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let max_width = 220.0;
+        let runs = [StyledRun::new("short", font).with_decoration(TextDecoration::underline())];
+        let paragraph = Paragraph::new(&runs, max_width);
+        let shaper = CosmicShaper::headless();
+
+        let base = layout_paragraph(&paragraph, &shaper);
+        assert_eq!(base.decorations.len(), 1);
+
+        let mut centered = base.clone();
+        align_lines(&mut centered, max_width, Align::Center);
+
+        let expected_shift = (max_width - base.lines[0].content_width) / 2.0;
+        assert!((centered.decorations[0].x_start - (base.decorations[0].x_start + expected_shift)).abs() < 1e-6);
+        assert!((centered.decorations[0].x_end - (base.decorations[0].x_end + expected_shift)).abs() < 1e-6);
+        // y/thickness/kind/color are untouched by a horizontal-only shift.
+        assert_eq!(centered.decorations[0].y, base.decorations[0].y);
+        assert_eq!(centered.decorations[0].thickness, base.decorations[0].thickness);
     }
 }
