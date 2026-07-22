@@ -1,0 +1,10 @@
+{
+    "kind": "kpi",
+    "data": {
+        "label": "Active Users",
+        "value": 48213.0,
+        "previous_value": 45012.0,
+        "sparkline": [100.0, 106.0, 103.0, 110.0, 118.0, 121.0, 119.0, 127.0, 130.0, 128.0, 134.0, 140.0],
+        "format": { "kind": "si" }
+    }
+}

@@ -52,6 +52,9 @@ members = [
     "uzor-export",
     # Data-figure engine core (scales/coord/marks/guides/figures)
     "uzor-figures",
+    # Serde-able spec/IR registry for uzor-figures (authored .figure.json
+    # content -> typed FigureSpec -> render)
+    "uzor-figures-registry",
     # Pretext-pattern text layout engine (Arc 2 — plain text Phase 1)
     "uzor-text",
     # Typographic composition + slicing engine (Arc 4 — scene model, compose, pages/slides/frames)

@@ -1,0 +1,14 @@
+{
+    "kind": "bar",
+    "data": {
+        "categories": ["Q1", "Q2", "Q3", "Q4"],
+        "series": [
+            { "name": "product-a", "values": [120.0, 135.0, 128.0, 150.0] },
+            { "name": "product-b", "values": [80.0, 95.0, 110.0, 105.0] }
+        ],
+        "mode": "stacked",
+        "title": "Quarterly revenue by product",
+        "show_value_labels": false,
+        "legend_position": "top"
+    }
+}
