@@ -48,7 +48,7 @@ use uzor::render::RenderContext;
 use uzor_render_tiny_skia::TinySkiaCpuRenderContext;
 
 use crate::factory::{
-    Submit3DError, SurfaceMode, UrxComposeOverlayCache, WindowRenderState,
+    Submit3DError, SurfaceMode, UrxComposeOverlayCache, UrxComposeOverlayDynamic, WindowRenderState,
 };
 
 /// One 3D viewport contribution to a composed frame.
@@ -227,34 +227,52 @@ pub fn submit_urx_composed(
         b => b,
     };
 
-    match backend_resolved {
-        uzor::UrxBackend::Cpu => {
-            compose_urx_cpu_into_swap(
-                state, &device, &queue, &mut encoder, &swap_view,
-                surf_w, surf_h, urx_scene_opt, base_color,
-            );
-        }
-        uzor::UrxBackend::Wgpu => {
-            compose_urx_wgpu_into_swap(
-                state, &device, &queue, &mut encoder, &swap_view,
-                surf_w, surf_h, surface_format, urx_scene_opt, base_color,
-            );
-        }
-        uzor::UrxBackend::Hybrid | uzor::UrxBackend::WgpuFull | uzor::UrxBackend::Auto => {
-            // Hybrid / WgpuFull have monolithic submit paths with no
-            // external-encoder entry point (that's the SR3 native-wgpu
-            // work). For the COMPOSE case their 2D layer is chrome — not
-            // perf-critical — so we rasterise it through the CPU URX
-            // backend into the pixmap and blit, exactly like the Cpu arm.
-            // The 3D viewports still render natively via Renderer3D in
-            // Phase 4. This is honest (chrome actually paints) and cheap,
-            // and replaces the 1.4.9 clear-only stub that dropped all 2D
-            // content. A true GPU 2D compose pass for these backends
-            // arrives with SR3 (render_into_encoder).
-            compose_urx_cpu_into_swap(
-                state, &device, &queue, &mut encoder, &swap_view,
-                surf_w, surf_h, urx_scene_opt, base_color,
-            );
+    // Dead-pass elimination (perf pass 2026-07-24): when there is NO 2D
+    // scene to draw AND some 3D job covers the ENTIRE swapchain, the 2D
+    // pass would only produce a full-surface base-color fill that Phase
+    // 4's whole-surface `copy_texture_to_texture` then overwrites pixel
+    // for pixel. On the CPU arm that fill is real, per-frame work — a
+    // full-surface pixmap memset + a full-surface `write_texture` upload
+    // + a blit (~10 MB of pure PCIe traffic per frame at 1400×900) for
+    // zero visible pixels. `uzor-desktop`'s `Manager` never arms
+    // `urx_ctx`, so every composed 3D window hit this every frame. A
+    // window with a PARTIAL 3D rect (or any real 2D scene) keeps the 2D
+    // pass — it genuinely owns the pixels outside the job rect there.
+    let full_cover_3d_job = jobs.iter().any(|job| {
+        job.dst_x == 0 && job.dst_y == 0 && job.dst_w >= surf_w && job.dst_h >= surf_h
+    });
+    let skip_2d_pass = urx_scene_opt.is_none() && full_cover_3d_job;
+
+    if !skip_2d_pass {
+        match backend_resolved {
+            uzor::UrxBackend::Cpu => {
+                compose_urx_cpu_into_swap(
+                    state, &device, &queue, &mut encoder, &swap_view,
+                    surf_w, surf_h, urx_scene_opt, base_color,
+                );
+            }
+            uzor::UrxBackend::Wgpu => {
+                compose_urx_wgpu_into_swap(
+                    state, &device, &queue, &mut encoder, &swap_view,
+                    surf_w, surf_h, surface_format, urx_scene_opt, base_color,
+                );
+            }
+            uzor::UrxBackend::Hybrid | uzor::UrxBackend::WgpuFull | uzor::UrxBackend::Auto => {
+                // Hybrid / WgpuFull have monolithic submit paths with no
+                // external-encoder entry point (that's the SR3 native-wgpu
+                // work). For the COMPOSE case their 2D layer is chrome — not
+                // perf-critical — so we rasterise it through the CPU URX
+                // backend into the pixmap and blit, exactly like the Cpu arm.
+                // The 3D viewports still render natively via Renderer3D in
+                // Phase 4. This is honest (chrome actually paints) and cheap,
+                // and replaces the 1.4.9 clear-only stub that dropped all 2D
+                // content. A true GPU 2D compose pass for these backends
+                // arrives with SR3 (render_into_encoder).
+                compose_urx_cpu_into_swap(
+                    state, &device, &queue, &mut encoder, &swap_view,
+                    surf_w, surf_h, urx_scene_opt, base_color,
+                );
+            }
         }
     }
 
@@ -413,24 +431,68 @@ pub fn submit_urx_composed(
     }
 
     if let Some(overlay_fn) = overlay.as_mut() {
-        if let Some(uploaded) = build_overlay_texture(&device, &queue, surf_w, surf_h, overlay_fn.as_mut()) {
-            blit_overlay_onto(
-                &device,
-                &mut encoder,
-                &uploaded.view,
-                &swap_view,
-                surface_format,
-                &mut state.urx_compose_overlay_blitter,
-            );
-            if let Some(cap) = state.urx_capture_3d.as_ref() {
+        if surf_w > 0 && surf_h > 0 {
+            let mut ctx = TinySkiaCpuRenderContext::new(surf_w, surf_h, 1.0);
+            overlay_fn(&mut ctx);
+
+            // Reuse the persistent dynamic-overlay texture across frames
+            // (perf pass 2026-07-24) — the CONTENT re-uploads every
+            // frame, but creating (and dropping) a brand-new full-surface
+            // wgpu texture per frame was pure driver allocation churn.
+            // Recreate only on a surface resize.
+            let needs_new = state
+                .urx_compose_overlay_dynamic
+                .as_ref()
+                .is_none_or(|d| d.width != surf_w || d.height != surf_h);
+            if needs_new {
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("uzor-render-hub:compose-overlay-dynamic"),
+                    size: wgpu::Extent3d { width: surf_w, height: surf_h, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: OVERLAY_TEXTURE_FORMAT,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                state.urx_compose_overlay_dynamic =
+                    Some(UrxComposeOverlayDynamic { texture, view, width: surf_w, height: surf_h });
+            }
+            if let Some(dynamic) = state.urx_compose_overlay_dynamic.as_ref() {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture:   &dynamic.texture,
+                        mip_level: 0,
+                        origin:    wgpu::Origin3d::ZERO,
+                        aspect:    wgpu::TextureAspect::All,
+                    },
+                    ctx.pixels(),
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * surf_w),
+                        rows_per_image: Some(surf_h),
+                    },
+                    wgpu::Extent3d { width: surf_w, height: surf_h, depth_or_array_layers: 1 },
+                );
                 blit_overlay_onto(
                     &device,
                     &mut encoder,
-                    &uploaded.view,
-                    &cap.view,
+                    &dynamic.view,
+                    &swap_view,
                     surface_format,
                     &mut state.urx_compose_overlay_blitter,
                 );
+                if let Some(cap) = state.urx_capture_3d.as_ref() {
+                    blit_overlay_onto(
+                        &device,
+                        &mut encoder,
+                        &dynamic.view,
+                        &cap.view,
+                        surface_format,
+                        &mut state.urx_compose_overlay_blitter,
+                    );
+                }
             }
         }
     }

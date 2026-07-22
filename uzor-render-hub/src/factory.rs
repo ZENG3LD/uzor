@@ -306,6 +306,15 @@ pub struct WindowRenderState {
     /// Retained CPU-rasterized texture for a cache-keyed composed 3D
     /// overlay (toolbars, legends, and other mostly-static chrome).
     pub(crate) urx_compose_overlay_cache: Option<UrxComposeOverlayCache>,
+    /// Persistent upload target for the per-frame DYNAMIC composed-3D
+    /// overlay (labels, HUD text, crosshair). The pixel CONTENT is
+    /// re-rasterized and re-uploaded every frame — but the texture
+    /// object itself is reused across frames (perf pass 2026-07-24:
+    /// `submit_urx_composed` used to `device.create_texture` a fresh
+    /// full-surface texture EVERY frame and drop it at frame end —
+    /// per-frame driver allocation/free churn for no benefit). Recreated
+    /// only on surface resize.
+    pub(crate) urx_compose_overlay_dynamic: Option<UrxComposeOverlayDynamic>,
     /// Reused overlay blitter. Building its render pipeline per frame is
     /// expensive on DX12, so it follows the window/surface lifetime.
     pub(crate) urx_compose_overlay_blitter: Option<(wgpu::TextureFormat, wgpu::util::TextureBlitter)>,
@@ -339,6 +348,15 @@ pub struct UrxCapture3D {
 /// Cached uploaded overlay texture for `submit_urx_composed`.
 pub struct UrxComposeOverlayCache {
     pub key:     u64,
+    pub texture: wgpu::Texture,
+    pub view:    wgpu::TextureView,
+    pub width:   u32,
+    pub height:  u32,
+}
+
+/// Persistent upload target for the per-frame dynamic overlay — see
+/// `WindowRenderState.urx_compose_overlay_dynamic`.
+pub struct UrxComposeOverlayDynamic {
     pub texture: wgpu::Texture,
     pub view:    wgpu::TextureView,
     pub width:   u32,
@@ -406,6 +424,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             urx_compose_overlay_cache: None,
+            urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
@@ -455,6 +474,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             urx_compose_overlay_cache: None,
+            urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
@@ -532,6 +552,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             urx_compose_overlay_cache: None,
+            urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
@@ -579,6 +600,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             urx_compose_overlay_cache: None,
+            urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
@@ -624,6 +646,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             urx_compose_overlay_cache: None,
+            urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
@@ -717,6 +740,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             urx_compose_overlay_cache: None,
+            urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
@@ -765,6 +789,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             urx_compose_overlay_cache: None,
+            urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
@@ -832,6 +857,7 @@ impl WindowRenderState {
             urx_offscreen_3d: None,
             urx_capture_3d: None,
             urx_compose_overlay_cache: None,
+            urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),

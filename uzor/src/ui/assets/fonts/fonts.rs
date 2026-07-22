@@ -55,7 +55,7 @@ pub use uzor_fonts::{
 /// - **JetBrainsMono** — monospace with full Unicode box-drawing coverage
 ///   (U+2500–U+259F). Used for terminal output, code blocks, etc. Only
 ///   regular + bold variants are bundled; italic requests use regular.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum FontFamily {
     #[default]
     Roboto,

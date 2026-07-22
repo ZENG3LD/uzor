@@ -160,51 +160,104 @@ fn parse_css_font(font_str: &str) -> FontInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Process-wide glyph raster cache
+// ---------------------------------------------------------------------------
+//
+// fontdue re-rasterizes a glyph's bitmap from its outline on EVERY
+// `Font::rasterize` call — it keeps no cache of its own. Before this
+// cache, `fill_text` paid that cost twice per glyph per call (once in
+// `measure_text_width` for the align offset, once in the draw loop), and
+// text-heavy per-frame consumers turned it into the dominant frame cost:
+// the graph demo's 3D overlay (up to ~126 node labels × 8-direction halo
+// = 9 `fill_text` per label, repainted every frame through this backend
+// via `uzor-render-hub`'s compose overlay path) measured at ~11k outline
+// rasterizations PER FRAME — tens of milliseconds of single-threaded CPU
+// (live-diagnosed 2026-07-24, «параша с оптимизацией»). A cached glyph
+// is a plain HashMap hit + `Arc` clone instead.
+//
+// Key includes the FULL fallback identity (family/bold/italic + exact
+// size bits) and the cached value is the POST-fallback-chain result, so
+// the (deep, 8-font) fallback probing is paid once per distinct glyph,
+// not once per draw. Bounded defensively: a pathological consumer
+// cycling thousands of distinct sizes clears the map rather than growing
+// it without limit (a full re-warm is one frame of the old cost).
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct GlyphKey {
+    family: FontFamily,
+    bold: bool,
+    italic: bool,
+    ch: char,
+    px_bits: u32,
+}
+
+struct CachedGlyph {
+    metrics: fontdue::Metrics,
+    bitmap: Vec<u8>,
+}
+
+static GLYPH_CACHE: OnceLock<std::sync::Mutex<HashMap<GlyphKey, std::sync::Arc<CachedGlyph>>>> = OnceLock::new();
+
+/// Bound on distinct (font, glyph, size) entries — generous for real UI
+/// use (full ASCII × dozens of sizes × every family fits with room to
+/// spare) while capping worst-case memory.
+const GLYPH_CACHE_MAX_ENTRIES: usize = 32_768;
+
+/// Rasterize `ch` at `px` through the SAME fallback chain `fill_text`
+/// has always used (primary → NerdFont → Symbols2 → CJK SC → Arabic →
+/// Devanagari → NotoColorEmoji → NotoEmoji → primary tofu; whitespace
+/// never falls back), served from [`GLYPH_CACHE`] after the first call.
+fn rasterize_cached(family: FontFamily, bold: bool, italic: bool, ch: char, px: f32) -> std::sync::Arc<CachedGlyph> {
+    let key = GlyphKey { family, bold, italic, ch, px_bits: px.to_bits() };
+    let cache = GLYPH_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    if let Ok(map) = cache.lock() {
+        if let Some(hit) = map.get(&key) {
+            return std::sync::Arc::clone(hit);
+        }
+    }
+
+    let font = get_font(family, bold, italic);
+    let (mut metrics, mut bitmap) = font.rasterize(ch, px);
+    if metrics.width == 0 && !ch.is_whitespace() {
+        let fallbacks: [&fontdue::Font; 7] = [
+            get_nerd_font(),
+            get_symbols_font(),
+            get_cjk_sc_font(),
+            get_arabic_font(),
+            get_devanagari_font(),
+            get_color_emoji_font(),
+            get_emoji_font(),
+        ];
+        for fb in fallbacks {
+            let (m, b) = fb.rasterize(ch, px);
+            if m.width > 0 {
+                metrics = m;
+                bitmap = b;
+                break;
+            }
+        }
+    }
+
+    let entry = std::sync::Arc::new(CachedGlyph { metrics, bitmap });
+    if let Ok(mut map) = cache.lock() {
+        if map.len() >= GLYPH_CACHE_MAX_ENTRIES {
+            map.clear();
+        }
+        map.insert(key, std::sync::Arc::clone(&entry));
+    }
+    entry
+}
+
+// ---------------------------------------------------------------------------
 // Text width measurement via fontdue
 // ---------------------------------------------------------------------------
 
 fn measure_text_width(text: &str, font_info: &FontInfo) -> f64 {
-    let font = get_font(font_info.family, font_info.bold, font_info.italic);
     let mut width = 0.0f32;
     for ch in text.chars() {
-        let (metrics, _) = font.rasterize(ch, font_info.size);
-        let advance = if metrics.width == 0 && !ch.is_whitespace() {
-            let (nf_metrics, _) = get_nerd_font().rasterize(ch, font_info.size);
-            if nf_metrics.width > 0 {
-                nf_metrics.advance_width
-            } else {
-                let (fb_metrics, _) = get_symbols_font().rasterize(ch, font_info.size);
-                if fb_metrics.width > 0 {
-                    fb_metrics.advance_width
-                } else {
-                    let (cjk_metrics, _) = get_cjk_sc_font().rasterize(ch, font_info.size);
-                    if cjk_metrics.width > 0 {
-                        cjk_metrics.advance_width
-                    } else {
-                        let (ar_metrics, _) = get_arabic_font().rasterize(ch, font_info.size);
-                        if ar_metrics.width > 0 {
-                            ar_metrics.advance_width
-                        } else {
-                            let (deva_metrics, _) = get_devanagari_font().rasterize(ch, font_info.size);
-                            if deva_metrics.width > 0 {
-                                deva_metrics.advance_width
-                            } else {
-                                let (cv_metrics, _) = get_color_emoji_font().rasterize(ch, font_info.size);
-                                if cv_metrics.width > 0 {
-                                    cv_metrics.advance_width
-                                } else {
-                                    let (em_metrics, _) = get_emoji_font().rasterize(ch, font_info.size);
-                                    em_metrics.advance_width
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            metrics.advance_width
-        };
-        width += advance;
+        width += rasterize_cached(font_info.family, font_info.bold, font_info.italic, ch, font_info.size)
+            .metrics
+            .advance_width;
     }
     width as f64
 }
@@ -1067,52 +1120,12 @@ impl TextRenderer for TinySkiaCpuRenderContext {
 
         for ch in text.chars() {
             let render_px = px * render_scale;
-            let (primary_metrics, primary_bitmap) = font.rasterize(ch, render_px);
-
-            // Fallback chain: NerdFont → Symbols2 → CJK SC → Arabic → Devanagari
-            //                 → NotoColorEmoji → NotoEmoji → primary (tofu)
-            // Text script fonts (CJK/Arabic/Devanagari) are placed BEFORE emoji so
-            // ordinary script codepoints resolve to text outlines rather than emoji.
-            let (metrics, bitmap) = if primary_metrics.width == 0 && !ch.is_whitespace() {
-                let (nf_metrics, nf_bitmap) = get_nerd_font().rasterize(ch, render_px);
-                if nf_metrics.width > 0 {
-                    (nf_metrics, nf_bitmap)
-                } else {
-                    let (sym_metrics, sym_bitmap) = get_symbols_font().rasterize(ch, render_px);
-                    if sym_metrics.width > 0 {
-                        (sym_metrics, sym_bitmap)
-                    } else {
-                        let (cjk_metrics, cjk_bitmap) = get_cjk_sc_font().rasterize(ch, render_px);
-                        if cjk_metrics.width > 0 {
-                            (cjk_metrics, cjk_bitmap)
-                        } else {
-                            let (ar_metrics, ar_bitmap) = get_arabic_font().rasterize(ch, render_px);
-                            if ar_metrics.width > 0 {
-                                (ar_metrics, ar_bitmap)
-                            } else {
-                                let (deva_metrics, deva_bitmap) = get_devanagari_font().rasterize(ch, render_px);
-                                if deva_metrics.width > 0 {
-                                    (deva_metrics, deva_bitmap)
-                                } else {
-                                    let (cv_metrics, cv_bitmap) = get_color_emoji_font().rasterize(ch, render_px);
-                                    if cv_metrics.width > 0 {
-                                        (cv_metrics, cv_bitmap)
-                                    } else {
-                                        let (em_metrics, em_bitmap) = get_emoji_font().rasterize(ch, render_px);
-                                        if em_metrics.width > 0 {
-                                            (em_metrics, em_bitmap)
-                                        } else {
-                                            (primary_metrics, primary_bitmap)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                (primary_metrics, primary_bitmap)
-            };
+            // Cached post-fallback glyph (see [`rasterize_cached`]'s own
+            // doc — same NerdFont → … → NotoEmoji chain as before, paid
+            // once per distinct glyph instead of per draw call).
+            let glyph = rasterize_cached(font_info.family, font_info.bold, font_info.italic, ch, render_px);
+            let metrics = glyph.metrics;
+            let bitmap = &glyph.bitmap;
 
             let gw = metrics.width  as i32;
             let gh = metrics.height as i32;

@@ -2900,6 +2900,15 @@ impl Scene3DApp<NoPanel> for DemoApp {
             Some(prev) => now.duration_since(prev).as_secs_f32().min(0.1),
             None => 1.0 / 60.0,
         };
+        // Honest frame timing (perf pass 2026-07-24): `dt` IS the real
+        // wall-clock interval between consecutive rendered 3D frames —
+        // record it as `frame_total` so `agent_state`/the HUD report the
+        // ACTUAL frame rate, not just the tick+scene_build slice (which
+        // measured ~0.5ms while real frames ran 13ms+, masking the whole
+        // overlay/compose cost from every earlier perf read).
+        if self.last_3d_frame_at.is_some() {
+            Self::lock_profiler(&self.frame_profiler).record_ms("frame_total", dt as f64 * 1000.0);
+        }
         self.last_3d_frame_at = Some(now);
 
         let mut engine3d = Self::lock3d(&self.engine3d);
@@ -2948,13 +2957,19 @@ impl Scene3DApp<NoPanel> for DemoApp {
         let node_count = engine3d.graph.node_count();
         drop(engine3d);
 
-        let frame_ms = {
+        let (frame_total_ms, overlay_ms) = {
             let mut profiler = Self::lock_profiler(&self.frame_profiler);
             profiler.record_ms("tick", tick_ms);
             profiler.record_ms("scene_build", scene_build_ms);
             profiler.end_frame();
-            profiler.stage_ms("tick") + profiler.stage_ms("scene_build")
+            // Honest HUD numbers (perf pass 2026-07-24): report the REAL
+            // smoothed frame interval + the overlay paint cost (recorded
+            // by the closure below on PREVIOUS frames — EMA, one frame
+            // of lag is irrelevant), not the misleading tick+scene_build
+            // sum that hid the actual bottleneck.
+            (profiler.stage_ms("frame_total"), profiler.stage_ms("overlay_paint"))
         };
+        let fps = if frame_total_ms > 0.0 { 1000.0 / frame_total_ms } else { 0.0 };
 
         let hud_snapshot = self.hud_snapshot();
         let hud_visible = self.hud_visible.get();
@@ -2995,9 +3010,11 @@ impl Scene3DApp<NoPanel> for DemoApp {
         // next to the per-node label pass that already repaints every
         // frame anyway.
         let engine3d_for_overlay = self.engine3d.clone();
+        let profiler_for_overlay = self.frame_profiler.clone();
         let overlay_viewport = Rect::new(0.0, 0.0, surf_w as f64, surf_h as f64);
         let crosshair_armed = self.nav_mode.get() == NavMode::Fly && self.mouse_look.get();
         let overlay: Box<dyn FnMut(&mut dyn RenderContext)> = Box::new(move |ctx: &mut dyn RenderContext| {
+            let overlay_started = std::time::Instant::now();
             let engine3d = Self::lock3d(&engine3d_for_overlay);
             engine3d.draw_overlay(ctx, &camera, overlay_viewport);
             let selection_lines = selection_lines_3d(&engine3d);
@@ -3014,10 +3031,17 @@ impl Scene3DApp<NoPanel> for DemoApp {
             if hud_visible {
                 let layout = build_hud_layout(hud_origin_x, hud_origin_y, hud_width, &hud_snapshot);
                 draw_hud_static(ctx, &layout, hud_scale);
-                let lines = [format!("nodes {node_count}  visible {node_count}"), format!("frame {frame_ms:.2}ms")];
+                let lines = [
+                    format!("nodes {node_count}  visible {node_count}"),
+                    format!("fps {fps:.0}  frame {frame_total_ms:.1}ms  overlay {overlay_ms:.1}ms"),
+                ];
                 draw_hud_status(ctx, layout.panel.x, layout.status_y, &lines, hud_scale);
                 draw_hud_status(ctx, layout.panel.x, layout.selection_y, &selection_lines, hud_scale);
             }
+            // The CPU cost of THIS whole overlay paint (labels + HUD) —
+            // the piece every earlier perf read was blind to.
+            let overlay_paint_ms = overlay_started.elapsed().as_secs_f64() * 1000.0;
+            Self::lock_profiler(&profiler_for_overlay).record_ms("overlay_paint", overlay_paint_ms);
         });
 
         Some(Scene3DFrame { scene, camera, cached_overlay: None, overlay: Some(overlay) })

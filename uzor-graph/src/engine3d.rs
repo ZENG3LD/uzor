@@ -1628,6 +1628,15 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         let hidden = self.compute_excluded_nodes_3d();
         let render_particles = self.render_particles();
         let mut scene = crate::render3d::build_scene(&self.graph, &render_particles, &self.node_mesh, &self.edge_mesh, &hidden);
+        // Post-effects OFF for graph scenes (perf pass 2026-07-24):
+        // `SceneEffects::default()` arms shadows + bloom + SSAO, and
+        // `Renderer3D` genuinely runs the whole bloom mip pyramid + SSAO
+        // pass every frame when armed — none of which a flat-shaded
+        // node-link graph benefits from (the foxhound reference app
+        // disables all three for the same reason). `Renderer3D`'s
+        // composite zeroes the corresponding strengths when disabled, so
+        // this skips real GPU passes, not just their visual contribution.
+        scene.effects = uzor_urx_3d::SceneEffects { shadows: false, bloom: false, ssao: false };
         scene.nodes.extend(crate::render3d::build_cluster_edge_instances(&render_particles, &self.edge_mesh, &self.clusters));
         if self.grid_enabled {
             if let Some((min, max)) = particle_aabb(&render_particles) {
