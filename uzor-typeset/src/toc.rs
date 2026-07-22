@@ -44,34 +44,28 @@
 //! crate mechanism (parley's "reserved rectangle spliced into a
 //! paragraph's run sequence"), not a new one.
 //!
-//! ## Why row text needs owned, `'static` backing (report — a genuine
-//! constraint, not an oversight)
+//! ## Row text backing — a caller-held [`TocArena`], not a leak (report)
 //!
 //! Every `BlockNode<'a>`/`Paragraph<'a>` in this crate is BORROWED by
 //! design (design law 3: stateless layout over borrowed snapshots,
 //! mirroring `uzor_text::Paragraph<'a>`'s own convention) — every
 //! existing fixture in this crate (tests, the showcase) authors its
 //! runs/blocks as literal `&'static str`/caller-owned `String`s already
-//! alive in the SAME scope `compose()`/`slice_pages()` is called from.
-//! A TOC row's own text (title + a MEASURED leader + a resolved page
+//! alive in the SAME scope `compose()`/`slice_pages()` is called from. A
+//! TOC row's own text (title + a MEASURED leader + a resolved page
 //! number) is instead SYNTHESIZED at compose time — there is no caller
 //! scope that could have authored it ahead of time, because the numbers
-//! it prints depend on a prior composition pass. Bundling "owns a
-//! `String`" and "borrows that `String`" into ONE self-contained return
-//! value is the classic Rust self-referential-struct limitation (no
-//! `unsafe`/pinning crate is used anywhere in this workspace, so that
-//! route is out) — [`build_toc`] resolves this the same way the standard
-//! library itself offers for exactly this case: `Vec::leak`/`Box::leak`
-//! (safe, `std`-sanctioned, NOT `unsafe` code) turns each row's owned
-//! `String`/backing arrays into `'static` data, which trivially unifies
-//! with ANY caller lifetime `'a` via reference covariance. This is a
-//! **bounded, per-call leak** (total size proportional to one document's
-//! own TOC entry count — typically a few hundred bytes to a few KB) —
-//! acceptable for a document-generation library whose `slice_pages`/
-//! `pages_to_pdf` entry points are called a bounded number of times per
-//! process (the CLI/batch/report-export usage this crate targets), NOT
-//! suitable for an unbounded hot loop generating unboundedly many
-//! documents inside one long-running process that never restarts.
+//! it prints depend on a prior composition pass.
+//!
+//! [`build_toc`]/[`compose_document_with_toc`] used to resolve this via
+//! `Vec::leak`/`Box::leak` (this module's OLD approach, superseded here —
+//! see [`TocArena`]'s own doc comment for exactly why that specific leak
+//! is now gone for row text, and why a small, fixed residual leak
+//! remains for each row's tiny `StyledRun`/`InlineBoxSlot` backing
+//! regardless). [`TocArena`] is the caller-held replacement: the caller
+//! constructs one, keeps it alive at least as long as it uses whatever
+//! `Page`s [`compose_document_with_toc`] hands back, and lets it drop
+//! naturally wherever it goes out of scope.
 
 use uzor::fonts::FontFamily;
 use uzor_text::{paragraph_intrinsic_size, FontSpec, InlineBox, InlineBoxSlot, LineShaper, Paragraph, StyledRun};
@@ -208,12 +202,79 @@ pub fn build_toc_rows(entries: &[OutlineEntry], style: &TocStyle, row_width: f64
         .collect()
 }
 
-/// Leak `s` into a `'static` `&str` — see this module's own "Why row text
-/// needs owned, `'static` backing" doc comment for the full rationale.
-/// `std`-sanctioned (`Box::leak`), not `unsafe` code — a documented,
-/// bounded, per-[`build_toc`]-call trade-off.
-fn leak_str(s: String) -> &'static str {
-    Box::leak(s.into_boxed_str())
+/// Caller-held backing storage for synthesized TOC row text (and, per
+/// [`crate::caption::attach_captions`]'s own additive reuse of this SAME
+/// type, synthesized figure/table caption text) — the arena that
+/// replaces this module's former `Box::leak`-per-row-text convention.
+///
+/// The caller constructs ONE `TocArena`, keeps it alive at least as long
+/// as it uses whatever `Page`s [`compose_document_with_toc`]/
+/// [`crate::caption::attach_captions`] hand back (a placed `Paragraph`
+/// holds a live `&'arena str` back into this arena's own storage — design
+/// law 1, painting reads straight from `Block`, never a second copy),
+/// then lets it drop naturally wherever it goes out of scope. A plain
+/// owned-strings holder: `Vec<String>` push + borrow, no `unsafe`, no new
+/// dependency.
+///
+/// ## Why this holds ONLY text, not the whole per-row `Paragraph` backing
+/// (report — a genuine Rust type-system wall, not an incomplete fix)
+///
+/// `uzor_text::Paragraph<'a>::runs: &'a [StyledRun<'a>]` is a BORROWED
+/// slice (same for this module's own leading-indent `InlineBoxSlot`) —
+/// building one needs SOME stable-address storage holding the actual
+/// values, and that storage would need to borrow ITS OWN text back out of
+/// `self.texts` — a struct that owns BOTH data AND a second field whose
+/// elements borrow `&'a str` from that SAME owned data is the textbook
+/// Rust self-referential-struct limitation: a struct's own lifetime
+/// parameter cannot be tied to "however long THIS SPECIFIC INSTANCE's own
+/// other field happens to remain valid." There is no 100%-safe,
+/// standard-library-only way around this — every real safe-Rust arena
+/// crate that supports "push now, borrow indefinitely, push again later"
+/// (`typed-arena`, `bumpalo`) does so via `unsafe` internally (raw
+/// pointers into a bump allocator); the ONLY 100%-safe escape hatch the
+/// standard library itself offers is exactly the `Vec::leak`/`Box::leak`
+/// this arena exists to reduce (leak makes a reference `'static` —
+/// valid forever, sidestepping "tied to one instance's own lifetime" by
+/// not being tied to any instance at all). Given this feature's own "no
+/// `unsafe`, no new deps" constraint, [`TocArena`] is therefore scoped to
+/// eliminate the leak for the part that actually DOMINATES memory
+/// (row/caption TEXT — proportional to title length and TOC/document
+/// size); each row's tiny, FIXED-SIZE (one `StyledRun`, one
+/// `InlineBoxSlot`) structural backing still uses `Vec::leak`/`Box::leak`
+/// — proportional only to ROW COUNT, never to title length, i.e. the part
+/// of the ORIGINAL leak that was never the actual size concern.
+#[derive(Debug, Default)]
+pub struct TocArena {
+    texts: Vec<String>,
+}
+
+impl TocArena {
+    pub fn new() -> Self {
+        Self { texts: Vec::new() }
+    }
+
+    /// Push an owned string into this arena's storage, returning the
+    /// index [`TocArena::text`] retrieves it back at. Returns an index,
+    /// never a reference — this arena's callers ([`build_toc`],
+    /// [`crate::caption::attach_captions`]) push EVERY string a call
+    /// needs first (this arena's own two-phase discipline), then borrow
+    /// them all back in a separate pass; a naive `push(&mut self) ->
+    /// &str` signature would tie every subsequent push to the
+    /// FIRST push's own returned borrow, making a second push a
+    /// genuine, correctly-rejected aliasing conflict (see this type's
+    /// own doc comment for the deeper reason this arena can't offer a
+    /// per-push returned reference at all).
+    pub(crate) fn push(&mut self, s: String) -> usize {
+        self.texts.push(s);
+        self.texts.len() - 1
+    }
+
+    /// Borrow row/caption text back out of this arena at `index` — only
+    /// meaningful AFTER every [`TocArena::push`] a call site needs has
+    /// already happened (see the two-phase discipline above).
+    pub(crate) fn text(&self, index: usize) -> &str {
+        &self.texts[index]
+    }
 }
 
 /// Turn `entries` into real, composable `Block::Paragraph` flow nodes —
@@ -223,13 +284,11 @@ fn leak_str(s: String) -> &'static str {
 /// comment). Rows are ordinary blocks, composed/sliced exactly like any
 /// other paragraph in this crate (`compose()`/`slice_pages()` — real
 /// pagination, real vector text once exported via `pages_to_pdf`) — the
-/// returned `'static` lifetime is this function's own documented,
-/// bounded-leak trade-off (see this module's own top doc comment),
-/// invisible to the caller beyond the lifetime annotation itself: a
-/// `Vec<BlockNode<'static>>` composes into `Page<'static>`, which is a
-/// valid `Page<'a>` for ANY `'a` via reference covariance — free to
-/// concatenate with an ordinary borrowed body flow's own `Page<'a>`s.
-/// See this function's own doc comment above for the leak rationale.
+/// returned `'arena` lifetime ties to `arena`'s own borrow (see
+/// [`TocArena`]'s own doc comment), invisible to the caller beyond the
+/// lifetime annotation itself: a `Vec<BlockNode<'arena>>` composes into
+/// `Page<'arena>`, a valid `Page<'a>` for any `'a` `arena` outlives — free
+/// to concatenate with an ordinary borrowed body flow's own `Page<'a>`s.
 /// Each row's own `BlockNode` is ALSO tagged via
 /// [`BlockNode::with_link_target`] against its own entry's already-
 /// resolved `page_index` — a TOC row is therefore a real internal-link
@@ -237,18 +296,35 @@ fn leak_str(s: String) -> &'static str {
 /// separate wiring needed at the PDF-export layer beyond reading
 /// [`crate::slice::Page::links`] (which `uzor-typeset::export::pdf_adapter`
 /// already does).
-pub fn build_toc(entries: &[OutlineEntry], style: &TocStyle, row_width: f64, shaper: &dyn LineShaper) -> Vec<BlockNode<'static>> {
-    build_toc_rows(entries, style, row_width, shaper)
-        .into_iter()
-        .zip(entries.iter())
-        .map(|(row, entry)| {
-            let text: &'static str = leak_str(row.text);
-            let runs: &'static [StyledRun<'static>] = &*vec![StyledRun::new(text, style.font)].leak();
-            let boxes: &'static [InlineBoxSlot] = &*vec![InlineBoxSlot::new(0, 0, InlineBox::in_flow(0, row.indent_px, 1.0))].leak();
-            let paragraph = Paragraph::new(runs, row_width).with_inline_boxes(boxes);
-            BlockNode::new(Block::Paragraph(paragraph)).with_link_target(entry.page_index)
-        })
-        .collect()
+pub fn build_toc<'arena>(
+    arena: &'arena mut TocArena,
+    entries: &[OutlineEntry],
+    style: &TocStyle,
+    row_width: f64,
+    shaper: &dyn LineShaper,
+) -> Vec<BlockNode<'arena>> {
+    let rows = build_toc_rows(entries, style, row_width, shaper);
+
+    // Phase 1 (mutate): push every row's synthesized text into `arena`
+    // BEFORE taking any borrow of it — see `TocArena`'s own doc comment
+    // for why interleaving push+borrow can't work in safe Rust.
+    let mut text_indices = Vec::with_capacity(rows.len());
+    for row in &rows {
+        text_indices.push(arena.push(row.text.clone()));
+    }
+
+    // Phase 2 (borrow): `arena` is fully populated for this call now —
+    // every text lookup below borrows `arena` SHARED, with lifetime
+    // 'arena (this arena is never mutated again after this point).
+    let mut out = Vec::with_capacity(rows.len());
+    for ((row, entry), text_index) in rows.into_iter().zip(entries.iter()).zip(text_indices) {
+        let text: &'arena str = arena.text(text_index);
+        let runs: &'arena [StyledRun<'arena>] = &*vec![StyledRun::new(text, style.font)].leak();
+        let boxes: &'arena [InlineBoxSlot] = &*vec![InlineBoxSlot::new(0, 0, InlineBox::in_flow(0, row.indent_px, 1.0))].leak();
+        let paragraph = Paragraph::new(runs, row_width).with_inline_boxes(boxes);
+        out.push(BlockNode::new(Block::Paragraph(paragraph)).with_link_target(entry.page_index));
+    }
+    out
 }
 
 /// Read every `.with_outline()`-tagged entry already attached to `pages`
@@ -322,38 +398,84 @@ const MAX_TOC_FIXPOINT_ITERATIONS: usize = 3;
 /// would mean that invariant was broken — this function's own bug, not a
 /// caller-input problem, hence the documented panic below rather than a
 /// silent best-effort return.
+///
+/// ## Two phases against `arena` (report — a REQUIRED shape, not a style
+/// choice)
+///
+/// `arena: &'a mut TocArena` is borrowed for THIS function's own FULL
+/// `'a` (the same lifetime the final returned `Vec<Page<'a>>` needs) —
+/// but a `&'a mut` reborrow taken and used ACROSS MULTIPLE LOOP
+/// ITERATIONS (one per fixpoint pass) cannot compile: the borrow checker
+/// type-checks a loop BODY once, uniformly, for every dynamic pass — if
+/// ANY code path inside it (here, the `return` on a converged iteration)
+/// requires the reborrow to last `'a`, EVERY iteration's own reborrow is
+/// held to that SAME requirement, which then conflicts with the NEXT
+/// iteration's own reborrow of the identical `arena`. The fix:
+/// **discover the converged page-count OFFSET first, using a throwaway,
+/// per-iteration `TocArena` that never touches the caller's own `arena`
+/// at all** (a probe iteration only ever reads `toc_pages.len()` — a
+/// plain `u32` — so nothing it builds needs to outlive that ONE loop
+/// pass, hence no `.leak()` either, an improvement over the OLD
+/// per-iteration-leak convention this function used to rely on); **then
+/// build the REAL TOC exactly once**, at the now-known offset, against
+/// the caller's own long-lived `arena` — a single, non-repeated
+/// `&mut *arena` use with no competing reborrow anywhere else in this
+/// function, which is unconditionally sound.
 pub fn compose_document_with_toc<'a>(
     body_pages: Vec<Page<'a>>,
     toc_master: &PageMaster<'a>,
     toc_style: &TocStyle,
     shaper: &dyn LineShaper,
     page_number_style: Option<&PageNumberStyle>,
+    arena: &'a mut TocArena,
 ) -> Vec<Page<'a>> {
     let toc_row_width = toc_master.body_rect().width;
     let toc_compose_style = ComposeStyle::new(toc_style.row_gap_px, toc_style.font);
 
+    // Phase 1: discover the converged offset. Every probe here is
+    // entirely LOCAL (its own throwaway `TocArena`, an owned, non-leaked
+    // `Vec<BlockNode<'_>>`) — dropped at the end of each loop pass,
+    // never touching the caller's own `arena`.
     let mut toc_page_offset = 0u32;
+    let mut converged = false;
     for _ in 0..MAX_TOC_FIXPOINT_ITERATIONS {
         let entries = collect_shifted_entries(&body_pages, toc_page_offset);
-        // The TOC flow's own backing array is ALSO leaked here (on top of
-        // `build_toc`'s own per-row leaks) — the Vec CONTAINER itself
-        // must outlive this loop iteration for `slice_pages`'s returned
-        // `Page<'static>` to be valid to return from this function (a
-        // `&toc_flow` LOCAL-variable borrow would not). Bounded: at most
-        // `MAX_TOC_FIXPOINT_ITERATIONS` such leaks per
-        // `compose_document_with_toc` call, each proportional to this
-        // document's own TOC entry count.
-        let toc_flow: &'static [BlockNode<'static>] = build_toc(&entries, toc_style, toc_row_width, shaper).leak();
-        let toc_pages = slice_pages(toc_flow, toc_master, &toc_compose_style, shaper);
-        let new_offset = toc_pages.len() as u32;
-
+        let mut probe_arena = TocArena::new();
+        let probe_flow = build_toc(&mut probe_arena, &entries, toc_style, toc_row_width, shaper);
+        let probe_pages = slice_pages(&probe_flow, toc_master, &toc_compose_style, shaper);
+        let new_offset = probe_pages.len() as u32;
         if new_offset == toc_page_offset {
-            let mut all: Vec<Page<'a>> = Vec::with_capacity(toc_pages.len() + body_pages.len());
-            all.extend(toc_pages);
-            all.extend(body_pages);
-            return renumber_pages(all, page_number_style);
+            converged = true;
+            break;
         }
         toc_page_offset = new_offset;
+    }
+
+    if converged {
+        // Phase 2: build the REAL TOC exactly once, at the converged
+        // offset, against the caller's own `arena` — a placed
+        // `Paragraph` in the returned pages holds a live `&'a str` back
+        // into it (design law 1), so `arena` must outlive whatever the
+        // caller does with the returned `Vec<Page<'a>>`.
+        let entries = collect_shifted_entries(&body_pages, toc_page_offset);
+        // The TOC flow's own backing array (its per-row `StyledRun`/
+        // `InlineBoxSlot` arrays) is still leaked here — only the ROW
+        // TEXT itself moved to `arena`, see `TocArena`'s own doc comment
+        // for exactly why that residual leak can't be eliminated without
+        // `unsafe`. The Vec CONTAINER itself must outlive this function
+        // call for `slice_pages`'s returned `Page<'a>` to be valid to
+        // return (a `&toc_flow` LOCAL-variable borrow would not) — a
+        // SINGLE such leak per `compose_document_with_toc` call now
+        // (Phase 1's own probes never leak at all), proportional only to
+        // this document's own TOC entry COUNT, never to title length
+        // (which `arena` now owns instead).
+        let toc_flow: &'a [BlockNode<'a>] = build_toc(arena, &entries, toc_style, toc_row_width, shaper).leak();
+        let toc_pages = slice_pages(toc_flow, toc_master, &toc_compose_style, shaper);
+
+        let mut all: Vec<Page<'a>> = Vec::with_capacity(toc_pages.len() + body_pages.len());
+        all.extend(toc_pages);
+        all.extend(body_pages);
+        return renumber_pages(all, page_number_style);
     }
 
     panic!(
@@ -549,7 +671,8 @@ mod tests {
 
         let toc_style = TocStyle { row_gap_px: 40.0, ..TocStyle::default() }; // exaggerated row gap forces the tiny 1-entry TOC to still behave predictably
         let body_pages_for_toc = slice_pages(&body, &body_master, &style, &shaper);
-        let pages = compose_document_with_toc(body_pages_for_toc, &toc_master, &toc_style, &shaper, None);
+        let mut arena = TocArena::new();
+        let pages = compose_document_with_toc(body_pages_for_toc, &toc_master, &toc_style, &shaper, None, &mut arena);
 
         // Independently confirm the body alone (no TOC) would have put
         // the heading on body-local page index >= 1 (i.e. NOT page 0) —
@@ -587,5 +710,65 @@ mod tests {
         let joined = toc_row_text.join(" ");
         let expected_number = (final_entry.page_index + 1).to_string();
         assert!(joined.contains(&expected_number), "the rendered TOC row must contain the FINAL, correctly-shifted page number {expected_number:?}, got {joined:?}");
+    }
+
+    /// The arena replacement's own core gate: `build_toc`'s returned
+    /// `BlockNode`s carry text genuinely BORROWED from `arena` (not
+    /// leaked) — every row's rendered paragraph text must byte-for-byte
+    /// match [`build_toc_rows`]'s own independently-computed row text.
+    #[test]
+    fn build_toc_produces_block_nodes_whose_text_is_arena_backed_and_matches_build_toc_rows() {
+        let shaper = CosmicShaper::headless();
+        let toc_style = style();
+        const ROW_WIDTH: f64 = 300.0;
+
+        let entries = [
+            OutlineEntry { level: 1, title: "Introduction".to_owned(), page_index: 0 },
+            OutlineEntry { level: 2, title: "Background".to_owned(), page_index: 2 },
+        ];
+        let expected_rows = build_toc_rows(&entries, &toc_style, ROW_WIDTH, &shaper);
+
+        let mut arena = TocArena::new();
+        let nodes = build_toc(&mut arena, &entries, &toc_style, ROW_WIDTH, &shaper);
+        assert_eq!(nodes.len(), expected_rows.len());
+
+        for (node, expected) in nodes.iter().zip(expected_rows.iter()) {
+            let Block::Paragraph(p) = &node.kind else { panic!("a TOC row must be a real Block::Paragraph") };
+            assert_eq!(p.runs.len(), 1);
+            assert_eq!(p.runs[0].text, expected.text, "row text must round-trip through the arena verbatim");
+        }
+    }
+
+    /// `TocArena` is a REUSABLE, caller-held value — a caller may drive
+    /// more than one `build_toc` call against the SAME arena
+    /// SEQUENTIALLY (once an earlier batch's own data has been read out,
+    /// its exclusive borrow ends and a later call can reuse the same
+    /// arena; overlapping the two would be a genuine, correctly-rejected
+    /// aliasing conflict — the reason `compose_document_with_toc`'s own
+    /// fixpoint loop uses a fresh, throwaway per-iteration arena for its
+    /// PROBE passes and only ever touches the caller's real arena once,
+    /// see that function's own doc comment). Pushing a second batch of
+    /// rows must never corrupt the FIRST batch's own already-read text.
+    #[test]
+    fn toc_arena_can_be_reused_sequentially_across_multiple_build_toc_calls_without_corrupting_earlier_rows() {
+        let shaper = CosmicShaper::headless();
+        let toc_style = style();
+        const ROW_WIDTH: f64 = 300.0;
+
+        let entries_a = [OutlineEntry { level: 1, title: "First Pass Heading".to_owned(), page_index: 0 }];
+        let entries_b = [OutlineEntry { level: 1, title: "Second Pass Heading".to_owned(), page_index: 3 }];
+
+        let mut arena = TocArena::new();
+        let first_text = {
+            let nodes_a = build_toc(&mut arena, &entries_a, &toc_style, ROW_WIDTH, &shaper);
+            let Block::Paragraph(pa) = &nodes_a[0].kind else { panic!("expected a paragraph") };
+            pa.runs[0].text.to_owned()
+        };
+
+        let nodes_b = build_toc(&mut arena, &entries_b, &toc_style, ROW_WIDTH, &shaper);
+        let Block::Paragraph(pb) = &nodes_b[0].kind else { panic!("expected a paragraph") };
+
+        assert!(first_text.starts_with("First Pass Heading"), "the FIRST batch's own text must have resolved correctly before the arena was reused, got {first_text:?}");
+        assert!(pb.runs[0].text.starts_with("Second Pass Heading"), "the SECOND batch must resolve its own distinct text after reuse, got {:?}", pb.runs[0].text);
     }
 }

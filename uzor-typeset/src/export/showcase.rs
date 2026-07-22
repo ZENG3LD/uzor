@@ -59,7 +59,7 @@ use crate::scene::{
 };
 use crate::slice::{renumber_pages, slice_pages, Margins, Page, PageMaster};
 use crate::style::Theme;
-use crate::toc::{compose_document_with_toc, TocStyle};
+use crate::toc::{compose_document_with_toc, TocArena, TocStyle};
 
 const PAGE_W: f64 = 595.0;
 const PAGE_H: f64 = 842.0;
@@ -1404,7 +1404,16 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     // this concatenated flow into a real, auto-numbered caption paragraph
     // BEFORE composing — see `crate::caption`'s own module doc for why this
     // needs no fixpoint (a pure, single-pass function of flow order).
-    let flow_rest = attach_captions(&flow_rest, &caption_style);
+    // A SEPARATE `TocArena` instance from the TOC's own below — the two
+    // features share the SAME reusable arena TYPE (see `crate::caption`'s
+    // own module doc), but each needs its OWN EXCLUSIVE, non-overlapping
+    // mutable borrow (the caption arena's own text must remain valid all
+    // the way through the TOC's own fixpoint + this document's final
+    // PDF export, so it can never fully "release" its borrow early
+    // enough for a single shared instance to also satisfy the TOC's own
+    // later mutable borrow).
+    let mut caption_arena = TocArena::new();
+    let flow_rest = attach_captions(&flow_rest, &caption_style, &mut caption_arena);
     let pages_rest = slice_pages(&flow_rest, &master_single, &style_single, &shaper);
 
     // ── Document navigation: a generated table of contents inserted
@@ -1422,7 +1431,8 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     body_after_opener.extend(pages_footnotes);
 
     let toc_style = TocStyle { font: BODY_FONT, dot_char: '.', level_indent_px: 16.0, row_gap_px: 10.0 };
-    let with_toc = compose_document_with_toc(body_after_opener, &master_single, &toc_style, &shaper, Some(&page_number_style));
+    let mut toc_arena = TocArena::new();
+    let with_toc = compose_document_with_toc(body_after_opener, &master_single, &toc_style, &shaper, Some(&page_number_style), &mut toc_arena);
 
     let mut all_pages: Vec<Page<'_>> = Vec::new();
     all_pages.extend(pages_opener);

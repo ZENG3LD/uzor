@@ -45,12 +45,15 @@
 //! [`attach_captions`] never touches `compose()`/`render.rs`/
 //! `export::pdf_adapter.rs` — it splices a synthesized `Block::Paragraph`
 //! (the resolved `"Figure 1 — ..."` label) directly AFTER every captioned
-//! node, via the SAME `Box::leak`/`Vec::leak` "synthesized text needs
-//! owned, `'static` backing" convention `crate::toc::build_toc` already
-//! established (see that module's own doc comment for the full Rust
-//! ownership rationale) — the resulting flow composes/paginates/paints/
-//! exports through the EXISTING `Block::Paragraph` pipeline with ZERO new
-//! code anywhere else in this crate.
+//! node. The synthesized LABEL TEXT is arena-backed, via the SAME
+//! [`crate::toc::TocArena`] `crate::toc::build_toc` uses (this module's
+//! own small, additive reuse of that type — see its own doc comment for
+//! the two-phase push/borrow discipline and for exactly why the tiny,
+//! per-caption `StyledRun` array still uses `Vec::leak`/`Box::leak`
+//! regardless, a genuine Rust type-system wall, not an incomplete fix) —
+//! the resulting flow composes/paginates/paints/exports through the
+//! EXISTING `Block::Paragraph` pipeline with ZERO new code anywhere else
+//! in this crate.
 
 use std::collections::HashMap;
 
@@ -58,6 +61,7 @@ use uzor::fonts::FontFamily;
 use uzor_text::{FontSpec, StyledRun};
 
 use crate::scene::{resolve_block_ids, Block, BlockId, BlockNode, CaptionKind};
+use crate::toc::TocArena;
 
 /// Style knobs for [`attach_captions`]/[`resolve_refs`]'s generated text —
 /// mirrors [`crate::toc::TocStyle`]'s own shape (a plain, caller-suppliable
@@ -131,14 +135,6 @@ pub fn resolve_caption_numbers(flow: &[BlockNode<'_>]) -> HashMap<BlockId, (Capt
     out
 }
 
-/// Leak `s` into a `'static` `&str` — the SAME documented, bounded, per-call
-/// trade-off `crate::toc`'s own (private) `leak_str` uses, for the identical
-/// reason (a synthesized caption/ref string has no caller scope to borrow
-/// from). `std`-sanctioned (`Box::leak`), not `unsafe` code.
-fn leak_str(s: String) -> &'static str {
-    Box::leak(s.into_boxed_str())
-}
-
 /// Splice a synthesized `Block::Paragraph` (the resolved
 /// `"{kind} {number} — {text}"` caption line, via [`CaptionStyle::label`])
 /// directly AFTER every [`crate::scene::BlockNode::caption`]-tagged node in
@@ -151,13 +147,38 @@ fn leak_str(s: String) -> &'static str {
 /// exactly as authored) so the figure/table and ITS OWN caption never land
 /// separated across a page break; an already-non-`Auto` break control is
 /// left untouched (the author already made a deliberate choice there).
-pub fn attach_captions<'a>(flow: &'a [BlockNode<'a>], style: &CaptionStyle) -> Vec<BlockNode<'a>> {
+///
+/// `arena` backs every synthesized caption label's TEXT (the SAME
+/// [`TocArena`] `crate::toc::build_toc` uses — see that type's own doc
+/// comment for the two-phase push/borrow discipline this function follows
+/// too: every captioned node's label text is pushed FIRST, in document
+/// order, before any of them is borrowed back out to build a real
+/// `Paragraph`). The per-caption `StyledRun` array itself still uses
+/// `Vec::leak` — a tiny, fixed-size (one `StyledRun` per caption)
+/// residual, proportional only to caption COUNT, never to label length;
+/// see `TocArena`'s own doc comment for exactly why that can't also move
+/// into the arena without `unsafe`.
+pub fn attach_captions<'a>(flow: &'a [BlockNode<'a>], style: &CaptionStyle, arena: &'a mut TocArena) -> Vec<BlockNode<'a>> {
     let numbers = resolve_caption_numbers(flow);
     let ids = resolve_block_ids(flow);
-    let mut out = Vec::with_capacity(flow.len());
 
+    // Phase 1 (mutate): push every captioned node's resolved label text
+    // into `arena` BEFORE taking any borrow of it.
+    let mut text_index_for: Vec<Option<usize>> = Vec::with_capacity(flow.len());
     for (node, id) in flow.iter().zip(ids.iter()) {
-        let Some(caption) = &node.caption else {
+        let idx = node.caption.as_ref().map(|caption| {
+            let (kind, number) = numbers.get(id).copied().unwrap_or((caption.kind, 0));
+            arena.push((style.label)(kind, number, &caption.text))
+        });
+        text_index_for.push(idx);
+    }
+
+    // Phase 2 (borrow): `arena` is fully populated for this call now —
+    // every text lookup below borrows `arena` SHARED, with lifetime 'a
+    // (this arena is never mutated again after this point).
+    let mut out = Vec::with_capacity(flow.len());
+    for ((node, _id), text_index) in flow.iter().zip(ids.iter()).zip(text_index_for) {
+        let Some(caption_text_index) = text_index else {
             out.push(reborrow(node));
             continue;
         };
@@ -167,9 +188,8 @@ pub fn attach_captions<'a>(flow: &'a [BlockNode<'a>], style: &CaptionStyle) -> V
         }
         out.push(carried);
 
-        let (kind, number) = numbers.get(id).copied().unwrap_or((caption.kind, 0));
-        let label_text: &'static str = leak_str((style.label)(kind, number, &caption.text));
-        let run: &'static [StyledRun<'static>] = &*vec![StyledRun::new(label_text, style.font)].leak();
+        let label_text: &'a str = arena.text(caption_text_index);
+        let run: &'a [StyledRun<'a>] = &*vec![StyledRun::new(label_text, style.font)].leak();
         let paragraph = uzor_text::Paragraph::new(run, f64::MAX);
         out.push(BlockNode::new(Block::Paragraph(paragraph)));
     }
@@ -312,7 +332,8 @@ mod tests {
     fn attach_captions_splices_a_resolved_label_paragraph_immediately_after_each_captioned_node() {
         let a = StubFig;
         let flow = [stub_figure_node(&a).with_caption(CaptionKind::Figure, "a seeded bar chart")];
-        let attached = attach_captions(&flow, &style());
+        let mut arena = TocArena::new();
+        let attached = attach_captions(&flow, &style(), &mut arena);
 
         assert_eq!(attached.len(), 2, "one figure + one synthesized caption paragraph");
         assert!(matches!(attached[0].kind, Block::Figure(_)));
@@ -329,7 +350,8 @@ mod tests {
             stub_figure_node(&a).with_caption(CaptionKind::Figure, "auto"),
             stub_figure_node(&b).with_caption(CaptionKind::Figure, "explicit").with_break_control(crate::compose::BreakControl::ForceAfter),
         ];
-        let attached = attach_captions(&flow, &style());
+        let mut arena = TocArena::new();
+        let attached = attach_captions(&flow, &style(), &mut arena);
         assert_eq!(attached[0].break_control, crate::compose::BreakControl::AvoidAfter, "an Auto captioned node must be upgraded");
         assert_eq!(attached[2].break_control, crate::compose::BreakControl::ForceAfter, "an explicit break control must survive untouched");
     }
@@ -338,7 +360,8 @@ mod tests {
     fn attach_captions_leaves_untagged_nodes_completely_unchanged_in_place() {
         let runs = [StyledRun::new("plain paragraph", style().font)];
         let flow = [BlockNode::new(Block::Paragraph(Paragraph::new(&runs, 200.0)))];
-        let attached = attach_captions(&flow, &style());
+        let mut arena = TocArena::new();
+        let attached = attach_captions(&flow, &style(), &mut arena);
         assert_eq!(attached.len(), 1, "an untagged node never gains a synthesized sibling");
     }
 

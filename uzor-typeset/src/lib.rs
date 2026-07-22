@@ -86,4 +86,4 @@ pub use style::{
     resolve_property_chain, BrandTokens, ColorRole, ComponentStyle, DesignTokens, FigureThemeTokens, FontFileRef, FontRole, PropertyState,
     ResolvedProperty, RootPropertyState, TextStyle, Theme,
 };
-pub use toc::{build_toc, build_toc_rows, compose_document_with_toc, dotted_leader, TocRow, TocStyle};
+pub use toc::{build_toc, build_toc_rows, compose_document_with_toc, dotted_leader, TocArena, TocRow, TocStyle};

@@ -19,10 +19,17 @@
 //! opt into [`crate::guide::annotation`]'s reference lines/bands/callouts
 //! where applicable (curve/bars gained the SAME opt-in `annotations`
 //! field this wave).
+//!
+//! `dag` (arc B wave 2 shelf item): [`dag::DagFigure`] — a layered DAG
+//! figure over a private, in-crate copy of `uzor-graph`'s own Kahn
+//! longest-path + barycenter layering algorithm (this crate must not
+//! depend on `uzor-graph` — see `dag`'s own module docs for the full
+//! lift provenance and its documented v1 scope boundaries).
 
 pub mod bars;
 pub mod boxplot;
 pub mod curve;
+pub mod dag;
 pub mod heatmap;
 pub mod histogram;
 pub mod kpi;
@@ -35,6 +42,7 @@ pub mod waterfall;
 pub use bars::{BarFigure, BarMode, BarSeries};
 pub use boxplot::{boxplot_stats, quartile, BoxplotFigure, BoxplotStats, WHISKER_IQR_MULTIPLIER};
 pub use curve::{CurveFigure, CurveSeries};
+pub use dag::{hit_test_dag_node, layout_dag, DagEdge, DagEdgeGeom, DagFigure, DagLayout, DagNode};
 pub use heatmap::{hit_test_cell, layout_heatmap, HeatmapCell, HeatmapFigure, HeatmapLayout};
 pub use histogram::{bin, Bin, HistogramFigure};
 pub use kpi::KpiFigure;

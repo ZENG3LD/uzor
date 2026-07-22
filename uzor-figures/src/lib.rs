@@ -54,8 +54,9 @@ pub mod transform;
 pub use coord::PlotArea;
 pub use figure::{
     boxplot_stats, quartile, uniform_thin_indices, BarFigure, BarMode, BarSeries, BoxplotFigure, BoxplotStats, CurveFigure, CurveSeries,
-    HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, PieFigure, PieSlice, PointRadius, SankeyFigure, SankeyLink, SankeyNode,
-    ScatterFigure, ScatterPoint, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind, WHISKER_IQR_MULTIPLIER,
+    DagEdge, DagFigure, DagNode, HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, PieFigure, PieSlice, PointRadius, SankeyFigure,
+    SankeyLink, SankeyNode, ScatterFigure, ScatterPoint, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind,
+    WHISKER_IQR_MULTIPLIER,
 };
 pub use guide::annotation::{draw_annotation_overlays, draw_annotation_underlays, Annotation};
 pub use guide::axis::{draw_x_axis_formatted, draw_y_axis_formatted};
@@ -84,9 +85,10 @@ mod proof_tests {
     use crate::theme::FigureTheme;
     use crate::transform::lttb;
     use crate::{
-        Annotation, BarFigure, BarMode, BarSeries, BoxplotFigure, CurveFigure, CurveSeries, FocusSet, HeatmapFigure, HistogramFigure,
-        FigureOverlay, KpiFigure, LegendPosition, NumberFormat, PieFigure, PieSlice, PointRadius, SankeyFigure, SankeyLink, SankeyNode,
-        ScatterFigure, ScatterPoint, TimeScale, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind,
+        Annotation, BarFigure, BarMode, BarSeries, BoxplotFigure, CurveFigure, CurveSeries, DagEdge, DagFigure, DagNode, FocusSet,
+        HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, LegendPosition, NumberFormat, PieFigure, PieSlice, PointRadius,
+        SankeyFigure, SankeyLink, SankeyNode, ScatterFigure, ScatterPoint, TimeScale, TimelineEvent, TimelineFigure, WaterfallFigure,
+        WaterfallItem, WaterfallKind,
     };
 
     const WIDTH: u32 = 800;
@@ -845,5 +847,65 @@ mod proof_tests {
         .expect("KPI tile row should render");
         assert_eq!(decoded_png_dims(&bytes), (KPI_ROW_WIDTH, KPI_TILE_HEIGHT));
         write_proof_png("figures_kpi.png", &bytes);
+    }
+
+    // ── arc B wave 2 (DagFigure) proof ──────────────────────────────────
+
+    const DAG_WIDTH: u32 = 700;
+    const DAG_HEIGHT: u32 = 500;
+
+    /// Deterministic 15-node/4-layer fixture (fixed structure, no RNG):
+    /// one root (layer 0), 3 nodes (layer 1), 6 nodes (layer 2), 5 nodes
+    /// (layer 3) — a real branching-then-merging DAG, not a bare tree
+    /// (every layer-2/layer-3 node has more than one possible parent
+    /// path feeding it), one `category` per layer for palette color
+    /// variety.
+    fn seeded_dag_figure() -> DagFigure {
+        let layer_sizes = [1usize, 3, 6, 5];
+        let mut nodes = Vec::new();
+        for (layer, &count) in layer_sizes.iter().enumerate() {
+            for i in 0..count {
+                let label = if layer == 0 { "root".to_owned() } else { format!("n{layer}-{i}") };
+                nodes.push(DagNode { label, category: Some(layer) });
+            }
+        }
+        // Node indices: 0 = root; 1..=3 = layer 1; 4..=9 = layer 2; 10..=14 = layer 3.
+        let edges = vec![
+            DagEdge { from: 0, to: 1 },
+            DagEdge { from: 0, to: 2 },
+            DagEdge { from: 0, to: 3 },
+            DagEdge { from: 1, to: 4 },
+            DagEdge { from: 1, to: 5 },
+            DagEdge { from: 2, to: 5 },
+            DagEdge { from: 2, to: 6 },
+            DagEdge { from: 2, to: 7 },
+            DagEdge { from: 3, to: 7 },
+            DagEdge { from: 3, to: 8 },
+            DagEdge { from: 3, to: 9 },
+            DagEdge { from: 4, to: 10 },
+            DagEdge { from: 5, to: 10 },
+            DagEdge { from: 5, to: 11 },
+            DagEdge { from: 6, to: 11 },
+            DagEdge { from: 6, to: 12 },
+            DagEdge { from: 7, to: 12 },
+            DagEdge { from: 7, to: 13 },
+            DagEdge { from: 8, to: 13 },
+            DagEdge { from: 8, to: 14 },
+            DagEdge { from: 9, to: 14 },
+        ];
+        DagFigure::new(nodes, edges).with_title("Layered DAG (seeded, 15 nodes / 4 layers)")
+    }
+
+    #[test]
+    fn dag_figure_renders_to_a_valid_png() {
+        let figure = seeded_dag_figure();
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: DAG_WIDTH, height_px: DAG_HEIGHT, dpr: 1.0, background: None };
+        let bytes = render_to_png(&spec, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, DAG_WIDTH as f64, DAG_HEIGHT as f64), &theme);
+        })
+        .expect("dag figure should render");
+        assert_eq!(decoded_png_dims(&bytes), (DAG_WIDTH, DAG_HEIGHT));
+        write_proof_png("figures_dag.png", &bytes);
     }
 }
