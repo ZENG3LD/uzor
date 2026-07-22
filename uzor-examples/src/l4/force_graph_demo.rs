@@ -943,24 +943,27 @@ fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot
     }
     y += HUD_SECTION_GAP;
 
-    // LAYOUT — 2D only (owner defect fix: tree/hierarchy fixtures were
-    // always run through the force layout regardless of shape). Three
-    // buttons let the owner flip ANY fixture's layout by hand;
-    // `rebuild_engines`' own per-fixture default just picks the initial
-    // one on a fixture switch. 3D has no `GraphLayoutMode` equivalent —
-    // its engine is force-only — so this section is entirely absent
-    // there, same convention ORBIT/FLY/GRID already use for being 2D-
-    // absent.
-    if snap.dim == Dimension::TwoD {
-        headings.push(("LAYOUT", y));
-        y += HUD_HEADING_H;
-        for (kind, label) in [(LayoutKind::Force, "FORCE"), (LayoutKind::Hierarchical, "LAYERED"), (LayoutKind::Radial, "RADIAL")] {
-            let rect = Rect::new(origin_x + HUD_PAD, y, content_w, HUD_BUTTON_H);
-            buttons.push(HudButtonRect { control: HudControl::SetLayout(kind), rect, label: label.to_owned(), active: kind == snap.layout_kind });
-            y += HUD_BUTTON_H + HUD_BUTTON_GAP;
-        }
-        y += HUD_SECTION_GAP;
+    // LAYOUT — shows exactly the modes that EXIST in the current
+    // dimension (owner rule: «если они разные в 2D и 3D — показывать
+    // только те, которые там есть, чужие не показывать»). 2D has three
+    // real GraphLayoutMode kinds; the 3D engine is force-only today, so
+    // 3D shows the single FORCE button (always active) rather than an
+    // empty/hidden section — the panel honestly states what the
+    // dimension can do instead of silently omitting the concept.
+    headings.push(("LAYOUT", y));
+    y += HUD_HEADING_H;
+    let layout_modes: &[(LayoutKind, &str)] = if snap.dim == Dimension::TwoD {
+        &[(LayoutKind::Force, "FORCE"), (LayoutKind::Hierarchical, "LAYERED"), (LayoutKind::Radial, "RADIAL")]
+    } else {
+        &[(LayoutKind::Force, "FORCE")]
+    };
+    for &(kind, label) in layout_modes {
+        let rect = Rect::new(origin_x + HUD_PAD, y, content_w, HUD_BUTTON_H);
+        let active = if snap.dim == Dimension::TwoD { kind == snap.layout_kind } else { true };
+        buttons.push(HudButtonRect { control: HudControl::SetLayout(kind), rect, label: label.to_owned(), active });
+        y += HUD_BUTTON_H + HUD_BUTTON_GAP;
     }
+    y += HUD_SECTION_GAP;
 
     // NAVIGATION — dimension toggle + Fit always show; Orbit/Fly and
     // Grid only while 3D is active (both are purely 3D camera concepts).
@@ -2991,10 +2994,14 @@ mod tests {
         assert!(layout_3d_fly.buttons.iter().any(|b| b.control == HudControl::ToggleNavMode));
         assert!(layout_3d_fly.buttons.iter().any(|b| b.control == HudControl::ToggleGrid));
         assert_eq!(layout_3d_fly.sliders.len(), 2, "keyboard + mouse sensitivity sliders while 3D fly is active");
-        assert!(
-            !layout_3d_fly.buttons.iter().any(|b| matches!(b.control, HudControl::SetLayout(_))),
-            "the LAYOUT section is 2D only — uzor-graph's 3D engine is force-only, no GraphLayoutMode equivalent exists there"
-        );
+        // Owner rule: show exactly the modes that EXIST per dimension —
+        // 3D is force-only, so exactly ONE layout button (FORCE, always
+        // active), never LAYERED/RADIAL and never an empty section.
+        let layout_buttons_3d: Vec<_> =
+            layout_3d_fly.buttons.iter().filter(|b| matches!(b.control, HudControl::SetLayout(_))).collect();
+        assert_eq!(layout_buttons_3d.len(), 1, "3D must show exactly the one layout mode it has");
+        assert_eq!(layout_buttons_3d[0].control, HudControl::SetLayout(LayoutKind::Force));
+        assert!(layout_buttons_3d[0].active, "3D's single FORCE mode is always the active one");
     }
 
     /// The task's own explicit ask: prove the coordinate-space
@@ -3202,10 +3209,14 @@ mod tests {
 
         app.dim.set(Dimension::ThreeD);
         let layout_3d = app.hud_layout();
-        assert!(
-            !layout_3d.buttons.iter().any(|b| matches!(b.control, HudControl::SetLayout(_))),
-            "the LAYOUT section must not appear at all while 3D is active"
+        let layout_buttons_3d: Vec<_> =
+            layout_3d.buttons.iter().filter(|b| matches!(b.control, HudControl::SetLayout(_))).collect();
+        assert_eq!(
+            layout_buttons_3d.len(),
+            1,
+            "3D shows exactly its one existing layout mode (FORCE), never the 2D-only LAYERED/RADIAL"
         );
+        assert_eq!(layout_buttons_3d[0].control, HudControl::SetLayout(LayoutKind::Force));
     }
 
     #[test]
