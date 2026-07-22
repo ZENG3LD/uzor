@@ -107,6 +107,7 @@ use uzor::render::{
 };
 
 use super::subset::FontData;
+use super::tagging::{PageTagState, PdfTagRole, StructElemId};
 use super::{flate_compress, FontId, PdfBuilder, PdfFontCache, RefAllocator};
 
 // ---------------------------------------------------------------------------
@@ -273,6 +274,14 @@ pub(crate) enum PdfOp {
         px_h: u32,
         alpha: f32,
     },
+    /// Typography wave 5 — open a marked-content sequence for the
+    /// registered structure element `id`, bracketing every subsequent op
+    /// up to the matching [`PdfOp::EndTag`]. Inert (never pushed at all)
+    /// when [`PdfBuilder::is_tagged`] is `false` — see
+    /// [`PdfRenderContext::begin_tag`].
+    BeginTag(StructElemId),
+    /// Close the marked-content sequence [`PdfOp::BeginTag`] opened.
+    EndTag,
 }
 
 /// Opaque accumulator [`PdfRenderContext::finish`] hands back —
@@ -417,6 +426,30 @@ impl<'a> PdfRenderContext<'a> {
     /// op list for [`super::PdfPageSpec::content`].
     pub fn finish(self) -> PdfContentStream {
         PdfContentStream(self.ops)
+    }
+
+    /// Typography wave 5 — bracket every op recorded between this call
+    /// and the matching [`Self::end_tag`] in one `BDC`/`EMC` marked-
+    /// content sequence tied to the registered structure element `tag`
+    /// (`uzor-typeset::export::pdf_adapter`'s own
+    /// `PdfBuilder::register_struct_elem` — this crate holds no
+    /// `Page`/`Block` knowledge, so it never decides `tag`'s own role
+    /// itself). A pure, inert no-op when [`PdfBuilder::is_tagged`] is
+    /// `false` — the SAME bookkeeping-only convention
+    /// [`PdfBuilder::register_struct_elem`] itself already uses, so a
+    /// caller never needs to branch on tagging state before calling this.
+    pub fn begin_tag(&mut self, tag: StructElemId) {
+        if self.builder.is_tagged() {
+            self.ops.push(PdfOp::BeginTag(tag));
+        }
+    }
+
+    /// Close the marked-content sequence [`Self::begin_tag`] opened —
+    /// same inert-when-untagged convention.
+    pub fn end_tag(&mut self) {
+        if self.builder.is_tagged() {
+            self.ops.push(PdfOp::EndTag);
+        }
     }
 
     // -----------------------------------------------------------------
@@ -1042,6 +1075,9 @@ pub(crate) fn emit_ops(
     page_height_pt: f64,
     font_data: &[FontData],
     font_names: &[String],
+    tagged: bool,
+    struct_roles: &[PdfTagRole],
+    tag_state: &mut PageTagState,
 ) -> PageOpResources {
     let mut resources = PageOpResources::default();
     let mut gstate_cache: Vec<(i32, String)> = Vec::new();
@@ -1050,6 +1086,18 @@ pub(crate) fn emit_ops(
 
     for op in ops {
         match op {
+            PdfOp::BeginTag(id) => {
+                if tagged {
+                    let mcid = tag_state.open(*id);
+                    let mut mc = content.begin_marked_content_with_properties(Name(struct_roles[id.0 as usize].bdc_tag_name()));
+                    mc.properties().identify(mcid);
+                }
+            }
+            PdfOp::EndTag => {
+                if tagged {
+                    content.end_marked_content();
+                }
+            }
             PdfOp::Save => {
                 content.save_state();
             }

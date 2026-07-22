@@ -91,12 +91,12 @@
 
 use uzor::render::{Painter, ShapeHelpers};
 use uzor::types::Rect;
-use uzor_export::{FontId, PdfBuilder, PdfFontCache, PdfLink, PdfOutlineEntry, PdfPageSpec, PdfRenderContext, PdfTextRun};
+use uzor_export::{FontId, PdfBuilder, PdfFontCache, PdfLink, PdfMeta, PdfOutlineEntry, PdfPageSpec, PdfRenderContext, PdfTagRole, PdfTextRun, StructElemId};
 use uzor_text::ParagraphLayout;
 
 use crate::master::PageMaster;
 use crate::region::{Frame, PlacedBlock};
-use crate::render::{draw_page_layers, DrawLayers};
+use crate::render::{draw_footnote_separator, draw_page_layers, draw_page_number, draw_placed_block, DrawLayers};
 use crate::scene::Block;
 use crate::slice::Page;
 use crate::style::{ColorRole, Theme};
@@ -114,6 +114,71 @@ struct CollectedRun {
     /// `text` — typography-gap WAVE 2 per-glyph PDF kerning. Fed straight
     /// into `uzor_export::PdfTextRun::glyph_advances_pt`.
     glyph_advances_pt: Vec<f64>,
+    /// Typography wave 5 — moved verbatim into `uzor_export::PdfTextRun::
+    /// struct_tag`. `None` for every run collected while tagging is off
+    /// (or for header/footer/footnote/list content — see
+    /// [`TagMode`]'s own doc comment for this module's tagging scope).
+    struct_tag: Option<StructElemId>,
+}
+
+/// Export-time options for [`pages_to_pdf`] (typography wave 5 — tagged
+/// PDF + `/Lang`). `Default` matches this wave's own "default ON" ask:
+/// `tagged: true`, `lang: None`.
+#[derive(Debug, Clone)]
+pub struct PdfExportOptions {
+    /// Emit a real Tagged-PDF structure tree (`/MarkInfo`, `/StructTreeRoot`,
+    /// balanced `BDC`/`EMC` marked content, `/ParentTree`, `/StructParents`)
+    /// — see `uzor_export::pdf`'s own module doc comment for the full
+    /// engine-side mechanism, and this module's own "Typography wave 5"
+    /// section below for the adapter-side tag-mapping decisions. `false`
+    /// makes [`pages_to_pdf`] take the EXACT pre-wave-5 code path (a
+    /// single whole-page [`draw_page_layers`] call + untagged text-run
+    /// collection) — never merely a downstream no-op on the SAME code
+    /// path — so the emitted bytes are byte-for-byte identical to the
+    /// pre-wave-5 writer.
+    pub tagged: bool,
+    /// RFC 3066 language tag (e.g. `"ru"`) for the Catalog's own `/Lang`
+    /// entry — independent of `tagged` (a document can declare its own
+    /// language regardless of whether it is a Tagged PDF).
+    pub lang: Option<String>,
+    /// Document metadata (`/Info` dictionary + optional hand-rolled XMP
+    /// `/Metadata` stream when `meta.write_xmp` is set) — forwarded to
+    /// [`uzor_export::PdfMeta`] verbatim, except `lang`: [`Self::lang`]
+    /// wins when both are set (one language source of truth at THIS
+    /// options boundary; `meta.lang` fills in only when `Self::lang` is
+    /// `None`).
+    pub meta: Option<PdfMeta>,
+}
+
+impl Default for PdfExportOptions {
+    fn default() -> Self {
+        Self { tagged: true, lang: None, meta: None }
+    }
+}
+
+/// How [`collect_text_runs_from_placed`]'s `Block::Paragraph` arm resolves
+/// a collected run's own [`StructElemId`] (typography wave 5). A plain,
+/// `Copy` enum threaded alongside the existing recursion rather than
+/// folded into a richer type — every variant is a small, self-contained
+/// decision the CALLER already knows before recursing one level deeper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TagMode {
+    /// Tagging is off, or this content is out of this wave's tagging
+    /// scope (header/footer/footnote/list content — see this module's
+    /// own "Typography wave 5" doc section for the scope-narrowing
+    /// reasoning). No `PdfBuilder::register_struct_elem` call happens at
+    /// all for a run collected under this mode.
+    None,
+    /// Top-level body-flow content: resolve EACH paragraph independently
+    /// to `H1`/`H2` (if its own plain text matches a pending, same-page
+    /// [`crate::slice::OutlineEntry::title`]) or `P` otherwise.
+    AutoHeading,
+    /// Use this EXACT, already-registered element for every run collected
+    /// under this mode — a table cell's own paragraph content is tagged
+    /// directly as its enclosing `TableCell` leaf, never a nested `P`
+    /// inside a `TD` (this module's own "Typography wave 5" tag-mapping
+    /// decision).
+    Fixed(StructElemId),
 }
 
 /// Convert `pages` (already composed + sliced via [`crate::slice::
@@ -146,8 +211,79 @@ struct CollectedRun {
 /// `uzor_export::PdfPageSpec::links`. Both convert 1:1 (this module's own
 /// "1pt = 1px" convention — a link/outline-destination rect lives in the
 /// SAME page-pt coordinate space [`PdfTextRun`] positions already do).
-pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) -> Vec<u8> {
+///
+/// ## Typography wave 5 — tagged PDF tag-mapping decisions
+///
+/// `options.tagged` (default `true`) drives a REAL Tagged-PDF structure
+/// tree via `uzor_export::pdf`'s own new mechanism (see that crate's own
+/// `CLAUDE.md`). This adapter is the ONLY place that ever decides a run's
+/// own [`PdfTagRole`] — `uzor-export` itself holds no `Page`/
+/// `ParagraphLayout`/outline knowledge (design law: engine-agnostic
+/// boundary).
+///
+/// - **`P`/`H1`/`H2`** — every TOP-LEVEL `Block::Paragraph` (this page's
+///   own `frame`/`extra_frames`, never header/footer/footnotes) is tagged
+///   `H1`/`H2` when its own PLAIN TEXT (glyph clusters concatenated
+///   verbatim) matches a PENDING, same-page [`crate::slice::OutlineEntry::
+///   title`] at level 1/2 — the SAME title an outline-tagged heading's
+///   own `.with_outline(level, title)` call supplied. A matched entry is
+///   consumed (never reused for a second paragraph on the same page).
+///   Everything else falls back to `P`, including: a heading whose own
+///   OUTLINE title deliberately differs from its PAINTED text (this
+///   crate's own showcase fixture intentionally does this once, for a
+///   bilingual outline title — see that fixture's own comment), a level
+///   3+ heading (out of this wave's own P/H1/H2 scope), and every
+///   ordinary body paragraph. This is a DOCUMENTED, honest text-matching
+///   heuristic (report, not silent): `PlacedBlock` carries no back-
+///   reference to the `BlockNode`/`OutlineTag` that produced it (only
+///   `Page::outline`, a separate, already-page-resolved list with no
+///   block-level correlation), so exact-text matching is the only signal
+///   available at this module's own recursion depth without a deeper,
+///   out-of-scope change to `compose`/`region` (this task's own scope is
+///   "pdf_adapter wiring").
+/// - **`Figure`** — every top-level `Block::Figure`/`Block::Image` wraps
+///   its OWN painted ops (via [`PdfRenderContext::begin_tag`]/
+///   [`PdfRenderContext::end_tag`]) in one marked-content sequence, with
+///   `/Alt` resolved from the immediately-FOLLOWING sibling block (SAME
+///   frame, next index) when it is a `Block::Paragraph` — this crate's
+///   own `caption::attach_captions` convention always splices a
+///   captioned block's resolved caption paragraph directly after it, so
+///   this is a real, honest signal, not a guess (see
+///   [`resolve_figure_alt`]'s own doc comment for exactly how far this
+///   heuristic goes and why). A figure with no following paragraph gets
+///   NO `/Alt` at all (an honest absence, never a fabricated placeholder
+///   string) — `uzor_export::pdf`'s own engine-side convention already
+///   never invents one either.
+/// - **`Table`/`TableRow`/`TableCell`** — real, full nesting, not a
+///   whole-table `Figure` fallback: [`crate::region::PlacedTableCell`]/
+///   [`crate::region::PlacedTableRow`] already expose clean cell/row
+///   geometry (`rect`, `column_index`) unconditionally on every
+///   `TablePlacement`, so the brief's own "only if cell geometry is
+///   exposed cleanly, else whole-table Figure" condition is ALWAYS
+///   satisfied in this codebase's current architecture — logged here per
+///   the brief's own explicit "log the decision either way" instruction,
+///   no Figure-fallback branch exists because none was ever needed. Each
+///   cell's own paragraph content is tagged directly with its enclosing
+///   `TableCell`'s [`StructElemId`] (`TagMode::Fixed`) — never a nested
+///   `P` inside the `TD` (one fewer, purely cosmetic tree level; a
+///   screen reader still reads the SAME cell text either way).
+/// - **Out of scope this wave (documented, not silent)**: list markers/
+///   items (`Block::List`, including the footnote zone's own numbered
+///   list), header/footer running chrome, and the page-number text are
+///   never struct-tagged — the brief's own explicit tag-mapping list
+///   names only P/H1/H2/Figure/Table(+TR+TD); this content still paints
+///   (untagged — a screen reader receives it as ordinary, un-tagged
+///   content, tolerated by every reader as "artifact-like," never
+///   dropped or hidden).
+pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme, options: PdfExportOptions) -> Vec<u8> {
     let mut builder = PdfBuilder::new();
+    builder.set_tagged(options.tagged);
+    let lang = options.lang.clone().or_else(|| options.meta.as_ref().and_then(|m| m.lang.clone()));
+    match (options.meta.clone(), lang) {
+        (Some(meta), lang) => builder.set_meta(PdfMeta { lang, ..meta }),
+        (None, Some(lang)) => builder.set_meta(PdfMeta { lang: Some(lang), ..Default::default() }),
+        (None, None) => {}
+    }
     let mut fonts = PdfFontCache::new();
 
     let outline_entries: Vec<PdfOutlineEntry> = pages
@@ -166,7 +302,15 @@ pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) 
         // (typography-gap WAVE 1), not an offscreen raster pixmap. The
         // page's own opaque background is painted explicitly first (the
         // whole-page raster this used to ride along with is gone).
-        let content = {
+        //
+        // Typography wave 5: `options.tagged == false` takes the EXACT
+        // pre-wave-5 branch below, unchanged — no new code path (struct-
+        // elem registration, `begin_tag`/`end_tag`) ever executes, not
+        // merely "has no effect" (see `PdfExportOptions::tagged`'s own
+        // doc comment).
+        let content = if options.tagged {
+            build_tagged_content(page, master, theme, &mut builder, &mut fonts)
+        } else {
             let mut pdf_ctx = PdfRenderContext::new(1.0, &mut builder, &mut fonts);
             pdf_ctx.set_fill_color(&theme.color_hex(ColorRole::Background));
             pdf_ctx.fill_rect(0.0, 0.0, master.width, master.height);
@@ -174,16 +318,24 @@ pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) 
             pdf_ctx.finish()
         };
 
+        // Typography wave 5: this page's own PENDING (level, title) pairs
+        // — consumed one at a time by `collect_text_runs_from_placed`'s
+        // `Block::Paragraph` arm under `TagMode::AutoHeading` as it walks
+        // `page.frame`/`page.extra_frames` in placement order. Empty (and
+        // therefore inert) whenever `!options.tagged`.
+        let mut pending_headings: Vec<(u8, String)> = if options.tagged { page.outline.iter().map(|e| (e.level, e.title.clone())).collect() } else { Vec::new() };
+        let body_tag_mode = if options.tagged { TagMode::AutoHeading } else { TagMode::None };
+
         let mut collected = Vec::new();
-        collect_text_runs_from_frame(&page.frame, theme, &mut fonts, &mut builder, &mut collected);
+        collect_text_runs_from_frame(&page.frame, theme, &mut fonts, &mut builder, &mut collected, body_tag_mode, &mut pending_headings);
         for extra in &page.extra_frames {
-            collect_text_runs_from_frame(extra, theme, &mut fonts, &mut builder, &mut collected);
+            collect_text_runs_from_frame(extra, theme, &mut fonts, &mut builder, &mut collected, body_tag_mode, &mut pending_headings);
         }
         if let Some(header) = &page.header {
-            collect_text_runs_from_frame(header, theme, &mut fonts, &mut builder, &mut collected);
+            collect_text_runs_from_frame(header, theme, &mut fonts, &mut builder, &mut collected, TagMode::None, &mut pending_headings);
         }
         if let Some(footer) = &page.footer {
-            collect_text_runs_from_frame(footer, theme, &mut fonts, &mut builder, &mut collected);
+            collect_text_runs_from_frame(footer, theme, &mut fonts, &mut builder, &mut collected, TagMode::None, &mut pending_headings);
         }
         if let Some(footnotes) = &page.footnotes {
             // The footnote zone's own content is a real `Block::List`
@@ -193,7 +345,10 @@ pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) 
             // through (design law 1); its numbered marker glyphs paint via
             // the page's own `PdfRenderContext` pass above (`draw_page_layers`
             // already walks `Page::footnotes` there), never a second path.
-            collect_text_runs_from_frame(&footnotes.frame, theme, &mut fonts, &mut builder, &mut collected);
+            // `TagMode::None` — list content is out of this wave's own
+            // tagging scope (this module's own "Typography wave 5" doc
+            // section above).
+            collect_text_runs_from_frame(&footnotes.frame, theme, &mut fonts, &mut builder, &mut collected, TagMode::None, &mut pending_headings);
         }
 
         let text_runs: Vec<PdfTextRun<'_>> = collected
@@ -206,6 +361,7 @@ pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) 
                 rgb: run.rgb,
                 text: run.text.as_str(),
                 glyph_advances_pt: Some(run.glyph_advances_pt.clone()),
+                struct_tag: run.struct_tag,
             })
             .collect();
         let links: Vec<PdfLink> = page
@@ -230,25 +386,191 @@ pub fn pages_to_pdf(pages: &[Page<'_>], master: &PageMaster<'_>, theme: &Theme) 
     builder.finish()
 }
 
-fn collect_text_runs_from_frame(frame: &Frame<'_>, theme: &Theme, fonts: &mut PdfFontCache, builder: &mut PdfBuilder, out: &mut Vec<CollectedRun>) {
-    for placed in &frame.blocks {
-        collect_text_runs_from_placed(placed, theme, fonts, builder, out);
+/// The `options.tagged == true` content-stream pass — mirrors
+/// [`draw_page_layers`]'s own body exactly (background paint, then
+/// `frame`/`extra_frames`/`header`/`footer`/`footnotes`/`page_number`, in
+/// the SAME order) with ONE difference: every top-level `Block::Figure`/
+/// `Block::Image` in `frame`/`extra_frames` is individually bracketed in
+/// its own `BDC`/`EMC` marked-content sequence (this module's own
+/// "Typography wave 5" doc section above). Every struct element this
+/// pass registers is allocated BEFORE [`PdfRenderContext`] takes its own
+/// exclusive `&mut PdfBuilder` borrow for the whole painting pass below —
+/// `PdfBuilder::register_struct_elem` needs `&mut PdfBuilder` too, which
+/// a live `PdfRenderContext` would otherwise make unreachable.
+fn build_tagged_content(page: &Page<'_>, master: &PageMaster<'_>, theme: &Theme, builder: &mut PdfBuilder, fonts: &mut PdfFontCache) -> uzor_export::PdfContentStream {
+    let default_color = theme.color_hex(ColorRole::Ink);
+    let figure_theme = theme.figure_theme();
+    let layers = DrawLayers { paragraph_ink: false, paragraph_decorations: true };
+
+    let frame_tags = register_figure_tags(&page.frame.blocks, builder);
+    let extra_tags: Vec<Vec<Option<StructElemId>>> = page.extra_frames.iter().map(|extra| register_figure_tags(&extra.blocks, builder)).collect();
+
+    let mut pdf_ctx = PdfRenderContext::new(1.0, builder, fonts);
+    pdf_ctx.set_fill_color(&theme.color_hex(ColorRole::Background));
+    pdf_ctx.fill_rect(0.0, 0.0, master.width, master.height);
+
+    paint_blocks_tagged(&mut pdf_ctx, &page.frame.blocks, &frame_tags, &default_color, &figure_theme, layers);
+    for (extra, tags) in page.extra_frames.iter().zip(extra_tags.iter()) {
+        paint_blocks_tagged(&mut pdf_ctx, &extra.blocks, tags, &default_color, &figure_theme, layers);
+    }
+    if let Some(header) = &page.header {
+        for placed in &header.blocks {
+            draw_placed_block(&mut pdf_ctx, placed, &default_color, &figure_theme, layers);
+        }
+    }
+    if let Some(footer) = &page.footer {
+        for placed in &footer.blocks {
+            draw_placed_block(&mut pdf_ctx, placed, &default_color, &figure_theme, layers);
+        }
+    }
+    if let Some(footnotes) = &page.footnotes {
+        draw_footnote_separator(&mut pdf_ctx, footnotes.frame.region.rect, &default_color);
+        for placed in &footnotes.frame.blocks {
+            draw_placed_block(&mut pdf_ctx, placed, &default_color, &figure_theme, layers);
+        }
+    }
+    if let Some(page_number) = &page.page_number {
+        draw_page_number(&mut pdf_ctx, page_number, theme);
+    }
+
+    pdf_ctx.finish()
+}
+
+/// Register a `Figure` struct element (with `/Alt` resolved via
+/// [`resolve_figure_alt`]) for every top-level `Block::Figure`/
+/// `Block::Image` in `blocks`, `None` for every other block kind — the
+/// returned `Vec` is index-parallel to `blocks` itself, read back by
+/// [`paint_blocks_tagged`].
+fn register_figure_tags(blocks: &[PlacedBlock<'_>], builder: &mut PdfBuilder) -> Vec<Option<StructElemId>> {
+    blocks
+        .iter()
+        .enumerate()
+        .map(|(i, placed)| match placed.kind {
+            Block::Figure(_) | Block::Image(_) => {
+                let alt = resolve_figure_alt(blocks, i);
+                Some(builder.register_struct_elem(PdfTagRole::Figure, None, alt))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// A figure/image's own `/Alt` text: the immediately-FOLLOWING sibling
+/// block's plain text, when it is a `Block::Paragraph` with a real
+/// layout — this crate's own `caption::attach_captions` convention
+/// ALWAYS splices a captioned figure/table's resolved caption paragraph
+/// directly after it (and upgrades the figure's own `break_control` to
+/// `AvoidAfter` so the pair never separates across a page break), so
+/// "the next sibling in this SAME frame" is a real, honest signal — not
+/// a guessed heuristic invented for this wave. **Documented scope limit
+/// (report, not silent)**: `pages_to_pdf` only ever sees the already-
+/// composed `Page`/`PlacedBlock` tree, never the original flow's own
+/// `BlockId`-keyed caption map (`crate::caption::resolve_caption_numbers`)
+/// — there is no way at this recursion depth to distinguish "the
+/// following paragraph really is this figure's caption" from "the
+/// following paragraph merely happens to be the next thing in the flow"
+/// with certainty; a figure followed by ordinary body text (rare — this
+/// crate's own fixtures always pair a figure with its caption
+/// immediately) would get that body text's own first words as its
+/// `/Alt` instead of nothing, which is still marginally more useful than
+/// a placeholder to an assistive-technology reader, never actively
+/// wrong/fabricated data. A figure with NO following paragraph at all
+/// (the last block in its frame) gets NO `/Alt` — an honest absence,
+/// never a synthesized generic string.
+fn resolve_figure_alt(blocks: &[PlacedBlock<'_>], index: usize) -> Option<String> {
+    let next = blocks.get(index + 1)?;
+    let Block::Paragraph(_) = next.kind else { return None };
+    let layout = next.paragraph_layout.as_ref()?;
+    let text = paragraph_plain_text(layout);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_owned())
     }
 }
 
-fn collect_text_runs_from_placed(placed: &PlacedBlock<'_>, theme: &Theme, fonts: &mut PdfFontCache, builder: &mut PdfBuilder, out: &mut Vec<CollectedRun>) {
+/// Paint every block in `blocks` (one frame's worth), bracketing a
+/// `Block::Figure`/`Block::Image`'s own ops in `begin_tag`/`end_tag`
+/// whenever `tags[i]` is `Some` — every other block kind (including a
+/// `Block::Table`, whose own cell TEXT is tagged separately via the
+/// text-run collection pass, never here) paints exactly like
+/// [`draw_page_layers`]'s own untagged loop.
+fn paint_blocks_tagged(ctx: &mut PdfRenderContext<'_>, blocks: &[PlacedBlock<'_>], tags: &[Option<StructElemId>], default_color: &str, figure_theme: &uzor_figures::FigureTheme, layers: DrawLayers) {
+    for (placed, tag) in blocks.iter().zip(tags.iter()) {
+        match tag {
+            Some(id) => {
+                ctx.begin_tag(*id);
+                draw_placed_block(ctx, placed, default_color, figure_theme, layers);
+                ctx.end_tag();
+            }
+            None => draw_placed_block(ctx, placed, default_color, figure_theme, layers),
+        }
+    }
+}
+
+/// A paragraph's own visible text — every glyph cluster concatenated
+/// verbatim, in glyph order (whitespace clusters included, ligature-
+/// continuation empty clusters contribute nothing) — used ONLY to
+/// correlate a placed paragraph against a pending [`crate::slice::
+/// OutlineEntry::title`] for `H1`/`H2` tagging (typography wave 5); NOT a
+/// general-purpose text-extraction utility (no line-break/hyphenation
+/// awareness is needed for a single-paragraph heading match).
+fn paragraph_plain_text(layout: &ParagraphLayout) -> String {
+    layout.glyphs.iter().map(|g| g.cluster.as_str()).collect()
+}
+
+fn collect_text_runs_from_frame(
+    frame: &Frame<'_>,
+    theme: &Theme,
+    fonts: &mut PdfFontCache,
+    builder: &mut PdfBuilder,
+    out: &mut Vec<CollectedRun>,
+    tag_mode: TagMode,
+    pending_headings: &mut Vec<(u8, String)>,
+) {
+    for placed in &frame.blocks {
+        collect_text_runs_from_placed(placed, theme, fonts, builder, out, tag_mode, pending_headings);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_text_runs_from_placed(
+    placed: &PlacedBlock<'_>,
+    theme: &Theme,
+    fonts: &mut PdfFontCache,
+    builder: &mut PdfBuilder,
+    out: &mut Vec<CollectedRun>,
+    tag_mode: TagMode,
+    pending_headings: &mut Vec<(u8, String)>,
+) {
     match placed.kind {
         Block::Paragraph(_) => {
             if let Some(layout) = &placed.paragraph_layout {
-                collect_from_layout(layout, placed.rect, theme, fonts, builder, out);
+                let struct_tag = resolve_paragraph_tag(layout, tag_mode, builder, pending_headings);
+                collect_from_layout(layout, placed.rect, theme, fonts, builder, out, struct_tag);
             }
         }
         Block::Table(_) => {
             if let Some(table) = &placed.table_placement {
+                // Typography wave 5 — real Table/TableRow/TableCell
+                // nesting (this module's own "Typography wave 5" doc
+                // section on `pages_to_pdf` has the full tag-mapping
+                // decision + why no Figure-fallback branch was needed).
+                // Registered ONLY when tagging is active at all (`tag_mode
+                // != TagMode::None`) — header/footer/footnote content
+                // never reaches this arm with anything else, but a table
+                // is never placed there in practice either way.
+                let table_id = if tag_mode != TagMode::None { Some(builder.register_struct_elem(PdfTagRole::Table, None, None)) } else { None };
                 for row in &table.rows {
+                    let tr_id = table_id.map(|t| builder.register_struct_elem(PdfTagRole::TableRow, Some(t), None));
                     for cell in &row.cells {
+                        let cell_tag_mode = match tr_id {
+                            Some(tr) => TagMode::Fixed(builder.register_struct_elem(PdfTagRole::TableCell, Some(tr), None)),
+                            None => TagMode::None,
+                        };
                         for inner in &cell.content {
-                            collect_text_runs_from_placed(inner, theme, fonts, builder, out);
+                            collect_text_runs_from_placed(inner, theme, fonts, builder, out, cell_tag_mode, pending_headings);
                         }
                     }
                 }
@@ -256,9 +578,11 @@ fn collect_text_runs_from_placed(placed: &PlacedBlock<'_>, theme: &Theme, fonts:
         }
         Block::List(_) => {
             if let Some(list) = &placed.list_placement {
+                // Out of this wave's own tagging scope — see this
+                // module's own "Typography wave 5" doc section above.
                 for item in &list.items {
                     for inner in &item.content {
-                        collect_text_runs_from_placed(inner, theme, fonts, builder, out);
+                        collect_text_runs_from_placed(inner, theme, fonts, builder, out, TagMode::None, pending_headings);
                     }
                 }
             }
@@ -266,8 +590,40 @@ fn collect_text_runs_from_placed(placed: &PlacedBlock<'_>, theme: &Theme, fonts:
         // Figures/images/islands contribute NO paragraph-style text runs:
         // their ink (including figure axis/label text) is emitted by the
         // page's own `PdfRenderContext` pass in `add_document` — vector
-        // ops in the content stream since WAVE 1. A spacer paints nothing.
+        // ops in the content stream since WAVE 1 (Figure/Image tagging
+        // itself happens in `build_tagged_content`'s own ops-level pass,
+        // not here). A spacer paints nothing.
         Block::Figure(_) | Block::Image(_) | Block::Island(_) | Block::Spacer(_) => {}
+    }
+}
+
+/// Resolve a top-level paragraph's own [`StructElemId`] under `tag_mode`
+/// (typography wave 5) — see [`TagMode`]'s own doc comment for what each
+/// variant means; `AutoHeading` is the only variant that actually reads
+/// `layout`'s own text.
+fn resolve_paragraph_tag(layout: &ParagraphLayout, tag_mode: TagMode, builder: &mut PdfBuilder, pending_headings: &mut Vec<(u8, String)>) -> Option<StructElemId> {
+    match tag_mode {
+        TagMode::None => None,
+        TagMode::Fixed(id) => Some(id),
+        TagMode::AutoHeading => {
+            let text = paragraph_plain_text(layout);
+            let matched_level = pending_headings
+                .iter()
+                .position(|(_, title)| title.trim() == text.trim())
+                .map(|idx| pending_headings.remove(idx).0);
+            let role = match matched_level {
+                Some(1) => PdfTagRole::H1,
+                Some(2) => PdfTagRole::H2,
+                // A matched level outside 1/2 (never produced by this
+                // crate's own `.with_outline()` convention today, but a
+                // defensive, honest fallback rather than a panic) and
+                // "no match at all" (an ordinary body paragraph, OR a
+                // heading whose own outline title deliberately differs
+                // from its painted text) both degrade to a plain `P`.
+                _ => PdfTagRole::P,
+            };
+            Some(builder.register_struct_elem(role, None, None))
+        }
     }
 }
 
@@ -307,7 +663,16 @@ fn collect_text_runs_from_placed(placed: &PlacedBlock<'_>, theme: &Theme, fonts:
 /// this pass doesn't newly introduce), so a `0.0` continuation advance is
 /// the correct value to keep those glyphs visually coincident rather than
 /// spread across the ligature's own combined width.
-fn collect_from_layout(layout: &ParagraphLayout, rect: Rect, theme: &Theme, fonts: &mut PdfFontCache, builder: &mut PdfBuilder, out: &mut Vec<CollectedRun>) {
+#[allow(clippy::too_many_arguments)]
+fn collect_from_layout(
+    layout: &ParagraphLayout,
+    rect: Rect,
+    theme: &Theme,
+    fonts: &mut PdfFontCache,
+    builder: &mut PdfBuilder,
+    out: &mut Vec<CollectedRun>,
+    struct_tag: Option<StructElemId>,
+) {
     let glyphs = &layout.glyphs;
     let mut i = 0;
     while i < glyphs.len() {
@@ -354,7 +719,7 @@ fn collect_from_layout(layout: &ParagraphLayout, rect: Rect, theme: &Theme, font
         if !text.is_empty() {
             let font_id = fonts.id_for(font.family, font.bold, font.italic, builder);
             let rgb = color.map(|rgba| (rgba >> 8) & 0x00FF_FFFF).unwrap_or_else(|| theme.color_rgb(ColorRole::Ink));
-            out.push(CollectedRun { font: font_id, size_pt: font.size_px, x_pt: rect.x + start_x, y_pt: rect.y + start_y, rgb, text, glyph_advances_pt });
+            out.push(CollectedRun { font: font_id, size_pt: font.size_px, x_pt: rect.x + start_x, y_pt: rect.y + start_y, rgb, text, glyph_advances_pt, struct_tag });
         }
 
         i = j.max(i + 1);
@@ -381,7 +746,7 @@ mod tests {
     use uzor::fonts::FontFamily;
     use uzor_text::{CosmicShaper, FontSpec, Paragraph, StyledRun};
 
-    use super::pages_to_pdf;
+    use super::{pages_to_pdf, PdfExportOptions};
     use crate::compose::ComposeStyle;
     use crate::render::draw_page;
     use crate::scene::{Block, BlockNode};
@@ -444,7 +809,7 @@ mod tests {
         let pages = slice_pages(&flow, &master, &style, &shaper);
         assert_eq!(pages.len(), 2, "fixture must be tuned to land on exactly 2 pages, got {}", pages.len());
 
-        let pdf_bytes = pages_to_pdf(&pages, &master, &theme);
+        let pdf_bytes = pages_to_pdf(&pages, &master, &theme, PdfExportOptions::default());
         assert!(pdf_bytes.starts_with(b"%PDF-"));
         write_proof("typeset_p5_adapter_proof.pdf", &pdf_bytes);
 
@@ -498,7 +863,7 @@ mod tests {
         let mut fonts = PdfFontCache::new();
         let mut collected = Vec::new();
         let rect = uzor::types::Rect { x: 10.0, y: 20.0, width: 260.0, height: 400.0 };
-        collect_from_layout(&layout, rect, &theme, &mut fonts, &mut builder, &mut collected);
+        collect_from_layout(&layout, rect, &theme, &mut fonts, &mut builder, &mut collected, None);
 
         // No collected run ever spans a whitespace boundary (per-word, not
         // per-line, granularity).
@@ -574,7 +939,7 @@ mod tests {
         let mut fonts = PdfFontCache::new();
         let mut collected = Vec::new();
         let rect = uzor::types::Rect { x: 0.0, y: 0.0, width: 1000.0, height: 100.0 };
-        collect_from_layout(&layout, rect, &theme, &mut fonts, &mut builder, &mut collected);
+        collect_from_layout(&layout, rect, &theme, &mut fonts, &mut builder, &mut collected, None);
         assert_eq!(collected.len(), 1, "single unbroken word must collect into exactly one run");
 
         let word_glyph_advances: Vec<f64> = layout.glyphs.iter().filter(|g| !g.cluster.trim().is_empty()).map(|g| g.advance).collect();
@@ -607,7 +972,7 @@ mod tests {
         let pages = slice_pages(&flow, &master, &style, &shaper);
         assert_eq!(pages.len(), 1);
 
-        let pdf_bytes = pages_to_pdf(&pages, &master, &theme);
+        let pdf_bytes = pages_to_pdf(&pages, &master, &theme, PdfExportOptions::default());
         let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
         let lopdf_pages = doc.get_pages();
         let page_id = *lopdf_pages.values().next().expect("one page");
@@ -648,7 +1013,7 @@ mod tests {
         let pages = slice_pages(&flow, &master, &style, &shaper);
         assert_eq!(pages.len(), 1);
 
-        let pdf_bytes = pages_to_pdf(&pages, &master, &theme);
+        let pdf_bytes = pages_to_pdf(&pages, &master, &theme, PdfExportOptions::default());
         let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
         let lopdf_pages = doc.get_pages();
         let page_id = *lopdf_pages.values().next().expect("one page");
@@ -944,7 +1309,7 @@ mod tests {
         // pages" showcase range.
         assert_eq!(pages.len(), 5, "showcase fixture is tuned to land on exactly 5 pages, got {}", pages.len());
 
-        let pdf_bytes = pages_to_pdf(&pages, &master, &theme);
+        let pdf_bytes = pages_to_pdf(&pages, &master, &theme, PdfExportOptions::default());
         assert!(pdf_bytes.starts_with(b"%PDF-"));
         write_proof("typeset_p5_report.pdf", &pdf_bytes);
 
@@ -1060,7 +1425,7 @@ mod tests {
         let pages = slice_pages(&flow, &master, &style, &shaper);
         assert_eq!(pages.len(), 1, "single small table must land on exactly 1 page");
 
-        let pdf_bytes = pages_to_pdf(&pages, &master, &theme);
+        let pdf_bytes = pages_to_pdf(&pages, &master, &theme, PdfExportOptions::default());
         let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
         let lopdf_pages = doc.get_pages();
         let page_id = *lopdf_pages.values().next().expect("one page");
@@ -1077,5 +1442,252 @@ mod tests {
         let content_str = String::from_utf8_lossy(&content_bytes);
         let toks: Vec<&str> = content_str.split_whitespace().collect();
         assert!(toks.contains(&"S"), "the table's own gridlines must be a real stroke 'S' operator, got: {content_str}");
+    }
+
+    // -----------------------------------------------------------------
+    // Typography wave 5 — adapter-side tag-mapping decisions.
+    // -----------------------------------------------------------------
+
+    /// Decode a PDF text-string's raw bytes the same convention
+    /// `pdf_writer::TextStr` itself writes (bare ASCII, or a `U+FEFF`
+    /// byte-order-mark followed by UTF-16BE code units) — this test
+    /// module's own copy of the identical helper `uzor-export`'s own
+    /// `pdf::tests` module already carries (test-only, no production
+    /// code ever needs to decode a `TextStr` it just wrote).
+    fn decode_text_str(bytes: &[u8]) -> String {
+        if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
+            let units: Vec<u16> = bytes[2..].chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            String::from_utf16_lossy(&units)
+        } else {
+            String::from_utf8_lossy(bytes).into_owned()
+        }
+    }
+
+    /// Count every real `/StructElem` object's own `/S` role across the
+    /// whole finished PDF — a cheap, direct way to prove "exactly N
+    /// elements of role X exist" without walking the tree by hand.
+    fn count_struct_roles(doc: &lopdf::Document) -> std::collections::HashMap<Vec<u8>, u32> {
+        let mut counts = std::collections::HashMap::new();
+        for obj in doc.objects.values() {
+            let lopdf::Object::Dictionary(dict) = obj else { continue };
+            if dict.get(b"Type").and_then(|o| o.as_name()).ok() != Some(b"StructElem".as_slice()) {
+                continue;
+            }
+            if let Ok(role) = dict.get(b"S").and_then(|o| o.as_name()) {
+                *counts.entry(role.to_vec()).or_insert(0) += 1;
+            }
+        }
+        counts
+    }
+
+    /// Heading paragraphs whose own PAINTED text matches a same-page
+    /// `.with_outline(level, title)` entry resolve to `H1`/`H2`; every
+    /// other paragraph (no match at all) falls back to `P` — this
+    /// module's own "Typography wave 5" tag-mapping decision, proven end
+    /// to end through `slice_pages` -> `pages_to_pdf` -> a real parsed
+    /// struct tree.
+    #[test]
+    fn heading_paragraphs_resolve_to_h1_h2_tags_matching_the_outline_levels() {
+        const TITLE_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 22.0, bold: true, italic: false };
+        const BODY_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 14.0, bold: false, italic: false };
+
+        let master = PageMaster::new(PAGE_WIDTH, PAGE_HEIGHT, Margins::uniform(40.0));
+        let body_width = master.body_rect().width;
+
+        let title_run = [StyledRun::new("Intro", TITLE_FONT)];
+        let sub_run = [StyledRun::new("Sub", TITLE_FONT)];
+        let body_run = [StyledRun::new("Just a body paragraph.", BODY_FONT)];
+
+        let flow = vec![
+            BlockNode::new(Block::Paragraph(Paragraph::new(&title_run, body_width))).with_outline(1, "Intro"),
+            BlockNode::new(Block::Spacer(10.0)),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&sub_run, body_width))).with_outline(2, "Sub"),
+            BlockNode::new(Block::Spacer(10.0)),
+            BlockNode::new(Block::Paragraph(Paragraph::new(&body_run, body_width))),
+        ];
+
+        let theme = Theme::light_report();
+        let style = ComposeStyle::from_theme(&theme, 12.0);
+        let shaper = CosmicShaper::headless();
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1, "this small fixture must fit on one page");
+
+        let pdf_bytes = pages_to_pdf(&pages, &master, &theme, PdfExportOptions::default());
+        let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
+
+        let roles = count_struct_roles(&doc);
+        assert_eq!(roles.get(b"H1".as_slice()).copied().unwrap_or(0), 1, "exactly one H1-tagged heading, got {roles:?}");
+        assert_eq!(roles.get(b"H2".as_slice()).copied().unwrap_or(0), 1, "exactly one H2-tagged heading, got {roles:?}");
+        assert_eq!(roles.get(b"P".as_slice()).copied().unwrap_or(0), 1, "exactly one plain-P body paragraph, got {roles:?}");
+    }
+
+    /// A figure's own `/Alt` resolves from its immediately-following
+    /// sibling caption paragraph (this module's own "Typography wave 5"
+    /// adjacent-caption heuristic — see `resolve_figure_alt`'s own doc
+    /// comment).
+    #[test]
+    fn figure_alt_text_is_resolved_from_its_own_following_caption_paragraph() {
+        use uzor_figures::BarFigure;
+
+        use crate::scene::{BlockSizing, FigureBlock};
+
+        const CAPTION_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 11.0, bold: false, italic: true };
+
+        let master = PageMaster::new(PAGE_WIDTH, PAGE_HEIGHT, Margins::uniform(40.0));
+        let body_width = master.body_rect().width;
+        let caption_run = [StyledRun::new("Figure 1 - a seeded bar chart of observed amounts.", CAPTION_FONT)];
+
+        let bar_figure = BarFigure::new(vec!["A".to_owned(), "B".to_owned()], vec![10.0, 20.0]);
+        let figure_block = FigureBlock::new(&bar_figure, BlockSizing::FixedHeight(150.0));
+
+        let flow = vec![BlockNode::new(Block::Figure(figure_block)), BlockNode::new(Block::Paragraph(Paragraph::new(&caption_run, body_width)))];
+
+        let theme = Theme::light_report();
+        let style = ComposeStyle::from_theme(&theme, 12.0);
+        let shaper = CosmicShaper::headless();
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1);
+
+        let pdf_bytes = pages_to_pdf(&pages, &master, &theme, PdfExportOptions::default());
+        let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
+
+        let alt = doc
+            .objects
+            .values()
+            .find_map(|obj| {
+                let lopdf::Object::Dictionary(dict) = obj else { return None };
+                if dict.get(b"S").and_then(|o| o.as_name()).ok() != Some(b"Figure".as_slice()) {
+                    return None;
+                }
+                dict.get(b"Alt").and_then(|o| o.as_str()).ok().map(decode_text_str)
+            })
+            .expect("the Figure struct element must carry a resolved /Alt from its own following caption");
+        assert!(alt.contains("bar chart of observed amounts"), "unexpected alt text: {alt}");
+    }
+
+    /// A figure with NO following paragraph gets no `/Alt` at all — an
+    /// honest absence, never a fabricated placeholder string (this
+    /// module's own explicit divergence from a blanket generic alt).
+    #[test]
+    fn a_figure_with_no_following_paragraph_gets_no_alt_at_all() {
+        use uzor_figures::BarFigure;
+
+        use crate::scene::{BlockSizing, FigureBlock};
+
+        let master = PageMaster::new(PAGE_WIDTH, PAGE_HEIGHT, Margins::uniform(40.0));
+        let bar_figure = BarFigure::new(vec!["A".to_owned(), "B".to_owned()], vec![10.0, 20.0]);
+        let figure_block = FigureBlock::new(&bar_figure, BlockSizing::FixedHeight(150.0));
+        let flow = vec![BlockNode::new(Block::Figure(figure_block))];
+
+        let theme = Theme::light_report();
+        let style = ComposeStyle::from_theme(&theme, 12.0);
+        let shaper = CosmicShaper::headless();
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1);
+
+        let pdf_bytes = pages_to_pdf(&pages, &master, &theme, PdfExportOptions::default());
+        let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
+
+        let figure_elem = doc
+            .objects
+            .values()
+            .find_map(|obj| {
+                let lopdf::Object::Dictionary(dict) = obj else { return None };
+                (dict.get(b"S").and_then(|o| o.as_name()).ok() == Some(b"Figure".as_slice())).then_some(dict)
+            })
+            .expect("a Figure struct element must exist");
+        assert!(figure_elem.get(b"Alt").is_err(), "no following paragraph exists, so no /Alt must be written");
+    }
+
+    /// Table tagging: real `Table`/`TableRow`/`TableCell` nesting (this
+    /// module's own "cell geometry is always exposed cleanly, no Figure
+    /// fallback needed" finding — see `pages_to_pdf`'s own "Typography
+    /// wave 5" doc section) — one `Table`, one `TableRow`, one `TableCell`
+    /// PER cell, and every cell's own text is still extractable verbatim.
+    #[test]
+    fn table_cells_are_tagged_table_tr_td_and_their_own_text_stays_extractable() {
+        use crate::scene::{ColumnSpec, TableBlock, TableCell, TableRow};
+
+        const CELL_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 13.0, bold: false, italic: false };
+
+        let master = PageMaster::new(PAGE_WIDTH, PAGE_HEIGHT, Margins::uniform(40.0));
+
+        let c_a = [StyledRun::new("Alpha", CELL_FONT)];
+        let n_a = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_a, f64::MAX)))];
+        let c_b = [StyledRun::new("Beta", CELL_FONT)];
+        let n_b = [BlockNode::new(Block::Paragraph(Paragraph::new(&c_b, f64::MAX)))];
+        let cells = [TableCell::new(&n_a), TableCell::new(&n_b)];
+        let rows = [TableRow::new(&cells)];
+        let columns = [ColumnSpec::Auto, ColumnSpec::Fraction(1.0)];
+        let flow = vec![BlockNode::new(Block::Table(TableBlock::new(&columns, &rows)))];
+
+        let theme = Theme::light_report();
+        let style = ComposeStyle::from_theme(&theme, 12.0);
+        let shaper = CosmicShaper::headless();
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 1);
+
+        let pdf_bytes = pages_to_pdf(&pages, &master, &theme, PdfExportOptions::default());
+        let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
+
+        let roles = count_struct_roles(&doc);
+        assert_eq!(roles.get(b"Table".as_slice()).copied().unwrap_or(0), 1, "exactly one Table container, got {roles:?}");
+        assert_eq!(roles.get(b"TR".as_slice()).copied().unwrap_or(0), 1, "exactly one TableRow container, got {roles:?}");
+        assert_eq!(roles.get(b"TD".as_slice()).copied().unwrap_or(0), 2, "one TableCell leaf per real cell, got {roles:?}");
+
+        let page_numbers: Vec<u32> = doc.get_pages().keys().copied().collect();
+        let extracted = doc.extract_text(&page_numbers).expect("lopdf text extraction must succeed");
+        assert!(extracted.contains("Alpha") && extracted.contains("Beta"), "cell text must still extract verbatim under real Table/TR/TD tagging, got: {extracted:?}");
+    }
+
+    /// `tagged: false` must never write any tagging marker, AND must
+    /// never perturb the SEPARATE raster paint path (`crate::render::
+    /// draw_page`) either build variant drives afterward — parity PNGs
+    /// captured immediately before and after both `pages_to_pdf` calls
+    /// must be byte-identical (structurally guaranteed by `pages: &[Page]`
+    /// being an immutable borrow throughout, verified here as data, not
+    /// just by inspection).
+    #[test]
+    fn tagged_false_writes_no_tagging_markers_and_never_perturbs_the_raster_paint_path() {
+        use uzor_export::{render_to_png as export_render_to_png, ExportSpec};
+
+        use crate::slice::Page;
+
+        let master = PageMaster::new(PAGE_WIDTH, PAGE_HEIGHT, Margins::uniform(40.0));
+        let body_width = master.body_rect().width;
+        let flow = two_page_fixture(body_width);
+
+        let theme = Theme::light_report();
+        let style = ComposeStyle::from_theme(&theme, 12.0);
+        let shaper = CosmicShaper::headless();
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 2);
+
+        let png_spec = ExportSpec { width_px: PAGE_WIDTH as u32, height_px: PAGE_HEIGHT as u32, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+        let render_all = |pages: &[Page<'_>]| -> Vec<Vec<u8>> {
+            pages.iter().map(|p| export_render_to_png(&png_spec, |ctx| draw_page(ctx, p, &theme)).expect("parity render should succeed")).collect()
+        };
+
+        let png_before = render_all(&pages);
+        let untagged_bytes = pages_to_pdf(&pages, &master, &theme, PdfExportOptions { tagged: false, lang: None, meta: None });
+        let tagged_bytes = pages_to_pdf(&pages, &master, &theme, PdfExportOptions { tagged: true, lang: None, meta: None });
+        let png_after = render_all(&pages);
+
+        assert_eq!(png_before, png_after, "generating either PDF variant must never perturb the separate raster paint path");
+
+        let untagged_text = String::from_utf8_lossy(&untagged_bytes);
+        assert!(!untagged_text.contains("/MarkInfo") && !untagged_text.contains("/StructTreeRoot"), "tagged:false must never write /MarkInfo or /StructTreeRoot");
+
+        let doc_untagged = lopdf::Document::load_mem(&untagged_bytes).expect("lopdf must parse the untagged PDF");
+        for (_, page_id) in doc_untagged.get_pages() {
+            let content_str = String::from_utf8_lossy(&doc_untagged.get_page_content(page_id)).into_owned();
+            assert!(!content_str.contains("BDC") && !content_str.contains("EMC"), "tagged:false must never emit BDC/EMC on any page");
+        }
+
+        // Positive control: the SAME fixture with tagging on really does
+        // carry the expected additions (proves the ABSENCE above is a
+        // real signal, not an artifact of a broken assertion).
+        let tagged_text = String::from_utf8_lossy(&tagged_bytes);
+        assert!(tagged_text.contains("/MarkInfo") && tagged_text.contains("/StructTreeRoot"), "tagged:true must carry the expected additions");
     }
 }

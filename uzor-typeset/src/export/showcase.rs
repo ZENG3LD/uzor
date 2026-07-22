@@ -51,7 +51,7 @@ use uzor_text::{
 
 use crate::caption::{attach_captions, resolve_caption_numbers, resolve_refs, CaptionStyle, RefSegment};
 use crate::compose::{BreakControl, ComposeStyle};
-use crate::export::pages_to_pdf;
+use crate::export::{pages_to_pdf, PdfExportOptions};
 use crate::master::{PageNumberFormat, PageNumberStyle};
 use crate::scene::{
     AnchoredIsland, Block, BlockId, BlockNode, BlockSizing, CaptionKind, CellPadding, ColumnSpec, FigureBlock, Footnote, ImageBlock, ImageFit,
@@ -1477,7 +1477,31 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     }
     assert_eq!(checked_toc_rows, all_outline_entries.len(), "every tagged heading must have a corresponding, correctly-numbered TOC row");
 
-    let pdf_bytes = pages_to_pdf(&all_pages, &master_single, &theme);
+    // Typography wave 5: the flagship showcase deliberately exercises
+    // BOTH new options at once — `tagged: true` (the default anyway, but
+    // named explicitly here since this IS the tagging showcase) and
+    // `lang: "ru"` (the document's own real Cyrillic content already
+    // proven elsewhere in this fixture makes "ru" the honest, non-
+    // arbitrary choice, not a placeholder tag).
+    let pdf_bytes = pages_to_pdf(&all_pages, &master_single, &theme, PdfExportOptions {
+        tagged: true,
+        lang: Some("ru".to_owned()),
+        // Full-capability rule: the flagship must exercise EVERY wave-5
+        // metadata surface, so the /Info dictionary AND the hand-rolled
+        // XMP /Metadata packet (write_xmp) both ship. Deterministic
+        // fixture date - never a system clock (PdfDate is caller-supplied
+        // by design).
+        meta: Some(uzor_export::PdfMeta {
+            title: Some("The uzor Engine Family - Full-Capability Showcase".to_owned()),
+            producer: Some("uzor-export".to_owned()),
+            author: Some("uzor typeset engine".to_owned()),
+            subject: Some("Deterministic full-capability typeset fixture: figures, graphs, tables, footnotes, captions, hyphenated ru+en justify".to_owned()),
+            keywords: Some("uzor, typeset, figures, tagged-pdf".to_owned()),
+            creation_date: Some(uzor_export::PdfDate { year: 2026, month: 7, day: 19, hour: 0, minute: 0, second: 0 }),
+            lang: None,
+            write_xmp: true,
+        }),
+    });
     assert!(pdf_bytes.starts_with(b"%PDF-"));
     write_proof("typeset_showcase.pdf", &pdf_bytes);
 
@@ -1494,6 +1518,45 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     let outlines_ref = catalog.get(b"Outlines").and_then(lopdf::Object::as_reference).expect("the showcase's own tagged headings must produce a real /Outlines entry");
     let outlines_dict = doc.get_dictionary(outlines_ref).expect("must resolve the /Outlines dict");
     assert!(outlines_dict.get(b"First").is_ok(), "the /Outlines root must have at least one top-level item");
+
+    // Typography wave 5 structural sanity (the flagship artifact, not
+    // just an isolated unit fixture): `/MarkInfo`/`/StructTreeRoot`/
+    // `/Lang` are present, every page's own `/StructParents` key
+    // resolves to a real `/ParentTree` array, and BDC/EMC stay balanced
+    // on every page that carries any.
+    let mark_info = catalog.get(b"MarkInfo").and_then(lopdf::Object::as_dict).expect("the showcase must carry /MarkInfo (tagged: true)");
+    assert!(mark_info.get(b"Marked").and_then(lopdf::Object::as_bool).expect("/Marked must be a bool"), "/MarkInfo's own /Marked must be true");
+    let struct_tree_root_ref = catalog.get(b"StructTreeRoot").and_then(lopdf::Object::as_reference).expect("the showcase must reference /StructTreeRoot");
+    let struct_tree_root = doc.get_dictionary(struct_tree_root_ref).expect("must resolve /StructTreeRoot");
+    let lang_bytes = catalog.get(b"Lang").and_then(lopdf::Object::as_str).expect("the showcase must carry /Lang");
+    let lang_text = if lang_bytes.len() >= 2 && lang_bytes[0] == 0xFE && lang_bytes[1] == 0xFF {
+        let units: Vec<u16> = lang_bytes[2..].chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+        String::from_utf16_lossy(&units)
+    } else {
+        String::from_utf8_lossy(lang_bytes).into_owned()
+    };
+    assert_eq!(lang_text, "ru", "the showcase's own explicit lang: \"ru\" must round-trip verbatim");
+
+    let parent_tree = struct_tree_root.get(b"ParentTree").and_then(lopdf::Object::as_dict).expect("/StructTreeRoot must carry a /ParentTree dict");
+    let nums = parent_tree.get(b"Nums").and_then(lopdf::Object::as_array).expect("/ParentTree must carry /Nums");
+    assert!(!nums.is_empty(), "a showcase this rich in headings/figures/tables must carry at least one ParentTree entry");
+    let mut struct_parents_checked = 0usize;
+    for (page_num, page_id) in &lopdf_pages {
+        let page_dict = doc.get_dictionary(*page_id).expect("must resolve a page dict");
+        let Ok(struct_parents_key) = page_dict.get(b"StructParents").and_then(lopdf::Object::as_i64) else { continue };
+        // Every `/StructParents` key must resolve to a real entry in
+        // `/ParentTree`'s own `/Nums` — proves the page-level key and the
+        // document-wide number tree stay consistent, not just that both
+        // individually exist.
+        let resolved = nums.chunks_exact(2).find(|pair| pair[0].as_i64().ok() == Some(struct_parents_key));
+        assert!(resolved.is_some(), "page {page_num}'s own /StructParents key {struct_parents_key} must resolve in /ParentTree's /Nums");
+        struct_parents_checked += 1;
+
+        // BDC/EMC must stay balanced on every page that carries any.
+        let content_str = String::from_utf8_lossy(&doc.get_page_content(*page_id)).into_owned();
+        assert_eq!(content_str.matches("BDC").count(), content_str.matches("EMC").count(), "page {page_num}'s own BDC/EMC count must be balanced");
+    }
+    assert!(struct_parents_checked > 0, "at least one page must actually carry tagged content");
 
     // Internal links: every TOC row is a real `/Subtype /Link` annotation
     // with a `GoTo` `/Dest` pointing at a real page object (proves
@@ -1689,7 +1752,7 @@ fn graph_exhibit_page_carries_real_vector_ops_and_no_image_xobject() {
     assert_eq!(pages.len(), 1, "a single graph exhibit must land on exactly 1 page");
     assert!(body_width > 0.0, "sanity: the page must have a real body width");
 
-    let pdf_bytes = pages_to_pdf(&pages, &master, &theme);
+    let pdf_bytes = pages_to_pdf(&pages, &master, &theme, PdfExportOptions::default());
     assert!(pdf_bytes.starts_with(b"%PDF-"));
 
     let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
@@ -1731,7 +1794,7 @@ fn ascii_exhibit_page_carries_real_text_ops_and_no_image_xobject() {
     let pages = slice_pages(&flow, &master, &style, &shaper);
     assert_eq!(pages.len(), 1, "a single ASCII exhibit must land on exactly 1 page");
 
-    let pdf_bytes = pages_to_pdf(&pages, &master, &theme);
+    let pdf_bytes = pages_to_pdf(&pages, &master, &theme, PdfExportOptions::default());
     let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
     let lopdf_pages = doc.get_pages();
     assert_eq!(lopdf_pages.len(), 1);
@@ -1765,7 +1828,7 @@ fn kinetics_exhibit_page_carries_real_text_ops_and_no_image_xobject() {
     let pages = slice_pages(&flow, &master, &style, &shaper);
     assert_eq!(pages.len(), 1, "a single kinetics exhibit must land on exactly 1 page");
 
-    let pdf_bytes = pages_to_pdf(&pages, &master, &theme);
+    let pdf_bytes = pages_to_pdf(&pages, &master, &theme, PdfExportOptions::default());
     let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
     let lopdf_pages = doc.get_pages();
     assert_eq!(lopdf_pages.len(), 1);

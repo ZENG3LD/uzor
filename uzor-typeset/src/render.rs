@@ -172,7 +172,10 @@ pub fn draw_page_layers(ctx: &mut dyn RenderContext, page: &Page<'_>, theme: &Th
 /// primitive (design law 6 — no new drawing primitive), the SAME "paint a
 /// decoration as a filled rect" convention `uzor_text::draw_decorations`
 /// already uses for underline/strikethrough rules.
-fn draw_footnote_separator(ctx: &mut dyn RenderContext, zone_rect: Rect, default_color: &str) {
+///
+/// `pub(crate)` (was private) since typography wave 5 — see
+/// [`draw_placed_block`]'s own doc comment for why.
+pub(crate) fn draw_footnote_separator(ctx: &mut dyn RenderContext, zone_rect: Rect, default_color: &str) {
     const RULE_HEIGHT: f64 = 1.0;
     const RULE_WIDTH_FRACTION: f64 = 0.35;
     if zone_rect.height <= 0.0 {
@@ -274,7 +277,10 @@ pub fn draw_frame_state(ctx: &mut dyn RenderContext, state: &FrameBlockState<'_>
 /// reserved footer slice, in `FontRole::Caption`/`ColorRole::Muted` — the
 /// same small, de-emphasized styling any real word processor gives a
 /// page number.
-fn draw_page_number(ctx: &mut dyn RenderContext, placement: &PageNumberPlacement, theme: &Theme) {
+///
+/// `pub(crate)` (was private) since typography wave 5 — see
+/// [`draw_placed_block`]'s own doc comment for why.
+pub(crate) fn draw_page_number(ctx: &mut dyn RenderContext, placement: &PageNumberPlacement, theme: &Theme) {
     ctx.set_font(&theme.font_spec(FontRole::Caption).to_css_font());
     ctx.set_fill_color(&theme.color_hex(ColorRole::Muted));
     ctx.set_text_align(TextAlign::Right);
@@ -286,7 +292,14 @@ fn draw_page_number(ctx: &mut dyn RenderContext, placement: &PageNumberPlacement
 /// cell content (itself a `Vec<PlacedBlock>`) can recurse through the
 /// exact same paint logic top-level flow blocks use. `layers` (P5) gates
 /// only the `Block::Paragraph` arm — see [`DrawLayers`]'s own doc comment.
-fn draw_placed_block(ctx: &mut dyn RenderContext, placed: &PlacedBlock<'_>, default_color: &str, figure_theme: &FigureTheme, layers: DrawLayers) {
+///
+/// `pub(crate)` (was private) since typography wave 5 —
+/// `export::pdf_adapter::pages_to_pdf`'s own tagged content-ops pass
+/// drives this ONE block at a time (instead of the whole-page
+/// `draw_page_layers` loop) so it can bracket a `Block::Figure`/
+/// `Block::Image`'s own ops in a `BDC`/`EMC` marked-content pair — see
+/// that module's own doc comment.
+pub(crate) fn draw_placed_block(ctx: &mut dyn RenderContext, placed: &PlacedBlock<'_>, default_color: &str, figure_theme: &FigureTheme, layers: DrawLayers) {
     match placed.kind {
         Block::Paragraph(_) => {
             if let Some(layout) = &placed.paragraph_layout {

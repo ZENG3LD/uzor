@@ -85,16 +85,44 @@
 //! [`PdfMeta`] (title/producer/creation date) written as the PDF `/Info`
 //! dictionary. This module holds no wall-clock access of its own — a
 //! creation date only appears if the caller supplies one via [`PdfDate`].
-//! XMP metadata (`xmp-writer`) was evaluated and deliberately NOT added
-//! this pass — the research doc's own escape hatch ("XMP only if trivial,
-//! else skip") — `/Info` alone already satisfies "professional polish, no
-//! new correctness risk" without a second metadata representation that
-//! could drift from the first.
+//!
+//! ## Typography wave 5 — tagged PDF, XMP, `/Lang`
+//!
+//! [`PdfMeta`] grew `author`/`subject`/`keywords`/`lang` (all still
+//! additive, opt-in — see [`PdfMeta`]'s own doc comment) plus
+//! `write_xmp: bool` — `true` additionally writes a hand-rolled XMP
+//! packet (`tagging`'s sibling, see [`write_xmp_packet`]) into a
+//! `/Metadata` stream, mirroring the SAME fields into `dc:title`/
+//! `dc:creator`/`dc:description`/`xmp:CreateDate`/`pdf:Producer` — no new
+//! dependency, a plain formatted `String`. Superseded the earlier "XMP
+//! evaluated and deliberately NOT added" note above (this pass's own
+//! task explicitly asked for it; the escape-hatch reasoning above is
+//! historical context, not current policy).
+//!
+//! [`PdfBuilder::tagged`] (default `true` — [`PdfBuilder::set_tagged`] to
+//! opt out) additionally writes a REAL Tagged-PDF structure tree
+//! (`/MarkInfo`, `/StructTreeRoot`, balanced `BDC`/`EMC` marked-content
+//! sequences around every tagged run, a `/ParentTree` number tree, and
+//! `/StructParents` on every page that carries at least one tagged
+//! region) — see the new `tagging` submodule's own doc comment for the
+//! full design (element granularity, container-vs-leaf roles, survival
+//! pruning). `tagged: false` reproduces the PRE-wave-5 writer's output
+//! byte-for-byte (no `/MarkInfo`/`/StructTreeRoot`/`BDC`/`EMC`/
+//! `/StructParents` at all, regardless of whether a caller still calls
+//! [`PdfBuilder::register_struct_elem`]/[`PdfRenderContext::begin_tag`] —
+//! both become inert no-ops, see [`PdfBuilder::register_struct_elem`]'s
+//! own doc comment) — `uzor-typeset::export::pdf_adapter` is the only
+//! real caller, and is the ONLY place allowed to decide a run's own
+//! [`PdfTagRole`] (P/H1/H2/Figure/Table/TableRow/TableCell) — this crate
+//! itself holds no `Page`/`ParagraphLayout`/outline-level knowledge,
+//! same dependency-boundary law every other adapter-constructed type
+//! ([`PdfOutlineEntry`]/[`PdfLink`]) already follows.
 
 mod font_cache;
 mod outline;
 mod render_context;
 mod subset;
+mod tagging;
 mod ttf;
 
 use std::collections::HashMap;
@@ -105,9 +133,11 @@ use pdf_writer::{Content, Date, Filter, Name, Pdf, Rect as PdfRect, Ref, Str, Te
 use crate::ExportError;
 use outline::write_outline_tree;
 use subset::{build_font_data, FontData, ADOBE_IDENTITY_UCS};
+use tagging::{write_struct_tree, PageTagState, StructElemSpec};
 
 pub use font_cache::PdfFontCache;
 pub use render_context::{PdfContentStream, PdfRenderContext};
+pub use tagging::{PdfTagRole, StructElemId};
 use render_context::{emit_ops, PdfOp};
 
 /// Opaque handle to a font registered via [`PdfBuilder::register_font`].
@@ -153,6 +183,15 @@ pub struct PdfTextRun<'a> {
     /// panic, never silently truncates the run); a LONGER `advances` has
     /// its extra entries ignored.
     pub glyph_advances_pt: Option<Vec<f64>>,
+    /// `Some(id)` when this run's own glyphs belong to a registered
+    /// structure element (typography wave 5 — [`PdfBuilder::
+    /// register_struct_elem`]) — every consecutive run sharing the SAME
+    /// `id` is wrapped in exactly one `BDC`/`EMC` marked-content pair at
+    /// [`Self::finish`] time (see `write_page`'s own doc comment). `None`
+    /// (every pre-wave-5 caller, and any caller that never opts in) never
+    /// wraps this run in any marked content at all — byte-identical to
+    /// this field's pre-wave-5 absence.
+    pub struct_tag: Option<StructElemId>,
 }
 
 /// One PDF page: its physical size, an optional full-page opaque raster
@@ -224,11 +263,33 @@ pub struct PdfLink {
 /// wall-clock access of its own (design law: no clocks inside a neutral
 /// library) — [`Self::creation_date`] must come from the caller if wanted
 /// at all.
+///
+/// `author`/`subject`/`keywords`/`lang` (typography wave 5) follow the
+/// SAME "additive, opt-in" rule `title`/`producer`/`creation_date`
+/// already established — a field left `None` writes nothing at all,
+/// never a placeholder/empty string. `lang` also drives the Catalog's
+/// own `/Lang` entry (independent of `write_xmp`/[`PdfBuilder::tagged`] —
+/// a document can declare its language regardless of whether it is
+/// tagged). `write_xmp` (default `false` via `#[derive(Default)]`) is the
+/// ONLY thing that gates whether an XMP `/Metadata` stream is written at
+/// all — every field above is mirrored into it when `true` (see
+/// [`write_xmp_packet`]).
 #[derive(Debug, Clone, Default)]
 pub struct PdfMeta {
     pub title: Option<String>,
     pub producer: Option<String>,
     pub creation_date: Option<PdfDate>,
+    pub author: Option<String>,
+    pub subject: Option<String>,
+    pub keywords: Option<String>,
+    /// RFC 3066 language tag (e.g. `"ru"`, `"en-US"`) for the Catalog's
+    /// own `/Lang` entry.
+    pub lang: Option<String>,
+    /// `true` additionally writes a hand-rolled XMP packet (no new
+    /// dependency) into a `/Metadata` stream, mirroring every field above
+    /// into `dc:title`/`dc:creator`/`dc:description`/`xmp:CreateDate`/
+    /// `pdf:Producer`.
+    pub write_xmp: bool,
 }
 
 /// A caller-supplied point in time for [`PdfMeta::creation_date`] — plain
@@ -274,6 +335,8 @@ struct PageTextRun {
     /// collected — same timing every other subsetting-dependent value in
     /// this module already waits for).
     real_advances_pt: Option<Vec<f64>>,
+    /// Moved verbatim from [`PdfTextRun::struct_tag`] — typography wave 5.
+    struct_tag: Option<StructElemId>,
 }
 
 struct PageRecord {
@@ -307,6 +370,12 @@ pub struct PdfBuilder {
     pages: Vec<PageRecord>,
     meta: Option<PdfMeta>,
     outline: Vec<PdfOutlineEntry>,
+    /// Typography wave 5 — default `true` ([`Self::set_tagged`] to opt
+    /// out). Gates EVERY new-this-wave writer behavior (`/MarkInfo`,
+    /// `/StructTreeRoot`, `BDC`/`EMC`, `/ParentTree`, `/StructParents`) —
+    /// see `tagging`'s own module doc comment.
+    tagged: bool,
+    struct_elems: Vec<StructElemSpec>,
 }
 
 impl Default for PdfBuilder {
@@ -317,7 +386,7 @@ impl Default for PdfBuilder {
 
 impl PdfBuilder {
     pub fn new() -> Self {
-        Self { fonts: Vec::new(), pages: Vec::new(), meta: None, outline: Vec::new() }
+        Self { fonts: Vec::new(), pages: Vec::new(), meta: None, outline: Vec::new(), tagged: true, struct_elems: Vec::new() }
     }
 
     /// Register a font's raw TTF/OpenType bytes, returning a handle to
@@ -360,6 +429,58 @@ impl PdfBuilder {
         self.outline = entries;
     }
 
+    /// Opt out of the tagged-PDF structure tree (typography wave 5) —
+    /// default `true`. `false` reproduces the pre-wave-5 writer's output
+    /// byte-for-byte: no `/MarkInfo`, no `/StructTreeRoot`, no `BDC`/`EMC`
+    /// marked-content sequences, no `/ParentTree`, no `/StructParents` on
+    /// any page — regardless of whether a caller still calls
+    /// [`Self::register_struct_elem`]/[`PdfRenderContext::begin_tag`]
+    /// afterward (both become inert no-ops the moment this is `false`;
+    /// see [`Self::register_struct_elem`]'s own doc comment).
+    pub fn set_tagged(&mut self, tagged: bool) {
+        self.tagged = tagged;
+    }
+
+    /// This builder's own current tagging state — read by
+    /// [`PdfRenderContext::begin_tag`]/[`Self::register_struct_elem`] to
+    /// decide whether tagging is actually active.
+    pub(crate) fn is_tagged(&self) -> bool {
+        self.tagged
+    }
+
+    /// Register a structure-tree element (typography wave 5), returning a
+    /// handle to reference from [`PdfTextRun::struct_tag`]/
+    /// [`PdfRenderContext::begin_tag`]. `parent` is `None` for a
+    /// top-level element (parented directly under the implicit
+    /// `Document` root at [`Self::finish`] time) or `Some(id)` to nest
+    /// under an EARLIER-registered element — `id` must always come from a
+    /// call that happened before this one (this crate's own bottom-up
+    /// survival pass, [`tagging::write_struct_tree`], relies on a child's
+    /// own index always being strictly greater than its parent's).
+    ///
+    /// Always bookkeeps (cheap, a plain `Vec` push) even when
+    /// [`Self::set_tagged`] disabled tagging — [`Self::finish`] simply
+    /// never reads `struct_elems` at all in that case, so this call has
+    /// zero effect on the emitted bytes either way; callers therefore
+    /// never need to branch on `is_tagged()` before calling this (though
+    /// `uzor-typeset::export::pdf_adapter` still does, as a documented
+    /// belt-and-suspenders "no new code path runs at all" guarantee for
+    /// its own `tagged: false` option — see that crate's own `CLAUDE.md`).
+    ///
+    /// An element registered with `role` [`PdfTagRole::Figure`]/
+    /// [`PdfTagRole::P`]/[`PdfTagRole::H1`]/[`PdfTagRole::H2`]/
+    /// [`PdfTagRole::TableCell`] is a LEAF — `alt` becomes its own `/Alt`
+    /// description (only meaningful for `Figure`; harmless on any other
+    /// role, though no current caller sets one there). A
+    /// [`PdfTagRole::Table`]/[`PdfTagRole::TableRow`] element is a
+    /// CONTAINER — `alt` is accepted but never written (containers hold
+    /// children, not their own `/Alt`-described content).
+    pub fn register_struct_elem(&mut self, role: PdfTagRole, parent: Option<StructElemId>, alt: Option<String>) -> StructElemId {
+        let id = StructElemId(self.struct_elems.len() as u32);
+        self.struct_elems.push(StructElemSpec { role, parent, alt });
+        id
+    }
+
     /// Add one page. Decodes `spec.raster` (if present) into a tightly
     /// packed, alpha-dropped `RGB8` buffer and resolves every text run's
     /// own characters to this run's font's real glyph ids up front —
@@ -386,6 +507,7 @@ impl PdfBuilder {
                     rgb: run.rgb,
                     glyphs,
                     real_advances_pt: run.glyph_advances_pt,
+                    struct_tag: run.struct_tag,
                 }
             })
             .collect();
@@ -459,21 +581,26 @@ impl PdfBuilder {
             .collect();
         let image_names: Vec<String> = (0..self.pages.len()).map(|i| format!("Im{i}")).collect();
 
-        {
-            let mut catalog = pdf.catalog(catalog_id);
-            catalog.pages(page_tree_id);
-            if let Some(root) = outline_root_ref {
-                catalog.outlines(root);
-            }
-        }
         pdf.pages(page_tree_id).kids(page_refs.iter().map(|r| r.page)).count(page_refs.len() as i32);
 
         for (entry, refs, data, base_font_name) in izip(&self.fonts, &font_refs, &font_data, &base_font_names) {
             write_font(&mut pdf, refs, base_font_name, entry, data);
         }
 
+        // Typography wave 5 — one `PdfTagRole` per registered struct
+        // element, indexed identically to `self.struct_elems` (needed by
+        // `write_page`/`emit_ops` to resolve a `StructElemId` to its own
+        // `BDC` tag name without borrowing `self` from inside that free
+        // function). Empty (and therefore never read) whenever `!tagged`.
+        let struct_roles: Vec<PdfTagRole> = self.struct_elems.iter().map(|e| e.role).collect();
+
+        // Every page's own `(struct_elem index, mcid)` occurrences, in
+        // page order — collected while writing pages, consumed below to
+        // build the `/ParentTree` (only meaningful when `self.tagged`).
+        let mut page_struct_occurrences: Vec<Vec<(u32, i32)>> = Vec::with_capacity(self.pages.len());
+
         for (i, page) in self.pages.iter().enumerate() {
-            write_page(
+            let occurrences = write_page(
                 &mut pdf,
                 &mut refs,
                 page_tree_id,
@@ -486,7 +613,49 @@ impl PdfBuilder {
                 &page_only_refs,
                 &page_heights_pt,
                 &self.fonts,
+                i,
+                self.tagged,
+                &struct_roles,
             );
+            page_struct_occurrences.push(occurrences);
+        }
+
+        // Typography wave 5 — the tagged structure tree itself. Must run
+        // AFTER every page is written (it needs each page's own real
+        // `Ref` plus its own collected occurrences) but BEFORE the
+        // catalog is written below (the catalog's own `/StructTreeRoot`
+        // entry needs this ref).
+        let struct_tree_root_ref =
+            if self.tagged { Some(write_struct_tree(&mut pdf, &mut refs, &self.struct_elems, &page_only_refs, &page_struct_occurrences)) } else { None };
+
+        let metadata_ref = if self.meta.as_ref().is_some_and(|m| m.write_xmp) { Some(refs.next()) } else { None };
+        if let (Some(meta), Some(id)) = (&self.meta, metadata_ref) {
+            let xmp = write_xmp_packet(meta);
+            pdf.metadata(id, &xmp);
+        }
+
+        // The catalog itself is written LAST (moved from its pre-wave-5
+        // position right after `page_tree_id`/`pdf.pages(..)` above) —
+        // every cross-reference it needs (`/StructTreeRoot`, `/Metadata`)
+        // is only known once pages + the struct tree are fully written.
+        {
+            let mut catalog = pdf.catalog(catalog_id);
+            catalog.pages(page_tree_id);
+            if let Some(root) = outline_root_ref {
+                catalog.outlines(root);
+            }
+            if self.tagged {
+                catalog.mark_info().marked(true);
+            }
+            if let Some(root) = struct_tree_root_ref {
+                catalog.pair(Name(b"StructTreeRoot"), root);
+            }
+            if let Some(lang) = self.meta.as_ref().and_then(|m| m.lang.as_deref()) {
+                catalog.lang(TextStr(lang));
+            }
+            if let Some(id) = metadata_ref {
+                catalog.metadata(id);
+            }
         }
 
         if let (Some(meta), Some(info_id)) = (&self.meta, info_ref) {
@@ -637,6 +806,10 @@ fn write_font(pdf: &mut Pdf, refs: &FontRefs, base_font_name: &str, entry: &Font
 /// they share the same origin corner horizontally and the image itself is
 /// placed spanning the WHOLE page (`0,0` to `width_pt,height_pt` in BOTH
 /// coordinate systems).
+/// Returns this page's own `(struct_elem index, mcid)` occurrences (empty
+/// when `tagged` is `false`, or when tagged but nothing on this page was
+/// ever tagged) — [`PdfBuilder::finish`]'s own caller aggregates these
+/// across every page to build the `/ParentTree`.
 #[allow(clippy::too_many_arguments)]
 fn write_page(
     pdf: &mut Pdf,
@@ -651,7 +824,10 @@ fn write_page(
     page_refs_by_index: &[Ref],
     page_heights_pt: &[f64],
     fonts: &[FontEntry],
-) {
+    page_index: usize,
+    tagged: bool,
+    struct_roles: &[PdfTagRole],
+) -> Vec<(u32, i32)> {
     if let (Some(image_ref), Some((rgb, width, height))) = (refs.image, page.raster_rgb.as_ref()) {
         let compressed = flate_compress(rgb);
         let mut image = pdf.image_xobject(image_ref, &compressed);
@@ -661,6 +837,8 @@ fn write_page(
         image.color_space().device_rgb();
         image.bits_per_component(8);
     }
+
+    let mut tag_state = PageTagState::default();
 
     // `op_resources` collects whatever patterns/gstates/inline images
     // `emit_ops` allocates ON DEMAND while building the content stream
@@ -675,10 +853,32 @@ fn write_page(
             content.x_object(Name(image_name.as_bytes()));
             content.restore_state();
         }
-        let op_resources = emit_ops(pdf, ref_alloc, &mut content, &page.content_ops, page.height_pt, font_data, font_names);
+        let op_resources = emit_ops(pdf, ref_alloc, &mut content, &page.content_ops, page.height_pt, font_data, font_names, tagged, struct_roles, &mut tag_state);
         if !page.runs.is_empty() {
             content.begin_text();
+            // Typography wave 5: contiguous runs sharing the SAME
+            // `struct_tag` are wrapped in exactly one `BDC`/`EMC` pair —
+            // legal INSIDE a text object (a marked-content sequence may
+            // bracket any portion of a content stream, including a run of
+            // `Tj`/`TJ` show operators). `current_tag` tracks the
+            // currently-open tag (if any) so a transition to a different
+            // tag (or to `None`) closes it first.
+            let mut current_tag: Option<u32> = None;
             for run in &page.runs {
+                if tagged {
+                    let run_tag = run.struct_tag.map(|t| t.0);
+                    if run_tag != current_tag {
+                        if current_tag.is_some() {
+                            content.end_marked_content();
+                        }
+                        if let Some(id) = run.struct_tag {
+                            let mcid = tag_state.open(id);
+                            let mut mc = content.begin_marked_content_with_properties(Name(struct_roles[id.0 as usize].bdc_tag_name()));
+                            mc.properties().identify(mcid);
+                        }
+                        current_tag = run_tag;
+                    }
+                }
                 let (r, g, b) = rgb_components(run.rgb);
                 content.set_fill_rgb(r, g, b);
                 content.set_font(Name(font_names[run.font_id.0 as usize].as_bytes()), run.size_pt as f32);
@@ -686,6 +886,9 @@ fn write_page(
                 let orig_to_new = &font_data[run.font_id.0 as usize].orig_to_new;
                 let metrics = &fonts[run.font_id.0 as usize].metrics;
                 show_run(&mut content, run, orig_to_new, metrics);
+            }
+            if tagged && current_tag.is_some() {
+                content.end_marked_content();
             }
             content.end_text();
         }
@@ -723,6 +926,8 @@ fn write_page(
         annot.action().action_type(ActionType::GoTo).destination().page(target_page_ref).xyz(0.0, target_height as f32, None);
     }
 
+    let has_tagged_content = tagged && !tag_state.occurrences_is_empty();
+
     {
         let mut page_writer = pdf.page(refs.page);
         page_writer.parent(page_tree_id);
@@ -730,6 +935,15 @@ fn write_page(
         page_writer.contents(refs.content);
         if !refs.annotations.is_empty() {
             page_writer.annotations(refs.annotations.iter().copied());
+        }
+        // Typography wave 5: `/StructParents` is this page's own key into
+        // the document-wide `/ParentTree` (its 0-based page index —
+        // `PdfBuilder::finish`'s own `tagging::write_struct_tree` builds
+        // exactly one `/ParentTree` array per page that has one) — only
+        // written when this page actually carries at least one tagged
+        // marked-content region (a page with none needs no key at all).
+        if has_tagged_content {
+            page_writer.struct_parents(page_index as i32);
         }
 
         let mut resources = page_writer.resources();
@@ -761,6 +975,8 @@ fn write_page(
             }
         }
     }
+
+    tag_state.into_occurrences()
 }
 
 /// Encode one text run's own `(gid, char)` pairs as a 2-byte-per-glyph,
@@ -860,6 +1076,75 @@ fn write_info(pdf: &mut Pdf, info_id: Ref, meta: &PdfMeta) {
     if let Some(date) = meta.creation_date {
         info.creation_date(date.to_pdf_writer_date());
     }
+    if let Some(author) = &meta.author {
+        info.author(TextStr(author));
+    }
+    if let Some(subject) = &meta.subject {
+        info.subject(TextStr(subject));
+    }
+    if let Some(keywords) = &meta.keywords {
+        info.keywords(TextStr(keywords));
+    }
+}
+
+/// Escape the 5 XML predefined entities (`&` FIRST, so an already-escaped
+/// `&amp;` never becomes `&amp;amp;`) — this crate's own hand-rolled XMP
+/// packet (typography wave 5) never pulls in an XML-writing dependency
+/// for what's fundamentally 5 substring replacements over a handful of
+/// short metadata strings.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
+}
+
+/// Build a complete XMP packet (typography wave 5) mirroring `meta`'s own
+/// fields into `dc:title`/`dc:creator`/`dc:description`/`xmp:CreateDate`/
+/// `pdf:Producer` — hand-written XML, no new dependency (this crate's own
+/// `miniz_oxide`-over-`flate2`-style "small, dedicated tool over a
+/// general-purpose library" precedent, applied here to "a formatted
+/// `String`" over "a whole XMP-writing crate" for 5 mirrored fields).
+/// Every field left `None` on `meta` is simply omitted from the packet —
+/// same "whichever the caller supplies is the ONLY thing written"
+/// convention [`PdfMeta`] itself already documents.
+fn write_xmp_packet(meta: &PdfMeta) -> Vec<u8> {
+    let mut body = String::new();
+    if let Some(title) = &meta.title {
+        body.push_str(&format!("<dc:title><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:title>", xml_escape(title)));
+    }
+    if let Some(author) = &meta.author {
+        body.push_str(&format!("<dc:creator><rdf:Seq><rdf:li>{}</rdf:li></rdf:Seq></dc:creator>", xml_escape(author)));
+    }
+    if let Some(subject) = &meta.subject {
+        body.push_str(&format!(
+            "<dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">{}</rdf:li></rdf:Alt></dc:description>",
+            xml_escape(subject)
+        ));
+    }
+    if let Some(keywords) = &meta.keywords {
+        body.push_str(&format!("<pdf:Keywords>{}</pdf:Keywords>", xml_escape(keywords)));
+    }
+    if let Some(producer) = &meta.producer {
+        body.push_str(&format!("<pdf:Producer>{}</pdf:Producer>", xml_escape(producer)));
+    }
+    if let Some(date) = meta.creation_date {
+        body.push_str(&format!(
+            "<xmp:CreateDate>{:04}-{:02}-{:02}T{:02}:{:02}:{:02}</xmp:CreateDate>",
+            date.year, date.month, date.day, date.hour, date.minute, date.second
+        ));
+    }
+
+    format!(
+        "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\
+<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\
+<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\
+<rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" xmlns:pdf=\"http://ns.adobe.com/pdf/1.3/\">\
+{body}\
+</rdf:Description>\
+</rdf:RDF>\
+</x:xmpmeta>\
+<?xpacket end=\"w\"?>"
+    )
+    .into_bytes()
 }
 
 fn rgb_components(rgb: u32) -> (f32, f32, f32) {
@@ -923,6 +1208,7 @@ fn to_opaque_rgb8(buf: &[u8], color_type: png::ColorType, width: u32, height: u3
 #[cfg(test)]
 mod tests {
     use super::*;
+    use uzor::render::{Painter, ShapeHelpers};
 
     const ROBOTO_REGULAR: &[u8] = include_bytes!("../../../uzor-fonts/fonts/Roboto-Regular.ttf");
 
@@ -977,7 +1263,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "Hello PDF" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "Hello PDF" }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -997,7 +1283,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "Hello PDF" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "Hello PDF" }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -1052,7 +1338,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "A\u{F8FF}B" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "A\u{F8FF}B" }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -1078,7 +1364,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 14.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: cyrillic }],
+                text_runs: vec![PdfTextRun { font, size_pt: 14.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: cyrillic }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -1115,7 +1401,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 24.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "Kerning" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 24.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "Kerning" }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -1161,6 +1447,7 @@ mod tests {
                     y_pt: 20.0,
                     rgb: 0x111111,
                     glyph_advances_pt: Some(fake_advances),
+                    struct_tag: None,
                     text,
                 }],
                 links: Vec::new(),
@@ -1213,6 +1500,7 @@ mod tests {
                     y_pt: 20.0,
                     rgb: 0x111111,
                     glyph_advances_pt: Some(matching_advances),
+                    struct_tag: None,
                     text,
                 }],
                 links: Vec::new(),
@@ -1242,7 +1530,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "Hi" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "Hi" }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -1308,7 +1596,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "x" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "x" }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -1324,7 +1612,7 @@ mod tests {
                 height_pt: 100.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "x" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "x" }],
                 links: Vec::new(),
                 content: PdfContentStream::empty(),
             })
@@ -1333,6 +1621,7 @@ mod tests {
             title: Some("Case Report".to_owned()),
             producer: Some("uzor-export".to_owned()),
             creation_date: Some(PdfDate { year: 2026, month: 7, day: 17, hour: 12, minute: 0, second: 0 }),
+            ..Default::default()
         });
         let bytes_with_meta = builder.finish();
         let doc = lopdf::Document::load_mem(&bytes_with_meta).expect("lopdf must parse this crate's own PDF output");
@@ -1356,7 +1645,7 @@ mod tests {
                     height_pt: 100.0,
                     raster: None,
                     raster_px: (0, 0),
-                    text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "Hello lopdf" }],
+                    text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "Hello lopdf" }],
                     links: Vec::new(),
                 content: PdfContentStream::empty(),
                 })
@@ -1430,7 +1719,7 @@ mod tests {
                     height_pt: 300.0,
                     raster: None,
                     raster_px: (0, 0),
-                    text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "Page" }],
+                    text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "Page" }],
                     links: Vec::new(),
                 content: PdfContentStream::empty(),
                 })
@@ -1497,7 +1786,7 @@ mod tests {
                 height_pt: 300.0,
                 raster: None,
                 raster_px: (0, 0),
-                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, text: "See page 2" }],
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "See page 2" }],
                 links: vec![PdfLink { x_pt: 10.0, y_pt: 20.0, width_pt: 80.0, height_pt: 16.0, target_page: 1 }],
                 content: PdfContentStream::empty(),
             })
@@ -1528,5 +1817,548 @@ mod tests {
         let dest = action.get(b"D").and_then(lopdf::Object::as_array).expect("a GoTo action must carry a /D destination array");
         let dest_page_ref = dest[0].as_reference().expect("the destination's first item must be the target page reference");
         assert_eq!(dest_page_ref, page2_id, "the link's own GoTo destination must resolve to the TARGET page object (page 2), not page 1 or any other page");
+    }
+
+    // -----------------------------------------------------------------
+    // Typography wave 5 — tagged PDF, XMP, /Lang.
+    // -----------------------------------------------------------------
+
+    /// Default (`tagged: true`, the whole point of the "default ON"
+    /// requirement): a single tagged paragraph must produce a real
+    /// `/MarkInfo`, a `/StructTreeRoot` whose `Document` root really has a
+    /// `P` child, a page-level `/StructParents` key, and a `/ParentTree`
+    /// whose array (indexed by the page's own `/StructParents` key)
+    /// resolves back to that SAME `P` struct element — the full round
+    /// trip this wave's whole mechanism depends on.
+    #[test]
+    fn tagged_default_writes_mark_info_struct_tree_root_and_a_consistent_parent_tree() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        let p_id = builder.register_struct_elem(PdfTagRole::P, None, None);
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 200.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: Some(p_id), text: "Tagged paragraph" }],
+                links: Vec::new(),
+                content: PdfContentStream::empty(),
+            })
+            .expect("add_page should succeed");
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+        let catalog = doc.catalog().expect("catalog must be present");
+
+        let mark_info = catalog.get(b"MarkInfo").and_then(lopdf::Object::as_dict).expect("catalog must carry a /MarkInfo dict by default (tagged defaults true)");
+        assert!(mark_info.get(b"Marked").and_then(lopdf::Object::as_bool).expect("/Marked must be a bool"), "/MarkInfo's own /Marked must be true");
+
+        let struct_tree_root_ref = catalog.get(b"StructTreeRoot").and_then(lopdf::Object::as_reference).expect("catalog must reference /StructTreeRoot");
+        let struct_tree_root = doc.get_dictionary(struct_tree_root_ref).expect("must resolve /StructTreeRoot");
+        assert_eq!(struct_tree_root.get(b"Type").and_then(lopdf::Object::as_name).expect("/Type must be present"), b"StructTreeRoot".as_slice());
+
+        let document_ref = struct_tree_root.get(b"K").and_then(lopdf::Object::as_reference).expect("/StructTreeRoot must reference its own Document child");
+        let document_elem = doc.get_dictionary(document_ref).expect("must resolve the Document struct element");
+        assert_eq!(document_elem.get(b"S").and_then(lopdf::Object::as_name).expect("/S must be present"), b"Document".as_slice());
+        let document_children = document_elem.get(b"K").and_then(lopdf::Object::as_array).expect("Document must reference its own children array");
+        assert_eq!(document_children.len(), 1, "the one registered P element is the Document's own only child");
+
+        let page_id = *doc.get_pages().values().next().expect("one page");
+        let page_dict = doc.get_dictionary(page_id).expect("must resolve the page dict");
+        let struct_parents = page_dict.get(b"StructParents").and_then(lopdf::Object::as_i64).expect("a page with tagged content must carry /StructParents");
+        assert_eq!(struct_parents, 0);
+
+        // `/ParentTree` is written INLINE inside `/StructTreeRoot` (a
+        // nested dict, not a separate indirect object — `pdf-writer`'s
+        // own `NumberTree` writer, same embedding convention `/MarkInfo`
+        // already uses), so it resolves directly, never through a Ref.
+        let parent_tree = struct_tree_root.get(b"ParentTree").and_then(lopdf::Object::as_dict).expect("/StructTreeRoot must carry a /ParentTree dict");
+        let nums = parent_tree.get(b"Nums").and_then(lopdf::Object::as_array).expect("/ParentTree must carry /Nums");
+        assert_eq!(nums.len(), 2, "one (key, value) pair for the one tagged page");
+        assert_eq!(nums[0].as_i64().expect("Nums key must be an integer"), 0, "the Nums key must equal this page's own /StructParents value");
+
+        let mcid_array_ref = nums[1].as_reference().expect("the Nums value must be an indirect array reference");
+        let mcid_array = doc.get_object(mcid_array_ref).and_then(lopdf::Object::as_array).expect("must resolve the per-page MCID array");
+        assert_eq!(mcid_array.len(), 1, "exactly one tagged run on this page -> exactly one mcid slot");
+
+        let p_elem_ref = mcid_array[0].as_reference().expect("mcid 0 must reference a real struct element");
+        assert_eq!(p_elem_ref, document_children[0].as_reference().expect("Document's own child ref"), "the ParentTree's own mcid-0 element must be the SAME element the Document tree references");
+        let p_elem = doc.get_dictionary(p_elem_ref).expect("must resolve the P struct element");
+        assert_eq!(p_elem.get(b"S").and_then(lopdf::Object::as_name).expect("/S must be present"), b"P".as_slice());
+        assert!(p_elem.get(b"Pg").is_ok(), "a leaf struct element must reference its own page via /Pg");
+        assert_eq!(p_elem.get(b"K").and_then(lopdf::Object::as_i64).expect("/K must be an integer MCID"), 0, "the leaf's own /K must be the bare MCID integer (not a child array)");
+
+        let content_bytes = doc.get_page_content(page_id);
+        let content_str = String::from_utf8_lossy(&content_bytes);
+        assert_eq!(content_str.matches("BDC").count(), 1, "exactly one tagged run must open exactly one marked-content sequence");
+        assert_eq!(content_str.matches("EMC").count(), 1, "every BDC must be closed by its own EMC");
+    }
+
+    /// `tagged: false` must be inert — a caller that STILL calls
+    /// [`PdfBuilder::register_struct_elem`]/sets [`PdfTextRun::struct_tag`]
+    /// anyway (this crate's own "always bookkeep, `finish()` decides
+    /// whether to read it" convention) must see ZERO tagging output: no
+    /// `/MarkInfo`, `/StructTreeRoot`, `/StructParents`, `BDC`, or `EMC`
+    /// anywhere in the emitted bytes — and the SAME inputs must always
+    /// produce byte-identical output (no hidden nondeterminism the
+    /// tagging machinery could have introduced).
+    #[test]
+    fn tagged_false_emits_no_tagging_markers_and_is_self_deterministic() {
+        fn build() -> Vec<u8> {
+            let mut builder = PdfBuilder::new();
+            builder.set_tagged(false);
+            let font = builder.register_font(ROBOTO_REGULAR);
+            let p_id = builder.register_struct_elem(PdfTagRole::P, None, None);
+            builder
+                .add_page(PdfPageSpec {
+                    width_pt: 200.0,
+                    height_pt: 100.0,
+                    raster: None,
+                    raster_px: (0, 0),
+                    text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: Some(p_id), text: "Hello" }],
+                    links: Vec::new(),
+                    content: PdfContentStream::empty(),
+                })
+                .expect("add_page should succeed");
+            builder.finish()
+        }
+
+        let bytes_a = build();
+        let bytes_b = build();
+        assert_eq!(bytes_a, bytes_b, "tagged:false output must be deterministic across two identical builds");
+
+        let text = String::from_utf8_lossy(&bytes_a);
+        assert!(!text.contains("/MarkInfo"), "tagged:false must never write /MarkInfo");
+        assert!(!text.contains("/StructTreeRoot"), "tagged:false must never write /StructTreeRoot");
+        assert!(!text.contains("/StructParents"), "tagged:false must never write /StructParents");
+        assert!(!text.contains("BDC"), "tagged:false must never emit a BDC marked-content operator");
+        assert!(!text.contains("EMC"), "tagged:false must never emit an EMC marked-content operator");
+    }
+
+    /// The gate this wave's own brief asks for directly: the SAME fixture
+    /// built once `tagged: false` and once `tagged: true` must differ
+    /// ONLY by the expected tagging additions — never in extracted text,
+    /// page count, or any other observable content.
+    #[test]
+    fn tagged_true_output_differs_from_tagged_false_only_by_the_tagging_additions() {
+        fn build(tagged: bool) -> Vec<u8> {
+            let mut builder = PdfBuilder::new();
+            builder.set_tagged(tagged);
+            let font = builder.register_font(ROBOTO_REGULAR);
+            let p_id = builder.register_struct_elem(PdfTagRole::P, None, None);
+            builder
+                .add_page(PdfPageSpec {
+                    width_pt: 200.0,
+                    height_pt: 100.0,
+                    raster: None,
+                    raster_px: (0, 0),
+                    text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: Some(p_id), text: "Parity" }],
+                    links: Vec::new(),
+                    content: PdfContentStream::empty(),
+                })
+                .expect("add_page should succeed");
+            builder.finish()
+        }
+
+        let untagged = build(false);
+        let tagged = build(true);
+        assert_ne!(untagged, tagged, "tagging must add real bytes, not be a no-op");
+
+        // `/MarkInfo`/`/StructTreeRoot` are top-level, UNCOMPRESSED PDF
+        // objects — a whole-file substring search is honest here. `BDC`
+        // lives INSIDE a Flate-compressed content stream, though (every
+        // page's own content stream is compressed, tagged or not) — a
+        // whole-file search would never find it regardless of tagging;
+        // decompress via `lopdf::Document::get_page_content` first, the
+        // same convention every other content-stream assertion in this
+        // file already uses.
+        let untagged_text = String::from_utf8_lossy(&untagged);
+        let tagged_text = String::from_utf8_lossy(&tagged);
+        assert!(!untagged_text.contains("/MarkInfo") && !untagged_text.contains("/StructTreeRoot"), "the untagged build must carry none of the additions");
+        assert!(tagged_text.contains("/MarkInfo") && tagged_text.contains("/StructTreeRoot"), "the tagged build must carry every expected addition");
+
+        let doc_untagged = lopdf::Document::load_mem(&untagged).expect("lopdf must parse the untagged PDF");
+        let doc_tagged = lopdf::Document::load_mem(&tagged).expect("lopdf must parse the tagged PDF");
+        assert_eq!(doc_untagged.get_pages().len(), doc_tagged.get_pages().len(), "tagging must never change the page count");
+
+        let untagged_page_id = *doc_untagged.get_pages().values().next().expect("one page");
+        let tagged_page_id = *doc_tagged.get_pages().values().next().expect("one page");
+        let untagged_content = String::from_utf8_lossy(&doc_untagged.get_page_content(untagged_page_id)).into_owned();
+        let tagged_content = String::from_utf8_lossy(&doc_tagged.get_page_content(tagged_page_id)).into_owned();
+        assert!(!untagged_content.contains("BDC"), "the untagged content stream must never carry a BDC operator");
+        assert!(tagged_content.contains("BDC"), "the tagged content stream must carry a real BDC operator");
+        let pages_untagged: Vec<u32> = doc_untagged.get_pages().keys().copied().collect();
+        let pages_tagged: Vec<u32> = doc_tagged.get_pages().keys().copied().collect();
+        assert_eq!(
+            doc_untagged.extract_text(&pages_untagged).expect("extract untagged"),
+            doc_tagged.extract_text(&pages_tagged).expect("extract tagged"),
+            "tagging must never change the extracted text"
+        );
+    }
+
+    /// Mixed tagged/untagged runs on ONE page: exactly as many `BDC`/`EMC`
+    /// pairs as tagged runs (an untagged run in between opens nothing),
+    /// and every pair is properly NESTED/BALANCED — a `BDC` never opens
+    /// while a previous one is still open, an `EMC` never appears without
+    /// a matching open `BDC`. Counted via byte-offset order (not
+    /// whitespace tokenization — `BDC`'s own operand dict can end in `>>`
+    /// with no separating space before the operator name, per
+    /// `pdf-writer`'s own content-stream serialization, so a
+    /// `split_whitespace`-based token scan would be unreliable here).
+    #[test]
+    fn mixed_tagged_and_untagged_runs_produce_balanced_bdc_emc_pairs() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        let h1_id = builder.register_struct_elem(PdfTagRole::H1, None, None);
+        let p_id = builder.register_struct_elem(PdfTagRole::P, None, None);
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 300.0,
+                height_pt: 200.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![
+                    PdfTextRun { font, size_pt: 18.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: Some(h1_id), text: "Heading" },
+                    PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 40.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "Untagged chrome" },
+                    PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 60.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: Some(p_id), text: "Body" },
+                ],
+                links: Vec::new(),
+                content: PdfContentStream::empty(),
+            })
+            .expect("add_page should succeed");
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+        let page_id = *doc.get_pages().values().next().expect("one page");
+        let content_bytes = doc.get_page_content(page_id);
+        let content_str = String::from_utf8_lossy(&content_bytes);
+
+        assert_eq!(content_str.matches("BDC").count(), 2, "2 tagged runs -> 2 BDC opens; the untagged run in between opens none");
+        assert_eq!(content_str.matches("EMC").count(), 2, "BDC/EMC must be balanced");
+
+        let mut positions: Vec<(usize, bool)> = content_str.match_indices("BDC").map(|(i, _)| (i, true)).collect();
+        positions.extend(content_str.match_indices("EMC").map(|(i, _)| (i, false)));
+        positions.sort_by_key(|&(i, _)| i);
+
+        let mut depth = 0i32;
+        for (_, is_begin) in positions {
+            if is_begin {
+                depth += 1;
+                assert!(depth <= 1, "a new BDC must never open while a previous one is still open (never nested/overlapping)");
+            } else {
+                depth -= 1;
+                assert!(depth >= 0, "an EMC must never appear without a matching open BDC");
+            }
+        }
+        assert_eq!(depth, 0, "every BDC must be closed by its own EMC by the end of the content stream");
+    }
+
+    /// Figure tagging: a figure's own registered `/Alt` text round-trips
+    /// through the struct tree, and its content-stream ops (painted
+    /// through [`PdfRenderContext::begin_tag`]/[`PdfRenderContext::end_tag`],
+    /// the ops-level tagging seam `uzor-typeset::export::pdf_adapter` uses
+    /// for `Block::Figure`/`Block::Image`) are wrapped in exactly one
+    /// balanced `BDC`/`EMC` pair naming the `/Figure` tag.
+    #[test]
+    fn figure_struct_elem_alt_text_round_trips_and_wraps_its_own_ops() {
+        let mut builder = PdfBuilder::new();
+        let mut fonts = PdfFontCache::new();
+        let fig_id = builder.register_struct_elem(PdfTagRole::Figure, None, Some("A bar chart of observed amounts".to_owned()));
+        let content = {
+            let mut ctx = PdfRenderContext::new(1.0, &mut builder, &mut fonts);
+            ctx.begin_tag(fig_id);
+            ctx.set_fill_color("#3366ff");
+            ctx.fill_rect(10.0, 10.0, 50.0, 20.0);
+            ctx.end_tag();
+            ctx.finish()
+        };
+        builder
+            .add_page(PdfPageSpec { width_pt: 200.0, height_pt: 100.0, raster: None, raster_px: (0, 0), text_runs: Vec::new(), links: Vec::new(), content })
+            .expect("add_page should succeed");
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+
+        let page_id = *doc.get_pages().values().next().expect("one page");
+        let content_bytes = doc.get_page_content(page_id);
+        let content_str = String::from_utf8_lossy(&content_bytes);
+        assert_eq!(content_str.matches("BDC").count(), 1);
+        assert_eq!(content_str.matches("EMC").count(), 1);
+        assert!(content_str.contains("/Figure"), "the BDC operator's own tag name must be /Figure, got: {content_str}");
+
+        let catalog = doc.catalog().expect("catalog must be present");
+        let struct_tree_root_ref = catalog.get(b"StructTreeRoot").and_then(lopdf::Object::as_reference).expect("catalog must reference /StructTreeRoot");
+        let struct_tree_root = doc.get_dictionary(struct_tree_root_ref).expect("must resolve /StructTreeRoot");
+        let document_ref = struct_tree_root.get(b"K").and_then(lopdf::Object::as_reference).expect("Document child ref");
+        let document_elem = doc.get_dictionary(document_ref).expect("must resolve Document elem");
+        let children = document_elem.get(b"K").and_then(lopdf::Object::as_array).expect("Document must have children");
+        assert_eq!(children.len(), 1);
+
+        let fig_ref = children[0].as_reference().expect("child must be a reference");
+        let fig_elem = doc.get_dictionary(fig_ref).expect("must resolve the Figure struct element");
+        assert_eq!(fig_elem.get(b"S").and_then(lopdf::Object::as_name).expect("/S must be present"), b"Figure".as_slice());
+        let alt_bytes = fig_elem.get(b"Alt").and_then(lopdf::Object::as_str).expect("the Figure element must carry /Alt");
+        assert_eq!(decode_pdf_text_string(alt_bytes), "A bar chart of observed amounts");
+    }
+
+    /// A captionless figure (`alt: None`) must never write an `/Alt` key
+    /// at all — the brief's own "honest generic alt, never a fake one"
+    /// framing means the ENGINE never invents placeholder text on the
+    /// adapter's behalf; a generic fallback string, if any, is the
+    /// adapter's own decision (see `uzor-typeset::export::pdf_adapter`'s
+    /// own `CLAUDE.md`), never this crate's.
+    #[test]
+    fn a_figure_with_no_alt_writes_no_alt_key_at_all() {
+        let mut builder = PdfBuilder::new();
+        let mut fonts = PdfFontCache::new();
+        let fig_id = builder.register_struct_elem(PdfTagRole::Figure, None, None);
+        let content = {
+            let mut ctx = PdfRenderContext::new(1.0, &mut builder, &mut fonts);
+            ctx.begin_tag(fig_id);
+            ctx.set_fill_color("#3366ff");
+            ctx.fill_rect(10.0, 10.0, 50.0, 20.0);
+            ctx.end_tag();
+            ctx.finish()
+        };
+        builder
+            .add_page(PdfPageSpec { width_pt: 200.0, height_pt: 100.0, raster: None, raster_px: (0, 0), text_runs: Vec::new(), links: Vec::new(), content })
+            .expect("add_page should succeed");
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+        let catalog = doc.catalog().expect("catalog must be present");
+        let struct_tree_root_ref = catalog.get(b"StructTreeRoot").and_then(lopdf::Object::as_reference).expect("StructTreeRoot ref");
+        let struct_tree_root = doc.get_dictionary(struct_tree_root_ref).expect("resolve StructTreeRoot");
+        let document_ref = struct_tree_root.get(b"K").and_then(lopdf::Object::as_reference).expect("Document ref");
+        let document_elem = doc.get_dictionary(document_ref).expect("resolve Document elem");
+        let children = document_elem.get(b"K").and_then(lopdf::Object::as_array).expect("Document children");
+        let fig_ref = children[0].as_reference().expect("child ref");
+        let fig_elem = doc.get_dictionary(fig_ref).expect("resolve Figure elem");
+        assert!(fig_elem.get(b"Alt").is_err(), "no /Alt was registered, so none must be written");
+    }
+
+    /// Table tagging: `Table` (container) -> `TableRow` (container) ->
+    /// `TableCell` (leaf) — every registered container element carries NO
+    /// `/Pg` of its own (only children), and the leaf `TableCell` carries
+    /// exactly one bare-integer `/K` MCID plus its own `/Pg` — proves the
+    /// brief's own "cell geometry exposes cleanly, so real Table/TR/TD
+    /// nesting is used, never a whole-table Figure fallback" decision
+    /// (this crate's own engine side of that decision — see
+    /// `uzor-typeset::export::pdf_adapter`'s `CLAUDE.md` for the adapter
+    /// side of the same finding).
+    #[test]
+    fn table_row_cell_hierarchy_is_well_formed_container_then_leaf() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        let table_id = builder.register_struct_elem(PdfTagRole::Table, None, None);
+        let tr_id = builder.register_struct_elem(PdfTagRole::TableRow, Some(table_id), None);
+        let td_id = builder.register_struct_elem(PdfTagRole::TableCell, Some(tr_id), None);
+
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 200.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: Some(td_id), text: "Cell text" }],
+                links: Vec::new(),
+                content: PdfContentStream::empty(),
+            })
+            .expect("add_page should succeed");
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+        let catalog = doc.catalog().expect("catalog must be present");
+        let struct_tree_root_ref = catalog.get(b"StructTreeRoot").and_then(lopdf::Object::as_reference).expect("StructTreeRoot ref");
+        let struct_tree_root = doc.get_dictionary(struct_tree_root_ref).expect("resolve StructTreeRoot");
+        let document_ref = struct_tree_root.get(b"K").and_then(lopdf::Object::as_reference).expect("Document ref");
+        let document_elem = doc.get_dictionary(document_ref).expect("resolve Document elem");
+        let doc_children = document_elem.get(b"K").and_then(lopdf::Object::as_array).expect("Document children");
+        assert_eq!(doc_children.len(), 1, "only the Table is a top-level child — TR/TD nest inside it, never flattened to the Document root");
+
+        let table_ref = doc_children[0].as_reference().expect("table ref");
+        let table_elem = doc.get_dictionary(table_ref).expect("resolve table elem");
+        assert_eq!(table_elem.get(b"S").and_then(lopdf::Object::as_name).expect("/S must be present"), b"Table".as_slice());
+        assert!(table_elem.get(b"Pg").is_err(), "a container element must never carry its own /Pg");
+        let table_children = table_elem.get(b"K").and_then(lopdf::Object::as_array).expect("Table children");
+        assert_eq!(table_children.len(), 1);
+
+        let tr_ref = table_children[0].as_reference().expect("tr ref");
+        let tr_elem = doc.get_dictionary(tr_ref).expect("resolve tr elem");
+        assert_eq!(tr_elem.get(b"S").and_then(lopdf::Object::as_name).expect("/S must be present"), b"TR".as_slice());
+        assert!(tr_elem.get(b"Pg").is_err(), "TR is also a container — no /Pg of its own");
+        let tr_children = tr_elem.get(b"K").and_then(lopdf::Object::as_array).expect("TR children");
+        assert_eq!(tr_children.len(), 1);
+
+        let td_ref = tr_children[0].as_reference().expect("td ref");
+        let td_elem = doc.get_dictionary(td_ref).expect("resolve td elem");
+        assert_eq!(td_elem.get(b"S").and_then(lopdf::Object::as_name).expect("/S must be present"), b"TD".as_slice());
+        assert!(td_elem.get(b"Pg").is_ok(), "the leaf TD must reference its own page");
+        assert_eq!(td_elem.get(b"K").and_then(lopdf::Object::as_i64).expect("/K must be an integer MCID"), 0, "the leaf's own /K must be the bare MCID integer");
+    }
+
+    /// A struct element with zero surviving descendants (nothing was ever
+    /// actually tagged on any page) must be silently dropped from the
+    /// written tree entirely — never an empty/dangling dict object, never
+    /// a panic. Registers a whole Table/TR/TD tree but never actually
+    /// tags any run with the TD id — proves the survival-pruning pass
+    /// (`tagging::write_struct_tree`) really removes it, rather than
+    /// leaving a hollow container in the Document's own children.
+    #[test]
+    fn an_unused_struct_elem_tree_is_pruned_entirely_never_left_dangling() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        let table_id = builder.register_struct_elem(PdfTagRole::Table, None, None);
+        let tr_id = builder.register_struct_elem(PdfTagRole::TableRow, Some(table_id), None);
+        let _td_id = builder.register_struct_elem(PdfTagRole::TableCell, Some(tr_id), None);
+        // A SEPARATE, real P element that DOES get tagged — proves the
+        // pruning pass removes ONLY the genuinely-unused subtree, not
+        // every element in the document.
+        let p_id = builder.register_struct_elem(PdfTagRole::P, None, None);
+
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 200.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: Some(p_id), text: "Real content" }],
+                links: Vec::new(),
+                content: PdfContentStream::empty(),
+            })
+            .expect("add_page should succeed");
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+        let catalog = doc.catalog().expect("catalog must be present");
+        let struct_tree_root_ref = catalog.get(b"StructTreeRoot").and_then(lopdf::Object::as_reference).expect("StructTreeRoot ref");
+        let struct_tree_root = doc.get_dictionary(struct_tree_root_ref).expect("resolve StructTreeRoot");
+        let document_ref = struct_tree_root.get(b"K").and_then(lopdf::Object::as_reference).expect("Document ref");
+        let document_elem = doc.get_dictionary(document_ref).expect("resolve Document elem");
+        let doc_children = document_elem.get(b"K").and_then(lopdf::Object::as_array).expect("Document children");
+        assert_eq!(doc_children.len(), 1, "the unused Table/TR/TD subtree must be pruned entirely — only the real P element remains");
+        let only_child_ref = doc_children[0].as_reference().expect("child ref");
+        let only_child = doc.get_dictionary(only_child_ref).expect("resolve the surviving child");
+        assert_eq!(
+            only_child.get(b"S").and_then(lopdf::Object::as_name).expect("/S must be present"),
+            b"P".as_slice(),
+            "the ONE surviving child must be the real, tagged P element"
+        );
+    }
+
+    /// XMP: hand-written packet mirrors `PdfMeta` fields into the SAME
+    /// `/Metadata` stream `Catalog::metadata` references, only when
+    /// `write_xmp` is `true` — and a title containing raw `<`/`&`/`>`
+    /// must be XML-escaped, never emitted literally (which would corrupt
+    /// the packet's own XML well-formedness).
+    #[test]
+    fn xmp_packet_is_written_when_opted_in_and_escapes_xml_entities() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 100.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "x" }],
+                links: Vec::new(),
+                content: PdfContentStream::empty(),
+            })
+            .expect("add_page should succeed");
+        builder.set_meta(PdfMeta { title: Some("Report <A & B>".to_owned()), write_xmp: true, ..Default::default() });
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+        let catalog = doc.catalog().expect("catalog must be present");
+        let metadata_ref = catalog.get(b"Metadata").and_then(lopdf::Object::as_reference).expect("catalog must reference /Metadata when write_xmp is set");
+        let metadata_obj = doc.get_object(metadata_ref).expect("must resolve /Metadata");
+        let stream = match metadata_obj {
+            lopdf::Object::Stream(s) => s,
+            other => panic!("/Metadata must be a stream object, got {other:?}"),
+        };
+        assert_eq!(stream.dict.get(b"Subtype").and_then(lopdf::Object::as_name).expect("/Subtype must be present"), b"XML".as_slice());
+
+        let xmp_text = String::from_utf8_lossy(&stream.content).into_owned();
+        assert!(xmp_text.contains("Report &lt;A &amp; B&gt;"), "the title must be XML-escaped in the XMP packet, got: {xmp_text}");
+        assert!(!xmp_text.contains("Report <A & B>"), "the RAW, unescaped title must never appear literally in the XMP packet");
+    }
+
+    /// A [`PdfBuilder`] that never sets `write_xmp` must never write a
+    /// `/Metadata` entry at all — additive, opt-in, same convention every
+    /// other `PdfMeta` field already follows.
+    #[test]
+    fn no_xmp_metadata_is_written_unless_write_xmp_is_set() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 100.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "x" }],
+                links: Vec::new(),
+                content: PdfContentStream::empty(),
+            })
+            .expect("add_page should succeed");
+        builder.set_meta(PdfMeta { title: Some("Untitled".to_owned()), ..Default::default() });
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+        let catalog = doc.catalog().expect("catalog must be present");
+        assert!(catalog.get(b"Metadata").is_err(), "no /Metadata entry must be written when write_xmp was never set");
+    }
+
+    /// `/Lang` on the Catalog — additive, opt-in via [`PdfMeta::lang`],
+    /// independent of `tagged`/`write_xmp` (a document can declare its
+    /// language regardless of whether it is a Tagged PDF).
+    #[test]
+    fn lang_is_written_on_the_catalog_when_set() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 100.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "x" }],
+                links: Vec::new(),
+                content: PdfContentStream::empty(),
+            })
+            .expect("add_page should succeed");
+        builder.set_meta(PdfMeta { lang: Some("ru".to_owned()), ..Default::default() });
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+        let catalog = doc.catalog().expect("catalog must be present");
+        let lang_bytes = catalog.get(b"Lang").and_then(lopdf::Object::as_str).expect("catalog must carry /Lang when PdfMeta::lang is set");
+        assert_eq!(decode_pdf_text_string(lang_bytes), "ru");
+    }
+
+    /// No `/Lang` at all unless `PdfMeta::lang` is set — additive,
+    /// opt-in, same convention as every other `PdfMeta` field.
+    #[test]
+    fn no_lang_is_written_unless_set() {
+        let mut builder = PdfBuilder::new();
+        let font = builder.register_font(ROBOTO_REGULAR);
+        builder
+            .add_page(PdfPageSpec {
+                width_pt: 100.0,
+                height_pt: 100.0,
+                raster: None,
+                raster_px: (0, 0),
+                text_runs: vec![PdfTextRun { font, size_pt: 12.0, x_pt: 10.0, y_pt: 20.0, rgb: 0x111111, glyph_advances_pt: None, struct_tag: None, text: "x" }],
+                links: Vec::new(),
+                content: PdfContentStream::empty(),
+            })
+            .expect("add_page should succeed");
+
+        let bytes = builder.finish();
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf must parse this crate's own PDF output");
+        let catalog = doc.catalog().expect("catalog must be present");
+        assert!(catalog.get(b"Lang").is_err(), "no /Lang must be written unless PdfMeta::lang is set");
     }
 }

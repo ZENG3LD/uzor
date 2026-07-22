@@ -173,7 +173,7 @@ mod tests {
             width_pt: 100.0,
             height_pt: 100.0,
             raster_rgb: None,
-            runs: vec![PageTextRun { font_id: FontId(font_index), size_pt: 12.0, x_pt: 0.0, y_pt: 0.0, rgb: 0, glyphs, real_advances_pt: None }],
+            runs: vec![PageTextRun { font_id: FontId(font_index), size_pt: 12.0, x_pt: 0.0, y_pt: 0.0, rgb: 0, glyphs, real_advances_pt: None, struct_tag: None }],
             links: Vec::new(),
             content_ops: Vec::new(),
         }

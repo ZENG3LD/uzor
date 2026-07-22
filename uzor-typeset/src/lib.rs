@@ -61,7 +61,7 @@ pub mod toc;
 
 pub use caption::{attach_captions, default_caption_label, default_caption_ref_label, resolve_caption_numbers, resolve_refs, CaptionStyle, RefSegment};
 pub use compose::{compose, BreakControl, ComposeStyle};
-pub use export::pages_to_pdf;
+pub use export::{pages_to_pdf, PdfExportOptions};
 pub use kinetics::{build_frame_morph, FrameBlockState, FrameMorph};
 pub use master::{
     HeaderPlaceholder, LayoutId, MasterId, PlaceholderFill, PlaceholderKind, PlaceholderSlot, PlacedPlaceholder, PageNumberFormat,
