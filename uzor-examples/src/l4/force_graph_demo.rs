@@ -63,7 +63,6 @@ use uzor::layout::agent::{AgentAction, AgentActionReply, AgentWidget, BlackboxAg
 use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager};
 use uzor::platform::types::CornerStyle;
 use uzor::render::{RenderContext, RenderRegion};
-use uzor::types::unsafe_widget_id;
 use uzor_desktop::{AppRun3D as _, CachedOverlayJob, Scene3DApp, Scene3DFrame};
 
 use uzor_graph::interaction::fly::{FlyController, KEYBOARD_SENSITIVITY_MAX, KEYBOARD_SENSITIVITY_MIN, MOUSE_SENSITIVITY_MAX, MOUSE_SENSITIVITY_MIN};
@@ -436,14 +435,6 @@ impl FixtureState {
 
 // ── App ───────────────────────────────────────────────────────────────
 
-struct SelectedFacts {
-    label: String,
-    category: String,
-    degree: u32,
-    position: (f32, f32),
-    pinned: bool,
-}
-
 // `GraphLayoutMode`/`GraphLayoutMode3D` (not a bare
 // `ForceDirectedLayout`/`ForceDirectedLayout3D`) so the `set_layout`
 // agent action + the HUD's LAYOUT section have something to dispatch to
@@ -726,19 +717,16 @@ fn draw_fly_crosshair(ctx: &mut dyn RenderContext, viewport: Rect) {
 // fixed top-LEFT origin in 3D while 2D extended the pre-existing
 // RIGHT-docked sidebar (`SIDEBAR_SLOT`/`SIDEBAR_WIDTH`) — a real,
 // reported left/right inconsistency, not a deliberate design choice
-// worth keeping. Both dimensions now dock the SAME top-RIGHT corner, at
-// the SAME width: 2D still extends the real sidebar body rect (no
-// change there — its own `body_rect` IS already right-docked at
-// `SIDEBAR_WIDTH`); 3D — which has ZERO 2D chrome to extend
-// (`Scene3DApp`'s own divergence log) — computes an equivalent
-// right-docked rect from the last-known real 3D surface width and the
-// SAME `SIDEBAR_WIDTH` constant (`surface_width_logical`/`DemoApp::
-// hud_origin`'s own `Dimension::ThreeD` branch), so the panel is flush
-// against the right edge in EITHER dimension, at the SAME width, with
-// only the top-edge padding (`HUD_FLOAT_Y`, unchanged) differing from
-// 2D's own header-inclusive body rect — everything else about the HUD
-// (section layout, padding, button/slider geometry, `build_hud_layout`
-// itself) is completely unchanged. Both dimensions share the exact same
+// worth keeping. Both dimensions now paint the SAME content-sized
+// floating card (owner design order 2026-07-24: no "Graph" header
+// strip, no title row, no dead full-height column — `HUD_MARGIN` air
+// above/around it): 2D paints it directly into the docked
+// `SIDEBAR_SLOT` edge area (the old `lm::sidebar` widget is gone); 3D —
+// which has ZERO 2D chrome to extend (`Scene3DApp`'s own divergence
+// log) — computes the equivalent right-docked card anchor from the
+// last-known real 3D surface width and the SAME `SIDEBAR_WIDTH`/
+// `HUD_MARGIN` constants (`surface_width_logical`/`DemoApp::hud_origin`'s
+// own `Dimension::ThreeD` branch). Both dimensions share the exact same
 // row/section LAYOUT (`build_hud_layout`), just a different `(origin_x,
 // origin_y, width)` anchor.
 //
@@ -768,14 +756,16 @@ fn draw_fly_crosshair(ctx: &mut dyn RenderContext, viewport: Rect) {
 // via `PlatformEvent::ScaleFactorChanged` — see that field's own doc
 // comment for the one known startup-value gap this leaves (still
 // correct by construction for the common 100%-scale case). The 2D
-// sidebar panel needs NO scaling at all (`scale: 1.0` always) — its
-// `RenderContext` is already logical-native (`ui()`'s own `body_rect` is
-// in the identical logical space `PointerDown` events arrive in, per
-// `uzor::framework::widgets::lm::sidebar`'s own `Clip`-mode body-rect
-// contract — no transform applied under the default `OverflowMode::Clip`
-// this demo's sidebar already uses).
+// sidebar panel needs NO scaling at all (`scale: 1.0` always) — `ui()`'s
+// `RenderContext` is already logical-native (the docked column rect it
+// paints into is in the identical logical space `PointerDown` events
+// arrive in).
 const HUD_PAD: f64 = 12.0;
-const HUD_TITLE_H: f64 = 24.0;
+/// Empty-space margin around the floating HUD card (owner design order
+/// 2026-07-24: the panel is NOT a full-height column and has NO title —
+/// a content-sized card with air above/below/around it, docked toward
+/// the right edge in both dimensions).
+const HUD_MARGIN: f64 = 12.0;
 const HUD_HEADING_H: f64 = 16.0;
 const HUD_BUTTON_H: f64 = 27.0;
 const HUD_BUTTON_GAP: f64 = 5.0;
@@ -783,16 +773,6 @@ const HUD_SECTION_GAP: f64 = 10.0;
 const HUD_SLIDER_ROW_H: f64 = 32.0;
 const HUD_TEXT_LINE_H: f64 = 16.0;
 const HUD_STATUS_LINE_COUNT: usize = 2;
-/// Top-edge padding for the 3D panel's right-docked origin (owner defect
-/// fix, panel-placement consistency — see this section's own module
-/// doc). Both dimensions now dock top-RIGHT; this is the one piece of
-/// the anchor that's genuinely NOT derived from the 2D sidebar's own
-/// geometry (2D's `body_rect.y` already includes the sidebar's header
-/// height, which 3D has no chrome to replicate) — `HUD_FLOAT_Y` keeps
-/// its pre-fix value unchanged, only the X origin changed from a fixed
-/// left offset to a computed right-dock (see [`surface_width_logical`]/
-/// [`DemoApp::hud_origin`]'s own `Dimension::ThreeD` branch).
-const HUD_FLOAT_Y: f64 = 12.0;
 
 /// Fallback logical viewport width for deriving the 3D panel's
 /// right-docked origin ([`surface_width_logical`]) before any real 3D
@@ -813,6 +793,27 @@ fn surface_width_logical(size: Option<(u32, u32)>, scale_factor: f64) -> f64 {
         Some((w, _)) if scale_factor > 0.0 => w as f64 / scale_factor,
         _ => FALLBACK_SURFACE_WIDTH_LOGICAL,
     }
+}
+
+/// Height sibling of [`surface_width_logical`] — backs the 3D card's
+/// vertical centering (owner design order 2026-07-24: equal air above
+/// and below the card). Fallback = the window's own initial logical
+/// height (`WindowSpec::new(...).size(1400, 900)`).
+const FALLBACK_SURFACE_HEIGHT_LOGICAL: f64 = 900.0;
+
+fn surface_height_logical(size: Option<(u32, u32)>, scale_factor: f64) -> f64 {
+    match size {
+        Some((_, h)) if scale_factor > 0.0 => h as f64 / scale_factor,
+        _ => FALLBACK_SURFACE_HEIGHT_LOGICAL,
+    }
+}
+
+/// Vertically-centered card origin y for a viewport of `viewport_h`
+/// logical px — equal empty space above and below the content-sized
+/// card (owner design order 2026-07-24), floored at [`HUD_MARGIN`] so a
+/// card taller than the window still starts with its top row reachable.
+fn hud_card_y(viewport_h: f64, card_h: f64) -> f64 {
+    ((viewport_h - card_h) / 2.0).max(HUD_MARGIN)
 }
 
 /// Which control the HUD panel currently exposes as a clickable button —
@@ -873,7 +874,6 @@ struct HudSliderRect {
 /// plain informational text (no hit-test needed for either).
 struct HudLayout {
     panel: Rect,
-    title_y: f64,
     headings: Vec<(&'static str, f64)>,
     buttons: Vec<HudButtonRect>,
     sliders: Vec<HudSliderRect>,
@@ -884,6 +884,11 @@ struct HudLayout {
     /// [`HUD_TEXT_LINE_H`]. Exactly [`HUD_STATUS_LINE_COUNT`] lines are
     /// ever drawn there (`draw_hud_status`'s own contract).
     status_y: f64,
+    /// y of the FIRST selection-facts line (SELECTION section — owner
+    /// defect fix 2026-07-24, selection info lives INSIDE the panel now);
+    /// exactly `HudSnapshot::selection_line_count` lines are drawn there,
+    /// same line advance as `status_y`.
+    selection_y: f64,
 }
 
 /// Small, cheap-to-snapshot slice of live app state the HUD layout/paint
@@ -908,27 +913,32 @@ struct HudSnapshot {
     /// as `layout_kind` above; only meaningful (and only ever `true`)
     /// while `layout_kind == LayoutKind::Force`.
     layout_paused: bool,
+    /// How many SELECTION-section text lines the layout must reserve
+    /// space for — [`selection_lines_2d`]/[`selection_lines_3d`]'s own
+    /// `.len()` for the active dimension (5 facts while a node is
+    /// selected, 1 "no selection" hint line otherwise). Count only — the
+    /// TEXT is per-frame dynamic, see [`HudLayout::selection_y`].
+    selection_line_count: usize,
 }
 
 /// Build the panel's full layout at `(origin_x, origin_y)` with content
 /// `width` — the ONE function both painting (`draw_hud_static`/
 /// `draw_hud_status`) and hit-testing (`DemoApp::on_event_hud`) call, so
 /// drawn and clickable geometry can never drift apart. Section order
-/// mirrors the foxhound reference app's own HUD: title, FIXTURE (4
-/// buttons, always), LAYOUT (3 buttons — FORCE/LAYERED/RADIAL, **same 3
-/// in both dimensions** since `GraphLayoutMode3D` — owner defect fix
-/// 2026-07-23 — gave 3D the same runtime-switchable kinds 2D already had;
-/// re-clicking the ACTIVE button toggles FORCE pause/resume or re-runs +
-/// re-fits a one-shot LAYERED/RADIAL layout, see [`HudButtonRect::paused`]
-/// and [`DemoApp::apply_hud_control`]), NAVIGATION (2-4 buttons —
-/// Orbit/Fly and Grid are 3D only), SENSITIVITY (2 sliders, 3D **fly**
-/// mode only), MOUSE (a per-mode legend), STATUS (2 numeric lines, filled
-/// in by the caller — see [`draw_hud_status`]).
+/// mirrors the foxhound reference app's own HUD: FIXTURE (4
+/// buttons, always), LAYOUT (ONLY [`available_layout_kinds`]'s modes for
+/// the current fixture — tree/hierarchy get FORCE/LAYERED/RADIAL,
+/// clusters/sparse get FORCE alone; re-clicking the ACTIVE button
+/// toggles FORCE pause/resume or re-runs + re-fits a one-shot
+/// LAYERED/RADIAL layout, see [`HudButtonRect::paused`] and
+/// [`DemoApp::apply_hud_control`]), NAVIGATION (2-4 buttons — Orbit/Fly
+/// and Grid are 3D only), SENSITIVITY (2 sliders, 3D **fly** mode only),
+/// MOUSE (a per-mode legend), STATUS (2 numeric lines, filled in by the
+/// caller — see [`draw_hud_status`]), SELECTION
+/// (`HudSnapshot::selection_line_count` lines, also caller-filled).
 fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot) -> HudLayout {
     let content_w = (width - 2.0 * HUD_PAD).max(0.0);
     let mut y = origin_y + HUD_PAD;
-    let title_y = y + 14.0;
-    y += HUD_TITLE_H;
 
     let mut headings: Vec<(&'static str, f64)> = Vec::new();
     let mut buttons: Vec<HudButtonRect> = Vec::new();
@@ -950,23 +960,22 @@ fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot
     }
     y += HUD_SECTION_GAP;
 
-    // LAYOUT — same 3 modes in BOTH dimensions now (owner defect fix
-    // 2026-07-23: 3D used to show a single hardcoded always-active FORCE
-    // button that neither toggled nor disabled — the exact "зажат форс"
-    // defect report — because `GraphEngine3D` had no runtime-switchable
-    // layout at all; `GraphLayoutMode3D` closes that gap). A button whose
-    // kind is already active AND is FORCE AND is currently paused gets
-    // the distinct `paused` visual treatment (amber, "(PAUSED)" label
-    // suffix) — see `draw_hud_static`'s own color table.
+    // LAYOUT — ONLY the modes that genuinely exist for the current
+    // fixture's data shape ([`available_layout_kinds`]'s own doc — the
+    // owner rule «показывать только те режимы которые там есть»):
+    // tree/hierarchy show FORCE/LAYERED/RADIAL, clusters/sparse show
+    // FORCE alone (which still acts — re-clicking it toggles pause). A
+    // button whose kind is already active AND is FORCE AND is currently
+    // paused gets the distinct `paused` visual treatment (amber,
+    // "(PAUSED)" label suffix) — see `draw_hud_static`'s own color table.
     headings.push(("LAYOUT", y));
     y += HUD_HEADING_H;
-    const LAYOUT_MODES: &[(LayoutKind, &str)] =
-        &[(LayoutKind::Force, "FORCE"), (LayoutKind::Hierarchical, "LAYERED"), (LayoutKind::Radial, "RADIAL")];
-    for &(kind, label) in LAYOUT_MODES {
+    for &kind in available_layout_kinds(snap.fixture) {
         let rect = Rect::new(origin_x + HUD_PAD, y, content_w, HUD_BUTTON_H);
         let active = kind == snap.layout_kind;
         let paused = active && kind == LayoutKind::Force && snap.layout_paused;
-        let label = if paused { format!("{label} (PAUSED)") } else { label.to_owned() };
+        let base = layout_kind_label(kind);
+        let label = if paused { format!("{base} (PAUSED)") } else { base.to_owned() };
         buttons.push(HudButtonRect { control: HudControl::SetLayout(kind), rect, label, active, paused });
         y += HUD_BUTTON_H + HUD_BUTTON_GAP;
     }
@@ -1063,9 +1072,22 @@ fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot
     y += HUD_HEADING_H;
     let status_y = y;
     y += HUD_STATUS_LINE_COUNT as f64 * HUD_TEXT_LINE_H;
+    y += HUD_SECTION_GAP;
+
+    // SELECTION — the selected node's facts, INSIDE the panel (owner
+    // defect fix 2026-07-24: these used to be loose text rows dangling
+    // in the dead black area under the old sidebar-widget body). Line
+    // COUNT comes from the snapshot so this layout stays a pure
+    // function; line TEXT is per-frame dynamic and drawn by the caller
+    // via `draw_hud_status` at `selection_y` (positions change while
+    // dragging).
+    headings.push(("SELECTION", y));
+    y += HUD_HEADING_H;
+    let selection_y = y;
+    y += snap.selection_line_count as f64 * HUD_TEXT_LINE_H;
     y += HUD_PAD;
 
-    HudLayout { panel: Rect::new(origin_x, origin_y, width, y - origin_y), title_y, headings, buttons, sliders, legend, status_y }
+    HudLayout { panel: Rect::new(origin_x, origin_y, width, y - origin_y), headings, buttons, sliders, legend, status_y, selection_y }
 }
 
 /// Resolve a LOGICAL `(x, y)` against every button's own `rect` — the
@@ -1099,6 +1121,9 @@ fn scaled_rect(r: Rect, scale: f64) -> Rect {
 /// comment for why that split exists (the `CachedOverlayJob` chrome/
 /// dynamic split item 3 asked for).
 fn draw_hud_static(ctx: &mut dyn RenderContext, layout: &HudLayout, scale: f64) {
+    // A content-sized floating CARD (owner design order 2026-07-24: no
+    // title row, not a full-height column — air above/below it), with
+    // its own background + border box.
     let panel = scaled_rect(layout.panel, scale);
     ctx.save();
     ctx.set_global_alpha(0.96);
@@ -1108,10 +1133,6 @@ fn draw_hud_static(ctx: &mut dyn RenderContext, layout: &HudLayout, scale: f64) 
     ctx.set_stroke_color("#2e3a4d");
     ctx.set_stroke_width(1.0);
     ctx.stroke_rect(panel.x, panel.y, panel.width, panel.height);
-
-    ctx.set_font("bold 13px sans-serif");
-    ctx.set_fill_color("#edf2fa");
-    ctx.fill_text("FORCE GRAPH DEMO", panel.x + HUD_PAD * scale, layout.title_y * scale);
 
     for &(label, y) in &layout.headings {
         ctx.set_font("bold 10px sans-serif");
@@ -1173,10 +1194,12 @@ fn draw_hud_static(ctx: &mut dyn RenderContext, layout: &HudLayout, scale: f64) 
     ctx.restore();
 }
 
-/// Paint the STATUS line's numeric content (node/visible counts, frame
-/// timing) — the DYNAMIC half of the split `draw_hud_static` documents.
-/// `lines` must be exactly [`HUD_STATUS_LINE_COUNT`] long — the layout
-/// already reserved exactly that much vertical space for it.
+/// Paint a run of dynamic text lines starting at `status_y` — the
+/// DYNAMIC half of the split `draw_hud_static` documents. Used for BOTH
+/// the STATUS section (exactly [`HUD_STATUS_LINE_COUNT`] lines) and the
+/// SELECTION section (`HudSnapshot::selection_line_count` lines, at
+/// `HudLayout::selection_y`) — the layout reserved exactly `lines.len()`
+/// worth of vertical space in either case.
 fn draw_hud_status(ctx: &mut dyn RenderContext, panel_x: f64, status_y: f64, lines: &[String], scale: f64) {
     ctx.save();
     ctx.set_font("11px sans-serif");
@@ -1187,6 +1210,43 @@ fn draw_hud_status(ctx: &mut dyn RenderContext, panel_x: f64, status_y: f64, lin
         ctx.fill_text(line, x, y);
     }
     ctx.restore();
+}
+
+/// The SELECTION section's text lines for the 2D engine — the same five
+/// facts the old under-panel text rows showed (owner defect fix
+/// 2026-07-24: they live INSIDE the panel now), or the single "no
+/// selection" hint. Shared shape with [`selection_lines_3d`]; both the
+/// snapshot (line COUNT, reserves layout space) and the per-frame draw
+/// (line TEXT) call these, so reserved and drawn line counts can never
+/// drift apart.
+fn selection_lines_2d(engine: &Engine) -> Vec<String> {
+    match engine.selected_facts() {
+        Some(f) => vec![
+            format!("selected: {}", f.label),
+            format!("category: {}", f.category),
+            format!("degree: {}", f.degree),
+            format!("pos: ({:.1}, {:.1})", f.position.0, f.position.1),
+            format!("pinned: {}", f.pinned),
+        ],
+        None => vec!["no selection — click a node".to_owned()],
+    }
+}
+
+/// 3D sibling of [`selection_lines_2d`] — same five facts via
+/// `GraphEngine3D::node_facts` (`NodeFacts` reports the 2D `(x, y)`
+/// position shape by design, see that method's own doc), same hint line
+/// when nothing is selected.
+fn selection_lines_3d(engine3d: &Engine3D) -> Vec<String> {
+    match engine3d.selected().and_then(|id| engine3d.node_facts(id)) {
+        Some(f) => vec![
+            format!("selected: {}", f.label),
+            format!("category: {}", f.category),
+            format!("degree: {}", f.degree),
+            format!("pos: ({:.1}, {:.1})", f.position.0, f.position.1),
+            format!("pinned: {}", f.pinned),
+        ],
+        None => vec!["no selection — click a node".to_owned()],
+    }
 }
 
 /// Cache key for the 3D `CachedOverlayJob` static-chrome paint — changes
@@ -1208,7 +1268,7 @@ fn draw_hud_status(ctx: &mut dyn RenderContext, panel_x: f64, status_y: f64, lin
 /// pre-existing gap this fix closes, not a regression it introduces —
 /// this key never needed to include them before, since 3D's own single
 /// FORCE button was always hardcoded active and never paused).
-fn hud_static_key(snap: &HudSnapshot, scale: f64, origin_x: f64) -> u64 {
+fn hud_static_key(snap: &HudSnapshot, scale: f64, origin_x: f64, origin_y: f64) -> u64 {
     let mut hasher = DefaultHasher::new();
     snap.dim.code().hash(&mut hasher);
     snap.fixture.code().hash(&mut hasher);
@@ -1218,8 +1278,15 @@ fn hud_static_key(snap: &HudSnapshot, scale: f64, origin_x: f64) -> u64 {
     snap.mouse_sensitivity.to_bits().hash(&mut hasher);
     snap.layout_kind.hash(&mut hasher);
     snap.layout_paused.hash(&mut hasher);
+    // SELECTION section (2026-07-24): the card's own height and the
+    // section heading's y position both depend on the reserved line
+    // count — it must invalidate the cached chrome.
+    snap.selection_line_count.hash(&mut hasher);
     scale.to_bits().hash(&mut hasher);
     origin_x.to_bits().hash(&mut hasher);
+    // origin_y is the vertically-CENTERED anchor — a height-only window
+    // resize moves it without touching any other hashed field.
+    origin_y.to_bits().hash(&mut hasher);
     hasher.finish()
 }
 
@@ -1293,12 +1360,43 @@ impl FlattenPendingFlag {
 /// `engine` AND `engine3d`, owner defect fix 2026-07-23 — previously 3D's
 /// engine had no runtime-switchable layout at all to default). The
 /// owner's own explicit HUD LAYOUT buttons (`HudControl::SetLayout`) let
-/// this default be overridden by hand for ANY fixture afterward — this is
-/// only the INITIAL pick on a fixture switch, not a hard rule.
+/// this default be overridden by hand afterward — within
+/// [`available_layout_kinds`]'s own per-fixture set; this is only the
+/// INITIAL pick on a fixture switch, not a hard rule.
 fn default_layout_kind_for_fixture(fixture: Fixture) -> LayoutKind {
     match fixture {
         Fixture::Clusters | Fixture::Sparse => LayoutKind::Force,
         Fixture::Tree | Fixture::Hierarchy => LayoutKind::Hierarchical,
+    }
+}
+
+/// Which layout modes genuinely EXIST for a fixture's data shape — the
+/// owner's HUD rule («показывать только те режимы которые там есть, чужие
+/// не показывать»): `tree`/`hierarchy` are rooted hierarchical data, so
+/// Layered/Radial are real modes for them; `clusters`/`sparse` are
+/// mesh-shaped (cyclic, no root, no levels), so a layered/radial pass
+/// over them isn't a mode that exists, just garbage rows — those
+/// fixtures expose FORCE alone (a single-variant control still acts:
+/// re-clicking it toggles pause, per [`DemoApp::apply_hud_control`]).
+/// Identical in both dimensions (availability is a property of the DATA,
+/// not of 2D vs 3D — both engines implement all three kinds). The HUD
+/// (`build_hud_layout`), the click dispatcher (`apply_hud_control`) and
+/// the agent-api `set_layout` gate (`DemoBlackbox::apply_agent_action`)
+/// all consult this ONE function, so what's shown, what's clickable and
+/// what's scriptable can never drift apart.
+fn available_layout_kinds(fixture: Fixture) -> &'static [LayoutKind] {
+    match fixture {
+        Fixture::Clusters | Fixture::Sparse => &[LayoutKind::Force],
+        Fixture::Tree | Fixture::Hierarchy => &[LayoutKind::Force, LayoutKind::Hierarchical, LayoutKind::Radial],
+    }
+}
+
+/// Drawn HUD label for a layout kind — the LAYOUT section's button text.
+fn layout_kind_label(kind: LayoutKind) -> &'static str {
+    match kind {
+        LayoutKind::Force => "FORCE",
+        LayoutKind::Hierarchical => "LAYERED",
+        LayoutKind::Radial => "RADIAL",
     }
 }
 
@@ -1856,14 +1954,14 @@ impl DemoApp {
             let fly = Self::lock_fly(&self.fly);
             (fly.keyboard_sensitivity(), fly.mouse_sensitivity())
         };
-        let (layout_kind, layout_paused) = match self.dim.get() {
+        let (layout_kind, layout_paused, selection_line_count) = match self.dim.get() {
             Dimension::TwoD => {
                 let engine = Self::lock(&self.engine);
-                (engine.layout.kind(), engine.layout.paused())
+                (engine.layout.kind(), engine.layout.paused(), selection_lines_2d(&engine).len())
             }
             Dimension::ThreeD => {
                 let engine3d = Self::lock3d(&self.engine3d);
-                (engine3d.layout.kind(), engine3d.layout.paused())
+                (engine3d.layout.kind(), engine3d.layout.paused(), selection_lines_3d(&engine3d).len())
             }
         };
         HudSnapshot {
@@ -1875,6 +1973,7 @@ impl DemoApp {
             mouse_sensitivity,
             layout_kind,
             layout_paused,
+            selection_line_count,
         }
     }
 
@@ -1887,11 +1986,18 @@ impl DemoApp {
     /// real 3D surface width (falling back to
     /// [`FALLBACK_SURFACE_WIDTH_LOGICAL`] before the first 3D frame ever
     /// renders).
-    fn hud_origin(&self) -> (f64, f64, f64) {
+    fn hud_origin(&self, snap: &HudSnapshot) -> (f64, f64, f64) {
         match self.dim.get() {
             Dimension::ThreeD => {
-                let viewport_width = surface_width_logical(self.last_3d_surface_px.get(), self.scale_factor);
-                (viewport_width - SIDEBAR_WIDTH as f64, HUD_FLOAT_Y, SIDEBAR_WIDTH as f64)
+                let viewport_w = surface_width_logical(self.last_3d_surface_px.get(), self.scale_factor);
+                let viewport_h = surface_height_logical(self.last_3d_surface_px.get(), self.scale_factor);
+                // Floating card, right-docked with `HUD_MARGIN` air and
+                // VERTICALLY CENTERED (owner design order 2026-07-24) —
+                // the content-sized height comes from a zero-origin
+                // probe layout of the same snapshot, so paint and
+                // hit-test center on the identical card height.
+                let card_h = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, snap).panel.height;
+                (viewport_w - HUD_MARGIN - SIDEBAR_WIDTH as f64, hud_card_y(viewport_h, card_h), SIDEBAR_WIDTH as f64)
             }
             Dimension::TwoD => (self.last_sidebar_body.x, self.last_sidebar_body.y, self.last_sidebar_body.width),
         }
@@ -1901,11 +2007,13 @@ impl DemoApp {
     /// call `on_event_hud`'s own hit-testing makes; `ui()`/`scene3d()`
     /// build their own copy from the identical `build_hud_layout` with
     /// whatever origin their own paint call site already has on hand
-    /// (`body_rect` in 2D, the fixed float origin in 3D) — always the
-    /// SAME function, so drawn and clickable geometry never drift apart.
+    /// (the centered card rect in 2D, the centered float origin in 3D)
+    /// — always the SAME function, so drawn and clickable geometry
+    /// never drift apart.
     fn hud_layout(&self) -> HudLayout {
-        let (origin_x, origin_y, width) = self.hud_origin();
-        build_hud_layout(origin_x, origin_y, width, &self.hud_snapshot())
+        let snap = self.hud_snapshot();
+        let (origin_x, origin_y, width) = self.hud_origin(&snap);
+        build_hud_layout(origin_x, origin_y, width, &snap)
     }
 
     /// App-level HUD hit-testing (owner defect fix item 3) — checked at
@@ -2013,49 +2121,60 @@ impl DemoApp {
             // to whichever dimension's engine is CURRENTLY active — both
             // now expose the identical `GraphLayoutMode`/`GraphLayoutMode3D`
             // surface (`kind`/`paused`/`set_kind`/`set_paused`/`reheat`).
-            HudControl::SetLayout(kind) => match self.dim.get() {
-                Dimension::TwoD => {
-                    let mut engine = Self::lock(&self.engine);
-                    if engine.layout.kind() == kind {
-                        if kind == LayoutKind::Force {
-                            let next = !engine.layout.paused();
-                            engine.layout.set_paused(next);
+            HudControl::SetLayout(kind) => {
+                // Defense in depth for the owner's availability rule —
+                // `build_hud_layout` never emits a button for a kind
+                // outside `available_layout_kinds(fixture)`, so a click
+                // can't normally reach here with one; a stale hit-test
+                // race right after a fixture switch could, and must be a
+                // no-op, not a garbage layout.
+                if !available_layout_kinds(self.fixture.get()).contains(&kind) {
+                    return;
+                }
+                match self.dim.get() {
+                    Dimension::TwoD => {
+                        let mut engine = Self::lock(&self.engine);
+                        if engine.layout.kind() == kind {
+                            if kind == LayoutKind::Force {
+                                let next = !engine.layout.paused();
+                                engine.layout.set_paused(next);
+                            } else {
+                                engine.layout.reheat(1.0);
+                                drop(engine);
+                                self.camera_fit.request();
+                            }
                         } else {
-                            engine.layout.reheat(1.0);
+                            engine.layout.set_kind(kind);
+                            // A layout switch can move every node to a wildly
+                            // different extent (e.g. force's settled cluster
+                            // spread vs. layered's compact rows) — re-frame
+                            // the camera so the owner actually sees the new
+                            // shape, same "camera fit after" convention a
+                            // fixture switch already follows
+                            // (`rebuild_engines`'s own `camera_fit.request()`).
                             drop(engine);
                             self.camera_fit.request();
                         }
-                    } else {
-                        engine.layout.set_kind(kind);
-                        // A layout switch can move every node to a wildly
-                        // different extent (e.g. force's settled cluster
-                        // spread vs. layered's compact rows) — re-frame
-                        // the camera so the owner actually sees the new
-                        // shape, same "camera fit after" convention a
-                        // fixture switch already follows
-                        // (`rebuild_engines`'s own `camera_fit.request()`).
-                        drop(engine);
-                        self.camera_fit.request();
                     }
-                }
-                Dimension::ThreeD => {
-                    let mut engine3d = Self::lock3d(&self.engine3d);
-                    if engine3d.layout.kind() == kind {
-                        if kind == LayoutKind::Force {
-                            let next = !engine3d.layout.paused();
-                            engine3d.layout.set_paused(next);
+                    Dimension::ThreeD => {
+                        let mut engine3d = Self::lock3d(&self.engine3d);
+                        if engine3d.layout.kind() == kind {
+                            if kind == LayoutKind::Force {
+                                let next = !engine3d.layout.paused();
+                                engine3d.layout.set_paused(next);
+                            } else {
+                                engine3d.layout.reheat(1.0);
+                                drop(engine3d);
+                                self.fit_view_3d();
+                            }
                         } else {
-                            engine3d.layout.reheat(1.0);
+                            engine3d.layout.set_kind(kind);
                             drop(engine3d);
                             self.fit_view_3d();
                         }
-                    } else {
-                        engine3d.layout.set_kind(kind);
-                        drop(engine3d);
-                        self.fit_view_3d();
                     }
                 }
-            },
+            }
             HudControl::ToggleDimension => self.toggle_dimension(),
             HudControl::ToggleNavMode => {
                 if self.dim.get() == Dimension::ThreeD {
@@ -2245,6 +2364,32 @@ impl BlackboxAgentSurface for DemoBlackbox {
             };
             self.hud_visible.set(on);
             return AgentActionReply::ok_with_log(json!({ "hud": { "visible": on } }));
+        }
+        if action.name == "set_layout" {
+            // Owner availability rule, agent-api mirror of the HUD gate
+            // (`available_layout_kinds`'s own doc): a mode that doesn't
+            // exist for the current fixture's data shape is a typed
+            // rejection here too, in ONE place for both dimensions —
+            // the per-dimension handlers below only ever see a kind the
+            // fixture genuinely has.
+            if let Some(mode) = action.args.get("mode").and_then(Value::as_str) {
+                let kind = match mode {
+                    "force" => Some(LayoutKind::Force),
+                    "hierarchical" => Some(LayoutKind::Hierarchical),
+                    "radial" => Some(LayoutKind::Radial),
+                    _ => None, // unknown string — let the handler's own error reply fire
+                };
+                let fixture = self.fixture.get();
+                if let Some(kind) = kind {
+                    if !available_layout_kinds(fixture).contains(&kind) {
+                        return AgentActionReply::err(format!(
+                            "layout mode {mode:?} does not exist for fixture {:?} (available: {:?})",
+                            fixture.as_str(),
+                            available_layout_kinds(fixture).iter().map(|k| layout_kind_str(*k)).collect::<Vec<_>>(),
+                        ));
+                    }
+                }
+            }
         }
         match self.dim.get() {
             Dimension::TwoD => DemoApp::lock(&self.engine).apply_agent_action(action),
@@ -2541,24 +2686,18 @@ impl DemoBlackbox {
     }
 }
 
-fn draw_row(
-    layout: &mut LayoutManager<NoPanel>,
-    render: &mut dyn RenderContext,
-    body_rect: Rect,
-    cy: &mut f64,
-    row_h: f64,
-    pad: f64,
-    w: f64,
-    id: &str,
-    text: &str,
-) {
-    let r = Rect { x: body_rect.x + pad, y: *cy, width: w, height: row_h };
-    uzor::framework::widgets::lm::text(unsafe_widget_id(id), r, text).build(layout, render);
-    *cy += row_h;
-}
 
 impl App<NoPanel> for DemoApp {
-    fn init(&mut self, _key: &WindowKey, layout: &mut LayoutManager<NoPanel>) {
+    fn init(&mut self, key: &WindowKey, layout: &mut LayoutManager<NoPanel>) {
+        // Kill the LayoutManager's DEFAULT chrome strip (owner defect
+        // report 2026-07-24: «невидимая полоска за которую я могу
+        // драгать» — `ChromeSlot::default()` is `visible: true`, so the
+        // solver reserved an unpainted 32px band under the REAL OS
+        // titlebar this window already has, and `Manager`'s
+        // `handle_chrome_press` hit-tested its caption zone into
+        // `drag_window()`). This demo uses standard OS decorations —
+        // the LM's own custom-titlebar system must be fully OFF.
+        layout.chrome_mut_for(key).visible = false;
         // Wave 2 (W3D arc plan §1.6): register the `DemoBlackbox`
         // dimension-aware wrapper instead of `self.engine` directly —
         // see that struct's own doc comment.
@@ -2581,12 +2720,19 @@ impl App<NoPanel> for DemoApp {
     }
 
     fn ui(&mut self, win: &mut WindowCtx<'_, NoPanel>) {
+        // The dock slot itself follows HUD visibility (owner defect fix
+        // 2026-07-24): a hidden panel (H) releases the whole column back
+        // to the graph viewport instead of leaving a dead black strip.
+        let hud_visible = self.hud_visible.get();
         win.layout.edges_mut().clear();
         win.layout.edges_mut().add(EdgeSlot {
             id: SIDEBAR_SLOT.to_owned(),
             side: EdgeSide::Right,
-            thickness: SIDEBAR_WIDTH,
-            visible: true,
+            // Card width + air on BOTH sides of it (owner design order
+            // 2026-07-24: the panel floats with empty space around it,
+            // it's not a flush full-height column).
+            thickness: SIDEBAR_WIDTH + 2.0 * HUD_MARGIN as f32,
+            visible: hud_visible,
             order: 0,
             ..Default::default()
         });
@@ -2601,7 +2747,7 @@ impl App<NoPanel> for DemoApp {
         win.render.set_fill_color("#0d0f14");
         win.render.fill_rect(canvas_rect.x, canvas_rect.y, canvas_rect.width, canvas_rect.height);
 
-        let (hot, alpha, node_count, visible_count, facts_owned) = {
+        let (hot, alpha, node_count, visible_count, selection_lines) = {
             let mut engine = Self::lock(&self.engine);
             engine.set_canvas_rect(canvas_rect);
 
@@ -2624,73 +2770,40 @@ impl App<NoPanel> for DemoApp {
                 win.render.restore();
             }
 
-            let facts = engine.selected_facts().map(|f| SelectedFacts {
-                label: f.label.to_owned(),
-                category: f.category.to_owned(),
-                degree: f.degree,
-                position: f.position,
-                pinned: f.pinned,
-            });
-            let snapshot = (engine.is_hot(), engine.last_tick().alpha, engine.graph.node_count(), engine.visible_nodes().len(), facts);
+            let lines = selection_lines_2d(&engine);
+            let snapshot = (engine.is_hot(), engine.last_tick().alpha, engine.graph.node_count(), engine.visible_nodes().len(), lines);
             engine.clear_dirty();
             snapshot
         };
 
-        // Control-HUD panel content (owner defect fix, item 3) — snapshot
-        // BEFORE the sidebar closure below so the closure only ever needs
-        // a single `&mut self.last_sidebar_body` field write, never a
-        // method call on `self` (which would need the WHOLE struct and
-        // conflict with that field write under Rust's disjoint-closure-
-        // capture rules). Same reasoning as every `facts_owned`/
-        // `node_count`-shaped local already computed above.
-        let hud_snapshot = self.hud_snapshot();
-        let hud_visible = self.hud_visible.get();
-
-        let sb_handle = win.layout.add_sidebar(SIDEBAR_SLOT);
-        {
-            let layout = &mut *win.layout;
-            let render = &mut *win.render;
-            uzor::framework::widgets::lm::sidebar(&sb_handle, SIDEBAR_SLOT)
-                .header_title("Graph")
-                .content_height(700.0)
-                .build_with_body(layout, render, |layout, render, body_rect| {
-                    self.last_sidebar_body = body_rect;
-
-                    let pad = 12.0_f64;
-                    let row_h = 20.0_f64;
-                    let w = body_rect.width - 2.0 * pad;
-                    let mut cy = body_rect.y + pad;
-
-                    // Control-HUD panel — extends the sidebar (same
-                    // click zones `on_event_hud` hit-tests against,
-                    // `build_hud_layout` at the identical `body_rect`
-                    // origin/width). `scale: 1.0` — this `RenderContext`
-                    // is already logical-native (see the "Control HUD"
-                    // section's own module doc).
-                    let hud_layout = build_hud_layout(body_rect.x, body_rect.y, body_rect.width, &hud_snapshot);
-                    if hud_visible {
-                        draw_hud_static(render, &hud_layout, 1.0);
-                        let status_lines = [
-                            format!("nodes {node_count}  visible {visible_count}"),
-                            format!("alpha {alpha:.4}  hot {hot}"),
-                        ];
-                        draw_hud_status(render, hud_layout.panel.x, hud_layout.status_y, &status_lines, 1.0);
-                        cy = hud_layout.panel.bottom() + pad;
-                    }
-
-                    match &facts_owned {
-                        Some(f) => {
-                            draw_row(layout, render, body_rect, &mut cy, row_h, pad, w, "graph:sel:label", &format!("selected: {}", f.label));
-                            draw_row(layout, render, body_rect, &mut cy, row_h, pad, w, "graph:sel:category", &format!("category: {}", f.category));
-                            draw_row(layout, render, body_rect, &mut cy, row_h, pad, w, "graph:sel:degree", &format!("degree: {}", f.degree));
-                            draw_row(layout, render, body_rect, &mut cy, row_h, pad, w, "graph:sel:pos", &format!("pos: ({:.1}, {:.1})", f.position.0, f.position.1));
-                            draw_row(layout, render, body_rect, &mut cy, row_h, pad, w, "graph:sel:pinned", &format!("pinned: {}", f.pinned));
-                        }
-                        None => {
-                            draw_row(layout, render, body_rect, &mut cy, row_h, pad, w, "graph:sel:none", "no selection — click a node");
-                        }
-                    }
-                });
+        // Control-HUD card — painted DIRECTLY into the docked right-edge
+        // area (owner defect fix 2026-07-24: the old `lm::sidebar` widget
+        // put a "Graph" header strip ABOVE the panel and left a dead
+        // black body area BELOW it; owner design order same day: a
+        // content-sized floating card with `HUD_MARGIN` air around it,
+        // no title row — the selection facts are a SELECTION section
+        // inside it instead of loose text rows). `scale: 1.0` — this
+        // `RenderContext` is already logical-native (see the "Control
+        // HUD" section's own module doc).
+        if hud_visible && win_rect.width > 0.0 && win_rect.height > 0.0 {
+            let hud_snapshot = self.hud_snapshot();
+            // Vertically CENTERED content-sized card (owner design order
+            // 2026-07-24: equal air above and below) — height from a
+            // zero-origin probe of the same snapshot.
+            let card_h = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, &hud_snapshot).panel.height;
+            let card_origin = Rect::new(
+                win_rect.x + win_rect.width - HUD_MARGIN - SIDEBAR_WIDTH as f64,
+                win_rect.y + hud_card_y(win_rect.height, card_h),
+                SIDEBAR_WIDTH as f64,
+                card_h,
+            );
+            self.last_sidebar_body = card_origin;
+            let hud_layout = build_hud_layout(card_origin.x, card_origin.y, card_origin.width, &hud_snapshot);
+            draw_hud_static(win.render, &hud_layout, 1.0);
+            let status_lines =
+                [format!("nodes {node_count}  visible {visible_count}"), format!("alpha {alpha:.4}  hot {hot}")];
+            draw_hud_status(win.render, hud_layout.panel.x, hud_layout.status_y, &status_lines, 1.0);
+            draw_hud_status(win.render, hud_layout.panel.x, hud_layout.selection_y, &selection_lines, 1.0);
         }
     }
 
@@ -2902,9 +3015,9 @@ impl Scene3DApp<NoPanel> for DemoApp {
         // `DemoApp::hud_origin`'s own `Dimension::ThreeD` branch (`dim`
         // is confirmed `ThreeD` by the early-return guard at the top of
         // this function, so this always resolves the 3D branch).
-        let (hud_origin_x, hud_origin_y, hud_width) = self.hud_origin();
+        let (hud_origin_x, hud_origin_y, hud_width) = self.hud_origin(&hud_snapshot);
         let cached_overlay = if hud_visible {
-            let key = hud_static_key(&hud_snapshot, hud_scale, hud_origin_x);
+            let key = hud_static_key(&hud_snapshot, hud_scale, hud_origin_x, hud_origin_y);
             let snap = hud_snapshot; // `Copy` — an owned local the `move` closure below can capture directly, no borrow-across-closures ambiguity.
             Some(CachedOverlayJob {
                 key,
@@ -2918,7 +3031,7 @@ impl Scene3DApp<NoPanel> for DemoApp {
         };
         let hud_status_anchor = if hud_visible {
             let layout = build_hud_layout(hud_origin_x, hud_origin_y, hud_width, &hud_snapshot);
-            Some((layout.panel.x, layout.status_y))
+            Some((layout.panel.x, layout.status_y, layout.selection_y))
         } else {
             None
         };
@@ -2941,20 +3054,23 @@ impl Scene3DApp<NoPanel> for DemoApp {
         let overlay: Box<dyn FnMut(&mut dyn RenderContext)> = Box::new(move |ctx: &mut dyn RenderContext| {
             let engine3d = Self::lock3d(&engine3d_for_overlay);
             engine3d.draw_overlay(ctx, &camera, overlay_viewport);
+            let selection_lines = selection_lines_3d(&engine3d);
             if crosshair_armed {
                 draw_fly_crosshair(ctx, overlay_viewport);
             }
             drop(engine3d);
-            // Control-HUD panel's DYNAMIC status content — the counter
-            // half of the `draw_hud_static`/`draw_hud_status` split (see
-            // `draw_hud_static`'s own doc comment for why): changes
-            // every frame, so it's painted here, NOT through the cached
-            // job above. 3D has no separate "visible" (frustum-culled)
-            // node count of its own to report — see `draw_hud_status`'s
-            // caller-supplied `lines`, this is the honest simplification.
-            if let Some((panel_x, status_y)) = hud_status_anchor {
+            // Control-HUD panel's DYNAMIC status + selection content —
+            // the counter half of the `draw_hud_static`/`draw_hud_status`
+            // split (see `draw_hud_static`'s own doc comment for why):
+            // changes every frame, so it's painted here, NOT through the
+            // cached job above. 3D has no separate "visible"
+            // (frustum-culled) node count of its own to report — see
+            // `draw_hud_status`'s caller-supplied `lines`, this is the
+            // honest simplification.
+            if let Some((panel_x, status_y, selection_y)) = hud_status_anchor {
                 let lines = [format!("nodes {node_count}  visible {node_count}"), format!("frame {frame_ms:.2}ms")];
                 draw_hud_status(ctx, panel_x, status_y, &lines, hud_scale);
+                draw_hud_status(ctx, panel_x, selection_y, &selection_lines, hud_scale);
             }
         });
 
@@ -3139,6 +3255,7 @@ mod tests {
             mouse_sensitivity: 1.0,
             layout_kind: LayoutKind::Force,
             layout_paused: false,
+            selection_line_count: 1,
         };
         let layout = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, &snap);
         let tree_button = layout.buttons.iter().find(|b| b.control == HudControl::Fixture(Fixture::Tree)).expect("tree button must exist");
@@ -3165,6 +3282,7 @@ mod tests {
             mouse_sensitivity: 1.0,
             layout_kind: LayoutKind::Force,
             layout_paused: false,
+            selection_line_count: 1,
         };
         let layout_2d = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, &snap_2d);
         assert!(!layout_2d.buttons.iter().any(|b| b.control == HudControl::ToggleNavMode), "Orbit/Fly button must not appear in 2D");
@@ -3179,16 +3297,44 @@ mod tests {
         assert!(layout_3d_fly.buttons.iter().any(|b| b.control == HudControl::ToggleNavMode));
         assert!(layout_3d_fly.buttons.iter().any(|b| b.control == HudControl::ToggleGrid));
         assert_eq!(layout_3d_fly.sliders.len(), 2, "keyboard + mouse sensitivity sliders while 3D fly is active");
-        // Owner defect fix 2026-07-23: the LAYOUT section shows the SAME
-        // 3 modes in BOTH dimensions now (`GraphLayoutMode3D` gave 3D
-        // real Hierarchical/Radial layouts to switch into) — 3D no
-        // longer shows a single hardcoded always-active FORCE button.
-        let layout_buttons_3d: Vec<_> =
-            layout_3d_fly.buttons.iter().filter(|b| matches!(b.control, HudControl::SetLayout(_))).collect();
-        assert_eq!(layout_buttons_3d.len(), 3, "3D must show all 3 layout modes, same as 2D");
-        assert!(layout_buttons_3d.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Force) && b.active));
-        assert!(layout_buttons_3d.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Hierarchical) && !b.active));
-        assert!(layout_buttons_3d.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Radial) && !b.active));
+    }
+
+    /// The owner's availability rule (2026-07-24): the LAYOUT section
+    /// shows ONLY the modes that exist for the current fixture's data
+    /// shape — never a foreign mode, never an empty section. Mesh-shaped
+    /// fixtures (clusters/sparse) expose FORCE alone; tree-shaped ones
+    /// (tree/hierarchy) expose all three. Identical in both dimensions.
+    #[test]
+    fn hud_layout_shows_only_the_layout_modes_that_exist_for_the_fixture() {
+        let base = HudSnapshot {
+            dim: Dimension::TwoD,
+            fixture: Fixture::Clusters,
+            nav_mode: NavMode::Orbit,
+            grid_enabled: false,
+            keyboard_sensitivity: 1.0,
+            mouse_sensitivity: 1.0,
+            layout_kind: LayoutKind::Force,
+            layout_paused: false,
+            selection_line_count: 1,
+        };
+        for dim in [Dimension::TwoD, Dimension::ThreeD] {
+            for fixture in [Fixture::Clusters, Fixture::Sparse] {
+                let snap = HudSnapshot { dim, fixture, ..base };
+                let layout = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, &snap);
+                let modes: Vec<_> = layout.buttons.iter().filter(|b| matches!(b.control, HudControl::SetLayout(_))).collect();
+                assert_eq!(modes.len(), 1, "{fixture:?}/{dim:?}: mesh-shaped fixtures have exactly one layout mode");
+                assert!(modes[0].control == HudControl::SetLayout(LayoutKind::Force) && modes[0].active);
+            }
+            for fixture in [Fixture::Tree, Fixture::Hierarchy] {
+                let snap = HudSnapshot { dim, fixture, layout_kind: LayoutKind::Hierarchical, ..base };
+                let layout = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, &snap);
+                let modes: Vec<_> = layout.buttons.iter().filter(|b| matches!(b.control, HudControl::SetLayout(_))).collect();
+                assert_eq!(modes.len(), 3, "{fixture:?}/{dim:?}: tree-shaped fixtures have all three layout modes");
+                assert!(modes.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Force) && !b.active));
+                assert!(modes.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Hierarchical) && b.active));
+                assert!(modes.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Radial) && !b.active));
+            }
+        }
     }
 
     /// The task's own explicit ask: prove the coordinate-space
@@ -3210,6 +3356,7 @@ mod tests {
             mouse_sensitivity: 0.8,
             layout_kind: LayoutKind::Force,
             layout_paused: false,
+            selection_line_count: 5,
         };
         let layout = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, &snap);
         let button = layout.buttons.first().expect("at least one button");
@@ -3327,33 +3474,37 @@ mod tests {
     #[test]
     fn hud_panel_rect_consistency_both_dimensions_dock_flush_right_with_the_same_width() {
         let mut app = DemoApp::new();
+        let snap = app.hud_snapshot();
 
         // 2D: `hud_origin` reads back whatever `ui()` last painted the
-        // real, already-right-docked sidebar body rect at.
+        // real, already-centered card rect at.
         app.last_sidebar_body = Rect::new(1080.0, 40.0, SIDEBAR_WIDTH as f64, 860.0);
-        assert_eq!(app.hud_origin(), (1080.0, 40.0, SIDEBAR_WIDTH as f64));
+        assert_eq!(app.hud_origin(&snap), (1080.0, 40.0, SIDEBAR_WIDTH as f64));
 
-        // 3D: owner defect fix — the panel now docks the SAME right
-        // edge, at the SAME `SIDEBAR_WIDTH`, derived from the
-        // last-known real 3D surface width, instead of floating at a
-        // fixed top-LEFT origin (the reported "тут слева, тут справа"
-        // defect).
+        // 3D: the card docks the SAME right edge, at the SAME
+        // `SIDEBAR_WIDTH`, derived from the last-known real 3D surface
+        // size — and is VERTICALLY CENTERED (owner design order
+        // 2026-07-24: equal air above and below the content-sized card).
         app.dim.set(Dimension::ThreeD);
         app.last_3d_surface_px.set(1400, 900);
-        let (x3, y3, w3) = app.hud_origin();
-        assert_eq!(w3, SIDEBAR_WIDTH as f64, "3D panel width must match the 2D sidebar's own thickness");
-        assert_eq!(x3, 1400.0 - SIDEBAR_WIDTH as f64, "3D panel must dock flush against the right edge");
-        assert_eq!(y3, HUD_FLOAT_Y, "3D keeps its own pre-existing top-edge padding — only the X dock changed");
+        let snap3 = app.hud_snapshot();
+        let card_h = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, &snap3).panel.height;
+        let (x3, y3, w3) = app.hud_origin(&snap3);
+        assert_eq!(w3, SIDEBAR_WIDTH as f64, "3D card width must match the 2D card's own width");
+        assert_eq!(x3, 1400.0 - HUD_MARGIN - SIDEBAR_WIDTH as f64, "3D card docks toward the right edge with HUD_MARGIN air");
+        assert_eq!(y3, (900.0 - card_h) / 2.0, "the card is vertically centered — equal air above and below");
+        assert!((y3 + card_h / 2.0 - 450.0).abs() < 1e-9, "card center must sit at the viewport's vertical center");
         assert!(x3 > 0.0, "must not sit at a left-anchored origin — the exact defect the owner reported");
 
         // A wider surface pushes the dock further right, proportionally
         // — proves this is a REAL right-dock derived from the viewport,
         // not a second hardcoded left-ish constant in disguise.
         app.last_3d_surface_px.set(1920, 1080);
-        let (x3_wide, _, w3_wide) = app.hud_origin();
+        let (x3_wide, y3_tall, w3_wide) = app.hud_origin(&snap3);
         assert_eq!(w3_wide, SIDEBAR_WIDTH as f64);
-        assert_eq!(x3_wide, 1920.0 - SIDEBAR_WIDTH as f64);
+        assert_eq!(x3_wide, 1920.0 - HUD_MARGIN - SIDEBAR_WIDTH as f64);
         assert!(x3_wide > x3, "a wider window must dock the panel further right, not leave it in place");
+        assert!(y3_tall > y3, "a taller window must re-center the card lower, not leave it pinned at a fixed top offset");
     }
 
     // ── Owner defect fix 2: per-fixture default 2D layout + HUD LAYOUT section ──
@@ -3384,47 +3535,57 @@ mod tests {
         }
     }
 
+    /// The live-app twin of the pure availability test above: a REAL
+    /// `DemoApp` on the tree fixture shows all 3 modes in both
+    /// dimensions with the fixture default (LAYERED) highlighted, and
+    /// the default clusters fixture shows FORCE alone.
     #[test]
-    fn hud_layout_shows_the_same_3_mode_layout_section_in_both_dimensions_with_the_active_kind_highlighted() {
-        let app = DemoApp::new();
-        // Fresh app defaults to `Clusters`, whose own default kind is Force.
+    fn hud_layout_reflects_per_fixture_layout_availability_in_both_dimensions() {
+        let mut app = DemoApp::new();
+        // Fresh app defaults to `Clusters` — a single FORCE mode, active.
         let layout = app.hud_layout();
-        let force_button =
-            layout.buttons.iter().find(|b| b.control == HudControl::SetLayout(LayoutKind::Force)).expect("FORCE button must exist in 2D");
-        assert!(force_button.active, "Force must be the active layout for the default Clusters fixture");
+        let modes: Vec<_> = layout.buttons.iter().filter(|b| matches!(b.control, HudControl::SetLayout(_))).collect();
+        assert_eq!(modes.len(), 1, "clusters must expose exactly one layout mode");
+        assert!(modes[0].control == HudControl::SetLayout(LayoutKind::Force) && modes[0].active);
+
+        app.fixture.set(Fixture::Tree);
+        rebuild_engines(&app.engine, &app.engine3d, Fixture::Tree, &app.camera_fit);
+        let layout = app.hud_layout();
         let layered_button = layout.buttons.iter().find(|b| b.control == HudControl::SetLayout(LayoutKind::Hierarchical));
-        assert!(layered_button.is_some_and(|b| !b.active), "LAYERED button must exist and NOT be active while Force is current");
+        assert!(layered_button.is_some_and(|b| b.active), "LAYERED must exist and be the tree fixture's active default");
         assert!(layout.buttons.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Radial)), "RADIAL button must exist too");
 
-        // Owner defect fix 2026-07-23 — 3D now shows the SAME 3 modes,
-        // not a single hardcoded always-active FORCE button (the exact
-        // "зажат форс" defect report).
         app.dim.set(Dimension::ThreeD);
         let layout_3d = app.hud_layout();
         let layout_buttons_3d: Vec<_> =
             layout_3d.buttons.iter().filter(|b| matches!(b.control, HudControl::SetLayout(_))).collect();
-        assert_eq!(layout_buttons_3d.len(), 3, "3D must show all 3 layout modes, same as 2D");
-        assert!(layout_buttons_3d.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Force) && b.active));
-        assert!(layout_buttons_3d.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Hierarchical) && !b.active));
+        assert_eq!(layout_buttons_3d.len(), 3, "3D must show the same 3 tree-fixture modes as 2D");
+        assert!(layout_buttons_3d.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Force) && !b.active));
+        assert!(layout_buttons_3d.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Hierarchical) && b.active));
         assert!(layout_buttons_3d.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Radial) && !b.active));
     }
 
     #[test]
     fn layout_button_click_switches_the_2d_engines_layout_kind_and_requests_a_camera_fit() {
         let mut app = DemoApp::new();
+        // The tree fixture defaults to LAYERED — RADIAL is the inactive
+        // mode a click genuinely SWITCHES to (clusters would have no
+        // second mode to switch to at all, per the availability rule).
+        app.fixture.set(Fixture::Tree);
+        rebuild_engines(&app.engine, &app.engine3d, Fixture::Tree, &app.camera_fit);
         app.camera_fit.clear();
         let layout = app.hud_layout();
-        let layered_button = layout
+        let radial_button = layout
             .buttons
             .iter()
-            .find(|b| b.control == HudControl::SetLayout(LayoutKind::Hierarchical))
-            .expect("LAYERED button must exist while 2D is active");
-        let (x, y) = (layered_button.rect.center_x(), layered_button.rect.center_y());
+            .find(|b| b.control == HudControl::SetLayout(LayoutKind::Radial))
+            .expect("RADIAL button must exist for the tree fixture while 2D is active");
+        let (x, y) = (radial_button.rect.center_x(), radial_button.rect.center_y());
 
         assert!(app.on_event(&PlatformEvent::PointerDown { x, y, button: MouseButton::Left }));
         assert!(app.on_event(&PlatformEvent::PointerUp { x, y, button: MouseButton::Left }));
 
-        assert_eq!(DemoApp::lock(&app.engine).layout.kind(), LayoutKind::Hierarchical);
+        assert_eq!(DemoApp::lock(&app.engine).layout.kind(), LayoutKind::Radial);
         assert!(app.camera_fit.needs_fit(), "switching layout must request a camera re-fit, same convention a fixture switch already follows");
     }
 
@@ -3530,8 +3691,13 @@ mod tests {
     #[test]
     fn clicking_an_inactive_layout_button_in_3d_switches_kind_and_fits() {
         let mut app = DemoApp::new();
+        // RADIAL only exists for tree-shaped fixtures (availability
+        // rule) — the tree default is LAYERED, so RADIAL is the
+        // inactive button this test clicks.
+        app.fixture.set(Fixture::Tree);
+        rebuild_engines(&app.engine, &app.engine3d, Fixture::Tree, &app.camera_fit);
         app.dim.set(Dimension::ThreeD);
-        assert_eq!(DemoApp::lock3d(&app.engine3d).layout.kind(), LayoutKind::Force);
+        assert_eq!(DemoApp::lock3d(&app.engine3d).layout.kind(), LayoutKind::Hierarchical);
 
         let layout = app.hud_layout();
         let radial_button = layout
