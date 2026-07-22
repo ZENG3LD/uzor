@@ -34,6 +34,15 @@ pub fn draw_tooltip(ctx: &mut dyn RenderContext, theme: &FigureTheme, anchor_px:
         return;
     }
 
+    // Guide-state hygiene: this fn flips text align (Right for the value
+    // column) and baseline (Middle) — without a save/restore bracket that
+    // state LEAKED into whatever the caller painted next (live-caught
+    // 2026-07-24: a graph demo's whole HUD text shifted left by each
+    // string's own width whenever the hover tooltip was open, because
+    // every later `fill_text` inherited `TextAlign::Right`). `save`/
+    // `restore` stacks text align/baseline in the render backends, so the
+    // caller gets its own state back regardless of what this box drew.
+    ctx.save();
     ctx.set_font(&theme.label_font);
     let row_h = ctx.text_bounds("Ag", &theme.label_font).h.max(12.0) + ROW_GAP;
     let key_w = lines.iter().map(|(k, _)| ctx.measure_text(k)).fold(0.0_f64, f64::max);
@@ -73,4 +82,9 @@ pub fn draw_tooltip(ctx: &mut dyn RenderContext, theme: &FigureTheme, anchor_px:
         ctx.set_text_align(TextAlign::Right);
         ctx.fill_text(value, box_x + box_w - PAD, row_center_y);
     }
+    // Belt-and-suspenders for any backend whose save/restore doesn't
+    // stack text state: land on the workspace-default alignment
+    // explicitly before restoring.
+    ctx.set_text_align(TextAlign::Left);
+    ctx.restore();
 }
