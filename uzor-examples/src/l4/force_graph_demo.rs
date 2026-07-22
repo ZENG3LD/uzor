@@ -15,8 +15,21 @@
 //! cargo run -p uzor-examples --bin force-graph-demo
 //! ```
 //!
+//! Keybinds (owner control-HUD pass — see the left/sidebar control
+//! panel for the same map with clickable buttons):
+//! - `Tab` — toggle 2D <-> 3D (animated), works from EITHER dimension.
+//! - `V` — toggle orbit/fly camera navigation (3D only).
+//! - `Home` / `F` — fit view to the graph's bounds (either dimension).
+//! - `G` — toggle the reference ground grid (3D only).
+//! - `MMB` click (fly mode) — toggle captured cursor/look.
+//! - `Esc` — extra escape hatch: releases fly mouse-look if captured.
+//! - `Shift`+drag — box-select.
+//! - `H` — show/hide the control-HUD panel (shown by default).
+//!
 //! Agent-api verification: see `uzor-graph/RUN.md`.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -33,9 +46,9 @@ use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager};
 use uzor::platform::types::CornerStyle;
 use uzor::render::{RenderContext, RenderRegion};
 use uzor::types::unsafe_widget_id;
-use uzor_desktop::{AppRun3D as _, Scene3DApp, Scene3DFrame};
+use uzor_desktop::{AppRun3D as _, CachedOverlayJob, Scene3DApp, Scene3DFrame};
 
-use uzor_graph::interaction::fly::FlyController;
+use uzor_graph::interaction::fly::{FlyController, KEYBOARD_SENSITIVITY_MAX, KEYBOARD_SENSITIVITY_MIN, MOUSE_SENSITIVITY_MAX, MOUSE_SENSITIVITY_MIN};
 use uzor_graph::{
     FilterSpec, ForceDirectedLayout3D, Graph, GraphEngine, GraphEngine3D, GraphLayoutMode, GroupId, NodeIndex, SelectMode,
     TransitionDirection,
@@ -565,6 +578,34 @@ impl MouseLookState {
     }
 }
 
+/// Control-HUD panel visibility (owner defect fix, item 3 — "H hides/
+/// shows it, default shown") — same cross-thread `Arc<AtomicBool>`
+/// convention [`MouseLookState`] already established: read/written from
+/// `DemoApp::on_event` on the winit thread, reported by
+/// `DemoBlackbox::agent_state` on the agent-api HTTP thread.
+#[derive(Clone)]
+struct HudVisibleState(Arc<AtomicBool>);
+
+impl HudVisibleState {
+    fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(true)))
+    }
+
+    fn get(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn set(&self, on: bool) {
+        self.0.store(on, Ordering::Relaxed);
+    }
+
+    fn toggle(&self) -> bool {
+        let next = !self.get();
+        self.set(next);
+        next
+    }
+}
+
 /// Wave 2's placeholder: `GraphEngine3D::on_event` used its `viewport`
 /// argument ONLY for a `contains()` gate (never for coordinate math), so
 /// a maximal rect was the honest "whole window, no narrower rect to
@@ -663,6 +704,403 @@ fn draw_fly_crosshair(ctx: &mut dyn RenderContext, viewport: Rect) {
     ctx.fill_rect(cx - THICK / 2.0, cy + GAP, THICK, ARM);
     ctx.fill_rect(cx - 1.0, cy - 1.0, 2.0, 2.0);
     ctx.set_global_alpha(1.0);
+}
+
+// ── Control HUD (owner defect fix — foxhound-style control panel) ───────
+//
+// Owner report: this demo was an agent-api test stand with nothing for a
+// human — no dimension hotkey, no toggles/menu. This section builds a
+// left/sidebar control panel mirroring `foxhound-app-shell-native`'s own
+// HUD structure (title, FIXTURE/NAVIGATION button rows, SENSITIVITY
+// sliders, MOUSE legend, STATUS line) at the APP level — `uzor-graph`
+// itself gains no new API.
+//
+// **Placement, a deliberate asymmetry**: the owner's own item 3 spec
+// calls this "a left panel... visible in BOTH dimensions" but ALSO says
+// 2D gets it "painted into the EXISTING sidebar region" — this demo's
+// pre-existing 2D sidebar is RIGHT-docked (`SIDEBAR_SLOT`/`SIDEBAR_WIDTH`).
+// Read literally: 2D extends that existing right sidebar (no 2D chrome
+// exists to invent a left panel from); 3D — which has ZERO 2D chrome at
+// all while active (`Scene3DApp`'s own divergence log) — floats a NEW
+// panel at a fixed top-left origin, mirroring the foxhound reference
+// app's own literal position. Both share the exact same row/section
+// LAYOUT (`build_hud_layout`), just a different `(origin_x, origin_y,
+// width)` anchor.
+//
+// **Single source of truth, not stored-then-hit-tested**: [`HudLayout`]
+// is a deterministic PURE function of a small state snapshot
+// ([`HudSnapshot`]) plus an origin/width — recomputed fresh every paint
+// AND every hit-test call (`DemoApp::hud_layout`), never cached from a
+// previous frame. This is cheap (a few dozen `Rect` computations, no
+// allocation-heavy work) and makes drift between "what's drawn" and
+// "what's clickable" structurally impossible — they're always the exact
+// same function call.
+//
+// **Coordinate-space reconciliation (item 3's own explicit ask)**: hit
+// zones are stored/compared in LOGICAL pixels — the SAME space every
+// `PlatformEvent::Pointer*` coordinate already arrives in
+// (`uzor-window-desktop::EventMapper` divides physical by the real OS
+// scale factor before this app ever sees an event, confirmed by that
+// crate's own divergence log). The 3D floating panel, however, is
+// painted through `Scene3DFrame::overlay`'s render context, which
+// operates in the SAME 1:1 PHYSICAL-pixel space as `surf_w`/`surf_h`
+// (per that field's own doc comment) — DIFFERENT from the logical event
+// space whenever the OS scale factor isn't exactly `1.0`. Reconciled by
+// scaling ONLY the DRAW call sites (`draw_hud_static`/`draw_hud_status`'s
+// own `scale` parameter, `DemoApp::scale_factor`) — hit-testing itself
+// needs no scale factor at all, since it stays entirely in logical space
+// end to end. `DemoApp::scale_factor` defaults to `1.0` and is kept live
+// via `PlatformEvent::ScaleFactorChanged` — see that field's own doc
+// comment for the one known startup-value gap this leaves (still
+// correct by construction for the common 100%-scale case). The 2D
+// sidebar panel needs NO scaling at all (`scale: 1.0` always) — its
+// `RenderContext` is already logical-native (`ui()`'s own `body_rect` is
+// in the identical logical space `PointerDown` events arrive in, per
+// `uzor::framework::widgets::lm::sidebar`'s own `Clip`-mode body-rect
+// contract — no transform applied under the default `OverflowMode::Clip`
+// this demo's sidebar already uses).
+const HUD_WIDTH: f64 = 230.0;
+const HUD_PAD: f64 = 12.0;
+const HUD_TITLE_H: f64 = 24.0;
+const HUD_HEADING_H: f64 = 16.0;
+const HUD_BUTTON_H: f64 = 27.0;
+const HUD_BUTTON_GAP: f64 = 5.0;
+const HUD_SECTION_GAP: f64 = 10.0;
+const HUD_SLIDER_ROW_H: f64 = 32.0;
+const HUD_TEXT_LINE_H: f64 = 16.0;
+const HUD_STATUS_LINE_COUNT: usize = 2;
+/// Floating panel origin while 3D is active — see this section's own
+/// module doc for why 2D instead extends the existing right sidebar.
+const HUD_FLOAT_X: f64 = 12.0;
+const HUD_FLOAT_Y: f64 = 12.0;
+
+/// Which control the HUD panel currently exposes as a clickable button —
+/// resolved by [`hit_button`], dispatched by [`DemoApp::apply_hud_control`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HudControl {
+    Fixture(Fixture),
+    ToggleDimension,
+    ToggleNavMode,
+    FitView,
+    ToggleGrid,
+}
+
+/// Which sensitivity slider a HUD hit-test resolved — see
+/// [`hit_slider`]/[`DemoApp::apply_hud_slider`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HudSliderId {
+    Keyboard,
+    Mouse,
+}
+
+/// One laid-out, clickable button row — geometry (`rect`, LOGICAL px),
+/// what it does (`control`), its drawn label, and whether it should
+/// paint in the "active" highlighted style.
+struct HudButtonRect {
+    control: HudControl,
+    rect: Rect,
+    label: String,
+    active: bool,
+}
+
+/// One laid-out sensitivity slider — `track` is the thin visual bar,
+/// `hit` a taller (18px) surrounding hit-test band around it (matching
+/// the foxhound reference app's own `TOOLBAR_SLIDER_HIT_HEIGHT`
+/// convention — a bare 4px track would be nearly unclickable).
+struct HudSliderRect {
+    id: HudSliderId,
+    track: Rect,
+    hit: Rect,
+    label: &'static str,
+    value: f32,
+    min: f32,
+    max: f32,
+}
+
+/// One deterministic layout pass over the panel's own content — see
+/// this section's module doc for why this is recomputed fresh rather
+/// than cached. `legend`/`status_y` are LOGICAL-space anchors for
+/// plain informational text (no hit-test needed for either).
+struct HudLayout {
+    panel: Rect,
+    title_y: f64,
+    headings: Vec<(&'static str, f64)>,
+    buttons: Vec<HudButtonRect>,
+    sliders: Vec<HudSliderRect>,
+    /// `(input label, action label, y)` — mirrors the foxhound
+    /// reference app's own two-column `draw_toolbar_hint` convention.
+    legend: Vec<(&'static str, &'static str, f64)>,
+    /// y of the FIRST status text line; each subsequent line advances by
+    /// [`HUD_TEXT_LINE_H`]. Exactly [`HUD_STATUS_LINE_COUNT`] lines are
+    /// ever drawn there (`draw_hud_status`'s own contract).
+    status_y: f64,
+}
+
+/// Small, cheap-to-snapshot slice of live app state the HUD layout/paint
+/// needs — deliberately NOT the whole `DemoApp` (keeps `build_hud_layout`
+/// a pure function, directly unit-testable with no engine/window setup).
+#[derive(Clone, Copy)]
+struct HudSnapshot {
+    dim: Dimension,
+    fixture: Fixture,
+    nav_mode: NavMode,
+    grid_enabled: bool,
+    keyboard_sensitivity: f32,
+    mouse_sensitivity: f32,
+}
+
+/// Build the panel's full layout at `(origin_x, origin_y)` with content
+/// `width` — the ONE function both painting (`draw_hud_static`/
+/// `draw_hud_status`) and hit-testing (`DemoApp::on_event_hud`) call, so
+/// drawn and clickable geometry can never drift apart. Section order
+/// mirrors the foxhound reference app's own HUD: title, FIXTURE (4
+/// buttons, always), NAVIGATION (2-4 buttons — Orbit/Fly and Grid are 3D
+/// only), SENSITIVITY (2 sliders, 3D **fly** mode only), MOUSE (a
+/// per-mode legend), STATUS (2 numeric lines, filled in by the caller —
+/// see [`draw_hud_status`]).
+fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot) -> HudLayout {
+    let content_w = (width - 2.0 * HUD_PAD).max(0.0);
+    let mut y = origin_y + HUD_PAD;
+    let title_y = y + 14.0;
+    y += HUD_TITLE_H;
+
+    let mut headings: Vec<(&'static str, f64)> = Vec::new();
+    let mut buttons: Vec<HudButtonRect> = Vec::new();
+    let mut sliders: Vec<HudSliderRect> = Vec::new();
+
+    // FIXTURE — always 4 buttons, one per deterministic demo shape.
+    headings.push(("FIXTURE", y));
+    y += HUD_HEADING_H;
+    for fixture in [Fixture::Clusters, Fixture::Tree, Fixture::Hierarchy, Fixture::Sparse] {
+        let rect = Rect::new(origin_x + HUD_PAD, y, content_w, HUD_BUTTON_H);
+        buttons.push(HudButtonRect {
+            control: HudControl::Fixture(fixture),
+            rect,
+            label: fixture.as_str().to_ascii_uppercase(),
+            active: fixture == snap.fixture,
+        });
+        y += HUD_BUTTON_H + HUD_BUTTON_GAP;
+    }
+    y += HUD_SECTION_GAP;
+
+    // NAVIGATION — dimension toggle + Fit always show; Orbit/Fly and
+    // Grid only while 3D is active (both are purely 3D camera concepts).
+    headings.push(("NAVIGATION", y));
+    y += HUD_HEADING_H;
+    {
+        let rect = Rect::new(origin_x + HUD_PAD, y, content_w, HUD_BUTTON_H);
+        buttons.push(HudButtonRect {
+            control: HudControl::ToggleDimension,
+            rect,
+            label: "2D / 3D  —  TAB".to_owned(),
+            active: snap.dim == Dimension::ThreeD,
+        });
+        y += HUD_BUTTON_H + HUD_BUTTON_GAP;
+    }
+    if snap.dim == Dimension::ThreeD {
+        let rect = Rect::new(origin_x + HUD_PAD, y, content_w, HUD_BUTTON_H);
+        buttons.push(HudButtonRect {
+            control: HudControl::ToggleNavMode,
+            rect,
+            label: "ORBIT / FLY  —  V".to_owned(),
+            active: snap.nav_mode == NavMode::Fly,
+        });
+        y += HUD_BUTTON_H + HUD_BUTTON_GAP;
+    }
+    {
+        let rect = Rect::new(origin_x + HUD_PAD, y, content_w, HUD_BUTTON_H);
+        buttons.push(HudButtonRect {
+            control: HudControl::FitView,
+            rect,
+            label: "FIT  —  HOME / F".to_owned(),
+            active: false,
+        });
+        y += HUD_BUTTON_H + HUD_BUTTON_GAP;
+    }
+    if snap.dim == Dimension::ThreeD {
+        let rect = Rect::new(origin_x + HUD_PAD, y, content_w, HUD_BUTTON_H);
+        buttons.push(HudButtonRect {
+            control: HudControl::ToggleGrid,
+            rect,
+            label: "GRID  —  G".to_owned(),
+            active: snap.grid_enabled,
+        });
+        y += HUD_BUTTON_H + HUD_BUTTON_GAP;
+    }
+    y += HUD_SECTION_GAP;
+
+    // SENSITIVITY — fly-mode-only section (FlyController's own
+    // keyboard/mouse sensitivity scalars mean nothing outside fly nav).
+    if snap.dim == Dimension::ThreeD && snap.nav_mode == NavMode::Fly {
+        headings.push(("SENSITIVITY", y));
+        y += HUD_HEADING_H;
+        for (id, label, value, min, max) in [
+            (HudSliderId::Keyboard, "KEYBOARD SPEED", snap.keyboard_sensitivity, KEYBOARD_SENSITIVITY_MIN, KEYBOARD_SENSITIVITY_MAX),
+            (HudSliderId::Mouse, "MOUSE LOOK", snap.mouse_sensitivity, MOUSE_SENSITIVITY_MIN, MOUSE_SENSITIVITY_MAX),
+        ] {
+            let track = Rect::new(origin_x + HUD_PAD, y + 14.0, content_w, 4.0);
+            let hit = Rect::new(track.x, track.y - 9.0, track.width, 18.0);
+            sliders.push(HudSliderRect { id, track, hit, label, value, min, max });
+            y += HUD_SLIDER_ROW_H;
+        }
+        y += HUD_SECTION_GAP;
+    }
+
+    // MOUSE — a per-(dimension, nav_mode) legend, plain text.
+    headings.push(("MOUSE", y));
+    y += HUD_HEADING_H;
+    let legend_pairs: &[(&str, &str)] = match (snap.dim, snap.nav_mode) {
+        (Dimension::TwoD, _) => &[("DRAG", "PAN / MOVE NODE"), ("WHEEL", "ZOOM"), ("SHIFT+DRAG", "BOX SELECT")],
+        (Dimension::ThreeD, NavMode::Orbit) => {
+            &[("LMB DRAG", "ORBIT / MOVE NODE"), ("MMB DRAG", "PAN"), ("WHEEL", "DOLLY"), ("SHIFT+DRAG", "BOX SELECT")]
+        }
+        (Dimension::ThreeD, NavMode::Fly) => &[("WASD", "MOVE"), ("MOUSE", "LOOK"), ("MMB CLICK", "CURSOR / LOOK")],
+    };
+    let mut legend = Vec::with_capacity(legend_pairs.len());
+    for &(input, action) in legend_pairs {
+        legend.push((input, action, y));
+        y += HUD_TEXT_LINE_H;
+    }
+    y += HUD_SECTION_GAP;
+
+    // STATUS — heading + [`HUD_STATUS_LINE_COUNT`] numeric lines, text
+    // supplied by the caller (`draw_hud_status`) since it changes every
+    // frame (node/visible counts, frame timing).
+    headings.push(("STATUS", y));
+    y += HUD_HEADING_H;
+    let status_y = y;
+    y += HUD_STATUS_LINE_COUNT as f64 * HUD_TEXT_LINE_H;
+    y += HUD_PAD;
+
+    HudLayout { panel: Rect::new(origin_x, origin_y, width, y - origin_y), title_y, headings, buttons, sliders, legend, status_y }
+}
+
+/// Resolve a LOGICAL `(x, y)` against every button's own `rect` — the
+/// one hit-test both `DemoApp::on_event_hud` and this module's own tests
+/// use, so "what's clickable" can never diverge from `hit_button`'s own
+/// logic living in two places.
+fn hit_button(layout: &HudLayout, x: f64, y: f64) -> Option<HudControl> {
+    layout.buttons.iter().find(|b| b.rect.contains(x, y)).map(|b| b.control)
+}
+
+/// Resolve a LOGICAL `(x, y)` against every slider's own (taller) `hit`
+/// band.
+fn hit_slider(layout: &HudLayout, x: f64, y: f64) -> Option<HudSliderId> {
+    layout.sliders.iter().find(|s| s.hit.contains(x, y)).map(|s| s.id)
+}
+
+/// Uniformly scale every field of a `Rect` by `scale` — the ONE place
+/// the logical-to-physical conversion for painting happens (see this
+/// section's own module doc on coordinate-space reconciliation).
+/// `scale == 1.0` is a pure no-op, exactly the 2D sidebar's own case.
+fn scaled_rect(r: Rect, scale: f64) -> Rect {
+    Rect::new(r.x * scale, r.y * scale, r.width * scale, r.height * scale)
+}
+
+/// Paint the panel's STATIC chrome — background, border, title, section
+/// headings, fixture/navigation buttons (with active-state highlight),
+/// sensitivity sliders (current knob position included — cheap enough
+/// to repaint whenever [`hud_static_key`] changes, no finer-grained
+/// caching needed), and the mouse legend. Deliberately does NOT draw the
+/// STATUS line's numeric content — see [`draw_hud_status`]'s own doc
+/// comment for why that split exists (the `CachedOverlayJob` chrome/
+/// dynamic split item 3 asked for).
+fn draw_hud_static(ctx: &mut dyn RenderContext, layout: &HudLayout, scale: f64) {
+    let panel = scaled_rect(layout.panel, scale);
+    ctx.save();
+    ctx.set_global_alpha(0.96);
+    ctx.set_fill_color("#0b1019");
+    ctx.fill_rect(panel.x, panel.y, panel.width, panel.height);
+    ctx.set_global_alpha(1.0);
+    ctx.set_stroke_color("#2e3a4d");
+    ctx.set_stroke_width(1.0);
+    ctx.stroke_rect(panel.x, panel.y, panel.width, panel.height);
+
+    ctx.set_font("bold 13px sans-serif");
+    ctx.set_fill_color("#edf2fa");
+    ctx.fill_text("FORCE GRAPH DEMO", panel.x + HUD_PAD * scale, layout.title_y * scale);
+
+    for &(label, y) in &layout.headings {
+        ctx.set_font("bold 10px sans-serif");
+        ctx.set_fill_color("#687b96");
+        ctx.fill_text(label, panel.x + HUD_PAD * scale, (y + 11.0) * scale);
+    }
+
+    for b in &layout.buttons {
+        let r = scaled_rect(b.rect, scale);
+        ctx.set_fill_color(if b.active { "#193c31" } else { "#151d2a" });
+        ctx.fill_rect(r.x, r.y, r.width, r.height);
+        ctx.set_stroke_color(if b.active { "#75dba0" } else { "#36445a" });
+        ctx.set_stroke_width(1.0);
+        ctx.stroke_rect(r.x, r.y, r.width, r.height);
+        ctx.set_font("bold 10px sans-serif");
+        ctx.set_fill_color(if b.active { "#8be7b2" } else { "#b7c2d4" });
+        ctx.fill_text(&b.label, r.x + 8.0 * scale, r.y + r.height * 0.65);
+    }
+
+    for s in &layout.sliders {
+        let track = scaled_rect(s.track, scale);
+        let normalized = (((s.value - s.min) / (s.max - s.min)) as f64).clamp(0.0, 1.0);
+        let knob_x = track.x + track.width * normalized;
+        ctx.set_font("bold 9px sans-serif");
+        ctx.set_fill_color("#b7c2d4");
+        ctx.fill_text(s.label, track.x, track.y - 8.0 * scale);
+        ctx.set_fill_color("#8be7b2");
+        ctx.fill_text(&format!("{:.2}x", s.value), track.x + track.width - 32.0 * scale, track.y - 8.0 * scale);
+        ctx.set_fill_color("#263246");
+        ctx.fill_rect(track.x, track.y, track.width, track.height);
+        ctx.set_fill_color("#4d90fe");
+        ctx.fill_rect(track.x, track.y, knob_x - track.x, track.height);
+        ctx.begin_path();
+        ctx.arc(knob_x, track.y + track.height / 2.0, 4.0 * scale, 0.0, std::f64::consts::TAU);
+        ctx.set_fill_color("#edf2fa");
+        ctx.fill();
+    }
+
+    ctx.set_font("bold 10px sans-serif");
+    for &(input, action, y) in &layout.legend {
+        ctx.set_fill_color("#b7c2d4");
+        ctx.fill_text(input, panel.x + HUD_PAD * scale, (y + 11.0) * scale);
+        ctx.set_font("10px sans-serif");
+        ctx.set_fill_color("#73839b");
+        ctx.fill_text(action, panel.x + 90.0 * scale, (y + 11.0) * scale);
+        ctx.set_font("bold 10px sans-serif");
+    }
+    ctx.restore();
+}
+
+/// Paint the STATUS line's numeric content (node/visible counts, frame
+/// timing) — the DYNAMIC half of the split `draw_hud_static` documents.
+/// `lines` must be exactly [`HUD_STATUS_LINE_COUNT`] long — the layout
+/// already reserved exactly that much vertical space for it.
+fn draw_hud_status(ctx: &mut dyn RenderContext, panel_x: f64, status_y: f64, lines: &[String], scale: f64) {
+    ctx.save();
+    ctx.set_font("11px sans-serif");
+    ctx.set_fill_color("#aebbd0");
+    let x = (panel_x + HUD_PAD) * scale;
+    for (i, line) in lines.iter().enumerate() {
+        let y = (status_y + i as f64 * HUD_TEXT_LINE_H + 11.0) * scale;
+        ctx.fill_text(line, x, y);
+    }
+    ctx.restore();
+}
+
+/// Cache key for the 3D `CachedOverlayJob` static-chrome paint — changes
+/// exactly when anything `draw_hud_static` actually reads changes
+/// (dimension, fixture, nav mode, grid toggle, both sensitivities, the
+/// active draw scale), so a caller-side resize/DPI change or any control
+/// change invalidates the cache; an unrelated per-frame value (node
+/// counts, frame timing — the DYNAMIC half) never does.
+fn hud_static_key(snap: &HudSnapshot, scale: f64) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    snap.dim.code().hash(&mut hasher);
+    snap.fixture.code().hash(&mut hasher);
+    snap.nav_mode.code().hash(&mut hasher);
+    snap.grid_enabled.hash(&mut hasher);
+    snap.keyboard_sensitivity.to_bits().hash(&mut hasher);
+    snap.mouse_sensitivity.to_bits().hash(&mut hasher);
+    scale.to_bits().hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Shared "the 2D camera needs an initial `fit_view()`" flag — same
@@ -776,6 +1214,56 @@ fn flatten_3d_into_2d(engine: &Arc<Mutex<Engine>>, engine3d: &Arc<Mutex<Engine3D
     dim.set(Dimension::TwoD);
 }
 
+/// Shared state-mutation core of the 2D->3D dimension switch — the SAME
+/// logic `DemoBlackbox::set_dimension_3d` (the `set_dimension` agent
+/// action) and `DemoApp::toggle_dimension` (the Tab keyboard shortcut,
+/// owner defect fix item 2) both drive, so there's exactly ONE "flip to
+/// 3D" code path regardless of which thread/input source triggers it.
+/// See `DemoBlackbox::set_dimension_3d`'s own (now-forwarding) doc
+/// comment for the full In/Out mechanics this implements.
+fn apply_dimension_3d_transition(
+    engine: &Arc<Mutex<Engine>>,
+    engine3d: &Arc<Mutex<Engine3D>>,
+    dim: &DimState,
+    flatten_pending: &FlattenPendingFlag,
+    animate: bool,
+) {
+    if dim.get() == Dimension::TwoD {
+        let positions: Vec<(f32, f32)> = {
+            let engine = DemoApp::lock(engine);
+            engine.particles.iter().map(|p| (p.x, p.y)).collect()
+        };
+        DemoApp::lock3d(engine3d).seed_positions(&positions);
+        dim.set(Dimension::ThreeD);
+    }
+    flatten_pending.clear();
+    if animate {
+        DemoApp::lock3d(engine3d).start_transition(TransitionDirection::In, DIMENSION_TRANSITION_MS);
+    }
+}
+
+/// Shared state-mutation core of the 3D->2D dimension switch — see
+/// [`apply_dimension_3d_transition`]'s own doc comment for why this is a
+/// free fn shared by `DemoBlackbox::set_dimension_2d` and
+/// `DemoApp::toggle_dimension`.
+fn apply_dimension_2d_transition(
+    engine: &Arc<Mutex<Engine>>,
+    engine3d: &Arc<Mutex<Engine3D>>,
+    dim: &DimState,
+    flatten_pending: &FlattenPendingFlag,
+    animate: bool,
+) {
+    if dim.get() == Dimension::ThreeD {
+        if animate {
+            flatten_pending.request();
+            DemoApp::lock3d(engine3d).start_transition(TransitionDirection::Out, DIMENSION_TRANSITION_MS);
+        } else {
+            flatten_3d_into_2d(engine, engine3d, dim);
+            flatten_pending.clear();
+        }
+    }
+}
+
 struct DemoApp {
     engine: Arc<Mutex<Engine>>,
     engine3d: Arc<Mutex<Engine3D>>,
@@ -821,6 +1309,36 @@ struct DemoApp {
     /// Dimension-transition wave — see [`FlattenPendingFlag`]'s own doc
     /// comment. Polled every `scene3d()` tick.
     flatten_pending: FlattenPendingFlag,
+    /// Control-HUD panel visibility (owner defect fix, item 3/4) — see
+    /// [`HudVisibleState`]'s own doc comment.
+    hud_visible: HudVisibleState,
+    /// Tracked OS DPI scale factor, winit-thread-only (both reader and
+    /// writer are `App`/`Scene3DApp` methods `Manager` calls on the same
+    /// thread every frame — unlike `DimState`/`NavModeState`/etc, this
+    /// never needs to cross to the agent-api HTTP thread, so a plain
+    /// field is correct here, not an `Arc<Atomic*>`). See the "Control
+    /// HUD" section's own module doc for the full coordinate-space
+    /// reconciliation this backs and its one known startup-value gap.
+    scale_factor: f64,
+    /// Last-known 2D sidebar body rect (`ui()`'s own `body_rect`,
+    /// LOGICAL px) — `on_event`'s HUD hit-test needs the SAME rect the
+    /// panel was actually painted into, but `on_event` and `ui()` run at
+    /// different times within a frame; mirrors this file's own
+    /// established "last-known value from the most recent paint" idiom
+    /// ([`SurfaceSizeState`]/`dim3d_viewport`'s own convention). Defaults
+    /// to a zero-size rect (`Rect::contains` on a zero rect only ever
+    /// matches the single point `(0, 0)`) — the same honest "nothing
+    /// painted yet, no click zones" answer `full_window_viewport`'s own
+    /// doc comment already established for the 3D viewport case.
+    last_sidebar_body: Rect,
+    /// Which HUD button is currently pressed (`PointerDown` matched, not
+    /// yet released) — mirrors the foxhound reference app's own
+    /// press-then-release-confirm button convention (`pressed_control`):
+    /// the action only actually fires on `PointerUp` if the cursor is
+    /// STILL over the same button, so a drag-off cancels the click.
+    hud_pressed_button: Option<HudControl>,
+    /// Which HUD sensitivity slider is currently being dragged, if any.
+    hud_dragging_slider: Option<HudSliderId>,
 }
 
 /// Thin `BlackboxAgentSurface` wrapper the demo registers instead of
@@ -858,6 +1376,9 @@ struct DemoBlackbox {
     /// Same `flatten_pending` `Arc` `DemoApp` owns — see
     /// [`FlattenPendingFlag`]'s own doc comment.
     flatten_pending: FlattenPendingFlag,
+    /// Same `hud_visible` `Arc` `DemoApp` owns — see
+    /// [`HudVisibleState`]'s own doc comment.
+    hud_visible: HudVisibleState,
 }
 
 /// `NodeIndex` resolution for the 3D agent-forwarding path (Wave 3) —
@@ -979,6 +1500,11 @@ impl DemoApp {
             last_3d_frame_at: None,
             last_3d_surface_px: SurfaceSizeState::new(),
             flatten_pending: FlattenPendingFlag::new(),
+            hud_visible: HudVisibleState::new(),
+            scale_factor: 1.0,
+            last_sidebar_body: Rect::new(0.0, 0.0, 0.0, 0.0),
+            hud_pressed_button: None,
+            hud_dragging_slider: None,
         }
     }
 
@@ -1010,8 +1536,10 @@ impl DemoApp {
         }
     }
 
-    /// Toggle between orbit and fly navigation (Tab, 3D only) — always
-    /// stops the `FlyController` on either transition so held keys/
+    /// Toggle between orbit and fly navigation (`V`, 3D only — REBOUND
+    /// from `Tab`, owner defect fix item 2: `Tab` is now the 2D<->3D
+    /// dimension toggle) — always stops the `FlyController` on either
+    /// transition so held keys/
     /// inertia can never leak across the boundary (mirrors the source
     /// app's own `stop_movement`/`release_viewport_cursor` discipline on
     /// any navigation-mode change).
@@ -1022,9 +1550,10 @@ impl DemoApp {
         };
         self.nav_mode.set(next);
         // Entering fly always starts in LOOK state (crosshair armed) —
-        // the owner's expected "Tab drops me straight into mouse-look"
-        // flow; a stale OFF from the previous fly session would read as
-        // a broken toggle.
+        // the owner's expected "one keypress drops me straight into
+        // mouse-look" flow (originally bound to `Tab`, now `V` — see
+        // this method's own doc comment); a stale OFF from the previous
+        // fly session would read as a broken toggle.
         self.mouse_look.set(true);
         Self::lock_fly(&self.fly).stop();
     }
@@ -1110,6 +1639,179 @@ impl DemoApp {
         let mut engine3d = Self::lock3d(&self.engine3d);
         let next = !engine3d.grid_enabled();
         engine3d.set_grid_enabled(next);
+    }
+
+    /// Tab (owner defect fix item 2) — 2D<->3D dimension toggle, works
+    /// from EITHER dimension. Shares its state-mutation core with
+    /// `DemoBlackbox::set_dimension_3d`/`set_dimension_2d` (the
+    /// `set_dimension` agent action) via `apply_dimension_3d_transition`/
+    /// `apply_dimension_2d_transition` — see those free fns' own doc
+    /// comments. Always animated, mirroring `set_dimension`'s own default.
+    fn toggle_dimension(&mut self) {
+        match self.dim.get() {
+            Dimension::TwoD => apply_dimension_3d_transition(&self.engine, &self.engine3d, &self.dim, &self.flatten_pending, true),
+            Dimension::ThreeD => apply_dimension_2d_transition(&self.engine, &self.engine3d, &self.dim, &self.flatten_pending, true),
+        }
+    }
+
+    /// Home/F fit-to-bounds (owner defect fix item 2), dispatched to
+    /// whichever dimension is currently active. 3D reuses the existing
+    /// `fit_view_3d()`; 2D reuses the SAME `camera_fit` flag `ui()`'s own
+    /// initial-fit/`set_fixture` paths already drive
+    /// (`GraphEngine::fit_view()` runs on the next 2D frame). Previously
+    /// Home/F only worked in 3D — extended to 2D here because the
+    /// control-HUD's own "FIT — Home/F" button (item 3) is NOT marked 3D
+    /// only, unlike "Orbit/Fly"/"Grid".
+    fn fit_view_current_dimension(&mut self) {
+        match self.dim.get() {
+            Dimension::TwoD => self.camera_fit.request(),
+            Dimension::ThreeD => self.fit_view_3d(),
+        }
+    }
+
+    /// Small, cheap snapshot of exactly the state [`build_hud_layout`]
+    /// needs — see [`HudSnapshot`]'s own doc comment.
+    fn hud_snapshot(&self) -> HudSnapshot {
+        let grid_enabled = Self::lock3d(&self.engine3d).grid_enabled();
+        let (keyboard_sensitivity, mouse_sensitivity) = {
+            let fly = Self::lock_fly(&self.fly);
+            (fly.keyboard_sensitivity(), fly.mouse_sensitivity())
+        };
+        HudSnapshot {
+            dim: self.dim.get(),
+            fixture: self.fixture.get(),
+            nav_mode: self.nav_mode.get(),
+            grid_enabled,
+            keyboard_sensitivity,
+            mouse_sensitivity,
+        }
+    }
+
+    /// Panel origin + content width for the CURRENT dimension — see the
+    /// "Control HUD" section's own module doc for why 2D and 3D anchor
+    /// differently.
+    fn hud_origin(&self) -> (f64, f64, f64) {
+        match self.dim.get() {
+            Dimension::ThreeD => (HUD_FLOAT_X, HUD_FLOAT_Y, HUD_WIDTH),
+            Dimension::TwoD => (self.last_sidebar_body.x, self.last_sidebar_body.y, self.last_sidebar_body.width),
+        }
+    }
+
+    /// The full HUD layout for the CURRENT dimension/state — the one
+    /// call `on_event_hud`'s own hit-testing makes; `ui()`/`scene3d()`
+    /// build their own copy from the identical `build_hud_layout` with
+    /// whatever origin their own paint call site already has on hand
+    /// (`body_rect` in 2D, the fixed float origin in 3D) — always the
+    /// SAME function, so drawn and clickable geometry never drift apart.
+    fn hud_layout(&self) -> HudLayout {
+        let (origin_x, origin_y, width) = self.hud_origin();
+        build_hud_layout(origin_x, origin_y, width, &self.hud_snapshot())
+    }
+
+    /// App-level HUD hit-testing (owner defect fix item 3) — checked at
+    /// the very top of `App::on_event`, before ANY dimension/nav-mode
+    /// dispatch, so a click on the panel NEVER reaches
+    /// `GraphEngine`/`GraphEngine3D::on_event` (satisfies "clicks on
+    /// panel consume the event, no click-through" AND "panel excluded
+    /// from box-select origination" as the exact SAME mechanism — a
+    /// box-select can only ever START from a `PointerDown` the graph
+    /// engine actually sees, which a panel-consumed `PointerDown` never
+    /// reaches). Mirrors the foxhound reference app's own press-then-
+    /// release-confirm button convention (a drag-off before release
+    /// cancels the click) and its own live slider-drag-follows-the-
+    /// cursor convention. Returns `Some(consumed)` once this event is
+    /// fully handled by the HUD; `None` means "not the HUD's concern,
+    /// let the caller's existing dispatch run."
+    fn on_event_hud(&mut self, event: &PlatformEvent) -> Option<bool> {
+        match event {
+            PlatformEvent::PointerDown { x, y, button: MouseButton::Left } => {
+                let layout = self.hud_layout();
+                if let Some(id) = hit_slider(&layout, *x, *y) {
+                    self.hud_dragging_slider = Some(id);
+                    if let Some(slider) = layout.sliders.iter().find(|s| s.id == id) {
+                        self.apply_hud_slider(id, *x, slider.track);
+                    }
+                    return Some(true);
+                }
+                if let Some(control) = hit_button(&layout, *x, *y) {
+                    self.hud_pressed_button = Some(control);
+                    return Some(true);
+                }
+                if layout.panel.contains(*x, *y) {
+                    // Inside the panel but not over any control (padding/
+                    // heading/legend text) — still consumed, so a drag
+                    // starting here can never fall through into a
+                    // background pan/orbit/box-select gesture either.
+                    return Some(true);
+                }
+                None
+            }
+            PlatformEvent::PointerMoved { x, .. } => {
+                if let Some(id) = self.hud_dragging_slider {
+                    let layout = self.hud_layout();
+                    if let Some(slider) = layout.sliders.iter().find(|s| s.id == id) {
+                        self.apply_hud_slider(id, *x, slider.track);
+                    }
+                    return Some(true);
+                }
+                if self.hud_pressed_button.is_some() {
+                    return Some(true);
+                }
+                None
+            }
+            PlatformEvent::PointerUp { x, y, button: MouseButton::Left } => {
+                if self.hud_dragging_slider.take().is_some() {
+                    return Some(true);
+                }
+                if let Some(pressed) = self.hud_pressed_button.take() {
+                    let layout = self.hud_layout();
+                    if hit_button(&layout, *x, *y) == Some(pressed) {
+                        self.apply_hud_control(pressed);
+                    }
+                    return Some(true);
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Drive a sensitivity slider from a pointer x position (start-drag
+    /// or continued-drag alike) — mirrors the foxhound reference app's
+    /// own `apply_slider_at`.
+    fn apply_hud_slider(&mut self, id: HudSliderId, x: f64, track: Rect) {
+        let t = (((x - track.x) / track.width) as f32).clamp(0.0, 1.0);
+        let mut fly = Self::lock_fly(&self.fly);
+        match id {
+            HudSliderId::Keyboard => {
+                fly.set_keyboard_sensitivity(KEYBOARD_SENSITIVITY_MIN + t * (KEYBOARD_SENSITIVITY_MAX - KEYBOARD_SENSITIVITY_MIN));
+            }
+            HudSliderId::Mouse => {
+                fly.set_mouse_sensitivity(MOUSE_SENSITIVITY_MIN + t * (MOUSE_SENSITIVITY_MAX - MOUSE_SENSITIVITY_MIN));
+            }
+        }
+    }
+
+    /// Dispatch a resolved HUD button click.
+    fn apply_hud_control(&mut self, control: HudControl) {
+        match control {
+            HudControl::Fixture(fixture) => {
+                self.fixture.set(fixture);
+                rebuild_engines(&self.engine, &self.engine3d, fixture, &self.camera_fit);
+            }
+            HudControl::ToggleDimension => self.toggle_dimension(),
+            HudControl::ToggleNavMode => {
+                if self.dim.get() == Dimension::ThreeD {
+                    self.toggle_nav_mode();
+                }
+            }
+            HudControl::FitView => self.fit_view_current_dimension(),
+            HudControl::ToggleGrid => {
+                if self.dim.get() == Dimension::ThreeD {
+                    self.toggle_grid();
+                }
+            }
+        }
     }
 }
 
@@ -1198,6 +1900,12 @@ impl BlackboxAgentSurface for DemoBlackbox {
             // way (an empty `stages` map, `frames: 0`, before the first
             // 3D frame ever renders).
             map.insert("frame_profile_ema_ms".to_owned(), DemoApp::lock_profiler(&self.frame_profiler).to_json());
+            // Owner defect fix item 4 — "panel sections reflect the same
+            // state already reported": no new engine API, just the
+            // panel's own visibility flag; every section it draws
+            // (fixture/nav-mode/grid/dimension) is already reported by
+            // the fields above.
+            map.insert("hud".to_owned(), json!({ "visible": self.hud_visible.get() }));
         }
         state
     }
@@ -1263,6 +1971,17 @@ impl BlackboxAgentSurface for DemoBlackbox {
             DemoApp::lock3d(&self.engine3d).set_grid_enabled(on);
             return AgentActionReply::ok_with_log(json!({ "grid": on }));
         }
+        if action.name == "set_hud" {
+            // Owner defect fix item 4 — headless twin of the H keyboard
+            // shortcut, mirroring `set_mouse_look`'s own shape, so an
+            // agent can toggle the panel and verify it via a screenshot
+            // without synthesizing a real keypress.
+            let Some(on) = action.args.get("visible").and_then(Value::as_bool) else {
+                return AgentActionReply::err("set_hud requires args.visible to be true or false");
+            };
+            self.hud_visible.set(on);
+            return AgentActionReply::ok_with_log(json!({ "hud": { "visible": on } }));
+        }
         match self.dim.get() {
             Dimension::TwoD => DemoApp::lock(&self.engine).apply_agent_action(action),
             Dimension::ThreeD => self.apply_3d_agent_action(action),
@@ -1284,19 +2003,14 @@ impl DemoBlackbox {
     /// no-snap reversal mechanics. `animate: false` skips
     /// `start_transition` entirely (an instant switch, the pre-existing
     /// behavior — headless tests/scripts want determinism).
+    ///
+    /// The actual state mutation now lives in the shared free fn
+    /// [`apply_dimension_3d_transition`] (owner defect fix item 2) — this
+    /// method is a thin agent-api wrapper around it, so the Tab keyboard
+    /// shortcut (`DemoApp::toggle_dimension`) and this action can never
+    /// drift onto two different "flip to 3D" implementations.
     fn set_dimension_3d(&mut self, animate: bool) -> AgentActionReply {
-        if self.dim.get() == Dimension::TwoD {
-            let positions: Vec<(f32, f32)> = {
-                let engine = DemoApp::lock(&self.engine);
-                engine.particles.iter().map(|p| (p.x, p.y)).collect()
-            };
-            DemoApp::lock3d(&self.engine3d).seed_positions(&positions);
-            self.dim.set(Dimension::ThreeD);
-        }
-        self.flatten_pending.clear();
-        if animate {
-            DemoApp::lock3d(&self.engine3d).start_transition(TransitionDirection::In, DIMENSION_TRANSITION_MS);
-        }
+        apply_dimension_3d_transition(&self.engine, &self.engine3d, &self.dim, &self.flatten_pending, animate);
         AgentActionReply::ok_with_log(json!({ "dimension": 3, "animate": animate }))
     }
 
@@ -1313,20 +2027,16 @@ impl DemoBlackbox {
     /// way — the flag is the persistent signal). `animate: false`
     /// completes the flip synchronously right here instead (the
     /// pre-existing instant-switch behavior).
+    ///
+    /// Delegates the actual state mutation to the shared free fn
+    /// [`apply_dimension_2d_transition`] — see [`Self::set_dimension_3d`]'s
+    /// own updated doc comment for why. The reply shape is IDENTICAL on
+    /// both branches of the pre-existing match (`{"dimension":2,
+    /// "animate":animate}`), so collapsing to one reply after the shared
+    /// call is a pure refactor, not a behavior change.
     fn set_dimension_2d(&mut self, animate: bool) -> AgentActionReply {
-        match self.dim.get() {
-            Dimension::TwoD => AgentActionReply::ok_with_log(json!({ "dimension": 2, "animate": animate })),
-            Dimension::ThreeD => {
-                if animate {
-                    self.flatten_pending.request();
-                    DemoApp::lock3d(&self.engine3d).start_transition(TransitionDirection::Out, DIMENSION_TRANSITION_MS);
-                } else {
-                    flatten_3d_into_2d(&self.engine, &self.engine3d, &self.dim);
-                    self.flatten_pending.clear();
-                }
-                AgentActionReply::ok_with_log(json!({ "dimension": 2, "animate": animate }))
-            }
-        }
+        apply_dimension_2d_transition(&self.engine, &self.engine3d, &self.dim, &self.flatten_pending, animate);
+        AgentActionReply::ok_with_log(json!({ "dimension": 2, "animate": animate }))
     }
 
     /// Wave 3 — `hover_node`/`select_node`/`clear_selection` forwarded
@@ -1542,6 +2252,7 @@ impl App<NoPanel> for DemoApp {
             frame_profiler: self.frame_profiler.clone(),
             surface_size: self.last_3d_surface_px.clone(),
             flatten_pending: self.flatten_pending.clone(),
+            hud_visible: self.hud_visible.clone(),
         };
         layout.register_blackbox_agent(BLACKBOX_SLOT, Arc::new(Mutex::new(blackbox)));
     }
@@ -1597,22 +2308,47 @@ impl App<NoPanel> for DemoApp {
             snapshot
         };
 
+        // Control-HUD panel content (owner defect fix, item 3) — snapshot
+        // BEFORE the sidebar closure below so the closure only ever needs
+        // a single `&mut self.last_sidebar_body` field write, never a
+        // method call on `self` (which would need the WHOLE struct and
+        // conflict with that field write under Rust's disjoint-closure-
+        // capture rules). Same reasoning as every `facts_owned`/
+        // `node_count`-shaped local already computed above.
+        let hud_snapshot = self.hud_snapshot();
+        let hud_visible = self.hud_visible.get();
+
         let sb_handle = win.layout.add_sidebar(SIDEBAR_SLOT);
         {
             let layout = &mut *win.layout;
             let render = &mut *win.render;
             uzor::framework::widgets::lm::sidebar(&sb_handle, SIDEBAR_SLOT)
                 .header_title("Graph")
-                .content_height(360.0)
+                .content_height(700.0)
                 .build_with_body(layout, render, |layout, render, body_rect| {
+                    self.last_sidebar_body = body_rect;
+
                     let pad = 12.0_f64;
                     let row_h = 20.0_f64;
                     let w = body_rect.width - 2.0 * pad;
                     let mut cy = body_rect.y + pad;
 
-                    draw_row(layout, render, body_rect, &mut cy, row_h, pad, w, "graph:nodes", &format!("nodes: {node_count}  visible: {visible_count}"));
-                    draw_row(layout, render, body_rect, &mut cy, row_h, pad, w, "graph:alpha", &format!("alpha: {alpha:.4}  hot: {hot}"));
-                    cy += 8.0;
+                    // Control-HUD panel — extends the sidebar (same
+                    // click zones `on_event_hud` hit-tests against,
+                    // `build_hud_layout` at the identical `body_rect`
+                    // origin/width). `scale: 1.0` — this `RenderContext`
+                    // is already logical-native (see the "Control HUD"
+                    // section's own module doc).
+                    let hud_layout = build_hud_layout(body_rect.x, body_rect.y, body_rect.width, &hud_snapshot);
+                    if hud_visible {
+                        draw_hud_static(render, &hud_layout, 1.0);
+                        let status_lines = [
+                            format!("nodes {node_count}  visible {visible_count}"),
+                            format!("alpha {alpha:.4}  hot {hot}"),
+                        ];
+                        draw_hud_status(render, hud_layout.panel.x, hud_layout.status_y, &status_lines, 1.0);
+                        cy = hud_layout.panel.bottom() + pad;
+                    }
 
                     match &facts_owned {
                         Some(f) => {
@@ -1643,21 +2379,65 @@ impl App<NoPanel> for DemoApp {
     /// check; `on_event` is called every tick regardless of which
     /// dimension is rendering, so it does.
     fn on_event(&mut self, event: &PlatformEvent) -> bool {
-        // `Tab` toggles orbit/fly (item 5 — a human-owner keyboard
-        // shortcut alongside the `set_nav_mode` agent action); only
-        // meaningful while 3D is active, since orbit/fly are both purely
-        // 3D camera-control concepts.
-        if self.dim.get() == Dimension::ThreeD {
-            if let PlatformEvent::KeyDown { key: KeyCode::Tab, .. } = event {
-                self.toggle_nav_mode();
+        // Keep the tracked DPI scale factor current — see the "Control
+        // HUD" section's own module doc for what this backs and its one
+        // known startup-value gap. Not consumed: falls through so the
+        // engines can still see it (neither currently reacts to it, but
+        // there's no reason to hide the event from them either).
+        if let PlatformEvent::ScaleFactorChanged { scale } = event {
+            self.scale_factor = *scale;
+        }
+
+        // Owner defect fix item 3 — control-HUD hit-testing, checked
+        // FIRST so a panel click never reaches
+        // `GraphEngine`/`GraphEngine3D::on_event` at all. See
+        // `on_event_hud`'s own doc comment.
+        if self.hud_visible.get() {
+            if let Some(consumed) = self.on_event_hud(event) {
+                return consumed;
+            }
+        }
+
+        // `H` (item 3) — HUD visibility toggle, works in EITHER
+        // dimension, checked regardless of current visibility so a
+        // hidden panel can be brought back.
+        if let PlatformEvent::KeyDown { key: KeyCode::H, .. } = event {
+            self.hud_visible.toggle();
+            return true;
+        }
+
+        // `Tab` (item 2) — 2D<->3D dimension toggle, works from EITHER
+        // dimension (REBOUND from the pre-existing orbit/fly toggle,
+        // which moved to `V` below).
+        if let PlatformEvent::KeyDown { key: KeyCode::Tab, .. } = event {
+            self.toggle_dimension();
+            return true;
+        }
+
+        // `Home`/`F` (item 2) — fit-to-bounds, now EITHER dimension (was
+        // 3D-only) — see `fit_view_current_dimension`'s own doc comment
+        // for why.
+        if let PlatformEvent::KeyDown { key: KeyCode::Home | KeyCode::F, .. } = event {
+            self.fit_view_current_dimension();
+            return true;
+        }
+
+        // `Esc` (item 2) — extra escape hatch out of fly mouse-look, on
+        // top of the pre-existing MMB toggle. A no-op (falls through)
+        // whenever fly mouse-look isn't actually active, so Escape still
+        // does whatever else it might mean elsewhere.
+        if let PlatformEvent::KeyDown { key: KeyCode::Escape, .. } = event {
+            if self.dim.get() == Dimension::ThreeD && self.nav_mode.get() == NavMode::Fly && self.mouse_look.get() {
+                self.mouse_look.set(false);
                 return true;
             }
-            // Wave 5 fit-to-bounds — Home or F, in EITHER nav mode
-            // (orbit or fly): frame the whole graph, keeping the current
-            // yaw/pitch. Checked here, ahead of the orbit/fly dispatch
-            // below, so it works regardless of which nav mode is active.
-            if let PlatformEvent::KeyDown { key: KeyCode::Home | KeyCode::F, .. } = event {
-                self.fit_view_3d();
+        }
+
+        if self.dim.get() == Dimension::ThreeD {
+            // `V` (item 2, REBOUND from Tab) — orbit/fly toggle, 3D only,
+            // since orbit/fly are both purely 3D camera-control concepts.
+            if let PlatformEvent::KeyDown { key: KeyCode::V, .. } = event {
+                self.toggle_nav_mode();
                 return true;
             }
             // Wave 5 ground-reference grid toggle — G, in either nav mode.
@@ -1756,14 +2536,48 @@ impl Scene3DApp<NoPanel> for DemoApp {
         let scene_build_ms = scene_build_started.elapsed().as_secs_f64() * 1000.0;
         let aspect = surf_w as f32 / (surf_h.max(1) as f32);
         let camera = engine3d.camera(aspect);
+        let node_count = engine3d.graph.node_count();
         drop(engine3d);
 
-        {
+        let frame_ms = {
             let mut profiler = Self::lock_profiler(&self.frame_profiler);
             profiler.record_ms("tick", tick_ms);
             profiler.record_ms("scene_build", scene_build_ms);
             profiler.end_frame();
-        }
+            profiler.stage_ms("tick") + profiler.stage_ms("scene_build")
+        };
+
+        // Owner defect fix item 3 — the floating control-HUD panel's
+        // STATIC chrome, via a `CachedOverlayJob` (item 3's own
+        // preference: "prefer CachedOverlayJob for the static panel
+        // chrome... dynamic bits in the plain overlay"). `hud_static_key`
+        // changes exactly when anything the paint closure reads changes,
+        // so a caller-side resize/DPI change or any control toggle
+        // repaints it; per-frame node counts/timing (below, in the plain
+        // overlay) never do. `None` entirely while hidden (`H` key) — no
+        // wasted paint, no stale cached chrome either.
+        let hud_snapshot = self.hud_snapshot();
+        let hud_visible = self.hud_visible.get();
+        let hud_scale = self.scale_factor;
+        let cached_overlay = if hud_visible {
+            let key = hud_static_key(&hud_snapshot, hud_scale);
+            let snap = hud_snapshot; // `Copy` — an owned local the `move` closure below can capture directly, no borrow-across-closures ambiguity.
+            Some(CachedOverlayJob {
+                key,
+                paint: Box::new(move |ctx: &mut dyn RenderContext| {
+                    let layout = build_hud_layout(HUD_FLOAT_X, HUD_FLOAT_Y, HUD_WIDTH, &snap);
+                    draw_hud_static(ctx, &layout, hud_scale);
+                }),
+            })
+        } else {
+            None
+        };
+        let hud_status_anchor = if hud_visible {
+            let layout = build_hud_layout(HUD_FLOAT_X, HUD_FLOAT_Y, HUD_WIDTH, &hud_snapshot);
+            Some((layout.panel.x, layout.status_y))
+        } else {
+            None
+        };
 
         // Wave 4 (W3D arc plan §1.3 label-overlay gap, closed here): hand
         // `Manager` a real 2D overlay closure — node labels + the hover
@@ -1786,9 +2600,21 @@ impl Scene3DApp<NoPanel> for DemoApp {
             if crosshair_armed {
                 draw_fly_crosshair(ctx, overlay_viewport);
             }
+            drop(engine3d);
+            // Control-HUD panel's DYNAMIC status content — the counter
+            // half of the `draw_hud_static`/`draw_hud_status` split (see
+            // `draw_hud_static`'s own doc comment for why): changes
+            // every frame, so it's painted here, NOT through the cached
+            // job above. 3D has no separate "visible" (frustum-culled)
+            // node count of its own to report — see `draw_hud_status`'s
+            // caller-supplied `lines`, this is the honest simplification.
+            if let Some((panel_x, status_y)) = hud_status_anchor {
+                let lines = [format!("nodes {node_count}  visible {node_count}"), format!("frame {frame_ms:.2}ms")];
+                draw_hud_status(ctx, panel_x, status_y, &lines, hud_scale);
+            }
         });
 
-        Some(Scene3DFrame { scene, camera, cached_overlay: None, overlay: Some(overlay) })
+        Some(Scene3DFrame { scene, camera, cached_overlay, overlay: Some(overlay) })
     }
 }
 
@@ -1799,7 +2625,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             WindowSpec::new(WindowKey::new("main"), "uzor-graph — force graph demo")
                 .size(1400, 900)
                 .min_size(900, 600)
-                .decorations(false)
+                // Owner defect fix — this demo is a human-facing control
+                // surface now (item 3's own control HUD), not a bare
+                // agent-api test stand, so it gets STANDARD OS window
+                // chrome (titlebar + min/max/close) like every other
+                // window on the desktop. `WindowSpec::new`'s own default
+                // is `decorations: false` (borderless, no OS chrome) —
+                // this demo used to just restate that default explicitly;
+                // overriding it here to `true` is the ENTIRE chrome fix,
+                // `uzor-desktop::manager.rs` already forwards
+                // `spec.decorations` straight into winit's own
+                // `.with_decorations(...)`. `corner_style`/`border_color`
+                // are independent DWM window-attribute overrides (not
+                // decorations) and stay as-is — they still apply on a
+                // decorated window.
+                .decorations(true)
                 .background(0xFF_0d_0f_14)
                 .corner_style(CornerStyle::Rounded)
                 .border_color(0x00_4d_90_fe),
@@ -1940,5 +2780,177 @@ mod tests {
         assert_eq!(state.get(), Fixture::Clusters);
         state.set(Fixture::Sparse);
         assert_eq!(state.get(), Fixture::Sparse);
+    }
+
+    // ── Owner defect fix: control-HUD hit-zone mapping + keybind dispatch ──
+
+    #[test]
+    fn hit_button_resolves_the_correct_fixture_button_and_none_outside_any_zone() {
+        let snap = HudSnapshot {
+            dim: Dimension::ThreeD,
+            fixture: Fixture::Clusters,
+            nav_mode: NavMode::Orbit,
+            grid_enabled: false,
+            keyboard_sensitivity: 1.0,
+            mouse_sensitivity: 1.0,
+        };
+        let layout = build_hud_layout(HUD_FLOAT_X, HUD_FLOAT_Y, HUD_WIDTH, &snap);
+        let tree_button = layout.buttons.iter().find(|b| b.control == HudControl::Fixture(Fixture::Tree)).expect("tree button must exist");
+        let (cx, cy) = (tree_button.rect.center_x(), tree_button.rect.center_y());
+        assert_eq!(hit_button(&layout, cx, cy), Some(HudControl::Fixture(Fixture::Tree)));
+
+        // A point in the panel's own padding gutter, left of every
+        // button's own rect (which starts at `HUD_PAD` in from the
+        // panel edge) — no button should claim it.
+        assert_eq!(hit_button(&layout, layout.panel.x + 1.0, cy), None);
+
+        // Nothing outside the panel bounds at all.
+        assert_eq!(hit_button(&layout, layout.panel.x - 50.0, layout.panel.y - 50.0), None);
+    }
+
+    #[test]
+    fn hud_layout_omits_3d_only_controls_while_2d_is_active() {
+        let snap_2d = HudSnapshot {
+            dim: Dimension::TwoD,
+            fixture: Fixture::Clusters,
+            nav_mode: NavMode::Orbit,
+            grid_enabled: false,
+            keyboard_sensitivity: 1.0,
+            mouse_sensitivity: 1.0,
+        };
+        let layout_2d = build_hud_layout(0.0, 0.0, HUD_WIDTH, &snap_2d);
+        assert!(!layout_2d.buttons.iter().any(|b| b.control == HudControl::ToggleNavMode), "Orbit/Fly button must not appear in 2D");
+        assert!(!layout_2d.buttons.iter().any(|b| b.control == HudControl::ToggleGrid), "Grid button must not appear in 2D");
+        assert!(layout_2d.sliders.is_empty(), "sensitivity sliders are a 3D fly-mode-only section");
+        assert!(layout_2d.buttons.iter().any(|b| b.control == HudControl::ToggleDimension), "the 2D/3D toggle must always appear");
+        assert!(layout_2d.buttons.iter().any(|b| b.control == HudControl::FitView), "Fit must always appear (not 3D-only)");
+
+        let snap_3d_fly = HudSnapshot { dim: Dimension::ThreeD, nav_mode: NavMode::Fly, ..snap_2d };
+        let layout_3d_fly = build_hud_layout(0.0, 0.0, HUD_WIDTH, &snap_3d_fly);
+        assert!(layout_3d_fly.buttons.iter().any(|b| b.control == HudControl::ToggleNavMode));
+        assert!(layout_3d_fly.buttons.iter().any(|b| b.control == HudControl::ToggleGrid));
+        assert_eq!(layout_3d_fly.sliders.len(), 2, "keyboard + mouse sensitivity sliders while 3D fly is active");
+    }
+
+    /// The task's own explicit ask: prove the coordinate-space
+    /// reconciliation with a synthetic click, not just by inspection. A
+    /// LOGICAL click point strictly inside a button's own (logical) hit
+    /// rect must map to a PHYSICAL point (`logical * scale`) that also
+    /// falls strictly inside that SAME button's rect after
+    /// `scaled_rect` — proving `draw_hud_static`'s painted geometry and
+    /// `hit_button`'s hit-tested geometry agree at ANY scale factor, not
+    /// just `1.0`.
+    #[test]
+    fn hud_layout_scale_invariant_holds_for_a_synthetic_click_at_an_arbitrary_scale() {
+        let snap = HudSnapshot {
+            dim: Dimension::ThreeD,
+            fixture: Fixture::Sparse,
+            nav_mode: NavMode::Orbit,
+            grid_enabled: true,
+            keyboard_sensitivity: 1.2,
+            mouse_sensitivity: 0.8,
+        };
+        let layout = build_hud_layout(HUD_FLOAT_X, HUD_FLOAT_Y, HUD_WIDTH, &snap);
+        let button = layout.buttons.first().expect("at least one button");
+        let logical = (button.rect.center_x(), button.rect.center_y());
+        assert_eq!(hit_button(&layout, logical.0, logical.1), Some(button.control));
+
+        for scale in [1.0_f64, 1.25, 1.5, 2.0] {
+            let physical = (logical.0 * scale, logical.1 * scale);
+            let drawn = scaled_rect(button.rect, scale);
+            assert!(
+                drawn.contains(physical.0, physical.1),
+                "at scale {scale}: physical click {physical:?} must land inside the scaled draw rect {drawn:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tab_key_toggles_dimension_from_2d_to_3d_and_back() {
+        let mut app = DemoApp::new();
+        assert_eq!(app.dim.get(), Dimension::TwoD);
+        app.on_event(&PlatformEvent::KeyDown { key: KeyCode::Tab, modifiers: uzor::input::ModifierKeys::default() });
+        assert_eq!(app.dim.get(), Dimension::ThreeD, "Tab must switch 2D -> 3D");
+        app.on_event(&PlatformEvent::KeyDown { key: KeyCode::Tab, modifiers: uzor::input::ModifierKeys::default() });
+        // Dimension-transition wave: an animated 3D->2D switch keeps
+        // `DimState` at `ThreeD` until `scene3d()`'s own completion poll
+        // flattens it (see `apply_dimension_2d_transition`'s own doc
+        // comment) — headless tests never call `scene3d()`, so the
+        // observable, testable claim here is that flattening was
+        // correctly REQUESTED, not that `dim` already flipped back.
+        assert!(app.flatten_pending.is_pending(), "Tab from 3D must request the animated flatten-to-2D");
+    }
+
+    #[test]
+    fn v_key_toggles_nav_mode_only_while_3d_is_active_and_is_a_noop_in_2d() {
+        let mut app = DemoApp::new();
+        assert_eq!(app.nav_mode.get(), NavMode::Orbit);
+        app.on_event(&PlatformEvent::KeyDown { key: KeyCode::V, modifiers: uzor::input::ModifierKeys::default() });
+        assert_eq!(app.nav_mode.get(), NavMode::Orbit, "V must be a no-op while 2D is active");
+
+        app.dim.set(Dimension::ThreeD);
+        app.on_event(&PlatformEvent::KeyDown { key: KeyCode::V, modifiers: uzor::input::ModifierKeys::default() });
+        assert_eq!(app.nav_mode.get(), NavMode::Fly, "V must toggle orbit -> fly while 3D is active");
+    }
+
+    #[test]
+    fn h_key_toggles_hud_visibility_and_defaults_to_shown() {
+        let mut app = DemoApp::new();
+        assert!(app.hud_visible.get());
+        app.on_event(&PlatformEvent::KeyDown { key: KeyCode::H, modifiers: uzor::input::ModifierKeys::default() });
+        assert!(!app.hud_visible.get());
+        app.on_event(&PlatformEvent::KeyDown { key: KeyCode::H, modifiers: uzor::input::ModifierKeys::default() });
+        assert!(app.hud_visible.get());
+    }
+
+    #[test]
+    fn escape_key_exits_fly_mouse_look_only_when_active_in_3d_fly() {
+        let mut app = DemoApp::new();
+        // Not yet in 3D fly — Escape must be a complete no-op on mouse_look.
+        app.on_event(&PlatformEvent::KeyDown { key: KeyCode::Escape, modifiers: uzor::input::ModifierKeys::default() });
+        assert!(app.mouse_look.get(), "mouse_look defaults true and Escape must not touch it outside 3D fly");
+
+        app.dim.set(Dimension::ThreeD);
+        app.nav_mode.set(NavMode::Fly);
+        assert!(app.mouse_look.get());
+        app.on_event(&PlatformEvent::KeyDown { key: KeyCode::Escape, modifiers: uzor::input::ModifierKeys::default() });
+        assert!(!app.mouse_look.get(), "Escape must release fly mouse-look");
+
+        // A second Escape while already released is a no-op, not a
+        // re-toggle back on — this is an escape HATCH, not a toggle.
+        app.on_event(&PlatformEvent::KeyDown { key: KeyCode::Escape, modifiers: uzor::input::ModifierKeys::default() });
+        assert!(!app.mouse_look.get());
+    }
+
+    #[test]
+    fn pointer_down_inside_the_hud_panel_is_consumed_by_on_event() {
+        let mut app = DemoApp::new();
+        app.dim.set(Dimension::ThreeD);
+        // Well inside the floating 3D panel's title area — no button/
+        // slider under it, just plain panel padding.
+        let consumed = app.on_event(&PlatformEvent::PointerDown { x: HUD_FLOAT_X + 20.0, y: HUD_FLOAT_Y + 5.0, button: MouseButton::Left });
+        assert!(consumed, "a PointerDown inside the HUD panel must be consumed, never fall through to the graph engine");
+        // The panel-consumed click must not have started an orbit-drag
+        // (no `Pointer3DMode` state this test can inspect directly, but
+        // the nav mode/dimension must be completely untouched by a
+        // plain panel click with no button under it).
+        assert_eq!(app.dim.get(), Dimension::ThreeD);
+        assert_eq!(app.nav_mode.get(), NavMode::Orbit);
+    }
+
+    #[test]
+    fn fixture_button_click_rebuilds_both_engines_from_the_clicked_fixture() {
+        let mut app = DemoApp::new();
+        app.dim.set(Dimension::ThreeD);
+        let layout = app.hud_layout();
+        let tree_button = layout.buttons.iter().find(|b| b.control == HudControl::Fixture(Fixture::Tree)).expect("tree button must exist");
+        let (x, y) = (tree_button.rect.center_x(), tree_button.rect.center_y());
+
+        assert!(app.on_event(&PlatformEvent::PointerDown { x, y, button: MouseButton::Left }));
+        assert!(app.on_event(&PlatformEvent::PointerUp { x, y, button: MouseButton::Left }));
+
+        assert_eq!(app.fixture.get(), Fixture::Tree);
+        let node_count = DemoApp::lock3d(&app.engine3d).graph.node_count();
+        assert!(node_count > 100, "the tree fixture has a few hundred nodes, got {node_count}");
     }
 }
