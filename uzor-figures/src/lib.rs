@@ -62,6 +62,7 @@ pub use guide::axis::{draw_x_axis_formatted, draw_y_axis_formatted};
 pub use guide::colorbar::{draw_colorbar, measure_colorbar, ColorbarSize};
 pub use guide::labeler::{anchor_candidates, place_labels, OccupancyBitmap};
 pub use guide::legend::{LegendEntry, LegendPosition};
+pub use guide::wrap::{truncate_ellipsis, wrap_text};
 pub use interact::{BrushState, FocusSet, HitZone, HoverInfo, SelectionBus, FigureInputAction, FigureOutputAction};
 pub use mark::MarkStyle;
 pub use scale::{BandScale, ColorScale, LinearScale, LogScale, NumberFormat, Scale, Tick, TimeScale};

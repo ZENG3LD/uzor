@@ -23,10 +23,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use serde_json::{json, Value};
 
 use uzor::core::types::Rect;
-use uzor::framework::app::{App, NoPanel};
+use uzor::framework::app::{App, CursorCaptureMode, NoPanel};
 use uzor::framework::builder::AppBuilder;
 use uzor::framework::multi_window::{WindowCtx, WindowKey, WindowSpec};
-use uzor::input::PlatformEvent;
+use uzor::input::{KeyCode, PlatformEvent};
 use uzor::layout::agent::{AgentAction, AgentActionReply, AgentWidget, BlackboxAgentSurface};
 use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager};
 use uzor::platform::types::CornerStyle;
@@ -34,6 +34,7 @@ use uzor::render::{RenderContext, RenderRegion};
 use uzor::types::unsafe_widget_id;
 use uzor_desktop::{AppRun3D as _, Scene3DApp, Scene3DFrame};
 
+use uzor_graph::interaction::fly::FlyController;
 use uzor_graph::{ForceDirectedLayout3D, Graph, GraphEngine, GraphEngine3D, GraphLayoutMode, NodeIndex};
 
 const AGENT_PORT: u16 = 17481;
@@ -460,6 +461,68 @@ impl DimState {
     }
 }
 
+/// Which 3D camera-control scheme is active — orbit (the pre-existing
+/// `GraphEngine3D::on_event` drag-orbit/wheel-dolly/shift-drag-pan
+/// behavior, default) or fly (WASD/arrow-key + captured-mouse-look via
+/// `uzor_graph::interaction::fly::FlyController`, proving out that
+/// lifted engine capability — see `uzor-graph/CLAUDE.md`'s divergence
+/// log). Decided at the DEMO layer, same convention as [`Dimension`]:
+/// `GraphEngine3D` itself stays fully independent of this choice.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum NavMode {
+    Orbit,
+    Fly,
+}
+
+impl NavMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            NavMode::Orbit => "orbit",
+            NavMode::Fly => "fly",
+        }
+    }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "orbit" => Some(NavMode::Orbit),
+            "fly" => Some(NavMode::Fly),
+            _ => None,
+        }
+    }
+
+    fn code(self) -> u8 {
+        match self {
+            NavMode::Orbit => 0,
+            NavMode::Fly => 1,
+        }
+    }
+
+    fn from_code(code: u8) -> Self {
+        if code == 1 { NavMode::Fly } else { NavMode::Orbit }
+    }
+}
+
+/// Shared, thread-safe active-nav-mode flag — same cross-thread
+/// `Arc<AtomicU8>` convention as [`DimState`]: read/written from the
+/// agent-api HTTP thread (`set_nav_mode` action, `agent_state()`) and
+/// read every tick from the winit thread (`on_event`/`scene3d`).
+#[derive(Clone)]
+struct NavModeState(Arc<AtomicU8>);
+
+impl NavModeState {
+    fn new() -> Self {
+        Self(Arc::new(AtomicU8::new(NavMode::Orbit.code())))
+    }
+
+    fn get(&self) -> NavMode {
+        NavMode::from_code(self.0.load(Ordering::Relaxed))
+    }
+
+    fn set(&self, mode: NavMode) {
+        self.0.store(mode.code(), Ordering::Relaxed);
+    }
+}
+
 /// Wave 2's placeholder: `GraphEngine3D::on_event` used its `viewport`
 /// argument ONLY for a `contains()` gate (never for coordinate math), so
 /// a maximal rect was the honest "whole window, no narrower rect to
@@ -536,6 +599,14 @@ struct DemoApp {
     /// [`Fixture`]/[`rebuild_engines`].
     fixture: FixtureState,
     camera_fit: CameraFitFlag,
+    /// Active 3D camera-control scheme — see [`NavMode`].
+    nav_mode: NavModeState,
+    /// The `FlyController` instance itself — `Arc<Mutex<_>>` (not a bare
+    /// field) so `DemoBlackbox::agent_state` can read its current
+    /// velocity from the agent-api HTTP thread without needing a
+    /// `DemoApp`-only accessor (mirrors why `engine`/`engine3d` are
+    /// themselves `Arc<Mutex<_>>`).
+    fly: Arc<Mutex<FlyController>>,
     /// Wall-clock timestamp of the last `scene3d()` tick — mirrors
     /// `GraphEngine::tick_real_time`'s own clamped-dt convention so the
     /// 3D sim settles at a real-time rate regardless of the render
@@ -574,6 +645,8 @@ struct DemoBlackbox {
     dim: DimState,
     fixture: FixtureState,
     camera_fit: CameraFitFlag,
+    nav_mode: NavModeState,
+    fly: Arc<Mutex<FlyController>>,
 }
 
 /// `NodeIndex` resolution for the 3D agent-forwarding path (Wave 3) —
@@ -641,6 +714,8 @@ impl DemoApp {
             dim: DimState::new(),
             fixture,
             camera_fit,
+            nav_mode: NavModeState::new(),
+            fly: Arc::new(Mutex::new(FlyController::new())),
             last_3d_frame_at: None,
             last_3d_surface_px: None,
         }
@@ -658,6 +733,62 @@ impl DemoApp {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         }
+    }
+
+    fn lock_fly(fly: &Arc<Mutex<FlyController>>) -> MutexGuard<'_, FlyController> {
+        match fly.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    /// Toggle between orbit and fly navigation (Tab, 3D only) — always
+    /// stops the `FlyController` on either transition so held keys/
+    /// inertia can never leak across the boundary (mirrors the source
+    /// app's own `stop_movement`/`release_viewport_cursor` discipline on
+    /// any navigation-mode change).
+    fn toggle_nav_mode(&mut self) {
+        let next = match self.nav_mode.get() {
+            NavMode::Orbit => NavMode::Fly,
+            NavMode::Fly => NavMode::Orbit,
+        };
+        self.nav_mode.set(next);
+        Self::lock_fly(&self.fly).stop();
+    }
+
+    /// Fly-mode event routing (3D + `NavMode::Fly` only) — WASD/arrow
+    /// `KeyDown`/`KeyUp` feed the `FlyController`'s held intent;
+    /// `PointerDelta` applies free look (the app requests
+    /// `CursorCaptureMode::LockedHidden` while flying, see
+    /// `App::cursor_capture_mode` below, so the OS cursor is already
+    /// locked/hidden by the time these deltas arrive). Anything the
+    /// controller doesn't recognize (zoom via scroll, modifier tracking,
+    /// ...) still falls through to `GraphEngine3D::on_event` unchanged.
+    fn on_event_fly(&mut self, event: &PlatformEvent) -> bool {
+        match event {
+            PlatformEvent::KeyDown { key, .. } => {
+                if Self::lock_fly(&self.fly).set_key(*key, true) {
+                    return true;
+                }
+            }
+            PlatformEvent::KeyUp { key, .. } => {
+                if Self::lock_fly(&self.fly).set_key(*key, false) {
+                    return true;
+                }
+            }
+            PlatformEvent::PointerDelta { dx, dy } => {
+                let mut engine3d = Self::lock3d(&self.engine3d);
+                Self::lock_fly(&self.fly).apply_look_delta(*dx as f32, *dy as f32, &mut engine3d.camera);
+                return true;
+            }
+            PlatformEvent::WindowFocused(false) => {
+                Self::lock_fly(&self.fly).stop();
+                return false;
+            }
+            _ => {}
+        }
+        let mut engine3d = Self::lock3d(&self.engine3d);
+        engine3d.on_event(event, self.dim3d_viewport())
     }
 
     /// The REAL 3D viewport (Wave 3) — the last surface size `scene3d()`
@@ -718,6 +849,9 @@ impl BlackboxAgentSurface for DemoBlackbox {
         if let Value::Object(ref mut map) = state {
             map.insert("dimension".to_owned(), json!(self.dim.get().code()));
             map.insert("fixture".to_owned(), json!(self.fixture.get().as_str()));
+            map.insert("nav_mode".to_owned(), json!(self.nav_mode.get().as_str()));
+            let fly_velocity = DemoApp::lock_fly(&self.fly).velocity();
+            map.insert("fly_velocity".to_owned(), json!([fly_velocity[0], fly_velocity[1]]));
         }
         state
     }
@@ -735,6 +869,14 @@ impl BlackboxAgentSurface for DemoBlackbox {
                 }
                 _ => AgentActionReply::err("set_dimension requires args.dim to be 2 or 3"),
             };
+        }
+        if action.name == "set_nav_mode" {
+            let Some(mode) = action.args.get("mode").and_then(Value::as_str).and_then(NavMode::from_str) else {
+                return AgentActionReply::err("set_nav_mode requires args.mode to be one of: orbit, fly");
+            };
+            self.nav_mode.set(mode);
+            DemoApp::lock_fly(&self.fly).stop();
+            return AgentActionReply::ok_with_log(json!({ "nav_mode": mode.as_str() }));
         }
         if action.name == "set_fixture" {
             let Some(fixture) = action.args.get("name").and_then(Value::as_str).and_then(Fixture::from_str) else {
@@ -822,6 +964,8 @@ impl App<NoPanel> for DemoApp {
             dim: self.dim.clone(),
             fixture: self.fixture.clone(),
             camera_fit: self.camera_fit.clone(),
+            nav_mode: self.nav_mode.clone(),
+            fly: self.fly.clone(),
         };
         layout.register_blackbox_agent(BLACKBOX_SLOT, Arc::new(Mutex::new(blackbox)));
     }
@@ -923,15 +1067,42 @@ impl App<NoPanel> for DemoApp {
     /// check; `on_event` is called every tick regardless of which
     /// dimension is rendering, so it does.
     fn on_event(&mut self, event: &PlatformEvent) -> bool {
+        // `Tab` toggles orbit/fly (item 5 — a human-owner keyboard
+        // shortcut alongside the `set_nav_mode` agent action); only
+        // meaningful while 3D is active, since orbit/fly are both purely
+        // 3D camera-control concepts.
+        if self.dim.get() == Dimension::ThreeD {
+            if let PlatformEvent::KeyDown { key: KeyCode::Tab, .. } = event {
+                self.toggle_nav_mode();
+                return true;
+            }
+        }
         match self.dim.get() {
             Dimension::TwoD => {
                 let mut engine = Self::lock(&self.engine);
                 engine.on_event(event)
             }
-            Dimension::ThreeD => {
-                let mut engine3d = Self::lock3d(&self.engine3d);
-                engine3d.on_event(event, self.dim3d_viewport())
-            }
+            Dimension::ThreeD => match self.nav_mode.get() {
+                NavMode::Orbit => {
+                    let mut engine3d = Self::lock3d(&self.engine3d);
+                    engine3d.on_event(event, self.dim3d_viewport())
+                }
+                NavMode::Fly => self.on_event_fly(event),
+            },
+        }
+    }
+
+    /// While 3D + fly navigation is active, requests a locked/hidden OS
+    /// cursor so `PlatformEvent::PointerDelta` carries raw mouse-look
+    /// motion (`uzor-desktop::Manager::sync_cursor_capture` handles the
+    /// actual OS grab, plus its own focus-loss safety net — item 3 of
+    /// this same lift). Every other state (2D, or 3D orbit) stays
+    /// `Free`, matching the pre-existing default.
+    fn cursor_capture_mode(&self) -> CursorCaptureMode {
+        if self.dim.get() == Dimension::ThreeD && self.nav_mode.get() == NavMode::Fly {
+            CursorCaptureMode::LockedHidden
+        } else {
+            CursorCaptureMode::Free
         }
     }
 }
@@ -962,6 +1133,9 @@ impl Scene3DApp<NoPanel> for DemoApp {
 
         let mut engine3d = Self::lock3d(&self.engine3d);
         engine3d.tick(dt);
+        if self.nav_mode.get() == NavMode::Fly {
+            Self::lock_fly(&self.fly).tick(dt, &mut engine3d.camera);
+        }
         let scene = engine3d.build_scene();
         let aspect = surf_w as f32 / (surf_h.max(1) as f32);
         let camera = engine3d.camera(aspect);

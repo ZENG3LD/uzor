@@ -34,6 +34,8 @@ use uzor::framework::builder::{AnyFactory, BuildError, BuiltApp, TraySpec};
 use uzor::framework::multi_window::{WindowCtx, WindowKey};
 use uzor::framework::render_control::RenderControl;
 
+use uzor::framework::frame_profiler::EmaF64;
+
 use crate::scene3d_app::Scene3DFrame;
 
 // ── HubControl ────────────────────────────────────────────────────────────────
@@ -313,6 +315,14 @@ pub struct Manager<A: App<P>, P: DockPanel> {
 
     // ── Frame metrics (EMA, mlc pattern) ──
     pub(crate) fps_ema:           f32,
+    /// The actual smoothing tracker behind [`Self::fps_ema`] — see
+    /// `frame_profiler::EmaF64`'s own doc comment for why this crate
+    /// no longer hand-rolls the `previous * 0.9 + sample * 0.1` formula
+    /// inline a second time (deduplicated against the generic named-stage
+    /// profiler's identical idiom). `fps_ema` itself stays a plain `f32`
+    /// field — every existing reader of it (`RenderControl::measured_fps`,
+    /// `HubControl`) is unchanged.
+    pub(crate) fps_ema_tracker:   EmaF64,
     pub(crate) last_frame_time_ms: f32,
     pub(crate) frame_count:       u64,
     pub(crate) last_frame_instant: std::time::Instant,
@@ -350,6 +360,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
             #[cfg(not(target_arch = "wasm32"))]
             agent_handle: None,
             fps_ema: 60.0,
+            fps_ema_tracker: EmaF64::seeded(60.0),
             last_frame_time_ms: 16.0,
             frame_count: 0,
             last_frame_instant: std::time::Instant::now(),
@@ -1232,12 +1243,29 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         result
     }
 
+    /// Reconciles the OS cursor-grab state with what [`App::cursor_capture_mode`]
+    /// currently requests — plus an engine-level safety net the app
+    /// cannot opt out of: `requested` is only ever trusted while this
+    /// window actually has OS focus (`pw.window.has_focus()`). An
+    /// unfocused window (e.g. Alt-Tabbed away) always forces
+    /// `requested = false` here regardless of the app's own answer, so
+    /// capture is force-released the very next tick after focus is lost
+    /// — no new event plumbing needed (this only ever polls the window's
+    /// own focus state, it does not need `PlatformEvent::WindowFocused`
+    /// relayed to it). Re-capture then happens naturally on a later tick
+    /// once focus returns AND the app still requests `LockedHidden`.
+    /// Every uzor app that requests `LockedHidden` gets this guarantee
+    /// for free instead of having to reimplement its own focus-tracking
+    /// release dance (see `nemo/docs/uzor-engines/research_foxhound_lift_candidates.md`
+    /// §4 — `foxhound-app-shell-native`'s own `ViewportCursorState` did
+    /// exactly this app-side, by omission rather than by design).
     #[cfg(not(target_arch = "wasm32"))]
     fn sync_cursor_capture(&mut self, id: winit::window::WindowId) {
         use winit::window::CursorGrabMode;
 
-        let requested = self.app.cursor_capture_mode() == CursorCaptureMode::LockedHidden;
+        let app_requested = self.app.cursor_capture_mode() == CursorCaptureMode::LockedHidden;
         let Some(pw) = self.windows.get_mut(&id) else { return };
+        let requested = app_requested && pw.window.has_focus();
         if requested == pw.cursor_capture_active {
             return;
         }
@@ -1286,7 +1314,7 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
         let dt_ms = dt.as_secs_f64() * 1000.0;
         if dt_ms > 0.1 && dt_ms < 1000.0 {
             let instant_fps = 1000.0 / dt_ms;
-            self.fps_ema = (self.fps_ema as f64 * 0.9 + instant_fps * 0.1) as f32;
+            self.fps_ema = self.fps_ema_tracker.update(instant_fps, 0.1) as f32;
             self.last_frame_time_ms = dt_ms as f32;
         }
         self.frame_count = self.frame_count.wrapping_add(1);
