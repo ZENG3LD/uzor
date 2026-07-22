@@ -218,7 +218,15 @@ impl FilterSpec {
     /// category matching is exact-string equality against any entry in
     /// the list. `false` for an out-of-range `id` (fails closed, not
     /// open).
-    fn matches<N, E>(&self, graph: &Graph<N, E>, id: NodeIndex) -> bool {
+    ///
+    /// `pub(crate)` (not private) so [`crate::engine3d::GraphEngine3D`]'s
+    /// own filter/local-subgraph wave reuses this EXACT matching logic
+    /// (both the `tick` force-topology filtering and the exclusion-set
+    /// computation) rather than a duplicated copy — same "reuse the
+    /// SAME typed struct, not a parallel one" convention
+    /// `box_select_mode_for`/`normalized_rect` already established for
+    /// the 3D selection wave.
+    pub(crate) fn matches<N, E>(&self, graph: &Graph<N, E>, id: NodeIndex) -> bool {
         let Some(node) = graph.get_node(id) else { return false };
         if let Some(sub) = &self.label_substring {
             if !node.label.to_lowercase().contains(&sub.to_lowercase()) {

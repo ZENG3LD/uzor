@@ -35,7 +35,7 @@ use uzor::types::unsafe_widget_id;
 use uzor_desktop::{AppRun3D as _, Scene3DApp, Scene3DFrame};
 
 use uzor_graph::interaction::fly::FlyController;
-use uzor_graph::{ForceDirectedLayout3D, Graph, GraphEngine, GraphEngine3D, GraphLayoutMode, GroupId, NodeIndex, SelectMode};
+use uzor_graph::{FilterSpec, ForceDirectedLayout3D, Graph, GraphEngine, GraphEngine3D, GraphLayoutMode, GroupId, NodeIndex, SelectMode};
 
 const AGENT_PORT: u16 = 17481;
 const BLACKBOX_SLOT: &str = "graph";
@@ -841,6 +841,18 @@ fn parse_select_mode_3d(action: &AgentAction) -> Result<SelectMode, String> {
     }
 }
 
+/// [`FilterSpec`] snapshot as JSON — mirrors `uzor_graph::agent`'s own
+/// private `filter_json` exactly (re-implemented here since that helper
+/// isn't exported), shared by `agent_state`'s 3D `filter` field and the
+/// `set_filter` action's reply.
+fn filter_json_3d(filter: &FilterSpec) -> Value {
+    json!({
+        "label_substring": filter.label_substring,
+        "categories": filter.categories,
+        "min_degree": filter.min_degree,
+    })
+}
+
 /// `agent_state`'s 3D `selection` field shape — mirrors `uzor_graph::agent`'s
 /// own 2D `selection_json` exactly (`{count, indices (capped at 50),
 /// collapsed_group}`).
@@ -1061,6 +1073,10 @@ impl BlackboxAgentSurface for DemoBlackbox {
                     // capped 50, collapsed_group}` shape `uzor_graph::agent`'s
                     // own 2D `selection_json` reports.
                     "selection": selection_json_3d(&engine3d),
+                    // Filter/local-subgraph wave — same field names/shapes
+                    // `uzor_graph::agent`'s own 2D `agent_state` reports.
+                    "local_root": engine3d.local_root().map(|(node, depth)| json!({ "index": node.index(), "depth": depth })),
+                    "filter": engine3d.filter().map(filter_json_3d),
                 })
             }
         };
@@ -1163,8 +1179,18 @@ impl DemoBlackbox {
     /// real viewport this wrapper doesn't itself track — it reads
     /// [`DemoBlackbox::surface_size`], the SAME last-known 3D surface size
     /// [`DemoApp::dim3d_viewport`] reads from a separate `Arc` clone (see
-    /// [`viewport_from_surface_size`]'s own doc comment). Everything else
-    /// stays a typed rejection — pin_node/unpin_node/filter-equivalents
+    /// [`viewport_from_surface_size`]'s own doc comment).
+    ///
+    /// **Filter/local-subgraph wave (3D interaction parity, item 4)**:
+    /// `set_local_root`/`set_filter` (mirror the 2D arg shapes exactly,
+    /// `uzor_graph::agent`'s own doc comments) now also forward onto
+    /// `engine3d`. `set_local_root` additionally calls
+    /// `engine3d.fit_view(...)` right after, with the SAME real surface
+    /// aspect [`DemoApp::fit_view_3d`] uses — `GraphEngine3D::
+    /// set_local_root` itself does NOT auto-fit (documented on that
+    /// method), so the demo/caller layer does it instead, mirroring 2D's
+    /// own "activation frames the local neighborhood" convention.
+    /// Everything else stays a typed rejection — pin_node/unpin_node
     /// remain out of this arc.
     fn apply_3d_agent_action(&mut self, action: AgentAction) -> AgentActionReply {
         let mut engine3d = DemoApp::lock3d(&self.engine3d);
@@ -1261,8 +1287,58 @@ impl DemoBlackbox {
                     AgentActionReply::err(format!("cluster {} not found or not collapsed", id.0))
                 }
             }
+            // Filter/local-subgraph wave (3D interaction parity, item 4)
+            // — mirrors `uzor_graph::agent`'s own 2D `set_local_root`
+            // action arg shape exactly (`{}`/`{"index": null}` clears,
+            // same convention `hover_node`/`select_node` already use).
+            // `GraphEngine3D::set_local_root` itself does NOT auto-fit
+            // (it owns no viewport — see its own doc comment); the demo
+            // is the caller with a REAL surface size, so it fits here,
+            // mirroring 2D's own "activation frames the local
+            // neighborhood" convention at this layer instead.
+            "set_local_root" => {
+                let index_arg = action.args.get("index");
+                let explicit_clear =
+                    matches!(index_arg, Some(Value::Null)) || (index_arg.is_none() && action.args.get("label").is_none());
+                if explicit_clear {
+                    engine3d.set_local_root(None, None);
+                    engine3d.fit_view(surface_aspect(self.surface_size.get()));
+                    return AgentActionReply::ok_with_log(json!({ "local_root": Value::Null }));
+                }
+                let Some(node) = resolve_node_3d(&engine3d, &action) else {
+                    return AgentActionReply::err(
+                        "set_local_root requires args.index (u32), args.label (string), or {} / null to clear",
+                    );
+                };
+                let depth = action.args.get("depth").and_then(Value::as_u64).map(|d| d as u8);
+                engine3d.set_local_root(Some(node), depth);
+                engine3d.fit_view(surface_aspect(self.surface_size.get()));
+                AgentActionReply::ok_with_log(json!({
+                    "local_root": engine3d.local_root().map(|(n, d)| json!({ "index": n.index(), "depth": d })),
+                }))
+            }
+            // Mirrors `uzor_graph::agent`'s own 2D `set_filter` action arg
+            // shape exactly — an args object with NONE of the 3
+            // recognized clauses clears the filter.
+            "set_filter" => {
+                let has_clause = ["label_substring", "categories", "min_degree"].iter().any(|k| action.args.get(*k).is_some());
+                if !has_clause {
+                    engine3d.set_filter(None);
+                    return AgentActionReply::ok_with_log(json!({ "filter": Value::Null }));
+                }
+                let label_substring = action.args.get("label_substring").and_then(Value::as_str).map(str::to_owned);
+                let categories = action
+                    .args
+                    .get("categories")
+                    .and_then(Value::as_array)
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect::<Vec<String>>());
+                let min_degree = action.args.get("min_degree").and_then(Value::as_u64).map(|v| v as u32);
+                let spec = FilterSpec { label_substring, categories, min_degree };
+                engine3d.set_filter(Some(spec));
+                AgentActionReply::ok_with_log(json!({ "filter": engine3d.filter().map(filter_json_3d) }))
+            }
             _ => AgentActionReply::err(
-                "3D dimension supports hover_node/select_node/clear_selection/select_nodes/box_select/collapse_selection/pin_selection/unpin_selection/collapse/expand besides set_dimension",
+                "3D dimension supports hover_node/select_node/clear_selection/select_nodes/box_select/collapse_selection/pin_selection/unpin_selection/collapse/expand/set_local_root/set_filter besides set_dimension",
             ),
         }
     }

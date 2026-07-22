@@ -32,8 +32,8 @@ use uzor_urx_3d::{Mesh, MeshLit, PerspectiveCamera, Scene3D};
 
 use crate::camera3d::Camera3D;
 use crate::cluster::{ClusterRegistry, GroupId};
-use crate::engine::{box_select_mode_for, normalized_rect, NodeFacts, SelectMode, DEFAULT_LABEL_HALO};
-use crate::graph::{Graph, NodeIndex};
+use crate::engine::{box_select_mode_for, normalized_rect, FilterSpec, NodeFacts, SelectMode, DEFAULT_LABEL_HALO};
+use crate::graph::{Graph, NodeIndex, SimEdge, SimTopology};
 use crate::interaction::pick3d;
 use crate::label_grid;
 use crate::layout::force_directed_3d::ForceDirectedLayout3D;
@@ -142,16 +142,26 @@ enum Pointer3DMode {
     Panning { last: (f64, f64), button: MouseButton },
     /// 3D node drag (owner-ordered live fix — previously EVERY plain
     /// drag orbited the camera, even one starting directly on a node;
-    /// vasturiano `3d-force-graph`'s own convention). `node` is the hit
-    /// resolved once at `PointerDown` (CPU `nearest_node_3d`, never
-    /// re-resolved mid-drag — same "resolved once" idiom every other
-    /// `Pointer3DMode` variant already follows); `plane_point`/
-    /// `plane_normal` are the CAMERA-PARALLEL drag plane
-    /// (`plane_point` = the node's world position AT DRAG-START,
+    /// vasturiano `3d-force-graph`'s own convention). `node` is the
+    /// ANCHOR — the actual hit resolved once at `PointerDown` (CPU
+    /// `nearest_node_3d`, never re-resolved mid-drag — same "resolved
+    /// once" idiom every other `Pointer3DMode` variant already follows);
+    /// `plane_point`/`plane_normal` are the CAMERA-PARALLEL drag plane
+    /// (`plane_point` = the ANCHOR's own world position AT DRAG-START,
     /// `plane_normal` = the camera's view direction at drag-start) that
     /// [`GraphEngine3D::on_pointer_moved`] intersects every move — see
     /// [`pick3d::ray_plane_intersection`]'s own doc comment for why a
     /// camera-parallel plane, not the ray's first world-surface hit.
+    ///
+    /// **Group-drag wave**: the actual SET of moved nodes lives in the
+    /// engine's own [`GraphEngine3D::drag_group`] (a `Vec<DragMember3>`,
+    /// captured at `PointerDown` — mirrors 2D's own `PointerMode::
+    /// DraggingNode` + external `drag_group` field split, `engine.rs`),
+    /// not inside this variant — every member (including a solo drag's
+    /// one-element set) is re-pinned every `PointerMoved` from the SAME
+    /// anchor ray-plane intersection plus that member's own fixed
+    /// `offset`, so `node`/`plane_point`/`plane_normal` here describe
+    /// only the anchor's own drag plane, shared by the whole group.
     Dragging { node: NodeIndex, plane_point: Vec3, plane_normal: Vec3 },
     /// Box-select drag (cluster/selection wave — 2D-parity decision:
     /// mirrors [`crate::engine::GraphEngine`]'s own `PointerMode::
@@ -169,6 +179,32 @@ enum Pointer3DMode {
     /// the rest of the gesture — same convention every other
     /// `Pointer3DMode` variant already follows.
     BoxSelecting { origin: (f64, f64), current: (f64, f64), mode: SelectMode },
+}
+
+/// One member of an in-progress 3D drag gesture (group-drag wave),
+/// captured at drag-start — the 3D sibling of [`crate::engine::
+/// DragMember`] (`engine.rs`), one extra axis. `offset` is a FIXED
+/// world-space offset from the anchor node's own position AT DRAG-START;
+/// every subsequent `PointerMoved` recomputes this member's `fx`/`fy`/`fz`
+/// (via [`crate::particle::Particle::pin3`]) as `anchor_world_now +
+/// offset` — the SAME single-shared-shift ("`silentShift`") convention
+/// 2D's own `DragMember` doc comment covers in full: relative offsets
+/// between drag-set members are preserved EXACTLY by construction, never
+/// incrementally accumulated from a stale per-tick delta. For a solo drag
+/// (drag set = `{anchor}` only) `offset` is `Vec3::ZERO`, which reproduces
+/// this engine's pre-group-drag single-node behavior byte-for-byte.
+///
+/// **Known simplification vs. 2D's own `DragMember`**: no per-member
+/// `prior_pinned` snapshot — 3D node drag is Sticky-only (no
+/// `DragEndPolicy::RestorePrior` mode exists for 3D, see
+/// [`GraphEngine3D::pin_node`]'s own doc comment for why a parallel
+/// `pinned: Vec<bool>` array was already judged unnecessary), so every
+/// member simply stays pinned at its release position — there's no prior
+/// state to disambiguate a drag-pin from.
+#[derive(Debug, Clone, Copy)]
+struct DragMember3 {
+    node: NodeIndex,
+    offset: Vec3,
 }
 
 /// Sustained `alphaTarget` a node drag holds the sim at while active
@@ -235,6 +271,12 @@ const FIT_VIEW_MIN_NODES: usize = 3;
 /// meaningless a `fit_bounds` target as 0-2 nodes are.
 const FIT_VIEW_MIN_HALF_DIAGONAL: f32 = 1e-3;
 
+/// Default local-subgraph BFS depth (filter/local-subgraph wave) —
+/// mirrors 2D's own `engine::DEFAULT_LOCAL_DEPTH` value (`2`) exactly;
+/// redeclared here since that constant is private to `engine.rs` and this
+/// is the only 3D consumer.
+const DEFAULT_LOCAL_DEPTH_3D: u8 = 2;
+
 /// The 3D sibling of [`crate::engine::GraphEngine`] — see the module doc.
 pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     pub graph: Graph<N, E>,
@@ -273,6 +315,18 @@ pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     /// orbit vs. shift-drag pan (plan §1.4).
     modifiers: ModifierKeys,
     mode: Pointer3DMode,
+    /// Every node moved by the in-progress drag gesture, captured at
+    /// drag-start (group-drag wave) — mirrors [`crate::engine::
+    /// GraphEngine::drag_group`] exactly (2D's own `DragMember`, one
+    /// extra axis — see [`DragMember3`]). Empty when nothing is being
+    /// dragged.
+    drag_group: Vec<DragMember3>,
+    /// Whether the grabbed (anchor) node was ALREADY in `selection` at
+    /// drag-start (group-drag wave) — mirrors [`crate::engine::
+    /// GraphEngine::drag_was_group`] exactly: decides `on_pointer_up`'s
+    /// `Dragging` arm branching (whole selection stays selected vs. a
+    /// solo drag Replace-selects itself).
+    drag_was_group: bool,
     /// Last pointer position in screen px — [`GraphEngine3D::on_scroll`]'s
     /// "is the cursor currently over this viewport" gate (mirrors
     /// `GraphEngine::on_scroll`, which reads its own
@@ -280,9 +334,13 @@ pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     last_pointer_screen: (f64, f64),
     /// Every graph node id, cached once at construction (Wave 3) — the
     /// CPU ray-picking candidate slice `pick3d::nearest_node_3d` needs.
-    /// 3D has no visibility-culling infrastructure yet (plan §5
-    /// exclusion), so every node is always a pick candidate; caching
-    /// avoids rebuilding this `Vec` on every guarded hover/click pick.
+    /// 3D has no visibility-CULLING infrastructure of its own (plan §5
+    /// exclusion — every node is always a RENDER/CULL candidate), so
+    /// this stays the full graph; [`GraphEngine3D::pick_candidates`]
+    /// narrows it by the filter/local-subgraph wave's own EXCLUSION set
+    /// ([`GraphEngine3D::compute_excluded_nodes_3d`]) instead. Caching
+    /// this `Vec` once avoids rebuilding it on every guarded hover/click
+    /// pick.
     all_node_ids: Vec<NodeIndex>,
     /// Screen position at the last hover pick (Wave 3) — `None` forces
     /// the very next `PointerMoved` inside the viewport to re-pick
@@ -319,6 +377,20 @@ pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     /// GraphEngine::label_halo`] (same [`DEFAULT_LABEL_HALO`] default). See
     /// [`GraphEngine3D::label_halo`]/[`GraphEngine3D::set_label_halo`].
     label_halo: String,
+    /// Local-subgraph root + BFS depth (filter/local-subgraph wave) —
+    /// mirrors [`crate::engine::GraphEngine::local_root`] exactly: `None`
+    /// shows the full graph. VIEW-ONLY (see [`GraphEngine3D::tick`]'s own
+    /// doc comment for the DIFFERENT, topology-changing [`Self::filter`]
+    /// field) — the simulation ticks every particle regardless; only
+    /// render/pick/label eligibility is restricted. See
+    /// [`GraphEngine3D::set_local_root`]/[`GraphEngine3D::local_root`].
+    local_root: Option<(NodeIndex, u8)>,
+    /// Query filter (filter/local-subgraph wave) — mirrors
+    /// [`crate::engine::GraphEngine::filter`] exactly, reusing the exact
+    /// SAME [`FilterSpec`] type (not a parallel 3D-only shape). DOES
+    /// change the force topology — see [`GraphEngine3D::tick`]'s own doc
+    /// comment. See [`GraphEngine3D::set_filter`]/[`GraphEngine3D::filter`].
+    filter: Option<FilterSpec>,
 }
 
 impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
@@ -338,6 +410,8 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             edge_mesh: Arc::new(Mesh::unit_edge_quad([1.0, 1.0, 1.0, 1.0])),
             modifiers: ModifierKeys::default(),
             mode: Pointer3DMode::Idle,
+            drag_group: Vec::new(),
+            drag_was_group: false,
             last_pointer_screen: (0.0, 0.0),
             all_node_ids,
             last_hover_pick_screen: None,
@@ -347,6 +421,8 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             gpu_pick_pipeline: pick3d::GpuPickPipeline::new(),
             grid_enabled: false,
             label_halo: DEFAULT_LABEL_HALO.to_owned(),
+            local_root: None,
+            filter: None,
         }
     }
 
@@ -361,11 +437,33 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         &self.edge_mesh
     }
 
-    /// Advance the 3D force simulation by `dt` real seconds — the whole
-    /// of this wave's proof surface (plan §4 Wave 1).
+    /// Advance the 3D force simulation by `dt` real seconds (plan §4 Wave
+    /// 1's proof surface). Filter/local-subgraph wave: ticks against a
+    /// FILTERED topology when [`Self::filter`] is active — mirrors
+    /// [`crate::engine::GraphEngine::tick`]'s own filtered-topology branch
+    /// literally: an edge is dropped from the topology fed to
+    /// `Layout::tick` the instant EITHER endpoint fails the filter, so
+    /// surviving nodes' link-force no longer pulls toward an excluded
+    /// one. [`Self::local_root`] does NOT affect this — local mode is
+    /// VIEW-ONLY (see [`GraphEngine3D::set_local_root`]'s own doc
+    /// comment), every particle keeps ticking under the full topology
+    /// regardless of the local-subgraph restriction.
     pub fn tick(&mut self, dt: f32) -> LayoutTickResult {
         let topo = self.graph.topology();
-        self.layout.tick(&topo, &mut self.particles, dt)
+        match &self.filter {
+            Some(filter) => {
+                let filtered_edges: Vec<SimEdge> = topo
+                    .edges
+                    .iter()
+                    .copied()
+                    .filter(|e| filter.matches(&self.graph, e.from) && filter.matches(&self.graph, e.to))
+                    .collect();
+                let filtered_topo =
+                    SimTopology { node_count: topo.node_count, edges: &filtered_edges, degree: topo.degree, radii: topo.radii };
+                self.layout.tick(&filtered_topo, &mut self.particles, dt)
+            }
+            None => self.layout.tick(&topo, &mut self.particles, dt),
+        }
     }
 
     /// Seed every particle's `(x, y)` from `positions` (mirrors
@@ -498,18 +596,53 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         // same-frame answer, and the plan's GPU escalation is scoped to
         // hover refinement only (see `GraphEngine3D::apply_gpu_pick_result`'s
         // own doc comment). Candidates exclude any node currently hidden
-        // by a collapsed cluster (see [`GraphEngine3D::pick_candidates`]).
+        // by a collapsed cluster or the filter/local-subgraph exclusion
+        // set (see [`GraphEngine3D::pick_candidates`]).
         let aspect = (viewport.width / viewport.height.max(1.0)) as f32;
         let camera = self.camera.to_perspective(aspect);
         let (ray_origin, ray_dir) = pick3d::screen_to_ray(&camera, viewport, (x, y));
         let candidates = self.pick_candidates();
         if let Some(hit) = pick3d::nearest_node_3d(&self.graph, &self.particles, ray_origin, ray_dir, &candidates) {
             if let Some(p) = self.particles.get(hit.index()) {
-                let plane_point = Vec3::new(p.x, p.y, p.z);
+                let anchor_pos = Vec3::new(p.x, p.y, p.z);
+                let plane_point = anchor_pos;
                 let plane_normal = (camera.target - camera.eye).normalize_or_zero();
                 self.mode = Pointer3DMode::Dragging { node: hit, plane_point, plane_normal };
-                if let Some(pm) = self.particles.get_mut(hit.index()) {
-                    pm.pin3(plane_point.x, plane_point.y, plane_point.z);
+
+                // Group-drag wave: dragging a node already IN the
+                // multi-selection moves the WHOLE selection together;
+                // dragging anything else drags just that one node (and,
+                // on release, Replace-selects it — see `on_pointer_up`).
+                // Mirrors 2D's own `on_pointer_down` group-drag decision
+                // (`engine.rs`) exactly.
+                let was_selected = self.selection.contains(&hit);
+                self.drag_was_group = was_selected;
+                let group: Vec<NodeIndex> = if was_selected { self.selection.iter().copied().collect() } else { vec![hit] };
+                self.drag_group = group
+                    .into_iter()
+                    .map(|node| {
+                        let offset = self
+                            .particles
+                            .get(node.index())
+                            .map(|mp| Vec3::new(mp.x, mp.y, mp.z) - anchor_pos)
+                            .unwrap_or(Vec3::ZERO);
+                        DragMember3 { node, offset }
+                    })
+                    .collect();
+
+                // Pin every member immediately at its own current
+                // position (`anchor_pos + offset` — a no-op positionally
+                // for the FIRST frame, since `offset` was just derived
+                // from that same current position; reproduces this
+                // engine's pre-group-drag single-node behavior
+                // byte-for-byte for a solo drag, where `offset ==
+                // Vec3::ZERO`). Every subsequent `PointerMoved` re-pins
+                // from the anchor's ray-plane intersection instead.
+                for member in &self.drag_group {
+                    if let Some(pm) = self.particles.get_mut(member.node.index()) {
+                        let target = anchor_pos + member.offset;
+                        pm.pin3(target.x, target.y, target.z);
+                    }
                 }
                 // Sustained reheat (mirrors 2D's own drag contract,
                 // `engine.rs`): hold alpha at the drag target for the
@@ -555,7 +688,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 self.mode = Pointer3DMode::Panning { last: (x, y), button };
                 handled = true;
             }
-            Pointer3DMode::Dragging { node, plane_point, plane_normal } => {
+            Pointer3DMode::Dragging { plane_point, plane_normal, .. } => {
                 // Camera-parallel drag plane, fixed at drag-start (the
                 // camera itself never orbits/pans/dollies during a node
                 // drag — `on_pointer_down` chose `Dragging` INSTEAD of
@@ -564,12 +697,22 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 // CURRENT cursor position every move and intersect it
                 // against that same plane (see
                 // `pick3d::ray_plane_intersection`'s own doc comment).
+                // Group-drag wave: the resolved anchor world position
+                // feeds EVERY member of `self.drag_group` via its own
+                // fixed `offset` (the shared-delta shift — see
+                // [`DragMember3`]'s own doc comment); a solo drag's
+                // one-element group (`offset == Vec3::ZERO`) reproduces
+                // this engine's pre-group-drag single-node behavior
+                // byte-for-byte.
                 let aspect = (viewport.width / viewport.height.max(1.0)) as f32;
                 let camera = self.camera.to_perspective(aspect);
                 let (ray_origin, ray_dir) = pick3d::screen_to_ray(&camera, viewport, (x, y));
-                if let Some(world) = pick3d::ray_plane_intersection(ray_origin, ray_dir, plane_point, plane_normal) {
-                    if let Some(p) = self.particles.get_mut(node.index()) {
-                        p.pin3(world.x, world.y, world.z);
+                if let Some(anchor_world) = pick3d::ray_plane_intersection(ray_origin, ray_dir, plane_point, plane_normal) {
+                    for member in &self.drag_group {
+                        if let Some(p) = self.particles.get_mut(member.node.index()) {
+                            let target = anchor_world + member.offset;
+                            p.pin3(target.x, target.y, target.z);
+                        }
                     }
                 }
                 handled = true;
@@ -641,10 +784,20 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// or a drag" question for a node hit the way there is for
     /// background) and applies the STICKY drag-end policy (owner order,
     /// same default [`crate::engine::DragEndPolicy::Sticky`] the 2D
-    /// engine uses): the node stays pinned exactly where the last
-    /// `PointerMoved` left it — `fx`/`fy`/`fz` already hold that
-    /// position via `pin3`, nothing further to do here beyond releasing
-    /// `alpha_target`.
+    /// engine uses): every member of [`Self::drag_group`] stays pinned
+    /// exactly where the last `PointerMoved` left it — `fx`/`fy`/`fz`
+    /// already hold that position via `pin3`, nothing further to do here
+    /// beyond releasing `alpha_target`. 3D is Sticky-ONLY (no
+    /// `DragEndPolicy::RestorePrior` equivalent — see [`DragMember3`]'s
+    /// own doc comment).
+    ///
+    /// **Group-drag wave**: mirrors 2D's own `on_pointer_up`'s
+    /// `DraggingNode` arm branching exactly (`engine.rs`) — a group drag
+    /// (the anchor was already in [`Self::selection`] at drag-start, see
+    /// [`Self::drag_was_group`]) keeps the WHOLE selection selected as-is
+    /// (only [`Self::selected`], the facts-panel "last clicked" value,
+    /// moves to the physically-grabbed anchor); a solo drag
+    /// Replace-selects the dragged node ([`GraphEngine3D::select`]).
     fn on_pointer_up(&mut self, x: f64, y: f64, button: MouseButton, viewport: Rect) -> bool {
         let mode = self.mode;
         if let Pointer3DMode::Panning { button: active_button, .. } = mode {
@@ -671,7 +824,20 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             Pointer3DMode::Panning { .. } => true,
             Pointer3DMode::Dragging { node, .. } => {
                 self.layout.set_alpha_target(0.0);
-                self.select(node);
+                let was_group = self.drag_was_group;
+                self.drag_group.clear();
+                if was_group {
+                    // The whole multi-selection just moved together — it
+                    // STAYS selected as-is; only the facts-panel "last
+                    // clicked" value moves to the physically-grabbed
+                    // anchor (mirrors 2D's own `on_pointer_up` exactly).
+                    self.selected = Some(node);
+                } else {
+                    // A single un-selected node was dragged solo —
+                    // Replace-selects itself on release (matches the
+                    // pre-group-drag behavior exactly for this case).
+                    self.select(node);
+                }
                 true
             }
             Pointer3DMode::BoxSelecting { origin, mode, .. } => {
@@ -687,9 +853,8 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// the CURRENT camera state. Both hover ([`GraphEngine3D::on_pointer_moved`])
     /// and click-select ([`GraphEngine3D::on_pointer_up`]) funnel
     /// through this one function so they can never diverge on which
-    /// camera/candidate set they pick against. Candidates exclude any
-    /// node hidden by a collapsed cluster (see
-    /// [`GraphEngine3D::pick_candidates`]).
+    /// camera/candidate set they pick against. Candidates exclude every
+    /// currently-excluded node (see [`GraphEngine3D::pick_candidates`]).
     fn pick_at(&self, x: f64, y: f64, viewport: Rect) -> Option<NodeIndex> {
         let aspect = (viewport.width / viewport.height.max(1.0)) as f32;
         let camera = self.camera.to_perspective(aspect);
@@ -698,25 +863,73 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         pick3d::nearest_node_3d(&self.graph, &self.particles, origin, dir, &candidates)
     }
 
-    /// Node ids currently eligible for hover/click picking, box-select
-    /// containment, and label emission — every graph node MINUS anything
-    /// hidden by a collapsed cluster (cluster wave — mirrors the 2D
-    /// engine's own visible-set discipline, `GraphEngine::visible_nodes`/
-    /// `compute_excluded_nodes`; 3D has no viewport-culling pass of its
-    /// own yet, see [`GraphEngine3D::all_node_ids`]'s own doc comment, so
-    /// cluster-hidden exclusion is the only exclusion source this engine
-    /// has). Scene-instance emission ([`GraphEngine3D::build_scene`])
-    /// applies the SAME exclusion independently at the `render3d`
-    /// function level (it needs a `HashSet` for O(1) membership, not a
-    /// `Vec`) — both derive from the identical
-    /// `self.clusters.hidden_nodes()` source, so a node can never be
-    /// pickable yet invisible, or vice versa.
+    /// Node ids currently eligible for hover/click/drag picking, box-select
+    /// containment, and label emission — every graph node MINUS
+    /// [`GraphEngine3D::compute_excluded_nodes_3d`]'s union (cluster-hidden
+    /// ∪ local-subgraph-excluded ∪ filter-excluded — filter/local-subgraph
+    /// wave; cluster wave — mirrors the 2D engine's own visible-set
+    /// discipline, `GraphEngine::visible_nodes`/`compute_excluded_nodes`;
+    /// 3D has no viewport-culling pass of its own yet, see
+    /// [`GraphEngine3D::all_node_ids`]'s own doc comment). Scene-instance
+    /// emission ([`GraphEngine3D::build_scene`]) applies the SAME
+    /// exclusion independently at the `render3d` function level — both
+    /// derive from the identical `compute_excluded_nodes_3d` source, so a
+    /// node can never be pickable yet invisible, or vice versa.
     fn pick_candidates(&self) -> Vec<NodeIndex> {
-        if !self.clusters.any_collapsed() {
+        let excluded = self.compute_excluded_nodes_3d();
+        if excluded.is_empty() {
             return self.all_node_ids.clone();
         }
-        let hidden: HashSet<NodeIndex> = self.clusters.hidden_nodes().collect();
-        self.all_node_ids.iter().copied().filter(|id| !hidden.contains(id)).collect()
+        self.all_node_ids.iter().copied().filter(|id| !excluded.contains(id)).collect()
+    }
+
+    /// The union of every 3D exclusion source (filter/local-subgraph
+    /// wave) — cluster-hidden (pre-existing) ∪ local-subgraph-excluded ∪
+    /// filter-excluded. Mirrors [`crate::engine::GraphEngine::
+    /// compute_excluded_nodes`] exactly, one wave later: the SAME choke
+    /// point [`GraphEngine3D::pick_candidates`] (hover/click/drag picking,
+    /// box-select containment, `visible_labels`' candidate set — all
+    /// routed through `pick_candidates`) and [`GraphEngine3D::build_scene`]
+    /// (no node instance, no touching edges — the wave-1 `hidden` param
+    /// plumbing, no second parallel mechanism) both feed from.
+    fn compute_excluded_nodes_3d(&self) -> HashSet<NodeIndex> {
+        let mut excluded: HashSet<NodeIndex> =
+            if self.clusters.any_collapsed() { self.clusters.hidden_nodes().collect() } else { HashSet::new() };
+
+        if let Some((root, depth)) = self.local_root {
+            let local_set = self.local_bfs_nodes_3d(root, depth);
+            for (id, _) in self.graph.nodes() {
+                if !local_set.contains(&id) {
+                    excluded.insert(id);
+                }
+            }
+        }
+
+        if let Some(filter) = &self.filter {
+            for (id, _) in self.graph.nodes() {
+                if !filter.matches(&self.graph, id) {
+                    excluded.insert(id);
+                }
+            }
+        }
+
+        excluded
+    }
+
+    /// BFS depth-`depth` node set from `root` (filter/local-subgraph
+    /// wave) — mirrors [`crate::engine::GraphEngine::local_bfs_nodes`]
+    /// exactly: reuses [`Graph::neighborhood_focus_keys_depth`]'s existing
+    /// BFS rather than a parallel walk, converting its tagged `FocusSet`
+    /// keys back to plain `NodeIndex` via the even/odd convention
+    /// `graph.rs`'s `From<NodeIndex> for u64` already established (node
+    /// keys are even).
+    fn local_bfs_nodes_3d(&self, root: NodeIndex, depth: u8) -> HashSet<NodeIndex> {
+        self.graph
+            .neighborhood_focus_keys_depth(root, depth)
+            .into_iter()
+            .filter(|k| k % 2 == 0)
+            .map(|k| NodeIndex((k >> 1) as u32))
+            .collect()
     }
 
     /// Wheel-to-dolly, gated on the cursor currently sitting over
@@ -781,6 +994,61 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// set_label_halo`]'s own doc comment for the same reasoning.
     pub fn set_label_halo(&mut self, color: impl Into<String>) {
         self.label_halo = color.into();
+    }
+
+    // ── Filter / local subgraph (filter/local-subgraph wave — mirrors
+    // `GraphEngine`'s own `set_local_root`/`local_root`/`set_filter`/
+    // `filter` API 1:1, reusing the exact SAME [`FilterSpec`] type) ──────
+
+    /// Restrict the visible/pick/label set to the BFS depth-`depth`
+    /// neighborhood of `root` — everything else is EXCLUDED entirely (not
+    /// dimmed), the same mechanism a collapsed cluster's hidden members
+    /// already use (see [`GraphEngine3D::compute_excluded_nodes_3d`]).
+    /// Mirrors [`crate::engine::GraphEngine::set_local_root`] exactly:
+    /// VIEW-ONLY — [`GraphEngine3D::tick`] keeps ticking every particle
+    /// under the full, unrestricted force topology regardless (contrast
+    /// [`GraphEngine3D::set_filter`], which DOES change the force
+    /// topology). `depth` defaults to [`DEFAULT_LOCAL_DEPTH_3D`] (`2`)
+    /// when `None`. `root = None` restores the full view.
+    ///
+    /// **Divergence from 2D, by explicit task instruction**: does NOT
+    /// auto-fit the camera. 2D's own `set_local_root` animates
+    /// `zoom_to_fit` on every change because `GraphEngine` owns a
+    /// `canvas_rect` of its own; this engine owns no viewport (every
+    /// other viewport-needing method here — `on_event`/`fit_view`/
+    /// `box_select` — already takes one explicitly), so there is no
+    /// implicit aspect ratio to fit against. The caller decides when to
+    /// fit and with which real aspect — see [`GraphEngine3D::fit_view`];
+    /// `force_graph_demo`'s own `set_local_root` forwarding calls
+    /// `fit_view(real_aspect)` right after this, mirroring 2D's own
+    /// "activation frames the local neighborhood" convention at the
+    /// demo/caller layer instead of inside the engine.
+    pub fn set_local_root(&mut self, root: Option<NodeIndex>, depth: Option<u8>) {
+        self.local_root = root.map(|node| (node, depth.unwrap_or(DEFAULT_LOCAL_DEPTH_3D)));
+    }
+
+    /// Current local-subgraph root + depth, if active. See
+    /// [`GraphEngine3D::set_local_root`].
+    pub fn local_root(&self) -> Option<(NodeIndex, u8)> {
+        self.local_root
+    }
+
+    /// Query filter — mirrors [`crate::engine::GraphEngine::set_filter`]
+    /// exactly, including the "removed from the sim" scope boundary
+    /// documented on that method's own doc comment: filtered-out nodes
+    /// are EXCLUDED from render/pick/labels (the same mechanism
+    /// [`GraphEngine3D::set_local_root`] uses) AND from the force
+    /// topology fed to `Layout::tick` every subsequent
+    /// [`GraphEngine3D::tick`] call (see that method's own doc comment).
+    /// Reheats so the re-settle under the new topology is visible.
+    pub fn set_filter(&mut self, filter: Option<FilterSpec>) {
+        self.filter = filter;
+        self.layout.reheat(REHEAT_ALPHA);
+    }
+
+    /// Current query filter, if active. See [`GraphEngine3D::set_filter`].
+    pub fn filter(&self) -> Option<&FilterSpec> {
+        self.filter.as_ref()
     }
 
     // ── Cluster collapse/expand (cluster wave — mirrors `GraphEngine`'s
@@ -997,17 +1265,22 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// for the headless-GPU proof that the result actually renders
     /// visually-distinct pixels.
     ///
-    /// **Cluster wave**: nodes hidden by a collapsed cluster (every member
-    /// except that cluster's own representative) emit NO node instance and
-    /// NO edges touching them (`hidden` forwarded to
-    /// `render3d::build_node_instances`/`build_edge_instances`); the
+    /// **Cluster wave, extended by the filter/local-subgraph wave**: nodes
+    /// in [`GraphEngine3D::compute_excluded_nodes_3d`]'s union
+    /// (cluster-hidden — every member except that cluster's own
+    /// representative — ∪ local-subgraph-excluded ∪ filter-excluded) emit
+    /// NO node instance and NO edges touching them (`hidden` forwarded to
+    /// `render3d::build_node_instances`/`build_edge_instances` — the SAME
+    /// wave-1 `hidden` param, no second parallel mechanism); the
     /// aggregated cross-cluster substitute edges are appended separately
     /// via [`crate::render3d::build_cluster_edge_instances`] — mirrors the
     /// 2D engine's own `GraphEngine::draw`'s separate `draw_edges`/
-    /// `draw_cluster_edges` calls. The representative's own scaled-up
-    /// radius needs no special-case here — `ClusterRegistry::collapse_3d`
-    /// already bumped `graph`'s own `node.radius` field in place, which
-    /// `build_node_instances` reads unconditionally.
+    /// `draw_cluster_edges` calls (which is likewise NOT filtered by the
+    /// local/filter exclusion, only by the cluster registry itself). The
+    /// representative's own scaled-up radius needs no special-case here —
+    /// `ClusterRegistry::collapse_3d` already bumped `graph`'s own
+    /// `node.radius` field in place, which `build_node_instances` reads
+    /// unconditionally.
     ///
     /// **Wave 5**: while [`GraphEngine3D::grid_enabled`], also appends the
     /// ground-reference grid's own instanced lines
@@ -1018,8 +1291,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// caller not using the grid can pass any positive value. A no-op
     /// (no grid appended) while there isn't a single particle yet.
     pub fn build_scene(&self, viewport_height_px: f64) -> Scene3D {
-        let hidden: HashSet<NodeIndex> =
-            if self.clusters.any_collapsed() { self.clusters.hidden_nodes().collect() } else { HashSet::new() };
+        let hidden = self.compute_excluded_nodes_3d();
         let mut scene = crate::render3d::build_scene(&self.graph, &self.particles, &self.node_mesh, &self.edge_mesh, &hidden);
         scene.nodes.extend(crate::render3d::build_cluster_edge_instances(&self.particles, &self.edge_mesh, &self.clusters));
         if self.grid_enabled {
@@ -1264,8 +1536,12 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         let max_degree = self.graph.nodes().map(|(id, _)| self.graph.degree(id)).max().unwrap_or(0).max(1);
         let zoom_analog = (Camera3D::default().distance / self.camera.distance.max(1e-3)) as f64;
         let forced: HashSet<NodeIndex> = self.clusters.collapsed_clusters().map(|c| c.representative).collect();
-        let hidden: HashSet<NodeIndex> =
-            if self.clusters.any_collapsed() { self.clusters.hidden_nodes().collect() } else { HashSet::new() };
+        // Filter/local-subgraph wave: the selection-ring skip now uses the
+        // FULL exclusion union (cluster-hidden ∪ local ∪ filter), not just
+        // cluster-hidden — mirrors 2D's own `draw_nodes`, which only ever
+        // iterates `ctx.visible` (a selected node excluded by ANY source
+        // gets no ring, even though it stays in `self.selection`).
+        let hidden = self.compute_excluded_nodes_3d();
 
         let mut labels_drawn = 0usize;
         for (id, sx, sy) in self.visible_labels(camera, viewport) {
@@ -2574,5 +2850,323 @@ mod tests {
         engine.unpin_selection();
         assert!(!engine.particles[members[0].index()].is_pinned_3d());
         assert!(!engine.particles[members[1].index()].is_pinned_3d());
+    }
+
+    // ── 3D interaction parity wave 2, item 3: group-drag ────────────────
+
+    #[test]
+    fn group_drag_preserves_relative_offsets_via_a_single_shared_delta() {
+        let mut engine = spread_triangle_engine();
+        engine.apply_selection([NodeIndex(0), NodeIndex(1)], SelectMode::Replace);
+
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        let (sx0, sy0) = pick3d::project_world_to_screen(&camera, Vec3::new(-40.0, 0.0, 0.0), viewport)
+            .expect("node 0 must project inside the default orbit view");
+
+        let anchor_before = Vec3::new(engine.particles[0].x, engine.particles[0].y, engine.particles[0].z);
+        let member_before = Vec3::new(engine.particles[1].x, engine.particles[1].y, engine.particles[1].z);
+        let unselected_before = engine.particles[2];
+        let offset = member_before - anchor_before;
+
+        // Drag the anchor (node 0), already a member of `selection`.
+        assert!(engine.on_event(&PlatformEvent::PointerDown { x: sx0, y: sy0, button: MouseButton::Left }, viewport));
+        let move_x = sx0 + 25.0;
+        let move_y = sy0 + 15.0;
+        assert!(engine.on_event(&PlatformEvent::PointerMoved { x: move_x, y: move_y }, viewport));
+
+        // Independently recompute the expected anchor world position via
+        // the SAME ray-plane primitive `on_pointer_moved` uses — NOT
+        // copy-pasted from production — to actually prove the wiring.
+        let (origin, dir) = pick3d::screen_to_ray(&camera, viewport, (move_x, move_y));
+        let plane_normal = (camera.target - camera.eye).normalize_or_zero();
+        let expected_anchor = pick3d::ray_plane_intersection(origin, dir, anchor_before, plane_normal)
+            .expect("the moved cursor ray must still cross the drag plane");
+        let expected_member = expected_anchor + offset;
+
+        let p0 = engine.particles[0];
+        let p1 = engine.particles[1];
+        let p2 = engine.particles[2];
+        assert!(
+            (Vec3::new(p0.x, p0.y, p0.z) - expected_anchor).length() < 1e-3,
+            "the anchor must move to the exact ray-plane intersection"
+        );
+        assert!(
+            (Vec3::new(p1.x, p1.y, p1.z) - expected_member).length() < 1e-3,
+            "the other selected member must keep its EXACT relative offset from the anchor, not drift"
+        );
+        assert_eq!(
+            (p2.x, p2.y, p2.z),
+            (unselected_before.x, unselected_before.y, unselected_before.z),
+            "an unselected node must never move during a group drag"
+        );
+        assert!(p0.is_pinned_3d());
+        assert!(p1.is_pinned_3d());
+        assert!(!p2.is_pinned_3d());
+
+        assert!(engine.on_event(&PlatformEvent::PointerUp { x: move_x, y: move_y, button: MouseButton::Left }, viewport));
+        // Group drag keeps the WHOLE selection selected; only `selected`
+        // (facts-panel value) moves to the physically-grabbed anchor.
+        assert_eq!(engine.selected(), Some(NodeIndex(0)));
+        assert_eq!(engine.selection, [NodeIndex(0), NodeIndex(1)].into_iter().collect());
+
+        // Sticky release: both members stay held across subsequent ticks.
+        let released0 = (engine.particles[0].x, engine.particles[0].y, engine.particles[0].z);
+        let released1 = (engine.particles[1].x, engine.particles[1].y, engine.particles[1].z);
+        for _ in 0..30 {
+            engine.tick(1.0 / 60.0);
+        }
+        assert_eq!((engine.particles[0].x, engine.particles[0].y, engine.particles[0].z), released0);
+        assert_eq!((engine.particles[1].x, engine.particles[1].y, engine.particles[1].z), released1);
+        assert!(engine.particles[0].is_pinned_3d(), "Sticky policy must leave every group member pinned after release");
+        assert!(engine.particles[1].is_pinned_3d());
+    }
+
+    #[test]
+    fn dragging_a_non_selected_node_drags_just_it_and_replace_selects_it() {
+        let mut engine = spread_triangle_engine();
+        engine.apply_selection([NodeIndex(1), NodeIndex(2)], SelectMode::Replace);
+
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        let (sx0, sy0) = pick3d::project_world_to_screen(&camera, Vec3::new(-40.0, 0.0, 0.0), viewport)
+            .expect("node 0 must project inside the default orbit view");
+
+        let before1 = engine.particles[1];
+        let before2 = engine.particles[2];
+
+        assert!(engine.on_event(&PlatformEvent::PointerDown { x: sx0, y: sy0, button: MouseButton::Left }, viewport));
+        assert!(engine.on_event(&PlatformEvent::PointerMoved { x: sx0 + 20.0, y: sy0 + 8.0 }, viewport));
+
+        assert_eq!(
+            (engine.particles[1].x, engine.particles[1].y, engine.particles[1].z),
+            (before1.x, before1.y, before1.z),
+            "a member of the OLD (unrelated) selection must not move — dragging node 0 is a SOLO drag"
+        );
+        assert_eq!((engine.particles[2].x, engine.particles[2].y, engine.particles[2].z), (before2.x, before2.y, before2.z));
+        assert!(!engine.particles[1].is_pinned_3d());
+        assert!(!engine.particles[2].is_pinned_3d());
+
+        assert!(engine.on_event(&PlatformEvent::PointerUp { x: sx0 + 20.0, y: sy0 + 8.0, button: MouseButton::Left }, viewport));
+        assert_eq!(engine.selected(), Some(NodeIndex(0)));
+        assert_eq!(
+            engine.selection,
+            std::iter::once(NodeIndex(0)).collect(),
+            "a solo drag must Replace-select ONLY the dragged node, dropping the prior selection"
+        );
+    }
+
+    // ── 3D interaction parity wave 2, item 4: filter + local subgraph ───
+
+    /// `a - b - c - d` chain on a line — mirrors `crate::engine`'s own
+    /// `chain4_engine_on_a_line` test fixture.
+    fn chain4_engine_3d() -> (GraphEngine3D<(), (), ForceDirectedLayout3D>, [NodeIndex; 4]) {
+        let mut graph = DemoGraph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let b = graph.push_node((), "b", "x", 4.0);
+        let c = graph.push_node((), "c", "x", 4.0);
+        let d = graph.push_node((), "d", "x", 4.0);
+        graph.push_edge(a, b, 1.0, ());
+        graph.push_edge(b, c, 1.0, ());
+        graph.push_edge(c, d, 1.0, ());
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> = GraphEngine3D::new(graph, ForceDirectedLayout3D::default());
+        engine.particles[a.index()] = Particle::at3(0.0, 0.0, 0.0);
+        engine.particles[b.index()] = Particle::at3(20.0, 0.0, 0.0);
+        engine.particles[c.index()] = Particle::at3(40.0, 0.0, 0.0);
+        engine.particles[d.index()] = Particle::at3(60.0, 0.0, 0.0);
+        (engine, [a, b, c, d])
+    }
+
+    #[test]
+    fn set_local_root_restricts_pick_candidates_to_exactly_the_bfs_depth_k_neighborhood_and_restores_on_clear() {
+        let (mut engine, [a, b, c, d]) = chain4_engine_3d();
+        assert_eq!(engine.pick_candidates().len(), 4, "sanity: all 4 nodes are candidates with no restriction");
+
+        engine.set_local_root(Some(b), Some(1));
+        let candidates: HashSet<NodeIndex> = engine.pick_candidates().into_iter().collect();
+        assert_eq!(candidates, [a, b, c].into_iter().collect(), "depth-1 from b in a 4-chain is exactly {{a,b,c}}");
+        assert_eq!(engine.local_root(), Some((b, 1)));
+
+        engine.set_local_root(None, None);
+        let candidates_full: HashSet<NodeIndex> = engine.pick_candidates().into_iter().collect();
+        assert_eq!(candidates_full, [a, b, c, d].into_iter().collect(), "clearing local_root restores the full candidate set");
+        assert!(engine.local_root().is_none());
+    }
+
+    #[test]
+    fn set_local_root_default_depth_is_two() {
+        let (mut engine, [a, b, _c, d]) = chain4_engine_3d();
+        engine.set_local_root(Some(a), None);
+        assert_eq!(engine.local_root(), Some((a, 2)));
+        let candidates: HashSet<NodeIndex> = engine.pick_candidates().into_iter().collect();
+        assert!(!candidates.contains(&d), "d is 3 hops from a — outside a depth-2 neighborhood");
+        assert!(candidates.contains(&b));
+    }
+
+    #[test]
+    fn set_local_root_excludes_nodes_from_build_scene_too() {
+        let (mut engine, _ids) = chain4_engine_3d();
+        engine.set_local_root(Some(NodeIndex(1)), Some(1));
+        let scene = engine.build_scene(600.0);
+        // Local set {a,b,c}: 3 node spheres + edges a-b/b-c survive (both
+        // endpoints inside); c-d touches the excluded node d and drops.
+        assert_eq!(scene.nodes.len(), 5, "excluded node d and its touching edge must be gone from the scene");
+    }
+
+    /// `a - b - c` chain where `b` gets a DIFFERENT category from `a`/`c`
+    /// — the fixture the 3D filter tests exclude `b` with (mirrors
+    /// `crate::engine`'s own `three_node_chain_with_a_hideable_middle`).
+    fn three_node_chain_with_a_hideable_middle_3d() -> (DemoGraph, NodeIndex, NodeIndex, NodeIndex) {
+        let mut graph = DemoGraph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let b = graph.push_node((), "b", "hidden", 4.0);
+        let c = graph.push_node((), "c", "x", 4.0);
+        graph.push_edge(a, b, 1.0, ());
+        graph.push_edge(b, c, 1.0, ());
+        (graph, a, b, c)
+    }
+
+    /// A filtered-out node is excluded from the scene/picking AND from the
+    /// force topology fed to the layout: dropping its edges measurably
+    /// changes where the SURVIVING nodes settle, compared to an
+    /// otherwise-identical unfiltered run — mirrors `crate::engine`'s own
+    /// `filter_removes_a_node_from_render_and_from_the_force_topology_so_settled_positions_differ`
+    /// in 3D.
+    #[test]
+    fn filter_removes_a_node_from_scene_and_picking_and_changes_settled_positions() {
+        let settle = |engine: &mut GraphEngine3D<(), (), ForceDirectedLayout3D>| {
+            for _ in 0..600 {
+                engine.tick(1.0 / 60.0);
+            }
+        };
+
+        let (graph, a, _b, _c) = three_node_chain_with_a_hideable_middle_3d();
+        let mut baseline: GraphEngine3D<(), (), ForceDirectedLayout3D> = GraphEngine3D::new(graph, ForceDirectedLayout3D::default());
+        baseline.seed_positions(&[(-40.0, 0.0), (0.0, 0.0), (40.0, 0.0)]);
+        settle(&mut baseline);
+        let baseline_a = baseline.particles[a.index()];
+
+        let (graph2, a2, b2, c2) = three_node_chain_with_a_hideable_middle_3d();
+        let mut filtered: GraphEngine3D<(), (), ForceDirectedLayout3D> = GraphEngine3D::new(graph2, ForceDirectedLayout3D::default());
+        filtered.seed_positions(&[(-40.0, 0.0), (0.0, 0.0), (40.0, 0.0)]);
+        filtered.set_filter(Some(FilterSpec { categories: Some(vec!["x".to_owned()]), ..Default::default() }));
+
+        let candidates: HashSet<NodeIndex> = filtered.pick_candidates().into_iter().collect();
+        assert!(!candidates.contains(&b2), "the filtered-out node must be excluded from picking");
+        assert!(candidates.contains(&a2));
+        assert!(candidates.contains(&c2));
+
+        let scene = filtered.build_scene(600.0);
+        // a/c spheres survive (b excluded); NEITHER edge survives — both
+        // a-b and b-c touch the excluded node b.
+        assert_eq!(scene.nodes.len(), 2, "the filtered-out node and every edge touching it must be gone from the scene");
+
+        settle(&mut filtered);
+        let filtered_a = filtered.particles[a2.index()];
+
+        let dist = ((baseline_a.x - filtered_a.x).powi(2) + (baseline_a.y - filtered_a.y).powi(2) + (baseline_a.z - filtered_a.z).powi(2))
+            .sqrt();
+        assert!(
+            dist > 1.0,
+            "losing the link-force pull toward the filtered-out node must measurably change where `a` settles in 3D too: \
+             baseline ({}, {}, {}) vs filtered ({}, {}, {}), dist {dist}",
+            baseline_a.x,
+            baseline_a.y,
+            baseline_a.z,
+            filtered_a.x,
+            filtered_a.y,
+            filtered_a.z
+        );
+    }
+
+    #[test]
+    fn filter_defaults_to_none_and_set_filter_none_clears_a_previous_filter() {
+        let (mut engine, _members, outside) = clustered_engine();
+        assert!(engine.filter().is_none());
+
+        engine.set_filter(Some(FilterSpec { categories: Some(vec!["cluster".to_owned()]), ..Default::default() }));
+        assert!(engine.filter().is_some());
+        let candidates: HashSet<NodeIndex> = engine.pick_candidates().into_iter().collect();
+        assert!(!candidates.contains(&outside), "the outside node's category (\"x\") fails the \"cluster\"-only filter");
+
+        engine.set_filter(None);
+        assert!(engine.filter().is_none());
+        let candidates_full: HashSet<NodeIndex> = engine.pick_candidates().into_iter().collect();
+        assert!(candidates_full.contains(&outside), "clearing the filter must restore the excluded node");
+    }
+
+    /// Star graph — root + 4 leaves, alternating categories `"keep"`/
+    /// `"drop"` — mirrors `crate::engine`'s own `star_graph_with_categories`.
+    fn star_graph_with_categories_3d() -> (DemoGraph, NodeIndex, [NodeIndex; 4]) {
+        let mut graph = DemoGraph::new();
+        let root = graph.push_node((), "root", "keep", 4.0);
+        let mut leaves = Vec::with_capacity(4);
+        for i in 0..4 {
+            let category = if i % 2 == 0 { "keep" } else { "drop" };
+            let leaf = graph.push_node((), format!("leaf{i}"), category, 4.0);
+            graph.push_edge(root, leaf, 1.0, ());
+            leaves.push(leaf);
+        }
+        (graph, root, [leaves[0], leaves[1], leaves[2], leaves[3]])
+    }
+
+    /// Filter and local-subgraph mode compose as an INTERSECTION in 3D too
+    /// — mirrors `crate::engine`'s own
+    /// `filter_and_local_mode_compose_as_an_intersection`.
+    #[test]
+    fn filter_and_local_mode_compose_as_an_intersection() {
+        let (graph, root, [l0, l1, l2, l3]) = star_graph_with_categories_3d();
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> = GraphEngine3D::new(graph, ForceDirectedLayout3D::default());
+        engine.seed_positions(&[(0.0, 0.0), (50.0, 0.0), (0.0, 50.0), (-50.0, 0.0), (0.0, -50.0)]);
+
+        engine.set_local_root(Some(root), Some(1));
+        engine.set_filter(Some(FilterSpec { categories: Some(vec!["keep".to_owned()]), ..Default::default() }));
+
+        let candidates: HashSet<NodeIndex> = engine.pick_candidates().into_iter().collect();
+        // BFS depth-1 from root = {root, l0, l1, l2, l3}; filter keeps
+        // only category "keep" = {root, l0, l2}. Intersection = {root, l0, l2}.
+        assert_eq!(candidates, [root, l0, l2].into_iter().collect());
+        assert!(!candidates.contains(&l1), "l1 fails the filter even though it's in the local BFS set");
+        assert!(!candidates.contains(&l3));
+    }
+
+    /// Triangle where the third node is otherwise box-selectable, but a
+    /// filter that keeps only `a`/`b`'s own category excludes it —
+    /// mirrors the fixture shape [`clustered_engine`]/[`spread_triangle_engine`]
+    /// already use, purpose-built here for a clean category split.
+    fn triangle_with_a_distinct_third_category() -> GraphEngine3D<(), (), ForceDirectedLayout3D> {
+        let mut graph = DemoGraph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let b = graph.push_node((), "b", "x", 4.0);
+        let c = graph.push_node((), "c", "y", 4.0);
+        graph.push_edge(a, b, 1.0, ());
+        graph.push_edge(b, c, 1.0, ());
+        graph.push_edge(c, a, 1.0, ());
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> = GraphEngine3D::new(graph, ForceDirectedLayout3D::default());
+        engine.particles[a.index()] = Particle::at3(-40.0, 0.0, 0.0);
+        engine.particles[b.index()] = Particle::at3(40.0, 0.0, 0.0);
+        engine.particles[c.index()] = Particle::at3(0.0, 40.0, 0.0);
+        engine
+    }
+
+    #[test]
+    fn box_select_ignores_excluded_nodes_as_candidates() {
+        let mut engine = triangle_with_a_distinct_third_category();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        let (sx2, sy2) = pick3d::project_world_to_screen(&camera, Vec3::new(0.0, 40.0, 0.0), viewport).expect("node c must project inside the view");
+
+        // Sanity: with no exclusion active, node c IS box-selectable.
+        engine.box_select((sx2 - 5.0, sy2 - 5.0), (sx2 + 5.0, sy2 + 5.0), SelectMode::Replace, viewport);
+        assert_eq!(engine.selection, std::iter::once(NodeIndex(2)).collect());
+        engine.clear_selection();
+
+        // Category filter that excludes node c ("y") but keeps a/b ("x").
+        engine.set_filter(Some(FilterSpec { categories: Some(vec!["x".to_owned()]), ..Default::default() }));
+        engine.box_select((sx2 - 5.0, sy2 - 5.0), (sx2 + 5.0, sy2 + 5.0), SelectMode::Replace, viewport);
+        assert!(engine.selection.is_empty(), "a filter-excluded node must never be a box-select candidate");
     }
 }
