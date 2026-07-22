@@ -300,7 +300,11 @@ pub enum SelectMode {
 /// Shift-alone for the undecorated (Replace) mode and reserves the two
 /// two-key chords for Union/Diff — see `uzor-graph/CLAUDE.md`'s
 /// divergence log for the full reasoning.
-fn box_select_mode_for(modifiers: ModifierKeys) -> Option<SelectMode> {
+///
+/// `pub(crate)` (not private) so [`crate::engine3d::GraphEngine3D`]'s own
+/// box-select entry point reuses this EXACT modifier mapping rather than
+/// a duplicated copy — the 3D box-select wave.
+pub(crate) fn box_select_mode_for(modifiers: ModifierKeys) -> Option<SelectMode> {
     if !modifiers.shift {
         return None;
     }
@@ -316,8 +320,10 @@ fn box_select_mode_for(modifiers: ModifierKeys) -> Option<SelectMode> {
 /// Corner-normalize two arbitrary screen points into a non-negative-size
 /// `Rect` — shared by [`GraphEngine::box_select_rect`] (live overlay) and
 /// [`GraphEngine::box_select`] (final containment test), so the drawn
-/// rectangle and the actually-tested area can never diverge.
-fn normalized_rect(a: (f64, f64), b: (f64, f64)) -> Rect {
+/// rectangle and the actually-tested area can never diverge. `pub(crate)`
+/// so [`crate::engine3d::GraphEngine3D`]'s own box-select reuses this
+/// exact helper (3D box-select wave) instead of a duplicated copy.
+pub(crate) fn normalized_rect(a: (f64, f64), b: (f64, f64)) -> Rect {
     let x = a.0.min(b.0);
     let y = a.1.min(b.1);
     Rect::new(x, y, (a.0 - b.0).abs(), (a.1 - b.1).abs())

@@ -20,7 +20,7 @@
 //! select half — see that method's own doc comment for the Wave 3
 //! overlay-draw scope note).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use glam::Vec3;
@@ -31,7 +31,8 @@ use uzor_figures::guide::text_protect::fill_text_with_halo;
 use uzor_urx_3d::{Mesh, MeshLit, PerspectiveCamera, Scene3D};
 
 use crate::camera3d::Camera3D;
-use crate::engine::{NodeFacts, DEFAULT_LABEL_HALO};
+use crate::cluster::{ClusterRegistry, GroupId};
+use crate::engine::{box_select_mode_for, normalized_rect, NodeFacts, SelectMode, DEFAULT_LABEL_HALO};
 use crate::graph::{Graph, NodeIndex};
 use crate::interaction::pick3d;
 use crate::label_grid;
@@ -152,6 +153,22 @@ enum Pointer3DMode {
     /// [`pick3d::ray_plane_intersection`]'s own doc comment for why a
     /// camera-parallel plane, not the ray's first world-surface hit.
     Dragging { node: NodeIndex, plane_point: Vec3, plane_normal: Vec3 },
+    /// Box-select drag (cluster/selection wave — 2D-parity decision:
+    /// mirrors [`crate::engine::GraphEngine`]'s own `PointerMode::
+    /// BoxSelecting`). **REPURPOSES 3D's own former "Shift+left-drag
+    /// pans" gesture** — held Shift (alone, or with Ctrl/Alt) now ALWAYS
+    /// starts a box-select instead, exactly mirroring 2D's own
+    /// `box_select_mode_for` precedence; plain MIDDLE-drag pan
+    /// (`on_pan_pointer_down`, dispatched from `on_event`'s own separate
+    /// `MouseButton::Middle` branch) is UNCHANGED and remains the only
+    /// way to pan the 3D camera. `origin` is the fixed down-point,
+    /// `current` tracks the live cursor (what
+    /// [`GraphEngine3D::box_select_rect`] reads for the rubber-band
+    /// overlay); `mode` is resolved ONCE at drag-start from the held
+    /// modifiers (see [`box_select_mode_for`]) and never re-resolved for
+    /// the rest of the gesture — same convention every other
+    /// `Pointer3DMode` variant already follows.
+    BoxSelecting { origin: (f64, f64), current: (f64, f64), mode: SelectMode },
 }
 
 /// Sustained `alphaTarget` a node drag holds the sim at while active
@@ -159,6 +176,13 @@ enum Pointer3DMode {
 /// convention in spirit though not value — 2D's engine.rs constant is
 /// private and 3D's drag physics needs its own tuning pass regardless).
 const NODE_DRAG_ALPHA_TARGET: f32 = 0.3;
+
+/// Alpha to reheat the 3D sim to after a cluster expands or a node is
+/// unpinned (cluster/selection wave) — mirrors the 2D engine's own
+/// `DRAG_REHEAT_ALPHA` convention (`engine.rs`), same value: enough to
+/// visibly resettle the local neighborhood without a full
+/// restart-from-scratch jolt.
+const REHEAT_ALPHA: f32 = 0.35;
 
 /// Shared unit-sphere node mesh geometry (plan §1.3) — latitude/longitude
 /// resolution tuned for a smooth silhouette at typical node screen sizes
@@ -219,6 +243,22 @@ pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     pub camera: Camera3D,
     pub hovered: Option<NodeIndex>,
     pub selected: Option<NodeIndex>,
+    /// The current multi-selection (cluster/selection wave — mirrors
+    /// [`crate::engine::GraphEngine::selection`] exactly, including the
+    /// "`selected` = last individually clicked, `selection` = the bulk
+    /// set box-select/`apply_selection` mutate" separation: a click
+    /// (`GraphEngine3D::select`) sets BOTH to `{node}`, but
+    /// [`GraphEngine3D::apply_selection`]/[`GraphEngine3D::box_select`]
+    /// touch ONLY this field). Iterated in deterministic ascending
+    /// `NodeIndex` order (`BTreeSet`).
+    pub selection: BTreeSet<NodeIndex>,
+    /// Caller-declared cluster collapse/expand registry (cluster wave) —
+    /// mirrors [`crate::engine::GraphEngine::clusters`]; the registry
+    /// struct itself is engine-agnostic (see `crate::cluster`'s own doc
+    /// comment), the position math the 2D/3D paths drive it through
+    /// differs (`ClusterRegistry::collapse`/`expand` vs.
+    /// `ClusterRegistry::collapse_3d`/`expand_3d`).
+    pub clusters: ClusterRegistry,
     /// Shared unit sphere every node instances from (plan §1.3) — built
     /// once at construction, never mutated.
     node_mesh: Arc<MeshLit>,
@@ -292,6 +332,8 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             camera: Camera3D::default(),
             hovered: None,
             selected: None,
+            selection: BTreeSet::new(),
+            clusters: ClusterRegistry::default(),
             node_mesh: Arc::new(MeshLit::sphere(1.0, NODE_SPHERE_RINGS, NODE_SPHERE_SLICES, [1.0, 1.0, 1.0, 1.0])),
             edge_mesh: Arc::new(Mesh::unit_edge_quad([1.0, 1.0, 1.0, 1.0])),
             modifiers: ModifierKeys::default(),
@@ -437,19 +479,31 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         if !viewport.contains(x, y) {
             return false;
         }
-        if self.modifiers.shift {
-            return self.on_pan_pointer_down(x, y, MouseButton::Left, viewport);
+        // Cluster/selection wave: a held Shift (alone, or with Ctrl/Alt)
+        // ALWAYS starts a box-select drag — mirrors the 2D engine's own
+        // `box_select_mode_for` precedence exactly, even ahead of the
+        // node-drag ray-pick below (same "modifier-held mousedown wins
+        // over node-grab" rule 2D's own divergence log documents). This
+        // REPURPOSES 3D's own former "Shift-drag pans" gesture — see
+        // [`Pointer3DMode::BoxSelecting`]'s own doc comment for the
+        // 2D-parity reasoning; plain middle-drag pan
+        // (`on_pan_pointer_down`) is unaffected.
+        if let Some(mode) = box_select_mode_for(self.modifiers) {
+            self.mode = Pointer3DMode::BoxSelecting { origin: (x, y), current: (x, y), mode };
+            return true;
         }
         // Node-drag ray-pick — ALWAYS the CPU path (`nearest_node_3d`),
         // never the GPU color-ID pass, regardless of
         // `should_use_gpu_pick()`: drag-start needs a synchronous,
         // same-frame answer, and the plan's GPU escalation is scoped to
         // hover refinement only (see `GraphEngine3D::apply_gpu_pick_result`'s
-        // own doc comment).
+        // own doc comment). Candidates exclude any node currently hidden
+        // by a collapsed cluster (see [`GraphEngine3D::pick_candidates`]).
         let aspect = (viewport.width / viewport.height.max(1.0)) as f32;
         let camera = self.camera.to_perspective(aspect);
         let (ray_origin, ray_dir) = pick3d::screen_to_ray(&camera, viewport, (x, y));
-        if let Some(hit) = pick3d::nearest_node_3d(&self.graph, &self.particles, ray_origin, ray_dir, &self.all_node_ids) {
+        let candidates = self.pick_candidates();
+        if let Some(hit) = pick3d::nearest_node_3d(&self.graph, &self.particles, ray_origin, ray_dir, &candidates) {
             if let Some(p) = self.particles.get(hit.index()) {
                 let plane_point = Vec3::new(p.x, p.y, p.z);
                 let plane_normal = (camera.target - camera.eye).normalize_or_zero();
@@ -520,6 +574,10 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 }
                 handled = true;
             }
+            Pointer3DMode::BoxSelecting { origin, mode, .. } => {
+                self.mode = Pointer3DMode::BoxSelecting { origin, current: (x, y), mode };
+                handled = true;
+            }
             Pointer3DMode::Idle => {}
         }
 
@@ -564,12 +622,19 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         handled
     }
 
-    /// Ends the in-progress drag/orbit/pan/node-drag gesture; a plain
-    /// orbit-drag that travelled less than [`CLICK_DRAG_THRESHOLD_PX`]
-    /// since `PointerDown` resolves as a click — a Replace-select
-    /// ray-pick at the release point (`None` on empty space deselects,
-    /// mirroring 2D's own `clear_selection()` on a background click).
-    /// Shift-drag pan never resolves a click (see [`Pointer3DMode::Panning`]'s
+    /// Ends the in-progress drag/orbit/pan/node-drag/box-select gesture; a
+    /// plain orbit-drag that travelled less than [`CLICK_DRAG_THRESHOLD_PX`]
+    /// since `PointerDown` resolves as a click — a designated single click
+    /// on a COLLAPSED cluster representative expands it (mirrors the 2D
+    /// engine's own `on_pointer_up`'s `PanningCamera` arm, `engine.rs` —
+    /// see `crate::cluster`'s own module doc for why this isn't a
+    /// double-click gesture); any other node Replace-selects it
+    /// ([`GraphEngine3D::select`]); empty space clears the selection
+    /// ([`GraphEngine3D::clear_selection`], mirroring 2D's own background-
+    /// click behavior). Shift-drag no longer pans (see
+    /// [`Pointer3DMode::BoxSelecting`]'s own doc comment) and never
+    /// resolves a click of its own — it resolves the box-select instead.
+    /// Middle-drag pan never resolves a click (see [`Pointer3DMode::Panning`]'s
     /// doc comment). A node drag ALWAYS selects the dragged node on
     /// release (a plain click on a node and a click-and-drag both end in
     /// the node being selected — there's no ambiguous "was this a click
@@ -591,14 +656,26 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         match mode {
             Pointer3DMode::Orbiting { total, .. } => {
                 if total < CLICK_DRAG_THRESHOLD_PX && viewport.contains(x, y) {
-                    self.selected = self.pick_at(x, y, viewport);
+                    match self.pick_at(x, y, viewport) {
+                        Some(hit) if self.clusters.cluster_of(hit).is_some_and(|id| self.clusters.is_collapsed(id)) => {
+                            if let Some(id) = self.clusters.cluster_of(hit) {
+                                self.expand_cluster(id);
+                            }
+                        }
+                        Some(hit) => self.select(hit),
+                        None => self.clear_selection(),
+                    }
                 }
                 true
             }
             Pointer3DMode::Panning { .. } => true,
             Pointer3DMode::Dragging { node, .. } => {
                 self.layout.set_alpha_target(0.0);
-                self.selected = Some(node);
+                self.select(node);
+                true
+            }
+            Pointer3DMode::BoxSelecting { origin, mode, .. } => {
+                self.box_select(origin, (x, y), mode, viewport);
                 true
             }
             Pointer3DMode::Idle => false,
@@ -610,12 +687,36 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// the CURRENT camera state. Both hover ([`GraphEngine3D::on_pointer_moved`])
     /// and click-select ([`GraphEngine3D::on_pointer_up`]) funnel
     /// through this one function so they can never diverge on which
-    /// camera/candidate set they pick against.
+    /// camera/candidate set they pick against. Candidates exclude any
+    /// node hidden by a collapsed cluster (see
+    /// [`GraphEngine3D::pick_candidates`]).
     fn pick_at(&self, x: f64, y: f64, viewport: Rect) -> Option<NodeIndex> {
         let aspect = (viewport.width / viewport.height.max(1.0)) as f32;
         let camera = self.camera.to_perspective(aspect);
         let (origin, dir) = pick3d::screen_to_ray(&camera, viewport, (x, y));
-        pick3d::nearest_node_3d(&self.graph, &self.particles, origin, dir, &self.all_node_ids)
+        let candidates = self.pick_candidates();
+        pick3d::nearest_node_3d(&self.graph, &self.particles, origin, dir, &candidates)
+    }
+
+    /// Node ids currently eligible for hover/click picking, box-select
+    /// containment, and label emission — every graph node MINUS anything
+    /// hidden by a collapsed cluster (cluster wave — mirrors the 2D
+    /// engine's own visible-set discipline, `GraphEngine::visible_nodes`/
+    /// `compute_excluded_nodes`; 3D has no viewport-culling pass of its
+    /// own yet, see [`GraphEngine3D::all_node_ids`]'s own doc comment, so
+    /// cluster-hidden exclusion is the only exclusion source this engine
+    /// has). Scene-instance emission ([`GraphEngine3D::build_scene`])
+    /// applies the SAME exclusion independently at the `render3d`
+    /// function level (it needs a `HashSet` for O(1) membership, not a
+    /// `Vec`) — both derive from the identical
+    /// `self.clusters.hidden_nodes()` source, so a node can never be
+    /// pickable yet invisible, or vice versa.
+    fn pick_candidates(&self) -> Vec<NodeIndex> {
+        if !self.clusters.any_collapsed() {
+            return self.all_node_ids.clone();
+        }
+        let hidden: HashSet<NodeIndex> = self.clusters.hidden_nodes().collect();
+        self.all_node_ids.iter().copied().filter(|id| !hidden.contains(id)).collect()
     }
 
     /// Wheel-to-dolly, gated on the cursor currently sitting over
@@ -682,12 +783,231 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         self.label_halo = color.into();
     }
 
+    // ── Cluster collapse/expand (cluster wave — mirrors `GraphEngine`'s
+    // own `define_cluster`/`collapse_cluster`/`expand_cluster` API 1:1,
+    // driven through `ClusterRegistry`'s 3D-aware `collapse_3d`/
+    // `expand_3d` instead of the 2D-only `collapse`/`expand`) ───────────
+
+    /// Declare a cluster over `members` (first member becomes the
+    /// collapse representative — see `cluster.rs` module docs). `None` if
+    /// `members` is empty.
+    pub fn define_cluster(&mut self, members: Vec<NodeIndex>) -> Option<GroupId> {
+        self.clusters.define(&self.graph, members)
+    }
+
+    pub fn is_collapsed(&self, id: GroupId) -> bool {
+        self.clusters.is_collapsed(id)
+    }
+
+    /// Collapse `id` into one super-node — 3D centroid position (all 3
+    /// axes), member-count radius, aggregated cross-cluster edge weights
+    /// (see [`ClusterRegistry::collapse_3d`]). No-op (`false`) if `id` is
+    /// unknown or already collapsed.
+    pub fn collapse_cluster(&mut self, id: GroupId) -> bool {
+        self.clusters.collapse_3d(id, &mut self.graph, &mut self.particles)
+    }
+
+    /// Expand `id` back to its individual members, restoring EXACT
+    /// pre-collapse `(x, y, z)` positions (round-trip identity — see
+    /// [`ClusterRegistry::expand_3d`]), then reheats so the layout
+    /// visibly resettles around them (mirrors [`GraphEngine3D::unpin_node`]'s
+    /// own convention). No-op (`false`) if `id` is unknown or not
+    /// currently collapsed.
+    pub fn expand_cluster(&mut self, id: GroupId) -> bool {
+        let ok = self.clusters.expand_3d(id, &mut self.graph, &mut self.particles);
+        if ok {
+            self.layout.reheat(REHEAT_ALPHA);
+        }
+        ok
+    }
+
+    // ── Multi-selection (cluster/selection wave — mirrors `GraphEngine`'s
+    // own `select`/`clear_selection`/`apply_selection`/`box_select`/
+    // `collapse_selection`/`pin_selection`/`unpin_selection` API) ───────
+
+    /// A CLICK (or a node-drag-then-release — see `on_pointer_up`'s
+    /// `Dragging` arm) always Replace-selects: `selected` (facts-panel
+    /// value) AND `selection` (the multi-select set [`GraphEngine3D::
+    /// draw_overlay`]'s selection rings derive from) both become exactly
+    /// `{node}` — mirrors [`crate::engine::GraphEngine::select`] exactly.
+    pub fn select(&mut self, node: NodeIndex) {
+        self.selected = Some(node);
+        self.selection = std::iter::once(node).collect();
+    }
+
+    /// Clears BOTH `selected` and `selection` — mirrors
+    /// [`crate::engine::GraphEngine::clear_selection`].
+    pub fn clear_selection(&mut self) {
+        self.selected = None;
+        self.selection.clear();
+    }
+
+    /// Combine `nodes` into the current [`GraphEngine3D::selection`] per
+    /// `mode` — mirrors [`crate::engine::GraphEngine::apply_selection`]
+    /// exactly, including deliberately NOT touching
+    /// [`GraphEngine3D::selected`] (a bulk selection op is a different
+    /// gesture from a click). Drives [`GraphEngine3D::box_select`] and the
+    /// `select_nodes`/`box_select` agent-forwarding actions.
+    ///
+    /// **Known divergence from 2D**: this method does not recompute any
+    /// hover/selection dim-highlight `FocusSet`-equivalent, because 3D has
+    /// none yet (`render3d::build_scene` tints every node by category
+    /// only) — see [`GraphEngine3D::draw_overlay`]'s own doc comment for
+    /// what 3D DOES paint for a selection (rings), not a dim/highlight
+    /// reducer.
+    pub fn apply_selection(&mut self, nodes: impl IntoIterator<Item = NodeIndex>, mode: SelectMode) {
+        match mode {
+            SelectMode::Replace => self.selection = nodes.into_iter().collect(),
+            SelectMode::Union => self.selection.extend(nodes),
+            SelectMode::Diff => {
+                for node in nodes {
+                    if !self.selection.remove(&node) {
+                        self.selection.insert(node);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Screen-space rectangle box-select — the 3D counterpart of
+    /// [`crate::engine::GraphEngine::box_select`]. `corner_a`/`corner_b`
+    /// are any two opposite corners in screen px, order-independent
+    /// (corner-normalized internally via [`normalized_rect`]).
+    /// Containment is a node's projected screen CENTER
+    /// ([`pick3d::project_world_to_screen`]) falling inside the rect —
+    /// same "screen center, not full node-bounds overlap" convention 2D
+    /// uses. Candidates are drawn from [`GraphEngine3D::pick_candidates`]
+    /// (every node MINUS anything hidden by a collapsed cluster).
+    ///
+    /// **Known divergence from 2D**: takes an explicit `viewport`
+    /// parameter — unlike `GraphEngine`, this engine owns no `canvas_rect`
+    /// of its own (every other viewport-needing method here, e.g.
+    /// `on_event`/`fit_view`, already takes one explicitly too), so there
+    /// is no implicit viewport to read a projection/aspect from.
+    pub fn box_select(&mut self, corner_a: (f64, f64), corner_b: (f64, f64), mode: SelectMode, viewport: Rect) {
+        let rect = normalized_rect(corner_a, corner_b);
+        let aspect = (viewport.width / viewport.height.max(1.0)) as f32;
+        let camera = self.camera.to_perspective(aspect);
+        let nodes = self.nodes_in_screen_rect(&camera, viewport, rect);
+        self.apply_selection(nodes, mode);
+    }
+
+    fn nodes_in_screen_rect(&self, camera: &PerspectiveCamera, viewport: Rect, rect: Rect) -> Vec<NodeIndex> {
+        self.pick_candidates()
+            .into_iter()
+            .filter(|&id| {
+                let Some(p) = self.particles.get(id.index()) else { return false };
+                match pick3d::project_world_to_screen(camera, Vec3::new(p.x, p.y, p.z), viewport) {
+                    Some((sx, sy)) => rect.contains(sx, sy),
+                    None => false,
+                }
+            })
+            .collect()
+    }
+
+    /// Live screen-space rectangle of an in-progress box-select drag,
+    /// already corner-normalized — `None` when no box-select is active.
+    /// Mirrors [`crate::engine::GraphEngine::box_select_rect`]; a caller's
+    /// overlay draw reads this every frame via `render::draw_box_select_rect`
+    /// (see [`GraphEngine3D::draw_overlay`]).
+    pub fn box_select_rect(&self) -> Option<Rect> {
+        match self.mode {
+            Pointer3DMode::BoxSelecting { origin, current, .. } => Some(normalized_rect(origin, current)),
+            _ => None,
+        }
+    }
+
+    /// Define a cluster over the CURRENT [`GraphEngine3D::selection`] and
+    /// immediately collapse it — mirrors
+    /// [`crate::engine::GraphEngine::collapse_selection`] exactly. `None`
+    /// if the selection is empty.
+    pub fn collapse_selection(&mut self) -> Option<GroupId> {
+        if self.selection.is_empty() {
+            return None;
+        }
+        let members: Vec<NodeIndex> = self.selection.iter().copied().collect();
+        let id = self.define_cluster(members)?;
+        self.collapse_cluster(id);
+        Some(id)
+    }
+
+    /// The [`GroupId`] whose FULL member set is EXACTLY the current
+    /// selection and which is currently collapsed — mirrors
+    /// [`crate::engine::GraphEngine::selection_collapsed_group`], purely
+    /// derived, no separate bookkeeping.
+    pub fn selection_collapsed_group(&self) -> Option<GroupId> {
+        if self.selection.is_empty() {
+            return None;
+        }
+        self.clusters.iter().find_map(|(id, cluster)| {
+            if !cluster.is_collapsed() {
+                return None;
+            }
+            let members: BTreeSet<NodeIndex> = cluster.members.iter().copied().collect();
+            (members == self.selection).then_some(id)
+        })
+    }
+
+    /// Persistently pin `node` at its current `(x, y, z)` position.
+    /// **Known simplification vs. 2D**: no separate `pinned: Vec<bool>`
+    /// bookkeeping array — [`GraphEngine3D::node_facts`]'s own `pinned`
+    /// field already reads [`Particle::is_pinned_3d`] directly, and this
+    /// engine's node-drag only ever uses [`crate::engine::DragEndPolicy::Sticky`]
+    /// (no `RestorePrior` mode to disambiguate a transient drag-pin from a
+    /// persistent one), so there's no state a parallel bool would need to
+    /// carry that the particle's own `fx`/`fy`/`fz` don't already capture.
+    pub fn pin_node(&mut self, node: NodeIndex) {
+        if let Some(p) = self.particles.get_mut(node.index()) {
+            let (x, y, z) = (p.x, p.y, p.z);
+            p.pin3(x, y, z);
+        }
+    }
+
+    /// Release the persistent pin and reheat so the node visibly rejoins
+    /// the simulation — mirrors [`crate::engine::GraphEngine::unpin_node`].
+    pub fn unpin_node(&mut self, node: NodeIndex) {
+        if let Some(p) = self.particles.get_mut(node.index()) {
+            p.unpin3();
+        }
+        self.layout.reheat(REHEAT_ALPHA);
+    }
+
+    /// Persistently pin every node in the current selection — mirrors
+    /// [`crate::engine::GraphEngine::pin_selection`].
+    pub fn pin_selection(&mut self) {
+        let nodes: Vec<NodeIndex> = self.selection.iter().copied().collect();
+        for node in nodes {
+            self.pin_node(node);
+        }
+    }
+
+    /// Release the persistent pin on every node in the current selection —
+    /// mirrors [`crate::engine::GraphEngine::unpin_selection`].
+    pub fn unpin_selection(&mut self) {
+        let nodes: Vec<NodeIndex> = self.selection.iter().copied().collect();
+        for node in nodes {
+            self.unpin_node(node);
+        }
+    }
+
     /// Instanced sphere nodes + billboarded edge quads (plan §1.3) — wires
     /// straight into [`crate::render3d::build_scene`], which is
     /// independently unit-tested (no GPU needed) for the node/edge
     /// instance construction itself; see `uzor-graph/tests/render3d_gpu.rs`
     /// for the headless-GPU proof that the result actually renders
     /// visually-distinct pixels.
+    ///
+    /// **Cluster wave**: nodes hidden by a collapsed cluster (every member
+    /// except that cluster's own representative) emit NO node instance and
+    /// NO edges touching them (`hidden` forwarded to
+    /// `render3d::build_node_instances`/`build_edge_instances`); the
+    /// aggregated cross-cluster substitute edges are appended separately
+    /// via [`crate::render3d::build_cluster_edge_instances`] — mirrors the
+    /// 2D engine's own `GraphEngine::draw`'s separate `draw_edges`/
+    /// `draw_cluster_edges` calls. The representative's own scaled-up
+    /// radius needs no special-case here — `ClusterRegistry::collapse_3d`
+    /// already bumped `graph`'s own `node.radius` field in place, which
+    /// `build_node_instances` reads unconditionally.
     ///
     /// **Wave 5**: while [`GraphEngine3D::grid_enabled`], also appends the
     /// ground-reference grid's own instanced lines
@@ -698,7 +1018,10 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// caller not using the grid can pass any positive value. A no-op
     /// (no grid appended) while there isn't a single particle yet.
     pub fn build_scene(&self, viewport_height_px: f64) -> Scene3D {
-        let mut scene = crate::render3d::build_scene(&self.graph, &self.particles, &self.node_mesh, &self.edge_mesh);
+        let hidden: HashSet<NodeIndex> =
+            if self.clusters.any_collapsed() { self.clusters.hidden_nodes().collect() } else { HashSet::new() };
+        let mut scene = crate::render3d::build_scene(&self.graph, &self.particles, &self.node_mesh, &self.edge_mesh, &hidden);
+        scene.nodes.extend(crate::render3d::build_cluster_edge_instances(&self.particles, &self.edge_mesh, &self.clusters));
         if self.grid_enabled {
             if let Some((min, max)) = particle_aabb(&self.particles) {
                 let fov_y = self.camera.to_perspective(1.0).fov_y;
@@ -845,25 +1168,32 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// verification of the underlying pick/project math, not as painted
     /// pixels.
     ///
-    /// No forced-label union (collapsed-cluster representatives, hover/
-    /// selection-neighbor forcing) — 3D has none of that machinery yet
-    /// (plan §5: cluster collapse and `FocusSet` neighbor-dimming are
-    /// explicitly out of this arc).
+    /// Candidates exclude any node hidden by a collapsed cluster (cluster
+    /// wave — [`GraphEngine3D::pick_candidates`], instead of the whole
+    /// `all_node_ids` this previously scanned): a hidden member has no
+    /// scene presence, so it must not get a label slot either. Forced
+    /// union (cluster wave): every collapsed cluster's own representative
+    /// ALWAYS keeps its label regardless of quota (mirrors the 2D
+    /// engine's own `forced_labels` union, `render.rs`'s `DrawContext::
+    /// forced_labels`) — hover/selection-neighbor forcing still has NO
+    /// equivalent (3D has no `FocusSet`-style dim/highlight reducer yet;
+    /// see [`GraphEngine3D::draw_overlay`]'s own doc comment for what 3D
+    /// DOES paint for a selection instead — rings, not label forcing).
     pub fn visible_labels(&self, camera: &PerspectiveCamera, viewport: Rect) -> Vec<(NodeIndex, f64, f64)> {
-        let mut candidates = Vec::with_capacity(self.all_node_ids.len());
-        let mut screen_positions: HashMap<NodeIndex, (f64, f64)> = HashMap::with_capacity(self.all_node_ids.len());
-        for &id in &self.all_node_ids {
+        let candidate_ids = self.pick_candidates();
+        let mut candidates = Vec::with_capacity(candidate_ids.len());
+        let mut screen_positions: HashMap<NodeIndex, (f64, f64)> = HashMap::with_capacity(candidate_ids.len());
+        for id in candidate_ids {
             let (Some(p), Some(node)) = (self.particles.get(id.index()), self.graph.get_node(id)) else { continue };
             let world = Vec3::new(p.x, p.y, p.z);
             let Some(screen_pos) = pick3d::project_world_to_screen(camera, world, viewport) else { continue };
-            let dist = (world - camera.eye).length().max(1e-3);
-            let half_fov_tan = (camera.fov_y * 0.5).tan().max(1e-6);
-            let screen_radius = ((node.radius / (dist * half_fov_tan)) * (viewport.height as f32 * 0.5)) as f64;
+            let screen_radius = project_screen_radius(camera, viewport, world, node.radius);
             candidates.push(label_grid::LabelCandidate { node: id, screen_pos, degree: self.graph.degree(id), screen_radius });
             screen_positions.insert(id, screen_pos);
         }
         let zoom_analog = (Camera3D::default().distance / self.camera.distance.max(1e-3)) as f64;
-        let shown = label_grid::select_labels(&candidates, viewport, zoom_analog, self.label_density, &HashSet::new());
+        let forced: HashSet<NodeIndex> = self.clusters.collapsed_clusters().map(|c| c.representative).collect();
+        let shown = label_grid::select_labels(&candidates, viewport, zoom_analog, self.label_density, &forced);
         shown.into_iter().filter_map(|id| screen_positions.get(&id).map(|&(x, y)| (id, x, y))).collect()
     }
 
@@ -909,15 +1239,21 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// [`GraphEngine3D::node_facts`] — one hover-card implementation for
     /// both dimensions, not a second one invented here.
     ///
-    /// **Selection ring deliberately NOT drawn** — no 3D-side selected/
-    /// hovered highlight exists yet (`render3d.rs::build_scene` tints
-    /// every node by category only, confirmed by direct read — no
-    /// selection-aware branch), and adding a screen-space ring around a
-    /// selected node's projected position (without the matching 3D-side
-    /// glow 2D's own selection ring visually pairs with) was explicitly
-    /// scoped out by this task's own instruction ("if not, skip — labels
-    /// + card are the deliverable"). A natural Wave 5+ follow-up once a
-    /// 3D-side highlight exists to pair it with.
+    /// **Selection rings + cluster supernode "×N" labels (cluster/
+    /// selection wave)** — a 3D-side selection/cluster highlight now
+    /// exists (the [`GraphEngine3D::selection`] set + `ClusterRegistry`),
+    /// so both are painted here as cheap screen-space overlays rather
+    /// than skipped (superseding the earlier Wave 3/4 "no 3D-side
+    /// highlight exists yet" deferral this doc comment used to record):
+    /// one white ring per currently-selected, non-hidden node at its
+    /// projected screen position (radius from the SAME
+    /// [`project_screen_radius`] pinhole approximation `visible_labels`
+    /// already uses, `+2px` — the exact ring-offset convention
+    /// `crate::render::draw_nodes`'s own selection ring uses), and one
+    /// "×N" member-count label per collapsed cluster's representative
+    /// (mirrors `crate::render::draw_cluster_supernodes`'s own label,
+    /// WITH the halo — both gained it in this same pass, see
+    /// `uzor-graph/CLAUDE.md`'s divergence log).
     ///
     /// **Wave 5**: while [`GraphEngine3D::grid_enabled`], also paints a
     /// numeric axis-tick label for every STRONG gridline — see
@@ -927,12 +1263,23 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     pub fn draw_overlay(&self, render: &mut dyn RenderContext, camera: &PerspectiveCamera, viewport: Rect) -> OverlayDrawStats {
         let max_degree = self.graph.nodes().map(|(id, _)| self.graph.degree(id)).max().unwrap_or(0).max(1);
         let zoom_analog = (Camera3D::default().distance / self.camera.distance.max(1e-3)) as f64;
+        let forced: HashSet<NodeIndex> = self.clusters.collapsed_clusters().map(|c| c.representative).collect();
+        let hidden: HashSet<NodeIndex> =
+            if self.clusters.any_collapsed() { self.clusters.hidden_nodes().collect() } else { HashSet::new() };
 
         let mut labels_drawn = 0usize;
         for (id, sx, sy) in self.visible_labels(camera, viewport) {
             let Some(node) = self.graph.get_node(id) else { continue };
-            let normalized_degree = self.graph.degree(id) as f64 / max_degree as f64;
-            let alpha = label_grid::label_alpha(zoom_analog, normalized_degree);
+            // Forced (a collapsed-cluster representative) always draws at
+            // full opacity — the zoom+degree fade curve only governs the
+            // ordinary, non-forced case, mirroring `crate::render::
+            // draw_nodes`'s own forced-label convention.
+            let alpha = if forced.contains(&id) {
+                1.0
+            } else {
+                let normalized_degree = self.graph.degree(id) as f64 / max_degree as f64;
+                label_grid::label_alpha(zoom_analog, normalized_degree)
+            };
             if alpha <= 0.01 {
                 continue;
             }
@@ -948,6 +1295,40 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
 
         let grid_labels_drawn = if self.grid_enabled { self.draw_grid_overlay(render, camera, viewport) } else { 0 };
 
+        // Cluster supernode "×N" labels — see this method's own doc
+        // comment above.
+        let mut cluster_labels_drawn = 0usize;
+        for cluster in self.clusters.collapsed_clusters() {
+            let Some(p) = self.particles.get(cluster.representative.index()) else { continue };
+            let world = Vec3::new(p.x, p.y, p.z);
+            let Some((sx, sy)) = pick3d::project_world_to_screen(camera, world, viewport) else { continue };
+            let text = format!("×{}", cluster.member_count());
+            render.set_font("11px sans-serif");
+            fill_text_with_halo(render, &text, sx + OVERLAY_LABEL_OFFSET_X + 10.0, sy + OVERLAY_LABEL_OFFSET_Y, "#f0e6c0", &self.label_halo);
+            cluster_labels_drawn += 1;
+        }
+
+        // Selection rings — see this method's own doc comment above.
+        // Hidden (cluster-collapsed, non-representative) members are
+        // skipped even if they remain in `self.selection` — mirrors 2D's
+        // own `draw_nodes`, which only ever iterates `ctx.visible`.
+        let mut selection_rings_drawn = 0usize;
+        for &node in &self.selection {
+            if hidden.contains(&node) {
+                continue;
+            }
+            let (Some(p), Some(graph_node)) = (self.particles.get(node.index()), self.graph.get_node(node)) else { continue };
+            let world = Vec3::new(p.x, p.y, p.z);
+            let Some((sx, sy)) = pick3d::project_world_to_screen(camera, world, viewport) else { continue };
+            let r = project_screen_radius(camera, viewport, world, graph_node.radius);
+            render.set_stroke_color("#ffffff");
+            render.set_stroke_width(2.0);
+            render.begin_path();
+            render.arc(sx, sy, r + 2.0, 0.0, std::f64::consts::TAU);
+            render.stroke();
+            selection_rings_drawn += 1;
+        }
+
         let mut hover_card_drawn = false;
         if let Some(hovered) = self.hovered {
             if let (Some(facts), Some(p)) = (self.node_facts(hovered), self.particles.get(hovered.index())) {
@@ -960,7 +1341,15 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             }
         }
 
-        OverlayDrawStats { labels_drawn, grid_labels_drawn, hover_card_drawn }
+        // Live box-select rubber band — LAST, always on top of every
+        // other overlay element (same z-convention as 2D's own
+        // `GraphEngine::draw`, which paints `draw_box_select_rect`
+        // after nodes/labels/hover card).
+        if let Some(rect) = self.box_select_rect() {
+            crate::render::draw_box_select_rect(render, rect);
+        }
+
+        OverlayDrawStats { labels_drawn, grid_labels_drawn, cluster_labels_drawn, selection_rings_drawn, hover_card_drawn }
     }
 
     /// Axis tick labels for every STRONG gridline (Wave 5) — see
@@ -983,7 +1372,6 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         let plan = crate::render3d::build_grid_plan(min, max, step);
 
         render.set_font("10px sans-serif");
-        render.set_fill_color("#8a93a6");
         let mut drawn = 0usize;
         for line in plan.lines.iter().filter(|l| l.strong) {
             if drawn >= crate::render3d::GRID_MAX_AXIS_LABELS {
@@ -994,11 +1382,29 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 continue;
             }
             let text = crate::render3d::format_tick_value(line.tick_value, plan.step);
-            render.fill_text(&text, sx + OVERLAY_LABEL_OFFSET_X, sy + OVERLAY_LABEL_OFFSET_Y);
+            // Halo (deferred tail from the label-halo pass — see
+            // `uzor-graph/CLAUDE.md`'s divergence log): grid tick labels
+            // gained the same 8-direction halo protection node/cluster
+            // labels already had.
+            fill_text_with_halo(render, &text, sx + OVERLAY_LABEL_OFFSET_X, sy + OVERLAY_LABEL_OFFSET_Y, "#8a93a6", &self.label_halo);
             drawn += 1;
         }
         drawn
     }
+}
+
+/// Pinhole-camera apparent screen radius for a node at `world` with
+/// world-space `node_radius`, at `camera`'s current eye/fov (cluster/
+/// selection wave) — factored out of [`GraphEngine3D::visible_labels`]'s
+/// own inline `screen_radius` tie-break input formula, now that
+/// [`GraphEngine3D::draw_overlay`]'s selection-ring pass needs the
+/// identical approximation for its own ring radius. Exact enough for
+/// ranking/ring-sizing, not claimed pixel-perfect (same caveat
+/// `visible_labels`'s own doc comment already carried).
+fn project_screen_radius(camera: &PerspectiveCamera, viewport: Rect, world: Vec3, node_radius: f32) -> f64 {
+    let dist = (world - camera.eye).length().max(1e-3);
+    let half_fov_tan = (camera.fov_y * 0.5).tan().max(1e-6);
+    ((node_radius / (dist * half_fov_tan)) * (viewport.height as f32 * 0.5)) as f64
 }
 
 /// Per-frame draw counts for [`GraphEngine3D::draw_overlay`] — a
@@ -1010,6 +1416,12 @@ pub struct OverlayDrawStats {
     /// Numeric axis-tick labels painted this frame (Wave 5) — always `0`
     /// while [`GraphEngine3D::grid_enabled`] is `false`.
     pub grid_labels_drawn: usize,
+    /// Cluster supernode "×N" member-count labels painted this frame
+    /// (cluster wave) — always `0` while no cluster is collapsed.
+    pub cluster_labels_drawn: usize,
+    /// Selection rings painted this frame (selection wave) — always `0`
+    /// while [`GraphEngine3D::selection`] is empty.
+    pub selection_rings_drawn: usize,
     pub hover_card_drawn: bool,
 }
 
@@ -1157,7 +1569,12 @@ mod tests {
     }
 
     #[test]
-    fn on_event_shift_drag_pans_instead_of_orbiting() {
+    fn on_event_shift_drag_starts_a_box_select_instead_of_panning_or_orbiting() {
+        // Cluster/selection wave — 2D-parity decision (see
+        // `Pointer3DMode::BoxSelecting`'s own doc comment): shift-drag no
+        // longer pans the 3D camera at all, it starts a box-select drag.
+        // Plain middle-drag pan (`on_event_middle_drag_pans_camera_target`,
+        // just below) is unaffected.
         let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> =
             GraphEngine3D::new(triangle(), ForceDirectedLayout3D::default());
         let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
@@ -1166,10 +1583,15 @@ mod tests {
 
         engine.on_event(&PlatformEvent::ModifiersChanged { modifiers: uzor::input::ModifierKeys::shift() }, viewport);
         engine.on_event(&PlatformEvent::PointerDown { x: 50.0, y: 50.0, button: uzor::input::MouseButton::Left }, viewport);
-        engine.on_event(&PlatformEvent::PointerMoved { x: 150.0, y: 50.0 }, viewport);
+        engine.on_event(&PlatformEvent::PointerMoved { x: 150.0, y: 90.0 }, viewport);
 
-        assert_eq!(engine.camera.yaw, before_yaw, "shift-drag must pan, not orbit — yaw stays put");
-        assert!(engine.camera.target != before_target, "shift-drag must move the pan target");
+        assert_eq!(engine.camera.yaw, before_yaw, "shift-drag must not orbit the camera");
+        assert_eq!(engine.camera.target, before_target, "shift-drag must not pan the camera either — it box-selects now");
+        assert_eq!(
+            engine.box_select_rect(),
+            Some(Rect::new(50.0, 50.0, 100.0, 40.0)),
+            "shift-drag must be a live box-select rect from origin to the current cursor"
+        );
     }
 
     #[test]
@@ -1899,5 +2321,258 @@ mod tests {
             "no numeric axis-tick label should be painted while the grid is off: {:?}",
             ctx.fill_texts
         );
+    }
+
+    // ── Cluster/selection wave: 3D collapse/expand, box-select, rings ──
+
+    /// 4-member cluster (m0..m3) plus one outside node, spread on distinct
+    /// well-separated 3D positions — mirrors `cluster.rs`'s own
+    /// `small_graph_with_cluster` fixture shape, adapted to
+    /// `GraphEngine3D`. Two cross-cluster edges (weights 2.0 + 3.0) land
+    /// on the SAME outside node, so a collapse must aggregate them into
+    /// one synthetic edge of weight 5.0.
+    fn clustered_engine() -> (GraphEngine3D<(), (), ForceDirectedLayout3D>, Vec<NodeIndex>, NodeIndex) {
+        let mut graph = DemoGraph::new();
+        let outside = graph.push_node((), "outside", "x", 4.0);
+        let mut members = Vec::new();
+        for i in 0..4 {
+            members.push(graph.push_node((), format!("m{i}"), "cluster", 4.0));
+        }
+        for i in 0..members.len() {
+            graph.push_edge(members[i], members[(i + 1) % members.len()], 1.0, ());
+        }
+        graph.push_edge(members[0], outside, 2.0, ());
+        graph.push_edge(outside, members[2], 3.0, ());
+
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> = GraphEngine3D::new(graph, ForceDirectedLayout3D::default());
+        engine.particles[outside.index()] = Particle::at3(100.0, 0.0, 0.0);
+        engine.particles[members[0].index()] = Particle::at3(-10.0, 0.0, 5.0);
+        engine.particles[members[1].index()] = Particle::at3(0.0, -10.0, -5.0);
+        engine.particles[members[2].index()] = Particle::at3(10.0, 0.0, 5.0);
+        engine.particles[members[3].index()] = Particle::at3(0.0, 10.0, -5.0);
+        (engine, members, outside)
+    }
+
+    #[test]
+    fn collapse_cluster_and_expand_cluster_round_trip_via_the_engine_level_api() {
+        let (mut engine, members, _outside) = clustered_engine();
+        let original: Vec<Particle> = members.iter().map(|&m| engine.particles[m.index()]).collect();
+
+        let id = engine.define_cluster(members.clone()).expect("non-empty cluster");
+        assert!(!engine.is_collapsed(id));
+        assert!(engine.collapse_cluster(id));
+        assert!(!engine.collapse_cluster(id), "collapsing an already-collapsed cluster is a no-op");
+        assert!(engine.is_collapsed(id));
+
+        // Every non-representative member is pinned exactly onto the
+        // representative's own (real 3D) position.
+        let rep = engine.particles[members[0].index()];
+        for &m in &members[1..] {
+            let p = engine.particles[m.index()];
+            assert!(p.is_pinned_3d());
+            assert_eq!((p.x, p.y, p.z), (rep.x, rep.y, rep.z));
+        }
+        // Representative's radius grew to reflect the member count.
+        assert!(engine.graph.get_node(members[0]).unwrap().radius > 4.0);
+
+        assert!(engine.expand_cluster(id));
+        assert!(!engine.expand_cluster(id), "expanding an already-expanded cluster is a no-op");
+        assert!(!engine.is_collapsed(id));
+        for (&m, before) in members.iter().zip(original.iter()) {
+            let p = engine.particles[m.index()];
+            assert_eq!((p.x, p.y, p.z), (before.x, before.y, before.z), "expand must restore the EXACT pre-collapse 3D position");
+            assert!(!p.is_pinned_3d());
+        }
+    }
+
+    #[test]
+    fn pick_candidates_excludes_hidden_cluster_members_but_keeps_the_representative_and_outside_nodes() {
+        let (mut engine, members, outside) = clustered_engine();
+        let id = engine.define_cluster(members.clone()).expect("non-empty cluster");
+        assert_eq!(engine.pick_candidates().len(), 5, "nothing hidden yet — every node is a candidate");
+
+        engine.collapse_cluster(id);
+        let candidates = engine.pick_candidates();
+        assert_eq!(candidates.len(), 2, "3 hidden members excluded — only the representative + outside remain");
+        assert!(candidates.contains(&members[0]), "the representative itself must stay a pick candidate");
+        assert!(candidates.contains(&outside), "an unrelated outside node must stay a pick candidate");
+        for &hidden_member in &members[1..] {
+            assert!(!candidates.contains(&hidden_member), "a hidden cluster member must never be a pick candidate");
+        }
+    }
+
+    #[test]
+    fn build_scene_hides_cluster_members_and_appends_one_aggregated_cross_cluster_edge() {
+        let (mut engine, members, _outside) = clustered_engine();
+        let id = engine.define_cluster(members.clone()).expect("non-empty cluster");
+
+        let scene_before = engine.build_scene(600.0);
+        // 5 nodes + 6 edges (4 ring + 2 cross-cluster) = 11 instances.
+        assert_eq!(scene_before.nodes.len(), 11);
+
+        assert!(engine.collapse_cluster(id));
+        let scene_after = engine.build_scene(600.0);
+        // Node spheres: 2 (representative + outside) instead of 5 — 3
+        // hidden members emit none. Edges: the 4 ring edges all touch a
+        // hidden non-representative member and drop; the `m0-outside`
+        // cross-cluster edge does NOT (the representative itself is
+        // NEVER hidden — `hidden_nodes()`'s own doc comment — so this
+        // raw edge survives the `hidden` filter untouched, mirroring the
+        // SAME quirk the 2D engine's own `draw_edges` has for exactly
+        // this reason); the OTHER cross-cluster edge (`outside-m2`) DOES
+        // drop (m2 is hidden). Plus exactly 1 aggregated cross-cluster
+        // synthetic edge, summing BOTH raw cross-cluster edges (2.0+3.0)
+        // onto the one outside node. Total: 2 nodes + 1 surviving raw
+        // edge + 1 aggregated edge = 4.
+        assert_eq!(
+            scene_after.nodes.len(),
+            4,
+            "collapse must hide 3 member spheres, drop only the fully-internal-or-hidden-touching edges, and add the aggregated substitute"
+        );
+    }
+
+    #[test]
+    fn visible_labels_and_draw_overlay_exclude_hidden_cluster_members_and_force_the_representatives_label() {
+        let (mut engine, members, outside) = clustered_engine();
+        engine.set_label_density(100.0); // remove the LOD quota as a confound
+        let id = engine.define_cluster(members.clone()).expect("non-empty cluster");
+        engine.collapse_cluster(id);
+
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+
+        let labels = engine.visible_labels(&camera, viewport);
+        let labeled_ids: HashSet<NodeIndex> = labels.iter().map(|(id, _, _)| *id).collect();
+        assert!(labeled_ids.contains(&members[0]), "the representative's own label must always be forced-shown");
+        assert!(labeled_ids.contains(&outside), "an unrelated outside node keeps its ordinary label");
+        for &hidden_member in &members[1..] {
+            assert!(!labeled_ids.contains(&hidden_member), "a hidden cluster member must never get a label slot");
+        }
+
+        let mut ctx = RecordingRenderContext::new();
+        let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
+        assert_eq!(stats.cluster_labels_drawn, 1, "exactly one collapsed cluster's own supernode label must be painted");
+        assert!(
+            ctx.fill_texts.iter().any(|(t, _, _)| t == "×4"),
+            "the supernode label text must be the exact member count: {:?}",
+            ctx.fill_texts
+        );
+    }
+
+    #[test]
+    fn draw_overlay_paints_one_selection_ring_per_selected_visible_node_and_skips_a_hidden_one() {
+        let (mut engine, members, outside) = clustered_engine();
+        let id = engine.define_cluster(members.clone()).expect("non-empty cluster");
+        engine.collapse_cluster(id);
+        // Select the (visible) representative, a hidden member, and the
+        // (visible) outside node.
+        engine.apply_selection([members[0], members[1], outside], SelectMode::Replace);
+
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        let mut ctx = RecordingRenderContext::new();
+
+        let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
+
+        assert_eq!(stats.selection_rings_drawn, 2, "the hidden member in the selection must be skipped — only 2 of 3 rings drawn");
+    }
+
+    #[test]
+    fn apply_selection_replace_union_and_diff_produce_exact_expected_sets() {
+        let (mut engine, members, outside) = clustered_engine();
+        engine.apply_selection([members[0], members[1]], SelectMode::Replace);
+        assert_eq!(engine.selection, [members[0], members[1]].into_iter().collect());
+
+        engine.apply_selection([outside], SelectMode::Union);
+        assert_eq!(engine.selection, [members[0], members[1], outside].into_iter().collect());
+
+        engine.apply_selection([members[0]], SelectMode::Diff);
+        assert_eq!(engine.selection, [members[1], outside].into_iter().collect(), "Diff must toggle: remove an already-selected node");
+
+        engine.apply_selection([members[2]], SelectMode::Diff);
+        assert_eq!(engine.selection, [members[1], members[2], outside].into_iter().collect(), "Diff must toggle: add a not-yet-selected node");
+    }
+
+    #[test]
+    fn select_sets_both_selected_and_a_one_element_selection_and_clear_selection_clears_both() {
+        let (mut engine, members, _outside) = clustered_engine();
+        engine.select(members[0]);
+        assert_eq!(engine.selected(), Some(members[0]));
+        assert_eq!(engine.selection, std::iter::once(members[0]).collect());
+
+        engine.clear_selection();
+        assert_eq!(engine.selected(), None);
+        assert!(engine.selection.is_empty());
+    }
+
+    #[test]
+    fn box_select_rect_is_corner_normalized_regardless_of_drag_direction() {
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> =
+            GraphEngine3D::new(triangle(), ForceDirectedLayout3D::default());
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+
+        engine.on_event(&PlatformEvent::ModifiersChanged { modifiers: uzor::input::ModifierKeys::shift() }, viewport);
+        engine.on_event(&PlatformEvent::PointerDown { x: 250.0, y: 180.0, button: uzor::input::MouseButton::Left }, viewport);
+        engine.on_event(&PlatformEvent::PointerMoved { x: 60.0, y: 40.0 }, viewport);
+
+        assert_eq!(
+            engine.box_select_rect(),
+            Some(Rect::new(60.0, 40.0, 190.0, 140.0)),
+            "the rubber-band rect must be corner-normalized even when the drag runs bottom-right -> top-left"
+        );
+
+        engine.on_event(&PlatformEvent::PointerUp { x: 60.0, y: 40.0, button: uzor::input::MouseButton::Left }, viewport);
+        assert_eq!(engine.box_select_rect(), None, "box_select_rect must clear once the drag ends");
+    }
+
+    #[test]
+    fn box_select_selects_only_nodes_whose_projected_center_falls_inside_the_screen_rect() {
+        let mut engine = spread_triangle_engine();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        let (sx0, sy0) = pick3d::project_world_to_screen(&camera, Vec3::new(-40.0, 0.0, 0.0), viewport).expect("node 0 projects");
+        let (sx1, sy1) = pick3d::project_world_to_screen(&camera, Vec3::new(40.0, 0.0, 0.0), viewport).expect("node 1 projects");
+
+        // A rect covering only node 0's own projected position, well away
+        // from nodes 1/2 (well-separated fixture — see
+        // `spread_triangle_engine`'s own doc comment).
+        engine.box_select((sx0 - 5.0, sy0 - 5.0), (sx0 + 5.0, sy0 + 5.0), SelectMode::Replace, viewport);
+        assert_eq!(engine.selection, std::iter::once(NodeIndex(0)).collect());
+
+        // Union in node 1.
+        engine.box_select((sx1 - 5.0, sy1 - 5.0), (sx1 + 5.0, sy1 + 5.0), SelectMode::Union, viewport);
+        assert_eq!(engine.selection, [NodeIndex(0), NodeIndex(1)].into_iter().collect());
+    }
+
+    #[test]
+    fn collapse_selection_defines_and_collapses_a_cluster_from_the_current_selection_and_expand_reverts_it() {
+        let (mut engine, members, _outside) = clustered_engine();
+        assert!(engine.collapse_selection().is_none(), "collapse_selection with nothing selected is a no-op");
+
+        engine.apply_selection(members.clone(), SelectMode::Replace);
+        let id = engine.collapse_selection().expect("a non-empty selection must collapse");
+        assert!(engine.is_collapsed(id));
+        assert_eq!(engine.selection_collapsed_group(), Some(id));
+
+        assert!(engine.expand_cluster(id));
+        assert_eq!(engine.selection_collapsed_group(), None, "collapsed_group clears once expanded");
+    }
+
+    #[test]
+    fn pin_selection_and_unpin_selection_apply_to_every_selected_member() {
+        let (mut engine, members, _outside) = clustered_engine();
+        engine.apply_selection([members[0], members[1]], SelectMode::Replace);
+
+        engine.pin_selection();
+        assert!(engine.particles[members[0].index()].is_pinned_3d());
+        assert!(engine.particles[members[1].index()].is_pinned_3d());
+        assert!(!engine.particles[members[2].index()].is_pinned_3d(), "an unselected node must not be pinned");
+
+        engine.unpin_selection();
+        assert!(!engine.particles[members[0].index()].is_pinned_3d());
+        assert!(!engine.particles[members[1].index()].is_pinned_3d());
     }
 }

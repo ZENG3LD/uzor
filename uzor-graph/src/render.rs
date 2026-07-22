@@ -360,6 +360,12 @@ pub fn draw_cluster_edges(
 /// Draw a distinct double-ring + member-count label over every collapsed
 /// cluster's representative — the "this circle is actually N nodes"
 /// affordance. Returns the number of super-nodes drawn.
+///
+/// The "×N" label paints through `fill_text_with_halo` (deferred tail
+/// from the node-label halo pass — see `uzor-graph/CLAUDE.md`'s
+/// divergence log): a thin edge stroke crossing this label at a similar
+/// luminance is exactly the same defect the halo already fixes for
+/// ordinary node labels, so this label gets the identical protection.
 pub fn draw_cluster_supernodes<N, E>(
     render: &mut dyn RenderContext,
     graph: &Graph<N, E>,
@@ -383,9 +389,8 @@ pub fn draw_cluster_supernodes<N, E>(
         render.arc(sx, sy, r + 7.0, 0.0, std::f64::consts::TAU);
         render.stroke();
 
-        render.set_fill_color("#f0e6c0");
         render.set_font("11px sans-serif");
-        render.fill_text(&format!("×{}", cluster.member_count()), sx + r + 10.0, sy + 4.0);
+        fill_text_with_halo(render, &format!("×{}", cluster.member_count()), sx + r + 10.0, sy + 4.0, "#f0e6c0", ctx.label_halo);
         drawn += 1;
     }
     drawn

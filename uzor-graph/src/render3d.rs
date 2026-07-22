@@ -191,11 +191,13 @@
 //! caps the total at [`GRID_MAX_AXIS_LABELS`] — a documented
 //! simplification, not a forgotten integration.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use glam::{Quat, Vec3};
 use uzor_urx_3d::{Light, Mesh, MeshLit, Node, PhongMaterial, Scene3D, Vertex};
 
+use crate::cluster::ClusterRegistry;
 use crate::graph::{Graph, NodeIndex};
 use crate::particle::Particle;
 use crate::render::category_color;
@@ -223,6 +225,15 @@ pub const EDGE_ALPHA: f32 = 0.45;
 /// color — `edge_quad_instanced.wgsl`'s `out.color = in.color * in.tint`,
 /// premultiplied by its own analytic-AA coverage in the fragment stage).
 pub const EDGE_TINT: [f32; 4] = [EDGE_TINT_RGB[0], EDGE_TINT_RGB[1], EDGE_TINT_RGB[2], EDGE_ALPHA];
+
+/// Aggregated cross-cluster synthetic-edge tint (cluster-collapse wave) —
+/// the SAME warm gold accent the 2D engine's own `render::CLUSTER_ACCENT`
+/// (`"#c9a94e"`) uses for its cluster affordances, converted to a
+/// `[f32; 4]` tint (opaque — unlike the desaturated, alpha-blended
+/// [`EDGE_TINT`], a cluster's cross-edges are meant to read as a
+/// distinct, more prominent accent, mirroring 2D's own opaque
+/// `CLUSTER_ACCENT` stroke).
+pub const CLUSTER_EDGE_TINT: [f32; 4] = [0.788, 0.663, 0.306, 1.0];
 
 /// Convert [`category_color`]'s fixed `"#rrggbb"` palette into an opaque
 /// `[f32; 4]` tint — `Node::color_tint` takes floats, not a CSS-style hex
@@ -266,10 +277,28 @@ const NODE_MATERIAL: PhongMaterial = PhongMaterial {
 };
 
 /// One instanced `Node::new_lit` per graph node — see the module doc.
-pub fn build_node_instances<N, E>(graph: &Graph<N, E>, particles: &[Particle], mesh: &Arc<MeshLit>) -> Vec<Node> {
+/// `hidden` (cluster-collapse wave) is every node currently hidden by a
+/// collapsed cluster (every member except that cluster's own
+/// representative — see `crate::cluster`'s own doc comment); such a node
+/// emits NO instance at all, mirroring the 2D engine's own
+/// `render::draw_nodes` (which simply never iterates a hidden node,
+/// since it isn't in `ctx.visible`). The representative itself is never
+/// hidden and instances normally at its own (collapse-bumped) `node.radius`
+/// — the graph's own radius field already reflects the supernode size
+/// (`crate::cluster::ClusterRegistry::collapse_3d` bumps it in place), so
+/// no separate supernode-scaling branch is needed here.
+pub fn build_node_instances<N, E>(
+    graph: &Graph<N, E>,
+    particles: &[Particle],
+    mesh: &Arc<MeshLit>,
+    hidden: &HashSet<NodeIndex>,
+) -> Vec<Node> {
     graph
         .nodes()
         .filter_map(|(id, node)| {
+            if hidden.contains(&id) {
+                return None;
+            }
             let p = particles.get(id.index())?;
             Some(
                 Node::new_lit(mesh.clone())
@@ -290,10 +319,28 @@ pub fn build_node_instances<N, E>(graph: &Graph<N, E>, particles: &[Particle], m
 /// itself is byte-for-byte unchanged across both edge-mesh
 /// replacements). A coincident (zero-length) edge has no well-defined
 /// direction and is skipped rather than emitting a NaN rotation.
-pub fn build_edge_instances<N, E>(graph: &Graph<N, E>, particles: &[Particle], mesh: &Arc<Mesh>) -> Vec<Node> {
+///
+/// `hidden` (cluster-collapse wave) — an edge touching EITHER endpoint in
+/// `hidden` is skipped entirely, mirroring the 2D engine's own
+/// `render::draw_edges` (`ctx.hidden.contains(&edge.from) ||
+/// ctx.hidden.contains(&edge.to)`). This naturally drops every intra-
+/// cluster edge once a cluster is collapsed (every such edge touches at
+/// least one non-representative member, which is always in `hidden`) —
+/// [`build_cluster_edge_instances`] draws the aggregated cross-cluster
+/// substitute separately, the 3D counterpart of `crate::render::
+/// draw_cluster_edges`.
+pub fn build_edge_instances<N, E>(
+    graph: &Graph<N, E>,
+    particles: &[Particle],
+    mesh: &Arc<Mesh>,
+    hidden: &HashSet<NodeIndex>,
+) -> Vec<Node> {
     graph
         .edges()
         .filter_map(|(_, edge)| {
+            if hidden.contains(&edge.from) || hidden.contains(&edge.to) {
+                return None;
+            }
             let a = particles.get(edge.from.index())?;
             let b = particles.get(edge.to.index())?;
             let from = Vec3::new(a.x, a.y, a.z);
@@ -341,12 +388,67 @@ fn arm_default_lighting(scene: &mut Scene3D) {
 /// regardless of graph size (`uzor-urx-3d`'s `MeshCache` Arc-identity
 /// dedup, confirmed real in the plan's own substrate verdict §0) — plus
 /// a default key light.
-pub fn build_scene<N, E>(graph: &Graph<N, E>, particles: &[Particle], node_mesh: &Arc<MeshLit>, edge_mesh: &Arc<Mesh>) -> Scene3D {
+///
+/// `hidden` (cluster-collapse wave) — forwarded unchanged to
+/// [`build_node_instances`]/[`build_edge_instances`]; pass
+/// `&HashSet::new()` for a caller with no cluster concept at all. Does
+/// NOT append the aggregated cross-cluster substitute edges itself — see
+/// [`build_cluster_edge_instances`], a separate additive call
+/// (`GraphEngine3D::build_scene` composes both, mirroring the 2D engine's
+/// own `GraphEngine::draw`'s separate `draw_edges`/`draw_cluster_edges`
+/// calls).
+pub fn build_scene<N, E>(
+    graph: &Graph<N, E>,
+    particles: &[Particle],
+    node_mesh: &Arc<MeshLit>,
+    edge_mesh: &Arc<Mesh>,
+    hidden: &HashSet<NodeIndex>,
+) -> Scene3D {
     let mut scene = Scene3D::new();
     arm_default_lighting(&mut scene);
-    scene.nodes.extend(build_edge_instances(graph, particles, edge_mesh));
-    scene.nodes.extend(build_node_instances(graph, particles, node_mesh));
+    scene.nodes.extend(build_edge_instances(graph, particles, edge_mesh, hidden));
+    scene.nodes.extend(build_node_instances(graph, particles, node_mesh, hidden));
     scene
+}
+
+/// Cluster-supernode aggregated cross-cluster edges (cluster-collapse
+/// wave) — the 3D counterpart of `crate::render::draw_cluster_edges`: one
+/// instanced edge-quad per outside neighbor of every currently-collapsed
+/// cluster, from the representative's own current position, replacing
+/// the raw intra/cross-cluster member edges [`build_edge_instances`]
+/// already excludes via its `hidden` set. Unlike 2D's own per-synthetic-
+/// edge WIDTH scaling by summed weight (`draw_cluster_edges`'s `width =
+/// (1.0 + weight.sqrt()).min(6.0)`), a 3D edge-quad's on-screen width is a
+/// single `Renderer3D`-wide `edge_width_px` uniform, not a per-instance
+/// scale (see `uzor_urx_3d`'s own `edge_quad_instanced.wgsl` module doc)
+/// — every synthetic cross-cluster edge here shares the SAME tint/width
+/// as an ordinary graph edge, just through [`CLUSTER_EDGE_TINT`] instead
+/// of [`EDGE_TINT`], a documented divergence rather than an oversight.
+pub fn build_cluster_edge_instances(particles: &[Particle], mesh: &Arc<Mesh>, clusters: &ClusterRegistry) -> Vec<Node> {
+    let mut out = Vec::new();
+    for cluster in clusters.collapsed_clusters() {
+        let Some(rep) = particles.get(cluster.representative.index()) else { continue };
+        let from = Vec3::new(rep.x, rep.y, rep.z);
+        for edge in cluster.aggregated_edges() {
+            let Some(other) = particles.get(edge.outside.index()) else { continue };
+            let to = Vec3::new(other.x, other.y, other.z);
+            let delta = to - from;
+            let length = delta.length();
+            if length < 1e-5 {
+                continue;
+            }
+            let dir = delta / length;
+            let rotation = Quat::from_rotation_arc(Vec3::Y, dir);
+            out.push(
+                Node::new_line(mesh.clone())
+                    .with_translation(from)
+                    .with_rotation(rotation)
+                    .with_scale(Vec3::new(1.0, length, 1.0))
+                    .with_tint(CLUSTER_EDGE_TINT),
+            );
+        }
+    }
+    out
 }
 
 // ── Wave 5 — 3D reference ground grid + axis tick labels (distance LOD) ──
@@ -834,7 +936,7 @@ mod tests {
         let particles = vec![Particle::at3(1.0, 2.0, 3.0)];
         let mesh = unit_mesh();
 
-        let nodes = build_node_instances(&graph, &particles, &mesh);
+        let nodes = build_node_instances(&graph, &particles, &mesh, &HashSet::new());
 
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].translation, Vec3::new(1.0, 2.0, 3.0));
@@ -853,7 +955,7 @@ mod tests {
         let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(0.0, 5.0, 0.0)];
         let mesh = unit_edge_quad_mesh();
 
-        let edges = build_edge_instances(&graph, &particles, &mesh);
+        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new());
 
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].translation, Vec3::ZERO, "translation must be the FROM endpoint, not the midpoint — see the module doc");
@@ -875,7 +977,7 @@ mod tests {
         let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(3.0, 4.0, 0.0)];
         let mesh = unit_edge_quad_mesh();
 
-        let edges = build_edge_instances(&graph, &particles, &mesh);
+        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new());
 
         let expected_dir = Vec3::new(3.0, 4.0, 0.0).normalize();
         let rotated_axis = edges[0].rotation * Vec3::Y;
@@ -892,9 +994,41 @@ mod tests {
         let particles = vec![Particle::at3(2.0, 2.0, 2.0), Particle::at3(2.0, 2.0, 2.0)];
         let mesh = unit_edge_quad_mesh();
 
-        let edges = build_edge_instances(&graph, &particles, &mesh);
+        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new());
 
         assert!(edges.is_empty(), "a zero-length edge has no well-defined direction — must not emit a NaN-rotation node");
+    }
+
+    #[test]
+    fn build_edge_instances_skips_an_edge_touching_a_hidden_node() {
+        let mut graph = DemoGraph::new();
+        let a = graph.push_node((), "a", "x", 1.0);
+        let b = graph.push_node((), "b", "x", 1.0);
+        let c = graph.push_node((), "c", "x", 1.0);
+        graph.push_edge(a, b, 1.0, ());
+        graph.push_edge(b, c, 1.0, ());
+        let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(0.0, 5.0, 0.0), Particle::at3(0.0, 10.0, 0.0)];
+        let mesh = unit_edge_quad_mesh();
+        let hidden: HashSet<NodeIndex> = [b].into_iter().collect();
+
+        let edges = build_edge_instances(&graph, &particles, &mesh, &hidden);
+
+        assert!(edges.is_empty(), "both edges touch the hidden node b — neither may be emitted");
+    }
+
+    #[test]
+    fn build_node_instances_emits_no_instance_for_a_hidden_node() {
+        let mut graph = DemoGraph::new();
+        graph.push_node((), "a", "x", 1.0);
+        let b = graph.push_node((), "b", "x", 1.0);
+        let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(5.0, 0.0, 0.0)];
+        let mesh = unit_mesh();
+        let hidden: HashSet<NodeIndex> = [b].into_iter().collect();
+
+        let nodes = build_node_instances(&graph, &particles, &mesh, &hidden);
+
+        assert_eq!(nodes.len(), 1, "the hidden node must emit zero instances, the other node must still emit one");
+        assert_eq!(nodes[0].translation, Vec3::new(0.0, 0.0, 0.0), "the surviving instance must belong to node a, not the hidden node b");
     }
 
     #[test]
@@ -905,10 +1039,50 @@ mod tests {
         let node_mesh = unit_mesh();
         let edge_mesh = unit_edge_quad_mesh();
 
-        let scene = build_scene(&graph, &particles, &node_mesh, &edge_mesh);
+        let scene = build_scene(&graph, &particles, &node_mesh, &edge_mesh, &HashSet::new());
 
         assert_eq!(scene.nodes.len(), 1);
         assert!(!scene.lights.is_empty());
+    }
+
+    #[test]
+    fn build_scene_hides_a_node_and_its_touching_edges_when_given_a_non_empty_hidden_set() {
+        let mut graph = DemoGraph::new();
+        let a = graph.push_node((), "a", "x", 1.0);
+        let b = graph.push_node((), "b", "x", 1.0);
+        graph.push_edge(a, b, 1.0, ());
+        let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(5.0, 0.0, 0.0)];
+        let node_mesh = unit_mesh();
+        let edge_mesh = unit_edge_quad_mesh();
+        let hidden: HashSet<NodeIndex> = [b].into_iter().collect();
+
+        let scene = build_scene(&graph, &particles, &node_mesh, &edge_mesh, &hidden);
+
+        assert_eq!(scene.nodes.len(), 1, "one surviving node sphere, zero edges (the edge touches the hidden node)");
+    }
+
+    #[test]
+    fn build_cluster_edge_instances_draws_one_edge_per_aggregated_outside_neighbor() {
+        let mut graph = DemoGraph::new();
+        let outside = graph.push_node((), "outside", "x", 4.0);
+        let mut members = Vec::new();
+        for i in 0..3 {
+            members.push(graph.push_node((), format!("m{i}"), "cluster", 4.0));
+        }
+        graph.push_edge(members[0], outside, 2.0, ());
+        graph.push_edge(outside, members[1], 3.0, ());
+        let mut particles = vec![Particle::at3(0.0, 0.0, 0.0); graph.node_count()];
+        particles[outside.index()] = Particle::at3(50.0, 0.0, 0.0);
+
+        let mut registry = ClusterRegistry::default();
+        let id = registry.define(&graph, members.clone()).expect("non-empty cluster");
+        assert!(registry.collapse_3d(id, &mut graph, &mut particles));
+
+        let mesh = unit_edge_quad_mesh();
+        let edges = build_cluster_edge_instances(&particles, &mesh, &registry);
+
+        assert_eq!(edges.len(), 1, "both raw cross-cluster edges aggregate onto the same outside node, so exactly one synthetic edge is drawn");
+        assert_eq!(edges[0].color_tint, CLUSTER_EDGE_TINT);
     }
 
     // ── Wave 4: GPU color-ID picking encode/decode ─────────────────────

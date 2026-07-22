@@ -35,7 +35,7 @@ use uzor::types::unsafe_widget_id;
 use uzor_desktop::{AppRun3D as _, Scene3DApp, Scene3DFrame};
 
 use uzor_graph::interaction::fly::FlyController;
-use uzor_graph::{ForceDirectedLayout3D, Graph, GraphEngine, GraphEngine3D, GraphLayoutMode, NodeIndex};
+use uzor_graph::{ForceDirectedLayout3D, Graph, GraphEngine, GraphEngine3D, GraphLayoutMode, GroupId, NodeIndex, SelectMode};
 
 const AGENT_PORT: u16 = 17481;
 const BLACKBOX_SLOT: &str = "graph";
@@ -569,6 +569,21 @@ fn full_window_viewport() -> Rect {
     Rect::new(-1.0e9, -1.0e9, 2.0e9, 2.0e9)
 }
 
+/// The REAL 3D viewport `Rect` for a last-known surface size, or
+/// [`full_window_viewport`]'s placeholder before the first 3D frame ever
+/// renders — shared by [`DemoApp::dim3d_viewport`] (winit thread, reads
+/// `DemoApp::last_3d_surface_px`) and [`DemoBlackbox::apply_3d_agent_action`]'s
+/// own `box_select` forwarding (agent-api HTTP thread, reads
+/// `DemoBlackbox::surface_size` — the SAME last-known size, a separate
+/// `Arc` clone of it, per [`SurfaceSizeState`]'s own doc comment), so
+/// both threads derive the identical viewport from the identical source.
+fn viewport_from_surface_size(size: Option<(u32, u32)>) -> Rect {
+    match size {
+        Some((w, h)) => Rect::new(0.0, 0.0, w as f64, h as f64),
+        None => full_window_viewport(),
+    }
+}
+
 /// Shared last-known 3D render-surface size in px (Wave 5 fit-to-bounds)
 /// — `scene3d()` writes it every tick on the winit thread; the
 /// `fit_view_3d` agent action (`DemoBlackbox::apply_agent_action`) reads
@@ -686,10 +701,18 @@ fn rebuild_engines(engine: &Arc<Mutex<Engine>>, engine3d: &Arc<Mutex<Engine3D>>,
 
     // Same fixture, called a SECOND time (deterministic — `DetRng`'s own
     // doc comment) for the independent 3D engine, mirroring
-    // `DemoApp::new()`'s original Wave 2 convention.
-    let (graph3d, positions3d, _cluster_members3d) = build_fixture(fixture);
+    // `DemoApp::new()`'s original Wave 2 convention. Cluster/selection
+    // wave: the SAME collapsible clusters are ALSO defined on the 3D
+    // engine now (its own independent `ClusterRegistry` — see
+    // `GraphEngine3D::clusters`'s own doc comment), so the demo's
+    // `collapse`/`expand`/`collapse_selection` blackbox actions work
+    // identically while `dimension=3`.
+    let (graph3d, positions3d, cluster_members3d) = build_fixture(fixture);
     let mut new_engine3d = Engine3D::new(graph3d, ForceDirectedLayout3D::default());
     new_engine3d.seed_positions(&positions3d);
+    for members in cluster_members3d.iter().take(COLLAPSIBLE_CLUSTERS) {
+        new_engine3d.define_cluster(members[..COLLAPSIBLE_CLUSTER_SIZE.min(members.len())].to_vec());
+    }
 
     *DemoApp::lock(engine) = new_engine;
     *DemoApp::lock3d(engine3d) = new_engine3d;
@@ -793,6 +816,41 @@ fn node_facts_json_3d(engine3d: &Engine3D, id: NodeIndex) -> Option<Value> {
             "position": { "x": f.position.0, "y": f.position.1 },
             "pinned": f.pinned,
         })
+    })
+}
+
+/// `GroupId` resolution for the 3D agent-forwarding path (cluster/
+/// selection wave) — mirrors `uzor_graph::agent`'s own private
+/// `resolve_cluster` (`args.cluster` as a u32), re-implemented here since
+/// that helper isn't exported.
+fn resolve_cluster_3d(action: &AgentAction) -> Option<GroupId> {
+    action.args.get("cluster").and_then(Value::as_u64).map(|v| GroupId(v as u32))
+}
+
+/// Parse `args.mode` for the 3D `select_nodes`/`box_select` forwarding —
+/// mirrors `uzor_graph::agent`'s own private `parse_select_mode` byte-for-
+/// byte (re-implemented here since that helper isn't exported): missing
+/// `mode` defaults to [`SelectMode::Replace`], an unrecognized string is
+/// an error, not a silent fallback.
+fn parse_select_mode_3d(action: &AgentAction) -> Result<SelectMode, String> {
+    match action.args.get("mode").and_then(Value::as_str) {
+        None | Some("replace") => Ok(SelectMode::Replace),
+        Some("union") => Ok(SelectMode::Union),
+        Some("diff") => Ok(SelectMode::Diff),
+        Some(other) => Err(format!("unknown select mode {other:?} (expected \"replace\"|\"union\"|\"diff\")")),
+    }
+}
+
+/// `agent_state`'s 3D `selection` field shape — mirrors `uzor_graph::agent`'s
+/// own 2D `selection_json` exactly (`{count, indices (capped at 50),
+/// collapsed_group}`).
+fn selection_json_3d(engine3d: &Engine3D) -> Value {
+    const MAX_REPORTED_INDICES: usize = 50;
+    let indices: Vec<u32> = engine3d.selection.iter().take(MAX_REPORTED_INDICES).map(|n| n.0).collect();
+    json!({
+        "count": engine3d.selection.len(),
+        "indices": indices,
+        "collapsed_group": engine3d.selection_collapsed_group().map(|id| id.0),
     })
 }
 
@@ -939,10 +997,7 @@ impl DemoApp {
     /// against yet, and no picking has anything to hit before then
     /// either).
     fn dim3d_viewport(&self) -> Rect {
-        match self.last_3d_surface_px.get() {
-            Some((w, h)) => Rect::new(0.0, 0.0, w as f64, h as f64),
-            None => full_window_viewport(),
-        }
+        viewport_from_surface_size(self.last_3d_surface_px.get())
     }
 
     /// Wave 5 fit-to-bounds — recenters/redistances the 3D camera to
@@ -1002,6 +1057,10 @@ impl BlackboxAgentSurface for DemoBlackbox {
                     "hover": engine3d.hovered().and_then(|id| node_facts_json_3d(&engine3d, id)),
                     "selected": engine3d.selected().map(NodeIndex::index),
                     "selected_facts": engine3d.selected().and_then(|id| node_facts_json_3d(&engine3d, id)),
+                    // Cluster/selection wave — same `{count, indices
+                    // capped 50, collapsed_group}` shape `uzor_graph::agent`'s
+                    // own 2D `selection_json` reports.
+                    "selection": selection_json_3d(&engine3d),
                 })
             }
         };
@@ -1094,9 +1153,19 @@ impl DemoBlackbox {
     /// equivalents working in 3D"). Mirrors `uzor_graph::agent`'s own 2D
     /// `hover_node` convention exactly: `{}`/explicit `null` clears the
     /// hover, an out-of-range index or unknown label is an error reply,
-    /// not a silent clear. Everything else stays a typed rejection — a
-    /// full 3D agent vocabulary (pin/cluster/filter-equivalents) is out
-    /// of this arc (plan §5).
+    /// not a silent clear.
+    ///
+    /// **Cluster/selection wave**: `collapse`/`expand` (mirrors 2D's own
+    /// args shape, `{"cluster": <u32 GroupId>}`) and `select_nodes`/
+    /// `box_select`/`collapse_selection`/`pin_selection`/`unpin_selection`
+    /// (mirror the 2D arg shapes exactly, `uzor_graph::agent`'s own doc
+    /// comments) now also forward onto `engine3d`. `box_select` needs a
+    /// real viewport this wrapper doesn't itself track — it reads
+    /// [`DemoBlackbox::surface_size`], the SAME last-known 3D surface size
+    /// [`DemoApp::dim3d_viewport`] reads from a separate `Arc` clone (see
+    /// [`viewport_from_surface_size`]'s own doc comment). Everything else
+    /// stays a typed rejection — pin_node/unpin_node/filter-equivalents
+    /// remain out of this arc.
     fn apply_3d_agent_action(&mut self, action: AgentAction) -> AgentActionReply {
         let mut engine3d = DemoApp::lock3d(&self.engine3d);
         match action.name.as_str() {
@@ -1118,15 +1187,82 @@ impl DemoBlackbox {
                 let Some(node) = resolve_node_3d(&engine3d, &action) else {
                     return AgentActionReply::err("select_node requires args.index (u32) or args.label (string)");
                 };
-                engine3d.selected = Some(node);
+                engine3d.select(node);
                 AgentActionReply::ok_with_log(json!({ "selected": node.index() }))
             }
             "clear_selection" => {
-                engine3d.selected = None;
+                engine3d.clear_selection();
                 AgentActionReply::ok_with_log(json!({ "selected": Value::Null }))
             }
+            "select_nodes" => {
+                let Some(indices) = action.args.get("indices").and_then(Value::as_array) else {
+                    return AgentActionReply::err("select_nodes requires args.indices (array of u32 node indices)");
+                };
+                let mode = match parse_select_mode_3d(&action) {
+                    Ok(m) => m,
+                    Err(e) => return AgentActionReply::err(e),
+                };
+                let mut nodes = Vec::with_capacity(indices.len());
+                for v in indices {
+                    let Some(idx) = v.as_u64() else {
+                        return AgentActionReply::err("select_nodes args.indices entries must all be u32");
+                    };
+                    let node = NodeIndex(idx as u32);
+                    if node.index() >= engine3d.graph.node_count() {
+                        return AgentActionReply::err(format!("select_nodes index {idx} out of range"));
+                    }
+                    nodes.push(node);
+                }
+                engine3d.apply_selection(nodes, mode);
+                AgentActionReply::ok_with_log(json!({ "selection": selection_json_3d(&engine3d) }))
+            }
+            "box_select" => {
+                let coord = |k: &str| action.args.get(k).and_then(Value::as_f64);
+                let (Some(x0), Some(y0), Some(x1), Some(y1)) = (coord("x0"), coord("y0"), coord("x1"), coord("y1")) else {
+                    return AgentActionReply::err("box_select requires args.x0/y0/x1/y1 (f64 screen coords)");
+                };
+                let mode = match parse_select_mode_3d(&action) {
+                    Ok(m) => m,
+                    Err(e) => return AgentActionReply::err(e),
+                };
+                let viewport = viewport_from_surface_size(self.surface_size.get());
+                engine3d.box_select((x0, y0), (x1, y1), mode, viewport);
+                AgentActionReply::ok_with_log(json!({ "selection": selection_json_3d(&engine3d) }))
+            }
+            "collapse_selection" => match engine3d.collapse_selection() {
+                Some(id) => AgentActionReply::ok_with_log(json!({ "collapsed": id.0 })),
+                None => AgentActionReply::err("collapse_selection requires a non-empty selection"),
+            },
+            "pin_selection" => {
+                engine3d.pin_selection();
+                AgentActionReply::ok_with_log(json!({ "selection": selection_json_3d(&engine3d) }))
+            }
+            "unpin_selection" => {
+                engine3d.unpin_selection();
+                AgentActionReply::ok_with_log(json!({ "selection": selection_json_3d(&engine3d) }))
+            }
+            "collapse" => {
+                let Some(id) = resolve_cluster_3d(&action) else {
+                    return AgentActionReply::err("collapse requires args.cluster (u32 GroupId)");
+                };
+                if engine3d.collapse_cluster(id) {
+                    AgentActionReply::ok_with_log(json!({ "collapsed": id.0 }))
+                } else {
+                    AgentActionReply::err(format!("cluster {} not found or already collapsed", id.0))
+                }
+            }
+            "expand" => {
+                let Some(id) = resolve_cluster_3d(&action) else {
+                    return AgentActionReply::err("expand requires args.cluster (u32 GroupId)");
+                };
+                if engine3d.expand_cluster(id) {
+                    AgentActionReply::ok_with_log(json!({ "expanded": id.0 }))
+                } else {
+                    AgentActionReply::err(format!("cluster {} not found or not collapsed", id.0))
+                }
+            }
             _ => AgentActionReply::err(
-                "3D dimension only supports hover_node/select_node/clear_selection besides set_dimension (Wave 3)",
+                "3D dimension supports hover_node/select_node/clear_selection/select_nodes/box_select/collapse_selection/pin_selection/unpin_selection/collapse/expand besides set_dimension",
             ),
         }
     }

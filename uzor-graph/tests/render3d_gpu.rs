@@ -44,6 +44,7 @@ use uzor_graph::render3d;
 use uzor_graph::NodeIndex;
 use uzor_urx_3d::{Mesh, MeshLit, PerspectiveCamera, Renderer3D, Scene3D, Vec3};
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 const W: u32 = 128;
@@ -415,7 +416,7 @@ fn long_thin_diagonal_edge_at_the_engines_default_distance_renders_with_continuo
 
     let node_mesh = Arc::new(MeshLit::sphere(1.0, 8, 8, [1.0, 1.0, 1.0, 1.0]));
     let edge_mesh = Arc::new(Mesh::unit_edge_quad([1.0, 1.0, 1.0, 1.0]));
-    let scene = render3d::build_scene(&graph, &particles, &node_mesh, &edge_mesh);
+    let scene = render3d::build_scene(&graph, &particles, &node_mesh, &edge_mesh, &HashSet::new());
 
     let d = 500.0f32;
     let mut camera = PerspectiveCamera::new(Vec3::new(0.0, 0.0, d), Vec3::ZERO, W as f32 / H as f32);
@@ -549,7 +550,7 @@ fn edge_quad_analytic_aa_feathers_the_line_edge_instead_of_a_binary_hard_step() 
     graph.push_edge(a, b, 1.0, ());
     let particles = vec![Particle::at3(-10.0, 0.0, 0.0), Particle::at3(10.0, 0.0, 0.0)];
     let edge_mesh = Arc::new(Mesh::unit_edge_quad([1.0, 1.0, 1.0, 1.0]));
-    let edges = render3d::build_edge_instances(&graph, &particles, &edge_mesh);
+    let edges = render3d::build_edge_instances(&graph, &particles, &edge_mesh, &HashSet::new());
     assert_eq!(edges.len(), 1, "exactly one edge, no node spheres, in this scene");
     let mut scene = Scene3D::new();
     scene.nodes = edges;

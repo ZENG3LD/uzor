@@ -65,6 +65,14 @@ pub struct ClusterState {
     /// restored verbatim on expand (round-trip identity, not a
     /// re-simulated approximation).
     saved_positions: Vec<(f32, f32)>,
+    /// 3D counterpart of `saved_positions` — populated ONLY by
+    /// [`ClusterRegistry::collapse_3d`], consumed ONLY by
+    /// [`ClusterRegistry::expand_3d`]. The 2D `collapse`/`expand` path
+    /// never touches this field (stays empty); in practice each
+    /// `GraphEngine`/`GraphEngine3D` owns its own independent
+    /// `ClusterRegistry` instance, so one `ClusterState` is only ever
+    /// driven through ONE of the two position-mutation paths.
+    saved_positions_3d: Vec<(f32, f32, f32)>,
     /// The representative's own radius before collapse — restored on
     /// expand (collapse bumps it to reflect member count).
     saved_representative_radius: f32,
@@ -121,6 +129,7 @@ impl ClusterRegistry {
                 representative,
                 collapsed: false,
                 saved_positions: Vec::new(),
+                saved_positions_3d: Vec::new(),
                 saved_representative_radius,
                 aggregated: Vec::new(),
             },
@@ -226,6 +235,84 @@ impl ClusterRegistry {
                 p.vx = 0.0;
                 p.vy = 0.0;
                 p.unpin();
+            }
+        }
+        graph.set_radius(cluster.representative, cluster.saved_representative_radius);
+        cluster.collapsed = false;
+        cluster.aggregated.clear();
+        true
+    }
+
+    /// 3D counterpart of [`ClusterRegistry::collapse`] — identical
+    /// bookkeeping/aggregation (representative/hidden-member/
+    /// cross-cluster-edge machinery is engine-agnostic, shared unchanged),
+    /// but the position math is centroid/pin over all THREE axes
+    /// (`Particle::pin3`, not the 2D-only `Particle::pin`) so a hidden
+    /// member collapses onto the representative's real `(x, y, z)`
+    /// position, not just its `(x, y)` projection — otherwise a hidden
+    /// member pinned only in x/y would still drift in z under
+    /// `ForceDirectedLayout3D`'s z-symmetric forces even though it never
+    /// draws, weakening (not breaking, since it's invisible either way)
+    /// the "one heavier point mass" repulsion analogy the module doc
+    /// describes.
+    pub fn collapse_3d<N, E>(&mut self, id: GroupId, graph: &mut Graph<N, E>, particles: &mut [Particle]) -> bool {
+        let Some(cluster) = self.clusters.get_mut(&id) else { return false };
+        if cluster.collapsed {
+            return false;
+        }
+
+        let saved_positions_3d: Vec<(f32, f32, f32)> = cluster
+            .members
+            .iter()
+            .map(|&m| particles.get(m.index()).map(|p| (p.x, p.y, p.z)).unwrap_or((0.0, 0.0, 0.0)))
+            .collect();
+
+        let (sum_x, sum_y, sum_z) =
+            saved_positions_3d.iter().fold((0.0f32, 0.0f32, 0.0f32), |acc, &(x, y, z)| (acc.0 + x, acc.1 + y, acc.2 + z));
+        let count = saved_positions_3d.len().max(1) as f32;
+        let centroid = (sum_x / count, sum_y / count, sum_z / count);
+
+        for &m in cluster.members.iter().skip(1) {
+            if let Some(p) = particles.get_mut(m.index()) {
+                p.pin3(centroid.0, centroid.1, centroid.2);
+            }
+        }
+        if let Some(p) = particles.get_mut(cluster.representative.index()) {
+            p.x = centroid.0;
+            p.y = centroid.1;
+            p.z = centroid.2;
+            p.vx = 0.0;
+            p.vy = 0.0;
+            p.vz = 0.0;
+        }
+
+        let aggregated = aggregate_cross_edges(graph, &cluster.members);
+        graph.set_radius(cluster.representative, supernode_radius(cluster.members.len()));
+
+        cluster.saved_positions_3d = saved_positions_3d;
+        cluster.aggregated = aggregated;
+        cluster.collapsed = true;
+        true
+    }
+
+    /// 3D counterpart of [`ClusterRegistry::expand`] — restores every
+    /// member's exact pre-collapse `(x, y, z)` (the snapshot
+    /// [`ClusterRegistry::collapse_3d`] took) and releases the 3D pin
+    /// (`Particle::unpin3`) instead of the 2D-only `unpin`.
+    pub fn expand_3d<N, E>(&mut self, id: GroupId, graph: &mut Graph<N, E>, particles: &mut [Particle]) -> bool {
+        let Some(cluster) = self.clusters.get_mut(&id) else { return false };
+        if !cluster.collapsed {
+            return false;
+        }
+        for (&m, &(x, y, z)) in cluster.members.iter().zip(cluster.saved_positions_3d.iter()) {
+            if let Some(p) = particles.get_mut(m.index()) {
+                p.x = x;
+                p.y = y;
+                p.z = z;
+                p.vx = 0.0;
+                p.vy = 0.0;
+                p.vz = 0.0;
+                p.unpin3();
             }
         }
         graph.set_radius(cluster.representative, cluster.saved_representative_radius);
@@ -372,5 +459,68 @@ mod tests {
         let hidden: HashSet<NodeIndex> = registry.hidden_nodes().collect();
         assert_eq!(hidden.len(), members.len() - 1, "every member except the representative is hidden");
         assert!(!hidden.contains(&members[0]), "the representative itself stays visible");
+    }
+
+    // ── 3D collapse/expand (`collapse_3d`/`expand_3d`) ──────────────────
+
+    #[test]
+    fn collapse_3d_centers_at_the_3d_centroid_and_pins_every_axis() {
+        let (mut graph, members, outside) = small_graph_with_cluster();
+        let mut particles = vec![Particle::at3(0.0, 0.0, 0.0); graph.node_count()];
+        particles[members[0].index()] = Particle::at3(-10.0, 0.0, 5.0);
+        particles[members[1].index()] = Particle::at3(0.0, -10.0, -5.0);
+        particles[members[2].index()] = Particle::at3(10.0, 0.0, 5.0);
+        particles[members[3].index()] = Particle::at3(0.0, 10.0, -5.0);
+
+        let mut registry = ClusterRegistry::default();
+        let id = registry.define(&graph, members.clone()).expect("non-empty cluster");
+        assert!(registry.collapse_3d(id, &mut graph, &mut particles));
+        assert!(!registry.collapse_3d(id, &mut graph, &mut particles), "collapsing an already-collapsed cluster is a no-op");
+
+        let cluster = registry.get(id).expect("cluster exists");
+        assert!(cluster.is_collapsed());
+        let aggregated = cluster.aggregated_edges();
+        assert_eq!(aggregated.len(), 1, "both cross-cluster edges land on the same outside node");
+        assert_eq!(aggregated[0].outside, outside);
+        assert_eq!(aggregated[0].weight, 5.0, "2.0 + 3.0 summed — the aggregation math is unchanged by the 3D path");
+
+        let rep = particles[cluster.representative.index()];
+        assert!((rep.x - 0.0).abs() < 1e-5);
+        assert!((rep.y - 0.0).abs() < 1e-5);
+        assert!((rep.z - 0.0).abs() < 1e-5, "z centroid of {{5,-5,5,-5}} is 0.0 too");
+
+        for &m in &members[1..] {
+            let p = particles[m.index()];
+            assert!(p.is_pinned_3d(), "every non-representative member must be pinned on all 3 axes");
+            assert!((p.x - rep.x).abs() < 1e-5 && (p.y - rep.y).abs() < 1e-5 && (p.z - rep.z).abs() < 1e-5);
+        }
+        assert!(graph.get_node(cluster.representative).unwrap().radius > 4.0);
+    }
+
+    #[test]
+    fn expand_3d_restores_exact_prior_member_positions_round_trip() {
+        let (mut graph, members, _outside) = small_graph_with_cluster();
+        let mut particles = vec![Particle::at3(0.0, 0.0, 0.0); graph.node_count()];
+        let original: Vec<(f32, f32, f32)> = vec![(1.0, 2.0, 3.0), (3.0, -4.0, 1.0), (-5.0, 6.0, -2.0), (7.0, 8.0, 0.5)];
+        for (&m, &(x, y, z)) in members.iter().zip(&original) {
+            particles[m.index()] = Particle::at3(x, y, z);
+        }
+        let original_radius = graph.get_node(members[0]).unwrap().radius;
+
+        let mut registry = ClusterRegistry::default();
+        let id = registry.define(&graph, members.clone()).expect("non-empty cluster");
+
+        assert!(registry.collapse_3d(id, &mut graph, &mut particles));
+        assert!(registry.expand_3d(id, &mut graph, &mut particles));
+        assert!(!registry.expand_3d(id, &mut graph, &mut particles), "expanding an already-expanded cluster is a no-op");
+
+        let cluster = registry.get(id).expect("cluster exists");
+        assert!(!cluster.is_collapsed());
+        for (&m, &(x, y, z)) in members.iter().zip(&original) {
+            let p = particles[m.index()];
+            assert_eq!((p.x, p.y, p.z), (x, y, z), "expand_3d must restore the EXACT pre-collapse position on all 3 axes");
+            assert!(!p.is_pinned_3d());
+        }
+        assert_eq!(graph.get_node(members[0]).unwrap().radius, original_radius);
     }
 }
