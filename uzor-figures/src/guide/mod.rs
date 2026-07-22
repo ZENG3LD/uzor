@@ -18,7 +18,11 @@
 //! measure-fn-driven word-wrap + ellipsis-truncate utility lifted from
 //! `foxhound-app-shell-native` (see that module's own doc comment) --
 //! feeds pre-wrapped lines to `tooltip::draw_tooltip` or any other
-//! multi-line text layout.
+//! multi-line text layout. `text_protect` is the small `plate`/`halo`
+//! label-readability primitive pair (typography-gap follow-up, see that
+//! module's own doc comment) — used by `annotation`'s own `HBand`/`VBand`
+//! label plate, and by `uzor-graph`'s node-label halo (a separate crate,
+//! hence its two functions are `pub`, not `pub(crate)`).
 
 pub mod annotation;
 pub mod axis;
@@ -27,5 +31,6 @@ pub mod crosshair;
 pub mod grid;
 pub mod labeler;
 pub mod legend;
+pub mod text_protect;
 pub mod tooltip;
 pub mod wrap;

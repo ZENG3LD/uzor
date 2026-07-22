@@ -61,6 +61,15 @@ const HOVER_PICK_MIN_MOVE_PX: f64 = 2.0;
 /// default) adds its direct neighbors + connecting edges.
 const DEFAULT_HOVER_DEPTH: u8 = 1;
 
+/// Default node-label halo color (owner defect report: thin edge strokes
+/// crossing node label text made it unreadable, e.g. in the hierarchical/
+/// radial exhibits) — matches `force-graph-demo`'s/the showcase's own
+/// `GraphExhibit` canvas background (`"#0d0f14"`), so the default reads as
+/// invisible on the crate's own demo canvas while still protecting a
+/// label wherever a caller's own background happens to differ. See
+/// [`GraphEngine::label_halo`]/[`GraphEngine::set_label_halo`].
+pub(crate) const DEFAULT_LABEL_HALO: &str = "#0d0f14";
+
 /// Wave 2.5 default transition duration (ms) for `zoom_to_fit`/
 /// `zoom_to_node` when the caller doesn't specify one. `pub(crate)` so
 /// `agent.rs`'s `zoom_to_fit`/`zoom_to_node` actions default to the exact
@@ -442,6 +451,10 @@ pub struct GraphEngine<N, E, L: Layout = ForceDirectedLayout> {
     /// `labelDensity`, "labels per 100px cell at zoom 1.0"). See
     /// [`GraphEngine::label_density`]/[`GraphEngine::set_label_density`].
     label_density: f64,
+    /// Node-label halo color — see [`DEFAULT_LABEL_HALO`]'s own doc
+    /// comment. See [`GraphEngine::label_halo`]/[`GraphEngine::
+    /// set_label_halo`].
+    label_halo: String,
     /// Labels actually drawn on the last [`GraphEngine::draw`] call —
     /// see [`GraphEngine::labels_drawn_last_frame`].
     labels_drawn_last_frame: usize,
@@ -492,6 +505,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             hover_depth: DEFAULT_HOVER_DEPTH,
             hover_card: true,
             label_density: label_grid::DEFAULT_LABEL_DENSITY,
+            label_halo: DEFAULT_LABEL_HALO.to_owned(),
             labels_drawn_last_frame: 0,
             visible: Vec::new(),
             last_tick: LayoutTickResult { alpha: 1.0, max_displacement: 0.0, settled: false },
@@ -761,6 +775,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             hovered: self.hovered,
             hidden: &hidden,
             label_density: self.label_density,
+            label_halo: &self.label_halo,
             forced_labels: &forced_labels,
         };
         gr_render::draw_edges(render, &self.graph, &self.particles, &ctx);
@@ -1101,6 +1116,24 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
     /// representatives, would show).
     pub fn set_label_density(&mut self, density: f64) {
         self.label_density = density.max(0.0);
+        self.dirty = true;
+    }
+
+    /// Node-label halo color (a 4-direction offset-fill "stroke text"
+    /// painted in this color under the real label fill — see
+    /// `crate::render::draw_nodes`'s own doc comment) — default
+    /// [`DEFAULT_LABEL_HALO`], matching this crate's own demo/showcase
+    /// canvas background.
+    pub fn label_halo(&self) -> &str {
+        &self.label_halo
+    }
+
+    /// Set this engine's own node-label halo color to match a caller's OWN
+    /// canvas background — `GraphEngine::draw` never paints a background
+    /// itself (a caller's own `fill_rect` does, before calling `draw`), so
+    /// this can't be inferred automatically.
+    pub fn set_label_halo(&mut self, color: impl Into<String>) {
+        self.label_halo = color.into();
         self.dirty = true;
     }
 
@@ -1967,6 +2000,17 @@ mod tests {
         // Negative density clamps to 0.0 (an empty per-cell quota).
         engine.set_label_density(-4.0);
         assert_eq!(engine.label_density(), 0.0);
+    }
+
+    #[test]
+    fn label_halo_defaults_and_set_label_halo_updates_the_getter_and_marks_dirty() {
+        let mut engine: TestEngine = GraphEngine::new(Graph::new(), ForceDirectedLayout::default());
+        assert_eq!(engine.label_halo(), DEFAULT_LABEL_HALO, "default halo must match the crate's own demo/showcase canvas background");
+
+        engine.clear_dirty();
+        engine.set_label_halo("#ffffff");
+        assert_eq!(engine.label_halo(), "#ffffff");
+        assert!(engine.dirty(), "changing label_halo must mark the canvas dirty");
     }
 
     /// A real `draw()` call (through `uzor-export`'s headless render path,

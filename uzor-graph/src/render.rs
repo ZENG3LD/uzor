@@ -17,6 +17,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use uzor::render::{CircleBatch, LineSegment, RenderContext};
 use uzor::types::Rect;
+use uzor_figures::guide::text_protect::fill_text_with_halo;
 use uzor_figures::guide::tooltip::draw_tooltip;
 use uzor_figures::interact::FocusSet;
 use uzor_figures::theme::FigureTheme;
@@ -112,6 +113,15 @@ pub struct DrawContext<'a> {
     /// through here rather than as a ninth loose argument to
     /// [`draw_nodes`].
     pub label_density: f64,
+    /// Node-label halo color (owner defect report: thin edge strokes
+    /// crossing node label text made it unreadable) — [`draw_nodes`]
+    /// paints each label's own 4-direction offset-fill halo in this color
+    /// before the real label fill, via
+    /// `uzor_figures::guide::text_protect::fill_text_with_halo`. See
+    /// [`crate::engine::GraphEngine::label_halo`]/[`crate::engine::
+    /// GraphEngine::set_label_halo`] for the owning field this is read
+    /// from every frame.
+    pub label_halo: &'a str,
     /// Nodes that must show their label regardless of the grid quota —
     /// collapsed-cluster representatives. Hover/selection-neighbor
     /// forcing does NOT need a separate entry here: it's derived inline
@@ -306,9 +316,11 @@ pub fn draw_nodes<N, E>(
 
         if alpha > 0.01 {
             render.set_global_alpha(alpha);
-            render.set_fill_color("#e6e6ea");
             render.set_font("11px sans-serif");
-            render.fill_text(&node.label, sx + r + 4.0, sy + 4.0);
+            // Halo (owner defect report: thin edge strokes crossing node
+            // label text made it unreadable) — a 4-direction offset-fill
+            // in `ctx.label_halo` under the real `"#e6e6ea"` label fill.
+            fill_text_with_halo(render, &node.label, sx + r + 4.0, sy + 4.0, "#e6e6ea", ctx.label_halo);
             render.set_global_alpha(1.0);
             labels_drawn += 1;
         }
@@ -499,6 +511,7 @@ mod tests {
             hovered: None,
             hidden: &hidden,
             label_density: label_grid::DEFAULT_LABEL_DENSITY,
+            label_halo: crate::engine::DEFAULT_LABEL_HALO,
             forced_labels: &forced,
         };
         let shown_no_focus = labels_to_draw(&graph, &particles, &ctx_no_focus);
@@ -552,6 +565,7 @@ mod tests {
             hovered: None,
             hidden: &hidden,
             label_density: label_grid::DEFAULT_LABEL_DENSITY,
+            label_halo: crate::engine::DEFAULT_LABEL_HALO,
             forced_labels: &forced,
         };
 

@@ -1,5 +1,5 @@
 //! Annotation guide — reference lines, reference bands, and text callouts
-//! drawn OVER a figure's own marks/axes, through the same
+//! drawn over/under a figure's own marks, through the same
 //! [`PlotArea`]/[`Scale`] transform every mark/guide in this crate already
 //! uses (design law #1). A figure opts in via a small `annotations: Vec<
 //! Annotation>` field + a `.with_annotations(..)` builder — the SAME
@@ -8,6 +8,38 @@
 //! ...), never a config bag and never a change to any figure's own
 //! `render`/`render_with` signature (see e.g.
 //! [`crate::figure::CurveFigure::with_downsample`]).
+//!
+//! ## Layer contract (report: fixes bubbles/marks swallowing annotation text)
+//!
+//! An owner defect report found `ScatterFigure` painting its WHOLE
+//! annotation pass (band fill AND label text AND the `Callout` box) in one
+//! shot, BEFORE marks — correct for a shaded band's own fill (a "zone sits
+//! behind the cloud" convention every figure using this guide shares), but
+//! wrong for anything with readable TEXT: a dense point cloud (or a tall
+//! bar) painted AFTER a label/callout simply covers it. The fix splits this
+//! module's own draw entry point into two passes, each figure's own
+//! `render_with` now calls BOTH, with its marks drawn in between:
+//!
+//! 1. [`draw_annotation_underlays`] — FILLS ONLY (`HBand`'s shaded rect —
+//!    the only variant with a fill component). Called BEFORE a figure's
+//!    marks. `HLine`/`VLine`/`Callout` have no fill-only component and are
+//!    no-ops here.
+//! 2. (the figure's own marks paint here)
+//! 3. [`draw_annotation_overlays`] — every reference LINE stroke + LABEL
+//!    text (`HLine`/`VLine`, and `HBand`'s own label — the fill already
+//!    painted in step 1) + the full `Callout` (dot, leader line, box, text
+//!    — a callout has no separate underlay, its leader always points at
+//!    live data so it only ever makes sense drawn on top). Called AFTER a
+//!    figure's marks, before axes/title chrome.
+//!
+//! A reference LINE crossing marks reads fine the same way an axis
+//! gridline already does (thin, low-contrast, never solid text) — so only
+//! `HBand`'s own label additionally gets a
+//! [`crate::guide::text_protect::plate_under_text`] backing plate in this
+//! pass (the SAME text-over-marks problem the callout's own pre-existing
+//! opaque box already solved for itself — see [`draw_callout`]'s own doc
+//! comment). Full order, top to bottom: background -> grid -> annotation
+//! FILLS -> marks -> annotation LINES + LABELS + Callout -> axes/title.
 //!
 //! [`Annotation::Callout`]'s flip-to-fit box placement is adapted from
 //! [`crate::guide::tooltip::draw_tooltip`]'s own edge-flip idiom — a
@@ -22,6 +54,7 @@ use uzor::render::{CircleBatch, RenderContext, TextAlign, TextBaseline};
 use uzor::types::Rect;
 
 use crate::coord::PlotArea;
+use crate::guide::text_protect::plate_under_text;
 use crate::scale::Scale;
 use crate::theme::FigureTheme;
 
@@ -98,7 +131,12 @@ fn dashed_vline(ctx: &mut dyn RenderContext, area: &PlotArea, xscale: &dyn Scale
     }
 }
 
-fn shaded_hband(ctx: &mut dyn RenderContext, area: &PlotArea, yscale: &dyn Scale, theme: &FigureTheme, low: f64, high: f64, color: &Option<String>, label: &Option<String>) {
+/// `HBand`'s own FILL only — called from [`draw_annotation_underlays`],
+/// before a figure's marks (the "shaded zone sits behind the cloud/bars"
+/// convention). The band's own LABEL text is a separate fn
+/// ([`shaded_hband_label`]), called from [`draw_annotation_overlays`]
+/// instead — see this module's own "Layer contract" doc comment for why.
+fn shaded_hband_fill(ctx: &mut dyn RenderContext, area: &PlotArea, yscale: &dyn Scale, theme: &FigureTheme, low: f64, high: f64, color: &Option<String>) {
     let y0 = area.y(yscale, low);
     let y1 = area.y(yscale, high);
     let (top, height) = (y0.min(y1), (y1 - y0).abs());
@@ -107,14 +145,30 @@ fn shaded_hband(ctx: &mut dyn RenderContext, area: &PlotArea, yscale: &dyn Scale
     ctx.set_global_alpha(BAND_ALPHA);
     ctx.fill_rect(area.rect.x, top, area.rect.width, height);
     ctx.set_global_alpha(1.0);
+}
 
-    if let Some(text) = label {
-        ctx.set_font(&theme.label_font);
-        ctx.set_fill_color(fill);
-        ctx.set_text_align(TextAlign::Left);
-        ctx.set_text_baseline(TextBaseline::Top);
-        ctx.fill_text(text, area.rect.x + REFERENCE_LABEL_GAP, top + REFERENCE_LABEL_GAP);
-    }
+/// `HBand`'s own LABEL text only — called from
+/// [`draw_annotation_overlays`], AFTER a figure's marks. A
+/// [`crate::guide::text_protect::plate_under_text`] backing plate goes
+/// under the text FIRST (this label now paints over marks — e.g. a dense
+/// scatter cloud — that would otherwise swallow bare text at this position;
+/// see this module's own "Layer contract" doc comment).
+fn shaded_hband_label(ctx: &mut dyn RenderContext, area: &PlotArea, yscale: &dyn Scale, theme: &FigureTheme, low: f64, high: f64, color: &Option<String>, label: &Option<String>) {
+    let Some(text) = label else { return };
+    let y0 = area.y(yscale, low);
+    let y1 = area.y(yscale, high);
+    let top = y0.min(y1);
+    let fill = color.as_deref().unwrap_or(&theme.label_color);
+    let x = area.rect.x + REFERENCE_LABEL_GAP;
+    let y = top + REFERENCE_LABEL_GAP;
+
+    ctx.set_font(&theme.label_font);
+    plate_under_text(ctx, theme, text, x, y, TextAlign::Left, TextBaseline::Top);
+
+    ctx.set_fill_color(fill);
+    ctx.set_text_align(TextAlign::Left);
+    ctx.set_text_baseline(TextBaseline::Top);
+    ctx.fill_text(text, x, y);
 }
 
 /// Free-text callout at a resolved screen `anchor_px`, staying inside
@@ -171,16 +225,38 @@ fn draw_callout(ctx: &mut dyn RenderContext, theme: &FigureTheme, anchor_px: (f6
     ctx.fill_text(text, box_x + CALLOUT_PAD, box_y + box_h / 2.0);
 }
 
-/// Draw every `annotations` entry over `area` — `xscale`/`yscale` are
-/// whatever the calling figure already resolved for this render pass
-/// (design law #1: no annotation-private scale math). Order: `annotations`
-/// draws in caller order, so a later entry paints over an earlier one.
-pub fn draw_annotations(ctx: &mut dyn RenderContext, area: &PlotArea, xscale: &dyn Scale, yscale: &dyn Scale, theme: &FigureTheme, annotations: &[Annotation]) {
+/// Pass 1 of this module's own layer contract (see the module's own
+/// doc comment) — draw only the FILL portion of every `annotations` entry
+/// (currently just `HBand`'s shaded rect, the only variant with a fill
+/// component). Call this BEFORE a figure's own marks. `HLine`/`VLine`/
+/// `Callout` have no fill-only component and are no-ops here — see
+/// [`draw_annotation_overlays`] for the rest of each variant's own paint.
+/// No `xscale` parameter — nothing this pass currently draws needs one (an
+/// `HBand` fill spans the plot's full width at a fixed Y interval); a
+/// future X-domain band fill would add one then, not before.
+pub fn draw_annotation_underlays(ctx: &mut dyn RenderContext, area: &PlotArea, yscale: &dyn Scale, theme: &FigureTheme, annotations: &[Annotation]) {
+    for annotation in annotations {
+        if let Annotation::HBand { low, high, color, .. } = annotation {
+            shaded_hband_fill(ctx, area, yscale, theme, *low, *high, color);
+        }
+    }
+}
+
+/// Pass 2 of this module's own layer contract (see the module's own doc
+/// comment) — draw every reference LINE stroke + LABEL text
+/// (`HLine`/`VLine`, and `HBand`'s own label — its fill already painted by
+/// [`draw_annotation_underlays`]) plus the full `Callout` (dot + leader +
+/// box + text). Call this AFTER a figure's own marks, before axes/title
+/// chrome — `xscale`/`yscale` are whatever the calling figure already
+/// resolved for this render pass (design law #1: no annotation-private
+/// scale math). Order: `annotations` draws in caller order, so a later
+/// entry paints over an earlier one.
+pub fn draw_annotation_overlays(ctx: &mut dyn RenderContext, area: &PlotArea, xscale: &dyn Scale, yscale: &dyn Scale, theme: &FigureTheme, annotations: &[Annotation]) {
     for annotation in annotations {
         match annotation {
             Annotation::HLine { value, color, label } => dashed_hline(ctx, area, yscale, theme, *value, color, label),
             Annotation::VLine { value, color, label } => dashed_vline(ctx, area, xscale, theme, *value, color, label),
-            Annotation::HBand { low, high, color, label } => shaded_hband(ctx, area, yscale, theme, *low, *high, color, label),
+            Annotation::HBand { low, high, color, label } => shaded_hband_label(ctx, area, yscale, theme, *low, *high, color, label),
             Annotation::Callout { x, y, text } => {
                 let anchor_px = (area.x(xscale, *x), area.y(yscale, *y));
                 draw_callout(ctx, theme, anchor_px, text, area.rect);
@@ -200,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_annotations_renders_every_variant_without_panicking() {
+    fn draw_annotation_passes_render_every_variant_without_panicking() {
         let theme = FigureTheme::dark();
         let xscale = LinearScale::new(0.0, 100.0);
         let yscale = LinearScale::new(0.0, 50.0);
@@ -212,19 +288,45 @@ mod tests {
         ];
         let spec = ExportSpec { width_px: 240, height_px: 190, dpr: 1.0, background: None };
         let result = render_to_png(&spec, |ctx| {
-            draw_annotations(ctx, &area(), &xscale, &yscale, &theme, &annotations);
+            draw_annotation_underlays(ctx, &area(), &yscale, &theme, &annotations);
+            draw_annotation_overlays(ctx, &area(), &xscale, &yscale, &theme, &annotations);
         });
         assert!(result.is_ok());
     }
 
     #[test]
-    fn draw_annotations_empty_slice_is_a_no_op() {
+    fn draw_annotation_passes_empty_slice_is_a_no_op() {
         let theme = FigureTheme::dark();
         let xscale = LinearScale::new(0.0, 100.0);
         let yscale = LinearScale::new(0.0, 50.0);
         let spec = ExportSpec { width_px: 240, height_px: 190, dpr: 1.0, background: None };
         let result = render_to_png(&spec, |ctx| {
-            draw_annotations(ctx, &area(), &xscale, &yscale, &theme, &[]);
+            draw_annotation_underlays(ctx, &area(), &yscale, &theme, &[]);
+            draw_annotation_overlays(ctx, &area(), &xscale, &yscale, &theme, &[]);
+        });
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn hband_fill_paints_before_a_mark_and_its_label_paints_after() {
+        // The whole point of the split: a mark drawn BETWEEN the two passes
+        // must sit UNDER the band's own fill (painted first, by
+        // `draw_annotation_underlays`) but UNDER the band's own LABEL TEXT
+        // (painted last, by `draw_annotation_overlays`) — i.e. the fill is
+        // an underlay, the label is an overlay, relative to marks. This is
+        // a render-order smoke test (no panic across the 3-step sequence a
+        // real figure now performs); the actual pixel-level "label stays
+        // legible over marks" claim is covered by the regenerated
+        // `figures_scatter.png` proof (see `uzor-figures`'s own CLAUDE.md).
+        let theme = FigureTheme::dark();
+        let yscale = LinearScale::new(0.0, 50.0);
+        let annotations = vec![Annotation::HBand { low: 10.0, high: 40.0, color: None, label: Some("band".to_owned()) }];
+        let spec = ExportSpec { width_px: 240, height_px: 190, dpr: 1.0, background: None };
+        let result = render_to_png(&spec, |ctx| {
+            draw_annotation_underlays(ctx, &area(), &yscale, &theme, &annotations);
+            ctx.set_fill_color("#ffffff");
+            ctx.fill_rect(area().rect.x, area().rect.y, area().rect.width, area().rect.height);
+            draw_annotation_overlays(ctx, &area(), &LinearScale::new(0.0, 100.0), &yscale, &theme, &annotations);
         });
         assert!(result.is_ok());
     }

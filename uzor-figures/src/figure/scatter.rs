@@ -41,7 +41,7 @@ use uzor::types::Rect;
 
 use crate::coord::PlotArea;
 use crate::figure::FigureOverlay;
-use crate::guide::annotation::{draw_annotations, Annotation};
+use crate::guide::annotation::{draw_annotation_overlays, draw_annotation_underlays, Annotation};
 use crate::guide::{axis, grid, tooltip};
 use crate::interact::hit::{self, HitZone};
 use crate::mark::point::draw_points_sized;
@@ -308,10 +308,15 @@ impl ScatterFigure {
             grid::draw_x_grid(ctx, &area, x_scale, theme, TARGET_X_TICKS);
             grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
 
-            // Reference lines/bands paint UNDER the data points (the
-            // typical "shaded zone sits behind the cloud" convention),
-            // over the grid.
-            draw_annotations(ctx, &area, x_scale, &y_scale, theme, &self.annotations);
+            // Annotation FILLS (the only underlay: `HBand`'s own shaded
+            // rect) paint UNDER the data points — the typical "shaded zone
+            // sits behind the cloud" convention, over the grid. Reference
+            // LINES/LABELS/`Callout` paint AFTER the points below (see
+            // `guide::annotation`'s own "Layer contract" doc comment) — an
+            // owner defect report found a dense point cloud swallowing the
+            // `HBand` label/`Callout` box when the whole annotation pass
+            // drew in one shot before marks.
+            draw_annotation_underlays(ctx, &area, &y_scale, theme, &self.annotations);
 
             let indices = self.rendered_indices();
             let value_domain = self.value_domain();
@@ -324,6 +329,8 @@ impl ScatterFigure {
                 .collect();
             let style = MarkStyle { color: theme.palette[0].clone(), fill_alpha: DEFAULT_FILL_ALPHA, ..Default::default() };
             draw_points_sized(ctx, &area, x_scale, &y_scale, &sized, &style);
+
+            draw_annotation_overlays(ctx, &area, x_scale, &y_scale, theme, &self.annotations);
 
             if let Some((hx, hy)) = overlay.hover_px {
                 if hit::hit_zone(&area, hx, hy) == HitZone::Plot {

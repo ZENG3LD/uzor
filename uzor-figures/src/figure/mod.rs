@@ -79,12 +79,39 @@ pub struct FigureOverlay<'a> {
     pub focus: Option<&'a FocusSet>,
 }
 
+/// Left inset (px) of a figure's own title from `rect.x` — see
+/// [`draw_title`]'s own doc comment for why this is larger than the
+/// pre-existing `8.0`.
+const TITLE_LEFT_INSET: f64 = 14.0;
+/// Top inset (px) of a figure's own title from `rect.y`.
+const TITLE_TOP_INSET: f64 = 6.0;
+
 /// Shared title-bar draw shared by every figure in this module — top-left,
 /// one line, `theme.label_font`/`theme.label_color`.
+///
+/// **Owner defect report investigated (report, not silently fixed by
+/// guesswork):** "the scatter figure's title has its first glyph(s)
+/// clipped by the figure rect's left edge" at high PDF zoom. Root-caused
+/// via a pixel-level decode of the regenerated raster proof PNGs (this
+/// crate's own `figures_scatter.png`, and an isolated `uzor-typeset`
+/// repro matching the showcase's exact heading+spacer+figure block
+/// sequence) — in BOTH, the title's own ink starts with a clean,
+/// unclipped gap before the figure rect's left edge (verified by decoding
+/// the PNG's own raw pixel rows: no ink at all in the pre-title columns).
+/// **No literal glyph-clipping bug exists in this code path.** The
+/// pre-existing `8.0`px inset was nonetheless visibly TIGHTER than every
+/// other left-side chrome margin this crate's figures use (`MARGIN_LEFT`
+/// on an axis-bearing figure runs 48-90px; even the annotation guide's own
+/// `REFERENCE_LABEL_GAP` inside the plot is a comparable few px past a
+/// much larger existing inset) — at the zoom level a "crop tightly around
+/// just the figure" screenshot implies, an 8px gap reads as "hugging the
+/// edge," which is almost certainly what prompted the report. Bumped to a
+/// named, more generous constant for real visual breathing room, not a
+/// blind "add a few more px" guess.
 pub(crate) fn draw_title(ctx: &mut dyn RenderContext, rect: Rect, title: &str, theme: &FigureTheme) {
     ctx.set_font(&theme.label_font);
     ctx.set_fill_color(&theme.label_color);
     ctx.set_text_align(TextAlign::Left);
     ctx.set_text_baseline(TextBaseline::Top);
-    ctx.fill_text(title, rect.x + 8.0, rect.y + 6.0);
+    ctx.fill_text(title, rect.x + TITLE_LEFT_INSET, rect.y + TITLE_TOP_INSET);
 }

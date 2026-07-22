@@ -17,7 +17,7 @@ use uzor::types::Rect;
 
 use crate::coord::PlotArea;
 use crate::figure::FigureOverlay;
-use crate::guide::annotation::{draw_annotations, Annotation};
+use crate::guide::annotation::{draw_annotation_overlays, draw_annotation_underlays, Annotation};
 use crate::guide::legend::{self, LegendEntry, LegendPosition};
 use crate::guide::{axis, grid, tooltip};
 use crate::interact::hit::{self, HitZone};
@@ -310,10 +310,12 @@ impl BarFigure {
 
             grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
 
-            // Reference lines/bands paint UNDER the bars (over the grid,
-            // under the data) — same ordering `CurveFigure::render_with`
-            // uses.
-            draw_annotations(ctx, &area, &band, &y_scale, theme, &self.annotations);
+            // Annotation FILLS (the only underlay: `HBand`'s own shaded
+            // rect) paint UNDER the bars (over the grid, under the data) —
+            // same ordering `CurveFigure::render_with` uses. Reference
+            // LINES/LABELS/`Callout` paint AFTER the bars below (see
+            // `guide::annotation`'s own "Layer contract" doc comment).
+            draw_annotation_underlays(ctx, &area, &y_scale, theme, &self.annotations);
 
             if self.series.len() <= 1 {
                 if let Some(single) = self.series.first() {
@@ -328,6 +330,8 @@ impl BarFigure {
                     BarMode::Stacked => draw_bars_stacked(ctx, &area, &band, &y_scale, &series_values, &colors),
                 }
             }
+
+            draw_annotation_overlays(ctx, &area, &band, &y_scale, theme, &self.annotations);
 
             if self.show_value_labels {
                 if let Some(single) = self.series.first().filter(|_| self.series.len() == 1) {

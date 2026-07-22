@@ -19,7 +19,7 @@ use uzor::types::Rect;
 
 use crate::coord::PlotArea;
 use crate::figure::FigureOverlay;
-use crate::guide::annotation::{draw_annotations, Annotation};
+use crate::guide::annotation::{draw_annotation_overlays, draw_annotation_underlays, Annotation};
 use crate::guide::legend::{self, LegendEntry, LegendPosition};
 use crate::guide::{axis, crosshair, grid, tooltip};
 use crate::interact::hit::{self, HitZone};
@@ -314,12 +314,14 @@ impl CurveFigure {
             grid::draw_x_grid(ctx, &area, x_scale, theme, TARGET_X_TICKS);
             grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
 
-            // Reference lines/bands paint UNDER the series (over the grid,
-            // under the data) — the typical "shaded zone sits behind the
-            // line" convention; callouts still land on top since they're
-            // drawn last within `draw_annotations` itself when supplied
-            // after a band/line in the caller's own `annotations` order.
-            draw_annotations(ctx, &area, x_scale, &y_scale, theme, &self.annotations);
+            // Annotation FILLS (the only underlay: `HBand`'s own shaded
+            // rect) paint UNDER the series — the typical "shaded zone sits
+            // behind the line" convention, over the grid. Reference
+            // LINES/LABELS/`Callout` paint AFTER the series below (see
+            // `guide::annotation`'s own "Layer contract" doc comment) —
+            // matches `ScatterFigure`'s own fix for the SAME class of
+            // "dense marks swallow annotation text" defect.
+            draw_annotation_underlays(ctx, &area, &y_scale, theme, &self.annotations);
 
             // Per-series LTTB-downsampled (or borrowed verbatim) point
             // set — the SAME set drawn below AND hit-tested against
@@ -336,6 +338,8 @@ impl CurveFigure {
                 }
                 draw_polyline(ctx, &area, x_scale, &y_scale, s, &style);
             }
+
+            draw_annotation_overlays(ctx, &area, x_scale, &y_scale, theme, &self.annotations);
 
             axis::draw_x_axis(ctx, &area, x_scale, theme, TARGET_X_TICKS);
             axis::draw_y_axis(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);

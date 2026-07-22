@@ -27,10 +27,11 @@ use glam::Vec3;
 use uzor::input::{ModifierKeys, MouseButton, PlatformEvent};
 use uzor::render::RenderContext;
 use uzor::types::Rect;
+use uzor_figures::guide::text_protect::fill_text_with_halo;
 use uzor_urx_3d::{Mesh, MeshLit, PerspectiveCamera, Scene3D};
 
 use crate::camera3d::Camera3D;
-use crate::engine::NodeFacts;
+use crate::engine::{NodeFacts, DEFAULT_LABEL_HALO};
 use crate::graph::{Graph, NodeIndex};
 use crate::interaction::pick3d;
 use crate::label_grid;
@@ -274,6 +275,10 @@ pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     /// opt-in orientation aid, not a default-on feature. See
     /// [`GraphEngine3D::set_grid_enabled`]/[`GraphEngine3D::grid_enabled`].
     grid_enabled: bool,
+    /// Node-label halo color — the 3D sibling of [`crate::engine::
+    /// GraphEngine::label_halo`] (same [`DEFAULT_LABEL_HALO`] default). See
+    /// [`GraphEngine3D::label_halo`]/[`GraphEngine3D::set_label_halo`].
+    label_halo: String,
 }
 
 impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
@@ -299,6 +304,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             gpu_pick_threshold: pick3d::GPU_PICK_NODE_THRESHOLD,
             gpu_pick_pipeline: pick3d::GpuPickPipeline::new(),
             grid_enabled: false,
+            label_halo: DEFAULT_LABEL_HALO.to_owned(),
         }
     }
 
@@ -663,6 +669,19 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         self.grid_enabled = enabled;
     }
 
+    /// Node-label halo color — the 3D sibling of [`crate::engine::
+    /// GraphEngine::label_halo`] (same [`DEFAULT_LABEL_HALO`] default).
+    pub fn label_halo(&self) -> &str {
+        &self.label_halo
+    }
+
+    /// Set this engine's own node-label halo color to match a caller's OWN
+    /// canvas background — see [`crate::engine::GraphEngine::
+    /// set_label_halo`]'s own doc comment for the same reasoning.
+    pub fn set_label_halo(&mut self, color: impl Into<String>) {
+        self.label_halo = color.into();
+    }
+
     /// Instanced sphere nodes + billboarded edge quads (plan §1.3) — wires
     /// straight into [`crate::render3d::build_scene`], which is
     /// independently unit-tested (no GPU needed) for the node/edge
@@ -918,9 +937,11 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 continue;
             }
             render.set_global_alpha(alpha);
-            render.set_fill_color("#e6e6ea");
             render.set_font("11px sans-serif");
-            render.fill_text(&node.label, sx + OVERLAY_LABEL_OFFSET_X, sy + OVERLAY_LABEL_OFFSET_Y);
+            // Halo (owner defect report: thin edge strokes crossing node
+            // label text made it unreadable) — same treatment
+            // `crate::render::draw_nodes` uses for the 2D engine's labels.
+            fill_text_with_halo(render, &node.label, sx + OVERLAY_LABEL_OFFSET_X, sy + OVERLAY_LABEL_OFFSET_Y, "#e6e6ea", &self.label_halo);
             render.set_global_alpha(1.0);
             labels_drawn += 1;
         }
@@ -1452,7 +1473,16 @@ mod tests {
         let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
 
         assert_eq!(stats.labels_drawn, 3, "all 3 well-separated triangle nodes must get a painted label at this camera/density");
-        assert_eq!(ctx.fill_texts.len(), 3, "draw_overlay must issue exactly one fill_text draw call per shown label");
+        // Each shown label now paints through `fill_text_with_halo` (owner
+        // defect report: thin edge strokes crossing node label text made
+        // it unreadable) — 8 halo copies + 1 real fill per label, 9 raw
+        // `fill_text` calls per label, not 1.
+        const FILL_TEXT_CALLS_PER_LABEL: usize = 9;
+        assert_eq!(
+            ctx.fill_texts.len(),
+            3 * FILL_TEXT_CALLS_PER_LABEL,
+            "draw_overlay must issue exactly {FILL_TEXT_CALLS_PER_LABEL} fill_text draw calls (halo + real fill) per shown label"
+        );
         let drawn_labels: HashSet<&str> = ctx.fill_texts.iter().map(|(t, _, _)| t.as_str()).collect();
         assert_eq!(drawn_labels, HashSet::from(["a", "b", "c"]), "every fixture node's own label text must be drawn");
         assert!(!stats.hover_card_drawn, "nothing is hovered in this fixture, so no hover card should be painted");
@@ -1799,6 +1829,15 @@ mod tests {
         assert!(engine.grid_enabled());
         engine.set_grid_enabled(false);
         assert!(!engine.grid_enabled());
+    }
+
+    #[test]
+    fn label_halo_defaults_and_the_setter_updates_it() {
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> =
+            GraphEngine3D::new(triangle(), ForceDirectedLayout3D::default());
+        assert_eq!(engine.label_halo(), DEFAULT_LABEL_HALO, "default halo must match the 2D engine's own default");
+        engine.set_label_halo("#112233");
+        assert_eq!(engine.label_halo(), "#112233");
     }
 
     #[test]

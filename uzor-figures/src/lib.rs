@@ -57,7 +57,7 @@ pub use figure::{
     HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, PieFigure, PieSlice, PointRadius, SankeyFigure, SankeyLink, SankeyNode,
     ScatterFigure, ScatterPoint, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind, WHISKER_IQR_MULTIPLIER,
 };
-pub use guide::annotation::{draw_annotations, Annotation};
+pub use guide::annotation::{draw_annotation_overlays, draw_annotation_underlays, Annotation};
 pub use guide::axis::{draw_x_axis_formatted, draw_y_axis_formatted};
 pub use guide::colorbar::{draw_colorbar, measure_colorbar, ColorbarSize};
 pub use guide::labeler::{anchor_candidates, place_labels, OccupancyBitmap};

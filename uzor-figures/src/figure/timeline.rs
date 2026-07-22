@@ -264,18 +264,30 @@ impl TimelineFigure {
             }
             let label_w = ctx.measure_text(&e.label);
             let cy = bar_y + bar_h / 2.0;
-            if label_w + LABEL_GAP * 2.0 <= width {
-                // Fits inside the bar — background-tinted text reads
-                // cleanly against any palette accent, same convention as a
-                // filled-button label.
-                draw_label_centered(ctx, &e.label, left + width / 2.0, cy, &theme.background, &theme.label_font);
-            } else {
-                // Fix D: a beside-label naturally drawn past the bar's own
-                // right edge would clip past the PLOT's right edge for an
-                // interval ending near it — mirror to the bar's own LEFT
-                // edge instead when that would happen.
-                let beside_left = beside_label_left_edge(right + LABEL_GAP, label_w, left - LABEL_GAP, area.rect.right());
-                draw_label_left_aligned(ctx, &e.label, beside_left, cy, &theme.label_color, &theme.label_font);
+            match inside_label_placement(left, right, area.rect.x, area.rect.right(), label_w, LABEL_GAP) {
+                Some(InsideLabelPlacement::Centered(cx)) => {
+                    // Fits inside the bar's own FULL span — background-tinted
+                    // text reads cleanly against any palette accent, same
+                    // convention as a filled-button label.
+                    draw_label_centered(ctx, &e.label, cx, cy, &theme.background, &theme.label_font);
+                }
+                Some(InsideLabelPlacement::LeftAligned(lx)) => {
+                    // The bar itself starts left of the visible plot area
+                    // (or its FULL span is otherwise off-plot) but the
+                    // VISIBLE portion is wide enough — anchor at the
+                    // visible portion's own left edge, never at the bar's
+                    // own off-plot start (see `inside_label_placement`'s
+                    // own doc comment).
+                    draw_label_left_aligned(ctx, &e.label, lx, cy, &theme.background, &theme.label_font);
+                }
+                None => {
+                    // Fix D: a beside-label naturally drawn past the bar's own
+                    // right edge would clip past the PLOT's right edge for an
+                    // interval ending near it — mirror to the bar's own LEFT
+                    // edge instead when that would happen.
+                    let beside_left = beside_label_left_edge(right + LABEL_GAP, label_w, left - LABEL_GAP, area.rect.right());
+                    draw_label_left_aligned(ctx, &e.label, beside_left, cy, &theme.label_color, &theme.label_font);
+                }
             }
         }
     }
@@ -579,6 +591,58 @@ fn beside_label_left_edge(natural_left: f64, width: f64, mirrored_anchor: f64, p
     }
 }
 
+/// Where (if anywhere) an interval bar's own inside-bar label should land,
+/// given the bar's FULL screen-pixel span `[left, right]` (which may start
+/// or end off-plot — nothing in this figure's own domain computation
+/// currently produces that, since [`time_domain`] always pads to cover
+/// every event, but a caller-overridden scale or a future degenerate
+/// padding edge case could) and the plot's own `[plot_left, plot_right]`
+/// bounds.
+///
+/// Owner defect report: the pre-fix code checked "does the label fit the
+/// bar's FULL width" and, if so, always centered at the bar's own FULL
+/// center (`left + width / 2.0`) — correct only when the bar itself is
+/// entirely on-plot. A bar whose `left` sits before `plot_left` has a FULL
+/// center that can ALSO sit before `plot_left`, silently painting the label
+/// (or its leading glyphs) off the visible plot area even though the check
+/// that let it through only ever measured the bar's own (partly invisible)
+/// width, never where any of that width is actually visible.
+///
+/// Three outcomes:
+/// - the bar is fully on-plot (`left >= plot_left`) AND its own FULL width
+///   fits the label: [`InsideLabelPlacement::Centered`] at the bar's own
+///   full center — byte-identical to this figure's pre-fix behavior for
+///   every bar that was already entirely on-plot (the common case).
+/// - otherwise, if the VISIBLE portion (`[left, right]` clamped to
+///   `[plot_left, plot_right]`) is wide enough: [`InsideLabelPlacement::
+///   LeftAligned`] at the visible portion's own left edge + `pad` — never
+///   anchored at the bar's own (possibly off-plot) `left`.
+/// - neither: `None` — the caller falls back to its existing beside-the-bar
+///   placement (`beside_label_left_edge`), unchanged.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum InsideLabelPlacement {
+    /// Centered at this screen-pixel X.
+    Centered(f64),
+    /// Left-aligned starting at this screen-pixel X.
+    LeftAligned(f64),
+}
+
+fn inside_label_placement(left: f64, right: f64, plot_left: f64, plot_right: f64, label_w: f64, pad: f64) -> Option<InsideLabelPlacement> {
+    let width = (right - left).max(0.0);
+    if left >= plot_left && label_w + pad * 2.0 <= width {
+        return Some(InsideLabelPlacement::Centered(left + width / 2.0));
+    }
+
+    let visible_left = left.max(plot_left);
+    let visible_right = right.min(plot_right);
+    let visible_width = (visible_right - visible_left).max(0.0);
+    if label_w + pad * 2.0 <= visible_width {
+        return Some(InsideLabelPlacement::LeftAligned(visible_left + pad));
+    }
+
+    None
+}
+
 /// Greedy left-to-right label collision within one lane, resolved in
 /// INPUT order (not resorted by position): if the next label's left edge
 /// would overlap the last VISIBLE label's extent (plus `gap`), it's
@@ -731,6 +795,58 @@ mod tests {
         let left_edge = beside_label_left_edge(90.0, width, mirrored_anchor, 100.0);
         assert!((left_edge - (mirrored_anchor - width)).abs() < 1e-9, "flipped label's right edge must sit exactly at the mirrored anchor");
         assert!(left_edge + width <= 100.0, "flipped label must fit within the plot's own right edge");
+    }
+
+    // ── Off-plot inside-bar label clamp (report fix) ─────────────────────
+
+    #[test]
+    fn inside_label_placement_centers_in_the_bar_when_fully_on_plot_and_fitting() {
+        // A bar comfortably inside the plot, wide enough for the label —
+        // byte-identical to the pre-fix centered behavior.
+        let placement = inside_label_placement(20.0, 120.0, 0.0, 200.0, 40.0, LABEL_GAP);
+        assert_eq!(placement, Some(InsideLabelPlacement::Centered(70.0)));
+    }
+
+    #[test]
+    fn inside_label_placement_clamps_to_the_visible_start_when_the_bar_begins_off_plot() {
+        // Bar spans [-80, 60] (starts 80px before the plot's own left edge
+        // at x=0). Its FULL width (140) trivially "fits" a 30px label, but
+        // `left < plot_left`, so the fully-on-plot fast path (which would
+        // have centered on the FULL, partly-invisible span) is skipped;
+        // the VISIBLE width (60 - 0 = 60) still fits, so it clamps to the
+        // visible portion's own start instead — never anchoring at the
+        // bar's own off-plot `left`.
+        let placement = inside_label_placement(-80.0, 60.0, 0.0, 200.0, 30.0, LABEL_GAP);
+        assert_eq!(placement, Some(InsideLabelPlacement::LeftAligned(0.0 + LABEL_GAP)));
+    }
+
+    #[test]
+    fn inside_label_placement_never_centers_past_the_plot_left_edge() {
+        // Bar spans [-300, 60] — FULL width (360) trivially fits a 40px
+        // label under the OLD (pre-fix) check, and the FULL center
+        // (-300+180=-120) sits WAY off-plot to the left. The visible
+        // portion is [0, 60] (width 60), which also fits — must resolve to
+        // LeftAligned at the visible start (0 + pad), never Centered at a
+        // negative x.
+        let placement = inside_label_placement(-300.0, 60.0, 0.0, 500.0, 40.0, LABEL_GAP);
+        assert_eq!(placement, Some(InsideLabelPlacement::LeftAligned(LABEL_GAP)));
+    }
+
+    #[test]
+    fn inside_label_placement_falls_back_to_none_when_even_the_visible_portion_is_too_narrow() {
+        // Bar starts off-plot, and its visible sliver (only 5px) can't fit
+        // any reasonably-sized label — caller must fall back to its
+        // existing beside-the-bar placement.
+        let placement = inside_label_placement(-100.0, 5.0, 0.0, 500.0, 40.0, LABEL_GAP);
+        assert_eq!(placement, None);
+    }
+
+    #[test]
+    fn inside_label_placement_falls_back_to_none_for_an_ordinary_too_narrow_on_plot_bar() {
+        // A fully on-plot bar too narrow for its own label — the ordinary,
+        // pre-existing "fall back to beside" case, unaffected by this fix.
+        let placement = inside_label_placement(20.0, 40.0, 0.0, 500.0, 100.0, LABEL_GAP);
+        assert_eq!(placement, None);
     }
 
     /// End-to-end proof against REAL geometry (not just the pure helper in
