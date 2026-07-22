@@ -1,53 +1,51 @@
 //! Kahn longest-path layering + one down-sweep/one up-sweep barycenter
 //! within-layer ordering pass.
 //!
-//! **Provenance — faithful lift, not a fresh algorithm.** This is a
-//! logic-for-logic copy of `uzor-graph/src/layout/layering.rs`'s own
-//! `compute_layering` (Sugiyama-lite layer assignment + barycenter
-//! ordering — deliberately NOT a full crossing-minimization Sugiyama
-//! pass: no dummy-node chain insertion for multi-layer-spanning edges,
-//! no iterate-to-convergence median heuristic, "1-2 sweeps, no full
-//! crossing minimization" per that module's own doc comment, repeated
-//! here verbatim since the algorithm itself is unchanged). Only the
-//! input/output plumbing differs: the source operates over
-//! `uzor-graph`'s own `SimTopology`/`NodeIndex` graph types, which this
-//! crate must not depend on (`uzor-figures` has no graph type of its
-//! own, and `uzor-graph` is explicitly out of this crate's dependency
-//! graph — see this crate's own `CLAUDE.md` Forbidden list); this copy
-//! takes a plain `(node_count: usize, edges: &[(usize, usize)])` pair
-//! list instead of `SimTopology`'s `NodeIndex`-keyed edges, and drops
-//! the `slot`/`children` fields the source exposes only for
-//! `uzor-graph::layout::radial`'s own leaf-count computation (not
-//! needed by [`super::DagFigure`]).
+//! **Canonical home (2026-07-22 re-point).** This is the ONE Sugiyama-lite
+//! layering implementation this workspace runs. It was originally written
+//! in `uzor-graph/src/layout/layering.rs` for that crate's own
+//! `HierarchicalLayout`/`RadialLayout`, then lifted here (logic unchanged)
+//! so [`super::DagFigure`] could use it without `uzor-figures` depending on
+//! `uzor-graph` (this crate must not depend on `uzor-graph` — see this
+//! crate's own `CLAUDE.md` Forbidden list). `uzor-graph/src/layout/
+//! layering.rs` now RE-POINTS onto this module instead of keeping its own
+//! copy — that file is a thin adapter converting `SimTopology`/`NodeIndex`
+//! to this module's plain `(usize, usize)` pair-list API and back, its own
+//! algorithm body deleted. This module is the canonical, owned-here
+//! implementation; `uzor-graph`'s file is the (former duplicate, now
+//! adapter) consumer.
 //!
-//! **Re-import direction (documented per the shelf plan, not actioned
-//! this pass):** the plan calls for `uzor-graph/src/layout/layering.rs`
-//! to EVENTUALLY re-import from this copy instead of keeping its own —
-//! at that point `uzor-graph`'s own file becomes the deleted duplicate,
-//! this one the canonical source. That re-point is explicitly OUT OF
-//! SCOPE for this pass (another agent owns `uzor-graph` concurrently as
-//! of 2026-07-22) — `uzor-graph/src/layout/layering.rs` is NOT modified
-//! or deleted by this change; until the re-point lands, that file is the
-//! (currently still-canonical, soon-to-be-duplicate) original this
-//! module was copied from.
+//! Deliberately NOT a full crossing-minimization Sugiyama pass: no
+//! dummy-node chain insertion for edges spanning more than one layer, no
+//! iterate-to-convergence median heuristic — one down-sweep plus one
+//! up-sweep barycenter pass ("1-2 sweeps, no full crossing minimization").
 //!
-//! Private to [`super`] ([`super::DagFigure`]) — this algorithm carries
-//! no figure-specific vocabulary of its own and is not part of this
-//! crate's public surface.
+//! Public — both this crate's own [`super::DagFigure`] and `uzor-graph`'s
+//! adapter consume it across a crate boundary, so this module and
+//! [`Layering`]/[`compute_layering`] are `pub`, not `pub(super)`.
 
 use std::collections::{HashSet, VecDeque};
 
-/// Layer assignment + within-layer slot order, computed once from a
-/// plain node/edge list (`edges[i] == (from, to)`, `from` = parent /
-/// upstream, `to` = child / downstream).
+/// Layer assignment + within-layer slot order, computed once from a plain
+/// node/edge list (`edges[i] == (from, to)`, `from` = parent / upstream,
+/// `to` = child / downstream).
 #[derive(Debug, Clone, Default)]
-pub(super) struct Layering {
+pub struct Layering {
     /// `layer[i]` = depth of node `i` (`0` = root).
     pub layer: Vec<u32>,
+    /// Node index -> its slot position within its own layer
+    /// (`0..layer_len-1`, dense per layer), after the barycenter sweeps.
+    pub slot: Vec<usize>,
     /// Node indices grouped by layer, already in barycenter-ordered slot
     /// order (`layers[l][k]` = the node sitting at slot `k` of layer
     /// `l`).
     pub layers: Vec<Vec<usize>>,
+    /// Reduced (back-edge-free, self-loop-free) forward adjacency — kept
+    /// alongside `layer`/`layers` for a caller that needs the same
+    /// cycle-broken DAG structure the layering itself was computed over
+    /// (e.g. `uzor-graph::layout::radial`'s own subtree leaf-count
+    /// computation). [`super::DagFigure`] itself doesn't read this field.
+    pub children: Vec<Vec<usize>>,
 }
 
 /// Compute node depths + within-layer slot order over `node_count` nodes
@@ -74,7 +72,7 @@ pub(super) struct Layering {
 /// Self-loops and out-of-range `(from, to)` indices are dropped
 /// defensively — never trusted blindly, mirroring the source's own
 /// defensive filter (a caller data bug, not a panic).
-pub(super) fn compute_layering(node_count: usize, edges: &[(usize, usize)], explicit_roots: &[usize]) -> Layering {
+pub fn compute_layering(node_count: usize, edges: &[(usize, usize)], explicit_roots: &[usize]) -> Layering {
     let n = node_count;
     if n == 0 {
         return Layering::default();
@@ -122,9 +120,9 @@ pub(super) fn compute_layering(node_count: usize, edges: &[(usize, usize)], expl
     }
 
     let layer = layer_by_longest_path(n, &children_reduced, &in_degree);
-    let layers = order_by_barycenter(n, &layer, &children_reduced);
+    let (slot, layers) = order_by_barycenter(n, &layer, &children_reduced);
 
-    Layering { layer, layers }
+    Layering { layer, slot, layers, children: children_reduced }
 }
 
 /// Iterative (non-recursive — safe on a large node count) DFS marking
@@ -257,7 +255,7 @@ fn resort_layer(layers: &mut [Vec<usize>], row_layer: usize, adjacency: &[Vec<us
 /// parents) then one up-sweep (order each layer by the mean slot of its
 /// reduced children) — a minimal barycenter pass, not full crossing
 /// minimization.
-fn order_by_barycenter(n: usize, layer: &[u32], children: &[Vec<usize>]) -> Vec<Vec<usize>> {
+fn order_by_barycenter(n: usize, layer: &[u32], children: &[Vec<usize>]) -> (Vec<usize>, Vec<Vec<usize>>) {
     let max_layer = layer.iter().copied().max().unwrap_or(0) as usize;
     let mut layers: Vec<Vec<usize>> = vec![Vec::new(); max_layer + 1];
     for i in 0..n {
@@ -286,7 +284,7 @@ fn order_by_barycenter(n: usize, layer: &[u32], children: &[Vec<usize>]) -> Vec<
         }
     }
 
-    layers
+    (slot_of, layers)
 }
 
 #[cfg(test)]
@@ -343,7 +341,9 @@ mod tests {
         let first = compute_layering(5, &edges, &[]);
         let second = compute_layering(5, &edges, &[]);
         assert_eq!(first.layer, second.layer);
+        assert_eq!(first.slot, second.slot);
         assert_eq!(first.layers, second.layers);
+        assert_eq!(first.children, second.children);
     }
 
     #[test]
@@ -371,6 +371,23 @@ mod tests {
         let edges = [(0, 0), (0, 99), (99, 1), (0, 1)];
         let layering = compute_layering(2, &edges, &[]);
         assert_eq!(layering.layer, vec![0, 1]);
+    }
+
+    /// `children` is the reduced (back-edge-free, self-loop-free) forward
+    /// adjacency the layering itself was computed over — the field
+    /// `uzor-graph::layout::radial`'s subtree leaf-count computation
+    /// consumes via the `uzor-graph` adapter. Proven directly here (not
+    /// just re-derived from `layer`/`layers`) since it's a distinct piece
+    /// of this canonical module's own output contract.
+    #[test]
+    fn children_field_is_the_reduced_back_edge_free_adjacency() {
+        // 0 -> 1 -> 2 -> 0 (cycle) plus a self-loop and an out-of-range
+        // edge, both of which must never appear in `children` either.
+        let edges = [(0, 1), (1, 2), (2, 0), (1, 1), (0, 99)];
+        let layering = compute_layering(3, &edges, &[]);
+        assert_eq!(layering.children[0], vec![1]);
+        assert_eq!(layering.children[1], vec![2]);
+        assert!(layering.children[2].is_empty(), "the 2->0 back edge must be excluded from the reduced adjacency");
     }
 
     /// Count bipartite edge crossings between two adjacent layers given

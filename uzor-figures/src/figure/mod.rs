@@ -21,10 +21,12 @@
 //! field this wave).
 //!
 //! `dag` (arc B wave 2 shelf item): [`dag::DagFigure`] — a layered DAG
-//! figure over a private, in-crate copy of `uzor-graph`'s own Kahn
-//! longest-path + barycenter layering algorithm (this crate must not
+//! figure over [`dag::layering`], the CANONICAL Kahn longest-path +
+//! barycenter layering algorithm for this workspace (this crate must not
 //! depend on `uzor-graph` — see `dag`'s own module docs for the full
-//! lift provenance and its documented v1 scope boundaries).
+//! provenance and its documented v1 scope boundaries). `uzor-graph`
+//! re-points its own `layout::layering` onto this module (2026-07-22)
+//! instead of keeping a duplicate copy.
 
 pub mod bars;
 pub mod boxplot;

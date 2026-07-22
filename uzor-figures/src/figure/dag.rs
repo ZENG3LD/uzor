@@ -8,7 +8,7 @@
 //! a FIRST version — one down-sweep/one up-sweep barycenter pass, no
 //! dummy-node chain insertion for edges spanning more than one layer, no
 //! iterate-to-convergence crossing minimization (same honestly-scoped
-//! limitation [`layering`]'s own lifted algorithm documents). Edge
+//! limitation [`layering`]'s own algorithm documents). Edge
 //! anchoring is also a fixed, simple convention (source anchors at its
 //! own node's bottom-center, target at its own node's top-center,
 //! regardless of which layer either sits in) — a back edge whose target
@@ -20,11 +20,13 @@
 //! crosses; this is a documented v1 simplification, not a bug, matching
 //! this shelf item's own "faithful lift, not a full Sugiyama pass"
 //! framing. `uzor-figures` must NOT depend on `uzor-graph` (see this
-//! crate's own `CLAUDE.md` Forbidden list) — the layering algorithm is a
-//! private, in-crate copy (see [`layering`]'s own provenance doc), not
-//! an import.
+//! crate's own `CLAUDE.md` Forbidden list) — [`layering`] is the
+//! CANONICAL layering implementation for this workspace (2026-07-22
+//! re-point): `uzor-graph/src/layout/layering.rs` is now a thin adapter
+//! calling into this module instead of keeping its own copy, see
+//! [`layering`]'s own module doc for the full provenance.
 
-mod layering;
+pub mod layering;
 
 use uzor::render::RenderContext;
 use uzor::types::Rect;
