@@ -26,7 +26,7 @@ use uzor::core::types::Rect;
 use uzor::framework::app::{App, CursorCaptureMode, NoPanel};
 use uzor::framework::builder::AppBuilder;
 use uzor::framework::multi_window::{WindowCtx, WindowKey, WindowSpec};
-use uzor::input::{KeyCode, PlatformEvent};
+use uzor::input::{KeyCode, MouseButton, PlatformEvent};
 use uzor::layout::agent::{AgentAction, AgentActionReply, AgentWidget, BlackboxAgentSurface};
 use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager};
 use uzor::platform::types::CornerStyle;
@@ -523,6 +523,39 @@ impl NavModeState {
     }
 }
 
+/// Fly-mode mouse-look sub-state (owner order 2026-07-19: "прицел и
+/// сброс прицела по МКМ") — the foxhound source app's own "MMB CLICK:
+/// CURSOR / LOOK" toggle, which the original lift skipped. While ON (the
+/// default whenever fly mode is entered) the app requests
+/// `CursorCaptureMode::LockedHidden`, `PointerDelta` drives free look,
+/// and the overlay paints a center crosshair; a middle-click flips it
+/// OFF — capture releases, the crosshair disappears, the ordinary OS
+/// cursor returns (WASD movement stays live either way). Another
+/// middle-click re-arms look. Same cross-thread `Arc<Atomic*>`
+/// convention as [`NavModeState`]/[`DimState`].
+#[derive(Clone)]
+struct MouseLookState(Arc<AtomicBool>);
+
+impl MouseLookState {
+    fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(true)))
+    }
+
+    fn get(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn set(&self, on: bool) {
+        self.0.store(on, Ordering::Relaxed);
+    }
+
+    fn toggle(&self) -> bool {
+        let next = !self.get();
+        self.set(next);
+        next
+    }
+}
+
 /// Wave 2's placeholder: `GraphEngine3D::on_event` used its `viewport`
 /// argument ONLY for a `contains()` gate (never for coordinate math), so
 /// a maximal rect was the honest "whole window, no narrower rect to
@@ -534,6 +567,30 @@ impl NavModeState {
 /// before-the-first-3D-frame fallback (see [`DemoApp::dim3d_viewport`]).
 fn full_window_viewport() -> Rect {
     Rect::new(-1.0e9, -1.0e9, 2.0e9, 2.0e9)
+}
+
+/// Center crosshair painted into the 3D overlay while fly-mode
+/// mouse-look is active (owner order 2026-07-19) — the captured-cursor
+/// aim marker, the foxhound source app's own convention (its HUD's
+/// "MMB CLICK: CURSOR / LOOK" pairing). Four short bars around a small
+/// center gap plus a center dot, drawn with plain `fill_rect` (no
+/// stroke-path machinery needed for axis-aligned bars); light gray at
+/// partial alpha so it reads over both the dark background and a bright
+/// node sphere.
+fn draw_fly_crosshair(ctx: &mut dyn RenderContext, viewport: Rect) {
+    const ARM: f64 = 9.0;
+    const GAP: f64 = 4.0;
+    const THICK: f64 = 1.5;
+    let cx = viewport.x + viewport.width / 2.0;
+    let cy = viewport.y + viewport.height / 2.0;
+    ctx.set_global_alpha(0.85);
+    ctx.set_fill_color("#e6e6ea");
+    ctx.fill_rect(cx - GAP - ARM, cy - THICK / 2.0, ARM, THICK);
+    ctx.fill_rect(cx + GAP, cy - THICK / 2.0, ARM, THICK);
+    ctx.fill_rect(cx - THICK / 2.0, cy - GAP - ARM, THICK, ARM);
+    ctx.fill_rect(cx - THICK / 2.0, cy + GAP, THICK, ARM);
+    ctx.fill_rect(cx - 1.0, cy - 1.0, 2.0, 2.0);
+    ctx.set_global_alpha(1.0);
 }
 
 /// Shared "the 2D camera needs an initial `fit_view()`" flag — same
@@ -601,6 +658,8 @@ struct DemoApp {
     camera_fit: CameraFitFlag,
     /// Active 3D camera-control scheme — see [`NavMode`].
     nav_mode: NavModeState,
+    /// Fly-mode mouse-look sub-state — see [`MouseLookState`].
+    mouse_look: MouseLookState,
     /// The `FlyController` instance itself — `Arc<Mutex<_>>` (not a bare
     /// field) so `DemoBlackbox::agent_state` can read its current
     /// velocity from the agent-api HTTP thread without needing a
@@ -646,6 +705,7 @@ struct DemoBlackbox {
     fixture: FixtureState,
     camera_fit: CameraFitFlag,
     nav_mode: NavModeState,
+    mouse_look: MouseLookState,
     fly: Arc<Mutex<FlyController>>,
 }
 
@@ -715,6 +775,7 @@ impl DemoApp {
             fixture,
             camera_fit,
             nav_mode: NavModeState::new(),
+            mouse_look: MouseLookState::new(),
             fly: Arc::new(Mutex::new(FlyController::new())),
             last_3d_frame_at: None,
             last_3d_surface_px: None,
@@ -753,6 +814,11 @@ impl DemoApp {
             NavMode::Fly => NavMode::Orbit,
         };
         self.nav_mode.set(next);
+        // Entering fly always starts in LOOK state (crosshair armed) —
+        // the owner's expected "Tab drops me straight into mouse-look"
+        // flow; a stale OFF from the previous fly session would read as
+        // a broken toggle.
+        self.mouse_look.set(true);
         Self::lock_fly(&self.fly).stop();
     }
 
@@ -776,9 +842,29 @@ impl DemoApp {
                     return true;
                 }
             }
+            // Owner order 2026-07-19 — the foxhound source app's own
+            // "MMB CLICK: CURSOR / LOOK" mechanic the original lift
+            // skipped: a middle-click toggles mouse-look (crosshair +
+            // captured cursor <-> ordinary free cursor). Both halves of
+            // the click are consumed so the middle-drag PAN gesture the
+            // 3D engine would otherwise start can never fire while
+            // flying — in fly mode MMB IS the look toggle, nothing else.
+            PlatformEvent::PointerDown { button: MouseButton::Middle, .. } => {
+                self.mouse_look.toggle();
+                return true;
+            }
+            PlatformEvent::PointerUp { button: MouseButton::Middle, .. } => {
+                return true;
+            }
             PlatformEvent::PointerDelta { dx, dy } => {
-                let mut engine3d = Self::lock3d(&self.engine3d);
-                Self::lock_fly(&self.fly).apply_look_delta(*dx as f32, *dy as f32, &mut engine3d.camera);
+                // Deltas only ever arrive while the cursor is actually
+                // captured, but the look gate is checked anyway so a
+                // straggler delta from the release frame can't turn the
+                // camera after the crosshair is already gone.
+                if self.mouse_look.get() {
+                    let mut engine3d = Self::lock3d(&self.engine3d);
+                    Self::lock_fly(&self.fly).apply_look_delta(*dx as f32, *dy as f32, &mut engine3d.camera);
+                }
                 return true;
             }
             PlatformEvent::WindowFocused(false) => {
@@ -850,6 +936,7 @@ impl BlackboxAgentSurface for DemoBlackbox {
             map.insert("dimension".to_owned(), json!(self.dim.get().code()));
             map.insert("fixture".to_owned(), json!(self.fixture.get().as_str()));
             map.insert("nav_mode".to_owned(), json!(self.nav_mode.get().as_str()));
+            map.insert("mouse_look".to_owned(), json!(self.mouse_look.get()));
             let fly_velocity = DemoApp::lock_fly(&self.fly).velocity();
             map.insert("fly_velocity".to_owned(), json!([fly_velocity[0], fly_velocity[1]]));
         }
@@ -875,8 +962,22 @@ impl BlackboxAgentSurface for DemoBlackbox {
                 return AgentActionReply::err("set_nav_mode requires args.mode to be one of: orbit, fly");
             };
             self.nav_mode.set(mode);
+            // Mirror `DemoApp::toggle_nav_mode` — entering fly always
+            // starts in LOOK state (crosshair armed).
+            self.mouse_look.set(true);
             DemoApp::lock_fly(&self.fly).stop();
-            return AgentActionReply::ok_with_log(json!({ "nav_mode": mode.as_str() }));
+            return AgentActionReply::ok_with_log(json!({ "nav_mode": mode.as_str(), "mouse_look": true }));
+        }
+        if action.name == "set_mouse_look" {
+            // Headless twin of the middle-click toggle (owner order
+            // 2026-07-19) — lets an agent flip look/cursor state and
+            // verify the crosshair via a screenshot without synthesizing
+            // a real MMB click.
+            let Some(on) = action.args.get("on").and_then(Value::as_bool) else {
+                return AgentActionReply::err("set_mouse_look requires args.on to be true or false");
+            };
+            self.mouse_look.set(on);
+            return AgentActionReply::ok_with_log(json!({ "mouse_look": on }));
         }
         if action.name == "set_fixture" {
             let Some(fixture) = action.args.get("name").and_then(Value::as_str).and_then(Fixture::from_str) else {
@@ -965,6 +1066,7 @@ impl App<NoPanel> for DemoApp {
             fixture: self.fixture.clone(),
             camera_fit: self.camera_fit.clone(),
             nav_mode: self.nav_mode.clone(),
+            mouse_look: self.mouse_look.clone(),
             fly: self.fly.clone(),
         };
         layout.register_blackbox_agent(BLACKBOX_SLOT, Arc::new(Mutex::new(blackbox)));
@@ -1099,7 +1201,10 @@ impl App<NoPanel> for DemoApp {
     /// this same lift). Every other state (2D, or 3D orbit) stays
     /// `Free`, matching the pre-existing default.
     fn cursor_capture_mode(&self) -> CursorCaptureMode {
-        if self.dim.get() == Dimension::ThreeD && self.nav_mode.get() == NavMode::Fly {
+        if self.dim.get() == Dimension::ThreeD
+            && self.nav_mode.get() == NavMode::Fly
+            && self.mouse_look.get()
+        {
             CursorCaptureMode::LockedHidden
         } else {
             CursorCaptureMode::Free
@@ -1155,9 +1260,13 @@ impl Scene3DApp<NoPanel> for DemoApp {
         // returned below in `Scene3DFrame`.
         let engine3d_for_overlay = self.engine3d.clone();
         let overlay_viewport = Rect::new(0.0, 0.0, surf_w as f64, surf_h as f64);
+        let crosshair_armed = self.nav_mode.get() == NavMode::Fly && self.mouse_look.get();
         let overlay: Box<dyn FnMut(&mut dyn RenderContext)> = Box::new(move |ctx: &mut dyn RenderContext| {
             let engine3d = Self::lock3d(&engine3d_for_overlay);
             engine3d.draw_overlay(ctx, &camera, overlay_viewport);
+            if crosshair_armed {
+                draw_fly_crosshair(ctx, overlay_viewport);
+            }
         });
 
         Some(Scene3DFrame { scene, camera, cached_overlay: None, overlay: Some(overlay) })
