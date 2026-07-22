@@ -19,7 +19,7 @@ uzor-render-wgpu-instanced = { workspace = true }
 uzor-render-vello-cpu = { workspace = true }
 uzor-render-tiny-skia = { workspace = true }
 uzor-render-urx = { workspace = true }
-uzor-urx-cpu = { workspace = true }
+uzor-urx-cpu = { workspace = true, features = ["glyph"] }
 uzor-urx-wgpu = { workspace = true }
 uzor-urx-hybrid = { workspace = true }
 # urx-wgpu-full has a different consumer API (encode → upload → dispatch +

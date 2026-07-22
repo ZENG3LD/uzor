@@ -11,7 +11,7 @@ categories  = ["graphics", "rendering"]
 
 [dependencies]
 uzor-urx-core = { workspace = true }
-uzor-urx-cpu  = { workspace = true }
+uzor-urx-cpu  = { workspace = true, features = ["glyph"] }
 metrics = "0.24"
 
 # uzor-urx-wgpu is opt-in via feature so consumers that only want CPU

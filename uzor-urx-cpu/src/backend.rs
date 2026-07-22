@@ -200,7 +200,12 @@ impl CpuBackend {
                 DrawCommand::GlyphRun { glyphs, font, font_size, brush, transform, text: _ } => {
                     #[cfg(feature = "glyph")]
                     {
-                        let color = brush_to_color(brush);
+                        // peniko 0.6: byte channels via `to_rgba8()` (the
+                        // old direct `r/g/b/a` fields are gone) — this arm
+                        // had bit-rotted unnoticed because no consumer
+                        // enabled the `glyph` feature until the URX
+                        // family-parity Wave 0 (2026-07-24).
+                        let rgba = brush_to_color(brush).to_rgba8();
                         let coeffs = transform.as_coeffs();
                         let (tx, ty) = (coeffs[4] as f32, coeffs[5] as f32);
                         let pw = pixmap.width();
@@ -212,7 +217,7 @@ impl CpuBackend {
                             glyphs,
                             *font,
                             *font_size,
-                            [color.r, color.g, color.b, color.a],
+                            [rgba.r, rgba.g, rgba.b, rgba.a],
                         );
                     }
                     #[cfg(not(feature = "glyph"))]

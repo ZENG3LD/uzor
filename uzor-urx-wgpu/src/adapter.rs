@@ -29,7 +29,7 @@
 
 use std::time::Instant;
 
-use uzor::render::{GradientPainter, Masking, Painter, ShapeHelpers};
+use uzor::render::{GradientPainter, Masking, Painter, ShapeHelpers, TextRenderer};
 use uzor_render_wgpu_instanced::InstancedRenderContext;
 use uzor_urx_core::math::{Affine, BezPath, Brush, Color, GradientKind};
 use uzor_urx_core::scene::{DrawCommand, Scene};
@@ -159,18 +159,36 @@ pub fn adapt_scene_into(scene: &Scene, ctx: &mut InstancedRenderContext) {
                 ctx.stroke();
                 unapply_transform(ctx, transform);
             }
-            DrawCommand::GlyphRun { .. } => {
-                // Stage 1a — Scene carries pre-shaped glyph ids (u32) but
-                // not the source text. InstancedRenderContext's atlas-based
-                // text path takes a `&str`, not glyph ids. Stage 2 IR
-                // expansion adds either a `text: String` companion field
-                // or a FontId-keyed atlas direct submit path. Until then
-                // GlyphRun continues to degrade — UrxRenderContext doesn't
-                // emit it yet (it path-converts text to FillPath instead).
-                metrics::counter!(
-                    uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
-                    "kind" => "wgpu_glyphrun_dropped",
-                ).increment(1);
+            DrawCommand::GlyphRun { glyphs: _, font: _, font_size, brush, transform, text } => {
+                match text {
+                    // Stage 2 (Wave 0 of the URX family-parity plan,
+                    // 2026-07-24): the `text` source-string companion the
+                    // IR grew for exactly this round-trip now reaches the
+                    // instanced backend's EXISTING GPU glyph atlas via
+                    // `fill_text`. The run origin is the transform's own
+                    // translation (same convention `uzor-urx-cpu`'s
+                    // `draw_glyph_run` reads); `FontId` → family
+                    // resolution is not wired at this layer yet (default
+                    // family, size honored) — a documented approximation
+                    // the Wave 2 native glyph-id atlas removes.
+                    Some(s) if !s.is_empty() => {
+                        let color = brush_to_solid_color(brush);
+                        ctx.set_fill_color(&color_to_css(color));
+                        ctx.set_font(&format!("{font_size}px sans-serif"));
+                        apply_transform(ctx, transform);
+                        ctx.fill_text(s, 0.0, 0.0);
+                        unapply_transform(ctx, transform);
+                    }
+                    // A pre-shaped glyph-id-only run (no source string)
+                    // still degrades, counted — closing it needs the
+                    // native atlas keyed by (FontId, glyph_id) (Wave 2).
+                    _ => {
+                        metrics::counter!(
+                            uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+                            "kind" => "wgpu_glyphrun_dropped",
+                        ).increment(1);
+                    }
+                }
             }
             DrawCommand::Image { .. } => {
                 // Stage 1b — image atlas wire.
@@ -355,6 +373,64 @@ mod tests {
         });
         adapt_scene_into(&scene, &mut ctx);
         assert!(!ctx.draw_commands.is_empty());
+    }
+
+    /// Wave 0 gate (URX family-parity plan 2026-07-24): a `GlyphRun`
+    /// carrying its `text` source-string companion must reach the
+    /// instanced backend's atlas text path as a real `DrawCmd::Text`
+    /// (correct string, size, run-origin position from the transform) —
+    /// not the counted `wgpu_glyphrun_dropped` degrade.
+    #[test]
+    fn adapt_routes_glyph_run_with_text_companion_to_the_atlas_text_path() {
+        let mut ctx = InstancedRenderContext::new(200.0, 100.0, 0.0, 0.0);
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::GlyphRun {
+            glyphs: vec![],
+            font: uzor_urx_core::scene::FontId(0),
+            font_size: 24.0,
+            brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+            transform: Affine::translate((15.0, 60.0)),
+            text: Some("hello".to_owned()),
+        });
+        adapt_scene_into(&scene, &mut ctx);
+        let text_cmds: Vec<_> = ctx
+            .draw_commands
+            .iter()
+            .filter_map(|c| match c {
+                uzor_render_wgpu_instanced::DrawCmd::Text(t) => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text_cmds.len(), 1, "exactly one Text draw command must be emitted");
+        assert_eq!(text_cmds[0].text, "hello");
+        assert_eq!(text_cmds[0].font_size, 24.0);
+        assert!(
+            (text_cmds[0].x - 15.0).abs() < 0.01 && (text_cmds[0].y - 60.0).abs() < 0.01,
+            "run origin must come from the transform translation, got ({}, {})",
+            text_cmds[0].x,
+            text_cmds[0].y
+        );
+    }
+
+    /// A pre-shaped glyph-id-only run (no `text` companion) still
+    /// degrades (counted) — the Wave 2 native atlas closes that half.
+    #[test]
+    fn adapt_still_degrades_a_glyph_id_only_run_without_text() {
+        let mut ctx = InstancedRenderContext::new(200.0, 100.0, 0.0, 0.0);
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::GlyphRun {
+            glyphs: vec![uzor_urx_core::scene::Glyph { glyph_id: 36, x: 0.0, y: 0.0 }],
+            font: uzor_urx_core::scene::FontId(0),
+            font_size: 24.0,
+            brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+            transform: Affine::IDENTITY,
+            text: None,
+        });
+        adapt_scene_into(&scene, &mut ctx);
+        assert!(
+            !ctx.draw_commands.iter().any(|c| matches!(c, uzor_render_wgpu_instanced::DrawCmd::Text(_))),
+            "a glyph-id-only run must not fabricate a Text command"
+        );
     }
 
     #[test]

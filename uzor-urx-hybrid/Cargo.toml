@@ -11,7 +11,7 @@ categories  = ["graphics", "rendering"]
 
 [dependencies]
 uzor-urx-core = { workspace = true, features = ["pipeline-cache"] }
-uzor-urx-cpu  = { workspace = true }
+uzor-urx-cpu  = { workspace = true, features = ["glyph"] }
 uzor-urx-wgpu = { workspace = true }
 metrics = "0.24"
 wgpu    = "29"

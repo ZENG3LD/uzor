@@ -19,7 +19,7 @@ fn glyph_run_via_backend_paints_pixels() {
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(0.0, 0.0, 200.0, 80.0),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(0, 0, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
         transform: Affine::IDENTITY,
     });
     // Render two glyphs over the black bg.
@@ -30,7 +30,7 @@ fn glyph_run_via_backend_paints_pixels() {
         ],
         font,
         font_size: 32.0,
-        brush: Brush::Solid(Color::rgba8(255, 255, 255, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
         transform: Affine::translate((0.0, 50.0)),
         text: None,
     });
