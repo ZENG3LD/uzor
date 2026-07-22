@@ -56,12 +56,17 @@
 //!   object per distinct alpha value, invoked via `gs` before EVERY
 //!   paint op (never relying on state carried over from a previous op —
 //!   see [`resolve_alpha_gstate_name`]'s own doc comment).
-//! - Images (`ImagePainter::draw_image_rgba`) — a real Image XObject
-//!   (`DeviceRGB`, `+/SMask` when the source data carries real alpha),
+//! - Images (`ImagePainter::draw_image_rgba`) — a real Image XObject,
 //!   placed via its own `cm`/`Do` pair. Embedded at the SOURCE data's own
 //!   pixel resolution (no artificial upsampling) — there is no "whole-page
 //!   raster" concept left to inherit a `2x` factor FROM; a real image
-//!   block's own native pixels are what get embedded.
+//!   block's own native pixels are what get embedded. An OPAQUE source
+//!   (no per-pixel alpha) encodes as a real JPEG (`/DCTDecode`, quality
+//!   [`JPEG_QUALITY`]) — far smaller than Flate over raw RGB for
+//!   photographic content, and JPEG has no alpha channel to lose anyway.
+//!   A source that DOES carry real per-pixel alpha keeps the lossless
+//!   `DeviceRGB`/`FlateDecode` path (`+/SMask`, itself always Flate,
+//!   grayscale) — see [`write_image_xobject`]'s own doc comment.
 //! - Linear/radial gradients (`GradientPainter`) — a REAL PDF shading
 //!   pattern (`/PatternType 2`, `/ShadingType 2` or `3`), built from a
 //!   `StitchingFunction` over per-segment `ExponentialFunction`s — not the
@@ -91,6 +96,7 @@
 
 use std::collections::HashMap;
 
+use jpeg_encoder::{ColorType as JpegColorType, Encoder as JpegEncoder};
 use pdf_writer::types::{ColorSpaceOperand, FunctionShadingType, LineCapStyle, LineJoinStyle};
 use pdf_writer::{Content, Filter, Name, Pdf, Ref, Str};
 
@@ -1294,9 +1300,41 @@ fn write_stops_function(pdf: &mut Pdf, refs: &mut RefAllocator, stops: &[Gradien
     stitch_ref
 }
 
-/// Write one content-embedded image XObject (`DeviceRGB`, Flate-
-/// compressed) plus its own `/SMask` grayscale XObject when `alpha_mask`
-/// carries real per-pixel transparency.
+/// JPEG quality (0-100) used for an opaque image's `/DCTDecode` XObject —
+/// the owner's own "quality ~90" ask: visually lossless for the
+/// gradient-plus-circles photo fixture at a fraction of Flate-over-raw-RGB
+/// size, without chasing quality 100's much larger, only-marginally-sharper
+/// output.
+const JPEG_QUALITY: u8 = 90;
+
+/// Best-effort JPEG-encode a tightly packed RGB8 buffer (`rgb.len() ==
+/// px_w * px_h * 3`, [`write_image_xobject`]'s own precondition) via
+/// `jpeg-encoder`. Returns `None` on any encode error (oversized
+/// dimensions past `u16::MAX`, or a malformed buffer) rather than
+/// panicking — [`write_image_xobject`] falls back to the lossless Flate
+/// path when this returns `None`, so a hypothetical future caller with an
+/// unusually large source image degrades gracefully instead of failing
+/// the whole PDF build.
+fn encode_jpeg_rgb(rgb: &[u8], px_w: u32, px_h: u32) -> Option<Vec<u8>> {
+    let width = u16::try_from(px_w).ok()?;
+    let height = u16::try_from(px_h).ok()?;
+    let mut bytes = Vec::new();
+    let encoder = JpegEncoder::new(&mut bytes, JPEG_QUALITY);
+    encoder.encode(rgb, width, height, JpegColorType::Rgb).ok()?;
+    Some(bytes)
+}
+
+/// Write one content-embedded image XObject plus its own `/SMask`
+/// grayscale XObject when `alpha_mask` carries real per-pixel
+/// transparency. An OPAQUE image (`alpha_mask: None`) encodes as a real
+/// JPEG (`/DCTDecode`, [`JPEG_QUALITY`]) — smaller than Flate over raw RGB
+/// for photographic content, and JPEG has no alpha channel to lose since
+/// this path is only ever reached when there wasn't one. A TRANSPARENT
+/// image (`alpha_mask: Some`) keeps the original lossless `DeviceRGB` +
+/// `FlateDecode` path exactly (no lossy filter here supports per-pixel
+/// alpha) — its own `/SMask` always stays Flate/`DeviceGray`, unchanged.
+/// `encode_jpeg_rgb` returning `None` (a defensive backstop, not a path
+/// any current caller reaches) also falls back to Flate.
 fn write_image_xobject(pdf: &mut Pdf, refs: &mut RefAllocator, rgb: &[u8], alpha_mask: Option<&[u8]>, px_w: u32, px_h: u32) -> Ref {
     let smask_ref = alpha_mask.map(|mask| {
         let sref = refs.next();
@@ -1311,6 +1349,18 @@ fn write_image_xobject(pdf: &mut Pdf, refs: &mut RefAllocator, rgb: &[u8], alpha
     });
 
     let img_ref = refs.next();
+    if smask_ref.is_none() {
+        if let Some(jpeg) = encode_jpeg_rgb(rgb, px_w, px_h) {
+            let mut image = pdf.image_xobject(img_ref, &jpeg);
+            image.filter(Filter::DctDecode);
+            image.width(px_w as i32);
+            image.height(px_h as i32);
+            image.color_space().device_rgb();
+            image.bits_per_component(8);
+            return img_ref;
+        }
+    }
+
     let compressed = flate_compress(rgb);
     let mut image = pdf.image_xobject(img_ref, &compressed);
     image.filter(Filter::FlateDecode);
@@ -1511,6 +1561,62 @@ mod tests {
         let resources = resources.expect("Resources dict is inline");
         let x_objects = resources.get(b"XObject").and_then(lopdf::Object::as_dict).expect("XObject dict must be present");
         assert!(!x_objects.is_empty(), "the content-embedded image must appear in the page's own XObject dict");
+    }
+
+    /// Every image XObject stream in `doc` (identified by carrying a
+    /// `/Width` key, the same convention `pdf::mod`'s own test module
+    /// already uses for its raster-background image XObject).
+    fn find_image_streams(doc: &lopdf::Document) -> Vec<&lopdf::Stream> {
+        doc.objects
+            .values()
+            .filter_map(|obj| match obj {
+                lopdf::Object::Stream(stream) if stream.dict.has(b"Width") => Some(stream),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn opaque_image_with_no_alpha_embeds_via_dct_decode_jpeg_not_flate() {
+        // A fully opaque 2x2 RGBA source (every alpha byte 255) — the
+        // `write_image_xobject` no-`/SMask` branch, which now prefers the
+        // smaller lossy JPEG path over the original lossless Flate one.
+        #[rustfmt::skip]
+        let rgba: [u8; 16] = [
+            255, 0, 0, 255,   0, 255, 0, 255,
+              0, 0, 255, 255, 255, 255, 0, 255,
+        ];
+        let bytes = build_pdf(|ctx| {
+            ctx.draw_image_rgba(&rgba, 2, 2, 10.0, 10.0, 40.0, 40.0);
+        });
+
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf parse");
+        let images = find_image_streams(&doc);
+        assert_eq!(images.len(), 1, "expected exactly one image XObject");
+        let filter = images[0].dict.get(b"Filter").and_then(|f| f.as_name()).expect("the image XObject must declare a /Filter");
+        assert_eq!(filter, b"DCTDecode", "an opaque image must embed via /DCTDecode (JPEG), not Flate");
+        assert!(!images[0].dict.has(b"SMask"), "an opaque image must never carry an /SMask");
+    }
+
+    #[test]
+    fn translucent_image_with_real_alpha_keeps_the_lossless_flate_smask_path() {
+        // Same 2x2 fixture, but one pixel carries real transparency — must
+        // NOT take the lossy JPEG path (JPEG has no alpha channel to
+        // preserve), and its own `/SMask` XObject must still be Flate.
+        #[rustfmt::skip]
+        let rgba: [u8; 16] = [
+            255, 0, 0, 128,   0, 255, 0, 255,
+              0, 0, 255, 255, 255, 255, 0, 255,
+        ];
+        let bytes = build_pdf(|ctx| {
+            ctx.draw_image_rgba(&rgba, 2, 2, 10.0, 10.0, 40.0, 40.0);
+        });
+
+        let doc = lopdf::Document::load_mem(&bytes).expect("lopdf parse");
+        let images = find_image_streams(&doc);
+        let with_smask = images.into_iter().find(|s| s.dict.has(b"SMask")).expect("a translucent image must carry a real /SMask");
+        let filter = with_smask.dict.get(b"Filter").and_then(|f| f.as_name()).expect("the image XObject must declare a /Filter");
+        assert_eq!(filter, b"FlateDecode", "a translucent image must stay on the lossless Flate path, never DCTDecode");
     }
 
     #[test]

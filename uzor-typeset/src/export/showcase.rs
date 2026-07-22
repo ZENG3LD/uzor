@@ -35,7 +35,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 
 use uzor::fonts::FontFamily;
-use uzor::render::RenderContext;
+use uzor::render::{RenderContext, TextAlign, TextBaseline};
 use uzor::types::Rect;
 use uzor_export::{render_to_png, ExportSpec};
 use uzor_figures::{
@@ -43,10 +43,10 @@ use uzor_figures::{
     SankeyLink, SankeyNode, ScatterFigure, ScatterPoint, TimeScale, TimelineEvent, TimelineFigure,
 };
 use uzor_graph::{ForceDirectedLayout, Graph, GraphEngine, HierarchicalLayout, HierarchicalParams, Layout, NodeIndex, RadialLayout, RadialParams};
-use uzor_text::ascii::{build_ascii_grid, draw_ascii_grid, AsciiGridStyle};
+use uzor_text::ascii::{build_ascii_grid, AsciiGrid, AsciiGridStyle};
 use uzor_text::{
     build_morph, draw_paragraph, layout_text, sample_layout, BreakStrategy, CosmicShaper, FontSpec, Hyphenation, InlineBox, InlineBoxSlot,
-    Paragraph, ParagraphAlign, StyledRun, VerticalAlign,
+    Paragraph, ParagraphAlign, ParagraphLayout, StyledRun, VerticalAlign,
 };
 
 use crate::caption::{attach_captions, resolve_caption_numbers, resolve_refs, CaptionStyle, RefSegment};
@@ -85,52 +85,19 @@ fn write_proof(name: &str, bytes: &[u8]) {
     std::fs::write(dir.join(name), bytes).expect("write proof file");
 }
 
-/// Decode `bytes` (a `render_to_png` result) back into a straight RGBA8
-/// buffer + its own dimensions — every render this fixture embeds as an
-/// [`ImageBlock`] is fully opaque (every `ExportSpec::background` used
-/// below is `Some([.., 255])` and nothing painted is ever translucent), so
-/// straight vs. premultiplied never matters here.
-fn decode_rgba8(bytes: &[u8]) -> (Vec<u8>, u32, u32) {
-    let decoder = png::Decoder::new(bytes);
-    let mut reader = decoder.read_info().expect("valid PNG header");
-    let mut buf = vec![0u8; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).expect("decode PNG frame");
-    let (w, h) = (info.width, info.height);
-    let rgba = match info.color_type {
-        png::ColorType::Rgba => buf[..info.buffer_size()].to_vec(),
-        png::ColorType::Rgb => buf[..info.buffer_size()].chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
-        other => panic!("showcase fixture: unexpected PNG color type {other:?} decoding an internal render"),
-    };
-    (rgba, w, h)
-}
-
-/// Render `draw` headlessly at `width`x`height` and return a straight RGBA8
-/// buffer — the shared bridge the ASCII/kinetics exhibits below use to
-/// become a real [`ImageBlock`] (there is no `render_to_rgba` in
-/// `uzor-export` — only `render_to_png` — so this decodes the PNG straight
-/// back via the `png` crate, dev-dep already, matching this workspace's
-/// own existing decode-back-out convention, e.g.
-/// `crate::render::tests::decoded_png_pixel`). The four `uzor-graph`
-/// layout exhibits do NOT go through this bridge anymore — see
-/// [`GraphExhibit`] below, which paints them directly into whatever
-/// `RenderContext` the page itself is using (real vector ops in the PDF,
-/// not a rasterized pixmap).
-fn render_rgba(width: u32, height: u32, background: [u8; 4], draw: impl FnOnce(&mut dyn RenderContext)) -> Vec<u8> {
-    let spec = ExportSpec { width_px: width, height_px: height, dpr: 1.0, background: Some(background) };
-    let bytes = render_to_png(&spec, draw).unwrap_or_else(|e| panic!("showcase fixture rgba render failed: {e}"));
-    let (rgba, w, h) = decode_rgba8(&bytes);
-    assert_eq!((w, h), (width, height), "decoded PNG dims must match the requested render size");
-    rgba
-}
-
 /// How much denser than the placed logical size the generated "photo"
 /// buffer below is rendered — the raster/XObject path's own proof fixture
 /// (see [`generated_photo_rgba`]'s own doc comment) needs a source buffer
 /// genuinely denser than its display rect, or no amount of downstream
 /// embedding care can make it hold up at PDF zoom (`uzor-export`'s own
 /// WAVE 1 convention: an image XObject embeds at the source data's own
-/// native pixel resolution, never artificially upsampled).
-const PHOTO_OVERSAMPLE: u32 = 3;
+/// native pixel resolution, never artificially upsampled). Raised `3x ->
+/// 5x` (owner-reported still-blocky at 8x zoom) now that `uzor-export`'s
+/// image XObject writer encodes an opaque source as JPEG (`/DCTDecode`)
+/// instead of Flate-over-raw-RGB — the density budget that previously
+/// capped this at `3x` (Flate cost scales with raw pixel count) no longer
+/// applies at anywhere near the same rate.
+const PHOTO_OVERSAMPLE: u32 = 5;
 
 /// Alpha-blend `color` over `base` by `coverage` (`0.0` = `base`
 /// untouched, `1.0` = fully `color`) — the one shared compositing step
@@ -363,19 +330,176 @@ fn build_collapsed_cluster_exhibit() -> GraphExhibit<ForceDirectedLayout> {
     GraphExhibit::new(engine, GRAPH_BG_HEX)
 }
 
-// ── uzor-text ASCII + kinetics exhibits ─────────────────────────────────
+// ── uzor-text ASCII + kinetics exhibits (vector cutover, 2026-07-22) ────
+//
+// Both exhibits used to render offscreen to an RGBA8 buffer and embed as a
+// `Block::Image` — flagged by the owner as pixel mush at PDF zoom, same
+// class of defect the graph-exhibit vector cutover already fixed for
+// `uzor-graph` content (see the "Graph-exhibit vector cutover" doc
+// comment above). Both `uzor_text::ascii::AsciiGrid::render` and
+// `uzor_text::draw_paragraph` ALREADY paint through a plain `&mut dyn
+// RenderContext` (real `fill_text`/`fill_rect` calls, not pixel writes) —
+// contrary to this file's own now-stale WAVE-1-era claim that these two
+// exhibits have "no live re-drivable RenderContext object": both are
+// exactly that, they just used to be driven against an offscreen
+// `tiny-skia` pixmap (`render_rgba`) instead of the page's own
+// `PdfRenderContext`. The SAMPLING stays byte-identical in both cases
+// (`build_ascii_grid`'s glyph-coverage math; `build_morph`/`sample_layout`'s
+// resize-morph math) — only the paint target changes, via the SAME
+// `TypesetFigure` seam `GraphExhibit` already established.
 
-/// Renders the ASCII-grid exhibit at a canvas sized TIGHTLY to the actual
-/// stepped grid's own content (`grid_dims_for_layout`'s own `cols`/`rows` x
-/// `style.cell_w`/`cell_h`, plus a fixed margin) rather than a fixed,
-/// caller-guessed size — a fixed 620x260 canvas for this fixture's short
-/// 3-line paragraph left ~85% of the canvas blank, which `ImageFit::
-/// Contain` then faithfully preserved as a large empty gap once embedded
-/// at a smaller display height (found + fixed during visual review of
-/// `typeset_showcase_page8.png`). Returns the RGBA buffer plus its OWN
-/// `(width, height)` — the caller uses these as the `ImageBlock`'s real
-/// intrinsic dimensions, not a guessed constant.
-fn ascii_exhibit_rgba(max_width: u32) -> (Vec<u8>, u32, u32) {
+/// Adapter turning a stepped [`AsciiGrid`] into a [`TypesetFigure`] — the
+/// vector-PDF replacement for the ASCII exhibit's former render-to-RGBA-
+/// then-`ImageBlock` bridge. Paints its own small background panel (sized
+/// tightly to the grid's own content, the same "no wasted blank space"
+/// fix the deleted `ascii_exhibit_rgba` doc comment already established)
+/// centered — well, left-flush, since this exhibit always spans the
+/// caller's own `max_width` — inside whatever `rect` the page hands it.
+///
+/// Paint strategy (measured, not assumed — see [`Self::render`]'s own
+/// body): this exhibit's shader (`uzor_text::ascii::ParagraphAsciiShader`)
+/// always emits a flat, grid-wide-uniform `color` and a constant
+/// `alpha: 1.0`/`scale: 1.0` for every cell (verified here by scanning
+/// every cell, not hardcoded) — when that holds AND this exhibit's own
+/// monospace font's REAL shaped glyph advance (measured through the SAME
+/// shaper every paragraph in this document already goes through) lands
+/// close to the grid's own `cell_w`, each row merges into one contiguous
+/// same-color `fill_text` run (far fewer PDF ops than one call per
+/// non-blank cell). Otherwise — never reached by this exhibit's own
+/// shader today, but a real, always-correct fallback for a hypothetical
+/// future variable-alpha/scale `AsciiGrid` — it degrades to one centered
+/// `fill_text` per non-blank cell, mirroring `AsciiGrid::render`'s own
+/// per-cell font-size-from-scale/alpha handling exactly.
+struct AsciiExhibit {
+    grid: AsciiGrid,
+    style: AsciiGridStyle,
+    margin: f64,
+    background: &'static str,
+}
+
+impl AsciiExhibit {
+    fn new(grid: AsciiGrid, style: AsciiGridStyle, margin: f64, background: &'static str) -> Self {
+        Self { grid, style, margin, background }
+    }
+}
+
+/// How close (as a fraction of `cell_w`) this exhibit's real measured
+/// monospace glyph advance must land to `cell_w` before [`AsciiExhibit`]
+/// merges a row into one `fill_text` run instead of one call per cell.
+const ASCII_ROW_MERGE_TOLERANCE: f64 = 0.15;
+
+fn rgb_css(color: [u8; 3]) -> String {
+    format!("rgb({},{},{})", color[0], color[1], color[2])
+}
+
+impl TypesetFigure for AsciiExhibit {
+    fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, _theme: &FigureTheme) {
+        let cols = self.grid.cols();
+        let rows = self.grid.rows();
+        let content_w = (cols as f64) * self.style.cell_w + 2.0 * self.margin;
+        let content_h = (rows as f64) * self.style.cell_h + 2.0 * self.margin;
+        ctx.set_fill_color(self.background);
+        ctx.fill_rect(rect.x, rect.y, content_w, content_h);
+        if cols == 0 || rows == 0 {
+            return;
+        }
+
+        let cell_w = self.style.cell_w;
+        let cell_h = self.style.cell_h;
+        let base_fs = cell_h.max(4.0);
+        let ox = rect.x + self.margin;
+        let oy = rect.y + self.margin;
+
+        let first = self.grid.cell(0, 0);
+        let uniform_alpha_scale =
+            (0..rows).all(|y| (0..cols).all(|x| { let c = self.grid.cell(x, y); c.alpha == first.alpha && c.scale == first.scale }));
+
+        ctx.set_text_baseline(TextBaseline::Middle);
+
+        let row_merge = if uniform_alpha_scale {
+            let font_px = (base_fs * first.scale as f64).clamp(3.0, base_fs * 1.7).round().max(1.0);
+            ctx.set_font(&format!("{font_px}px monospace"));
+            ctx.set_global_alpha(first.alpha as f64);
+            let glyph_advance = ctx.measure_text("M");
+            glyph_advance > 0.0 && (glyph_advance - cell_w).abs() <= cell_w * ASCII_ROW_MERGE_TOLERANCE
+        } else {
+            false
+        };
+
+        if row_merge {
+            ctx.set_text_align(TextAlign::Left);
+            for y in 0..rows {
+                let mut x = 0usize;
+                while x < cols {
+                    let color = self.grid.cell(x, y).color;
+                    let start = x;
+                    let mut run = String::with_capacity(cols - x);
+                    let mut has_ink = false;
+                    while x < cols {
+                        let cell = self.grid.cell(x, y);
+                        if cell.color != color {
+                            break;
+                        }
+                        has_ink |= cell.ch != ' ';
+                        run.push(cell.ch);
+                        x += 1;
+                    }
+                    if has_ink {
+                        ctx.set_fill_color(&rgb_css(color));
+                        let run_x = ox + (start as f64) * cell_w;
+                        let run_y = oy + (y as f64 + 0.5) * cell_h;
+                        ctx.fill_text(&run, run_x, run_y);
+                    }
+                }
+            }
+            ctx.set_global_alpha(1.0);
+            return;
+        }
+
+        // Per-cell fallback (never reached by this exhibit's own shader
+        // today — see this struct's own doc comment).
+        ctx.set_text_align(TextAlign::Center);
+        let mut cur_fs = -1_i32;
+        let mut cur_alpha = -1.0_f64;
+        for y in 0..rows {
+            for x in 0..cols {
+                let cell = self.grid.cell(x, y);
+                if cell.ch == ' ' || cell.alpha <= 0.01 || cell.scale <= 0.06 {
+                    continue;
+                }
+                let fs = (base_fs * cell.scale as f64).clamp(3.0, base_fs * 1.7).round() as i32;
+                if fs != cur_fs {
+                    ctx.set_font(&format!("{fs}px monospace"));
+                    cur_fs = fs;
+                }
+                let alpha = cell.alpha as f64;
+                if (alpha - cur_alpha).abs() > 0.004 {
+                    ctx.set_global_alpha(alpha);
+                    cur_alpha = alpha;
+                }
+                ctx.set_fill_color(&rgb_css(cell.color));
+                let cx = ox + (x as f64 + 0.5) * cell_w;
+                let cy = oy + (y as f64 + 0.5) * cell_h;
+                let mut buf = [0u8; 4];
+                ctx.fill_text(cell.ch.encode_utf8(&mut buf), cx, cy);
+            }
+        }
+        ctx.set_global_alpha(1.0);
+    }
+}
+
+/// Build the ASCII-grid exhibit's [`TypesetFigure`] — the sampling
+/// (`build_ascii_grid`'s own glyph-coverage math, unchanged) stays
+/// byte-identical to the deleted raster `ascii_exhibit_rgba` this
+/// replaces; only the paint target changes (see [`AsciiExhibit`]'s own
+/// doc comment). Returns the figure plus its own exact content height
+/// (`rows * cell_h + 2*margin`) so the caller can size a
+/// `BlockSizing::FixedHeight` that leaves no letterboxing gap — the
+/// figure paints its OWN background/grid filling exactly that much of
+/// whatever rect it's handed (a `Block::Figure`'s placed rect always
+/// spans the full region width, so there's no `ImageFit::Contain`
+/// aspect-fitting concern left to solve at all).
+fn build_ascii_exhibit(max_width: u32) -> (AsciiExhibit, f64) {
     const TEXT: &str = "This short seeded paragraph is rendered through the uzor-text ASCII cell-shader \
         bridge, sampling real glyph coverage onto a monospace character grid instead of painting glyph \
         outlines directly.";
@@ -385,29 +509,66 @@ fn ascii_exhibit_rgba(max_width: u32) -> (Vec<u8>, u32, u32) {
     let shaper = CosmicShaper::headless();
     let layout = layout_text(TEXT, &font, (max_width as f64) - 2.0 * MARGIN, &shaper);
     let style = AsciiGridStyle::square(8.0);
-    let (cols, rows) = uzor_text::ascii::grid_dims_for_layout(&layout, style.cell_w, style.cell_h);
+    let (_cols, rows) = uzor_text::ascii::grid_dims_for_layout(&layout, style.cell_w, style.cell_h);
     let grid = build_ascii_grid(&layout, style);
 
-    let width = ((cols as f64) * style.cell_w + 2.0 * MARGIN).round().max(1.0) as u32;
-    let height = ((rows as f64) * style.cell_h + 2.0 * MARGIN).round().max(1.0) as u32;
-    let rgba = render_rgba(width, height, [255, 255, 255, 255], |ctx| {
-        draw_ascii_grid(ctx, (MARGIN, MARGIN), &grid, style);
-    });
-    (rgba, width, height)
+    let content_h = (rows as f64) * style.cell_h + 2.0 * MARGIN;
+    (AsciiExhibit::new(grid, style, MARGIN, "#ffffff"), content_h)
 }
 
 const KINETICS_TEXT: &str = "A fixed seeded paragraph morphing between a narrow and a wide column, one glyph at a time.";
 
-fn kinetics_frame_rgba(width: u32, height: u32, t: f64) -> Vec<u8> {
+/// This exhibit's own fixed demo-box width — deliberately independent of
+/// the page's own (much wider) body width, matching the compact box the
+/// deleted raster `kinetics_frame_rgba` always rendered at (`460px` wide,
+/// `15px` margins on every side, "wide" endpoint text wrapped at
+/// `460 - 2*15 = 430px`) — kept byte-identical so the morph's own two
+/// wrap endpoints (and therefore every sampled mid-flight frame) are
+/// unchanged from the pre-cutover raster render.
+const KINETICS_BOX_W: f64 = 460.0;
+const KINETICS_MARGIN: f64 = 15.0;
+
+/// Adapter turning one already-sampled [`ParagraphLayout`] frame (`t = 0.0
+/// / 0.5 / 1.0`, from [`build_kinetics_exhibit`]) into a [`TypesetFigure`]
+/// — `uzor_text::draw_paragraph` already paints through a plain `&mut dyn
+/// RenderContext`, so this is a direct call, not a new drawing path.
+/// Centers its own fixed [`KINETICS_BOX_W`]-wide panel horizontally inside
+/// whatever (wider) `rect` the page hands it, so the compact demo box
+/// keeps reading as a small inset figure rather than stretching to fill
+/// the full body width.
+struct KineticsExhibit {
+    layout: ParagraphLayout,
+    background: &'static str,
+}
+
+impl TypesetFigure for KineticsExhibit {
+    fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, _theme: &FigureTheme) {
+        let box_h = self.layout.height + 2.0 * KINETICS_MARGIN;
+        let ox = rect.x + ((rect.width - KINETICS_BOX_W) / 2.0).max(0.0);
+        let oy = rect.y;
+        ctx.set_fill_color(self.background);
+        ctx.fill_rect(ox, oy, KINETICS_BOX_W, box_h);
+        draw_paragraph(ctx, (ox + KINETICS_MARGIN, oy + KINETICS_MARGIN), &self.layout, "#111111", false);
+    }
+}
+
+/// Build one sampled kinetics-morph frame at `t` — the resize-morph
+/// sampling (`build_morph`/`sample_layout`) stays byte-identical to the
+/// deleted raster `kinetics_frame_rgba` this replaces; only the paint
+/// target changes (see [`KineticsExhibit`]'s own doc comment). Returns
+/// the figure plus its own exact content height (`layout.height +
+/// 2*margin`) — each of the 3 sampled frames (t=0/0.5/1) gets its own
+/// tightly-fit `BlockSizing::FixedHeight`, since a narrow-wrapped frame
+/// and a wide-wrapped frame genuinely differ in line count/height.
+fn build_kinetics_exhibit(t: f64) -> (KineticsExhibit, f64) {
     let font = FontSpec::new(FontFamily::Roboto, 14.0);
     let shaper = CosmicShaper::headless();
     let narrow = layout_text(KINETICS_TEXT, &font, 130.0, &shaper);
-    let wide = layout_text(KINETICS_TEXT, &font, (width as f64) - 30.0, &shaper);
+    let wide = layout_text(KINETICS_TEXT, &font, KINETICS_BOX_W - 2.0 * KINETICS_MARGIN, &shaper);
     let morph = build_morph(&narrow, &wide);
     let sampled = sample_layout(&morph, t, 0x111111_ff);
-    render_rgba(width, height, [255, 255, 255, 255], |ctx| {
-        draw_paragraph(ctx, (15.0, 15.0), &sampled, "#111111", false);
-    })
+    let content_h = sampled.height + 2.0 * KINETICS_MARGIN;
+    (KineticsExhibit { layout: sampled, background: "#ffffff" }, content_h)
 }
 
 /// Decode a PNG's dimensions only (used by the per-page parity render
@@ -911,24 +1072,21 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
     ];
 
     // ── Section 5: ASCII exhibit + kinetics morph strip ─────────────────
-    // The ASCII exhibit's own render is sized TIGHTLY to its content (see
-    // `ascii_exhibit_rgba`'s own doc comment), so its display height is
-    // derived from its OWN intrinsic aspect at full body width — an exact
-    // fit, never a guessed box that leaves `ImageFit::Contain` letterboxing
-    // blank space above/below.
-    let (ascii_pixels, ascii_w, ascii_h) = ascii_exhibit_rgba(body_width.round() as u32);
-    let ascii_display_h = (ascii_h as f64 / ascii_w as f64) * body_width;
-    let ascii_image = ImageBlock::new(&ascii_pixels, ascii_w, ascii_h, BlockSizing::FixedHeight(ascii_display_h), ImageFit::Contain);
+    // Both exhibits are now real `TypesetFigure`s (vector cutover — see
+    // the "uzor-text ASCII + kinetics exhibits" doc comment above), each
+    // sized TIGHTLY to its own content via its own returned height — no
+    // `ImageFit::Contain` letterboxing/aspect-fitting concern left to
+    // solve at all (a `Block::Figure`'s placed rect always spans the
+    // full region width already).
+    let (ascii_exhibit, ascii_content_h) = build_ascii_exhibit(body_width.round() as u32);
+    let ascii_figure = FigureBlock::new(&ascii_exhibit, BlockSizing::FixedHeight(ascii_content_h));
 
-    const KINETICS_RENDER_W: u32 = 460;
-    const KINETICS_RENDER_H: u32 = 110;
-    const KINETICS_DISPLAY_H: f64 = 85.0;
-    let kinetics_t0_pixels = kinetics_frame_rgba(KINETICS_RENDER_W, KINETICS_RENDER_H, 0.0);
-    let kinetics_t05_pixels = kinetics_frame_rgba(KINETICS_RENDER_W, KINETICS_RENDER_H, 0.5);
-    let kinetics_t1_pixels = kinetics_frame_rgba(KINETICS_RENDER_W, KINETICS_RENDER_H, 1.0);
-    let kinetics_t0_image = ImageBlock::new(&kinetics_t0_pixels, KINETICS_RENDER_W, KINETICS_RENDER_H, BlockSizing::FixedHeight(KINETICS_DISPLAY_H), ImageFit::Contain);
-    let kinetics_t05_image = ImageBlock::new(&kinetics_t05_pixels, KINETICS_RENDER_W, KINETICS_RENDER_H, BlockSizing::FixedHeight(KINETICS_DISPLAY_H), ImageFit::Contain);
-    let kinetics_t1_image = ImageBlock::new(&kinetics_t1_pixels, KINETICS_RENDER_W, KINETICS_RENDER_H, BlockSizing::FixedHeight(KINETICS_DISPLAY_H), ImageFit::Contain);
+    let (kinetics_t0_exhibit, kinetics_t0_h) = build_kinetics_exhibit(0.0);
+    let (kinetics_t05_exhibit, kinetics_t05_h) = build_kinetics_exhibit(0.5);
+    let (kinetics_t1_exhibit, kinetics_t1_h) = build_kinetics_exhibit(1.0);
+    let kinetics_t0_figure = FigureBlock::new(&kinetics_t0_exhibit, BlockSizing::FixedHeight(kinetics_t0_h));
+    let kinetics_t05_figure = FigureBlock::new(&kinetics_t05_exhibit, BlockSizing::FixedHeight(kinetics_t05_h));
+    let kinetics_t1_figure = FigureBlock::new(&kinetics_t1_exhibit, BlockSizing::FixedHeight(kinetics_t1_h));
 
     let ascii_heading_run = [StyledRun::new("ASCII Text Mode", SUBHEADING_FONT)];
     let ascii_caption_run = [StyledRun::new("Exhibit 5 — ASCII-grid text rendering (uzor-text::ascii).", CAPTION_FONT)];
@@ -942,7 +1100,7 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
             .with_break_control(BreakControl::ForceBefore)
             .with_outline(1, "ASCII Text Mode"),
         BlockNode::new(Block::Spacer(10.0)),
-        BlockNode::new(Block::Image(ascii_image)).with_break_control(BreakControl::AvoidAfter),
+        BlockNode::new(Block::Figure(ascii_figure)).with_break_control(BreakControl::AvoidAfter),
         BlockNode::new(Block::Spacer(6.0)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&ascii_caption_run, body_width))),
         BlockNode::new(Block::Spacer(20.0)),
@@ -950,15 +1108,15 @@ fn full_capability_showcase_produces_the_pdf_and_a_parity_png_per_page() {
             .with_break_control(BreakControl::AvoidAfter)
             .with_outline(2, "Kinetics — Paragraph Morph"),
         BlockNode::new(Block::Spacer(8.0)),
-        BlockNode::new(Block::Image(kinetics_t0_image)).with_break_control(BreakControl::AvoidAfter),
+        BlockNode::new(Block::Figure(kinetics_t0_figure)).with_break_control(BreakControl::AvoidAfter),
         BlockNode::new(Block::Spacer(4.0)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&kinetics_t0_caption_run, body_width))),
         BlockNode::new(Block::Spacer(10.0)),
-        BlockNode::new(Block::Image(kinetics_t05_image)).with_break_control(BreakControl::AvoidAfter),
+        BlockNode::new(Block::Figure(kinetics_t05_figure)).with_break_control(BreakControl::AvoidAfter),
         BlockNode::new(Block::Spacer(4.0)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&kinetics_t05_caption_run, body_width))),
         BlockNode::new(Block::Spacer(10.0)),
-        BlockNode::new(Block::Image(kinetics_t1_image)).with_break_control(BreakControl::AvoidAfter),
+        BlockNode::new(Block::Figure(kinetics_t1_figure)).with_break_control(BreakControl::AvoidAfter),
         BlockNode::new(Block::Spacer(4.0)),
         BlockNode::new(Block::Paragraph(Paragraph::new(&kinetics_t1_caption_run, body_width))),
     ];
@@ -1549,4 +1707,75 @@ fn graph_exhibit_page_carries_real_vector_ops_and_no_image_xobject() {
     assert!(toks.iter().any(|&t| t == "S"), "the graph's own edges must be real stroke 'S' operators, got: {content_str}");
     assert!(toks.iter().any(|&t| t == "f"), "the graph's own node circles must be real fill 'f' operators, got: {content_str}");
     assert!(toks.iter().any(|&t| t == "c"), "the graph's own node circles are bezier-approximated arcs, must carry a 'c' curve operator, got: {content_str}");
+}
+
+/// Raster-shakal gate, ASCII exhibit half (owner's own follow-up report:
+/// the ASCII-grid exhibit was still a sampled `Block::Image` — pixel mush
+/// at PDF zoom — even after the graph-exhibit vector cutover above). A
+/// page carrying ONLY an [`AsciiExhibit`] must show NO `/XObject` at all
+/// and its content stream must carry a real `Tj` text-showing operator
+/// (every non-blank grid cell/row paints via `PdfRenderContext::
+/// fill_text`, never a pixel write).
+#[test]
+fn ascii_exhibit_page_carries_real_text_ops_and_no_image_xobject() {
+    let theme = Theme::light_report();
+    let shaper = CosmicShaper::headless();
+    let master = PageMaster::new(PAGE_W, PAGE_H, Margins::uniform(40.0));
+    let body_width = master.body_rect().width;
+
+    let (exhibit, content_h) = build_ascii_exhibit(body_width.round() as u32);
+    let figure = FigureBlock::new(&exhibit, BlockSizing::FixedHeight(content_h));
+    let flow = [BlockNode::new(Block::Figure(figure))];
+
+    let style = ComposeStyle::from_theme(&theme, 12.0);
+    let pages = slice_pages(&flow, &master, &style, &shaper);
+    assert_eq!(pages.len(), 1, "a single ASCII exhibit must land on exactly 1 page");
+
+    let pdf_bytes = pages_to_pdf(&pages, &master, &theme);
+    let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
+    let lopdf_pages = doc.get_pages();
+    assert_eq!(lopdf_pages.len(), 1);
+    let page_id = *lopdf_pages.values().next().expect("exactly one page");
+
+    let (resources, _) = doc.get_page_resources(page_id).expect("get_page_resources should succeed");
+    let has_xobjects = resources.and_then(|r| r.get(b"XObject").and_then(lopdf::Object::as_dict).ok()).is_some_and(|d| !d.is_empty());
+    assert!(!has_xobjects, "an ASCII-exhibit-only page must carry NO image XObject — the sampled-ImageBlock bridge is gone");
+
+    let content_bytes = doc.get_page_content(page_id);
+    let content_str = String::from_utf8_lossy(&content_bytes);
+    assert!(content_str.contains("Tj"), "the ASCII grid's own cells must paint as real 'Tj' text-showing operators, got: {content_str}");
+}
+
+/// Raster-shakal gate, kinetics-morph exhibit half (same owner report as
+/// the ASCII exhibit above). A page carrying ONLY a [`KineticsExhibit`]
+/// must show NO `/XObject` at all and must carry a real `Tj` text-showing
+/// operator (`uzor_text::draw_paragraph` paints every glyph via
+/// `fill_text`).
+#[test]
+fn kinetics_exhibit_page_carries_real_text_ops_and_no_image_xobject() {
+    let theme = Theme::light_report();
+    let shaper = CosmicShaper::headless();
+    let master = PageMaster::new(PAGE_W, PAGE_H, Margins::uniform(40.0));
+
+    let (exhibit, content_h) = build_kinetics_exhibit(0.5);
+    let figure = FigureBlock::new(&exhibit, BlockSizing::FixedHeight(content_h));
+    let flow = [BlockNode::new(Block::Figure(figure))];
+
+    let style = ComposeStyle::from_theme(&theme, 12.0);
+    let pages = slice_pages(&flow, &master, &style, &shaper);
+    assert_eq!(pages.len(), 1, "a single kinetics exhibit must land on exactly 1 page");
+
+    let pdf_bytes = pages_to_pdf(&pages, &master, &theme);
+    let doc = lopdf::Document::load_mem(&pdf_bytes).expect("lopdf must parse this fixture's own PDF output");
+    let lopdf_pages = doc.get_pages();
+    assert_eq!(lopdf_pages.len(), 1);
+    let page_id = *lopdf_pages.values().next().expect("exactly one page");
+
+    let (resources, _) = doc.get_page_resources(page_id).expect("get_page_resources should succeed");
+    let has_xobjects = resources.and_then(|r| r.get(b"XObject").and_then(lopdf::Object::as_dict).ok()).is_some_and(|d| !d.is_empty());
+    assert!(!has_xobjects, "a kinetics-exhibit-only page must carry NO image XObject — the sampled-ImageBlock bridge is gone");
+
+    let content_bytes = doc.get_page_content(page_id);
+    let content_str = String::from_utf8_lossy(&content_bytes);
+    assert!(content_str.contains("Tj"), "the kinetics frame's own glyphs must paint as real 'Tj' text-showing operators, got: {content_str}");
 }

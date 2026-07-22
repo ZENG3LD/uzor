@@ -35,6 +35,20 @@ subsetter = { version = "0.2", default-features = false }
 # `miniz_oxide::deflate::compress_to_vec_zlib` verbatim, so this is the
 # reference implementation's own choice, not a narrower substitute.
 miniz_oxide = "0.8"
+# DCTDecode (JPEG) encoding for opaque (no-alpha) image XObjects — the
+# owner-flagged "photo fixture blocky at 8x zoom" fix. The workspace
+# already carries the general-purpose `image` crate elsewhere (`uzor`,
+# `uzor-desktop`, `uzor-icon`, `uzor-urx-cpu`), but always with `png`/`ico`
+# only — no consumer anywhere in this workspace currently enables its
+# `jpeg` (encode) feature, and pulling in `image`'s own multi-format
+# graph (`tiff`, `moxcms` color management, etc.) just for one encoder
+# call would be the exact "general-purpose library for one narrow need"
+# the `miniz_oxide`-over-`flate2` choice above already argues against.
+# `jpeg-encoder` is a small, dedicated, pure-Rust baseline encoder (no
+# `image`-crate dependency graph, no C toolchain) — `default-features =
+# false` + `std` only (drops the optional `simd`/`benchmark` features,
+# neither needed for a one-shot RGB8 encode per raster image).
+jpeg-encoder = { version = "0.7.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 lopdf = { version = "0.44", default-features = false }
