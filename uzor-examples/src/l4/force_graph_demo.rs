@@ -46,8 +46,6 @@
 //!
 //! Agent-api verification: see `uzor-graph/RUN.md`.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -63,7 +61,7 @@ use uzor::layout::agent::{AgentAction, AgentActionReply, AgentWidget, BlackboxAg
 use uzor::layout::{EdgeSide, EdgeSlot, LayoutManager};
 use uzor::platform::types::CornerStyle;
 use uzor::render::{RenderContext, RenderRegion};
-use uzor_desktop::{AppRun3D as _, CachedOverlayJob, Scene3DApp, Scene3DFrame};
+use uzor_desktop::{AppRun3D as _, Scene3DApp, Scene3DFrame};
 
 use uzor_graph::interaction::fly::{FlyController, KEYBOARD_SENSITIVITY_MAX, KEYBOARD_SENSITIVITY_MIN, MOUSE_SENSITIVITY_MAX, MOUSE_SENSITIVITY_MIN};
 use uzor_graph::{
@@ -1112,14 +1110,15 @@ fn scaled_rect(r: Rect, scale: f64) -> Rect {
     Rect::new(r.x * scale, r.y * scale, r.width * scale, r.height * scale)
 }
 
-/// Paint the panel's STATIC chrome — background, border, title, section
-/// headings, fixture/navigation buttons (with active-state highlight),
-/// sensitivity sliders (current knob position included — cheap enough
-/// to repaint whenever [`hud_static_key`] changes, no finer-grained
-/// caching needed), and the mouse legend. Deliberately does NOT draw the
-/// STATUS line's numeric content — see [`draw_hud_status`]'s own doc
-/// comment for why that split exists (the `CachedOverlayJob` chrome/
-/// dynamic split item 3 asked for).
+/// Paint the card's chrome — background, border, section headings,
+/// fixture/layout/navigation buttons (with active-state highlight),
+/// sensitivity sliders, and the mouse legend. Painted fresh every frame
+/// in BOTH dimensions (the former 3D `CachedOverlayJob` static/dynamic
+/// split is gone — owner z-order rule 2026-07-24, «менюшка всегда выше
+/// сцены»: render-hub blits a cached job UNDER the plain overlay, which
+/// put scene labels above the card; see `DemoApp::scene3d`'s own
+/// z-order comment). Does NOT draw the STATUS/SELECTION line content —
+/// [`draw_hud_status`] paints those after this, above the card bg.
 fn draw_hud_static(ctx: &mut dyn RenderContext, layout: &HudLayout, scale: f64) {
     // A content-sized floating CARD (owner design order 2026-07-24: no
     // title row, not a full-height column — air above/below it), with
@@ -1247,47 +1246,6 @@ fn selection_lines_3d(engine3d: &Engine3D) -> Vec<String> {
         ],
         None => vec!["no selection — click a node".to_owned()],
     }
-}
-
-/// Cache key for the 3D `CachedOverlayJob` static-chrome paint — changes
-/// exactly when anything `draw_hud_static` actually reads changes
-/// (dimension, fixture, layout kind + pause, nav mode, grid toggle, both
-/// sensitivities, the active draw scale, the panel's own right-docked
-/// `origin_x`), so a caller-side resize/DPI change or any control change
-/// invalidates the cache; an unrelated per-frame value (node counts,
-/// frame timing — the DYNAMIC half) never does. `origin_x` is passed
-/// separately (not read off `HudSnapshot`) because it's derived from the
-/// last-known 3D surface width, not app control state — see
-/// [`DemoApp::hud_origin`]'s own `Dimension::ThreeD` branch; a window
-/// resize changes it without touching any `HudSnapshot` field, so it must
-/// be hashed explicitly or a resize would leave the cached chrome painted
-/// at the OLD right-dock position. `layout_kind`/`layout_paused` are new
-/// (owner defect fix 2026-07-23 — the LAYOUT section is now switchable in
-/// 3D too, so its own active-highlight/pause-color state must invalidate
-/// the cached paint exactly like every other control already does; a
-/// pre-existing gap this fix closes, not a regression it introduces —
-/// this key never needed to include them before, since 3D's own single
-/// FORCE button was always hardcoded active and never paused).
-fn hud_static_key(snap: &HudSnapshot, scale: f64, origin_x: f64, origin_y: f64) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    snap.dim.code().hash(&mut hasher);
-    snap.fixture.code().hash(&mut hasher);
-    snap.nav_mode.code().hash(&mut hasher);
-    snap.grid_enabled.hash(&mut hasher);
-    snap.keyboard_sensitivity.to_bits().hash(&mut hasher);
-    snap.mouse_sensitivity.to_bits().hash(&mut hasher);
-    snap.layout_kind.hash(&mut hasher);
-    snap.layout_paused.hash(&mut hasher);
-    // SELECTION section (2026-07-24): the card's own height and the
-    // section heading's y position both depend on the reserved line
-    // count — it must invalidate the cached chrome.
-    snap.selection_line_count.hash(&mut hasher);
-    scale.to_bits().hash(&mut hasher);
-    origin_x.to_bits().hash(&mut hasher);
-    // origin_y is the vertically-CENTERED anchor — a height-only window
-    // resize moves it without touching any other hashed field.
-    origin_y.to_bits().hash(&mut hasher);
-    hasher.finish()
 }
 
 /// Shared "the 2D camera needs an initial `fit_view()`" flag — same
@@ -2998,43 +2956,16 @@ impl Scene3DApp<NoPanel> for DemoApp {
             profiler.stage_ms("tick") + profiler.stage_ms("scene_build")
         };
 
-        // Owner defect fix item 3 — the floating control-HUD panel's
-        // STATIC chrome, via a `CachedOverlayJob` (item 3's own
-        // preference: "prefer CachedOverlayJob for the static panel
-        // chrome... dynamic bits in the plain overlay"). `hud_static_key`
-        // changes exactly when anything the paint closure reads changes,
-        // so a caller-side resize/DPI change or any control toggle
-        // repaints it; per-frame node counts/timing (below, in the plain
-        // overlay) never do. `None` entirely while hidden (`H` key) — no
-        // wasted paint, no stale cached chrome either.
         let hud_snapshot = self.hud_snapshot();
         let hud_visible = self.hud_visible.get();
         let hud_scale = self.scale_factor;
-        // Right-docked origin for THIS tick's real surface size (already
-        // recorded above via `self.last_3d_surface_px.set(...)`) — see
-        // `DemoApp::hud_origin`'s own `Dimension::ThreeD` branch (`dim`
-        // is confirmed `ThreeD` by the early-return guard at the top of
-        // this function, so this always resolves the 3D branch).
+        // Right-docked, vertically-centered card origin for THIS tick's
+        // real surface size (already recorded above via
+        // `self.last_3d_surface_px.set(...)`) — see `DemoApp::hud_origin`'s
+        // own `Dimension::ThreeD` branch (`dim` is confirmed `ThreeD` by
+        // the early-return guard at the top of this function, so this
+        // always resolves the 3D branch).
         let (hud_origin_x, hud_origin_y, hud_width) = self.hud_origin(&hud_snapshot);
-        let cached_overlay = if hud_visible {
-            let key = hud_static_key(&hud_snapshot, hud_scale, hud_origin_x, hud_origin_y);
-            let snap = hud_snapshot; // `Copy` — an owned local the `move` closure below can capture directly, no borrow-across-closures ambiguity.
-            Some(CachedOverlayJob {
-                key,
-                paint: Box::new(move |ctx: &mut dyn RenderContext| {
-                    let layout = build_hud_layout(hud_origin_x, hud_origin_y, hud_width, &snap);
-                    draw_hud_static(ctx, &layout, hud_scale);
-                }),
-            })
-        } else {
-            None
-        };
-        let hud_status_anchor = if hud_visible {
-            let layout = build_hud_layout(hud_origin_x, hud_origin_y, hud_width, &hud_snapshot);
-            Some((layout.panel.x, layout.status_y, layout.selection_y))
-        } else {
-            None
-        };
 
         // Wave 4 (W3D arc plan §1.3 label-overlay gap, closed here): hand
         // `Manager` a real 2D overlay closure — node labels + the hover
@@ -3048,6 +2979,21 @@ impl Scene3DApp<NoPanel> for DemoApp {
         // returns, same tick, before the next frame) — `camera` is
         // `Copy` so capturing it here doesn't disturb the `camera` value
         // returned below in `Scene3DFrame`.
+        //
+        // Z-ORDER RULE (owner defect fix 2026-07-24: «менюшка всегда
+        // выше сцены» — node labels used to leak straight through the
+        // HUD card): EVERYTHING scene-space (engine overlay labels,
+        // rings, grid ticks, hover card, crosshair) paints FIRST, the
+        // WHOLE HUD card (static chrome + dynamic status/selection
+        // text) paints LAST, all inside this ONE closure. The former
+        // `CachedOverlayJob` split (static chrome cached, dynamic text
+        // in the plain overlay) is deliberately GONE — render-hub's
+        // Phase 4.5 blits the cached texture BEFORE the plain overlay,
+        // which structurally puts scene labels ABOVE the card chrome;
+        // no cache key can fix an ordering problem, and the card's
+        // static paint (a few dozen rects + short strings) is trivial
+        // next to the per-node label pass that already repaints every
+        // frame anyway.
         let engine3d_for_overlay = self.engine3d.clone();
         let overlay_viewport = Rect::new(0.0, 0.0, surf_w as f64, surf_h as f64);
         let crosshair_armed = self.nav_mode.get() == NavMode::Fly && self.mouse_look.get();
@@ -3059,22 +3005,22 @@ impl Scene3DApp<NoPanel> for DemoApp {
                 draw_fly_crosshair(ctx, overlay_viewport);
             }
             drop(engine3d);
-            // Control-HUD panel's DYNAMIC status + selection content —
-            // the counter half of the `draw_hud_static`/`draw_hud_status`
-            // split (see `draw_hud_static`'s own doc comment for why):
-            // changes every frame, so it's painted here, NOT through the
-            // cached job above. 3D has no separate "visible"
-            // (frustum-culled) node count of its own to report — see
-            // `draw_hud_status`'s caller-supplied `lines`, this is the
-            // honest simplification.
-            if let Some((panel_x, status_y, selection_y)) = hud_status_anchor {
+            // The HUD card — chrome first, then its dynamic STATUS/
+            // SELECTION text, both ABOVE everything scene-space painted
+            // just before (the z-order rule above). 3D has no separate
+            // "visible" (frustum-culled) node count of its own to
+            // report — see `draw_hud_status`'s caller-supplied `lines`,
+            // this is the honest simplification.
+            if hud_visible {
+                let layout = build_hud_layout(hud_origin_x, hud_origin_y, hud_width, &hud_snapshot);
+                draw_hud_static(ctx, &layout, hud_scale);
                 let lines = [format!("nodes {node_count}  visible {node_count}"), format!("frame {frame_ms:.2}ms")];
-                draw_hud_status(ctx, panel_x, status_y, &lines, hud_scale);
-                draw_hud_status(ctx, panel_x, selection_y, &selection_lines, hud_scale);
+                draw_hud_status(ctx, layout.panel.x, layout.status_y, &lines, hud_scale);
+                draw_hud_status(ctx, layout.panel.x, layout.selection_y, &selection_lines, hud_scale);
             }
         });
 
-        Some(Scene3DFrame { scene, camera, cached_overlay, overlay: Some(overlay) })
+        Some(Scene3DFrame { scene, camera, cached_overlay: None, overlay: Some(overlay) })
     }
 }
 
