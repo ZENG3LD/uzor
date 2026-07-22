@@ -643,6 +643,111 @@ fn edge_quad_analytic_aa_feathers_the_line_edge_instead_of_a_binary_hard_step() 
     );
 }
 
+// ── 2026-07-22 (3D-parity-arc final wave): per-instance edge width ──────
+
+/// The task's own explicit gate: "two edges, widths 1.75 and 5.0, assert
+/// the 5.0 edge's cross-section reads wider in pixels than the 1.75
+/// one." Routed through the REAL per-graph-edge path
+/// (`render3d::build_edge_instances`), not a hand-poked `Node::with_scale`
+/// — the mechanism under test is the full weight -> `scale.x` -> shader
+/// chain, not just the shader in isolation. Two independent, screen-
+/// broadside (world-X-aligned) edges stacked at different world Y so
+/// each has its own clean midpoint sampling column, well away from
+/// either endpoint's round-cap region (same broadside construction
+/// `edge_quad_analytic_aa_feathers_the_line_edge_instead_of_a_binary_hard_step`
+/// already uses).
+#[test]
+#[ignore]
+fn per_instance_edge_width_makes_a_higher_weight_edge_read_wider_in_pixels() {
+    let Some((device, queue)) = init_device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+
+    let edge_mesh = Arc::new(Mesh::unit_edge_quad([1.0, 1.0, 1.0, 1.0]));
+
+    // Weight 1.0 -> `render3d::edge_width_scale(1.0) == 1.0` exactly ->
+    // the renderer's own BASE `edge_width_px` default (1.75px), i.e.
+    // today's exact pre-existing rendering for a weight-1.0 edge.
+    let mut thin_graph: Graph<(), ()> = Graph::new();
+    let ta = thin_graph.push_node((), "a", "cat-a", 1.0);
+    let tb = thin_graph.push_node((), "b", "cat-b", 1.0);
+    thin_graph.push_edge(ta, tb, 1.0, ());
+    let thin_particles = vec![Particle::at3(-10.0, -6.0, 0.0), Particle::at3(10.0, -6.0, 0.0)];
+    let thin_edges = render3d::build_edge_instances(&thin_graph, &thin_particles, &edge_mesh, &HashSet::new());
+    assert_eq!(thin_edges.len(), 1);
+
+    // Solve for the weight `render3d::edge_width_scale`'s own formula
+    // (`scale = (1 + sqrt(w)) / 2`) needs to land the final width at
+    // ~5.0px against the renderer's default 1.75px base uniform:
+    // `w = (2*scale - 1)^2`.
+    let base_width_px = 1.75_f32;
+    let target_scale = 5.0_f32 / base_width_px;
+    let thick_weight = (2.0 * target_scale - 1.0).powi(2);
+
+    let mut thick_graph: Graph<(), ()> = Graph::new();
+    let ca = thick_graph.push_node((), "a", "cat-a", 1.0);
+    let cb = thick_graph.push_node((), "b", "cat-b", 1.0);
+    thick_graph.push_edge(ca, cb, thick_weight, ());
+    let thick_particles = vec![Particle::at3(-10.0, 6.0, 0.0), Particle::at3(10.0, 6.0, 0.0)];
+    let thick_edges = render3d::build_edge_instances(&thick_graph, &thick_particles, &edge_mesh, &HashSet::new());
+    assert_eq!(thick_edges.len(), 1);
+
+    let mut scene = Scene3D::new();
+    scene.nodes = thin_edges;
+    scene.nodes.extend(thick_edges);
+
+    let d = 60.0f32;
+    let mut camera = PerspectiveCamera::new(Vec3::new(0.0, 0.0, d), Vec3::ZERO, W as f32 / H as f32);
+    camera.z_near = (d * 0.001).max(0.05);
+    camera.z_far = (d * 4.0).max(2_000.0);
+
+    let mut r = Renderer3D::new(&device, &queue, COLOR_FORMAT, (W, H), 64);
+    r.set_bloom_strength(0.0);
+    r.set_ssao_strength(0.0);
+    // Renderer stays at its OWN default `edge_width_px` (1.75px) — the
+    // whole point of this test is the PER-INSTANCE scale, not a global
+    // override via `set_edge_width_px`.
+
+    let (tex, view) = make_target(&device);
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    r.render(&device, &queue, &mut enc, &view, &camera, &scene);
+    queue.submit(Some(enc.finish()));
+    let px = readback_rgba(&device, &queue, &tex);
+    let bg = brightness(at(&px, 2, 2));
+
+    let viewport = Rect::new(0.0, 0.0, W as f64, H as f64);
+    // Each edge's own midpoint — deep inside its own segment (edges span
+    // 20 world units), well away from either endpoint's round-cap region.
+    let (thin_mx, thin_my) = project_world_to_screen(&camera, Vec3::new(0.0, -6.0, 0.0), viewport).expect("thin edge midpoint is in front of the eye");
+    let (thick_mx, thick_my) = project_world_to_screen(&camera, Vec3::new(0.0, 6.0, 0.0), viewport).expect("thick edge midpoint is in front of the eye");
+
+    // Measure the apparent cross-section span (count of "lit" pixel rows,
+    // clearly brighter than background) via a vertical sweep
+    // perpendicular to each (screen-horizontal) edge's own centerline —
+    // same sampling technique the analytic-AA sweep test above uses.
+    let measure_span = |cx: f64, cy: f64| -> usize {
+        let cxi = (cx.round() as i64).clamp(0, (W - 1) as i64) as u32;
+        let cyi = cy.round() as i64;
+        (-15..=15)
+            .filter(|dy| {
+                let y = (cyi + dy).clamp(0, (H - 1) as i64) as u32;
+                brightness(at(&px, cxi, y)) > bg + 20
+            })
+            .count()
+    };
+
+    let thin_span = measure_span(thin_mx, thin_my);
+    let thick_span = measure_span(thick_mx, thick_my);
+    eprintln!("thin_span={thin_span} thick_span={thick_span} (thick_weight={thick_weight:.2})");
+
+    assert!(thin_span > 0, "the thin (weight 1.0, today's default 1.75px) edge must be visible at all");
+    assert!(
+        thick_span > thin_span,
+        "the higher-weight edge's per-instance width must read visibly wider in pixels than the default-weight edge: thin_span={thin_span} thick_span={thick_span}"
+    );
+}
+
 // ── Wave 4: GPU color-ID picking escalation ─────────────────────────────
 
 #[test]

@@ -309,6 +309,19 @@ pub struct Renderer3D {
     // smoother on top of (not a replacement for) this shader's own
     // analytic per-fragment alpha falloff, which is what actually
     // delivers the antialiased line edge.
+    //
+    // 2026-07-22 (3D-parity-arc final wave): the SAME `InstanceRaw`
+    // upload this pipeline already consumed gained a real per-instance
+    // meaning for its model matrix's `scale.x` (a per-edge width
+    // multiplier against `edge_params.z`) and the shader's own
+    // coverage function became true distance-to-SEGMENT (round caps at
+    // both ends) instead of distance-to-infinite-centerline — see
+    // `edge_quad_instanced.wgsl`'s own module doc for the full
+    // packing/recovery mechanics. No Rust-side buffer/layout change was
+    // needed for either: `scale.x` already had zero effect on this
+    // shader's own vertex math (only `model * (0,0,0,1)`/`model *
+    // (0,1,0,1)` are ever read), so it was free to repurpose, and the
+    // round-cap extension is pure shader-side geometry math.
     pipeline_edge_quad: wgpu::RenderPipeline,
     pipeline_edge_quad_msaa: wgpu::RenderPipeline,
     /// Combined `Frame` (binding 0, reuses the SAME `frame_buf` every
@@ -1990,10 +2003,19 @@ impl Renderer3D {
     /// [`DEFAULT_EDGE_WIDTH_PX`] (`~1.75px`, the owner's own re-tuned
     /// value); a caller that never touches this setter still gets that
     /// default.
+    ///
+    /// **2026-07-22 (3D-parity-arc final wave)**: this is now the BASE
+    /// width every `NodeMesh::Line` instance's own per-instance
+    /// `scale.x` multiplies (`edge_quad_instanced.wgsl`'s own module
+    /// doc) — an instance that never sets `scale.x` away from its
+    /// historical `1.0` default renders at exactly this value, unchanged
+    /// from before that wave.
     pub fn set_edge_width_px(&mut self, px: f32) { self.edge_width_px = px.max(0.0); }
 
-    /// Current edge-quad line width in device pixels — see
-    /// [`Renderer3D::set_edge_width_px`].
+    /// Current BASE edge-quad line width in device pixels — see
+    /// [`Renderer3D::set_edge_width_px`]. An individual `NodeMesh::Line`
+    /// instance's own final on-screen width is this value multiplied by
+    /// that instance's own per-instance `scale.x` (default `1.0`).
     pub fn edge_width_px(&self) -> f32 { self.edge_width_px }
 
     pub fn grow_node_ring(&mut self, device: &wgpu::Device, needed: u32) {

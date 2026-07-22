@@ -162,12 +162,40 @@
 //! edge-quad line machinery graph edges already use ([`Node::new_line`]
 //! over a shared [`Mesh::unit_edge_quad`]) — no new `uzor-urx-3d`
 //! surface at all: a gridline and a graph edge are visually the SAME
-//! primitive, only the endpoints and the tint differ. Confirmed by the
-//! shader itself ([`uzor_urx_3d`]'s `edge_quad_instanced.wgsl`): line
-//! WIDTH comes entirely from `Renderer3D`'s own per-frame `edge_width_px`
-//! uniform, not from any per-instance scale — so grid lines share the
-//! exact rendered pixel width edges already use, and only `color_tint`'s
-//! alpha differentiates a dim/strong gridline from an edge.
+//! primitive, only the endpoints and the tint differ. At the time this
+//! wave landed, line WIDTH came entirely from `Renderer3D`'s own
+//! per-frame `edge_width_px` uniform, not from any per-instance scale
+//! (the 2026-07-22 per-instance-width wave below added that capability,
+//! but [`build_grid_instances`] deliberately does not use it — see that
+//! function's own doc comment) — so grid lines still share the exact
+//! BASE rendered pixel width edges use, and only `color_tint`'s alpha
+//! differentiates a dim/strong gridline from an edge.
+//!
+//! ## 2026-07-22 — 3D-parity-arc final wave: per-instance edge width
+//! (round caps)
+//!
+//! [`build_edge_instances`] now packs a per-edge width MULTIPLIER into
+//! the instance model matrix's `scale.x` (`edge_quad_instanced.wgsl`'s
+//! own module doc has the full packing/recovery derivation:
+//! `scale.x`/`scale.z` were provably unused by that shader's own vertex
+//! math before this wave, since only `model * (0,0,0,1)`/`model *
+//! (0,1,0,1)` are ever read to recover `from`/`to`) — [`edge_width_scale`]
+//! mirrors 2D's own [`crate::render::draw_cluster_edges`] `width = (1.0
+//! + weight.sqrt()).min(6.0)` formula's SPIRIT (the only existing
+//! weight→width convention in this crate — plain `crate::render::
+//! draw_edges` itself does NOT scale ordinary 2D edges by weight at all,
+//! a real finding from reading it, not an assumption), normalized so
+//! `edge_width_scale(1.0) == 1.0` exactly (byte/pixel compatibility for
+//! every pre-existing weight-1.0 edge — the renderer's own BASE
+//! `edge_width_px` uniform, still `~1.75px` by default, is untouched).
+//! [`build_cluster_edge_instances`]/[`build_grid_instances`] deliberately
+//! keep `scale.x = 1.0` (their own doc comments say why) — only real
+//! per-graph-edge instances vary width by weight. The shader's own
+//! fragment stage ALSO switched from distance-to-infinite-centerline to
+//! true distance-to-SEGMENT this same wave (round caps at both ends,
+//! `edge_quad_instanced.wgsl`'s own module doc) — the correct "joins"
+//! answer for a node-link graph's independent 2-endpoint segments (every
+//! real junction is a node, covered by its own sphere or by this cap).
 //!
 //! [`grid_step_for_scale`] picks a 1/2/5×10^k "nice number" world-unit
 //! step so the on-screen spacing between adjacent gridlines lands close
@@ -225,6 +253,45 @@ pub const EDGE_ALPHA: f32 = 0.45;
 /// color — `edge_quad_instanced.wgsl`'s `out.color = in.color * in.tint`,
 /// premultiplied by its own analytic-AA coverage in the fragment stage).
 pub const EDGE_TINT: [f32; 4] = [EDGE_TINT_RGB[0], EDGE_TINT_RGB[1], EDGE_TINT_RGB[2], EDGE_ALPHA];
+
+/// 2026-07-22 (3D-parity-arc final wave) — absolute on-screen cap an
+/// edge's per-instance width should ever reach (the owner's own "~6px"
+/// spec), expressed as a SCALE multiplier against `uzor_urx_3d::pipeline`'s
+/// own private `DEFAULT_EDGE_WIDTH_PX = 1.75` (mirrored here as a literal
+/// — the SAME "redeclare a small cross-crate constant" convention
+/// `DEFAULT_LOCAL_DEPTH_3D` already established for 2D's private
+/// `DEFAULT_LOCAL_DEPTH`, since that constant isn't `pub`): `6.0 / 1.75
+/// ≈ 3.4286`. A caller that changes the renderer's own BASE
+/// `edge_width_px` via `Renderer3D::set_edge_width_px` shifts where this
+/// scale-relative cap lands in absolute pixels too — same as every other
+/// value this design derives from a per-instance SCALE rather than a
+/// hardcoded pixel count.
+pub const EDGE_WIDTH_SCALE_MAX: f32 = 6.0 / 1.75;
+
+/// 2026-07-22 (3D-parity-arc final wave) — per-edge width MULTIPLIER
+/// from a graph edge's own `weight`, packed into the edge-quad instance's
+/// `scale.x` by [`build_edge_instances`] (`edge_quad_instanced.wgsl`'s
+/// own module doc has the shader-side packing/recovery derivation).
+///
+/// Mirrors the SPIRIT of the only existing weight→width convention in
+/// this crate — [`crate::render::draw_cluster_edges`]'s `width = (1.0 +
+/// weight.sqrt()).min(6.0)` — but that formula computes an ABSOLUTE
+/// pixel width directly, not a multiplier, and 2D's own plain
+/// `crate::render::draw_edges` does NOT scale ordinary edges by weight
+/// at all (a direct read of that function found a fixed `1.7px`/`1.3px`
+/// stroke regardless of weight — a real finding, not an assumption this
+/// wave carries over). Normalized by its own value at `weight == 1.0`
+/// (`(1.0 + 1.0.sqrt()) / 2.0 == 1.0`) so a weight-1.0 edge — the
+/// implicit weight every pre-existing graph-edge push used before this
+/// wave — recovers `scale == 1.0` exactly, the byte/pixel-compatibility
+/// this wave's own gate required (the renderer's BASE `edge_width_px`
+/// uniform, `~1.75px` by default, is untouched either way). Clamped at
+/// [`EDGE_WIDTH_SCALE_MAX`] so no single edge's weight can blow the line
+/// out past the owner's own "~6px" sane maximum.
+pub fn edge_width_scale(weight: f32) -> f32 {
+    let w = weight.max(0.0);
+    ((1.0 + w.sqrt()) * 0.5).min(EDGE_WIDTH_SCALE_MAX)
+}
 
 /// Aggregated cross-cluster synthetic-edge tint (cluster-collapse wave) —
 /// the SAME warm gold accent the 2D engine's own `render::CLUSTER_ACCENT`
@@ -329,6 +396,15 @@ pub fn build_node_instances<N, E>(
 /// [`build_cluster_edge_instances`] draws the aggregated cross-cluster
 /// substitute separately, the 3D counterpart of `crate::render::
 /// draw_cluster_edges`.
+///
+/// **2026-07-22 (3D-parity-arc final wave)**: `scale.x` — provably
+/// unused by `edge_quad_instanced.wgsl`'s own vertex math before this
+/// wave (see that shader's own module doc) — now carries
+/// [`edge_width_scale(edge.weight)`](edge_width_scale), a per-instance
+/// width MULTIPLIER against the renderer's BASE `edge_width_px`
+/// uniform. A weight-1.0 edge recovers `scale.x == 1.0` exactly, so
+/// every pre-existing graph built before this wave (implicit weight
+/// 1.0) renders byte-for-byte unchanged.
 pub fn build_edge_instances<N, E>(
     graph: &Graph<N, E>,
     particles: &[Particle],
@@ -356,7 +432,7 @@ pub fn build_edge_instances<N, E>(
                 Node::new_line(mesh.clone())
                     .with_translation(from)
                     .with_rotation(rotation)
-                    .with_scale(Vec3::new(1.0, length, 1.0))
+                    .with_scale(Vec3::new(edge_width_scale(edge.weight), length, 1.0))
                     .with_tint(EDGE_TINT),
             )
         })
@@ -418,12 +494,15 @@ pub fn build_scene<N, E>(
 /// the raw intra/cross-cluster member edges [`build_edge_instances`]
 /// already excludes via its `hidden` set. Unlike 2D's own per-synthetic-
 /// edge WIDTH scaling by summed weight (`draw_cluster_edges`'s `width =
-/// (1.0 + weight.sqrt()).min(6.0)`), a 3D edge-quad's on-screen width is a
-/// single `Renderer3D`-wide `edge_width_px` uniform, not a per-instance
-/// scale (see `uzor_urx_3d`'s own `edge_quad_instanced.wgsl` module doc)
-/// — every synthetic cross-cluster edge here shares the SAME tint/width
-/// as an ordinary graph edge, just through [`CLUSTER_EDGE_TINT`] instead
-/// of [`EDGE_TINT`], a documented divergence rather than an oversight.
+/// (1.0 + weight.sqrt()).min(6.0)`), this function deliberately keeps
+/// `scale.x = 1.0` (the renderer's BASE `edge_width_px`) even though
+/// `uzor_urx_3d`'s edge-quad pipeline gained real per-instance width
+/// support in the 2026-07-22 wave ([`edge_width_scale`]/
+/// [`build_edge_instances`]'s own doc comment) — every synthetic
+/// cross-cluster edge here shares the SAME tint/width as an ordinary
+/// weight-1.0 graph edge, just through [`CLUSTER_EDGE_TINT`] instead of
+/// [`EDGE_TINT`], a documented divergence rather than an oversight (out
+/// of scope for that wave — it named `build_edge_instances` specifically).
 pub fn build_cluster_edge_instances(particles: &[Particle], mesh: &Arc<Mesh>, clusters: &ClusterRegistry) -> Vec<Node> {
     let mut out = Vec::new();
     for cluster in clusters.collapsed_clusters() {
@@ -630,7 +709,10 @@ pub fn build_grid_plan(min: Vec3, max: Vec3, step: f64) -> GridPlan {
 /// (the SAME [`Mesh::unit_edge_quad`] Arc graph edges already instance —
 /// module doc's own "no new `uzor-urx-3d` surface" point). A degenerate
 /// (zero-length) line is skipped, exactly like [`build_edge_instances`]
-/// does for a coincident edge.
+/// does for a coincident edge. **Deliberately keeps `scale.x = 1.0`**
+/// (the per-instance-width-scale wave's default, see the module doc's
+/// own "2026-07-22" section) — a grid line has no weight concept to
+/// scale by, so it always renders at the renderer's BASE `edge_width_px`.
 pub fn build_grid_instances(plan: &GridPlan, mesh: &Arc<Mesh>) -> Vec<Node> {
     plan.lines
         .iter()
@@ -960,6 +1042,7 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].translation, Vec3::ZERO, "translation must be the FROM endpoint, not the midpoint — see the module doc");
         assert!((edges[0].scale.y - 5.0).abs() < 1e-5);
+        assert_eq!(edges[0].scale.x, 1.0, "a weight-1.0 edge must recover scale.x == 1.0 exactly — the byte/pixel-compatibility the per-instance-width wave's own gate required");
         assert_eq!(edges[0].color_tint, EDGE_TINT);
         assert!(matches!(edges[0].geometry, uzor_urx_3d::NodeMesh::Line(_)), "edges must use the dedicated edge-quad geometry, not a cylinder");
         // b - a is already +Y, the line mesh's own local axis, so the
@@ -983,6 +1066,83 @@ mod tests {
         let rotated_axis = edges[0].rotation * Vec3::Y;
         assert!((rotated_axis - expected_dir).length() < 1e-4);
         assert!((edges[0].scale.y - 5.0).abs() < 1e-4);
+    }
+
+    // ── 2026-07-22 (3D-parity-arc final wave) — per-instance edge width ──
+
+    #[test]
+    fn edge_width_scale_of_weight_1_is_the_identity_scale() {
+        assert_eq!(edge_width_scale(1.0), 1.0, "a weight-1.0 edge must recover exactly scale 1.0 — the byte/pixel-compatibility gate");
+    }
+
+    #[test]
+    fn edge_width_scale_of_a_lower_weight_is_visibly_thinner_than_weight_1() {
+        // Mirrors the demo's own `clusters`/`sparse` fixtures: hub-ring
+        // edges at weight 0.6 vs intra-cluster edges at weight 1.0.
+        let thinner = edge_width_scale(0.6);
+        let baseline = edge_width_scale(1.0);
+        assert!(thinner < baseline, "weight 0.6 must scale visibly thinner than weight 1.0: {thinner} vs {baseline}");
+        assert!(baseline - thinner > 0.05, "the difference must be large enough to actually READ as a different width on screen, not a sub-pixel rounding wash: {thinner} vs {baseline}");
+    }
+
+    #[test]
+    fn edge_width_scale_is_monotonically_increasing_in_weight() {
+        let low = edge_width_scale(0.1);
+        let mid = edge_width_scale(1.0);
+        let high = edge_width_scale(4.0);
+        assert!(low < mid, "{low} should be < {mid}");
+        assert!(mid < high, "{mid} should be < {high}");
+    }
+
+    #[test]
+    fn edge_width_scale_clamps_at_the_sane_max_for_an_extreme_weight() {
+        let extreme = edge_width_scale(10_000.0);
+        assert_eq!(extreme, EDGE_WIDTH_SCALE_MAX, "an extreme weight must clamp at EDGE_WIDTH_SCALE_MAX, not blow the line out unbounded");
+        // At the renderer's own default 1.75px base uniform, the clamp
+        // must land close to the owner's own "~6px" sane maximum.
+        let clamped_px = 1.75 * EDGE_WIDTH_SCALE_MAX;
+        assert!((clamped_px - 6.0).abs() < 0.01, "EDGE_WIDTH_SCALE_MAX against the 1.75px default base must land at ~6px, got {clamped_px}");
+    }
+
+    #[test]
+    fn edge_width_scale_never_goes_negative_for_a_negative_weight() {
+        assert!(edge_width_scale(-5.0) > 0.0, "a defensively-clamped negative weight must still produce a positive scale");
+    }
+
+    #[test]
+    fn build_edge_instances_threads_the_edge_weight_into_scale_x_via_edge_width_scale() {
+        let mut graph = DemoGraph::new();
+        let a = graph.push_node((), "a", "x", 1.0);
+        let b = graph.push_node((), "b", "x", 1.0);
+        graph.push_edge(a, b, 0.6, ());
+        let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(0.0, 5.0, 0.0)];
+        let mesh = unit_edge_quad_mesh();
+
+        let edges = build_edge_instances(&graph, &particles, &mesh, &HashSet::new());
+
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].scale.x, edge_width_scale(0.6), "scale.x must carry exactly edge_width_scale(edge.weight), not the old hardcoded 1.0");
+        assert_ne!(edges[0].scale.x, 1.0, "a weight-0.6 edge must NOT recover the identity scale");
+    }
+
+    #[test]
+    fn build_cluster_edge_instances_keeps_scale_x_at_the_identity_regardless_of_summed_weight() {
+        let mut graph = DemoGraph::new();
+        let member = graph.push_node((), "member", "x", 1.0);
+        let outside = graph.push_node((), "outside", "x", 4.0);
+        graph.push_edge(member, outside, 5.0, ());
+        let mut clusters = ClusterRegistry::default();
+        let id = clusters.define(&graph, vec![member]).expect("define must succeed for a real member");
+        let mut particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(10.0, 0.0, 0.0)];
+        assert!(clusters.collapse_3d(id, &mut graph, &mut particles), "collapse_3d must succeed");
+        let mesh = unit_edge_quad_mesh();
+
+        let edges = build_cluster_edge_instances(&particles, &mesh, &clusters);
+
+        assert!(!edges.is_empty(), "expected at least one aggregated cross-cluster edge (summed weight 5.0)");
+        for e in &edges {
+            assert_eq!(e.scale.x, 1.0, "cluster synthetic edges deliberately stay at the BASE width regardless of summed weight — see the function's own doc comment");
+        }
     }
 
     #[test]

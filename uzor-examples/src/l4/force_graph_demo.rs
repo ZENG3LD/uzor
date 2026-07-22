@@ -25,6 +25,7 @@ use serde_json::{json, Value};
 use uzor::core::types::Rect;
 use uzor::framework::app::{App, CursorCaptureMode, NoPanel};
 use uzor::framework::builder::AppBuilder;
+use uzor::framework::frame_profiler::FrameProfiler;
 use uzor::framework::multi_window::{WindowCtx, WindowKey, WindowSpec};
 use uzor::input::{KeyCode, MouseButton, PlatformEvent};
 use uzor::layout::agent::{AgentAction, AgentActionReply, AgentWidget, BlackboxAgentSurface};
@@ -737,6 +738,13 @@ struct DemoApp {
     /// `DemoApp`-only accessor (mirrors why `engine`/`engine3d` are
     /// themselves `Arc<Mutex<_>>`).
     fly: Arc<Mutex<FlyController>>,
+    /// 2026-07-22 (3D-parity-arc tail) — named-stage frame timings for
+    /// `scene3d()`'s own `tick`/`scene_build` stages, `Arc<Mutex<_>>` for
+    /// the SAME cross-thread reason `fly` is (`DemoBlackbox::agent_state`
+    /// reads it from the agent-api HTTP thread; `scene3d()` writes it
+    /// from the winit thread). Lifted mechanism, app-specific stage
+    /// names — see `uzor::framework::frame_profiler`'s own module doc.
+    frame_profiler: Arc<Mutex<FrameProfiler>>,
     /// Wall-clock timestamp of the last `scene3d()` tick — mirrors
     /// `GraphEngine::tick_real_time`'s own clamped-dt convention so the
     /// 3D sim settles at a real-time rate regardless of the render
@@ -781,6 +789,9 @@ struct DemoBlackbox {
     nav_mode: NavModeState,
     mouse_look: MouseLookState,
     fly: Arc<Mutex<FlyController>>,
+    /// Same `frame_profiler` `Arc` `DemoApp` owns — see that field's own
+    /// doc comment.
+    frame_profiler: Arc<Mutex<FrameProfiler>>,
     /// Wave 5 fit-to-bounds — last-known 3D surface size, so `fit_view_3d`
     /// can derive an aspect ratio from the agent-api HTTP thread. See
     /// [`SurfaceSizeState`]'s own doc comment.
@@ -902,6 +913,7 @@ impl DemoApp {
             nav_mode: NavModeState::new(),
             mouse_look: MouseLookState::new(),
             fly: Arc::new(Mutex::new(FlyController::new())),
+            frame_profiler: Arc::new(Mutex::new(FrameProfiler::default())),
             last_3d_frame_at: None,
             last_3d_surface_px: SurfaceSizeState::new(),
         }
@@ -923,6 +935,13 @@ impl DemoApp {
 
     fn lock_fly(fly: &Arc<Mutex<FlyController>>) -> MutexGuard<'_, FlyController> {
         match fly.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn lock_profiler(profiler: &Arc<Mutex<FrameProfiler>>) -> MutexGuard<'_, FrameProfiler> {
+        match profiler.lock() {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         }
@@ -1092,6 +1111,15 @@ impl BlackboxAgentSurface for DemoBlackbox {
             // the grid toggle lives on `engine3d`, but it's meaningful to
             // query even while 2D is the active dimension.
             map.insert("grid".to_owned(), json!(DemoApp::lock3d(&self.engine3d).grid_enabled()));
+            // 2026-07-22 (3D-parity-arc tail) — same field name the
+            // foxhound source app's own `FrameProfile` publishes under
+            // (`uzor::framework::frame_profiler::FrameProfiler::to_json`'s
+            // own doc comment), reported unconditionally like `fixture`/
+            // `nav_mode`/`grid` above: `scene3d()` only ever records into
+            // it while 3D is active, but it's meaningful to query either
+            // way (an empty `stages` map, `frames: 0`, before the first
+            // 3D frame ever renders).
+            map.insert("frame_profile_ema_ms".to_owned(), DemoApp::lock_profiler(&self.frame_profiler).to_json());
         }
         state
     }
@@ -1374,6 +1402,7 @@ impl App<NoPanel> for DemoApp {
             nav_mode: self.nav_mode.clone(),
             mouse_look: self.mouse_look.clone(),
             fly: self.fly.clone(),
+            frame_profiler: self.frame_profiler.clone(),
             surface_size: self.last_3d_surface_px.clone(),
         };
         layout.register_blackbox_agent(BLACKBOX_SLOT, Arc::new(Mutex::new(blackbox)));
@@ -1557,14 +1586,29 @@ impl Scene3DApp<NoPanel> for DemoApp {
         self.last_3d_frame_at = Some(now);
 
         let mut engine3d = Self::lock3d(&self.engine3d);
+        // 2026-07-22 (3D-parity-arc tail) — `Instant`-bracket `tick`/
+        // `build_scene` independently and feed both into `frame_profiler`,
+        // mirroring foxhound's own `FrameProfile` stage-naming
+        // (`uzor::framework::frame_profiler`'s own module doc).
+        let tick_started = std::time::Instant::now();
         engine3d.tick(dt);
+        let tick_ms = tick_started.elapsed().as_secs_f64() * 1000.0;
         if self.nav_mode.get() == NavMode::Fly {
             Self::lock_fly(&self.fly).tick(dt, &mut engine3d.camera);
         }
+        let scene_build_started = std::time::Instant::now();
         let scene = engine3d.build_scene(surf_h as f64);
+        let scene_build_ms = scene_build_started.elapsed().as_secs_f64() * 1000.0;
         let aspect = surf_w as f32 / (surf_h.max(1) as f32);
         let camera = engine3d.camera(aspect);
         drop(engine3d);
+
+        {
+            let mut profiler = Self::lock_profiler(&self.frame_profiler);
+            profiler.record_ms("tick", tick_ms);
+            profiler.record_ms("scene_build", scene_build_ms);
+            profiler.end_frame();
+        }
 
         // Wave 4 (W3D arc plan §1.3 label-overlay gap, closed here): hand
         // `Manager` a real 2D overlay closure — node labels + the hover

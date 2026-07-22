@@ -791,12 +791,22 @@ impl Mesh {
     /// plain white so the per-instance tint alone determines the edge's
     /// final color, same convention the old mesh used).
     ///
-    /// Single straight 2-endpoint segment only — no join geometry. Graph
-    /// edges are independent point-to-point segments (never a connected
-    /// polyline sharing a vertex with another edge's own quad), so the
-    /// three.js `Line2`/cosmos.gl join-handling machinery a prior wave
-    /// explicitly declined for this reason doesn't apply here either —
-    /// this mesh still needs none of it.
+    /// Single straight 2-endpoint segment only — no polyline JOIN
+    /// geometry (miter/bevel). Graph edges are independent point-to-point
+    /// segments (never a connected polyline sharing a vertex with another
+    /// edge's own quad), so the three.js `Line2`/cosmos.gl join-handling
+    /// machinery a prior wave explicitly declined for this reason doesn't
+    /// apply here either — this mesh still needs none of it. **2026-07-22
+    /// (3D-parity-arc final wave)**: `edge_quad_instanced.wgsl`'s own
+    /// vertex shader now extends each quad by `half_width` past both
+    /// `from`/`to` and its fragment shader computes true
+    /// distance-to-SEGMENT (clamped along-axis component) rather than
+    /// distance-to-infinite-centerline — a round CAP at each end (the
+    /// correct "joins" answer for a node-link graph, where every real
+    /// junction is a node, covered by its own sphere or by this cap, not
+    /// a third edge meeting mid-segment). This mesh's own 4 vertices are
+    /// unchanged; the extension is pure shader-side geometry math driven
+    /// from the SAME `pos.xy` packing this doc comment already describes.
     pub fn unit_edge_quad(color: [f32; 4]) -> Self {
         let corner = |side: f32, endpoint: f32| Vertex::new(Vec3::new(side, endpoint, 0.0), color);
         Self {
