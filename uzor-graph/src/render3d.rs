@@ -155,6 +155,41 @@
 //! over byte-for-byte unchanged — only the mesh Arc's own constructor
 //! and the pipeline/shader that draws it have ever changed;
 //! `build_edge_instances` itself has been untouched since Wave 2.
+//!
+//! ## Wave 5 — 3D reference ground grid + axis tick labels (distance LOD)
+//!
+//! A world-space XZ ground grid, built through the exact SAME instanced
+//! edge-quad line machinery graph edges already use ([`Node::new_line`]
+//! over a shared [`Mesh::unit_edge_quad`]) — no new `uzor-urx-3d`
+//! surface at all: a gridline and a graph edge are visually the SAME
+//! primitive, only the endpoints and the tint differ. Confirmed by the
+//! shader itself ([`uzor_urx_3d`]'s `edge_quad_instanced.wgsl`): line
+//! WIDTH comes entirely from `Renderer3D`'s own per-frame `edge_width_px`
+//! uniform, not from any per-instance scale — so grid lines share the
+//! exact rendered pixel width edges already use, and only `color_tint`'s
+//! alpha differentiates a dim/strong gridline from an edge.
+//!
+//! [`grid_step_for_scale`] picks a 1/2/5×10^k "nice number" world-unit
+//! step so the on-screen spacing between adjacent gridlines lands close
+//! to [`GRID_MIN_SCREEN_PX`]-[`GRID_MAX_SCREEN_PX`] at the CURRENT
+//! camera distance — the same pinhole apparent-size math
+//! [`crate::engine3d::GraphEngine3D::visible_labels`] already uses for
+//! its own `screen_radius` LOD input, evaluated at world-unit scale
+//! instead of a node's own radius. [`GraphEngine3D::build_scene`]
+//! recomputes it fresh on every call (no memoization): a `log10` plus a
+//! handful of trig ops is cheap next to the instance-generation work the
+//! same call already does.
+//!
+//! **Tick labels are deliberately NOT a `label_grid::LabelGrid` pass.**
+//! That module's crowded-cell quota/ranking machinery exists for
+//! irregular, potentially-thousands-large node-label candidate sets;
+//! axis ticks are already sparse and perfectly regular (one label per
+//! STRONG line — every 5th — never per node), so
+//! [`crate::engine3d::GraphEngine3D::draw_overlay`] just walks the same
+//! [`GridLine`] list [`build_grid_plan`] produced, keeps `strong` lines
+//! only, culls anything that fails to project or lands off-viewport, and
+//! caps the total at [`GRID_MAX_AXIS_LABELS`] — a documented
+//! simplification, not a forgotten integration.
 
 use std::sync::Arc;
 
@@ -312,6 +347,223 @@ pub fn build_scene<N, E>(graph: &Graph<N, E>, particles: &[Particle], node_mesh:
     scene.nodes.extend(build_edge_instances(graph, particles, edge_mesh));
     scene.nodes.extend(build_node_instances(graph, particles, node_mesh));
     scene
+}
+
+// ── Wave 5 — 3D reference ground grid + axis tick labels (distance LOD) ──
+
+/// Dim gridline alpha (the owner's own spec: "~0.15").
+pub const GRID_LINE_ALPHA: f32 = 0.15;
+/// Every 5th line's own, more visible alpha (the owner's own spec: "~0.25").
+pub const GRID_STRONG_LINE_ALPHA: f32 = 0.25;
+/// Neutral gray-blue tint — visually distinct from [`EDGE_TINT_RGB`]'s own
+/// warmer blue-gray so a grid line and a graph edge don't read as the
+/// exact same element even though they share one rendering pipeline.
+pub const GRID_TINT_RGB: [f32; 3] = [0.60, 0.63, 0.70];
+/// Every `GRID_STRONG_LINE_EVERY`th tick (index counted from world
+/// coordinate `0`, not from the range's own start — so which lines are
+/// "strong" doesn't shift as the graph's own AABB drifts) is a strong
+/// line, per the owner's own spec.
+const GRID_STRONG_LINE_EVERY: i64 = 5;
+/// Ground-plane drop below the AABB's own lowest point, as a fraction of
+/// the AABB's largest dimension (floored by [`GRID_Y_MARGIN_MIN`] so a
+/// very flat/small graph still gets a visibly separated ground plane) —
+/// the task's own "AABB min y minus a small margin" simplification of
+/// "the XZ plane through the centroid."
+const GRID_Y_MARGIN_FRACTION: f32 = 0.08;
+const GRID_Y_MARGIN_MIN: f32 = 4.0;
+
+/// Target on-screen gridline-spacing BAND (the owner's own spec: "roughly
+/// 40-160px"). [`grid_step_for_scale`] snaps to whichever 1/2/5×10^k
+/// ladder rung lands closest (in log-RATIO terms, not linear difference)
+/// to [`GRID_TARGET_SCREEN_PX`] — the band's own geometric mean, the
+/// natural "center" of a multiplicative range. The worst-case ladder gap
+/// (`5 -> 10`, or equivalently `1 -> 2`, both ratio `2.5`) means the
+/// worst-case snap lands at `sqrt(2.5) ≈ 1.58×` off target in either
+/// direction — `80 / 1.58 ≈ 50.6px` and `80 * 1.58 ≈ 126.5px` — safely
+/// inside this band with real margin either side.
+pub const GRID_MIN_SCREEN_PX: f64 = 40.0;
+pub const GRID_MAX_SCREEN_PX: f64 = 160.0;
+const GRID_TARGET_SCREEN_PX: f64 = 80.0;
+
+/// Axis-tick-label budget per [`crate::engine3d::GraphEngine3D::draw_overlay`]
+/// call (module doc's own "documented simplification, not a forgotten
+/// integration" note) — cheap insurance against an extreme AABB/step
+/// combination producing an unreasonable label count.
+pub const GRID_MAX_AXIS_LABELS: usize = 40;
+
+/// Snap `raw` (a positive, unitless "world units per target pixel"
+/// value) to the nearest 1/2/5×10^k "nice number" ladder rung — the same
+/// convention d3/sigma-style axis-tick generators use. "Nearest" is by
+/// LOG-ratio, not linear difference: a linear nearest-neighbor would
+/// systematically favor the larger candidate at every magnitude (e.g.
+/// `fraction=3` is linearly closer to `2` AND to `5` depending on how you
+/// measure, but `3/2 = 1.5` is a smaller ratio than `5/3 ≈ 1.67`, so `2`
+/// is the log-nearer, and therefore visually-truer, neighbor). Pure and
+/// total across every magnitude a caller might pass — `raw <= 0` clamps
+/// to a tiny positive floor before `log10` ever sees it.
+fn snap_to_nice_step(raw: f64) -> f64 {
+    let raw = raw.max(1e-12);
+    let exponent = raw.log10().floor();
+    let base = 10f64.powi(exponent as i32);
+    let fraction = raw / base;
+    const CANDIDATES: [f64; 4] = [1.0, 2.0, 5.0, 10.0];
+    let mut best = CANDIDATES[0];
+    let mut best_ratio = f64::MAX;
+    for &candidate in &CANDIDATES {
+        let ratio = (fraction / candidate).max(candidate / fraction);
+        if ratio < best_ratio {
+            best_ratio = ratio;
+            best = candidate;
+        }
+    }
+    best * base
+}
+
+/// World-space grid step for a ground grid viewed from `camera_distance`
+/// with vertical field-of-view `fov_y_radians`, rendered into a
+/// `viewport_height_px`-tall surface — see the module doc's own
+/// distance-LOD writeup. Non-finite/non-positive inputs fall back to a
+/// step of `1.0` rather than propagating NaN/inf into the grid geometry.
+pub fn grid_step_for_scale(camera_distance: f32, fov_y_radians: f32, viewport_height_px: f64) -> f64 {
+    let half_fov_tan = (fov_y_radians * 0.5).tan().max(1e-6) as f64;
+    let distance = (camera_distance.max(1e-3)) as f64;
+    let px_per_world_unit = (viewport_height_px.max(1.0) * 0.5) / (distance * half_fov_tan);
+    if !px_per_world_unit.is_finite() || px_per_world_unit <= 0.0 {
+        return 1.0;
+    }
+    snap_to_nice_step(GRID_TARGET_SCREEN_PX / px_per_world_unit)
+}
+
+/// One planned gridline before it becomes an instanced [`Node`] — also
+/// the shape [`crate::engine3d::GraphEngine3D::draw_overlay`] walks to
+/// place axis tick labels (module doc: "NOT a `label_grid::LabelGrid`
+/// pass").
+#[derive(Debug, Clone, Copy)]
+pub struct GridLine {
+    pub from: Vec3,
+    pub to: Vec3,
+    /// The world-space coordinate this line represents along its OWN
+    /// axis (the X value for a line that runs parallel to Z, or the Z
+    /// value for a line that runs parallel to X) — the tick label's
+    /// numeric text, via [`format_tick_value`].
+    pub tick_value: f64,
+    /// Every [`GRID_STRONG_LINE_EVERY`]th tick — drawn at
+    /// [`GRID_STRONG_LINE_ALPHA`] instead of [`GRID_LINE_ALPHA`], and the
+    /// only lines that ever get a tick label.
+    pub strong: bool,
+}
+
+/// A fully planned ground grid — [`build_grid_instances`] turns this into
+/// instanced [`Node`]s, and [`crate::engine3d::GraphEngine3D::draw_overlay`]
+/// walks `lines` directly for tick-label placement (`step` alongside it
+/// so [`format_tick_value`] can decide integer-vs-decimal formatting).
+#[derive(Debug, Clone)]
+pub struct GridPlan {
+    pub lines: Vec<GridLine>,
+    pub step: f64,
+}
+
+/// Ground-plane Y (module doc: "AABB min y minus a small margin").
+fn grid_ground_y(min: Vec3, max: Vec3) -> f32 {
+    let extent = max - min;
+    let largest = extent.x.max(extent.y).max(extent.z).max(0.0);
+    let margin = (largest * GRID_Y_MARGIN_FRACTION).max(GRID_Y_MARGIN_MIN);
+    min.y - margin
+}
+
+/// Tick positions covering `[min, max]`, ROUNDED OUT to `step` (the
+/// task's own "grid extent covers the node AABB, rounded out to the
+/// step") — `(value, strong)` pairs, `strong` counted from world
+/// coordinate `0`, not from `min`, via [`i64::rem_euclid`] so a negative
+/// tick index still lands on the correct 5-line cadence. Empty for a
+/// non-finite/non-positive `step`, or `min > max` (shouldn't happen for a
+/// real AABB, but a defensive empty result beats a panic).
+fn grid_ticks(min: f64, max: f64, step: f64) -> Vec<(f64, bool)> {
+    if !min.is_finite() || !max.is_finite() || !step.is_finite() || step <= 0.0 || min > max {
+        return Vec::new();
+    }
+    let start_index = (min / step).floor() as i64;
+    let end_index = (max / step).ceil() as i64;
+    (start_index..=end_index)
+        .map(|index| (index as f64 * step, index.rem_euclid(GRID_STRONG_LINE_EVERY) == 0))
+        .collect()
+}
+
+/// Plan a ground grid covering the AABB (`min`, `max`) at world-unit
+/// `step` — see the module doc. Lines run BOTH ways: one per X tick
+/// (running parallel to Z, spanning the full rounded-out Z range) and
+/// one per Z tick (running parallel to X, spanning the full rounded-out
+/// X range) — the ordinary two-family regular grid.
+pub fn build_grid_plan(min: Vec3, max: Vec3, step: f64) -> GridPlan {
+    let step = if step.is_finite() && step > 0.0 { step } else { 1.0 };
+    let grid_y = grid_ground_y(min, max);
+    let x_ticks = grid_ticks(min.x as f64, max.x as f64, step);
+    let z_ticks = grid_ticks(min.z as f64, max.z as f64, step);
+    let z_min = z_ticks.first().map_or(min.z as f64, |t| t.0);
+    let z_max = z_ticks.last().map_or(max.z as f64, |t| t.0);
+    let x_min = x_ticks.first().map_or(min.x as f64, |t| t.0);
+    let x_max = x_ticks.last().map_or(max.x as f64, |t| t.0);
+
+    let mut lines = Vec::with_capacity(x_ticks.len() + z_ticks.len());
+    for (x, strong) in x_ticks {
+        lines.push(GridLine {
+            from: Vec3::new(x as f32, grid_y, z_min as f32),
+            to: Vec3::new(x as f32, grid_y, z_max as f32),
+            tick_value: x,
+            strong,
+        });
+    }
+    for (z, strong) in z_ticks {
+        lines.push(GridLine {
+            from: Vec3::new(x_min as f32, grid_y, z as f32),
+            to: Vec3::new(x_max as f32, grid_y, z as f32),
+            tick_value: z,
+            strong,
+        });
+    }
+    GridPlan { lines, step }
+}
+
+/// Turn a [`GridPlan`] into instanced [`Node::new_line`]s sharing `mesh`
+/// (the SAME [`Mesh::unit_edge_quad`] Arc graph edges already instance —
+/// module doc's own "no new `uzor-urx-3d` surface" point). A degenerate
+/// (zero-length) line is skipped, exactly like [`build_edge_instances`]
+/// does for a coincident edge.
+pub fn build_grid_instances(plan: &GridPlan, mesh: &Arc<Mesh>) -> Vec<Node> {
+    plan.lines
+        .iter()
+        .filter_map(|line| {
+            let delta = line.to - line.from;
+            let length = delta.length();
+            if length < 1e-5 {
+                return None;
+            }
+            let dir = delta / length;
+            let rotation = Quat::from_rotation_arc(Vec3::Y, dir);
+            let alpha = if line.strong { GRID_STRONG_LINE_ALPHA } else { GRID_LINE_ALPHA };
+            let tint = [GRID_TINT_RGB[0], GRID_TINT_RGB[1], GRID_TINT_RGB[2], alpha];
+            Some(
+                Node::new_line(mesh.clone())
+                    .with_translation(line.from)
+                    .with_rotation(rotation)
+                    .with_scale(Vec3::new(1.0, length, 1.0))
+                    .with_tint(tint),
+            )
+        })
+        .collect()
+}
+
+/// Compact numeric label for a [`GridLine::tick_value`] — integers once
+/// `step >= 1.0` (the owner's own spec), otherwise enough decimal places
+/// to actually distinguish adjacent sub-unit ticks, derived from the
+/// step's own magnitude rather than a fixed decimal count.
+pub fn format_tick_value(value: f64, step: f64) -> String {
+    if step >= 1.0 || step <= 0.0 {
+        format!("{:.0}", value.round())
+    } else {
+        let decimals = (-step.log10()).ceil().max(0.0) as usize;
+        format!("{value:.decimals$}")
+    }
 }
 
 // ── Wave 4 — GPU color-ID picking escalation (plan §1.5/§4) ────────────
@@ -715,5 +967,126 @@ mod tests {
         assert_eq!(scene.nodes[0].translation, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(scene.nodes[1].color_tint, encode_node_id_tint(b));
         assert_eq!(scene.nodes[1].translation, Vec3::new(-4.0, 0.0, 5.0));
+    }
+
+    // ── Wave 5: 3D reference grid + axis tick labels ────────────────────
+
+    #[test]
+    fn snap_to_nice_step_always_lands_on_a_1_2_5_ladder_rung_across_a_wide_magnitude_range() {
+        fn is_nice(step: f64) -> bool {
+            for k in -6..=6 {
+                let base = 10f64.powi(k);
+                for c in [1.0, 2.0, 5.0] {
+                    if (step - c * base).abs() < base * 1e-6 {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        let mut raw = 0.001_f64;
+        while raw <= 10_000.0 {
+            let step = snap_to_nice_step(raw);
+            assert!(is_nice(step), "raw={raw} produced a non-ladder step={step}");
+            raw *= 1.31;
+        }
+    }
+
+    #[test]
+    fn snap_to_nice_step_is_monotonic_non_decreasing_in_raw() {
+        let mut raw = 0.001_f64;
+        let mut previous = snap_to_nice_step(raw);
+        while raw <= 10_000.0 {
+            let step = snap_to_nice_step(raw);
+            assert!(step >= previous - 1e-9, "raw={raw}: step {step} regressed below previous {previous}");
+            previous = step;
+            raw *= 1.05;
+        }
+    }
+
+    #[test]
+    fn grid_step_for_scale_matches_the_snap_to_nice_step_of_the_target_px_formula() {
+        let distance = 500.0_f32;
+        let fov_y = 60_f32.to_radians();
+        let viewport_height_px = 900.0_f64;
+        let half_fov_tan = (fov_y * 0.5).tan() as f64;
+        let px_per_world_unit = (viewport_height_px * 0.5) / (distance as f64 * half_fov_tan);
+        let expected = snap_to_nice_step(GRID_TARGET_SCREEN_PX / px_per_world_unit);
+        assert_eq!(grid_step_for_scale(distance, fov_y, viewport_height_px), expected);
+    }
+
+    #[test]
+    fn grid_step_for_scale_produces_apparent_spacing_within_the_target_band() {
+        let fov_y = 60_f32.to_radians();
+        let viewport_height_px = 900.0_f64;
+        for distance in [10.0_f32, 100.0, 500.0, 5_000.0, 50_000.0] {
+            let step = grid_step_for_scale(distance, fov_y, viewport_height_px);
+            let half_fov_tan = (fov_y * 0.5).tan() as f64;
+            let px_per_world_unit = (viewport_height_px * 0.5) / (distance as f64 * half_fov_tan);
+            let apparent_px = step * px_per_world_unit;
+            assert!(
+                apparent_px >= GRID_MIN_SCREEN_PX - 1e-6 && apparent_px <= GRID_MAX_SCREEN_PX + 1e-6,
+                "distance={distance} step={step} apparent_px={apparent_px} escaped [{GRID_MIN_SCREEN_PX}, {GRID_MAX_SCREEN_PX}]"
+            );
+        }
+    }
+
+    #[test]
+    fn build_grid_plan_line_count_matches_x_and_z_tick_counts_for_a_known_aabb_and_step() {
+        let min = Vec3::new(-12.0, -3.0, -7.0);
+        let max = Vec3::new(22.0, 5.0, 18.0);
+        let step = 10.0;
+
+        let plan = build_grid_plan(min, max, step);
+
+        let expected_x_ticks = ((min.x as f64 / step).floor() as i64..=(max.x as f64 / step).ceil() as i64).count();
+        let expected_z_ticks = ((min.z as f64 / step).floor() as i64..=(max.z as f64 / step).ceil() as i64).count();
+        assert_eq!(plan.lines.len(), expected_x_ticks + expected_z_ticks);
+        assert_eq!(plan.step, step);
+    }
+
+    #[test]
+    fn build_grid_plan_marks_every_5th_tick_from_world_origin_as_strong() {
+        let plan = build_grid_plan(Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 0.0), 10.0);
+        // A degenerate point AABB still yields exactly one x-tick and one
+        // z-tick, both at world coordinate 0 — index 0 is always strong.
+        assert!(plan.lines.iter().all(|l| l.strong), "tick index 0 (world origin) must always be a strong line");
+
+        let plan = build_grid_plan(Vec3::new(0.0, 0.0, -5.0), Vec3::new(50.0, 0.0, 5.0), 10.0);
+        let x_strong: Vec<f64> = plan.lines.iter().filter(|l| l.strong && l.to.z != l.from.z).map(|l| l.tick_value).collect();
+        for value in &x_strong {
+            let index = (value / 10.0).round() as i64;
+            assert_eq!(index.rem_euclid(5), 0, "strong tick {value} must land on a multiple-of-5 index");
+        }
+    }
+
+    #[test]
+    fn build_grid_instances_emits_one_node_per_planned_line_tinted_by_strong_alpha() {
+        let plan = build_grid_plan(Vec3::new(-10.0, 0.0, -10.0), Vec3::new(10.0, 0.0, 10.0), 10.0);
+        let mesh = unit_edge_quad_mesh();
+
+        let nodes = build_grid_instances(&plan, &mesh);
+
+        assert_eq!(nodes.len(), plan.lines.len());
+        for (node, line) in nodes.iter().zip(plan.lines.iter()) {
+            assert!(matches!(node.geometry, uzor_urx_3d::NodeMesh::Line(_)));
+            let expected_alpha = if line.strong { GRID_STRONG_LINE_ALPHA } else { GRID_LINE_ALPHA };
+            assert!((node.color_tint[3] - expected_alpha).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn build_grid_instances_skips_a_degenerate_zero_length_line() {
+        let plan = GridPlan { lines: vec![GridLine { from: Vec3::ZERO, to: Vec3::ZERO, tick_value: 0.0, strong: true }], step: 1.0 };
+        let mesh = unit_edge_quad_mesh();
+        assert!(build_grid_instances(&plan, &mesh).is_empty());
+    }
+
+    #[test]
+    fn format_tick_value_is_integer_at_or_above_a_step_of_one_and_decimal_below_it() {
+        assert_eq!(format_tick_value(42.0, 10.0), "42");
+        assert_eq!(format_tick_value(-3.0, 1.0), "-3");
+        assert_eq!(format_tick_value(1.5, 0.5), "1.5");
+        assert_eq!(format_tick_value(0.07, 0.05), "0.07");
     }
 }

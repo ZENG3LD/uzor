@@ -143,6 +143,79 @@ impl Camera3D {
         self.target -= right * (delta_x * scale);
         self.target += up * (delta_y * scale);
     }
+
+    /// Frame an axis-aligned world-space box (`min`, `max`) — dolly +
+    /// retarget only, `yaw`/`pitch` are left exactly as they are (mirrors
+    /// the 2D engine's own `fit_view`'s "keep the user's orientation"
+    /// spirit: this is a camera MOVE, not a re-orientation). `target`
+    /// becomes the box's own center; `distance` is derived so every
+    /// corner of the box stays inside the frustum for the CURRENT
+    /// orientation, accounting for both the vertical field of view and
+    /// the horizontal one (`aspect`-derived, since a wide/narrow viewport
+    /// can make either axis the binding constraint depending on view
+    /// direction).
+    ///
+    /// Method: for each of the 8 corners, decompose its offset from the
+    /// box center into the camera's own local basis (`right`/`up`/
+    /// `forward`, held fixed by the untouched yaw/pitch) and solve for
+    /// the smallest `distance` that keeps that corner's up/right angle
+    /// within the vertical/horizontal half-fov — this is exact for an
+    /// arbitrary fixed orientation, unlike a bounding-sphere shortcut
+    /// (which only exactly matches an orientation where the box's
+    /// diagonal is perpendicular to the view axis). `padding` is a
+    /// multiplicative margin applied to the final distance (the owner's
+    /// own spec: "~1.1" dollies out a bit further than the tightest fit);
+    /// non-finite/non-positive `aspect`/`padding` fall back to a sane
+    /// default (16:9 / no margin) rather than propagating NaN into
+    /// `distance`. A degenerate (zero-volume) box still produces a valid,
+    /// clamped `distance` — every corner collapses onto the center, so
+    /// the derived distance floors at [`MIN_DISTANCE`].
+    pub fn fit_bounds(&mut self, min: Vec3, max: Vec3, aspect: f32, padding: f32) {
+        let center = (min + max) * 0.5;
+        self.target = center;
+
+        let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 16.0 / 9.0 };
+        // `PerspectiveCamera::new`'s own hardcoded default (`to_perspective`
+        // never overrides `fov_y`, only `z_near`/`z_far` — see that
+        // method's own doc comment) — reading it back here rather than
+        // duplicating the literal keeps this in lockstep if that default
+        // ever changes.
+        let half_fov_y = (self.to_perspective(aspect).fov_y * 0.5).max(1e-4);
+        let tan_half_y = half_fov_y.tan().max(1e-6);
+        let tan_half_x = (tan_half_y * aspect).max(1e-6);
+
+        let forward = self.forward();
+        let right = self.right();
+        let up = right.cross(forward).normalize_or_zero();
+
+        let corners = [
+            Vec3::new(min.x, min.y, min.z),
+            Vec3::new(min.x, min.y, max.z),
+            Vec3::new(min.x, max.y, min.z),
+            Vec3::new(min.x, max.y, max.z),
+            Vec3::new(max.x, min.y, min.z),
+            Vec3::new(max.x, min.y, max.z),
+            Vec3::new(max.x, max.y, min.z),
+            Vec3::new(max.x, max.y, max.z),
+        ];
+
+        let mut required_distance = 0.0f32;
+        for corner in corners {
+            let local = corner - center;
+            // `forward_offset` is how much closer to the camera (positive
+            // = toward the eye) this corner sits than the center — a
+            // corner nearer the eye needs a LARGER overall distance to
+            // keep its angular size within the fov, since its own depth
+            // budget is smaller.
+            let forward_offset = local.dot(forward);
+            let vertical = local.dot(up).abs() / tan_half_y - forward_offset;
+            let horizontal = local.dot(right).abs() / tan_half_x - forward_offset;
+            required_distance = required_distance.max(vertical).max(horizontal);
+        }
+
+        let padding = if padding.is_finite() && padding > 0.0 { padding } else { 1.0 };
+        self.distance = (required_distance.max(MIN_DISTANCE) * padding).clamp(MIN_DISTANCE, MAX_DISTANCE);
+    }
 }
 
 #[cfg(test)]
@@ -230,5 +303,76 @@ mod tests {
         camera.pan(50.0, 0.0);
         assert!(camera.target.length() > 0.0);
         assert!((camera.distance - 10.0).abs() < 1e-6);
+    }
+
+    // ── fit_bounds (Wave 5 fit-to-bounds) ───────────────────────────────
+
+    #[test]
+    fn fit_bounds_centers_the_target_on_the_aabb_and_keeps_every_corner_inside_ndc() {
+        let mut camera = Camera3D { target: Vec3::new(999.0, -50.0, 12.0), distance: 5.0, yaw: 0.6, pitch: -0.3 };
+        let min = Vec3::new(-40.0, -10.0, -25.0);
+        let max = Vec3::new(60.0, 30.0, 15.0);
+        let aspect = 16.0 / 9.0;
+
+        camera.fit_bounds(min, max, aspect, 1.1);
+
+        let center = (min + max) * 0.5;
+        assert!((camera.target - center).length() < 1e-3);
+
+        let persp = camera.to_perspective(aspect);
+        let view_proj = persp.view_proj();
+        let corners = [
+            Vec3::new(min.x, min.y, min.z),
+            Vec3::new(min.x, min.y, max.z),
+            Vec3::new(min.x, max.y, min.z),
+            Vec3::new(min.x, max.y, max.z),
+            Vec3::new(max.x, min.y, min.z),
+            Vec3::new(max.x, min.y, max.z),
+            Vec3::new(max.x, max.y, min.z),
+            Vec3::new(max.x, max.y, max.z),
+        ];
+        for corner in corners {
+            let clip = view_proj * corner.extend(1.0);
+            assert!(clip.w > 1e-5, "corner {corner:?} must be in front of the fitted camera");
+            let ndc_x = clip.x / clip.w;
+            let ndc_y = clip.y / clip.w;
+            assert!(ndc_x.abs() <= 1.0 + 1e-3, "corner {corner:?} escaped horizontal NDC: {ndc_x}");
+            assert!(ndc_y.abs() <= 1.0 + 1e-3, "corner {corner:?} escaped vertical NDC: {ndc_y}");
+        }
+    }
+
+    #[test]
+    fn fit_bounds_preserves_yaw_and_pitch_a_dolly_and_retarget_only() {
+        let mut camera = Camera3D { target: Vec3::ZERO, distance: 5.0, yaw: 1.2, pitch: -0.4 };
+        camera.fit_bounds(Vec3::new(-10.0, -10.0, -10.0), Vec3::new(10.0, 10.0, 10.0), 1.5, 1.1);
+        assert_eq!(camera.yaw, 1.2, "fit_bounds must not re-orient the camera");
+        assert_eq!(camera.pitch, -0.4, "fit_bounds must not re-orient the camera");
+    }
+
+    #[test]
+    fn fit_bounds_on_a_degenerate_point_aabb_does_not_panic_and_clamps_distance() {
+        let mut camera = Camera3D::default();
+        let point = Vec3::new(5.0, 5.0, 5.0);
+        camera.fit_bounds(point, point, 16.0 / 9.0, 1.1);
+        assert_eq!(camera.target, point);
+        assert!(camera.distance >= MIN_DISTANCE && camera.distance <= MAX_DISTANCE);
+    }
+
+    #[test]
+    fn fit_bounds_uses_a_larger_distance_for_a_bigger_box() {
+        let mut small = Camera3D::default();
+        small.fit_bounds(Vec3::splat(-5.0), Vec3::splat(5.0), 16.0 / 9.0, 1.1);
+        let mut big = Camera3D::default();
+        big.fit_bounds(Vec3::splat(-50.0), Vec3::splat(50.0), 16.0 / 9.0, 1.1);
+        assert!(big.distance > small.distance, "a larger AABB must need a larger fitted distance");
+    }
+
+    #[test]
+    fn fit_bounds_padding_scales_the_resulting_distance() {
+        let mut tight = Camera3D::default();
+        tight.fit_bounds(Vec3::splat(-10.0), Vec3::splat(10.0), 16.0 / 9.0, 1.0);
+        let mut padded = Camera3D::default();
+        padded.fit_bounds(Vec3::splat(-10.0), Vec3::splat(10.0), 16.0 / 9.0, 1.1);
+        assert!((padded.distance / tight.distance - 1.1).abs() < 1e-3, "a 1.1 padding must scale the distance by ~10%: tight={} padded={}", tight.distance, padded.distance);
     }
 }

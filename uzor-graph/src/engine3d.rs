@@ -89,6 +89,26 @@ const Z_JITTER_REHEAT_ALPHA: f32 = 0.6;
 /// use). Backs [`GraphEngine3D::ensure_z_variance`]'s z-jitter: distinct
 /// indices deterministically land on different offsets, and the exact
 /// same graph produces the exact same jitter on every run.
+/// Bounding box of every particle's current `(x, y, z)` position — `None`
+/// for an empty particle set. Shared by [`GraphEngine3D::fit_view`] and
+/// [`GraphEngine3D::build_scene`]'s grid geometry (Wave 5): the same
+/// "walk every particle, min/max component-wise" shape
+/// [`GraphEngine3D::ensure_z_variance`] already computes inline for its
+/// own z-degeneracy check, factored out here now that two more callers
+/// need the identical bounding box.
+fn particle_aabb(particles: &[Particle]) -> Option<(Vec3, Vec3)> {
+    let mut iter = particles.iter();
+    let first = iter.next()?;
+    let mut min = Vec3::new(first.x, first.y, first.z);
+    let mut max = min;
+    for p in iter {
+        let v = Vec3::new(p.x, p.y, p.z);
+        min = min.min(v);
+        max = max.max(v);
+    }
+    Some((min, max))
+}
+
 fn z_jitter_unit(index: usize) -> f32 {
     let mut state = (index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xD1B5_4A32_D192_ED03;
     state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
@@ -171,6 +191,25 @@ const NODE_SPHERE_SLICES: u32 = 30;
 const OVERLAY_LABEL_OFFSET_X: f64 = 6.0;
 const OVERLAY_LABEL_OFFSET_Y: f64 = 4.0;
 
+/// [`Camera3D::fit_bounds`]'s own multiplicative margin, applied by
+/// [`GraphEngine3D::fit_view`] — the owner's own spec ("~1.1").
+const FIT_VIEW_PADDING: f32 = 1.1;
+
+/// Below this node count, a bounding-box fit doesn't mean much (there's
+/// no real graph SHAPE yet) — [`GraphEngine3D::fit_view`] falls back to
+/// [`Camera3D::default`]'s own distance instead of zooming to an
+/// arbitrary (possibly degenerate) extent, per this wave's own spec.
+const FIT_VIEW_MIN_NODES: usize = 3;
+
+/// A particle cloud whose half-diagonal sits below this world-unit
+/// threshold is treated as "effectively a single point" for fit purposes
+/// (e.g. every particle still sitting at [`GraphEngine3D::new`]'s shared
+/// origin, before any seeding/settling has spread them out) — guards the
+/// same degenerate case [`FIT_VIEW_MIN_NODES`] targets by COUNT, but by
+/// actual EXTENT instead, since 3+ coincident nodes are just as
+/// meaningless a `fit_bounds` target as 0-2 nodes are.
+const FIT_VIEW_MIN_HALF_DIAGONAL: f32 = 1e-3;
+
 /// The 3D sibling of [`crate::engine::GraphEngine`] — see the module doc.
 pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     pub graph: Graph<N, E>,
@@ -230,6 +269,11 @@ pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     /// is the CALLER's job (this engine owns no `wgpu::Device`); see
     /// [`GraphEngine3D::apply_gpu_pick_result`].
     gpu_pick_pipeline: pick3d::GpuPickPipeline,
+    /// Ground-reference grid toggle (Wave 5) — OFF by default: a force
+    /// graph has no semantic axes of its own, so the grid is purely an
+    /// opt-in orientation aid, not a default-on feature. See
+    /// [`GraphEngine3D::set_grid_enabled`]/[`GraphEngine3D::grid_enabled`].
+    grid_enabled: bool,
 }
 
 impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
@@ -254,6 +298,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             id_pass_mesh: Arc::new(crate::render3d::build_id_pass_mesh(NODE_SPHERE_RINGS, NODE_SPHERE_SLICES)),
             gpu_pick_threshold: pick3d::GPU_PICK_NODE_THRESHOLD,
             gpu_pick_pipeline: pick3d::GpuPickPipeline::new(),
+            grid_enabled: false,
         }
     }
 
@@ -582,14 +627,68 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         true
     }
 
+    /// Frame the WHOLE graph in view — dolly + retarget only, current
+    /// yaw/pitch are kept (Wave 5, mirrors the 2D engine's own
+    /// `GraphEngine::fit_view`'s "keep the user's orientation" spirit).
+    /// `aspect` is the caller's real render-surface aspect — this engine
+    /// has no viewport of its own to derive one from (same reason
+    /// [`GraphEngine3D::camera`] takes an explicit `aspect` too). A no-op
+    /// if there isn't a single particle yet; a too-small or
+    /// near-degenerate (effectively coincident) particle cloud (see
+    /// [`FIT_VIEW_MIN_NODES`]/[`FIT_VIEW_MIN_HALF_DIAGONAL`]) recenters on
+    /// whatever IS there but falls back to [`Camera3D::default`]'s own
+    /// distance rather than an arbitrary [`Camera3D::fit_bounds`] result.
+    pub fn fit_view(&mut self, aspect: f32) {
+        let Some((min, max)) = particle_aabb(&self.particles) else { return };
+        let half_diagonal = (max - min).length() * 0.5;
+        if self.particles.len() < FIT_VIEW_MIN_NODES || half_diagonal < FIT_VIEW_MIN_HALF_DIAGONAL {
+            self.camera.target = (min + max) * 0.5;
+            self.camera.distance = Camera3D::default().distance;
+            return;
+        }
+        self.camera.fit_bounds(min, max, aspect, FIT_VIEW_PADDING);
+    }
+
+    /// Whether [`GraphEngine3D::build_scene`]/[`GraphEngine3D::draw_overlay`]
+    /// currently emit the ground-reference grid + axis tick labels (Wave
+    /// 5) — default `false`. See [`GraphEngine3D::set_grid_enabled`].
+    pub fn grid_enabled(&self) -> bool {
+        self.grid_enabled
+    }
+
+    /// Toggle the ground-reference grid (Wave 5) — see
+    /// [`GraphEngine3D::grid_enabled`]'s own doc comment for why it
+    /// defaults off.
+    pub fn set_grid_enabled(&mut self, enabled: bool) {
+        self.grid_enabled = enabled;
+    }
+
     /// Instanced sphere nodes + billboarded edge quads (plan §1.3) — wires
     /// straight into [`crate::render3d::build_scene`], which is
     /// independently unit-tested (no GPU needed) for the node/edge
     /// instance construction itself; see `uzor-graph/tests/render3d_gpu.rs`
     /// for the headless-GPU proof that the result actually renders
     /// visually-distinct pixels.
-    pub fn build_scene(&self) -> Scene3D {
-        crate::render3d::build_scene(&self.graph, &self.particles, &self.node_mesh, &self.edge_mesh)
+    ///
+    /// **Wave 5**: while [`GraphEngine3D::grid_enabled`], also appends the
+    /// ground-reference grid's own instanced lines
+    /// (`crate::render3d::build_grid_plan`/`build_grid_instances`),
+    /// sharing the exact same edge-quad mesh edges instance from. `viewport_height_px`
+    /// is the render surface's pixel height — needed for the grid's
+    /// distance-LOD step (`crate::render3d::grid_step_for_scale`); a
+    /// caller not using the grid can pass any positive value. A no-op
+    /// (no grid appended) while there isn't a single particle yet.
+    pub fn build_scene(&self, viewport_height_px: f64) -> Scene3D {
+        let mut scene = crate::render3d::build_scene(&self.graph, &self.particles, &self.node_mesh, &self.edge_mesh);
+        if self.grid_enabled {
+            if let Some((min, max)) = particle_aabb(&self.particles) {
+                let fov_y = self.camera.to_perspective(1.0).fov_y;
+                let step = crate::render3d::grid_step_for_scale(self.camera.distance, fov_y, viewport_height_px);
+                let plan = crate::render3d::build_grid_plan(min, max, step);
+                scene.nodes.extend(crate::render3d::build_grid_instances(&plan, &self.edge_mesh));
+            }
+        }
+        scene
     }
 
     /// Shared id-pass sphere mesh (Wave 4) — see
@@ -800,6 +899,12 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// scoped out by this task's own instruction ("if not, skip — labels
     /// + card are the deliverable"). A natural Wave 5+ follow-up once a
     /// 3D-side highlight exists to pair it with.
+    ///
+    /// **Wave 5**: while [`GraphEngine3D::grid_enabled`], also paints a
+    /// numeric axis-tick label for every STRONG gridline — see
+    /// [`GraphEngine3D::draw_grid_overlay`]'s own doc comment for why
+    /// this is a direct walk of `crate::render3d`'s `GridLine`s rather
+    /// than a `label_grid::LabelGrid` pass.
     pub fn draw_overlay(&self, render: &mut dyn RenderContext, camera: &PerspectiveCamera, viewport: Rect) -> OverlayDrawStats {
         let max_degree = self.graph.nodes().map(|(id, _)| self.graph.degree(id)).max().unwrap_or(0).max(1);
         let zoom_analog = (Camera3D::default().distance / self.camera.distance.max(1e-3)) as f64;
@@ -820,6 +925,8 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             labels_drawn += 1;
         }
 
+        let grid_labels_drawn = if self.grid_enabled { self.draw_grid_overlay(render, camera, viewport) } else { 0 };
+
         let mut hover_card_drawn = false;
         if let Some(hovered) = self.hovered {
             if let (Some(facts), Some(p)) = (self.node_facts(hovered), self.particles.get(hovered.index())) {
@@ -832,7 +939,44 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             }
         }
 
-        OverlayDrawStats { labels_drawn, hover_card_drawn }
+        OverlayDrawStats { labels_drawn, grid_labels_drawn, hover_card_drawn }
+    }
+
+    /// Axis tick labels for every STRONG gridline (Wave 5) — see
+    /// `crate::render3d`'s own module doc for why this is a direct walk
+    /// of the same [`crate::render3d::GridLine`] list
+    /// [`GraphEngine3D::build_scene`] instances from, not a
+    /// `label_grid::LabelGrid` pass: axis ticks are already sparse and
+    /// perfectly regular, so a flat off-viewport cull plus a count cap
+    /// ([`crate::render3d::GRID_MAX_AXIS_LABELS`]) is the whole LOD this
+    /// needs. Recomputes the SAME `crate::render3d::grid_step_for_scale`/
+    /// `build_grid_plan` [`GraphEngine3D::build_scene`] used, from
+    /// `viewport.height` — a caller feeding a different height here than
+    /// it fed `build_scene` this frame would see labels that don't quite
+    /// match the rendered grid; the demo wiring keeps both fed from the
+    /// SAME real surface height every tick, per this method's own
+    /// contract. Returns `0` (no-op) once there isn't a single particle.
+    fn draw_grid_overlay(&self, render: &mut dyn RenderContext, camera: &PerspectiveCamera, viewport: Rect) -> usize {
+        let Some((min, max)) = particle_aabb(&self.particles) else { return 0 };
+        let step = crate::render3d::grid_step_for_scale(self.camera.distance, camera.fov_y, viewport.height);
+        let plan = crate::render3d::build_grid_plan(min, max, step);
+
+        render.set_font("10px sans-serif");
+        render.set_fill_color("#8a93a6");
+        let mut drawn = 0usize;
+        for line in plan.lines.iter().filter(|l| l.strong) {
+            if drawn >= crate::render3d::GRID_MAX_AXIS_LABELS {
+                break;
+            }
+            let Some((sx, sy)) = pick3d::project_world_to_screen(camera, line.from, viewport) else { continue };
+            if sx < viewport.x || sx > viewport.x + viewport.width || sy < viewport.y || sy > viewport.y + viewport.height {
+                continue;
+            }
+            let text = crate::render3d::format_tick_value(line.tick_value, plan.step);
+            render.fill_text(&text, sx + OVERLAY_LABEL_OFFSET_X, sy + OVERLAY_LABEL_OFFSET_Y);
+            drawn += 1;
+        }
+        drawn
     }
 }
 
@@ -842,6 +986,9 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OverlayDrawStats {
     pub labels_drawn: usize,
+    /// Numeric axis-tick labels painted this frame (Wave 5) — always `0`
+    /// while [`GraphEngine3D::grid_enabled`] is `false`.
+    pub grid_labels_drawn: usize,
     pub hover_card_drawn: bool,
 }
 
@@ -964,7 +1111,7 @@ mod tests {
         engine.particles[1] = Particle::at3(4.0, 0.0, 0.0);
         engine.particles[2] = Particle::at3(0.0, 4.0, 0.0);
 
-        let scene = engine.build_scene();
+        let scene = engine.build_scene(900.0);
 
         // Triangle fixture: 3 nodes, 3 edges.
         assert_eq!(scene.nodes.len(), 6, "build_scene must emit one Node per graph node plus one per edge (Wave 2)");
@@ -1573,5 +1720,145 @@ mod tests {
             let n = glam::Vec3::from_array(v.normal);
             assert!((p.normalize() - n).length() < 1e-4, "vertex normal must equal its own unit-sphere position direction: pos={p:?} normal={n:?}");
         }
+    }
+
+    // ── Wave 5: Camera3D::fit_bounds fit_view wiring ────────────────────
+
+    #[test]
+    fn fit_view_frames_every_node_inside_the_ndc_unit_square_and_keeps_yaw_pitch() {
+        let mut engine = spread_triangle_engine();
+        engine.camera.yaw = 0.9;
+        engine.camera.pitch = -0.25;
+        let aspect = 16.0 / 9.0;
+
+        engine.fit_view(aspect);
+
+        assert_eq!(engine.camera.yaw, 0.9, "fit_view must keep the existing yaw — dolly+retarget only");
+        assert_eq!(engine.camera.pitch, -0.25, "fit_view must keep the existing pitch");
+
+        let persp = engine.camera(aspect);
+        let view_proj = persp.view_proj();
+        for p in &engine.particles {
+            let world = Vec3::new(p.x, p.y, p.z);
+            let clip = view_proj * world.extend(1.0);
+            assert!(clip.w > 1e-5, "node at {world:?} must sit in front of the fitted camera");
+            let ndc_x = clip.x / clip.w;
+            let ndc_y = clip.y / clip.w;
+            assert!(ndc_x.abs() <= 1.0 + 1e-3 && ndc_y.abs() <= 1.0 + 1e-3, "node at {world:?} escaped NDC: ({ndc_x}, {ndc_y})");
+        }
+    }
+
+    #[test]
+    fn fit_view_on_a_fresh_engine_with_a_degenerate_zero_extent_seed_falls_back_to_the_default_distance() {
+        // Right after `new()`, every particle sits at the shared origin —
+        // 3 nodes but a fully degenerate (zero-extent) AABB.
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> =
+            GraphEngine3D::new(triangle(), ForceDirectedLayout3D::default());
+        engine.camera.yaw = 0.4;
+
+        engine.fit_view(16.0 / 9.0);
+
+        assert_eq!(engine.camera.distance, Camera3D::default().distance);
+        assert_eq!(engine.camera.target, Vec3::ZERO);
+        assert_eq!(engine.camera.yaw, 0.4, "the degenerate fallback must still keep yaw/pitch untouched");
+    }
+
+    #[test]
+    fn fit_view_on_too_few_nodes_falls_back_to_the_default_distance_even_with_a_real_extent() {
+        let mut two_node_graph = DemoGraph::new();
+        two_node_graph.push_node((), "a", "x", 4.0);
+        two_node_graph.push_node((), "b", "x", 4.0);
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> =
+            GraphEngine3D::new(two_node_graph, ForceDirectedLayout3D::default());
+        engine.particles[0] = Particle::at3(-100.0, 0.0, 0.0);
+        engine.particles[1] = Particle::at3(100.0, 0.0, 0.0);
+
+        engine.fit_view(16.0 / 9.0);
+
+        assert_eq!(engine.camera.distance, Camera3D::default().distance, "2 nodes is too few for a meaningful bounding-box fit, regardless of extent");
+        assert_eq!(engine.camera.target, Vec3::ZERO);
+    }
+
+    #[test]
+    fn fit_view_on_an_empty_graph_is_a_no_op() {
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> =
+            GraphEngine3D::new(DemoGraph::new(), ForceDirectedLayout3D::default());
+        let before = engine.camera;
+        engine.fit_view(16.0 / 9.0);
+        assert_eq!(engine.camera, before, "fit_view must not touch the camera when there are zero particles");
+    }
+
+    // ── Wave 5: ground-reference grid toggle + build_scene/draw_overlay ─
+
+    #[test]
+    fn grid_enabled_defaults_to_off_and_the_setter_toggles_it() {
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> =
+            GraphEngine3D::new(triangle(), ForceDirectedLayout3D::default());
+        assert!(!engine.grid_enabled(), "a force graph has no semantic axes of its own — the grid must default OFF");
+        engine.set_grid_enabled(true);
+        assert!(engine.grid_enabled());
+        engine.set_grid_enabled(false);
+        assert!(!engine.grid_enabled());
+    }
+
+    #[test]
+    fn build_scene_appends_grid_lines_only_once_enabled() {
+        let mut engine = spread_triangle_engine();
+
+        let scene_without_grid = engine.build_scene(900.0);
+        assert_eq!(scene_without_grid.nodes.len(), 6, "disabled grid must emit zero grid nodes — 3 spheres + 3 edges only");
+
+        engine.set_grid_enabled(true);
+        let scene_with_grid = engine.build_scene(900.0);
+        assert!(
+            scene_with_grid.nodes.len() > scene_without_grid.nodes.len(),
+            "enabling the grid must append extra instanced line nodes"
+        );
+    }
+
+    #[test]
+    fn build_scene_grid_is_a_no_op_on_an_empty_graph() {
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> =
+            GraphEngine3D::new(DemoGraph::new(), ForceDirectedLayout3D::default());
+        engine.set_grid_enabled(true);
+        let scene = engine.build_scene(900.0);
+        assert!(scene.nodes.is_empty(), "an empty graph has no AABB to grid — must not panic or fabricate geometry");
+    }
+
+    #[test]
+    fn draw_overlay_paints_axis_tick_labels_for_strong_gridlines_once_the_grid_is_enabled() {
+        let mut engine = spread_triangle_engine();
+        engine.set_grid_enabled(true);
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+
+        let mut ctx = RecordingRenderContext::new();
+        let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
+
+        assert!(stats.grid_labels_drawn > 0, "at least one strong gridline must be labeled once the grid is enabled");
+        assert!(
+            ctx.fill_texts.iter().any(|(text, _, _)| text.parse::<f64>().is_ok()),
+            "a numeric axis-tick label must actually be painted once the grid is enabled: {:?}",
+            ctx.fill_texts
+        );
+    }
+
+    #[test]
+    fn draw_overlay_paints_no_axis_tick_labels_while_the_grid_stays_disabled() {
+        let engine = spread_triangle_engine();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+
+        let mut ctx = RecordingRenderContext::new();
+        let stats = engine.draw_overlay(&mut ctx, &camera, viewport);
+
+        assert_eq!(stats.grid_labels_drawn, 0, "grid_labels_drawn must stay 0 while the grid defaults off");
+        assert!(
+            !ctx.fill_texts.iter().any(|(text, _, _)| text.parse::<f64>().is_ok()),
+            "no numeric axis-tick label should be painted while the grid is off: {:?}",
+            ctx.fill_texts
+        );
     }
 }

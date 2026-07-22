@@ -17,7 +17,7 @@
 //!
 //! Agent-api verification: see `uzor-graph/RUN.md`.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde_json::{json, Value};
@@ -569,6 +569,54 @@ fn full_window_viewport() -> Rect {
     Rect::new(-1.0e9, -1.0e9, 2.0e9, 2.0e9)
 }
 
+/// Shared last-known 3D render-surface size in px (Wave 5 fit-to-bounds)
+/// — `scene3d()` writes it every tick on the winit thread; the
+/// `fit_view_3d` agent action (`DemoBlackbox::apply_agent_action`) reads
+/// it from the agent-api HTTP thread to derive the aspect ratio
+/// `GraphEngine3D::fit_view` needs, mirroring [`DimState`]/[`NavModeState`]'s
+/// own cross-thread `Arc<Atomic*>` convention (a `(u32, u32)` doesn't fit
+/// one atomic, so this holds width/height as a pair of `AtomicU32`s
+/// instead of `Mutex<Option<(u32, u32)>>` — same lock-free spirit). `0`
+/// in either slot means "no 3D frame has rendered yet" — see
+/// [`surface_aspect`] for the fallback.
+#[derive(Clone)]
+struct SurfaceSizeState(Arc<(AtomicU32, AtomicU32)>);
+
+impl SurfaceSizeState {
+    fn new() -> Self {
+        Self(Arc::new((AtomicU32::new(0), AtomicU32::new(0))))
+    }
+
+    fn set(&self, w: u32, h: u32) {
+        self.0 .0.store(w, Ordering::Relaxed);
+        self.0 .1.store(h, Ordering::Relaxed);
+    }
+
+    fn get(&self) -> Option<(u32, u32)> {
+        let w = self.0 .0.load(Ordering::Relaxed);
+        let h = self.0 .1.load(Ordering::Relaxed);
+        if w == 0 || h == 0 {
+            None
+        } else {
+            Some((w, h))
+        }
+    }
+}
+
+/// Fallback aspect ratio (Wave 5) for the Home/F fit-to-bounds shortcut
+/// and the `fit_view_3d` agent action, while no real 3D frame has
+/// rendered yet — an ordinary 16:9 widescreen ratio, the same "no real
+/// viewport yet" convention [`full_window_viewport`]'s own doc comment
+/// already established for picking.
+const FALLBACK_SURFACE_ASPECT: f32 = 16.0 / 9.0;
+
+fn surface_aspect(size: Option<(u32, u32)>) -> f32 {
+    match size {
+        Some((w, h)) if h > 0 => w as f32 / h as f32,
+        _ => FALLBACK_SURFACE_ASPECT,
+    }
+}
+
 /// Center crosshair painted into the 3D overlay while fly-mode
 /// mouse-look is active (owner order 2026-07-19) — the captured-cursor
 /// aim marker, the foxhound source app's own convention (its HUD's
@@ -678,8 +726,11 @@ struct DemoApp {
     /// ACTUAL rendered pixel dimensions, unlike Wave 2's pure-gating
     /// `viewport.contains()` use, which tolerated
     /// [`full_window_viewport`]'s placeholder extent. See
-    /// [`DemoApp::dim3d_viewport`].
-    last_3d_surface_px: Option<(u32, u32)>,
+    /// [`DemoApp::dim3d_viewport`]. Wave 5 promoted this from a plain
+    /// `Option<(u32, u32)>` to [`SurfaceSizeState`] so `fit_view_3d`'s
+    /// agent-api action (`DemoBlackbox`, a different struct on a
+    /// different thread) can read the same last-known size.
+    last_3d_surface_px: SurfaceSizeState,
 }
 
 /// Thin `BlackboxAgentSurface` wrapper the demo registers instead of
@@ -707,6 +758,10 @@ struct DemoBlackbox {
     nav_mode: NavModeState,
     mouse_look: MouseLookState,
     fly: Arc<Mutex<FlyController>>,
+    /// Wave 5 fit-to-bounds — last-known 3D surface size, so `fit_view_3d`
+    /// can derive an aspect ratio from the agent-api HTTP thread. See
+    /// [`SurfaceSizeState`]'s own doc comment.
+    surface_size: SurfaceSizeState,
 }
 
 /// `NodeIndex` resolution for the 3D agent-forwarding path (Wave 3) —
@@ -778,7 +833,7 @@ impl DemoApp {
             mouse_look: MouseLookState::new(),
             fly: Arc::new(Mutex::new(FlyController::new())),
             last_3d_frame_at: None,
-            last_3d_surface_px: None,
+            last_3d_surface_px: SurfaceSizeState::new(),
         }
     }
 
@@ -884,10 +939,28 @@ impl DemoApp {
     /// against yet, and no picking has anything to hit before then
     /// either).
     fn dim3d_viewport(&self) -> Rect {
-        match self.last_3d_surface_px {
+        match self.last_3d_surface_px.get() {
             Some((w, h)) => Rect::new(0.0, 0.0, w as f64, h as f64),
             None => full_window_viewport(),
         }
+    }
+
+    /// Wave 5 fit-to-bounds — recenters/redistances the 3D camera to
+    /// frame the whole graph, keeping the current yaw/pitch. The demo-level
+    /// entry point both the Home/F keyboard shortcut (`App::on_event`
+    /// below) and the `fit_view_3d` agent action
+    /// (`DemoBlackbox::apply_agent_action`) call.
+    fn fit_view_3d(&self) {
+        let aspect = surface_aspect(self.last_3d_surface_px.get());
+        Self::lock3d(&self.engine3d).fit_view(aspect);
+    }
+
+    /// Wave 5 ground-reference grid toggle — the demo-level entry point
+    /// both the G keyboard shortcut and the `set_grid` agent action call.
+    fn toggle_grid(&self) {
+        let mut engine3d = Self::lock3d(&self.engine3d);
+        let next = !engine3d.grid_enabled();
+        engine3d.set_grid_enabled(next);
     }
 }
 
@@ -939,6 +1012,11 @@ impl BlackboxAgentSurface for DemoBlackbox {
             map.insert("mouse_look".to_owned(), json!(self.mouse_look.get()));
             let fly_velocity = DemoApp::lock_fly(&self.fly).velocity();
             map.insert("fly_velocity".to_owned(), json!([fly_velocity[0], fly_velocity[1]]));
+            // Wave 5 — always reported regardless of which dimension is
+            // active (same convention `fixture`/`nav_mode` already use):
+            // the grid toggle lives on `engine3d`, but it's meaningful to
+            // query even while 2D is the active dimension.
+            map.insert("grid".to_owned(), json!(DemoApp::lock3d(&self.engine3d).grid_enabled()));
         }
         state
     }
@@ -986,6 +1064,22 @@ impl BlackboxAgentSurface for DemoBlackbox {
             self.fixture.set(fixture);
             rebuild_engines(&self.engine, &self.engine3d, fixture, &self.camera_fit);
             return AgentActionReply::ok_with_log(json!({ "fixture": fixture.as_str() }));
+        }
+        if action.name == "fit_view_3d" {
+            // Wave 5 — headless twin of the Home/F keyboard shortcut,
+            // driven from the agent-api HTTP thread; uses the last
+            // surface size `scene3d()` recorded (fallback 16:9 before the
+            // very first 3D frame — see `surface_aspect`).
+            let aspect = surface_aspect(self.surface_size.get());
+            DemoApp::lock3d(&self.engine3d).fit_view(aspect);
+            return AgentActionReply::ok_with_log(json!({ "fit_view_3d": true }));
+        }
+        if action.name == "set_grid" {
+            let Some(on) = action.args.get("on").and_then(Value::as_bool) else {
+                return AgentActionReply::err("set_grid requires args.on to be true or false");
+            };
+            DemoApp::lock3d(&self.engine3d).set_grid_enabled(on);
+            return AgentActionReply::ok_with_log(json!({ "grid": on }));
         }
         match self.dim.get() {
             Dimension::TwoD => DemoApp::lock(&self.engine).apply_agent_action(action),
@@ -1068,6 +1162,7 @@ impl App<NoPanel> for DemoApp {
             nav_mode: self.nav_mode.clone(),
             mouse_look: self.mouse_look.clone(),
             fly: self.fly.clone(),
+            surface_size: self.last_3d_surface_px.clone(),
         };
         layout.register_blackbox_agent(BLACKBOX_SLOT, Arc::new(Mutex::new(blackbox)));
     }
@@ -1178,6 +1273,19 @@ impl App<NoPanel> for DemoApp {
                 self.toggle_nav_mode();
                 return true;
             }
+            // Wave 5 fit-to-bounds — Home or F, in EITHER nav mode
+            // (orbit or fly): frame the whole graph, keeping the current
+            // yaw/pitch. Checked here, ahead of the orbit/fly dispatch
+            // below, so it works regardless of which nav mode is active.
+            if let PlatformEvent::KeyDown { key: KeyCode::Home | KeyCode::F, .. } = event {
+                self.fit_view_3d();
+                return true;
+            }
+            // Wave 5 ground-reference grid toggle — G, in either nav mode.
+            if let PlatformEvent::KeyDown { key: KeyCode::G, .. } = event {
+                self.toggle_grid();
+                return true;
+            }
         }
         match self.dim.get() {
             Dimension::TwoD => {
@@ -1228,7 +1336,7 @@ impl Scene3DApp<NoPanel> for DemoApp {
         // Wave 3: record the REAL surface size so `on_event`'s picking
         // math (`dim3d_viewport`) uses the actual rendered viewport
         // instead of `full_window_viewport`'s placeholder.
-        self.last_3d_surface_px = Some((surf_w, surf_h));
+        self.last_3d_surface_px.set(surf_w, surf_h);
         let now = std::time::Instant::now();
         let dt = match self.last_3d_frame_at {
             Some(prev) => now.duration_since(prev).as_secs_f32().min(0.1),
@@ -1241,7 +1349,7 @@ impl Scene3DApp<NoPanel> for DemoApp {
         if self.nav_mode.get() == NavMode::Fly {
             Self::lock_fly(&self.fly).tick(dt, &mut engine3d.camera);
         }
-        let scene = engine3d.build_scene();
+        let scene = engine3d.build_scene(surf_h as f64);
         let aspect = surf_w as f32 / (surf_h.max(1) as f32);
         let camera = engine3d.camera(aspect);
         drop(engine3d);

@@ -201,7 +201,7 @@ fn build_scene_renders_visually_distinct_node_and_edge_pixels() {
     };
 
     let engine = head_on_engine();
-    let scene = engine.build_scene();
+    let scene = engine.build_scene(H as f64);
     assert_eq!(scene.nodes.len(), 3, "2 node spheres + 1 edge line");
 
     let aspect = W as f32 / H as f32;
@@ -272,7 +272,7 @@ fn camera_orbit_changes_pixels() {
     };
 
     let mut engine = head_on_engine();
-    let scene = engine.build_scene();
+    let scene = engine.build_scene(H as f64);
     let mut r = Renderer3D::new(&device, &queue, COLOR_FORMAT, (W, H), 64);
     let aspect = W as f32 / H as f32;
 
@@ -322,7 +322,7 @@ fn build_scene_renders_correctly_with_msaa_armed_at_sample_count_4() {
     };
 
     let engine = head_on_engine();
-    let scene = engine.build_scene();
+    let scene = engine.build_scene(H as f64);
     assert_eq!(scene.nodes.len(), 3, "2 node spheres (Lit) + 1 edge line (Line) — MSAA covers Unlit+Lit+Line, all sample-count-matched pipeline pairs");
 
     let aspect = W as f32 / H as f32;

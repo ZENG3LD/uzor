@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn apply_look_delta_scales_the_resulting_yaw_change_by_mouse_sensitivity() {
-        let mut low = FlyController::new();
+        let low = FlyController::new();
         let mut high = FlyController::new();
         high.set_mouse_sensitivity(2.0);
 
