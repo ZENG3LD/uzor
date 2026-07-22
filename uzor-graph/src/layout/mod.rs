@@ -5,15 +5,21 @@ pub mod barnes_hut_3d;
 pub mod force_directed;
 pub mod force_directed_3d;
 pub mod hierarchical;
+pub mod hierarchical_3d;
 pub mod layering;
 pub mod mode;
+pub mod mode3d;
 pub mod radial;
+pub mod radial_3d;
 
 pub use force_directed::{ForceDirectedLayout, ForceParams};
 pub use force_directed_3d::{ForceDirectedLayout3D, ForceParams3D};
 pub use hierarchical::{HierarchicalLayout, HierarchicalParams};
+pub use hierarchical_3d::{HierarchicalLayout3D, HierarchicalParams3D};
 pub use mode::{GraphLayoutMode, LayoutKind};
+pub use mode3d::GraphLayoutMode3D;
 pub use radial::{RadialLayout, RadialParams};
+pub use radial_3d::{RadialLayout3D, RadialParams3D};
 
 use crate::graph::SimTopology;
 use crate::particle::Particle;

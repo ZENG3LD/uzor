@@ -85,6 +85,11 @@ where
             "alpha": self.last_tick().alpha,
             "hot": self.is_hot(),
             "layout": layout_mode,
+            // HUD pause/resume (`force_graph_demo`'s own re-click-the-
+            // active-FORCE-button semantics) — `Some(bool)` only when `L`
+            // is the `GraphLayoutMode` dispatcher, mirroring `layout`
+            // above (`None` for any other concrete `Layout`).
+            "layout_paused": layout_paused_flag(&self.layout),
             "clusters": clusters,
             "collapsed_clusters": self.clusters.collapsed_ids(),
             "forces": self.force_params().map(|p| force_params_json(&p)),
@@ -365,15 +370,27 @@ where
                 self.set_filter(Some(spec));
                 AgentActionReply::ok_with_log(json!({ "filter": self.filter().map(filter_json) }))
             }
+            // `args.mode` switches the active kind, `args.paused` freezes/
+            // resumes it in place — either or both may be present in one
+            // call (folded into this single action rather than a second
+            // `set_layout_paused` action: both mutate the same
+            // `GraphLayoutMode` dispatcher, and a caller wanting "switch
+            // to radial AND leave it paused" in one round trip shouldn't
+            // need two calls). At least one of the two must be present.
             "set_layout" => {
-                let Some(mode) = action.args.get("mode").and_then(Value::as_str) else {
-                    return AgentActionReply::err("set_layout requires args.mode (\"force\"|\"hierarchical\"|\"radial\")");
-                };
-                let kind = match mode {
-                    "force" => LayoutKind::Force,
-                    "hierarchical" => LayoutKind::Hierarchical,
-                    "radial" => LayoutKind::Radial,
-                    other => return AgentActionReply::err(format!("unknown layout mode {other:?}")),
+                let mode_arg = action.args.get("mode").and_then(Value::as_str);
+                let paused_arg = action.args.get("paused").and_then(Value::as_bool);
+                if mode_arg.is_none() && paused_arg.is_none() {
+                    return AgentActionReply::err(
+                        "set_layout requires args.mode (\"force\"|\"hierarchical\"|\"radial\") and/or args.paused (bool)",
+                    );
+                }
+                let kind = match mode_arg {
+                    Some("force") => Some(LayoutKind::Force),
+                    Some("hierarchical") => Some(LayoutKind::Hierarchical),
+                    Some("radial") => Some(LayoutKind::Radial),
+                    Some(other) => return AgentActionReply::err(format!("unknown layout mode {other:?}")),
+                    None => None,
                 };
                 // `GraphLayoutMode` is one `Layout` impl among several this
                 // engine can be generic over (`L`) — a runtime `set_layout`
@@ -383,9 +400,17 @@ where
                 let Some(dispatch) = layout_any.downcast_mut::<GraphLayoutMode>() else {
                     return AgentActionReply::err("set_layout requires GraphEngine<_, _, GraphLayoutMode>");
                 };
-                dispatch.set_kind(kind);
+                if let Some(kind) = kind {
+                    dispatch.set_kind(kind);
+                }
+                if let Some(paused) = paused_arg {
+                    dispatch.set_paused(paused);
+                }
                 self.mark_dirty();
-                AgentActionReply::ok_with_log(json!({ "layout": mode }))
+                AgentActionReply::ok_with_log(json!({
+                    "layout": layout_mode_name(&self.layout),
+                    "layout_paused": layout_paused_flag(&self.layout),
+                }))
             }
             other => AgentActionReply::err(format!("unknown action {other:?}")),
         }
@@ -491,6 +516,14 @@ fn layout_mode_name<L: Layout + 'static>(layout: &L) -> Option<&'static str> {
     })
 }
 
+/// `Some(bool)` when `L` is the runtime [`GraphLayoutMode`] dispatcher,
+/// `None` for any other concrete `Layout` — mirrors [`layout_mode_name`]'s
+/// own downcast, read-only.
+fn layout_paused_flag<L: Layout + 'static>(layout: &L) -> Option<bool> {
+    let layout_any: &dyn std::any::Any = layout;
+    layout_any.downcast_ref::<GraphLayoutMode>().map(GraphLayoutMode::paused)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,12 +555,49 @@ mod tests {
         let (graph, _) = ring_graph(3);
         let mut engine: GraphEngine<(), (), GraphLayoutMode> = GraphEngine::new(graph, GraphLayoutMode::default());
         assert_eq!(engine.agent_state()["layout"], json!("force"));
+        assert_eq!(engine.agent_state()["layout_paused"], json!(false));
 
         let reply = engine.apply_agent_action(action("set_layout", json!({ "mode": "radial" })));
         assert!(reply.ok);
         assert_eq!(engine.agent_state()["layout"], json!("radial"));
 
         let bad = engine.apply_agent_action(action("set_layout", json!({ "mode": "not_a_mode" })));
+        assert!(!bad.ok);
+    }
+
+    #[test]
+    fn layout_paused_flag_is_none_for_a_bare_force_directed_layout() {
+        let (graph, _) = ring_graph(3);
+        let engine: GraphEngine<(), (), ForceDirectedLayout> = GraphEngine::new(graph, ForceDirectedLayout::default());
+        assert_eq!(engine.agent_state().get("layout_paused"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn set_layout_action_can_toggle_paused_independently_of_mode() {
+        let (graph, _) = ring_graph(3);
+        let mut engine: GraphEngine<(), (), GraphLayoutMode> = GraphEngine::new(graph, GraphLayoutMode::default());
+
+        // `paused` alone, no `mode` — kind stays Force, only pause flips.
+        let reply = engine.apply_agent_action(action("set_layout", json!({ "paused": true })));
+        assert!(reply.ok);
+        assert_eq!(engine.agent_state()["layout"], json!("force"));
+        assert_eq!(engine.agent_state()["layout_paused"], json!(true));
+
+        // `mode` alone while paused — switching kind must clear the pause
+        // (mirrors `GraphLayoutMode::set_kind`'s own contract).
+        let reply = engine.apply_agent_action(action("set_layout", json!({ "mode": "hierarchical" })));
+        assert!(reply.ok);
+        assert_eq!(engine.agent_state()["layout"], json!("hierarchical"));
+        assert_eq!(engine.agent_state()["layout_paused"], json!(false));
+
+        // Both in one call.
+        let reply = engine.apply_agent_action(action("set_layout", json!({ "mode": "radial", "paused": true })));
+        assert!(reply.ok);
+        assert_eq!(engine.agent_state()["layout"], json!("radial"));
+        assert_eq!(engine.agent_state()["layout_paused"], json!(true));
+
+        // Neither key present — a clean error, not a silent no-op.
+        let bad = engine.apply_agent_action(action("set_layout", json!({})));
         assert!(!bad.ok);
     }
 

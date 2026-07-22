@@ -28,15 +28,21 @@
 //! - `Shift`+drag — box-select.
 //! - `H` — show/hide the control-HUD panel (shown by default).
 //!
-//! `tree`/`hierarchy` (2D only) load with the HUD's own LAYERED
-//! (hierarchical, layered top-down) layout by default instead of
-//! FORCE — a tree-shaped fixture used to always run through the force
-//! layout and ball up instead of reading as a tree (owner defect fix
-//! 2026-07-23). `clusters`/`sparse` keep FORCE as their own default. The
-//! HUD's 2D-only LAYOUT section (FORCE / LAYERED / RADIAL) lets any
-//! fixture's layout be flipped by hand afterward — 3D stays force-only
-//! (`uzor-graph`'s 3D engine has no `GraphLayoutMode` equivalent), so
-//! that section is entirely absent while 3D is active.
+//! `tree`/`hierarchy` load with the HUD's own LAYERED (hierarchical,
+//! layered top-down) layout by default instead of FORCE — a tree-shaped
+//! fixture used to always run through the force layout and ball up
+//! instead of reading as a tree (owner defect fix 2026-07-23).
+//! `clusters`/`sparse` keep FORCE as their own default. The default
+//! applies to BOTH dimensions now (`GraphLayoutMode3D` — 2026-07-23 —
+//! gave the 3D engine the same three runtime-switchable layouts 2D
+//! already had: Force/Hierarchical/Radial). The HUD's LAYOUT section
+//! (FORCE / LAYERED / RADIAL) shows all three in BOTH dimensions and
+//! lets any fixture's layout be flipped by hand afterward. Re-clicking
+//! the ALREADY-active button toggles: FORCE pauses/resumes the sim in
+//! place (button reads "FORCE (PAUSED)", amber-highlighted, while
+//! frozen); LAYERED/RADIAL (one-shot) re-run their layout and re-fit the
+//! camera, a visibly honest action since a fresh recompute can genuinely
+//! move every node. Clicking an INACTIVE button switches mode as before.
 //!
 //! Agent-api verification: see `uzor-graph/RUN.md`.
 
@@ -62,8 +68,8 @@ use uzor_desktop::{AppRun3D as _, CachedOverlayJob, Scene3DApp, Scene3DFrame};
 
 use uzor_graph::interaction::fly::{FlyController, KEYBOARD_SENSITIVITY_MAX, KEYBOARD_SENSITIVITY_MIN, MOUSE_SENSITIVITY_MAX, MOUSE_SENSITIVITY_MIN};
 use uzor_graph::{
-    FilterSpec, ForceDirectedLayout3D, Graph, GraphEngine, GraphEngine3D, GraphLayoutMode, GroupId, LayoutKind, NodeIndex,
-    SelectMode, TransitionDirection,
+    FilterSpec, Graph, GraphEngine, GraphEngine3D, GraphLayoutMode, GraphLayoutMode3D, GroupId, Layout, LayoutKind,
+    NodeIndex, SelectMode, TransitionDirection,
 };
 
 const AGENT_PORT: u16 = 17481;
@@ -438,11 +444,12 @@ struct SelectedFacts {
     pinned: bool,
 }
 
-// `GraphLayoutMode` (not a bare `ForceDirectedLayout`) so the
-// `set_layout` agent action has something to dispatch to — see
-// `uzor-graph/src/layout/mode.rs`.
+// `GraphLayoutMode`/`GraphLayoutMode3D` (not a bare
+// `ForceDirectedLayout`/`ForceDirectedLayout3D`) so the `set_layout`
+// agent action + the HUD's LAYOUT section have something to dispatch to
+// — see `uzor-graph/src/layout/{mode,mode3d}.rs`.
 type Engine = GraphEngine<(), (), GraphLayoutMode>;
-type Engine3D = GraphEngine3D<(), (), ForceDirectedLayout3D>;
+type Engine3D = GraphEngine3D<(), (), GraphLayoutMode3D>;
 
 // ── Dimension switching (W3D arc plan §1.6, Wave 2) ──────────────────────
 
@@ -680,19 +687,6 @@ impl SurfaceSizeState {
     }
 }
 
-/// Fallback aspect ratio (Wave 5) for the Home/F fit-to-bounds shortcut
-/// and the `fit_view_3d` agent action, while no real 3D frame has
-/// rendered yet — an ordinary 16:9 widescreen ratio, the same "no real
-/// viewport yet" convention [`full_window_viewport`]'s own doc comment
-/// already established for picking.
-const FALLBACK_SURFACE_ASPECT: f32 = 16.0 / 9.0;
-
-fn surface_aspect(size: Option<(u32, u32)>) -> f32 {
-    match size {
-        Some((w, h)) if h > 0 => w as f32 / h as f32,
-        _ => FALLBACK_SURFACE_ASPECT,
-    }
-}
 
 /// Center crosshair painted into the 3D overlay while fly-mode
 /// mouse-look is active (owner order 2026-07-19) — the captured-cursor
@@ -826,9 +820,10 @@ fn surface_width_logical(size: Option<(u32, u32)>, scale_factor: f64) -> f64 {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum HudControl {
     Fixture(Fixture),
-    /// LAYOUT section button (2D only) — switches the 2D engine's
-    /// `GraphLayoutMode` kind. See [`build_hud_layout`]'s own LAYOUT
-    /// section doc.
+    /// LAYOUT section button — switches the ACTIVE dimension's own
+    /// `GraphLayoutMode`/`GraphLayoutMode3D` kind (owner defect fix
+    /// 2026-07-23: both dimensions expose the same three modes now). See
+    /// [`build_hud_layout`]'s own LAYOUT section doc.
     SetLayout(LayoutKind),
     ToggleDimension,
     ToggleNavMode,
@@ -846,12 +841,16 @@ enum HudSliderId {
 
 /// One laid-out, clickable button row — geometry (`rect`, LOGICAL px),
 /// what it does (`control`), its drawn label, and whether it should
-/// paint in the "active" highlighted style.
+/// paint in the "active" highlighted style. `paused` is a further,
+/// LAYOUT-section-only refinement of `active` (owner rule «если 1
+/// вариант — должен тоглиться», generalized to re-click-toggles-pause for
+/// FORCE) — always `false` for every other button.
 struct HudButtonRect {
     control: HudControl,
     rect: Rect,
     label: String,
     active: bool,
+    paused: bool,
 }
 
 /// One laid-out sensitivity slider — `track` is the thin visual bar,
@@ -898,12 +897,17 @@ struct HudSnapshot {
     grid_enabled: bool,
     keyboard_sensitivity: f32,
     mouse_sensitivity: f32,
-    /// The 2D engine's CURRENT `GraphLayoutMode` kind — read regardless
-    /// of which dimension is active (same convention `grid_enabled`
-    /// already uses: meaningful to report even while 3D is active, even
-    /// though the LAYOUT section itself only ever renders in 2D). See
-    /// [`build_hud_layout`]'s own LAYOUT section doc.
+    /// The ACTIVE dimension's own layout kind (`engine.layout.kind()` in
+    /// 2D, `engine3d.layout.kind()` in 3D — owner defect fix 2026-07-23:
+    /// previously this always read the 2D engine regardless of `dim`,
+    /// which is why 3D's LAYOUT section could only ever show a single
+    /// hardcoded always-active FORCE button). See [`build_hud_layout`]'s
+    /// own LAYOUT section doc.
     layout_kind: LayoutKind,
+    /// The active dimension's own layout pause state — same source engine
+    /// as `layout_kind` above; only meaningful (and only ever `true`)
+    /// while `layout_kind == LayoutKind::Force`.
+    layout_paused: bool,
 }
 
 /// Build the panel's full layout at `(origin_x, origin_y)` with content
@@ -911,13 +915,15 @@ struct HudSnapshot {
 /// `draw_hud_status`) and hit-testing (`DemoApp::on_event_hud`) call, so
 /// drawn and clickable geometry can never drift apart. Section order
 /// mirrors the foxhound reference app's own HUD: title, FIXTURE (4
-/// buttons, always), LAYOUT (3 buttons — FORCE/LAYERED/RADIAL, **2D
-/// only**: `uzor-graph`'s 3D engine is force-only, no `GraphLayoutMode`
-/// equivalent exists there, same "section doesn't appear" convention
-/// ORBIT/FLY already uses for 2D), NAVIGATION (2-4 buttons — Orbit/Fly
-/// and Grid are 3D only), SENSITIVITY (2 sliders, 3D **fly** mode only),
-/// MOUSE (a per-mode legend), STATUS (2 numeric lines, filled in by the
-/// caller — see [`draw_hud_status`]).
+/// buttons, always), LAYOUT (3 buttons — FORCE/LAYERED/RADIAL, **same 3
+/// in both dimensions** since `GraphLayoutMode3D` — owner defect fix
+/// 2026-07-23 — gave 3D the same runtime-switchable kinds 2D already had;
+/// re-clicking the ACTIVE button toggles FORCE pause/resume or re-runs +
+/// re-fits a one-shot LAYERED/RADIAL layout, see [`HudButtonRect::paused`]
+/// and [`DemoApp::apply_hud_control`]), NAVIGATION (2-4 buttons —
+/// Orbit/Fly and Grid are 3D only), SENSITIVITY (2 sliders, 3D **fly**
+/// mode only), MOUSE (a per-mode legend), STATUS (2 numeric lines, filled
+/// in by the caller — see [`draw_hud_status`]).
 fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot) -> HudLayout {
     let content_w = (width - 2.0 * HUD_PAD).max(0.0);
     let mut y = origin_y + HUD_PAD;
@@ -938,29 +944,30 @@ fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot
             rect,
             label: fixture.as_str().to_ascii_uppercase(),
             active: fixture == snap.fixture,
+            paused: false,
         });
         y += HUD_BUTTON_H + HUD_BUTTON_GAP;
     }
     y += HUD_SECTION_GAP;
 
-    // LAYOUT — shows exactly the modes that EXIST in the current
-    // dimension (owner rule: «если они разные в 2D и 3D — показывать
-    // только те, которые там есть, чужие не показывать»). 2D has three
-    // real GraphLayoutMode kinds; the 3D engine is force-only today, so
-    // 3D shows the single FORCE button (always active) rather than an
-    // empty/hidden section — the panel honestly states what the
-    // dimension can do instead of silently omitting the concept.
+    // LAYOUT — same 3 modes in BOTH dimensions now (owner defect fix
+    // 2026-07-23: 3D used to show a single hardcoded always-active FORCE
+    // button that neither toggled nor disabled — the exact "зажат форс"
+    // defect report — because `GraphEngine3D` had no runtime-switchable
+    // layout at all; `GraphLayoutMode3D` closes that gap). A button whose
+    // kind is already active AND is FORCE AND is currently paused gets
+    // the distinct `paused` visual treatment (amber, "(PAUSED)" label
+    // suffix) — see `draw_hud_static`'s own color table.
     headings.push(("LAYOUT", y));
     y += HUD_HEADING_H;
-    let layout_modes: &[(LayoutKind, &str)] = if snap.dim == Dimension::TwoD {
-        &[(LayoutKind::Force, "FORCE"), (LayoutKind::Hierarchical, "LAYERED"), (LayoutKind::Radial, "RADIAL")]
-    } else {
-        &[(LayoutKind::Force, "FORCE")]
-    };
-    for &(kind, label) in layout_modes {
+    const LAYOUT_MODES: &[(LayoutKind, &str)] =
+        &[(LayoutKind::Force, "FORCE"), (LayoutKind::Hierarchical, "LAYERED"), (LayoutKind::Radial, "RADIAL")];
+    for &(kind, label) in LAYOUT_MODES {
         let rect = Rect::new(origin_x + HUD_PAD, y, content_w, HUD_BUTTON_H);
-        let active = if snap.dim == Dimension::TwoD { kind == snap.layout_kind } else { true };
-        buttons.push(HudButtonRect { control: HudControl::SetLayout(kind), rect, label: label.to_owned(), active });
+        let active = kind == snap.layout_kind;
+        let paused = active && kind == LayoutKind::Force && snap.layout_paused;
+        let label = if paused { format!("{label} (PAUSED)") } else { label.to_owned() };
+        buttons.push(HudButtonRect { control: HudControl::SetLayout(kind), rect, label, active, paused });
         y += HUD_BUTTON_H + HUD_BUTTON_GAP;
     }
     y += HUD_SECTION_GAP;
@@ -976,6 +983,7 @@ fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot
             rect,
             label: "2D / 3D  —  TAB".to_owned(),
             active: snap.dim == Dimension::ThreeD,
+            paused: false,
         });
         y += HUD_BUTTON_H + HUD_BUTTON_GAP;
     }
@@ -986,6 +994,7 @@ fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot
             rect,
             label: "ORBIT / FLY  —  V".to_owned(),
             active: snap.nav_mode == NavMode::Fly,
+            paused: false,
         });
         y += HUD_BUTTON_H + HUD_BUTTON_GAP;
     }
@@ -996,6 +1005,7 @@ fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot
             rect,
             label: "FIT  —  HOME / F".to_owned(),
             active: false,
+            paused: false,
         });
         y += HUD_BUTTON_H + HUD_BUTTON_GAP;
     }
@@ -1006,6 +1016,7 @@ fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot
             rect,
             label: "GRID  —  G".to_owned(),
             active: snap.grid_enabled,
+            paused: false,
         });
         y += HUD_BUTTON_H + HUD_BUTTON_GAP;
     }
@@ -1110,13 +1121,24 @@ fn draw_hud_static(ctx: &mut dyn RenderContext, layout: &HudLayout, scale: f64) 
 
     for b in &layout.buttons {
         let r = scaled_rect(b.rect, scale);
-        ctx.set_fill_color(if b.active { "#193c31" } else { "#151d2a" });
+        // `paused` (LAYOUT section, active FORCE re-clicked) gets a
+        // distinct amber palette — visually different from BOTH plain
+        // "active/running" (green) and "inactive" (gray), so a frozen
+        // sim reads as neither "off" nor "running normally".
+        let (fill, stroke, text) = if b.paused {
+            ("#3c3319", "#dba85c", "#e7c98b")
+        } else if b.active {
+            ("#193c31", "#75dba0", "#8be7b2")
+        } else {
+            ("#151d2a", "#36445a", "#b7c2d4")
+        };
+        ctx.set_fill_color(fill);
         ctx.fill_rect(r.x, r.y, r.width, r.height);
-        ctx.set_stroke_color(if b.active { "#75dba0" } else { "#36445a" });
+        ctx.set_stroke_color(stroke);
         ctx.set_stroke_width(1.0);
         ctx.stroke_rect(r.x, r.y, r.width, r.height);
         ctx.set_font("bold 10px sans-serif");
-        ctx.set_fill_color(if b.active { "#8be7b2" } else { "#b7c2d4" });
+        ctx.set_fill_color(text);
         ctx.fill_text(&b.label, r.x + 8.0 * scale, r.y + r.height * 0.65);
     }
 
@@ -1169,17 +1191,23 @@ fn draw_hud_status(ctx: &mut dyn RenderContext, panel_x: f64, status_y: f64, lin
 
 /// Cache key for the 3D `CachedOverlayJob` static-chrome paint — changes
 /// exactly when anything `draw_hud_static` actually reads changes
-/// (dimension, fixture, nav mode, grid toggle, both sensitivities, the
-/// active draw scale, the panel's own right-docked `origin_x`), so a
-/// caller-side resize/DPI change or any control change invalidates the
-/// cache; an unrelated per-frame value (node counts, frame timing — the
-/// DYNAMIC half) never does. `origin_x` is passed separately (not read
-/// off `HudSnapshot`) because it's derived from the last-known 3D
-/// surface width, not app control state — see [`DemoApp::hud_origin`]'s
-/// own `Dimension::ThreeD` branch; a window resize changes it without
-/// touching any `HudSnapshot` field, so it must be hashed explicitly or
-/// a resize would leave the cached chrome painted at the OLD right-dock
-/// position.
+/// (dimension, fixture, layout kind + pause, nav mode, grid toggle, both
+/// sensitivities, the active draw scale, the panel's own right-docked
+/// `origin_x`), so a caller-side resize/DPI change or any control change
+/// invalidates the cache; an unrelated per-frame value (node counts,
+/// frame timing — the DYNAMIC half) never does. `origin_x` is passed
+/// separately (not read off `HudSnapshot`) because it's derived from the
+/// last-known 3D surface width, not app control state — see
+/// [`DemoApp::hud_origin`]'s own `Dimension::ThreeD` branch; a window
+/// resize changes it without touching any `HudSnapshot` field, so it must
+/// be hashed explicitly or a resize would leave the cached chrome painted
+/// at the OLD right-dock position. `layout_kind`/`layout_paused` are new
+/// (owner defect fix 2026-07-23 — the LAYOUT section is now switchable in
+/// 3D too, so its own active-highlight/pause-color state must invalidate
+/// the cached paint exactly like every other control already does; a
+/// pre-existing gap this fix closes, not a regression it introduces —
+/// this key never needed to include them before, since 3D's own single
+/// FORCE button was always hardcoded active and never paused).
 fn hud_static_key(snap: &HudSnapshot, scale: f64, origin_x: f64) -> u64 {
     let mut hasher = DefaultHasher::new();
     snap.dim.code().hash(&mut hasher);
@@ -1188,6 +1216,8 @@ fn hud_static_key(snap: &HudSnapshot, scale: f64, origin_x: f64) -> u64 {
     snap.grid_enabled.hash(&mut hasher);
     snap.keyboard_sensitivity.to_bits().hash(&mut hasher);
     snap.mouse_sensitivity.to_bits().hash(&mut hasher);
+    snap.layout_kind.hash(&mut hasher);
+    snap.layout_paused.hash(&mut hasher);
     scale.to_bits().hash(&mut hasher);
     origin_x.to_bits().hash(&mut hasher);
     hasher.finish()
@@ -1253,17 +1283,18 @@ impl FlattenPendingFlag {
     }
 }
 
-/// Per-fixture default 2D `GraphLayoutMode` kind (owner defect fix —
-/// tree/hierarchy fixtures are tree-SHAPED graphs but always ran through
-/// the force layout, which balls them up instead of reading as a tree).
-/// `clusters`/`sparse` are genuinely mesh-shaped (a force layout is the
-/// right default), `tree`/`hierarchy` are genuinely hierarchical (a
-/// layered top-down layout is the right default) — 3D is untouched, its
-/// engine is force-only regardless of fixture (see [`build_hud_layout`]'s
-/// own LAYOUT-section doc). The owner's own explicit HUD LAYOUT buttons
-/// (`HudControl::SetLayout`) let this default be overridden by hand for
-/// ANY fixture afterward — this is only the INITIAL pick on a fixture
-/// switch, not a hard rule.
+/// Per-fixture default `GraphLayoutMode`/`GraphLayoutMode3D` kind (owner
+/// defect fix — tree/hierarchy fixtures are tree-SHAPED graphs but always
+/// ran through the force layout, which balls them up instead of reading
+/// as a tree). `clusters`/`sparse` are genuinely mesh-shaped (a force
+/// layout is the right default), `tree`/`hierarchy` are genuinely
+/// hierarchical (a layered top-down layout is the right default) — this
+/// mapping now applies to BOTH dimensions (`rebuild_engines` calls it for
+/// `engine` AND `engine3d`, owner defect fix 2026-07-23 — previously 3D's
+/// engine had no runtime-switchable layout at all to default). The
+/// owner's own explicit HUD LAYOUT buttons (`HudControl::SetLayout`) let
+/// this default be overridden by hand for ANY fixture afterward — this is
+/// only the INITIAL pick on a fixture switch, not a hard rule.
 fn default_layout_kind_for_fixture(fixture: Fixture) -> LayoutKind {
     match fixture {
         Fixture::Clusters | Fixture::Sparse => LayoutKind::Force,
@@ -1302,8 +1333,13 @@ fn rebuild_engines(engine: &Arc<Mutex<Engine>>, engine3d: &Arc<Mutex<Engine3D>>,
     // `collapse`/`expand`/`collapse_selection` blackbox actions work
     // identically while `dimension=3`.
     let (graph3d, positions3d, cluster_members3d) = build_fixture(fixture);
-    let mut new_engine3d = Engine3D::new(graph3d, ForceDirectedLayout3D::default());
+    let mut new_engine3d = Engine3D::new(graph3d, GraphLayoutMode3D::default());
     new_engine3d.seed_positions(&positions3d);
+    // Owner defect fix 2026-07-23 — the SAME per-fixture default now
+    // applies to 3D too (`GraphLayoutMode3D` gave 3D real Hierarchical/
+    // Radial modes to default INTO). `camera_fit.request()` below
+    // (unconditional, pre-existing) re-frames BOTH dimensions after.
+    new_engine3d.layout.set_kind(default_layout_kind_for_fixture(fixture));
     for members in cluster_members3d.iter().take(COLLAPSIBLE_CLUSTERS) {
         new_engine3d.define_cluster(members[..COLLAPSIBLE_CLUSTER_SIZE.min(members.len())].to_vec());
     }
@@ -1386,6 +1422,12 @@ struct DemoApp {
     /// [`Fixture`]/[`rebuild_engines`].
     fixture: FixtureState,
     camera_fit: CameraFitFlag,
+    /// Deferred 3D fit — consumed in `scene3d()` AFTER the engine tick
+    /// (one-shot layouts apply their positions during a tick; fitting
+    /// before it frames the stale extent — the same ordering rule 2D's
+    /// `camera_fit` already follows) and only while no dimension
+    /// transition is interpolating the camera.
+    fit3d_pending: CameraFitFlag,
     /// Active 3D camera-control scheme — see [`NavMode`].
     nav_mode: NavModeState,
     /// Fly-mode mouse-look sub-state — see [`MouseLookState`].
@@ -1477,6 +1519,7 @@ struct DemoBlackbox {
     dim: DimState,
     fixture: FixtureState,
     camera_fit: CameraFitFlag,
+    fit3d_pending: CameraFitFlag,
     nav_mode: NavModeState,
     mouse_look: MouseLookState,
     fly: Arc<Mutex<FlyController>>,
@@ -1561,6 +1604,19 @@ fn filter_json_3d(filter: &FilterSpec) -> Value {
     })
 }
 
+/// Stable lowercase string form for `LayoutKind` — mirrors
+/// `uzor_graph::agent`'s own private `layout_mode_name`'s match arms
+/// (re-implemented here since `GraphEngine3D` has no `BlackboxAgentSurface`
+/// impl of its own to reuse that helper through), the 3D `agent_state`'s
+/// `"layout"` field + the `set_layout` action's own reply both use this.
+fn layout_kind_str(kind: LayoutKind) -> &'static str {
+    match kind {
+        LayoutKind::Force => "force",
+        LayoutKind::Hierarchical => "hierarchical",
+        LayoutKind::Radial => "radial",
+    }
+}
+
 /// `agent_state`'s 3D `selection` field shape — mirrors `uzor_graph::agent`'s
 /// own 2D `selection_json` exactly (`{count, indices (capped at 50),
 /// collapsed_group}`).
@@ -1596,7 +1652,7 @@ impl DemoApp {
         // z = 0 plane. See `uzor-graph/CLAUDE.md`'s divergence log and
         // `GraphEngine3D::ensure_z_variance`.
         let engine = Arc::new(Mutex::new(GraphEngine::new(DemoGraph::new(), GraphLayoutMode::default())));
-        let engine3d = Arc::new(Mutex::new(Engine3D::new(DemoGraph::new(), ForceDirectedLayout3D::default())));
+        let engine3d = Arc::new(Mutex::new(Engine3D::new(DemoGraph::new(), GraphLayoutMode3D::default())));
         let camera_fit = CameraFitFlag::new();
         let fixture = FixtureState::new();
         rebuild_engines(&engine, &engine3d, fixture.get(), &camera_fit);
@@ -1607,6 +1663,7 @@ impl DemoApp {
             dim: DimState::new(),
             fixture,
             camera_fit,
+            fit3d_pending: CameraFitFlag::new(),
             nav_mode: NavModeState::new(),
             mouse_look: MouseLookState::new(),
             fly: Arc::new(Mutex::new(FlyController::new())),
@@ -1742,9 +1799,12 @@ impl DemoApp {
     /// entry point both the Home/F keyboard shortcut (`App::on_event`
     /// below) and the `fit_view_3d` agent action
     /// (`DemoBlackbox::apply_agent_action`) call.
+    /// Deferred: raises [`DemoApp::fit3d_pending`], consumed in
+    /// `scene3d()` AFTER the engine tick — see that field's doc comment
+    /// for the ordering rule (one-shot layouts apply positions during
+    /// the tick, so an immediate fit here would frame the stale extent).
     fn fit_view_3d(&self) {
-        let aspect = surface_aspect(self.last_3d_surface_px.get());
-        Self::lock3d(&self.engine3d).fit_view(aspect);
+        self.fit3d_pending.request();
     }
 
     /// Wave 5 ground-reference grid toggle — the demo-level entry point
@@ -1784,14 +1844,28 @@ impl DemoApp {
     }
 
     /// Small, cheap snapshot of exactly the state [`build_hud_layout`]
-    /// needs — see [`HudSnapshot`]'s own doc comment.
+    /// needs — see [`HudSnapshot`]'s own doc comment. `layout_kind`/
+    /// `layout_paused` read whichever dimension's engine is CURRENTLY
+    /// active (owner defect fix 2026-07-23 — this used to always read the
+    /// 2D engine regardless of `dim`, which is the root cause of 3D's
+    /// LAYOUT section only ever being able to show one hardcoded
+    /// always-active button).
     fn hud_snapshot(&self) -> HudSnapshot {
         let grid_enabled = Self::lock3d(&self.engine3d).grid_enabled();
         let (keyboard_sensitivity, mouse_sensitivity) = {
             let fly = Self::lock_fly(&self.fly);
             (fly.keyboard_sensitivity(), fly.mouse_sensitivity())
         };
-        let layout_kind = Self::lock(&self.engine).layout.kind();
+        let (layout_kind, layout_paused) = match self.dim.get() {
+            Dimension::TwoD => {
+                let engine = Self::lock(&self.engine);
+                (engine.layout.kind(), engine.layout.paused())
+            }
+            Dimension::ThreeD => {
+                let engine3d = Self::lock3d(&self.engine3d);
+                (engine3d.layout.kind(), engine3d.layout.paused())
+            }
+        };
         HudSnapshot {
             dim: self.dim.get(),
             fixture: self.fixture.get(),
@@ -1800,6 +1874,7 @@ impl DemoApp {
             keyboard_sensitivity,
             mouse_sensitivity,
             layout_kind,
+            layout_paused,
         }
     }
 
@@ -1924,22 +1999,63 @@ impl DemoApp {
                 self.fixture.set(fixture);
                 rebuild_engines(&self.engine, &self.engine3d, fixture, &self.camera_fit);
             }
-            HudControl::SetLayout(kind) => {
-                // 2D only — the LAYOUT section itself never renders in
-                // 3D (see `build_hud_layout`'s own doc comment), so this
-                // guard is defense-in-depth, not the primary gate.
-                if self.dim.get() == Dimension::TwoD {
-                    Self::lock(&self.engine).layout.set_kind(kind);
-                    // A layout switch can move every node to a wildly
-                    // different extent (e.g. force's settled cluster
-                    // spread vs. layered's compact rows) — re-frame the
-                    // camera so the owner actually sees the new shape,
-                    // same "camera fit after" convention a fixture switch
-                    // already follows (`rebuild_engines`' own
-                    // `camera_fit.request()`).
-                    self.camera_fit.request();
+            // Owner defect fix 2026-07-23 — re-click semantics generalize
+            // the owner's own rule «если 1 вариант — должен тоглиться»:
+            // clicking the ALREADY-active mode toggles instead of being a
+            // silent no-op (the exact "зажат форс, нихуя не
+            // переключается" defect — FORCE was hardcoded active in 3D
+            // and its own button click did nothing at all). FORCE
+            // pauses/resumes the sim IN PLACE (no camera jump — nothing
+            // actually moved); LAYERED/RADIAL (one-shot) re-run their
+            // layout and re-fit, a visibly honest action since a fresh
+            // recompute genuinely can move every node. Clicking an
+            // INACTIVE button switches mode as before (+ fit). Dispatches
+            // to whichever dimension's engine is CURRENTLY active — both
+            // now expose the identical `GraphLayoutMode`/`GraphLayoutMode3D`
+            // surface (`kind`/`paused`/`set_kind`/`set_paused`/`reheat`).
+            HudControl::SetLayout(kind) => match self.dim.get() {
+                Dimension::TwoD => {
+                    let mut engine = Self::lock(&self.engine);
+                    if engine.layout.kind() == kind {
+                        if kind == LayoutKind::Force {
+                            let next = !engine.layout.paused();
+                            engine.layout.set_paused(next);
+                        } else {
+                            engine.layout.reheat(1.0);
+                            drop(engine);
+                            self.camera_fit.request();
+                        }
+                    } else {
+                        engine.layout.set_kind(kind);
+                        // A layout switch can move every node to a wildly
+                        // different extent (e.g. force's settled cluster
+                        // spread vs. layered's compact rows) — re-frame
+                        // the camera so the owner actually sees the new
+                        // shape, same "camera fit after" convention a
+                        // fixture switch already follows
+                        // (`rebuild_engines`'s own `camera_fit.request()`).
+                        drop(engine);
+                        self.camera_fit.request();
+                    }
                 }
-            }
+                Dimension::ThreeD => {
+                    let mut engine3d = Self::lock3d(&self.engine3d);
+                    if engine3d.layout.kind() == kind {
+                        if kind == LayoutKind::Force {
+                            let next = !engine3d.layout.paused();
+                            engine3d.layout.set_paused(next);
+                        } else {
+                            engine3d.layout.reheat(1.0);
+                            drop(engine3d);
+                            self.fit_view_3d();
+                        }
+                    } else {
+                        engine3d.layout.set_kind(kind);
+                        drop(engine3d);
+                        self.fit_view_3d();
+                    }
+                }
+            },
             HudControl::ToggleDimension => self.toggle_dimension(),
             HudControl::ToggleNavMode => {
                 if self.dim.get() == Dimension::ThreeD {
@@ -2002,6 +2118,14 @@ impl BlackboxAgentSurface for DemoBlackbox {
                     // `uzor_graph::agent`'s own 2D `agent_state` reports.
                     "local_root": engine3d.local_root().map(|(node, depth)| json!({ "index": node.index(), "depth": depth })),
                     "filter": engine3d.filter().map(filter_json_3d),
+                    // Owner defect fix 2026-07-23 — same `layout`/
+                    // `layout_paused` field names `uzor_graph::agent`'s
+                    // own 2D `agent_state` reports (see that crate's
+                    // `agent.rs`), now meaningful in 3D too since
+                    // `GraphLayoutMode3D` gave 3D real runtime-switchable
+                    // layouts.
+                    "layout": layout_kind_str(engine3d.layout.kind()),
+                    "layout_paused": engine3d.layout.paused(),
                 })
             }
         };
@@ -2101,8 +2225,7 @@ impl BlackboxAgentSurface for DemoBlackbox {
             // driven from the agent-api HTTP thread; uses the last
             // surface size `scene3d()` recorded (fallback 16:9 before the
             // very first 3D frame — see `surface_aspect`).
-            let aspect = surface_aspect(self.surface_size.get());
-            DemoApp::lock3d(&self.engine3d).fit_view(aspect);
+            self.fit3d_pending.request();
             return AgentActionReply::ok_with_log(json!({ "fit_view_3d": true }));
         }
         if action.name == "set_grid" {
@@ -2158,8 +2281,7 @@ impl DemoBlackbox {
             // instant path used to keep the STALE orbit pose from the
             // previous 3D session — fit explicitly, same aspect source
             // as the fit_view_3d action.
-            let aspect = surface_aspect(self.surface_size.get());
-            DemoApp::lock3d(&self.engine3d).fit_view(aspect);
+            self.fit3d_pending.request();
         }
         AgentActionReply::ok_with_log(json!({ "dimension": 3, "animate": animate }))
     }
@@ -2217,6 +2339,13 @@ impl DemoBlackbox {
     /// own "activation frames the local neighborhood" convention.
     /// Everything else stays a typed rejection — pin_node/unpin_node
     /// remain out of this arc.
+    ///
+    /// **Owner defect fix 2026-07-23**: `set_layout` (mirrors 2D's own
+    /// `args.mode`/`args.paused` arg shape, `uzor-graph/src/agent.rs`)
+    /// now also forwards onto `engine3d.layout` (`GraphLayoutMode3D` —
+    /// 3D's own runtime-switchable Force/Hierarchical/Radial dispatcher,
+    /// closing the "3D has no `set_layout` to dispatch to" gap every
+    /// earlier wave's own doc comment used to note).
     fn apply_3d_agent_action(&mut self, action: AgentAction) -> AgentActionReply {
         let mut engine3d = DemoApp::lock3d(&self.engine3d);
         match action.name.as_str() {
@@ -2327,7 +2456,7 @@ impl DemoBlackbox {
                     matches!(index_arg, Some(Value::Null)) || (index_arg.is_none() && action.args.get("label").is_none());
                 if explicit_clear {
                     engine3d.set_local_root(None, None);
-                    engine3d.fit_view(surface_aspect(self.surface_size.get()));
+                    self.fit3d_pending.request();
                     return AgentActionReply::ok_with_log(json!({ "local_root": Value::Null }));
                 }
                 let Some(node) = resolve_node_3d(&engine3d, &action) else {
@@ -2337,7 +2466,7 @@ impl DemoBlackbox {
                 };
                 let depth = action.args.get("depth").and_then(Value::as_u64).map(|d| d as u8);
                 engine3d.set_local_root(Some(node), depth);
-                engine3d.fit_view(surface_aspect(self.surface_size.get()));
+                self.fit3d_pending.request();
                 AgentActionReply::ok_with_log(json!({
                     "local_root": engine3d.local_root().map(|(n, d)| json!({ "index": n.index(), "depth": d })),
                 }))
@@ -2362,8 +2491,51 @@ impl DemoBlackbox {
                 engine3d.set_filter(Some(spec));
                 AgentActionReply::ok_with_log(json!({ "filter": engine3d.filter().map(filter_json_3d) }))
             }
+            // Owner defect fix 2026-07-23 — mirrors `uzor_graph::agent`'s
+            // own 2D `set_layout` action arg shape exactly (`args.mode`
+            // switches kind, `args.paused` freezes/resumes in place,
+            // either or both may be present in one call — see that
+            // crate's own `agent.rs` for the identical "fold pause into
+            // the existing action shape" decision, applied here too so a
+            // caller driving both dimensions sees the same action name
+            // and args shape either way).
+            "set_layout" => {
+                let mode_arg = action.args.get("mode").and_then(Value::as_str);
+                let paused_arg = action.args.get("paused").and_then(Value::as_bool);
+                if mode_arg.is_none() && paused_arg.is_none() {
+                    return AgentActionReply::err(
+                        "set_layout requires args.mode (\"force\"|\"hierarchical\"|\"radial\") and/or args.paused (bool)",
+                    );
+                }
+                let kind = match mode_arg {
+                    Some("force") => Some(LayoutKind::Force),
+                    Some("hierarchical") => Some(LayoutKind::Hierarchical),
+                    Some("radial") => Some(LayoutKind::Radial),
+                    Some(other) => return AgentActionReply::err(format!("unknown layout mode {other:?}")),
+                    None => None,
+                };
+                if let Some(kind) = kind {
+                    if engine3d.layout.kind() != kind {
+                        engine3d.layout.set_kind(kind);
+                        // Same "re-frame after a layout switch" rule the
+                        // HUD button follows — deferred so the one-shot
+                        // layout has applied by the time the fit reads
+                        // positions.
+                        self.fit3d_pending.request();
+                    } else {
+                        engine3d.layout.set_kind(kind);
+                    }
+                }
+                if let Some(paused) = paused_arg {
+                    engine3d.layout.set_paused(paused);
+                }
+                AgentActionReply::ok_with_log(json!({
+                    "layout": layout_kind_str(engine3d.layout.kind()),
+                    "layout_paused": engine3d.layout.paused(),
+                }))
+            }
             _ => AgentActionReply::err(
-                "3D dimension supports hover_node/select_node/clear_selection/select_nodes/box_select/collapse_selection/pin_selection/unpin_selection/collapse/expand/set_local_root/set_filter besides set_dimension",
+                "3D dimension supports hover_node/select_node/clear_selection/select_nodes/box_select/collapse_selection/pin_selection/unpin_selection/collapse/expand/set_local_root/set_filter/set_layout besides set_dimension",
             ),
         }
     }
@@ -2396,6 +2568,7 @@ impl App<NoPanel> for DemoApp {
             dim: self.dim.clone(),
             fixture: self.fixture.clone(),
             camera_fit: self.camera_fit.clone(),
+            fit3d_pending: self.fit3d_pending.clone(),
             nav_mode: self.nav_mode.clone(),
             mouse_look: self.mouse_look.clone(),
             fly: self.fly.clone(),
@@ -2668,6 +2841,16 @@ impl Scene3DApp<NoPanel> for DemoApp {
         let tick_ms = tick_started.elapsed().as_secs_f64() * 1000.0;
         if self.nav_mode.get() == NavMode::Fly {
             Self::lock_fly(&self.fly).tick(dt, &mut engine3d.camera);
+        }
+
+        // Deferred 3D fit — consumed AFTER the tick so a one-shot layout
+        // (Layered/Radial) has applied its positions before the camera
+        // frames them (same ordering rule 2D's `camera_fit` follows);
+        // skipped while a dimension transition owns the camera — the
+        // flag simply survives until the transition ends.
+        if self.fit3d_pending.needs_fit() && !engine3d.transition_active() {
+            engine3d.fit_view(surf_w as f32 / (surf_h.max(1) as f32));
+            self.fit3d_pending.clear();
         }
 
         // Dimension-transition wave — poll for an animated `Out`
@@ -2955,6 +3138,7 @@ mod tests {
             keyboard_sensitivity: 1.0,
             mouse_sensitivity: 1.0,
             layout_kind: LayoutKind::Force,
+            layout_paused: false,
         };
         let layout = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, &snap);
         let tree_button = layout.buttons.iter().find(|b| b.control == HudControl::Fixture(Fixture::Tree)).expect("tree button must exist");
@@ -2980,6 +3164,7 @@ mod tests {
             keyboard_sensitivity: 1.0,
             mouse_sensitivity: 1.0,
             layout_kind: LayoutKind::Force,
+            layout_paused: false,
         };
         let layout_2d = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, &snap_2d);
         assert!(!layout_2d.buttons.iter().any(|b| b.control == HudControl::ToggleNavMode), "Orbit/Fly button must not appear in 2D");
@@ -2994,14 +3179,16 @@ mod tests {
         assert!(layout_3d_fly.buttons.iter().any(|b| b.control == HudControl::ToggleNavMode));
         assert!(layout_3d_fly.buttons.iter().any(|b| b.control == HudControl::ToggleGrid));
         assert_eq!(layout_3d_fly.sliders.len(), 2, "keyboard + mouse sensitivity sliders while 3D fly is active");
-        // Owner rule: show exactly the modes that EXIST per dimension —
-        // 3D is force-only, so exactly ONE layout button (FORCE, always
-        // active), never LAYERED/RADIAL and never an empty section.
+        // Owner defect fix 2026-07-23: the LAYOUT section shows the SAME
+        // 3 modes in BOTH dimensions now (`GraphLayoutMode3D` gave 3D
+        // real Hierarchical/Radial layouts to switch into) — 3D no
+        // longer shows a single hardcoded always-active FORCE button.
         let layout_buttons_3d: Vec<_> =
             layout_3d_fly.buttons.iter().filter(|b| matches!(b.control, HudControl::SetLayout(_))).collect();
-        assert_eq!(layout_buttons_3d.len(), 1, "3D must show exactly the one layout mode it has");
-        assert_eq!(layout_buttons_3d[0].control, HudControl::SetLayout(LayoutKind::Force));
-        assert!(layout_buttons_3d[0].active, "3D's single FORCE mode is always the active one");
+        assert_eq!(layout_buttons_3d.len(), 3, "3D must show all 3 layout modes, same as 2D");
+        assert!(layout_buttons_3d.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Force) && b.active));
+        assert!(layout_buttons_3d.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Hierarchical) && !b.active));
+        assert!(layout_buttons_3d.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Radial) && !b.active));
     }
 
     /// The task's own explicit ask: prove the coordinate-space
@@ -3022,6 +3209,7 @@ mod tests {
             keyboard_sensitivity: 1.2,
             mouse_sensitivity: 0.8,
             layout_kind: LayoutKind::Force,
+            layout_paused: false,
         };
         let layout = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, &snap);
         let button = layout.buttons.first().expect("at least one button");
@@ -3179,9 +3367,9 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_engines_applies_the_default_layout_kind_for_the_2d_engine_per_fixture() {
+    fn rebuild_engines_applies_the_default_layout_kind_to_both_engines_per_fixture() {
         let engine = Arc::new(Mutex::new(Engine::new(DemoGraph::new(), GraphLayoutMode::default())));
-        let engine3d = Arc::new(Mutex::new(Engine3D::new(DemoGraph::new(), ForceDirectedLayout3D::default())));
+        let engine3d = Arc::new(Mutex::new(Engine3D::new(DemoGraph::new(), GraphLayoutMode3D::default())));
         let camera_fit = CameraFitFlag::new();
 
         for (fixture, expected) in [
@@ -3191,12 +3379,13 @@ mod tests {
             (Fixture::Sparse, LayoutKind::Force),
         ] {
             rebuild_engines(&engine, &engine3d, fixture, &camera_fit);
-            assert_eq!(DemoApp::lock(&engine).layout.kind(), expected, "{fixture:?} must default to {expected:?}");
+            assert_eq!(DemoApp::lock(&engine).layout.kind(), expected, "2D {fixture:?} must default to {expected:?}");
+            assert_eq!(DemoApp::lock3d(&engine3d).layout.kind(), expected, "3D {fixture:?} must default to {expected:?}");
         }
     }
 
     #[test]
-    fn hud_layout_shows_a_2d_only_layout_section_with_the_active_kind_highlighted() {
+    fn hud_layout_shows_the_same_3_mode_layout_section_in_both_dimensions_with_the_active_kind_highlighted() {
         let app = DemoApp::new();
         // Fresh app defaults to `Clusters`, whose own default kind is Force.
         let layout = app.hud_layout();
@@ -3207,16 +3396,17 @@ mod tests {
         assert!(layered_button.is_some_and(|b| !b.active), "LAYERED button must exist and NOT be active while Force is current");
         assert!(layout.buttons.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Radial)), "RADIAL button must exist too");
 
+        // Owner defect fix 2026-07-23 — 3D now shows the SAME 3 modes,
+        // not a single hardcoded always-active FORCE button (the exact
+        // "зажат форс" defect report).
         app.dim.set(Dimension::ThreeD);
         let layout_3d = app.hud_layout();
         let layout_buttons_3d: Vec<_> =
             layout_3d.buttons.iter().filter(|b| matches!(b.control, HudControl::SetLayout(_))).collect();
-        assert_eq!(
-            layout_buttons_3d.len(),
-            1,
-            "3D shows exactly its one existing layout mode (FORCE), never the 2D-only LAYERED/RADIAL"
-        );
-        assert_eq!(layout_buttons_3d[0].control, HudControl::SetLayout(LayoutKind::Force));
+        assert_eq!(layout_buttons_3d.len(), 3, "3D must show all 3 layout modes, same as 2D");
+        assert!(layout_buttons_3d.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Force) && b.active));
+        assert!(layout_buttons_3d.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Hierarchical) && !b.active));
+        assert!(layout_buttons_3d.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Radial) && !b.active));
     }
 
     #[test]
@@ -3236,6 +3426,126 @@ mod tests {
 
         assert_eq!(DemoApp::lock(&app.engine).layout.kind(), LayoutKind::Hierarchical);
         assert!(app.camera_fit.needs_fit(), "switching layout must request a camera re-fit, same convention a fixture switch already follows");
+    }
+
+    /// Owner defect fix 2026-07-23 — the exact defect report: the LAYOUT
+    /// section's FORCE button in 3D used to be a single, hardcoded,
+    /// always-active, ALWAYS-DEAD button — clicking it did nothing at
+    /// all («зажат форс, нихуя не переключается, не отключается»). Now
+    /// it toggles pause/resume in place.
+    #[test]
+    fn re_clicking_the_active_force_button_pauses_and_resumes_in_place_in_3d() {
+        let mut app = DemoApp::new();
+        app.dim.set(Dimension::ThreeD);
+        assert!(!DemoApp::lock3d(&app.engine3d).layout.paused());
+
+        let layout = app.hud_layout();
+        let force_button = layout
+            .buttons
+            .iter()
+            .find(|b| b.control == HudControl::SetLayout(LayoutKind::Force))
+            .expect("FORCE button must exist in 3D");
+        assert!(force_button.active, "FORCE must be the default active mode");
+        let (x, y) = (force_button.rect.center_x(), force_button.rect.center_y());
+
+        assert!(app.on_event(&PlatformEvent::PointerDown { x, y, button: MouseButton::Left }));
+        assert!(app.on_event(&PlatformEvent::PointerUp { x, y, button: MouseButton::Left }));
+        assert!(DemoApp::lock3d(&app.engine3d).layout.paused(), "re-clicking the active FORCE button must pause the sim");
+
+        // The paused state must show up in the HUD's own button
+        // (distinct visual state) and in agent_state.
+        let paused_layout = app.hud_layout();
+        let paused_button =
+            paused_layout.buttons.iter().find(|b| b.control == HudControl::SetLayout(LayoutKind::Force)).expect("still there");
+        assert!(paused_button.paused, "the HUD button itself must report the paused visual state");
+        assert!(paused_button.label.contains("PAUSED"));
+
+        // Re-click again resumes.
+        assert!(app.on_event(&PlatformEvent::PointerDown { x, y, button: MouseButton::Left }));
+        assert!(app.on_event(&PlatformEvent::PointerUp { x, y, button: MouseButton::Left }));
+        assert!(!DemoApp::lock3d(&app.engine3d).layout.paused(), "a second re-click must resume the sim");
+    }
+
+    #[test]
+    fn re_clicking_the_active_force_button_pauses_and_resumes_in_place_in_2d() {
+        let mut app = DemoApp::new();
+        assert!(!DemoApp::lock(&app.engine).layout.paused());
+
+        let layout = app.hud_layout();
+        let force_button = layout
+            .buttons
+            .iter()
+            .find(|b| b.control == HudControl::SetLayout(LayoutKind::Force))
+            .expect("FORCE button must exist in 2D");
+        let (x, y) = (force_button.rect.center_x(), force_button.rect.center_y());
+
+        assert!(app.on_event(&PlatformEvent::PointerDown { x, y, button: MouseButton::Left }));
+        assert!(app.on_event(&PlatformEvent::PointerUp { x, y, button: MouseButton::Left }));
+        assert!(DemoApp::lock(&app.engine).layout.paused(), "re-clicking the active FORCE button must pause the sim");
+
+        assert!(app.on_event(&PlatformEvent::PointerDown { x, y, button: MouseButton::Left }));
+        assert!(app.on_event(&PlatformEvent::PointerUp { x, y, button: MouseButton::Left }));
+        assert!(!DemoApp::lock(&app.engine).layout.paused(), "a second re-click must resume the sim");
+    }
+
+    /// Re-clicking an already-active ONE-SHOT mode (LAYERED/RADIAL) must
+    /// re-run the layout and re-fit — a visibly honest action, not a
+    /// silent no-op, and NOT a pause (one-shot layouts have nothing
+    /// ongoing to freeze).
+    #[test]
+    fn re_clicking_the_active_layered_button_re_runs_the_layout_and_requests_a_fit() {
+        let mut app = DemoApp::new();
+        app.fixture.set(Fixture::Tree);
+        rebuild_engines(&app.engine, &app.engine3d, Fixture::Tree, &app.camera_fit);
+        assert_eq!(DemoApp::lock(&app.engine).layout.kind(), LayoutKind::Hierarchical);
+        app.camera_fit.clear();
+
+        // Hand-nudge a settled position so the re-run is provably fresh.
+        {
+            let mut engine = DemoApp::lock(&app.engine);
+            engine.particles[0].x = 123_456.0;
+        }
+
+        let layout = app.hud_layout();
+        let layered_button = layout
+            .buttons
+            .iter()
+            .find(|b| b.control == HudControl::SetLayout(LayoutKind::Hierarchical))
+            .expect("LAYERED must be active for the tree fixture");
+        assert!(layered_button.active);
+        let (x, y) = (layered_button.rect.center_x(), layered_button.rect.center_y());
+
+        assert!(app.on_event(&PlatformEvent::PointerDown { x, y, button: MouseButton::Left }));
+        assert!(app.on_event(&PlatformEvent::PointerUp { x, y, button: MouseButton::Left }));
+
+        assert_eq!(DemoApp::lock(&app.engine).layout.kind(), LayoutKind::Hierarchical, "re-click must not change kind");
+        assert!(app.camera_fit.needs_fit(), "re-running a one-shot layout must request a camera re-fit");
+        // Ticking once must overwrite the hand-nudged position (the
+        // one-shot layout genuinely recomputed, `reheat` cleared its
+        // `computed` flag).
+        DemoApp::lock(&app.engine).tick(1.0 / 60.0);
+        assert_ne!(DemoApp::lock(&app.engine).particles[0].x, 123_456.0);
+    }
+
+    #[test]
+    fn clicking_an_inactive_layout_button_in_3d_switches_kind_and_fits() {
+        let mut app = DemoApp::new();
+        app.dim.set(Dimension::ThreeD);
+        assert_eq!(DemoApp::lock3d(&app.engine3d).layout.kind(), LayoutKind::Force);
+
+        let layout = app.hud_layout();
+        let radial_button = layout
+            .buttons
+            .iter()
+            .find(|b| b.control == HudControl::SetLayout(LayoutKind::Radial))
+            .expect("RADIAL button must exist in 3D");
+        let (x, y) = (radial_button.rect.center_x(), radial_button.rect.center_y());
+
+        assert!(app.on_event(&PlatformEvent::PointerDown { x, y, button: MouseButton::Left }));
+        assert!(app.on_event(&PlatformEvent::PointerUp { x, y, button: MouseButton::Left }));
+
+        assert_eq!(DemoApp::lock3d(&app.engine3d).layout.kind(), LayoutKind::Radial);
+        assert!(!DemoApp::lock3d(&app.engine3d).layout.paused(), "switching kind must not leave the new kind paused");
     }
 
     /// The task's own explicit gate: prove the hierarchical layout

@@ -54,8 +54,9 @@ pub use engine::{DragEndPolicy, FilterSpec, GraphEngine, NodeFacts, SelectMode};
 pub use engine3d::{GraphEngine3D, TransitionDirection};
 pub use graph::{EdgeIndex, Graph, GraphEdge, GraphNode, NodeIndex, SimEdge, SimTopology};
 pub use layout::{
-    ForceDirectedLayout, ForceDirectedLayout3D, ForceParams, ForceParams3D, GraphLayoutMode, HierarchicalLayout,
-    HierarchicalParams, Layout, LayoutKind, LayoutTickResult, RadialLayout, RadialParams,
+    ForceDirectedLayout, ForceDirectedLayout3D, ForceParams, ForceParams3D, GraphLayoutMode, GraphLayoutMode3D,
+    HierarchicalLayout, HierarchicalLayout3D, HierarchicalParams, HierarchicalParams3D, Layout, LayoutKind,
+    LayoutTickResult, RadialLayout, RadialLayout3D, RadialParams, RadialParams3D,
 };
 pub use particle::Particle;
 pub use uzor_figures::interact::FocusSet;
