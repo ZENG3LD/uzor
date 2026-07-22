@@ -51,7 +51,7 @@ pub use camera::{Aabb, Camera2D};
 pub use camera3d::Camera3D;
 pub use cluster::{AggregatedEdge, ClusterRegistry, ClusterState, GroupId};
 pub use engine::{DragEndPolicy, FilterSpec, GraphEngine, NodeFacts, SelectMode};
-pub use engine3d::GraphEngine3D;
+pub use engine3d::{GraphEngine3D, TransitionDirection};
 pub use graph::{EdgeIndex, Graph, GraphEdge, GraphNode, NodeIndex, SimEdge, SimTopology};
 pub use layout::{
     ForceDirectedLayout, ForceDirectedLayout3D, ForceParams, ForceParams3D, GraphLayoutMode, HierarchicalLayout,

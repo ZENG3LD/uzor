@@ -36,12 +36,20 @@ use uzor::types::unsafe_widget_id;
 use uzor_desktop::{AppRun3D as _, Scene3DApp, Scene3DFrame};
 
 use uzor_graph::interaction::fly::FlyController;
-use uzor_graph::{FilterSpec, ForceDirectedLayout3D, Graph, GraphEngine, GraphEngine3D, GraphLayoutMode, GroupId, NodeIndex, SelectMode};
+use uzor_graph::{
+    FilterSpec, ForceDirectedLayout3D, Graph, GraphEngine, GraphEngine3D, GraphLayoutMode, GroupId, NodeIndex, SelectMode,
+    TransitionDirection,
+};
 
 const AGENT_PORT: u16 = 17481;
 const BLACKBOX_SLOT: &str = "graph";
 const SIDEBAR_SLOT: &str = "sidebar";
 const SIDEBAR_WIDTH: f32 = 320.0;
+
+/// Animated 2D<->3D dimension-transition duration — the owner's own spec
+/// ("~600ms"). See [`DemoBlackbox::set_dimension_3d`]/
+/// [`DemoBlackbox::set_dimension_2d`].
+const DIMENSION_TRANSITION_MS: f64 = 600.0;
 
 const NUM_CLUSTERS: usize = 6;
 const CLUSTER_SIZE: usize = 88;
@@ -684,6 +692,39 @@ impl CameraFitFlag {
     }
 }
 
+/// Shared "an animated `Out` dimension transition is flattening toward
+/// 2D" flag (dimension-transition wave) — same cross-thread
+/// `Arc<Atomic*>` convention [`CameraFitFlag`]/[`DimState`] already
+/// established. `DimState` itself stays `ThreeD` for the WHOLE duration
+/// of an animated 3D->2D switch (the flattening volume is still `engine3d`'s
+/// own scene) — this flag is the separate signal `DemoApp::scene3d`
+/// polls every tick, on the winit thread, to know once the transition
+/// completes (`GraphEngine3D::transition_active()` itself clears the
+/// instant the ease finishes, losing which DIRECTION just completed) that
+/// it must copy the settled 3D positions back into the 2D engine and
+/// flip `DimState` to `TwoD` — see [`DemoBlackbox::set_dimension_2d`] and
+/// [`DemoApp::scene3d`]'s own doc comments.
+#[derive(Clone)]
+struct FlattenPendingFlag(Arc<AtomicBool>);
+
+impl FlattenPendingFlag {
+    fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
+
+    fn is_pending(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn request(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    fn clear(&self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
 /// Rebuild BOTH the 2D and 3D engines IN PLACE from `fixture` —
 /// `set_fixture`'s own implementation, also used by `DemoApp::new()` for
 /// the initial build (exactly ONE "build a fixture into these engines"
@@ -718,6 +759,21 @@ fn rebuild_engines(engine: &Arc<Mutex<Engine>>, engine3d: &Arc<Mutex<Engine3D>>,
     *DemoApp::lock(engine) = new_engine;
     *DemoApp::lock3d(engine3d) = new_engine3d;
     camera_fit.request();
+}
+
+/// Copy the 3D engine's CURRENT `(x, y)` positions into the 2D engine and
+/// flip `dim` to `TwoD` (dimension-transition wave) — the "3D->2D handoff"
+/// half of `set_dimension`, shared by [`DemoBlackbox::set_dimension_2d`]'s
+/// instant (`animate: false`) path and [`DemoApp::scene3d`]'s own
+/// animated-completion poll, so there is exactly ONE "flatten 3D into 2D"
+/// code path regardless of which thread triggers it.
+fn flatten_3d_into_2d(engine: &Arc<Mutex<Engine>>, engine3d: &Arc<Mutex<Engine3D>>, dim: &DimState) {
+    let positions: Vec<(f32, f32)> = {
+        let engine3d = DemoApp::lock3d(engine3d);
+        engine3d.particles.iter().map(|p| (p.x, p.y)).collect()
+    };
+    DemoApp::lock(engine).seed_positions(&positions);
+    dim.set(Dimension::TwoD);
 }
 
 struct DemoApp {
@@ -762,6 +818,9 @@ struct DemoApp {
     /// agent-api action (`DemoBlackbox`, a different struct on a
     /// different thread) can read the same last-known size.
     last_3d_surface_px: SurfaceSizeState,
+    /// Dimension-transition wave — see [`FlattenPendingFlag`]'s own doc
+    /// comment. Polled every `scene3d()` tick.
+    flatten_pending: FlattenPendingFlag,
 }
 
 /// Thin `BlackboxAgentSurface` wrapper the demo registers instead of
@@ -796,6 +855,9 @@ struct DemoBlackbox {
     /// can derive an aspect ratio from the agent-api HTTP thread. See
     /// [`SurfaceSizeState`]'s own doc comment.
     surface_size: SurfaceSizeState,
+    /// Same `flatten_pending` `Arc` `DemoApp` owns — see
+    /// [`FlattenPendingFlag`]'s own doc comment.
+    flatten_pending: FlattenPendingFlag,
 }
 
 /// `NodeIndex` resolution for the 3D agent-forwarding path (Wave 3) —
@@ -916,6 +978,7 @@ impl DemoApp {
             frame_profiler: Arc::new(Mutex::new(FrameProfiler::default())),
             last_3d_frame_at: None,
             last_3d_surface_px: SurfaceSizeState::new(),
+            flatten_pending: FlattenPendingFlag::new(),
         }
     }
 
@@ -1111,6 +1174,21 @@ impl BlackboxAgentSurface for DemoBlackbox {
             // the grid toggle lives on `engine3d`, but it's meaningful to
             // query even while 2D is the active dimension.
             map.insert("grid".to_owned(), json!(DemoApp::lock3d(&self.engine3d).grid_enabled()));
+            // Dimension-transition wave — always reported regardless of
+            // which dimension is active (same convention `fixture`/
+            // `nav_mode`/`grid` already use): the transition lives on
+            // `engine3d` regardless.
+            {
+                let engine3d = DemoApp::lock3d(&self.engine3d);
+                map.insert(
+                    "dimension_transition".to_owned(),
+                    json!({
+                        "active": engine3d.transition_active(),
+                        "direction": engine3d.transition_direction().map(TransitionDirection::as_str),
+                        "progress": engine3d.transition_progress(),
+                    }),
+                );
+            }
             // 2026-07-22 (3D-parity-arc tail) — same field name the
             // foxhound source app's own `FrameProfile` publishes under
             // (`uzor::framework::frame_profiler::FrameProfiler::to_json`'s
@@ -1126,15 +1204,16 @@ impl BlackboxAgentSurface for DemoBlackbox {
 
     fn apply_agent_action(&mut self, action: AgentAction) -> AgentActionReply {
         if action.name == "set_dimension" {
+            // Dimension-transition wave: animated by default (the owner's
+            // own spec — "the last 3D-shelf UX item"); `args.animate:
+            // false` keeps the pre-existing instant switch for headless
+            // tests/scripts that want determinism. See
+            // `DemoBlackbox::set_dimension_3d`/`set_dimension_2d`'s own
+            // doc comments for the full In/Out mechanics.
+            let animate = action.args.get("animate").and_then(Value::as_bool).unwrap_or(true);
             return match action.args.get("dim").and_then(Value::as_u64) {
-                Some(2) => {
-                    self.dim.set(Dimension::TwoD);
-                    AgentActionReply::ok_with_log(json!({ "dimension": 2 }))
-                }
-                Some(3) => {
-                    self.dim.set(Dimension::ThreeD);
-                    AgentActionReply::ok_with_log(json!({ "dimension": 3 }))
-                }
+                Some(2) => self.set_dimension_2d(animate),
+                Some(3) => self.set_dimension_3d(animate),
                 _ => AgentActionReply::err("set_dimension requires args.dim to be 2 or 3"),
             };
         }
@@ -1192,6 +1271,64 @@ impl BlackboxAgentSurface for DemoBlackbox {
 }
 
 impl DemoBlackbox {
+    /// `set_dimension {"dim": 3}` — 2D->3D (dimension-transition wave).
+    /// Re-seeds `engine3d`'s `x`/`y` from the CURRENT 2D particle layout
+    /// (`GraphEngine3D::seed_positions` also jitters `z` per its own
+    /// existing z-plane-degeneracy fix) ONLY on a genuinely fresh switch
+    /// (`self.dim.get() == TwoD` — reseeding while already `ThreeD` would
+    /// stomp the live 3D sim mid-flight, e.g. during a reversal of an
+    /// in-flight `Out`), flips `DimState` to `ThreeD` immediately, clears
+    /// any pending flatten-to-2D (a reversal), then starts (or reverses
+    /// into) an animated `In` transition — see
+    /// `GraphEngine3D::start_transition`'s own doc comment for the
+    /// no-snap reversal mechanics. `animate: false` skips
+    /// `start_transition` entirely (an instant switch, the pre-existing
+    /// behavior — headless tests/scripts want determinism).
+    fn set_dimension_3d(&mut self, animate: bool) -> AgentActionReply {
+        if self.dim.get() == Dimension::TwoD {
+            let positions: Vec<(f32, f32)> = {
+                let engine = DemoApp::lock(&self.engine);
+                engine.particles.iter().map(|p| (p.x, p.y)).collect()
+            };
+            DemoApp::lock3d(&self.engine3d).seed_positions(&positions);
+            self.dim.set(Dimension::ThreeD);
+        }
+        self.flatten_pending.clear();
+        if animate {
+            DemoApp::lock3d(&self.engine3d).start_transition(TransitionDirection::In, DIMENSION_TRANSITION_MS);
+        }
+        AgentActionReply::ok_with_log(json!({ "dimension": 3, "animate": animate }))
+    }
+
+    /// `set_dimension {"dim": 2}` — 3D->2D (dimension-transition wave).
+    /// While ALREADY `TwoD`, a no-op success (matches the pre-existing
+    /// idempotent behavior). While `ThreeD` and `animate`: starts an
+    /// `Out` transition and sets [`FlattenPendingFlag`] — `DimState`
+    /// DELIBERATELY stays `ThreeD` for the whole flattening (the volume
+    /// is still `engine3d`'s own scene to render); `DemoApp::scene3d`'s
+    /// own completion poll is what actually copies the settled 3D
+    /// positions into the 2D engine and flips `DimState` once the ease
+    /// finishes (`GraphEngine3D::transition_active()` alone can't tell
+    /// `scene3d` which direction just completed, since it clears either
+    /// way — the flag is the persistent signal). `animate: false`
+    /// completes the flip synchronously right here instead (the
+    /// pre-existing instant-switch behavior).
+    fn set_dimension_2d(&mut self, animate: bool) -> AgentActionReply {
+        match self.dim.get() {
+            Dimension::TwoD => AgentActionReply::ok_with_log(json!({ "dimension": 2, "animate": animate })),
+            Dimension::ThreeD => {
+                if animate {
+                    self.flatten_pending.request();
+                    DemoApp::lock3d(&self.engine3d).start_transition(TransitionDirection::Out, DIMENSION_TRANSITION_MS);
+                } else {
+                    flatten_3d_into_2d(&self.engine, &self.engine3d, &self.dim);
+                    self.flatten_pending.clear();
+                }
+                AgentActionReply::ok_with_log(json!({ "dimension": 2, "animate": animate }))
+            }
+        }
+    }
+
     /// Wave 3 — `hover_node`/`select_node`/`clear_selection` forwarded
     /// straight onto `engine3d` (plan §4 item 4: "hover_node/select_node
     /// equivalents working in 3D"). Mirrors `uzor_graph::agent`'s own 2D
@@ -1404,6 +1541,7 @@ impl App<NoPanel> for DemoApp {
             fly: self.fly.clone(),
             frame_profiler: self.frame_profiler.clone(),
             surface_size: self.last_3d_surface_px.clone(),
+            flatten_pending: self.flatten_pending.clone(),
         };
         layout.register_blackbox_agent(BLACKBOX_SLOT, Arc::new(Mutex::new(blackbox)));
     }
@@ -1596,6 +1734,23 @@ impl Scene3DApp<NoPanel> for DemoApp {
         if self.nav_mode.get() == NavMode::Fly {
             Self::lock_fly(&self.fly).tick(dt, &mut engine3d.camera);
         }
+
+        // Dimension-transition wave — poll for an animated `Out`
+        // flattening's completion: `GraphEngine3D::tick` (above) just
+        // advanced it, and `transition_active()` clears the INSTANT the
+        // ease finishes. `DimState` deliberately stayed `ThreeD` for the
+        // whole flattening (see `DemoBlackbox::set_dimension_2d`'s own
+        // doc comment) — this is the one place that actually hands
+        // control back to the 2D engine, THIS SAME frame, once the
+        // volume has genuinely finished collapsing to the plane.
+        if self.flatten_pending.is_pending() && !engine3d.transition_active() {
+            drop(engine3d);
+            flatten_3d_into_2d(&self.engine, &self.engine3d, &self.dim);
+            self.flatten_pending.clear();
+            self.last_3d_frame_at = None;
+            return None;
+        }
+
         let scene_build_started = std::time::Instant::now();
         let scene = engine3d.build_scene(surf_h as f64);
         let scene_build_ms = scene_build_started.elapsed().as_secs_f64() * 1000.0;

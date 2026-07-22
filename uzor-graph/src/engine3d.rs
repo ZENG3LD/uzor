@@ -32,7 +32,7 @@ use uzor_urx_3d::{Mesh, MeshLit, PerspectiveCamera, Scene3D};
 
 use crate::camera3d::Camera3D;
 use crate::cluster::{ClusterRegistry, GroupId};
-use crate::engine::{box_select_mode_for, normalized_rect, FilterSpec, NodeFacts, SelectMode, DEFAULT_LABEL_HALO};
+use crate::engine::{box_select_mode_for, ease_in_out_cubic, normalized_rect, FilterSpec, NodeFacts, SelectMode, DEFAULT_LABEL_HALO};
 use crate::graph::{Graph, NodeIndex, SimEdge, SimTopology};
 use crate::interaction::pick3d;
 use crate::label_grid;
@@ -277,6 +277,90 @@ const FIT_VIEW_MIN_HALF_DIAGONAL: f32 = 1e-3;
 /// is the only 3D consumer.
 const DEFAULT_LOCAL_DEPTH_3D: u8 = 2;
 
+// ── Dimension transition (dimension-transition wave — the animated
+// 2D<->3D switch, `force_graph_demo`'s own `set_dimension` action) ──────
+
+/// Fixed aspect assumed for [`GraphEngine3D::front_on_camera`]'s own
+/// [`Camera3D::fit_bounds`] solve — [`GraphEngine3D::start_transition`]'s
+/// literal signature (`direction`, `duration_ms`) takes no viewport/
+/// aspect parameter, unlike every OTHER viewport-needing method on this
+/// engine (`fit_view`/`box_select`/`on_event`, all of which take one
+/// explicitly): the front-on pose only needs to be "close enough" to
+/// fill the viewport for the ~600ms the transition itself runs, and
+/// `Camera3D::fit_bounds`'s own fallback for a non-finite/invalid aspect
+/// is this SAME 16:9 default already — this just applies that existing
+/// fallback unconditionally instead of only on invalid input, rather than
+/// threading a real aspect through a brand new parameter this wave's own
+/// task spec didn't ask for.
+const FRONT_ON_ASPECT: f32 = 16.0 / 9.0;
+
+/// Direction of an in-flight [`DimensionTransition`]. `In` = entering 3D
+/// (the flat layout inflates into a volume while the camera eases from a
+/// front-on framing toward the settled orbit pose); `Out` = leaving 3D
+/// (the volume flattens back to the plane while the camera eases from the
+/// orbit pose back toward a front-on framing, before the caller hands
+/// control back to the 2D engine — see `force_graph_demo`'s own
+/// `set_dimension` handling).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransitionDirection {
+    In,
+    Out,
+}
+
+impl TransitionDirection {
+    /// Stable lowercase string form — `force_graph_demo`'s own
+    /// `agent_state`'s `dimension_transition.direction` field reads this.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TransitionDirection::In => "in",
+            TransitionDirection::Out => "out",
+        }
+    }
+}
+
+/// An in-flight animated 2D<->3D dimension transition — ticked once per
+/// [`GraphEngine3D::tick`] call via
+/// [`GraphEngine3D::advance_dimension_transition`]. Mirrors
+/// [`crate::engine`]'s own `CameraTransition`'s `ease_in_out_cubic`
+/// convention EXACTLY (that function was promoted `pub(crate)` for this
+/// reuse — see its own doc comment) rather than a duplicated copy: only
+/// the PROGRESS FRACTION is eased; every interpolated quantity (z-scale,
+/// yaw, pitch, distance, target) is then linearly interpolated against
+/// that SAME eased fraction.
+#[derive(Debug, Clone, Copy)]
+struct DimensionTransition {
+    direction: TransitionDirection,
+    elapsed_s: f32,
+    duration_s: f32,
+    /// The render z-scale this transition eases FROM — the pure
+    /// canonical `0.0` (`In`) or `1.0` (`Out`) for a FRESH transition,
+    /// but a mid-transition REVERSAL (a second [`GraphEngine3D::
+    /// start_transition`] call while one is already in flight) captures
+    /// whatever the CURRENT instantaneous scale happens to be instead, so
+    /// the reversed ease continues smoothly with no visual snap (see
+    /// `start_transition`'s own doc comment).
+    start_scale: f32,
+    /// The render z-scale this transition eases TOWARD — always the pure
+    /// canonical endpoint (`1.0` for `In`, `0.0` for `Out`), regardless of
+    /// whether this is a fresh transition or a reversal.
+    end_scale: f32,
+    start_camera: Camera3D,
+    end_camera: Camera3D,
+}
+
+impl DimensionTransition {
+    /// Raw linear progress in `[0, 1]` — `duration_s <= 0.0` (an explicit
+    /// instant transition) short-circuits to `1.0` immediately, mirroring
+    /// `CameraTransition::step`'s own convention.
+    fn progress(&self) -> f64 {
+        if self.duration_s <= 0.0 {
+            1.0
+        } else {
+            (self.elapsed_s / self.duration_s).clamp(0.0, 1.0) as f64
+        }
+    }
+}
+
 /// The 3D sibling of [`crate::engine::GraphEngine`] — see the module doc.
 pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     pub graph: Graph<N, E>,
@@ -391,6 +475,32 @@ pub struct GraphEngine3D<N, E, L: Layout = ForceDirectedLayout3D> {
     /// change the force topology — see [`GraphEngine3D::tick`]'s own doc
     /// comment. See [`GraphEngine3D::set_filter`]/[`GraphEngine3D::filter`].
     filter: Option<FilterSpec>,
+    /// In-flight animated 2D<->3D dimension transition (dimension-
+    /// transition wave), if any — `None` is this engine's ordinary,
+    /// full-volume steady state. See [`GraphEngine3D::start_transition`].
+    dim_transition: Option<DimensionTransition>,
+    /// Last known SETTLED (non-transitional) orbit-camera pose —
+    /// remembered separately from `camera` (which a transition's own ease
+    /// continuously overwrites while in flight) so any number of
+    /// transitions/reversals always converges back on the pose the user
+    /// actually last chose interactively. See
+    /// [`GraphEngine3D::start_transition`]'s own doc comment.
+    orbit_camera: Camera3D,
+    /// Current instantaneous render-time z-scale — a PERSISTENT, STICKY
+    /// field (mirrors `camera` itself: both are written eagerly by
+    /// [`GraphEngine3D::start_transition`] and every subsequent
+    /// [`GraphEngine3D::advance_dimension_transition`] tick, never
+    /// recomputed transiently from `dim_transition`'s mere presence).
+    /// Defaults to `1.0` (full volume) and STAYS at whatever value a
+    /// transition last eased it to even after that transition completes
+    /// and `dim_transition` clears — e.g. an `Out` transition that just
+    /// reached `0.0` (flat) must keep reading `0.0`, not spuriously jump
+    /// back to a hardcoded "no transition" default the instant it
+    /// finishes; a caller (`force_graph_demo`'s own `scene3d` poll) is
+    /// expected to stop rendering this engine at exactly that point
+    /// anyway, but the field itself stays internally consistent either
+    /// way. See [`GraphEngine3D::render_z_scale`].
+    z_scale: f32,
 }
 
 impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
@@ -423,6 +533,9 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             label_halo: DEFAULT_LABEL_HALO.to_owned(),
             local_root: None,
             filter: None,
+            dim_transition: None,
+            orbit_camera: Camera3D::default(),
+            z_scale: 1.0,
         }
     }
 
@@ -438,17 +551,22 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     }
 
     /// Advance the 3D force simulation by `dt` real seconds (plan §4 Wave
-    /// 1's proof surface). Filter/local-subgraph wave: ticks against a
-    /// FILTERED topology when [`Self::filter`] is active — mirrors
-    /// [`crate::engine::GraphEngine::tick`]'s own filtered-topology branch
-    /// literally: an edge is dropped from the topology fed to
-    /// `Layout::tick` the instant EITHER endpoint fails the filter, so
-    /// surviving nodes' link-force no longer pulls toward an excluded
-    /// one. [`Self::local_root`] does NOT affect this — local mode is
-    /// VIEW-ONLY (see [`GraphEngine3D::set_local_root`]'s own doc
+    /// 1's proof surface) — also advances any in-flight
+    /// [`DimensionTransition`] (dimension-transition wave, see
+    /// [`GraphEngine3D::advance_dimension_transition`]), which only ever
+    /// touches [`GraphEngine3D::camera`]/the render-time z-scale, never
+    /// [`GraphEngine3D::particles`]. Filter/local-subgraph wave: ticks
+    /// against a FILTERED topology when [`Self::filter`] is active —
+    /// mirrors [`crate::engine::GraphEngine::tick`]'s own
+    /// filtered-topology branch literally: an edge is dropped from the
+    /// topology fed to `Layout::tick` the instant EITHER endpoint fails
+    /// the filter, so surviving nodes' link-force no longer pulls toward
+    /// an excluded one. [`Self::local_root`] does NOT affect this — local
+    /// mode is VIEW-ONLY (see [`GraphEngine3D::set_local_root`]'s own doc
     /// comment), every particle keeps ticking under the full topology
     /// regardless of the local-subgraph restriction.
     pub fn tick(&mut self, dt: f32) -> LayoutTickResult {
+        self.advance_dimension_transition(dt);
         let topo = self.graph.topology();
         match &self.filter {
             Some(filter) => {
@@ -598,11 +716,19 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         // own doc comment). Candidates exclude any node currently hidden
         // by a collapsed cluster or the filter/local-subgraph exclusion
         // set (see [`GraphEngine3D::pick_candidates`]).
+        //
+        // Dimension-transition wave: the HIT TEST itself runs against
+        // [`GraphEngine3D::render_particles`] (what's actually on screen
+        // mid-transition), but the drag PLANE/anchor position read just
+        // below is the REAL, unscaled `self.particles` position — a drag
+        // manipulates the simulated node directly and must never inherit
+        // a transition's cosmetic z-scale into the sim itself.
         let aspect = (viewport.width / viewport.height.max(1.0)) as f32;
         let camera = self.camera.to_perspective(aspect);
         let (ray_origin, ray_dir) = pick3d::screen_to_ray(&camera, viewport, (x, y));
         let candidates = self.pick_candidates();
-        if let Some(hit) = pick3d::nearest_node_3d(&self.graph, &self.particles, ray_origin, ray_dir, &candidates) {
+        let render_particles = self.render_particles();
+        if let Some(hit) = pick3d::nearest_node_3d(&self.graph, &render_particles, ray_origin, ray_dir, &candidates) {
             if let Some(p) = self.particles.get(hit.index()) {
                 let anchor_pos = Vec3::new(p.x, p.y, p.z);
                 let plane_point = anchor_pos;
@@ -855,12 +981,19 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// through this one function so they can never diverge on which
     /// camera/candidate set they pick against. Candidates exclude every
     /// currently-excluded node (see [`GraphEngine3D::pick_candidates`]).
+    ///
+    /// **Dimension-transition wave**: ray-vs-sphere hit-testing runs
+    /// against [`GraphEngine3D::render_particles`] (the `z`-scaled
+    /// snapshot), not `self.particles` directly, so hover/click always
+    /// hit whatever's ACTUALLY on screen mid-transition, not the
+    /// full-depth simulated position.
     fn pick_at(&self, x: f64, y: f64, viewport: Rect) -> Option<NodeIndex> {
         let aspect = (viewport.width / viewport.height.max(1.0)) as f32;
         let camera = self.camera.to_perspective(aspect);
         let (origin, dir) = pick3d::screen_to_ray(&camera, viewport, (x, y));
         let candidates = self.pick_candidates();
-        pick3d::nearest_node_3d(&self.graph, &self.particles, origin, dir, &candidates)
+        let render_particles = self.render_particles();
+        pick3d::nearest_node_3d(&self.graph, &render_particles, origin, dir, &candidates)
     }
 
     /// Node ids currently eligible for hover/click/drag picking, box-select
@@ -967,6 +1100,196 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             return;
         }
         self.camera.fit_bounds(min, max, aspect, FIT_VIEW_PADDING);
+    }
+
+    // ── Dimension transition (dimension-transition wave — animated
+    // 2D<->3D switch driven by `force_graph_demo`'s own `set_dimension`
+    // action) ─────────────────────────────────────────────────────────
+
+    /// Current render-time z-scale — a thin getter over the persistent
+    /// [`Self::z_scale`] field (see that field's own doc comment for why
+    /// this is a STORED, sticky value rather than recomputed transiently
+    /// from `dim_transition`'s mere presence). `1.0` absent any
+    /// transition ever having run (this engine's ordinary, full-volume 3D
+    /// state); eased between `0.0`/`1.0` while
+    /// [`GraphEngine3D::transition_active`]; STAYS at whatever a
+    /// transition last eased it to even after that transition completes.
+    /// Every RENDER/PICK/LABEL/OVERLAY consumer of particle positions
+    /// applies this scale to `z` via [`GraphEngine3D::render_particles`]
+    /// (whole-slice consumers: [`GraphEngine3D::build_scene`], the grid
+    /// AABB, CPU ray-picking) or inline against a single particle
+    /// (`visible_labels`/`draw_overlay`/box-select containment) — the
+    /// SIMULATION itself ([`GraphEngine3D::particles`]/
+    /// [`GraphEngine3D::tick`]) never reads this and is never mutated by
+    /// it.
+    fn render_z_scale(&self) -> f32 {
+        self.z_scale
+    }
+
+    /// Owned snapshot of every particle with `z` scaled by
+    /// [`GraphEngine3D::render_z_scale`] — the choke point every
+    /// whole-slice RENDER/PICK consumer reads instead of `self.particles`
+    /// directly. `Particle` is `Copy`, so this clone is cheap at this
+    /// crate's node-count scale — no attempt is made to skip the
+    /// allocation in the always-`1.0` steady state, matching this file's
+    /// own established "small per-frame allocations are an acceptable
+    /// cost at this scale" convention (e.g. [`GraphEngine3D::
+    /// compute_excluded_nodes_3d`]'s own `HashSet`s).
+    fn render_particles(&self) -> Vec<Particle> {
+        let scale = self.render_z_scale();
+        self.particles
+            .iter()
+            .map(|p| {
+                let mut p = *p;
+                p.z *= scale;
+                p
+            })
+            .collect()
+    }
+
+    /// A front-on, 2D-like camera framing of the CURRENT particle layout
+    /// — `yaw = 0`, `pitch = 0` (looking straight down the world `-Z`
+    /// axis at the flat `xy` plane, the same front-on view a 2D camera
+    /// would show), `target`/`distance` derived via [`Camera3D::
+    /// fit_bounds`] against the layout's own FLATTENED (`z = 0`) AABB so
+    /// the graph fills the viewport the way 2D's own `Camera2D::fit_view`
+    /// framing does. Falls back to [`Camera3D::default`]'s own distance,
+    /// centered at the origin, if there isn't a single particle yet. Uses
+    /// a fixed [`FRONT_ON_ASPECT`] — see that constant's own doc comment.
+    fn front_on_camera(&self) -> Camera3D {
+        let mut camera = Camera3D { target: Vec3::ZERO, distance: Camera3D::default().distance, yaw: 0.0, pitch: 0.0 };
+        if let Some((min, max)) = particle_aabb(&self.particles) {
+            let flat_min = Vec3::new(min.x, min.y, 0.0);
+            let flat_max = Vec3::new(max.x, max.y, 0.0);
+            camera.fit_bounds(flat_min, flat_max, FRONT_ON_ASPECT, FIT_VIEW_PADDING);
+        }
+        camera
+    }
+
+    /// Start (or REVERSE) an animated 2D<->3D dimension transition —
+    /// `direction: In` inflates the flat layout into a volume while the
+    /// camera eases from a front-on framing toward the settled orbit
+    /// pose; `Out` reverses both (the volume flattens, the camera eases
+    /// back toward the front-on framing). `duration_ms <= 0.0` completes
+    /// on the very next [`GraphEngine3D::tick`] (an explicit instant
+    /// transition, the same convention [`crate::engine`]'s own
+    /// `CameraTransition` uses).
+    ///
+    /// **Continuity, no snap**: calling this again while a transition is
+    /// ALREADY in flight (a caller toggling back before the first one
+    /// finished) does NOT reset to the canonical `0.0`/`1.0`/front-on/
+    /// orbit endpoints — the new transition's START is whatever the
+    /// CURRENT instantaneous z-scale/camera pose happens to be
+    /// ([`GraphEngine3D::render_z_scale`]/`self.camera`, both already
+    /// continuously updated every tick by the transition in progress), so
+    /// reversing direction eases smoothly from exactly where the visual
+    /// state already is. The END is always the pure canonical target for
+    /// the NEW direction.
+    ///
+    /// **Remembering the orbit pose across a flatten-out-and-back
+    /// cycle**: `self.camera` itself gets overwritten by the ease every
+    /// tick, so [`Self::orbit_camera`] separately remembers the last
+    /// SETTLED (non-transitional) orbit pose — refreshed only when a
+    /// FRESH (not-already-in-flight) `Out` transition starts, since that
+    /// is the one moment `self.camera` is guaranteed to hold the caller's
+    /// own most recent real orbit/pan/dolly interaction, undisturbed by
+    /// any ease. `In`'s own end target reads this snapshot (not
+    /// `self.camera`), so any number of reversals always still converges
+    /// back on the SAME real orbit pose, never a stale or mid-flight one.
+    pub fn start_transition(&mut self, direction: TransitionDirection, duration_ms: f64) {
+        let is_fresh = self.dim_transition.is_none();
+        // A FRESH `In` always starts perfectly flat (`0.0`) — NOT
+        // `self.render_z_scale()`, which reads `1.0` absent a transition
+        // (this engine's ordinary full-volume steady state, exactly what
+        // a fresh 2D->3D switch must NOT start from). A REVERSAL (or any
+        // fresh `Out`, whose canonical start `1.0` already equals the
+        // steady-state reading) correctly continues from whatever the
+        // CURRENT instantaneous scale is.
+        let start_scale = if is_fresh && direction == TransitionDirection::In { 0.0 } else { self.render_z_scale() };
+        let end_scale = match direction {
+            TransitionDirection::In => 1.0,
+            TransitionDirection::Out => 0.0,
+        };
+
+        if is_fresh && direction == TransitionDirection::Out {
+            self.orbit_camera = self.camera;
+        }
+
+        let front_on = self.front_on_camera();
+        let (start_camera, end_camera) = match direction {
+            TransitionDirection::In => (if is_fresh { front_on } else { self.camera }, self.orbit_camera),
+            TransitionDirection::Out => (self.camera, front_on),
+        };
+
+        self.camera = start_camera;
+        self.z_scale = start_scale;
+        self.dim_transition = Some(DimensionTransition {
+            direction,
+            elapsed_s: 0.0,
+            duration_s: (duration_ms.max(0.0) / 1000.0) as f32,
+            start_scale,
+            end_scale,
+            start_camera,
+            end_camera,
+        });
+    }
+
+    /// Whether an animated dimension transition is currently in flight —
+    /// the completion probe a caller's `set_dimension`-equivalent handling
+    /// polls every tick to know when to hand control back to the 2D
+    /// engine (`force_graph_demo`'s own `scene3d` does exactly this for
+    /// its `Out` case — see that function's own doc comment). This engine
+    /// has no freeze/wake concept of its own (`uzor-graph/CLAUDE.md`'s
+    /// divergence log), so it isn't a new redraw gate — the demo already
+    /// ticks every frame while 3D is active regardless.
+    pub fn transition_active(&self) -> bool {
+        self.dim_transition.is_some()
+    }
+
+    /// Current transition direction, if any. See
+    /// [`GraphEngine3D::start_transition`].
+    pub fn transition_direction(&self) -> Option<TransitionDirection> {
+        self.dim_transition.as_ref().map(|t| t.direction)
+    }
+
+    /// Current transition's raw linear progress in `[0, 1]` — `0.0` when
+    /// no transition is active.
+    pub fn transition_progress(&self) -> f64 {
+        self.dim_transition.as_ref().map(DimensionTransition::progress).unwrap_or(0.0)
+    }
+
+    /// Advance the in-flight [`DimensionTransition`], if any, and clear it
+    /// once it reaches `progress >= 1.0` — mirrors
+    /// [`crate::engine::GraphEngine`]'s own `advance_camera_transition`
+    /// convention: `self.camera`'s yaw/pitch/distance/target AND
+    /// [`Self::z_scale`] are each linearly interpolated against the SAME
+    /// eased fraction ("ease the fraction, lerp every field against it",
+    /// not a curved fly-to path). `z_scale` is written into the
+    /// persistent field even on the very tick that finishes the
+    /// transition (before `dim_transition` is cleared), so it lands
+    /// EXACTLY on the pure canonical endpoint and stays there afterward —
+    /// see that field's own doc comment for why this must be a stored
+    /// write, not a value recomputed from `dim_transition.is_some()`.
+    fn advance_dimension_transition(&mut self, dt: f32) {
+        let Some(t) = self.dim_transition.as_mut() else { return };
+        t.elapsed_s += dt.max(0.0);
+        let progress = t.progress();
+        let eased = ease_in_out_cubic(progress) as f32;
+        let start_scale = t.start_scale;
+        let end_scale = t.end_scale;
+        let start_camera = t.start_camera;
+        let end_camera = t.end_camera;
+        let finished = progress >= 1.0;
+
+        self.z_scale = start_scale + (end_scale - start_scale) * eased;
+        self.camera.yaw = start_camera.yaw + (end_camera.yaw - start_camera.yaw) * eased;
+        self.camera.pitch = start_camera.pitch + (end_camera.pitch - start_camera.pitch) * eased;
+        self.camera.distance = start_camera.distance + (end_camera.distance - start_camera.distance) * eased;
+        self.camera.target = start_camera.target + (end_camera.target - start_camera.target) * eased;
+
+        if finished {
+            self.dim_transition = None;
+        }
     }
 
     /// Whether [`GraphEngine3D::build_scene`]/[`GraphEngine3D::draw_overlay`]
@@ -1161,11 +1484,16 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     }
 
     fn nodes_in_screen_rect(&self, camera: &PerspectiveCamera, viewport: Rect, rect: Rect) -> Vec<NodeIndex> {
+        // Dimension-transition wave: containment against the `z`-scaled
+        // render position (see `GraphEngine3D::render_z_scale`), not the
+        // raw simulated `z` — same "hit what's on screen" reasoning as
+        // `pick_at`.
+        let scale = self.render_z_scale();
         self.pick_candidates()
             .into_iter()
             .filter(|&id| {
                 let Some(p) = self.particles.get(id.index()) else { return false };
-                match pick3d::project_world_to_screen(camera, Vec3::new(p.x, p.y, p.z), viewport) {
+                match pick3d::project_world_to_screen(camera, Vec3::new(p.x, p.y, p.z * scale), viewport) {
                     Some((sx, sy)) => rect.contains(sx, sy),
                     None => false,
                 }
@@ -1290,12 +1618,19 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// distance-LOD step (`crate::render3d::grid_step_for_scale`); a
     /// caller not using the grid can pass any positive value. A no-op
     /// (no grid appended) while there isn't a single particle yet.
+    ///
+    /// **Dimension-transition wave**: every position here is read from
+    /// [`GraphEngine3D::render_particles`] (a `z`-scaled SNAPSHOT), not
+    /// `self.particles` directly — while a [`DimensionTransition`] is in
+    /// flight this renders the eased-flat/inflating volume without ever
+    /// mutating the simulated particles themselves.
     pub fn build_scene(&self, viewport_height_px: f64) -> Scene3D {
         let hidden = self.compute_excluded_nodes_3d();
-        let mut scene = crate::render3d::build_scene(&self.graph, &self.particles, &self.node_mesh, &self.edge_mesh, &hidden);
-        scene.nodes.extend(crate::render3d::build_cluster_edge_instances(&self.particles, &self.edge_mesh, &self.clusters));
+        let render_particles = self.render_particles();
+        let mut scene = crate::render3d::build_scene(&self.graph, &render_particles, &self.node_mesh, &self.edge_mesh, &hidden);
+        scene.nodes.extend(crate::render3d::build_cluster_edge_instances(&render_particles, &self.edge_mesh, &self.clusters));
         if self.grid_enabled {
-            if let Some((min, max)) = particle_aabb(&self.particles) {
+            if let Some((min, max)) = particle_aabb(&render_particles) {
                 let fov_y = self.camera.to_perspective(1.0).fov_y;
                 let step = crate::render3d::grid_step_for_scale(self.camera.distance, fov_y, viewport_height_px);
                 let plan = crate::render3d::build_grid_plan(min, max, step);
@@ -1452,12 +1787,17 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// see [`GraphEngine3D::draw_overlay`]'s own doc comment for what 3D
     /// DOES paint for a selection instead — rings, not label forcing).
     pub fn visible_labels(&self, camera: &PerspectiveCamera, viewport: Rect) -> Vec<(NodeIndex, f64, f64)> {
+        // Dimension-transition wave: projected from the `z`-scaled render
+        // position, not the raw simulated `z` (see
+        // `GraphEngine3D::render_z_scale`) — a label always sits on the
+        // node's ACTUAL on-screen position mid-transition.
+        let scale = self.render_z_scale();
         let candidate_ids = self.pick_candidates();
         let mut candidates = Vec::with_capacity(candidate_ids.len());
         let mut screen_positions: HashMap<NodeIndex, (f64, f64)> = HashMap::with_capacity(candidate_ids.len());
         for id in candidate_ids {
             let (Some(p), Some(node)) = (self.particles.get(id.index()), self.graph.get_node(id)) else { continue };
-            let world = Vec3::new(p.x, p.y, p.z);
+            let world = Vec3::new(p.x, p.y, p.z * scale);
             let Some(screen_pos) = pick3d::project_world_to_screen(camera, world, viewport) else { continue };
             let screen_radius = project_screen_radius(camera, viewport, world, node.radius);
             candidates.push(label_grid::LabelCandidate { node: id, screen_pos, degree: self.graph.degree(id), screen_radius });
@@ -1533,6 +1873,13 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// this is a direct walk of `crate::render3d`'s `GridLine`s rather
     /// than a `label_grid::LabelGrid` pass.
     pub fn draw_overlay(&self, render: &mut dyn RenderContext, camera: &PerspectiveCamera, viewport: Rect) -> OverlayDrawStats {
+        // Dimension-transition wave: every projection below (cluster
+        // label, selection ring, hover card) reads the SAME `z`-scaled
+        // render position `GraphEngine3D::visible_labels` already uses
+        // for the ordinary node labels above it — an anchor always sits
+        // on the node's ACTUAL on-screen position mid-transition, never
+        // the full-depth simulated one.
+        let scale = self.render_z_scale();
         let max_degree = self.graph.nodes().map(|(id, _)| self.graph.degree(id)).max().unwrap_or(0).max(1);
         let zoom_analog = (Camera3D::default().distance / self.camera.distance.max(1e-3)) as f64;
         let forced: HashSet<NodeIndex> = self.clusters.collapsed_clusters().map(|c| c.representative).collect();
@@ -1576,7 +1923,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         let mut cluster_labels_drawn = 0usize;
         for cluster in self.clusters.collapsed_clusters() {
             let Some(p) = self.particles.get(cluster.representative.index()) else { continue };
-            let world = Vec3::new(p.x, p.y, p.z);
+            let world = Vec3::new(p.x, p.y, p.z * scale);
             let Some((sx, sy)) = pick3d::project_world_to_screen(camera, world, viewport) else { continue };
             let text = format!("×{}", cluster.member_count());
             render.set_font("11px sans-serif");
@@ -1594,7 +1941,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 continue;
             }
             let (Some(p), Some(graph_node)) = (self.particles.get(node.index()), self.graph.get_node(node)) else { continue };
-            let world = Vec3::new(p.x, p.y, p.z);
+            let world = Vec3::new(p.x, p.y, p.z * scale);
             let Some((sx, sy)) = pick3d::project_world_to_screen(camera, world, viewport) else { continue };
             let r = project_screen_radius(camera, viewport, world, graph_node.radius);
             render.set_stroke_color("#ffffff");
@@ -1608,7 +1955,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         let mut hover_card_drawn = false;
         if let Some(hovered) = self.hovered {
             if let (Some(facts), Some(p)) = (self.node_facts(hovered), self.particles.get(hovered.index())) {
-                let world = Vec3::new(p.x, p.y, p.z);
+                let world = Vec3::new(p.x, p.y, p.z * scale);
                 if let Some(anchor) = pick3d::project_world_to_screen(camera, world, viewport) {
                     let info = HoverCardInfo { label: facts.label, category: facts.category, degree: facts.degree, pinned: facts.pinned };
                     draw_hover_card(render, anchor, &info, viewport);
@@ -1643,7 +1990,13 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// SAME real surface height every tick, per this method's own
     /// contract. Returns `0` (no-op) once there isn't a single particle.
     fn draw_grid_overlay(&self, render: &mut dyn RenderContext, camera: &PerspectiveCamera, viewport: Rect) -> usize {
-        let Some((min, max)) = particle_aabb(&self.particles) else { return 0 };
+        // Dimension-transition wave: the SAME `z`-scaled snapshot
+        // `build_scene` uses for its own grid geometry this frame (see
+        // that method's own doc comment) — keeps the axis-tick labels
+        // aligned with the actually-rendered grid while flattening/
+        // inflating.
+        let render_particles = self.render_particles();
+        let Some((min, max)) = particle_aabb(&render_particles) else { return 0 };
         let step = crate::render3d::grid_step_for_scale(self.camera.distance, camera.fov_y, viewport.height);
         let plan = crate::render3d::build_grid_plan(min, max, step);
 
@@ -3168,5 +3521,202 @@ mod tests {
         engine.set_filter(Some(FilterSpec { categories: Some(vec!["x".to_owned()]), ..Default::default() }));
         engine.box_select((sx2 - 5.0, sy2 - 5.0), (sx2 + 5.0, sy2 + 5.0), SelectMode::Replace, viewport);
         assert!(engine.selection.is_empty(), "a filter-excluded node must never be a box-select candidate");
+    }
+
+    // ── Dimension transition (dimension-transition wave — animated
+    // 2D<->3D switch) ────────────────────────────────────────────────────
+
+    /// Triangle fixture with a genuine `z` spread (unlike `triangle()`'s
+    /// own callers, which mostly only need `x`/`y`) so `z * scale` is
+    /// actually visible/provable, not a `0.0 * scale == 0.0` degenerate
+    /// case.
+    fn engine_with_z_spread() -> GraphEngine3D<(), (), ForceDirectedLayout3D> {
+        let mut engine: GraphEngine3D<(), (), ForceDirectedLayout3D> =
+            GraphEngine3D::new(triangle(), ForceDirectedLayout3D::default());
+        engine.particles[0] = Particle::at3(-40.0, 0.0, 20.0);
+        engine.particles[1] = Particle::at3(40.0, 0.0, -30.0);
+        engine.particles[2] = Particle::at3(0.0, 40.0, 15.0);
+        engine
+    }
+
+    #[test]
+    fn dimension_transition_z_scale_eases_monotonically_in_and_hits_exact_endpoints() {
+        let mut engine = engine_with_z_spread();
+        assert_eq!(engine.render_z_scale(), 1.0, "absent a transition, render z-scale is the identity");
+
+        engine.start_transition(TransitionDirection::In, 600.0);
+        assert_eq!(engine.render_z_scale(), 0.0, "a fresh `In` transition must start perfectly flat");
+        assert!(engine.transition_active());
+        assert_eq!(engine.transition_direction(), Some(TransitionDirection::In));
+
+        // 600ms at a fixed 20ms tick is 30 ticks in EXACT arithmetic, but
+        // `f32` summation of `0.02` 30 times can under/overshoot by a
+        // fraction of a tick — loop until completion (capped well above
+        // 30 as a deadlock guard) rather than assuming an exact count.
+        let mut last = engine.render_z_scale();
+        let mut ticks = 0;
+        while engine.transition_active() {
+            ticks += 1;
+            assert!(ticks <= 100, "the In transition must complete well within 100 20ms ticks (2s) of a 600ms duration");
+            engine.tick(0.02);
+            let now = engine.render_z_scale();
+            assert!(now >= last - 1e-6, "z-scale must never regress while easing In (was {last}, now {now})");
+            last = now;
+        }
+        assert!((last - 1.0).abs() < 1e-4, "In must converge to the full z-scale, got {last}");
+    }
+
+    #[test]
+    fn dimension_transition_z_scale_eases_monotonically_out_and_hits_exact_endpoints() {
+        let mut engine = engine_with_z_spread();
+        assert_eq!(engine.render_z_scale(), 1.0);
+
+        engine.start_transition(TransitionDirection::Out, 600.0);
+        assert_eq!(engine.render_z_scale(), 1.0, "a fresh `Out` transition must start at the full z-scale");
+        assert_eq!(engine.transition_direction(), Some(TransitionDirection::Out));
+
+        // See the `In` sibling test above for why this loops to
+        // completion instead of assuming an exact tick count.
+        let mut last = engine.render_z_scale();
+        let mut ticks = 0;
+        while engine.transition_active() {
+            ticks += 1;
+            assert!(ticks <= 100, "the Out transition must complete well within 100 20ms ticks (2s) of a 600ms duration");
+            engine.tick(0.02);
+            let now = engine.render_z_scale();
+            assert!(now <= last + 1e-6, "z-scale must never increase while easing Out (was {last}, now {now})");
+            last = now;
+        }
+        assert!(last.abs() < 1e-4, "Out must converge to a zero z-scale, got {last}");
+    }
+
+    #[test]
+    fn dimension_transition_camera_converges_from_front_on_to_the_orbit_state_on_in() {
+        let mut engine = engine_with_z_spread();
+        let settled_orbit = engine.camera; // `Camera3D::default()` here — never touched yet.
+
+        engine.start_transition(TransitionDirection::In, 600.0);
+        let front_on = engine.front_on_camera();
+        assert_eq!(engine.camera.yaw, front_on.yaw, "t=0 of In must sample the front-on framing exactly");
+        assert_eq!(engine.camera.pitch, front_on.pitch);
+        assert!((engine.camera.distance - front_on.distance).abs() < 1e-4);
+        assert!((engine.camera.target - front_on.target).length() < 1e-4);
+        assert_eq!(front_on.yaw, 0.0, "front-on framing must look straight down -Z (yaw 0)");
+        assert_eq!(front_on.pitch, 0.0, "front-on framing must look straight down -Z (pitch 0)");
+
+        let mut ticks = 0;
+        while engine.transition_active() {
+            ticks += 1;
+            assert!(ticks <= 100, "600ms must complete well within 100 20ms ticks");
+            engine.tick(0.02);
+        }
+        assert!((engine.camera.yaw - settled_orbit.yaw).abs() < 1e-3, "t=1 of In must converge to the settled orbit yaw");
+        assert!((engine.camera.pitch - settled_orbit.pitch).abs() < 1e-3);
+        assert!((engine.camera.distance - settled_orbit.distance).abs() < 1e-2);
+        assert!((engine.camera.target - settled_orbit.target).length() < 1e-2);
+    }
+
+    #[test]
+    fn dimension_transition_camera_converges_from_the_orbit_state_to_front_on_on_out() {
+        let mut engine = engine_with_z_spread();
+        // A distinctive orbit pose so convergence provably targets THIS
+        // pose, not the untouched default.
+        engine.camera.yaw = 1.1;
+        engine.camera.pitch = 0.4;
+        engine.camera.distance = 777.0;
+        let settled_orbit = engine.camera;
+
+        engine.start_transition(TransitionDirection::Out, 600.0);
+        assert_eq!(engine.camera, settled_orbit, "t=0 of an Out transition must sample the CURRENT settled orbit pose exactly");
+        // Captured BEFORE any tick runs — the physics sim also advances
+        // every tick and would otherwise drift the particle AABB (and
+        // therefore a freshly-recomputed front-on framing) out from under
+        // the ALREADY-FROZEN `end_camera` this transition committed to at
+        // `start_transition` time.
+        let front_on = engine.front_on_camera();
+
+        let mut ticks = 0;
+        while engine.transition_active() {
+            ticks += 1;
+            assert!(ticks <= 100, "600ms must complete well within 100 20ms ticks");
+            engine.tick(0.02);
+        }
+        assert!((engine.camera.yaw - front_on.yaw).abs() < 1e-3, "t=1 of Out must converge to the front-on yaw");
+        assert!((engine.camera.pitch - front_on.pitch).abs() < 1e-3);
+        assert!((engine.camera.distance - front_on.distance).abs() < 1e-2);
+    }
+
+    #[test]
+    fn dimension_transition_never_mutates_the_simulated_particle_positions() {
+        let mut engine = engine_with_z_spread();
+        engine.start_transition(TransitionDirection::In, 600.0);
+        engine.tick(0.02); // advance the sim (legitimate physics movement) + the transition once.
+
+        let scale = engine.render_z_scale();
+        assert!(scale > 0.0 && scale < 1.0, "must genuinely be mid-flight for this to be a meaningful proof, got {scale}");
+
+        let before: Vec<(f32, f32, f32)> = engine.particles.iter().map(|p| (p.x, p.y, p.z)).collect();
+
+        // Render/pick repeatedly WITHOUT ticking again — none of these
+        // may touch `self.particles`, even mid-transition.
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let _ = engine.build_scene(300.0);
+        let camera = engine.camera(400.0 / 300.0);
+        let _ = engine.visible_labels(&camera, viewport);
+        let _ = engine.pick_at(200.0, 150.0, viewport);
+        let _ = engine.draw_overlay(&mut RecordingRenderContext::new(), &camera, viewport);
+
+        let after: Vec<(f32, f32, f32)> = engine.particles.iter().map(|p| (p.x, p.y, p.z)).collect();
+        assert_eq!(before, after, "build_scene/pick_at/visible_labels/draw_overlay must never mutate the simulated particles");
+    }
+
+    #[test]
+    fn dimension_transition_is_deterministic_across_identical_runs() {
+        let mut engine1 = engine_with_z_spread();
+        let mut engine2 = engine_with_z_spread();
+        engine1.start_transition(TransitionDirection::In, 500.0);
+        engine2.start_transition(TransitionDirection::In, 500.0);
+
+        for _ in 0..25 {
+            engine1.tick(0.017);
+            engine2.tick(0.017);
+            assert_eq!(engine1.render_z_scale(), engine2.render_z_scale());
+            assert_eq!(engine1.camera, engine2.camera);
+        }
+        assert_eq!(engine1.transition_active(), engine2.transition_active());
+    }
+
+    #[test]
+    fn dimension_transition_reversal_mid_flight_continues_without_a_snap() {
+        let mut engine = engine_with_z_spread();
+        engine.start_transition(TransitionDirection::In, 600.0);
+        for _ in 0..10 {
+            engine.tick(0.02); // ~200ms elapsed — genuinely mid-flight.
+        }
+        let scale_before_reversal = engine.render_z_scale();
+        let camera_before_reversal = engine.camera;
+        assert!(scale_before_reversal > 0.0 && scale_before_reversal < 1.0, "must genuinely be mid-flight before reversing");
+
+        engine.start_transition(TransitionDirection::Out, 600.0);
+        // No snap: the instant a reversal starts, both the z-scale and
+        // the camera pose must be UNCHANGED from the moment before —
+        // only the TARGET (not the current visual state) flips.
+        assert!((engine.render_z_scale() - scale_before_reversal).abs() < 1e-6, "reversing must not snap the z-scale");
+        assert_eq!(engine.camera, camera_before_reversal, "reversing must not snap the camera pose");
+        assert_eq!(engine.transition_direction(), Some(TransitionDirection::Out));
+
+        // And it must actually reverse — the following ticks ease TOWARD
+        // 0.0 (flat/front-on), not keep climbing toward 1.0.
+        let mut last = engine.render_z_scale();
+        let mut ticks = 0;
+        while engine.transition_active() {
+            ticks += 1;
+            assert!(ticks <= 100, "the reversed Out transition must complete well within 100 20ms ticks");
+            engine.tick(0.02);
+            let now = engine.render_z_scale();
+            assert!(now <= last + 1e-6, "after reversing, z-scale must ease DOWN toward 0, not keep climbing");
+            last = now;
+        }
+        assert!(last.abs() < 1e-4);
     }
 }

@@ -133,7 +133,14 @@ fn nav_key_for(key: KeyCode) -> Option<NavKey> {
 /// convention is a heavier alternative this crate doesn't need at demo
 /// scale — the research doc explicitly allows "simple linear-in-
 /// transform-space" here).
-fn ease_in_out_cubic(t: f64) -> f64 {
+///
+/// `pub(crate)` (not private) so [`crate::engine3d::GraphEngine3D`]'s own
+/// dimension-transition wave (the animated 2D<->3D switch) reuses this
+/// EXACT easing function rather than a duplicated copy — same "reuse the
+/// SAME logic, not a parallel one" convention `box_select_mode_for`/
+/// `normalized_rect`/`FilterSpec::matches` already established for the 3D
+/// waves.
+pub(crate) fn ease_in_out_cubic(t: f64) -> f64 {
     if t < 0.5 {
         4.0 * t * t * t
     } else {
