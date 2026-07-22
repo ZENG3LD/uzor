@@ -15,8 +15,10 @@
 //! cargo run -p uzor-examples --bin force-graph-demo
 //! ```
 //!
-//! Keybinds (owner control-HUD pass — see the left/sidebar control
-//! panel for the same map with clickable buttons):
+//! Keybinds (owner control-HUD pass — see the control panel, docked
+//! top-RIGHT in BOTH dimensions — owner defect fix 2026-07-23, it used
+//! to float top-left in 3D while 2D extended the right sidebar — for
+//! the same map with clickable buttons):
 //! - `Tab` — toggle 2D <-> 3D (animated), works from EITHER dimension.
 //! - `V` — toggle orbit/fly camera navigation (3D only).
 //! - `Home` / `F` — fit view to the graph's bounds (either dimension).
@@ -25,6 +27,16 @@
 //! - `Esc` — extra escape hatch: releases fly mouse-look if captured.
 //! - `Shift`+drag — box-select.
 //! - `H` — show/hide the control-HUD panel (shown by default).
+//!
+//! `tree`/`hierarchy` (2D only) load with the HUD's own LAYERED
+//! (hierarchical, layered top-down) layout by default instead of
+//! FORCE — a tree-shaped fixture used to always run through the force
+//! layout and ball up instead of reading as a tree (owner defect fix
+//! 2026-07-23). `clusters`/`sparse` keep FORCE as their own default. The
+//! HUD's 2D-only LAYOUT section (FORCE / LAYERED / RADIAL) lets any
+//! fixture's layout be flipped by hand afterward — 3D stays force-only
+//! (`uzor-graph`'s 3D engine has no `GraphLayoutMode` equivalent), so
+//! that section is entirely absent while 3D is active.
 //!
 //! Agent-api verification: see `uzor-graph/RUN.md`.
 
@@ -50,8 +62,8 @@ use uzor_desktop::{AppRun3D as _, CachedOverlayJob, Scene3DApp, Scene3DFrame};
 
 use uzor_graph::interaction::fly::{FlyController, KEYBOARD_SENSITIVITY_MAX, KEYBOARD_SENSITIVITY_MIN, MOUSE_SENSITIVITY_MAX, MOUSE_SENSITIVITY_MIN};
 use uzor_graph::{
-    FilterSpec, ForceDirectedLayout3D, Graph, GraphEngine, GraphEngine3D, GraphLayoutMode, GroupId, NodeIndex, SelectMode,
-    TransitionDirection,
+    FilterSpec, ForceDirectedLayout3D, Graph, GraphEngine, GraphEngine3D, GraphLayoutMode, GroupId, LayoutKind, NodeIndex,
+    SelectMode, TransitionDirection,
 };
 
 const AGENT_PORT: u16 = 17481;
@@ -715,17 +727,26 @@ fn draw_fly_crosshair(ctx: &mut dyn RenderContext, viewport: Rect) {
 // sliders, MOUSE legend, STATUS line) at the APP level — `uzor-graph`
 // itself gains no new API.
 //
-// **Placement, a deliberate asymmetry**: the owner's own item 3 spec
-// calls this "a left panel... visible in BOTH dimensions" but ALSO says
-// 2D gets it "painted into the EXISTING sidebar region" — this demo's
-// pre-existing 2D sidebar is RIGHT-docked (`SIDEBAR_SLOT`/`SIDEBAR_WIDTH`).
-// Read literally: 2D extends that existing right sidebar (no 2D chrome
-// exists to invent a left panel from); 3D — which has ZERO 2D chrome at
-// all while active (`Scene3DApp`'s own divergence log) — floats a NEW
-// panel at a fixed top-left origin, mirroring the foxhound reference
-// app's own literal position. Both share the exact same row/section
-// LAYOUT (`build_hud_layout`), just a different `(origin_x, origin_y,
-// width)` anchor.
+// **Placement, ONE consistent position — owner defect fix (2026-07-23):
+// "тут слева, тут справа — что за хуйня"**. The panel used to float at a
+// fixed top-LEFT origin in 3D while 2D extended the pre-existing
+// RIGHT-docked sidebar (`SIDEBAR_SLOT`/`SIDEBAR_WIDTH`) — a real,
+// reported left/right inconsistency, not a deliberate design choice
+// worth keeping. Both dimensions now dock the SAME top-RIGHT corner, at
+// the SAME width: 2D still extends the real sidebar body rect (no
+// change there — its own `body_rect` IS already right-docked at
+// `SIDEBAR_WIDTH`); 3D — which has ZERO 2D chrome to extend
+// (`Scene3DApp`'s own divergence log) — computes an equivalent
+// right-docked rect from the last-known real 3D surface width and the
+// SAME `SIDEBAR_WIDTH` constant (`surface_width_logical`/`DemoApp::
+// hud_origin`'s own `Dimension::ThreeD` branch), so the panel is flush
+// against the right edge in EITHER dimension, at the SAME width, with
+// only the top-edge padding (`HUD_FLOAT_Y`, unchanged) differing from
+// 2D's own header-inclusive body rect — everything else about the HUD
+// (section layout, padding, button/slider geometry, `build_hud_layout`
+// itself) is completely unchanged. Both dimensions share the exact same
+// row/section LAYOUT (`build_hud_layout`), just a different `(origin_x,
+// origin_y, width)` anchor.
 //
 // **Single source of truth, not stored-then-hit-tested**: [`HudLayout`]
 // is a deterministic PURE function of a small state snapshot
@@ -759,7 +780,6 @@ fn draw_fly_crosshair(ctx: &mut dyn RenderContext, viewport: Rect) {
 // `uzor::framework::widgets::lm::sidebar`'s own `Clip`-mode body-rect
 // contract — no transform applied under the default `OverflowMode::Clip`
 // this demo's sidebar already uses).
-const HUD_WIDTH: f64 = 230.0;
 const HUD_PAD: f64 = 12.0;
 const HUD_TITLE_H: f64 = 24.0;
 const HUD_HEADING_H: f64 = 16.0;
@@ -769,16 +789,47 @@ const HUD_SECTION_GAP: f64 = 10.0;
 const HUD_SLIDER_ROW_H: f64 = 32.0;
 const HUD_TEXT_LINE_H: f64 = 16.0;
 const HUD_STATUS_LINE_COUNT: usize = 2;
-/// Floating panel origin while 3D is active — see this section's own
-/// module doc for why 2D instead extends the existing right sidebar.
-const HUD_FLOAT_X: f64 = 12.0;
+/// Top-edge padding for the 3D panel's right-docked origin (owner defect
+/// fix, panel-placement consistency — see this section's own module
+/// doc). Both dimensions now dock top-RIGHT; this is the one piece of
+/// the anchor that's genuinely NOT derived from the 2D sidebar's own
+/// geometry (2D's `body_rect.y` already includes the sidebar's header
+/// height, which 3D has no chrome to replicate) — `HUD_FLOAT_Y` keeps
+/// its pre-fix value unchanged, only the X origin changed from a fixed
+/// left offset to a computed right-dock (see [`surface_width_logical`]/
+/// [`DemoApp::hud_origin`]'s own `Dimension::ThreeD` branch).
 const HUD_FLOAT_Y: f64 = 12.0;
+
+/// Fallback logical viewport width for deriving the 3D panel's
+/// right-docked origin ([`surface_width_logical`]) before any real 3D
+/// surface size is known yet — the window's own initial logical size
+/// (`WindowSpec::new(...).size(1400, 900)`, see `main()`), the same
+/// "no real viewport yet" convention [`full_window_viewport`]/
+/// [`FALLBACK_SURFACE_ASPECT`] already established.
+const FALLBACK_SURFACE_WIDTH_LOGICAL: f64 = 1400.0;
+
+/// Logical viewport width for the CURRENT last-known 3D surface size —
+/// physical px / OS scale factor, landing the right-docked HUD origin in
+/// the SAME logical space `PlatformEvent::Pointer*` coordinates already
+/// arrive in (this section's own module doc, "coordinate-space
+/// reconciliation"). Falls back to [`FALLBACK_SURFACE_WIDTH_LOGICAL`]
+/// before the first 3D frame has ever rendered.
+fn surface_width_logical(size: Option<(u32, u32)>, scale_factor: f64) -> f64 {
+    match size {
+        Some((w, _)) if scale_factor > 0.0 => w as f64 / scale_factor,
+        _ => FALLBACK_SURFACE_WIDTH_LOGICAL,
+    }
+}
 
 /// Which control the HUD panel currently exposes as a clickable button —
 /// resolved by [`hit_button`], dispatched by [`DemoApp::apply_hud_control`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum HudControl {
     Fixture(Fixture),
+    /// LAYOUT section button (2D only) — switches the 2D engine's
+    /// `GraphLayoutMode` kind. See [`build_hud_layout`]'s own LAYOUT
+    /// section doc.
+    SetLayout(LayoutKind),
     ToggleDimension,
     ToggleNavMode,
     FitView,
@@ -847,6 +898,12 @@ struct HudSnapshot {
     grid_enabled: bool,
     keyboard_sensitivity: f32,
     mouse_sensitivity: f32,
+    /// The 2D engine's CURRENT `GraphLayoutMode` kind — read regardless
+    /// of which dimension is active (same convention `grid_enabled`
+    /// already uses: meaningful to report even while 3D is active, even
+    /// though the LAYOUT section itself only ever renders in 2D). See
+    /// [`build_hud_layout`]'s own LAYOUT section doc.
+    layout_kind: LayoutKind,
 }
 
 /// Build the panel's full layout at `(origin_x, origin_y)` with content
@@ -854,10 +911,13 @@ struct HudSnapshot {
 /// `draw_hud_status`) and hit-testing (`DemoApp::on_event_hud`) call, so
 /// drawn and clickable geometry can never drift apart. Section order
 /// mirrors the foxhound reference app's own HUD: title, FIXTURE (4
-/// buttons, always), NAVIGATION (2-4 buttons — Orbit/Fly and Grid are 3D
-/// only), SENSITIVITY (2 sliders, 3D **fly** mode only), MOUSE (a
-/// per-mode legend), STATUS (2 numeric lines, filled in by the caller —
-/// see [`draw_hud_status`]).
+/// buttons, always), LAYOUT (3 buttons — FORCE/LAYERED/RADIAL, **2D
+/// only**: `uzor-graph`'s 3D engine is force-only, no `GraphLayoutMode`
+/// equivalent exists there, same "section doesn't appear" convention
+/// ORBIT/FLY already uses for 2D), NAVIGATION (2-4 buttons — Orbit/Fly
+/// and Grid are 3D only), SENSITIVITY (2 sliders, 3D **fly** mode only),
+/// MOUSE (a per-mode legend), STATUS (2 numeric lines, filled in by the
+/// caller — see [`draw_hud_status`]).
 fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot) -> HudLayout {
     let content_w = (width - 2.0 * HUD_PAD).max(0.0);
     let mut y = origin_y + HUD_PAD;
@@ -882,6 +942,25 @@ fn build_hud_layout(origin_x: f64, origin_y: f64, width: f64, snap: &HudSnapshot
         y += HUD_BUTTON_H + HUD_BUTTON_GAP;
     }
     y += HUD_SECTION_GAP;
+
+    // LAYOUT — 2D only (owner defect fix: tree/hierarchy fixtures were
+    // always run through the force layout regardless of shape). Three
+    // buttons let the owner flip ANY fixture's layout by hand;
+    // `rebuild_engines`' own per-fixture default just picks the initial
+    // one on a fixture switch. 3D has no `GraphLayoutMode` equivalent —
+    // its engine is force-only — so this section is entirely absent
+    // there, same convention ORBIT/FLY/GRID already use for being 2D-
+    // absent.
+    if snap.dim == Dimension::TwoD {
+        headings.push(("LAYOUT", y));
+        y += HUD_HEADING_H;
+        for (kind, label) in [(LayoutKind::Force, "FORCE"), (LayoutKind::Hierarchical, "LAYERED"), (LayoutKind::Radial, "RADIAL")] {
+            let rect = Rect::new(origin_x + HUD_PAD, y, content_w, HUD_BUTTON_H);
+            buttons.push(HudButtonRect { control: HudControl::SetLayout(kind), rect, label: label.to_owned(), active: kind == snap.layout_kind });
+            y += HUD_BUTTON_H + HUD_BUTTON_GAP;
+        }
+        y += HUD_SECTION_GAP;
+    }
 
     // NAVIGATION — dimension toggle + Fit always show; Orbit/Fly and
     // Grid only while 3D is active (both are purely 3D camera concepts).
@@ -1088,10 +1167,17 @@ fn draw_hud_status(ctx: &mut dyn RenderContext, panel_x: f64, status_y: f64, lin
 /// Cache key for the 3D `CachedOverlayJob` static-chrome paint — changes
 /// exactly when anything `draw_hud_static` actually reads changes
 /// (dimension, fixture, nav mode, grid toggle, both sensitivities, the
-/// active draw scale), so a caller-side resize/DPI change or any control
-/// change invalidates the cache; an unrelated per-frame value (node
-/// counts, frame timing — the DYNAMIC half) never does.
-fn hud_static_key(snap: &HudSnapshot, scale: f64) -> u64 {
+/// active draw scale, the panel's own right-docked `origin_x`), so a
+/// caller-side resize/DPI change or any control change invalidates the
+/// cache; an unrelated per-frame value (node counts, frame timing — the
+/// DYNAMIC half) never does. `origin_x` is passed separately (not read
+/// off `HudSnapshot`) because it's derived from the last-known 3D
+/// surface width, not app control state — see [`DemoApp::hud_origin`]'s
+/// own `Dimension::ThreeD` branch; a window resize changes it without
+/// touching any `HudSnapshot` field, so it must be hashed explicitly or
+/// a resize would leave the cached chrome painted at the OLD right-dock
+/// position.
+fn hud_static_key(snap: &HudSnapshot, scale: f64, origin_x: f64) -> u64 {
     let mut hasher = DefaultHasher::new();
     snap.dim.code().hash(&mut hasher);
     snap.fixture.code().hash(&mut hasher);
@@ -1100,6 +1186,7 @@ fn hud_static_key(snap: &HudSnapshot, scale: f64) -> u64 {
     snap.keyboard_sensitivity.to_bits().hash(&mut hasher);
     snap.mouse_sensitivity.to_bits().hash(&mut hasher);
     scale.to_bits().hash(&mut hasher);
+    origin_x.to_bits().hash(&mut hasher);
     hasher.finish()
 }
 
@@ -1163,6 +1250,24 @@ impl FlattenPendingFlag {
     }
 }
 
+/// Per-fixture default 2D `GraphLayoutMode` kind (owner defect fix —
+/// tree/hierarchy fixtures are tree-SHAPED graphs but always ran through
+/// the force layout, which balls them up instead of reading as a tree).
+/// `clusters`/`sparse` are genuinely mesh-shaped (a force layout is the
+/// right default), `tree`/`hierarchy` are genuinely hierarchical (a
+/// layered top-down layout is the right default) — 3D is untouched, its
+/// engine is force-only regardless of fixture (see [`build_hud_layout`]'s
+/// own LAYOUT-section doc). The owner's own explicit HUD LAYOUT buttons
+/// (`HudControl::SetLayout`) let this default be overridden by hand for
+/// ANY fixture afterward — this is only the INITIAL pick on a fixture
+/// switch, not a hard rule.
+fn default_layout_kind_for_fixture(fixture: Fixture) -> LayoutKind {
+    match fixture {
+        Fixture::Clusters | Fixture::Sparse => LayoutKind::Force,
+        Fixture::Tree | Fixture::Hierarchy => LayoutKind::Hierarchical,
+    }
+}
+
 /// Rebuild BOTH the 2D and 3D engines IN PLACE from `fixture` —
 /// `set_fixture`'s own implementation, also used by `DemoApp::new()` for
 /// the initial build (exactly ONE "build a fixture into these engines"
@@ -1175,6 +1280,12 @@ fn rebuild_engines(engine: &Arc<Mutex<Engine>>, engine3d: &Arc<Mutex<Engine3D>>,
     let mut new_engine = Engine::new(graph, GraphLayoutMode::default());
     new_engine.seed_positions(&positions);
     new_engine.set_agent_slot_id(BLACKBOX_SLOT);
+    // Owner defect fix — a tree-shaped fixture defaults to a tree-shaped
+    // LAYOUT, not the force layout every fixture ran through before. See
+    // `default_layout_kind_for_fixture`'s own doc comment; the camera-fit
+    // request below (unconditional, pre-existing) re-frames the view for
+    // whichever layout just got picked.
+    new_engine.layout.set_kind(default_layout_kind_for_fixture(fixture));
     for members in cluster_members.iter().take(COLLAPSIBLE_CLUSTERS) {
         new_engine.define_cluster(members[..COLLAPSIBLE_CLUSTER_SIZE.min(members.len())].to_vec());
     }
@@ -1677,6 +1788,7 @@ impl DemoApp {
             let fly = Self::lock_fly(&self.fly);
             (fly.keyboard_sensitivity(), fly.mouse_sensitivity())
         };
+        let layout_kind = Self::lock(&self.engine).layout.kind();
         HudSnapshot {
             dim: self.dim.get(),
             fixture: self.fixture.get(),
@@ -1684,15 +1796,25 @@ impl DemoApp {
             grid_enabled,
             keyboard_sensitivity,
             mouse_sensitivity,
+            layout_kind,
         }
     }
 
-    /// Panel origin + content width for the CURRENT dimension — see the
-    /// "Control HUD" section's own module doc for why 2D and 3D anchor
-    /// differently.
+    /// Panel origin + content width for the CURRENT dimension — owner
+    /// defect fix (panel-placement consistency): BOTH dimensions dock
+    /// top-RIGHT now, at the SAME `SIDEBAR_WIDTH`, per this section's own
+    /// module doc. 2D reads the real, already-right-docked sidebar body
+    /// rect `ui()` last painted into; 3D has no such chrome to read, so
+    /// it computes an equivalent right-docked rect from the last-known
+    /// real 3D surface width (falling back to
+    /// [`FALLBACK_SURFACE_WIDTH_LOGICAL`] before the first 3D frame ever
+    /// renders).
     fn hud_origin(&self) -> (f64, f64, f64) {
         match self.dim.get() {
-            Dimension::ThreeD => (HUD_FLOAT_X, HUD_FLOAT_Y, HUD_WIDTH),
+            Dimension::ThreeD => {
+                let viewport_width = surface_width_logical(self.last_3d_surface_px.get(), self.scale_factor);
+                (viewport_width - SIDEBAR_WIDTH as f64, HUD_FLOAT_Y, SIDEBAR_WIDTH as f64)
+            }
             Dimension::TwoD => (self.last_sidebar_body.x, self.last_sidebar_body.y, self.last_sidebar_body.width),
         }
     }
@@ -1798,6 +1920,22 @@ impl DemoApp {
             HudControl::Fixture(fixture) => {
                 self.fixture.set(fixture);
                 rebuild_engines(&self.engine, &self.engine3d, fixture, &self.camera_fit);
+            }
+            HudControl::SetLayout(kind) => {
+                // 2D only — the LAYOUT section itself never renders in
+                // 3D (see `build_hud_layout`'s own doc comment), so this
+                // guard is defense-in-depth, not the primary gate.
+                if self.dim.get() == Dimension::TwoD {
+                    Self::lock(&self.engine).layout.set_kind(kind);
+                    // A layout switch can move every node to a wildly
+                    // different extent (e.g. force's settled cluster
+                    // spread vs. layered's compact rows) — re-frame the
+                    // camera so the owner actually sees the new shape,
+                    // same "camera fit after" convention a fixture switch
+                    // already follows (`rebuild_engines`' own
+                    // `camera_fit.request()`).
+                    self.camera_fit.request();
+                }
             }
             HudControl::ToggleDimension => self.toggle_dimension(),
             HudControl::ToggleNavMode => {
@@ -2011,6 +2149,15 @@ impl DemoBlackbox {
     /// drift onto two different "flip to 3D" implementations.
     fn set_dimension_3d(&mut self, animate: bool) -> AgentActionReply {
         apply_dimension_3d_transition(&self.engine, &self.engine3d, &self.dim, &self.flatten_pending, animate);
+        if !animate {
+            // The animated path frames the flat layout itself (the In
+            // transition starts from a fit_bounds front-on pose); the
+            // instant path used to keep the STALE orbit pose from the
+            // previous 3D session — fit explicitly, same aspect source
+            // as the fit_view_3d action.
+            let aspect = surface_aspect(self.surface_size.get());
+            DemoApp::lock3d(&self.engine3d).fit_view(aspect);
+        }
         AgentActionReply::ok_with_log(json!({ "dimension": 3, "animate": animate }))
     }
 
@@ -2282,12 +2429,17 @@ impl App<NoPanel> for DemoApp {
             let mut engine = Self::lock(&self.engine);
             engine.set_canvas_rect(canvas_rect);
 
+            engine.tick_real_time();
+
+            // Fit AFTER the tick, not before: the one-shot layouts
+            // (Hierarchical/Radial) only apply their positions during a
+            // tick — fitting first framed the stale seed layout (owner
+            // report: layered tree rendered with most layers off-canvas,
+            // "visible 78" of 300).
             if self.camera_fit.needs_fit() && canvas_rect.width > 0.0 {
                 engine.fit_view();
                 self.camera_fit.clear();
             }
-
-            engine.tick_real_time();
 
             if canvas_rect.width > 0.0 && canvas_rect.height > 0.0 {
                 win.render.save();
@@ -2559,13 +2711,19 @@ impl Scene3DApp<NoPanel> for DemoApp {
         let hud_snapshot = self.hud_snapshot();
         let hud_visible = self.hud_visible.get();
         let hud_scale = self.scale_factor;
+        // Right-docked origin for THIS tick's real surface size (already
+        // recorded above via `self.last_3d_surface_px.set(...)`) — see
+        // `DemoApp::hud_origin`'s own `Dimension::ThreeD` branch (`dim`
+        // is confirmed `ThreeD` by the early-return guard at the top of
+        // this function, so this always resolves the 3D branch).
+        let (hud_origin_x, hud_origin_y, hud_width) = self.hud_origin();
         let cached_overlay = if hud_visible {
-            let key = hud_static_key(&hud_snapshot, hud_scale);
+            let key = hud_static_key(&hud_snapshot, hud_scale, hud_origin_x);
             let snap = hud_snapshot; // `Copy` — an owned local the `move` closure below can capture directly, no borrow-across-closures ambiguity.
             Some(CachedOverlayJob {
                 key,
                 paint: Box::new(move |ctx: &mut dyn RenderContext| {
-                    let layout = build_hud_layout(HUD_FLOAT_X, HUD_FLOAT_Y, HUD_WIDTH, &snap);
+                    let layout = build_hud_layout(hud_origin_x, hud_origin_y, hud_width, &snap);
                     draw_hud_static(ctx, &layout, hud_scale);
                 }),
             })
@@ -2573,7 +2731,7 @@ impl Scene3DApp<NoPanel> for DemoApp {
             None
         };
         let hud_status_anchor = if hud_visible {
-            let layout = build_hud_layout(HUD_FLOAT_X, HUD_FLOAT_Y, HUD_WIDTH, &hud_snapshot);
+            let layout = build_hud_layout(hud_origin_x, hud_origin_y, hud_width, &hud_snapshot);
             Some((layout.panel.x, layout.status_y))
         } else {
             None
@@ -2793,8 +2951,9 @@ mod tests {
             grid_enabled: false,
             keyboard_sensitivity: 1.0,
             mouse_sensitivity: 1.0,
+            layout_kind: LayoutKind::Force,
         };
-        let layout = build_hud_layout(HUD_FLOAT_X, HUD_FLOAT_Y, HUD_WIDTH, &snap);
+        let layout = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, &snap);
         let tree_button = layout.buttons.iter().find(|b| b.control == HudControl::Fixture(Fixture::Tree)).expect("tree button must exist");
         let (cx, cy) = (tree_button.rect.center_x(), tree_button.rect.center_y());
         assert_eq!(hit_button(&layout, cx, cy), Some(HudControl::Fixture(Fixture::Tree)));
@@ -2817,19 +2976,25 @@ mod tests {
             grid_enabled: false,
             keyboard_sensitivity: 1.0,
             mouse_sensitivity: 1.0,
+            layout_kind: LayoutKind::Force,
         };
-        let layout_2d = build_hud_layout(0.0, 0.0, HUD_WIDTH, &snap_2d);
+        let layout_2d = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, &snap_2d);
         assert!(!layout_2d.buttons.iter().any(|b| b.control == HudControl::ToggleNavMode), "Orbit/Fly button must not appear in 2D");
         assert!(!layout_2d.buttons.iter().any(|b| b.control == HudControl::ToggleGrid), "Grid button must not appear in 2D");
         assert!(layout_2d.sliders.is_empty(), "sensitivity sliders are a 3D fly-mode-only section");
         assert!(layout_2d.buttons.iter().any(|b| b.control == HudControl::ToggleDimension), "the 2D/3D toggle must always appear");
         assert!(layout_2d.buttons.iter().any(|b| b.control == HudControl::FitView), "Fit must always appear (not 3D-only)");
+        assert!(layout_2d.buttons.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Force)), "LAYOUT buttons must appear in 2D");
 
         let snap_3d_fly = HudSnapshot { dim: Dimension::ThreeD, nav_mode: NavMode::Fly, ..snap_2d };
-        let layout_3d_fly = build_hud_layout(0.0, 0.0, HUD_WIDTH, &snap_3d_fly);
+        let layout_3d_fly = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, &snap_3d_fly);
         assert!(layout_3d_fly.buttons.iter().any(|b| b.control == HudControl::ToggleNavMode));
         assert!(layout_3d_fly.buttons.iter().any(|b| b.control == HudControl::ToggleGrid));
         assert_eq!(layout_3d_fly.sliders.len(), 2, "keyboard + mouse sensitivity sliders while 3D fly is active");
+        assert!(
+            !layout_3d_fly.buttons.iter().any(|b| matches!(b.control, HudControl::SetLayout(_))),
+            "the LAYOUT section is 2D only — uzor-graph's 3D engine is force-only, no GraphLayoutMode equivalent exists there"
+        );
     }
 
     /// The task's own explicit ask: prove the coordinate-space
@@ -2849,8 +3014,9 @@ mod tests {
             grid_enabled: true,
             keyboard_sensitivity: 1.2,
             mouse_sensitivity: 0.8,
+            layout_kind: LayoutKind::Force,
         };
-        let layout = build_hud_layout(HUD_FLOAT_X, HUD_FLOAT_Y, HUD_WIDTH, &snap);
+        let layout = build_hud_layout(0.0, 0.0, SIDEBAR_WIDTH as f64, &snap);
         let button = layout.buttons.first().expect("at least one button");
         let logical = (button.rect.center_x(), button.rect.center_y());
         assert_eq!(hit_button(&layout, logical.0, logical.1), Some(button.control));
@@ -2926,9 +3092,16 @@ mod tests {
     fn pointer_down_inside_the_hud_panel_is_consumed_by_on_event() {
         let mut app = DemoApp::new();
         app.dim.set(Dimension::ThreeD);
-        // Well inside the floating 3D panel's title area — no button/
+        // Well inside the right-docked 3D panel's title area (no real
+        // surface size recorded yet in this headless test, so
+        // `hud_origin` falls back to `FALLBACK_SURFACE_WIDTH_LOGICAL` —
+        // read the REAL computed layout rather than a stale hardcoded
+        // top-left constant, since the panel no longer floats there —
+        // owner defect fix, panel-placement consistency) — no button/
         // slider under it, just plain panel padding.
-        let consumed = app.on_event(&PlatformEvent::PointerDown { x: HUD_FLOAT_X + 20.0, y: HUD_FLOAT_Y + 5.0, button: MouseButton::Left });
+        let panel = app.hud_layout().panel;
+        let consumed =
+            app.on_event(&PlatformEvent::PointerDown { x: panel.x + 20.0, y: panel.y + 5.0, button: MouseButton::Left });
         assert!(consumed, "a PointerDown inside the HUD panel must be consumed, never fall through to the graph engine");
         // The panel-consumed click must not have started an orbit-drag
         // (no `Pointer3DMode` state this test can inspect directly, but
@@ -2952,5 +3125,145 @@ mod tests {
         assert_eq!(app.fixture.get(), Fixture::Tree);
         let node_count = DemoApp::lock3d(&app.engine3d).graph.node_count();
         assert!(node_count > 100, "the tree fixture has a few hundred nodes, got {node_count}");
+    }
+
+    // ── Owner defect fix 1: HUD panel position consistency (both dims dock top-right) ──
+
+    #[test]
+    fn hud_panel_rect_consistency_both_dimensions_dock_flush_right_with_the_same_width() {
+        let mut app = DemoApp::new();
+
+        // 2D: `hud_origin` reads back whatever `ui()` last painted the
+        // real, already-right-docked sidebar body rect at.
+        app.last_sidebar_body = Rect::new(1080.0, 40.0, SIDEBAR_WIDTH as f64, 860.0);
+        assert_eq!(app.hud_origin(), (1080.0, 40.0, SIDEBAR_WIDTH as f64));
+
+        // 3D: owner defect fix — the panel now docks the SAME right
+        // edge, at the SAME `SIDEBAR_WIDTH`, derived from the
+        // last-known real 3D surface width, instead of floating at a
+        // fixed top-LEFT origin (the reported "тут слева, тут справа"
+        // defect).
+        app.dim.set(Dimension::ThreeD);
+        app.last_3d_surface_px.set(1400, 900);
+        let (x3, y3, w3) = app.hud_origin();
+        assert_eq!(w3, SIDEBAR_WIDTH as f64, "3D panel width must match the 2D sidebar's own thickness");
+        assert_eq!(x3, 1400.0 - SIDEBAR_WIDTH as f64, "3D panel must dock flush against the right edge");
+        assert_eq!(y3, HUD_FLOAT_Y, "3D keeps its own pre-existing top-edge padding — only the X dock changed");
+        assert!(x3 > 0.0, "must not sit at a left-anchored origin — the exact defect the owner reported");
+
+        // A wider surface pushes the dock further right, proportionally
+        // — proves this is a REAL right-dock derived from the viewport,
+        // not a second hardcoded left-ish constant in disguise.
+        app.last_3d_surface_px.set(1920, 1080);
+        let (x3_wide, _, w3_wide) = app.hud_origin();
+        assert_eq!(w3_wide, SIDEBAR_WIDTH as f64);
+        assert_eq!(x3_wide, 1920.0 - SIDEBAR_WIDTH as f64);
+        assert!(x3_wide > x3, "a wider window must dock the panel further right, not leave it in place");
+    }
+
+    // ── Owner defect fix 2: per-fixture default 2D layout + HUD LAYOUT section ──
+
+    #[test]
+    fn default_layout_kind_matches_the_owner_specified_per_fixture_mapping() {
+        assert_eq!(default_layout_kind_for_fixture(Fixture::Clusters), LayoutKind::Force);
+        assert_eq!(default_layout_kind_for_fixture(Fixture::Sparse), LayoutKind::Force);
+        assert_eq!(default_layout_kind_for_fixture(Fixture::Tree), LayoutKind::Hierarchical);
+        assert_eq!(default_layout_kind_for_fixture(Fixture::Hierarchy), LayoutKind::Hierarchical);
+    }
+
+    #[test]
+    fn rebuild_engines_applies_the_default_layout_kind_for_the_2d_engine_per_fixture() {
+        let engine = Arc::new(Mutex::new(Engine::new(DemoGraph::new(), GraphLayoutMode::default())));
+        let engine3d = Arc::new(Mutex::new(Engine3D::new(DemoGraph::new(), ForceDirectedLayout3D::default())));
+        let camera_fit = CameraFitFlag::new();
+
+        for (fixture, expected) in [
+            (Fixture::Clusters, LayoutKind::Force),
+            (Fixture::Tree, LayoutKind::Hierarchical),
+            (Fixture::Hierarchy, LayoutKind::Hierarchical),
+            (Fixture::Sparse, LayoutKind::Force),
+        ] {
+            rebuild_engines(&engine, &engine3d, fixture, &camera_fit);
+            assert_eq!(DemoApp::lock(&engine).layout.kind(), expected, "{fixture:?} must default to {expected:?}");
+        }
+    }
+
+    #[test]
+    fn hud_layout_shows_a_2d_only_layout_section_with_the_active_kind_highlighted() {
+        let app = DemoApp::new();
+        // Fresh app defaults to `Clusters`, whose own default kind is Force.
+        let layout = app.hud_layout();
+        let force_button =
+            layout.buttons.iter().find(|b| b.control == HudControl::SetLayout(LayoutKind::Force)).expect("FORCE button must exist in 2D");
+        assert!(force_button.active, "Force must be the active layout for the default Clusters fixture");
+        let layered_button = layout.buttons.iter().find(|b| b.control == HudControl::SetLayout(LayoutKind::Hierarchical));
+        assert!(layered_button.is_some_and(|b| !b.active), "LAYERED button must exist and NOT be active while Force is current");
+        assert!(layout.buttons.iter().any(|b| b.control == HudControl::SetLayout(LayoutKind::Radial)), "RADIAL button must exist too");
+
+        app.dim.set(Dimension::ThreeD);
+        let layout_3d = app.hud_layout();
+        assert!(
+            !layout_3d.buttons.iter().any(|b| matches!(b.control, HudControl::SetLayout(_))),
+            "the LAYOUT section must not appear at all while 3D is active"
+        );
+    }
+
+    #[test]
+    fn layout_button_click_switches_the_2d_engines_layout_kind_and_requests_a_camera_fit() {
+        let mut app = DemoApp::new();
+        app.camera_fit.clear();
+        let layout = app.hud_layout();
+        let layered_button = layout
+            .buttons
+            .iter()
+            .find(|b| b.control == HudControl::SetLayout(LayoutKind::Hierarchical))
+            .expect("LAYERED button must exist while 2D is active");
+        let (x, y) = (layered_button.rect.center_x(), layered_button.rect.center_y());
+
+        assert!(app.on_event(&PlatformEvent::PointerDown { x, y, button: MouseButton::Left }));
+        assert!(app.on_event(&PlatformEvent::PointerUp { x, y, button: MouseButton::Left }));
+
+        assert_eq!(DemoApp::lock(&app.engine).layout.kind(), LayoutKind::Hierarchical);
+        assert!(app.camera_fit.needs_fit(), "switching layout must request a camera re-fit, same convention a fixture switch already follows");
+    }
+
+    /// The task's own explicit gate: prove the hierarchical layout
+    /// actually produces a LAYERED tree for the `tree` fixture through
+    /// this demo's own engine wiring (not just `uzor-graph`'s own
+    /// isolated `HierarchicalLayout` unit tests) — root strictly above
+    /// EVERY one of its children, across the whole tree, and frozen
+    /// (one-shot) on a second tick.
+    #[test]
+    fn hierarchical_layout_settles_the_tree_fixture_into_strict_top_down_layers() {
+        let (graph, positions, _clusters) = build_fixture(Fixture::Tree);
+        let mut engine = Engine::new(graph, GraphLayoutMode::default());
+        engine.seed_positions(&positions);
+        engine.layout.set_kind(LayoutKind::Hierarchical);
+        engine.tick(1.0 / 60.0);
+
+        // `build_tree_internal` pushes the root as the very first node
+        // of a fresh graph, so it is always `NodeIndex(0)` — and every
+        // edge in the plain `tree` fixture is parent->child in
+        // construction order (no cross-links, unlike `hierarchy`).
+        let root = NodeIndex(0);
+        let root_y = engine.particles[root.index()].y;
+        let mut child_edges_checked = 0usize;
+        for (_, edge) in engine.graph.edges() {
+            if edge.from == root {
+                child_edges_checked += 1;
+                let child_y = engine.particles[edge.to.index()].y;
+                assert!(
+                    root_y < child_y,
+                    "hierarchical layout must place the root strictly ABOVE (a shallower layer than) its child \
+                     (root_y={root_y}, child_y={child_y})"
+                );
+            }
+        }
+        assert!(child_edges_checked > 0, "the tree fixture's root must have at least one child edge to prove layering against");
+
+        // One-shot layout — a second tick must not move the root away
+        // from its computed layer.
+        engine.tick(1.0 / 60.0);
+        assert_eq!(engine.particles[root.index()].y, root_y, "hierarchical layout is one-shot — a second tick must not move the root");
     }
 }
