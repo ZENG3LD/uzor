@@ -9,8 +9,8 @@
 //! the background rect forces both backends to composite over an
 //! identical opaque ground and actually exercises blend semantics.
 
-use uzor_urx_core::math::{Affine, Brush, Color, Rect, Vec2};
-use uzor_urx_core::scene::{DrawCommand, LineCap, Scene, Stroke};
+use uzor_urx_core::math::{Affine, BezPath, Brush, Color, Gradient, Rect, Vec2};
+use uzor_urx_core::scene::{DrawCommand, FillRule, LineCap, LineJoin, Scene, Stroke};
 
 pub const CANVAS: u32 = 256;
 
@@ -271,6 +271,133 @@ pub fn quad_line_interleave() -> Scene {
         rect: Rect::new(120.5, 70.5, 200.5, 130.5),
         radii: None,
         brush: solid(20, 200, 200, 255),
+        transform: Affine::IDENTITY,
+    });
+    scene
+}
+
+/// `FillRect` with `Brush::Gradient(Linear)` AND `radii` — the routed-
+/// through-Path-pipeline case (design §5). Horizontal gradient axis
+/// spanning EXACTLY the rect's un-rounded bounding box (`x0` to `x1`),
+/// two FULLY OPAQUE stops at offsets 0.0/1.0.
+///
+/// Both choices are load-bearing, not cosmetic:
+/// - Spanning the whole bounding box means every point inside the
+///   shape sits on the SAME single affine segment of the gradient
+///   function (no `Extend::Pad` clamping ever kicks in inside the
+///   rect) — per-vertex sampling + the rasteriser's linear
+///   interpolation is then mathematically EXACT versus CPU's
+///   per-pixel evaluation, not merely close, at any interior point.
+/// - Fully opaque stops make straight-alpha vertex-lerp (this
+///   pipeline's convention) and premultiplied-lerp (CPU's LUT
+///   convention) coincide exactly — see `encode.rs`'s module doc,
+///   "Gradient-routing finding".
+///
+/// `radii` is the routed case's whole point (design §5) — but see
+/// `encode.rs`'s module doc for the CPU-side finding this surfaces:
+/// `uzor-urx-cpu`'s gradient fill never actually consults the rounded
+/// clip mask it pushes, so CPU renders this SAME scene with SQUARE
+/// corners while this pipeline renders true rounded ones. That
+/// corner-region mismatch is expected and confined to a small area —
+/// sized (rect/radius choice, same engineering call as
+/// `solid_rects_with_radii`) to keep it inside the design §7 whole-
+/// image budget without touching the tolerances. Probes stay well
+/// inside the flat interior either way (design risk 5).
+pub fn linear_gradient_rect() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    let rect = Rect::new(69.5, 69.5, 187.5, 187.5);
+    let cy = (rect.y0 + rect.y1) * 0.5;
+    let gradient = Gradient::new_linear((rect.x0, cy), (rect.x1, cy)).with_stops([
+        (0.0f32, Color::from_rgba8(30, 60, 220, 255)),
+        (1.0f32, Color::from_rgba8(230, 180, 30, 255)),
+    ]);
+    scene.push(DrawCommand::FillRect {
+        rect,
+        radii: Some([14.0; 4]),
+        brush: Brush::Gradient(gradient),
+        transform: Affine::IDENTITY,
+    });
+    scene
+}
+
+/// A 5-point star polygon (10 alternating outer/inner vertices),
+/// closed. Shared generator for both stars in
+/// `tessellated_path_star()` — "same geometry" per the design's
+/// fixture spec, just translated.
+fn star_path(cx: f64, cy: f64, r_outer: f64, r_inner: f64) -> BezPath {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    let mut path = BezPath::new();
+    for i in 0..10 {
+        let angle = -FRAC_PI_2 + (i as f64) * PI / 5.0;
+        let r = if i % 2 == 0 { r_outer } else { r_inner };
+        let x = cx + r * angle.cos();
+        let y = cy + r * angle.sin();
+        if i == 0 {
+            path.move_to((x, y));
+        } else {
+            path.line_to((x, y));
+        }
+    }
+    path.close_path();
+    path
+}
+
+/// A 5-point star: `FillPath` (nonzero winding) + `StrokePath` (round
+/// join) over the SAME star geometry (design §8 commit 3 — "same
+/// geometry, different colors"). This is the seam-fix acceptance
+/// fixture: a concave, many-triangle tessellation is exactly where the
+/// legacy crate's per-triangle-independent barycentric edge AA visibly
+/// gaps/double-fades along internal tessellation seams (design §4);
+/// this pipeline drops that scheme entirely and relies on MSAA
+/// instead. Two separate stars (same generator, different center)
+/// rather than one star filled+stroked in place, so each primitive
+/// gets its own clean probe region.
+pub fn tessellated_path_star() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+
+    let fill_star = star_path(70.5, 140.5, 45.0, 18.0);
+    scene.push(DrawCommand::FillPath {
+        path: fill_star,
+        rule: FillRule::NonZero,
+        brush: solid(160, 60, 200, 255),
+        transform: Affine::IDENTITY,
+    });
+
+    let stroke_star = star_path(185.5, 140.5, 45.0, 18.0);
+    scene.push(DrawCommand::StrokePath {
+        path: stroke_star,
+        stroke: Stroke { width: 5.0, join: LineJoin::Round, ..Stroke::default() },
+        brush: solid(40, 190, 190, 255),
+        transform: Affine::IDENTITY,
+    });
+
+    scene
+}
+
+/// A trivially-scalable scene (opaque background + one centered solid
+/// rect spanning the middle 50% of the canvas) — used ONLY by the
+/// resize-sanity test (design §8 commit 3 gate: render 64x64 ->
+/// 512x512 -> 64x64 on ONE renderer instance, no panic, final output
+/// still parity-green). Every OTHER fixture in this file assumes a
+/// fixed 256x256 canvas and would clip/misalign at other sizes; this
+/// one scales with whatever `canvas` the caller passes so the SAME
+/// generator works at 64 and 512 alike, with a probe point (canvas
+/// center) that's always deep inside the rect regardless of size.
+pub fn resize_sanity_scene(canvas: u32) -> Scene {
+    let c = canvas as f64;
+    let mut scene = Scene::new();
+    scene.push(DrawCommand::FillRect {
+        rect: Rect::new(0.0, 0.0, c, c),
+        radii: None,
+        brush: solid(32, 32, 32, 255),
+        transform: Affine::IDENTITY,
+    });
+    scene.push(DrawCommand::FillRect {
+        rect: Rect::new(c * 0.25 + 0.5, c * 0.25 + 0.5, c * 0.75 + 0.5, c * 0.75 + 0.5),
+        radii: None,
+        brush: solid(220, 60, 60, 255),
         transform: Affine::IDENTITY,
     });
     scene

@@ -5,8 +5,8 @@
 //! same `Uniforms` bind group (group 0, binding 0) carrying
 //! `screen_size` in physical pixels.
 //!
-//! Commit 1 shipped `QUAD_SHADER_NATIVE`. Commit 2 adds
-//! `LINE_SHADER_NATIVE`.
+//! Commit 1 shipped `QUAD_SHADER_NATIVE`. Commit 2 added
+//! `LINE_SHADER_NATIVE`. Commit 3 adds `PATH_SHADER_NATIVE`.
 
 /// Quad shader — filled/bordered rounded rectangles with SDF AA.
 ///
@@ -275,6 +275,86 @@ fn fs_main(in: LineVsOut) -> @location(0) vec4<f32> {
     // Premultiplied output built directly (design §7) — the pipeline's
     // blend state expects this, unlike legacy's straight-alpha output.
     let a = in.color.a * cov;
+    if a <= 0.0 { discard; }
+    return vec4<f32>(in.color.rgb * a, a);
+}
+"#;
+
+/// Path/triangle shader — flat- or per-vertex-gradient-coloured
+/// triangles from lyon tessellation, deliberately WITHOUT the legacy
+/// crate's per-triangle barycentric edge AA (design §4 "AA decision"):
+/// that scheme fades every triangle edge independently, including
+/// INTERNAL tessellation seams shared by two triangles from the same
+/// fill/stroke, producing visible seam artefacts on curved/concave
+/// paths (the literal seam bug this pipeline exists to fix). MSAA
+/// (already armed from Commit 1) supplies the antialiasing instead —
+/// both at the shape's true outer boundary and at every internal
+/// tessellation seam, since MSAA operates on the actual triangle
+/// geometry rather than a per-triangle distance heuristic.
+pub const PATH_SHADER_NATIVE: &str = r#"
+struct Uniforms {
+    screen_size: vec2<f32>,
+};
+@group(0) @binding(0)
+var<uniform> uniforms: Uniforms;
+
+// Instance data — must match TriInstance in pipelines/path.rs (56 bytes).
+struct TriInstance {
+    @location(0) v0:            vec2<f32>,
+    @location(1) v1:            vec2<f32>,
+    @location(2) v2:            vec2<f32>,
+    @location(3) color0_packed: u32,
+    @location(4) color1_packed: u32,
+    @location(5) color2_packed: u32,
+    @location(6) _pad0:         f32,
+    @location(7) clip_rect:     vec4<f32>,
+};
+
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color:     vec4<f32>,
+    @location(1) clip_rect: vec4<f32>,
+};
+
+@vertex
+fn vs_main(
+    @builtin(vertex_index) vi: u32,
+    inst: TriInstance,
+) -> VertexOut {
+    var px: vec2<f32>;
+    var color: vec4<f32>;
+    switch vi {
+        case 0u: { px = inst.v0; color = unpack4x8unorm(inst.color0_packed); }
+        case 1u: { px = inst.v1; color = unpack4x8unorm(inst.color1_packed); }
+        case 2u: { px = inst.v2; color = unpack4x8unorm(inst.color2_packed); }
+        default: { px = inst.v0; color = unpack4x8unorm(inst.color0_packed); }
+    }
+
+    let ndc = vec2<f32>(
+        px.x / uniforms.screen_size.x *  2.0 - 1.0,
+        px.y / uniforms.screen_size.y * -2.0 + 1.0,
+    );
+
+    var out: VertexOut;
+    out.position  = vec4<f32>(ndc, 0.0, 1.0);
+    // Interpolated across the triangle for free via this vertex→fragment
+    // varying — no explicit lerp code needed (design §4).
+    out.color     = color;
+    out.clip_rect = inst.clip_rect;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    let px_abs = in.position.xy;
+    let cr = in.clip_rect;
+    if px_abs.x < cr.x || px_abs.y < cr.y
+       || px_abs.x > cr.x + cr.z || px_abs.y > cr.y + cr.w {
+        discard;
+    }
+    // Premultiplied output built directly (design §7), same discipline
+    // as Quad/Line.
+    let a = in.color.a;
     if a <= 0.0 { discard; }
     return vec4<f32>(in.color.rgb * a, a);
 }

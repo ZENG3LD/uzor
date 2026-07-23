@@ -17,7 +17,9 @@ use crate::encode::{self, BatchKind};
 use crate::msaa::MsaaTarget;
 use crate::native_error::NativeRenderError;
 use crate::pipelines::line::LinePipeline;
+use crate::pipelines::path::PathPipeline;
 use crate::pipelines::quad::QuadPipeline;
+use crate::tessellate::{TessCache, TessCacheStats};
 
 /// Target dimensions in physical pixels for one `render_into_encoder`
 /// call.
@@ -35,9 +37,11 @@ struct Uniforms {
 }
 
 /// Owns every native-pipeline GPU resource: the Quad SDF pipeline
-/// (Commit 1) and the Line/capsule pipeline (Commit 2) — Path joins in
-/// Commit 3 — the shared uniform bind group (group 0, `screen_size`),
-/// and the grow-only MSAA offscreen color target.
+/// (Commit 1), the Line/capsule pipeline (Commit 2), and the Path/
+/// triangle pipeline (Commit 3) — the shared uniform bind group
+/// (group 0, `screen_size`), the MSAA offscreen color target (exact-
+/// match reallocation on resize, see `msaa.rs`'s module doc), and the
+/// tessellation cache.
 pub struct NativeUrxRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -46,11 +50,13 @@ pub struct NativeUrxRenderer {
 
     quad: QuadPipeline,
     line: LinePipeline,
+    path: PathPipeline,
 
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
 
     msaa: MsaaTarget,
+    tess_cache: TessCache,
 }
 
 impl NativeUrxRenderer {
@@ -103,9 +109,23 @@ impl NativeUrxRenderer {
 
         let quad = QuadPipeline::new(&device, format, sample_count, &uniform_bgl);
         let line = LinePipeline::new(&device, format, sample_count, &uniform_bgl);
+        let path = PathPipeline::new(&device, format, sample_count, &uniform_bgl);
         let msaa = MsaaTarget::new(sample_count, format);
+        let tess_cache = TessCache::new();
 
-        Self { device, queue, format, sample_count, quad, line, uniform_buffer, uniform_bind_group, msaa }
+        Self {
+            device,
+            queue,
+            format,
+            sample_count,
+            quad,
+            line,
+            path,
+            uniform_buffer,
+            uniform_bind_group,
+            msaa,
+            tess_cache,
+        }
     }
 
     /// `format` this renderer's pipelines were built for.
@@ -113,12 +133,21 @@ impl NativeUrxRenderer {
         self.format
     }
 
-    /// Grow-only viewport hint — pre-allocates the MSAA target for
-    /// `width x height` so the first `render_into_encoder` at that
-    /// size doesn't pay a realloc. `render_into_encoder` calls this
-    /// internally if skipped.
+    /// Viewport hint — pre-allocates the MSAA target for `width x
+    /// height` so the next `render_into_encoder` at that size doesn't
+    /// pay a realloc mid-frame. `render_into_encoder` calls this
+    /// internally if skipped. Reallocates on any size CHANGE, not just
+    /// growth (`msaa.rs`'s module doc) — required for the multisample
+    /// resolve step, which needs the MSAA and destination views to
+    /// match dimensions exactly.
     pub fn resize(&mut self, width: u32, height: u32) {
         self.msaa.ensure(&self.device, width, height);
+    }
+
+    /// Read-only tessellation-cache telemetry — hit/miss/entry counts
+    /// (design §2). Not a hot-path cost: three `usize`/`u64` loads.
+    pub fn tess_cache_stats(&self) -> TessCacheStats {
+        self.tess_cache.stats()
     }
 
     /// Walk `scene.commands`, encode into the Quad pipeline's instance
@@ -144,12 +173,13 @@ impl NativeUrxRenderer {
 
         self.resize(viewport.width, viewport.height);
 
-        let frame = encode::encode_scene(scene, viewport);
+        let frame = encode::encode_scene(scene, viewport, &mut self.tess_cache);
 
         let uniforms = Uniforms { screen_size: [viewport.width as f32, viewport.height as f32], _pad: [0.0; 2] };
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
         self.quad.upload(&self.device, &self.queue, &frame.quads);
         self.line.upload(&self.device, &self.queue, &frame.lines);
+        self.path.upload(&self.device, &self.queue, &frame.triangles);
 
         // `sample_count > 1`: render into the MSAA color target and let
         // the pass epilogue hardware-resolve into the caller's `view`
@@ -209,6 +239,13 @@ impl NativeUrxRenderer {
                             current = Some(BatchKind::Line);
                         }
                         self.line.draw_range(&mut pass, batch.start, batch.count);
+                    }
+                    BatchKind::Triangle => {
+                        if current != Some(BatchKind::Triangle) {
+                            self.path.bind(&mut pass);
+                            current = Some(BatchKind::Triangle);
+                        }
+                        self.path.draw_range(&mut pass, batch.start, batch.count);
                     }
                 }
             }

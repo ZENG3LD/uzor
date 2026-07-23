@@ -127,11 +127,9 @@ fn dump_failure_artifacts(cpu: &[u8], native: &[u8], width: u32, height: u32, ca
     dump_diff_png(&dir.join(format!("{}_diff.png", case.name)), width, height, cpu, native);
 }
 
-fn compare_rgba(cpu: &[u8], native: &[u8], width: u32, height: u32, case: &ParityCase) {
-    debug_assert_eq!(cpu.len(), native.len());
-
-    // 1. Interior probes — exact-ish match required, fail immediately
-    //    (with dumped artifacts) on the first offender.
+/// Interior probes — exact-ish match required, fail immediately (with
+/// dumped artifacts) on the first offender.
+fn check_interior_probes(cpu: &[u8], native: &[u8], width: u32, height: u32, case: &ParityCase) {
     for &(x, y) in case.interior_probes {
         let idx = ((y * width + x) * 4) as usize;
         let c = &cpu[idx..idx + 4];
@@ -145,9 +143,11 @@ fn compare_rgba(cpu: &[u8], native: &[u8], width: u32, height: u32, case: &Parit
             );
         }
     }
+}
 
-    // 2. Whole-image sweep — count pixels exceeding the edge tolerance,
-    //    fail if the fraction exceeds the budget.
+/// Whole-image sweep — count pixels exceeding the edge tolerance, fail
+/// if the fraction exceeds the budget.
+fn check_whole_image_budget(cpu: &[u8], native: &[u8], width: u32, height: u32, case: &ParityCase) {
     let total_pixels = (width as usize) * (height as usize);
     let mut differing = 0usize;
     for i in 0..total_pixels {
@@ -166,6 +166,12 @@ fn compare_rgba(cpu: &[u8], native: &[u8], width: u32, height: u32, case: &Parit
             MAX_DIFFERING_FRACTION * 100.0
         );
     }
+}
+
+fn compare_rgba(cpu: &[u8], native: &[u8], width: u32, height: u32, case: &ParityCase) {
+    debug_assert_eq!(cpu.len(), native.len());
+    check_interior_probes(cpu, native, width, height, case);
+    check_whole_image_budget(cpu, native, width, height, case);
 }
 
 fn run_case(case: ParityCase) {
@@ -251,4 +257,101 @@ fn parity_quad_line_interleave() {
         // over the bottom quad.
         interior_probes: &[(160, 100), (80, 100)],
     });
+}
+
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_linear_gradient_rect() {
+    run_case(ParityCase {
+        name: "linear_gradient_rect",
+        scene: fixtures::linear_gradient_rect(),
+        // Near-endpoint / midpoint probes (design risk 5), all
+        // comfortably inside the rounded shape's flat interior — see
+        // `fixtures::linear_gradient_rect`'s doc comment for why the
+        // WHOLE interior (not just these 3 points) is expected to
+        // match near-exactly, and why only the rounded-corner region
+        // (excluded here) is expected to diverge.
+        interior_probes: &[(93, 128), (128, 128), (163, 128)],
+    });
+}
+
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_tessellated_path_star() {
+    run_case(ParityCase {
+        name: "tessellated_path_star",
+        scene: fixtures::tessellated_path_star(),
+        // Fill star (nonzero winding): center + a point deep inside
+        // the top spike, both comfortably away from the outline edge
+        // (design §8 commit 3: "probes at star center + a point deep
+        // inside one arm"). Stroke star: an edge midpoint (the
+        // straight segment between vertex 0 and vertex 1), deep in
+        // the stroke band, away from both its endpoints' round joins.
+        interior_probes: &[(70, 140), (70, 109), (190, 110)],
+    });
+}
+
+/// Design §8 commit 3 gate: render the SAME renderer instance at
+/// 64x64, then 512x512, then back to 64x64 — must not panic (this is
+/// exactly the scenario that caught the `MsaaTarget` resolve-target
+/// size-mismatch bug fixed in `msaa.rs` this commit), and the FINAL
+/// (64x64) output must still be parity-green against CPU rendered at
+/// the same final size.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn resize_sanity_64_512_64() {
+    let Some((device, queue)) = common::init_device() else {
+        eprintln!("resize_sanity_64_512_64: no GPU/software adapter available; skipping");
+        return;
+    };
+
+    let mut renderer = NativeUrxRenderer::new(device.clone(), queue.clone(), NATIVE_FORMAT);
+
+    const FINAL_SIZE: u32 = 64;
+    let sizes = [64u32, 512u32, FINAL_SIZE];
+    let mut last_native: Option<Vec<u8>> = None;
+    for &size in &sizes {
+        let scene = fixtures::resize_sanity_scene(size);
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("uzor-urx-wgpu-resize-sanity-target"),
+            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: NATIVE_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        renderer
+            .render_into_encoder(&scene, &mut encoder, &view, Viewport { width: size, height: size })
+            .unwrap_or_else(|e| panic!("render_into_encoder must not error at size {size}: {e}"));
+        queue.submit(Some(encoder.finish()));
+        last_native = Some(common::readback_rgba(&device, &queue, &target, size, size));
+    }
+
+    let native = last_native.expect("loop runs at least once");
+    let cpu = render_cpu(&fixtures::resize_sanity_scene(FINAL_SIZE), FINAL_SIZE, FINAL_SIZE);
+
+    let case = ParityCase {
+        name: "resize_sanity_64_512_64",
+        scene: fixtures::resize_sanity_scene(FINAL_SIZE),
+        interior_probes: &[(FINAL_SIZE / 2, FINAL_SIZE / 2)],
+    };
+    // Interior-probe-only, deliberately NOT `compare_rgba`'s full
+    // whole-image sweep: at a 64x64 canvas, ANY simple rect's AA
+    // fringe (a near-constant ~1.5-2px band regardless of canvas
+    // size) covers a MUCH larger fraction of total pixels than at the
+    // 256x256 canvas every dedicated fixture in this file uses —
+    // perimeter scales linearly with size, area quadratically, so the
+    // AA-affected fraction scales as roughly `6 / canvas_size`
+    // (empirically ~6% at 64x64 vs a comfortable <1% at 256x256 for
+    // the same shape). That is the well-documented "two different AA
+    // algorithms" divergence already covered by `solid_rects_axis_aligned`
+    // et al. at their designed scale — this test's actual job is
+    // proving the resize machinery itself doesn't corrupt output
+    // (no panic across 64->512->64, content lands in the right place,
+    // right color), which the interior probe confirms.
+    check_interior_probes(&cpu, &native, FINAL_SIZE, FINAL_SIZE, &case);
 }

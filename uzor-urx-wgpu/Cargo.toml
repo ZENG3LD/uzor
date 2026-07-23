@@ -24,6 +24,10 @@ peniko = "0.6"
 # major version as the sibling `uzor-urx-wgpu-full` crate).
 bytemuck  = { version = "1", features = ["derive"] }
 thiserror = "1"
+# Path tessellation (Wave 1 Commit 3) — same version pin as the legacy
+# crate (`uzor-render-wgpu-instanced/Cargo.toml:18-19`).
+lyon_tessellation = "1.0"
+lyon_path         = "1.0"
 
 [dev-dependencies]
 # Headless-GPU parity harness (Wave 1) — same versions as the sibling

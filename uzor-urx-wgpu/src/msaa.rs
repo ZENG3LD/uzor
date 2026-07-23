@@ -1,11 +1,28 @@
-//! Grow-only MSAA offscreen color target.
+//! MSAA offscreen color target.
 //!
-//! Shape matches `uzor-urx-3d`'s `create_msaa_targets`/`resize` (see
-//! `uzor-urx-3d/src/pipeline.rs:1866-1939`): one `RENDER_ATTACHMENT`
-//! color texture at a fixed `sample_count`, freed/regrown only when the
-//! requested size grows past the current allocation — never shrinks,
-//! so window-resize jitter doesn't churn allocations. No depth/stencil
-//! target: the native 2D pipelines never z-test.
+//! ## Commit 3 correction (resolve-target size-mismatch bug)
+//!
+//! Commit 1/2 described this target as "grow-only" (never shrinks),
+//! matching the Wave 1 design brief's prose description of
+//! `uzor-urx-3d`'s MSAA lifecycle. Commit 3's resize-sanity test
+//! (render 64x64 -> 512x512 -> 64x64 on one renderer instance) exposed
+//! that this was wrong: `wgpu`/WebGPU require a multisampled color
+//! attachment and its `resolve_target` to have IDENTICAL width/height
+//! — resolve is a per-pixel operation, not a scaling blit. A grow-only
+//! MSAA buffer that stays at 512x512 after the caller shrinks back to
+//! a 64x64 destination view is a validation error (or undefined
+//! behaviour), not just wasted memory.
+//!
+//! Re-reading `uzor-urx-3d::Renderer3D::resize` directly (not just the
+//! design brief's prose) confirms it actually recreates its MSAA
+//! targets whenever `size != self.depth_size` — an EXACT-match
+//! recreate, not grow-only. This module now matches that real
+//! behaviour: `ensure` reallocates whenever the requested size
+//! CHANGES (grows OR shrinks), never leaving a stale larger-than-
+//! requested buffer around. Still gated on `sample_count > 1` and
+//! still a no-op when the requested size repeats (the common per-frame
+//! case), so ordinary rendering pays no extra cost — only an actual
+//! resize reallocates, exactly like the cited precedent.
 
 /// Owns the (optional) multisampled color target `NativeUrxRenderer`
 /// resolves into the caller's view every frame. `sample_count <= 1`
@@ -24,18 +41,20 @@ impl MsaaTarget {
         Self { view: None, width: 0, height: 0, sample_count, format }
     }
 
-    /// Ensure a color target exists that covers at least `width x
-    /// height`. No-op when MSAA is disabled (`sample_count <= 1`) or
-    /// the current allocation already covers the request.
+    /// Ensure a color target exists that is EXACTLY `width x height`
+    /// (reallocates on any size change, not just growth — see this
+    /// module's doc comment). No-op when MSAA is disabled
+    /// (`sample_count <= 1`) or the requested size repeats the current
+    /// allocation.
     pub(crate) fn ensure(&mut self, device: &wgpu::Device, width: u32, height: u32) {
         if self.sample_count <= 1 {
             return;
         }
-        if self.view.is_some() && width <= self.width && height <= self.height {
+        let w = width.max(1);
+        let h = height.max(1);
+        if self.view.is_some() && w == self.width && h == self.height {
             return;
         }
-        let w = width.max(self.width).max(1);
-        let h = height.max(self.height).max(1);
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("uzor_urx_wgpu.native_msaa_color"),
             size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
