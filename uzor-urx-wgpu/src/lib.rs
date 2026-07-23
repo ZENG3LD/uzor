@@ -5,9 +5,25 @@
 //! crate map at `docs/uzor-engines/research/urx-wave1-crate-map-2026-07-25.md`):
 //!
 //! 1. **Legacy adapter path** (`adapter` module, [`UrxWgpuBackend`]) —
-//!    translates a `Scene` into `uzor-render-wgpu-instanced` calls.
-//!    Still the production path wired into `uzor-render-hub`; untouched
-//!    by Wave 1.
+//!    translates a `Scene` into `uzor-render-wgpu-instanced` calls via
+//!    the free fn [`adapt_scene_into`]. No longer `uzor-render-hub`'s
+//!    production path for the ordinary (autodetect-reachable) 2D submit
+//!    as of Wave 6 Commit 1 (`submit_urx_wgpu` now renders through
+//!    [`NativeUrxRenderer`] — see below); `adapt_scene_into` itself
+//!    still has 2 live callers: `uzor-render-hub`'s OWN
+//!    `compose_urx_wgpu_into_swap` (the compose.rs Phase-3 plain
+//!    `UrxBackend::Wgpu` arm — reachable only via `tessera-window`'s
+//!    own `active_urx` axis, explicitly out of THIS wave's scope,
+//!    `urx-wave6-autodetect-cutover-design-2026-07-25.md` §2) and
+//!    `uzor-urx-engine`'s retained-mode `engine.rs`. The `UrxWgpuBackend`
+//!    STRUCT itself (as opposed to the free fn), however, has ZERO
+//!    remaining real call sites anywhere in the workspace as of this
+//!    wave (grepped: only a `#[cfg(doctest)]`-style doc example and the
+//!    pre-existing `#[allow(dead_code)]`-marked
+//!    `WindowRenderState.urx_wgpu_backend` field reference it) — a
+//!    genuinely dead type, flagged here for a LATER removal pass (design
+//!    §3.3: "this design only moves `submit_urx_wgpu`, doesn't chase
+//!    transitively-orphaned code"), not deleted this wave.
 //! 2. **Native pipeline path** ([`NativeUrxRenderer`]) — Wave 1's
 //!    self-owned wgpu pipelines (Quad SDF in Commit 1, Line/capsule in
 //!    Commit 2, Path/triangle + lyon tessellation in Commit 3) plus
@@ -34,8 +50,14 @@
 //!    tests and the pixel-parity harness (`tests/parity.rs`, 22/22
 //!    CPU-vs-GPU cases green — 16 from Waves 1-3 plus Wave 4's 6 new
 //!    ones — plus 3 GPU-only correctness tests that have no CPU
-//!    baseline to compare against, design §0.3) until the Wave 5
-//!    cutover flips production traffic onto it.
+//!    baseline to compare against, design §0.3). Production traffic:
+//!    Wave 5 flipped `uzor-render-hub::compose.rs`'s Phase 3 (chrome)
+//!    and Phase 4.5 (post-3D overlay) onto this path; Wave 6 Commit 1
+//!    (`urx-wave6-autodetect-cutover-design-2026-07-25.md` §3) flipped
+//!    the ordinary (non-compose) `submit_urx_wgpu` path too — the exact
+//!    function `uzor-render-hub::detect_backend`'s future GPU-autodetect
+//!    arm will make live. Both cutovers share ONE per-window
+//!    `NativeUrxRenderer` instance (`WindowRenderState.urx_native_renderer`).
 //!
 //! ## Native pipelines (Wave 1 + Wave 2 + Wave 3 + Wave 4)
 //!
