@@ -114,10 +114,13 @@ pub(crate) fn premultiplied_blend_state() -> wgpu::BlendState {
     }
 }
 
-/// Owns the quad SDF `wgpu::RenderPipeline` + its grow-only instance
-/// buffer.
+/// Owns the quad SDF `wgpu::RenderPipeline` pair (design §2.2 — `_off`
+/// for frames with no active rounded clip, byte-identical to Wave 1/2;
+/// `_test` for frames where `EncodedFrame::has_rounded_clip` is true)
+/// + the shared grow-only instance buffer.
 pub(crate) struct QuadPipeline {
-    pipeline: wgpu::RenderPipeline,
+    pipeline_off: wgpu::RenderPipeline,
+    pipeline_test: wgpu::RenderPipeline,
     buffer: wgpu::Buffer,
     capacity: usize,
 }
@@ -138,37 +141,51 @@ impl QuadPipeline {
             bind_group_layouts: &[Some(uniform_bgl)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("uzor_urx_wgpu.quad_pipeline_native"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[quad_instance_layout()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(premultiplied_blend_state()),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
-            multiview_mask: None,
-            cache: None,
-        });
+        // Hoisted OUTSIDE the `make` closure below (not inlined as
+        // `&[quad_instance_layout()]`/`&[Some(ColorTargetState{..})]`
+        // directly in the descriptor literal) — `build_off_test_pair`
+        // RETURNS the descriptor value out of the closure and consumes
+        // it after the call, so any array literal built INSIDE the
+        // closure body would be a temporary dropped at the closure's
+        // return, which the returned descriptor's borrow can't outlive
+        // (confirmed by the compiler: "cannot return value referencing
+        // temporary value"). These two locals live for the whole
+        // `new()` call, so both `make(None)` and `make(Some(..))`
+        // borrow the SAME long-lived arrays safely.
+        let vertex_buffers = [quad_instance_layout()];
+        let color_targets = [Some(wgpu::ColorTargetState {
+            format,
+            blend: Some(premultiplied_blend_state()),
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
+        let (pipeline_off, pipeline_test) =
+            crate::pipelines::build_off_test_pair(device, |depth_stencil| wgpu::RenderPipelineDescriptor {
+                label: Some("uzor_urx_wgpu.quad_pipeline_native"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &vertex_buffers,
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &color_targets,
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil,
+                multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
+                multiview_mask: None,
+                cache: None,
+            });
         let buffer = make_instance_buffer(device, INITIAL_CAPACITY);
 
-        Self { pipeline, buffer, capacity: INITIAL_CAPACITY }
+        Self { pipeline_off, pipeline_test, buffer, capacity: INITIAL_CAPACITY }
     }
 
     /// Upload `data`, growing the buffer (doubling capacity) if it no
@@ -189,12 +206,21 @@ impl QuadPipeline {
         queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(data));
     }
 
-    /// Bind this pipeline + its vertex buffer onto `pass`. Called only
-    /// when the renderer's batch-replay loop switches INTO a quad
-    /// batch (matches legacy `renderer.rs:1008-1061`'s
+    /// Bind this pipeline + its vertex buffer onto `pass`. `stencil_ref:
+    /// None` selects the `_off` variant (a frame with NO stencil
+    /// attachment at all — `has_rounded_clip == false`, byte-identical
+    /// to Wave 1/2); `Some(r)` selects `_test` + `set_stencil_reference(r)`
+    /// (design §2.2). Called only when the renderer's batch-replay loop
+    /// switches INTO a quad batch (matches legacy `renderer.rs:1008-1061`'s
     /// avoid-redundant-`set_pipeline` pattern).
-    pub(crate) fn bind(&self, pass: &mut wgpu::RenderPass<'_>) {
-        pass.set_pipeline(&self.pipeline);
+    pub(crate) fn bind(&self, pass: &mut wgpu::RenderPass<'_>, stencil_ref: Option<u32>) {
+        match stencil_ref {
+            None => pass.set_pipeline(&self.pipeline_off),
+            Some(r) => {
+                pass.set_pipeline(&self.pipeline_test);
+                pass.set_stencil_reference(r);
+            }
+        }
         pass.set_vertex_buffer(0, self.buffer.slice(..));
     }
 

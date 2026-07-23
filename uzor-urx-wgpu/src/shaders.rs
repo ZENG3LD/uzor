@@ -7,7 +7,8 @@
 //!
 //! Wave 1 Commit 1 shipped `QUAD_SHADER_NATIVE`. Commit 2 added
 //! `LINE_SHADER_NATIVE`. Commit 3 added `PATH_SHADER_NATIVE`. Wave 2
-//! Commit 2 adds `GLYPH_SHADER_NATIVE`.
+//! Commit 2 added `GLYPH_SHADER_NATIVE`. Wave 3 Commit 2 adds
+//! `STENCIL_MASK_SHADER_NATIVE`.
 
 /// Quad shader — filled/bordered rounded rectangles with SDF AA.
 ///
@@ -466,5 +467,78 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let out_a   = in.color.a * coverage;
     if out_a <= 0.0 { discard; }
     return vec4<f32>(out_rgb, out_a);
+}
+"#;
+
+/// Stencil mask-write shader — position + `clip_rect` discard ONLY
+/// (design §2.3). Reuses `TriInstance`'s wire layout verbatim
+/// (`pipelines/path.rs::tri_instance_layout`) so the mask-write
+/// pipeline pair needs no new instance struct; `color0/1/2` are
+/// present in the vertex-input layout (byte-compatibility with
+/// `TriInstance`) but never read here — a mask write never touches
+/// color (`ColorWrites::empty()` on the pipeline's color target blocks
+/// the fragment's return value from ever reaching the attachment
+/// regardless of what this shader returns). The fragment stage exists
+/// purely to let the stencil TEST/OP machinery run per-fragment; its
+/// dummy `vec4(1.0)` return is never observed.
+pub const STENCIL_MASK_SHADER_NATIVE: &str = r#"
+struct Uniforms {
+    screen_size: vec2<f32>,
+};
+@group(0) @binding(0)
+var<uniform> uniforms: Uniforms;
+
+// Instance data — must match TriInstance in pipelines/path.rs (56
+// bytes). color0/1/2 + _pad0 are declared for byte-layout parity with
+// TriInstance's vertex buffer layout but never read.
+struct TriInstance {
+    @location(0) v0:            vec2<f32>,
+    @location(1) v1:            vec2<f32>,
+    @location(2) v2:            vec2<f32>,
+    @location(3) color0_packed: u32,
+    @location(4) color1_packed: u32,
+    @location(5) color2_packed: u32,
+    @location(6) _pad0:         f32,
+    @location(7) clip_rect:     vec4<f32>,
+};
+
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) clip_rect: vec4<f32>,
+};
+
+@vertex
+fn vs_main(
+    @builtin(vertex_index) vi: u32,
+    inst: TriInstance,
+) -> VertexOut {
+    var px: vec2<f32>;
+    switch vi {
+        case 0u: { px = inst.v0; }
+        case 1u: { px = inst.v1; }
+        case 2u: { px = inst.v2; }
+        default: { px = inst.v0; }
+    }
+
+    let ndc = vec2<f32>(
+        px.x / uniforms.screen_size.x *  2.0 - 1.0,
+        px.y / uniforms.screen_size.y * -2.0 + 1.0,
+    );
+
+    var out: VertexOut;
+    out.position  = vec4<f32>(ndc, 0.0, 1.0);
+    out.clip_rect = inst.clip_rect;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    let px_abs = in.position.xy;
+    let cr = in.clip_rect;
+    if px_abs.x < cr.x || px_abs.y < cr.y
+       || px_abs.x > cr.x + cr.z || px_abs.y > cr.y + cr.w {
+        discard;
+    }
+    return vec4<f32>(1.0, 1.0, 1.0, 1.0); // dummy — ColorWrites::empty() blocks this from ever landing
 }
 "#;

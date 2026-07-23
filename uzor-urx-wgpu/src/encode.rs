@@ -122,13 +122,24 @@ use uzor_urx_core::metrics_keys::{KEY_RENDER_GLYPH_INSTANCES, KEY_RENDER_PRIMITI
 use uzor_urx_core::scene::{DrawCommand, FillRule, FontId, Glyph, LineCap, Scene, Stroke};
 use uzor_urx_core::validate::{validate_command, ValidationIssue};
 
+use std::sync::Arc;
+
 use crate::atlas::NativeGlyphAtlas;
 use crate::pipelines::glyph::GlyphInstance;
 use crate::pipelines::line::LineInstance;
 use crate::pipelines::path::TriInstance;
 use crate::pipelines::quad::{pack_rgba8, QuadInstance};
 use crate::renderer::Viewport;
-use crate::tessellate::TessCache;
+use crate::tessellate::{TessCache, TessMesh};
+
+/// Which of the two stencil mask-write pipelines (`stencil_mask.rs`) a
+/// `BatchKind::StencilMask` batch replays through — the ONLY
+/// difference between the two is `pass_op` (design §2.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MaskOp {
+    Increment,
+    Decrement,
+}
 
 /// Which pipeline a [`Batch`] replays through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,22 +148,47 @@ pub(crate) enum BatchKind {
     Line,
     Triangle,
     Glyph,
+    /// Wave 3 Commit 2 (design §2/§4) — mask-write geometry, indexes
+    /// into `EncodedFrame::stencil_masks`, NOT `triangles` (a separate
+    /// buffer — mask writes and content triangles never share one
+    /// vertex buffer, since they bind different pipelines).
+    StencilMask(MaskOp),
 }
 
-/// A contiguous run of same-kind instances in painter's-order scan
-/// order — `start`/`count` index into `EncodedFrame::{quads,lines,
-/// triangles}` depending on `kind`. Copied algorithm from legacy
+/// A contiguous run of same-kind, same-`stencil_ref` instances in
+/// painter's-order scan order — `start`/`count` index into
+/// `EncodedFrame::{quads,lines,triangles,glyphs,stencil_masks}`
+/// depending on `kind`. Copied algorithm from legacy
 /// `InstancedRenderer::render`'s Phase-1 scan
 /// (`uzor-render-wgpu-instanced/src/renderer.rs:766-848`, design §5):
-/// a new batch opens only when the kind differs from the previous
-/// one, so consecutive same-kind commands coalesce into one draw call
-/// while painter's order (replay in scan order, never reordered) is
-/// preserved across a Quad/Line/Triangle interleave.
+/// a new batch opens only when `kind` OR `stencil_ref` differs from the
+/// previous one (Wave 3 Commit 2 extends the original kind-only rule —
+/// `set_stencil_reference` is genuine per-draw-call pass state, unlike
+/// the free per-instance `clip_rect` field, design risk 6), so
+/// consecutive same-kind-AND-same-depth commands still coalesce into
+/// one draw call while painter's order is preserved.
+///
+/// `stencil_ref` meaning (design item 4's wgpu-pass-compatibility
+/// finding — see `encode_scene`'s doc comment for the full resolution):
+/// for `Quad`/`Line`/`Triangle`/`Glyph` batches, `None` means "depth 0"
+/// and `Some(d)` means "nested `d` rounded clips deep" — BOTH are
+/// replayed with the `_test` pipeline variant, gated `Equal(0)`/
+/// `Equal(d)`, whenever `EncodedFrame::has_rounded_clip` is true for
+/// the WHOLE frame (the renderer's `_off`-vs-`_test` choice is a
+/// frame-wide decision, never per-batch — mixing `_off` and `_test`
+/// pipelines within ONE pass that has a stencil attachment is a wgpu
+/// validation error, `RenderPassCompatibilityError::IncompatibleDepthStencilAttachment`,
+/// confirmed by reading `wgpu-core-29.0.3/src/device/mod.rs`'s
+/// `RenderPassContext::check_compatible`). For `StencilMask` batches,
+/// `stencil_ref` is ALWAYS `Some(gate)` (the explicit gate value the
+/// mask write itself tests against before mutating stencil) — never
+/// `None`, since a mask write never has a "no stencil" state.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Batch {
     pub(crate) kind: BatchKind,
     pub(crate) start: u32,
     pub(crate) count: u32,
+    pub(crate) stencil_ref: Option<u32>,
 }
 
 /// Painter's-order encoded frame — the Scene walker's output, ready
@@ -163,112 +199,258 @@ pub(crate) struct EncodedFrame {
     pub(crate) lines: Vec<LineInstance>,
     pub(crate) triangles: Vec<TriInstance>,
     pub(crate) glyphs: Vec<GlyphInstance>,
+    /// Mask-write geometry (design §2/§4) — a SEPARATE buffer from
+    /// `triangles`; `StencilMask` batches index into this one.
+    pub(crate) stencil_masks: Vec<TriInstance>,
     pub(crate) batches: Vec<Batch>,
+    /// Set (never cleared) the first time ANY `PushClipRoundedRect` is
+    /// scanned (design §2.5) — read ONCE by `render_into_encoder`
+    /// before opening any pass, deciding for the WHOLE frame whether a
+    /// `StencilTarget` is even allocated. `false` (the overwhelming
+    /// common case — no Wave 1/2 fixture uses a rounded clip) means
+    /// byte-identical cost/behaviour to pre-Wave-3.
+    pub(crate) has_rounded_clip: bool,
+    /// Transient encode-time channel — NOT part of the frame's actual
+    /// render output, just how `active_clip` tells the NEXT `push_quad`/
+    /// `push_line`/`push_triangle`/`push_glyph` call which stencil
+    /// depth this command's instances should test against. Never read
+    /// directly by tests or the renderer — its only observable effect
+    /// is `Batch::stencil_ref` on whatever gets pushed next.
+    current_stencil_ref: Option<u32>,
 }
 
 impl EncodedFrame {
     fn push_quad(&mut self, instance: QuadInstance) {
         let start = self.quads.len() as u32;
         self.quads.push(instance);
-        self.bump_batch(BatchKind::Quad, start);
+        let stencil_ref = self.current_stencil_ref;
+        self.bump_batch(BatchKind::Quad, start, stencil_ref);
     }
 
     fn push_line(&mut self, instance: LineInstance) {
         let start = self.lines.len() as u32;
         self.lines.push(instance);
-        self.bump_batch(BatchKind::Line, start);
+        let stencil_ref = self.current_stencil_ref;
+        self.bump_batch(BatchKind::Line, start, stencil_ref);
     }
 
     fn push_triangle(&mut self, instance: TriInstance) {
         let start = self.triangles.len() as u32;
         self.triangles.push(instance);
-        self.bump_batch(BatchKind::Triangle, start);
+        let stencil_ref = self.current_stencil_ref;
+        self.bump_batch(BatchKind::Triangle, start, stencil_ref);
     }
 
     fn push_glyph(&mut self, instance: GlyphInstance) {
         let start = self.glyphs.len() as u32;
         self.glyphs.push(instance);
-        self.bump_batch(BatchKind::Glyph, start);
+        let stencil_ref = self.current_stencil_ref;
+        self.bump_batch(BatchKind::Glyph, start, stencil_ref);
     }
 
-    /// Extend the current batch if its kind matches, else open a new
-    /// one — the exact coalescing rule design §5 specifies.
-    fn bump_batch(&mut self, kind: BatchKind, start: u32) {
+    /// Mask-write geometry (design §2.4) — `gate_ref` is the EXPLICIT
+    /// stencil-test gate this specific mask write needs (parent depth
+    /// for an increment, this scope's own depth for a decrement), NOT
+    /// read from `current_stencil_ref` (which tracks CONTENT depth, a
+    /// different value at push/pop time — see `emit_stencil_mask_batch`).
+    fn push_stencil_mask(&mut self, instance: TriInstance, op: MaskOp, gate_ref: u32) {
+        let start = self.stencil_masks.len() as u32;
+        self.stencil_masks.push(instance);
+        self.bump_batch(BatchKind::StencilMask(op), start, Some(gate_ref));
+    }
+
+    /// Extend the current batch if BOTH `kind` and `stencil_ref` match,
+    /// else open a new one (design §5, extended by Wave 3 Commit 2's
+    /// `stencil_ref` equality requirement — see `Batch`'s doc comment).
+    fn bump_batch(&mut self, kind: BatchKind, start: u32, stencil_ref: Option<u32>) {
         if let Some(last) = self.batches.last_mut() {
-            if last.kind == kind {
+            if last.kind == kind && last.stencil_ref == stencil_ref {
                 last.count += 1;
                 return;
             }
         }
-        self.batches.push(Batch { kind, start, count: 1 });
+        self.batches.push(Batch { kind, start, count: 1, stencil_ref });
     }
 }
 
 /// CPU-side clip stack, computed at encode time (design §5) — same
 /// intersection semantics as `uzor-urx-cpu::clip::ClipStack`'s plain-
-/// rect entries (`push_rect`/`current`): a `Vec<[x,y,w,h]>`, root =
-/// full viewport, intersect-with-current-top on every push, guarded
-/// pop (root is never popped). Unlike the CPU reference, this stack
-/// has no rounded-mask entry variant — `PushClipRoundedRect` degrades
-/// to its bounding rect (Wave 3 owns real stencil clip), matching the
-/// legacy adapter's own `wgpu_rounded_clip_to_rect_bbox` policy
-/// (`adapter.rs:227-230`) under a distinct `native_*` label.
+/// rect entries (`push_rect`/`current`): root = full viewport,
+/// intersect-with-current-top on every push, guarded pop (root is
+/// never popped).
 ///
-/// **CPU clip-edge AA finding**: `uzor-urx-cpu`'s `ClipStack::coverage`
-/// (`clip.rs:34-39`) does a HARD binary in/out test for plain `Rect`
-/// entries, but that method is only reachable via `pixel_coverage()`,
-/// which every CPU rasteriser (`fill_rect_aa`, `fill_path_aa`,
-/// `stroke_line_aa_with_caps`) only calls when a MASK (rounded-clip)
-/// entry is present (`ClipStack::all_rect()` gate). For a plain-rect-
-/// only clip stack — the ONLY kind this native path supports — every
-/// CPU primitive instead intersects its own float bounding box against
-/// `clip.current()` (a plain float `Rect`) and feeds the result through
-/// the SAME analytic per-pixel coverage function used for the shape's
-/// own edges (`fill.rs::axis_coverage`). So CPU's clip boundary gets a
-/// SOFT, sub-pixel-accurate AA transition, same as any other edge —
-/// while this native path's fragment-shader clip test
-/// (`if px < cr.x || ... { discard; }`) is a HARD binary cut. This is
-/// the same "two different AA algorithms" class of divergence as
-/// every other Wave 1 finding — expected to show up only as a thin
-/// 1px seam along each clip boundary in the whole-image sweep, not at
-/// any interior probe placed away from a clip edge.
+/// **Wave 3 Commit 2**: gains a `Rounded` frame variant (design §4) —
+/// `PushClipRoundedRect` now drives REAL stencil clipping (closes
+/// `native_rounded_clip_to_rect_bbox`, removed entirely — there is no
+/// approximation left to degrade about). The bbox intersection still
+/// feeds the SAME plain-rect `clip_rect` mechanism every instance
+/// already carries (stencil is purely ADDITIVE precision on top, never
+/// a replacement, design §4) — a `Rounded` frame's `current()` value is
+/// identical in shape to a `Rect` frame's, just also carrying the
+/// cached tessellated mask mesh + its projection coefficients (captured
+/// at push time, replayed unchanged at the matching pop — mirrors
+/// `emit_solid_mesh`'s replay contract) so the eventual `PopClip` can
+/// re-emit the SAME geometry as a decrement without re-tessellating.
+///
+/// **CPU clip-edge AA finding** (Wave 1, still true for plain-rect
+/// clips): `uzor-urx-cpu`'s `ClipStack::coverage` (`clip.rs:34-39`)
+/// does a HARD binary in/out test for plain `Rect` entries, but that
+/// method is only reachable via `pixel_coverage()`, which every CPU
+/// rasteriser only calls when a MASK (rounded-clip) entry is present.
+/// For a plain-rect-only clip stack, every CPU primitive instead
+/// intersects its own float bounding box against `clip.current()` and
+/// feeds the result through the SAME analytic per-pixel coverage
+/// function used for the shape's own edges — a SOFT, sub-pixel-accurate
+/// AA transition, same as any other edge — while this native path's
+/// fragment-shader clip test is a HARD binary cut (the same "two
+/// different AA algorithms" class of divergence as every other Wave 1
+/// finding). Wave 3's stencil+MSAA mechanism is its OWN separate,
+/// coarser-but-graduated AA source (design §2.6) — a third, distinct
+/// divergence source layered on top for rounded-clip content
+/// specifically, not a replacement for this one.
+enum ClipFrame {
+    Rect([f32; 4]),
+    Rounded {
+        /// Bbox intersection — feeds the existing `clip_rect` mechanism
+        /// unchanged (design §4).
+        rect_device: [f32; 4],
+        /// This frame's OWN stencil depth (1-indexed — the outermost
+        /// rounded clip is depth 1).
+        stencil_depth: u32,
+        /// Cached tessellated mask geometry (LOCAL space) — the SAME
+        /// `TessCache` Wave 1 built for gradient-routed `FillRect`, no
+        /// new cache.
+        mesh: Arc<TessMesh>,
+        /// Projection coefficients captured at PUSH time — the eventual
+        /// `PopClip` re-projects the SAME mesh through these, not
+        /// whatever transform happens to be active at pop time (there
+        /// isn't one — `PopClip` carries no transform of its own — but
+        /// documented for the same "replay contract" reason
+        /// `emit_solid_mesh` documents its own coefficients).
+        sx: f64,
+        sy: f64,
+        tx: f64,
+        ty: f64,
+    },
+}
+
 struct ClipStack {
-    stack: Vec<[f32; 4]>,
+    stack: Vec<ClipFrame>,
+    /// Current rounded-clip nesting depth — 0 means "no rounded clip
+    /// active right now" (either before the first push, or after the
+    /// last matching pop). Tracked separately from `stack.len()` since
+    /// plain `Rect` frames can interleave with `Rounded` ones (design
+    /// §2.4's nested-rounded-plus-rect fixture is exactly this case).
+    rounded_depth: u32,
 }
 
 impl ClipStack {
     fn new(viewport: Viewport) -> Self {
-        Self { stack: vec![[0.0, 0.0, viewport.width as f32, viewport.height as f32]] }
+        Self {
+            stack: vec![ClipFrame::Rect([0.0, 0.0, viewport.width as f32, viewport.height as f32])],
+            rounded_depth: 0,
+        }
     }
 
-    /// Current active clip rect (top of stack). The stack is seeded
+    /// Current active clip rect (bbox, top of stack) — identical shape
+    /// regardless of frame kind (design §4: the plain-rect mechanism is
+    /// unchanged by `Rounded` frames existing). The stack is seeded
     /// with the root entry in `new` and that entry is never popped, so
     /// this never panics.
     fn current(&self) -> [f32; 4] {
-        *self.stack.last().expect("ClipStack is seeded with a root entry that is never popped")
+        match self.stack.last().expect("ClipStack is seeded with a root entry that is never popped") {
+            ClipFrame::Rect(r) => *r,
+            ClipFrame::Rounded { rect_device, .. } => *rect_device,
+        }
+    }
+
+    /// Current rounded-clip nesting depth (design item 4 / §2.4) — `0`
+    /// when no rounded clip is active right now.
+    fn rounded_depth(&self) -> u32 {
+        self.rounded_depth
     }
 
     /// Intersect `r` (already in device space) with the current top
-    /// and push the result — mirrors `uzor-urx-cpu::clip::ClipStack::push_rect`'s
-    /// intersection (`clip.rs:73-82`), just carrying `[x,y,w,h]`
-    /// instead of a `kurbo::Rect`.
+    /// and push a plain `Rect` frame — mirrors
+    /// `uzor-urx-cpu::clip::ClipStack::push_rect`'s intersection
+    /// (`clip.rs:73-82`), just carrying `[x,y,w,h]` instead of a
+    /// `kurbo::Rect`.
     fn push_rect_device(&mut self, r: [f32; 4]) {
         let cur = self.current();
         let x0 = cur[0].max(r[0]);
         let y0 = cur[1].max(r[1]);
         let x1 = (cur[0] + cur[2]).min(r[0] + r[2]);
         let y1 = (cur[1] + cur[3]).min(r[1] + r[3]);
-        self.stack.push([x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)]);
+        self.stack.push(ClipFrame::Rect([x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)]));
+    }
+
+    /// Intersect `r` with the current top (SAME bbox math as
+    /// `push_rect_device`) and push a `Rounded` frame carrying the mask
+    /// mesh + its projection coefficients. Returns the NEW stencil
+    /// depth (post-increment) — the caller (`encode_scene`) uses
+    /// `new_depth - 1` as the mask-write's gate reference (design §2.4)
+    /// and emits the matching `MaskOp::Increment` batch itself (kept OUT
+    /// of `ClipStack` to keep this type free of any `EncodedFrame`
+    /// dependency — pure bookkeeping, same separation of concerns as
+    /// Wave 1's `ClipStack`).
+    fn push_rounded_rect_device(
+        &mut self,
+        r: [f32; 4],
+        mesh: Arc<TessMesh>,
+        sx: f64,
+        sy: f64,
+        tx: f64,
+        ty: f64,
+    ) -> u32 {
+        let cur = self.current();
+        let x0 = cur[0].max(r[0]);
+        let y0 = cur[1].max(r[1]);
+        let x1 = (cur[0] + cur[2]).min(r[0] + r[2]);
+        let y1 = (cur[1] + cur[3]).min(r[1] + r[3]);
+        let rect_device = [x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)];
+        self.rounded_depth += 1;
+        let depth = self.rounded_depth;
+        self.stack.push(ClipFrame::Rounded { rect_device, stencil_depth: depth, mesh, sx, sy, tx, ty });
+        depth
     }
 
     /// Guarded pop — the root entry (index 0) is never removed, so an
     /// unbalanced (extra) `PopClip` is a defensive no-op rather than a
     /// panic, same policy as the legacy adapter's `clip_depth` guard
-    /// (`adapter.rs:233-238`).
-    fn pop(&mut self) {
-        if self.stack.len() > 1 {
-            self.stack.pop();
+    /// (`adapter.rs:233-238`). Returns `Some((mesh, sx, sy, tx, ty,
+    /// stencil_depth))` when the popped frame was `Rounded` — the
+    /// caller emits the matching `MaskOp::Decrement` batch from it
+    /// (gated on `stencil_depth`, the scope's OWN depth, design §2.4);
+    /// `None` for a `Rect` pop (nothing stencil-related to undo) or an
+    /// underflow no-op.
+    fn pop(&mut self) -> Option<(Arc<TessMesh>, f64, f64, f64, f64, u32)> {
+        if self.stack.len() <= 1 {
+            return None;
         }
+        match self.stack.pop().expect("length > 1 checked above") {
+            ClipFrame::Rounded { mesh, sx, sy, tx, ty, stencil_depth, rect_device: _ } => {
+                self.rounded_depth -= 1;
+                Some((mesh, sx, sy, tx, ty, stencil_depth))
+            }
+            ClipFrame::Rect(_) => None,
+        }
+    }
+
+    /// End-of-scene unbalanced-scene guard (design §2.4's "unbalanced-
+    /// scene guard", mirrored from the CPU-side blend-layer
+    /// `force_close_all` audit fix) — force-pops every still-open
+    /// `Rounded` frame (LIFO) so no buggy/unbalanced scene ever leaves
+    /// the stencil buffer in a stale nonzero state for the rest of that
+    /// (already-malformed) frame. Returns each popped frame's data (same
+    /// shape as `pop()`'s `Some` case) so the caller emits one decrement
+    /// batch per entry, counted `native_rounded_clip_force_closed_at_scene_end`
+    /// (never silent — same doctrine as the blend-layer force-close).
+    fn force_close_all_rounded(&mut self) -> Vec<(Arc<TessMesh>, f64, f64, f64, f64, u32)> {
+        let mut closed = Vec::new();
+        while let Some(entry) = self.pop() {
+            closed.push(entry);
+        }
+        closed
     }
 }
 
@@ -276,14 +458,34 @@ impl ClipStack {
 /// the primitive entirely (design commit 4 item 3: a zero-area clip
 /// makes anything under it invisible by construction, so encoding an
 /// instance for it would be pure waste, not a degrade).
+///
+/// **Also stashes the CURRENT stencil-test depth** into
+/// `frame.current_stencil_ref` (design item 4's wgpu-pass-compatibility
+/// finding) for whichever `push_quad`/`push_line`/`push_triangle`/
+/// `push_glyph` call the caller makes next — `None` when no rounded
+/// clip is active right now (depth 0), `Some(depth)` otherwise. This is
+/// NOT a per-batch "_off vs _test" decision: mixing pipeline variants
+/// within a SINGLE render pass that has a stencil attachment is a wgpu
+/// validation error (`RenderPassCompatibilityError::IncompatibleDepthStencilAttachment`
+/// — confirmed by reading `wgpu-core-29.0.3/src/device/mod.rs`'s
+/// `RenderPassContext::check_compatible`, which compares
+/// `attachments.depth_stencil: Option<TextureFormat>` between the pass
+/// and every pipeline used in it: a pipeline built with `depth_stencil:
+/// None` cannot be bound inside a pass whose `depth_stencil_attachment`
+/// is `Some(_)`). The RENDERER alone decides `_off` vs `_test` for the
+/// WHOLE frame from `EncodedFrame::has_rounded_clip`; `None` here is
+/// defaulted to `0` at replay time when the frame turns out to be
+/// armed, and is otherwise never read at all (an unarmed frame's `_off`
+/// variant never touches stencil regardless).
 #[inline]
-fn active_clip(clip: &ClipStack) -> Option<[f32; 4]> {
+fn active_clip(clip: &ClipStack, frame: &mut EncodedFrame) -> Option<[f32; 4]> {
     let r = clip.current();
     if r[2] <= 0.0 || r[3] <= 0.0 {
-        None
-    } else {
-        Some(r)
+        return None;
     }
+    let depth = clip.rounded_depth();
+    frame.current_stencil_ref = if depth > 0 { Some(depth) } else { None };
+    Some(r)
 }
 
 /// Translate + uniform-scale decomposition (design §5) — the native
@@ -396,6 +598,51 @@ fn corner_radius_uniform(radii: &Option<[f32; 4]>) -> f32 {
 /// how a `None` atlas is handled if a glyph ever DOES successfully
 /// rasterise under it (defensive-only; unreachable in practice and in
 /// every test this commit adds).
+/// Emit one `MaskOp` batch's worth of `TriInstance`s from an
+/// already-tessellated (LOCAL-space) mask mesh, re-projected through
+/// `sx/sy/tx/ty` (design §2.3/§2.4). `clip_rect` is the PARENT scope's
+/// plain-rect bbox — the ALREADY-active clip before this push (or
+/// after this pop) — never the rounded rect's OWN newly-computed bbox,
+/// since the mask write must respect whatever plain-rect clip was
+/// already active, not the shape it's about to help refine (design §2.3
+/// "a mask write additionally respects whatever PLAIN-RECT clip is
+/// active"). `gate_ref` is `depth - 1` for an increment (§2.4: gated on
+/// the PARENT scope, so the write only lands where that scope was
+/// already active) or `depth` for a decrement (gated on THIS scope's
+/// own depth, so it only clears pixels CURRENTLY at that depth). Color
+/// fields carry a fixed opaque dummy — ignored by
+/// `STENCIL_MASK_SHADER_NATIVE`, `ColorWrites::empty()` blocks the
+/// pipeline from ever writing color regardless (design §2.3).
+fn emit_stencil_mask_batch(
+    frame: &mut EncodedFrame,
+    mesh: &TessMesh,
+    sx: f64,
+    sy: f64,
+    tx: f64,
+    ty: f64,
+    clip_rect: [f32; 4],
+    op: MaskOp,
+    gate_ref: u32,
+) {
+    const DUMMY_COLOR: u32 = 0xFFFF_FFFF;
+    for tri in &mesh.triangles {
+        frame.push_stencil_mask(
+            TriInstance {
+                v0: project_local(tri[0], sx, sy, tx, ty),
+                v1: project_local(tri[1], sx, sy, tx, ty),
+                v2: project_local(tri[2], sx, sy, tx, ty),
+                color0: DUMMY_COLOR,
+                color1: DUMMY_COLOR,
+                color2: DUMMY_COLOR,
+                _pad0: 0.0,
+                clip_rect,
+            },
+            op,
+            gate_ref,
+        );
+    }
+}
+
 pub(crate) fn encode_scene(
     scene: &Scene,
     viewport: Viewport,
@@ -421,17 +668,51 @@ pub(crate) fn encode_scene(
                 clip.push_rect_device([x0 as f32, y0 as f32, w as f32, h as f32]);
             }
             DrawCommand::PushClipRoundedRect { rect, transform } => {
-                // Bounding-rect approximation (Wave 3 owns real
-                // stencil clip) — the rounded rect's OWN bbox still
-                // needs the same transform + intersection treatment
-                // as a plain `PushClipRect`.
+                // Real stencil clip (Wave 3 Commit 2, design §2.4) —
+                // closes `native_rounded_clip_to_rect_bbox` entirely
+                // (no approximation left to degrade about). The bbox
+                // intersection still feeds the SAME plain-rect
+                // `clip_rect` mechanism as before (design §4).
                 let (x0, y0, w, h, _, _) = transform_rect(rect.rect(), transform);
-                clip.push_rect_device([x0 as f32, y0 as f32, w as f32, h as f32]);
-                degrade("native_rounded_clip_to_rect_bbox");
+                let parent_clip_rect = clip.current(); // gate for the mask write below
+                let path = (*rect).into_path(crate::tessellate::TESS_TOLERANCE_PX);
+                let mesh = tess_cache.get_or_insert_fill(&path, FillRule::NonZero);
+                let (sx, sy, tx, ty) = decompose_translate_scale(transform);
+                let parent_depth = clip.rounded_depth();
+                let new_depth = clip.push_rounded_rect_device(
+                    [x0 as f32, y0 as f32, w as f32, h as f32],
+                    mesh.clone(),
+                    sx,
+                    sy,
+                    tx,
+                    ty,
+                );
+                debug_assert_eq!(new_depth, parent_depth + 1, "push must increment depth by exactly 1");
+                emit_stencil_mask_batch(
+                    &mut frame,
+                    &mesh,
+                    sx,
+                    sy,
+                    tx,
+                    ty,
+                    parent_clip_rect,
+                    MaskOp::Increment,
+                    parent_depth,
+                );
+                frame.has_rounded_clip = true;
             }
-            DrawCommand::PopClip => clip.pop(),
+            DrawCommand::PopClip => {
+                if let Some((mesh, sx, sy, tx, ty, depth)) = clip.pop() {
+                    // The parent scope's bbox is whatever `clip.current()`
+                    // is NOW, after the pop already happened above.
+                    let parent_clip_rect = clip.current();
+                    emit_stencil_mask_batch(
+                        &mut frame, &mesh, sx, sy, tx, ty, parent_clip_rect, MaskOp::Decrement, depth,
+                    );
+                }
+            }
             DrawCommand::GlyphRun { glyphs, font, font_size, brush, transform, text: _ } => {
-                let Some(clip_rect) = active_clip(&clip) else { continue };
+                let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
                 encode_glyph_run(
                     &mut frame,
                     atlas.as_deref_mut(),
@@ -448,26 +729,37 @@ pub(crate) fn encode_scene(
                 degrade("native_blend_layer_not_yet_implemented");
             }
             DrawCommand::FillRect { rect, radii, brush, transform } => {
-                let Some(clip_rect) = active_clip(&clip) else { continue };
+                let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
                 encode_fill_rect(&mut frame, tess_cache, *rect, radii, brush, transform, clip_rect);
             }
             DrawCommand::StrokeRect { rect, radii, stroke, brush, transform } => {
-                let Some(clip_rect) = active_clip(&clip) else { continue };
+                let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
                 encode_stroke_rect(&mut frame, *rect, radii, stroke, brush, transform, clip_rect);
             }
             DrawCommand::Line { from, to, stroke, brush, transform } => {
-                let Some(clip_rect) = active_clip(&clip) else { continue };
+                let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
                 encode_line(&mut frame, *from, *to, stroke, brush, transform, clip_rect);
             }
             DrawCommand::FillPath { path, rule, brush, transform } => {
-                let Some(clip_rect) = active_clip(&clip) else { continue };
+                let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
                 encode_fill_path(&mut frame, tess_cache, path, *rule, brush, transform, clip_rect);
             }
             DrawCommand::StrokePath { path, stroke, brush, transform } => {
-                let Some(clip_rect) = active_clip(&clip) else { continue };
+                let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
                 encode_stroke_path(&mut frame, tess_cache, path, stroke, brush, transform, clip_rect);
             }
         }
+    }
+
+    // Unbalanced-scene guard (design §2.4, mirrored from the CPU-side
+    // blend-layer `force_close_all` audit fix) — any `PushClipRoundedRect`
+    // with no matching `PopClip` gets a synthetic decrement here, so the
+    // stencil buffer never carries a stale nonzero value into whatever
+    // comes after this (already-malformed) frame. Never silent.
+    for (mesh, sx, sy, tx, ty, depth) in clip.force_close_all_rounded() {
+        let parent_clip_rect = clip.current();
+        emit_stencil_mask_batch(&mut frame, &mesh, sx, sy, tx, ty, parent_clip_rect, MaskOp::Decrement, depth);
+        degrade("native_rounded_clip_force_closed_at_scene_end");
     }
 
     frame
@@ -1347,8 +1639,13 @@ mod tests {
         );
     }
 
+    /// Wave 3 Commit 2 (design §4): the bbox intersection still feeds
+    /// the SAME plain-rect `clip_rect` mechanism every instance already
+    /// carries — stencil is purely ADDITIVE precision on top, never a
+    /// replacement (the `[10,10,20,20]` value is identical to what a
+    /// plain `PushClipRect` at the same rect would give).
     #[test]
-    fn push_clip_rounded_rect_degrades_to_bbox_and_still_clips() {
+    fn push_clip_rounded_rect_still_feeds_bbox_into_clip_rect() {
         let mut scene = Scene::new();
         scene.push(DrawCommand::PushClipRoundedRect {
             rect: uzor_urx_core::math::RoundedRect::from_rect(
@@ -1359,10 +1656,54 @@ mod tests {
         });
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
         let frame = encode_scene(&scene, viewport(), &mut cache(), None);
-        // Bounding-rect approximation — the ROUNDED rect's plain bbox
-        // is [10,10,20,20], same as a plain `PushClipRect` would give.
         assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 20.0, 20.0]);
+        assert!(frame.has_rounded_clip);
     }
+
+    /// The core stencil-ref sequencing contract (design §2.4, §9 commit
+    /// 2 gate) — pure `encode_scene` output inspection, no GPU needed:
+    /// `push` emits a `MaskOp::Increment` batch gated on the PARENT
+    /// depth (`0`, outermost), content between push/pop is tagged
+    /// `Some(1)`, `pop` emits a `MaskOp::Decrement` batch gated on THIS
+    /// scope's own depth (`1`). Also proves the coalescing rule splits
+    /// on `stencil_ref` change even though `Quad` batches sandwich the
+    /// rounded-clip scope on both sides.
+    #[test]
+    fn rounded_clip_stencil_ref_sequencing_push_content_pop() {
+        let mut scene = Scene::new();
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255)); // depth 0, BEFORE
+        scene.push(DrawCommand::PushClipRoundedRect {
+            rect: uzor_urx_core::math::RoundedRect::from_rect(
+                Rect::new(10.0, 10.0, 30.0, 30.0),
+                uzor_urx_core::math::RoundedRectRadii::new(5.0, 5.0, 5.0, 5.0),
+            ),
+            transform: Affine::IDENTITY,
+        });
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255)); // depth 1, INSIDE
+        scene.push(DrawCommand::PopClip);
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(2, 2, 2, 255)); // depth 0, AFTER
+
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        assert!(frame.has_rounded_clip);
+        assert!(!frame.stencil_masks.is_empty(), "the mask geometry itself must have been emitted");
+
+        let kinds: Vec<(BatchKind, Option<u32>)> = frame.batches.iter().map(|b| (b.kind, b.stencil_ref)).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (BatchKind::Quad, None),                             // depth 0, before
+                (BatchKind::StencilMask(MaskOp::Increment), Some(0)), // gate = parent depth (0)
+                (BatchKind::Quad, Some(1)),                          // depth 1, inside
+                (BatchKind::StencilMask(MaskOp::Decrement), Some(1)), // gate = this scope's own depth (1)
+                (BatchKind::Quad, None),                             // depth 0, after — did NOT coalesce with the first Quad batch
+            ],
+            "push -> increment(gate=parent), content -> Some(depth), pop -> decrement(gate=own depth)"
+        );
+    }
+
+    // The unbalanced-scene force-close test lives in
+    // `metrics_recorder_proof` below (it needs `TestRecorder`, private
+    // to that submodule).
 
     /// Port of the legacy adapter's `adapt_balances_clip_stack`
     /// (`adapter.rs:436-446`) shape, adapted to the native encoder's
@@ -1520,9 +1861,7 @@ mod tests {
     // this uses `metrics::with_local_recorder` — already part of the
     // crate's EXISTING `metrics = "0.24"` dependency (no new dep at
     // all) — with a small hand-rolled `Recorder` that records counter
-    // values into a `Mutex<HashMap<Key, Arc<AtomicU64>>>`. This proves
-    // at least one degrade counter (`native_rounded_clip_to_rect_bbox`)
-    // actually increments, not just that the encoder doesn't panic.
+    // values into a `Mutex<HashMap<Key, Arc<AtomicU64>>>`.
     mod metrics_recorder_proof {
         use std::collections::HashMap;
         use std::sync::atomic::{AtomicU64, Ordering};
@@ -1580,10 +1919,21 @@ mod tests {
 
         use super::*;
 
+        /// Unbalanced-scene guard (design §2.4, mirrored from the
+        /// CPU-side blend-layer `force_close_all` audit fix, Wave 3
+        /// Commit 1): a `PushClipRoundedRect` with NO matching
+        /// `PopClip` still gets a decrement batch emitted at
+        /// end-of-scene, and the force-close is counted
+        /// (`native_rounded_clip_force_closed_at_scene_end`) rather
+        /// than silently leaving the stencil buffer in a stale nonzero
+        /// state for whatever (already-malformed) frame comes next.
+        /// Replaces the Wave 1 `rounded_clip_bbox_degrade_counter_actually_increments`
+        /// test — its subject (`native_rounded_clip_to_rect_bbox`) was
+        /// REMOVED this commit, replaced by real stencil clipping.
         #[test]
-        fn rounded_clip_bbox_degrade_counter_actually_increments() {
+        fn unbalanced_push_clip_rounded_rect_force_closes_at_scene_end() {
             let recorder = TestRecorder::default();
-            metrics::with_local_recorder(&recorder, || {
+            let frame = metrics::with_local_recorder(&recorder, || {
                 let mut scene = Scene::new();
                 scene.push(DrawCommand::PushClipRoundedRect {
                     rect: uzor_urx_core::math::RoundedRect::from_rect(
@@ -1592,11 +1942,17 @@ mod tests {
                     ),
                     transform: Affine::IDENTITY,
                 });
-                let _frame = encode_scene(&scene, viewport(), &mut cache(), None);
+                scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
+                // NO PopClip — deliberately unbalanced.
+                encode_scene(&scene, viewport(), &mut cache(), None)
             });
 
-            let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_rounded_clip_to_rect_bbox");
-            assert_eq!(value, 1, "the degrade counter must have actually incremented, not just avoided a panic");
+            let last = frame.batches.last().expect("at least the synthetic decrement batch must exist");
+            assert_eq!(last.kind, BatchKind::StencilMask(MaskOp::Decrement));
+            assert_eq!(last.stencil_ref, Some(1), "force-close gates on the still-open scope's own depth");
+
+            let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_rounded_clip_force_closed_at_scene_end");
+            assert_eq!(value, 1, "the force-close counter must have actually incremented, not just avoided a panic");
         }
 
         // ── Wave 2 Commit 2: GlyphRun degrade proofs ─────────────────

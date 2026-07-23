@@ -89,10 +89,12 @@ fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer 
     })
 }
 
-/// Owns the path/triangle `wgpu::RenderPipeline` + its grow-only
-/// instance buffer.
+/// Owns the path/triangle `wgpu::RenderPipeline` pair (design §2.2 —
+/// `_off`/`_test`, same convention as `QuadPipeline`) + the shared
+/// grow-only instance buffer.
 pub(crate) struct PathPipeline {
-    pipeline: wgpu::RenderPipeline,
+    pipeline_off: wgpu::RenderPipeline,
+    pipeline_test: wgpu::RenderPipeline,
     buffer: wgpu::Buffer,
     capacity: usize,
 }
@@ -113,39 +115,43 @@ impl PathPipeline {
             bind_group_layouts: &[Some(uniform_bgl)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("uzor_urx_wgpu.path_pipeline_native"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[tri_instance_layout()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    // Same premultiplied blend state as Quad/Line
-                    // (design §7).
-                    blend: Some(crate::pipelines::quad::premultiplied_blend_state()),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
-            multiview_mask: None,
-            cache: None,
-        });
+        // Hoisted OUTSIDE the `make` closure — see `QuadPipeline::new`'s
+        // comment for why.
+        let vertex_buffers = [tri_instance_layout()];
+        let color_targets = [Some(wgpu::ColorTargetState {
+            format,
+            // Same premultiplied blend state as Quad/Line (design §7).
+            blend: Some(crate::pipelines::quad::premultiplied_blend_state()),
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
+        let (pipeline_off, pipeline_test) =
+            crate::pipelines::build_off_test_pair(device, |depth_stencil| wgpu::RenderPipelineDescriptor {
+                label: Some("uzor_urx_wgpu.path_pipeline_native"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &vertex_buffers,
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &color_targets,
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil,
+                multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
+                multiview_mask: None,
+                cache: None,
+            });
         let buffer = make_instance_buffer(device, INITIAL_CAPACITY);
 
-        Self { pipeline, buffer, capacity: INITIAL_CAPACITY }
+        Self { pipeline_off, pipeline_test, buffer, capacity: INITIAL_CAPACITY }
     }
 
     /// Upload `data`, growing the buffer (doubling capacity) if
@@ -164,9 +170,17 @@ impl PathPipeline {
         queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(data));
     }
 
-    /// Bind this pipeline + its vertex buffer onto `pass`.
-    pub(crate) fn bind(&self, pass: &mut wgpu::RenderPass<'_>) {
-        pass.set_pipeline(&self.pipeline);
+    /// Bind this pipeline + its vertex buffer onto `pass` (design §2.2's
+    /// `_off`/`_test` selection — see `QuadPipeline::bind`'s doc
+    /// comment for the exact semantics of `stencil_ref`).
+    pub(crate) fn bind(&self, pass: &mut wgpu::RenderPass<'_>, stencil_ref: Option<u32>) {
+        match stencil_ref {
+            None => pass.set_pipeline(&self.pipeline_off),
+            Some(r) => {
+                pass.set_pipeline(&self.pipeline_test);
+                pass.set_stencil_reference(r);
+            }
+        }
         pass.set_vertex_buffer(0, self.buffer.slice(..));
     }
 

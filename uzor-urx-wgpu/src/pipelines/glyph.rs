@@ -86,15 +86,17 @@ fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer 
     })
 }
 
-/// Owns the glyph `wgpu::RenderPipeline` + its grow-only instance
-/// buffer. Does NOT own the atlas texture/bind group — those live in
-/// `crate::atlas::NativeGlyphAtlas`, borrowed by reference at bind
-/// time (`bind`'s `atlas_bind_group` parameter), same split
-/// `NativeUrxRenderer::render_into_encoder`'s batch-replay loop uses
-/// for every other pipeline (bind group 0 once per pass; group 1 here
-/// switches to whichever atlas is live).
+/// Owns the glyph `wgpu::RenderPipeline` pair (design §2.2 —
+/// `_off`/`_test`, same convention as `QuadPipeline`) + the shared
+/// grow-only instance buffer. Does NOT own the atlas texture/bind
+/// group — those live in `crate::atlas::NativeGlyphAtlas`, borrowed by
+/// reference at bind time (`bind`'s `atlas_bind_group` parameter), same
+/// split `NativeUrxRenderer::render_into_encoder`'s batch-replay loop
+/// uses for every other pipeline (bind group 0 once per pass; group 1
+/// here switches to whichever atlas is live).
 pub(crate) struct GlyphPipeline {
-    pipeline: wgpu::RenderPipeline,
+    pipeline_off: wgpu::RenderPipeline,
+    pipeline_test: wgpu::RenderPipeline,
     buffer: wgpu::Buffer,
     capacity: usize,
 }
@@ -116,40 +118,45 @@ impl GlyphPipeline {
             bind_group_layouts: &[Some(uniform_bgl), Some(atlas_bgl)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("uzor_urx_wgpu.glyph_pipeline_native"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[glyph_instance_layout()],
-                compilation_options: Default::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    // Same premultiplied blend state as every other
-                    // native pipeline (design §7 / §4) — never the
-                    // legacy crate's straight-alpha `ALPHA_BLENDING`.
-                    blend: Some(crate::pipelines::quad::premultiplied_blend_state()),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: Default::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
-            multiview_mask: None,
-            cache: None,
-        });
+        // Hoisted OUTSIDE the `make` closure — see `QuadPipeline::new`'s
+        // comment for why.
+        let vertex_buffers = [glyph_instance_layout()];
+        let color_targets = [Some(wgpu::ColorTargetState {
+            format,
+            // Same premultiplied blend state as every other native
+            // pipeline (design §7 / §4) — never the legacy crate's
+            // straight-alpha `ALPHA_BLENDING`.
+            blend: Some(crate::pipelines::quad::premultiplied_blend_state()),
+            write_mask: wgpu::ColorWrites::ALL,
+        })];
+        let (pipeline_off, pipeline_test) =
+            crate::pipelines::build_off_test_pair(device, |depth_stencil| wgpu::RenderPipelineDescriptor {
+                label: Some("uzor_urx_wgpu.glyph_pipeline_native"),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &vertex_buffers,
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &color_targets,
+                    compilation_options: Default::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    ..Default::default()
+                },
+                depth_stencil,
+                multisample: wgpu::MultisampleState { count: sample_count, ..Default::default() },
+                multiview_mask: None,
+                cache: None,
+            });
         let buffer = make_instance_buffer(device, INITIAL_CAPACITY);
 
-        Self { pipeline, buffer, capacity: INITIAL_CAPACITY }
+        Self { pipeline_off, pipeline_test, buffer, capacity: INITIAL_CAPACITY }
     }
 
     /// Upload `data`, growing the buffer (doubling capacity) if it no
@@ -170,12 +177,20 @@ impl GlyphPipeline {
     }
 
     /// Bind this pipeline + its vertex buffer + `atlas_bind_group` at
-    /// group 1 onto `pass`. Group 0 (the shared uniform bind group) is
+    /// group 1 onto `pass` (design §2.2's `_off`/`_test` selection —
+    /// see `QuadPipeline::bind`'s doc comment for the exact semantics
+    /// of `stencil_ref`). Group 0 (the shared uniform bind group) is
     /// bound once per pass by `render_into_encoder`, same as
     /// Quad/Line/Path — only group 1 is this pipeline's own concern,
     /// since it's the only native pipeline with a second bind group.
-    pub(crate) fn bind(&self, pass: &mut wgpu::RenderPass<'_>, atlas_bind_group: &wgpu::BindGroup) {
-        pass.set_pipeline(&self.pipeline);
+    pub(crate) fn bind(&self, pass: &mut wgpu::RenderPass<'_>, stencil_ref: Option<u32>, atlas_bind_group: &wgpu::BindGroup) {
+        match stencil_ref {
+            None => pass.set_pipeline(&self.pipeline_off),
+            Some(r) => {
+                pass.set_pipeline(&self.pipeline_test);
+                pass.set_stencil_reference(r);
+            }
+        }
         pass.set_vertex_buffer(0, self.buffer.slice(..));
         pass.set_bind_group(1, atlas_bind_group, &[]);
     }

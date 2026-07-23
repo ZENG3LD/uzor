@@ -77,6 +77,7 @@ pub mod native_error;
 mod pipelines;
 pub mod renderer;
 mod shaders;
+mod stencil;
 mod tessellate;
 
 pub use adapter::{adapt_scene_into, UrxWgpuBackend};
