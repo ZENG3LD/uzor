@@ -19,3 +19,16 @@ wgpu    = "29"
 # for clarity in the DrawCommand → InstancedRenderContext adapter.
 kurbo = "0.13"
 peniko = "0.6"
+# Native-pipeline GPU resource plumbing (Wave 1) — raw instance buffers
+# need Pod/Zeroable derives; typed renderer errors need thiserror (same
+# major version as the sibling `uzor-urx-wgpu-full` crate).
+bytemuck  = { version = "1", features = ["derive"] }
+thiserror = "1"
+
+[dev-dependencies]
+# Headless-GPU parity harness (Wave 1) — same versions as the sibling
+# `uzor-urx-3d`/`uzor-render-wgpu-instanced` headless test suites.
+pollster = "0.4"
+image    = { version = "0.25", default-features = false, features = ["png"] }
+# The semantic reference the native pipeline is diffed against.
+uzor-urx-cpu = { workspace = true }

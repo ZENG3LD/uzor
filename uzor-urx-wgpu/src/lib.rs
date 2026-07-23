@@ -1,15 +1,21 @@
-//! URX WGPU backend — `Scene` consumer + adapter to the existing
-//! `uzor-render-wgpu-instanced` primitive pipelines.
+//! URX WGPU backend.
 //!
-//! Why a wrapper, not a fork:
-//! - The existing crate has 1500+ LOC of well-tested Quad/Line/Triangle
-//!   SDF + cosmic-text atlas plumbing. Don't duplicate.
-//! - URX value-add at this layer is consuming the shared `Scene` enum
-//!   instead of the legacy ad-hoc `RenderContext` trait method calls.
-//! - Renaming the underlying crate is a Phase 9 cleanup (deprecate
-//!   + remove); for now we wrap.
+//! Two render paths coexist during the URX Wave 1 cutover
+//! (`docs/uzor-engines/plans/urx-wave1-native-pipelines-design-2026-07-25.md`,
+//! crate map at `docs/uzor-engines/research/urx-wave1-crate-map-2026-07-25.md`):
 //!
-//! ## API
+//! 1. **Legacy adapter path** (`adapter` module, [`UrxWgpuBackend`]) —
+//!    translates a `Scene` into `uzor-render-wgpu-instanced` calls.
+//!    Still the production path wired into `uzor-render-hub`; untouched
+//!    by Wave 1.
+//! 2. **Native pipeline path** ([`NativeUrxRenderer`]) — Wave 1's
+//!    self-owned wgpu pipelines (Quad SDF in Commit 1; Line/Path join
+//!    in Commit 2/3), consuming `Scene` directly with no delegation to
+//!    the legacy crate. Exercised by this crate's own tests and the
+//!    pixel-parity harness (`tests/parity.rs`) until the Wave 5
+//!    cutover flips production traffic onto it.
+//!
+//! ## Legacy API
 //!
 //! ```ignore
 //! let mut ctx = InstancedRenderContext::new(w, h, 0.0, 0.0);
@@ -19,8 +25,16 @@
 //! ```
 
 pub mod adapter;
+mod encode;
+mod msaa;
+pub mod native_error;
+mod pipelines;
+pub mod renderer;
+mod shaders;
 
 pub use adapter::{adapt_scene_into, UrxWgpuBackend};
+pub use native_error::NativeRenderError;
+pub use renderer::{NativeUrxRenderer, Viewport};
 
 // Re-export the underlying primitive pieces so consumers don't need a
 // separate `uzor-render-wgpu-instanced` dep just to call render.
