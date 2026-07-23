@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use uzor_urx_core::math::{Brush, Rect};
+use uzor_urx_core::math::{Affine, Brush, Rect};
 use uzor_urx_core::scene::{DrawCommand, Scene};
 use uzor_urx_core::validate::{validate_command, ValidationIssue};
 
@@ -45,6 +45,7 @@ fn tile_eligible(scene: &Scene) -> bool {
     true
 }
 
+use crate::blend::{LayerStack, PopOutcome};
 use crate::clip::ClipStack;
 use crate::color::brush_to_color;
 use crate::fill::fill_rect_aa;
@@ -127,6 +128,17 @@ impl CpuBackend {
 
         let bounds = Rect::new(0.0, 0.0, pixmap.width() as f64, pixmap.height() as f64);
         let mut clip = ClipStack::new(bounds);
+        // Wave 3 Commit 1: real offscreen-pixmap blend-layer isolation
+        // (closes `cpu_blend_layer_dropped`, design §5/§6.2). `clip` is
+        // completely UNCHANGED by layers — one shared clip stack spans
+        // layer boundaries (design §0.2); only the DRAW TARGET switches
+        // via `layer_stack.current_target(pixmap)` below. Every
+        // per-primitive rasteriser here takes `pixmap` purely as its
+        // write target (verified by direct read of every arm's
+        // callee signature) — none re-derives bounds from it, so
+        // redirecting the target to a same-viewport-sized layer pixmap
+        // (§0.2) is a safe, purely mechanical substitution.
+        let mut layer_stack = LayerStack::new(self.config.blend_layer_max_depth);
 
         for cmd in &scene.commands {
             // Non-finite input (NaN, ±Inf in any coord/transform) is
@@ -155,18 +167,20 @@ impl CpuBackend {
                             true
                         } else { false }
                     } else { false };
+                    let target = layer_stack.current_target(pixmap);
                     if matches!(brush, uzor_urx_core::math::Brush::Gradient(_)) {
-                        if crate::gradient::try_fill_rect_gradient(pixmap, &clip, *rect, brush, transform).is_some() {
+                        if crate::gradient::try_fill_rect_gradient(target, &clip, *rect, brush, transform).is_some() {
                             if _radii_guard { clip.pop(); }
                             continue;
                         }
                     }
                     let color = brush_to_color(brush);
-                    fill_rect_aa(pixmap, &clip, *rect, color, transform);
+                    fill_rect_aa(target, &clip, *rect, color, transform);
                     if _radii_guard { clip.pop(); }
                 }
                 DrawCommand::StrokeRect { rect, radii, stroke, brush, transform } => {
                     let color = brush_to_color(brush);
+                    let target = layer_stack.current_target(pixmap);
                     if let Some(r) = radii {
                         if r.iter().any(|v| *v > 0.0) {
                             // Round-corner stroke = stroke a flattened
@@ -179,23 +193,26 @@ impl CpuBackend {
                             );
                             use kurbo::Shape as _;
                             let path: uzor_urx_core::math::BezPath = rr.into_path(0.25);
-                            crate::path::stroke_path_aa(pixmap, &clip, &path, stroke, color, transform);
+                            crate::path::stroke_path_aa(target, &clip, &path, stroke, color, transform);
                             continue;
                         }
                     }
-                    stroke_rect_aa(pixmap, &clip, *rect, stroke.width, color, transform);
+                    stroke_rect_aa(target, &clip, *rect, stroke.width, color, transform);
                 }
                 DrawCommand::Line { from, to, stroke, brush, transform } => {
                     let color = brush_to_color(brush);
-                    stroke_line_aa(pixmap, &clip, *from, *to, stroke.width, color, transform);
+                    let target = layer_stack.current_target(pixmap);
+                    stroke_line_aa(target, &clip, *from, *to, stroke.width, color, transform);
                 }
                 DrawCommand::FillPath { path, rule, brush, transform } => {
                     let color = brush_to_color(brush);
-                    crate::path::fill_path_aa(pixmap, &clip, path, *rule, color, transform);
+                    let target = layer_stack.current_target(pixmap);
+                    crate::path::fill_path_aa(target, &clip, path, *rule, color, transform);
                 }
                 DrawCommand::StrokePath { path, stroke, brush, transform } => {
                     let color = brush_to_color(brush);
-                    crate::path::stroke_path_aa(pixmap, &clip, path, stroke, color, transform);
+                    let target = layer_stack.current_target(pixmap);
+                    crate::path::stroke_path_aa(target, &clip, path, stroke, color, transform);
                 }
                 DrawCommand::GlyphRun { glyphs, font, font_size, brush, transform, text: _ } => {
                     #[cfg(feature = "glyph")]
@@ -208,10 +225,11 @@ impl CpuBackend {
                         let rgba = brush_to_color(brush).to_rgba8();
                         let coeffs = transform.as_coeffs();
                         let (tx, ty) = (coeffs[4] as f32, coeffs[5] as f32);
-                        let pw = pixmap.width();
-                        let ph = pixmap.height();
+                        let target = layer_stack.current_target(pixmap);
+                        let pw = target.width();
+                        let ph = target.height();
                         let _ = uzor_urx_glyph::draw_glyph_run(
-                            pixmap.pixels_mut(),
+                            target.pixels_mut(),
                             pw, ph,
                             tx, ty,
                             glyphs,
@@ -230,8 +248,9 @@ impl CpuBackend {
                     }
                 }
                 DrawCommand::Image { src, src_rect, dest, transform } => {
+                    let target = layer_stack.current_target(pixmap);
                     let _ = crate::image_draw::draw_image_aa(
-                        pixmap, &clip, *src, *src_rect, *dest, transform,
+                        target, &clip, *src, *src_rect, *dest, transform,
                     );
                 }
                 DrawCommand::PushClipRect { rect, transform } => {
@@ -243,17 +262,56 @@ impl CpuBackend {
                 DrawCommand::PopClip => {
                     clip.pop();
                 }
-                DrawCommand::PushBlendLayer { .. } | DrawCommand::PopBlendLayer => {
-                    // Stage 2 IR additions — CPU backend lift to offscreen
-                    // pixmap is a Stage 2.5 follow-up. For now we degrade
-                    // to identity (SrcOver direct draw); counter so
-                    // consumers know the request was dropped.
-                    metrics::counter!(
-                        KEY_RENDER_PRIMITIVES,
-                        "kind" => "cpu_blend_layer_dropped",
-                    ).increment(1);
+                DrawCommand::PushBlendLayer { mode, alpha, transform } => {
+                    // `Affine` derives `PartialEq` in the pinned kurbo
+                    // 0.13 (confirmed by reading `kurbo::Affine`'s own
+                    // struct definition — a plain `!=` works directly,
+                    // no `as_coeffs()` dance needed).
+                    if *transform != Affine::IDENTITY {
+                        metrics::counter!(
+                            KEY_RENDER_PRIMITIVES,
+                            "kind" => "cpu_blend_layer_transform_ignored",
+                        ).increment(1);
+                    }
+                    if !layer_stack.push(*mode, *alpha, pixmap.width(), pixmap.height()) {
+                        metrics::counter!(
+                            KEY_RENDER_PRIMITIVES,
+                            "kind" => "cpu_blend_layer_depth_exceeded",
+                        ).increment(1);
+                    }
+                }
+                DrawCommand::PopBlendLayer => {
+                    // `pixmap` here is the TRUE ROOT binding, never a
+                    // redirected `current_target` — `LayerStack::pop`
+                    // resolves its own parent internally (see
+                    // `blend.rs`'s module doc for why: the design
+                    // sketch's `layer_stack.pop(layer_stack.current_target_parent(pixmap))`
+                    // double-borrows `layer_stack`, genuinely uncompilable).
+                    match layer_stack.pop(pixmap) {
+                        PopOutcome::Composited | PopOutcome::Suppressed => {}
+                        PopOutcome::Underflow => {
+                            metrics::counter!(
+                                KEY_RENDER_PRIMITIVES,
+                                "kind" => "cpu_blend_layer_pop_underflow",
+                            ).increment(1);
+                        }
+                    }
                 }
             }
+        }
+
+        // Unbalanced-scene guard (design §3.3's GPU-side
+        // `native_blend_layer_force_closed_at_scene_end`, mirrored here)
+        // — any layer still open at this point had no matching
+        // `PopBlendLayer`. Force-composite each one (LIFO) onto its
+        // parent so its content stays visible instead of being silently
+        // dropped along with `layer_stack` at the end of this function.
+        let force_closed = layer_stack.force_close_all(pixmap);
+        if force_closed > 0 {
+            metrics::counter!(
+                KEY_RENDER_PRIMITIVES,
+                "kind" => "cpu_blend_layer_force_closed_at_scene_end",
+            ).increment(force_closed as u64);
         }
 
         let elapsed_us = t0.elapsed().as_micros() as u64;

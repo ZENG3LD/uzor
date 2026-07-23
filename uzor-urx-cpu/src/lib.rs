@@ -25,6 +25,7 @@
 
 pub mod pixmap;
 pub mod backend;
+mod blend;
 pub mod fill;
 pub mod stroke;
 pub mod clip;

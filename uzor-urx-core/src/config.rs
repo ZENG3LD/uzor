@@ -126,6 +126,18 @@ pub struct UrxConfig {
     pub wgpu_glyph_atlas_w: u32,
     /// See [`Self::wgpu_glyph_atlas_w`]. Wave 2. Default `2048`.
     pub wgpu_glyph_atlas_h: u32,
+    /// Maximum blend-layer nesting depth (`PushBlendLayer` without a
+    /// matching `PopBlendLayer` yet) — shared symmetrically by BOTH
+    /// backends (`uzor-urx-cpu::blend::LayerStack`,
+    /// `uzor-urx-wgpu`'s equivalent, one knob not two). Pushes beyond
+    /// this cap are suppressed (content keeps drawing into whatever
+    /// target was already active, no new offscreen layer allocated) —
+    /// bounds the per-nested-layer memory cost (one full-viewport
+    /// pixmap/texture per open layer) rather than growing unbounded
+    /// for a pathological/buggy scene. Read at backend-construction-
+    /// equivalent time (`CpuBackend::render`'s `LayerStack::new`) —
+    /// not hot-swappable mid-frame. Wave 3. Default `8`.
+    pub blend_layer_max_depth: usize,
 
     // ── SIMD ───────────────────────────────────────────────────────
 
@@ -198,6 +210,7 @@ impl Default for UrxConfig {
             path_tess_cache_cap: 256,
             wgpu_glyph_atlas_w: 2048,
             wgpu_glyph_atlas_h: 2048,
+            blend_layer_max_depth: 8,
             simd_level: SimdLevel::Native,
             hybrid_atlas_w: 2048,
             hybrid_atlas_h: 2048,
@@ -227,6 +240,11 @@ pub enum ConfigError {
     InvalidAtlasDim(u32, u32),
     /// `rounded_mask_max_dim` exceeded the safety cap (16384).
     RoundedMaskTooLarge(u32),
+    /// `blend_layer_max_depth` was `0` — would suppress EVERY blend
+    /// layer unconditionally, almost certainly a bug rather than an
+    /// intended "disable" (there is no dedicated disable knob; a
+    /// scene that never uses `PushBlendLayer` already pays zero cost).
+    InvalidBlendLayerDepth(usize),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -240,6 +258,8 @@ impl std::fmt::Display for ConfigError {
                 write!(f, "hybrid_atlas dims must be 1..=16384 (got {}×{})", w, h),
             ConfigError::RoundedMaskTooLarge(d) =>
                 write!(f, "rounded_mask_max_dim must be ≤ 16384 (got {})", d),
+            ConfigError::InvalidBlendLayerDepth(d) =>
+                write!(f, "blend_layer_max_depth must be > 0 (got {})", d),
         }
     }
 }
@@ -274,6 +294,9 @@ impl UrxConfig {
         if self.rounded_mask_max_dim > 16384 {
             return Err(ConfigError::RoundedMaskTooLarge(self.rounded_mask_max_dim));
         }
+        if self.blend_layer_max_depth == 0 {
+            return Err(ConfigError::InvalidBlendLayerDepth(self.blend_layer_max_depth));
+        }
         Ok(())
     }
 }
@@ -304,6 +327,7 @@ impl UrxConfigBuilder {
     setter!(path_tess_cache_cap, usize);
     setter!(wgpu_glyph_atlas_w, u32);
     setter!(wgpu_glyph_atlas_h, u32);
+    setter!(blend_layer_max_depth, usize);
     setter!(simd_level, SimdLevel);
     setter!(hybrid_atlas_w, u32);
     setter!(hybrid_atlas_h, u32);
@@ -350,6 +374,9 @@ mod tests {
         // atlas size.
         assert_eq!(c.wgpu_glyph_atlas_w, 2048);
         assert_eq!(c.wgpu_glyph_atlas_h, 2048);
+        // Wave-3-introduced — shared symmetrically by both backends'
+        // `LayerStack` equivalents.
+        assert_eq!(c.blend_layer_max_depth, 8);
         assert_eq!(c.simd_level, SimdLevel::Native);
         assert_eq!(c.hybrid_atlas_w, 2048);
         assert_eq!(c.hybrid_atlas_h, 2048);
@@ -424,6 +451,18 @@ mod tests {
     fn validate_rejects_oversize_rounded_mask() {
         let c = UrxConfig { rounded_mask_max_dim: 20_000, ..Default::default() };
         assert!(matches!(c.validate(), Err(ConfigError::RoundedMaskTooLarge(20_000))));
+    }
+
+    #[test]
+    fn validate_rejects_zero_blend_layer_max_depth() {
+        let c = UrxConfig { blend_layer_max_depth: 0, ..Default::default() };
+        assert!(matches!(c.validate(), Err(ConfigError::InvalidBlendLayerDepth(0))));
+    }
+
+    #[test]
+    fn blend_layer_max_depth_settable_via_builder() {
+        let c = UrxConfig::builder().blend_layer_max_depth(3).build().unwrap();
+        assert_eq!(c.blend_layer_max_depth, 3);
     }
 
     #[test]
