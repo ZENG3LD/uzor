@@ -29,7 +29,14 @@ use bytemuck::{Pod, Zeroable};
 /// - uv_pos:   8 bytes  ([f32; 2] — atlas UV top-left, 0..1)
 /// - uv_size:  8 bytes  ([f32; 2] — atlas UV width/height, 0..1)
 /// - color:    4 bytes  (u32, packed STRAIGHT (non-premultiplied) RGBA8 brush colour)
-/// - _pad0:    4 bytes  (f32)
+/// - _pad0:    4 bytes  (f32) — REPURPOSED (URX text-gamma design,
+///   2026-07-26, §2.5a): the foreground-luma gamma-bin index
+///   (`uzor_urx_core::text_gamma::luma_bin`'s output, `0` or `1` for
+///   `TEXT_GAMMA_BINS = 2`), written as a plain `f32` (`0.0`/`1.0`) by
+///   `encode.rs::encode_glyph_run`. NOT always-0 padding anymore — see
+///   that function's own doc comment. Layout size is UNCHANGED (56
+///   bytes, verified by the `assert!` below) — this is a value-meaning
+///   change only, never a field-layout change.
 /// - clip_rect: 16 bytes ([f32; 4])
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]

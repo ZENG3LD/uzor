@@ -219,6 +219,19 @@ pub struct UrxConfig {
     /// Eliminates the periodic ~25 ms allocation spike (wgpu issue
     /// #1242). Default `false` until belt sizing is calibrated.
     pub wgpu_staging_belt_enabled: bool,
+    /// Enable the text-gamma coverage-space adjustment (URX text-gamma
+    /// design, 2026-07-26) — `cov' = cov^(1/γ(fg_luma))` applied at
+    /// glyph composite time on BOTH backends via the shared
+    /// `uzor_urx_core::text_gamma` LUT. Default `false` — opt-in until
+    /// the app-fixture vello-diff gate proves it closes the
+    /// light-on-dark text-weight gap without moving the CPU-vs-native
+    /// byte-tight tier, same rollout discipline as `hybrid_atlas_enabled`/
+    /// `wgpu_packed_color` above. Read at `CpuBackend`/`NativeUrxRenderer`
+    /// construction only — not hot-swappable (same class of knob as
+    /// `wgpu_glyph_atlas_w`/`wgpu_gradient_lut_rows`: baking the LUT
+    /// texture is a one-time construction-time cost, not a per-frame
+    /// one).
+    pub text_gamma_enabled: bool,
 }
 
 impl Default for UrxConfig {
@@ -253,6 +266,7 @@ impl Default for UrxConfig {
             wgpu_use_immediates_for_projection: false,
             wgpu_sort_by_pipeline: false,
             wgpu_staging_belt_enabled: false,
+            text_gamma_enabled: false,
         }
     }
 }
@@ -378,6 +392,7 @@ impl UrxConfigBuilder {
     setter!(wgpu_use_immediates_for_projection, bool);
     setter!(wgpu_sort_by_pipeline, bool);
     setter!(wgpu_staging_belt_enabled, bool);
+    setter!(text_gamma_enabled, bool);
 
     /// Finalise + validate.
     pub fn build(self) -> Result<UrxConfig, ConfigError> {
@@ -432,6 +447,9 @@ mod tests {
         assert!(!c.wgpu_use_immediates_for_projection);
         assert!(!c.wgpu_sort_by_pipeline);
         assert!(!c.wgpu_staging_belt_enabled);
+        // URX text-gamma design, 2026-07-26, Commit 1 — B-tier opt-in,
+        // default OFF (same rollout discipline as every flag above).
+        assert!(!c.text_gamma_enabled);
         c.validate().unwrap();
     }
 
@@ -444,6 +462,7 @@ mod tests {
             .wgpu_use_immediates_for_projection(true)
             .wgpu_sort_by_pipeline(true)
             .wgpu_staging_belt_enabled(true)
+            .text_gamma_enabled(true)
             .build()
             .unwrap();
         assert!(c.hybrid_atlas_enabled);
@@ -452,6 +471,7 @@ mod tests {
         assert!(c.wgpu_use_immediates_for_projection);
         assert!(c.wgpu_sort_by_pipeline);
         assert!(c.wgpu_staging_belt_enabled);
+        assert!(c.text_gamma_enabled);
     }
 
     #[test]

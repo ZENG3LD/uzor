@@ -228,6 +228,12 @@ impl CpuBackend {
                         let target = layer_stack.current_target(pixmap);
                         let pw = target.width();
                         let ph = target.height();
+                        // URX text-gamma design, 2026-07-26, §2.4 — the
+                        // LUT is resolved from config, not baked into
+                        // this arm's own state; `None` when the flag is
+                        // off is `draw_glyph_run`'s zero-added-cost path.
+                        let gamma_lut = self.config.text_gamma_enabled
+                            .then(uzor_urx_glyph::configured_text_gamma_lut);
                         let _ = uzor_urx_glyph::draw_glyph_run(
                             target.pixels_mut(),
                             pw, ph,
@@ -236,6 +242,7 @@ impl CpuBackend {
                             *font,
                             *font_size,
                             [rgba.r, rgba.g, rgba.b, rgba.a],
+                            gamma_lut,
                         );
                     }
                     #[cfg(not(feature = "glyph"))]

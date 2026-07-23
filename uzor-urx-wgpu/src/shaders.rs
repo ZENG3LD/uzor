@@ -467,8 +467,15 @@ struct Uniforms {
 @group(0) @binding(0)
 var<uniform> uniforms: Uniforms;
 
-@group(1) @binding(0) var atlas_tex:     texture_2d<f32>;
-@group(1) @binding(1) var atlas_sampler: sampler;
+@group(1) @binding(0) var atlas_tex:      texture_2d<f32>;
+@group(1) @binding(1) var atlas_sampler:  sampler;
+// Text-gamma LUT (URX text-gamma design, 2026-07-26, §2.5b) — exact
+// integer-coordinate fetch ONLY (`textureLoad`, never `textureSample`),
+// same non-filterable contract as GRADIENT_SHADER_NATIVE's `lut_tex`.
+// Static: built once at NativeGlyphAtlas construction from the SAME
+// `uzor_urx_core::text_gamma::TEXT_GAMMA_CURVE` table the CPU backend
+// reads — never re-uploaded per frame, never per-gradient row churn.
+@group(1) @binding(2) var text_gamma_lut: texture_2d<f32>;
 
 // Instance data — must match GlyphInstance in pipelines/glyph.rs (56 bytes).
 struct GlyphInstance {
@@ -486,6 +493,10 @@ struct VertexOut {
     @location(0) uv:        vec2<f32>,
     @location(1) color:     vec4<f32>,
     @location(2) clip_rect: vec4<f32>,
+    // Flat integer varying (WGSL forbids interpolating integers) — same
+    // requirement GRADIENT_SHADER_NATIVE's `kind_extend`/`lut_row`
+    // already document. Set from `GlyphInstance._pad0` in vs_main.
+    @location(3) @interpolate(flat) gamma_bin: u32,
 };
 
 fn quad_vert_pos(vertex_index: u32) -> vec2<f32> {
@@ -512,6 +523,7 @@ fn vs_main(
     out.uv        = instance.uv_pos + uv_local * instance.uv_size;
     out.color     = unpack4x8unorm(instance.color_packed);
     out.clip_rect = instance.clip_rect;
+    out.gamma_bin = u32(instance._pad0 + 0.5);
     return out;
 }
 
@@ -526,13 +538,25 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let coverage = textureSample(atlas_tex, atlas_sampler, in.uv).r;
     if coverage < 0.0039 { discard; } // < 1/255 — same early-out legacy uses
 
+    // Text-gamma coverage adjustment (URX text-gamma design §2.5b) —
+    // exact-fetch LUT read, NEVER `pow()` in-shader (byte-parity vs
+    // CPU's own table read is structural, not just measured small).
+    // CPU's own LUT read is a rounded-clamped index with zero
+    // interpolation between entries; `textureLoad` reproduces that
+    // exactly. When `text_gamma_enabled` is false, `encode.rs` always
+    // writes gamma_bin=0 and row 0 is the identity curve (gamma=1.0
+    // built into the LUT itself) — so `adjusted == coverage` exactly,
+    // no shader-side branch needed at all.
+    let cov_i = i32(clamp(round(coverage * 255.0), 0.0, 255.0));
+    let adjusted = textureLoad(text_gamma_lut, vec2<i32>(cov_i, i32(in.gamma_bin)), 0).r;
+
     // Premultiply BOTH rgb and alpha here — `in.color` arrives STRAIGHT
     // (non-premultiplied brush colour, `GlyphInstance.color`); the
     // pipeline's blend state expects a premultiplied fragment output
     // (design §5, same discipline as Quad/Line/Path).
     let premul_rgb = in.color.rgb * in.color.a;
-    let out_rgb = premul_rgb * coverage;
-    let out_a   = in.color.a * coverage;
+    let out_rgb = premul_rgb * adjusted;
+    let out_a   = in.color.a * adjusted;
     if out_a <= 0.0 { discard; }
     return vec4<f32>(out_rgb, out_a);
 }

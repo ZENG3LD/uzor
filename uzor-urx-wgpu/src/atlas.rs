@@ -100,8 +100,9 @@ pub struct AtlasStats {
 }
 
 /// Owns the glyph atlas `R8Unorm` texture, its group-1 bind group
-/// (texture + sampler), the `etagere` rectangle allocator, and the
-/// per-`GlyphKey` slot table.
+/// (atlas texture + sampler + the static text-gamma LUT texture, URX
+/// text-gamma design 2026-07-26 §2.5), the `etagere` rectangle
+/// allocator, and the per-`GlyphKey` slot table.
 pub(crate) struct NativeGlyphAtlas {
     texture: wgpu::Texture,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -117,9 +118,13 @@ pub(crate) struct NativeGlyphAtlas {
 
 impl NativeGlyphAtlas {
     /// Build a `width x height` `R8Unorm` atlas texture + its group-1
-    /// bind group layout (`binding 0`: texture, `binding 1`: sampler —
-    /// matches `GLYPH_SHADER_NATIVE`'s `@group(1)` bindings, design §5).
-    pub(crate) fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    /// bind group layout (`binding 0`: texture, `binding 1`: sampler,
+    /// `binding 2`: the text-gamma LUT texture — matches
+    /// `GLYPH_SHADER_NATIVE`'s `@group(1)` bindings, design §5 / URX
+    /// text-gamma design §2.5). `queue` is only needed for the ONE-TIME
+    /// gamma LUT upload below — the atlas texture itself still fills
+    /// lazily via `flush_uploads`.
+    pub(crate) fn new(device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("uzor_urx_wgpu.native_glyph_atlas"),
             size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
@@ -144,6 +149,52 @@ impl NativeGlyphAtlas {
             ..Default::default()
         });
 
+        // Text-gamma LUT texture (URX text-gamma design, 2026-07-26,
+        // §2.5b) — group 1, binding 2. Built and uploaded ONCE here
+        // (not per-frame, not per-config) from
+        // `uzor_urx_core::text_gamma::TEXT_GAMMA_CURVE` via the SAME
+        // pure `build_text_gamma_lut` function `uzor-urx-glyph`'s
+        // `configured_text_gamma_lut` calls for the CPU side — byte-
+        // identical bytes on both backends, by construction. Exists
+        // unconditionally, even with `UrxConfig::text_gamma_enabled`
+        // false: `encode_glyph_run` always writes SOME bin into
+        // `GlyphInstance._pad0` (bin 0 — the hardcoded gamma=1.0
+        // identity row — when the flag is off), so sampling this
+        // texture with the flag off is a byte-exact no-op, never a
+        // shader-side branch (see `GLYPH_SHADER_NATIVE`'s own doc
+        // comment). `R8Unorm`, non-filterable (`textureLoad` only,
+        // never `textureSample` — no sampler entry needed, same
+        // contract `gradient_lut.rs::GradientLutAtlas` already uses).
+        let gamma_lut_bytes =
+            uzor_urx_core::text_gamma::build_text_gamma_lut(&uzor_urx_core::text_gamma::TEXT_GAMMA_CURVE);
+        let gamma_lut_w = uzor_urx_core::text_gamma::TEXT_GAMMA_LUT_SIZE as u32;
+        let gamma_lut_h = uzor_urx_core::text_gamma::TEXT_GAMMA_BINS as u32;
+        let gamma_lut_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("uzor_urx_wgpu.native_glyph_gamma_lut"),
+            size: wgpu::Extent3d { width: gamma_lut_w, height: gamma_lut_h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        // `TextGammaLut = [[u8; 256]; BINS]` is contiguous row-major in
+        // memory — flatten to one `write_texture` call.
+        let gamma_lut_flat: Vec<u8> = gamma_lut_bytes.iter().flatten().copied().collect();
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &gamma_lut_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &gamma_lut_flat,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(gamma_lut_w), rows_per_image: Some(gamma_lut_h) },
+            wgpu::Extent3d { width: gamma_lut_w, height: gamma_lut_h, depth_or_array_layers: 1 },
+        );
+        let gamma_lut_view = gamma_lut_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("uzor_urx_wgpu.native_glyph_atlas_bgl"),
             entries: &[
@@ -163,6 +214,16 @@ impl NativeGlyphAtlas {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -172,6 +233,7 @@ impl NativeGlyphAtlas {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&gamma_lut_view) },
             ],
         });
 
@@ -361,8 +423,8 @@ mod tests {
     #[test]
     #[ignore = "needs a headless GPU adapter"]
     fn repeat_key_is_a_cache_hit_with_no_duplicate_upload() {
-        let Some((device, _queue)) = test_device() else { return };
-        let mut atlas = NativeGlyphAtlas::new(&device, 256, 256);
+        let Some((device, queue)) = test_device() else { return };
+        let mut atlas = NativeGlyphAtlas::new(&device, &queue, 256, 256);
         atlas.begin_frame();
 
         let k = key(36);
@@ -387,13 +449,13 @@ mod tests {
     #[test]
     #[ignore = "needs a headless GPU adapter"]
     fn tiny_atlas_forced_eviction_never_touches_this_frame_slots() {
-        let Some((device, _queue)) = test_device() else { return };
+        let Some((device, queue)) = test_device() else { return };
         // 8x8 exactly fits ONE 6x6 bitmap's padded (8x8) allocation and
         // NOTHING else (no free space is left for a second shelf/column
         // of any size) — a single-slot atlas makes the "is it full"
         // outcome deterministic instead of depending on `etagere`'s
         // shelf-packing heuristics fitting (or not) a second rect.
-        let mut atlas = NativeGlyphAtlas::new(&device, 8, 8);
+        let mut atlas = NativeGlyphAtlas::new(&device, &queue, 8, 8);
         atlas.begin_frame();
 
         let a = key(1);
@@ -437,7 +499,7 @@ mod tests {
     #[ignore = "needs a headless GPU adapter"]
     fn flush_uploads_drains_exactly_the_queued_rects() {
         let Some((device, queue)) = test_device() else { return };
-        let mut atlas = NativeGlyphAtlas::new(&device, 256, 256);
+        let mut atlas = NativeGlyphAtlas::new(&device, &queue, 256, 256);
         atlas.begin_frame();
 
         let _ = atlas.get_or_insert(key(10), &bitmap(8, 8, 255));
@@ -456,8 +518,8 @@ mod tests {
     #[test]
     #[ignore = "needs a headless GPU adapter"]
     fn bind_group_layout_is_usable_in_a_pipeline_layout() {
-        let Some((device, _queue)) = test_device() else { return };
-        let atlas = NativeGlyphAtlas::new(&device, 64, 64);
+        let Some((device, queue)) = test_device() else { return };
+        let atlas = NativeGlyphAtlas::new(&device, &queue, 64, 64);
 
         // Proves `bind_group_layout()` returns a layout Commit 2's
         // `GlyphPipeline::new` can actually build a `wgpu::PipelineLayout`

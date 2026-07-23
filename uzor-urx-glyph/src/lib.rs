@@ -221,11 +221,36 @@ pub fn rasterise_glyph(
     Ok(bm)
 }
 
+/// Shared, lazily-built LUT for `uzor_urx_core::text_gamma::TEXT_GAMMA_CURVE`
+/// — production callers (e.g. `uzor-urx-cpu::CpuBackend`) that just want
+/// "the configured curve" call [`configured_text_gamma_lut`] instead of
+/// building their own. Built exactly once per process, from the SAME
+/// pure `build_text_gamma_lut` function `uzor-urx-wgpu`'s native glyph
+/// pipeline calls at its own construction time — byte-identical bytes
+/// on both backends, by construction (URX text-gamma design, §2.5).
+static TEXT_GAMMA_LUT: std::sync::OnceLock<uzor_urx_core::text_gamma::TextGammaLut> = std::sync::OnceLock::new();
+
+/// The shared, lazily-built LUT for `TEXT_GAMMA_CURVE`. See
+/// [`TEXT_GAMMA_LUT`]'s own doc comment.
+pub fn configured_text_gamma_lut() -> &'static uzor_urx_core::text_gamma::TextGammaLut {
+    TEXT_GAMMA_LUT.get_or_init(|| {
+        uzor_urx_core::text_gamma::build_text_gamma_lut(&uzor_urx_core::text_gamma::TEXT_GAMMA_CURVE)
+    })
+}
+
 /// Composite a pre-shaped glyph run onto a premul RGBA8 pixel buffer.
 /// Caller supplies the buffer + width/height + pen origin. Each glyph
 /// is rasterised at the supplied font_size with subpx_x derived from
 /// the glyph's fractional x position. `color` is the text colour
 /// (any alpha); glyph mask is multiplied through.
+///
+/// `gamma_lut` — `None` is today's exact code path, zero added cost (a
+/// single branch skipped, no LUT indexing at all). `Some(lut)` looks up
+/// the foreground-luma bucket ONCE for the whole run (loop-invariant,
+/// same shape GPU's `encode_glyph_run` computes its own bin), then
+/// remaps every glyph's raw swash coverage byte through `lut[bin]`
+/// before the existing premultiply math — URX text-gamma compositing
+/// design, 2026-07-26, §2.4.
 pub fn draw_glyph_run(
     pixels:    &mut [u8],
     buf_w:     u32,
@@ -236,6 +261,7 @@ pub fn draw_glyph_run(
     font:      FontId,
     font_size: f32,
     color:     [u8; 4],
+    gamma_lut: Option<&uzor_urx_core::text_gamma::TextGammaLut>,
 ) -> Result<(), GlyphError> {
     let a = color[3] as u32;
     let premul_color = [
@@ -244,6 +270,7 @@ pub fn draw_glyph_run(
         ((color[2] as u32 * a + 127) / 255) as u8,
         color[3],
     ];
+    let gamma_bin = gamma_lut.map(|_| uzor_urx_core::text_gamma::luma_bin(color) as usize);
 
     for g in glyphs {
         let px = origin_x + g.x;
@@ -262,8 +289,11 @@ pub fn draw_glyph_run(
             for gx in 0..bm.width as i32 {
                 let dx = dst_x0 + gx;
                 if dx < 0 || dx as u32 >= buf_w { continue; }
-                let mask = bm.alpha[(gy as u32 * bm.width + gx as u32) as usize] as u32;
+                let mut mask = bm.alpha[(gy as u32 * bm.width + gx as u32) as usize] as u32;
                 if mask == 0 { continue; }
+                if let (Some(lut), Some(bin)) = (gamma_lut, gamma_bin) {
+                    mask = lut[bin][mask as usize] as u32;
+                }
                 let scaled = [
                     ((premul_color[0] as u32 * mask + 127) / 255) as u8,
                     ((premul_color[1] as u32 * mask + 127) / 255) as u8,

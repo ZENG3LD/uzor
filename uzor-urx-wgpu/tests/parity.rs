@@ -581,6 +581,70 @@ fn parity_glyph_run_two_letters() {
     });
 }
 
+/// URX text-gamma design (2026-07-26), §6 Commit 1 gate / §8 testing
+/// plan: re-run the SAME Wave 2 glyph fixture with
+/// `UrxConfig::text_gamma_enabled: true` on BOTH the CPU and native
+/// legs — must STAY 0.000% differing. This is the structural proof
+/// (not just "measured small") that Commit 1's placeholder curve
+/// (`TEXT_GAMMA_CURVE = [1.0, 1.0]`, both bins the exact-passthrough
+/// gamma) is a true no-op end-to-end with the mechanism actually wired
+/// and switched ON, not merely inert because the flag defaults off.
+/// Deliberately does NOT reuse `run_case`/`render_cpu`/`render_native`
+/// (those hardcode `CpuBackend::new()`/`NativeUrxRenderer::new()` —
+/// default config, flag off) — every one of the other 26 fixtures must
+/// keep exercising the default-off path unmodified.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_glyph_run_two_letters_with_text_gamma_enabled_stays_byte_tight() {
+    let scene = fixtures::glyph_run_two_letters();
+    let width = fixtures::CANVAS;
+    let height = fixtures::CANVAS;
+
+    let cfg = uzor_urx_core::config::UrxConfig::builder()
+        .text_gamma_enabled(true)
+        .build()
+        .expect("text_gamma_enabled(true) is a valid config");
+
+    let mut pixmap = Pixmap::new(width, height);
+    let cpu_backend = CpuBackend::with_config(cfg.clone());
+    cpu_backend
+        .render(&scene, &mut pixmap)
+        .expect("CpuBackend::render must not error on the glyph fixture");
+    let cpu = pixmap.pixels().to_vec();
+
+    let Some((device, queue)) = common::init_device() else {
+        eprintln!("parity_glyph_run_two_letters_with_text_gamma_enabled_stays_byte_tight: no GPU/software adapter available; skipping");
+        return;
+    };
+    let mut renderer = NativeUrxRenderer::with_config(device.clone(), queue.clone(), NATIVE_FORMAT, 4, &cfg);
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("uzor-urx-wgpu-parity-text-gamma-target"),
+        size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: NATIVE_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    renderer
+        .render_into_encoder(&scene, &mut encoder, &view, Viewport { width, height })
+        .expect("render_into_encoder must not error on the glyph fixture");
+    queue.submit(Some(encoder.finish()));
+    let native = common::readback_rgba(&device, &queue, &target, width, height);
+
+    let case = ParityCase {
+        name: "glyph_run_two_letters_text_gamma_enabled",
+        scene,
+        interior_probes: &[(56, 97), (97, 105), (102, 110)],
+        edge_tolerance: CHANNEL_TOLERANCE_EDGE_TEXT,
+        max_differing_fraction: MAX_DIFFERING_FRACTION_TEXT,
+    };
+    compare_rgba(&cpu, &native, width, height, &case);
+}
+
 // ── Wave 4 Commits 5+6: gradients, images, full affine, per-corner ──
 // ── radii parity cases ───────────────────────────────────────────────
 //

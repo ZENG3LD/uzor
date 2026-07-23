@@ -280,6 +280,12 @@ pub struct NativeUrxRenderer {
     gradient_lut: GradientLutAtlas,
     image_cache: NativeImageCache,
     blend_layer_max_depth: usize,
+    /// `UrxConfig::text_gamma_enabled` (URX text-gamma design,
+    /// 2026-07-26), read once here and threaded through to
+    /// `encode::encode_scene` on every `render_into_encoder` call —
+    /// same "read at construction, bake into a plain resolved value"
+    /// convention as `blend_layer_max_depth` above.
+    text_gamma_enabled: bool,
 }
 
 impl NativeUrxRenderer {
@@ -363,7 +369,7 @@ impl NativeUrxRenderer {
         // pipeline's layout borrows the atlas's `BindGroupLayout` at
         // pipeline-creation time (design §4), fixed for the pipeline's
         // lifetime (this crate has no atlas-resize path).
-        let glyph_atlas = NativeGlyphAtlas::new(&device, cfg.wgpu_glyph_atlas_w, cfg.wgpu_glyph_atlas_h);
+        let glyph_atlas = NativeGlyphAtlas::new(&device, &queue, cfg.wgpu_glyph_atlas_w, cfg.wgpu_glyph_atlas_h);
         let glyph = GlyphPipeline::new(&device, format, sample_count, &uniform_bgl, glyph_atlas.bind_group_layout());
         let stencil_mask = StencilMaskPipeline::new(&device, format, sample_count, &uniform_bgl);
 
@@ -454,6 +460,7 @@ impl NativeUrxRenderer {
             gradient_lut,
             image_cache,
             blend_layer_max_depth: cfg.blend_layer_max_depth,
+            text_gamma_enabled: cfg.text_gamma_enabled,
         }
     }
 
@@ -546,6 +553,7 @@ impl NativeUrxRenderer {
             Some(&mut self.glyph_atlas),
             Some(&mut self.gradient_lut),
             self.blend_layer_max_depth,
+            self.text_gamma_enabled,
         );
 
         let uniforms = Uniforms { screen_size: [viewport.width as f32, viewport.height as f32], _pad: [0.0; 2] };

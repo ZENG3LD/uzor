@@ -1093,6 +1093,12 @@ fn emit_stencil_mask_batch(
 /// device-free unit tests that never touch a Radial/Sweep gradient to
 /// also acquire a headless GPU device. `NativeUrxRenderer::render_into_encoder`
 /// always supplies `Some`; `None` is a test-only state.
+///
+/// `text_gamma_enabled` — `UrxConfig::text_gamma_enabled` (URX
+/// text-gamma design, 2026-07-26), read once at `NativeUrxRenderer`
+/// construction and threaded through the same "plain resolved value"
+/// way as `blend_layer_max_depth` above. Consumed only by
+/// `encode_glyph_run` (every other primitive ignores it).
 pub(crate) fn encode_scene(
     scene: &Scene,
     viewport: Viewport,
@@ -1100,6 +1106,7 @@ pub(crate) fn encode_scene(
     mut atlas: Option<&mut NativeGlyphAtlas>,
     mut lut: Option<&mut GradientLutAtlas>,
     blend_layer_max_depth: usize,
+    text_gamma_enabled: bool,
 ) -> EncodedFrame {
     let mut frame = EncodedFrame::default();
     let mut clip = ClipStack::new(viewport);
@@ -1156,6 +1163,7 @@ pub(crate) fn encode_scene(
                     brush,
                     transform,
                     clip_rect,
+                    text_gamma_enabled,
                 );
             }
             DrawCommand::Image { src, src_rect, dest, transform } => {
@@ -1937,6 +1945,7 @@ fn encode_glyph_run(
     brush: &Brush,
     transform: &Affine,
     clip_rect: [f32; 4],
+    text_gamma_enabled: bool,
 ) {
     let (color, kind) = resolve_brush_color(brush);
     match kind {
@@ -1949,6 +1958,20 @@ fn encode_glyph_run(
         BrushKind::Solid => {}
     }
     let packed = packed_color(color); // STRAIGHT, non-premultiplied — the shader premultiplies (design §5)
+
+    // URX text-gamma design, 2026-07-26, §2.5a — bin computed ONCE per
+    // run (loop-invariant across every glyph, exactly like the CPU
+    // side's own `gamma_bin` in `draw_glyph_run`), via the SAME pure
+    // `luma_bin` function both backends call independently — this is
+    // what makes CPU/GPU bin selection identical BY CONSTRUCTION, not
+    // just by coincidence of matching formulas. Bin 0 (identity row)
+    // when the flag is off.
+    let gamma_bin: f32 = if text_gamma_enabled {
+        let rgba = color.to_rgba8();
+        uzor_urx_core::text_gamma::luma_bin([rgba.r, rgba.g, rgba.b, rgba.a]) as f32
+    } else {
+        0.0
+    };
 
     let coeffs = transform.as_coeffs();
     let (tx, ty) = (coeffs[4] as f32, coeffs[5] as f32);
@@ -1996,7 +2019,7 @@ fn encode_glyph_run(
             uv_pos: [uv_rect[0], uv_rect[1]],
             uv_size: [uv_rect[2], uv_rect[3]],
             color: packed,
-            _pad0: 0.0,
+            _pad0: gamma_bin,
             clip_rect,
         });
     }
@@ -2136,7 +2159,7 @@ mod tests {
     fn fill_rect_solid_emits_one_quad() {
         let mut scene = Scene::new();
         scene.fill_rect_solid(Rect::new(10.0, 10.0, 50.0, 50.0), Color::from_rgba8(255, 0, 0, 255));
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(frame.quads.len(), 1);
         assert_eq!(frame.quads[0].pos, [10.0, 10.0]);
         assert_eq!(frame.quads[0].size, [40.0, 40.0]);
@@ -2152,7 +2175,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(0, 255, 0, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(frame.quads.len(), 1);
         assert!((frame.quads[0].corner_radius - 8.0).abs() < 0.01);
     }
@@ -2177,11 +2200,11 @@ mod tests {
 
         let mut scene_1x = Scene::new();
         scene_1x.push(stroke_rect(Affine::IDENTITY));
-        let frame_1x = encode_scene(&scene_1x, viewport(), &mut cache(), None, None, max_depth());
+        let frame_1x = encode_scene(&scene_1x, viewport(), &mut cache(), None, None, max_depth(), false);
 
         let mut scene_2x = Scene::new();
         scene_2x.push(stroke_rect(Affine::scale(2.0)));
-        let frame_2x = encode_scene(&scene_2x, viewport(), &mut cache(), None, None, max_depth());
+        let frame_2x = encode_scene(&scene_2x, viewport(), &mut cache(), None, None, max_depth(), false);
 
         assert_eq!(frame_1x.quads.len(), 1);
         assert_eq!(frame_2x.quads.len(), 1);
@@ -2209,7 +2232,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
             transform: Affine::rotate(std::f64::consts::FRAC_PI_4),
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(frame.quads.len(), 1, "a similarity transform with UNIFORM radii must stay on Quad SDF");
         assert!(frame.triangles.is_empty(), "must NOT route through the Triangle pipeline");
         assert!(
@@ -2229,7 +2252,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(frame.quads.len(), 1);
         assert_eq!(frame.quads[0].color, 0);
         assert!((frame.quads[0].border_width - 3.0).abs() < 0.01);
@@ -2246,7 +2269,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert!(frame.quads.is_empty());
     }
 
@@ -2259,7 +2282,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert!(frame.quads.is_empty());
     }
 
@@ -2272,7 +2295,7 @@ mod tests {
             2.0,
             Color::from_rgba8(255, 255, 255, 255),
         );
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert!(frame.quads.is_empty());
         assert_eq!(frame.lines.len(), 1);
         assert_eq!(frame.lines[0].start, [0.0, 0.0]);
@@ -2296,7 +2319,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::scale(2.0),
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(frame.lines.len(), 1);
         assert_eq!(frame.lines[0].end, [20.0, 0.0], "endpoints still transform through the full affine");
         assert!(
@@ -2314,7 +2337,7 @@ mod tests {
             0.0,
             Color::from_rgba8(255, 255, 255, 255),
         );
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert!(frame.lines.is_empty());
     }
 
@@ -2328,7 +2351,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(frame.lines[0].cap_flags, 0.0);
     }
 
@@ -2342,7 +2365,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(frame.lines[0].cap_flags, 3.0);
     }
 
@@ -2356,7 +2379,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         // Degrades to round (flag 0) — counted via `native_line_square_cap_to_round`
         // (asserting on the global metrics recorder isn't wired in this
         // crate's unit tests; the geometry-level effect is what we can verify).
@@ -2377,7 +2400,7 @@ mod tests {
         );
         scene.fill_rect_solid(Rect::new(0.0, 30.0, 10.0, 40.0), Color::from_rgba8(255, 255, 0, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(frame.quads.len(), 3);
         assert_eq!(frame.lines.len(), 1);
         assert_eq!(frame.draw_batches().len(), 3, "batches: {:?}", frame.draw_batches());
@@ -2404,7 +2427,7 @@ mod tests {
         scene.fill_rect_solid(Rect::new(0.0, 20.0, 10.0, 30.0), Color::from_rgba8(0, 255, 0, 255));
         scene.line_solid(Vec2 { x: 0.0, y: 40.0 }, Vec2 { x: 10.0, y: 40.0 }, 2.0, Color::from_rgba8(255, 255, 0, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(frame.draw_batches().len(), 4);
         let kinds: Vec<BatchKind> = frame.draw_batches().iter().map(|b| b.kind).collect();
         assert_eq!(kinds, vec![BatchKind::Quad, BatchKind::Line, BatchKind::Quad, BatchKind::Line]);
@@ -2425,7 +2448,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(10, 20, 30, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert!(!frame.triangles.is_empty());
         assert_eq!(frame.draw_batches().len(), 1);
         assert_eq!(frame.draw_batches()[0].kind, BatchKind::Triangle);
@@ -2448,7 +2471,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(10, 20, 30, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert!(frame.triangles.is_empty());
     }
 
@@ -2470,7 +2493,7 @@ mod tests {
             transform: Affine::IDENTITY,
         });
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(frame.draw_batches().len(), 3);
         let kinds: Vec<BatchKind> = frame.draw_batches().iter().map(|b| b.kind).collect();
         assert_eq!(kinds, vec![BatchKind::Quad, BatchKind::Line, BatchKind::Triangle]);
@@ -2562,7 +2585,7 @@ mod tests {
             brush: radial_gradient_brush(),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert!(frame.gradients.is_empty(), "no GradientInstance without a real LUT atlas");
         assert!(!frame.triangles.is_empty(), "must still render SOMETHING — the solid fallback mesh");
     }
@@ -2591,7 +2614,7 @@ mod tests {
             brush: sweep_gradient_brush(),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, Some(&mut lut), max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, Some(&mut lut), max_depth(), false);
 
         assert!(frame.triangles.is_empty(), "Radial/Sweep must NOT land on the flat-shaded triangle path");
         assert!(!frame.gradients.is_empty(), "a real LUT atlas must produce real GradientInstances");
@@ -2677,7 +2700,7 @@ mod tests {
         ] {
             let mut lut = GradientLutAtlas::new(&device, 8);
             lut.begin_frame();
-            let frame = encode_scene(scene, viewport(), &mut cache(), None, Some(&mut lut), max_depth());
+            let frame = encode_scene(scene, viewport(), &mut cache(), None, Some(&mut lut), max_depth(), false);
             assert!(frame.triangles.is_empty(), "{label} must route through the Gradient path, not the solid one");
             assert!(!frame.gradients.is_empty(), "{label} must emit real GradientInstances");
             assert_eq!(
@@ -2698,7 +2721,7 @@ mod tests {
         }
         let mut lut = GradientLutAtlas::new(&device, 8);
         lut.begin_frame();
-        let frame = encode_scene(&combined, viewport(), &mut cache(), None, Some(&mut lut), max_depth());
+        let frame = encode_scene(&combined, viewport(), &mut cache(), None, Some(&mut lut), max_depth(), false);
         assert!(frame.triangles.is_empty(), "combined scene must route through the Gradient path, not the solid one");
         let batches = frame.draw_batches();
         assert_eq!(batches.len(), 1, "3 back-to-back Gradient draws at the same clip depth must coalesce into 1 batch");
@@ -2747,7 +2770,7 @@ mod tests {
             transform: Affine::IDENTITY,
         });
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(frame.images.len(), 3, "all 3 draws must still emit their own ImageInstance");
         let batches = frame.draw_batches();
         assert_eq!(
@@ -2808,7 +2831,7 @@ mod tests {
         scene.push(DrawCommand::PopClip);
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(0, 0, 255, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 20.0, 20.0], "rect under the pushed clip");
         assert_eq!(frame.lines[0].clip_rect, [10.0, 10.0, 20.0, 20.0], "line under the pushed clip");
         assert_eq!(
@@ -2834,7 +2857,7 @@ mod tests {
             transform: Affine::IDENTITY,
         });
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 20.0, 20.0]);
         assert!(frame.has_rounded_clip);
     }
@@ -2862,7 +2885,7 @@ mod tests {
         scene.push(DrawCommand::PopClip);
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(2, 2, 2, 255)); // depth 0, AFTER
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert!(frame.has_rounded_clip);
         assert!(!frame.stencil_masks.is_empty(), "the mask geometry itself must have been emitted");
 
@@ -2903,7 +2926,7 @@ mod tests {
         });
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
         // No matching PopClip.
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(frame.quads.len(), 1);
         assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 10.0, 10.0]);
     }
@@ -2927,7 +2950,7 @@ mod tests {
             transform: Affine::IDENTITY,
         });
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert!(frame.quads.is_empty());
         assert!(frame.lines.is_empty());
         assert!(frame.triangles.is_empty());
@@ -2976,7 +2999,7 @@ mod tests {
         scene.push(DrawCommand::PopBlendLayer);
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(3, 3, 3, 255)); // after
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(
             op_shapes(&frame),
             vec![
@@ -3005,7 +3028,7 @@ mod tests {
         scene.push(DrawCommand::PopBlendLayer);
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(
             op_shapes(&frame),
             vec![OpShape::Draw(BatchKind::Quad), OpShape::Push(1), OpShape::Pop(1), OpShape::Draw(BatchKind::Quad)],
@@ -3032,7 +3055,7 @@ mod tests {
         scene.push(DrawCommand::PopBlendLayer); // matches depth 2
         scene.push(DrawCommand::PopBlendLayer); // matches depth 1
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, 2);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, 2, false);
         assert_eq!(
             op_shapes(&frame),
             vec![
@@ -3057,7 +3080,7 @@ mod tests {
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(9, 9, 9, 255));
         // NO PopBlendLayer — deliberately unbalanced.
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert_eq!(
             op_shapes(&frame),
             vec![OpShape::Push(1), OpShape::Draw(BatchKind::Quad), OpShape::Pop(1)],
@@ -3112,8 +3135,8 @@ mod tests {
     #[test]
     #[ignore = "needs a headless GPU adapter"]
     fn glyphrun_with_registered_font_emits_plausible_instances() {
-        let Some((device, _queue)) = test_device() else { return };
-        let mut atlas = NativeGlyphAtlas::new(&device, 256, 256);
+        let Some((device, queue)) = test_device() else { return };
+        let mut atlas = NativeGlyphAtlas::new(&device, &queue, 256, 256);
         atlas.begin_frame();
 
         let font = registered_font();
@@ -3127,7 +3150,7 @@ mod tests {
             text: None,
         });
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), None, max_depth(), false);
         assert_eq!(frame.glyphs.len(), 2, "both glyphs should have rasterised + placed successfully");
         for g in &frame.glyphs {
             assert!(g.size[0] > 0.0 && g.size[1] > 0.0, "a real glyph bitmap must have a positive size");
@@ -3140,8 +3163,8 @@ mod tests {
     #[test]
     #[ignore = "needs a headless GPU adapter"]
     fn glyph_batches_coalesce_and_interleave_with_quad_batches() {
-        let Some((device, _queue)) = test_device() else { return };
-        let mut atlas = NativeGlyphAtlas::new(&device, 256, 256);
+        let Some((device, queue)) = test_device() else { return };
+        let mut atlas = NativeGlyphAtlas::new(&device, &queue, 256, 256);
         atlas.begin_frame();
 
         let font = registered_font();
@@ -3157,7 +3180,7 @@ mod tests {
         });
         scene.fill_rect_solid(Rect::new(50.0, 50.0, 60.0, 60.0), Color::from_rgba8(0, 255, 0, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), None, max_depth(), false);
         assert_eq!(frame.glyphs.len(), 2, "both glyphs must have placed for this to be a meaningful coalescing test");
         assert_eq!(frame.draw_batches().len(), 3, "Quad, then Glyph (both glyphs coalesced into ONE batch), then Quad");
         let kinds: Vec<BatchKind> = frame.draw_batches().iter().map(|b| b.kind).collect();
@@ -3256,7 +3279,7 @@ mod tests {
                 });
                 scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
                 // NO PopClip — deliberately unbalanced.
-                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
             });
 
             let batches = frame.draw_batches();
@@ -3287,7 +3310,7 @@ mod tests {
                 scene.push(push_blend_layer(BlendMode::default(), 1.0, Affine::IDENTITY));
                 scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255));
                 // NO PopBlendLayer — deliberately unbalanced.
-                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
             });
 
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_force_closed_at_scene_end");
@@ -3308,7 +3331,7 @@ mod tests {
                 scene.push(DrawCommand::PopBlendLayer);
                 scene.push(DrawCommand::PopBlendLayer);
                 scene.push(DrawCommand::PopBlendLayer);
-                encode_scene(&scene, viewport(), &mut cache(), None, None, 1)
+                encode_scene(&scene, viewport(), &mut cache(), None, None, 1, false)
             });
 
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_depth_exceeded");
@@ -3325,7 +3348,7 @@ mod tests {
                 let mut scene = Scene::new();
                 scene.push(DrawCommand::PopBlendLayer); // no matching push at all
                 scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255));
-                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
             });
 
             assert_eq!(frame.quads.len(), 1, "content after the stray pop must still render normally, no panic");
@@ -3349,7 +3372,7 @@ mod tests {
                 scene.push(push_blend_layer(mode, 1.0, Affine::IDENTITY));
                 scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255));
                 scene.push(DrawCommand::PopBlendLayer);
-                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
             });
 
             assert_eq!(recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_mix_to_normal"), 1);
@@ -3369,7 +3392,7 @@ mod tests {
                 let mut scene = Scene::new();
                 scene.push(push_blend_layer(BlendMode::default(), 1.0, Affine::translate((5.0, 5.0))));
                 scene.push(DrawCommand::PopBlendLayer);
-                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
             });
 
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_transform_ignored");
@@ -3394,7 +3417,7 @@ mod tests {
                     brush: radial_gradient_brush(),
                     transform: Affine::IDENTITY,
                 });
-                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
             });
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_gradient_lut_full_this_frame");
             assert_eq!(value, 1);
@@ -3420,7 +3443,7 @@ mod tests {
                     brush: Brush::Gradient(g),
                     transform: Affine::IDENTITY,
                 });
-                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
             });
             assert_eq!(recorder.value_for(KEY_RENDER_PRIMITIVES, "gradient_radial_focal_degraded"), 1);
         }
@@ -3443,7 +3466,7 @@ mod tests {
                     brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
                     transform: Affine::new([1.0, 0.0, 0.5, 1.0, 0.0, 0.0]), // genuine shear
                 });
-                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
             });
             assert!(frame.quads.is_empty(), "a sheared transform must NOT route through Quad SDF");
             assert!(!frame.triangles.is_empty(), "must route through the Triangle pipeline instead");
@@ -3469,7 +3492,7 @@ mod tests {
                     brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
                     transform: Affine::IDENTITY,
                 });
-                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
             });
             assert!(frame.quads.is_empty(), "non-uniform radii must NOT route through Quad SDF");
             assert!(!frame.triangles.is_empty(), "must route through the Triangle pipeline instead");
@@ -3502,7 +3525,7 @@ mod tests {
                     dest: Rect::new(0.0, 0.0, 20.0, 20.0),
                     transform: Affine::IDENTITY,
                 });
-                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
             });
             assert!(frame.images.is_empty(), "no ImageInstance for an unregistered id");
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "image_id_unknown");
@@ -3528,7 +3551,7 @@ mod tests {
                     dest: Rect::new(0.0, 0.0, 10.0, 10.0),
                     transform: shear,
                 });
-                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
             });
             assert_eq!(frame.images.len(), 1, "a sheared image must still render, approximated");
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_image_shear_to_rotation_approx");
@@ -3562,7 +3585,7 @@ mod tests {
                     transform: Affine::IDENTITY,
                     text: None,
                 });
-                let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+                let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
                 assert_eq!(frame.glyphs.len(), 0, "no glyph should have been placed — the font was never registered");
             });
 
@@ -3586,7 +3609,7 @@ mod tests {
                     text: None,
                 });
                 // Must not panic — that's the primary assertion here.
-                let _frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+                let _frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
             });
 
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_glyphrun_gradient_to_solid");
@@ -3613,13 +3636,13 @@ mod tests {
         #[test]
         #[ignore = "needs a headless GPU adapter"]
         fn tiny_configured_atlas_forces_full_this_frame_degrade() {
-            let Some((device, _queue)) = test_device() else { return };
+            let Some((device, queue)) = test_device() else { return };
             let cfg = uzor_urx_core::config::UrxConfig::builder()
                 .wgpu_glyph_atlas_w(64)
                 .wgpu_glyph_atlas_h(64)
                 .build()
                 .expect("64x64 is a valid atlas dim");
-            let mut atlas = NativeGlyphAtlas::new(&device, cfg.wgpu_glyph_atlas_w, cfg.wgpu_glyph_atlas_h);
+            let mut atlas = NativeGlyphAtlas::new(&device, &queue, cfg.wgpu_glyph_atlas_w, cfg.wgpu_glyph_atlas_h);
             atlas.begin_frame();
 
             let font = registered_font();
@@ -3646,7 +3669,7 @@ mod tests {
                     transform: Affine::IDENTITY,
                     text: None,
                 });
-                let _frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), None, max_depth());
+                let _frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), None, max_depth(), false);
             });
 
             let full_this_frame = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_glyph_atlas_full_this_frame");
