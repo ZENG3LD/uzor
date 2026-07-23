@@ -5,7 +5,7 @@
 //! Mask entries: sample the cached A8 mask at the pixel offset for
 //! sub-pixel AA on rounded corners.
 
-use uzor_urx_core::math::{Affine, Rect, RoundedRect};
+use uzor_urx_core::math::{Affine, Point, Rect, RoundedRect};
 
 use crate::rounded::{rounded_clip_to_mask, AlphaMaskArc};
 
@@ -125,19 +125,29 @@ impl ClipStack {
     }
 }
 
+/// Apply the full 2x3 affine `t` to a single point (URX Wave 4 design
+/// §0.1b/§10 Commit 1) — extracted from `transform_axis_aligned`'s
+/// inline `map` closure (mechanical, behavior-preserving; that
+/// function now calls this 4 times instead of inlining the same
+/// formula) so `gradient.rs` can transform a gradient's own anchor
+/// points (start/end/center) through the IDENTICAL mapping, rather
+/// than a re-derived copy.
+pub(crate) fn transform_point_full(t: &Affine, p: Point) -> Point {
+    let c = t.as_coeffs();
+    let (a, b, e, d, tx, ty) = (c[0], c[1], c[2], c[3], c[4], c[5]);
+    Point::new(a * p.x + e * p.y + tx, b * p.x + d * p.y + ty)
+}
+
 /// Apply a full 2x3 affine to a rect and snap to axis-aligned bounding
 /// box. Handles shear/rotation correctly by transforming all 4 corners.
 pub(crate) fn transform_axis_aligned(t: Affine, r: Rect) -> Rect {
-    let c = t.as_coeffs();
-    let (a, b, e, d, tx, ty) = (c[0], c[1], c[2], c[3], c[4], c[5]);
-    let map = |x: f64, y: f64| (a * x + e * y + tx, b * x + d * y + ty);
-    let (x00, y00) = map(r.x0, r.y0);
-    let (x10, y10) = map(r.x1, r.y0);
-    let (x11, y11) = map(r.x1, r.y1);
-    let (x01, y01) = map(r.x0, r.y1);
-    let min_x = x00.min(x10).min(x11).min(x01);
-    let max_x = x00.max(x10).max(x11).max(x01);
-    let min_y = y00.min(y10).min(y11).min(y01);
-    let max_y = y00.max(y10).max(y11).max(y01);
+    let p00 = transform_point_full(&t, Point::new(r.x0, r.y0));
+    let p10 = transform_point_full(&t, Point::new(r.x1, r.y0));
+    let p11 = transform_point_full(&t, Point::new(r.x1, r.y1));
+    let p01 = transform_point_full(&t, Point::new(r.x0, r.y1));
+    let min_x = p00.x.min(p10.x).min(p11.x).min(p01.x);
+    let max_x = p00.x.max(p10.x).max(p11.x).max(p01.x);
+    let min_y = p00.y.min(p10.y).min(p11.y).min(p01.y);
+    let max_y = p00.y.max(p10.y).max(p11.y).max(p01.y);
     Rect::new(min_x, min_y, max_x, max_y)
 }

@@ -28,6 +28,11 @@
 //! - [`recorder`] — `UrxRecorder` snapshot impl of `metrics::Recorder`
 //!   (counters / gauges / ring-buffer histograms). Same pattern
 //!   tessera uses; install once per process via `install_recorder()`.
+//! - [`gradient_lut`] — pure gradient-LUT math (build/sample/hash),
+//!   extracted from `uzor-urx-cpu::gradient` (URX Wave 4 design §2.2/
+//!   §10 Commit 1) so a GPU `GradientLutAtlas` (Wave 4 Commit 2+) and
+//!   CPU's own LUT cache build byte-identical tables from identical
+//!   stops — no per-backend fork of the LUT math.
 
 pub mod math;
 pub mod scene;
@@ -38,6 +43,7 @@ pub mod metrics_keys;
 pub mod recorder;
 pub mod validate;
 pub mod config;
+pub mod gradient_lut;
 
 /// wgpu::PipelineCache disk persistence helpers (opt-in feature
 /// `pipeline-cache`). Adds wgpu as a direct dep when enabled.

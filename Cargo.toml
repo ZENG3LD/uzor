@@ -28,6 +28,9 @@ members = [
     "uzor-urx-engine",
     "uzor-urx-hybrid",
     "uzor-urx-glyph",
+    # URX image registry (Wave 4 — shared opaque ImageId -> decoded
+    # premul RGBA8 store, mirrors the uzor-urx-glyph precedent)
+    "uzor-urx-image",
     # URX full-GPU compute pipeline backend (v1.6 scaffold)
     "uzor-urx-wgpu-full",
     # URX 3D backend (native XYZ, perspective camera, depth pipeline — Wave 1+)
@@ -98,6 +101,7 @@ uzor-urx-wgpu = { version = "1.4.18", path = "./uzor-urx-wgpu" }
 uzor-urx-engine = { version = "1.4.18", path = "./uzor-urx-engine" }
 uzor-urx-hybrid = { version = "1.4.18", path = "./uzor-urx-hybrid" }
 uzor-urx-glyph = { version = "1.4.18", path = "./uzor-urx-glyph" }
+uzor-urx-image = { version = "1.4.18", path = "./uzor-urx-image" }
 uzor-urx-wgpu-full = { version = "1.4.18", path = "./uzor-urx-wgpu-full" }
 uzor-urx-3d = { version = "1.4.18", path = "./uzor-urx-3d" }
 uzor-urx-physics = { version = "1.4.18", path = "./uzor-urx-physics" }

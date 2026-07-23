@@ -11,12 +11,18 @@ categories  = ["graphics", "rendering"]
 
 [dependencies]
 uzor-urx-core = { workspace = true }
+# Image registry (Wave 4 §0.4) — non-optional (same reasoning as
+# `uzor-urx-glyph`'s non-optional status in `uzor-urx-wgpu`, Wave 2
+# design risk 7: the registry itself has zero `image`-crate cost; only
+# `image-decode` below pulls that in). Replaces the local `image` dep
+# this crate used to carry directly for `image_reg.rs`'s
+# `decode_and_register` — now lives in `uzor-urx-image` instead.
+uzor-urx-image = { workspace = true }
 metrics = "0.24"
 kurbo = "0.13"
 peniko = "0.6"
 rayon = { version = "1", optional = true }
 uzor-urx-glyph = { workspace = true, optional = true }
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
 # `wide` provides portable SIMD types (f32x4/x8, u8x16/x32, i32x4/x8)
 # that compile to AVX2 on x86_64 and NEON on aarch64 from the SAME
 # source. Math + algorithm stay ours — wide is just register types +
@@ -57,6 +63,8 @@ harness = false
 [features]
 default = []
 parallel = ["dep:rayon"]
-image-decode = ["dep:image"]
+# Forwards to `uzor-urx-image`'s own feature — no local `image` crate
+# dep needed here anymore (Wave 4 §0.4/§10 Commit 1).
+image-decode = ["uzor-urx-image/image-decode"]
 # Enable glyph rasterisation via urx-glyph. Adds ~30 deps (swash chain).
 glyph = ["dep:uzor-urx-glyph"]

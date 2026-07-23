@@ -1,0 +1,27 @@
+[package]
+name        = "uzor-urx-image"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "URX image registry — opaque ImageId -> decoded premul RGBA8 bytes, shared canonical store consumed by every URX backend. No per-backend fork of ID allocation."
+keywords    = ["graphics", "rendering", "ui", "image"]
+categories  = ["graphics", "rendering"]
+
+[dependencies]
+uzor-urx-core = { workspace = true }
+# Optional: only pulled in by `image-decode` (`decode_and_register`,
+# guessed-format bytes -> registered ImageId). The registry itself
+# (ImageData/ImageRegistry/register_image/lookup_image/unregister_image)
+# has zero dependency on this crate — it only ever stores/returns
+# already-decoded premultiplied RGBA8 bytes the CALLER decoded.
+#
+# `["png", "jpeg"]` (not just `["png"]`) — preserves
+# `uzor-urx-cpu`'s CURRENT feature set verbatim (the crate this
+# functionality relocates FROM already enabled jpeg decode; dropping it
+# here would be a silent behavior regression, not a pure relocation).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
+
+[features]
+image-decode = ["dep:image"]
