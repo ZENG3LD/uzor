@@ -35,15 +35,6 @@ use uzor_urx_core::math::{Affine, BezPath, Brush, Color, GradientKind};
 use uzor_urx_core::scene::{DrawCommand, Scene};
 use kurbo::PathEl;
 
-/// Zero-state marker — the adapter is stateless; future per-region
-/// caches live one layer up.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct UrxWgpuBackend;
-
-impl UrxWgpuBackend {
-    pub fn new() -> Self { Self }
-}
-
 /// Translate a `Scene` into context calls. Caller has already cleared
 /// `ctx.draw_commands` for this frame (the hub's `with_render_context`
 /// path takes care of that).

@@ -196,12 +196,6 @@ pub struct WindowRenderState {
     pub(crate) urx_cpu_backend: Option<uzor_urx_cpu::CpuBackend>,
     /// URX CPU output pixmap — same role as `tiny_skia_ctx`'s buffer.
     pub(crate) urx_cpu_pixmap: Option<uzor_urx_cpu::Pixmap>,
-    /// URX instanced-wgpu backend slot. Stage 1a uses the shared
-    /// `instanced_renderer` / `instanced_ctx` slots for the actual render —
-    /// this slot stays unused until Stage 1b's native pipeline rewrite
-    /// gives urx-wgpu its own backend type.
-    #[allow(dead_code)]
-    pub(crate) urx_wgpu_backend: Option<uzor_urx_wgpu::UrxWgpuBackend>,
     /// URX hybrid backend. Wired in Stage 1a (single-region: whole window).
     pub(crate) urx_hybrid_backend: Option<uzor_urx_hybrid::HybridBackend>,
     /// URX full-GPU backend (`WgpuFullBackend` wrapper from
@@ -421,7 +415,6 @@ impl WindowRenderState {
             urx_ctx: None,
             urx_cpu_backend: None,
             urx_cpu_pixmap: None,
-            urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
@@ -472,7 +465,6 @@ impl WindowRenderState {
             urx_ctx: None,
             urx_cpu_backend: None,
             urx_cpu_pixmap: None,
-            urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
@@ -551,7 +543,6 @@ impl WindowRenderState {
             urx_ctx: None,
             urx_cpu_backend: None,
             urx_cpu_pixmap: None,
-            urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
@@ -600,7 +591,6 @@ impl WindowRenderState {
             urx_ctx: None,
             urx_cpu_backend: None,
             urx_cpu_pixmap: None,
-            urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
@@ -647,7 +637,6 @@ impl WindowRenderState {
             urx_ctx: None,
             urx_cpu_backend: None,
             urx_cpu_pixmap: None,
-            urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
@@ -742,7 +731,6 @@ impl WindowRenderState {
             urx_ctx: None,
             urx_cpu_backend: None,
             urx_cpu_pixmap: None,
-            urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
@@ -792,7 +780,6 @@ impl WindowRenderState {
             urx_ctx: None,
             urx_cpu_backend: None,
             urx_cpu_pixmap: None,
-            urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,
@@ -861,7 +848,6 @@ impl WindowRenderState {
             urx_ctx: None,
             urx_cpu_backend: None,
             urx_cpu_pixmap: None,
-            urx_wgpu_backend: None,
             urx_hybrid_backend: None,
             urx_wgpu_full_backend: None,
             urx_engine: None,

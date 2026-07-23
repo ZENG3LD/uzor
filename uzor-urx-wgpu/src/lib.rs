@@ -4,26 +4,21 @@
 //! (`docs/uzor-engines/plans/urx-wave1-native-pipelines-design-2026-07-25.md`,
 //! crate map at `docs/uzor-engines/research/urx-wave1-crate-map-2026-07-25.md`):
 //!
-//! 1. **Legacy adapter path** (`adapter` module, [`UrxWgpuBackend`]) —
-//!    translates a `Scene` into `uzor-render-wgpu-instanced` calls via
-//!    the free fn [`adapt_scene_into`]. No longer `uzor-render-hub`'s
-//!    production path for the ordinary (autodetect-reachable) 2D submit
-//!    as of Wave 6 Commit 1 (`submit_urx_wgpu` now renders through
+//! 1. **Legacy adapter path** (`adapter` module) — translates a `Scene`
+//!    into `uzor-render-wgpu-instanced` calls via the free fn
+//!    [`adapt_scene_into`]. No longer `uzor-render-hub`'s production
+//!    path for the ordinary (autodetect-reachable) 2D submit as of Wave
+//!    6 Commit 1 (`submit_urx_wgpu` now renders through
 //!    [`NativeUrxRenderer`] — see below); `adapt_scene_into` itself
-//!    still has 2 live callers: `uzor-render-hub`'s OWN
-//!    `compose_urx_wgpu_into_swap` (the compose.rs Phase-3 plain
-//!    `UrxBackend::Wgpu` arm — reachable only via `tessera-window`'s
-//!    own `active_urx` axis, explicitly out of THIS wave's scope,
-//!    `urx-wave6-autodetect-cutover-design-2026-07-25.md` §2) and
-//!    `uzor-urx-engine`'s retained-mode `engine.rs`. The `UrxWgpuBackend`
-//!    STRUCT itself (as opposed to the free fn), however, has ZERO
-//!    remaining real call sites anywhere in the workspace as of this
-//!    wave (grepped: only a `#[cfg(doctest)]`-style doc example and the
-//!    pre-existing `#[allow(dead_code)]`-marked
-//!    `WindowRenderState.urx_wgpu_backend` field reference it) — a
-//!    genuinely dead type, flagged here for a LATER removal pass (design
-//!    §3.3: "this design only moves `submit_urx_wgpu`, doesn't chase
-//!    transitively-orphaned code"), not deleted this wave.
+//!    stays live for `uzor-urx-engine`'s retained-mode `engine.rs`
+//!    (`uzor-render-hub`'s own `compose_urx_wgpu_into_swap` cut over to
+//!    the native renderer in the Wave 7 tail, 2026-07-24 — see
+//!    `uzor-render-hub::compose`'s own module doc for that call site's
+//!    current shape). The `UrxWgpuBackend` marker struct that used to
+//!    sit alongside this free fn had zero real call sites (only a doc
+//!    example + a `#[allow(dead_code)]`-marked `WindowRenderState` field)
+//!    and was removed in that same pass — this module now exports only
+//!    the free fn.
 //! 2. **Native pipeline path** ([`NativeUrxRenderer`]) — Wave 1's
 //!    self-owned wgpu pipelines (Quad SDF in Commit 1, Line/capsule in
 //!    Commit 2, Path/triangle + lyon tessellation in Commit 3) plus
@@ -127,7 +122,7 @@
 //!
 //! ```ignore
 //! let mut ctx = InstancedRenderContext::new(w, h, 0.0, 0.0);
-//! UrxWgpuBackend::adapt_scene(&scene, &mut ctx);
+//! adapt_scene_into(&scene, &mut ctx);
 //! // -> caller hands `ctx.draw_commands` to InstancedRenderer::render
 //! //    (or via uzor-render-hub's submit_instanced)
 //! ```
@@ -156,7 +151,7 @@ mod shaders;
 mod stencil;
 mod tessellate;
 
-pub use adapter::{adapt_scene_into, UrxWgpuBackend};
+pub use adapter::adapt_scene_into;
 pub use atlas::AtlasStats;
 pub use gradient_lut::GradientLutAtlasStats;
 pub use image_cache::NativeImageCacheStats;

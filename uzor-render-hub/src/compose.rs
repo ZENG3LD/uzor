@@ -226,11 +226,17 @@ pub fn submit_urx_composed(
     // URX 2D backends: CPU rasterises into a pixmap and uploads via
     // queue.write_texture into surface.target_texture, then blits to
     // swap_view (matches `submit_urx_cpu` upload path but with our
-    // encoder). Wgpu uses the InstancedRenderer's render-pass writing
-    // straight into swap_view. Hybrid/WgpuFull/Auto (Wave 5a) drive the
-    // Wave 1-4 `NativeUrxRenderer` via `render_into_encoder` into
-    // `surface.target_view`, then reuse the SAME blit tail the Cpu arm
-    // uses — see `compose_urx_native_into_swap`'s own doc comment.
+    // encoder). Wgpu/Hybrid/WgpuFull/Auto (Wave 5a + Wave 7 tail
+    // 2026-07-24) all drive the Wave 1-4 `NativeUrxRenderer` via
+    // `render_into_encoder` into `surface.target_view`, then reuse the
+    // SAME blit tail the Cpu arm uses — see
+    // `compose_urx_native_into_swap`'s own doc comment. Wgpu's own
+    // legacy `InstancedRenderer`-backed compose path
+    // (`compose_urx_wgpu_into_swap`, adapter-mediated) was retired in
+    // that same pass — the native pipelines already cover this arm at
+    // full parity (`uzor-urx-wgpu/tests/parity.rs`, 28/28) and the
+    // adapter path added a second, less-capable renderer + a whole
+    // extra internal `queue.submit` this compose frame didn't need.
     let urx_backend = state.active_urx.unwrap_or(uzor::UrxBackend::Cpu);
     let backend_resolved = match urx_backend {
         uzor::UrxBackend::Auto => uzor::UrxBackend::Wgpu, // GPU surface → wgpu
@@ -261,24 +267,19 @@ pub fn submit_urx_composed(
                     surf_w, surf_h, urx_scene_opt, base_color,
                 );
             }
-            uzor::UrxBackend::Wgpu => {
-                compose_urx_wgpu_into_swap(
-                    state, &device, &queue, &mut encoder, &swap_view,
-                    surf_w, surf_h, surface_format, urx_scene_opt, base_color,
-                );
-            }
-            uzor::UrxBackend::Hybrid | uzor::UrxBackend::WgpuFull | uzor::UrxBackend::Auto => {
-                // Wave 5a cutover: `HybridBackend`/`WgpuFullBackend`
+            uzor::UrxBackend::Wgpu | uzor::UrxBackend::Hybrid | uzor::UrxBackend::WgpuFull | uzor::UrxBackend::Auto => {
+                // Wave 5a cutover (Hybrid/WgpuFull/Auto) + Wave 7 tail
+                // (Wgpu, 2026-07-24): `HybridBackend`/`WgpuFullBackend`
                 // themselves are still untouched (their OWN monolithic
                 // submit paths do accept an external `&mut encoder`+view,
                 // `submit_urx.rs`'s `WgpuFullBackend::submit`/
                 // `HybridBackend::composite` — that description was
-                // already stale even before this wave). For the COMPOSE
-                // case, this arm routes the chrome pass through the
-                // already-built Wave 1-4 `NativeUrxRenderer` instead — the
-                // crate the SR3 plan always meant here — via
-                // `render_into_encoder`. The 3D viewports still render
-                // natively via `Renderer3D` in Phase 4, unchanged.
+                // already stale even before Wave 5a). For the COMPOSE
+                // case, every one of these arms routes the chrome pass
+                // through the already-built Wave 1-4 `NativeUrxRenderer`
+                // instead — the crate the SR3 plan always meant here —
+                // via `render_into_encoder`. The 3D viewports still
+                // render natively via `Renderer3D` in Phase 4, unchanged.
                 compose_urx_native_into_swap(
                     state, &device, &queue, &mut encoder, &swap_view,
                     surf_w, surf_h, urx_scene_opt, base_color,
@@ -932,80 +933,6 @@ fn compose_urx_native_into_swap(
     if let Some(cap) = state.urx_capture_3d.as_ref() {
         surface.blitter.copy(device, encoder, &surface.target_view, &cap.view);
     }
-}
-
-/// Wgpu URX 2D pass — adapt Scene into InstancedRenderContext, then
-/// draw via InstancedRenderer directly into swap_view using our
-/// encoder.
-fn compose_urx_wgpu_into_swap(
-    state:      &mut WindowRenderState,
-    device:     &wgpu::Device,
-    queue:      &wgpu::Queue,
-    encoder:    &mut wgpu::CommandEncoder,
-    swap_view:  &wgpu::TextureView,
-    surf_w:     u32,
-    surf_h:     u32,
-    format:     wgpu::TextureFormat,
-    scene_opt:  Option<uzor_urx_core::Scene>,
-    base_color: [f32; 4],
-) {
-    // Lazy-init InstancedRenderer + ctx.
-    if state.instanced_renderer.is_none() {
-        state.instanced_renderer =
-            Some(uzor_render_wgpu_instanced::InstancedRenderer::new(device, queue, format));
-    }
-    if state.instanced_ctx.is_none() {
-        state.instanced_ctx = Some(uzor_render_wgpu_instanced::InstancedRenderContext::new(
-            surf_w as f32, surf_h as f32, 0.0, 0.0,
-        ));
-    }
-
-    // Adapter: Scene → InstancedRenderContext draw_commands.
-    if let Some(ctx) = state.instanced_ctx.as_mut() {
-        ctx.clear();
-        if let Some(scene) = scene_opt {
-            uzor_urx_wgpu::adapt_scene_into(&scene, ctx);
-        }
-    }
-    let cmds: Vec<uzor_render_wgpu_instanced::DrawCmd> = state.instanced_ctx.as_mut()
-        .map(|c| std::mem::take(&mut c.draw_commands))
-        .unwrap_or_default();
-
-    let clear = wgpu::Color {
-        r: base_color[0] as f64,
-        g: base_color[1] as f64,
-        b: base_color[2] as f64,
-        a: base_color[3] as f64,
-    };
-
-    // The InstancedRenderer encodes its own render-pass into its own
-    // encoder and submits internally. In 1.4.9 we accept that cost
-    // for the Wgpu compose path: the renderer's internal submit
-    // happens BEFORE our encoder.submit, so the GPU sees them in the
-    // right order (Wgpu 2D → composed-encoder 3D blits). The 2D
-    // render writes straight to swap_view, so the 3D copy still
-    // lands on top correctly.
-    //
-    // A future cleanup would expose an `InstancedRenderer::render_into_encoder`
-    // entry point that takes an external encoder and skips the
-    // internal submit — that lets us collapse to ONE submit per
-    // frame. Tracked as backlog item for 1.4.10.
-    if let Some(ref mut inst) = state.instanced_renderer {
-        inst.render(device, queue, swap_view, surf_w, surf_h, &cmds, Some(clear), None);
-        // Mirror the 2D layer into the capture texture (screenshot
-        // pipe). A second instanced render is acceptable here — the
-        // mirror is armed only while a screenshot consumer is active.
-        if let Some(cap) = state.urx_capture_3d.as_ref() {
-            inst.render(device, queue, &cap.view, surf_w, surf_h, &cmds, Some(clear), None);
-        }
-    }
-    // Hand the Vec back so its capacity is reused.
-    if let Some(ctx) = state.instanced_ctx.as_mut() {
-        let mut taken = cmds;
-        taken.clear();
-        ctx.draw_commands = taken;
-    }
-    let _ = encoder; // Wgpu path doesn't use our encoder for 2D in 1.4.9.
 }
 
 // ── Post-3D 2D overlay pass ──────────────────────────────────────────
