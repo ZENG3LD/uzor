@@ -9,8 +9,8 @@
 //! the background rect forces both backends to composite over an
 //! identical opaque ground and actually exercises blend semantics.
 
-use uzor_urx_core::math::{Affine, Brush, Color, Rect};
-use uzor_urx_core::scene::{DrawCommand, Scene, Stroke};
+use uzor_urx_core::math::{Affine, Brush, Color, Rect, Vec2};
+use uzor_urx_core::scene::{DrawCommand, LineCap, Scene, Stroke};
 
 pub const CANVAS: u32 = 256;
 
@@ -133,6 +133,144 @@ pub fn overlapping_translucent_rects() -> Scene {
         rect: Rect::new(100.0, 100.0, 220.0, 220.0),
         radii: None,
         brush: solid(30, 60, 220, 128),
+        transform: Affine::IDENTITY,
+    });
+    scene
+}
+
+/// `Line` at several angles + widths, round and butt caps — Commit 2's
+/// baseline Line/capsule pipeline fixture.
+///
+/// Coordinates use `.5` sub-pixel offsets for the same reason as
+/// `solid_rects_axis_aligned`: an axis-aligned line whose centerline
+/// and width are BOTH integers puts its edges exactly on integer pixel
+/// boundaries, the worst case for cross-backend AA comparison (CPU's
+/// analytic per-pixel coverage collapses to a hard 0/255 step there,
+/// native's `fwidth`-based capsule SDF still shows a soft ~2px ramp —
+/// confirmed via scanline debug on line A before this fix, matching
+/// the exact failure mode `solid_rects_axis_aligned` hit in Commit 1).
+///
+/// Diagonal lines C/D are shorter than a first attempt at this fixture
+/// used (full-canvas-spanning diagonals) for a reason specific to the
+/// capsule body: even after the sub-pixel fix above, a scanline/grid
+/// debug showed a genuine, expected residual — CPU's exact analytic
+/// coverage (a 1px-wide linear ramp, `stroke.rs`'s `cov_f` formula)
+/// vs. native's `fwidth`-based smoothstep (a wider, ~2px ramp) diverge
+/// by a small but consistent amount (max channel diff ~26-28, just
+/// over the 24 edge tolerance) along a single-pixel-wide diagonal seam
+/// running the ENTIRE length of the line — the same "two legitimately
+/// different AA algorithms" class of divergence as
+/// `solid_rects_with_radii`'s CPU-mask-origin finding, not a bug.
+/// Shortening C/D keeps the total affected-pixel fraction inside the
+/// design §7 budget without touching the tolerances themselves (same
+/// engineering call as `solid_rects_with_radii`'s sizing).
+///
+/// **CPU cap-semantics finding** (verified by direct read of
+/// `uzor-urx-cpu/src/backend.rs`'s `DrawCommand::Line` arm and
+/// `uzor-urx-cpu/src/stroke.rs`): the CPU backend calls
+/// `stroke_line_aa` unconditionally for every `Line` command —
+/// `stroke_line_aa` hard-codes `round_endpoints = true`
+/// (`stroke.rs:57-67`) and **never reads `Stroke.cap` at all**.
+/// `stroke_line_aa_butt` (flat ends) exists in the same file but is
+/// only called from `path::stroke_path_aa` for flattened path
+/// strokes, never from the `DrawCommand::Line` arm. So the CPU
+/// reference always renders ROUND caps for a bare `Line`, regardless
+/// of what `Stroke.cap` says — a real, pre-existing gap (out of scope
+/// to fix; `uzor-urx-cpu` is off-limits). The native pipeline DOES
+/// honor `Stroke.cap` (`cap_flags` 0 vs 3, see `encode::encode_line`),
+/// so a butt-cap line's ENDPOINTS will genuinely mismatch between the
+/// two backends. Per instructions this fixture still includes a
+/// butt-cap line (line B below) — dropping it would silently hide a
+/// real, documented backend divergence — but no probe lands on or
+/// near its endpoints; only mid-body points are probed, where round
+/// vs butt caps produce identical pixels (the cap style only affects
+/// the capsule's tip regions).
+///
+/// **Thin-line AA-width finding**: a first attempt at line D used
+/// `width: 4.0` at its ~26.5 degree angle and failed the whole-image
+/// budget with a dense, whole-BODY diff pattern (not just a thin edge
+/// seam like lines A-C) — grid-scanned and root-caused to
+/// `fwidth(dist)`'s well-known L1-norm (`|dpdx|+|dpdy|`) over-estimate
+/// of the true (L2) gradient magnitude for an oblique gradient
+/// direction (exactly 1.0 when axis-aligned, up to `sqrt(2)` at 45
+/// degrees) — the SAME `aa = fwidth(dist)` expression the legacy
+/// `LINE_SHADER` already uses byte-for-byte (design §3 mandates no
+/// change here), so this is not a Wave-1 regression. For a WIDE line
+/// the resulting ~2-3px-wider-than-CPU transition band is still a
+/// small fraction of the total width and stays within tolerance
+/// (confirmed by lines A-C); for a width-4 line, that same absolute
+/// band consumes more than half the line's total cross-section, so
+/// there's no stable "core" pixel run left to agree on — the line
+/// reads as one continuous AA gradient end-to-end. Widened to `width:
+/// 8.0` below, which restores a comfortably-matching solid core.
+pub fn lines_at_angles() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    // A: horizontal, round caps.
+    scene.push(DrawCommand::Line {
+        from: Vec2 { x: 20.5, y: 50.5 },
+        to: Vec2 { x: 110.5, y: 50.5 },
+        stroke: Stroke { width: 8.0, cap: LineCap::Round, ..Stroke::default() },
+        brush: solid(220, 50, 50, 255),
+        transform: Affine::IDENTITY,
+    });
+    // B: vertical, butt caps (see the CPU cap-semantics finding above).
+    scene.push(DrawCommand::Line {
+        from: Vec2 { x: 140.5, y: 20.5 },
+        to: Vec2 { x: 140.5, y: 110.5 },
+        stroke: Stroke { width: 6.0, cap: LineCap::Butt, ..Stroke::default() },
+        brush: solid(50, 200, 90, 255),
+        transform: Affine::IDENTITY,
+    });
+    // C: 45 degree diagonal, round caps.
+    scene.push(DrawCommand::Line {
+        from: Vec2 { x: 20.5, y: 150.5 },
+        to: Vec2 { x: 40.5, y: 170.5 },
+        stroke: Stroke { width: 10.0, cap: LineCap::Round, ..Stroke::default() },
+        brush: solid(60, 110, 230, 255),
+        transform: Affine::IDENTITY,
+    });
+    // D: shallow diagonal (~26.5 deg), butt caps. width 8, not the
+    // original 4 — see the thin-line AA-width finding above.
+    scene.push(DrawCommand::Line {
+        from: Vec2 { x: 150.5, y: 150.5 },
+        to: Vec2 { x: 168.5, y: 159.5 },
+        stroke: Stroke { width: 8.0, cap: LineCap::Butt, ..Stroke::default() },
+        brush: solid(230, 140, 40, 255),
+        transform: Affine::IDENTITY,
+    });
+    scene
+}
+
+/// Quad, line crossing it, quad over part of the line — a painter's-
+/// order fixture that catches batch-coalescing bugs pixel-level: the
+/// encode order is `FillRect(A)`, `Line`, `FillRect(B)`, which must
+/// produce exactly 3 batches (`[Quad, Line, Quad]`, design §5) and
+/// replay in THAT scan order, not sorted-by-pipeline. `.5` sub-pixel
+/// offsets for the same reason as `lines_at_angles`.
+pub fn quad_line_interleave() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    // Bottom quad (orange).
+    scene.push(DrawCommand::FillRect {
+        rect: Rect::new(40.5, 40.5, 160.5, 160.5),
+        radii: None,
+        brush: solid(230, 140, 40, 255),
+        transform: Affine::IDENTITY,
+    });
+    // Line crossing the bottom quad and extending beyond it (magenta).
+    scene.push(DrawCommand::Line {
+        from: Vec2 { x: 20.5, y: 100.5 },
+        to: Vec2 { x: 220.5, y: 100.5 },
+        stroke: Stroke { width: 10.0, cap: LineCap::Round, ..Stroke::default() },
+        brush: solid(200, 20, 200, 255),
+        transform: Affine::IDENTITY,
+    });
+    // Top quad (cyan) — covers only part of the line.
+    scene.push(DrawCommand::FillRect {
+        rect: Rect::new(120.5, 70.5, 200.5, 130.5),
+        radii: None,
+        brush: solid(20, 200, 200, 255),
         transform: Affine::IDENTITY,
     });
     scene

@@ -221,3 +221,34 @@ fn parity_overlapping_translucent_rects() {
         interior_probes: &[(60, 60), (200, 200), (130, 130)],
     });
 }
+
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_lines_at_angles() {
+    run_case(ParityCase {
+        name: "lines_at_angles",
+        scene: fixtures::lines_at_angles(),
+        // Mid-body points only — never on/near an endpoint, since the
+        // CPU reference always renders round caps regardless of
+        // `Stroke.cap` (see the cap-semantics finding in
+        // `fixtures::lines_at_angles`'s doc comment) and would
+        // genuinely mismatch the native pipeline's true butt caps
+        // right at the tips of lines B and D.
+        interior_probes: &[(65, 50), (140, 65), (30, 160), (159, 155)],
+    });
+}
+
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_quad_line_interleave() {
+    run_case(ParityCase {
+        name: "quad_line_interleave",
+        scene: fixtures::quad_line_interleave(),
+        // (160, 100): inside the top quad's bounds AND on the line's
+        // path — the top quad must win (painter's order).
+        // (80, 100): inside the bottom quad's bounds AND on the
+        // line's path, but outside the top quad — the line must win
+        // over the bottom quad.
+        interior_probes: &[(160, 100), (80, 100)],
+    });
+}

@@ -13,9 +13,10 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::encode;
+use crate::encode::{self, BatchKind};
 use crate::msaa::MsaaTarget;
 use crate::native_error::NativeRenderError;
+use crate::pipelines::line::LinePipeline;
 use crate::pipelines::quad::QuadPipeline;
 
 /// Target dimensions in physical pixels for one `render_into_encoder`
@@ -33,10 +34,10 @@ struct Uniforms {
     _pad: [f32; 2],
 }
 
-/// Owns every native-pipeline GPU resource: the Quad SDF pipeline (Commit
-/// 1; Line/Path pipelines join in Commit 2/3), the shared uniform bind
-/// group (group 0, `screen_size`), and the grow-only MSAA offscreen
-/// color target.
+/// Owns every native-pipeline GPU resource: the Quad SDF pipeline
+/// (Commit 1) and the Line/capsule pipeline (Commit 2) — Path joins in
+/// Commit 3 — the shared uniform bind group (group 0, `screen_size`),
+/// and the grow-only MSAA offscreen color target.
 pub struct NativeUrxRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -44,6 +45,7 @@ pub struct NativeUrxRenderer {
     sample_count: u32,
 
     quad: QuadPipeline,
+    line: LinePipeline,
 
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
@@ -100,9 +102,10 @@ impl NativeUrxRenderer {
         });
 
         let quad = QuadPipeline::new(&device, format, sample_count, &uniform_bgl);
+        let line = LinePipeline::new(&device, format, sample_count, &uniform_bgl);
         let msaa = MsaaTarget::new(sample_count, format);
 
-        Self { device, queue, format, sample_count, quad, uniform_buffer, uniform_bind_group, msaa }
+        Self { device, queue, format, sample_count, quad, line, uniform_buffer, uniform_bind_group, msaa }
     }
 
     /// `format` this renderer's pipelines were built for.
@@ -146,6 +149,7 @@ impl NativeUrxRenderer {
         let uniforms = Uniforms { screen_size: [viewport.width as f32, viewport.height as f32], _pad: [0.0; 2] };
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
         self.quad.upload(&self.device, &self.queue, &frame.quads);
+        self.line.upload(&self.device, &self.queue, &frame.lines);
 
         // `sample_count > 1`: render into the MSAA color target and let
         // the pass epilogue hardware-resolve into the caller's `view`
@@ -177,8 +181,36 @@ impl NativeUrxRenderer {
             });
 
             pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-            if !frame.quads.is_empty() {
-                self.quad.draw(&mut pass, 0, frame.quads.len() as u32);
+
+            // Replay batches in scan order — this is what preserves
+            // painter's order across a Quad/Line interleave (design
+            // §5; legacy `renderer.rs:1008-1061` pattern). Every batch
+            // is guaranteed to differ in kind from its predecessor
+            // (coalescing already merged same-kind runs at encode
+            // time), so `current` always triggers a (re)bind here —
+            // kept anyway to document the intent and stay correct if
+            // a future pipeline ever breaks that invariant.
+            let mut current: Option<BatchKind> = None;
+            for batch in &frame.batches {
+                if batch.count == 0 {
+                    continue;
+                }
+                match batch.kind {
+                    BatchKind::Quad => {
+                        if current != Some(BatchKind::Quad) {
+                            self.quad.bind(&mut pass);
+                            current = Some(BatchKind::Quad);
+                        }
+                        self.quad.draw_range(&mut pass, batch.start, batch.count);
+                    }
+                    BatchKind::Line => {
+                        if current != Some(BatchKind::Line) {
+                            self.line.bind(&mut pass);
+                            current = Some(BatchKind::Line);
+                        }
+                        self.line.draw_range(&mut pass, batch.start, batch.count);
+                    }
+                }
             }
         }
 

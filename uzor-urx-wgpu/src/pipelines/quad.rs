@@ -96,10 +96,10 @@ fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer 
 
 /// Premultiplied blend equation (design §7 "the actual fix") — `One /
 /// OneMinusSrcAlpha` on both color and alpha, matching `Pixmap`'s own
-/// premultiplied definition. Scoped to this pipeline only; never reuse
-/// the legacy crate's `wgpu::BlendState::ALPHA_BLENDING` (straight
-/// alpha) here.
-fn premultiplied_blend_state() -> wgpu::BlendState {
+/// premultiplied definition. Shared by every native pipeline (Quad,
+/// Line, ...); never reuse the legacy crate's
+/// `wgpu::BlendState::ALPHA_BLENDING` (straight alpha) here.
+pub(crate) fn premultiplied_blend_state() -> wgpu::BlendState {
     wgpu::BlendState {
         color: wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::One,
@@ -189,12 +189,19 @@ impl QuadPipeline {
         queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(data));
     }
 
+    /// Bind this pipeline + its vertex buffer onto `pass`. Called only
+    /// when the renderer's batch-replay loop switches INTO a quad
+    /// batch (matches legacy `renderer.rs:1008-1061`'s
+    /// avoid-redundant-`set_pipeline` pattern).
+    pub(crate) fn bind(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_pipeline(&self.pipeline);
+        pass.set_vertex_buffer(0, self.buffer.slice(..));
+    }
+
     /// Draw instances `[start, start + count)` — 6 procedurally
     /// generated vertices per instance (2 triangles), matching the
     /// legacy crate's quad draw call (`renderer.rs:1019-1027`).
-    pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, start: u32, count: u32) {
-        pass.set_pipeline(&self.pipeline);
-        pass.set_vertex_buffer(0, self.buffer.slice(..));
+    pub(crate) fn draw_range(&self, pass: &mut wgpu::RenderPass<'_>, start: u32, count: u32) {
         pass.draw(0..6, start..(start + count));
     }
 }
