@@ -104,6 +104,49 @@ impl CpuBackend {
     /// bg-replacement). Otherwise falls through to the per-primitive
     /// scanline backend.
     pub fn render(&self, scene: &Scene, pixmap: &mut Pixmap) -> Result<(), RenderError> {
+        // `uzor_urx_glyph` is an OPTIONAL dep (Cargo.toml `glyph =
+        // ["dep:uzor-urx-glyph"]`) — resolving the configured LUT must
+        // stay behind the same feature gate the `GlyphRun` draw arm
+        // itself uses, or a `glyph`-feature-less build fails to link.
+        #[cfg(feature = "glyph")]
+        let gamma_lut = self.config.text_gamma_enabled.then(uzor_urx_glyph::configured_text_gamma_lut);
+        #[cfg(not(feature = "glyph"))]
+        let gamma_lut = None;
+        self.render_with_gamma_lut(scene, pixmap, gamma_lut)
+    }
+
+    /// Same as [`Self::render`], but with the glyph gamma LUT supplied
+    /// explicitly instead of resolved from `self.config` — lets the URX
+    /// text-gamma calibration sweep
+    /// (`uzor-examples/src/l3/dashboard.rs`'s `text_gamma_calibration`
+    /// test module, design §3.1) try an ARBITRARY candidate curve in one
+    /// process without touching the production `TEXT_GAMMA_CURVE`
+    /// constant or `UrxConfig::text_gamma_enabled`. `#[doc(hidden)]` —
+    /// a calibration-tooling entry point, not part of the stable public
+    /// API surface, same convention as `uzor_urx_glyph::_clear_caches_for_tests`.
+    #[doc(hidden)]
+    pub fn render_with_gamma_lut_for_test(
+        &self,
+        scene: &Scene,
+        pixmap: &mut Pixmap,
+        gamma_lut: Option<&uzor_urx_core::text_gamma::TextGammaLut>,
+    ) -> Result<(), RenderError> {
+        self.render_with_gamma_lut(scene, pixmap, gamma_lut)
+    }
+
+    fn render_with_gamma_lut(
+        &self,
+        scene: &Scene,
+        pixmap: &mut Pixmap,
+        gamma_lut: Option<&uzor_urx_core::text_gamma::TextGammaLut>,
+    ) -> Result<(), RenderError> {
+        // Only the `GlyphRun` arm's `#[cfg(feature = "glyph")]` body
+        // reads `gamma_lut` — without that feature it's genuinely
+        // unused for this whole function, same as `glyphs`/`font`/etc
+        // in that arm's own `#[cfg(not(feature = "glyph"))]` branch.
+        #[cfg(not(feature = "glyph"))]
+        let _ = gamma_lut;
+
         use uzor_urx_core::metrics_keys::{
             render_submit_us_key, render_submit_count_key,
             KEY_TICK_SUBMIT_US, KEY_TICK_FRAMES,
@@ -229,11 +272,12 @@ impl CpuBackend {
                         let pw = target.width();
                         let ph = target.height();
                         // URX text-gamma design, 2026-07-26, §2.4 — the
-                        // LUT is resolved from config, not baked into
-                        // this arm's own state; `None` when the flag is
-                        // off is `draw_glyph_run`'s zero-added-cost path.
-                        let gamma_lut = self.config.text_gamma_enabled
-                            .then(uzor_urx_glyph::configured_text_gamma_lut);
+                        // LUT is resolved by the caller (either from
+                        // config via `render()`, or an explicit override
+                        // via `render_with_gamma_lut_for_test`, see
+                        // `render_with_gamma_lut`'s own doc comment);
+                        // `None` is `draw_glyph_run`'s zero-added-cost
+                        // path.
                         let _ = uzor_urx_glyph::draw_glyph_run(
                             target.pixels_mut(),
                             pw, ph,

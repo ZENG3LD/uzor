@@ -21,6 +21,7 @@ uzor-render-vello-cpu = { workspace = true }
 uzor-render-urx       = { workspace = true }
 uzor-urx-core         = { workspace = true }
 uzor-urx-cpu          = { workspace = true }
+uzor-urx-glyph        = { workspace = true }
 uzor-urx-wgpu         = { workspace = true }
 uzor-window-desktop   = { workspace = true }
 uzor-figures          = { path = "../uzor-figures" }

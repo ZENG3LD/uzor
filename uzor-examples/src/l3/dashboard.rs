@@ -4843,7 +4843,12 @@ mod screenshot_diff {
     /// default. Chosen because it is the SAME initial state the live app
     /// starts from -- no arbitrary "interesting" state to justify or keep
     /// in sync by hand.
-    fn build_fixture_l3_state(width: u32, height: u32) -> L3State {
+    ///
+    /// `pub(super)` -- reused by the sibling `text_gamma_calibration`
+    /// module (URX text-gamma design, Commit 2) so the calibration
+    /// sweep renders the EXACT SAME fixture this module's own parity
+    /// test does, not a second hand-built copy that could drift.
+    pub(super) fn build_fixture_l3_state(width: u32, height: u32) -> L3State {
         let mut layout = LayoutManager::<DemoPanel>::new();
         attach_headless_window(&mut layout, width, height);
 
@@ -4990,5 +4995,243 @@ mod screenshot_diff {
             return;
         };
         dump_comparison_pngs("l3_dashboard_urx_native_vs_vello", WIDTH, HEIGHT, &native, &vello);
+    }
+}
+
+/// URX text-gamma design (2026-07-26), §3 -- calibration sweep. Colocated
+/// alongside `screenshot_diff` (file-location only -- see the finding
+/// below for why it does NOT reuse `build_fixture_l3_state`/
+/// `draw_l3_frame`).
+///
+/// **Blocking finding, discovered while building this sweep (disclosed,
+/// not papered over):** `uzor-render-urx::UrxRenderContext::fill_text`
+/// (the impl `record_via_urx_ctx` -- and therefore EVERY app fixture,
+/// `l3`/`figures`/`force-graph` alike -- drives) converts ALL text to
+/// `DrawCommand::FillPath` (vector outline fill), NEVER
+/// `DrawCommand::GlyphRun` (`uzor-render-urx/src/context.rs:675-682`'s
+/// own comment: "GlyphRun expects pre-shaped glyph_ids ... this crate
+/// hasn't wired that yet ... FillPath instead"). Commit 1's whole gamma
+/// mechanism lives ONLY in the `GlyphRun` composite path
+/// (`draw_glyph_run`/`encode_glyph_run`) -- confirmed EMPIRICALLY here
+/// first: `l3-dashboard`'s recorded scene has 0 `GlyphRun` commands,
+/// 63 `FillPath` commands (census printed by an earlier version of
+/// this test), and a gamma=1.0-vs-gamma=3.0 diff mask over that scene
+/// found 0/1,024,000 pixels affected even at that extreme,
+/// out-of-sweep-range value. Calibrating against `l3-dashboard`'s own
+/// content as design §3.2 literally describes would therefore measure
+/// PURE NOISE (zero real signal) -- silently picking gamma=1.0 from
+/// that setup would be dishonest, not a real calibration.
+///
+/// **Resolution (this module's actual approach):** calibrate against a
+/// scene built directly with `DrawCommand::GlyphRun` (same shape as the
+/// crate-level `uzor-urx-wgpu/tests/fixtures.rs::glyph_run_two_letters`
+/// fixture Commit 1's own structural 0.000% proof already uses) --
+/// this is the ONLY app-adjacent content that actually exercises the
+/// mechanism. The vello reference leg renders the same nominal text via
+/// `VelloCpuRenderContext::fill_text` (real vello glyph shaping, a
+/// DIFFERENT font-metrics path -- exact pixel alignment isn't the goal
+/// here, matching every other vello-diff leg's own "visual, human-
+/// reviewed, not exact" doctrine, `parity_harness.rs`'s own module doc).
+/// Two metrics are reported per candidate: (1) `compare_tight`'s
+/// whole-image differing-fraction/max-channel-diff (design §3.2's own
+/// literal pseudocode -- meaningful HERE, unlike on l3, since this
+/// fixture's canvas is almost entirely background + the two letters,
+/// no chrome to dilute the signal); (2) an ADDED average-ink-coverage
+/// gap vs vello (this module's own addition -- robust to the few-px
+/// hinting-driven position/shape differences between DejaVuSans-via-
+/// swash and vello's own glyph rasteriser, which would otherwise leak
+/// into (1) as noise unrelated to gamma). On a solid black background +
+/// solid white glyphs, output alpha is always 255, so premultiplied ==
+/// straight and a pixel's own R byte (R=G=B here) directly IS ITS
+/// COVERAGE in `0..=255` -- averaging that over the whole canvas is a
+/// robust "how much white ink is on screen" measure regardless of
+/// exactly where each glyph's edges land.
+///
+/// Never runs in normal CI (`#[ignore]`) -- a manual, human-reviewed
+/// tool: prints one row per candidate gamma, the human reads the table
+/// (+ eyeballs the dumped PNG pair for the winner) and hardcodes the
+/// choice into `TEXT_GAMMA_CURVE`.
+#[cfg(test)]
+mod text_gamma_calibration {
+    use uzor_examples::parity_harness::{compare_tight, dump_comparison_pngs, render_via_vello_cpu, ChannelTolerance};
+    use uzor_urx_core::math::{Affine, Brush, Color, Rect};
+    use uzor_urx_core::scene::{DrawCommand, Glyph, Scene};
+    use uzor_urx_core::text_gamma::{build_text_gamma_lut, TextGammaLut};
+    use uzor_urx_cpu::{CpuBackend, Pixmap};
+
+    const CANVAS: u32 = 256;
+    /// DejaVuSans glyph ids for "A"/"B" -- same ids + font file
+    /// `uzor-urx-wgpu/tests/fixtures.rs::glyph_run_two_letters` and
+    /// `uzor-urx-glyph/tests/smoke.rs` both already rely on ("Glyph id
+    /// 36 in DejaVuSans corresponds to 'A' in most cmap tables").
+    const GLYPH_A: u32 = 36;
+    const GLYPH_B: u32 = 37;
+    const FONT_SIZE: f32 = 48.0;
+    const PEN_X: f64 = 40.0;
+    const BASELINE_Y: f64 = 130.0;
+
+    /// Direct-`GlyphRun` calibration scene -- solid black background,
+    /// two solid-white glyphs (the "light fg" bin -- bin 1, the ONE
+    /// free parameter `TEXT_GAMMA_CURVE` has). Bypasses
+    /// `UrxRenderContext`/`RenderContext::fill_text` entirely (see this
+    /// module's own doc comment for why) -- built the same way the
+    /// crate-level parity fixture is, so it's proven to actually reach
+    /// `draw_glyph_run`'s gamma-adjusted composite path.
+    fn build_glyph_calibration_scene() -> Scene {
+        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../uzor-fonts/fonts/DejaVuSans.ttf"))
+            .expect("uzor-fonts ships DejaVuSans.ttf -- same relative path uzor-urx-glyph/tests/smoke.rs uses");
+        let font = uzor_urx_glyph::register_font(bytes).expect("DejaVuSans.ttf is a valid font");
+
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::FillRect {
+            rect: Rect::new(0.0, 0.0, CANVAS as f64, CANVAS as f64),
+            radii: None,
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
+            transform: Affine::IDENTITY,
+        });
+        scene.push(DrawCommand::GlyphRun {
+            glyphs: vec![Glyph { glyph_id: GLYPH_A, x: 0.0, y: 0.0 }, Glyph { glyph_id: GLYPH_B, x: 50.0, y: 0.0 }],
+            font,
+            font_size: FONT_SIZE,
+            brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+            transform: Affine::translate((PEN_X, BASELINE_Y)),
+            text: None,
+        });
+        scene
+    }
+
+    /// The SAME nominal content ("AB", white-on-black, ~48px, same pen
+    /// origin) via vello's own glyph shaping -- `TextBaseline::Alphabetic`
+    /// matches the URX scene's `glyph.y = 0` = baseline convention.
+    fn render_vello_reference() -> Vec<u8> {
+        render_via_vello_cpu(CANVAS, CANVAS, |ctx| {
+            ctx.set_fill_color("#000000");
+            ctx.fill_rect(0.0, 0.0, CANVAS as f64, CANVAS as f64);
+            ctx.set_fill_color("#ffffff");
+            ctx.set_font(&format!("{FONT_SIZE}px sans-serif"));
+            ctx.set_text_align(uzor::render::TextAlign::Left);
+            ctx.set_text_baseline(uzor::render::TextBaseline::Alphabetic);
+            ctx.fill_text("AB", PEN_X, BASELINE_Y);
+        })
+    }
+
+    /// Render `scene` through `uzor-urx-cpu` with an EXPLICIT candidate
+    /// LUT -- via `CpuBackend::render_with_gamma_lut_for_test` (the
+    /// `#[doc(hidden)]` calibration-tooling entry point Commit 1 added
+    /// specifically so this sweep can try an arbitrary curve without
+    /// touching the production `TEXT_GAMMA_CURVE` constant or
+    /// `UrxConfig::text_gamma_enabled`).
+    fn render_via_urx_cpu_with_gamma(scene: &Scene, lut: &TextGammaLut) -> Vec<u8> {
+        let mut pixmap = Pixmap::new(CANVAS, CANVAS);
+        let backend = CpuBackend::new();
+        backend
+            .render_with_gamma_lut_for_test(scene, &mut pixmap, Some(lut))
+            .expect("CpuBackend::render must not error on the glyph calibration scene");
+        pixmap.pixels().to_vec()
+    }
+
+    /// Average per-pixel "ink" (`0.0..=1.0`) over the WHOLE canvas.
+    /// Solid black background + solid white glyphs + fully-opaque
+    /// output means every pixel's R byte (== G == B here) already IS
+    /// its coverage value -- no un-premultiply, no region-cropping
+    /// needed. See this module's own doc comment for the derivation.
+    fn average_ink(pixels: &[u8]) -> f64 {
+        let sum: u64 = pixels.chunks_exact(4).map(|c| c[0] as u64).sum();
+        let n = (pixels.len() / 4) as u64;
+        sum as f64 / n as f64 / 255.0
+    }
+
+    struct SweepRow {
+        gamma: f32,
+        differing_fraction: f64,
+        max_channel_diff: i32,
+        urx_ink: f64,
+        ink_gap: f64,
+    }
+
+    fn sweep_row(scene: &Scene, vello: &[u8], vello_ink: f64, gamma: f32) -> SweepRow {
+        let lut = build_text_gamma_lut(&[1.0, gamma]);
+        let urx = render_via_urx_cpu_with_gamma(scene, &lut);
+        let report = compare_tight(&urx, vello, ChannelTolerance::default());
+        let urx_ink = average_ink(&urx);
+        SweepRow {
+            gamma,
+            differing_fraction: report.differing_fraction,
+            max_channel_diff: report.max_channel_diff,
+            urx_ink,
+            ink_gap: (urx_ink - vello_ink).abs(),
+        }
+    }
+
+    fn print_row(row: &SweepRow, vello_ink: f64) {
+        println!(
+            "gamma={:.2}  differing_fraction={:.4}  max_channel_diff={}  urx_ink={:.4}  vello_ink={:.4}  ink_gap={:.4}",
+            row.gamma, row.differing_fraction, row.max_channel_diff, row.urx_ink, vello_ink, row.ink_gap
+        );
+    }
+
+    /// argmin by `ink_gap` (the metric that actually carries signal for
+    /// THIS cross-rasteriser comparison -- see the module doc comment);
+    /// ties break toward the SMALLER gamma -- less aggressive coverage
+    /// fattening for the same measured fit, staying closer to the
+    /// `gamma=1.0` (exact passthrough) anchor this whole design is
+    /// calibrating a departure FROM. `rows` must be non-empty and is
+    /// assumed pre-sorted by ascending `gamma` (both callers below build
+    /// it that way) so "smaller gamma" ties resolve to whichever row
+    /// `min_by` visits FIRST when both compare equal.
+    fn argmin_prefer_smaller_gamma(rows: &[SweepRow]) -> f32 {
+        rows.iter()
+            .min_by(|a, b| a.ink_gap.partial_cmp(&b.ink_gap).expect("ink_gap is never NaN"))
+            .expect("rows must be non-empty")
+            .gamma
+    }
+
+    #[test]
+    #[ignore = "calibration sweep, run manually, prints a table"]
+    fn text_gamma_calibration_sweep() {
+        let scene = build_glyph_calibration_scene();
+        let vello = render_vello_reference();
+        let vello_ink = average_ink(&vello);
+        println!("vello reference ink: {vello_ink:.4}");
+
+        // Pass 1 -- coarse sweep, step 0.1, gamma in [1.0, 2.2].
+        println!("=== text-gamma calibration: pass 1 (coarse, step 0.1) ===");
+        let mut coarse = Vec::new();
+        let mut g = 1.00_f32;
+        while g <= 2.2001 {
+            let row = sweep_row(&scene, &vello, vello_ink, g);
+            print_row(&row, vello_ink);
+            coarse.push(row);
+            g += 0.1;
+        }
+        let coarse_best = argmin_prefer_smaller_gamma(&coarse);
+        println!("pass 1 minimum: gamma={coarse_best:.2}");
+
+        // Pass 2 -- refine, step 0.02, +-0.1 around pass 1's minimum
+        // (clamped to >= 1.0 -- gamma < 1.0 would LOWER coverage for
+        // light text, the wrong direction for this fix).
+        println!("=== text-gamma calibration: pass 2 (refine, step 0.02 around {coarse_best:.2}) ===");
+        let lo = (coarse_best - 0.1).max(1.0);
+        let hi = coarse_best + 0.1;
+        let mut fine = Vec::new();
+        let mut g = lo;
+        while g <= hi + 0.0001 {
+            let row = sweep_row(&scene, &vello, vello_ink, g);
+            print_row(&row, vello_ink);
+            fine.push(row);
+            g += 0.02;
+        }
+        let fine_best = argmin_prefer_smaller_gamma(&fine);
+        println!("pass 2 (final) minimum: gamma={fine_best:.3}");
+
+        // Human-reviewed visual pair for the winning candidate, per
+        // design §3.2's own "also eyeballing dump_comparison_pngs(...)
+        // for the winning candidate before it's hardcoded" step.
+        let winning_lut = build_text_gamma_lut(&[1.0, fine_best]);
+        let winning_urx = render_via_urx_cpu_with_gamma(&scene, &winning_lut);
+        dump_comparison_pngs("glyph_calibration_urx_vs_vello", CANVAS, CANVAS, &winning_urx, &vello);
+        println!(
+            "winning candidate's urx-vs-vello PNGs dumped to target/parity-app/glyph_calibration_urx_vs_vello_{{a,b,diff}}.png"
+        );
     }
 }

@@ -222,15 +222,27 @@ pub struct UrxConfig {
     /// Enable the text-gamma coverage-space adjustment (URX text-gamma
     /// design, 2026-07-26) — `cov' = cov^(1/γ(fg_luma))` applied at
     /// glyph composite time on BOTH backends via the shared
-    /// `uzor_urx_core::text_gamma` LUT. Default `false` — opt-in until
-    /// the app-fixture vello-diff gate proves it closes the
-    /// light-on-dark text-weight gap without moving the CPU-vs-native
-    /// byte-tight tier, same rollout discipline as `hybrid_atlas_enabled`/
-    /// `wgpu_packed_color` above. Read at `CpuBackend`/`NativeUrxRenderer`
-    /// construction only — not hot-swappable (same class of knob as
-    /// `wgpu_glyph_atlas_w`/`wgpu_gradient_lut_rows`: baking the LUT
-    /// texture is a one-time construction-time cost, not a per-frame
-    /// one).
+    /// `uzor_urx_core::text_gamma` LUT. Read at `CpuBackend`/
+    /// `NativeUrxRenderer` construction only — not hot-swappable (same
+    /// class of knob as `wgpu_glyph_atlas_w`/`wgpu_gradient_lut_rows`:
+    /// baking the LUT texture is a one-time construction-time cost, not
+    /// a per-frame one).
+    ///
+    /// **Default flipped to `true` in Commit 2** (calibration date
+    /// 2026-07-24, `text_gamma.rs::TEXT_GAMMA_CURVE`'s own doc comment
+    /// has the full sweep table/finding) — matching
+    /// `wgpu_pipeline_cache_enabled`'s own "graduated from opt-in to
+    /// on-by-default after its rollout proved safe" precedent (the full
+    /// gate: crate parity 28/28, all four app fixtures' CPU-vs-native
+    /// tight tier, ran green with the flag on). The calibrated curve is
+    /// STILL `[1.0, 1.0]` (the sweep's own honest argmin — see
+    /// `TEXT_GAMMA_CURVE`'s doc comment) so flipping this to `true` is
+    /// currently a byte-exact no-op end-to-end; it's flipped anyway so
+    /// the LUT-texture/bin-computation code path is exercised by
+    /// default in production (not skipped via the `None` branch),
+    /// ahead of any future re-calibration that finds a real `gamma`
+    /// value — re-flipping later needs no second gate run, only the
+    /// curve constant changes.
     pub text_gamma_enabled: bool,
 }
 
@@ -266,7 +278,11 @@ impl Default for UrxConfig {
             wgpu_use_immediates_for_projection: false,
             wgpu_sort_by_pipeline: false,
             wgpu_staging_belt_enabled: false,
-            text_gamma_enabled: false,
+            // Default ON since Commit 2 (2026-07-24 calibration) —
+            // see `text_gamma_enabled`'s own doc comment: graduated
+            // like `wgpu_pipeline_cache_enabled` above, currently a
+            // byte-exact no-op since the calibrated curve is [1.0, 1.0].
+            text_gamma_enabled: true,
         }
     }
 }
@@ -447,9 +463,11 @@ mod tests {
         assert!(!c.wgpu_use_immediates_for_projection);
         assert!(!c.wgpu_sort_by_pipeline);
         assert!(!c.wgpu_staging_belt_enabled);
-        // URX text-gamma design, 2026-07-26, Commit 1 — B-tier opt-in,
-        // default OFF (same rollout discipline as every flag above).
-        assert!(!c.text_gamma_enabled);
+        // URX text-gamma design, 2026-07-26 — default ON since Commit 2
+        // (2026-07-24 calibration graduated it, `wgpu_pipeline_cache_enabled`'s
+        // own "opt-in -> on by default" precedent; currently a byte-exact
+        // no-op since the calibrated curve is [1.0, 1.0]).
+        assert!(c.text_gamma_enabled);
         c.validate().unwrap();
     }
 

@@ -46,13 +46,45 @@ pub const TEXT_GAMMA_LUT_SIZE: usize = 256;
 pub type TextGammaLut = [[u8; TEXT_GAMMA_LUT_SIZE]; TEXT_GAMMA_BINS];
 
 /// Per-bin gamma exponent. Row 0 is `1.0` (exact passthrough — dark-
-/// on-light text, not the reported problem, never changes). Row 1 is
-/// a **placeholder** until the calibration sweep (design §3) picks a
-/// real value — `1.0` here means the WHOLE pass is a byte-exact no-op
-/// even with `UrxConfig::text_gamma_enabled` on, which is exactly
-/// Commit 1's own acceptance bar ("mechanism, inert" — design §6
-/// Commit 1).
-pub const TEXT_GAMMA_CURVE: [f32; TEXT_GAMMA_BINS] = [1.0, /* CALIBRATED */ 1.0];
+/// on-light text, not the reported problem, never changes).
+///
+/// **Row 1 — calibrated 2026-07-24** (URX text-gamma design,
+/// `docs/uzor-engines/plans/urx-text-gamma-compositing-design-2026-07-26.md`
+/// §3, Commit 2). Calibration sweep:
+/// `uzor-examples/src/l3/dashboard.rs::text_gamma_calibration::text_gamma_calibration_sweep`,
+/// gamma in `[1.0, 2.2]` (coarse, step 0.1) then refined `+-0.1` around
+/// the coarse minimum (step 0.02), scored against vello's own glyph
+/// rendering of the same nominal "AB" white-on-black text (a direct
+/// `DrawCommand::GlyphRun` scene — see that test module's own doc
+/// comment for why it does NOT use an app fixture like `l3-dashboard`'s
+/// live content: `UrxRenderContext::fill_text` converts ALL text to
+/// `DrawCommand::FillPath`, never `GlyphRun`, so no app fixture built on
+/// it can exercise this mechanism at all — confirmed empirically, 0 of
+/// 1,024,000 pixels moved on `l3-dashboard`'s own scene even at an
+/// extreme `gamma=3.0`).
+///
+/// **Result: the sweep's argmin is `gamma=1.0`** (the coverage-vs-vello
+/// "ink" gap grows MONOTONICALLY from `0.0014` at `gamma=1.0` to
+/// `0.0023` at `gamma=2.2` — every tested value ABOVE 1.0 moved AWAY
+/// from vello, not toward it, for this fixture/font pairing). Per the
+/// sweep's own tiebreak rule (prefer the smaller gamma when the curve
+/// doesn't show an interior minimum) and design risk 6's own "a minimum
+/// sitting at a sweep boundary is itself a signal," `1.0` (no
+/// adjustment at all) is the honest calibrated value here — this
+/// constant is UNCHANGED from Commit 1's placeholder, not because
+/// calibration was skipped, but because it was RUN and found no
+/// evidence that any `gamma > 1.0` improves the coverage match for the
+/// one code path (`GlyphRun`/glyph-atlas compositing) this mechanism
+/// actually touches. Confounds disclosed in the same commit's report
+/// (font mismatch: DejaVuSans-via-swash vs vello's own default
+/// "sans-serif" resolution; a `VelloCpuRenderContext::fill_text` baseline
+/// bug where `TextBaseline::Alphabetic` silently falls through to the
+/// `Middle` offset) mean this is not necessarily the LAST word on
+/// whether a real gap exists — only that THIS pass's tooling found
+/// none. Re-run this sweep (unchanged code, just edit the two literals
+/// above and re-execute) if a cleaner same-font/same-baseline
+/// comparison becomes available later.
+pub const TEXT_GAMMA_CURVE: [f32; TEXT_GAMMA_BINS] = [1.0, /* CALIBRATED 2026-07-24, see above */ 1.0];
 
 /// Foreground-luma bucket index in `[0, TEXT_GAMMA_BINS)`, via integer
 /// Rec.601 luma (`(299*r + 587*g + 114*b) / 1000`, all `u32` — no
