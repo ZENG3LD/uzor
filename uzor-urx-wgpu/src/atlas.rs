@@ -2,19 +2,24 @@
 //! rasterised glyph coverage bitmaps, packed by `etagere`'s
 //! `BucketedAtlasAllocator` and keyed by `uzor_urx_glyph::GlyphKey`.
 //!
-//! URX Wave 2 Commit 1 (`docs/uzor-engines/plans/urx-wave2-native-glyph-atlas-design-2026-07-25.md`
-//! §3). This module is NOT wired into `NativeUrxRenderer`/`encode.rs`
-//! yet (Commit 2) — it exists standalone, exercised only by this
-//! file's own unit tests, so Commit 1 stays an isolated, independently
-//! reviewable change to a shared-nothing new file.
+//! Built standalone in URX Wave 2 Commit 1
+//! (`docs/uzor-engines/plans/urx-wave2-native-glyph-atlas-design-2026-07-25.md`
+//! §3) — exercised only by this file's own unit tests at that point,
+//! so Commit 1 stayed an isolated, independently reviewable change to
+//! a shared-nothing new file. Wired into `NativeUrxRenderer`/
+//! `encode.rs` in Commit 2 (`renderer.rs`'s `glyph_atlas` field,
+//! `encode.rs`'s `encode_glyph_run`) — this is now real production
+//! machinery, not standalone. Commit 3 added the parity fixture
+//! (`tests/fixtures.rs::glyph_run_two_letters`) that exercises the
+//! whole path end-to-end and this doc pass.
 //!
 //! ## Rasterisation source (design §0)
 //!
 //! Bitmaps come from `uzor_urx_glyph::rasterise_glyph` — the SAME
 //! function `uzor-urx-cpu`'s `GlyphRun` arm ultimately calls via
 //! `draw_glyph_run`. This atlas never runs its own `swash`/`cosmic-text`
-//! rasteriser; it only packs bitmaps it's handed by the caller
-//! (`encode.rs`, from Commit 2 onward) into GPU texture space.
+//! rasteriser; it only packs bitmaps `encode.rs`'s `encode_glyph_run`
+//! hands it into GPU texture space.
 //!
 //! ## Never-evict-this-frame invariant (design §3)
 //!

@@ -488,3 +488,63 @@ pub fn resize_sanity_scene(canvas: u32) -> Scene {
     });
     scene
 }
+
+/// `GlyphRun` via the native glyph atlas (Wave 2 design §7) — same
+/// recipe as `uzor-urx-cpu/tests/glyph_e2e.rs`: register
+/// `uzor-fonts/fonts/DejaVuSans.ttf`, glyph ids 36/37, font_size 48.0,
+/// a black background then white text so every non-background pixel
+/// is unambiguous.
+///
+/// Deliberately does NOT call `push_background` (unlike every other
+/// fixture in this file) — pure BLACK (not the shared dark-gray)
+/// maximizes white-glyph-on-background contrast for probe derivation;
+/// this is design §7's own fixture recipe, not a style slip.
+///
+/// **`register_font` idempotency finding** (read `uzor-urx-glyph/src/
+/// lib.rs`'s `register_font` directly): it is NOT idempotent — every
+/// call increments a process-wide `next_id` counter and inserts a
+/// fresh registry entry, with no content-based dedup by font bytes.
+/// Calling it twice with byte-identical `DejaVuSans.ttf` data would
+/// mint two DIFFERENT `FontId`s, each independently valid (no
+/// correctness bug, just registry growth). This fixture never hits
+/// that path: it calls `register_font` exactly ONCE and bakes the
+/// resulting `FontId` into the `Scene` it returns; `run_case` (Wave 1)
+/// passes that ONE `Scene` BY REFERENCE to both `render_cpu` and
+/// `render_native`, so both backends resolve the SAME `FontId` against
+/// the SAME process-wide static registry inside `uzor-urx-glyph` —
+/// `uzor-urx-cpu`'s `glyph` feature and `uzor-urx-wgpu` both depend on
+/// the identical `uzor-urx-glyph` crate, unified to one instance by
+/// Cargo in this test binary, so there is exactly one `REGISTRY`/
+/// `CACHE` pair to resolve against. No idempotency gap is exercised in
+/// practice by this harness.
+///
+/// **Font-path finding**: `CARGO_MANIFEST_DIR` for this crate is
+/// `uzor/uzor-urx-wgpu`; `../uzor-fonts/fonts/DejaVuSans.ttf` resolves
+/// to `uzor/uzor-fonts/fonts/DejaVuSans.ttf` — verified present on
+/// disk, the SAME relative path `uzor-urx-cpu/tests/glyph_e2e.rs` uses
+/// from ITS OWN sibling position one level down from `uzor/`.
+pub fn glyph_run_two_letters() -> Scene {
+    let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../uzor-fonts/fonts/DejaVuSans.ttf"))
+        .expect("uzor-fonts ships DejaVuSans.ttf — same relative path uzor-urx-cpu/tests/glyph_e2e.rs uses");
+    let font = uzor_urx_glyph::register_font(bytes).expect("DejaVuSans.ttf is a valid font");
+
+    let mut scene = Scene::new();
+    scene.push(DrawCommand::FillRect {
+        rect: Rect::new(0.0, 0.0, CANVAS as f64, CANVAS as f64),
+        radii: None,
+        brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
+        transform: Affine::IDENTITY,
+    });
+    scene.push(DrawCommand::GlyphRun {
+        glyphs: vec![
+            uzor_urx_core::scene::Glyph { glyph_id: 36, x: 40.0, y: 0.0 },
+            uzor_urx_core::scene::Glyph { glyph_id: 37, x: 90.0, y: 0.0 },
+        ],
+        font,
+        font_size: 48.0,
+        brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+        transform: Affine::translate((0.0, 130.0)),
+        text: None,
+    });
+    scene
+}

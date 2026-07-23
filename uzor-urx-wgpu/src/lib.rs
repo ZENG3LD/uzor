@@ -12,10 +12,12 @@
 //!    self-owned wgpu pipelines (Quad SDF in Commit 1, Line/capsule in
 //!    Commit 2, Path/triangle + lyon tessellation in Commit 3) plus
 //!    Wave 2's native glyph atlas + Glyph pipeline (Commit 1: atlas,
-//!    Commit 2: pipeline + shader + wiring), consuming `Scene` directly
-//!    with no delegation to the legacy crate. Exercised by this
-//!    crate's own tests and the pixel-parity harness (`tests/parity.rs`)
-//!    until the Wave 5 cutover flips production traffic onto it.
+//!    Commit 2: pipeline + shader + wiring, Commit 3: parity fixture +
+//!    text-tolerance budget + doc pass — Wave 2 is now closed),
+//!    consuming `Scene` directly with no delegation to the legacy
+//!    crate. Exercised by this crate's own tests and the pixel-parity
+//!    harness (`tests/parity.rs`, 13/13 green including the glyph
+//!    fixture) until the Wave 5 cutover flips production traffic onto it.
 //!
 //! ## Native pipelines (Wave 1 + Wave 2)
 //!

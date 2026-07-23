@@ -21,8 +21,26 @@ use uzor_urx_cpu::{CpuBackend, Pixmap};
 use uzor_urx_wgpu::{NativeRenderError, NativeUrxRenderer, Viewport};
 
 const CHANNEL_TOLERANCE_EDGE: i32 = 24; // ~9% of 255 — AA-edge slack.
-const CHANNEL_TOLERANCE_INTERIOR: i32 = 2; // rounding-only slack.
+const CHANNEL_TOLERANCE_INTERIOR: i32 = 2; // rounding-only slack — NEVER overridden per-case (design §7).
 const MAX_DIFFERING_FRACTION: f64 = 0.02; // 2% of pixels may exceed edge tolerance.
+
+/// Text-specific per-case override (Wave 2 design §7) — 2x both shape
+/// budgets, scoped to `parity_glyph_run_two_letters` ONLY via
+/// `ParityCase::edge_tolerance`/`max_differing_fraction`. Three real,
+/// stacked divergence sources exist for text that don't for shapes
+/// (both backends composite byte-identical swash bitmaps, so this is
+/// about what happens to that bitmap AFTER rasterisation):
+/// 1. Bilinear GPU resampling of an already-antialiased swash mask.
+/// 2. 4x MSAA supersampling that same already-smoothed sample again.
+/// 3. Different premultiplication arithmetic regimes (CPU integer
+///    fixed-point `(a*mask+127)/255` vs native continuous `f32`
+///    multiply).
+/// `CHANNEL_TOLERANCE_INTERIOR` stays 2 — UNCHANGED, no per-case
+/// override exists for it at all — because deep-interior pixels
+/// (several texels from any letterform edge) see none of the above:
+/// bilinear only perturbs values near a coverage gradient.
+const CHANNEL_TOLERANCE_EDGE_TEXT: i32 = 48; // 2x the shape budget (24)
+const MAX_DIFFERING_FRACTION_TEXT: f64 = 0.04; // 2x the shape budget (0.02)
 
 /// Native readback target format — non-sRGB, avoids the degamma step
 /// a `*Srgb` format would force before comparing against `Pixmap`'s
@@ -36,6 +54,25 @@ struct ParityCase {
     /// fixture — checked against `CHANNEL_TOLERANCE_INTERIOR`
     /// unconditionally, regardless of the whole-image budget.
     interior_probes: &'static [(u32, u32)],
+    /// Per-case override of the whole-image edge-tolerance/fraction
+    /// budget. Defaults (via `Default`, `..Default::default()`) to the
+    /// shared `CHANNEL_TOLERANCE_EDGE`/`MAX_DIFFERING_FRACTION` shape
+    /// constants, which stay UNTOUCHED — only `parity_glyph_run_two_letters`
+    /// overrides these, to the wider `_TEXT` constants (design §7).
+    edge_tolerance: i32,
+    max_differing_fraction: f64,
+}
+
+impl Default for ParityCase {
+    fn default() -> Self {
+        Self {
+            name: "",
+            scene: Scene::new(),
+            interior_probes: &[],
+            edge_tolerance: CHANNEL_TOLERANCE_EDGE,
+            max_differing_fraction: MAX_DIFFERING_FRACTION,
+        }
+    }
 }
 
 fn render_cpu(scene: &Scene, width: u32, height: u32) -> Vec<u8> {
@@ -96,12 +133,12 @@ fn parity_dump_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("target/parity"))
 }
 
-fn dump_diff_png(path: &Path, width: u32, height: u32, cpu: &[u8], native: &[u8]) {
+fn dump_diff_png(path: &Path, width: u32, height: u32, cpu: &[u8], native: &[u8], edge_tolerance: i32) {
     let mut heat = vec![0u8; cpu.len()];
     for (i, chunk) in heat.chunks_exact_mut(4).enumerate() {
         let idx = i * 4;
         let d = max_channel_diff(&cpu[idx..idx + 4], &native[idx..idx + 4]);
-        if d > CHANNEL_TOLERANCE_EDGE {
+        if d > edge_tolerance {
             // Tint pixels that exceed the edge budget red for quick
             // eyeballing which region regressed.
             chunk.copy_from_slice(&[255, 0, 0, 255]);
@@ -124,7 +161,7 @@ fn dump_failure_artifacts(cpu: &[u8], native: &[u8], width: u32, height: u32, ca
     let dir = parity_dump_dir();
     common::dump_png(&dir.join(format!("{}_cpu.png", case.name)), width, height, cpu);
     common::dump_png(&dir.join(format!("{}_native.png", case.name)), width, height, native);
-    dump_diff_png(&dir.join(format!("{}_diff.png", case.name)), width, height, cpu, native);
+    dump_diff_png(&dir.join(format!("{}_diff.png", case.name)), width, height, cpu, native, case.edge_tolerance);
 }
 
 /// Interior probes — exact-ish match required, fail immediately (with
@@ -146,24 +183,35 @@ fn check_interior_probes(cpu: &[u8], native: &[u8], width: u32, height: u32, cas
 }
 
 /// Whole-image sweep — count pixels exceeding the edge tolerance, fail
-/// if the fraction exceeds the budget.
+/// if the fraction exceeds the (per-case) budget. Always PRINTS the
+/// measured fraction (pass or fail) — under `--nocapture`, this is
+/// how every case's actual number vs its budget gets reported, not
+/// just a binary pass/fail.
 fn check_whole_image_budget(cpu: &[u8], native: &[u8], width: u32, height: u32, case: &ParityCase) {
     let total_pixels = (width as usize) * (height as usize);
     let mut differing = 0usize;
     for i in 0..total_pixels {
         let idx = i * 4;
-        if max_channel_diff(&cpu[idx..idx + 4], &native[idx..idx + 4]) > CHANNEL_TOLERANCE_EDGE {
+        if max_channel_diff(&cpu[idx..idx + 4], &native[idx..idx + 4]) > case.edge_tolerance {
             differing += 1;
         }
     }
     let fraction = differing as f64 / total_pixels as f64;
-    if fraction > MAX_DIFFERING_FRACTION {
+    println!(
+        "{}: {differing}/{total_pixels} pixels ({:.3}%) exceeded edge tolerance {} — budget is {:.2}%",
+        case.name,
+        fraction * 100.0,
+        case.edge_tolerance,
+        case.max_differing_fraction * 100.0
+    );
+    if fraction > case.max_differing_fraction {
         dump_failure_artifacts(cpu, native, width, height, case);
         panic!(
-            "{}: {differing}/{total_pixels} pixels ({:.2}%) exceeded edge tolerance {CHANNEL_TOLERANCE_EDGE} — budget is {:.2}%",
+            "{}: {differing}/{total_pixels} pixels ({:.2}%) exceeded edge tolerance {} — budget is {:.2}%",
             case.name,
             fraction * 100.0,
-            MAX_DIFFERING_FRACTION * 100.0
+            case.edge_tolerance,
+            case.max_differing_fraction * 100.0
         );
     }
 }
@@ -192,6 +240,7 @@ fn parity_solid_rects_axis_aligned() {
         name: "solid_rects_axis_aligned",
         scene: fixtures::solid_rects_axis_aligned(),
         interior_probes: &[(60, 60), (190, 190), (10, 245)],
+        ..Default::default()
     });
 }
 
@@ -202,6 +251,7 @@ fn parity_solid_rects_with_radii() {
         name: "solid_rects_with_radii",
         scene: fixtures::solid_rects_with_radii(),
         interior_probes: &[(128, 128), (5, 5)],
+        ..Default::default()
     });
 }
 
@@ -215,6 +265,7 @@ fn parity_stroked_rects() {
         // (75, 75): deep interior of the first (unfilled) stroke rect —
         // must show the background, not the border color.
         interior_probes: &[(75, 30), (75, 75)],
+        ..Default::default()
     });
 }
 
@@ -225,6 +276,7 @@ fn parity_overlapping_translucent_rects() {
         name: "overlapping_translucent_rects",
         scene: fixtures::overlapping_translucent_rects(),
         interior_probes: &[(60, 60), (200, 200), (130, 130)],
+        ..Default::default()
     });
 }
 
@@ -241,6 +293,7 @@ fn parity_lines_at_angles() {
         // genuinely mismatch the native pipeline's true butt caps
         // right at the tips of lines B and D.
         interior_probes: &[(65, 50), (140, 65), (30, 160), (159, 155)],
+        ..Default::default()
     });
 }
 
@@ -256,6 +309,7 @@ fn parity_quad_line_interleave() {
         // line's path, but outside the top quad — the line must win
         // over the bottom quad.
         interior_probes: &[(160, 100), (80, 100)],
+        ..Default::default()
     });
 }
 
@@ -272,6 +326,7 @@ fn parity_linear_gradient_rect() {
         // match near-exactly, and why only the rounded-corner region
         // (excluded here) is expected to diverge.
         interior_probes: &[(93, 128), (128, 128), (163, 128)],
+        ..Default::default()
     });
 }
 
@@ -288,6 +343,7 @@ fn parity_tessellated_path_star() {
         // straight segment between vertex 0 and vertex 1), deep in
         // the stroke band, away from both its endpoints' round joins.
         interior_probes: &[(70, 140), (70, 109), (190, 110)],
+        ..Default::default()
     });
 }
 
@@ -308,6 +364,40 @@ fn parity_clip_rect_stack() {
         // accidentally cut CONTENT that's legitimately inside the
         // active clip.
         interior_probes: &[(128, 55), (80, 80), (128, 100)],
+        ..Default::default()
+    });
+}
+
+/// `GlyphRun` via the native glyph atlas (Wave 2 design §7) — the ONE
+/// fixture in this file using the widened `_TEXT` tolerance budget
+/// (`CHANNEL_TOLERANCE_EDGE_TEXT`/`MAX_DIFFERING_FRACTION_TEXT`, this
+/// module's doc comment). `CHANNEL_TOLERANCE_INTERIOR` is UNCHANGED
+/// (2) even here — `check_interior_probes` has no per-case override.
+///
+/// **Probe derivation**: rendered `fixtures::glyph_run_two_letters()`
+/// through `render_cpu` once (a throwaway scratch test, since removed)
+/// and scanned every pixel for "pure white (255,255,255,255) AND every
+/// pixel in its 8-neighborhood also pure white" — i.e. a point several
+/// texels inside a letterform stroke, nowhere near an AA edge. Three
+/// were picked from the resulting candidate set, spread across both
+/// glyphs and both letterforms' distinct stroke shapes:
+/// - `(56, 97)`: inside glyph 36's upper curve/stroke.
+/// - `(97, 105)`: inside glyph 37's vertical stem — this exact column
+///   (x=96-97) is pure-white-with-white-neighbors across ~25 CONSECUTIVE
+///   rows in the scan (y≈97 through y≈123), i.e. a deep, wide, very
+///   stable stroke — the least edge-adjacent point found.
+/// - `(102, 110)`: inside glyph 37's horizontal bar (a ~15px-wide
+///   pure-white band at this row), comfortably centered away from
+///   either end.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_glyph_run_two_letters() {
+    run_case(ParityCase {
+        name: "glyph_run_two_letters",
+        scene: fixtures::glyph_run_two_letters(),
+        interior_probes: &[(56, 97), (97, 105), (102, 110)],
+        edge_tolerance: CHANNEL_TOLERANCE_EDGE_TEXT,
+        max_differing_fraction: MAX_DIFFERING_FRACTION_TEXT,
     });
 }
 
@@ -432,6 +522,7 @@ fn resize_sanity_64_512_64() {
         name: "resize_sanity_64_512_64",
         scene: fixtures::resize_sanity_scene(FINAL_SIZE),
         interior_probes: &[(FINAL_SIZE / 2, FINAL_SIZE / 2)],
+        ..Default::default()
     };
     // Interior-probe-only, deliberately NOT `compare_rgba`'s full
     // whole-image sweep: at a 64x64 canvas, ANY simple rect's AA

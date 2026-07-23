@@ -1655,5 +1655,72 @@ mod tests {
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_glyphrun_gradient_to_solid");
             assert_eq!(value, 1, "the gradient-brush degrade counter must fire exactly once per GlyphRun");
         }
+
+        /// Wave 2 Commit 3 (design §9): force `native_glyph_atlas_full_this_frame`
+        /// via a tiny (64x64) atlas — sized off a REAL
+        /// `UrxConfigBuilder::wgpu_glyph_atlas_w/h(64)` config (proving the
+        /// config knob's VALUE, not just a literal `64`, drives the tiny
+        /// size) — plus a single `GlyphRun` carrying more unique glyph
+        /// identities than a 64x64 atlas can hold at once. All glyphs are
+        /// in ONE run, encoded in ONE `encode_scene` call (one tick), so
+        /// none of the ones that DO get placed are eviction-eligible
+        /// (never-evict-this-frame invariant) — once physical space runs
+        /// out mid-run, every remaining glyph must hit the degrade.
+        ///
+        /// The `metrics::with_local_recorder` pattern (same technique as
+        /// this submodule's other proofs) composes fine with a real
+        /// device-backed atlas — no awkwardness — so this asserts via
+        /// BOTH the degrade counter AND `NativeGlyphAtlas::stats()`
+        /// (the same data `NativeUrxRenderer::glyph_atlas_stats()` reads)
+        /// for a belt-and-suspenders proof.
+        #[test]
+        #[ignore = "needs a headless GPU adapter"]
+        fn tiny_configured_atlas_forces_full_this_frame_degrade() {
+            let Some((device, _queue)) = test_device() else { return };
+            let cfg = uzor_urx_core::config::UrxConfig::builder()
+                .wgpu_glyph_atlas_w(64)
+                .wgpu_glyph_atlas_h(64)
+                .build()
+                .expect("64x64 is a valid atlas dim");
+            let mut atlas = NativeGlyphAtlas::new(&device, cfg.wgpu_glyph_atlas_w, cfg.wgpu_glyph_atlas_h);
+            atlas.begin_frame();
+
+            let font = registered_font();
+            // 80 distinct glyph identities at a modest size (24px) — a
+            // 64x64 atlas (4096 px²) cannot possibly hold 80 padded
+            // glyph rects of any plausible non-whitespace size at once
+            // (even a generous over-estimate of ~20x20px padded puts a
+            // single glyph at ~400px², so ~10 is already the practical
+            // ceiling) — comfortably forces overflow regardless of which
+            // specific ids happen to be whitespace/.notdef/out-of-range
+            // (those fail via `rasterise_glyph` or the zero-size skip,
+            // both harmless to this test — plenty of the 80 will be real
+            // ink).
+            let glyphs: Vec<Glyph> = (3u32..83).map(|id| Glyph { glyph_id: id, x: 0.0, y: 0.0 }).collect();
+
+            let recorder = TestRecorder::default();
+            metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::GlyphRun {
+                    glyphs,
+                    font,
+                    font_size: 24.0,
+                    brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+                    transform: Affine::IDENTITY,
+                    text: None,
+                });
+                let _frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas));
+            });
+
+            let full_this_frame = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_glyph_atlas_full_this_frame");
+            assert!(full_this_frame > 0, "a 64x64 atlas fed 80 unique glyph identities in ONE frame must overflow");
+
+            let stats = atlas.stats();
+            assert!(
+                stats.entries < 80,
+                "a 64x64 atlas cannot hold 80 unique glyph rects — entries ({}) must be well short of 80",
+                stats.entries
+            );
+        }
     }
 }

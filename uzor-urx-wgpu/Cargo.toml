@@ -42,4 +42,10 @@ etagere = "0.2"
 pollster = "0.4"
 image    = { version = "0.25", default-features = false, features = ["png"] }
 # The semantic reference the native pipeline is diffed against.
-uzor-urx-cpu = { workspace = true }
+# `glyph` feature (Wave 2 Commit 3) — the parity harness's CPU side
+# needs `uzor-urx-cpu`'s `GlyphRun` arm to actually rasterise (calls
+# `uzor_urx_glyph::draw_glyph_run`); without it, that arm is a no-op
+# (`backend.rs`'s `#[cfg(not(feature = "glyph"))]` branch just drops
+# the command) and `parity_glyph_run_two_letters` would compare a
+# blank CPU reference against real native glyphs.
+uzor-urx-cpu = { workspace = true, features = ["glyph"] }
