@@ -9,6 +9,44 @@
 //! `CommandEncoder` + target `TextureView`; this type owns pipelines,
 //! instance buffers, the MSAA offscreen target, and the uniform bind
 //! group.
+//!
+//! ## Wave 3 Commit 3 — the multi-pass blend-layer executor
+//!
+//! `render_into_encoder` used to open exactly ONE render pass per frame
+//! (Wave 1 through Wave 3 Commit 2). Blend layers (design §3,
+//! `docs/uzor-engines/plans/urx-wave3-clip-blend-design-2026-07-25.md`)
+//! need MULTIPLE passes — one per `PushLayer`/`PopLayer` bracket, each
+//! rendering into its own offscreen target, composited back onto its
+//! parent when popped. `replay_ops` (below) is that executor: it walks
+//! `EncodedFrame::ops` (`encode::FrameOp` — `Draw`/`PushLayer`/`PopLayer`)
+//! and opens/closes/reopens passes exactly per design §3.5's pause/
+//! resume/close table.
+//!
+//! **Implementation note (a disclosed refinement of §3.5's literal
+//! phrasing, not a behavioural deviation):** a `wgpu::RenderPassDescriptor`
+//! fixes its `store`/`resolve_target` at `begin_render_pass` time, but
+//! whether a given pass-open's eventual close will be a PAUSE (a nested
+//! `PushLayer` comes next) or the FINAL close (this depth's own
+//! `PopLayer`, or end-of-stream for root) depends on what op comes
+//! *after* it — not knowable purely from the transition that triggered
+//! the open. Since `EncodedFrame::ops` is a fully materialized `&[FrameOp]`
+//! (not a lazy stream), this executor resolves that ambiguity with a
+//! plain forward index scan (`peek_close_kind`) from the position a
+//! stint's content starts, skipping `Draw` entries until the next
+//! marker — the FIRST marker found (`PushLayer` → pause, `PopLayer` or
+//! end-of-stream → final) is exactly the answer, no true "lookahead
+//! budget" or separate pre-pass required. This keeps every open/close
+//! decision local and single-scan while still producing the load/store/
+//! resolve sequence design §3.5's table specifies literally.
+//!
+//! For a scene with ZERO blend layers (every Wave 1/2/3-Commit-1/2
+//! fixture), `peek_close_kind` immediately finds no marker at all and
+//! returns `CloseKind::Final` for the very first (root) stint — the
+//! executor then opens exactly one pass, replays every batch, and does
+//! the final close/resolve, byte-for-byte the same sequence Commit 2's
+//! single-pass code already produced. This is the parity gate's load-
+//! bearing claim (design §9 Commit 3): the executor is a true no-op
+//! refactor of the single-pass case.
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
@@ -16,9 +54,10 @@ use wgpu::util::DeviceExt;
 use uzor_urx_core::config::UrxConfig;
 
 use crate::atlas::{AtlasStats, NativeGlyphAtlas};
-use crate::encode::{self, BatchKind, MaskOp};
+use crate::encode::{self, BatchKind, EncodedFrame, FrameOp, MaskOp};
 use crate::msaa::MsaaTarget;
 use crate::native_error::NativeRenderError;
+use crate::pipelines::blend_composite::BlendCompositePipeline;
 use crate::pipelines::glyph::GlyphPipeline;
 use crate::pipelines::line::LinePipeline;
 use crate::pipelines::path::PathPipeline;
@@ -42,14 +81,168 @@ struct Uniforms {
     _pad: [f32; 2],
 }
 
+/// One blend-layer nesting depth's offscreen target (design §3.4) —
+/// lazily built the first time a `PushLayer` at that depth is
+/// processed, then REUSED across frames at a stable viewport size
+/// (exact-match reallocation on any size change, same discipline as
+/// `MsaaTarget`/`StencilTarget`). Every layer covers the full viewport
+/// (design §0.2 — no bounds-derived sub-rect), so one target PER DEPTH
+/// (not per Push/Pop occurrence) suffices: sibling layers pushed and
+/// popped in sequence at the same depth safely reuse the same GPU
+/// resources — they are never open simultaneously.
+struct BlendLayerTarget {
+    /// `None` when `sample_count == 1` — this layer then renders
+    /// directly into `resolve_view` (design's `sample_count == 1` path:
+    /// "layers render directly into their resolve textures, no resolve
+    /// steps").
+    msaa_view: Option<wgpu::TextureView>,
+    resolve_view: wgpu::TextureView,
+    resolve_bind_group: wgpu::BindGroup,
+    /// This layer's OWN stencil sibling (design §3.4 Risk 4) — only
+    /// ever actually allocated (via `StencilTarget::ensure`) when a
+    /// frame is armed; an unarmed frame's layer never pays for one.
+    stencil: StencilTarget,
+    width: u32,
+    height: u32,
+}
+
+impl BlendLayerTarget {
+    fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        sample_count: u32,
+        resolve_bgl: &wgpu::BindGroupLayout,
+        resolve_sampler: &wgpu::Sampler,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        // Texture handles are dropped as soon as their view is built —
+        // the view holds the GPU resource alive internally (same idiom
+        // `msaa.rs`/`stencil.rs` already use: neither stores a `Texture`
+        // field, only the derived `TextureView`); nothing here ever
+        // needs to `write_texture`/`copy_texture_to_buffer` against the
+        // raw `Texture` handle directly, unlike `atlas.rs`.
+        let resolve_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("uzor_urx_wgpu.native_blend_layer_resolve"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let resolve_view = resolve_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let resolve_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("uzor_urx_wgpu.native_blend_layer_resolve_bg"),
+            layout: resolve_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&resolve_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(resolve_sampler) },
+            ],
+        });
+        let msaa_view = (sample_count > 1).then(|| {
+            let msaa_tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("uzor_urx_wgpu.native_blend_layer_msaa"),
+                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            msaa_tex.create_view(&wgpu::TextureViewDescriptor::default())
+        });
+
+        Self { msaa_view, resolve_view, resolve_bind_group, stencil: StencilTarget::new(sample_count), width, height }
+    }
+
+    /// The view actually bound as this layer's color attachment: the
+    /// MSAA view when multisampling, else `resolve_view` directly.
+    fn color_view(&self, sample_count: u32) -> &wgpu::TextureView {
+        if sample_count > 1 {
+            self.msaa_view.as_ref().expect("BlendLayerTarget built with sample_count > 1 must have an msaa_view")
+        } else {
+            &self.resolve_view
+        }
+    }
+}
+
+/// Depth-indexed pool of `BlendLayerTarget`s (design §3.4) — index
+/// `depth - 1` holds nesting depth `depth`'s target (`depth` is
+/// 1-indexed, matching `FrameOp::PushLayer::depth`). Grows on demand,
+/// never shrinks — a scene that nests 5 layers deep once keeps those 5
+/// targets allocated for the renderer's lifetime, the same amortizing
+/// trade-off `TessCache`/`NativeGlyphAtlas` already make elsewhere in
+/// this crate.
+struct BlendLayerPool {
+    targets: Vec<Option<BlendLayerTarget>>,
+}
+
+impl BlendLayerPool {
+    fn new() -> Self {
+        Self { targets: Vec::new() }
+    }
+
+    /// Ensure `depth`'s target exists and is sized EXACTLY `width x
+    /// height` (reallocates on any size change — same discipline as
+    /// `MsaaTarget`/`StencilTarget`); also ensures its stencil sibling
+    /// when `armed` (design §3.4 Risk 4). Called once per First-open of
+    /// `depth` — cheap/no-op on every repeat call at a stable size.
+    fn ensure(
+        &mut self,
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        sample_count: u32,
+        resolve_bgl: &wgpu::BindGroupLayout,
+        resolve_sampler: &wgpu::Sampler,
+        depth: u32,
+        width: u32,
+        height: u32,
+        armed: bool,
+    ) {
+        let idx = (depth - 1) as usize;
+        if self.targets.len() <= idx {
+            self.targets.resize_with(idx + 1, || None);
+        }
+        let needs_new = match &self.targets[idx] {
+            Some(t) => t.width != width || t.height != height,
+            None => true,
+        };
+        if needs_new {
+            self.targets[idx] =
+                Some(BlendLayerTarget::new(device, format, sample_count, resolve_bgl, resolve_sampler, width, height));
+        }
+        if armed {
+            self.targets[idx]
+                .as_mut()
+                .expect("just ensured above")
+                .stencil
+                .ensure(device, width, height);
+        }
+    }
+
+    /// Borrow `depth`'s target — only ever called for a depth the
+    /// executor already `ensure`'d at its matching `PushLayer` (a
+    /// `PopLayer`/composite can only reference a depth its own push
+    /// already built).
+    fn get(&self, depth: u32) -> &BlendLayerTarget {
+        self.targets[(depth - 1) as usize]
+            .as_ref()
+            .expect("BlendLayerPool::get called for a depth its matching PushLayer never ensured")
+    }
+}
+
 /// Owns every native-pipeline GPU resource: the Quad SDF pipeline
 /// (Wave 1 Commit 1), the Line/capsule pipeline (Commit 2), the Path/
 /// triangle pipeline (Commit 3), the Glyph pipeline + its
-/// `NativeGlyphAtlas` (Wave 2 Commit 2), and the stencil mask-write
-/// pipeline + `StencilTarget` (Wave 3 Commit 2) — the shared uniform
-/// bind group (group 0, `screen_size`), the MSAA offscreen color
-/// target (exact-match reallocation on resize, see `msaa.rs`'s module
-/// doc), the tessellation cache, and the glyph atlas.
+/// `NativeGlyphAtlas` (Wave 2 Commit 2), the stencil mask-write
+/// pipeline + `StencilTarget` (Wave 3 Commit 2), and the blend-layer
+/// composite pipeline + `BlendLayerPool` (Wave 3 Commit 3) — the shared
+/// uniform bind group (group 0, `screen_size`), the MSAA offscreen
+/// color target (exact-match reallocation on resize, see `msaa.rs`'s
+/// module doc), the tessellation cache, and the glyph atlas.
 pub struct NativeUrxRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -61,14 +254,24 @@ pub struct NativeUrxRenderer {
     path: PathPipeline,
     glyph: GlyphPipeline,
     stencil_mask: StencilMaskPipeline,
+    blend_composite: BlendCompositePipeline,
 
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
 
+    /// Group-1 bind group layout + sampler every `BlendLayerTarget`'s
+    /// `resolve_bind_group` is built from (design §3.6) — owned here
+    /// (not per-target) since every layer at every depth shares the
+    /// exact same layout/sampler, only the texture view differs.
+    resolve_bgl: wgpu::BindGroupLayout,
+    resolve_sampler: wgpu::Sampler,
+
     msaa: MsaaTarget,
     stencil: StencilTarget,
+    layer_pool: BlendLayerPool,
     tess_cache: TessCache,
     glyph_atlas: NativeGlyphAtlas,
+    blend_layer_max_depth: usize,
 }
 
 impl NativeUrxRenderer {
@@ -105,10 +308,10 @@ impl NativeUrxRenderer {
     ///
     /// `cfg` is read ONCE, here, at construction — every knob this
     /// renderer consumes from it (`path_tess_cache_cap`,
-    /// `wgpu_glyph_atlas_w`/`_h`) is baked into the owned resource it
-    /// configures (`TessCache::with_cap`, `NativeGlyphAtlas::new`) and
-    /// is NOT hot-swappable for the lifetime of this renderer.
-    /// Re-construct to pick up a changed config.
+    /// `wgpu_glyph_atlas_w`/`_h`, `blend_layer_max_depth`) is baked into
+    /// the owned resource/value it configures and is NOT hot-swappable
+    /// for the lifetime of this renderer. Re-construct to pick up a
+    /// changed config.
     pub fn with_config(
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -155,6 +358,45 @@ impl NativeUrxRenderer {
         let glyph_atlas = NativeGlyphAtlas::new(&device, cfg.wgpu_glyph_atlas_w, cfg.wgpu_glyph_atlas_h);
         let glyph = GlyphPipeline::new(&device, format, sample_count, &uniform_bgl, glyph_atlas.bind_group_layout());
         let stencil_mask = StencilMaskPipeline::new(&device, format, sample_count, &uniform_bgl);
+
+        // Group-1 layout/sampler shared by every `BlendLayerTarget`'s
+        // resolve bind group (design §3.6) — texture + sampler, same
+        // shape `atlas.rs`'s glyph-atlas bind group uses. `Nearest`
+        // filtering (unlike the atlas's `Linear`): a composite quad
+        // samples 1:1, viewport-pixel-for-viewport-pixel, against its
+        // own viewport-sized resolve texture — there is never a scale
+        // factor between sample and source pixel, so filtering mode is
+        // inert; `Nearest` documents that intent (no blending across
+        // texel boundaries is ever actually exercised).
+        let resolve_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("uzor_urx_wgpu.native_blend_layer_resolve_sampler"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let resolve_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("uzor_urx_wgpu.native_blend_layer_resolve_bgl"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let blend_composite = BlendCompositePipeline::new(&device, format, sample_count, &uniform_bgl, &resolve_bgl);
+
         let msaa = MsaaTarget::new(sample_count, format);
         // Sample count MUST match whichever color target this same
         // pass binds (`msaa`'s at `sample_count > 1`, or `view` itself
@@ -164,6 +406,7 @@ impl NativeUrxRenderer {
         // `ensure` is only ever called when a frame is actually armed
         // (design §2.5).
         let stencil = StencilTarget::new(sample_count);
+        let layer_pool = BlendLayerPool::new();
         let tess_cache = TessCache::with_cap(cfg.path_tess_cache_cap);
 
         Self {
@@ -176,12 +419,17 @@ impl NativeUrxRenderer {
             path,
             glyph,
             stencil_mask,
+            blend_composite,
             uniform_buffer,
             uniform_bind_group,
+            resolve_bgl,
+            resolve_sampler,
             msaa,
             stencil,
+            layer_pool,
             tess_cache,
             glyph_atlas,
+            blend_layer_max_depth: cfg.blend_layer_max_depth,
         }
     }
 
@@ -215,22 +463,15 @@ impl NativeUrxRenderer {
         self.glyph_atlas.stats()
     }
 
-    /// Walk `scene.commands`, encode into the Quad pipeline's instance
-    /// buffer, and render into `view` (resolving through the MSAA
-    /// target first when `sample_count > 1`). Never panics on scene
+    /// Walk `scene.commands`, encode into every native pipeline's
+    /// instance buffer, and render into `view` — a single pass when
+    /// the scene uses no blend layers (byte-identical to Wave 1/2/Wave
+    /// 3 Commit 2), or the multi-pass executor (`replay_ops`) when it
+    /// does (Wave 3 Commit 3, design §3.5). Never panics on scene
     /// content — invalid primitives are validated via
     /// `uzor_urx_core::validate::validate_command` and skipped +
     /// countered inside `encode::encode_scene`, same policy as
     /// `uzor-urx-cpu`.
-    ///
-    /// **Wave 3 Commit 2 — stencil arming (design §2.5)**: this is
-    /// still a SINGLE-pass function (the multi-pass executor for blend
-    /// layers is Commit 3) — the only new decision is whether THIS ONE
-    /// pass carries a `depth_stencil_attachment` at all, decided ONCE
-    /// from `frame.has_rounded_clip` before the pass opens. `false`
-    /// (no scene this crate's own fixtures use today) means no stencil
-    /// texture is even allocated and every pipeline uses its `_off`
-    /// variant — byte-identical cost/behaviour to pre-Wave-3.
     pub fn render_into_encoder(
         &mut self,
         scene: &uzor_urx_core::scene::Scene,
@@ -252,7 +493,13 @@ impl NativeUrxRenderer {
         // tick, which is what makes the never-evict-this-frame
         // invariant work (`atlas.rs`'s module doc).
         self.glyph_atlas.begin_frame();
-        let frame = encode::encode_scene(scene, viewport, &mut self.tess_cache, Some(&mut self.glyph_atlas));
+        let frame = encode::encode_scene(
+            scene,
+            viewport,
+            &mut self.tess_cache,
+            Some(&mut self.glyph_atlas),
+            self.blend_layer_max_depth,
+        );
 
         let uniforms = Uniforms { screen_size: [viewport.width as f32, viewport.height as f32], _pad: [0.0; 2] };
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
@@ -261,149 +508,313 @@ impl NativeUrxRenderer {
         self.path.upload(&self.device, &self.queue, &frame.triangles);
         self.glyph.upload(&self.device, &self.queue, &frame.glyphs);
         self.stencil_mask.upload(&self.device, &self.queue, &frame.stencil_masks);
+        self.blend_composite.upload(&self.device, &self.queue, &frame.composites);
         // Drain every glyph bitmap queued by this frame's `encode_scene`
         // call into the atlas texture — after encode returns (every
-        // glyph this frame has already been placed) and before the
-        // render pass begins (so it samples up-to-date contents).
+        // glyph this frame has already been placed) and before any
+        // pass opens (so it samples up-to-date contents).
         self.glyph_atlas.flush_uploads(&self.queue);
 
         // Frame-wide arming decision (design §2.5) — made ONCE, before
-        // the pass opens. `has_rounded_clip == false` (the overwhelming
-        // common case): no stencil texture is even allocated.
+        // any pass opens. `has_rounded_clip == false` (the overwhelming
+        // common case): no stencil texture is even allocated (neither
+        // root's nor any layer's).
         if frame.has_rounded_clip {
             self.stencil.ensure(&self.device, viewport.width, viewport.height);
         }
-        let depth_stencil_attachment = frame.has_rounded_clip.then(|| wgpu::RenderPassDepthStencilAttachment {
-            view: self.stencil.view(),
-            depth_ops: None,
-            // `Clear(0)` every frame this pass is armed — a fresh,
-            // all-zero buffer is the base case the increment/decrement-
-            // with-Equal-gate protocol's correctness proof assumes
-            // (design §2.4).
-            stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Discard }),
-        });
 
-        // `sample_count > 1`: render into the MSAA color target and let
-        // the pass epilogue hardware-resolve into the caller's `view`
-        // (matches `uzor-urx-3d`'s `resolve_target` shape,
-        // `pipeline.rs:2717-2735` — zero extra encoder submissions).
-        // `sample_count == 1`: render straight into `view`, no resolve.
-        let (color_view, resolve_target, store_op) = if self.sample_count > 1 {
-            (self.msaa.color_view(), Some(view), wgpu::StoreOp::Discard)
-        } else {
-            (view, None, wgpu::StoreOp::Store)
-        };
-
-        {
-            let mut pass = open_pass(
-                encoder,
-                color_view,
-                resolve_target,
-                wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                store_op,
-                depth_stencil_attachment,
-            );
-
-            pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-
-            // Replay batches in scan order — this is what preserves
-            // painter's order across a Quad/Line/.../StencilMask
-            // interleave (design §5; legacy `renderer.rs:1008-1061`
-            // pattern). `current` now tracks `(kind, stencil_ref)`, not
-            // just `kind` (Wave 3 Commit 2) — two adjacent batches of
-            // the SAME kind but DIFFERENT depth are never coalesced at
-            // encode time (`bump_batch`'s extended rule), so comparing
-            // only `kind` here would incorrectly skip the
-            // `set_stencil_reference` call a depth CHANGE needs even
-            // when the pipeline itself doesn't need re-binding.
-            //
-            // `effective_ref` is the design item 4 / wgpu-pass-
-            // compatibility resolution: mixing `_off` (`depth_stencil:
-            // None`) and `_test` (`depth_stencil: Some(_)`) pipelines
-            // within ONE pass that HAS a stencil attachment is a wgpu
-            // validation error (`RenderPassCompatibilityError::IncompatibleDepthStencilAttachment`,
-            // confirmed by reading `wgpu-core-29.0.3/src/device/mod.rs`'s
-            // `RenderPassContext::check_compatible`) — so the `_off`-
-            // vs-`_test` choice is made ONCE for the WHOLE frame here
-            // (`frame.has_rounded_clip`), never per-batch. When armed,
-            // every draw batch's `None` (depth 0) is defaulted to
-            // `Some(0)`, which correctly passes `Equal(0)` everywhere
-            // the stencil buffer is still at its fresh-`Clear`ed value.
-            let effective_ref = |raw: Option<u32>| -> Option<u32> {
-                if frame.has_rounded_clip { Some(raw.unwrap_or(0)) } else { None }
-            };
-
-            let mut current: Option<(BatchKind, Option<u32>)> = None;
-            for batch in &frame.batches {
-                if batch.count == 0 {
-                    continue;
-                }
-                match batch.kind {
-                    BatchKind::Quad => {
-                        let sr = effective_ref(batch.stencil_ref);
-                        if current != Some((batch.kind, sr)) {
-                            self.quad.bind(&mut pass, sr);
-                            current = Some((batch.kind, sr));
-                        }
-                        self.quad.draw_range(&mut pass, batch.start, batch.count);
-                    }
-                    BatchKind::Line => {
-                        let sr = effective_ref(batch.stencil_ref);
-                        if current != Some((batch.kind, sr)) {
-                            self.line.bind(&mut pass, sr);
-                            current = Some((batch.kind, sr));
-                        }
-                        self.line.draw_range(&mut pass, batch.start, batch.count);
-                    }
-                    BatchKind::Triangle => {
-                        let sr = effective_ref(batch.stencil_ref);
-                        if current != Some((batch.kind, sr)) {
-                            self.path.bind(&mut pass, sr);
-                            current = Some((batch.kind, sr));
-                        }
-                        self.path.draw_range(&mut pass, batch.start, batch.count);
-                    }
-                    BatchKind::Glyph => {
-                        let sr = effective_ref(batch.stencil_ref);
-                        if current != Some((batch.kind, sr)) {
-                            self.glyph.bind(&mut pass, sr, self.glyph_atlas.bind_group());
-                            current = Some((batch.kind, sr));
-                        }
-                        self.glyph.draw_range(&mut pass, batch.start, batch.count);
-                    }
-                    BatchKind::StencilMask(op) => {
-                        // Mask batches always carry `Some(gate)` by
-                        // construction (design §2.3/§2.4 — a mask write
-                        // never has a "no stencil" state); `unwrap_or(0)`
-                        // is a defensive fallback, never reachable on
-                        // well-formed scene content, not a panic either
-                        // way.
-                        let gate = batch.stencil_ref.unwrap_or(0);
-                        if current != Some((batch.kind, batch.stencil_ref)) {
-                            match op {
-                                MaskOp::Increment => self.stencil_mask.bind_increment(&mut pass, gate),
-                                MaskOp::Decrement => self.stencil_mask.bind_decrement(&mut pass, gate),
-                            }
-                            current = Some((batch.kind, batch.stencil_ref));
-                        }
-                        self.stencil_mask.draw_range(&mut pass, batch.start, batch.count);
-                    }
-                }
-            }
-        }
+        self.replay_ops(&frame, encoder, view, viewport);
 
         Ok(())
     }
+
+    /// The multi-pass executor (Wave 3 Commit 3, design §3.5) — see
+    /// this module's doc comment for the `peek_close_kind` resolution
+    /// of the "store is fixed at open time" wrinkle. Processes
+    /// `frame.ops` left to right exactly once; opens/closes exactly one
+    /// `wgpu::RenderPass` at a time (never two simultaneously — a
+    /// `RenderPass` mutably borrows `encoder`, so this is required
+    /// regardless of the design), resetting the pipeline-dedup tracker
+    /// (`current`) on every new pass (pipeline/bind-group state does
+    /// NOT persist across `begin_render_pass` calls).
+    fn replay_ops(
+        &mut self,
+        frame: &EncodedFrame,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        viewport: Viewport,
+    ) {
+        let armed = frame.has_rounded_clip;
+        let sample_count = self.sample_count;
+        let ops = &frame.ops;
+
+        // `effective_ref` is the design item 4 / wgpu-pass-compatibility
+        // resolution carried over from Commit 2 (see `encode.rs`'s
+        // `Batch::stencil_ref` doc comment for the full write-up): the
+        // `_off`-vs-`_test` pipeline choice is a FRAME-WIDE decision
+        // (`armed`), never per-batch: every draw's `None` (depth 0) is
+        // defaulted to `Some(0)` whenever the frame is armed.
+        let effective_ref = |raw: Option<u32>| -> Option<u32> { if armed { Some(raw.unwrap_or(0)) } else { None } };
+
+        let mut idx = 0usize;
+        let mut current_depth = 0u32;
+        let mut open_kind = OpenKind::First;
+        let mut composite_idx = 0u32;
+        // Set by a `PopLayer` transition — the very first thing drawn
+        // into the freshly reopened PARENT pass must be the composite
+        // quad (design §3.5: "reopen parent pass ... draw composite
+        // quad"), before any of the parent's own subsequent `Draw` ops.
+        // ALWAYS consumed within the very next loop iteration (the one
+        // that opens the parent's resumed pass) — never carries state
+        // across more than one iteration.
+        let mut pending_composite: Option<(u32, Option<u32>)> = None;
+
+        loop {
+            let close_kind = peek_close_kind(ops, idx);
+
+            if current_depth > 0 {
+                self.layer_pool.ensure(
+                    &self.device,
+                    self.format,
+                    sample_count,
+                    &self.resolve_bgl,
+                    &self.resolve_sampler,
+                    current_depth,
+                    viewport.width,
+                    viewport.height,
+                    armed,
+                );
+            }
+
+            let depth_stencil_attachment = armed.then(|| {
+                stencil_attachment_for(current_depth, open_kind, close_kind, &self.stencil, &self.layer_pool)
+            });
+            let (color_view, resolve_target) =
+                color_attachment_for(current_depth, close_kind, sample_count, &self.msaa, &self.layer_pool, view);
+            let load_op = color_load_op(open_kind);
+            let store_op = color_store_op(close_kind, sample_count);
+
+            {
+                let mut pass =
+                    open_pass(encoder, color_view, resolve_target, load_op, store_op, depth_stencil_attachment);
+                pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+
+                if let Some((popped_depth, sr)) = pending_composite.take() {
+                    let resolve_bg = &self.layer_pool.get(popped_depth).resolve_bind_group;
+                    self.blend_composite.bind(&mut pass, sr, resolve_bg);
+                    self.blend_composite.draw_one(&mut pass, composite_idx);
+                    composite_idx += 1;
+                }
+
+                let mut current: Option<(BatchKind, Option<u32>)> = None;
+                while idx < ops.len() {
+                    let FrameOp::Draw(batch) = &ops[idx] else { break };
+                    idx += 1;
+                    if batch.count == 0 {
+                        continue;
+                    }
+                    match batch.kind {
+                        BatchKind::Quad => {
+                            let sr = effective_ref(batch.stencil_ref);
+                            if current != Some((batch.kind, sr)) {
+                                self.quad.bind(&mut pass, sr);
+                                current = Some((batch.kind, sr));
+                            }
+                            self.quad.draw_range(&mut pass, batch.start, batch.count);
+                        }
+                        BatchKind::Line => {
+                            let sr = effective_ref(batch.stencil_ref);
+                            if current != Some((batch.kind, sr)) {
+                                self.line.bind(&mut pass, sr);
+                                current = Some((batch.kind, sr));
+                            }
+                            self.line.draw_range(&mut pass, batch.start, batch.count);
+                        }
+                        BatchKind::Triangle => {
+                            let sr = effective_ref(batch.stencil_ref);
+                            if current != Some((batch.kind, sr)) {
+                                self.path.bind(&mut pass, sr);
+                                current = Some((batch.kind, sr));
+                            }
+                            self.path.draw_range(&mut pass, batch.start, batch.count);
+                        }
+                        BatchKind::Glyph => {
+                            let sr = effective_ref(batch.stencil_ref);
+                            if current != Some((batch.kind, sr)) {
+                                self.glyph.bind(&mut pass, sr, self.glyph_atlas.bind_group());
+                                current = Some((batch.kind, sr));
+                            }
+                            self.glyph.draw_range(&mut pass, batch.start, batch.count);
+                        }
+                        BatchKind::StencilMask(op) => {
+                            // Mask batches always carry `Some(gate)` by
+                            // construction; `unwrap_or(0)` is a
+                            // defensive fallback, never reachable on
+                            // well-formed scene content.
+                            let gate = batch.stencil_ref.unwrap_or(0);
+                            if current != Some((batch.kind, batch.stencil_ref)) {
+                                match op {
+                                    MaskOp::Increment => self.stencil_mask.bind_increment(&mut pass, gate),
+                                    MaskOp::Decrement => self.stencil_mask.bind_decrement(&mut pass, gate),
+                                }
+                                current = Some((batch.kind, batch.stencil_ref));
+                            }
+                            self.stencil_mask.draw_range(&mut pass, batch.start, batch.count);
+                        }
+                    }
+                }
+            } // `pass` dropped here — applies (load_op, store_op, resolve_target) chosen above.
+
+            if idx >= ops.len() {
+                debug_assert_eq!(
+                    current_depth, 0,
+                    "the op stream must always end back at the root — encode.rs's end-of-scene force-close \
+                     guarantees every PushLayer has a matching (real or synthetic) PopLayer"
+                );
+                break;
+            }
+
+            match &ops[idx] {
+                FrameOp::PushLayer { depth } => {
+                    current_depth = *depth;
+                    open_kind = OpenKind::First;
+                    idx += 1;
+                }
+                FrameOp::PopLayer { depth, stencil_ref, .. } => {
+                    let parent_depth = depth - 1;
+                    pending_composite = Some((*depth, effective_ref(*stencil_ref)));
+                    current_depth = parent_depth;
+                    open_kind = OpenKind::Resume;
+                    idx += 1;
+                }
+                FrameOp::Draw(_) => unreachable!(
+                    "the draw-replay loop above only breaks on a non-Draw op or end-of-ops; a Draw here would mean \
+                     it broke early without consuming it"
+                ),
+            }
+        }
+    }
 }
 
-/// Open one render pass — extracted (design §2.2/item 6) so Wave 3
-/// Commit 3's multi-pass blend-layer executor can reuse the EXACT same
-/// pass-opening shape for every layer push/pop, not just the single
-/// root pass this commit still uses. `depth_stencil_attachment` is a
-/// parameter (not baked in) for exactly that reason — a future layer
-/// pass may or may not be armed independently of the root pass (design
-/// §3.4's Risk 4 resolution: a freshly-opened layer replays the active
-/// `ClipStack`'s cached masks into its OWN stencil sibling).
+/// Whether a pass is being opened for the FIRST time at its depth
+/// (`Clear`) or being RESUMED after a pause (`Load`) — design §3.5.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OpenKind {
+    First,
+    Resume,
+}
+
+/// Whether the pass about to be opened will be closed as a PAUSE
+/// (`Store`, no resolve — something deeper is about to open) or as the
+/// FINAL close for its depth (`Discard` + resolve at `sample_count >
+/// 1`, or a plain `Store` at `sample_count == 1` — design §3.5).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CloseKind {
+    Pause,
+    Final,
+}
+
+/// Resolve `close_kind` for the stint about to open at `ops[start..]`
+/// — see this module's doc comment for why this is a plain forward
+/// scan, not real lookahead. Skips `Draw` entries; the first marker
+/// found (`PushLayer` → `Pause`, `PopLayer` → `Final`) is the answer.
+/// Running off the end of `ops` (no marker at all) also means `Final`
+/// — only reachable for the root, guaranteed by encode.rs's end-of-
+/// scene force-close (every `PushLayer` gets a matching `PopLayer`).
+fn peek_close_kind(ops: &[FrameOp], mut i: usize) -> CloseKind {
+    while i < ops.len() {
+        match &ops[i] {
+            FrameOp::Draw(_) => i += 1,
+            FrameOp::PushLayer { .. } => return CloseKind::Pause,
+            FrameOp::PopLayer { .. } => return CloseKind::Final,
+        }
+    }
+    CloseKind::Final
+}
+
+fn color_load_op(open_kind: OpenKind) -> wgpu::LoadOp<wgpu::Color> {
+    match open_kind {
+        OpenKind::First => wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+        OpenKind::Resume => wgpu::LoadOp::Load,
+    }
+}
+
+/// `sample_count > 1`: `Store` while paused (the MSAA content must
+/// survive to be resumed), `Discard` at the final close (the resolve
+/// step already captured what's needed into the single-sample resolve
+/// target, so the multisampled buffer itself is disposable). `sample_count
+/// == 1`: always `Store` — there is no MSAA buffer to discard, the
+/// color view IS the final destination (caller's `view` for root, a
+/// layer's own resolve texture for a layer) and must persist either
+/// way (design's "no resolve steps" `sample_count == 1` path).
+fn color_store_op(close_kind: CloseKind, sample_count: u32) -> wgpu::StoreOp {
+    match (close_kind, sample_count > 1) {
+        (CloseKind::Final, true) => wgpu::StoreOp::Discard,
+        (CloseKind::Final, false) => wgpu::StoreOp::Store,
+        (CloseKind::Pause, _) => wgpu::StoreOp::Store,
+    }
+}
+
+/// Resolve the color attachment view + (only at `CloseKind::Final`)
+/// resolve target for `depth`'s about-to-open pass (design §3.5).
+/// `depth == 0` is the root (`msaa`/`caller_view`); `depth > 0` reads
+/// from `layer_pool` (already `ensure`'d by the caller before this is
+/// invoked).
+fn color_attachment_for<'a>(
+    depth: u32,
+    close_kind: CloseKind,
+    sample_count: u32,
+    msaa: &'a MsaaTarget,
+    layer_pool: &'a BlendLayerPool,
+    caller_view: &'a wgpu::TextureView,
+) -> (&'a wgpu::TextureView, Option<&'a wgpu::TextureView>) {
+    if depth == 0 {
+        if sample_count > 1 {
+            let resolve = matches!(close_kind, CloseKind::Final).then_some(caller_view);
+            (msaa.color_view(), resolve)
+        } else {
+            (caller_view, None)
+        }
+    } else {
+        let target = layer_pool.get(depth);
+        let color_view = target.color_view(sample_count);
+        if sample_count > 1 {
+            let resolve = matches!(close_kind, CloseKind::Final).then_some(&target.resolve_view);
+            (color_view, resolve)
+        } else {
+            (color_view, None)
+        }
+    }
+}
+
+/// Resolve the stencil attachment for `depth`'s about-to-open pass —
+/// only ever called when the frame is armed (`EncodedFrame::has_rounded_clip`).
+/// `load`/`store` mirror the color attachment's own open/close kind
+/// exactly (design §3.5's MSAA subtlety applies identically to the
+/// stencil buffer: a paused layer's accumulated clip-nesting counts
+/// must survive to be resumed, so `Pause` stores rather than discards).
+fn stencil_attachment_for<'a>(
+    depth: u32,
+    open_kind: OpenKind,
+    close_kind: CloseKind,
+    root_stencil: &'a StencilTarget,
+    layer_pool: &'a BlendLayerPool,
+) -> wgpu::RenderPassDepthStencilAttachment<'a> {
+    let view = if depth == 0 { root_stencil.view() } else { layer_pool.get(depth).stencil.view() };
+    wgpu::RenderPassDepthStencilAttachment {
+        view,
+        depth_ops: None,
+        stencil_ops: Some(wgpu::Operations {
+            load: if open_kind == OpenKind::First { wgpu::LoadOp::Clear(0) } else { wgpu::LoadOp::Load },
+            store: if close_kind == CloseKind::Final { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
+        }),
+    }
+}
+
+/// Open one render pass — the single shared shape every stint in
+/// `NativeUrxRenderer::replay_ops` uses, whether it's the degenerate
+/// single-pass (no blend layers) case or one stint of a deeply nested
+/// multi-pass frame.
 fn open_pass<'enc>(
     encoder: &'enc mut wgpu::CommandEncoder,
     color_view: &wgpu::TextureView,
@@ -515,6 +926,21 @@ mod tests {
         out
     }
 
+    fn make_target(device: &wgpu::Device, format: wgpu::TextureFormat, size: u32) -> (wgpu::Texture, wgpu::TextureView) {
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("uzor-urx-wgpu-renderer-test-target"),
+            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        (target, view)
+    }
+
     #[test]
     #[ignore = "needs a headless GPU adapter"]
     fn rounded_clip_corner_is_background_and_center_is_fill() {
@@ -551,17 +977,7 @@ mod tests {
         });
         scene.push(DrawCommand::PopClip);
 
-        let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("uzor-urx-wgpu-rounded-clip-test-target"),
-            size: wgpu::Extent3d { width: SIZE, height: SIZE, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: NATIVE_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[],
-        });
-        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let (target, view) = make_target(&device, NATIVE_FORMAT, SIZE);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
         renderer
             .render_into_encoder(&scene, &mut encoder, &view, Viewport { width: SIZE, height: SIZE })
@@ -587,5 +1003,220 @@ mod tests {
         // (125, 125): dead center — must be fill color under either
         // mechanism, a sanity probe.
         assert_eq!(px(125, 125), [220, 60, 60, 255], "center of the rounded clip must show the fill color");
+    }
+
+    // ── Wave 3 Commit 3: the multi-pass blend-layer executor ─────────
+    //
+    // Design risk 2's dedicated gate: a nested layer scene must not
+    // panic/hit a wgpu validation error, AND the composited pixels must
+    // be numerically correct — computed by hand below, not just
+    // "doesn't crash."
+
+    use uzor_urx_core::math::{Affine, Brush, Color, Rect};
+    use uzor_urx_core::scene::{DrawCommand, Scene};
+
+    fn push_layer(alpha: f32) -> DrawCommand {
+        DrawCommand::PushBlendLayer { mode: uzor_urx_core::math::BlendMode::default(), alpha, transform: Affine::IDENTITY }
+    }
+
+    fn solid_rect(x: f64, y: f64, w: f64, h: f64, rgba: [u8; 4]) -> DrawCommand {
+        DrawCommand::FillRect {
+            rect: Rect::new(x, y, x + w, y + h),
+            radii: None,
+            brush: Brush::Solid(Color::from_rgba8(rgba[0], rgba[1], rgba[2], rgba[3])),
+            transform: Affine::IDENTITY,
+        }
+    }
+
+    /// Blend a STRAIGHT-alpha `src` (0..255 per channel, un-premultiplied)
+    /// over an OPAQUE `dst` using premultiplied src-over, scaled by an
+    /// extra `layer_alpha` multiplier — the exact composite this
+    /// executor's `BlendCompositePipeline` performs (§3.6: `texel *
+    /// alpha`, where `texel` is `src` already premultiplied by its own
+    /// alpha from having been rendered through the SAME premultiplied
+    /// blend state onto a transparent-cleared layer target). Used here
+    /// to hand-compute this test's expected pixels.
+    fn blend_straight_over_opaque(src: [u8; 4], dst: [u8; 3], layer_alpha: f32) -> [u8; 3] {
+        let sa = (src[3] as f32 / 255.0) * layer_alpha;
+        let mut out = [0u8; 3];
+        for c in 0..3 {
+            let s = src[c] as f32 / 255.0;
+            let d = dst[c] as f32 / 255.0;
+            let v = s * sa + d * (1.0 - sa);
+            out[c] = (v * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
+        out
+    }
+
+    /// Every blend stage below lands on an exact `x.5` half-integer
+    /// boundary at least once (0.5 layer alphas, 8-bit stops) — the
+    /// GPU's fixed-function blend hardware and this test's own
+    /// hand-computed reference round such ties independently (round-
+    /// half-to-even vs round-half-away-from-zero, or vice versa,
+    /// depending on driver), and with 3 STACKED stages those ties can
+    /// legitimately land 1 LSB apart after quantizing to 8 bits at
+    /// every intermediate stage (exactly the composite pipeline's own
+    /// real behaviour: each layer's content really is stored as 8-bit
+    /// UNORM between stages, this is not a test-only approximation).
+    /// A tight ±1-per-channel tolerance still catches any REAL
+    /// composite-math bug (wrong operand order, missing alpha scale,
+    /// double-premultiply, etc. all miss by far more than 1 LSB) while
+    /// tolerating this legitimate hardware-rounding non-determinism —
+    /// same "tolerance budget" doctrine this crate's pixel-parity
+    /// harness already uses elsewhere (`encode.rs`'s module doc).
+    fn assert_close_rgb(got: [u8; 3], expected: [u8; 3], tol: i32, msg: &str) {
+        for c in 0..3 {
+            let diff = (got[c] as i32 - expected[c] as i32).abs();
+            assert!(diff <= tol, "{msg} — channel {c}: got {} expected {} (diff {diff} > tol {tol})", got[c], expected[c]);
+        }
+    }
+
+    #[test]
+    #[ignore = "needs a headless GPU adapter"]
+    fn three_level_nested_blend_layers_do_not_panic_and_composite_correct_pixels() {
+        let Some((device, queue)) = test_device() else { return };
+        const NATIVE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+        const SIZE: u32 = 64;
+
+        // sample_count = 1 — an exact, filter-free readback makes the
+        // hand-computed pixel comparison exact rather than approximate
+        // (MSAA edge blending would otherwise blur the probe pixel,
+        // which sits well inside every rect's interior here anyway, but
+        // sample_count = 1 keeps the arithmetic exact all the way
+        // through: the whole point of this test is verifying the
+        // COMPOSITE math, not edge AA).
+        let mut renderer = NativeUrxRenderer::with_sample_count(device.clone(), queue.clone(), NATIVE_FORMAT, 1);
+
+        let mut scene = Scene::new();
+        // Opaque black background covering the whole viewport.
+        scene.push(solid_rect(0.0, 0.0, SIZE as f64, SIZE as f64, [0, 0, 0, 255]));
+        // Layer 1 (alpha 0.5): a full-viewport red rect.
+        scene.push(push_layer(0.5));
+        scene.push(solid_rect(0.0, 0.0, SIZE as f64, SIZE as f64, [255, 0, 0, 255]));
+        // Layer 2 (alpha 0.5), nested inside layer 1: a full-viewport
+        // green rect — exercises PAUSE/RESUME of layer 1's OWN pass
+        // (opened, paused for layer 2's push, resumed after layer 2's
+        // pop, since more content — layer 3 below — follows inside
+        // layer 1 afterward).
+        scene.push(push_layer(0.5));
+        scene.push(solid_rect(0.0, 0.0, SIZE as f64, SIZE as f64, [0, 255, 0, 255]));
+        scene.push(DrawCommand::PopBlendLayer); // closes layer 2
+        // More layer-1 content AFTER layer 2 pops — proves layer 1's
+        // pass genuinely resumed with its prior content (the red fill)
+        // intact rather than losing it: a small blue rect in one
+        // corner only.
+        scene.push(solid_rect(0.0, 0.0, 8.0, 8.0, [0, 0, 255, 255]));
+        scene.push(DrawCommand::PopBlendLayer); // closes layer 1
+        // Layer 3 (alpha 0.5), a SIBLING of layer 1 (not nested) —
+        // proves `BlendLayerPool`'s depth-1 slot is safely REUSED after
+        // layer 1 already closed (design §3.4: siblings at the same
+        // depth are never open simultaneously).
+        scene.push(push_layer(0.5));
+        scene.push(solid_rect(0.0, 0.0, SIZE as f64, SIZE as f64, [255, 255, 0, 255]));
+        scene.push(DrawCommand::PopBlendLayer);
+
+        let (target, view) = make_target(&device, NATIVE_FORMAT, SIZE);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        renderer
+            .render_into_encoder(&scene, &mut encoder, &view, Viewport { width: SIZE, height: SIZE })
+            .expect("a well-formed nested blend-layer scene must not panic or hit a wgpu validation error");
+        queue.submit(Some(encoder.finish()));
+
+        let pixels = readback_rgba(&device, &queue, &target, SIZE, SIZE);
+        // Probe (32, 32) — dead center, untouched by the 8x8 blue
+        // corner rect, so only the full-viewport rects matter here.
+        let i = ((32 * SIZE + 32) * 4) as usize;
+        let got = [pixels[i], pixels[i + 1], pixels[i + 2]];
+
+        // Hand-computed expected value, composited bottom-up:
+        // background (black) <- layer1{ red <- layer2{ green } } <- layer3{ yellow }.
+        let bg = [0u8, 0, 0];
+        let after_layer2 = blend_straight_over_opaque([0, 255, 0, 255], [255, 0, 0], 0.5); // green over red, layer2 alpha 0.5
+        // Layer 1's OWN content at this pixel is `after_layer2` (fully
+        // opaque red+green mix, alpha still 255 since both fills were
+        // opaque) — layer 1 composites onto the background at its own
+        // alpha (0.5).
+        let after_layer1 = blend_straight_over_opaque([after_layer2[0], after_layer2[1], after_layer2[2], 255], bg, 0.5);
+        let after_layer3 = blend_straight_over_opaque([255, 255, 0, 255], after_layer1, 0.5); // yellow over the layer1 result
+
+        assert_close_rgb(
+            got,
+            after_layer3,
+            1,
+            "composited pixel must match the hand-computed 3-level nested blend result \
+             (bg <- layer1{red <- layer2{green}} <- layer3{yellow})",
+        );
+
+        // (4, 4) sits inside the 8x8 blue corner rect drawn into layer
+        // 1 AFTER layer 2 popped — proves layer 1's pass genuinely
+        // resumed with its prior red content intact (if the resume had
+        // wrongly `Clear`ed instead of `Load`ed, this pixel would show
+        // pure blue-over-background instead of blue-over-red).
+        let j = ((4 * SIZE + 4) * 4) as usize;
+        let got_corner = [pixels[j], pixels[j + 1], pixels[j + 2]];
+        let layer1_corner = blend_straight_over_opaque([0, 0, 255, 255], [255, 0, 0], 1.0); // blue drawn opaquely over the red already in layer 1
+        let expected_corner = blend_straight_over_opaque([layer1_corner[0], layer1_corner[1], layer1_corner[2], 255], bg, 0.5);
+        let expected_corner = blend_straight_over_opaque([255, 255, 0, 255], expected_corner, 0.5);
+        assert_close_rgb(
+            got_corner,
+            expected_corner,
+            1,
+            "the resumed layer-1 pass must retain its pre-pause red content under the blue corner rect",
+        );
+    }
+
+    /// Design §6.4's isolation-differs proof: a blend-layer group
+    /// (content drawn INSIDE a layer, composited back at less than full
+    /// alpha) must produce DIFFERENT pixels than the same content drawn
+    /// with NO layer at all (straight onto the target) — proving the
+    /// layer's own offscreen isolation is actually taking effect, not
+    /// silently degrading into "draw directly."
+    #[test]
+    #[ignore = "needs a headless GPU adapter"]
+    fn blend_layer_group_differs_from_the_same_content_with_no_layer() {
+        let Some((device, queue)) = test_device() else { return };
+        const NATIVE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+        const SIZE: u32 = 64;
+
+        let render = |use_layer: bool| -> [u8; 3] {
+            let mut renderer = NativeUrxRenderer::with_sample_count(device.clone(), queue.clone(), NATIVE_FORMAT, 1);
+            let mut scene = Scene::new();
+            scene.push(solid_rect(0.0, 0.0, SIZE as f64, SIZE as f64, [10, 20, 30, 255]));
+            if use_layer {
+                scene.push(push_layer(0.5));
+            }
+            scene.push(solid_rect(0.0, 0.0, SIZE as f64, SIZE as f64, [200, 100, 50, 255]));
+            if use_layer {
+                scene.push(DrawCommand::PopBlendLayer);
+            }
+
+            let (target, view) = make_target(&device, NATIVE_FORMAT, SIZE);
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            renderer
+                .render_into_encoder(&scene, &mut encoder, &view, Viewport { width: SIZE, height: SIZE })
+                .expect("well-formed scene must not error");
+            queue.submit(Some(encoder.finish()));
+            let pixels = readback_rgba(&device, &queue, &target, SIZE, SIZE);
+            let i = ((32 * SIZE + 32) * 4) as usize;
+            [pixels[i], pixels[i + 1], pixels[i + 2]]
+        };
+
+        let with_layer = render(true);
+        let without_layer = render(false);
+        assert_ne!(
+            with_layer, without_layer,
+            "a layer composited at alpha 0.5 must produce visibly different pixels than drawing the same \
+             content directly with no layer at all — otherwise the offscreen isolation isn't actually happening"
+        );
+        // Sanity: `without_layer` is fully opaque top content (no
+        // blending at all — the fill is opaque, drawn with no active
+        // layer above it).
+        assert_eq!(without_layer, [200, 100, 50]);
+        // `with_layer` must be the 0.5-alpha composite of the SAME top
+        // content over the background — proves it's REAL blending, not
+        // e.g. an accidentally-fully-transparent or fully-opaque
+        // degenerate result.
+        let expected = blend_straight_over_opaque([200, 100, 50, 255], [10, 20, 30], 0.5);
+        assert_eq!(with_layer, expected);
     }
 }

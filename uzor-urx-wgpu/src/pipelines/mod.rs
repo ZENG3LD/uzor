@@ -5,12 +5,14 @@
 //! pipeline. Commit 3 added the Path/triangle pipeline (lyon
 //! tessellation). Wave 2 Commit 2 added the Glyph pipeline (textured
 //! quads sampling `crate::atlas::NativeGlyphAtlas`). Wave 3 Commit 2
-//! adds the stencil-clip machinery: `stencil_mask` (the mask-write
+//! added the stencil-clip machinery: `stencil_mask` (the mask-write
 //! pipeline pair) and `stencil_test_state()` below, shared by every
-//! draw pipeline's new `_test` variant
+//! draw pipeline's `_test` variant. Wave 3 Commit 3 adds
+//! `blend_composite` (the blend-layer composite pipeline)
 //! (`docs/uzor-engines/plans/urx-wave3-clip-blend-design-2026-07-25.md`
-//! §2.2).
+//! §2.2/§3.6).
 
+pub(crate) mod blend_composite;
 pub(crate) mod glyph;
 pub(crate) mod line;
 pub(crate) mod path;

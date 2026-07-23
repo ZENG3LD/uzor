@@ -28,6 +28,25 @@
 //! function's doc comment for why it's `Option` rather than the
 //! design's literal `&mut` (a deliberate, disclosed deviation).
 //!
+//! **Wave 3 Commit 2** closed `PushClipRoundedRect` (real stencil clip,
+//! `ClipStack`'s `Rounded` frame variant, `MaskOp`-tagged batches) —
+//! see that commit's history in `ClipStack`'s own doc comment below.
+//!
+//! **Wave 3 Commit 3** closes `PushBlendLayer`/`PopBlendLayer`
+//! (`docs/uzor-engines/plans/urx-wave3-clip-blend-design-2026-07-25.md`
+//! §3) — `EncodedFrame::batches: Vec<Batch>` becomes `ops: Vec<FrameOp>`
+//! (`Draw(Batch)` plus `PushLayer`/`PopLayer` markers bracketing a
+//! blend-layer scope exactly where the Push/Pop occurred in the scan).
+//! An encode-time `LayerStack` (parallel to, and fully independent of,
+//! `ClipStack` — Push/PopBlendLayer never resets or nests the clip
+//! stack, design §0.2) tracks nesting depth against
+//! `UrxConfig::blend_layer_max_depth` (threaded in as a plain `usize`
+//! parameter, consistent with `tess_cache`/`atlas`'s already-resolved-
+//! value style — not the whole config struct). The multi-pass EXECUTOR
+//! that actually opens/closes render passes per `FrameOp::PushLayer`/
+//! `PopLayer` lives in `renderer.rs`; this module only produces the op
+//! list, oblivious to how many passes it costs.
+//!
 //! Every unimplemented `DrawCommand` variant is a counted, never-silent
 //! degrade via `uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES`
 //! with a `native_*` `kind` tag.
@@ -115,8 +134,8 @@
 use kurbo::Shape as _;
 use peniko::LinearGradientPosition;
 use uzor_urx_core::math::{
-    Affine, BezPath, Brush, Color, ColorStops, Extend, Gradient, GradientKind, Rect, RoundedRect,
-    RoundedRectRadii, Vec2,
+    Affine, BezPath, BlendMode, Brush, Color, ColorStops, Compose, Extend, Gradient, GradientKind, Mix, Rect,
+    RoundedRect, RoundedRectRadii, Vec2,
 };
 use uzor_urx_core::metrics_keys::{KEY_RENDER_GLYPH_INSTANCES, KEY_RENDER_PRIMITIVES, KEY_RENDER_SKIPPED_NONFINITE};
 use uzor_urx_core::scene::{DrawCommand, FillRule, FontId, Glyph, LineCap, Scene, Stroke};
@@ -125,6 +144,7 @@ use uzor_urx_core::validate::{validate_command, ValidationIssue};
 use std::sync::Arc;
 
 use crate::atlas::NativeGlyphAtlas;
+use crate::pipelines::blend_composite::BlendCompositeInstance;
 use crate::pipelines::glyph::GlyphInstance;
 use crate::pipelines::line::LineInstance;
 use crate::pipelines::path::TriInstance;
@@ -191,8 +211,40 @@ pub(crate) struct Batch {
     pub(crate) stencil_ref: Option<u32>,
 }
 
+/// Replaces `EncodedFrame::batches: Vec<Batch>` (Wave 1/2 shape) —
+/// Wave 3 Commit 3, design §3.2. A `Batch` is now wrapped in
+/// `FrameOp::Draw` alongside two new markers that bracket a blend-
+/// layer scope exactly where `PushBlendLayer`/`PopBlendLayer` occurred
+/// in the scan — `bump_batch`'s coalescing check (`last_mut()` must be
+/// a `FrameOp::Draw` with a matching `(kind, stencil_ref)`) naturally
+/// refuses to merge across a `PushLayer`/`PopLayer` marker, since the
+/// "last op" is a marker, not a `Draw`, whenever one sits between two
+/// otherwise-identical `Draw`s.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum FrameOp {
+    Draw(Batch),
+    /// Emitted at a `PushBlendLayer` that didn't hit the depth cap.
+    PushLayer { depth: u32 },
+    /// Emitted at the matching `PopBlendLayer` (real or synthetic,
+    /// end-of-scene force-close) — tells the executor "composite layer
+    /// `depth`'s resolved content onto whatever is now the current
+    /// target (parent layer or root), gated by `stencil_ref`." The
+    /// composite's `alpha`/`clip_rect` (design §3.6: "baked from the
+    /// clip active at the `PopBlendLayer` point") and `mode`'s already-
+    /// applied degrade (`degrade_blend_mode`, design §0.3) do NOT need a
+    /// slot here too — they are pushed, in the SAME order, into
+    /// `EncodedFrame::composites` (a `BlendCompositeInstance` the GPU
+    /// pipeline reads directly), and reading them back off THIS marker
+    /// as well would just be a second, unused copy (`depth`/
+    /// `stencil_ref` are the only two values the executor itself needs
+    /// to pick a target and a stencil test — the vertex/fragment shader
+    /// gets `alpha`/`clip_rect` from the instance buffer, not from this
+    /// marker).
+    PopLayer { depth: u32, stencil_ref: Option<u32> },
+}
+
 /// Painter's-order encoded frame — the Scene walker's output, ready
-/// for `NativeUrxRenderer` to upload + replay via `batches`.
+/// for `NativeUrxRenderer` to upload + replay via `ops`.
 #[derive(Debug, Default)]
 pub(crate) struct EncodedFrame {
     pub(crate) quads: Vec<QuadInstance>,
@@ -202,7 +254,15 @@ pub(crate) struct EncodedFrame {
     /// Mask-write geometry (design §2/§4) — a SEPARATE buffer from
     /// `triangles`; `StencilMask` batches index into this one.
     pub(crate) stencil_masks: Vec<TriInstance>,
-    pub(crate) batches: Vec<Batch>,
+    /// One entry per `FrameOp::PopLayer`, in the SAME order — the
+    /// renderer's executor reads these via a running counter as it
+    /// processes `PopLayer` ops (design §3.6), the same "upload once,
+    /// replay via index" convention every other instance type here
+    /// uses; no `Batch`/`BatchKind` entry needed since a composite draw
+    /// is never coalesced with anything (each one binds a DIFFERENT
+    /// layer's own resolve texture).
+    pub(crate) composites: Vec<BlendCompositeInstance>,
+    pub(crate) ops: Vec<FrameOp>,
     /// Set (never cleared) the first time ANY `PushClipRoundedRect` is
     /// scanned (design §2.5) — read ONCE by `render_into_encoder`
     /// before opening any pass, deciding for the WHOLE frame whether a
@@ -260,16 +320,45 @@ impl EncodedFrame {
     }
 
     /// Extend the current batch if BOTH `kind` and `stencil_ref` match,
-    /// else open a new one (design §5, extended by Wave 3 Commit 2's
-    /// `stencil_ref` equality requirement — see `Batch`'s doc comment).
+    /// else open a new `FrameOp::Draw` (design §5, extended by Wave 3
+    /// Commit 2's `stencil_ref` equality requirement, further extended
+    /// by Commit 3's marker-refusal — see `FrameOp`'s doc comment).
     fn bump_batch(&mut self, kind: BatchKind, start: u32, stencil_ref: Option<u32>) {
-        if let Some(last) = self.batches.last_mut() {
+        if let Some(FrameOp::Draw(last)) = self.ops.last_mut() {
             if last.kind == kind && last.stencil_ref == stencil_ref {
                 last.count += 1;
                 return;
             }
         }
-        self.batches.push(Batch { kind, start, count: 1, stencil_ref });
+        self.ops.push(FrameOp::Draw(Batch { kind, start, count: 1, stencil_ref }));
+    }
+
+    /// Push a `PushLayer`/`PopLayer` marker directly — bypasses
+    /// `bump_batch`'s coalescing entirely (a marker is never merged
+    /// with anything, design §3.2).
+    fn push_marker(&mut self, op: FrameOp) {
+        self.ops.push(op);
+    }
+
+    /// Test-only convenience — every `FrameOp::Draw` entry, in order,
+    /// as a flat `Vec<Batch>`, ignoring blend-layer structure. NOT used
+    /// internally by `bump_batch`, which must see the raw `ops` list
+    /// (including markers) to correctly refuse to coalesce across one;
+    /// NOT used by the renderer's executor either (`replay_ops` walks
+    /// `ops` directly, since it needs the markers `draw_batches` throws
+    /// away). `#[cfg(test)]`-gated rather than plain `pub(crate)` — a
+    /// production-reachable method that's actually only ever called
+    /// from `#[cfg(test)] mod tests` would be dead code outside test
+    /// builds.
+    #[cfg(test)]
+    pub(crate) fn draw_batches(&self) -> Vec<Batch> {
+        self.ops
+            .iter()
+            .filter_map(|op| match op {
+                FrameOp::Draw(b) => Some(*b),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -452,6 +541,40 @@ impl ClipStack {
         }
         closed
     }
+
+    /// Snapshot every currently-active `Rounded` frame, root-to-
+    /// innermost nesting order (design §3.4 Risk 4) — for replay into a
+    /// freshly-opened blend layer's OWN stencil texture. A new layer's
+    /// stencil starts `Clear`ed to 0, but content inside it must behave
+    /// as if it inherited the enclosing rounded-clip scope; the
+    /// encode-side resolution (chosen over an executor-side `ClipStack`
+    /// snapshot — see `encode_scene`'s `PushBlendLayer` arm) is to bake
+    /// the SAME sequence of increments that built up the current stack
+    /// directly into the op stream, right after the `PushLayer` marker,
+    /// so the executor never needs to know anything about `ClipStack`
+    /// at all — it just replays `Draw(StencilMask)` batches like any
+    /// other, which happen to land in the newly-opened layer's pass
+    /// because that's whichever pass is current when they're processed.
+    /// Returns `(mesh, sx, sy, tx, ty, stencil_depth, parent_bbox)` per
+    /// active frame — `parent_bbox` is frame `i`'s OWN parent's bbox
+    /// (`self.stack[i-1]`'s `current()`-equivalent value), exactly what
+    /// `emit_stencil_mask_batch`'s original increment used as
+    /// `clip_rect` (`stack[0]` is always the root `Rect` frame, never
+    /// `Rounded`, so `i - 1` is always in bounds for any `Rounded` frame
+    /// found).
+    fn active_rounded_frames_for_replay(&self) -> Vec<(Arc<TessMesh>, f64, f64, f64, f64, u32, [f32; 4])> {
+        let mut out = Vec::new();
+        for i in 0..self.stack.len() {
+            if let ClipFrame::Rounded { mesh, sx, sy, tx, ty, stencil_depth, .. } = &self.stack[i] {
+                let parent_bbox = match &self.stack[i - 1] {
+                    ClipFrame::Rect(r) => *r,
+                    ClipFrame::Rounded { rect_device, .. } => *rect_device,
+                };
+                out.push((mesh.clone(), *sx, *sy, *tx, *ty, *stencil_depth, parent_bbox));
+            }
+        }
+        out
+    }
 }
 
 /// `None` when the current clip has zero area — callers should elide
@@ -486,6 +609,104 @@ fn active_clip(clip: &ClipStack, frame: &mut EncodedFrame) -> Option<[f32; 4]> {
     let depth = clip.rounded_depth();
     frame.current_stencil_ref = if depth > 0 { Some(depth) } else { None };
     Some(r)
+}
+
+/// Encode-time blend-layer nesting tracker (design §3.3) — parallel to,
+/// and completely independent of, `ClipStack`: `PushBlendLayer`/
+/// `PopBlendLayer` never reset or nest the clip stack, content inside a
+/// layer sees whatever clip/stencil state was already active, unchanged
+/// mechanism (design §0.2).
+struct LayerStack {
+    /// One entry per currently-open layer: `(mode, alpha)` remembered
+    /// from its `PushBlendLayer`, needed at the matching Pop to emit
+    /// `FrameOp::PopLayer`.
+    open: Vec<(BlendMode, f32)>,
+    /// Incremented instead of pushing onto `open` once `open.len() ==
+    /// max_depth` — the matching Pop decrements this FIRST (never
+    /// touches `open`) so suppressed pushes/pops always balance without
+    /// emitting any `FrameOp` at all (content just keeps drawing into
+    /// whatever target was already active, unchanged).
+    suppressed: u32,
+    max_depth: usize,
+}
+
+/// Outcome of [`LayerStack::pop`].
+enum LayerPopOutcome {
+    /// A real layer closed — `depth` is the depth just closed (1-indexed).
+    Popped { depth: u32, mode: BlendMode, alpha: f32 },
+    /// This `Pop` matched a SUPPRESSED `Push` (the depth cap was hit,
+    /// so no layer was ever actually opened for it) — a defensive
+    /// no-op, not an error; nothing further to count (the matching
+    /// `Push` already counted `native_blend_layer_depth_exceeded` once).
+    Suppressed,
+    /// No open layer AND nothing suppressed to balance — an unbalanced
+    /// scene's extra `Pop`. Defensive no-op, mirrors `ClipStack::pop`'s
+    /// existing guard.
+    Underflow,
+}
+
+impl LayerStack {
+    fn new(max_depth: usize) -> Self {
+        Self { open: Vec::new(), suppressed: 0, max_depth }
+    }
+
+    /// Returns `Some(new_depth)` (1-indexed) when a real layer opened;
+    /// `None` when the depth cap was hit (caller counts
+    /// `native_blend_layer_depth_exceeded`; content keeps drawing into
+    /// whatever target was already active, unchanged, no new
+    /// `FrameOp::PushLayer` emitted).
+    fn push(&mut self, mode: BlendMode, alpha: f32) -> Option<u32> {
+        if self.open.len() >= self.max_depth {
+            self.suppressed += 1;
+            return None;
+        }
+        self.open.push((mode, alpha));
+        Some(self.open.len() as u32)
+    }
+
+    fn pop(&mut self) -> LayerPopOutcome {
+        if self.suppressed > 0 {
+            self.suppressed -= 1;
+            return LayerPopOutcome::Suppressed;
+        }
+        let Some((mode, alpha)) = self.open.pop() else {
+            return LayerPopOutcome::Underflow;
+        };
+        let depth = self.open.len() as u32 + 1; // the depth just closed
+        LayerPopOutcome::Popped { depth, mode, alpha }
+    }
+
+    /// End-of-scene unbalanced-scene guard (design §3.3, mirrored from
+    /// the CPU-side `LayerStack::force_close_all` audit fix, Wave 3
+    /// Commit 1) — drains every still-open REAL layer (LIFO), ignoring
+    /// `suppressed` entirely (a leftover suppressed count with no
+    /// matching real layer has no resource to close and no FrameOp was
+    /// ever emitted for it — nothing to do). Returns each closed
+    /// layer's `(depth, mode, alpha)` so the caller emits one synthetic
+    /// `FrameOp::PopLayer` per entry, counted
+    /// `native_blend_layer_force_closed_at_scene_end`.
+    fn force_close_all(&mut self) -> Vec<(u32, BlendMode, f32)> {
+        let mut closed = Vec::new();
+        while let Some((mode, alpha)) = self.open.pop() {
+            let depth = self.open.len() as u32 + 1;
+            closed.push((depth, mode, alpha));
+        }
+        closed
+    }
+}
+
+/// Count (never silently drop) when a blend layer's requested `mode`
+/// differs from the one combination this wave actually implements
+/// (`{Mix::Normal, Compose::SrcOver}`, design §0.3) — the GPU-side twin
+/// of `uzor-urx-cpu::blend::degrade_for_mode` (Wave 3 Commit 1), same
+/// two independent counters.
+fn degrade_blend_mode(mode: &BlendMode) {
+    if mode.mix != Mix::Normal {
+        degrade("native_blend_layer_mix_to_normal");
+    }
+    if mode.compose != Compose::SrcOver {
+        degrade("native_blend_layer_compose_to_srcover");
+    }
 }
 
 /// Translate + uniform-scale decomposition (design §5) — the native
@@ -643,14 +864,20 @@ fn emit_stencil_mask_batch(
     }
 }
 
+/// `blend_layer_max_depth` — `UrxConfig::blend_layer_max_depth`, read
+/// once by `NativeUrxRenderer::with_config` and threaded through as a
+/// plain resolved value (design §3.3), consistent with `tess_cache`/
+/// `atlas` above rather than accepting the whole config struct.
 pub(crate) fn encode_scene(
     scene: &Scene,
     viewport: Viewport,
     tess_cache: &mut TessCache,
     mut atlas: Option<&mut NativeGlyphAtlas>,
+    blend_layer_max_depth: usize,
 ) -> EncodedFrame {
     let mut frame = EncodedFrame::default();
     let mut clip = ClipStack::new(viewport);
+    let mut layer_stack = LayerStack::new(blend_layer_max_depth);
 
     for cmd in &scene.commands {
         // Same "silent skip + counter" policy as `uzor-urx-cpu`
@@ -725,9 +952,67 @@ pub(crate) fn encode_scene(
                 );
             }
             DrawCommand::Image { .. } => degrade("native_image_not_yet_implemented"),
-            DrawCommand::PushBlendLayer { .. } | DrawCommand::PopBlendLayer => {
-                degrade("native_blend_layer_not_yet_implemented");
+            DrawCommand::PushBlendLayer { mode, alpha, transform } => {
+                // `Affine` derives `PartialEq` in the pinned kurbo 0.13
+                // (same finding as `uzor-urx-cpu`'s Commit 1 CPU-side
+                // arm) — a plain `!=` works directly.
+                if *transform != Affine::IDENTITY {
+                    degrade("native_blend_layer_transform_ignored");
+                }
+                match layer_stack.push(*mode, *alpha) {
+                    Some(depth) => {
+                        frame.push_marker(FrameOp::PushLayer { depth });
+                        // Risk-4 resolution (design §3.4), encode-side
+                        // (chosen over an executor-side `ClipStack`
+                        // snapshot — see `ClipStack::active_rounded_frames_for_replay`'s
+                        // doc comment): replay every currently-active
+                        // `Rounded` frame's increment into the op stream
+                        // RIGHT AFTER the `PushLayer` marker, so whichever
+                        // pass the executor has open when it processes
+                        // these `Draw(StencilMask)` batches — the new
+                        // layer's, since it opens on `PushLayer` before
+                        // the next op is processed — ends up with the
+                        // SAME nesting depth the enclosing scope already
+                        // established, without the executor needing to
+                        // know anything about `ClipStack` at all.
+                        for (mesh, sx, sy, tx, ty, stencil_depth, parent_bbox) in
+                            clip.active_rounded_frames_for_replay()
+                        {
+                            emit_stencil_mask_batch(
+                                &mut frame,
+                                &mesh,
+                                sx,
+                                sy,
+                                tx,
+                                ty,
+                                parent_bbox,
+                                MaskOp::Increment,
+                                stencil_depth - 1,
+                            );
+                        }
+                    }
+                    None => degrade("native_blend_layer_depth_exceeded"),
+                }
             }
+            DrawCommand::PopBlendLayer => match layer_stack.pop() {
+                LayerPopOutcome::Popped { depth, mode, alpha } => {
+                    degrade_blend_mode(&mode);
+                    // Same values `active_clip` would produce for a
+                    // content draw AT this exact point (design §3.6) —
+                    // computed directly rather than via `active_clip`
+                    // itself, since a degenerate (zero-area) clip must
+                    // NOT skip emitting the `PopLayer` marker the way it
+                    // would skip a content primitive (the layer still
+                    // needs to structurally close + composite, even if
+                    // the composite ends up clipped to nothing).
+                    let clip_rect = clip.current();
+                    let stencil_ref = if clip.rounded_depth() > 0 { Some(clip.rounded_depth()) } else { None };
+                    frame.push_marker(FrameOp::PopLayer { depth, stencil_ref });
+                    frame.composites.push(BlendCompositeInstance { alpha, _pad: [0.0; 3], clip_rect });
+                }
+                LayerPopOutcome::Suppressed => {}
+                LayerPopOutcome::Underflow => degrade("native_blend_layer_pop_underflow"),
+            },
             DrawCommand::FillRect { rect, radii, brush, transform } => {
                 let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
                 encode_fill_rect(&mut frame, tess_cache, *rect, radii, brush, transform, clip_rect);
@@ -751,11 +1036,37 @@ pub(crate) fn encode_scene(
         }
     }
 
-    // Unbalanced-scene guard (design §2.4, mirrored from the CPU-side
-    // blend-layer `force_close_all` audit fix) — any `PushClipRoundedRect`
-    // with no matching `PopClip` gets a synthetic decrement here, so the
-    // stencil buffer never carries a stale nonzero value into whatever
-    // comes after this (already-malformed) frame. Never silent.
+    // Unbalanced-scene guards, run in this FIXED order (layers, then
+    // clips) — this is a deliberate, documented simplification for the
+    // genuinely pathological case of a scene with BOTH an open blend
+    // layer AND an open rounded clip left unclosed at scene end. The
+    // two force-close mechanisms are fully independent stacks (design
+    // §0.2/§3.3), so this code has no way to know which was ACTUALLY
+    // opened first without unifying their timelines — closing layers
+    // first means each force-closed layer's composite still sees the
+    // clip stack exactly as it stood mid-scene (a still-active rounded
+    // clip's `clip_rect`/`stencil_ref` are captured before that clip is
+    // ITSELF force-closed below), which is the safer of the two
+    // possible orderings for a malformed scene. Never panics either way.
+    //
+    // Blend layers first (design §3.3, mirrored from the CPU-side
+    // `LayerStack::force_close_all` audit fix, Wave 3 Commit 1) — any
+    // `PushBlendLayer` with no matching `PopBlendLayer` still gets
+    // composited here, counted `native_blend_layer_force_closed_at_scene_end`.
+    for (depth, mode, alpha) in layer_stack.force_close_all() {
+        degrade_blend_mode(&mode);
+        let clip_rect = clip.current();
+        let stencil_ref = if clip.rounded_depth() > 0 { Some(clip.rounded_depth()) } else { None };
+        frame.push_marker(FrameOp::PopLayer { depth, stencil_ref });
+        frame.composites.push(BlendCompositeInstance { alpha, _pad: [0.0; 3], clip_rect });
+        degrade("native_blend_layer_force_closed_at_scene_end");
+    }
+
+    // Then rounded clips (design §2.4, mirrored from the same CPU-side
+    // audit fix) — any `PushClipRoundedRect` with no matching `PopClip`
+    // gets a synthetic decrement here, so the stencil buffer never
+    // carries a stale nonzero value into whatever comes after this
+    // (already-malformed) frame. Never silent.
     for (mesh, sx, sy, tx, ty, depth) in clip.force_close_all_rounded() {
         let parent_clip_rect = clip.current();
         emit_stencil_mask_batch(&mut frame, &mesh, sx, sy, tx, ty, parent_clip_rect, MaskOp::Decrement, depth);
@@ -1270,11 +1581,21 @@ mod tests {
         TessCache::new()
     }
 
+    /// `UrxConfig::default().blend_layer_max_depth` (design §3.3) — every
+    /// pre-Wave-3-Commit-3 test in this module encodes zero blend layers,
+    /// so the exact cap value is inert; kept as a named helper (mirroring
+    /// `viewport()`/`cache()`) rather than a bare repeated literal so the
+    /// handful of NEW depth-cap tests below can call it with a different
+    /// value without hunting down every other call site.
+    fn max_depth() -> usize {
+        8
+    }
+
     #[test]
     fn fill_rect_solid_emits_one_quad() {
         let mut scene = Scene::new();
         scene.fill_rect_solid(Rect::new(10.0, 10.0, 50.0, 50.0), Color::from_rgba8(255, 0, 0, 255));
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert_eq!(frame.quads.len(), 1);
         assert_eq!(frame.quads[0].pos, [10.0, 10.0]);
         assert_eq!(frame.quads[0].size, [40.0, 40.0]);
@@ -1290,7 +1611,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(0, 255, 0, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert_eq!(frame.quads.len(), 1);
         assert!((frame.quads[0].corner_radius - 8.0).abs() < 0.01);
     }
@@ -1305,7 +1626,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert_eq!(frame.quads.len(), 1);
         assert_eq!(frame.quads[0].color, 0);
         assert!((frame.quads[0].border_width - 3.0).abs() < 0.01);
@@ -1322,7 +1643,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert!(frame.quads.is_empty());
     }
 
@@ -1335,7 +1656,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert!(frame.quads.is_empty());
     }
 
@@ -1348,7 +1669,7 @@ mod tests {
             2.0,
             Color::from_rgba8(255, 255, 255, 255),
         );
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert!(frame.quads.is_empty());
         assert_eq!(frame.lines.len(), 1);
         assert_eq!(frame.lines[0].start, [0.0, 0.0]);
@@ -1366,7 +1687,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::scale(2.0),
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert_eq!(frame.lines.len(), 1);
         assert_eq!(frame.lines[0].end, [20.0, 0.0]);
         assert!((frame.lines[0].width - 8.0).abs() < 0.01, "width should scale 2x with the transform");
@@ -1381,7 +1702,7 @@ mod tests {
             0.0,
             Color::from_rgba8(255, 255, 255, 255),
         );
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert!(frame.lines.is_empty());
     }
 
@@ -1395,7 +1716,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert_eq!(frame.lines[0].cap_flags, 0.0);
     }
 
@@ -1409,7 +1730,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert_eq!(frame.lines[0].cap_flags, 3.0);
     }
 
@@ -1423,7 +1744,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         // Degrades to round (flag 0) — counted via `native_line_square_cap_to_round`
         // (asserting on the global metrics recorder isn't wired in this
         // crate's unit tests; the geometry-level effect is what we can verify).
@@ -1444,22 +1765,22 @@ mod tests {
         );
         scene.fill_rect_solid(Rect::new(0.0, 30.0, 10.0, 40.0), Color::from_rgba8(255, 255, 0, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert_eq!(frame.quads.len(), 3);
         assert_eq!(frame.lines.len(), 1);
-        assert_eq!(frame.batches.len(), 3, "batches: {:?}", frame.batches);
+        assert_eq!(frame.draw_batches().len(), 3, "batches: {:?}", frame.draw_batches());
 
-        assert_eq!(frame.batches[0].kind, BatchKind::Quad);
-        assert_eq!(frame.batches[0].start, 0);
-        assert_eq!(frame.batches[0].count, 2);
+        assert_eq!(frame.draw_batches()[0].kind, BatchKind::Quad);
+        assert_eq!(frame.draw_batches()[0].start, 0);
+        assert_eq!(frame.draw_batches()[0].count, 2);
 
-        assert_eq!(frame.batches[1].kind, BatchKind::Line);
-        assert_eq!(frame.batches[1].start, 0);
-        assert_eq!(frame.batches[1].count, 1);
+        assert_eq!(frame.draw_batches()[1].kind, BatchKind::Line);
+        assert_eq!(frame.draw_batches()[1].start, 0);
+        assert_eq!(frame.draw_batches()[1].count, 1);
 
-        assert_eq!(frame.batches[2].kind, BatchKind::Quad);
-        assert_eq!(frame.batches[2].start, 2, "third batch must resume at quad index 2, not restart at 0");
-        assert_eq!(frame.batches[2].count, 1);
+        assert_eq!(frame.draw_batches()[2].kind, BatchKind::Quad);
+        assert_eq!(frame.draw_batches()[2].start, 2, "third batch must resume at quad index 2, not restart at 0");
+        assert_eq!(frame.draw_batches()[2].count, 1);
     }
 
     #[test]
@@ -1471,9 +1792,9 @@ mod tests {
         scene.fill_rect_solid(Rect::new(0.0, 20.0, 10.0, 30.0), Color::from_rgba8(0, 255, 0, 255));
         scene.line_solid(Vec2 { x: 0.0, y: 40.0 }, Vec2 { x: 10.0, y: 40.0 }, 2.0, Color::from_rgba8(255, 255, 0, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
-        assert_eq!(frame.batches.len(), 4);
-        let kinds: Vec<BatchKind> = frame.batches.iter().map(|b| b.kind).collect();
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        assert_eq!(frame.draw_batches().len(), 4);
+        let kinds: Vec<BatchKind> = frame.draw_batches().iter().map(|b| b.kind).collect();
         assert_eq!(kinds, vec![BatchKind::Quad, BatchKind::Line, BatchKind::Quad, BatchKind::Line]);
     }
 
@@ -1492,10 +1813,10 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(10, 20, 30, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert!(!frame.triangles.is_empty());
-        assert_eq!(frame.batches.len(), 1);
-        assert_eq!(frame.batches[0].kind, BatchKind::Triangle);
+        assert_eq!(frame.draw_batches().len(), 1);
+        assert_eq!(frame.draw_batches()[0].kind, BatchKind::Triangle);
         for tri in &frame.triangles {
             assert_eq!(tri.color0, tri.color1);
             assert_eq!(tri.color1, tri.color2);
@@ -1515,7 +1836,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(10, 20, 30, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert!(frame.triangles.is_empty());
     }
 
@@ -1537,9 +1858,9 @@ mod tests {
             transform: Affine::IDENTITY,
         });
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
-        assert_eq!(frame.batches.len(), 3);
-        let kinds: Vec<BatchKind> = frame.batches.iter().map(|b| b.kind).collect();
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        assert_eq!(frame.draw_batches().len(), 3);
+        let kinds: Vec<BatchKind> = frame.draw_batches().iter().map(|b| b.kind).collect();
         assert_eq!(kinds, vec![BatchKind::Quad, BatchKind::Line, BatchKind::Triangle]);
     }
 
@@ -1629,7 +1950,7 @@ mod tests {
         scene.push(DrawCommand::PopClip);
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(0, 0, 255, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 20.0, 20.0], "rect under the pushed clip");
         assert_eq!(frame.lines[0].clip_rect, [10.0, 10.0, 20.0, 20.0], "line under the pushed clip");
         assert_eq!(
@@ -1655,7 +1976,7 @@ mod tests {
             transform: Affine::IDENTITY,
         });
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 20.0, 20.0]);
         assert!(frame.has_rounded_clip);
     }
@@ -1683,11 +2004,11 @@ mod tests {
         scene.push(DrawCommand::PopClip);
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(2, 2, 2, 255)); // depth 0, AFTER
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert!(frame.has_rounded_clip);
         assert!(!frame.stencil_masks.is_empty(), "the mask geometry itself must have been emitted");
 
-        let kinds: Vec<(BatchKind, Option<u32>)> = frame.batches.iter().map(|b| (b.kind, b.stencil_ref)).collect();
+        let kinds: Vec<(BatchKind, Option<u32>)> = frame.draw_batches().iter().map(|b| (b.kind, b.stencil_ref)).collect();
         assert_eq!(
             kinds,
             vec![
@@ -1724,7 +2045,7 @@ mod tests {
         });
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
         // No matching PopClip.
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert_eq!(frame.quads.len(), 1);
         assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 10.0, 10.0]);
     }
@@ -1748,11 +2069,144 @@ mod tests {
             transform: Affine::IDENTITY,
         });
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
         assert!(frame.quads.is_empty());
         assert!(frame.lines.is_empty());
         assert!(frame.triangles.is_empty());
-        assert!(frame.batches.is_empty());
+        assert!(frame.draw_batches().is_empty());
+    }
+
+    // ── Wave 3 Commit 3: FrameOp sequencing (blend layers) ───────────
+    //
+    // `FrameOp` deliberately does not derive `PartialEq` (its `Batch`/
+    // `BlendMode` payloads carry more than these tests need to compare)
+    // — fold every op into this small comparable projection instead of
+    // pattern-matching by hand at every assertion site.
+    #[derive(Debug, PartialEq, Eq)]
+    enum OpShape {
+        Draw(BatchKind),
+        Push(u32),
+        Pop(u32),
+    }
+
+    fn op_shapes(frame: &EncodedFrame) -> Vec<OpShape> {
+        frame
+            .ops
+            .iter()
+            .map(|op| match op {
+                FrameOp::Draw(b) => OpShape::Draw(b.kind),
+                FrameOp::PushLayer { depth } => OpShape::Push(*depth),
+                FrameOp::PopLayer { depth, .. } => OpShape::Pop(*depth),
+            })
+            .collect()
+    }
+
+    fn push_blend_layer(alpha: f32) -> DrawCommand {
+        DrawCommand::PushBlendLayer { mode: BlendMode::default(), alpha, transform: Affine::IDENTITY }
+    }
+
+    /// Design §3.2: `PushLayer`/`PopLayer` markers bracket a blend-layer
+    /// scope exactly where the Push/Pop occurred in the scan, with
+    /// content before/inside/after emitting ordinary `Draw` ops around
+    /// them — and the composite instance carries the layer's own alpha.
+    #[test]
+    fn push_pop_blend_layer_emits_markers_bracketing_content_in_scan_order() {
+        let mut scene = Scene::new();
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255)); // before
+        scene.push(push_blend_layer(0.5));
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(2, 2, 2, 255)); // inside
+        scene.push(DrawCommand::PopBlendLayer);
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(3, 3, 3, 255)); // after
+
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        assert_eq!(
+            op_shapes(&frame),
+            vec![
+                OpShape::Draw(BatchKind::Quad),
+                OpShape::Push(1),
+                OpShape::Draw(BatchKind::Quad),
+                OpShape::Pop(1),
+                OpShape::Draw(BatchKind::Quad),
+            ],
+            "before/inside/after content must NOT coalesce across the layer markers"
+        );
+        assert_eq!(frame.composites.len(), 1);
+        assert_eq!(frame.composites[0].alpha, 0.5);
+    }
+
+    /// Design §3.2's coalescing-refusal claim, isolated: two content-free
+    /// `Push`/`Pop` markers alone (no draw between them) are still enough
+    /// to keep two otherwise-identical adjacent `Quad` batches from
+    /// merging — `bump_batch`'s `last_mut()` check sees a marker, not a
+    /// `Draw`, as the immediately-preceding op.
+    #[test]
+    fn coalescing_refuses_across_empty_push_pop_blend_layer_markers() {
+        let mut scene = Scene::new();
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255));
+        scene.push(push_blend_layer(1.0));
+        scene.push(DrawCommand::PopBlendLayer);
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255));
+
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        assert_eq!(
+            op_shapes(&frame),
+            vec![OpShape::Draw(BatchKind::Quad), OpShape::Push(1), OpShape::Pop(1), OpShape::Draw(BatchKind::Quad)],
+        );
+        let batches = frame.draw_batches();
+        assert_eq!(batches.len(), 2, "the two quad draws must NOT merge across the push/pop layer markers");
+        assert_eq!(batches[0].count, 1);
+        assert_eq!(batches[1].count, 1);
+    }
+
+    /// Design §3.3: pushes beyond `blend_layer_max_depth` are suppressed
+    /// (no `PushLayer` emitted, content keeps drawing into whatever
+    /// target was already current) and their matching pops emit no
+    /// `PopLayer`/composite either — the suppressed counter alone tracks
+    /// the imbalance, never `open`.
+    #[test]
+    fn blend_layer_depth_cap_suppresses_pushes_beyond_max_and_matching_pops_emit_nothing() {
+        let mut scene = Scene::new();
+        scene.push(push_blend_layer(1.0)); // depth 1 — real
+        scene.push(push_blend_layer(1.0)); // depth 2 — real (cap == 2)
+        scene.push(push_blend_layer(1.0)); // suppressed — cap already hit
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255));
+        scene.push(DrawCommand::PopBlendLayer); // matches the suppressed push — no-op
+        scene.push(DrawCommand::PopBlendLayer); // matches depth 2
+        scene.push(DrawCommand::PopBlendLayer); // matches depth 1
+
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, 2);
+        assert_eq!(
+            op_shapes(&frame),
+            vec![
+                OpShape::Push(1),
+                OpShape::Push(2),
+                OpShape::Draw(BatchKind::Quad),
+                OpShape::Pop(2),
+                OpShape::Pop(1),
+            ],
+            "the 3rd push (cap = 2) must emit no PushLayer, and its matching pop must emit no PopLayer either"
+        );
+        assert_eq!(frame.composites.len(), 2, "only the 2 real layers get a composite instance, not the suppressed one");
+    }
+
+    /// Design §3.3's unbalanced-scene guard, checked purely via the op
+    /// stream (the degrade-counter proof for the same scenario lives in
+    /// `metrics_recorder_proof` below, alongside its rounded-clip twin).
+    #[test]
+    fn unbalanced_push_blend_layer_force_closes_at_scene_end_with_synthetic_pop() {
+        let mut scene = Scene::new();
+        scene.push(push_blend_layer(0.75));
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(9, 9, 9, 255));
+        // NO PopBlendLayer — deliberately unbalanced.
+
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        assert_eq!(
+            op_shapes(&frame),
+            vec![OpShape::Push(1), OpShape::Draw(BatchKind::Quad), OpShape::Pop(1)],
+            "a synthetic PopLayer must close the still-open layer at scene end"
+        );
+        assert_eq!(frame.composites.len(), 1);
+        assert_eq!(frame.composites[0].alpha, 0.75);
     }
 
     // ── Wave 2 Commit 2: GlyphRun ─────────────────────────────────────
@@ -1815,14 +2269,14 @@ mod tests {
             text: None,
         });
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas));
+        let frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), max_depth());
         assert_eq!(frame.glyphs.len(), 2, "both glyphs should have rasterised + placed successfully");
         for g in &frame.glyphs {
             assert!(g.size[0] > 0.0 && g.size[1] > 0.0, "a real glyph bitmap must have a positive size");
             assert!(g.uv_size[0] > 0.0 && g.uv_size[1] > 0.0, "a placed glyph must have a non-zero atlas UV rect");
         }
-        assert_eq!(frame.batches.len(), 1);
-        assert_eq!(frame.batches[0].kind, BatchKind::Glyph);
+        assert_eq!(frame.draw_batches().len(), 1);
+        assert_eq!(frame.draw_batches()[0].kind, BatchKind::Glyph);
     }
 
     #[test]
@@ -1845,12 +2299,12 @@ mod tests {
         });
         scene.fill_rect_solid(Rect::new(50.0, 50.0, 60.0, 60.0), Color::from_rgba8(0, 255, 0, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas));
+        let frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), max_depth());
         assert_eq!(frame.glyphs.len(), 2, "both glyphs must have placed for this to be a meaningful coalescing test");
-        assert_eq!(frame.batches.len(), 3, "Quad, then Glyph (both glyphs coalesced into ONE batch), then Quad");
-        let kinds: Vec<BatchKind> = frame.batches.iter().map(|b| b.kind).collect();
+        assert_eq!(frame.draw_batches().len(), 3, "Quad, then Glyph (both glyphs coalesced into ONE batch), then Quad");
+        let kinds: Vec<BatchKind> = frame.draw_batches().iter().map(|b| b.kind).collect();
         assert_eq!(kinds, vec![BatchKind::Quad, BatchKind::Glyph, BatchKind::Quad]);
-        assert_eq!(frame.batches[1].count, 2, "both glyphs from the one GlyphRun must coalesce into a single batch");
+        assert_eq!(frame.draw_batches()[1].count, 2, "both glyphs from the one GlyphRun must coalesce into a single batch");
     }
 
     // ── Commit 4: metrics-recorder-backed degrade-counter proof ──────
@@ -1944,15 +2398,122 @@ mod tests {
                 });
                 scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
                 // NO PopClip — deliberately unbalanced.
-                encode_scene(&scene, viewport(), &mut cache(), None)
+                encode_scene(&scene, viewport(), &mut cache(), None, max_depth())
             });
 
-            let last = frame.batches.last().expect("at least the synthetic decrement batch must exist");
+            let batches = frame.draw_batches();
+            let last = batches.last().expect("at least the synthetic decrement batch must exist");
             assert_eq!(last.kind, BatchKind::StencilMask(MaskOp::Decrement));
             assert_eq!(last.stencil_ref, Some(1), "force-close gates on the still-open scope's own depth");
 
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_rounded_clip_force_closed_at_scene_end");
             assert_eq!(value, 1, "the force-close counter must have actually incremented, not just avoided a panic");
+        }
+
+        // ── Wave 3 Commit 3: blend-layer degrade-counter proofs ──────
+
+        fn push_blend_layer(mode: BlendMode, alpha: f32, transform: Affine) -> DrawCommand {
+            DrawCommand::PushBlendLayer { mode, alpha, transform }
+        }
+
+        /// Symmetric twin of `unbalanced_push_clip_rounded_rect_force_closes_at_scene_end`
+        /// above — an unbalanced `PushBlendLayer` still gets composited
+        /// (the op-stream shape is proven separately in the plain `tests`
+        /// module's `unbalanced_push_blend_layer_force_closes_at_scene_end_with_synthetic_pop`),
+        /// and the force-close is counted exactly once, never silent.
+        #[test]
+        fn blend_layer_force_closed_at_scene_end_counter_increments_once() {
+            let recorder = TestRecorder::default();
+            metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                scene.push(push_blend_layer(BlendMode::default(), 1.0, Affine::IDENTITY));
+                scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255));
+                // NO PopBlendLayer — deliberately unbalanced.
+                encode_scene(&scene, viewport(), &mut cache(), None, max_depth())
+            });
+
+            let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_force_closed_at_scene_end");
+            assert_eq!(value, 1, "the force-close counter must have actually incremented, not just avoided a panic");
+        }
+
+        /// Design §3.3: each push beyond the depth cap counts
+        /// `native_blend_layer_depth_exceeded` once — never silently
+        /// dropped.
+        #[test]
+        fn blend_layer_depth_exceeded_counts_once_per_suppressed_push() {
+            let recorder = TestRecorder::default();
+            metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                scene.push(push_blend_layer(BlendMode::default(), 1.0, Affine::IDENTITY)); // depth 1 — real
+                scene.push(push_blend_layer(BlendMode::default(), 1.0, Affine::IDENTITY)); // suppressed
+                scene.push(push_blend_layer(BlendMode::default(), 1.0, Affine::IDENTITY)); // suppressed
+                scene.push(DrawCommand::PopBlendLayer);
+                scene.push(DrawCommand::PopBlendLayer);
+                scene.push(DrawCommand::PopBlendLayer);
+                encode_scene(&scene, viewport(), &mut cache(), None, 1)
+            });
+
+            let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_depth_exceeded");
+            assert_eq!(value, 2, "one count per suppressed push, cap = 1 with 3 total pushes");
+        }
+
+        /// Mirrors `ClipStack::pop`'s existing underflow guard — an extra
+        /// `PopBlendLayer` with no open layer (and nothing suppressed to
+        /// balance) is a defensive no-op, counted rather than panicking.
+        #[test]
+        fn blend_layer_pop_underflow_is_a_defensive_noop_and_counts() {
+            let recorder = TestRecorder::default();
+            let frame = metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::PopBlendLayer); // no matching push at all
+                scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255));
+                encode_scene(&scene, viewport(), &mut cache(), None, max_depth())
+            });
+
+            assert_eq!(frame.quads.len(), 1, "content after the stray pop must still render normally, no panic");
+            assert!(frame.composites.is_empty(), "an underflowing pop has no layer to composite");
+
+            let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_pop_underflow");
+            assert_eq!(value, 1);
+        }
+
+        /// Design §0.3: a non-`{Normal, SrcOver}` `BlendMode` degrades to
+        /// that combination, counting `mix`- and `compose`-mismatch
+        /// independently (same two-counter shape as
+        /// `uzor-urx-cpu::blend::degrade_for_mode`, Wave 3 Commit 1) —
+        /// proven here for BOTH fields mismatching in the SAME pop.
+        #[test]
+        fn blend_layer_non_default_mode_counts_mix_and_compose_degrades_independently() {
+            let recorder = TestRecorder::default();
+            metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                let mode = BlendMode::new(uzor_urx_core::math::Mix::Multiply, uzor_urx_core::math::Compose::SrcIn);
+                scene.push(push_blend_layer(mode, 1.0, Affine::IDENTITY));
+                scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255));
+                scene.push(DrawCommand::PopBlendLayer);
+                encode_scene(&scene, viewport(), &mut cache(), None, max_depth())
+            });
+
+            assert_eq!(recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_mix_to_normal"), 1);
+            assert_eq!(recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_compose_to_srcover"), 1);
+        }
+
+        /// Design §5's shear/rotation drop, extended to blend layers: a
+        /// non-identity `PushBlendLayer::transform` is counted (never
+        /// silently applied OR silently ignored) — mirrors the existing
+        /// `decompose_translate_scale` finding for `FillRect`/`Line`.
+        #[test]
+        fn blend_layer_non_identity_transform_is_counted() {
+            let recorder = TestRecorder::default();
+            metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                scene.push(push_blend_layer(BlendMode::default(), 1.0, Affine::translate((5.0, 5.0))));
+                scene.push(DrawCommand::PopBlendLayer);
+                encode_scene(&scene, viewport(), &mut cache(), None, max_depth())
+            });
+
+            let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_transform_ignored");
+            assert_eq!(value, 1);
         }
 
         // ── Wave 2 Commit 2: GlyphRun degrade proofs ─────────────────
@@ -1981,7 +2542,7 @@ mod tests {
                     transform: Affine::IDENTITY,
                     text: None,
                 });
-                let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+                let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
                 assert_eq!(frame.glyphs.len(), 0, "no glyph should have been placed — the font was never registered");
             });
 
@@ -2005,7 +2566,7 @@ mod tests {
                     text: None,
                 });
                 // Must not panic — that's the primary assertion here.
-                let _frame = encode_scene(&scene, viewport(), &mut cache(), None);
+                let _frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
             });
 
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_glyphrun_gradient_to_solid");
@@ -2065,7 +2626,7 @@ mod tests {
                     transform: Affine::IDENTITY,
                     text: None,
                 });
-                let _frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas));
+                let _frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), max_depth());
             });
 
             let full_this_frame = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_glyph_atlas_full_this_frame");

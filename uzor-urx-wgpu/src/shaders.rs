@@ -542,3 +542,88 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     return vec4<f32>(1.0, 1.0, 1.0, 1.0); // dummy — ColorWrites::empty() blocks this from ever landing
 }
 "#;
+
+/// Blend-layer composite shader — full-viewport procedural quad
+/// sampling a just-closed layer's resolved RGBA texture, scaled by the
+/// layer's own `alpha` (design §3.6, Wave 3 Commit 3). See
+/// `pipelines::blend_composite`'s module doc for the corrected
+/// premultiply formula (`out = texel * alpha`, NOT `texel.rgb *
+/// texel.a` re-multiplied — the sampled texel is ALREADY premultiplied,
+/// having been resolved from content rendered through this crate's own
+/// premultiplied blend state).
+pub const BLEND_COMPOSITE_SHADER_NATIVE: &str = r#"
+struct Uniforms {
+    screen_size: vec2<f32>,
+};
+@group(0) @binding(0)
+var<uniform> uniforms: Uniforms;
+
+@group(1) @binding(0) var layer_tex:     texture_2d<f32>;
+@group(1) @binding(1) var layer_sampler: sampler;
+
+// Instance data — must match BlendCompositeInstance in
+// pipelines/blend_composite.rs (32 bytes).
+struct BlendCompositeInstance {
+    @location(0) alpha:     f32,
+    @location(1) _pad:      vec3<f32>,
+    @location(2) clip_rect: vec4<f32>,
+};
+
+struct VertexOut {
+    @builtin(position) clip_pos: vec4<f32>,
+    @location(0) uv:        vec2<f32>,
+    @location(1) alpha:     f32,
+    @location(2) clip_rect: vec4<f32>,
+};
+
+fn quad_vert_pos(vertex_index: u32) -> vec2<f32> {
+    let xs = array<f32, 6>(0.0, 1.0, 0.0,  1.0, 1.0, 0.0);
+    let ys = array<f32, 6>(0.0, 0.0, 1.0,  0.0, 1.0, 1.0);
+    return vec2<f32>(xs[vertex_index], ys[vertex_index]);
+}
+
+@vertex
+fn vs_main(
+    @builtin(vertex_index) vertex_index: u32,
+    instance: BlendCompositeInstance,
+) -> VertexOut {
+    // Full-viewport quad (design §0.2 — no position/size fields on the
+    // instance at all; the layer's resolve texture IS viewport-sized,
+    // so `uv_local` maps 1:1 onto it).
+    let uv_local = quad_vert_pos(vertex_index);
+    let px = uv_local * uniforms.screen_size;
+
+    let ndc = vec2<f32>(
+        px.x / uniforms.screen_size.x *  2.0 - 1.0,
+        px.y / uniforms.screen_size.y * -2.0 + 1.0,
+    );
+
+    var out: VertexOut;
+    out.clip_pos  = vec4<f32>(ndc, 0.0, 1.0);
+    out.uv        = uv_local;
+    out.alpha     = instance.alpha;
+    out.clip_rect = instance.clip_rect;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    let px_abs = in.clip_pos.xy;
+    let cr = in.clip_rect;
+    if px_abs.x < cr.x || px_abs.y < cr.y
+       || px_abs.x > cr.x + cr.z || px_abs.y > cr.y + cr.w {
+        discard;
+    }
+    // `texel` is ALREADY premultiplied (resolved from content rendered
+    // through the premultiplied blend state every native pipeline
+    // shares) — scaling an already-premultiplied value by a scalar is a
+    // uniform multiply across ALL 4 channels, same reasoning
+    // `uzor-urx-cpu::blend::composite_layer_srcover` uses. NOT
+    // `texel.rgb * texel.a` re-premultiplied (design §3.6's sketch —
+    // wrong for this data flow, see this file's module doc).
+    let texel = textureSample(layer_tex, layer_sampler, in.uv);
+    let out_rgba = texel * in.alpha;
+    if out_rgba.a <= 0.0 { discard; }
+    return out_rgba;
+}
+"#;
