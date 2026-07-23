@@ -665,3 +665,91 @@ mod tests {
         std::fs::write(dir.join("figures_demo_frame_interactive.png"), &bytes).expect("write proof PNG");
     }
 }
+
+// ── Wave 6 Commit 2: app-level screenshot-diff harness fixture ───────
+//
+// `docs/uzor-engines/plans/urx-wave6-autodetect-cutover-design-2026-07-25.md`
+// §4.2/§4.3/§4.5 — the FIRST reference fixture for the new
+// `uzor_examples::parity_harness`: `draw_frame` is already fully
+// headless-provable (the `mod tests` above proves it), so this fixture
+// needs ZERO extraction — it reuses `draw_frame`/`DemoState` verbatim,
+// just feeding them through the harness's recording/rendering legs
+// instead of `uzor_export::render_to_png`.
+#[cfg(test)]
+mod screenshot_diff {
+    use uzor_examples::parity_harness::{
+        compare_tight, dump_comparison_pngs, record_via_urx_ctx, render_via_urx_cpu, render_via_urx_native,
+        render_via_vello_cpu, ChannelTolerance,
+    };
+
+    use super::*;
+
+    const WIDTH: u32 = 1280;
+    const HEIGHT: u32 = 800;
+
+    /// Byte-tight urx-native-vs-urx-cpu leg (design §4.4) — hard,
+    /// automated gate. A real app fixture composing Waves 1-4's
+    /// primitives landing outside the base tolerance tier
+    /// (`ChannelTolerance::default()`, the SAME `edge=24`/
+    /// `interior=2`/`max_differing_fraction=0.02` numbers validated
+    /// per-primitive at the crate level) is a genuine compose-level bug
+    /// (batching order, state bleed between draw calls) the primitive
+    /// suite structurally cannot see.
+    #[test]
+    #[ignore = "needs a headless GPU adapter"]
+    fn figures_demo_frame_native_matches_cpu_within_the_base_tier() {
+        let state = DemoState::new(DEFAULT_SEED);
+        let scene = record_via_urx_ctx(WIDTH, HEIGHT, |ctx| draw_frame(ctx, WIDTH as f64, HEIGHT as f64, &state));
+
+        let cpu = render_via_urx_cpu(&scene, WIDTH, HEIGHT);
+        let Some(native) = render_via_urx_native(&scene, WIDTH, HEIGHT) else {
+            eprintln!(
+                "figures_demo_frame_native_matches_cpu_within_the_base_tier: no GPU/software adapter available; skipping"
+            );
+            return;
+        };
+
+        let tol = ChannelTolerance::default();
+        let report = compare_tight(&cpu, &native, tol);
+        println!(
+            "figures_demo_frame urx-cpu-vs-native: {:.3}% differing (edge {}), budget {:.2}%, max_channel_diff {}",
+            report.differing_fraction * 100.0,
+            tol.edge,
+            tol.max_differing_fraction * 100.0,
+            report.max_channel_diff,
+        );
+        if !report.within_budget {
+            dump_comparison_pngs("figures_demo_urx_cpu_vs_native", WIDTH, HEIGHT, &cpu, &native);
+        }
+        assert!(
+            report.within_budget,
+            "figures_demo frame exceeded the base tolerance tier: {:.3}% differing (budget {:.2}%), max_channel_diff {}",
+            report.differing_fraction * 100.0,
+            tol.max_differing_fraction * 100.0,
+            report.max_channel_diff,
+        );
+    }
+
+    /// urx-native vs vello — visual-only leg (design §4.4): dumps
+    /// comparison PNGs under `target/parity-app/` UNCONDITIONALLY for
+    /// human review, never a computed threshold (different rasterisers,
+    /// different AA algorithms, different color-management defaults —
+    /// byte parity was never vello's promise). Both legs paint the SAME
+    /// `draw_frame` content via the SAME `DemoState`, so any visible
+    /// difference is genuinely about the two rasterisers, not a
+    /// content mismatch.
+    #[test]
+    #[ignore = "needs a headless GPU adapter; dumps PNGs for human review, not a hard gate"]
+    fn figures_demo_frame_native_vs_vello_visual_dump() {
+        let state = DemoState::new(DEFAULT_SEED);
+        let vello = render_via_vello_cpu(WIDTH, HEIGHT, |ctx| draw_frame(ctx, WIDTH as f64, HEIGHT as f64, &state));
+
+        let scene = record_via_urx_ctx(WIDTH, HEIGHT, |ctx| draw_frame(ctx, WIDTH as f64, HEIGHT as f64, &state));
+        let Some(native) = render_via_urx_native(&scene, WIDTH, HEIGHT) else {
+            eprintln!("figures_demo_frame_native_vs_vello_visual_dump: no GPU/software adapter available; skipping");
+            return;
+        };
+
+        dump_comparison_pngs("figures_demo_urx_native_vs_vello", WIDTH, HEIGHT, &native, &vello);
+    }
+}

@@ -7,6 +7,9 @@ repository.workspace = true
 homepage.workspace = true
 description = "Layered demos for uzor — L1 (raw input coordinator), L2 (context manager + widgets), L3 (layout manager + composites), L4 (App + WindowManager builder)."
 
+[lib]
+path = "src/lib.rs"
+
 [dependencies]
 uzor                  = { workspace = true }
 uzor-desktop          = { workspace = true }
@@ -14,7 +17,11 @@ uzor-framework-macros = { workspace = true }
 uzor-graph            = { workspace = true }
 uzor-render-hub       = { workspace = true }
 uzor-render-vello-gpu = { workspace = true }
+uzor-render-vello-cpu = { workspace = true }
+uzor-render-urx       = { workspace = true }
 uzor-urx-core         = { workspace = true }
+uzor-urx-cpu          = { workspace = true }
+uzor-urx-wgpu         = { workspace = true }
 uzor-window-desktop   = { workspace = true }
 uzor-figures          = { path = "../uzor-figures" }
 uzor-text             = { path = "../uzor-text" }
@@ -24,6 +31,12 @@ pollster              = "0.4"
 winit                 = "0.30"
 arboard               = "3"
 serde_json            = "1"
+wgpu                  = "29"
+# Wave 6 Commit 2 parity harness (`uzor-examples/src/parity_harness.rs`)
+# — dumps comparison PNGs under target/parity-app/ for human review
+# (`urx-wave6-autodetect-cutover-design-2026-07-25.md` §4.2). Same
+# version/feature spec `uzor-urx-wgpu`'s own Cargo.toml already uses.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [[bin]]
 name = "l1-coord"

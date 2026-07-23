@@ -3511,7 +3511,7 @@ mod tests {
     /// the default clusters fixture shows FORCE alone.
     #[test]
     fn hud_layout_reflects_per_fixture_layout_availability_in_both_dimensions() {
-        let mut app = DemoApp::new();
+        let app = DemoApp::new();
         // Fresh app defaults to `Clusters` — a single FORCE mode, active.
         let layout = app.hud_layout();
         let modes: Vec<_> = layout.buttons.iter().filter(|b| matches!(b.control, HudControl::SetLayout(_))).collect();

@@ -28,6 +28,41 @@ pub fn detect_backend(info: &wgpu::AdapterInfo) -> RenderBackend {
     }
 }
 
+/// URX-family autodetect decision tree (Wave 6 Commit 2,
+/// `urx-wave6-autodetect-cutover-design-2026-07-25.md` §5.1) — lives
+/// ALONGSIDE [`detect_backend`], which stays the one `RenderHub::autodetect`
+/// actually calls until the flip commit (Wave 6 Commit 4). **Not called
+/// by anything yet** — a `git revert`-able, one-line-call-site-swap-away
+/// second named function, not a runtime feature flag (the project's
+/// hard-cutover doctrine rejects permanent flags for exactly this kind
+/// of transition). `pub fn` in a `pub mod` — the crate's own public API
+/// surface, so this needs no `#[allow(dead_code)]`: an unreferenced-
+/// internally `pub` item in a library crate is never flagged
+/// `dead_code` by rustc (it's reachable from any external consumer of
+/// this crate, whether or not anything inside the crate calls it yet).
+///
+/// Mapping vs [`detect_backend`]: `DiscreteGpu`/`IntegratedGpu` (was
+/// `VelloGpu`) → [`RenderBackend::UrxWgpu`] — the Wave 6 Commit 1
+/// gate-verified native GPU path. `VirtualGpu` (was `VelloCpu`) →
+/// [`RenderBackend::UrxCpu`] — `VirtualGpu` denotes a software/
+/// virtualized adapter, functionally CPU-class despite the GPU-shaped
+/// enum name; the brief's "CPU-only → urx-cpu" arm covers it directly
+/// (design §8 risk 1: this specific remap is unverified live on an
+/// actual `VirtualGpu`-reporting box as of this pass — verify on a VM/CI
+/// runner before trusting broadly). `Cpu` (was `TinySkia`) →
+/// [`RenderBackend::UrxCpu`]. Unknown/`_` (was `VelloGpu`, an optimistic
+/// default) → [`RenderBackend::UrxWgpu`], keeping the same "assume
+/// GPU-capable" policy the old function had for that fallthrough arm.
+pub fn detect_backend_urx(info: &wgpu::AdapterInfo) -> RenderBackend {
+    match info.device_type {
+        wgpu::DeviceType::DiscreteGpu   => RenderBackend::UrxWgpu,
+        wgpu::DeviceType::IntegratedGpu => RenderBackend::UrxWgpu,
+        wgpu::DeviceType::VirtualGpu    => RenderBackend::UrxCpu,
+        wgpu::DeviceType::Cpu           => RenderBackend::UrxCpu,
+        _                                => RenderBackend::UrxWgpu,
+    }
+}
+
 /// Per-backend performance defaults. FPS values copied verbatim from mlc.
 ///
 /// MSAA defaults are `0` (= vello `AaConfig::Area`) across the board: the
@@ -91,5 +126,66 @@ pub fn detect(info: &wgpu::AdapterInfo) -> GpuInfo {
         device_type: info.device_type,
         recommended,
         backend,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(device_type: wgpu::DeviceType) -> wgpu::AdapterInfo {
+        wgpu::AdapterInfo {
+            name: "test-adapter".to_string(),
+            vendor: 0,
+            device: 0,
+            device_type,
+            device_pci_bus_id: String::new(),
+            driver: String::new(),
+            driver_info: String::new(),
+            backend: wgpu::Backend::Noop,
+            subgroup_min_size: 0,
+            subgroup_max_size: 0,
+            transient_saves_memory: false,
+        }
+    }
+
+    /// Wave 6 Commit 2 — every `detect_backend_urx` arm (design §5.1),
+    /// covering all 5 `wgpu::DeviceType` variants (the 5th, `Other`,
+    /// exercises the `_` fallthrough).
+    #[test]
+    fn discrete_and_integrated_gpu_map_to_urx_wgpu() {
+        assert_eq!(detect_backend_urx(&info(wgpu::DeviceType::DiscreteGpu)), RenderBackend::UrxWgpu);
+        assert_eq!(detect_backend_urx(&info(wgpu::DeviceType::IntegratedGpu)), RenderBackend::UrxWgpu);
+    }
+
+    #[test]
+    fn virtual_gpu_and_cpu_map_to_urx_cpu() {
+        assert_eq!(detect_backend_urx(&info(wgpu::DeviceType::VirtualGpu)), RenderBackend::UrxCpu);
+        assert_eq!(detect_backend_urx(&info(wgpu::DeviceType::Cpu)), RenderBackend::UrxCpu);
+    }
+
+    #[test]
+    fn unknown_device_type_falls_through_to_urx_wgpu() {
+        assert_eq!(detect_backend_urx(&info(wgpu::DeviceType::Other)), RenderBackend::UrxWgpu);
+    }
+
+    /// `detect_backend_urx` must never return a non-URX variant — the
+    /// whole point of this decision tree is that autodetect, once
+    /// flipped onto it, only ever lands on `UrxCpu`/`UrxWgpu`.
+    #[test]
+    fn never_returns_a_non_urx_backend() {
+        for dt in [
+            wgpu::DeviceType::DiscreteGpu,
+            wgpu::DeviceType::IntegratedGpu,
+            wgpu::DeviceType::VirtualGpu,
+            wgpu::DeviceType::Cpu,
+            wgpu::DeviceType::Other,
+        ] {
+            let backend = detect_backend_urx(&info(dt));
+            assert!(
+                matches!(backend, RenderBackend::UrxCpu | RenderBackend::UrxWgpu),
+                "device_type {dt:?} produced non-URX backend {backend:?}"
+            );
+        }
     }
 }

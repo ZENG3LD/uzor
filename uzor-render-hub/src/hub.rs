@@ -191,10 +191,24 @@ impl RenderHub {
         {
             let (pool, recommended) = match probe_adapter() {
                 Some(info) => {
+                    // FLIP POINT 1 of 2 (Wave 6 Commit 4,
+                    // `urx-wave6-autodetect-cutover-design-2026-07-25.md`
+                    // §5.1/§7): becomes `detect_backend_urx(&info)`. Not
+                    // changed this commit — `detect_backend_urx` exists
+                    // dead-alongside-old (`detect.rs`) until the harness
+                    // (§C) gates the flip.
                     let rec = detect_backend(&info);
                     (BackendPool::from_gpu(rec), rec)
                 }
                 None => {
+                    // FLIP POINT 2 of 2 (same commit as above) — the
+                    // "no adapter found" branch never goes through
+                    // `detect_backend` at all; becomes
+                    // `RenderBackend::UrxCpu` (a genuinely no-adapter
+                    // box is CPU-only by definition — `BackendPool::
+                    // software_only()` already includes `UrxCpu` in its
+                    // `initialized` set today). Not changed this
+                    // commit.
                     let rec = RenderBackend::TinySkia;
                     (BackendPool::software_only(), rec)
                 }
