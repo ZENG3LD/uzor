@@ -29,8 +29,18 @@ pub struct WindowConfig {
     pub cascade_from: Option<winit::window::WindowId>,
     /// When `false` the window is created invisible until first GPU frame.
     pub start_visible: bool,
-    /// Override automatic backend detection.
+    /// Override automatic backend detection. Takes precedence over
+    /// [`Self::render_family`] entirely — an explicit backend skips
+    /// family resolution (owner decision 2026-07-24).
     pub backend_hint: Option<uzor_render_hub::RenderBackend>,
+    /// Coarse render family [`create_window`](super::creation::create_window)
+    /// resolves autodetect against when `backend_hint` is `None` — the
+    /// `UZOR_RENDER_FAMILY` env var (case-insensitive `vello`/`urx`), if
+    /// set and valid, still overrides this field; see
+    /// `uzor_render_hub::resolve_render_family_from_process_env`.
+    /// Defaults to [`uzor_render_hub::RenderFamily::default`] (`Vello`) —
+    /// no default flip, ever.
+    pub render_family: uzor_render_hub::RenderFamily,
 }
 
 impl Default for WindowConfig {
@@ -46,6 +56,7 @@ impl Default for WindowConfig {
             cascade_from: None,
             start_visible: false,
             backend_hint: None,
+            render_family: uzor_render_hub::RenderFamily::default(),
         }
     }
 }

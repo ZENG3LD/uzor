@@ -115,6 +115,67 @@ pub enum Scene2DBackend {
 /// `with_urx_engine` hub channel.
 pub type RenderBackend = Scene2DBackend;
 
+// ── RenderFamily ────────────────────────────────────────────────────────────
+
+/// Coarse 2D render-family selector — **the doctrine, owner decision
+/// 2026-07-24: no default flip, ever.** Vello and URX both stay
+/// first-class 2D pipelines; which one a given app/window uses is a
+/// per-app/per-window flag (this enum), never a workspace-wide
+/// migration that eventually completes and deletes the other side.
+///
+/// This selects which autodetect DECISION TREE
+/// [`crate::layout::window`] / `uzor-render-hub`'s `RenderHub::autodetect`
+/// walks when no adapter probe result is available yet
+/// (`detect_backend` for [`RenderFamily::Vello`], `detect_backend_urx`
+/// for [`RenderFamily::Urx`]) — it is coarser than [`Scene2DBackend`]
+/// itself (which names a single concrete pipeline variant), and it
+/// never overrides an explicit [`Scene2DBackend`] selection (e.g. via
+/// the app builder's `.backend(...)`) — precedence is always
+/// explicit-backend > env override > this flag > [`RenderFamily::
+/// default`].
+///
+/// **3D is always URX**, regardless of this flag — there is no
+/// vello-family 3D surface to select between, so nothing reads this
+/// enum on the 3D dispatch path (`Scene3DApp`'s hook is unconditional).
+///
+/// [`Scene2DBackend::TinySkia`] is deliberately **not** a member of
+/// this enum — it is the explicit, minimal CPU debug/light-build
+/// engine, not a family. It stays reachable two ways: as
+/// [`RenderFamily::Vello`]'s own no-GPU-adapter fallback (unchanged
+/// from today's `RenderHub::autodetect` behavior), and by direct
+/// `.backend(Scene2DBackend::TinySkia)` selection — never by resolving
+/// a family alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderFamily {
+    /// vello / vello_cpu / vello_hybrid / instanced-wgpu 2D pipeline —
+    /// today's long-standing default and production path.
+    Vello,
+    /// URX's own 2D pipeline (own math, own rasteriser/compositor, no
+    /// vello dependency) — a first-class alternative, never
+    /// auto-promoted over `Vello` by any autodetect logic.
+    Urx,
+}
+
+impl Default for RenderFamily {
+    /// `Vello` — no default flip, ever (owner doctrine 2026-07-24).
+    fn default() -> Self {
+        Self::Vello
+    }
+}
+
+impl RenderFamily {
+    /// Stable identifier for the `UZOR_RENDER_FAMILY` env override /
+    /// config files — lowercase, matches this type's own
+    /// `#[serde(rename_all = "snake_case")]` spelling exactly.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Vello => "vello",
+            Self::Urx   => "urx",
+        }
+    }
+}
+
 /// URX render-family backends. Selected through the `with_urx_engine`
 /// channel on the hub — separate from [`Scene2DBackend`]. Exposes the
 /// full URX surface (2D Scene IR, retained-mode regions, 3D scene,

@@ -12,8 +12,9 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! // Full autodetect — picks best backend, enables live switching.
-//! let hub = RenderHub::autodetect();
+//! // Full autodetect — picks best backend for the Vello family,
+//! // enables live switching.
+//! let hub = RenderHub::autodetect(RenderFamily::Vello);
 //!
 //! // Fixed backend — no adapter probe, no live switching.
 //! let hub = RenderHub::fixed(RenderBackend::VelloGpu);
@@ -26,10 +27,10 @@
 
 use std::collections::HashSet;
 
-use crate::backend::RenderBackend;
+use crate::backend::{RenderBackend, RenderFamily};
 use crate::detect::default_perf;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::detect::detect_backend;
+use crate::detect::{detect_backend_for_family, no_adapter_backend_for_family};
 use crate::metrics::RenderMetrics;
 
 // ── HubError ──────────────────────────────────────────────────────────────────
@@ -173,17 +174,26 @@ pub struct RenderHub {
 impl RenderHub {
     // ── Constructors ──────────────────────────────────────────────────────────
 
-    /// Probe a wgpu adapter and select the best available backend.
+    /// Probe a wgpu adapter and select the best available backend for
+    /// `family` (owner decision 2026-07-24: no default flip, ever —
+    /// `family` is the caller's own resolved choice, see
+    /// `crate::detect::resolve_render_family_from_process_env` for the
+    /// four-level precedence chain that usually produces it).
     ///
     /// The probe is synchronous (via `pollster`) and takes a few milliseconds.
-    /// If no adapter is found the hub falls back to software-only backends
-    /// (`TinySkia` / `VelloCpu`).
+    /// If no adapter is found the hub falls back to the family's own
+    /// software-only fallback ([`no_adapter_backend_for_family`] —
+    /// `TinySkia` for [`RenderFamily::Vello`], `UrxCpu` for
+    /// [`RenderFamily::Urx`]).
     ///
     /// On `wasm32` targets the probe is skipped and [`RenderBackend::Canvas2d`]
-    /// is selected immediately — it is the only available backend in a browser.
-    pub fn autodetect() -> Self {
+    /// is selected immediately regardless of `family` — it is the only
+    /// available backend in a browser (neither render family has a
+    /// wasm-native path yet).
+    pub fn autodetect(family: RenderFamily) -> Self {
         #[cfg(target_arch = "wasm32")]
         {
+            let _ = family;
             return Self::fixed(RenderBackend::Canvas2d);
         }
 
@@ -191,25 +201,11 @@ impl RenderHub {
         {
             let (pool, recommended) = match probe_adapter() {
                 Some(info) => {
-                    // FLIP POINT 1 of 2 (Wave 6 Commit 4,
-                    // `urx-wave6-autodetect-cutover-design-2026-07-25.md`
-                    // §5.1/§7): becomes `detect_backend_urx(&info)`. Not
-                    // changed this commit — `detect_backend_urx` exists
-                    // dead-alongside-old (`detect.rs`) until the harness
-                    // (§C) gates the flip.
-                    let rec = detect_backend(&info);
+                    let rec = detect_backend_for_family(&info, family);
                     (BackendPool::from_gpu(rec), rec)
                 }
                 None => {
-                    // FLIP POINT 2 of 2 (same commit as above) — the
-                    // "no adapter found" branch never goes through
-                    // `detect_backend` at all; becomes
-                    // `RenderBackend::UrxCpu` (a genuinely no-adapter
-                    // box is CPU-only by definition — `BackendPool::
-                    // software_only()` already includes `UrxCpu` in its
-                    // `initialized` set today). Not changed this
-                    // commit.
-                    let rec = RenderBackend::TinySkia;
+                    let rec = no_adapter_backend_for_family(family);
                     (BackendPool::software_only(), rec)
                 }
             };
@@ -393,7 +389,7 @@ mod tests {
 
     #[test]
     fn autodetect_returns_nonempty_pool() {
-        let hub = RenderHub::autodetect();
+        let hub = RenderHub::autodetect(RenderFamily::Vello);
         assert!(!hub.pool().initialized.is_empty(), "pool must have at least one backend");
     }
 
@@ -414,7 +410,7 @@ mod tests {
 
     #[test]
     fn set_active_accepts_pooled() {
-        let mut hub = RenderHub::autodetect();
+        let mut hub = RenderHub::autodetect(RenderFamily::Vello);
         // autodetect always includes TinySkia on desktop.
         assert!(hub.set_active(RenderBackend::TinySkia).is_ok());
         assert_eq!(hub.active(), RenderBackend::TinySkia);
@@ -422,7 +418,7 @@ mod tests {
 
     #[test]
     fn perf_settings_round_trip() {
-        let mut hub = RenderHub::autodetect();
+        let mut hub = RenderHub::autodetect(RenderFamily::Vello);
         hub.set_fps_limit(144);
         hub.set_msaa(16);
         hub.set_vsync(false);
@@ -433,7 +429,7 @@ mod tests {
 
     #[test]
     fn perf_settings_mut() {
-        let mut hub = RenderHub::autodetect();
+        let mut hub = RenderHub::autodetect(RenderFamily::Vello);
         hub.settings_mut().recalc_mode = "always".into();
         assert_eq!(hub.settings().recalc_mode, "always");
     }

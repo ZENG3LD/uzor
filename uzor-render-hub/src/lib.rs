@@ -26,8 +26,12 @@ pub mod factories;
 pub mod retained;
 pub mod urx_engine_handle;
 
-pub use backend::RenderBackend;
-pub use detect::{detect_backend, default_perf, detect, GpuInfo, PerfDefaults, RecommendedBackend};
+pub use backend::{RenderBackend, RenderFamily};
+pub use detect::{
+    default_perf, detect, detect_backend, detect_backend_for_family, detect_backend_urx,
+    no_adapter_backend_for_family, resolve_render_family, resolve_render_family_from_process_env,
+    GpuInfo, PerfDefaults, RecommendedBackend,
+};
 
 // URX cold-start skeleton types — re-exported so consumers
 // (tessera-window etc.) don't need a direct `uzor-urx-core` dep

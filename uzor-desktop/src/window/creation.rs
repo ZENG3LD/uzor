@@ -101,9 +101,14 @@ where
 
     let dev_id = surface.dev_id;
     let adapter_info = render_cx.devices[dev_id].adapter().get_info();
-    let backend = config
-        .backend_hint
-        .unwrap_or_else(|| uzor_render_hub::detect_backend(&adapter_info));
+    // Precedence (owner decision 2026-07-24: no default flip, ever):
+    // explicit `backend_hint` > `UZOR_RENDER_FAMILY` env var > `config`'s
+    // own `render_family` > `RenderFamily::default()` (`Vello`). Mirrors
+    // `uzor-desktop::Manager::from_built`'s own resolution exactly.
+    let backend = config.backend_hint.unwrap_or_else(|| {
+        let family = uzor_render_hub::resolve_render_family_from_process_env(Some(config.render_family));
+        uzor_render_hub::detect_backend_for_family(&adapter_info, family)
+    });
 
     let device = &render_cx.devices[dev_id].device;
     add_copy_src_to_target_texture(&mut surface, device);

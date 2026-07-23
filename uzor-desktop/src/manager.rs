@@ -373,23 +373,38 @@ impl<A: App<P>, P: DockPanel + Default + 'static> Manager<A, P> {
     /// This is the primary entry point used by [`crate::AppRun::run`].
     ///
     /// **Autodetect** is the default:
-    /// - Neither backend nor factory set → `RenderHub::autodetect()` probes the
-    ///   GPU and selects the best available backend + factory.
+    /// - Neither backend nor factory set → resolve a [`RenderFamily`] (see
+    ///   below) and call `RenderHub::autodetect(family)`, which probes the
+    ///   GPU and selects the best available backend + factory for that family.
     /// - Backend set, factory not set → `RenderHub::fixed(backend)` + factory
-    ///   from the hub's pool.
+    ///   from the hub's pool. An explicit backend always skips family
+    ///   resolution entirely (owner decision 2026-07-24 precedence: explicit
+    ///   backend beats env override beats builder family beats default).
     /// - Both set → use the caller-supplied backend + factory; wrap backend in
     ///   `RenderHub::fixed` for metrics bookkeeping.
+    ///
+    /// **`RenderFamily` resolution** (only reached when `built.backend` is
+    /// `None`): `uzor_render_hub::resolve_render_family_from_process_env`
+    /// applied to `built.render_family` — `UZOR_RENDER_FAMILY` env var (if
+    /// set and valid) beats the app builder's own `.render_family(...)`
+    /// setting, which beats [`RenderFamily::default`] (`Vello`). Neither
+    /// render family is ever auto-promoted over the other — see
+    /// `uzor_render_hub::detect`'s own module doc for the full doctrine.
     pub fn from_built(built: BuiltApp<A, P>) -> Self {
         // ── Phase 1: resolve hub, backend, factory ────────────────────────────
         let hub = match (built.backend, built.factory.is_some()) {
-            (None, false) => RenderHub::autodetect(),
+            (None, false) => {
+                let family = uzor_render_hub::resolve_render_family_from_process_env(built.render_family);
+                RenderHub::autodetect(family)
+            }
             (Some(b), _) => RenderHub::fixed(b),
             (None, true) => {
                 eprintln!(
                     "[uzor-desktop] from_built: factory supplied without backend — \
                      running autodetect; factory may mismatch active backend"
                 );
-                RenderHub::autodetect()
+                let family = uzor_render_hub::resolve_render_family_from_process_env(built.render_family);
+                RenderHub::autodetect(family)
             }
         };
 

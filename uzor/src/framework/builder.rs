@@ -8,7 +8,7 @@ use super::multi_window::{WindowSpec, WindowKey};
 // RgbaIcon, RenderBackend, and CornerStyle canonical definitions live in uzor::platform::types.
 // Re-exported here so existing callers of `uzor::framework::builder::{RgbaIcon,RenderBackend}`
 // keep working without changes.
-pub use crate::platform::types::{CornerStyle, RgbaIcon, RenderBackend};
+pub use crate::platform::types::{CornerStyle, RgbaIcon, RenderBackend, RenderFamily};
 
 // ── AnyFactory ───────────────────────────────────────────────────────────────
 //
@@ -87,6 +87,12 @@ pub struct BuiltApp<A: App<P>, P: DockPanel> {
     /// `None` means "let the platform runtime autodetect".
     #[doc(hidden)]
     pub backend: Option<RenderBackend>,
+    /// `None` means "the platform runtime resolves the family from
+    /// `UZOR_RENDER_FAMILY` / [`RenderFamily::default`]" — ignored
+    /// entirely when `backend` is `Some` (an explicit backend always
+    /// skips family resolution, owner decision 2026-07-24).
+    #[doc(hidden)]
+    pub render_family: Option<RenderFamily>,
     #[doc(hidden)]
     pub factory: Option<Box<dyn AnyFactory>>,
     #[doc(hidden)]
@@ -113,6 +119,7 @@ where
     app: A,
     config: AppConfig,
     backend: Option<RenderBackend>,
+    render_family: Option<RenderFamily>,
     factory: Option<Box<dyn AnyFactory>>,
     tray: Option<TraySpec>,
     windows: Vec<WindowSpec>,
@@ -130,6 +137,7 @@ where
             app,
             config: AppConfig::default(),
             backend: None,
+            render_family: None,
             factory: None,
             tray: None,
             windows: Vec::new(),
@@ -298,12 +306,32 @@ where
 
     // ── Infrastructure setters ────────────────────────────────────────────────
 
-    /// Select the rendering backend (override — skips autodetect).
+    /// Select the rendering backend (override — skips autodetect entirely,
+    /// including [`Self::render_family`] resolution).
     ///
     /// When omitted, `uzor-desktop` will call `RenderHub::autodetect()` at
-    /// startup and pick the best available backend automatically.
+    /// startup and pick the best available backend automatically, for
+    /// whichever [`RenderFamily`] [`Self::render_family`] (or the
+    /// `UZOR_RENDER_FAMILY` env var, or [`RenderFamily::default`]) resolves
+    /// to.
     pub fn backend(mut self, backend: RenderBackend) -> Self {
         self.backend = Some(backend);
+        self
+    }
+
+    /// Select the coarse render family autodetect should target — `Vello`
+    /// (today's default) or `Urx`. **Ignored when [`Self::backend`] is also
+    /// called** — an explicit backend always wins outright.
+    ///
+    /// Owner decision 2026-07-24: no default flip, ever. Both families stay
+    /// first-class; this is the per-app knob that picks between them when
+    /// no explicit backend is set. Full precedence: explicit `.backend(...)`
+    /// > `UZOR_RENDER_FAMILY` env var (case-insensitive `vello`/`urx`) >
+    /// this setting > [`RenderFamily::default`] (`Vello`). 3D is always
+    /// URX regardless of this flag — it has no effect on the 3D dispatch
+    /// path.
+    pub fn render_family(mut self, family: RenderFamily) -> Self {
+        self.render_family = Some(family);
         self
     }
 
@@ -351,6 +379,7 @@ where
             app:     self.app,
             config:  self.config,
             backend: self.backend,
+            render_family: self.render_family,
             factory: self.factory,
             tray:    self.tray,
             windows: self.windows,
