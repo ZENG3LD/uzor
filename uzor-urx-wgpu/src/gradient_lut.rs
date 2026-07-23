@@ -82,9 +82,12 @@ struct PendingUpload {
 }
 
 /// Read-only atlas telemetry — hit/miss/eviction/entry counts, same
-/// shape family as `atlas::AtlasStats`.
+/// shape family as `atlas::AtlasStats`. `pub` (re-exported from
+/// `lib.rs`, same convention as `AtlasStats`/`TessCacheStats`) —
+/// `NativeUrxRenderer::gradient_lut_stats()` (Wave 4 Commit 3) returns
+/// this, so it must be at least as visible as that `pub fn`.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct GradientLutAtlasStats {
+pub struct GradientLutAtlasStats {
     pub entries: usize,
     pub hits: u64,
     pub misses: u64,

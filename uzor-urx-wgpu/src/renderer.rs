@@ -55,10 +55,14 @@ use uzor_urx_core::config::UrxConfig;
 
 use crate::atlas::{AtlasStats, NativeGlyphAtlas};
 use crate::encode::{self, BatchKind, EncodedFrame, FrameOp, MaskOp};
+use crate::gradient_lut::GradientLutAtlas;
+use crate::image_cache::NativeImageCache;
 use crate::msaa::MsaaTarget;
 use crate::native_error::NativeRenderError;
 use crate::pipelines::blend_composite::BlendCompositePipeline;
 use crate::pipelines::glyph::GlyphPipeline;
+use crate::pipelines::gradient::GradientPipeline;
+use crate::pipelines::image::ImagePipeline;
 use crate::pipelines::line::LinePipeline;
 use crate::pipelines::path::PathPipeline;
 use crate::pipelines::quad::QuadPipeline;
@@ -255,6 +259,8 @@ pub struct NativeUrxRenderer {
     glyph: GlyphPipeline,
     stencil_mask: StencilMaskPipeline,
     blend_composite: BlendCompositePipeline,
+    gradient: GradientPipeline,
+    image: ImagePipeline,
 
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
@@ -271,6 +277,8 @@ pub struct NativeUrxRenderer {
     layer_pool: BlendLayerPool,
     tess_cache: TessCache,
     glyph_atlas: NativeGlyphAtlas,
+    gradient_lut: GradientLutAtlas,
+    image_cache: NativeImageCache,
     blend_layer_max_depth: usize,
 }
 
@@ -397,6 +405,18 @@ impl NativeUrxRenderer {
         });
         let blend_composite = BlendCompositePipeline::new(&device, format, sample_count, &uniform_bgl, &resolve_bgl);
 
+        // Gradient LUT atlas + Radial/Sweep pipeline (Wave 4 Commit 3,
+        // design §2.2/§2.3) — same "build the shared group-1 resource
+        // BEFORE the pipeline that borrows its BindGroupLayout" order
+        // the glyph atlas established above.
+        let gradient_lut = GradientLutAtlas::new(&device, cfg.wgpu_gradient_lut_rows);
+        let gradient = GradientPipeline::new(&device, format, sample_count, &uniform_bgl, gradient_lut.bind_group_layout());
+
+        // Per-image texture cache + Image pipeline (Wave 4 Commit 3,
+        // design §4.2/§4.3) — same ordering precedent.
+        let image_cache = NativeImageCache::new(&device, cfg.wgpu_image_cache_cap);
+        let image = ImagePipeline::new(&device, format, sample_count, &uniform_bgl, image_cache.bind_group_layout());
+
         let msaa = MsaaTarget::new(sample_count, format);
         // Sample count MUST match whichever color target this same
         // pass binds (`msaa`'s at `sample_count > 1`, or `view` itself
@@ -420,6 +440,8 @@ impl NativeUrxRenderer {
             glyph,
             stencil_mask,
             blend_composite,
+            gradient,
+            image,
             uniform_buffer,
             uniform_bind_group,
             resolve_bgl,
@@ -429,6 +451,8 @@ impl NativeUrxRenderer {
             layer_pool,
             tess_cache,
             glyph_atlas,
+            gradient_lut,
+            image_cache,
             blend_layer_max_depth: cfg.blend_layer_max_depth,
         }
     }
@@ -463,6 +487,21 @@ impl NativeUrxRenderer {
         self.glyph_atlas.stats()
     }
 
+    /// Read-only gradient-LUT-atlas telemetry — hit/miss/eviction/entry
+    /// counts (Wave 4 Commit 3, design §2.2/§10 Commit 2's own scope
+    /// item). Same "3-line accessor, no reason to defer it" precedent
+    /// as `glyph_atlas_stats` above. Not a hot-path cost: four
+    /// `usize`/`u64` loads.
+    pub fn gradient_lut_stats(&self) -> crate::gradient_lut::GradientLutAtlasStats {
+        self.gradient_lut.stats()
+    }
+
+    /// Read-only image-cache telemetry — same shape/reasoning as
+    /// [`Self::gradient_lut_stats`] above.
+    pub fn image_cache_stats(&self) -> crate::image_cache::NativeImageCacheStats {
+        self.image_cache.stats()
+    }
+
     /// Walk `scene.commands`, encode into every native pipeline's
     /// instance buffer, and render into `view` — a single pass when
     /// the scene uses no blend layers (byte-identical to Wave 1/2/Wave
@@ -488,16 +527,24 @@ impl NativeUrxRenderer {
 
         self.resize(viewport.width, viewport.height);
 
-        // Advance the atlas's per-frame tick BEFORE walking the scene —
-        // every `get_or_insert` this frame stamps its slot with the NEW
-        // tick, which is what makes the never-evict-this-frame
-        // invariant work (`atlas.rs`'s module doc).
+        // Advance the atlas's/LUT's per-frame tick BEFORE walking the
+        // scene — every `get_or_insert` this frame stamps its slot/row
+        // with the NEW tick, which is what makes the never-evict-this-
+        // frame invariant work (`atlas.rs`'s module doc,
+        // `gradient_lut.rs`'s own doc comment — Wave 4 Commit 3).
         self.glyph_atlas.begin_frame();
+        self.gradient_lut.begin_frame();
+        // `NativeImageCache`'s own `get_or_upload` isn't called until
+        // `replay_ops` (below) — its never-evict-this-frame invariant
+        // still needs the tick advanced exactly once per frame, before
+        // any of those calls happen.
+        self.image_cache.begin_frame();
         let frame = encode::encode_scene(
             scene,
             viewport,
             &mut self.tess_cache,
             Some(&mut self.glyph_atlas),
+            Some(&mut self.gradient_lut),
             self.blend_layer_max_depth,
         );
 
@@ -509,11 +556,21 @@ impl NativeUrxRenderer {
         self.glyph.upload(&self.device, &self.queue, &frame.glyphs);
         self.stencil_mask.upload(&self.device, &self.queue, &frame.stencil_masks);
         self.blend_composite.upload(&self.device, &self.queue, &frame.composites);
+        self.gradient.upload(&self.device, &self.queue, &frame.gradients);
+        self.image.upload(&self.device, &self.queue, &frame.images);
         // Drain every glyph bitmap queued by this frame's `encode_scene`
         // call into the atlas texture — after encode returns (every
         // glyph this frame has already been placed) and before any
         // pass opens (so it samples up-to-date contents).
         self.glyph_atlas.flush_uploads(&self.queue);
+        // Same timing for the gradient LUT atlas's queued rows (Wave 4
+        // Commit 3) — `GradientLutAtlas::flush_uploads` is the SAME
+        // "queue bytes at encode time, drain once here" shape as the
+        // glyph atlas (see that module's own doc comment for why
+        // `NativeImageCache` does NOT need an equivalent flush step:
+        // its uploads are synchronous, resolved lazily at replay time
+        // instead of during `encode_scene`).
+        self.gradient_lut.flush_uploads(&self.queue);
 
         // Frame-wide arming decision (design §2.5) — made ONCE, before
         // any pass opens. `has_rounded_clip == false` (the overwhelming
@@ -660,6 +717,61 @@ impl NativeUrxRenderer {
                                 current = Some((batch.kind, batch.stencil_ref));
                             }
                             self.stencil_mask.draw_range(&mut pass, batch.start, batch.count);
+                        }
+                        BatchKind::Gradient => {
+                            // Same shared-group-1-resource shape as
+                            // Glyph (Wave 4 Commit 3, design §2.3) — the
+                            // SAME `GradientLutAtlas` bind group is
+                            // rebound across every `Gradient` batch,
+                            // never per-instance data.
+                            let sr = effective_ref(batch.stencil_ref);
+                            if current != Some((batch.kind, sr)) {
+                                self.gradient.bind(&mut pass, sr, self.gradient_lut.bind_group());
+                                current = Some((batch.kind, sr));
+                            }
+                            self.gradient.draw_range(&mut pass, batch.start, batch.count);
+                        }
+                        BatchKind::Image(id) => {
+                            // A DIFFERENT `ImageId` never coalesces with
+                            // another (design §4.3 — bind group per
+                            // image); `current`'s equality check already
+                            // compares the WRAPPED id (`BatchKind`
+                            // derives `PartialEq`), so it naturally
+                            // re-binds on every id change with no extra
+                            // logic here. Resolved (and, on a genuine
+                            // miss, uploaded) HERE, at replay time — see
+                            // `image_cache.rs`'s own module doc for why
+                            // that's correct for images specifically
+                            // (unlike the atlas/LUT, an image slot is
+                            // written at most once in its whole resident
+                            // lifetime, so there's no encode-time
+                            // pending-queue to batch away).
+                            let sr = effective_ref(batch.stencil_ref);
+                            let Some(slot) = self.image_cache.get_or_upload(&self.device, &self.queue, id) else {
+                                // Honest miss (unregistered id) or
+                                // within-frame cache oversubscription
+                                // (never-evict-this-frame exhausted) —
+                                // this cache emits no metrics of its own
+                                // (same convention as the atlas/LUT);
+                                // THIS is the one call site that can
+                                // observe a replay-time miss (an
+                                // encode-time `image_id_unknown` miss
+                                // never reaches here at all — no
+                                // `BatchKind::Image` batch was ever
+                                // emitted for it), so it's counted here.
+                                metrics::counter!(
+                                    uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+                                    "kind" => "native_image_cache_full_this_frame"
+                                )
+                                .increment(1);
+                                current = None;
+                                continue;
+                            };
+                            if current != Some((batch.kind, sr)) {
+                                self.image.bind(&mut pass, sr, NativeImageCache::bind_group_of(slot));
+                                current = Some((batch.kind, sr));
+                            }
+                            self.image.draw_range(&mut pass, batch.start, batch.count);
                         }
                     }
                 }
@@ -847,6 +959,23 @@ mod tests {
         let v = Viewport { width: 100, height: 200 };
         let v2 = v;
         assert_eq!(v, v2);
+    }
+
+    #[test]
+    #[ignore = "needs a headless GPU adapter"]
+    fn gradient_lut_and_image_cache_stats_default_to_zero() {
+        let Some((device, queue)) = test_device() else { return };
+        let renderer = NativeUrxRenderer::new(device, queue, wgpu::TextureFormat::Rgba8Unorm);
+        let g = renderer.gradient_lut_stats();
+        assert_eq!(g.entries, 0);
+        assert_eq!(g.hits, 0);
+        assert_eq!(g.misses, 0);
+        assert_eq!(g.evictions, 0);
+        let i = renderer.image_cache_stats();
+        assert_eq!(i.entries, 0);
+        assert_eq!(i.hits, 0);
+        assert_eq!(i.misses, 0);
+        assert_eq!(i.evictions, 0);
     }
 
     // ── Wave 3 Commit 2: standalone GPU sanity for real stencil clip ──

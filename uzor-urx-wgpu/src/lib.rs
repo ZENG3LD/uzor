@@ -96,15 +96,13 @@ pub mod adapter;
 // gone.
 mod atlas;
 mod encode;
-// `GradientLutAtlas`/`NativeImageCache` are greenfield (URX Wave 4
-// Commit 2, `docs/uzor-engines/plans/urx-wave4-vello-parity-design-2026-07-25.md`
-// §2.2/§4.2) — nothing outside their own unit tests constructs one yet
-// (wired into `NativeUrxRenderer`/`encode.rs` in Commit 3), so both
-// modules are `#[cfg(test)]`-gated for now, same precedent as Wave 2
-// Commit 1's `atlas` module (see that mod's own doc comment above).
-#[cfg(test)]
+// `GradientLutAtlas`/`NativeImageCache` were greenfield in URX Wave 4
+// Commit 2 (`docs/uzor-engines/plans/urx-wave4-vello-parity-design-2026-07-25.md`
+// §2.2/§4.2, `#[cfg(test)]`-gated then, same precedent as Wave 2
+// Commit 1's `atlas` module) — Commit 3 wires both into
+// `NativeUrxRenderer`/`encode.rs` for real, so the gate is lifted here,
+// same as `atlas`'s own history above.
 mod gradient_lut;
-#[cfg(test)]
 mod image_cache;
 mod msaa;
 pub mod native_error;
@@ -116,6 +114,8 @@ mod tessellate;
 
 pub use adapter::{adapt_scene_into, UrxWgpuBackend};
 pub use atlas::AtlasStats;
+pub use gradient_lut::GradientLutAtlasStats;
+pub use image_cache::NativeImageCacheStats;
 pub use native_error::NativeRenderError;
 pub use renderer::{NativeUrxRenderer, Viewport};
 pub use tessellate::TessCacheStats;

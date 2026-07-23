@@ -7,13 +7,18 @@
 //! quads sampling `crate::atlas::NativeGlyphAtlas`). Wave 3 Commit 2
 //! added the stencil-clip machinery: `stencil_mask` (the mask-write
 //! pipeline pair) and `stencil_test_state()` below, shared by every
-//! draw pipeline's `_test` variant. Wave 3 Commit 3 adds
+//! draw pipeline's `_test` variant. Wave 3 Commit 3 added
 //! `blend_composite` (the blend-layer composite pipeline)
 //! (`docs/uzor-engines/plans/urx-wave3-clip-blend-design-2026-07-25.md`
-//! §2.2/§3.6).
+//! §2.2/§3.6). Wave 4 Commit 3 adds `gradient` (Radial/Sweep
+//! per-fragment LUT eval) and `image` (textured quad + rotation)
+//! (`docs/uzor-engines/plans/urx-wave4-vello-parity-design-2026-07-25.md`
+//! §2.3/§4.3).
 
 pub(crate) mod blend_composite;
 pub(crate) mod glyph;
+pub(crate) mod gradient;
+pub(crate) mod image;
 pub(crate) mod line;
 pub(crate) mod path;
 pub(crate) mod quad;

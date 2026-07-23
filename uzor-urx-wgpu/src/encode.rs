@@ -134,18 +134,21 @@
 use kurbo::Shape as _;
 use peniko::LinearGradientPosition;
 use uzor_urx_core::math::{
-    Affine, BezPath, BlendMode, Brush, Color, ColorStops, Compose, Extend, Gradient, GradientKind, Mix, Rect,
+    Affine, BezPath, BlendMode, Brush, Color, ColorStops, Compose, Extend, Gradient, GradientKind, Mix, Point, Rect,
     RoundedRect, RoundedRectRadii, Vec2,
 };
 use uzor_urx_core::metrics_keys::{KEY_RENDER_GLYPH_INSTANCES, KEY_RENDER_PRIMITIVES, KEY_RENDER_SKIPPED_NONFINITE};
-use uzor_urx_core::scene::{DrawCommand, FillRule, FontId, Glyph, LineCap, Scene, Stroke};
+use uzor_urx_core::scene::{DrawCommand, FillRule, FontId, Glyph, ImageId, LineCap, Scene, Stroke};
 use uzor_urx_core::validate::{validate_command, ValidationIssue};
 
 use std::sync::Arc;
 
 use crate::atlas::NativeGlyphAtlas;
+use crate::gradient_lut::GradientLutAtlas;
 use crate::pipelines::blend_composite::BlendCompositeInstance;
 use crate::pipelines::glyph::GlyphInstance;
+use crate::pipelines::gradient::GradientInstance;
+use crate::pipelines::image::ImageInstance;
 use crate::pipelines::line::LineInstance;
 use crate::pipelines::path::TriInstance;
 use crate::pipelines::quad::{pack_rgba8, QuadInstance};
@@ -173,6 +176,25 @@ pub(crate) enum BatchKind {
     /// buffer — mask writes and content triangles never share one
     /// vertex buffer, since they bind different pipelines).
     StencilMask(MaskOp),
+    /// Wave 4 Commit 3 (design §2) — Radial/Sweep gradient-mesh
+    /// triangles, indexes into `EncodedFrame::gradients` (a SEPARATE
+    /// buffer from `triangles`/`GradientInstance` is a different, wider
+    /// layout — see that struct's own doc comment).
+    Gradient,
+    /// Wave 4 Commit 3 (design §4.3) — `DrawCommand::Image`, indexes
+    /// into `EncodedFrame::images`. Carries the `ImageId` IN the batch
+    /// key itself (unlike every other `BatchKind`, which needs no
+    /// per-batch identity beyond its own variant) — a DIFFERENT
+    /// `ImageId` never coalesces with another (each needs its OWN bind
+    /// group bound at replay time), but CONSECUTIVE draws of the SAME
+    /// `ImageId` still coalesce via `bump_batch`'s existing equality
+    /// check (`BatchKind` derives `PartialEq`, so two `Image(id)`
+    /// values compare equal exactly when `id` matches) — no new
+    /// batching mechanism needed, mirrors Wave 3's blend-composite
+    /// precedent ("composites are never coalesced with anything... each
+    /// one binds a DIFFERENT layer's own resolve texture") for the
+    /// cross-image case, while still batching same-image runs for free.
+    Image(ImageId),
 }
 
 /// A contiguous run of same-kind, same-`stencil_ref` instances in
@@ -254,6 +276,13 @@ pub(crate) struct EncodedFrame {
     /// Mask-write geometry (design §2/§4) — a SEPARATE buffer from
     /// `triangles`; `StencilMask` batches index into this one.
     pub(crate) stencil_masks: Vec<TriInstance>,
+    /// Radial/Sweep gradient-mesh triangles (Wave 4 Commit 3, design
+    /// §2.3) — `BatchKind::Gradient` batches index into this one.
+    /// Linear gradients stay on `triangles` (unchanged, design §2.1).
+    pub(crate) gradients: Vec<GradientInstance>,
+    /// `DrawCommand::Image` quads (Wave 4 Commit 3, design §4.3) —
+    /// `BatchKind::Image(id)` batches index into this one.
+    pub(crate) images: Vec<ImageInstance>,
     /// One entry per `FrameOp::PopLayer`, in the SAME order — the
     /// renderer's executor reads these via a running counter as it
     /// processes `PopLayer` ops (design §3.6), the same "upload once,
@@ -306,6 +335,20 @@ impl EncodedFrame {
         self.glyphs.push(instance);
         let stencil_ref = self.current_stencil_ref;
         self.bump_batch(BatchKind::Glyph, start, stencil_ref);
+    }
+
+    fn push_gradient(&mut self, instance: GradientInstance) {
+        let start = self.gradients.len() as u32;
+        self.gradients.push(instance);
+        let stencil_ref = self.current_stencil_ref;
+        self.bump_batch(BatchKind::Gradient, start, stencil_ref);
+    }
+
+    fn push_image(&mut self, instance: ImageInstance, id: ImageId) {
+        let start = self.images.len() as u32;
+        self.images.push(instance);
+        let stencil_ref = self.current_stencil_ref;
+        self.bump_batch(BatchKind::Image(id), start, stencil_ref);
     }
 
     /// Mask-write geometry (design §2.4) — `gate_ref` is the EXPLICIT
@@ -742,6 +785,82 @@ fn project_local(p: [f32; 2], sx: f64, sy: f64, tx: f64, ty: f64) -> [f32; 2] {
     [(p[0] as f64 * sx + tx) as f32, (p[1] as f64 * sy + ty) as f32]
 }
 
+/// Apply the FULL 2x3 affine `t` to a single point — mirrors
+/// `uzor-urx-cpu::clip::transform_point_full`'s formula exactly (Wave 4
+/// Commit 1), reimplemented here rather than shared across crates:
+/// this backend does not (and should not) depend on its CPU sibling as
+/// a library — they're peer backends, not shared infra (design §0.4's
+/// own architectural principle, the reason `uzor-urx-image`/
+/// `uzor-urx-glyph` exist as SEPARATE shared crates rather than one
+/// backend depending on the other directly). Used ONLY for gradient
+/// PARAMETERS (§0.1b/§2.4's "commit 1 parity" — Radial's `end_center`,
+/// Sweep's `center`) — NOT for the tessellated MESH's own
+/// reprojection, which stays on `project_local`'s translate+scale-only
+/// decomposition until Commit 4's §5.4 upgrade (see
+/// `transform_gradient_params`'s own doc comment for the resulting,
+/// disclosed, one-commit-lived shape/gradient rotation asymmetry).
+fn transform_point_full(t: &Affine, p: Point) -> Point {
+    let c = t.as_coeffs();
+    let (a, b, e, d, tx, ty) = (c[0], c[1], c[2], c[3], c[4], c[5]);
+    Point::new(a * p.x + e * p.y + tx, b * p.x + d * p.y + ty)
+}
+
+/// `(hypot(a,b), hypot(c,d))` — the affine's own per-axis scale
+/// magnitude from its linear part, ignoring rotation/shear. Mirrors
+/// `uzor-urx-cpu::gradient::affine_scale_factors` (Wave 4 Commit 1)
+/// formula-for-formula.
+fn affine_scale_factors(t: &Affine) -> (f64, f64) {
+    let c = t.as_coeffs();
+    (c[0].hypot(c[1]), c[2].hypot(c[3]))
+}
+
+/// `atan2(b, a)` — the affine's rotation component. Mirrors
+/// `uzor-urx-cpu::gradient::affine_rotation_angle` (Wave 4 Commit 1).
+fn affine_rotation_angle(t: &Affine) -> f64 {
+    let c = t.as_coeffs();
+    c[1].atan2(c[0])
+}
+
+/// Unconditional `(sx, sy, angle, tx, ty)` via hypot/atan2 — no
+/// shear/reflection validity check. `decompose_similarity` (below)
+/// wraps this with a validity gate for the "is this a CLEAN rotation +
+/// scale, no shear" question; `encode_image`'s "shear degrades to a
+/// rotation-ONLY approximation" fallback (design §4.3) calls this
+/// directly instead, since it explicitly WANTS the (honestly counted)
+/// approximation even when the gate below would reject the transform.
+fn decompose_similarity_raw(t: &Affine) -> (f64, f64, f64, f64, f64) {
+    let c = t.as_coeffs();
+    let (a, b, cc, d, e, f) = (c[0], c[1], c[2], c[3], c[4], c[5]);
+    (a.hypot(b), cc.hypot(d), b.atan2(a), e, f)
+}
+
+/// `Some((sx, sy, angle, tx, ty))` when `t`'s linear part is a pure
+/// rotation + non-uniform-axis-scale (columns orthogonal, i.e. no
+/// shear, AND determinant > 0, i.e. no reflection — a reflection can't
+/// be represented by rotating an axis-aligned quad, since `size` is an
+/// unsigned magnitude). `None` when genuine shear or a reflection is
+/// present (design §5.1's `decompose_similarity` sketch — introduced
+/// here, this commit, for `encode_image`'s exclusive use; Commit 4
+/// wires FillRect/StrokeRect's OWN Quad-SDF-vs-Triangle routing
+/// decision through this SAME function rather than a duplicate, since
+/// it's pure geometry math with no Image-specific assumption baked in
+/// — `quad.rs`/`tessellate.rs`, the files that routing decision
+/// touches, are this commit's own explicit off-limits list).
+fn decompose_similarity(t: &Affine) -> Option<(f64, f64, f64, f64, f64)> {
+    let c = t.as_coeffs();
+    let (a, b, cc, d, _, _) = (c[0], c[1], c[2], c[3], c[4], c[5]);
+    const EPS: f64 = 1e-6;
+    let dot = a * cc + b * d;
+    if dot.abs() > EPS * (a.hypot(b) * cc.hypot(d)).max(1e-12) {
+        return None; // columns not orthogonal -> genuine shear
+    }
+    let det = a * d - b * cc;
+    if det <= 0.0 {
+        return None; // reflection present -> not representable as a quad rotation
+    }
+    Some(decompose_similarity_raw(t))
+}
+
 #[inline]
 fn degrade(kind: &'static str) {
     metrics::counter!(KEY_RENDER_PRIMITIVES, "kind" => kind).increment(1);
@@ -757,6 +876,21 @@ enum BrushKind {
     Image,
 }
 
+/// The gradient's own first stop colour, straight (non-premultiplied)
+/// sRGB — the fallback representative colour whenever a gradient
+/// can't render its real per-fragment/per-vertex form (Radial/Sweep's
+/// `native_gradient_lut_full_this_frame` degrade path in
+/// `emit_gradient_mesh` reuses this SAME resolution, not a re-derived
+/// copy).
+#[inline]
+fn first_stop_color(gradient: &Gradient) -> Color {
+    gradient
+        .stops
+        .first()
+        .map(|s| s.color.to_alpha_color::<peniko::color::Srgb>())
+        .unwrap_or(Color::from_rgba8(0, 0, 0, 0))
+}
+
 /// Resolve any `Brush` to a single representative colour: the brush's
 /// own colour for `Solid`, the first gradient stop for `Gradient`
 /// (matches the legacy adapter's `brush_to_solid_color`,
@@ -765,14 +899,7 @@ enum BrushKind {
 fn resolve_brush_color(brush: &Brush) -> (Color, BrushKind) {
     match brush {
         Brush::Solid(c) => (*c, BrushKind::Solid),
-        Brush::Gradient(g) => {
-            let c = g
-                .stops
-                .first()
-                .map(|s| s.color.to_alpha_color::<peniko::color::Srgb>())
-                .unwrap_or(Color::from_rgba8(0, 0, 0, 0));
-            (c, BrushKind::Gradient)
-        }
+        Brush::Gradient(g) => (first_stop_color(g), BrushKind::Gradient),
         Brush::Image(_) => (Color::from_rgba8(0, 0, 0, 0), BrushKind::Image),
     }
 }
@@ -868,11 +995,20 @@ fn emit_stencil_mask_batch(
 /// once by `NativeUrxRenderer::with_config` and threaded through as a
 /// plain resolved value (design §3.3), consistent with `tess_cache`/
 /// `atlas` above rather than accepting the whole config struct.
+///
+/// `lut: Option<&mut GradientLutAtlas>` (Wave 4 Commit 3) mirrors
+/// `atlas`'s own `Option` shape exactly, for the identical reason (see
+/// `encode_glyph_run`'s doc comment) — `GradientLutAtlas` only exists
+/// device-backed; a hard `&mut` would force every one of this module's
+/// device-free unit tests that never touch a Radial/Sweep gradient to
+/// also acquire a headless GPU device. `NativeUrxRenderer::render_into_encoder`
+/// always supplies `Some`; `None` is a test-only state.
 pub(crate) fn encode_scene(
     scene: &Scene,
     viewport: Viewport,
     tess_cache: &mut TessCache,
     mut atlas: Option<&mut NativeGlyphAtlas>,
+    mut lut: Option<&mut GradientLutAtlas>,
     blend_layer_max_depth: usize,
 ) -> EncodedFrame {
     let mut frame = EncodedFrame::default();
@@ -951,7 +1087,10 @@ pub(crate) fn encode_scene(
                     clip_rect,
                 );
             }
-            DrawCommand::Image { .. } => degrade("native_image_not_yet_implemented"),
+            DrawCommand::Image { src, src_rect, dest, transform } => {
+                let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
+                encode_image(&mut frame, *src, *src_rect, *dest, transform, clip_rect);
+            }
             DrawCommand::PushBlendLayer { mode, alpha, transform } => {
                 // `Affine` derives `PartialEq` in the pinned kurbo 0.13
                 // (same finding as `uzor-urx-cpu`'s Commit 1 CPU-side
@@ -1015,11 +1154,11 @@ pub(crate) fn encode_scene(
             },
             DrawCommand::FillRect { rect, radii, brush, transform } => {
                 let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
-                encode_fill_rect(&mut frame, tess_cache, *rect, radii, brush, transform, clip_rect);
+                encode_fill_rect(&mut frame, tess_cache, lut.as_deref_mut(), *rect, radii, brush, transform, clip_rect);
             }
             DrawCommand::StrokeRect { rect, radii, stroke, brush, transform } => {
                 let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
-                encode_stroke_rect(&mut frame, *rect, radii, stroke, brush, transform, clip_rect);
+                encode_stroke_rect(&mut frame, tess_cache, lut.as_deref_mut(), *rect, radii, stroke, brush, transform, clip_rect);
             }
             DrawCommand::Line { from, to, stroke, brush, transform } => {
                 let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
@@ -1027,11 +1166,11 @@ pub(crate) fn encode_scene(
             }
             DrawCommand::FillPath { path, rule, brush, transform } => {
                 let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
-                encode_fill_path(&mut frame, tess_cache, path, *rule, brush, transform, clip_rect);
+                encode_fill_path(&mut frame, tess_cache, lut.as_deref_mut(), path, *rule, brush, transform, clip_rect);
             }
             DrawCommand::StrokePath { path, stroke, brush, transform } => {
                 let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
-                encode_stroke_path(&mut frame, tess_cache, path, stroke, brush, transform, clip_rect);
+                encode_stroke_path(&mut frame, tess_cache, lut.as_deref_mut(), path, stroke, brush, transform, clip_rect);
             }
         }
     }
@@ -1076,9 +1215,18 @@ pub(crate) fn encode_scene(
     frame
 }
 
+/// Routing (design §2.5): `Solid` stays on the fast Quad SDF path
+/// unchanged. `Gradient` (ANY kind — Linear/Radial/Sweep all 3 now
+/// full, Wave 4 Commit 3) always tessellates `rect_bez_path` and
+/// dispatches through `emit_gradient_mesh`, the SAME mesh the
+/// solid-fill path would have needed anyway for a rounded rect — zero
+/// marginal pipeline cost for the radii case. `Image` (the peniko
+/// inline-image BRUSH, NOT `DrawCommand::Image`) stays dropped
+/// entirely — out of scope, design §4.1, unchanged.
 fn encode_fill_rect(
     frame: &mut EncodedFrame,
     tess_cache: &mut TessCache,
+    lut: Option<&mut GradientLutAtlas>,
     rect: Rect,
     radii: &Option<[f32; 4]>,
     brush: &Brush,
@@ -1087,23 +1235,17 @@ fn encode_fill_rect(
 ) {
     match brush {
         Brush::Solid(c) => encode_fill_rect_quad(frame, rect, radii, *c, transform, clip_rect),
-        Brush::Gradient(g) => match &g.kind {
-            GradientKind::Linear(pos) => {
-                encode_fill_rect_linear_gradient(frame, tess_cache, rect, radii, g, pos, transform, clip_rect);
-            }
-            GradientKind::Radial(_) | GradientKind::Sweep(_) => {
-                // Wave 1 scope: only Linear gets full gradient support
-                // on FillRect (design §5). Radial/Sweep degrade to
-                // first-stop solid, same policy as the legacy adapter.
-                degrade("native_fill_rect_radial_or_sweep_to_solid");
-                let color = resolve_brush_color(brush).0;
-                encode_fill_rect_quad(frame, rect, radii, color, transform, clip_rect);
-            }
-        },
+        Brush::Gradient(g) => {
+            let path = rect_bez_path(rect, radii);
+            let mesh = tess_cache.get_or_insert_fill(&path, FillRule::NonZero);
+            emit_gradient_mesh(frame, lut, &mesh, g, transform, clip_rect);
+        }
         Brush::Image(_) => {
             // No image atlas wired yet — dropped entirely, matching the
             // legacy adapter's own `wgpu_fill_rect_image_dropped` policy
-            // (`adapter.rs:109-115`).
+            // (`adapter.rs:109-115`). Unchanged, design §4.1 — this is
+            // `Brush::Image`, NOT `DrawCommand::Image` (which now
+            // renders for real, see `encode_image`).
             degrade("native_fill_rect_image_dropped");
         }
     }
@@ -1261,46 +1403,205 @@ fn gradient_vertex_color(
     sample_gradient_straight(stops, t)
 }
 
-/// `FillRect{Brush::Gradient(Linear), radii}` — routed through the
-/// Path pipeline (design §5). Tessellates a REAL `RoundedRect` (or
-/// plain rect) path, colours each output triangle's 3 vertices by
-/// projecting them onto the gradient axis and sampling the stop list.
-fn encode_fill_rect_linear_gradient(
+/// Device-space Radial/Sweep gradient parameters, ready to bake
+/// straight into a `GradientInstance` (design §2.3/§2.4). Computed
+/// ONCE per draw command, not per vertex/fragment.
+struct GradientDeviceParams {
+    p0: [f32; 2],
+    p1: f32,
+    p2: f32,
+    kind_extend: u32,
+}
+
+/// Transform a Radial/Sweep gradient's own parameters through the SAME
+/// full-affine math CPU's Commit-1 gradient-axis fix uses
+/// (`transform_point_full`/`affine_scale_factors`/`affine_rotation_angle`
+/// — design §0.1b/§2.4, "commit 1 parity"). `GradientKind::Linear` is
+/// unreachable here — `emit_gradient_mesh`'s own Linear arm returns
+/// before this function is ever called for it.
+///
+/// **Disclosed, one-commit-lived asymmetry**: this function computes
+/// FULL affine params (translation + non-uniform scale + ROTATION),
+/// exactly matching CPU's own gradient-parameter fix — but the
+/// TESSELLATED MESH these params accompany (`emit_gradient_mesh`,
+/// below) is still reprojected via `project_local`'s translate+scale-
+/// ONLY decomposition (Commit 4's §5.4 upgrades that to full affine).
+/// Under a transform with a genuine rotation component, this means the
+/// gradient's colour FIELD would rotate while the shape's own OUTLINE
+/// does not — a real, temporary inconsistency, but: (a) inert for
+/// every existing fixture (none combines a gradient with a rotating
+/// transform — the same "provably safe" finding Commit 1 already
+/// established for CPU's twin fix), (b) mirrors an EXISTING, accepted
+/// CPU-side gap of the identical shape (design §0.3: CPU's own
+/// `fill_rect_aa` never renders a genuinely rotated rect either, while
+/// CPU's gradient-param fix — Commit 1 — is ALSO full affine; CPU has
+/// carried this same params-rotate/shape-doesn't split since Commit 1
+/// landed), and (c) resolves itself for free the moment Commit 4's
+/// `project_local` upgrade lands, since this function's own math
+/// doesn't need to change at all.
+fn transform_gradient_params(kind: &GradientKind, extend: Extend, transform: &Affine) -> GradientDeviceParams {
+    let extend_bits: u32 = match extend {
+        Extend::Pad => 0,
+        Extend::Repeat => 1,
+        Extend::Reflect => 2,
+    };
+    match kind {
+        GradientKind::Radial(pos) => {
+            let center = transform_point_full(transform, pos.end_center);
+            let (sx, sy) = affine_scale_factors(transform);
+            let radius = (pos.end_radius as f64 * (sx + sy) * 0.5).max(1e-3);
+            GradientDeviceParams {
+                p0: [center.x as f32, center.y as f32],
+                p1: radius as f32,
+                p2: 0.0,
+                kind_extend: (extend_bits << 2), // kind bits = 0 (Radial)
+            }
+        }
+        GradientKind::Sweep(pos) => {
+            let center = transform_point_full(transform, pos.center);
+            let rot = affine_rotation_angle(transform);
+            GradientDeviceParams {
+                p0: [center.x as f32, center.y as f32],
+                p1: (pos.start_angle as f64 + rot) as f32,
+                p2: (pos.end_angle as f64 + rot) as f32,
+                kind_extend: 1u32 | (extend_bits << 2),
+            }
+        }
+        GradientKind::Linear(_) => unreachable!(
+            "Linear stays on the per-vertex TriInstance path — emit_gradient_mesh's own Linear arm returns \
+             before transform_gradient_params is ever called for it"
+        ),
+    }
+}
+
+/// Shared "resolve a LUT row, then emit one `GradientInstance` per
+/// mesh triangle" tail for BOTH Radial and Sweep — factored out so
+/// `emit_gradient_mesh`'s per-kind arms only need their own
+/// kind-specific pre-check (Radial's focal-degrade counter) before
+/// falling into this common path.
+///
+/// **`lut: None`** mirrors `encode_glyph_run`'s established `atlas:
+/// None` precedent exactly (see that function's own doc comment for
+/// the full rationale) — a defensive-only, production-unreachable
+/// state (`NativeUrxRenderer::render_into_encoder` always supplies
+/// `Some`) that exists purely so this module's ~30+ device-free unit
+/// tests (none of which exercise Radial/Sweep) don't need a headless
+/// GPU device just to call `encode_scene`.
+///
+/// **LUT full this frame** (`get_or_insert` returns `None` — every row
+/// already touched this frame, design §2.2's never-evict-this-frame
+/// invariant exhausted): falls back to the SAME first-stop solid color
+/// every OTHER "can't render the real thing" gradient path in this
+/// crate already uses, counted `native_gradient_lut_full_this_frame`
+/// (design §8) — never silent, content never simply vanishes.
+fn emit_gradient_lut_triangles(
     frame: &mut EncodedFrame,
-    tess_cache: &mut TessCache,
-    rect: Rect,
-    radii: &Option<[f32; 4]>,
+    lut: Option<&mut GradientLutAtlas>,
+    mesh: &TessMesh,
     gradient: &Gradient,
-    pos: &LinearGradientPosition,
     transform: &Affine,
     clip_rect: [f32; 4],
 ) {
-    let path = rect_bez_path(rect, radii);
-    let mesh = tess_cache.get_or_insert_fill(&path, FillRule::NonZero);
+    let row = match lut {
+        Some(lut) => lut.get_or_insert(&gradient.stops, gradient.extend),
+        None => None,
+    };
+    let Some(row) = row else {
+        degrade("native_gradient_lut_full_this_frame");
+        emit_solid_mesh(frame, mesh, transform, packed_color(first_stop_color(gradient)), clip_rect);
+        return;
+    };
 
+    let params = transform_gradient_params(&gradient.kind, gradient.extend, transform);
     let (sx, sy, tx, ty) = decompose_translate_scale(transform);
-    let axis = (pos.end.x - pos.start.x, pos.end.y - pos.start.y);
-    let axis_len_sq = axis.0 * axis.0 + axis.1 * axis.1;
-
     for tri in &mesh.triangles {
-        let c0 = gradient_vertex_color(tri[0], pos, axis, axis_len_sq, &gradient.stops, gradient.extend);
-        let c1 = gradient_vertex_color(tri[1], pos, axis, axis_len_sq, &gradient.stops, gradient.extend);
-        let c2 = gradient_vertex_color(tri[2], pos, axis, axis_len_sq, &gradient.stops, gradient.extend);
-        frame.push_triangle(TriInstance {
+        frame.push_gradient(GradientInstance {
             v0: project_local(tri[0], sx, sy, tx, ty),
             v1: project_local(tri[1], sx, sy, tx, ty),
             v2: project_local(tri[2], sx, sy, tx, ty),
-            color0: packed_color(c0),
-            color1: packed_color(c1),
-            color2: packed_color(c2),
-            _pad0: 0.0,
+            p0: params.p0,
+            p1: params.p1,
+            p2: params.p2,
+            kind_extend: params.kind_extend,
+            lut_row: row,
             clip_rect,
         });
     }
 }
 
+/// General gradient-mesh emitter — replaces `encode_fill_rect_linear_gradient`
+/// as the single entry point every gradient-brushed, tessellated draw
+/// command routes through (design §2.4): `FillRect`, `FillPath`,
+/// `StrokePath`, `StrokeRect` (design §2.5's routing table — all 4 now
+/// get real Radial/Sweep, not just Linear-on-FillRect). Dispatches per
+/// `gradient.kind`: Linear stays on the EXISTING per-vertex `TriInstance`
+/// path, completely unchanged (design §2.1 — barycentric interpolation
+/// of an affine function is mathematically exact, migrating it would
+/// be pure churn); Radial/Sweep go through the NEW per-triangle
+/// `GradientInstance` + per-fragment LUT eval (design §2.3).
+fn emit_gradient_mesh(
+    frame: &mut EncodedFrame,
+    lut: Option<&mut GradientLutAtlas>,
+    mesh: &TessMesh,
+    gradient: &Gradient,
+    transform: &Affine,
+    clip_rect: [f32; 4],
+) {
+    match &gradient.kind {
+        GradientKind::Linear(pos) => {
+            let (sx, sy, tx, ty) = decompose_translate_scale(transform);
+            let axis = (pos.end.x - pos.start.x, pos.end.y - pos.start.y);
+            let axis_len_sq = axis.0 * axis.0 + axis.1 * axis.1;
+
+            for tri in &mesh.triangles {
+                let c0 = gradient_vertex_color(tri[0], pos, axis, axis_len_sq, &gradient.stops, gradient.extend);
+                let c1 = gradient_vertex_color(tri[1], pos, axis, axis_len_sq, &gradient.stops, gradient.extend);
+                let c2 = gradient_vertex_color(tri[2], pos, axis, axis_len_sq, &gradient.stops, gradient.extend);
+                frame.push_triangle(TriInstance {
+                    v0: project_local(tri[0], sx, sy, tx, ty),
+                    v1: project_local(tri[1], sx, sy, tx, ty),
+                    v2: project_local(tri[2], sx, sy, tx, ty),
+                    color0: packed_color(c0),
+                    color1: packed_color(c1),
+                    color2: packed_color(c2),
+                    _pad0: 0.0,
+                    clip_rect,
+                });
+            }
+        }
+        GradientKind::Radial(pos) => {
+            // Focal-vs-concentric check at ENCODE TIME (design §2.6) —
+            // the identical formula CPU's Commit-1 fix uses, so the
+            // SAME counter fires under the SAME condition on both
+            // backends: genuine byte-parity, not "both wrong in the
+            // same direction by coincidence." UNPREFIXED — a shared,
+            // backend-agnostic label (matches CPU's own
+            // `gradient_radial_focal_degraded`, never
+            // `native_gradient_radial_focal_degraded`).
+            let dx_c = (pos.end_center.x - pos.start_center.x).abs();
+            let dy_c = (pos.end_center.y - pos.start_center.y).abs();
+            if dx_c > 0.5 || dy_c > 0.5 || pos.start_radius.abs() > 0.5 {
+                degrade("gradient_radial_focal_degraded");
+            }
+            emit_gradient_lut_triangles(frame, lut, mesh, gradient, transform, clip_rect);
+        }
+        GradientKind::Sweep(_) => {
+            emit_gradient_lut_triangles(frame, lut, mesh, gradient, transform, clip_rect);
+        }
+    }
+}
+
+/// Routing (design §2.5): `Gradient` (any kind) now routes through the
+/// SAME stroke-tessellation-of-`rect_bez_path` mechanism
+/// `encode_stroke_path` already uses for arbitrary paths, just fed a
+/// rect-shaped path — `emit_gradient_mesh`, closing
+/// `native_strokerect_gradient_to_solid` entirely. `Solid`/`Image` stay
+/// on the fast Quad SDF path exactly as before (Image still degrades
+/// to a fully-transparent border colour, unchanged, design §4.1).
 fn encode_stroke_rect(
     frame: &mut EncodedFrame,
+    tess_cache: &mut TessCache,
+    lut: Option<&mut GradientLutAtlas>,
     rect: Rect,
     radii: &Option<[f32; 4]>,
     stroke: &Stroke,
@@ -1308,11 +1609,19 @@ fn encode_stroke_rect(
     transform: &Affine,
     clip_rect: [f32; 4],
 ) {
+    if let Brush::Gradient(g) = brush {
+        if stroke.width <= 0.0 {
+            return;
+        }
+        let path = rect_bez_path(rect, radii);
+        let mesh = tess_cache.get_or_insert_stroke(&path, stroke);
+        emit_gradient_mesh(frame, lut, &mesh, g, transform, clip_rect);
+        return;
+    }
+
     let (color, kind) = resolve_brush_color(brush);
-    match kind {
-        BrushKind::Gradient => degrade("native_strokerect_gradient_to_solid"),
-        BrushKind::Image => degrade("native_strokerect_image_to_solid"),
-        BrushKind::Solid => {}
+    if matches!(kind, BrushKind::Image) {
+        degrade("native_strokerect_image_to_solid");
     }
 
     let (x0, y0, w, h, sx, sy) = transform_rect(rect, transform);
@@ -1419,28 +1728,41 @@ fn emit_solid_mesh(
     }
 }
 
+/// Routing (design §2.5): `Gradient` (any kind) routes through
+/// `emit_gradient_mesh`, fed the SAME mesh `get_or_insert_fill` already
+/// builds for the solid-fill case — zero marginal pipeline cost,
+/// closing `native_fillpath_gradient_to_solid` entirely.
 fn encode_fill_path(
     frame: &mut EncodedFrame,
     tess_cache: &mut TessCache,
+    lut: Option<&mut GradientLutAtlas>,
     path: &BezPath,
     rule: FillRule,
     brush: &Brush,
     transform: &Affine,
     clip_rect: [f32; 4],
 ) {
+    if let Brush::Gradient(g) = brush {
+        let mesh = tess_cache.get_or_insert_fill(path, rule);
+        emit_gradient_mesh(frame, lut, &mesh, g, transform, clip_rect);
+        return;
+    }
     let (color, kind) = resolve_brush_color(brush);
-    match kind {
-        BrushKind::Gradient => degrade("native_fillpath_gradient_to_solid"),
-        BrushKind::Image => degrade("native_fillpath_image_to_solid"),
-        BrushKind::Solid => {}
+    if matches!(kind, BrushKind::Image) {
+        degrade("native_fillpath_image_to_solid");
     }
     let mesh = tess_cache.get_or_insert_fill(path, rule);
     emit_solid_mesh(frame, &mesh, transform, packed_color(color), clip_rect);
 }
 
+/// Routing (design §2.5): `Gradient` (any kind) routes through
+/// `emit_gradient_mesh`, fed the SAME mesh `get_or_insert_stroke`
+/// already builds for the solid-stroke case, closing
+/// `native_strokepath_gradient_to_solid` entirely.
 fn encode_stroke_path(
     frame: &mut EncodedFrame,
     tess_cache: &mut TessCache,
+    lut: Option<&mut GradientLutAtlas>,
     path: &BezPath,
     stroke: &Stroke,
     brush: &Brush,
@@ -1450,11 +1772,14 @@ fn encode_stroke_path(
     if stroke.width <= 0.0 {
         return;
     }
+    if let Brush::Gradient(g) = brush {
+        let mesh = tess_cache.get_or_insert_stroke(path, stroke);
+        emit_gradient_mesh(frame, lut, &mesh, g, transform, clip_rect);
+        return;
+    }
     let (color, kind) = resolve_brush_color(brush);
-    match kind {
-        BrushKind::Gradient => degrade("native_strokepath_gradient_to_solid"),
-        BrushKind::Image => degrade("native_strokepath_image_to_solid"),
-        BrushKind::Solid => {}
+    if matches!(kind, BrushKind::Image) {
+        degrade("native_strokepath_image_to_solid");
     }
     let mesh = tess_cache.get_or_insert_stroke(path, stroke);
     emit_solid_mesh(frame, &mesh, transform, packed_color(color), clip_rect);
@@ -1568,6 +1893,107 @@ fn encode_glyph_run(
     metrics::counter!(KEY_RENDER_GLYPH_INSTANCES).increment(glyphs.len() as u64);
 }
 
+/// `DrawCommand::Image` → `ImageInstance` (design §4.3). Resolves the
+/// registered image via the SHARED `uzor_urx_image` registry (no
+/// per-backend fork of `ImageId` allocation, design §0.4) — an
+/// unregistered (or since-unregistered) id is a clean, honest miss,
+/// mirroring `uzor-urx-cpu::image_draw`'s own policy: no `ImageInstance`
+/// is ever emitted for it, and the SAME UNPREFIXED `image_id_unknown`
+/// counter CPU already uses fires here too (design §4.4's naming-
+/// consistency recommendation, same precedent as
+/// `gradient_radial_focal_degraded`).
+///
+/// ## Placement math — why `pos`/`size` are NOT simply "scale each
+/// corner, drop rotation"
+///
+/// A naive port of `transform_rect`'s recipe (scale+translate each
+/// CORNER independently, attach `rotation` as an afterthought) is
+/// subtly WRONG for a non-trivial `dest` under a genuine rotation: it
+/// places the quad's CENTER at `S*dest_center + t` (scale+translate
+/// only) rather than at the TRUE, fully-transformed center
+/// `R*S*dest_center + t` — these differ by `(I - R) * S * dest_center`,
+/// zero only when there's no rotation or `dest` is centered at the
+/// local origin. The CORRECT construction (verified by direct
+/// substitution against the full affine `T(p) = R*S*p + t`):
+/// 1. `size = [dest.width()*sx, dest.height()*sy]` — scale-magnitude
+///    only, no rotation (matches `ImageInstance.size`'s own "pre-
+///    rotation local extents" contract).
+/// 2. `center = transform_point_full(transform, dest's own center)` —
+///    the TRUE center, via the FULL affine (this is where the
+///    rotation's effect on the CENTER'S POSITION is captured exactly).
+/// 3. `pos = center - size * 0.5`.
+/// 4. The shader then rotates `size`-scaled LOCAL offsets around
+///    `center` (this module's `IMAGE_SHADER_NATIVE`, same technique as
+///    Quad SDF's own extension, §5.3) — captures the rotation's effect
+///    on the shape's OWN extent exactly.
+/// Substituting confirms `pos + rotate(uv_local*size - size*0.5) ==
+/// R*S*corner + t` for every corner — an EXACT match to the full
+/// affine, not an approximation, for the genuine-similarity case.
+fn encode_image(
+    frame: &mut EncodedFrame,
+    src: ImageId,
+    src_rect: Option<Rect>,
+    dest: Rect,
+    transform: &Affine,
+    clip_rect: [f32; 4],
+) {
+    let Some(data) = uzor_urx_image::lookup_image(src) else {
+        degrade("image_id_unknown");
+        return;
+    };
+
+    let img_w = data.width.max(1) as f64;
+    let img_h = data.height.max(1) as f64;
+    let src_box = src_rect.unwrap_or(Rect::new(0.0, 0.0, img_w, img_h));
+    if src_box.width() <= 0.0 || src_box.height() <= 0.0 {
+        return;
+    }
+    let uv_pos = [(src_box.x0 / img_w) as f32, (src_box.y0 / img_h) as f32];
+    let uv_size = [(src_box.width() / img_w) as f32, (src_box.height() / img_h) as f32];
+
+    // Similarity-vs-shear routing (design §4.3/§5.2) — introduced here
+    // for Image's exclusive use this commit; `decompose_similarity`
+    // itself is pure geometry with no Image-specific assumption baked
+    // in, so Commit 4 can wire FillRect/StrokeRect's OWN routing
+    // through this SAME function rather than a duplicate.
+    let (sx, sy, angle) = match decompose_similarity(transform) {
+        Some((sx, sy, angle, _, _)) => (sx, sy, angle),
+        None => {
+            // Shear or reflection — approximate as rotation-only,
+            // dropping the shear component (design §4.3), rather than
+            // building a whole parallel textured-triangle pipeline for
+            // a shape with zero current producers (§0.4's grep).
+            degrade("native_image_shear_to_rotation_approx");
+            let (sx, sy, angle, _, _) = decompose_similarity_raw(transform);
+            (sx, sy, angle)
+        }
+    };
+
+    let w = dest.width() * sx;
+    let h = dest.height() * sy;
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    let dest_center = Point::new(dest.x0 + dest.width() * 0.5, dest.y0 + dest.height() * 0.5);
+    let center = transform_point_full(transform, dest_center);
+    let pos = [(center.x - w * 0.5) as f32, (center.y - h * 0.5) as f32];
+
+    frame.push_image(
+        ImageInstance {
+            pos,
+            size: [w as f32, h as f32],
+            uv_pos,
+            uv_size,
+            rotation: angle as f32,
+            // Opaque white, straight — a no-op multiply (design §4.3:
+            // "reserved... no producer sets a tint yet").
+            tint: 0xFFFF_FFFF,
+            clip_rect,
+        },
+        src,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1595,7 +2021,7 @@ mod tests {
     fn fill_rect_solid_emits_one_quad() {
         let mut scene = Scene::new();
         scene.fill_rect_solid(Rect::new(10.0, 10.0, 50.0, 50.0), Color::from_rgba8(255, 0, 0, 255));
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(frame.quads.len(), 1);
         assert_eq!(frame.quads[0].pos, [10.0, 10.0]);
         assert_eq!(frame.quads[0].size, [40.0, 40.0]);
@@ -1611,7 +2037,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(0, 255, 0, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(frame.quads.len(), 1);
         assert!((frame.quads[0].corner_radius - 8.0).abs() < 0.01);
     }
@@ -1626,7 +2052,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(frame.quads.len(), 1);
         assert_eq!(frame.quads[0].color, 0);
         assert!((frame.quads[0].border_width - 3.0).abs() < 0.01);
@@ -1643,7 +2069,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert!(frame.quads.is_empty());
     }
 
@@ -1656,7 +2082,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert!(frame.quads.is_empty());
     }
 
@@ -1669,7 +2095,7 @@ mod tests {
             2.0,
             Color::from_rgba8(255, 255, 255, 255),
         );
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert!(frame.quads.is_empty());
         assert_eq!(frame.lines.len(), 1);
         assert_eq!(frame.lines[0].start, [0.0, 0.0]);
@@ -1687,7 +2113,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::scale(2.0),
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(frame.lines.len(), 1);
         assert_eq!(frame.lines[0].end, [20.0, 0.0]);
         assert!((frame.lines[0].width - 8.0).abs() < 0.01, "width should scale 2x with the transform");
@@ -1702,7 +2128,7 @@ mod tests {
             0.0,
             Color::from_rgba8(255, 255, 255, 255),
         );
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert!(frame.lines.is_empty());
     }
 
@@ -1716,7 +2142,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(frame.lines[0].cap_flags, 0.0);
     }
 
@@ -1730,7 +2156,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(frame.lines[0].cap_flags, 3.0);
     }
 
@@ -1744,7 +2170,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         // Degrades to round (flag 0) — counted via `native_line_square_cap_to_round`
         // (asserting on the global metrics recorder isn't wired in this
         // crate's unit tests; the geometry-level effect is what we can verify).
@@ -1765,7 +2191,7 @@ mod tests {
         );
         scene.fill_rect_solid(Rect::new(0.0, 30.0, 10.0, 40.0), Color::from_rgba8(255, 255, 0, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(frame.quads.len(), 3);
         assert_eq!(frame.lines.len(), 1);
         assert_eq!(frame.draw_batches().len(), 3, "batches: {:?}", frame.draw_batches());
@@ -1792,7 +2218,7 @@ mod tests {
         scene.fill_rect_solid(Rect::new(0.0, 20.0, 10.0, 30.0), Color::from_rgba8(0, 255, 0, 255));
         scene.line_solid(Vec2 { x: 0.0, y: 40.0 }, Vec2 { x: 10.0, y: 40.0 }, 2.0, Color::from_rgba8(255, 255, 0, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(frame.draw_batches().len(), 4);
         let kinds: Vec<BatchKind> = frame.draw_batches().iter().map(|b| b.kind).collect();
         assert_eq!(kinds, vec![BatchKind::Quad, BatchKind::Line, BatchKind::Quad, BatchKind::Line]);
@@ -1813,7 +2239,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(10, 20, 30, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert!(!frame.triangles.is_empty());
         assert_eq!(frame.draw_batches().len(), 1);
         assert_eq!(frame.draw_batches()[0].kind, BatchKind::Triangle);
@@ -1836,7 +2262,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(10, 20, 30, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert!(frame.triangles.is_empty());
     }
 
@@ -1858,7 +2284,7 @@ mod tests {
             transform: Affine::IDENTITY,
         });
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(frame.draw_batches().len(), 3);
         let kinds: Vec<BatchKind> = frame.draw_batches().iter().map(|b| b.kind).collect();
         assert_eq!(kinds, vec![BatchKind::Quad, BatchKind::Line, BatchKind::Triangle]);
@@ -1906,6 +2332,252 @@ mod tests {
         assert_eq!(before.to_rgba8().r, 0);
     }
 
+    // ── Wave 4 Commit 3: Radial/Sweep gradients ──────────────────────
+
+    fn two_stop_gradient_stops() -> ColorStops {
+        ColorStops::from(
+            &[
+                peniko::ColorStop::from((0.0f32, Color::from_rgba8(255, 0, 0, 255))),
+                peniko::ColorStop::from((1.0f32, Color::from_rgba8(0, 0, 255, 255))),
+            ][..],
+        )
+    }
+
+    fn radial_gradient_brush() -> Brush {
+        let mut g = Gradient::new_radial(kurbo::Point::new(20.0, 20.0), 15.0);
+        g.stops = two_stop_gradient_stops();
+        g.extend = Extend::Pad;
+        Brush::Gradient(g)
+    }
+
+    fn sweep_gradient_brush() -> Brush {
+        let mut g = Gradient::new_sweep(kurbo::Point::new(20.0, 20.0), -std::f32::consts::PI, std::f32::consts::PI);
+        g.stops = two_stop_gradient_stops();
+        g.extend = Extend::Pad;
+        Brush::Gradient(g)
+    }
+
+    /// Without a real `GradientLutAtlas` (`lut: None`, the shape every
+    /// pre-Wave-4-Commit-3 test in this module already uses), a
+    /// Radial/Sweep `FillRect` must NOT silently vanish — it falls back
+    /// to the SAME first-stop-solid `emit_solid_mesh` path every other
+    /// "can't render the real thing" gradient case in this crate uses,
+    /// counted `native_gradient_lut_full_this_frame`. Device-free —
+    /// this is the `lut: None` defensive branch
+    /// (`emit_gradient_lut_triangles`'s own doc comment), not the
+    /// real-hardware path (see the `#[ignore]`-gated test below for
+    /// that).
+    #[test]
+    fn radial_gradient_fillrect_falls_back_to_solid_without_a_lut() {
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::FillRect {
+            rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+            radii: None,
+            brush: radial_gradient_brush(),
+            transform: Affine::IDENTITY,
+        });
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        assert!(frame.gradients.is_empty(), "no GradientInstance without a real LUT atlas");
+        assert!(!frame.triangles.is_empty(), "must still render SOMETHING — the solid fallback mesh");
+    }
+
+    /// Radial/Sweep `FillRect` emits a `GradientInstance` with plausible
+    /// device-space params, given a REAL `GradientLutAtlas` (design §10
+    /// Commit 3's own test scope). `#[ignore]`-gated — needs a headless
+    /// GPU adapter to construct the atlas at all.
+    #[test]
+    #[ignore = "needs a headless GPU adapter"]
+    fn radial_and_sweep_fillrect_emit_gradient_instance_with_plausible_device_params() {
+        let Some((device, _queue)) = test_device() else { return };
+        let mut lut = GradientLutAtlas::new(&device, 8);
+        lut.begin_frame();
+
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::FillRect {
+            rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+            radii: None,
+            brush: radial_gradient_brush(),
+            transform: Affine::IDENTITY,
+        });
+        scene.push(DrawCommand::FillRect {
+            rect: Rect::new(50.0, 0.0, 90.0, 40.0),
+            radii: None,
+            brush: sweep_gradient_brush(),
+            transform: Affine::IDENTITY,
+        });
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, Some(&mut lut), max_depth());
+
+        assert!(frame.triangles.is_empty(), "Radial/Sweep must NOT land on the flat-shaded triangle path");
+        assert!(!frame.gradients.is_empty(), "a real LUT atlas must produce real GradientInstances");
+
+        // Radial instance: kind bits == 0, center near (20,20), radius
+        // near 15 (identity transform — device space == local space).
+        let radial = frame.gradients[0];
+        assert_eq!(radial.kind_extend & 3, 0, "first FillRect's gradient is Radial (kind bits 0)");
+        assert!((radial.p0[0] - 20.0).abs() < 0.5 && (radial.p0[1] - 20.0).abs() < 0.5, "center ~= (20,20), got {:?}", radial.p0);
+        assert!((radial.p1 - 15.0).abs() < 0.5, "radius ~= 15, got {}", radial.p1);
+
+        // Sweep instance: kind bits == 1, center near (20,20) (LOCAL to
+        // the second rect, but the gradient's own center coordinate is
+        // (20,20) regardless of which rect it's drawn under), angles
+        // near -PI/PI.
+        let sweep = frame.gradients.iter().find(|g| g.kind_extend & 3 == 1).expect("a Sweep instance must exist");
+        assert!((sweep.p0[0] - 20.0).abs() < 0.5 && (sweep.p0[1] - 20.0).abs() < 0.5, "center ~= (20,20), got {:?}", sweep.p0);
+        assert!((sweep.p1 + std::f32::consts::PI).abs() < 0.01, "start_angle ~= -PI, got {}", sweep.p1);
+        assert!((sweep.p2 - std::f32::consts::PI).abs() < 0.01, "end_angle ~= PI, got {}", sweep.p2);
+    }
+
+    /// Gradient on `FillPath`/`StrokePath`/`StrokeRect` all emit
+    /// `GradientInstance`s through the SAME `emit_gradient_mesh` code
+    /// path as `FillRect` — a regression-proof that the generalization
+    /// (design §2.4/§2.5) didn't quietly fork per-command (design §10
+    /// Commit 3's own test scope).
+    ///
+    /// Each command is encoded into its OWN scene (rather than one
+    /// combined scene) so a per-command emptiness check independently
+    /// proves that command's own route works — three back-to-back
+    /// `Gradient` batches at the same clip depth would legitimately
+    /// coalesce into one under `bump_batch`'s equality rule (same as
+    /// any other batch kind), so asserting on batch COUNT would be
+    /// asserting against `bump_batch`'s own, correct, coalescing
+    /// behavior rather than against a real regression.
+    #[test]
+    #[ignore = "needs a headless GPU adapter"]
+    fn gradient_on_fillpath_strokepath_strokerect_all_emit_gradient_instances() {
+        let Some((device, _queue)) = test_device() else { return };
+
+        let mut triangle = BezPath::new();
+        triangle.move_to((0.0, 0.0));
+        triangle.line_to((20.0, 0.0));
+        triangle.line_to((10.0, 20.0));
+        triangle.close_path();
+
+        let fill_scene = {
+            let mut scene = Scene::new();
+            scene.push(DrawCommand::FillPath {
+                path: triangle.clone(),
+                rule: FillRule::NonZero,
+                brush: radial_gradient_brush(),
+                transform: Affine::IDENTITY,
+            });
+            scene
+        };
+        let stroke_path_scene = {
+            let mut scene = Scene::new();
+            scene.push(DrawCommand::StrokePath {
+                path: triangle,
+                stroke: SceneStroke { width: 2.0, ..SceneStroke::default() },
+                brush: radial_gradient_brush(),
+                transform: Affine::IDENTITY,
+            });
+            scene
+        };
+        let stroke_rect_scene = {
+            let mut scene = Scene::new();
+            scene.push(DrawCommand::StrokeRect {
+                rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                radii: None,
+                stroke: SceneStroke { width: 2.0, ..SceneStroke::default() },
+                brush: radial_gradient_brush(),
+                transform: Affine::IDENTITY,
+            });
+            scene
+        };
+
+        for (label, scene) in [
+            ("FillPath", &fill_scene),
+            ("StrokePath", &stroke_path_scene),
+            ("StrokeRect", &stroke_rect_scene),
+        ] {
+            let mut lut = GradientLutAtlas::new(&device, 8);
+            lut.begin_frame();
+            let frame = encode_scene(scene, viewport(), &mut cache(), None, Some(&mut lut), max_depth());
+            assert!(frame.triangles.is_empty(), "{label} must route through the Gradient path, not the solid one");
+            assert!(!frame.gradients.is_empty(), "{label} must emit real GradientInstances");
+            assert_eq!(
+                frame.draw_batches().iter().map(|b| b.kind).collect::<Vec<_>>(),
+                vec![BatchKind::Gradient],
+                "{label} alone must produce exactly one Gradient batch"
+            );
+        }
+
+        // Combined scene: back-to-back gradient draws at the same clip
+        // depth legitimately coalesce into ONE batch (proves
+        // `bump_batch`'s coalescing applies to `Gradient` exactly like
+        // every other batch kind), while still carrying all 3 shapes'
+        // worth of instances.
+        let mut combined = Scene::new();
+        for scene in [&fill_scene, &stroke_path_scene, &stroke_rect_scene] {
+            combined.commands.extend(scene.commands.iter().cloned());
+        }
+        let mut lut = GradientLutAtlas::new(&device, 8);
+        lut.begin_frame();
+        let frame = encode_scene(&combined, viewport(), &mut cache(), None, Some(&mut lut), max_depth());
+        assert!(frame.triangles.is_empty(), "combined scene must route through the Gradient path, not the solid one");
+        let batches = frame.draw_batches();
+        assert_eq!(batches.len(), 1, "3 back-to-back Gradient draws at the same clip depth must coalesce into 1 batch");
+        assert_eq!(batches[0].kind, BatchKind::Gradient);
+        assert_eq!(batches[0].count, frame.gradients.len() as u32, "the coalesced batch must cover every emitted instance");
+    }
+
+    // ── Wave 4 Commit 3: DrawCommand::Image ───────────────────────────
+
+    fn register_test_image(w: u32, h: u32, fill: [u8; 4]) -> ImageId {
+        let mut bytes = vec![0u8; (w * h * 4) as usize];
+        for px in bytes.chunks_exact_mut(4) {
+            px.copy_from_slice(&fill);
+        }
+        let data = uzor_urx_image::ImageData::from_raw_premul(w, h, bytes).expect("size matches by construction");
+        uzor_urx_image::register_image(data)
+    }
+
+    /// `BatchKind::Image`'s batch key includes the `ImageId` (design
+    /// §4.3): two DIFFERENT ids never coalesce into one batch (each
+    /// needs its own bind group), but two draws of the SAME id DO
+    /// coalesce, via the exact same `bump_batch` equality check every
+    /// other batch kind already uses.
+    #[test]
+    fn image_batch_key_includes_id_distinct_ids_split_same_id_coalesces() {
+        let id_a = register_test_image(2, 2, [255, 0, 0, 255]);
+        let id_b = register_test_image(2, 2, [0, 255, 0, 255]);
+
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::Image {
+            src: id_a,
+            src_rect: None,
+            dest: Rect::new(0.0, 0.0, 10.0, 10.0),
+            transform: Affine::IDENTITY,
+        });
+        scene.push(DrawCommand::Image {
+            src: id_a,
+            src_rect: None,
+            dest: Rect::new(10.0, 0.0, 20.0, 10.0),
+            transform: Affine::IDENTITY,
+        });
+        scene.push(DrawCommand::Image {
+            src: id_b,
+            src_rect: None,
+            dest: Rect::new(20.0, 0.0, 30.0, 10.0),
+            transform: Affine::IDENTITY,
+        });
+
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        assert_eq!(frame.images.len(), 3, "all 3 draws must still emit their own ImageInstance");
+        let batches = frame.draw_batches();
+        assert_eq!(
+            batches.len(),
+            2,
+            "the two SAME-id (id_a) draws must coalesce into ONE batch; the id_b draw must be a SEPARATE batch"
+        );
+        assert_eq!(batches[0].kind, BatchKind::Image(id_a));
+        assert_eq!(batches[0].count, 2, "both id_a draws coalesced");
+        assert_eq!(batches[1].kind, BatchKind::Image(id_b));
+        assert_eq!(batches[1].count, 1);
+
+        uzor_urx_image::unregister_image(id_a);
+        uzor_urx_image::unregister_image(id_b);
+    }
+
     // ── Commit 4: ClipStack ─────────────────────────────────────────
 
     #[test]
@@ -1950,7 +2622,7 @@ mod tests {
         scene.push(DrawCommand::PopClip);
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(0, 0, 255, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 20.0, 20.0], "rect under the pushed clip");
         assert_eq!(frame.lines[0].clip_rect, [10.0, 10.0, 20.0, 20.0], "line under the pushed clip");
         assert_eq!(
@@ -1976,7 +2648,7 @@ mod tests {
             transform: Affine::IDENTITY,
         });
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 20.0, 20.0]);
         assert!(frame.has_rounded_clip);
     }
@@ -2004,7 +2676,7 @@ mod tests {
         scene.push(DrawCommand::PopClip);
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(2, 2, 2, 255)); // depth 0, AFTER
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert!(frame.has_rounded_clip);
         assert!(!frame.stencil_masks.is_empty(), "the mask geometry itself must have been emitted");
 
@@ -2045,7 +2717,7 @@ mod tests {
         });
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
         // No matching PopClip.
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(frame.quads.len(), 1);
         assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 10.0, 10.0]);
     }
@@ -2069,7 +2741,7 @@ mod tests {
             transform: Affine::IDENTITY,
         });
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert!(frame.quads.is_empty());
         assert!(frame.lines.is_empty());
         assert!(frame.triangles.is_empty());
@@ -2118,7 +2790,7 @@ mod tests {
         scene.push(DrawCommand::PopBlendLayer);
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(3, 3, 3, 255)); // after
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(
             op_shapes(&frame),
             vec![
@@ -2147,7 +2819,7 @@ mod tests {
         scene.push(DrawCommand::PopBlendLayer);
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(
             op_shapes(&frame),
             vec![OpShape::Draw(BatchKind::Quad), OpShape::Push(1), OpShape::Pop(1), OpShape::Draw(BatchKind::Quad)],
@@ -2174,7 +2846,7 @@ mod tests {
         scene.push(DrawCommand::PopBlendLayer); // matches depth 2
         scene.push(DrawCommand::PopBlendLayer); // matches depth 1
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, 2);
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, 2);
         assert_eq!(
             op_shapes(&frame),
             vec![
@@ -2199,7 +2871,7 @@ mod tests {
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(9, 9, 9, 255));
         // NO PopBlendLayer — deliberately unbalanced.
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(
             op_shapes(&frame),
             vec![OpShape::Push(1), OpShape::Draw(BatchKind::Quad), OpShape::Pop(1)],
@@ -2269,7 +2941,7 @@ mod tests {
             text: None,
         });
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), None, max_depth());
         assert_eq!(frame.glyphs.len(), 2, "both glyphs should have rasterised + placed successfully");
         for g in &frame.glyphs {
             assert!(g.size[0] > 0.0 && g.size[1] > 0.0, "a real glyph bitmap must have a positive size");
@@ -2299,7 +2971,7 @@ mod tests {
         });
         scene.fill_rect_solid(Rect::new(50.0, 50.0, 60.0, 60.0), Color::from_rgba8(0, 255, 0, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), max_depth());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), None, max_depth());
         assert_eq!(frame.glyphs.len(), 2, "both glyphs must have placed for this to be a meaningful coalescing test");
         assert_eq!(frame.draw_batches().len(), 3, "Quad, then Glyph (both glyphs coalesced into ONE batch), then Quad");
         let kinds: Vec<BatchKind> = frame.draw_batches().iter().map(|b| b.kind).collect();
@@ -2398,7 +3070,7 @@ mod tests {
                 });
                 scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
                 // NO PopClip — deliberately unbalanced.
-                encode_scene(&scene, viewport(), &mut cache(), None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
             });
 
             let batches = frame.draw_batches();
@@ -2429,7 +3101,7 @@ mod tests {
                 scene.push(push_blend_layer(BlendMode::default(), 1.0, Affine::IDENTITY));
                 scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255));
                 // NO PopBlendLayer — deliberately unbalanced.
-                encode_scene(&scene, viewport(), &mut cache(), None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
             });
 
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_force_closed_at_scene_end");
@@ -2450,7 +3122,7 @@ mod tests {
                 scene.push(DrawCommand::PopBlendLayer);
                 scene.push(DrawCommand::PopBlendLayer);
                 scene.push(DrawCommand::PopBlendLayer);
-                encode_scene(&scene, viewport(), &mut cache(), None, 1)
+                encode_scene(&scene, viewport(), &mut cache(), None, None, 1)
             });
 
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_depth_exceeded");
@@ -2467,7 +3139,7 @@ mod tests {
                 let mut scene = Scene::new();
                 scene.push(DrawCommand::PopBlendLayer); // no matching push at all
                 scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255));
-                encode_scene(&scene, viewport(), &mut cache(), None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
             });
 
             assert_eq!(frame.quads.len(), 1, "content after the stray pop must still render normally, no panic");
@@ -2491,7 +3163,7 @@ mod tests {
                 scene.push(push_blend_layer(mode, 1.0, Affine::IDENTITY));
                 scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(1, 1, 1, 255));
                 scene.push(DrawCommand::PopBlendLayer);
-                encode_scene(&scene, viewport(), &mut cache(), None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
             });
 
             assert_eq!(recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_mix_to_normal"), 1);
@@ -2509,11 +3181,111 @@ mod tests {
                 let mut scene = Scene::new();
                 scene.push(push_blend_layer(BlendMode::default(), 1.0, Affine::translate((5.0, 5.0))));
                 scene.push(DrawCommand::PopBlendLayer);
-                encode_scene(&scene, viewport(), &mut cache(), None, max_depth())
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
             });
 
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_transform_ignored");
             assert_eq!(value, 1);
+        }
+
+        // ── Wave 4 Commit 3: gradient/image degrade-counter proofs ───
+
+        /// Without a real `GradientLutAtlas`, a Radial/Sweep `FillRect`
+        /// counts `native_gradient_lut_full_this_frame` (the SAME
+        /// degrade the real "every row already touched this frame"
+        /// case uses — from the caller's perspective both are "no LUT
+        /// row available," design §8).
+        #[test]
+        fn radial_gradient_without_a_lut_counts_the_degrade() {
+            let recorder = TestRecorder::default();
+            metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::FillRect {
+                    rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                    radii: None,
+                    brush: radial_gradient_brush(),
+                    transform: Affine::IDENTITY,
+                });
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+            });
+            let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_gradient_lut_full_this_frame");
+            assert_eq!(value, 1);
+        }
+
+        /// Focal (non-concentric) Radial gradient counts the SAME
+        /// UNPREFIXED `gradient_radial_focal_degraded` label CPU emits
+        /// (design §2.6) — checked at ENCODE time, independent of
+        /// whether a real LUT atlas is available.
+        #[test]
+        fn focal_radial_gradient_counts_the_shared_unprefixed_label() {
+            let recorder = TestRecorder::default();
+            metrics::with_local_recorder(&recorder, || {
+                let mut g = Gradient::new_radial(kurbo::Point::new(20.0, 20.0), 15.0);
+                if let GradientKind::Radial(pos) = &mut g.kind {
+                    pos.start_center = kurbo::Point::new(5.0, 5.0); // far from end_center — genuinely focal
+                }
+                g.stops = two_stop_gradient_stops();
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::FillRect {
+                    rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                    radii: None,
+                    brush: Brush::Gradient(g),
+                    transform: Affine::IDENTITY,
+                });
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+            });
+            assert_eq!(recorder.value_for(KEY_RENDER_PRIMITIVES, "gradient_radial_focal_degraded"), 1);
+        }
+
+        /// An unregistered `ImageId` is a clean, honest miss — no
+        /// `ImageInstance` is emitted, and the shared, UNPREFIXED
+        /// `image_id_unknown` counter fires (design §4.4). Device-free
+        /// — `encode_image` only ever touches the shared
+        /// `uzor_urx_image` registry, never a GPU resource, at encode
+        /// time.
+        #[test]
+        fn unregistered_image_counts_miss_and_emits_nothing() {
+            let recorder = TestRecorder::default();
+            let frame = metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::Image {
+                    src: ImageId(u64::MAX),
+                    src_rect: None,
+                    dest: Rect::new(0.0, 0.0, 20.0, 20.0),
+                    transform: Affine::IDENTITY,
+                });
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+            });
+            assert!(frame.images.is_empty(), "no ImageInstance for an unregistered id");
+            let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "image_id_unknown");
+            assert_eq!(value, 1);
+        }
+
+        /// A sheared `DrawCommand::Image` degrades to a rotation-only
+        /// approximation (design §4.3) — still emits an `ImageInstance`
+        /// (never silently dropped), and counts
+        /// `native_image_shear_to_rotation_approx`.
+        #[test]
+        fn sheared_image_degrades_to_rotation_only_and_still_renders() {
+            let id = register_test_image(2, 2, [10, 20, 30, 255]);
+            let recorder = TestRecorder::default();
+            let frame = metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                // Non-uniform off-diagonal terms — genuine shear, not a
+                // pure rotation+scale.
+                let shear = Affine::new([1.0, 0.0, 0.5, 1.0, 0.0, 0.0]);
+                scene.push(DrawCommand::Image {
+                    src: id,
+                    src_rect: None,
+                    dest: Rect::new(0.0, 0.0, 10.0, 10.0),
+                    transform: shear,
+                });
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+            });
+            assert_eq!(frame.images.len(), 1, "a sheared image must still render, approximated");
+            let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_image_shear_to_rotation_approx");
+            assert_eq!(value, 1);
+            uzor_urx_image::unregister_image(id);
         }
 
         // ── Wave 2 Commit 2: GlyphRun degrade proofs ─────────────────
@@ -2542,7 +3314,7 @@ mod tests {
                     transform: Affine::IDENTITY,
                     text: None,
                 });
-                let frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+                let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
                 assert_eq!(frame.glyphs.len(), 0, "no glyph should have been placed — the font was never registered");
             });
 
@@ -2566,7 +3338,7 @@ mod tests {
                     text: None,
                 });
                 // Must not panic — that's the primary assertion here.
-                let _frame = encode_scene(&scene, viewport(), &mut cache(), None, max_depth());
+                let _frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
             });
 
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_glyphrun_gradient_to_solid");
@@ -2626,7 +3398,7 @@ mod tests {
                     transform: Affine::IDENTITY,
                     text: None,
                 });
-                let _frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), max_depth());
+                let _frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas), None, max_depth());
             });
 
             let full_this_frame = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_glyph_atlas_full_this_frame");

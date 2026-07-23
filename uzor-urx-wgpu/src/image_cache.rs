@@ -92,17 +92,26 @@ use uzor_urx_core::scene::ImageId;
 /// an EXISTING slot's texture a second time (see the upload-timing
 /// doc comment above) — there is nothing left to do with the raw
 /// handle after the bind group is built.
+///
+/// Also deliberately does NOT store `width`/`height` (a further,
+/// Commit-3-informed trim of Commit 2's own sketch) — `encode_image`
+/// (Wave 4 Commit 3, `encode.rs`) resolves an image's decoded
+/// dimensions directly from `uzor_urx_image::lookup_image`'s
+/// `ImageData.width`/`.height` at ENCODE time (needed there anyway, to
+/// compute `uv_pos`/`uv_size`), never from this cache's own slot at
+/// replay time — keeping a second, unused copy here would be dead code.
 pub(crate) struct GpuImageSlot {
     bind_group: wgpu::BindGroup,
-    width: u32,
-    height: u32,
     tick: u64,
 }
 
 /// Read-only cache telemetry — hit/miss/eviction/entry counts, same
 /// shape family as `atlas::AtlasStats`/`gradient_lut::GradientLutAtlasStats`.
+/// `pub` (re-exported from `lib.rs`, same convention) —
+/// `NativeUrxRenderer::image_cache_stats()` (Wave 4 Commit 3) returns
+/// this.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct NativeImageCacheStats {
+pub struct NativeImageCacheStats {
     pub entries: usize,
     pub hits: u64,
     pub misses: u64,
@@ -267,7 +276,7 @@ impl NativeImageCache {
             ],
         });
 
-        self.slots.insert(id, GpuImageSlot { bind_group, width: data.width, height: data.height, tick: self.tick });
+        self.slots.insert(id, GpuImageSlot { bind_group, tick: self.tick });
         self.stats.entries = self.slots.len();
 
         self.slots.get(&id)
@@ -277,15 +286,6 @@ impl NativeImageCache {
     /// batch-replay arm binds at draw time (Commit 3).
     pub(crate) fn bind_group_of(slot: &GpuImageSlot) -> &wgpu::BindGroup {
         &slot.bind_group
-    }
-
-    /// Decoded pixel dimensions this slot's texture was built at — the
-    /// SAME `(width, height)` `uzor_urx_image::ImageData` reported at
-    /// upload time, kept on the slot so a caller resolving through the
-    /// cache doesn't need a SEPARATE `lookup_image` call just to
-    /// recover them.
-    pub(crate) fn dims_of(slot: &GpuImageSlot) -> (u32, u32) {
-        (slot.width, slot.height)
     }
 
     pub(crate) fn stats(&self) -> NativeImageCacheStats {
@@ -344,18 +344,6 @@ mod tests {
         assert_eq!(stats.hits, 1);
         assert_eq!(stats.misses, 1);
         assert_eq!(stats.entries, 1);
-        uzor_urx_image::unregister_image(id);
-    }
-
-    #[test]
-    #[ignore = "needs a headless GPU adapter"]
-    fn dims_of_reports_the_registered_size() {
-        let Some((device, queue)) = test_device() else { return };
-        let id = register_sample(8, 5, [1, 2, 3, 255]);
-        let mut cache = NativeImageCache::new(&device, 4);
-        cache.begin_frame();
-        let slot = cache.get_or_upload(&device, &queue, id).expect("lookup must succeed");
-        assert_eq!(NativeImageCache::dims_of(slot), (8, 5));
         uzor_urx_image::unregister_image(id);
     }
 
