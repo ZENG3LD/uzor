@@ -117,11 +117,14 @@ pub struct ComposedOutcome {
 ///   carry the 3D path (returns [`Submit3DError::NotGpuSurface`]).
 /// - `state.active_urx` is `Some(_)` — the URX channel must be armed
 ///   (caller did `set_active_urx(Some(b))` before paint). The 2D pass is
-///   wired for every backend: `Cpu` and the `Hybrid`/`WgpuFull`/`Auto`
-///   arm rasterise the chrome through the CPU URX backend (chrome is not
-///   perf-critical); `Wgpu` draws it via the instanced renderer. The 3D
-///   viewports always render natively via `Renderer3D`. A GPU 2D compose
-///   pass for Hybrid/WgpuFull arrives with SR3 (native-wgpu pipelines).
+///   wired for every backend: `Cpu` rasterises the chrome through the
+///   CPU URX backend; `Hybrid`/`WgpuFull`/`Auto` (Wave 5a,
+///   `urx-wave5-compose-cutover-design-2026-07-25.md`) draw it through
+///   the native Wave 1-4 `NativeUrxRenderer` pipeline set instead
+///   (`compose_urx_native_into_swap`); `Wgpu` draws it via the
+///   instanced renderer (legacy adapter path, untouched — Wave 5 scopes
+///   only Hybrid/WgpuFull/Auto). The 3D viewports always render
+///   natively via `Renderer3D`.
 /// - For each job: the caller has already pushed the desired
 ///   `Scene3D` into the hub slot via
 ///   `state.with_renderer_3d(|_, scene| *scene = my_scene_for_this_job)`.
@@ -217,10 +220,10 @@ pub fn submit_urx_composed(
     // queue.write_texture into surface.target_texture, then blits to
     // swap_view (matches `submit_urx_cpu` upload path but with our
     // encoder). Wgpu uses the InstancedRenderer's render-pass writing
-    // straight into swap_view. Hybrid/WgpuFull fall through to a
-    // "clear only" 2D pass for 1.4.9 — they're rare and adding their
-    // compose path is mechanical follow-up (covered by FUTURE-WORK
-    // note in handoff).
+    // straight into swap_view. Hybrid/WgpuFull/Auto (Wave 5a) drive the
+    // Wave 1-4 `NativeUrxRenderer` via `render_into_encoder` into
+    // `surface.target_view`, then reuse the SAME blit tail the Cpu arm
+    // uses — see `compose_urx_native_into_swap`'s own doc comment.
     let urx_backend = state.active_urx.unwrap_or(uzor::UrxBackend::Cpu);
     let backend_resolved = match urx_backend {
         uzor::UrxBackend::Auto => uzor::UrxBackend::Wgpu, // GPU surface → wgpu
@@ -258,17 +261,18 @@ pub fn submit_urx_composed(
                 );
             }
             uzor::UrxBackend::Hybrid | uzor::UrxBackend::WgpuFull | uzor::UrxBackend::Auto => {
-                // Hybrid / WgpuFull have monolithic submit paths with no
-                // external-encoder entry point (that's the SR3 native-wgpu
-                // work). For the COMPOSE case their 2D layer is chrome — not
-                // perf-critical — so we rasterise it through the CPU URX
-                // backend into the pixmap and blit, exactly like the Cpu arm.
-                // The 3D viewports still render natively via Renderer3D in
-                // Phase 4. This is honest (chrome actually paints) and cheap,
-                // and replaces the 1.4.9 clear-only stub that dropped all 2D
-                // content. A true GPU 2D compose pass for these backends
-                // arrives with SR3 (render_into_encoder).
-                compose_urx_cpu_into_swap(
+                // Wave 5a cutover: `HybridBackend`/`WgpuFullBackend`
+                // themselves are still untouched (their OWN monolithic
+                // submit paths do accept an external `&mut encoder`+view,
+                // `submit_urx.rs`'s `WgpuFullBackend::submit`/
+                // `HybridBackend::composite` — that description was
+                // already stale even before this wave). For the COMPOSE
+                // case, this arm routes the chrome pass through the
+                // already-built Wave 1-4 `NativeUrxRenderer` instead — the
+                // crate the SR3 plan always meant here — via
+                // `render_into_encoder`. The 3D viewports still render
+                // natively via `Renderer3D` in Phase 4, unchanged.
+                compose_urx_native_into_swap(
                     state, &device, &queue, &mut encoder, &swap_view,
                     surf_w, surf_h, urx_scene_opt, base_color,
                 );
@@ -771,6 +775,121 @@ fn compose_urx_cpu_into_swap(
     let _ = base_color;
 }
 
+/// Pure, GPU-free — builds the synthetic-background-prepended `Scene`
+/// [`compose_urx_native_into_swap`] renders (Wave 5a,
+/// `urx-wave5-compose-cutover-design-2026-07-25.md` §4 step 2). Split
+/// out so the "does this compose the right command order" logic is
+/// unit-testable without a device (see this module's own
+/// `#[cfg(test)] mod tests` below).
+///
+/// `NativeUrxRenderer::render_into_encoder`'s root pass ALWAYS clears
+/// its own color attachment to `wgpu::Color::TRANSPARENT` and the
+/// eventual MSAA resolve (or direct `Store` at `sample_count == 1`)
+/// OVERWRITES the destination view — it never blends with whatever
+/// `target_view` held before. A caller-supplied clear color isn't part
+/// of `render_into_encoder`'s signature (deliberately — it's a pure
+/// `Scene -> pixels` entry point, no side-channel state). The CPU arm
+/// ([`compose_urx_cpu_into_swap`]) gets its background "for free" by
+/// filling the pixmap directly; this fn gets the identical effect by
+/// making the background CONTENT — a `FillRect` first in painter's
+/// order, same IR every other opaque background in this codebase
+/// already uses, same `bg_rgba` u8-quantization
+/// [`compose_urx_cpu_into_swap`] already uses.
+fn scene_with_opaque_background(
+    surf_w: u32,
+    surf_h: u32,
+    base_color: [f32; 4],
+    scene_opt: Option<uzor_urx_core::Scene>,
+) -> uzor_urx_core::Scene {
+    let bg_rgba = [
+        (base_color[0] * 255.0).round().clamp(0.0, 255.0) as u8,
+        (base_color[1] * 255.0).round().clamp(0.0, 255.0) as u8,
+        (base_color[2] * 255.0).round().clamp(0.0, 255.0) as u8,
+        (base_color[3] * 255.0).round().clamp(0.0, 255.0) as u8,
+    ];
+
+    let mut scene = uzor_urx_core::Scene::new();
+    scene.push(uzor_urx_core::DrawCommand::FillRect {
+        rect: uzor_urx_core::Rect::new(0.0, 0.0, surf_w as f64, surf_h as f64),
+        radii: None,
+        brush: uzor_urx_core::math::Brush::Solid(uzor_urx_core::math::Color::from_rgba8(
+            bg_rgba[0], bg_rgba[1], bg_rgba[2], bg_rgba[3],
+        )),
+        transform: uzor_urx_core::Affine::IDENTITY,
+    });
+    scene.commands.extend(scene_opt.map(|s| s.commands).unwrap_or_default());
+    scene
+}
+
+/// Native-GPU URX 2D pass (Wave 5a) — drives the already-built Wave 1-4
+/// `NativeUrxRenderer` (`uzor-urx-wgpu`) directly into the existing
+/// intermediate `surface.target_view`, then reuses the EXISTING
+/// blitter tail verbatim (byte-identical to
+/// [`compose_urx_cpu_into_swap`]'s own tail, just fed by a
+/// GPU-rendered `target_view` instead of an uploaded CPU pixmap).
+///
+/// `NativeUrxRenderer` is built at a FIXED
+/// `wgpu::TextureFormat::Rgba8Unorm` — NEVER the swapchain's own,
+/// possibly-sRGB format (design §1: the fragment shaders assume
+/// linear-arithmetic-on-Unorm-bytes — premultiplication math, gradient
+/// LUT sampling, glyph coverage — an sRGB-tagged target would apply an
+/// implicit gamma-encode on store, double-processing colors the
+/// shaders already computed correctly). `surface.target_texture`/
+/// `target_view` are unconditionally recreated at exactly
+/// `Rgba8Unorm` with `RENDER_ATTACHMENT` usage by
+/// `recreate_target_with_cpu_usage` on every GPU surface regardless of
+/// active backend, so this is a format match by construction, not a
+/// coincidence — see risk 1 in the design doc for the one theoretical
+/// pre-first-resize edge case (a typed, loggable `FormatMismatch`
+/// error, never a panic).
+fn compose_urx_native_into_swap(
+    state:      &mut WindowRenderState,
+    device:     &wgpu::Device,
+    queue:      &wgpu::Queue,
+    encoder:    &mut wgpu::CommandEncoder,
+    swap_view:  &wgpu::TextureView,
+    surf_w:     u32,
+    surf_h:     u32,
+    scene_opt:  Option<uzor_urx_core::Scene>,
+    base_color: [f32; 4],
+) {
+    // Lazy-init, independent of Phase 4.5's own lazy-init (Wave 5b) —
+    // this phase may run alone on a frame with no post-3D overlay.
+    if state.urx_native_renderer.is_none() {
+        state.urx_native_renderer = Some(uzor_urx_wgpu::NativeUrxRenderer::new(
+            device.clone(),
+            queue.clone(),
+            wgpu::TextureFormat::Rgba8Unorm,
+        ));
+    }
+
+    let scene = scene_with_opaque_background(surf_w, surf_h, base_color, scene_opt);
+
+    let SurfaceMode::Gpu { surface, .. } = &mut state.surface else { return };
+    if let Some(renderer) = state.urx_native_renderer.as_mut() {
+        if let Err(e) = renderer.render_into_encoder(
+            &scene,
+            encoder,
+            &surface.target_view,
+            uzor_urx_wgpu::Viewport { width: surf_w, height: surf_h },
+        ) {
+            eprintln!("[render-hub] compose urx-native render error: {:?}", e);
+        }
+    }
+
+    // Blit target_texture → swap_view in our encoder — SAME tail as
+    // compose_urx_cpu_into_swap, just fed by the native renderer's
+    // GPU-written target_view instead of an uploaded CPU pixmap.
+    surface.blitter.copy(device, encoder, &surface.target_view, swap_view);
+    // Mirror the 2D layer into the capture texture (screenshot pipe).
+    // Disjoint field borrow — `surface` is state.surface, `cap` is
+    // state.urx_capture_3d (same pattern `compose_urx_cpu_into_swap`
+    // already uses).
+    if let Some(cap) = state.urx_capture_3d.as_ref() {
+        surface.blitter.copy(device, encoder, &surface.target_view, &cap.view);
+    }
+}
+
 /// Wgpu URX 2D pass — adapt Scene into InstancedRenderContext, then
 /// draw via InstancedRenderer directly into swap_view using our
 /// encoder.
@@ -951,5 +1070,78 @@ fn blit_overlay_onto(
     }
     if let Some((_, blitter)) = cached_blitter.as_ref() {
         blitter.copy(device, encoder, overlay_view, target_view);
+    }
+}
+
+// ── Wave 5a: `scene_with_opaque_background` unit test ────────────────
+//
+// The one piece of NEW logic Wave 5a introduces — everything
+// downstream of it (`NativeUrxRenderer::render_into_encoder` itself)
+// is already proven by `uzor-urx-wgpu`'s 27/27 parity suite. No GPU
+// adapter needed.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn probe_scene() -> uzor_urx_core::Scene {
+        let mut scene = uzor_urx_core::Scene::new();
+        scene.push(uzor_urx_core::DrawCommand::FillRect {
+            rect: uzor_urx_core::Rect::new(1.0, 2.0, 3.0, 4.0),
+            radii: None,
+            brush: uzor_urx_core::math::Brush::Solid(uzor_urx_core::math::Color::from_rgba8(9, 8, 7, 6)),
+            transform: uzor_urx_core::Affine::IDENTITY,
+        });
+        scene
+    }
+
+    #[test]
+    fn opaque_background_is_first_and_consumer_commands_follow_in_order() {
+        let scene = scene_with_opaque_background(64, 32, [0.5, 0.25, 0.75, 1.0], Some(probe_scene()));
+        assert_eq!(scene.commands.len(), 2, "background + the one consumer command");
+
+        match &scene.commands[0] {
+            uzor_urx_core::DrawCommand::FillRect { rect, radii, brush, transform } => {
+                assert_eq!(*rect, uzor_urx_core::Rect::new(0.0, 0.0, 64.0, 32.0), "background must cover the full surface");
+                assert!(radii.is_none(), "background is a plain rect, no radii");
+                assert_eq!(*transform, uzor_urx_core::Affine::IDENTITY);
+                match brush {
+                    uzor_urx_core::math::Brush::Solid(c) => {
+                        let rgba = c.to_rgba8();
+                        // round(0.5*255)=128, round(0.25*255)=64,
+                        // round(0.75*255)=191, round(1.0*255)=255 —
+                        // same u8-quantization `compose_urx_cpu_into_swap`'s
+                        // own `bg_rgba` already uses.
+                        assert_eq!([rgba.r, rgba.g, rgba.b, rgba.a], [128, 64, 191, 255]);
+                    }
+                    other => panic!("background brush must be Solid, got {other:?}"),
+                }
+            }
+            other => panic!("first command must be the background FillRect, got {other:?}"),
+        }
+
+        match &scene.commands[1] {
+            uzor_urx_core::DrawCommand::FillRect { rect, .. } => {
+                assert_eq!(*rect, uzor_urx_core::Rect::new(1.0, 2.0, 3.0, 4.0), "consumer command must follow unchanged, in order");
+            }
+            other => panic!("second command must be the consumer's own FillRect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn none_scene_emits_only_the_background_command() {
+        let scene = scene_with_opaque_background(10, 20, [1.0, 1.0, 1.0, 1.0], None);
+        assert_eq!(scene.commands.len(), 1, "no consumer scene -> just the background");
+        assert!(matches!(&scene.commands[0], uzor_urx_core::DrawCommand::FillRect { .. }));
+    }
+
+    #[test]
+    fn background_rect_tracks_the_supplied_surface_size() {
+        let scene = scene_with_opaque_background(1920, 1080, [0.0, 0.0, 0.0, 1.0], None);
+        match &scene.commands[0] {
+            uzor_urx_core::DrawCommand::FillRect { rect, .. } => {
+                assert_eq!(*rect, uzor_urx_core::Rect::new(0.0, 0.0, 1920.0, 1080.0));
+            }
+            _ => unreachable!("checked above"),
+        }
     }
 }

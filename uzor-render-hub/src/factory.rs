@@ -318,6 +318,18 @@ pub struct WindowRenderState {
     /// Reused overlay blitter. Building its render pipeline per frame is
     /// expensive on DX12, so it follows the window/surface lifetime.
     pub(crate) urx_compose_overlay_blitter: Option<(wgpu::TextureFormat, wgpu::util::TextureBlitter)>,
+    /// Wave 5: the Wave 1-4 native-pipeline renderer
+    /// (`uzor_urx_wgpu::NativeUrxRenderer`), shared by `compose.rs`'s
+    /// Phase 3 (chrome background) and — once Wave 5b lands — Phase 4.5
+    /// (post-3D overlay). One instance per window, fixed at
+    /// `wgpu::TextureFormat::Rgba8Unorm` (see
+    /// `urx-wave5-compose-cutover-design-2026-07-25.md` §1 for why this
+    /// must NEVER be the swapchain's own, possibly-sRGB format).
+    /// Lazy-init on first use by EITHER phase — they don't share an
+    /// init-order guarantee (Phase 3 can be skipped entirely by the
+    /// existing dead-pass elimination, `compose.rs`'s own
+    /// `skip_2d_pass` check).
+    pub(crate) urx_native_renderer: Option<uzor_urx_wgpu::NativeUrxRenderer>,
     /// Arms the capture mirror above. Set by the consumer's screenshot
     /// pipeline on first request for a window.
     pub(crate) capture_3d_enabled: bool,
@@ -426,6 +438,7 @@ impl WindowRenderState {
             urx_compose_overlay_cache: None,
             urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
+            urx_native_renderer: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
@@ -476,6 +489,7 @@ impl WindowRenderState {
             urx_compose_overlay_cache: None,
             urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
+            urx_native_renderer: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
@@ -554,6 +568,7 @@ impl WindowRenderState {
             urx_compose_overlay_cache: None,
             urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
+            urx_native_renderer: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
@@ -602,6 +617,7 @@ impl WindowRenderState {
             urx_compose_overlay_cache: None,
             urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
+            urx_native_renderer: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
@@ -648,6 +664,7 @@ impl WindowRenderState {
             urx_compose_overlay_cache: None,
             urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
+            urx_native_renderer: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
@@ -742,6 +759,7 @@ impl WindowRenderState {
             urx_compose_overlay_cache: None,
             urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
+            urx_native_renderer: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
@@ -791,6 +809,7 @@ impl WindowRenderState {
             urx_compose_overlay_cache: None,
             urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
+            urx_native_renderer: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
@@ -859,6 +878,7 @@ impl WindowRenderState {
             urx_compose_overlay_cache: None,
             urx_compose_overlay_dynamic: None,
             urx_compose_overlay_blitter: None,
+            urx_native_renderer: None,
             capture_3d_enabled: false,
             retained_cache: crate::retained::RetainedCache::new(),
             vello_fragment_store: Default::default(),
