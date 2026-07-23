@@ -82,8 +82,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 // ── vello ──────────────────────────────────────────────────────────────────────
-use vello::kurbo::Affine;
-use vello::peniko::{Color, Fill};
+use vello::peniko::Color;
 use vello::util::{RenderContext as VelloRenderCx, RenderSurface};
 use vello::wgpu;
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene};
@@ -175,10 +174,7 @@ use uzor::ui::widgets::atomic::checkbox::settings::CheckboxSettings;
 use uzor::ui::widgets::atomic::checkbox::theme::CheckboxTheme;
 use uzor::ui::widgets::atomic::checkbox::types::{CheckboxRenderKind, CheckboxView};
 
-use uzor::render::{
-    RenderContext,
-    Masking as _, Painter as _, ShapeHelpers as _, TextRenderer as _,
-};
+use uzor::render::RenderContext;
 use uzor::ui::widgets::atomic::text::{draw_text, TextSettings};
 use uzor::ui::widgets::atomic::text::types::{TextOverflow, TextView};
 use uzor::render::{TextAlign, TextBaseline};
@@ -830,6 +826,1688 @@ struct AppState {
     demo_popup_h:          PopupHandle,
 }
 
+/// Headless snapshot of every field [`draw_l3_frame`] reads or mutates,
+/// carved out of `AppState` so the painting sequence is callable without a
+/// live winit `Window`/GPU surface (Wave 6 Commit 3). Built two ways:
+/// - **Production** (`AppState::render`): `std::mem::take`s `layout` /
+///   `watchlist` / `l2_demo` out of `self` for the duration of the call,
+///   copies/clones every other field, then writes the three taken fields
+///   back afterward (`popup_item` is the only OTHER field `draw_l3_frame`
+///   itself writes — written back too). Verified exhaustively: these are
+///   the only three `self.FIELD = ...` assignments inside the original
+///   inline body (`git grep`-style scan of the pre-extraction function).
+/// - **Harness** (`screenshot_diff` test module): built fresh from literal,
+///   deterministic values — no live `AppState` involved at all.
+struct L3State {
+    layout: LayoutManager<DemoPanel>,
+    watchlist: watchlist_blackbox::WatchlistState,
+    l2_demo: l2_demo_blackbox::L2DemoBlackbox,
+
+    clock_str: String,
+    top_toolbar_height_override: f64,
+    demo_toolbar_left2_w_override: f64,
+    demo_toolbar_right_w_override: f64,
+    demo_toolbar_bottom_h_override: f64,
+    modal_size_override: (f64, f64),
+
+    active_view: usize,
+    sidebar_open: bool,
+    sidebar_kind: u8,
+    popup_kind: Option<u8>,
+    demo_toolbar_left2: bool,
+    demo_toolbar_right: bool,
+    demo_toolbar_bottom: bool,
+    demo_sidebar_right: bool,
+    demo_sidebar_top: bool,
+    demo_sidebar_bottom: bool,
+    demo_overlay_mode: bool,
+    left_toolbar_visible: bool,
+    modal_open: bool,
+    modal_kind: ModalKind,
+    popup_item: Option<String>,
+    drag_target: Option<DragTarget>,
+    spawn_kind: PanelKind,
+    spawn_split: SpawnSplit,
+
+    modal_h: ModalHandle,
+    dd_file_h: DropdownHandle,
+    dd_view_h: DropdownHandle,
+    dd_help_h: DropdownHandle,
+    dd_sidebar_h: DropdownHandle,
+    dd_toolbar_h: DropdownHandle,
+    dd_popup_h: DropdownHandle,
+    ctx_menu_h: ContextMenuHandle,
+    top_toolbar_h: ToolbarHandle,
+    left_vtoolbar_h: ToolbarHandle,
+    demo_toolbar_left2_h: ToolbarHandle,
+    demo_toolbar_right_h: ToolbarHandle,
+    demo_toolbar_bottom_h: ToolbarHandle,
+    sidebar_h: SidebarHandle,
+    demo_sidebar_right_h: SidebarHandle,
+    demo_sidebar_top_h: SidebarHandle,
+    demo_sidebar_bottom_h: SidebarHandle,
+    demo_popup_h: PopupHandle,
+
+    /// Replaces `self.window.is_maximized()` — the one winit-specific read
+    /// the original inline body made inside the paint sequence.
+    is_maximized: bool,
+    /// Replaces `self.bridge.last_mouse_pos`.
+    cursor: (f64, f64),
+    /// Replaces `self.time_ms()`.
+    time_ms: f64,
+    /// Replaces `self.time_secs()`.
+    time_secs: f64,
+}
+
+/// Hex twin of `BG` (`Color::from_rgb8(0x16, 0x16, 0x1e)`) for the portable
+/// `RenderContext::set_fill_color` background paint inside [`draw_l3_frame`]
+/// (see that function's own doc for why this differs from the raw
+/// `vello::Scene::fill` the live `AppState::render` used before Wave 6).
+const BG_HEX: &str = "#16161e";
+
+/// One assembled l3-dashboard frame — chrome, toolbars, sidebar, docked main
+/// content, modal, context menu, dropdowns, popups — extracted verbatim from
+/// `AppState::render`'s own winit-tied redraw method (Wave 6 Commit 3,
+/// `urx-wave6-autodetect-cutover-design-2026-07-25.md` §4.3) so the
+/// screenshot-diff harness can replay this real app content against URX
+/// backends headlessly. Mechanical extraction only — same calls, same
+/// order, zero behavior change to the live bin (which still calls this
+/// exact function from `AppState::render`, just now via an explicit
+/// `L3State` snapshot instead of `self` directly).
+///
+/// The ONE semantic change from the original inline code: the background
+/// fill went from a raw `self.scene.reset()/self.scene.fill(...)` (bypassing
+/// the `RenderContext` trait, vello-`Scene`-specific) to the portable
+/// `render.set_fill_color(BG_HEX)` + `render.fill_rect(...)` — same color
+/// (`BG_HEX` mirrors `BG` exactly), needed because this function must also
+/// run against non-vello backends (URX-CPU / URX-native) that have no
+/// `vello::Scene` to poke directly. `self.scene.reset()` itself simply
+/// disappears — the production caller still resets its own `vello::Scene`
+/// right before calling this fn; the harness's own per-pass Scene/pixmap is
+/// already fresh on every call.
+fn draw_l3_frame(
+    render: &mut dyn uzor::render::RenderContext,
+    width: u32,
+    height: u32,
+    state: &mut L3State,
+) {
+    let win_rect = Rect::new(0.0, 0.0, width as f64, height as f64);
+
+        // ── 2. Setup layout ───────────────────────────────────────────────────
+        // Chrome (30px)
+        state.layout.chrome_mut().visible = true;
+        state.layout.chrome_mut().height = CHROME_H as f32;
+
+        // Top toolbar — thickness from toolbar style via measure_horizontal.
+        // Empty view returns (pad*2, style.height()) — we just need the height.
+        let probe_view_h = ToolbarView {
+            start: ToolbarSection::empty(), center: ToolbarSection::empty(),
+            end: ToolbarSection::empty(), chrome: None,
+            overflow: uzor::types::OverflowMode::Clip,
+            resize_edge: None,
+        };
+        let probe_settings = ToolbarSettings::new(
+            Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+            Box::new(HorizToolbarWithBorder),
+        );
+        let (_, top_h_measured) = measure_toolbar_h(&probe_view_h, &probe_settings);
+        let top_h = if state.top_toolbar_height_override > 0.0 {
+            state.top_toolbar_height_override
+        } else {
+            top_h_measured
+        };
+        // Wipe last frame's edge slots — the dropdowns spawn extra slots
+        // conditionally on every frame and any slot we don't re-add now
+        // should disappear (its space returns to the dock area).
+        state.layout.edges_mut().clear();
+        state.layout.edges_mut().add(EdgeSlot {
+            id: "top-toolbar".to_string(),
+            side: EdgeSide::Top,
+            thickness: top_h as f32,
+            visible: true,
+            order: 0,
+            ..Default::default()
+        });
+
+        // Left vertical toolbar (toggled via View → Show Toolbar) —
+        // thickness from style via measure_vertical.
+        let probe_view_v = ToolbarView {
+            start: ToolbarSection::empty(), center: ToolbarSection::empty(),
+            end: ToolbarSection::empty(), chrome: None,
+            overflow: uzor::types::OverflowMode::Clip,
+            resize_edge: None,
+        };
+        let probe_settings_v = ToolbarSettings::new(
+            Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+            Box::new(VertToolbarWithBorder),
+        );
+        let (left_w, _) = measure_toolbar_v(&probe_view_v, &probe_settings_v);
+        state.layout.edges_mut().add(EdgeSlot {
+            id: "left-vtoolbar".to_string(),
+            side: EdgeSide::Left,
+            thickness: left_w as f32,
+            visible: state.left_toolbar_visible,
+            order: 0,
+            ..Default::default()
+        });
+
+        // Sidebar (slide-out, toggled): always registered, visible toggled.
+        // Width from sidebar style via measure(); side / kind chosen by sidebar_kind.
+        let kind_value = sidebar_kind_from_index(state.sidebar_kind);
+        let edge_side = match state.sidebar_kind {
+            1 => EdgeSide::Right,           // Right
+            _ => EdgeSide::Left,            // Left, WithTypeSelector, Embedded → left
+        };
+        let (default_sidebar_w, _chrome_h) = measure_sidebar(
+            &SidebarSettings::default(),
+            &kind_value,
+        );
+        // Sidebar width follows user resize (sidebar state.width). Initialised
+        // from measure_sidebar()'s default; the resize-handle drag updates
+        // state.width which then flows back into the edge slot.
+        let sidebar_w = {
+            let w = state.layout.sidebar(&state.sidebar_h).width;
+            if w > 0.0 { w } else { default_sidebar_w }
+        };
+        state.layout.edges_mut().add(EdgeSlot {
+            id: "sidebar".to_string(),
+            side: edge_side,
+            thickness: sidebar_w as f32,
+            visible: state.sidebar_open,
+            order: 1,
+            ..Default::default()
+        });
+
+        // ── Demo toolbars / sidebars (toggleable from dropdowns) ──────────────
+        // Placement follows the Sidebar dropdown's "Overlay mode" toggle:
+        // Compress → shrink dock area; Overlay → float on top of dock.
+        let demo_placement = if state.demo_overlay_mode {
+            uzor::layout::EdgePlacement::Overlay
+        } else {
+            uzor::layout::EdgePlacement::Compress
+        };
+        if state.demo_toolbar_left2 {
+            let t = if state.demo_toolbar_left2_w_override > 0.0 {
+                state.demo_toolbar_left2_w_override as f32
+            } else { left_w as f32 };
+            state.layout.edges_mut().add(EdgeSlot {
+                id: "demo-toolbar-left2".into(),
+                side: EdgeSide::Left,
+                thickness: t,
+                visible: true,
+                order: 2,
+                placement: demo_placement,
+            });
+        }
+        if state.demo_toolbar_right {
+            let t = if state.demo_toolbar_right_w_override > 0.0 {
+                state.demo_toolbar_right_w_override as f32
+            } else { left_w as f32 };
+            state.layout.edges_mut().add(EdgeSlot {
+                id: "demo-toolbar-right".into(),
+                side: EdgeSide::Right,
+                thickness: t,
+                visible: true,
+                order: 0,
+                placement: demo_placement,
+            });
+        }
+        if state.demo_toolbar_bottom {
+            let t = if state.demo_toolbar_bottom_h_override > 0.0 {
+                state.demo_toolbar_bottom_h_override as f32
+            } else { top_h as f32 };
+            state.layout.edges_mut().add(EdgeSlot {
+                id: "demo-toolbar-bottom".into(),
+                side: EdgeSide::Bottom,
+                thickness: t,
+                visible: true,
+                order: 0,
+                placement: demo_placement,
+            });
+        }
+        // EdgeSlot.thickness pulls from state.width — composite initialises it
+        // via SidebarState::ensure_sized() on first register from viewport %.
+        // Until that first register fires we seed it here too so the slot
+        // reserves the right space on the very first frame.
+        let viewport_w = width as f64;
+        let viewport_h = height as f64;
+        {
+            let h = state.demo_sidebar_right_h.clone();
+            let st = state.layout.sidebar_mut(&h);
+            st.ensure_sized(viewport_w, viewport_h, true);
+        }
+        {
+            let h = state.demo_sidebar_top_h.clone();
+            let st = state.layout.sidebar_mut(&h);
+            st.ensure_sized(viewport_w, viewport_h, false);
+        }
+        {
+            let h = state.demo_sidebar_bottom_h.clone();
+            let st = state.layout.sidebar_mut(&h);
+            st.ensure_sized(viewport_w, viewport_h, false);
+        }
+        if state.demo_sidebar_right {
+            let h = state.demo_sidebar_right_h.clone();
+            let w = state.layout.sidebar(&h).width as f32;
+            state.layout.edges_mut().add(EdgeSlot {
+                id: "demo-sidebar-right".into(),
+                side: EdgeSide::Right,
+                thickness: w,
+                visible: true,
+                order: 1,
+                placement: demo_placement,
+            });
+        }
+        if state.demo_sidebar_top {
+            let h = state.demo_sidebar_top_h.clone();
+            let w = state.layout.sidebar(&h).width as f32;
+            state.layout.edges_mut().add(EdgeSlot {
+                id: "demo-sidebar-top".into(),
+                side: EdgeSide::Top,
+                thickness: w,
+                visible: true,
+                order: 1,
+                placement: demo_placement,
+            });
+        }
+        if state.demo_sidebar_bottom {
+            let h = state.demo_sidebar_bottom_h.clone();
+            let w = state.layout.sidebar(&h).width as f32;
+            state.layout.edges_mut().add(EdgeSlot {
+                id: "demo-sidebar-bottom".into(),
+                side: EdgeSide::Bottom,
+                thickness: w,
+                visible: true,
+                order: 1,
+                placement: demo_placement,
+            });
+        }
+
+        // Clear overlays at the START of frame (composites push them via
+        // register_layout_manager_* calls below).
+        // If we cleared at the end, rect_for_overlay would return None for
+        // outside-click handlers running between frames.
+        state.layout.clear_overlays();
+
+        state.layout.solve(win_rect);
+
+        // ── 3. Build InputState ───────────────────────────────────────────────
+        let (mx, my) = state.cursor;
+        let input = InputState {
+            pointer: PointerState {
+                pos: Some((mx, my)),
+                ..PointerState::default()
+            },
+            time: state.time_secs,
+            ..InputState::default()
+        };
+        state.layout.ctx_mut().input.begin_frame(input);
+        // Wipe last frame's dispatcher patterns — composites re-register on
+        // each register_layout_manager_* call below.
+        state.layout.dispatcher_begin_frame();
+
+        // ── 4. Scene ──────────────────────────────────────────────────────────
+        // Background paint moved to the portable RenderContext trait (was a
+        // direct self.scene.reset()/self.scene.fill() vello-Scene call) so
+        // this function stays backend-agnostic (URX-CPU / URX-native / vello
+        // all implement the trait); production caller resets the vello Scene
+        // itself before invoking this fn. Same BG color (see BG_HEX doc).
+        render.set_fill_color(BG_HEX);
+        render.fill_rect(0.0, 0.0, width as f64, height as f64);
+
+        let time_ms = state.time_ms;
+        // Push frame time into LayoutManager so atomics with animations
+        // (text_input caret blink etc.) can read it.
+        state.layout.set_frame_time_ms(time_ms as f64);
+        let clock = state.clock_str.clone();
+
+        // ── Chrome ────────────────────────────────────────────────────────────
+        let tab_ids = ["tab-0", "tab-1", "tab-2"];
+        let chrome_tabs = [
+            ChromeTabConfig { id: "tab-0", label: "Dashboard",  icon: None, color_tag: None, closable: false, active: state.active_view == 0 },
+            ChromeTabConfig { id: "tab-1", label: "Panels",     icon: None, color_tag: None, closable: false, active: state.active_view == 1 },
+            ChromeTabConfig { id: "tab-2", label: "Monitoring", icon: None, color_tag: None, closable: false, active: state.active_view == 2 },
+        ];
+        let chrome_view = ChromeView {
+            tabs: &chrome_tabs,
+            active_tab_id: Some(tab_ids[state.active_view]),
+            show_new_tab_btn: false,
+            show_menu_btn: false,
+            show_new_window_btn: false,
+            show_close_window_btn: false,
+            is_maximized: state.is_maximized,
+            menu_left: false,
+            show_maximize: true,
+            cursor_x: mx,
+            cursor_y: my,
+            time_ms,
+        };
+        let chrome_settings = ChromeSettings {
+            theme: Box::<uzor::ui::widgets::composite::chrome::theme::DefaultChromeTheme>::default(),
+            style: Box::new(ChromeWithBottomBorder),
+        };
+        let chrome_kind = ChromeRenderKind::Default;
+        register_layout_manager_chrome(
+            &mut state.layout,
+            render,
+            LayoutNodeId::ROOT,
+            "chrome",
+            &chrome_view,
+            &chrome_settings,
+            &chrome_kind,
+        );
+
+        // ── Top toolbar ───────────────────────────────────────────────────────
+        let view_btn_active    = state.layout.dropdown(&state.dd_view_h).open;
+        let modals_btn_active  = state.layout.dropdown(&state.dd_help_h).open;
+        let sidebar_btn_active = state.layout.dropdown(&state.dd_sidebar_h).open;
+        let toolbar_btn_active = state.layout.dropdown(&state.dd_toolbar_h).open;
+        let popup_btn_active   = state.layout.dropdown(&state.dd_popup_h).open;
+        let top_toolbar_items = [
+            ToolbarItem::TextButton { id: "tb-view",    text: "View",    active: view_btn_active,    tooltip: Some("View menu"),         popup_on_hover: true },
+            ToolbarItem::TextButton { id: "tb-help",    text: "Modals",  active: modals_btn_active,  tooltip: Some("Modals menu"),       popup_on_hover: true },
+            ToolbarItem::Separator,
+            ToolbarItem::TextButton { id: "tb-sidebar", text: "Sidebar", active: sidebar_btn_active, tooltip: Some("Sidebar variants"),  popup_on_hover: false },
+            ToolbarItem::TextButton { id: "tb-toolbar", text: "Toolbar", active: toolbar_btn_active, tooltip: Some("Toolbar variants"),  popup_on_hover: false },
+            ToolbarItem::TextButton { id: "tb-popup",   text: "Popup",   active: popup_btn_active,   tooltip: Some("Popup templates"),   popup_on_hover: false },
+        ];
+        let clock_items = [
+            ToolbarItem::Clock { id: "top-clock", time_text: clock.as_str() },
+        ];
+        let top_toolbar_view = ToolbarView {
+            start: ToolbarSection { items: &top_toolbar_items },
+            center: ToolbarSection::empty(),
+            end: ToolbarSection { items: &clock_items },
+            chrome: None,
+            overflow: uzor::types::OverflowMode::Clip,
+            resize_edge: None,
+        };
+        register_layout_manager_toolbar(
+            &mut state.layout,
+            render,
+            LayoutNodeId::ROOT,
+            "top-toolbar",
+            &state.top_toolbar_h.clone(),
+            &top_toolbar_view,
+            &ToolbarSettings::new(
+                Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+                Box::new(HorizToolbarWithBorder),
+            ),
+            &ToolbarRenderKind::Horizontal,
+        );
+
+        // ── Left vertical toolbar ─────────────────────────────────────────────
+        // Fix #5: use TextButton with SVG symbols — IconButton requires a
+        // populated icon registry which may be empty in examples.
+        let sidebar_open = state.sidebar_open;
+        let left_items = [
+            ToolbarItem::TextButton { id: "lt-toggle-sidebar", text: "☰", active: sidebar_open, tooltip: Some("Toggle sidebar"), popup_on_hover: false },
+        ];
+        if state.left_toolbar_visible {
+            let left_toolbar_view = ToolbarView {
+                start: ToolbarSection { items: &left_items },
+                center: ToolbarSection::empty(),
+                end: ToolbarSection::empty(),
+                chrome: None,
+                overflow: uzor::types::OverflowMode::Clip,
+                resize_edge: Some(uzor::layout::ResizeEdge::E),
+            };
+            register_layout_manager_toolbar(
+                &mut state.layout,
+                render,
+                LayoutNodeId::ROOT,
+                "left-vtoolbar",
+                &state.left_vtoolbar_h.clone(),
+                &left_toolbar_view,
+                &ToolbarSettings::new(
+                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+                    Box::new(VertToolbarWithBorder),
+                ),
+                &ToolbarRenderKind::Vertical,
+            );
+        }
+
+        // ── Spawned demo toolbars — REAL toolbar composite instances ─────────
+        // Toolbar composite supports every side (Horizontal for Top/Bottom,
+        // Vertical for Left/Right). Each spawned instance is registered the
+        // same way as the main top toolbar.
+        let demo_tb_specs: [(&str, bool, ToolbarRenderKind); 3] = [
+            ("demo-toolbar-left2",  state.demo_toolbar_left2,  ToolbarRenderKind::Vertical),
+            ("demo-toolbar-right",  state.demo_toolbar_right,  ToolbarRenderKind::Vertical),
+            ("demo-toolbar-bottom", state.demo_toolbar_bottom, ToolbarRenderKind::Horizontal),
+        ];
+        // Build a fat item list once — demo toolbars use it to force overflow.
+        // 30 buttons guarantee the strip is wider/taller than any reasonable
+        // viewport, so the chevron paging mode actually has work to do.
+        let demo_overflow_labels: [&str; 30] = [
+            "A1","A2","A3","A4","A5","A6","A7","A8","A9","A10",
+            "B1","B2","B3","B4","B5","B6","B7","B8","B9","B10",
+            "C1","C2","C3","C4","C5","C6","C7","C8","C9","C10",
+        ];
+        let demo_overflow_items: Vec<ToolbarItem<'_>> = demo_overflow_labels
+            .iter()
+            .map(|lbl| ToolbarItem::TextButton {
+                id: lbl, text: lbl, active: false, tooltip: None, popup_on_hover: false,
+            })
+            .collect();
+        // Each demo toolbar uses its own stored ToolbarState so the overflow
+        // chevron's scroll_offset persists between frames (otherwise paging
+        // can't accumulate). Resize edge is per-side: Left toolbar drags its
+        // E (right) edge, Right toolbar drags its W (left) edge, Bottom
+        // toolbar drags its N (top) edge.
+        let mk_demo = |edge: uzor::layout::ResizeEdge| ToolbarView {
+            start: ToolbarSection { items: &demo_overflow_items },
+            center: ToolbarSection::empty(),
+            end: ToolbarSection::empty(),
+            chrome: None,
+            overflow: uzor::types::OverflowMode::Chevrons,
+            resize_edge: Some(edge),
+        };
+        if state.demo_toolbar_left2 {
+            let view = mk_demo(uzor::layout::ResizeEdge::E);
+            register_layout_manager_toolbar(
+                &mut state.layout, render, LayoutNodeId::ROOT,
+                "demo-toolbar-left2", &state.demo_toolbar_left2_h.clone(),
+                &view,
+                &ToolbarSettings::new(
+                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+                    Box::new(VertToolbarWithBorder),
+                ),
+                &ToolbarRenderKind::Vertical,
+            );
+        }
+        if state.demo_toolbar_right {
+            let view = mk_demo(uzor::layout::ResizeEdge::W);
+            register_layout_manager_toolbar(
+                &mut state.layout, render, LayoutNodeId::ROOT,
+                "demo-toolbar-right", &state.demo_toolbar_right_h.clone(),
+                &view,
+                &ToolbarSettings::new(
+                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+                    Box::new(VertToolbarWithBorder),
+                ),
+                &ToolbarRenderKind::Vertical,
+            );
+        }
+        if state.demo_toolbar_bottom {
+            let view = mk_demo(uzor::layout::ResizeEdge::N);
+            register_layout_manager_toolbar(
+                &mut state.layout, render, LayoutNodeId::ROOT,
+                "demo-toolbar-bottom", &state.demo_toolbar_bottom_h.clone(),
+                &view,
+                &ToolbarSettings::new(
+                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
+                    Box::new(HorizToolbarWithBorder),
+                ),
+                &ToolbarRenderKind::Horizontal,
+            );
+        }
+        let _ = demo_tb_specs;
+
+        // ── Spawned demo sidebars — REAL sidebar composite instances ─────────
+        // Sidebar composite currently supports Left / Right (Top / Bottom are
+        // not in SidebarRenderKind yet — they'd need a composite-level addition).
+        // For Top / Bottom we register an empty edge slot and fall back to a
+        // Horizontal toolbar frame so the strip is at least visibly present.
+        if state.demo_sidebar_right {
+            let actions: &[HeaderAction<'_>] = &[];
+            let mut view = SidebarView {
+                header: SidebarHeader { icon: None, title: "Right sidebar", actions },
+                header_mode: uzor::ui::widgets::composite::sidebar::types::SidebarHeaderMode::Sticky,
+                tabs: &[],
+                active_tab: None,
+                show_scrollbar: false,
+                overflow: uzor::types::OverflowMode::Clip,
+                content_height: 200.0,
+            };
+            let _ = register_layout_manager_sidebar(
+                &mut state.layout,
+                render,
+                LayoutNodeId::ROOT,
+                "demo-sidebar-right",
+                &state.demo_sidebar_right_h.clone(),
+                &mut view,
+                &SidebarSettings::default(),
+                &SidebarRenderKind::Right,
+            );
+        }
+        // Top / Bottom sidebars now first-class composite kinds.
+        if state.demo_sidebar_top {
+            let actions: &[HeaderAction<'_>] = &[];
+            let mut view = SidebarView {
+                header: SidebarHeader { icon: None, title: "Top sidebar", actions },
+                header_mode: uzor::ui::widgets::composite::sidebar::types::SidebarHeaderMode::Sticky,
+                tabs: &[],
+                active_tab: None,
+                show_scrollbar: false,
+                overflow: uzor::types::OverflowMode::Clip,
+                content_height: 200.0,
+            };
+            let _ = register_layout_manager_sidebar(
+                &mut state.layout,
+                render,
+                LayoutNodeId::ROOT,
+                "demo-sidebar-top",
+                &state.demo_sidebar_top_h.clone(),
+                &mut view,
+                &SidebarSettings::default(),
+                &SidebarRenderKind::Top,
+            );
+        }
+        if state.demo_sidebar_bottom {
+            let actions: &[HeaderAction<'_>] = &[];
+            let mut view = SidebarView {
+                header: SidebarHeader { icon: None, title: "Bottom sidebar", actions },
+                header_mode: uzor::ui::widgets::composite::sidebar::types::SidebarHeaderMode::Sticky,
+                tabs: &[],
+                active_tab: None,
+                show_scrollbar: false,
+                overflow: uzor::types::OverflowMode::Clip,
+                content_height: 200.0,
+            };
+            let _ = register_layout_manager_sidebar(
+                &mut state.layout,
+                render,
+                LayoutNodeId::ROOT,
+                "demo-sidebar-bottom",
+                &state.demo_sidebar_bottom_h.clone(),
+                &mut view,
+                &SidebarSettings::default(),
+                &SidebarRenderKind::Bottom,
+            );
+        }
+
+        // ── Sidebar ───────────────────────────────────────────────────────────
+        // Sidebar shows dock panel list with close buttons + "Add Panel" button.
+        if state.sidebar_open {
+            let sidebar_actions: &[HeaderAction<'_>] = &[];
+            let sidebar_header = SidebarHeader { icon: None, title: "Dock Panels", actions: sidebar_actions };
+            // Estimated body height — header + spawn UI + per-leaf rows.
+            // When a Top/Bottom sidebar shrinks the available body the
+            // composite shows a scrollbar instead of clipping content.
+            let est_panels = state.layout.panels().tree().leaves().len() as f64;
+            let est_content_h = 480.0 + est_panels * 30.0;
+            let mut sidebar_view = SidebarView {
+                header: sidebar_header,
+                header_mode: uzor::ui::widgets::composite::sidebar::types::SidebarHeaderMode::Sticky,
+                tabs: &[],
+                active_tab: None,
+                show_scrollbar: false,
+                overflow: uzor::types::OverflowMode::Scrollbar,
+                content_height: est_content_h,
+            };
+            let sidebar_kind_value = sidebar_kind_from_index(state.sidebar_kind);
+            let _sidebar_node = register_layout_manager_sidebar(
+                &mut state.layout,
+                render,
+                LayoutNodeId::ROOT,
+                "sidebar",
+                &state.sidebar_h.clone(),
+                &mut sidebar_view,
+                &{
+                    let mut s = SidebarSettings::default();
+                    s.style = Box::new(NoDividerSidebarStyle(DefaultSidebarStyle));
+                    s
+                },
+                &sidebar_kind_value,
+            );
+            // Sidebar body — spawn UI + panel list (via SidebarBodyBuilder).
+            if let Some(body_rect) = state.layout.rect_for_edge_slot("sidebar") {
+                // Collect leaf data before borrowing layout mutably for the builder.
+                let leaf_entries: Vec<(uzor::docking::panels::LeafId, String, bool)> = {
+                    let active = state.layout.panels().active_leaf();
+                    let mut entries: Vec<_> = state
+                        .layout
+                        .panels()
+                        .panel_rects()
+                        .keys()
+                        .map(|&id| {
+                            let title = state
+                                .layout
+                                .panels()
+                                .tree()
+                                .leaf(id)
+                                .and_then(|l| l.panels.first())
+                                .map(|p| p.title().to_string())
+                                .unwrap_or_else(|| format!("Panel {}", id.0));
+                            (id, title, active == Some(id))
+                        })
+                        .collect();
+                    entries.sort_by_key(|(id, _, _)| id.0);
+                    entries
+                };
+
+                let sidebar_state_snap = state.layout.sidebar(&state.sidebar_h).clone();
+                let body_vp = uzor::ui::widgets::composite::sidebar::render::begin_body(
+                    render,
+                    body_rect,
+                    &sidebar_state_snap,
+                    &sidebar_view,
+                    &{
+                        let mut s = SidebarSettings::default();
+                        s.style = Box::new(NoDividerSidebarStyle(DefaultSidebarStyle));
+                        s
+                    },
+                    &sidebar_kind_value,
+                );
+
+                // Build radio items from PanelKind::all()
+                let spawn_kind = &state.spawn_kind;
+                let kind_radio_ids: Vec<String> = PanelKind::all()
+                    .iter()
+                    .map(|k| format!("spawn-kind-{}", k.title().to_lowercase()))
+                    .collect();
+                let kind_radio_items: Vec<sidebar_input::SidebarRadioItem<'_>> = PanelKind::all()
+                    .iter()
+                    .zip(kind_radio_ids.iter())
+                    .map(|(k, id)| sidebar_input::SidebarRadioItem {
+                        id: id.as_str(),
+                        label: k.title(),
+                        selected: spawn_kind == k,
+                    })
+                    .collect();
+
+                let spawn_split = &state.spawn_split;
+                let split_radio_items = [
+                    sidebar_input::SidebarRadioItem { id: "spawn-split-horiz", label: "Split right",  selected: *spawn_split == SpawnSplit::SplitRight  },
+                    sidebar_input::SidebarRadioItem { id: "spawn-split-vert",  label: "Split bottom", selected: *spawn_split == SpawnSplit::SplitBottom },
+                    sidebar_input::SidebarRadioItem { id: "spawn-split-grid",  label: "Grid 2×2",     selected: *spawn_split == SpawnSplit::Grid2x2     },
+                ];
+
+                let close_ids: Vec<String> = (0..leaf_entries.len())
+                    .map(|i| format!("dock-leaf-close-{i}"))
+                    .collect();
+                let panel_entries: Vec<sidebar_input::SidebarPanelEntry<'_>> = leaf_entries
+                    .iter()
+                    .zip(close_ids.iter())
+                    .map(|((_, title, active), close_id)| sidebar_input::SidebarPanelEntry {
+                        close_id: close_id.as_str(),
+                        title: title.as_str(),
+                        active: *active,
+                    })
+                    .collect();
+
+                let mut builder = sidebar_input::SidebarBodyBuilder::new(
+                    render,
+                    &mut state.layout,
+                    body_rect,
+                    body_vp.content_origin_y,
+                    LayerId::main(),
+                );
+                builder.add_section_header("NEW PANEL");
+                builder.add_sub_label("Type:");
+                builder.add_radio_group(&kind_radio_items);
+                builder.add_spacer(6.0);
+                builder.add_sub_label("Split:");
+                builder.add_radio_group(&split_radio_items);
+                builder.add_spacer(8.0);
+                builder.add_action_button("sidebar-spawn", "Spawn");
+                builder.add_divider();
+                builder.add_section_header("PANELS");
+                builder.add_panel_list(&panel_entries, "×");
+                builder.finish();
+            }
+        }
+
+        // ── Main content — iterate ALL leaves of the current dock tree ──────────
+        {
+            use uzor::input::core::sense::Sense;
+
+            let active_leaf = state.layout.panels().active_leaf();
+
+            // Snapshot leaf data to avoid borrow conflicts during render
+            let leaf_data: Vec<(uzor::docking::panels::LeafId, uzor::docking::panels::PanelRect, PanelKind)> = {
+                state.layout.panels().panel_rects().iter()
+                    .map(|(&id, &rect)| {
+                        let kind = state.layout.panels().tree().leaf(id)
+                            .and_then(|l| l.panels.first())
+                            .map(|p| p.kind.clone())
+                            .unwrap_or(PanelKind::Notes);
+                        (id, rect, kind)
+                    })
+                    .collect()
+            };
+
+            for (leaf_id, panel_rect, kind) in &leaf_data {
+                let rect = Rect::new(
+                    panel_rect.x as f64,
+                    panel_rect.y as f64,
+                    panel_rect.width as f64,
+                    panel_rect.height as f64,
+                );
+                let leaf_widget_id = format!("dock-leaf-{}", leaf_id.0);
+
+                if matches!(kind, PanelKind::Watchlist) {
+                    // Watchlist — wired through the real BlackboxPanel
+                    // composite. The lib owns hover routing: when an
+                    // overlay (dropdown / popup / modal) is over the
+                    // panel, the composite suppresses PointerMove.
+                    use std::cell::RefCell;
+                    use uzor::ui::widgets::composite::blackbox_panel::{
+                        input::register_layout_manager_blackbox_panel,
+                        settings::BlackboxPanelSettings,
+                        state::BlackboxState,
+                        types::{BlackboxHandler, BlackboxRenderKind, BlackboxView},
+                    };
+                    let mut taken = std::mem::take(&mut state.watchlist);
+                    taken.set_panel_size((rect.width, rect.height));
+                    let watchlist = RefCell::new(taken);
+                    let mut bb_state = BlackboxState::default();
+                    let mut view = BlackboxView {
+                        title: None,
+                        body: Box::new(|ctx, body_rect| {
+                            BlackboxHandler::render(&*watchlist.borrow(), ctx, body_rect);
+                        }),
+                        handle_event: Box::new(|evt| {
+                            BlackboxHandler::handle_event(&mut *watchlist.borrow_mut(), evt)
+                        }),
+                        sense: Sense::CLICK | Sense::HOVER | Sense::DRAG | Sense::SCROLL,
+                    };
+                    let slot = leaf_id.to_string();
+                    let _ = register_layout_manager_blackbox_panel(
+                        &mut state.layout, render,
+                        LayoutNodeId::ROOT, &slot, leaf_widget_id.clone(),
+                        &mut bb_state, &mut view,
+                        &BlackboxPanelSettings::default(),
+                        &BlackboxRenderKind::Default,
+                    );
+                    // Drop the closures (and their borrows) before reclaiming watchlist.
+                    drop(view);
+                    state.watchlist = watchlist.into_inner();
+                } else {
+                    use uzor::ui::widgets::composite::blackbox_panel::input::register_layout_manager_stub_panel;
+                    let _ = register_layout_manager_stub_panel(
+                        &mut state.layout,
+                        leaf_widget_id,
+                        rect,
+                        &LayerId::main(),
+                    );
+                    render_panel_body(kind, render, rect, &state.watchlist);
+                }
+
+                if Some(*leaf_id) == active_leaf {
+                    use uzor::ui::widgets::atomic::active_frame::render::draw_active_frame;
+                    use uzor::ui::widgets::atomic::active_frame::types::{ActiveFrameKind, ActiveFrameView};
+                    draw_active_frame(
+                        render,
+                        &ActiveFrameView { rect, color: "#2962ff", width: 2.0 },
+                        ActiveFrameKind::Stroke,
+                    );
+                }
+            }
+        }
+
+        // ── Dock separators ──────────────────────────────────────────────────
+        // Paint only — registration is owned by LayoutManager via
+        // `register_dock_separators` (called after all composite registration
+        // so overlays outrank separators in z-order hit-testing).
+        {
+            use uzor::docking::panels::SeparatorOrientation as DockSepOrient;
+            let separators: Vec<_> = state.layout.panels().separators().iter().enumerate().map(|(i, s)| {
+                let thickness = s.thickness_for_state() as f64;
+                let (sx, sy, sw, sh) = match s.orientation {
+                    DockSepOrient::Vertical => {
+                        (s.position as f64 - thickness / 2.0, s.start as f64, thickness, s.length as f64)
+                    }
+                    DockSepOrient::Horizontal => {
+                        (s.start as f64, s.position as f64 - thickness / 2.0, s.length as f64, thickness)
+                    }
+                };
+                (i, sx, sy, sw, sh)
+            }).collect();
+
+            let dragging_sep = if let Some(DragTarget::SeparatorDrag { sep_idx, .. }) = state.drag_target {
+                Some(sep_idx)
+            } else {
+                None
+            };
+
+            for (i, sx, sy, sw, sh) in &separators {
+                let color = if dragging_sep == Some(*i) {
+                    "rgba(100,160,255,0.7)"
+                } else {
+                    "rgba(80,80,100,0.5)"
+                };
+                render.set_fill_color(color);
+                render.fill_rect(*sx, *sy, *sw, *sh);
+            }
+        }
+
+        // ── Modal ─────────────────────────────────────────────────────────────
+        if state.modal_open {
+            // Body size per kind. Frame (modal_w, modal_h) = body + measure_chrome().
+            let (body_w, body_h) = match state.modal_kind {
+                ModalKind::L2             => (l2_demo_blackbox::L2_WIN_W, l2_demo_blackbox::L2_WIN_H),
+                ModalKind::L1             => (320.0,    150.0),
+                ModalKind::Settings       => (400.0,    250.0),
+                ModalKind::Tags           => (480.0,    310.0),
+                ModalKind::PlainDemo      => (380.0,    180.0),
+                ModalKind::HeaderDemo     => (380.0,    180.0),
+                ModalKind::TopTabsDemo    => (520.0,    320.0),
+                ModalKind::SideTabsDemo   => (560.0,    320.0),
+                ModalKind::WizardDemo     => (520.0,    320.0),
+            };
+            // Resolve render kind early so we can probe chrome overhead correctly.
+            let probe_kind = match state.modal_kind {
+                ModalKind::PlainDemo      => ModalRenderKind::Plain,
+                ModalKind::HeaderDemo     => ModalRenderKind::WithHeader,
+                ModalKind::TopTabsDemo    => ModalRenderKind::TopTabs,
+                ModalKind::SideTabsDemo   => ModalRenderKind::SideTabs,
+                ModalKind::WizardDemo     => ModalRenderKind::Wizard,
+                _                         => ModalRenderKind::WithHeaderFooter,
+            };
+            let probe_btns = [
+                FooterBtn { label: "Close", style: FooterBtnStyle::Ghost },
+                FooterBtn { label: "Apply", style: FooterBtnStyle::Primary },
+            ];
+            let probe_view = ModalView {
+                title: Some(""),
+                tabs: &[],
+                footer_buttons: &probe_btns,
+                wizard_pages: &[],
+                backdrop: BackdropKind::Dim,
+                overflow: uzor::types::OverflowMode::Clip,
+                resizable: false,
+            };
+            let (extra_w, extra_h) = measure_modal_chrome(
+                &probe_view,
+                &ModalSettings::default(),
+                &probe_kind,
+            );
+            let measured_w = body_w + extra_w;
+            let measured_h = body_h + extra_h;
+            let modal_w = if state.modal_size_override.0 > 0.0 { state.modal_size_override.0 } else { measured_w };
+            let modal_h = if state.modal_size_override.1 > 0.0 { state.modal_size_override.1 } else { measured_h };
+            // Fix #10/#11: use modal state.position (dragged) instead of always centering.
+            let default_x = (width as f64 / 2.0 - modal_w / 2.0).max(0.0);
+            let default_y = (height as f64 / 2.0 - modal_h / 2.0).max(0.0);
+            let modal_pos = state.layout.modal(&state.modal_h).position;
+            let (frame_x, frame_y) = if modal_pos != (0.0, 0.0) {
+                modal_pos
+            } else {
+                (default_x, default_y)
+            };
+            let modal_rect = Rect::new(frame_x, frame_y, modal_w, modal_h);
+
+            let modal_kind = state.modal_kind;
+
+            let title = match modal_kind {
+                ModalKind::L2             => "L2 Widget Set",
+                ModalKind::L1             => "L1 Custom Button",
+                ModalKind::Settings       => "Settings",
+                ModalKind::Tags           => "Dock Panels",
+                ModalKind::PlainDemo      => "Plain (frame only)",
+                ModalKind::HeaderDemo     => "WithHeader (no footer)",
+                ModalKind::TopTabsDemo    => "TopTabs",
+                ModalKind::SideTabsDemo   => "SideTabs",
+                ModalKind::WizardDemo     => "Wizard",
+            };
+            let footer_btns = [
+                FooterBtn { label: "Close", style: FooterBtnStyle::Ghost },
+                FooterBtn { label: "Apply", style: FooterBtnStyle::Primary },
+            ];
+            // Per-kind tabs (for TopTabs / SideTabs).
+            let toptabs_tabs   = ["General", "Network", "Storage", "Advanced"];
+            let sidetabs_tabs  = ["Profile", "Account", "Privacy", "Notifications"];
+            let wizard_pages_data: [WizardPageInfo; 3] = [
+                WizardPageInfo { label: Some("Welcome") },
+                WizardPageInfo { label: Some("Configure") },
+                WizardPageInfo { label: Some("Review") },
+            ];
+            let render_kind = match modal_kind {
+                ModalKind::PlainDemo      => ModalRenderKind::Plain,
+                ModalKind::HeaderDemo     => ModalRenderKind::WithHeader,
+                ModalKind::TopTabsDemo    => ModalRenderKind::TopTabs,
+                ModalKind::SideTabsDemo   => ModalRenderKind::SideTabs,
+                ModalKind::WizardDemo     => ModalRenderKind::Wizard,
+                _                         => ModalRenderKind::WithHeaderFooter,
+            };
+            let tabs: &[&str] = match modal_kind {
+                ModalKind::TopTabsDemo  => &toptabs_tabs,
+                ModalKind::SideTabsDemo => &sidetabs_tabs,
+                _                       => &[],
+            };
+            let wizard_pages_ref: &[WizardPageInfo] = match modal_kind {
+                ModalKind::WizardDemo => &wizard_pages_data,
+                _                     => &[],
+            };
+            // Overflow mode: chevrons make sense only inside the L2 widget
+            // catalog (its content can be wider than the body). All other
+            // demo modals fit their body — clip is enough.
+            // Pick a different overflow strategy per kind so each demo modal
+            // exercises one of the three reactions:
+            //   • HeaderDemo   — Chevrons (paging arrows)
+            //   • TopTabsDemo  — Scrollbar (vertical track)
+            //   • SideTabsDemo — Compress (children scaled to fit; fallback
+            //                    chevrons kick in if min-factor is reached)
+            //   • L2           — Chevrons (legacy behaviour for catalog)
+            //   • everything else — Clip (with auto-fallback to chevrons)
+            let overflow_mode = match modal_kind {
+                ModalKind::L2           => uzor::types::OverflowMode::Chevrons,
+                ModalKind::HeaderDemo   => uzor::types::OverflowMode::Chevrons,
+                ModalKind::TopTabsDemo  => uzor::types::OverflowMode::Scrollbar,
+                ModalKind::SideTabsDemo => uzor::types::OverflowMode::Compress,
+                _                       => uzor::types::OverflowMode::Clip,
+            };
+            let mut modal_view = ModalView {
+                title: Some(title),
+                tabs,
+                footer_buttons: &footer_btns,
+                wizard_pages: wizard_pages_ref,
+                backdrop: BackdropKind::Dim,
+                overflow: overflow_mode,
+                resizable: true,
+            };
+            // Tell the composite the natural body content size BEFORE
+            // it registers — `register_body_overflow` reads these to
+            // decide whether to register vertical / horizontal chevrons.
+            // Natural body content size per kind. These are the dimensions
+            // that the body *would* like to occupy. When the modal is shrunk
+            // below this, register_body_overflow falls back to chevrons even
+            // when overflow is set to Clip.
+            let (cw, ch): (f64, f64) = match modal_kind {
+                ModalKind::L2           => (l2_demo_blackbox::L2_WIN_W, l2_demo_blackbox::L2_WIN_H),
+                ModalKind::L1           => (360.0, 200.0),
+                ModalKind::Settings     => (520.0, 360.0),
+                ModalKind::Tags         => (520.0, 320.0),
+                ModalKind::PlainDemo    => (360.0, 120.0),
+                ModalKind::HeaderDemo   => (420.0, 180.0),
+                ModalKind::TopTabsDemo  => (420.0, 220.0),
+                ModalKind::SideTabsDemo => (480.0, 280.0),
+                ModalKind::WizardDemo   => (480.0, 240.0),
+            };
+            {
+                let h = state.modal_h.clone();
+                let ms = state.layout.modal_mut(&h);
+                ms.body_content_w = cw;
+                ms.body_content_h = ch;
+            }
+            let modal_node = register_layout_manager_modal(
+                &mut state.layout,
+                render,
+                LayoutNodeId::ROOT,
+                "modal-overlay",
+                &state.modal_h.clone(),
+                modal_rect,
+                None,
+                &mut modal_view,
+                &ModalSettings::default(),
+                &render_kind,
+            );
+            // Draw modal body content inline.
+            // `frame_rect` = full overlay rect (includes chrome).
+            // `body_rect` = content area carved out by the composite.
+            if let Some(frame_rect) = state.layout.rect_for_overlay("modal-overlay") {
+                let body_rect_raw = uzor::ui::widgets::composite::modal::render::body_rect(
+                    frame_rect,
+                    &modal_view,
+                    &ModalSettings::default(),
+                    &render_kind,
+                );
+                // Apply scroll offset so dragging the scrollbar moves the
+                // content. Composite paints the scrollbar; body content
+                // is shifted by scroll offsets and clipped to body_rect.
+                let (scroll_y, scroll_x) = {
+                    let ms = state.layout.modal(&state.modal_h);
+                    (ms.scroll.offset, ms.body_scroll_x)
+                };
+                let body_rect = Rect::new(
+                    body_rect_raw.x - scroll_x,
+                    body_rect_raw.y - scroll_y,
+                    body_rect_raw.width  + scroll_x,
+                    body_rect_raw.height + scroll_y,
+                );
+                // Hard-clip everything we draw inside body_rect_raw so
+                // the overflow can't bleed past the modal frame.
+                render.save();
+                render.clip_rect(
+                    body_rect_raw.x, body_rect_raw.y,
+                    body_rect_raw.width, body_rect_raw.height,
+                );
+                let layer = LayerId::modal();
+                match modal_kind {
+                    ModalKind::L1 => {
+                        // Fix 2 + Fix 5-6: custom button with hover/press colour animation.
+                        let btn_w = 200.0_f64;
+                        let btn_h = 60.0_f64;
+                        let cx = body_rect.x + body_rect.width / 2.0;
+                        let cy = body_rect.y + body_rect.height / 2.0;
+                        let btn_r = Rect::new(cx - btn_w / 2.0, cy - btn_h / 2.0, btn_w, btn_h);
+                        use uzor::input::core::sense::Sense;
+                        use uzor::input::core::widget_kind::WidgetKind;
+                        let btn_id = unsafe_widget_id("l1-mybtn");
+                        // Button is atomic — use register_atomic.
+                        // Sticky chevrons require a composite parent; to add a
+                        // chevron to a button, wrap it in a composite container
+                        // (e.g. WidgetKind::Panel) or use a ToolbarItem::SplitIconButton.
+                        let btn_composite_id = state.layout.ctx_mut().input.register_atomic(
+                            btn_id.clone(),
+                            WidgetKind::Button,
+                            btn_r,
+                            Sense::CLICK | Sense::HOVER,
+                            &layer,
+                        );
+                        // Three-state colour via coordinator widget_state — no manual fields needed.
+                        let btn_state = state.layout.ctx_mut().input.widget_state(&btn_id);
+                        let btn_color = match btn_state {
+                            WidgetState::Pressed  => "#1a40c8",
+                            WidgetState::Hovered  => "#4080ff",
+                            _                     => "#3769af",
+                        };
+                        render.set_fill_color(btn_color);
+                        render.fill_rounded_rect(btn_r.x, btn_r.y, btn_r.width, btn_r.height, 6.0);
+                        label(render, btn_r, "Click me (L1 custom)", TextAlign::Center, "#ffffff");
+
+                        // Sticky chevron requires a composite parent widget.
+                        // Button is atomic — chevron attachment removed.
+                        // To add a chevron to a button, use ToolbarItem::SplitIconButton
+                        // or wrap the button in a composite Panel container.
+                        let _ = btn_composite_id;
+                    }
+                    ModalKind::Settings => {
+                        label(render, Rect::new(body_rect.x, body_rect.y, body_rect.width, 40.0), "Settings content", TextAlign::Center, "rgba(255,255,255,0.55)");
+                        let items = [
+                            ("Enable dark mode", true),
+                            ("Show tooltips",    true),
+                            ("Auto-save",        false),
+                        ];
+                        for (i, (label, checked)) in items.iter().enumerate() {
+                            let r = Rect::new(body_rect.x + 16.0, body_rect.y + 48.0 + i as f64 * 36.0, body_rect.width - 32.0, 28.0);
+                            let cb_id = format!("settings-cb-{i}");
+                            register_context_manager_checkbox(
+                                state.layout.ctx_mut(), render,
+                                cb_id.as_str(), r, &layer,
+                                WidgetState::Normal,
+                                &CheckboxView { checked: *checked, label: Some(label) },
+                                &CheckboxSettings::default().with_theme(Box::new(VisibleCheckboxTheme)),
+                                &CheckboxRenderKind::Standard,
+                                "13px sans-serif",
+                            );
+                        }
+                    }
+                    ModalKind::Tags => {
+                        // "Panels" modal — lists real dock leaves of the active tab,
+                        // clipped to body_rect so nothing overflows.
+                        let body_inner = Rect::new(
+                            body_rect.x + 16.0,
+                            body_rect.y + 8.0,
+                            body_rect.width - 32.0,
+                            body_rect.height - 16.0,
+                        );
+
+                        render.save();
+                        render.clip_rect(body_inner.x, body_inner.y, body_inner.width, body_inner.height);
+
+                        // Section header
+                        {
+                            let hdr = format!("PANELS — Tab: {}", ["Dashboard", "Panels", "Monitoring"][state.active_view]);
+                            label(render, Rect::new(body_inner.x, body_inner.y, body_inner.width, 20.0), &hdr, TextAlign::Left, "rgba(255,255,255,0.5)");
+                        }
+
+                        // Real leaves of currently active dock
+                        let leaves: Vec<(String, uzor::docking::panels::LeafId)> = {
+                            let mut entries: Vec<(uzor::docking::panels::LeafId, String)> = state
+                                .layout.panels().panel_rects().keys()
+                                .map(|&id| {
+                                    let title = state.layout.panels().tree().leaf(id)
+                                        .and_then(|l| l.panels.first())
+                                        .map(|p| p.title().to_string())
+                                        .unwrap_or_else(|| format!("Panel {}", id.0));
+                                    (id, title)
+                                })
+                                .collect();
+                            entries.sort_by_key(|(id, _)| id.0);
+                            entries.into_iter().map(|(id, t)| (t, id)).collect()
+                        };
+
+                        let mut row_y = body_inner.y + 28.0;
+                        for (idx, (title, leaf_id)) in leaves.iter().enumerate() {
+                            if row_y + 32.0 > body_inner.y + body_inner.height { break; }
+                            render.set_fill_color("rgba(255,255,255,0.05)");
+                            render.fill_rounded_rect(body_inner.x, row_y, body_inner.width, 30.0, 4.0);
+                            {
+                                let idx_str  = format!("#{}", idx + 1);
+                                let leaf_str = format!("leaf {}", leaf_id.0);
+                                label(render, Rect::new(body_inner.x + 8.0, row_y, 32.0, 30.0),               &idx_str,        TextAlign::Left,  "#a6adc8");
+                                label(render, Rect::new(body_inner.x + 40.0, row_y, body_inner.width - 120.0, 30.0), title.as_str(),   TextAlign::Left,  "#d1d4dc");
+                                label(render, Rect::new(body_inner.x, row_y, body_inner.width - 8.0, 30.0),   &leaf_str,       TextAlign::Right, "rgba(255,255,255,0.35)");
+                            }
+                            row_y += 36.0;
+                        }
+
+                        if leaves.is_empty() {
+                            label(render, body_inner, "(no panels in this tab)", TextAlign::Center, "rgba(255,255,255,0.4)");
+                        }
+
+                        render.restore();
+                    }
+                    ModalKind::L2 => {
+                        // Phase D: L2 demo now lives entirely inside L2DemoBlackbox.
+                        // body_rect is in screen coords — render directly.
+                        use uzor::ui::widgets::composite::blackbox_panel::types::BlackboxHandler;
+                        state.l2_demo.set_panel_size((body_rect.width, body_rect.height));
+                        state.l2_demo.render(render, body_rect);
+                    }
+                    ModalKind::PlainDemo => {
+                        // No header/footer — caller draws everything inside the body.
+                        render.set_fill_color("#1a1a22");
+                        render.fill_rect(body_rect.x, body_rect.y, body_rect.width, body_rect.height);
+                        render.set_fill_color("#d1d4dc");
+                        render.set_font("14px sans-serif");
+                        render.set_text_align(TextAlign::Center);
+                        render.set_text_baseline(TextBaseline::Middle);
+                        render.fill_text(
+                            "ModalRenderKind::Plain — frame only",
+                            body_rect.x + body_rect.width / 2.0,
+                            body_rect.y + body_rect.height / 2.0 - 12.0,
+                        );
+                        render.set_fill_color("#7080a0");
+                        render.set_font("12px sans-serif");
+                        render.fill_text(
+                            "Click outside to dismiss.",
+                            body_rect.x + body_rect.width / 2.0,
+                            body_rect.y + body_rect.height / 2.0 + 12.0,
+                        );
+                    }
+                    ModalKind::HeaderDemo => {
+                        render.set_fill_color("#d1d4dc");
+                        render.set_font("13px sans-serif");
+                        render.set_text_align(TextAlign::Left);
+                        render.set_text_baseline(TextBaseline::Top);
+                        render.fill_text(
+                            "Header-only modal — no footer buttons.",
+                            body_rect.x + 16.0,
+                            body_rect.y + 16.0,
+                        );
+                        render.set_fill_color("#7080a0");
+                        render.set_font("12px sans-serif");
+                        render.fill_text(
+                            "Drag the title bar to move me. Click X or outside to close.",
+                            body_rect.x + 16.0,
+                            body_rect.y + 40.0,
+                        );
+
+                        // ── Live text input ────────────────────────────────
+                        let ti_id = unsafe_widget_id("modal:header_demo:text_input");
+                        let ti_rect = Rect::new(
+                            body_rect.x + 16.0,
+                            body_rect.y + 72.0,
+                            (body_rect.width - 32.0).max(120.0),
+                            32.0,
+                        );
+                        state.layout.ctx_mut().input.register_text_field(
+                            ti_id.clone(),
+                            ti_rect,
+                            StoreTextFieldConfig::text(),
+                        );
+                        let text_str = state.layout.ctx().input.text_fields()
+                            .text(&ti_id).to_owned();
+                        let cursor_pos = state.layout.ctx().input.text_fields().cursor(&ti_id);
+                        let selection  = state.layout.ctx().input.text_fields().selection_range(&ti_id);
+                        let focused    = state.layout.ctx().input.text_fields().is_focused(&ti_id);
+                        let ti_view = InputView {
+                            text:        text_str.as_str(),
+                            placeholder: "Type here...",
+                            cursor:      cursor_pos,
+                            selection,
+                            focused,
+                            disabled:    false,
+                            input_type:  InputType::Text,
+                        };
+                        let ti_state = if focused { WidgetState::Active } else { WidgetState::Normal };
+                        let parent_node = modal_node.map(|n| n.0).unwrap_or(LayoutNodeId::ROOT);
+                        let _ = register_layout_manager_text_input(
+                            &mut state.layout,
+                            render,
+                            parent_node,
+                            ti_id,
+                            ti_rect,
+                            ti_state,
+                            &ti_view,
+                            &TextInputSettings::with_config(TiTextFieldConfig::text()),
+                        );
+                    }
+                    ModalKind::TopTabsDemo => {
+                        render.set_fill_color("#d1d4dc");
+                        render.set_font("13px sans-serif");
+                        render.set_text_align(TextAlign::Left);
+                        render.set_text_baseline(TextBaseline::Top);
+                        render.fill_text(
+                            "TopTabs — horizontal tab strip below the header.",
+                            body_rect.x + 16.0,
+                            body_rect.y + 16.0,
+                        );
+                        render.set_fill_color("#7080a0");
+                        render.set_font("12px sans-serif");
+                        render.fill_text(
+                            "Tabs (decorative): General / Network / Storage / Advanced.",
+                            body_rect.x + 16.0,
+                            body_rect.y + 40.0,
+                        );
+                    }
+                    ModalKind::SideTabsDemo => {
+                        // Read the composite-computed compress factor and
+                        // apply it to font sizes + offsets.  Identity (1.0)
+                        // outside Compress mode so this code is safe to keep
+                        // unconditionally.
+                        let factor = state.layout.modal(&state.modal_h).compress_factor();
+                        let scale = factor.sx.min(factor.sy);
+                        let pad   = 16.0 * factor.sx;
+                        let font_a = (13.0 * scale).max(8.0);
+                        let font_b = (12.0 * scale).max(8.0);
+                        render.set_fill_color("#d1d4dc");
+                        render.set_font(&format!("{}px sans-serif", font_a as i32));
+                        render.set_text_align(TextAlign::Left);
+                        render.set_text_baseline(TextBaseline::Top);
+                        render.fill_text(
+                            "SideTabs (Compress) — resize the modal smaller; the body text scales down.",
+                            body_rect.x + pad,
+                            body_rect.y + pad,
+                        );
+                        render.set_fill_color("#7080a0");
+                        render.set_font(&format!("{}px sans-serif", font_b as i32));
+                        render.fill_text(
+                            "Sidebar tabs (decorative): Profile / Account / Privacy / Notifications.",
+                            body_rect.x + pad,
+                            body_rect.y + pad + 24.0 * factor.sy,
+                        );
+                        render.fill_text(
+                            &format!("compress factor: ({:.2}, {:.2})", factor.sx, factor.sy),
+                            body_rect.x + pad,
+                            body_rect.y + pad + 48.0 * factor.sy,
+                        );
+                    }
+                    ModalKind::WizardDemo => {
+                        render.set_fill_color("#d1d4dc");
+                        render.set_font("13px sans-serif");
+                        render.set_text_align(TextAlign::Left);
+                        render.set_text_baseline(TextBaseline::Top);
+                        render.fill_text(
+                            "Wizard — multi-step page flow with Back/Next nav.",
+                            body_rect.x + 16.0,
+                            body_rect.y + 16.0,
+                        );
+                        render.set_fill_color("#7080a0");
+                        render.set_font("12px sans-serif");
+                        render.fill_text(
+                            "Pages: Welcome → Configure → Review.",
+                            body_rect.x + 16.0,
+                            body_rect.y + 40.0,
+                        );
+                    }
+                }
+                // Close the body clip established before the per-kind branch.
+                render.restore();
+
+                // Two-pass body finish: paint overflow overlays, then re-register
+                // overflow hit-zones after body content so they outrank body widgets.
+                {
+                    // Take/return state via mem::replace because modal_body_finish
+                    // takes &mut LayoutManager + &mut ModalState concurrently.
+                    let h = state.modal_h.clone();
+                    let mut ms = std::mem::take(state.layout.modal_mut(&h));
+                    modal_input::modal_body_finish(
+                        &mut state.layout,
+                        render,
+                        frame_rect,
+                        &mut ms,
+                        &modal_view,
+                        &ModalSettings::default(),
+                        &render_kind,
+                    );
+                    *state.layout.modal_mut(&state.modal_h.clone()) = ms;
+                }
+            }
+        }
+
+        // Demo A (l2-connect popup) and Demo D (l2-4dir popup) removed — simplified in Phase D.
+
+        // ── Context menu ──────────────────────────────────────────────────────
+        let ctx_menu_is_open = state.layout.context_menu(&state.ctx_menu_h).is_open;
+        if ctx_menu_is_open {
+            let (ctx_x, ctx_y) = {
+                let s = state.layout.context_menu(&state.ctx_menu_h);
+                (s.x, s.y)
+            };
+            let items = [
+                ContextMenuItem { action: "ctx-copy",     label: "Copy",       icon: None, danger: false, separator_after: false, enabled: true },
+                ContextMenuItem { action: "ctx-paste",    label: "Paste",      icon: None, danger: false, separator_after: false, enabled: true },
+                ContextMenuItem { action: "ctx-delete",   label: "Delete",     icon: None, danger: true,  separator_after: true,  enabled: true },
+                ContextMenuItem { action: "ctx-props",    label: "Properties", icon: None, danger: false, separator_after: false, enabled: true },
+                ContextMenuItem { action: "ctx-settings", label: "Settings",   icon: None, danger: false, separator_after: false, enabled: true },
+            ];
+            let menu_h = items.len() as f64 * 28.0 + 16.0;
+            let ctx_menu_rect = Rect::new(ctx_x, ctx_y, 170.0, menu_h);
+            let mut ctx_menu_view = ContextMenuView { items: &items, target_id: None, title: None };
+            register_layout_manager_context_menu(
+                &mut state.layout,
+                render,
+                LayoutNodeId::ROOT,
+                "ctx-menu-overlay",
+                &state.ctx_menu_h.clone(),
+                ctx_menu_rect,
+                None,
+                &mut ctx_menu_view,
+                &ContextMenuSettings::default(),
+                &ContextMenuRenderKind::Minimal,
+            );
+        }
+
+        // ── Dropdown menus (File / View / Help) ───────────────────────────────
+        let file_items = [
+            DropdownItem::Item { id: "file-new",  label: "New",  icon: None, right: DropdownItemRight::Shortcut("Ctrl+N"), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "file-open", label: "Open", icon: None, right: DropdownItemRight::Shortcut("Ctrl+O"), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "file-save", label: "Save", icon: None, right: DropdownItemRight::Shortcut("Ctrl+S"), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Separator,
+            DropdownItem::Item { id: "file-quit", label: "Quit", icon: None, right: DropdownItemRight::None, disabled: false, danger: true, accent_color: None },
+        ];
+        open_dropdown_flat(
+            &mut state.layout, render, LayoutNodeId::ROOT,
+            "dd-file-overlay", &state.dd_file_h.clone(),
+            &file_items, &DropdownSettings::default(),
+        );
+
+        let view_items = [
+            DropdownItem::Item { id: "view-sidebar", label: "Toggle Sidebar", icon: None, right: DropdownItemRight::Toggle(state.sidebar_open),         disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "view-toolbar", label: "Show Toolbar",   icon: None, right: DropdownItemRight::Toggle(state.left_toolbar_visible), disabled: false, danger: false, accent_color: None },
+        ];
+        open_dropdown_flat(
+            &mut state.layout, render, LayoutNodeId::ROOT,
+            "dd-view-overlay", &state.dd_view_h.clone(),
+            &view_items, &DropdownSettings::default(),
+        );
+
+        let help_items = [
+            DropdownItem::Header { label: "Existing demos" },
+            DropdownItem::Item { id: "modals-l2",       label: "L2 Widget Set",  icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-l1",       label: "L1 Big Button",  icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-panels",   label: "Dock Panels",    icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-settings", label: "Settings",       icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
+            DropdownItem::Separator,
+            DropdownItem::Header { label: "ModalRenderKind catalog" },
+            DropdownItem::Item { id: "modals-plain",    label: "Plain",          icon: None, right: DropdownItemRight::Shortcut("frame only"),    disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-header",   label: "WithHeader",     icon: None, right: DropdownItemRight::Shortcut("title + drag"),  disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-toptabs",  label: "TopTabs",        icon: None, right: DropdownItemRight::Shortcut("tabs across"),   disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-sidetabs", label: "SideTabs",       icon: None, right: DropdownItemRight::Shortcut("icon sidebar"),  disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "modals-wizard",   label: "Wizard",         icon: None, right: DropdownItemRight::Shortcut("multi-step"),    disabled: false, danger: false, accent_color: None },
+        ];
+        open_dropdown_flat(
+            &mut state.layout, render, LayoutNodeId::ROOT,
+            "dd-help-overlay", &state.dd_help_h.clone(),
+            &help_items, &DropdownSettings::default(),
+        );
+
+        // ── Sidebar dropdown — toggles to spawn / hide demo sidebars ─────────
+        let main_open = state.sidebar_open;
+        let sidebar_items = [
+            DropdownItem::Header { label: "Spawn extra sidebars" },
+            DropdownItem::Item { id: "sb-toggle-main",   label: "Main (Left)",    icon: None, right: DropdownItemRight::Toggle(main_open),               disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "sb-spawn-right",   label: "Right sidebar",  icon: None, right: DropdownItemRight::Toggle(state.demo_sidebar_right), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "sb-spawn-top",     label: "Top sidebar",    icon: None, right: DropdownItemRight::Toggle(state.demo_sidebar_top),   disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "sb-spawn-bottom",  label: "Bottom sidebar", icon: None, right: DropdownItemRight::Toggle(state.demo_sidebar_bottom),disabled: false, danger: false, accent_color: None },
+            DropdownItem::Separator,
+            DropdownItem::Item { id: "sb-overlay-mode",  label: "Overlay mode",   icon: None, right: DropdownItemRight::Toggle(state.demo_overlay_mode),  disabled: false, danger: false, accent_color: None },
+        ];
+        open_dropdown_flat(
+            &mut state.layout, render, LayoutNodeId::ROOT,
+            "dd-sidebar-overlay", &state.dd_sidebar_h.clone(),
+            &sidebar_items, &DropdownSettings::default(),
+        );
+
+        // ── Toolbar dropdown — toggles to spawn / hide demo toolbars ─────────
+        let left_main_visible = state.left_toolbar_visible;
+        let toolbar_items_dd = [
+            DropdownItem::Header { label: "Spawn extra toolbars" },
+            DropdownItem::Item { id: "tb-toggle-main",  label: "Main (Top)",     icon: None, right: DropdownItemRight::Toggle(true),                    disabled: true, danger: false, accent_color: None },
+            DropdownItem::Item { id: "tb-toggle-left",  label: "Left (Vertical)",icon: None, right: DropdownItemRight::Toggle(left_main_visible),       disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "tb-spawn-left2",  label: "Left2 (extra)",  icon: None, right: DropdownItemRight::Toggle(state.demo_toolbar_left2), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "tb-spawn-right",  label: "Right toolbar",  icon: None, right: DropdownItemRight::Toggle(state.demo_toolbar_right), disabled: false, danger: false, accent_color: None },
+            DropdownItem::Item { id: "tb-spawn-bottom", label: "Bottom toolbar", icon: None, right: DropdownItemRight::Toggle(state.demo_toolbar_bottom),disabled: false, danger: false, accent_color: None },
+        ];
+        open_dropdown_flat(
+            &mut state.layout, render, LayoutNodeId::ROOT,
+            "dd-toolbar-overlay", &state.dd_toolbar_h.clone(),
+            &toolbar_items_dd, &DropdownSettings::default(),
+        );
+
+        // ── Popup templates dropdown (Plain | Custom) ──────────────────────────
+        // Both rows are submenu triggers — Plain opens its L2 on hover,
+        // Custom opens its L2 only on chevron click. Demonstrates both
+        // SubmenuTrigger variants in one place.
+        let popup_items_dd = [
+            DropdownItem::Header { label: "Popup kind" },
+            DropdownItem::Submenu {
+                id: "popup-plain",
+                label: "Plain",
+                icon: None,
+                trigger: uzor::ui::widgets::composite::dropdown::types::SubmenuTrigger::Hover,
+                chevron_hover: false,
+            },
+            DropdownItem::Submenu {
+                id: "popup-custom",
+                label: "Custom",
+                icon: None,
+                trigger: uzor::ui::widgets::composite::dropdown::types::SubmenuTrigger::ChevronClick,
+                chevron_hover: true,
+            },
+        ];
+        let popup_plain_sub_items = [
+            DropdownItem::Item {
+                id: "popup-plain", label: "Plain popup",
+                icon: None,
+                right: DropdownItemRight::Shortcut("text"),
+                disabled: false, danger: false, accent_color: None,
+            },
+        ];
+        let popup_custom_sub_items = [
+            DropdownItem::Item {
+                id: "popup-custom-grid", label: "Color grid 4×4",
+                icon: None,
+                right: DropdownItemRight::Shortcut("buttons"),
+                disabled: false, danger: false, accent_color: None,
+            },
+            // Debug stubs — exercise multi-row submenu hover.
+            DropdownItem::Item {
+                id: "popup-stub-a", label: "Stub A",
+                icon: None, right: DropdownItemRight::None,
+                disabled: false, danger: false, accent_color: None,
+            },
+            DropdownItem::Item {
+                id: "popup-stub-b", label: "Stub B",
+                icon: None, right: DropdownItemRight::None,
+                disabled: false, danger: false, accent_color: None,
+            },
+            DropdownItem::Item {
+                id: "popup-stub-c", label: "Stub C",
+                icon: None, right: DropdownItemRight::None,
+                disabled: false, danger: false, accent_color: None,
+            },
+        ];
+        {
+            let dd_popup_open = state.layout.dropdown(&state.dd_popup_h).open;
+            if dd_popup_open {
+                let (hovered_id, open_id, origin, anchor_rect, position_override) = {
+                    let s = state.layout.dropdown(&state.dd_popup_h);
+                    (s.hovered_id.clone(), s.submenu_open.clone(), s.effective_origin(), s.anchor_rect, s.open_position_override)
+                };
+                let (pw, ph) = measure_flat(&popup_items_dd, &DropdownSettings::default());
+                let submenu_items = match open_id.as_deref() {
+                    Some("popup-plain")  => Some(("popup-plain",  &popup_plain_sub_items[..])),
+                    Some("popup-custom") => Some(("popup-custom", &popup_custom_sub_items[..])),
+                    _                    => None,
+                };
+                let mut dd_view = DropdownView {
+                    anchor: anchor_rect,
+                    position_override,
+                    open: true,
+                    kind: DropdownViewKind::Flat {
+                        items: &popup_items_dd,
+                        hovered_id: hovered_id.as_deref(),
+                        submenu_items,
+                        submenu_hovered_id: None,
+                    },
+                    size_mode: uzor::types::SizeMode::AutoFit,
+                    overflow: uzor::types::OverflowMode::Clip,
+                    submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
+                };
+                register_layout_manager_dropdown(
+                    &mut state.layout, render,
+                    LayoutNodeId::ROOT, "dd-popup-overlay", &state.dd_popup_h.clone(),
+                    Rect::new(origin.0, origin.1, pw, ph), None,
+                    &mut dd_view,
+                    &DropdownSettings::default(),
+                    DropdownRenderKind::Flat,
+                );
+            }
+        }
+
+        // ── Demo popup ────────────────────────────────────────────────────────
+        // Two flavours, both via the slim popup composite:
+        //   0 (Plain)  → text body, no inner widgets
+        //   1 (Custom) → caller-driven 4×4 color grid where every cell is
+        //                registered as a child Button so it hovers/clicks
+        //                through the dispatcher
+        if let Some(kind_idx) = state.popup_kind {
+            use uzor::ui::widgets::composite::popup::render::body_rect;
+            let popup_settings = PopupSettings::default();
+            let pad = popup_settings.style.padding();
+
+            match kind_idx {
+                0 => {
+                    // Plain popup — text body sized from font metric.
+                    let body_w = 220.0_f64;
+                    let body_h = 60.0_f64;
+                    let popup_w = body_w + pad * 2.0;
+                    let popup_h = body_h + pad * 2.0;
+                    let px = (width as f64 - popup_w) / 2.0;
+                    let py = (height as f64 - popup_h) / 2.0;
+                    let mut v = PopupView {
+                        origin: (px, py),
+                        anchor: None,
+                        backdrop: PopupBackdrop::Dim,
+                        kind: PopupViewKind::Plain,
+                        size_mode: uzor::types::SizeMode::AutoFit,
+                        overflow: uzor::types::OverflowMode::Clip,
+                    };
+                    let _ = register_layout_manager_popup(
+                        &mut state.layout, render,
+                        LayoutNodeId::ROOT,
+                        "demo-popup-overlay", &state.demo_popup_h.clone(),
+                        Rect::new(px, py, popup_w, popup_h), None,
+                        &mut v,
+                        &popup_settings, PopupRenderKind::Plain,
+                    );
+                    if let Some(frame) = state.layout.rect_for_overlay("demo-popup-overlay") {
+                        let body = body_rect(frame, &popup_settings);
+                        label(render, body, "Plain popup body", TextAlign::Center, "#d1d4dc");
+                    }
+                }
+                _ => {
+                    // Custom popup — 4×4 grid of color buttons. Every cell
+                    // is a real child button so it dispatches through the
+                    // coordinator (hover / click / focus).
+                    let palette: [&str; 16] = [
+                        "#ef5350","#f59e0b","#fbbf24","#10b981","#22d3ee","#2962ff","#7c3aed","#ec4899",
+                        "#94a3b8","#fde68a","#86efac","#67e8f9","#93c5fd","#c4b5fd","#fbcfe8","#1f2937",
+                    ];
+                    let cols = 4_usize;
+                    let cell = 28.0_f64;
+                    let gap  = 6.0_f64;
+                    let rows = (palette.len() + cols - 1) / cols;
+                    let body_w = cols as f64 * cell + (cols as f64 - 1.0) * gap;
+                    let body_h = rows as f64 * cell + (rows as f64 - 1.0) * gap;
+                    let popup_w = body_w + pad * 2.0;
+                    let popup_h = body_h + pad * 2.0;
+                    let px = (width as f64 - popup_w) / 2.0;
+                    let py = (height as f64 - popup_h) / 2.0;
+                    // Use Plain so the composite paints the chrome — Custom
+                    // would skip the frame draw.
+                    let mut v = PopupView {
+                        origin: (px, py),
+                        anchor: None,
+                        backdrop: PopupBackdrop::Dim,
+                        kind: PopupViewKind::Plain,
+                        size_mode: uzor::types::SizeMode::AutoFit,
+                        overflow: uzor::types::OverflowMode::Clip,
+                    };
+                    let _ = register_layout_manager_popup(
+                        &mut state.layout, render,
+                        LayoutNodeId::ROOT,
+                        "demo-popup-overlay", &state.demo_popup_h.clone(),
+                        Rect::new(px, py, popup_w, popup_h), None,
+                        &mut v,
+                        &popup_settings, PopupRenderKind::Plain,
+                    );
+                    // Caller body — register every cell + paint its swatch via register_popup_grid.
+                    if let Some(frame) = state.layout.rect_for_overlay("demo-popup-overlay") {
+                        use uzor::ui::widgets::composite::popup::input::{register_popup_grid, PopupGridCell};
+                        let body = body_rect(frame, &popup_settings);
+                        let cell_ids: Vec<String> = (0..palette.len()).map(|i| format!("demo-popup-cell-{i}")).collect();
+                        let grid_cells: Vec<PopupGridCell<'_>> = palette.iter().zip(cell_ids.iter())
+                            .map(|(color, id)| PopupGridCell { id: id.as_str(), color })
+                            .collect();
+                        register_popup_grid(&mut state.layout, render, "demo-popup-widget", body, &grid_cells, cols, cell, gap);
+                    }
+                }
+            }
+        }
+
+        // ── Dock separators — z-aware hit-test registration ───────────────────
+        // Owned by LayoutManager. Called after composites so overlays already
+        // pushed their (modal=true) layers; separator clicks under an open
+        // overlay are blocked by z-ordered hit-test.
+        state.layout.register_dock_separators(&LayerId::main());
+
+        // Register prefix patterns for dock-leaf clicks and close buttons so
+        // the dispatcher surfaces DockLeafClicked / DockLeafClosedByIndex
+        // instead of raw Unhandled ids.
+        // Also register Indexed patterns for L2 modal radio/swatch/tab buttons.
+        {
+            use uzor::layout::EventBuilder;
+            state.layout.dispatcher_mut().on_prefix("dock-leaf-close-", EventBuilder::DockLeafCloseFromSuffix);
+            state.layout.dispatcher_mut().on_prefix("dock-leaf-",       EventBuilder::DockLeafFromSuffix);
+            // L2 modal indexed widgets (radio, swatch, tab — all have numeric suffixes)
+            state.layout.dispatcher_mut().on_prefix("l2-radio-",    EventBuilder::IndexedFromSuffix { base: "l2-radio".into()    });
+            state.layout.dispatcher_mut().on_prefix("l2-swatch-",   EventBuilder::IndexedFromSuffix { base: "l2-swatch".into()   });
+            state.layout.dispatcher_mut().on_prefix("l2-sub-tab-",  EventBuilder::IndexedFromSuffix { base: "l2-sub-tab".into()  });
+            state.layout.dispatcher_mut().on_prefix("l2-tab-",      EventBuilder::IndexedFromSuffix { base: "l2-tab".into()      });
+        }
+
+        // ── end_frame ─────────────────────────────────────────────────────────
+        let responses = state.layout.ctx_mut().input.end_frame();
+
+        // Debug: only print non-hover responses (hover spams every frame)
+        if !responses.is_empty() {
+            let interesting: Vec<_> = responses.iter()
+                .filter(|(_, r)| r.clicked || r.scrolled || r.dragged)
+                .collect();
+            if !interesting.is_empty() {
+                eprintln!("[END_FRAME] {} responses ({} interesting)", responses.len(), interesting.len());
+                for (id, resp) in &interesting {
+                    eprintln!("  - {} clicked={} hovered={} scrolled={} dragged={}",
+                        id.as_str(), resp.clicked, resp.hovered, resp.scrolled, resp.dragged);
+                }
+            }
+        }
+
+        // Process coordinator responses (l2 scrollbar is now inside the blackbox — no orphan ids here)
+
+        // Update popup based on hovered widget.
+        // Items with popup_on_hover:true open on hover — derive the set from the
+        // toolbar item definitions rather than a separate hardcoded allowlist.
+        let hovered_id = state.layout.ctx_mut().input.hovered_widget().map(|id| id.as_str().to_owned());
+        state.popup_item = hovered_id.as_deref().and_then(|hovered| {
+            // Iterate the top toolbar items and check popup_on_hover flag.
+            let top_items: &[(&str, bool)] = &[
+                ("tb-view", true),
+                ("tb-help", true),
+            ];
+            top_items.iter()
+                .find(|(id, on_hover)| *on_hover && *id == hovered)
+                .map(|(id, _)| id.to_string())
+        });
+}
+
 impl AppState {
     fn time_secs(&self) -> f64 {
         self.start.elapsed().as_secs_f64()
@@ -1022,7 +2700,6 @@ impl AppState {
             let s = &self.surface;
             (s.config.width, s.config.height)
         };
-        let win_rect = Rect::new(0.0, 0.0, width as f64, height as f64);
 
         // ── 1. Update clock ───────────────────────────────────────────────────
         if self.last_clock_tick.elapsed() >= Duration::from_secs(1) {
@@ -1034,1578 +2711,81 @@ impl AppState {
             self.last_clock_tick = Instant::now();
         }
 
-        // ── 2. Setup layout ───────────────────────────────────────────────────
-        // Chrome (30px)
-        self.layout.chrome_mut().visible = true;
-        self.layout.chrome_mut().height = CHROME_H as f32;
-
-        // Top toolbar — thickness from toolbar style via measure_horizontal.
-        // Empty view returns (pad*2, style.height()) — we just need the height.
-        let probe_view_h = ToolbarView {
-            start: ToolbarSection::empty(), center: ToolbarSection::empty(),
-            end: ToolbarSection::empty(), chrome: None,
-            overflow: uzor::types::OverflowMode::Clip,
-            resize_edge: None,
-        };
-        let probe_settings = ToolbarSettings::new(
-            Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
-            Box::new(HorizToolbarWithBorder),
-        );
-        let (_, top_h_measured) = measure_toolbar_h(&probe_view_h, &probe_settings);
-        let top_h = if self.top_toolbar_height_override > 0.0 {
-            self.top_toolbar_height_override
-        } else {
-            top_h_measured
-        };
-        // Wipe last frame's edge slots — the dropdowns spawn extra slots
-        // conditionally on every frame and any slot we don't re-add now
-        // should disappear (its space returns to the dock area).
-        self.layout.edges_mut().clear();
-        self.layout.edges_mut().add(EdgeSlot {
-            id: "top-toolbar".to_string(),
-            side: EdgeSide::Top,
-            thickness: top_h as f32,
-            visible: true,
-            order: 0,
-            ..Default::default()
-        });
-
-        // Left vertical toolbar (toggled via View → Show Toolbar) —
-        // thickness from style via measure_vertical.
-        let probe_view_v = ToolbarView {
-            start: ToolbarSection::empty(), center: ToolbarSection::empty(),
-            end: ToolbarSection::empty(), chrome: None,
-            overflow: uzor::types::OverflowMode::Clip,
-            resize_edge: None,
-        };
-        let probe_settings_v = ToolbarSettings::new(
-            Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
-            Box::new(VertToolbarWithBorder),
-        );
-        let (left_w, _) = measure_toolbar_v(&probe_view_v, &probe_settings_v);
-        self.layout.edges_mut().add(EdgeSlot {
-            id: "left-vtoolbar".to_string(),
-            side: EdgeSide::Left,
-            thickness: left_w as f32,
-            visible: self.left_toolbar_visible,
-            order: 0,
-            ..Default::default()
-        });
-
-        // Sidebar (slide-out, toggled): always registered, visible toggled.
-        // Width from sidebar style via measure(); side / kind chosen by sidebar_kind.
-        let kind_value = sidebar_kind_from_index(self.sidebar_kind);
-        let edge_side = match self.sidebar_kind {
-            1 => EdgeSide::Right,           // Right
-            _ => EdgeSide::Left,            // Left, WithTypeSelector, Embedded → left
-        };
-        let (default_sidebar_w, _chrome_h) = measure_sidebar(
-            &SidebarSettings::default(),
-            &kind_value,
-        );
-        // Sidebar width follows user resize (sidebar state.width). Initialised
-        // from measure_sidebar()'s default; the resize-handle drag updates
-        // state.width which then flows back into the edge slot.
-        let sidebar_w = {
-            let w = self.layout.sidebar(&self.sidebar_h).width;
-            if w > 0.0 { w } else { default_sidebar_w }
-        };
-        self.layout.edges_mut().add(EdgeSlot {
-            id: "sidebar".to_string(),
-            side: edge_side,
-            thickness: sidebar_w as f32,
-            visible: self.sidebar_open,
-            order: 1,
-            ..Default::default()
-        });
-
-        // ── Demo toolbars / sidebars (toggleable from dropdowns) ──────────────
-        // Placement follows the Sidebar dropdown's "Overlay mode" toggle:
-        // Compress → shrink dock area; Overlay → float on top of dock.
-        let demo_placement = if self.demo_overlay_mode {
-            uzor::layout::EdgePlacement::Overlay
-        } else {
-            uzor::layout::EdgePlacement::Compress
-        };
-        if self.demo_toolbar_left2 {
-            let t = if self.demo_toolbar_left2_w_override > 0.0 {
-                self.demo_toolbar_left2_w_override as f32
-            } else { left_w as f32 };
-            self.layout.edges_mut().add(EdgeSlot {
-                id: "demo-toolbar-left2".into(),
-                side: EdgeSide::Left,
-                thickness: t,
-                visible: true,
-                order: 2,
-                placement: demo_placement,
-            });
-        }
-        if self.demo_toolbar_right {
-            let t = if self.demo_toolbar_right_w_override > 0.0 {
-                self.demo_toolbar_right_w_override as f32
-            } else { left_w as f32 };
-            self.layout.edges_mut().add(EdgeSlot {
-                id: "demo-toolbar-right".into(),
-                side: EdgeSide::Right,
-                thickness: t,
-                visible: true,
-                order: 0,
-                placement: demo_placement,
-            });
-        }
-        if self.demo_toolbar_bottom {
-            let t = if self.demo_toolbar_bottom_h_override > 0.0 {
-                self.demo_toolbar_bottom_h_override as f32
-            } else { top_h as f32 };
-            self.layout.edges_mut().add(EdgeSlot {
-                id: "demo-toolbar-bottom".into(),
-                side: EdgeSide::Bottom,
-                thickness: t,
-                visible: true,
-                order: 0,
-                placement: demo_placement,
-            });
-        }
-        // EdgeSlot.thickness pulls from state.width — composite initialises it
-        // via SidebarState::ensure_sized() on first register from viewport %.
-        // Until that first register fires we seed it here too so the slot
-        // reserves the right space on the very first frame.
-        let viewport_w = width as f64;
-        let viewport_h = height as f64;
-        {
-            let h = self.demo_sidebar_right_h.clone();
-            let st = self.layout.sidebar_mut(&h);
-            st.ensure_sized(viewport_w, viewport_h, true);
-        }
-        {
-            let h = self.demo_sidebar_top_h.clone();
-            let st = self.layout.sidebar_mut(&h);
-            st.ensure_sized(viewport_w, viewport_h, false);
-        }
-        {
-            let h = self.demo_sidebar_bottom_h.clone();
-            let st = self.layout.sidebar_mut(&h);
-            st.ensure_sized(viewport_w, viewport_h, false);
-        }
-        if self.demo_sidebar_right {
-            let h = self.demo_sidebar_right_h.clone();
-            let w = self.layout.sidebar(&h).width as f32;
-            self.layout.edges_mut().add(EdgeSlot {
-                id: "demo-sidebar-right".into(),
-                side: EdgeSide::Right,
-                thickness: w,
-                visible: true,
-                order: 1,
-                placement: demo_placement,
-            });
-        }
-        if self.demo_sidebar_top {
-            let h = self.demo_sidebar_top_h.clone();
-            let w = self.layout.sidebar(&h).width as f32;
-            self.layout.edges_mut().add(EdgeSlot {
-                id: "demo-sidebar-top".into(),
-                side: EdgeSide::Top,
-                thickness: w,
-                visible: true,
-                order: 1,
-                placement: demo_placement,
-            });
-        }
-        if self.demo_sidebar_bottom {
-            let h = self.demo_sidebar_bottom_h.clone();
-            let w = self.layout.sidebar(&h).width as f32;
-            self.layout.edges_mut().add(EdgeSlot {
-                id: "demo-sidebar-bottom".into(),
-                side: EdgeSide::Bottom,
-                thickness: w,
-                visible: true,
-                order: 1,
-                placement: demo_placement,
-            });
-        }
-
-        // Clear overlays at the START of frame (composites push them via
-        // register_layout_manager_* calls below).
-        // If we cleared at the end, rect_for_overlay would return None for
-        // outside-click handlers running between frames.
-        self.layout.clear_overlays();
-
-        self.layout.solve(win_rect);
-
-        // ── 3. Build InputState ───────────────────────────────────────────────
-        let (mx, my) = self.bridge.last_mouse_pos;
-        let input = InputState {
-            pointer: PointerState {
-                pos: Some((mx, my)),
-                ..PointerState::default()
-            },
-            time: self.time_secs(),
-            ..InputState::default()
-        };
-        self.layout.ctx_mut().input.begin_frame(input);
-        // Wipe last frame's dispatcher patterns — composites re-register on
-        // each register_layout_manager_* call below.
-        self.layout.dispatcher_begin_frame();
-
-        // ── 4. Scene ──────────────────────────────────────────────────────────
-        self.scene.reset();
-        self.scene.fill(
-            Fill::NonZero, Affine::IDENTITY, BG, None,
-            &vello::kurbo::Rect::new(0.0, 0.0, width as f64, height as f64),
-        );
-
+        // ── Assemble + paint one frame via the portable, headlessly-testable
+        // draw_l3_frame (Wave 6 Commit 3 extraction) ───────────────────────────
         let time_ms = self.time_ms();
-        // Push frame time into LayoutManager so atomics with animations
-        // (text_input caret blink etc.) can read it.
-        self.layout.set_frame_time_ms(time_ms as f64);
-        let clock = self.clock_str.clone();
+        let time_secs = self.time_secs();
+        let mut l3 = L3State {
+            layout: std::mem::take(&mut self.layout),
+            watchlist: std::mem::take(&mut self.watchlist),
+            l2_demo: std::mem::take(&mut self.l2_demo),
 
-        let mut render = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
-        // ── Chrome ────────────────────────────────────────────────────────────
-        let tab_ids = ["tab-0", "tab-1", "tab-2"];
-        let chrome_tabs = [
-            ChromeTabConfig { id: "tab-0", label: "Dashboard",  icon: None, color_tag: None, closable: false, active: self.active_view == 0 },
-            ChromeTabConfig { id: "tab-1", label: "Panels",     icon: None, color_tag: None, closable: false, active: self.active_view == 1 },
-            ChromeTabConfig { id: "tab-2", label: "Monitoring", icon: None, color_tag: None, closable: false, active: self.active_view == 2 },
-        ];
-        let chrome_view = ChromeView {
-            tabs: &chrome_tabs,
-            active_tab_id: Some(tab_ids[self.active_view]),
-            show_new_tab_btn: false,
-            show_menu_btn: false,
-            show_new_window_btn: false,
-            show_close_window_btn: false,
+            clock_str: self.clock_str.clone(),
+            top_toolbar_height_override: self.top_toolbar_height_override,
+            demo_toolbar_left2_w_override: self.demo_toolbar_left2_w_override,
+            demo_toolbar_right_w_override: self.demo_toolbar_right_w_override,
+            demo_toolbar_bottom_h_override: self.demo_toolbar_bottom_h_override,
+            modal_size_override: self.modal_size_override,
+
+            active_view: self.active_view,
+            sidebar_open: self.sidebar_open,
+            sidebar_kind: self.sidebar_kind,
+            popup_kind: self.popup_kind,
+            demo_toolbar_left2: self.demo_toolbar_left2,
+            demo_toolbar_right: self.demo_toolbar_right,
+            demo_toolbar_bottom: self.demo_toolbar_bottom,
+            demo_sidebar_right: self.demo_sidebar_right,
+            demo_sidebar_top: self.demo_sidebar_top,
+            demo_sidebar_bottom: self.demo_sidebar_bottom,
+            demo_overlay_mode: self.demo_overlay_mode,
+            left_toolbar_visible: self.left_toolbar_visible,
+            modal_open: self.modal_open,
+            modal_kind: self.modal_kind,
+            popup_item: self.popup_item.clone(),
+            // DragTarget derives no Copy/Clone (never needed one before);
+            // mem::take + write-back avoids requiring either.
+            drag_target: std::mem::take(&mut self.drag_target),
+            spawn_kind: self.spawn_kind.clone(),
+            spawn_split: self.spawn_split.clone(),
+
+            modal_h: self.modal_h.clone(),
+            dd_file_h: self.dd_file_h.clone(),
+            dd_view_h: self.dd_view_h.clone(),
+            dd_help_h: self.dd_help_h.clone(),
+            dd_sidebar_h: self.dd_sidebar_h.clone(),
+            dd_toolbar_h: self.dd_toolbar_h.clone(),
+            dd_popup_h: self.dd_popup_h.clone(),
+            ctx_menu_h: self.ctx_menu_h.clone(),
+            top_toolbar_h: self.top_toolbar_h.clone(),
+            left_vtoolbar_h: self.left_vtoolbar_h.clone(),
+            demo_toolbar_left2_h: self.demo_toolbar_left2_h.clone(),
+            demo_toolbar_right_h: self.demo_toolbar_right_h.clone(),
+            demo_toolbar_bottom_h: self.demo_toolbar_bottom_h.clone(),
+            sidebar_h: self.sidebar_h.clone(),
+            demo_sidebar_right_h: self.demo_sidebar_right_h.clone(),
+            demo_sidebar_top_h: self.demo_sidebar_top_h.clone(),
+            demo_sidebar_bottom_h: self.demo_sidebar_bottom_h.clone(),
+            demo_popup_h: self.demo_popup_h.clone(),
+
             is_maximized: self.window.is_maximized(),
-            menu_left: false,
-            show_maximize: true,
-            cursor_x: mx,
-            cursor_y: my,
+            cursor: self.bridge.last_mouse_pos,
             time_ms,
+            time_secs,
         };
-        let chrome_settings = ChromeSettings {
-            theme: Box::<uzor::ui::widgets::composite::chrome::theme::DefaultChromeTheme>::default(),
-            style: Box::new(ChromeWithBottomBorder),
-        };
-        let chrome_kind = ChromeRenderKind::Default;
-        register_layout_manager_chrome(
-            &mut self.layout,
-            &mut render,
-            LayoutNodeId::ROOT,
-            "chrome",
-            &chrome_view,
-            &chrome_settings,
-            &chrome_kind,
-        );
 
-        // ── Top toolbar ───────────────────────────────────────────────────────
-        let view_btn_active    = self.layout.dropdown(&self.dd_view_h).open;
-        let modals_btn_active  = self.layout.dropdown(&self.dd_help_h).open;
-        let sidebar_btn_active = self.layout.dropdown(&self.dd_sidebar_h).open;
-        let toolbar_btn_active = self.layout.dropdown(&self.dd_toolbar_h).open;
-        let popup_btn_active   = self.layout.dropdown(&self.dd_popup_h).open;
-        let top_toolbar_items = [
-            ToolbarItem::TextButton { id: "tb-view",    text: "View",    active: view_btn_active,    tooltip: Some("View menu"),         popup_on_hover: true },
-            ToolbarItem::TextButton { id: "tb-help",    text: "Modals",  active: modals_btn_active,  tooltip: Some("Modals menu"),       popup_on_hover: true },
-            ToolbarItem::Separator,
-            ToolbarItem::TextButton { id: "tb-sidebar", text: "Sidebar", active: sidebar_btn_active, tooltip: Some("Sidebar variants"),  popup_on_hover: false },
-            ToolbarItem::TextButton { id: "tb-toolbar", text: "Toolbar", active: toolbar_btn_active, tooltip: Some("Toolbar variants"),  popup_on_hover: false },
-            ToolbarItem::TextButton { id: "tb-popup",   text: "Popup",   active: popup_btn_active,   tooltip: Some("Popup templates"),   popup_on_hover: false },
-        ];
-        let clock_items = [
-            ToolbarItem::Clock { id: "top-clock", time_text: clock.as_str() },
-        ];
-        let top_toolbar_view = ToolbarView {
-            start: ToolbarSection { items: &top_toolbar_items },
-            center: ToolbarSection::empty(),
-            end: ToolbarSection { items: &clock_items },
-            chrome: None,
-            overflow: uzor::types::OverflowMode::Clip,
-            resize_edge: None,
-        };
-        register_layout_manager_toolbar(
-            &mut self.layout,
-            &mut render,
-            LayoutNodeId::ROOT,
-            "top-toolbar",
-            &self.top_toolbar_h.clone(),
-            &top_toolbar_view,
-            &ToolbarSettings::new(
-                Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
-                Box::new(HorizToolbarWithBorder),
-            ),
-            &ToolbarRenderKind::Horizontal,
-        );
-
-        // ── Left vertical toolbar ─────────────────────────────────────────────
-        // Fix #5: use TextButton with SVG symbols — IconButton requires a
-        // populated icon registry which may be empty in examples.
-        let sidebar_open = self.sidebar_open;
-        let left_items = [
-            ToolbarItem::TextButton { id: "lt-toggle-sidebar", text: "☰", active: sidebar_open, tooltip: Some("Toggle sidebar"), popup_on_hover: false },
-        ];
-        if self.left_toolbar_visible {
-            let left_toolbar_view = ToolbarView {
-                start: ToolbarSection { items: &left_items },
-                center: ToolbarSection::empty(),
-                end: ToolbarSection::empty(),
-                chrome: None,
-                overflow: uzor::types::OverflowMode::Clip,
-                resize_edge: Some(uzor::layout::ResizeEdge::E),
-            };
-            register_layout_manager_toolbar(
-                &mut self.layout,
-                &mut render,
-                LayoutNodeId::ROOT,
-                "left-vtoolbar",
-                &self.left_vtoolbar_h.clone(),
-                &left_toolbar_view,
-                &ToolbarSettings::new(
-                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
-                    Box::new(VertToolbarWithBorder),
-                ),
-                &ToolbarRenderKind::Vertical,
-            );
-        }
-
-        // ── Spawned demo toolbars — REAL toolbar composite instances ─────────
-        // Toolbar composite supports every side (Horizontal for Top/Bottom,
-        // Vertical for Left/Right). Each spawned instance is registered the
-        // same way as the main top toolbar.
-        let demo_tb_specs: [(&str, bool, ToolbarRenderKind); 3] = [
-            ("demo-toolbar-left2",  self.demo_toolbar_left2,  ToolbarRenderKind::Vertical),
-            ("demo-toolbar-right",  self.demo_toolbar_right,  ToolbarRenderKind::Vertical),
-            ("demo-toolbar-bottom", self.demo_toolbar_bottom, ToolbarRenderKind::Horizontal),
-        ];
-        // Build a fat item list once — demo toolbars use it to force overflow.
-        // 30 buttons guarantee the strip is wider/taller than any reasonable
-        // viewport, so the chevron paging mode actually has work to do.
-        let demo_overflow_labels: [&str; 30] = [
-            "A1","A2","A3","A4","A5","A6","A7","A8","A9","A10",
-            "B1","B2","B3","B4","B5","B6","B7","B8","B9","B10",
-            "C1","C2","C3","C4","C5","C6","C7","C8","C9","C10",
-        ];
-        let demo_overflow_items: Vec<ToolbarItem<'_>> = demo_overflow_labels
-            .iter()
-            .map(|lbl| ToolbarItem::TextButton {
-                id: lbl, text: lbl, active: false, tooltip: None, popup_on_hover: false,
-            })
-            .collect();
-        // Each demo toolbar uses its own stored ToolbarState so the overflow
-        // chevron's scroll_offset persists between frames (otherwise paging
-        // can't accumulate). Resize edge is per-side: Left toolbar drags its
-        // E (right) edge, Right toolbar drags its W (left) edge, Bottom
-        // toolbar drags its N (top) edge.
-        let mk_demo = |edge: uzor::layout::ResizeEdge| ToolbarView {
-            start: ToolbarSection { items: &demo_overflow_items },
-            center: ToolbarSection::empty(),
-            end: ToolbarSection::empty(),
-            chrome: None,
-            overflow: uzor::types::OverflowMode::Chevrons,
-            resize_edge: Some(edge),
-        };
-        if self.demo_toolbar_left2 {
-            let view = mk_demo(uzor::layout::ResizeEdge::E);
-            register_layout_manager_toolbar(
-                &mut self.layout, &mut render, LayoutNodeId::ROOT,
-                "demo-toolbar-left2", &self.demo_toolbar_left2_h.clone(),
-                &view,
-                &ToolbarSettings::new(
-                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
-                    Box::new(VertToolbarWithBorder),
-                ),
-                &ToolbarRenderKind::Vertical,
-            );
-        }
-        if self.demo_toolbar_right {
-            let view = mk_demo(uzor::layout::ResizeEdge::W);
-            register_layout_manager_toolbar(
-                &mut self.layout, &mut render, LayoutNodeId::ROOT,
-                "demo-toolbar-right", &self.demo_toolbar_right_h.clone(),
-                &view,
-                &ToolbarSettings::new(
-                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
-                    Box::new(VertToolbarWithBorder),
-                ),
-                &ToolbarRenderKind::Vertical,
-            );
-        }
-        if self.demo_toolbar_bottom {
-            let view = mk_demo(uzor::layout::ResizeEdge::N);
-            register_layout_manager_toolbar(
-                &mut self.layout, &mut render, LayoutNodeId::ROOT,
-                "demo-toolbar-bottom", &self.demo_toolbar_bottom_h.clone(),
-                &view,
-                &ToolbarSettings::new(
-                    Box::<uzor::ui::widgets::composite::toolbar::theme::DefaultToolbarTheme>::default(),
-                    Box::new(HorizToolbarWithBorder),
-                ),
-                &ToolbarRenderKind::Horizontal,
-            );
-        }
-        let _ = demo_tb_specs;
-
-        // ── Spawned demo sidebars — REAL sidebar composite instances ─────────
-        // Sidebar composite currently supports Left / Right (Top / Bottom are
-        // not in SidebarRenderKind yet — they'd need a composite-level addition).
-        // For Top / Bottom we register an empty edge slot and fall back to a
-        // Horizontal toolbar frame so the strip is at least visibly present.
-        if self.demo_sidebar_right {
-            let actions: &[HeaderAction<'_>] = &[];
-            let mut view = SidebarView {
-                header: SidebarHeader { icon: None, title: "Right sidebar", actions },
-                header_mode: uzor::ui::widgets::composite::sidebar::types::SidebarHeaderMode::Sticky,
-                tabs: &[],
-                active_tab: None,
-                show_scrollbar: false,
-                overflow: uzor::types::OverflowMode::Clip,
-                content_height: 200.0,
-            };
-            let _ = register_layout_manager_sidebar(
-                &mut self.layout,
-                &mut render,
-                LayoutNodeId::ROOT,
-                "demo-sidebar-right",
-                &self.demo_sidebar_right_h.clone(),
-                &mut view,
-                &SidebarSettings::default(),
-                &SidebarRenderKind::Right,
-            );
-        }
-        // Top / Bottom sidebars now first-class composite kinds.
-        if self.demo_sidebar_top {
-            let actions: &[HeaderAction<'_>] = &[];
-            let mut view = SidebarView {
-                header: SidebarHeader { icon: None, title: "Top sidebar", actions },
-                header_mode: uzor::ui::widgets::composite::sidebar::types::SidebarHeaderMode::Sticky,
-                tabs: &[],
-                active_tab: None,
-                show_scrollbar: false,
-                overflow: uzor::types::OverflowMode::Clip,
-                content_height: 200.0,
-            };
-            let _ = register_layout_manager_sidebar(
-                &mut self.layout,
-                &mut render,
-                LayoutNodeId::ROOT,
-                "demo-sidebar-top",
-                &self.demo_sidebar_top_h.clone(),
-                &mut view,
-                &SidebarSettings::default(),
-                &SidebarRenderKind::Top,
-            );
-        }
-        if self.demo_sidebar_bottom {
-            let actions: &[HeaderAction<'_>] = &[];
-            let mut view = SidebarView {
-                header: SidebarHeader { icon: None, title: "Bottom sidebar", actions },
-                header_mode: uzor::ui::widgets::composite::sidebar::types::SidebarHeaderMode::Sticky,
-                tabs: &[],
-                active_tab: None,
-                show_scrollbar: false,
-                overflow: uzor::types::OverflowMode::Clip,
-                content_height: 200.0,
-            };
-            let _ = register_layout_manager_sidebar(
-                &mut self.layout,
-                &mut render,
-                LayoutNodeId::ROOT,
-                "demo-sidebar-bottom",
-                &self.demo_sidebar_bottom_h.clone(),
-                &mut view,
-                &SidebarSettings::default(),
-                &SidebarRenderKind::Bottom,
-            );
-        }
-
-        // ── Sidebar ───────────────────────────────────────────────────────────
-        // Sidebar shows dock panel list with close buttons + "Add Panel" button.
-        if self.sidebar_open {
-            let sidebar_actions: &[HeaderAction<'_>] = &[];
-            let sidebar_header = SidebarHeader { icon: None, title: "Dock Panels", actions: sidebar_actions };
-            // Estimated body height — header + spawn UI + per-leaf rows.
-            // When a Top/Bottom sidebar shrinks the available body the
-            // composite shows a scrollbar instead of clipping content.
-            let est_panels = self.layout.panels().tree().leaves().len() as f64;
-            let est_content_h = 480.0 + est_panels * 30.0;
-            let mut sidebar_view = SidebarView {
-                header: sidebar_header,
-                header_mode: uzor::ui::widgets::composite::sidebar::types::SidebarHeaderMode::Sticky,
-                tabs: &[],
-                active_tab: None,
-                show_scrollbar: false,
-                overflow: uzor::types::OverflowMode::Scrollbar,
-                content_height: est_content_h,
-            };
-            let sidebar_kind_value = sidebar_kind_from_index(self.sidebar_kind);
-            let _sidebar_node = register_layout_manager_sidebar(
-                &mut self.layout,
-                &mut render,
-                LayoutNodeId::ROOT,
-                "sidebar",
-                &self.sidebar_h.clone(),
-                &mut sidebar_view,
-                &{
-                    let mut s = SidebarSettings::default();
-                    s.style = Box::new(NoDividerSidebarStyle(DefaultSidebarStyle));
-                    s
-                },
-                &sidebar_kind_value,
-            );
-            // Sidebar body — spawn UI + panel list (via SidebarBodyBuilder).
-            if let Some(body_rect) = self.layout.rect_for_edge_slot("sidebar") {
-                // Collect leaf data before borrowing layout mutably for the builder.
-                let leaf_entries: Vec<(uzor::docking::panels::LeafId, String, bool)> = {
-                    let active = self.layout.panels().active_leaf();
-                    let mut entries: Vec<_> = self
-                        .layout
-                        .panels()
-                        .panel_rects()
-                        .keys()
-                        .map(|&id| {
-                            let title = self
-                                .layout
-                                .panels()
-                                .tree()
-                                .leaf(id)
-                                .and_then(|l| l.panels.first())
-                                .map(|p| p.title().to_string())
-                                .unwrap_or_else(|| format!("Panel {}", id.0));
-                            (id, title, active == Some(id))
-                        })
-                        .collect();
-                    entries.sort_by_key(|(id, _, _)| id.0);
-                    entries
-                };
-
-                let sidebar_state_snap = self.layout.sidebar(&self.sidebar_h).clone();
-                let body_vp = uzor::ui::widgets::composite::sidebar::render::begin_body(
-                    &mut render,
-                    body_rect,
-                    &sidebar_state_snap,
-                    &sidebar_view,
-                    &{
-                        let mut s = SidebarSettings::default();
-                        s.style = Box::new(NoDividerSidebarStyle(DefaultSidebarStyle));
-                        s
-                    },
-                    &sidebar_kind_value,
-                );
-
-                // Build radio items from PanelKind::all()
-                let spawn_kind = &self.spawn_kind;
-                let kind_radio_ids: Vec<String> = PanelKind::all()
-                    .iter()
-                    .map(|k| format!("spawn-kind-{}", k.title().to_lowercase()))
-                    .collect();
-                let kind_radio_items: Vec<sidebar_input::SidebarRadioItem<'_>> = PanelKind::all()
-                    .iter()
-                    .zip(kind_radio_ids.iter())
-                    .map(|(k, id)| sidebar_input::SidebarRadioItem {
-                        id: id.as_str(),
-                        label: k.title(),
-                        selected: spawn_kind == k,
-                    })
-                    .collect();
-
-                let spawn_split = &self.spawn_split;
-                let split_radio_items = [
-                    sidebar_input::SidebarRadioItem { id: "spawn-split-horiz", label: "Split right",  selected: *spawn_split == SpawnSplit::SplitRight  },
-                    sidebar_input::SidebarRadioItem { id: "spawn-split-vert",  label: "Split bottom", selected: *spawn_split == SpawnSplit::SplitBottom },
-                    sidebar_input::SidebarRadioItem { id: "spawn-split-grid",  label: "Grid 2×2",     selected: *spawn_split == SpawnSplit::Grid2x2     },
-                ];
-
-                let close_ids: Vec<String> = (0..leaf_entries.len())
-                    .map(|i| format!("dock-leaf-close-{i}"))
-                    .collect();
-                let panel_entries: Vec<sidebar_input::SidebarPanelEntry<'_>> = leaf_entries
-                    .iter()
-                    .zip(close_ids.iter())
-                    .map(|((_, title, active), close_id)| sidebar_input::SidebarPanelEntry {
-                        close_id: close_id.as_str(),
-                        title: title.as_str(),
-                        active: *active,
-                    })
-                    .collect();
-
-                let mut builder = sidebar_input::SidebarBodyBuilder::new(
-                    &mut render,
-                    &mut self.layout,
-                    body_rect,
-                    body_vp.content_origin_y,
-                    LayerId::main(),
-                );
-                builder.add_section_header("NEW PANEL");
-                builder.add_sub_label("Type:");
-                builder.add_radio_group(&kind_radio_items);
-                builder.add_spacer(6.0);
-                builder.add_sub_label("Split:");
-                builder.add_radio_group(&split_radio_items);
-                builder.add_spacer(8.0);
-                builder.add_action_button("sidebar-spawn", "Spawn");
-                builder.add_divider();
-                builder.add_section_header("PANELS");
-                builder.add_panel_list(&panel_entries, "×");
-                builder.finish();
-            }
-        }
-
-        // ── Main content — iterate ALL leaves of the current dock tree ──────────
+        self.scene.reset();
         {
-            use uzor::input::core::sense::Sense;
-
-            let active_leaf = self.layout.panels().active_leaf();
-
-            // Snapshot leaf data to avoid borrow conflicts during render
-            let leaf_data: Vec<(uzor::docking::panels::LeafId, uzor::docking::panels::PanelRect, PanelKind)> = {
-                self.layout.panels().panel_rects().iter()
-                    .map(|(&id, &rect)| {
-                        let kind = self.layout.panels().tree().leaf(id)
-                            .and_then(|l| l.panels.first())
-                            .map(|p| p.kind.clone())
-                            .unwrap_or(PanelKind::Notes);
-                        (id, rect, kind)
-                    })
-                    .collect()
-            };
-
-            for (leaf_id, panel_rect, kind) in &leaf_data {
-                let rect = Rect::new(
-                    panel_rect.x as f64,
-                    panel_rect.y as f64,
-                    panel_rect.width as f64,
-                    panel_rect.height as f64,
-                );
-                let leaf_widget_id = format!("dock-leaf-{}", leaf_id.0);
-
-                if matches!(kind, PanelKind::Watchlist) {
-                    // Watchlist — wired through the real BlackboxPanel
-                    // composite. The lib owns hover routing: when an
-                    // overlay (dropdown / popup / modal) is over the
-                    // panel, the composite suppresses PointerMove.
-                    use std::cell::RefCell;
-                    use uzor::ui::widgets::composite::blackbox_panel::{
-                        input::register_layout_manager_blackbox_panel,
-                        settings::BlackboxPanelSettings,
-                        state::BlackboxState,
-                        types::{BlackboxHandler, BlackboxRenderKind, BlackboxView},
-                    };
-                    let mut taken = std::mem::take(&mut self.watchlist);
-                    taken.set_panel_size((rect.width, rect.height));
-                    let watchlist = RefCell::new(taken);
-                    let mut bb_state = BlackboxState::default();
-                    let mut view = BlackboxView {
-                        title: None,
-                        body: Box::new(|ctx, body_rect| {
-                            BlackboxHandler::render(&*watchlist.borrow(), ctx, body_rect);
-                        }),
-                        handle_event: Box::new(|evt| {
-                            BlackboxHandler::handle_event(&mut *watchlist.borrow_mut(), evt)
-                        }),
-                        sense: Sense::CLICK | Sense::HOVER | Sense::DRAG | Sense::SCROLL,
-                    };
-                    let slot = leaf_id.to_string();
-                    let _ = register_layout_manager_blackbox_panel(
-                        &mut self.layout, &mut render,
-                        LayoutNodeId::ROOT, &slot, leaf_widget_id.clone(),
-                        &mut bb_state, &mut view,
-                        &BlackboxPanelSettings::default(),
-                        &BlackboxRenderKind::Default,
-                    );
-                    // Drop the closures (and their borrows) before reclaiming watchlist.
-                    drop(view);
-                    self.watchlist = watchlist.into_inner();
-                } else {
-                    use uzor::ui::widgets::composite::blackbox_panel::input::register_layout_manager_stub_panel;
-                    let _ = register_layout_manager_stub_panel(
-                        &mut self.layout,
-                        leaf_widget_id,
-                        rect,
-                        &LayerId::main(),
-                    );
-                    render_panel_body(kind, &mut render, rect, &self.watchlist);
-                }
-
-                if Some(*leaf_id) == active_leaf {
-                    use uzor::ui::widgets::atomic::active_frame::render::draw_active_frame;
-                    use uzor::ui::widgets::atomic::active_frame::types::{ActiveFrameKind, ActiveFrameView};
-                    draw_active_frame(
-                        &mut render,
-                        &ActiveFrameView { rect, color: "#2962ff", width: 2.0 },
-                        ActiveFrameKind::Stroke,
-                    );
-                }
-            }
+            let mut render = VelloGpuRenderContext::new(&mut self.scene, 0.0, 0.0);
+            draw_l3_frame(&mut render, width, height, &mut l3);
         }
 
-        // ── Dock separators ──────────────────────────────────────────────────
-        // Paint only — registration is owned by LayoutManager via
-        // `register_dock_separators` (called after all composite registration
-        // so overlays outrank separators in z-order hit-testing).
-        {
-            use uzor::docking::panels::SeparatorOrientation as DockSepOrient;
-            let separators: Vec<_> = self.layout.panels().separators().iter().enumerate().map(|(i, s)| {
-                let thickness = s.thickness_for_state() as f64;
-                let (sx, sy, sw, sh) = match s.orientation {
-                    DockSepOrient::Vertical => {
-                        (s.position as f64 - thickness / 2.0, s.start as f64, thickness, s.length as f64)
-                    }
-                    DockSepOrient::Horizontal => {
-                        (s.start as f64, s.position as f64 - thickness / 2.0, s.length as f64, thickness)
-                    }
-                };
-                (i, sx, sy, sw, sh)
-            }).collect();
+        // Write back the pieces draw_l3_frame actually mutates.
+        self.layout = l3.layout;
+        self.watchlist = l3.watchlist;
+        self.l2_demo = l3.l2_demo;
+        self.popup_item = l3.popup_item;
+        self.drag_target = l3.drag_target;
 
-            let dragging_sep = if let Some(DragTarget::SeparatorDrag { sep_idx, .. }) = self.drag_target {
-                Some(sep_idx)
-            } else {
-                None
-            };
-
-            for (i, sx, sy, sw, sh) in &separators {
-                let color = if dragging_sep == Some(*i) {
-                    "rgba(100,160,255,0.7)"
-                } else {
-                    "rgba(80,80,100,0.5)"
-                };
-                render.set_fill_color(color);
-                render.fill_rect(*sx, *sy, *sw, *sh);
-            }
-        }
-
-        // ── Modal ─────────────────────────────────────────────────────────────
-        if self.modal_open {
-            // Body size per kind. Frame (modal_w, modal_h) = body + measure_chrome().
-            let (body_w, body_h) = match self.modal_kind {
-                ModalKind::L2             => (l2_demo_blackbox::L2_WIN_W, l2_demo_blackbox::L2_WIN_H),
-                ModalKind::L1             => (320.0,    150.0),
-                ModalKind::Settings       => (400.0,    250.0),
-                ModalKind::Tags           => (480.0,    310.0),
-                ModalKind::PlainDemo      => (380.0,    180.0),
-                ModalKind::HeaderDemo     => (380.0,    180.0),
-                ModalKind::TopTabsDemo    => (520.0,    320.0),
-                ModalKind::SideTabsDemo   => (560.0,    320.0),
-                ModalKind::WizardDemo     => (520.0,    320.0),
-            };
-            // Resolve render kind early so we can probe chrome overhead correctly.
-            let probe_kind = match self.modal_kind {
-                ModalKind::PlainDemo      => ModalRenderKind::Plain,
-                ModalKind::HeaderDemo     => ModalRenderKind::WithHeader,
-                ModalKind::TopTabsDemo    => ModalRenderKind::TopTabs,
-                ModalKind::SideTabsDemo   => ModalRenderKind::SideTabs,
-                ModalKind::WizardDemo     => ModalRenderKind::Wizard,
-                _                         => ModalRenderKind::WithHeaderFooter,
-            };
-            let probe_btns = [
-                FooterBtn { label: "Close", style: FooterBtnStyle::Ghost },
-                FooterBtn { label: "Apply", style: FooterBtnStyle::Primary },
-            ];
-            let probe_view = ModalView {
-                title: Some(""),
-                tabs: &[],
-                footer_buttons: &probe_btns,
-                wizard_pages: &[],
-                backdrop: BackdropKind::Dim,
-                overflow: uzor::types::OverflowMode::Clip,
-                resizable: false,
-            };
-            let (extra_w, extra_h) = measure_modal_chrome(
-                &probe_view,
-                &ModalSettings::default(),
-                &probe_kind,
-            );
-            let measured_w = body_w + extra_w;
-            let measured_h = body_h + extra_h;
-            let modal_w = if self.modal_size_override.0 > 0.0 { self.modal_size_override.0 } else { measured_w };
-            let modal_h = if self.modal_size_override.1 > 0.0 { self.modal_size_override.1 } else { measured_h };
-            // Fix #10/#11: use modal state.position (dragged) instead of always centering.
-            let default_x = (width as f64 / 2.0 - modal_w / 2.0).max(0.0);
-            let default_y = (height as f64 / 2.0 - modal_h / 2.0).max(0.0);
-            let modal_pos = self.layout.modal(&self.modal_h).position;
-            let (frame_x, frame_y) = if modal_pos != (0.0, 0.0) {
-                modal_pos
-            } else {
-                (default_x, default_y)
-            };
-            let modal_rect = Rect::new(frame_x, frame_y, modal_w, modal_h);
-
-            let modal_kind = self.modal_kind;
-
-            let title = match modal_kind {
-                ModalKind::L2             => "L2 Widget Set",
-                ModalKind::L1             => "L1 Custom Button",
-                ModalKind::Settings       => "Settings",
-                ModalKind::Tags           => "Dock Panels",
-                ModalKind::PlainDemo      => "Plain (frame only)",
-                ModalKind::HeaderDemo     => "WithHeader (no footer)",
-                ModalKind::TopTabsDemo    => "TopTabs",
-                ModalKind::SideTabsDemo   => "SideTabs",
-                ModalKind::WizardDemo     => "Wizard",
-            };
-            let footer_btns = [
-                FooterBtn { label: "Close", style: FooterBtnStyle::Ghost },
-                FooterBtn { label: "Apply", style: FooterBtnStyle::Primary },
-            ];
-            // Per-kind tabs (for TopTabs / SideTabs).
-            let toptabs_tabs   = ["General", "Network", "Storage", "Advanced"];
-            let sidetabs_tabs  = ["Profile", "Account", "Privacy", "Notifications"];
-            let wizard_pages_data: [WizardPageInfo; 3] = [
-                WizardPageInfo { label: Some("Welcome") },
-                WizardPageInfo { label: Some("Configure") },
-                WizardPageInfo { label: Some("Review") },
-            ];
-            let render_kind = match modal_kind {
-                ModalKind::PlainDemo      => ModalRenderKind::Plain,
-                ModalKind::HeaderDemo     => ModalRenderKind::WithHeader,
-                ModalKind::TopTabsDemo    => ModalRenderKind::TopTabs,
-                ModalKind::SideTabsDemo   => ModalRenderKind::SideTabs,
-                ModalKind::WizardDemo     => ModalRenderKind::Wizard,
-                _                         => ModalRenderKind::WithHeaderFooter,
-            };
-            let tabs: &[&str] = match modal_kind {
-                ModalKind::TopTabsDemo  => &toptabs_tabs,
-                ModalKind::SideTabsDemo => &sidetabs_tabs,
-                _                       => &[],
-            };
-            let wizard_pages_ref: &[WizardPageInfo] = match modal_kind {
-                ModalKind::WizardDemo => &wizard_pages_data,
-                _                     => &[],
-            };
-            // Overflow mode: chevrons make sense only inside the L2 widget
-            // catalog (its content can be wider than the body). All other
-            // demo modals fit their body — clip is enough.
-            // Pick a different overflow strategy per kind so each demo modal
-            // exercises one of the three reactions:
-            //   • HeaderDemo   — Chevrons (paging arrows)
-            //   • TopTabsDemo  — Scrollbar (vertical track)
-            //   • SideTabsDemo — Compress (children scaled to fit; fallback
-            //                    chevrons kick in if min-factor is reached)
-            //   • L2           — Chevrons (legacy behaviour for catalog)
-            //   • everything else — Clip (with auto-fallback to chevrons)
-            let overflow_mode = match modal_kind {
-                ModalKind::L2           => uzor::types::OverflowMode::Chevrons,
-                ModalKind::HeaderDemo   => uzor::types::OverflowMode::Chevrons,
-                ModalKind::TopTabsDemo  => uzor::types::OverflowMode::Scrollbar,
-                ModalKind::SideTabsDemo => uzor::types::OverflowMode::Compress,
-                _                       => uzor::types::OverflowMode::Clip,
-            };
-            let mut modal_view = ModalView {
-                title: Some(title),
-                tabs,
-                footer_buttons: &footer_btns,
-                wizard_pages: wizard_pages_ref,
-                backdrop: BackdropKind::Dim,
-                overflow: overflow_mode,
-                resizable: true,
-            };
-            // Tell the composite the natural body content size BEFORE
-            // it registers — `register_body_overflow` reads these to
-            // decide whether to register vertical / horizontal chevrons.
-            // Natural body content size per kind. These are the dimensions
-            // that the body *would* like to occupy. When the modal is shrunk
-            // below this, register_body_overflow falls back to chevrons even
-            // when overflow is set to Clip.
-            let (cw, ch): (f64, f64) = match modal_kind {
-                ModalKind::L2           => (l2_demo_blackbox::L2_WIN_W, l2_demo_blackbox::L2_WIN_H),
-                ModalKind::L1           => (360.0, 200.0),
-                ModalKind::Settings     => (520.0, 360.0),
-                ModalKind::Tags         => (520.0, 320.0),
-                ModalKind::PlainDemo    => (360.0, 120.0),
-                ModalKind::HeaderDemo   => (420.0, 180.0),
-                ModalKind::TopTabsDemo  => (420.0, 220.0),
-                ModalKind::SideTabsDemo => (480.0, 280.0),
-                ModalKind::WizardDemo   => (480.0, 240.0),
-            };
-            {
-                let h = self.modal_h.clone();
-                let ms = self.layout.modal_mut(&h);
-                ms.body_content_w = cw;
-                ms.body_content_h = ch;
-            }
-            let modal_node = register_layout_manager_modal(
-                &mut self.layout,
-                &mut render,
-                LayoutNodeId::ROOT,
-                "modal-overlay",
-                &self.modal_h.clone(),
-                modal_rect,
-                None,
-                &mut modal_view,
-                &ModalSettings::default(),
-                &render_kind,
-            );
-            // Draw modal body content inline.
-            // `frame_rect` = full overlay rect (includes chrome).
-            // `body_rect` = content area carved out by the composite.
-            if let Some(frame_rect) = self.layout.rect_for_overlay("modal-overlay") {
-                let body_rect_raw = uzor::ui::widgets::composite::modal::render::body_rect(
-                    frame_rect,
-                    &modal_view,
-                    &ModalSettings::default(),
-                    &render_kind,
-                );
-                // Apply scroll offset so dragging the scrollbar moves the
-                // content. Composite paints the scrollbar; body content
-                // is shifted by scroll offsets and clipped to body_rect.
-                let (scroll_y, scroll_x) = {
-                    let ms = self.layout.modal(&self.modal_h);
-                    (ms.scroll.offset, ms.body_scroll_x)
-                };
-                let body_rect = Rect::new(
-                    body_rect_raw.x - scroll_x,
-                    body_rect_raw.y - scroll_y,
-                    body_rect_raw.width  + scroll_x,
-                    body_rect_raw.height + scroll_y,
-                );
-                // Hard-clip everything we draw inside body_rect_raw so
-                // the overflow can't bleed past the modal frame.
-                render.save();
-                render.clip_rect(
-                    body_rect_raw.x, body_rect_raw.y,
-                    body_rect_raw.width, body_rect_raw.height,
-                );
-                let layer = LayerId::modal();
-                match modal_kind {
-                    ModalKind::L1 => {
-                        // Fix 2 + Fix 5-6: custom button with hover/press colour animation.
-                        let btn_w = 200.0_f64;
-                        let btn_h = 60.0_f64;
-                        let cx = body_rect.x + body_rect.width / 2.0;
-                        let cy = body_rect.y + body_rect.height / 2.0;
-                        let btn_r = Rect::new(cx - btn_w / 2.0, cy - btn_h / 2.0, btn_w, btn_h);
-                        use uzor::input::core::sense::Sense;
-                        use uzor::input::core::widget_kind::WidgetKind;
-                        let btn_id = unsafe_widget_id("l1-mybtn");
-                        // Button is atomic — use register_atomic.
-                        // Sticky chevrons require a composite parent; to add a
-                        // chevron to a button, wrap it in a composite container
-                        // (e.g. WidgetKind::Panel) or use a ToolbarItem::SplitIconButton.
-                        let btn_composite_id = self.layout.ctx_mut().input.register_atomic(
-                            btn_id.clone(),
-                            WidgetKind::Button,
-                            btn_r,
-                            Sense::CLICK | Sense::HOVER,
-                            &layer,
-                        );
-                        // Three-state colour via coordinator widget_state — no manual fields needed.
-                        let btn_state = self.layout.ctx_mut().input.widget_state(&btn_id);
-                        let btn_color = match btn_state {
-                            WidgetState::Pressed  => "#1a40c8",
-                            WidgetState::Hovered  => "#4080ff",
-                            _                     => "#3769af",
-                        };
-                        render.set_fill_color(btn_color);
-                        render.fill_rounded_rect(btn_r.x, btn_r.y, btn_r.width, btn_r.height, 6.0);
-                        label(&mut render, btn_r, "Click me (L1 custom)", TextAlign::Center, "#ffffff");
-
-                        // Sticky chevron requires a composite parent widget.
-                        // Button is atomic — chevron attachment removed.
-                        // To add a chevron to a button, use ToolbarItem::SplitIconButton
-                        // or wrap the button in a composite Panel container.
-                        let _ = btn_composite_id;
-                    }
-                    ModalKind::Settings => {
-                        label(&mut render, Rect::new(body_rect.x, body_rect.y, body_rect.width, 40.0), "Settings content", TextAlign::Center, "rgba(255,255,255,0.55)");
-                        let items = [
-                            ("Enable dark mode", true),
-                            ("Show tooltips",    true),
-                            ("Auto-save",        false),
-                        ];
-                        for (i, (label, checked)) in items.iter().enumerate() {
-                            let r = Rect::new(body_rect.x + 16.0, body_rect.y + 48.0 + i as f64 * 36.0, body_rect.width - 32.0, 28.0);
-                            let cb_id = format!("settings-cb-{i}");
-                            register_context_manager_checkbox(
-                                self.layout.ctx_mut(), &mut render,
-                                cb_id.as_str(), r, &layer,
-                                WidgetState::Normal,
-                                &CheckboxView { checked: *checked, label: Some(label) },
-                                &CheckboxSettings::default().with_theme(Box::new(VisibleCheckboxTheme)),
-                                &CheckboxRenderKind::Standard,
-                                "13px sans-serif",
-                            );
-                        }
-                    }
-                    ModalKind::Tags => {
-                        // "Panels" modal — lists real dock leaves of the active tab,
-                        // clipped to body_rect so nothing overflows.
-                        let body_inner = Rect::new(
-                            body_rect.x + 16.0,
-                            body_rect.y + 8.0,
-                            body_rect.width - 32.0,
-                            body_rect.height - 16.0,
-                        );
-
-                        render.save();
-                        render.clip_rect(body_inner.x, body_inner.y, body_inner.width, body_inner.height);
-
-                        // Section header
-                        {
-                            let hdr = format!("PANELS — Tab: {}", ["Dashboard", "Panels", "Monitoring"][self.active_view]);
-                            label(&mut render, Rect::new(body_inner.x, body_inner.y, body_inner.width, 20.0), &hdr, TextAlign::Left, "rgba(255,255,255,0.5)");
-                        }
-
-                        // Real leaves of currently active dock
-                        let leaves: Vec<(String, uzor::docking::panels::LeafId)> = {
-                            let mut entries: Vec<(uzor::docking::panels::LeafId, String)> = self
-                                .layout.panels().panel_rects().keys()
-                                .map(|&id| {
-                                    let title = self.layout.panels().tree().leaf(id)
-                                        .and_then(|l| l.panels.first())
-                                        .map(|p| p.title().to_string())
-                                        .unwrap_or_else(|| format!("Panel {}", id.0));
-                                    (id, title)
-                                })
-                                .collect();
-                            entries.sort_by_key(|(id, _)| id.0);
-                            entries.into_iter().map(|(id, t)| (t, id)).collect()
-                        };
-
-                        let mut row_y = body_inner.y + 28.0;
-                        for (idx, (title, leaf_id)) in leaves.iter().enumerate() {
-                            if row_y + 32.0 > body_inner.y + body_inner.height { break; }
-                            render.set_fill_color("rgba(255,255,255,0.05)");
-                            render.fill_rounded_rect(body_inner.x, row_y, body_inner.width, 30.0, 4.0);
-                            {
-                                let idx_str  = format!("#{}", idx + 1);
-                                let leaf_str = format!("leaf {}", leaf_id.0);
-                                label(&mut render, Rect::new(body_inner.x + 8.0, row_y, 32.0, 30.0),               &idx_str,        TextAlign::Left,  "#a6adc8");
-                                label(&mut render, Rect::new(body_inner.x + 40.0, row_y, body_inner.width - 120.0, 30.0), title.as_str(),   TextAlign::Left,  "#d1d4dc");
-                                label(&mut render, Rect::new(body_inner.x, row_y, body_inner.width - 8.0, 30.0),   &leaf_str,       TextAlign::Right, "rgba(255,255,255,0.35)");
-                            }
-                            row_y += 36.0;
-                        }
-
-                        if leaves.is_empty() {
-                            label(&mut render, body_inner, "(no panels in this tab)", TextAlign::Center, "rgba(255,255,255,0.4)");
-                        }
-
-                        render.restore();
-                    }
-                    ModalKind::L2 => {
-                        // Phase D: L2 demo now lives entirely inside L2DemoBlackbox.
-                        // body_rect is in screen coords — render directly.
-                        use uzor::ui::widgets::composite::blackbox_panel::types::BlackboxHandler;
-                        self.l2_demo.set_panel_size((body_rect.width, body_rect.height));
-                        self.l2_demo.render(&mut render, body_rect);
-                    }
-                    ModalKind::PlainDemo => {
-                        // No header/footer — caller draws everything inside the body.
-                        render.set_fill_color("#1a1a22");
-                        render.fill_rect(body_rect.x, body_rect.y, body_rect.width, body_rect.height);
-                        render.set_fill_color("#d1d4dc");
-                        render.set_font("14px sans-serif");
-                        render.set_text_align(TextAlign::Center);
-                        render.set_text_baseline(TextBaseline::Middle);
-                        render.fill_text(
-                            "ModalRenderKind::Plain — frame only",
-                            body_rect.x + body_rect.width / 2.0,
-                            body_rect.y + body_rect.height / 2.0 - 12.0,
-                        );
-                        render.set_fill_color("#7080a0");
-                        render.set_font("12px sans-serif");
-                        render.fill_text(
-                            "Click outside to dismiss.",
-                            body_rect.x + body_rect.width / 2.0,
-                            body_rect.y + body_rect.height / 2.0 + 12.0,
-                        );
-                    }
-                    ModalKind::HeaderDemo => {
-                        render.set_fill_color("#d1d4dc");
-                        render.set_font("13px sans-serif");
-                        render.set_text_align(TextAlign::Left);
-                        render.set_text_baseline(TextBaseline::Top);
-                        render.fill_text(
-                            "Header-only modal — no footer buttons.",
-                            body_rect.x + 16.0,
-                            body_rect.y + 16.0,
-                        );
-                        render.set_fill_color("#7080a0");
-                        render.set_font("12px sans-serif");
-                        render.fill_text(
-                            "Drag the title bar to move me. Click X or outside to close.",
-                            body_rect.x + 16.0,
-                            body_rect.y + 40.0,
-                        );
-
-                        // ── Live text input ────────────────────────────────
-                        let ti_id = unsafe_widget_id("modal:header_demo:text_input");
-                        let ti_rect = Rect::new(
-                            body_rect.x + 16.0,
-                            body_rect.y + 72.0,
-                            (body_rect.width - 32.0).max(120.0),
-                            32.0,
-                        );
-                        self.layout.ctx_mut().input.register_text_field(
-                            ti_id.clone(),
-                            ti_rect,
-                            StoreTextFieldConfig::text(),
-                        );
-                        let text_str = self.layout.ctx().input.text_fields()
-                            .text(&ti_id).to_owned();
-                        let cursor_pos = self.layout.ctx().input.text_fields().cursor(&ti_id);
-                        let selection  = self.layout.ctx().input.text_fields().selection_range(&ti_id);
-                        let focused    = self.layout.ctx().input.text_fields().is_focused(&ti_id);
-                        let ti_view = InputView {
-                            text:        text_str.as_str(),
-                            placeholder: "Type here...",
-                            cursor:      cursor_pos,
-                            selection,
-                            focused,
-                            disabled:    false,
-                            input_type:  InputType::Text,
-                        };
-                        let ti_state = if focused { WidgetState::Active } else { WidgetState::Normal };
-                        let parent_node = modal_node.map(|n| n.0).unwrap_or(LayoutNodeId::ROOT);
-                        let _ = register_layout_manager_text_input(
-                            &mut self.layout,
-                            &mut render,
-                            parent_node,
-                            ti_id,
-                            ti_rect,
-                            ti_state,
-                            &ti_view,
-                            &TextInputSettings::with_config(TiTextFieldConfig::text()),
-                        );
-                    }
-                    ModalKind::TopTabsDemo => {
-                        render.set_fill_color("#d1d4dc");
-                        render.set_font("13px sans-serif");
-                        render.set_text_align(TextAlign::Left);
-                        render.set_text_baseline(TextBaseline::Top);
-                        render.fill_text(
-                            "TopTabs — horizontal tab strip below the header.",
-                            body_rect.x + 16.0,
-                            body_rect.y + 16.0,
-                        );
-                        render.set_fill_color("#7080a0");
-                        render.set_font("12px sans-serif");
-                        render.fill_text(
-                            "Tabs (decorative): General / Network / Storage / Advanced.",
-                            body_rect.x + 16.0,
-                            body_rect.y + 40.0,
-                        );
-                    }
-                    ModalKind::SideTabsDemo => {
-                        // Read the composite-computed compress factor and
-                        // apply it to font sizes + offsets.  Identity (1.0)
-                        // outside Compress mode so this code is safe to keep
-                        // unconditionally.
-                        let factor = self.layout.modal(&self.modal_h).compress_factor();
-                        let scale = factor.sx.min(factor.sy);
-                        let pad   = 16.0 * factor.sx;
-                        let font_a = (13.0 * scale).max(8.0);
-                        let font_b = (12.0 * scale).max(8.0);
-                        render.set_fill_color("#d1d4dc");
-                        render.set_font(&format!("{}px sans-serif", font_a as i32));
-                        render.set_text_align(TextAlign::Left);
-                        render.set_text_baseline(TextBaseline::Top);
-                        render.fill_text(
-                            "SideTabs (Compress) — resize the modal smaller; the body text scales down.",
-                            body_rect.x + pad,
-                            body_rect.y + pad,
-                        );
-                        render.set_fill_color("#7080a0");
-                        render.set_font(&format!("{}px sans-serif", font_b as i32));
-                        render.fill_text(
-                            "Sidebar tabs (decorative): Profile / Account / Privacy / Notifications.",
-                            body_rect.x + pad,
-                            body_rect.y + pad + 24.0 * factor.sy,
-                        );
-                        render.fill_text(
-                            &format!("compress factor: ({:.2}, {:.2})", factor.sx, factor.sy),
-                            body_rect.x + pad,
-                            body_rect.y + pad + 48.0 * factor.sy,
-                        );
-                    }
-                    ModalKind::WizardDemo => {
-                        render.set_fill_color("#d1d4dc");
-                        render.set_font("13px sans-serif");
-                        render.set_text_align(TextAlign::Left);
-                        render.set_text_baseline(TextBaseline::Top);
-                        render.fill_text(
-                            "Wizard — multi-step page flow with Back/Next nav.",
-                            body_rect.x + 16.0,
-                            body_rect.y + 16.0,
-                        );
-                        render.set_fill_color("#7080a0");
-                        render.set_font("12px sans-serif");
-                        render.fill_text(
-                            "Pages: Welcome → Configure → Review.",
-                            body_rect.x + 16.0,
-                            body_rect.y + 40.0,
-                        );
-                    }
-                }
-                // Close the body clip established before the per-kind branch.
-                render.restore();
-
-                // Two-pass body finish: paint overflow overlays, then re-register
-                // overflow hit-zones after body content so they outrank body widgets.
-                {
-                    // Take/return state via mem::replace because modal_body_finish
-                    // takes &mut LayoutManager + &mut ModalState concurrently.
-                    let h = self.modal_h.clone();
-                    let mut ms = std::mem::take(self.layout.modal_mut(&h));
-                    modal_input::modal_body_finish(
-                        &mut self.layout,
-                        &mut render,
-                        frame_rect,
-                        &mut ms,
-                        &modal_view,
-                        &ModalSettings::default(),
-                        &render_kind,
-                    );
-                    *self.layout.modal_mut(&self.modal_h.clone()) = ms;
-                }
-            }
-        }
-
-        // Demo A (l2-connect popup) and Demo D (l2-4dir popup) removed — simplified in Phase D.
-
-        // ── Context menu ──────────────────────────────────────────────────────
-        let ctx_menu_is_open = self.layout.context_menu(&self.ctx_menu_h).is_open;
-        if ctx_menu_is_open {
-            let (ctx_x, ctx_y) = {
-                let s = self.layout.context_menu(&self.ctx_menu_h);
-                (s.x, s.y)
-            };
-            let items = [
-                ContextMenuItem { action: "ctx-copy",     label: "Copy",       icon: None, danger: false, separator_after: false, enabled: true },
-                ContextMenuItem { action: "ctx-paste",    label: "Paste",      icon: None, danger: false, separator_after: false, enabled: true },
-                ContextMenuItem { action: "ctx-delete",   label: "Delete",     icon: None, danger: true,  separator_after: true,  enabled: true },
-                ContextMenuItem { action: "ctx-props",    label: "Properties", icon: None, danger: false, separator_after: false, enabled: true },
-                ContextMenuItem { action: "ctx-settings", label: "Settings",   icon: None, danger: false, separator_after: false, enabled: true },
-            ];
-            let menu_h = items.len() as f64 * 28.0 + 16.0;
-            let ctx_menu_rect = Rect::new(ctx_x, ctx_y, 170.0, menu_h);
-            let mut ctx_menu_view = ContextMenuView { items: &items, target_id: None, title: None };
-            register_layout_manager_context_menu(
-                &mut self.layout,
-                &mut render,
-                LayoutNodeId::ROOT,
-                "ctx-menu-overlay",
-                &self.ctx_menu_h.clone(),
-                ctx_menu_rect,
-                None,
-                &mut ctx_menu_view,
-                &ContextMenuSettings::default(),
-                &ContextMenuRenderKind::Minimal,
-            );
-        }
-
-        // ── Dropdown menus (File / View / Help) ───────────────────────────────
-        let file_items = [
-            DropdownItem::Item { id: "file-new",  label: "New",  icon: None, right: DropdownItemRight::Shortcut("Ctrl+N"), disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "file-open", label: "Open", icon: None, right: DropdownItemRight::Shortcut("Ctrl+O"), disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "file-save", label: "Save", icon: None, right: DropdownItemRight::Shortcut("Ctrl+S"), disabled: false, danger: false, accent_color: None },
-            DropdownItem::Separator,
-            DropdownItem::Item { id: "file-quit", label: "Quit", icon: None, right: DropdownItemRight::None, disabled: false, danger: true, accent_color: None },
-        ];
-        open_dropdown_flat(
-            &mut self.layout, &mut render, LayoutNodeId::ROOT,
-            "dd-file-overlay", &self.dd_file_h.clone(),
-            &file_items, &DropdownSettings::default(),
-        );
-
-        let view_items = [
-            DropdownItem::Item { id: "view-sidebar", label: "Toggle Sidebar", icon: None, right: DropdownItemRight::Toggle(self.sidebar_open),         disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "view-toolbar", label: "Show Toolbar",   icon: None, right: DropdownItemRight::Toggle(self.left_toolbar_visible), disabled: false, danger: false, accent_color: None },
-        ];
-        open_dropdown_flat(
-            &mut self.layout, &mut render, LayoutNodeId::ROOT,
-            "dd-view-overlay", &self.dd_view_h.clone(),
-            &view_items, &DropdownSettings::default(),
-        );
-
-        let help_items = [
-            DropdownItem::Header { label: "Existing demos" },
-            DropdownItem::Item { id: "modals-l2",       label: "L2 Widget Set",  icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "modals-l1",       label: "L1 Big Button",  icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "modals-panels",   label: "Dock Panels",    icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "modals-settings", label: "Settings",       icon: None, right: DropdownItemRight::None, disabled: false, danger: false, accent_color: None },
-            DropdownItem::Separator,
-            DropdownItem::Header { label: "ModalRenderKind catalog" },
-            DropdownItem::Item { id: "modals-plain",    label: "Plain",          icon: None, right: DropdownItemRight::Shortcut("frame only"),    disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "modals-header",   label: "WithHeader",     icon: None, right: DropdownItemRight::Shortcut("title + drag"),  disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "modals-toptabs",  label: "TopTabs",        icon: None, right: DropdownItemRight::Shortcut("tabs across"),   disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "modals-sidetabs", label: "SideTabs",       icon: None, right: DropdownItemRight::Shortcut("icon sidebar"),  disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "modals-wizard",   label: "Wizard",         icon: None, right: DropdownItemRight::Shortcut("multi-step"),    disabled: false, danger: false, accent_color: None },
-        ];
-        open_dropdown_flat(
-            &mut self.layout, &mut render, LayoutNodeId::ROOT,
-            "dd-help-overlay", &self.dd_help_h.clone(),
-            &help_items, &DropdownSettings::default(),
-        );
-
-        // ── Sidebar dropdown — toggles to spawn / hide demo sidebars ─────────
-        let main_open = self.sidebar_open;
-        let sidebar_items = [
-            DropdownItem::Header { label: "Spawn extra sidebars" },
-            DropdownItem::Item { id: "sb-toggle-main",   label: "Main (Left)",    icon: None, right: DropdownItemRight::Toggle(main_open),               disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "sb-spawn-right",   label: "Right sidebar",  icon: None, right: DropdownItemRight::Toggle(self.demo_sidebar_right), disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "sb-spawn-top",     label: "Top sidebar",    icon: None, right: DropdownItemRight::Toggle(self.demo_sidebar_top),   disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "sb-spawn-bottom",  label: "Bottom sidebar", icon: None, right: DropdownItemRight::Toggle(self.demo_sidebar_bottom),disabled: false, danger: false, accent_color: None },
-            DropdownItem::Separator,
-            DropdownItem::Item { id: "sb-overlay-mode",  label: "Overlay mode",   icon: None, right: DropdownItemRight::Toggle(self.demo_overlay_mode),  disabled: false, danger: false, accent_color: None },
-        ];
-        open_dropdown_flat(
-            &mut self.layout, &mut render, LayoutNodeId::ROOT,
-            "dd-sidebar-overlay", &self.dd_sidebar_h.clone(),
-            &sidebar_items, &DropdownSettings::default(),
-        );
-
-        // ── Toolbar dropdown — toggles to spawn / hide demo toolbars ─────────
-        let left_main_visible = self.left_toolbar_visible;
-        let toolbar_items_dd = [
-            DropdownItem::Header { label: "Spawn extra toolbars" },
-            DropdownItem::Item { id: "tb-toggle-main",  label: "Main (Top)",     icon: None, right: DropdownItemRight::Toggle(true),                    disabled: true, danger: false, accent_color: None },
-            DropdownItem::Item { id: "tb-toggle-left",  label: "Left (Vertical)",icon: None, right: DropdownItemRight::Toggle(left_main_visible),       disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "tb-spawn-left2",  label: "Left2 (extra)",  icon: None, right: DropdownItemRight::Toggle(self.demo_toolbar_left2), disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "tb-spawn-right",  label: "Right toolbar",  icon: None, right: DropdownItemRight::Toggle(self.demo_toolbar_right), disabled: false, danger: false, accent_color: None },
-            DropdownItem::Item { id: "tb-spawn-bottom", label: "Bottom toolbar", icon: None, right: DropdownItemRight::Toggle(self.demo_toolbar_bottom),disabled: false, danger: false, accent_color: None },
-        ];
-        open_dropdown_flat(
-            &mut self.layout, &mut render, LayoutNodeId::ROOT,
-            "dd-toolbar-overlay", &self.dd_toolbar_h.clone(),
-            &toolbar_items_dd, &DropdownSettings::default(),
-        );
-
-        // ── Popup templates dropdown (Plain | Custom) ──────────────────────────
-        // Both rows are submenu triggers — Plain opens its L2 on hover,
-        // Custom opens its L2 only on chevron click. Demonstrates both
-        // SubmenuTrigger variants in one place.
-        let popup_items_dd = [
-            DropdownItem::Header { label: "Popup kind" },
-            DropdownItem::Submenu {
-                id: "popup-plain",
-                label: "Plain",
-                icon: None,
-                trigger: uzor::ui::widgets::composite::dropdown::types::SubmenuTrigger::Hover,
-                chevron_hover: false,
-            },
-            DropdownItem::Submenu {
-                id: "popup-custom",
-                label: "Custom",
-                icon: None,
-                trigger: uzor::ui::widgets::composite::dropdown::types::SubmenuTrigger::ChevronClick,
-                chevron_hover: true,
-            },
-        ];
-        let popup_plain_sub_items = [
-            DropdownItem::Item {
-                id: "popup-plain", label: "Plain popup",
-                icon: None,
-                right: DropdownItemRight::Shortcut("text"),
-                disabled: false, danger: false, accent_color: None,
-            },
-        ];
-        let popup_custom_sub_items = [
-            DropdownItem::Item {
-                id: "popup-custom-grid", label: "Color grid 4×4",
-                icon: None,
-                right: DropdownItemRight::Shortcut("buttons"),
-                disabled: false, danger: false, accent_color: None,
-            },
-            // Debug stubs — exercise multi-row submenu hover.
-            DropdownItem::Item {
-                id: "popup-stub-a", label: "Stub A",
-                icon: None, right: DropdownItemRight::None,
-                disabled: false, danger: false, accent_color: None,
-            },
-            DropdownItem::Item {
-                id: "popup-stub-b", label: "Stub B",
-                icon: None, right: DropdownItemRight::None,
-                disabled: false, danger: false, accent_color: None,
-            },
-            DropdownItem::Item {
-                id: "popup-stub-c", label: "Stub C",
-                icon: None, right: DropdownItemRight::None,
-                disabled: false, danger: false, accent_color: None,
-            },
-        ];
-        {
-            let dd_popup_open = self.layout.dropdown(&self.dd_popup_h).open;
-            if dd_popup_open {
-                let (hovered_id, open_id, origin, anchor_rect, position_override) = {
-                    let s = self.layout.dropdown(&self.dd_popup_h);
-                    (s.hovered_id.clone(), s.submenu_open.clone(), s.effective_origin(), s.anchor_rect, s.open_position_override)
-                };
-                let (pw, ph) = measure_flat(&popup_items_dd, &DropdownSettings::default());
-                let submenu_items = match open_id.as_deref() {
-                    Some("popup-plain")  => Some(("popup-plain",  &popup_plain_sub_items[..])),
-                    Some("popup-custom") => Some(("popup-custom", &popup_custom_sub_items[..])),
-                    _                    => None,
-                };
-                let mut dd_view = DropdownView {
-                    anchor: anchor_rect,
-                    position_override,
-                    open: true,
-                    kind: DropdownViewKind::Flat {
-                        items: &popup_items_dd,
-                        hovered_id: hovered_id.as_deref(),
-                        submenu_items,
-                        submenu_hovered_id: None,
-                    },
-                    size_mode: uzor::types::SizeMode::AutoFit,
-                    overflow: uzor::types::OverflowMode::Clip,
-                    submenu_width: uzor::ui::widgets::composite::dropdown::types::SubmenuWidth::Auto,
-                };
-                register_layout_manager_dropdown(
-                    &mut self.layout, &mut render,
-                    LayoutNodeId::ROOT, "dd-popup-overlay", &self.dd_popup_h.clone(),
-                    Rect::new(origin.0, origin.1, pw, ph), None,
-                    &mut dd_view,
-                    &DropdownSettings::default(),
-                    DropdownRenderKind::Flat,
-                );
-            }
-        }
-
-        // ── Demo popup ────────────────────────────────────────────────────────
-        // Two flavours, both via the slim popup composite:
-        //   0 (Plain)  → text body, no inner widgets
-        //   1 (Custom) → caller-driven 4×4 color grid where every cell is
-        //                registered as a child Button so it hovers/clicks
-        //                through the dispatcher
-        if let Some(kind_idx) = self.popup_kind {
-            use uzor::ui::widgets::composite::popup::render::body_rect;
-            let popup_settings = PopupSettings::default();
-            let pad = popup_settings.style.padding();
-
-            match kind_idx {
-                0 => {
-                    // Plain popup — text body sized from font metric.
-                    let body_w = 220.0_f64;
-                    let body_h = 60.0_f64;
-                    let popup_w = body_w + pad * 2.0;
-                    let popup_h = body_h + pad * 2.0;
-                    let px = (width as f64 - popup_w) / 2.0;
-                    let py = (height as f64 - popup_h) / 2.0;
-                    let mut v = PopupView {
-                        origin: (px, py),
-                        anchor: None,
-                        backdrop: PopupBackdrop::Dim,
-                        kind: PopupViewKind::Plain,
-                        size_mode: uzor::types::SizeMode::AutoFit,
-                        overflow: uzor::types::OverflowMode::Clip,
-                    };
-                    let _ = register_layout_manager_popup(
-                        &mut self.layout, &mut render,
-                        LayoutNodeId::ROOT,
-                        "demo-popup-overlay", &self.demo_popup_h.clone(),
-                        Rect::new(px, py, popup_w, popup_h), None,
-                        &mut v,
-                        &popup_settings, PopupRenderKind::Plain,
-                    );
-                    if let Some(frame) = self.layout.rect_for_overlay("demo-popup-overlay") {
-                        let body = body_rect(frame, &popup_settings);
-                        label(&mut render, body, "Plain popup body", TextAlign::Center, "#d1d4dc");
-                    }
-                }
-                _ => {
-                    // Custom popup — 4×4 grid of color buttons. Every cell
-                    // is a real child button so it dispatches through the
-                    // coordinator (hover / click / focus).
-                    let palette: [&str; 16] = [
-                        "#ef5350","#f59e0b","#fbbf24","#10b981","#22d3ee","#2962ff","#7c3aed","#ec4899",
-                        "#94a3b8","#fde68a","#86efac","#67e8f9","#93c5fd","#c4b5fd","#fbcfe8","#1f2937",
-                    ];
-                    let cols = 4_usize;
-                    let cell = 28.0_f64;
-                    let gap  = 6.0_f64;
-                    let rows = (palette.len() + cols - 1) / cols;
-                    let body_w = cols as f64 * cell + (cols as f64 - 1.0) * gap;
-                    let body_h = rows as f64 * cell + (rows as f64 - 1.0) * gap;
-                    let popup_w = body_w + pad * 2.0;
-                    let popup_h = body_h + pad * 2.0;
-                    let px = (width as f64 - popup_w) / 2.0;
-                    let py = (height as f64 - popup_h) / 2.0;
-                    // Use Plain so the composite paints the chrome — Custom
-                    // would skip the frame draw.
-                    let mut v = PopupView {
-                        origin: (px, py),
-                        anchor: None,
-                        backdrop: PopupBackdrop::Dim,
-                        kind: PopupViewKind::Plain,
-                        size_mode: uzor::types::SizeMode::AutoFit,
-                        overflow: uzor::types::OverflowMode::Clip,
-                    };
-                    let _ = register_layout_manager_popup(
-                        &mut self.layout, &mut render,
-                        LayoutNodeId::ROOT,
-                        "demo-popup-overlay", &self.demo_popup_h.clone(),
-                        Rect::new(px, py, popup_w, popup_h), None,
-                        &mut v,
-                        &popup_settings, PopupRenderKind::Plain,
-                    );
-                    // Caller body — register every cell + paint its swatch via register_popup_grid.
-                    if let Some(frame) = self.layout.rect_for_overlay("demo-popup-overlay") {
-                        use uzor::ui::widgets::composite::popup::input::{register_popup_grid, PopupGridCell};
-                        let body = body_rect(frame, &popup_settings);
-                        let cell_ids: Vec<String> = (0..palette.len()).map(|i| format!("demo-popup-cell-{i}")).collect();
-                        let grid_cells: Vec<PopupGridCell<'_>> = palette.iter().zip(cell_ids.iter())
-                            .map(|(color, id)| PopupGridCell { id: id.as_str(), color })
-                            .collect();
-                        register_popup_grid(&mut self.layout, &mut render, "demo-popup-widget", body, &grid_cells, cols, cell, gap);
-                    }
-                }
-            }
-        }
-
-        // ── Dock separators — z-aware hit-test registration ───────────────────
-        // Owned by LayoutManager. Called after composites so overlays already
-        // pushed their (modal=true) layers; separator clicks under an open
-        // overlay are blocked by z-ordered hit-test.
-        self.layout.register_dock_separators(&LayerId::main());
-
-        // Register prefix patterns for dock-leaf clicks and close buttons so
-        // the dispatcher surfaces DockLeafClicked / DockLeafClosedByIndex
-        // instead of raw Unhandled ids.
-        // Also register Indexed patterns for L2 modal radio/swatch/tab buttons.
-        {
-            use uzor::layout::EventBuilder;
-            self.layout.dispatcher_mut().on_prefix("dock-leaf-close-", EventBuilder::DockLeafCloseFromSuffix);
-            self.layout.dispatcher_mut().on_prefix("dock-leaf-",       EventBuilder::DockLeafFromSuffix);
-            // L2 modal indexed widgets (radio, swatch, tab — all have numeric suffixes)
-            self.layout.dispatcher_mut().on_prefix("l2-radio-",    EventBuilder::IndexedFromSuffix { base: "l2-radio".into()    });
-            self.layout.dispatcher_mut().on_prefix("l2-swatch-",   EventBuilder::IndexedFromSuffix { base: "l2-swatch".into()   });
-            self.layout.dispatcher_mut().on_prefix("l2-sub-tab-",  EventBuilder::IndexedFromSuffix { base: "l2-sub-tab".into()  });
-            self.layout.dispatcher_mut().on_prefix("l2-tab-",      EventBuilder::IndexedFromSuffix { base: "l2-tab".into()      });
-        }
-
-        // ── end_frame ─────────────────────────────────────────────────────────
-        let responses = self.layout.ctx_mut().input.end_frame();
-
-        // Debug: only print non-hover responses (hover spams every frame)
-        if !responses.is_empty() {
-            let interesting: Vec<_> = responses.iter()
-                .filter(|(_, r)| r.clicked || r.scrolled || r.dragged)
-                .collect();
-            if !interesting.is_empty() {
-                eprintln!("[END_FRAME] {} responses ({} interesting)", responses.len(), interesting.len());
-                for (id, resp) in &interesting {
-                    eprintln!("  - {} clicked={} hovered={} scrolled={} dragged={}",
-                        id.as_str(), resp.clicked, resp.hovered, resp.scrolled, resp.dragged);
-                }
-            }
-        }
-
-        // Process coordinator responses (l2 scrollbar is now inside the blackbox — no orphan ids here)
-
-        // Update popup based on hovered widget.
-        // Items with popup_on_hover:true open on hover — derive the set from the
-        // toolbar item definitions rather than a separate hardcoded allowlist.
-        let hovered_id = self.layout.ctx_mut().input.hovered_widget().map(|id| id.as_str().to_owned());
-        self.popup_item = hovered_id.as_deref().and_then(|hovered| {
-            // Iterate the top toolbar items and check popup_on_hover flag.
-            let top_items: &[(&str, bool)] = &[
-                ("tb-view", true),
-                ("tb-help", true),
-            ];
-            top_items.iter()
-                .find(|(id, on_hover)| *on_hover && *id == hovered)
-                .map(|(id, _)| id.to_string())
-        });
 
         // ── GPU submit ────────────────────────────────────────────────────────
         let dev = &self.render_cx.devices[self.surface.dev_id];
@@ -4642,4 +4822,173 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut handler = Handler { state: None };
     event_loop.run_app(&mut handler)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod screenshot_diff {
+    use uzor_examples::parity_harness::{
+        attach_headless_window, compare_tight, dump_comparison_pngs, record_via_urx_ctx, render_via_urx_cpu,
+        render_via_urx_native, render_via_vello_cpu, ChannelTolerance,
+    };
+
+    use super::*;
+
+    const WIDTH: u32 = 1280;
+    const HEIGHT: u32 = 800;
+
+    /// Deterministic `L3State` fixture: tab-0's default dock content
+    /// (Watchlist + Notes split -- exactly what a fresh `AppState::new()`
+    /// shows before any user interaction), sidebar open, everything else
+    /// (modal/dropdowns/popups/demo toolbars+sidebars) at its closed
+    /// default. Chosen because it is the SAME initial state the live app
+    /// starts from -- no arbitrary "interesting" state to justify or keep
+    /// in sync by hand.
+    fn build_fixture_l3_state(width: u32, height: u32) -> L3State {
+        let mut layout = LayoutManager::<DemoPanel>::new();
+        attach_headless_window(&mut layout, width, height);
+
+        {
+            let cs = layout.chrome_state_mut();
+            cs.sync_tabs(&["tab-0", "tab-1", "tab-2"]);
+            cs.active_tab_id = Some("tab-0".into());
+        }
+
+        let modal_h = layout.add_modal("modal-widget");
+        let dd_file_h = layout.add_dropdown("dd-file-widget");
+        let dd_view_h = layout.add_dropdown("dd-view-widget");
+        let dd_help_h = layout.add_dropdown("dd-help-widget");
+        let dd_sidebar_h = layout.add_dropdown("dd-sidebar-widget");
+        let dd_toolbar_h = layout.add_dropdown("dd-toolbar-widget");
+        let dd_popup_h = layout.add_dropdown("dd-popup-widget");
+        let ctx_menu_h = layout.add_context_menu("ctx-menu-widget");
+        let top_toolbar_h = layout.add_toolbar("top-toolbar-widget");
+        let left_vtoolbar_h = layout.add_toolbar("left-vtoolbar-widget");
+        let demo_toolbar_left2_h = layout.add_toolbar("demo-toolbar-left2-widget");
+        let demo_toolbar_right_h = layout.add_toolbar("demo-toolbar-right-widget");
+        let demo_toolbar_bottom_h = layout.add_toolbar("demo-toolbar-bottom-widget");
+        let sidebar_h = layout.add_sidebar("sidebar-widget");
+        let demo_sidebar_right_h = layout.add_sidebar("demo-sidebar-right-widget");
+        let demo_sidebar_top_h = layout.add_sidebar("demo-sidebar-top-widget");
+        let demo_sidebar_bottom_h = layout.add_sidebar("demo-sidebar-bottom-widget");
+        let demo_popup_h = layout.add_popup("demo-popup-widget");
+
+        let mut tab_trees = build_initial_trees();
+        setup_dock(&mut layout, &mut tab_trees);
+
+        L3State {
+            layout,
+            watchlist: watchlist_blackbox::WatchlistState::default(),
+            l2_demo: l2_demo_blackbox::L2DemoBlackbox::default(),
+
+            clock_str: "00:00:00".to_string(),
+            top_toolbar_height_override: 0.0,
+            demo_toolbar_left2_w_override: 0.0,
+            demo_toolbar_right_w_override: 0.0,
+            demo_toolbar_bottom_h_override: 0.0,
+            modal_size_override: (0.0, 0.0),
+
+            active_view: 0,
+            sidebar_open: true,
+            sidebar_kind: 0,
+            popup_kind: None,
+            demo_toolbar_left2: false,
+            demo_toolbar_right: false,
+            demo_toolbar_bottom: false,
+            demo_sidebar_right: false,
+            demo_sidebar_top: false,
+            demo_sidebar_bottom: false,
+            demo_overlay_mode: false,
+            left_toolbar_visible: true,
+            modal_open: false,
+            modal_kind: ModalKind::L2,
+            popup_item: None,
+            drag_target: None,
+            spawn_kind: PanelKind::Notes,
+            spawn_split: SpawnSplit::SplitRight,
+
+            modal_h,
+            dd_file_h,
+            dd_view_h,
+            dd_help_h,
+            dd_sidebar_h,
+            dd_toolbar_h,
+            dd_popup_h,
+            ctx_menu_h,
+            top_toolbar_h,
+            left_vtoolbar_h,
+            demo_toolbar_left2_h,
+            demo_toolbar_right_h,
+            demo_toolbar_bottom_h,
+            sidebar_h,
+            demo_sidebar_right_h,
+            demo_sidebar_top_h,
+            demo_sidebar_bottom_h,
+            demo_popup_h,
+
+            is_maximized: false,
+            cursor: (-1.0, -1.0),
+            time_ms: 0.0,
+            time_secs: 0.0,
+        }
+    }
+
+    /// Byte-tight urx-native-vs-urx-cpu leg (design §4.4) -- hard,
+    /// automated gate, same tolerance tier `figures_demo` proved.
+    #[test]
+    #[ignore = "needs a headless GPU adapter"]
+    fn l3_dashboard_frame_native_matches_cpu_within_the_base_tier() {
+        let scene = record_via_urx_ctx(WIDTH, HEIGHT, |ctx| {
+            let mut state = build_fixture_l3_state(WIDTH, HEIGHT);
+            draw_l3_frame(ctx, WIDTH, HEIGHT, &mut state);
+        });
+
+        let cpu = render_via_urx_cpu(&scene, WIDTH, HEIGHT);
+        let Some(native) = render_via_urx_native(&scene, WIDTH, HEIGHT) else {
+            eprintln!(
+                "l3_dashboard_frame_native_matches_cpu_within_the_base_tier: no GPU/software adapter available; skipping"
+            );
+            return;
+        };
+
+        let tol = ChannelTolerance::default();
+        let report = compare_tight(&cpu, &native, tol);
+        println!(
+            "l3_dashboard_frame urx-cpu-vs-native: {:.3}% differing (edge {}), budget {:.2}%, max_channel_diff {}",
+            report.differing_fraction * 100.0,
+            tol.edge,
+            tol.max_differing_fraction * 100.0,
+            report.max_channel_diff,
+        );
+        if !report.within_budget {
+            dump_comparison_pngs("l3_dashboard_urx_cpu_vs_native", WIDTH, HEIGHT, &cpu, &native);
+        }
+        assert!(
+            report.within_budget,
+            "l3_dashboard frame exceeded the base tolerance tier: {:.3}% differing (budget {:.2}%), max_channel_diff {}",
+            report.differing_fraction * 100.0,
+            tol.max_differing_fraction * 100.0,
+            report.max_channel_diff,
+        );
+    }
+
+    /// urx-native vs vello -- visual-only leg (design §4.4): dumps
+    /// comparison PNGs unconditionally for human review, never a computed
+    /// threshold.
+    #[test]
+    #[ignore = "needs a headless GPU adapter; dumps PNGs for human review, not a hard gate"]
+    fn l3_dashboard_frame_native_vs_vello_visual_dump() {
+        let vello = render_via_vello_cpu(WIDTH, HEIGHT, |ctx| {
+            let mut state = build_fixture_l3_state(WIDTH, HEIGHT);
+            draw_l3_frame(ctx, WIDTH, HEIGHT, &mut state);
+        });
+        let scene = record_via_urx_ctx(WIDTH, HEIGHT, |ctx| {
+            let mut state = build_fixture_l3_state(WIDTH, HEIGHT);
+            draw_l3_frame(ctx, WIDTH, HEIGHT, &mut state);
+        });
+        let Some(native) = render_via_urx_native(&scene, WIDTH, HEIGHT) else {
+            eprintln!("l3_dashboard_frame_native_vs_vello_visual_dump: no GPU/software adapter available; skipping");
+            return;
+        };
+        dump_comparison_pngs("l3_dashboard_urx_native_vs_vello", WIDTH, HEIGHT, &native, &vello);
+    }
 }

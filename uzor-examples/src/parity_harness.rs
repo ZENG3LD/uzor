@@ -26,7 +26,11 @@
 //!   the gate is a human looking at all of them before a flip commit
 //!   lands, not a computed threshold.
 
+use uzor::docking::panels::DockPanel;
+use uzor::layout::window::{RawHandle, WindowKey, WindowProvider};
+use uzor::layout::LayoutManager;
 use uzor::render::RenderContext;
+use uzor::types::Rect;
 use uzor_urx_core::scene::Scene;
 
 /// Render `scene` through the CPU rasteriser — the family's semantic
@@ -165,6 +169,54 @@ pub fn render_via_vello_cpu(width: u32, height: u32, f: impl FnOnce(&mut dyn Ren
     let mut buf = vec![0u8; (width as usize) * (height as usize) * 4];
     ctx.render_to_pixmap_rgba8(&mut buf, width as u16, height as u16);
     buf
+}
+
+/// Headless stand-in for a platform `WindowProvider` (winit / web /
+/// mobile) — `LayoutManager`'s flat API (`solve`/`rect_for_edge_slot`/
+/// etc) requires a "current window" attached before any flat-API call
+/// (its own panic message: "no current_window — platform layer must
+/// call set_current_window"); this lets a fixture satisfy that
+/// requirement without a real OS window. Every method beyond
+/// `window_rect` is dead weight for a single non-interactive paint
+/// pass — trait defaults would do, but the trait requires them
+/// explicitly.
+struct HeadlessWindowProvider {
+    rect: Rect,
+}
+
+impl WindowProvider for HeadlessWindowProvider {
+    fn poll_events(&mut self) -> Vec<uzor::input::PlatformEvent> {
+        Vec::new()
+    }
+    fn window_rect(&self) -> Rect {
+        self.rect
+    }
+    fn scale_factor(&self) -> f64 {
+        1.0
+    }
+    fn request_redraw(&mut self) {}
+    fn should_close(&self) -> bool {
+        false
+    }
+    fn raw_window_handle(&self) -> Option<RawHandle> {
+        None
+    }
+}
+
+/// Attach a fresh headless window (key `"parity-fixture"`) to `layout`,
+/// make it current, and solve it once at `(width, height)` — the
+/// one-time setup every `LayoutManager`-driven fixture (any `DockPanel`
+/// type `P` — `l3-dashboard`'s `DemoPanel`, `force-graph-demo`'s
+/// `NoPanel`, ...) needs before calling app code that uses the flat API
+/// (`App::ui`, `draw_l3_frame`, etc). Shared here (not duplicated per
+/// fixture) since `WindowProvider` itself has no `P` parameter — one
+/// implementation covers every panel type.
+pub fn attach_headless_window<P: DockPanel>(layout: &mut LayoutManager<P>, width: u32, height: u32) {
+    let key = WindowKey::new("parity-fixture");
+    let rect = Rect::new(0.0, 0.0, width as f64, height as f64);
+    layout.attach_window(key.clone(), Box::new(HeadlessWindowProvider { rect }));
+    layout.set_current_window(key);
+    layout.solve(rect);
 }
 
 /// Byte-tight comparator tolerance — same shape as

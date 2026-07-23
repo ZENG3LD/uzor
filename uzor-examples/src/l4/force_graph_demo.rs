@@ -3724,3 +3724,237 @@ mod tests {
         assert_eq!(engine.particles[root.index()].y, root_y, "hierarchical layout is one-shot — a second tick must not move the root");
     }
 }
+
+/// Wave 6 Commit 3 app-level screenshot-diff fixture (design §4.3's
+/// "force-graph demo" rows). Two independent legs, matching the design's
+/// own scoping exactly:
+///
+/// - **2D**: `App::ui`'s dashboard-chrome path CAN be driven headlessly
+///   without an l3-style pure-fn extraction (Commit 2's own investigation
+///   finding) -- `WindowCtx` is a plain reference bundle (`key`, `layout`,
+///   `render`, `rect`, `render_control`), all synthesizable outside a real
+///   winit window. The one new piece of harness infrastructure is
+///   [`MockRenderControl`] (`ui()` itself never reads it, but the trait
+///   object slot is mandatory). `App::ui` is called EXACTLY ONCE to
+///   capture one `Scene` (`GraphEngine::tick_real_time` is a real-time
+///   side effect -- a second call would not reproduce the same frame),
+///   then that one Scene is replayed to both the CPU and native
+///   backends, the SAME "record once, replay twice" pattern
+///   `figures_demo`/`l3-dashboard` already use.
+/// - **3D**: per design §4.3, `uzor-urx-3d` has no CPU rasteriser, so
+///   "urx-wgpu vs urx-cpu" parity does not apply to the 3D viewport
+///   itself -- inventing one would compare against nothing. Only the 2D
+///   OVERLAY (`Scene3DFrame::overlay`, the part URX owns -- node labels,
+///   hover card, HUD chrome, all painted through the portable
+///   `RenderContext` trait) gets the byte-tight tier here; the raw 3D
+///   geometry's own visual correctness stays on Wave 5b's existing
+///   fps+HUD-legibility live-run protocol, not a new headless PNG this
+///   harness invents.
+#[cfg(test)]
+mod screenshot_diff {
+    use uzor::framework::render_control::RenderControl;
+    use uzor::platform::types::RenderBackend;
+    use uzor_examples::parity_harness::{
+        attach_headless_window, compare_tight, dump_comparison_pngs, record_via_urx_ctx, render_via_urx_cpu,
+        render_via_urx_native, render_via_vello_cpu, ChannelTolerance,
+    };
+    use uzor_urx_core::scene::Scene;
+
+    use super::*;
+
+    const WIDTH: u32 = 1280;
+    const HEIGHT: u32 = 800;
+
+    /// Trivial mock -- `App::ui`/the 2D chrome path never reads
+    /// `WindowCtx::render_control` today, but the trait-object slot is a
+    /// mandatory `WindowCtx` field, so SOME implementor must exist.
+    struct MockRenderControl {
+        backend: RenderBackend,
+        fps_limit: u32,
+        msaa_samples: u8,
+        vsync: bool,
+    }
+
+    impl RenderControl for MockRenderControl {
+        fn active_backend(&self) -> RenderBackend {
+            self.backend
+        }
+        fn available_backends(&self) -> Vec<RenderBackend> {
+            vec![self.backend]
+        }
+        fn set_backend(&mut self, b: RenderBackend) {
+            self.backend = b;
+        }
+        fn fps_limit(&self) -> u32 {
+            self.fps_limit
+        }
+        fn set_fps_limit(&mut self, fps: u32) {
+            self.fps_limit = fps;
+        }
+        fn msaa_samples(&self) -> u8 {
+            self.msaa_samples
+        }
+        fn set_msaa_samples(&mut self, n: u8) {
+            self.msaa_samples = n;
+        }
+        fn vsync(&self) -> bool {
+            self.vsync
+        }
+        fn set_vsync(&mut self, on: bool) {
+            self.vsync = on;
+        }
+    }
+
+    fn mock_render_control() -> MockRenderControl {
+        MockRenderControl { backend: RenderBackend::TinySkia, fps_limit: 0, msaa_samples: 0, vsync: false }
+    }
+
+    /// One deterministic 2D `App::ui` frame -- fresh `DemoApp::new()`
+    /// (the default `clusters` fixture, `Dimension::TwoD`), pre-solved
+    /// once so `ui()`'s own internal `last_window()`-then-`solve()`
+    /// re-check (see its own source: it falls back to a degenerate
+    /// zero rect and skips `solve()` entirely on a NEVER-solved
+    /// `LayoutManager`) sees a real window rect on this, its only call.
+    fn record_2d_frame(width: u32, height: u32) -> Scene {
+        record_via_urx_ctx(width, height, |ctx| {
+            let mut app = DemoApp::new();
+            let mut layout = LayoutManager::<NoPanel>::default();
+            attach_headless_window(&mut layout, width, height);
+            let key = WindowKey::new("parity-fixture");
+            let rect = Rect::new(0.0, 0.0, width as f64, height as f64);
+            let mut rc = mock_render_control();
+            let mut win = WindowCtx { key: &key, layout: &mut layout, render: ctx, rect, render_control: &mut rc };
+            app.ui(&mut win);
+        })
+    }
+
+    /// One deterministic 3D-overlay-only frame. `toggle_dimension()`
+    /// flips a fresh app straight to `Dimension::ThreeD` (no
+    /// intermediate transition variant -- `Dimension` is a plain
+    /// `TwoD`/`ThreeD` enum; the ~600ms "animation" mentioned in this
+    /// file's own module doc is a visual blend the renderer eases over
+    /// real wall-clock time, not a third `Dimension` state), then
+    /// `scene3d()`'s `dt` is the fixed `1.0 / 60.0` first-frame constant
+    /// (`self.last_3d_frame_at` starts `None`) -- deterministic, no
+    /// wall-clock coupling for the ONE frame this fixture captures.
+    fn record_3d_overlay(width: u32, height: u32) -> Option<Scene> {
+        let mut app = DemoApp::new();
+        app.toggle_dimension();
+        let mut frame = app.scene3d(width, height)?;
+        let mut overlay = frame.overlay.take()?;
+        Some(record_via_urx_ctx(width, height, |ctx| overlay(ctx)))
+    }
+
+    #[test]
+    #[ignore = "needs a headless GPU adapter"]
+    fn force_graph_2d_frame_native_matches_cpu_within_the_base_tier() {
+        let scene = record_2d_frame(WIDTH, HEIGHT);
+        let cpu = render_via_urx_cpu(&scene, WIDTH, HEIGHT);
+        let Some(native) = render_via_urx_native(&scene, WIDTH, HEIGHT) else {
+            eprintln!("force_graph_2d_frame_native_matches_cpu_within_the_base_tier: no GPU/software adapter available; skipping");
+            return;
+        };
+        let tol = ChannelTolerance::default();
+        let report = compare_tight(&cpu, &native, tol);
+        println!(
+            "force_graph_2d_frame urx-cpu-vs-native: {:.3}% differing (edge {}), budget {:.2}%, max_channel_diff {}",
+            report.differing_fraction * 100.0,
+            tol.edge,
+            tol.max_differing_fraction * 100.0,
+            report.max_channel_diff,
+        );
+        if !report.within_budget {
+            dump_comparison_pngs("force_graph_2d_urx_cpu_vs_native", WIDTH, HEIGHT, &cpu, &native);
+        }
+        assert!(
+            report.within_budget,
+            "force_graph 2D frame exceeded the base tolerance tier: {:.3}% differing (budget {:.2}%), max_channel_diff {}",
+            report.differing_fraction * 100.0,
+            tol.max_differing_fraction * 100.0,
+            report.max_channel_diff,
+        );
+    }
+
+    #[test]
+    #[ignore = "needs a headless GPU adapter; dumps PNGs for human review, not a hard gate"]
+    fn force_graph_2d_frame_native_vs_vello_visual_dump() {
+        let vello = render_via_vello_cpu(WIDTH, HEIGHT, |ctx| {
+            let mut app = DemoApp::new();
+            let mut layout = LayoutManager::<NoPanel>::default();
+            attach_headless_window(&mut layout, WIDTH, HEIGHT);
+            let key = WindowKey::new("parity-fixture");
+            let rect = Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64);
+            let mut rc = mock_render_control();
+            let mut win = WindowCtx { key: &key, layout: &mut layout, render: ctx, rect, render_control: &mut rc };
+            app.ui(&mut win);
+        });
+        let scene = record_2d_frame(WIDTH, HEIGHT);
+        let Some(native) = render_via_urx_native(&scene, WIDTH, HEIGHT) else {
+            eprintln!("force_graph_2d_frame_native_vs_vello_visual_dump: no GPU/software adapter available; skipping");
+            return;
+        };
+        dump_comparison_pngs("force_graph_2d_urx_native_vs_vello", WIDTH, HEIGHT, &native, &vello);
+    }
+
+    /// 3D OVERLAY ONLY (design §4.3: no CPU 3D renderer exists, so the
+    /// raw 3D viewport gets no automated comparison) -- byte-tight
+    /// native-vs-cpu on the label/HUD overlay `Scene3DFrame` hands
+    /// `Manager`, same tier every other fixture uses.
+    #[test]
+    #[ignore = "needs a headless GPU adapter"]
+    fn force_graph_3d_overlay_native_matches_cpu_within_the_base_tier() {
+        let Some(scene) = record_3d_overlay(WIDTH, HEIGHT) else {
+            eprintln!("force_graph_3d_overlay_native_matches_cpu_within_the_base_tier: scene3d() returned None; skipping");
+            return;
+        };
+        let cpu = render_via_urx_cpu(&scene, WIDTH, HEIGHT);
+        let Some(native) = render_via_urx_native(&scene, WIDTH, HEIGHT) else {
+            eprintln!("force_graph_3d_overlay_native_matches_cpu_within_the_base_tier: no GPU/software adapter available; skipping");
+            return;
+        };
+        let tol = ChannelTolerance::default();
+        let report = compare_tight(&cpu, &native, tol);
+        println!(
+            "force_graph_3d_overlay urx-cpu-vs-native: {:.3}% differing (edge {}), budget {:.2}%, max_channel_diff {}",
+            report.differing_fraction * 100.0,
+            tol.edge,
+            tol.max_differing_fraction * 100.0,
+            report.max_channel_diff,
+        );
+        if !report.within_budget {
+            dump_comparison_pngs("force_graph_3d_overlay_urx_cpu_vs_native", WIDTH, HEIGHT, &cpu, &native);
+        }
+        assert!(
+            report.within_budget,
+            "force_graph 3D overlay exceeded the base tolerance tier: {:.3}% differing (budget {:.2}%), max_channel_diff {}",
+            report.differing_fraction * 100.0,
+            tol.max_differing_fraction * 100.0,
+            report.max_channel_diff,
+        );
+    }
+
+    /// 3D overlay vs vello -- visual dump only, same non-gate as every
+    /// other vello leg (design §4.4).
+    #[test]
+    #[ignore = "needs a headless GPU adapter; dumps PNGs for human review, not a hard gate"]
+    fn force_graph_3d_overlay_native_vs_vello_visual_dump() {
+        let vello = render_via_vello_cpu(WIDTH, HEIGHT, |ctx| {
+            let mut app = DemoApp::new();
+            app.toggle_dimension();
+            if let Some(mut frame) = app.scene3d(WIDTH, HEIGHT) {
+                if let Some(mut overlay) = frame.overlay.take() {
+                    overlay(ctx);
+                }
+            }
+        });
+        let Some(scene) = record_3d_overlay(WIDTH, HEIGHT) else {
+            eprintln!("force_graph_3d_overlay_native_vs_vello_visual_dump: scene3d() returned None; skipping");
+            return;
+        };
+        let Some(native) = render_via_urx_native(&scene, WIDTH, HEIGHT) else {
+            eprintln!("force_graph_3d_overlay_native_vs_vello_visual_dump: no GPU/software adapter available; skipping");
+            return;
+        };
+        dump_comparison_pngs("force_graph_3d_overlay_urx_native_vs_vello", WIDTH, HEIGHT, &native, &vello);
+    }
+}
