@@ -32,12 +32,20 @@
 //! hover info card) ON TOP of a composed 3D viewport. The optional
 //! `overlay` parameter below closes that gap: an additive Phase 4.5,
 //! painted AFTER every [`Compose3DJob`]'s copy into `swap_view`, so it
-//! composites over whatever the 3D pass drew, not under it — using an
-//! entirely separate, self-contained CPU `RenderContext`
-//! ([`uzor_render_tiny_skia::TinySkiaCpuRenderContext`]), not the
-//! `urx_ctx` channel Phase 3 uses (that channel's own `Scene`-graph API
-//! is a different shape than the `&mut dyn RenderContext` immediate-mode
-//! draw calls `uzor-graph`'s label/hover-card drawing already uses).
+//! composites over whatever the 3D pass drew, not under it. Wave 5b
+//! (`urx-wave5-compose-cutover-design-2026-07-25.md`) cut this over
+//! from an entirely separate, self-contained CPU `RenderContext`
+//! ([`uzor_render_tiny_skia::TinySkiaCpuRenderContext`]) to
+//! [`uzor_render_urx::UrxRenderContext`] — the SAME `RenderContext` ->
+//! `Scene` bridge Phase 3's own `Wgpu`/`Auto` 2D channel already uses —
+//! rendered through the SAME per-window `NativeUrxRenderer` Phase 3
+//! drives (`compose_urx_native_into_swap`, Wave 5a). The overlay
+//! records into its OWN separate texture (not `urx_ctx`'s own `Scene`
+//! slot — a distinct recording each call), then composites onto
+//! `swap_view` via the existing premultiplied-alpha blit
+//! ([`blit_overlay_onto`]) — see [`build_overlay_texture_native`]'s own
+//! doc comment for why the render pass's transparent-clear behavior is
+//! exactly right for an overlay, not a problem to work around.
 //!
 //! Co-existence rule (doctrine): this path is opt-in. Consumers that
 //! want fullscreen 3D keep calling `submit_3d_frame_to_rect`;
@@ -45,7 +53,6 @@
 //! new path is for the COMPOSE case.
 
 use uzor::render::RenderContext;
-use uzor_render_tiny_skia::TinySkiaCpuRenderContext;
 
 use crate::factory::{
     Submit3DError, SurfaceMode, UrxComposeOverlayCache, UrxComposeOverlayDynamic, WindowRenderState,
@@ -390,21 +397,42 @@ pub fn submit_urx_composed(
     }
 
     // ── Phase 4.5: optional cached + dynamic 2D overlays over 3D ─────
-    // Stable chrome is rasterized/uploaded only on cache miss or resize.
-    // Dynamic content is painted after it so labels, selection cards and
-    // crosshairs remain on top. One retained blitter handles both layers.
+    // Stable chrome is rendered only on cache miss or resize. Dynamic
+    // content is painted after it so labels, selection cards and
+    // crosshairs remain on top. One retained blitter handles both
+    // layers. Wave 5b (`urx-wave5-compose-cutover-design-2026-07-25.md`
+    // §4 5b): both layers now record through
+    // `uzor_render_urx::UrxRenderContext` and render through the SAME
+    // per-window `NativeUrxRenderer` Phase 3 drives, instead of
+    // rasterising into a CPU `tiny-skia` pixmap and uploading it.
     if let Some(cached_job) = cached_overlay.as_mut() {
         let needs_refresh = state.urx_compose_overlay_cache.as_ref().is_none_or(|cache| {
             cache.key != cached_job.key || cache.width != surf_w || cache.height != surf_h
         });
         if needs_refresh {
-            state.urx_compose_overlay_cache = build_overlay_texture(
-                &device,
-                &queue,
-                surf_w,
-                surf_h,
-                cached_job.paint.as_mut(),
-            ).map(|uploaded| UrxComposeOverlayCache {
+            // Lazy-init, independent of Phase 3's own lazy-init
+            // (`compose_urx_native_into_swap`) — Phase 3 may have been
+            // skipped entirely this frame by the dead-pass elimination.
+            if state.urx_native_renderer.is_none() {
+                state.urx_native_renderer = Some(uzor_urx_wgpu::NativeUrxRenderer::new(
+                    device.clone(),
+                    queue.clone(),
+                    wgpu::TextureFormat::Rgba8Unorm,
+                ));
+            }
+            let uploaded = match state.urx_native_renderer.as_mut() {
+                Some(renderer) => build_overlay_texture_native(
+                    &device,
+                    &queue,
+                    &mut encoder,
+                    renderer,
+                    surf_w,
+                    surf_h,
+                    cached_job.paint.as_mut(),
+                ),
+                None => None,
+            };
+            state.urx_compose_overlay_cache = uploaded.map(|uploaded| UrxComposeOverlayCache {
                 key: cached_job.key,
                 texture: uploaded.texture,
                 view: uploaded.view,
@@ -436,14 +464,33 @@ pub fn submit_urx_composed(
 
     if let Some(overlay_fn) = overlay.as_mut() {
         if surf_w > 0 && surf_h > 0 {
-            let mut ctx = TinySkiaCpuRenderContext::new(surf_w, surf_h, 1.0);
+            // Lazy-init, independently of both Phase 3 AND the
+            // cached-overlay branch above (neither is guaranteed to
+            // have run this frame).
+            if state.urx_native_renderer.is_none() {
+                state.urx_native_renderer = Some(uzor_urx_wgpu::NativeUrxRenderer::new(
+                    device.clone(),
+                    queue.clone(),
+                    wgpu::TextureFormat::Rgba8Unorm,
+                ));
+            }
+
+            let mut ctx = uzor_render_urx::UrxRenderContext::new(1.0);
+            ctx.begin_frame(surf_w, surf_h);
             overlay_fn(&mut ctx);
+            let scene = ctx.take_scene();
 
             // Reuse the persistent dynamic-overlay texture across frames
-            // (perf pass 2026-07-24) — the CONTENT re-uploads every
-            // frame, but creating (and dropping) a brand-new full-surface
-            // wgpu texture per frame was pure driver allocation churn.
-            // Recreate only on a surface resize.
+            // (perf pass 2026-07-24, PRESERVED under this native cutover
+            // — a deliberate deviation from the design's literal
+            // "wire `build_overlay_texture_native` into both call
+            // sites" wording, see this module's own doc comment on
+            // `build_overlay_texture_native` for why): the CONTENT
+            // re-renders every frame via `render_into_encoder`, but the
+            // texture object itself is reused; recreated only on a
+            // surface resize, exactly as before — only WHAT populates
+            // it changed (a native render pass instead of a tiny-skia
+            // raster + `queue.write_texture` upload).
             let needs_new = state
                 .urx_compose_overlay_dynamic
                 .as_ref()
@@ -456,7 +503,9 @@ pub fn submit_urx_composed(
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format: OVERLAY_TEXTURE_FORMAT,
-                    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_DST
+                        | wgpu::TextureUsages::RENDER_ATTACHMENT,
                     view_formats: &[],
                 });
                 let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -464,21 +513,16 @@ pub fn submit_urx_composed(
                     Some(UrxComposeOverlayDynamic { texture, view, width: surf_w, height: surf_h });
             }
             if let Some(dynamic) = state.urx_compose_overlay_dynamic.as_ref() {
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture:   &dynamic.texture,
-                        mip_level: 0,
-                        origin:    wgpu::Origin3d::ZERO,
-                        aspect:    wgpu::TextureAspect::All,
-                    },
-                    ctx.pixels(),
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(4 * surf_w),
-                        rows_per_image: Some(surf_h),
-                    },
-                    wgpu::Extent3d { width: surf_w, height: surf_h, depth_or_array_layers: 1 },
-                );
+                if let Some(renderer) = state.urx_native_renderer.as_mut() {
+                    if let Err(e) = renderer.render_into_encoder(
+                        &scene,
+                        &mut encoder,
+                        &dynamic.view,
+                        uzor_urx_wgpu::Viewport { width: surf_w, height: surf_h },
+                    ) {
+                        eprintln!("[render-hub] compose urx-native dynamic-overlay render error: {:?}", e);
+                    }
+                }
                 blit_overlay_onto(
                     &device,
                     &mut encoder,
@@ -966,11 +1010,15 @@ fn compose_urx_wgpu_into_swap(
 
 // ── Post-3D 2D overlay pass ──────────────────────────────────────────
 
-/// Sampleable texture format the overlay pixmap uploads into. Doesn't
-/// need to match the swapchain format — [`wgpu::util::TextureBlitter`]'s
-/// fragment shader just samples it as `texture_2d<f32>`; only the BLIT
-/// TARGET has to match the format the blitter's pipeline was built for
-/// (see [`blit_overlay_onto`]).
+/// Overlay texture format — must equal `NativeUrxRenderer`'s own fixed
+/// format (`wgpu::TextureFormat::Rgba8Unorm`, design §1) since Wave 5b:
+/// `render_into_encoder` rejects a target view whose texture format
+/// doesn't match the renderer it was built with
+/// (`NativeRenderError::FormatMismatch`). Also doesn't need to match
+/// the swapchain format for the SEPARATE reason
+/// [`wgpu::util::TextureBlitter`]'s fragment shader just samples it as
+/// `texture_2d<f32>` — only the BLIT TARGET has to match the format the
+/// blitter's pipeline was built for (see [`blit_overlay_onto`]).
 const OVERLAY_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 struct UploadedOverlay {
@@ -978,21 +1026,42 @@ struct UploadedOverlay {
     view: wgpu::TextureView,
 }
 
-/// Paint `overlay_fn` into a fresh, fully-transparent
-/// [`TinySkiaCpuRenderContext`] sized `surf_w × surf_h` (1:1 physical
-/// pixels, no dpr scaling — see [`submit_urx_composed`]'s own doc
-/// comment) and upload the result into a sampleable texture. Returns
-/// `None` for a zero-sized surface (nothing to paint).
+/// Native-GPU overlay builder (Wave 5b,
+/// `urx-wave5-compose-cutover-design-2026-07-25.md` §4 5b step 2) —
+/// records `overlay_fn`'s draw calls through
+/// [`uzor_render_urx::UrxRenderContext`] (the SAME `RenderContext` ->
+/// `Scene` bridge Phase 3's own `Wgpu`/`Auto` 2D channel already uses)
+/// instead of rasterising into a CPU `tiny-skia` pixmap, then renders
+/// the resulting `Scene` through `renderer` (the SAME per-window
+/// `NativeUrxRenderer` Phase 3 drives) into a FRESH sampleable texture.
+/// Returns `None` for a zero-sized surface (nothing to paint) — this is
+/// the cached-overlay call site's exact drop-in replacement for the
+/// prior `build_overlay_texture` (`needs_refresh`-gated, so a fresh
+/// allocation per actual refresh is cheap in aggregate); the dynamic
+/// (per-frame) overlay call site does NOT route through this fn — see
+/// that call site's own comment for why it keeps a persistent texture
+/// instead.
 ///
-/// `TinySkiaCpuRenderContext::new`'s pixmap starts fully transparent
-/// (`tiny_skia::Pixmap::new` zero-fills) — the overlay never needs an
-/// explicit clear, unlike the base 2D chrome pass which owns the
-/// background color (Phase 3, `compose_urx_cpu_into_swap`). The pixmap
-/// data is PREMULTIPLIED alpha (tiny-skia's own convention) — see
-/// [`blit_overlay_onto`] for why that dictates the blend function.
-fn build_overlay_texture(
+/// **No synthetic background needed here** (unlike Phase 3's
+/// `scene_with_opaque_background`): `render_into_encoder`'s own root
+/// pass ALWAYS clears its target to `wgpu::Color::TRANSPARENT` — for an
+/// overlay that must let the 3D content underneath show through, that
+/// is EXACTLY the right behavior, the mirror image of Phase 3's own
+/// problem. This texture is a SEPARATE render target from `swap_view`/
+/// the 3D content already drawn there — clearing IT to transparent
+/// never erases anything; the actual "composite over 3D" step happens
+/// afterward, in the caller, via the EXISTING [`blit_overlay_onto`]
+/// (`LoadOp::Load` + premultiplied blend against whatever `swap_view`
+/// already holds from Phase 4). `NativeUrxRenderer`'s fragment shaders
+/// already output premultiplied color (Wave 1 design §7 "the actual
+/// fix"), so [`blit_overlay_onto`]'s existing `PREMULTIPLIED_ALPHA_BLENDING`
+/// state is already correct for this native-sourced content too — not
+/// just the CPU-sourced content it was originally built for.
+fn build_overlay_texture_native(
     device: &wgpu::Device,
-    queue:  &wgpu::Queue,
+    _queue: &wgpu::Queue,
+    encoder: &mut wgpu::CommandEncoder,
+    renderer: &mut uzor_urx_wgpu::NativeUrxRenderer,
     surf_w: u32,
     surf_h: u32,
     overlay_fn: &mut dyn FnMut(&mut dyn RenderContext),
@@ -1000,40 +1069,35 @@ fn build_overlay_texture(
     if surf_w == 0 || surf_h == 0 {
         return None;
     }
-    let mut ctx = TinySkiaCpuRenderContext::new(surf_w, surf_h, 1.0);
-    overlay_fn(&mut ctx);
 
-    let (w, h) = (ctx.width(), ctx.height());
-    if w == 0 || h == 0 {
-        return None;
-    }
+    let mut ctx = uzor_render_urx::UrxRenderContext::new(1.0);
+    ctx.begin_frame(surf_w, surf_h);
+    overlay_fn(&mut ctx);
+    let scene = ctx.take_scene();
 
     let overlay_tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("uzor-render-hub:compose-overlay"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d { width: surf_w, height: surf_h, depth_or_array_layers: 1 },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: OVERLAY_TEXTURE_FORMAT,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture:   &overlay_tex,
-            mip_level: 0,
-            origin:    wgpu::Origin3d::ZERO,
-            aspect:    wgpu::TextureAspect::All,
-        },
-        ctx.pixels(),
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * w),
-            rows_per_image: Some(h),
-        },
-        wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-    );
     let view = overlay_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    if let Err(e) = renderer.render_into_encoder(
+        &scene,
+        encoder,
+        &view,
+        uzor_urx_wgpu::Viewport { width: surf_w, height: surf_h },
+    ) {
+        eprintln!("[render-hub] compose urx-native overlay render error: {:?}", e);
+    }
+
     Some(UploadedOverlay { texture: overlay_tex, view })
 }
 
@@ -1045,8 +1109,9 @@ fn build_overlay_texture(
 /// an opaque overwrite.
 ///
 /// `PREMULTIPLIED_ALPHA_BLENDING`, not the default straight-alpha
-/// blend: [`build_overlay_texture`]'s source pixmap is tiny-skia's own
-/// premultiplied RGBA8, and the blit shader is a plain
+/// blend: the overlay's source is `NativeUrxRenderer`'s own
+/// premultiplied fragment-shader output (Wave 5b — was tiny-skia's own
+/// premultiplied RGBA8 pixmap before), and the blit shader is a plain
 /// `textureSample`-and-output pass-through (no unpremultiply step) —
 /// straight-alpha blending against already-premultiplied source data
 /// would double-apply the alpha and darken every translucent pixel.
