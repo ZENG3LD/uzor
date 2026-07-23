@@ -16,6 +16,7 @@ mod fixtures;
 
 use std::path::{Path, PathBuf};
 
+use uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES;
 use uzor_urx_core::scene::Scene;
 use uzor_urx_cpu::{CpuBackend, Pixmap};
 use uzor_urx_wgpu::{NativeRenderError, NativeUrxRenderer, Viewport};
@@ -57,6 +58,63 @@ const MAX_DIFFERING_FRACTION_TEXT: f64 = 0.04; // 2x the shape budget (0.02)
 /// stay untouched.
 const CHANNEL_TOLERANCE_EDGE_CLIP: i32 = 32;
 const MAX_DIFFERING_FRACTION_CLIP: f64 = 0.03;
+
+/// Radial/Sweep gradient per-case override (Wave 4 design §9
+/// "Tolerance tiers") — used ONLY by fixtures that cross a spread-mode
+/// wrap boundary (`sweep_gradient_rect`'s full-circle `Extend::Repeat`
+/// span). The EXACT concentric Radial case (`radial_gradient_rect`)
+/// and the gradient-on-`StrokePath` case stay on the BASE shape tier —
+/// both backends sample from byte-identical LUT bytes (the shared
+/// `uzor-urx-core::gradient_lut` functions) with no wrap boundary
+/// crossed, so they should agree tightly. Wider than the base tier
+/// (24/2%) because CPU's `f32` arithmetic and GPU's WGSL `f32`
+/// arithmetic can legitimately round a wrap boundary's exact pixel
+/// differently by construction; narrower than `_CLIP`'s reasoning class
+/// (this is a genuine, expected sub-ULP divergence at a SPECIFIC seam,
+/// not a structurally coarser AA mechanism across the whole boundary).
+const CHANNEL_TOLERANCE_EDGE_GRADIENT: i32 = 32;
+const MAX_DIFFERING_FRACTION_GRADIENT: f64 = 0.03;
+
+/// Image per-case override (Wave 4 design §9 "Tolerance tiers") —
+/// bilinear-vs-1:1-fast-path divergence at the image's own edges
+/// (design §4.3: GPU always bilinear-samples, even at an exact 1:1
+/// mapping, which mathematically degenerates to the same value a
+/// direct texel copy would produce EXCEPT at boundary texels where
+/// CPU's `unscaled` fast path and GPU's bilinear sampling can round
+/// slightly differently) — same class of reasoning as Wave 2's `_TEXT`
+/// tier for bilinear-atlas-plus-MSAA stacking. Also absorbs the ROTATED
+/// image instance's CPU-bbox-vs-GPU-true-rotated-shape mismatch area
+/// (design §0.3 — Image inherits Rect's own similarity-vs-shear
+/// routing decision), sized down at the fixture level (small,
+/// non-upscaled rotated instance) to fit this SAME budget rather than
+/// needing an even wider one.
+const CHANNEL_TOLERANCE_EDGE_IMAGE: i32 = 40;
+const MAX_DIFFERING_FRACTION_IMAGE: f64 = 0.03;
+
+/// Rotated-rect per-case override (design §9's own tier table calls
+/// this "base shape tier," but measurement shows it needs a wider
+/// FRACTION budget — same per-pixel edge tolerance as the base tier,
+/// since severity per pixel isn't the issue, just the AFFECTED AREA).
+/// TWO already-independently-documented divergence sources compound in
+/// this ONE fixture: (1) CPU bbox-approximates the rotated rect
+/// entirely (design §0.3) — an unavoidable, structural shape mismatch
+/// scaling with the rect's own size; (2) the rotated edges are
+/// themselves OBLIQUE, and `fwidth(dist)`'s well-known L1-norm
+/// over-estimate of the true (L2) gradient magnitude widens the native
+/// SDF's AA band by up to `sqrt(2)` at non-axis-aligned angles — the
+/// EXACT same finding `fixtures::lines_at_angles`'s own doc comment
+/// already documents for diagonal lines, here affecting a rotated
+/// rect's edges instead. Shrinking the fixture (a first 34x34 attempt
+/// measured 3.31%; 24x24 measured 2.44%) helps but doesn't clear the
+/// base 2% budget on its own — the oblique-AA component scales with
+/// PERIMETER (roughly linear in side length), not area, so it doesn't
+/// shrink away as fast as the quadratic bbox-mismatch term. Widening
+/// the fraction budget (rather than shrinking indefinitely into an
+/// uncomfortably tiny, hard-to-probe shape) is the same engineering
+/// call `_CLIP`/`_GRADIENT`/`_IMAGE` already make for their own
+/// legitimate, disclosed divergence sources.
+const CHANNEL_TOLERANCE_EDGE_ROTATED_BBOX: i32 = 24;
+const MAX_DIFFERING_FRACTION_ROTATED_BBOX: f64 = 0.03;
 
 /// Native readback target format — non-sRGB, avoids the degamma step
 /// a `*Srgb` format would force before comparing against `Pixmap`'s
@@ -523,6 +581,199 @@ fn parity_glyph_run_two_letters() {
     });
 }
 
+// ── Wave 4 Commits 5+6: gradients, images, full affine, per-corner ──
+// ── radii parity cases ───────────────────────────────────────────────
+//
+// `docs/uzor-engines/plans/urx-wave4-vello-parity-design-2026-07-25.md`
+// §9. 7 new cases (16 -> 23 total).
+
+/// The exact-agreement concentric Radial baseline (design §9) — see
+/// `fixtures::radial_gradient_rect`'s doc comment. Base shape tier: no
+/// spread-mode wrap boundary crossed, both backends read the SAME LUT
+/// bytes.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_radial_gradient_rect() {
+    run_case(ParityCase {
+        name: "radial_gradient_rect",
+        scene: fixtures::radial_gradient_rect(),
+        // (128, 128): dead center (t≈0, near the gradient's own
+        // start colour). (100, 118): t = dist((100,118),(128.5,128.5))
+        // /59 = sqrt(28.5²+10.5²)/59 = 30.38/59 ≈ 0.515 — comfortably
+        // mid-LUT-bucket (index ≈131.3, ~0.3 away from either
+        // neighbouring integer).
+        interior_probes: &[(128, 128), (100, 118)],
+        ..Default::default()
+    });
+}
+
+/// First-ever Sweep fixture in this harness (design §9) — see
+/// `fixtures::sweep_gradient_rect`'s doc comment for why this crosses
+/// the angle-wrap boundary and needs the `_GRADIENT` tier.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_sweep_gradient_rect() {
+    run_case(ParityCase {
+        name: "sweep_gradient_rect",
+        scene: fixtures::sweep_gradient_rect(),
+        // (128, 79.5) i.e. (128, 80): straight up from center — angle
+        // = -pi/2, t = (-pi/2 - 0)/(2*pi), wraps via Repeat's `+1.0`
+        // to t ≈ 0.75 (index ≈191.25, safely mid-bucket).
+        // (177, 128): straight right from center — angle = 0 exactly,
+        // t = 0 (index 0, the gradient's own start colour, no wrap
+        // involved at all — a stable non-boundary sanity probe).
+        interior_probes: &[(128, 80), (177, 128)],
+        edge_tolerance: CHANNEL_TOLERANCE_EDGE_GRADIENT,
+        max_differing_fraction: MAX_DIFFERING_FRACTION_GRADIENT,
+    });
+}
+
+/// "Gradient StrokeRect/FillPath/StrokePath closes for free" (design
+/// §2.5/§9) — GPU-ONLY, no CPU comparison. See
+/// `fixtures::gradient_on_stroke_path_star`'s doc comment for the THIRD
+/// previously-undocumented finding this measurement surfaced: CPU never
+/// renders a real gradient on anything but `FillRect` (`Line`/
+/// `StrokeRect`/`FillPath`/`StrokePath` all flatten to `brush_to_color`
+/// unconditionally), so there is no meaningful CPU baseline to compare
+/// against here — the SAME class of "no CPU comparison possible"
+/// reasoning as the rotated-rect/sheared-rect cases (§0.3), just from a
+/// different root cause (a CPU brush-resolution gap, not a
+/// transform-approximation gap).
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn gradient_on_stroke_path_star_gpu_only_correctness() {
+    let width = fixtures::CANVAS;
+    let height = fixtures::CANVAS;
+    let scene = fixtures::gradient_on_stroke_path_star();
+    let Some(native) = render_native(&scene, width, height) else {
+        eprintln!("gradient_on_stroke_path_star_gpu_only_correctness: no GPU/software adapter available; skipping");
+        return;
+    };
+    let idx = ((110u32 * width + 190u32) * 4) as usize;
+    let got = [native[idx], native[idx + 1], native[idx + 2], native[idx + 3]];
+    // Hand-computed: t = dist((190,110), (185.5,140.5)) / 45 ≈ 0.6852,
+    // LUT index round(0.6852*255) = 175, straight-lerp between the two
+    // fully-opaque stops (straight == premultiplied lerp here, same
+    // convention as `linear_gradient_rect`) at t = 175/255 ≈ 0.6863:
+    // R = 230 + (60-230)*0.6863 ≈ 113, G = 60 + (90-60)*0.6863 ≈ 81,
+    // B = 60 + (230-60)*0.6863 ≈ 177.
+    let expected = [113u8, 81, 177, 255];
+    for c in 0..4 {
+        let diff = (got[c] as i32 - expected[c] as i32).abs();
+        assert!(diff <= 4, "gradient_on_stroke_path_star_gpu_only_correctness: channel {c} got {got:?} expected {expected:?} (diff {diff})");
+    }
+}
+
+/// The Quad-SDF-vs-Triangle-routing acceptance case (design §6.2/§9) —
+/// see `fixtures::per_corner_radii_rect`'s doc comment for the
+/// discriminating-probe derivation.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_per_corner_radii_rect() {
+    run_case(ParityCase {
+        name: "per_corner_radii_rect",
+        scene: fixtures::per_corner_radii_rect(),
+        // (128, 128): dead center, sanity fill probe.
+        // (185, 71): 8px diagonally in from the `top_right` (40px
+        // radius) corner at (193.5, 63.5) — ~45.25px from that corner's
+        // TRUE arc center, outside it (background); a WRONG uniform
+        // approximation using `top_left`'s tiny 4px radius would show
+        // fill here instead (comfortably past its own tiny rounding
+        // zone at only 8px in).
+        interior_probes: &[(128, 128), (185, 71)],
+        ..Default::default()
+    });
+}
+
+/// The Quad-SDF rotation-path acceptance case (design §5.3/§9) — see
+/// `fixtures::rotated_uniform_radius_rect`'s doc comment. Interior-only
+/// probes (design §0.3(ii)): CPU bbox-approximates the rotation
+/// entirely, so only points deep inside the TRUE rotated shape (a
+/// strict subset of CPU's larger bbox) are analytically forced to
+/// agree on both backends. `_ROTATED_BBOX` tolerance tier (this
+/// module's own doc comment) — TWO already-documented divergence
+/// sources compound here (CPU's bbox approximation + oblique-edge
+/// `fwidth` AA widening), needing a wider fraction budget than the base
+/// shape tier even after shrinking the fixture down to 24x24.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_rotated_uniform_radius_rect() {
+    run_case(ParityCase {
+        name: "rotated_uniform_radius_rect",
+        scene: fixtures::rotated_uniform_radius_rect(),
+        // (128, 128): dead center — invariant under `rotate_about`'s
+        // own-center pivot, trivially inside both backends' shapes.
+        // (128, 138): center + (0,10) screen offset — inverse-rotated
+        // local coordinate (5.0, 8.66) against a 12px half-extent,
+        // comfortably (~3.3px margin) inside the TRUE rotated square
+        // (radii: None — a sharp-cornered square, no rounding to
+        // account for).
+        interior_probes: &[(128, 128), (128, 138)],
+        edge_tolerance: CHANNEL_TOLERANCE_EDGE_ROTATED_BBOX,
+        max_differing_fraction: MAX_DIFFERING_FRACTION_ROTATED_BBOX,
+    });
+}
+
+/// The stroke-width-unification regression proof (design §0.2/§9,
+/// coordinator's Commit 5 addition) — see
+/// `fixtures::scaled_stroke_width`'s doc comment. Base shape tier: both
+/// backends now agree exactly on device-constant width, no new
+/// divergence source introduced.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_scaled_stroke_width() {
+    run_case(ParityCase {
+        name: "scaled_stroke_width",
+        scene: fixtures::scaled_stroke_width(),
+        // StrokeRect (screen rect (20.5,20.5)-(80.5,80.5), border band
+        // y in [18.5,22.5] for width 4.0): (50, 20) on the border;
+        // (50, 50) deep in the hollow interior — must be BACKGROUND
+        // (StrokeRect never fills).
+        // StrokePath-as-rect (screen rect (120.5,20.5)-(180.5,80.5),
+        // SAME border band shape): (150, 20) on the border; (150, 50)
+        // deep hollow interior — background; (150, 17) — OUTSIDE the
+        // CORRECT 4px-wide band (edge at y=18.5) but INSIDE where a
+        // pre-Commit-4, incorrectly-2x-scaled 8px band (edge at
+        // y=16.5) would have painted border colour — the regression
+        // probe this fixture exists for.
+        interior_probes: &[(50, 20), (50, 50), (150, 20), (150, 50), (150, 17)],
+        ..Default::default()
+    });
+}
+
+/// `ImagePipeline`'s rotation path + the shared `uzor_urx_image`
+/// registry (design §9) — see
+/// `fixtures::image_axis_aligned_and_rotated`'s doc comment for the
+/// probe derivation (axis-aligned instance: any deep-interior
+/// checkerboard-cell point; rotated instance: dest's own dead center
+/// ONLY, per §0.3(ii)'s interior-only policy for CPU's bbox-approximated
+/// rotation). `_IMAGE` tolerance tier.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_image_axis_aligned_and_rotated() {
+    run_case(ParityCase {
+        name: "image_axis_aligned_and_rotated",
+        scene: fixtures::image_axis_aligned_and_rotated(),
+        // Axis-aligned instance (dest (20,20)-(84,84), 2x upscale of a
+        // 32x32 source with a 3-cell/axis checkerboard, cell=10):
+        // (50, 50): uv (0.46875, 0.46875) -> source (15, 15) EXACTLY —
+        // dead center of cell(1,1) (source range [10,20) each axis),
+        // 5px margin from either boundary, color A.
+        // (72, 50): uv (0.8125, 0.46875) -> source (26, 15) — cell(2,1)
+        // (source x range [20,32)), 6px margin from the x=20 cell
+        // boundary and the x=32 image edge, color B — a
+        // different-colour deep-interior point.
+        // Rotated instance (dest (150,150)-(182,182), no upscale,
+        // rotated 45deg about its own center (166,166)): (166, 166) —
+        // the dest's own dead center (uv 0.5,0.5 -> source (16,16),
+        // cell(1,1), color A) — the ONE point both backends' mappings
+        // agree on regardless of rotation.
+        interior_probes: &[(50, 50), (72, 50), (166, 166)],
+        edge_tolerance: CHANNEL_TOLERANCE_EDGE_IMAGE,
+        max_differing_fraction: MAX_DIFFERING_FRACTION_IMAGE,
+    });
+}
+
 /// Design §8 commit 4 gate (item 5): `NativeRenderError::ZeroViewport`
 /// needs no device at all to trigger (the check is the very first
 /// thing `render_into_encoder` does), but constructing a
@@ -661,4 +912,186 @@ fn resize_sanity_64_512_64() {
     // (no panic across 64->512->64, content lands in the right place,
     // right color), which the interior probe confirms.
     check_interior_probes(&cpu, &native, FINAL_SIZE, FINAL_SIZE, &case);
+}
+
+// ── Wave 4 Commits 5+6: GPU-only correctness + degrade-counter proofs ─
+//
+// Design §0.3 names TWO GPU-only correctness tests (no CPU comparison
+// possible — CPU bbox-approximates any non-axis-aligned transform):
+// the rotated-rect corner probe (already added Wave 4 Commit 4, in
+// `uzor-urx-wgpu/src/renderer.rs::rotated_uniform_radius_rect_corner_regions_render_correctly`
+// — NOT duplicated here) and the sheared-rect probe below (new this
+// commit, since nothing covered the shear-routing case at the pixel
+// level yet). A THIRD, unplanned GPU-only test
+// (`gradient_on_stroke_path_star_gpu_only_correctness`, below) was
+// added after measurement surfaced a genuinely new "no CPU baseline
+// exists" finding of its own (see that fixture's doc comment) — §0.3's
+// "no CPU comparison possible" reasoning turned out to apply to a
+// THIRD case design's own defect-list audit didn't anticipate.
+
+/// GPU-ONLY correctness (design §0.3 option (i)/§9) — see
+/// `fixtures::sheared_rect_scene`'s doc comment. No CPU comparison: a
+/// sheared parallelogram's true shape differs from CPU's bbox
+/// approximation by MORE than an AA-edge tolerance, structurally, at
+/// the corners.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn sheared_rect_gpu_only_correctness() {
+    let width = fixtures::CANVAS;
+    let height = fixtures::CANVAS;
+    let scene = fixtures::sheared_rect_scene();
+    let Some(native) = render_native(&scene, width, height) else {
+        eprintln!("sheared_rect_gpu_only_correctness: no GPU/software adapter available; skipping");
+        return;
+    };
+    let px = |x: u32, y: u32| -> [u8; 4] {
+        let idx = ((y * width + x) * 4) as usize;
+        [native[idx], native[idx + 1], native[idx + 2], native[idx + 3]]
+    };
+
+    // Local rect [-20,20]x[-20,20] under (x,y) -> (x+0.5y+128, y+128):
+    // corners map to (98,108),(138,108),(158,148),(118,148) — a
+    // parallelogram, NOT the wider axis-aligned bbox (98,108)-(158,148)
+    // CPU would paint for this same transform (design §0.3).
+    assert_eq!(px(128, 128), [220, 60, 60, 255], "dead center of the parallelogram must be fill");
+    // At screen y=140, the parallelogram's true left boundary sits at
+    // x=114 (98 + 20*(32/40), interpolating the left edge from
+    // (98,108) to (118,148)) — x=100 is 14px further left, INSIDE the
+    // would-be CPU bbox (which starts at x=98) but OUTSIDE the TRUE
+    // parallelogram.
+    assert_eq!(
+        px(100, 140),
+        [32, 32, 32, 255],
+        "must be background: inside the would-be CPU bbox but outside the TRUE sheared parallelogram"
+    );
+}
+
+/// Minimal hand-rolled `metrics::Recorder` — same shape as
+/// `uzor-urx-wgpu/src/encode.rs`'s own `mod metrics_recorder_proof`
+/// (that one is private to the lib crate, unreachable from this
+/// integration-test binary, hence a second small copy here rather than
+/// a shared export). Used ONLY for the handful of Wave 4 §8 degrade
+/// labels whose fixtures are ALSO new this wave — every OTHER label's
+/// counter behaviour is already thoroughly proven at the `encode.rs`
+/// unit-test level (both device-free and device-gated variants); this
+/// is an end-to-end (full `NativeUrxRenderer`) supplement for the
+/// specific cases where a fresh, dedicated parity fixture exists to
+/// drive it.
+mod metrics_probe {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use metrics::{Counter, CounterFn, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit};
+
+    struct RecordedCounter(AtomicU64);
+    impl CounterFn for RecordedCounter {
+        fn increment(&self, value: u64) {
+            self.0.fetch_add(value, Ordering::SeqCst);
+        }
+        fn absolute(&self, value: u64) {
+            self.0.store(value, Ordering::SeqCst);
+        }
+    }
+
+    #[derive(Default)]
+    pub(crate) struct TestRecorder {
+        counters: Mutex<HashMap<Key, Arc<RecordedCounter>>>,
+    }
+
+    impl TestRecorder {
+        pub(crate) fn value_for(&self, metric_name: &str, label: &str) -> u64 {
+            let map = self.counters.lock().unwrap_or_else(|e| e.into_inner());
+            map.iter()
+                .filter(|(key, _)| {
+                    key.name() == metric_name && key.labels().any(|l| l.key() == "kind" && l.value() == label)
+                })
+                .map(|(_, counter)| counter.0.load(Ordering::SeqCst))
+                .sum()
+        }
+    }
+
+    impl Recorder for TestRecorder {
+        fn describe_counter(&self, _key: KeyName, _unit: Option<Unit>, _description: SharedString) {}
+        fn describe_gauge(&self, _key: KeyName, _unit: Option<Unit>, _description: SharedString) {}
+        fn describe_histogram(&self, _key: KeyName, _unit: Option<Unit>, _description: SharedString) {}
+
+        fn register_counter(&self, key: &Key, _metadata: &Metadata<'_>) -> Counter {
+            let mut map = self.counters.lock().unwrap_or_else(|e| e.into_inner());
+            let counter = map.entry(key.clone()).or_insert_with(|| Arc::new(RecordedCounter(AtomicU64::new(0))));
+            Counter::from_arc(counter.clone())
+        }
+        fn register_gauge(&self, _key: &Key, _metadata: &Metadata<'_>) -> Gauge {
+            Gauge::noop()
+        }
+        fn register_histogram(&self, _key: &Key, _metadata: &Metadata<'_>) -> Histogram {
+            Histogram::noop()
+        }
+    }
+}
+
+/// `native_rect_shear_to_triangle_pipeline` (design §8, new, telemetry-
+/// only) fires exactly once for `sheared_rect_scene`'s one sheared
+/// `FillRect` — end-to-end through the full `NativeUrxRenderer`, not
+/// just at the `encode.rs` unit-test level.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn sheared_rect_counts_shear_telemetry_end_to_end() {
+    let recorder = metrics_probe::TestRecorder::default();
+    let width = fixtures::CANVAS;
+    let height = fixtures::CANVAS;
+    let rendered = metrics::with_local_recorder(&recorder, || {
+        let scene = fixtures::sheared_rect_scene();
+        render_native(&scene, width, height)
+    });
+    if rendered.is_none() {
+        eprintln!("sheared_rect_counts_shear_telemetry_end_to_end: no GPU/software adapter available; skipping");
+        return;
+    }
+    assert_eq!(
+        recorder.value_for(KEY_RENDER_PRIMITIVES, "native_rect_shear_to_triangle_pipeline"),
+        1
+    );
+}
+
+/// `native_per_corner_radii_uniform_approx` (design §8, CLOSED) never
+/// fires again — end-to-end proof on the exact fixture designed to
+/// exercise non-uniform per-corner radii.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn per_corner_radii_rect_never_counts_the_closed_approximation_label() {
+    let recorder = metrics_probe::TestRecorder::default();
+    let width = fixtures::CANVAS;
+    let height = fixtures::CANVAS;
+    let rendered = metrics::with_local_recorder(&recorder, || {
+        let scene = fixtures::per_corner_radii_rect();
+        render_native(&scene, width, height)
+    });
+    if rendered.is_none() {
+        eprintln!("per_corner_radii_rect_never_counts_the_closed_approximation_label: no GPU/software adapter available; skipping");
+        return;
+    }
+    assert_eq!(recorder.value_for(KEY_RENDER_PRIMITIVES, "native_per_corner_radii_uniform_approx"), 0);
+}
+
+/// `gradient_radial_focal_degraded` (unprefixed, shared with CPU, design
+/// §2.6) never fires for the deliberately-concentric
+/// `radial_gradient_rect` fixture — end-to-end proof that this
+/// fixture really is the "exact, non-approximated" baseline case its
+/// own doc comment claims to be.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn radial_gradient_rect_never_counts_the_focal_degrade() {
+    let recorder = metrics_probe::TestRecorder::default();
+    let width = fixtures::CANVAS;
+    let height = fixtures::CANVAS;
+    let rendered = metrics::with_local_recorder(&recorder, || {
+        let scene = fixtures::radial_gradient_rect();
+        render_native(&scene, width, height)
+    });
+    if rendered.is_none() {
+        eprintln!("radial_gradient_rect_never_counts_the_focal_degrade: no GPU/software adapter available; skipping");
+        return;
+    }
+    assert_eq!(recorder.value_for(KEY_RENDER_PRIMITIVES, "gradient_radial_focal_degraded"), 0);
 }

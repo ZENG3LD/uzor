@@ -9,7 +9,7 @@
 //! the background rect forces both backends to composite over an
 //! identical opaque ground and actually exercises blend semantics.
 
-use uzor_urx_core::math::{Affine, BezPath, BlendMode, Brush, Color, Gradient, Rect, RoundedRect, Vec2};
+use uzor_urx_core::math::{Affine, BezPath, BlendMode, Brush, Color, Extend, Gradient, Rect, RoundedRect, Vec2};
 use uzor_urx_core::scene::{DrawCommand, FillRule, LineCap, LineJoin, Scene, Stroke};
 
 pub const CANVAS: u32 = 256;
@@ -671,5 +671,355 @@ pub fn blend_layer_group_reference_no_layer() -> Scene {
     let mut scene = Scene::new();
     push_background(&mut scene);
     overlapping_pair(&mut scene);
+    scene
+}
+
+// ── Wave 4 Commits 5+6: gradients, images, full affine, per-corner ──
+// ── radii parity fixtures ────────────────────────────────────────────
+//
+// `docs/uzor-engines/plans/urx-wave4-vello-parity-design-2026-07-25.md`
+// §9. All 7 reuse the SAME `.5`-sub-pixel-offset + single-shared-
+// background conventions established above.
+
+/// `FillRect`, `Brush::Gradient(Radial)`, CONCENTRIC (design §9's
+/// "exact-agreement baseline case") — `Gradient::new_radial` sets
+/// `start_center == end_center` and `start_radius == 0.0` by
+/// construction, so `gradient_radial_focal_degraded` never fires here
+/// (the concentric case IS the non-approximated exact math, §2.6).
+/// `Extend::Pad` (peniko's default) — no spread-mode wrap boundary is
+/// crossed inside the rect (the inscribed-circle radius keeps every
+/// corner beyond `t == 1.0`, clamped flat by Pad), so this stays on the
+/// BASE shape tolerance tier: both backends sample from byte-identical
+/// LUT bytes (the shared `uzor-urx-core::gradient_lut` functions), so
+/// agreement should be tight.
+pub fn radial_gradient_rect() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    let rect = Rect::new(69.5, 69.5, 187.5, 187.5);
+    let radius = (rect.width().min(rect.height()) * 0.5) as f32;
+    let gradient = Gradient::new_radial(rect.center(), radius).with_stops([
+        (0.0f32, Color::from_rgba8(30, 60, 220, 255)),
+        (1.0f32, Color::from_rgba8(230, 180, 30, 255)),
+    ]);
+    scene.push(DrawCommand::FillRect { rect, radii: None, brush: Brush::Gradient(gradient), transform: Affine::IDENTITY });
+    scene
+}
+
+/// `FillRect`, `Brush::Gradient(Sweep)`, default FULL-CIRCLE span
+/// (design §9 — "first-ever Sweep fixture in this harness"; CPU already
+/// implemented Sweep, per §0.1c/§3, this proves GPU parity). Uses
+/// `Extend::Repeat` (NOT the default `Pad`) — a full 0..2π span is
+/// only a smooth, seamless spin under `Repeat`: `Pad` would clamp every
+/// `atan2`-negative pixel (half the circle) to the start colour,
+/// producing a visible hard seam rather than a genuine sweep. This
+/// deliberately CROSSES the angle-wrap boundary (`atan2`'s own
+/// -π/+π seam), so this fixture uses the widened `_GRADIENT` tolerance
+/// tier (`tests/parity.rs`'s own doc comment) rather than the base
+/// shape tier.
+pub fn sweep_gradient_rect() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    let rect = Rect::new(69.5, 69.5, 187.5, 187.5);
+    let gradient = Gradient::new_sweep(rect.center(), 0.0, std::f32::consts::TAU)
+        .with_extend(Extend::Repeat)
+        .with_stops([
+            (0.0f32, Color::from_rgba8(230, 60, 60, 255)),
+            (1.0f32, Color::from_rgba8(60, 90, 230, 255)),
+        ]);
+    scene.push(DrawCommand::FillRect { rect, radii: None, brush: Brush::Gradient(gradient), transform: Affine::IDENTITY });
+    scene
+}
+
+/// `StrokePath`, over the SAME star geometry as
+/// `tessellated_path_star`'s own stroke star (`star_path(185.5, 140.5,
+/// 45.0, 18.0)`), with a Radial `Brush::Gradient` instead of solid —
+/// proves the "gradient StrokeRect/FillPath/StrokePath closes for
+/// free" claim (design §2.5): the exact SAME `emit_gradient_mesh` path
+/// `FillRect` already uses, fed a star-shaped stroke mesh instead of a
+/// rect's.
+///
+/// **GPU-ONLY — no CPU comparison, a THIRD previously-undocumented
+/// finding**: measuring this as an ordinary `ParityCase` first showed a
+/// huge mismatch (`cpu=[230,60,60,255]`, exactly the gradient's first
+/// stop; `native≈[113,80,177,255]`, a real interpolated colour) at the
+/// SAME probe `tessellated_path_star`'s own solid-brush stroke star
+/// uses. Direct read of `uzor-urx-cpu/src/backend.rs` confirms why:
+/// `Line`, `StrokeRect` (non-radii), `FillPath`, and `StrokePath` ALL
+/// resolve their brush via `brush_to_color` (a flat first-stop-or-solid
+/// colour) UNCONDITIONALLY — `FillRect` is the ONLY `DrawCommand` whose
+/// CPU arm ever calls `try_fill_rect_gradient`. So design §2.5's
+/// "closes for free" claim describes a GPU-ONLY closure — CPU has
+/// never rendered a real gradient on anything but `FillRect`, a gap
+/// this design didn't discover (§0.1-§0.4's own defect list never
+/// mentions it). Out of scope to fix (`uzor-urx-cpu` is off-limits) —
+/// verified instead by
+/// `tests/parity.rs::gradient_on_stroke_path_star_gpu_only_correctness`,
+/// which hand-computes the expected interpolated colour at the SAME
+/// probe point and asserts GPU alone produces it (matching the
+/// measured value above almost exactly: `t = dist((190,110),
+/// (185.5,140.5)) / 45 ≈ 0.685`, LUT index `round(0.685*255) = 175`,
+/// straight-lerp — both stops fully opaque, so straight-lerp and
+/// premultiplied-lerp coincide exactly, same convention as
+/// `linear_gradient_rect` — gives `(113, 81, 177)`, matching the
+/// measured `(113-115, 80, 175-177)` within ordinary AA/rounding
+/// slack).
+pub fn gradient_on_stroke_path_star() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    let path = star_path(185.5, 140.5, 45.0, 18.0);
+    let gradient = Gradient::new_radial((185.5, 140.5), 45.0).with_stops([
+        (0.0f32, Color::from_rgba8(230, 60, 60, 255)),
+        (1.0f32, Color::from_rgba8(60, 90, 230, 255)),
+    ]);
+    scene.push(DrawCommand::StrokePath {
+        path,
+        stroke: Stroke { width: 5.0, join: LineJoin::Round, ..Stroke::default() },
+        brush: Brush::Gradient(gradient),
+        transform: Affine::IDENTITY,
+    });
+    scene
+}
+
+/// `FillRect`, `radii: Some([4.0, 40.0, 4.0, 40.0])` (design's own
+/// literal example, deliberately non-uniform — `top_left=4,
+/// top_right=40, bottom_right=4, bottom_left=40` per kurbo's
+/// `RoundedRectRadii::new` corner order), Solid brush — the
+/// Quad-SDF-vs-Triangle-routing acceptance case (design §6.2/§9).
+/// `top_right`'s 40px radius is the discriminating probe (see
+/// `tests/parity.rs`): a point 8px diagonally in from that corner sits
+/// ~45.25px from the TRUE arc center (outside the 40px radius,
+/// background) but would sit well past a WRONG uniform approximation
+/// using `top_left`'s tiny 4px radius (inside, fill) — a uniform
+/// approximation gets this pixel visibly wrong. CPU renders true
+/// per-corner radii via its own `RoundedRect`
+/// (`uzor-urx-cpu/src/backend.rs:154-179`), so this is a
+/// genuinely-agreeing-shape case — base shape tolerance tier. Sized
+/// down in two steps (160x160 measured 2.06%; 140x140 measured 2.00%
+/// exactly, still technically over since the check is a strict `>`;
+/// 130x130 comfortably clears it) to fit the base tier; the
+/// discriminating probe's own geometry is corner-relative, unaffected
+/// by the overall rect size.
+pub fn per_corner_radii_rect() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    scene.push(DrawCommand::FillRect {
+        rect: Rect::new(63.5, 63.5, 193.5, 193.5),
+        radii: Some([4.0, 40.0, 4.0, 40.0]),
+        brush: solid(80, 160, 230, 255),
+        transform: Affine::IDENTITY,
+    });
+    scene
+}
+
+/// `FillRect`, uniform `radii`, `transform` = 30-degree rotation about
+/// the rect's own center (design §9 — the Quad-SDF rotation-path
+/// acceptance case, §5.3). Sized down to 24x24 (from 34x34, then
+/// measured again) — CPU bbox-approximates the rotated rect entirely
+/// (design §0.3), so the "true rotated shape vs. CPU's larger
+/// circumscribing bbox" mismatch area scales roughly quadratically with
+/// the rect's side length `L`; shrinking helps, but a SECOND,
+/// independent divergence source (the rotated edges are themselves
+/// OBLIQUE — `fwidth`'s well-known AA-width overestimate at non-axis-
+/// aligned angles, the SAME finding `lines_at_angles` already documents
+/// for diagonal lines) scales only roughly linearly with `L` and
+/// doesn't shrink away as fast — so even at 24x24 this fixture needs
+/// the WIDENED `_ROTATED_BBOX` tolerance tier (`tests/parity.rs`'s own
+/// doc comment), not the base shape tier design §9's tier table
+/// originally assigned it (measured: 34x34 -> 3.31%, 24x24 -> 2.44%,
+/// both over the 2% base budget; 24x24 fits comfortably under
+/// `_ROTATED_BBOX`'s 3%).
+///
+/// **`radii: None` — a SECOND, previously-undocumented CPU defect found
+/// while measuring this fixture**: a first attempt used `Some([6.0;
+/// 4])` (design's literal "uniform radii" spec) and measured CPU
+/// showing pure BACKGROUND at the shape's own dead center — not merely
+/// a bbox-vs-true-shape corner mismatch, empty content entirely. Root
+/// cause (direct read, `uzor-urx-cpu/src/rounded.rs::rounded_clip_to_mask`):
+/// the rounded-clip MASK's own screen position is computed from ONLY
+/// `(sx, sy)` (`coeffs[0]`/`coeffs[3]`) — the shear/rotation
+/// off-diagonal coefficients are read ONLY to decide whether to count
+/// `rounded_clip_rotated_degraded` (an EXISTING, already-instrumented
+/// counter), never folded into the mask's own placement math. Under a
+/// genuine rotation this places the mask FAR from where
+/// `fill_rect_aa`'s OWN (correctly full-affine-bbox'd) fill actually
+/// lands, so their intersection can end up empty — worse than "wrong
+/// shape at the corners" (§0.3's documented Rect-fill finding), it's
+/// "wrong position for radii'd content entirely." Out of scope to fix
+/// (`uzor-urx-cpu` is off-limits) — this fixture avoids the interaction
+/// by using `radii: None`, which still fully exercises the Quad-SDF
+/// rotation path (`decompose_similarity` routing is independent of
+/// radius value) without combining it with the separately-broken
+/// rounded-mask-under-rotation mechanism.
+///
+/// Probes are restricted to the shape's INTERIOR ONLY (§0.3(ii)): both
+/// backends are analytically forced to agree only where GPU's TRUE
+/// rotated shape's interior lies (a strict subset of CPU's bbox), so
+/// CPU/GPU-agreeing points must stay well inside that intersection —
+/// see `tests/parity.rs` for the exact points and their derivation.
+pub fn rotated_uniform_radius_rect() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    let center = (128.5, 128.5);
+    scene.push(DrawCommand::FillRect {
+        rect: Rect::new(116.5, 116.5, 140.5, 140.5),
+        radii: None,
+        brush: solid(220, 140, 40, 255),
+        transform: Affine::rotate_about(30.0f64.to_radians(), center),
+    });
+    scene
+}
+
+/// Coordinator's Commit 5 addition — the parity-level regression proof
+/// for design §0.2's stroke-width unification. Two shapes, BOTH under
+/// a 2x scale transform, exercising BOTH width-carrying mechanisms:
+/// a `StrokeRect` (Quad SDF — `border_width` no longer multiplied by
+/// `scale` at all) and a `StrokePath` shaped as a plain rectangle
+/// (Triangle pipeline — `tess_stroke_scaled`'s local-width pre-divide).
+/// Both now render a DEVICE-CONSTANT `width: 4.0` border regardless of
+/// the 2x scale, matching CPU's own semantic (`stroke.width` applied
+/// AFTER transforming points, never itself scaled) — this fixture
+/// would have FAILED before Wave 4 Commit 4 landed (GPU used to
+/// multiply width by `scale` on TOP of the already-correct CPU
+/// semantic, doubling the apparent border width to 8.0).
+///
+/// **Width MUST be even, not the more "obviously round" `3.0`** — a
+/// first attempt used `3.0` and failed the whole-image budget with a
+/// HARD (zero-antialiased) mismatch band, root-caused via a scanline
+/// dump: the `.25`-local/`.5`-screen sub-pixel offset convention (this
+/// module's own `solid_rects_axis_aligned` doc comment) keeps the
+/// RECT's edges off the integer grid, but an ODD width's HALF-width
+/// (`1.5`) lands the border BAND's OWN edges (`rect_edge ± half_width`
+/// = `20.5 ± 1.5` = `19.0`/`22.0`) back EXACTLY on integer pixel
+/// boundaries — recreating the identical worst-case grid-alignment
+/// scenario the sub-pixel offset exists to avoid, just one derivation
+/// step removed from the rect's own position. An EVEN width's
+/// half-width is itself a `.5` value, so `20.5 ± 2.0` stays at `18.5`/
+/// `22.5` — off the grid, restoring normal soft antialiasing on both
+/// backends.
+pub fn scaled_stroke_width() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+
+    scene.push(DrawCommand::StrokeRect {
+        rect: Rect::new(10.25, 10.25, 40.25, 40.25),
+        radii: None,
+        stroke: Stroke { width: 4.0, ..Stroke::default() },
+        brush: solid(240, 210, 40, 255),
+        transform: Affine::scale(2.0),
+    });
+
+    let mut rect_path = BezPath::new();
+    rect_path.move_to((60.25, 10.25));
+    rect_path.line_to((90.25, 10.25));
+    rect_path.line_to((90.25, 40.25));
+    rect_path.line_to((60.25, 40.25));
+    rect_path.close_path();
+    scene.push(DrawCommand::StrokePath {
+        path: rect_path,
+        stroke: Stroke { width: 4.0, join: LineJoin::Miter, ..Stroke::default() },
+        brush: solid(40, 190, 190, 255),
+        transform: Affine::scale(2.0),
+    });
+
+    scene
+}
+
+/// Build a small (`size`x`size`) synthetic checkerboard `ImageData` —
+/// fully OPAQUE cells (sidesteps the premultiply-arithmetic-regime
+/// divergence the same way `linear_gradient_rect`'s two opaque stops
+/// do) — and register it via `uzor_urx_image::register_image`,
+/// returning the fresh `ImageId`. The grid is deliberately
+/// 3-cells-per-axis (`cell` px each, last cell absorbing any
+/// remainder) so the image's own CENTER pixel lands solidly in the
+/// MIDDLE cell, several pixels from any cell boundary in either
+/// direction — this is the property `image_axis_aligned_and_rotated`'s
+/// rotated-instance probe depends on (see that fixture's doc comment).
+fn checkerboard_image(size: u32, cell: u32, color_a: [u8; 4], color_b: [u8; 4]) -> uzor_urx_core::scene::ImageId {
+    let mut bytes = vec![0u8; (size * size * 4) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            let cx = (x / cell).min(2);
+            let cy = (y / cell).min(2);
+            let color = if (cx + cy) % 2 == 0 { color_a } else { color_b };
+            let idx = ((y * size + x) * 4) as usize;
+            bytes[idx..idx + 4].copy_from_slice(&color);
+        }
+    }
+    let data = uzor_urx_image::ImageData::from_raw_premul(size, size, bytes).expect("size matches by construction");
+    uzor_urx_image::register_image(data)
+}
+
+/// `DrawCommand::Image` — an axis-aligned instance (identity transform)
+/// and a second instance rotated 45 degrees about its own center
+/// (design §9), both sampling the SAME small synthetic checkerboard
+/// registered via `uzor_urx_image::register_image`. Proves
+/// `ImagePipeline`'s rotation path and the shared registry read
+/// together — same shared-registry precedent as
+/// `glyph_run_two_letters`'s `register_font` (exactly one call, the
+/// resulting `ImageId` baked into this ONE `Scene`, both backends
+/// resolve it against the SAME process-wide `uzor_urx_image` registry).
+///
+/// The axis-aligned instance upscales the 32x32 source 2x into a 64x64
+/// `dest` (genuine bilinear stretching, not the degenerate 1:1 case) —
+/// its own edges use the widened `_IMAGE` tolerance tier
+/// (`tests/parity.rs`'s doc comment: bilinear-vs-1:1-fast-path
+/// divergence). The rotated instance is deliberately SMALLER (32x32,
+/// no upscale) to keep the CPU-bbox-vs-GPU-true-rotated-shape mismatch
+/// area (design §0.3, same sizing tradeoff as
+/// `rotated_uniform_radius_rect`) inside that same `_IMAGE` budget —
+/// its ONLY safe probe is the dest's own dead center (see
+/// `checkerboard_image`'s doc comment for why that's the one point
+/// BOTH backends' mappings agree on regardless of rotation: a
+/// center-preserving rotation maps center to center under ANY
+/// reasonable UV parameterization, bbox-based or true-rotated-quad-based
+/// alike).
+pub fn image_axis_aligned_and_rotated() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    let image_id = checkerboard_image(32, 10, [200, 60, 60, 255], [60, 120, 200, 255]);
+
+    // Axis-aligned, 2x upscale (32x32 source -> 64x64 dest).
+    scene.push(DrawCommand::Image {
+        src: image_id,
+        src_rect: None,
+        dest: Rect::new(20.0, 20.0, 84.0, 84.0),
+        transform: Affine::IDENTITY,
+    });
+
+    // Rotated 45 degrees about its own center, no upscale (32x32 ->
+    // 32x32) — kept small so the CPU-bbox mismatch area stays inside
+    // the `_IMAGE` whole-image budget (design §0.3 sizing tradeoff).
+    let rotated_center = (166.0, 166.0);
+    scene.push(DrawCommand::Image {
+        src: image_id,
+        src_rect: None,
+        dest: Rect::new(150.0, 150.0, 182.0, 182.0),
+        transform: Affine::rotate_about(std::f64::consts::FRAC_PI_4, rotated_center),
+    });
+
+    scene
+}
+
+/// GPU-ONLY correctness fixture (design §0.3/§9, option (i)) — a
+/// `FillRect` under a genuine shear transform (`decompose_similarity`
+/// rejects it — columns not orthogonal — routing it through the
+/// Triangle pipeline, §5.2). No CPU comparison exists for this scene:
+/// CPU bbox-approximates ANY non-axis-aligned transform (§0.3), and a
+/// sheared parallelogram's bbox differs from its true shape by MORE
+/// than an AA-edge tolerance, structurally, not just at the edges.
+/// Used ONLY by `tests/parity.rs::sheared_rect_gpu_only_correctness`,
+/// which hand-computes the true parallelogram's corners and asserts
+/// GPU paints exactly that shape, not the wider bbox.
+pub fn sheared_rect_scene() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    scene.push(DrawCommand::FillRect {
+        rect: Rect::new(-20.0, -20.0, 20.0, 20.0),
+        radii: None,
+        brush: solid(220, 60, 60, 255),
+        // (x, y) -> (x + 0.5*y + 128, y + 128) — a genuine shear (no
+        // orthogonal columns) centered on the canvas.
+        transform: Affine::new([1.0, 0.0, 0.5, 1.0, 128.0, 128.0]),
+    });
     scene
 }

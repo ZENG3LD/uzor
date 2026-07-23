@@ -21,20 +21,33 @@
 //!    3: `FrameOp`/`BlendLayerPool`/the multi-pass executor, real
 //!    `PushBlendLayer`/`PopBlendLayer`; Commit 4: parity fixtures +
 //!    `_CLIP` tolerance tier; Commit 5: this doc pass — Wave 3 is now
-//!    closed), consuming `Scene` directly with no delegation to the
-//!    legacy crate. Exercised by this crate's own tests and the
-//!    pixel-parity harness (`tests/parity.rs`, 16/16 green — 13 from
-//!    Waves 1/2 plus Wave 3's 3 clip/blend-layer fixtures) until the
-//!    Wave 5 cutover flips production traffic onto it.
+//!    closed), plus Wave 4's Radial/Sweep gradients, images, full
+//!    affine, and per-corner radii (Commit 1: CPU gradient fixes +
+//!    shared-crate extractions — a different crate/a new crate, see
+//!    `uzor-urx-cpu`/`uzor-urx-image`; Commit 2: `GradientLutAtlas`/
+//!    `NativeImageCache` infra; Commit 3: `GradientPipeline`/
+//!    `ImagePipeline` + `encode.rs` wiring; Commit 4: full affine +
+//!    stroke-width unification + per-corner radii routing; Commits
+//!    5+6: 6 new parity fixtures + 3 GPU-only correctness tests + this
+//!    doc pass — Wave 4 is now closed), consuming `Scene` directly with
+//!    no delegation to the legacy crate. Exercised by this crate's own
+//!    tests and the pixel-parity harness (`tests/parity.rs`, 22/22
+//!    CPU-vs-GPU cases green — 16 from Waves 1-3 plus Wave 4's 6 new
+//!    ones — plus 3 GPU-only correctness tests that have no CPU
+//!    baseline to compare against, design §0.3) until the Wave 5
+//!    cutover flips production traffic onto it.
 //!
-//! ## Native pipelines (Wave 1 + Wave 2 + Wave 3)
+//! ## Native pipelines (Wave 1 + Wave 2 + Wave 3 + Wave 4)
 //!
 //! [`NativeUrxRenderer`] is the whole of the native path: it owns the
-//! Quad SDF (`pipelines::quad`), Line/capsule (`pipelines::line`),
-//! Path/triangle (`pipelines::path`), Glyph (`pipelines::glyph`,
-//! sampling `atlas::NativeGlyphAtlas`), stencil mask-write
-//! (`pipelines::stencil_mask`), and blend-layer composite
-//! (`pipelines::blend_composite`) `wgpu::RenderPipeline`s, the
+//! Quad SDF (`pipelines::quad`, rotation-capable since Wave 4 Commit 4),
+//! Line/capsule (`pipelines::line`), Path/triangle (`pipelines::path`),
+//! Glyph (`pipelines::glyph`, sampling `atlas::NativeGlyphAtlas`),
+//! stencil mask-write (`pipelines::stencil_mask`), blend-layer composite
+//! (`pipelines::blend_composite`), Radial/Sweep Gradient
+//! (`pipelines::gradient`, sampling `gradient_lut::GradientLutAtlas`),
+//! and Image (`pipelines::image`, sampling
+//! `image_cache::NativeImageCache`) `wgpu::RenderPipeline`s, the
 //! `ClipStack`-driven `Scene` → op-list encoder (`encode` —
 //! `FrameOp::{Draw,PushLayer,PopLayer}` since Wave 3 Commit 3, not a
 //! flat batch list), the lyon tessellation LRU (`tessellate`), the MSAA
@@ -73,6 +86,15 @@
 //!   different crate — see `uzor-urx-cpu`), the 3 new parity fixtures
 //!   + `_CLIP` tolerance tier (§6/§2.6), and the 5-commit plan Wave 3
 //!   was built across.
+//! - `nemo/docs/uzor-engines/plans/urx-wave4-vello-parity-design-2026-07-25.md` —
+//!   Wave 4's design: Radial/Sweep gradients (§2, per-fragment LUT
+//!   eval), images (§4, `DrawCommand::Image` + the shared
+//!   `uzor-urx-image` registry crate), full affine (§5,
+//!   `decompose_similarity`'s Quad-SDF-vs-Triangle routing + full
+//!   6-coefficient mesh reprojection), per-corner radii (§6, closes
+//!   `native_per_corner_radii_uniform_approx`), the 7 new parity
+//!   fixtures + `_GRADIENT`/`_IMAGE` tolerance tiers (§9), and the
+//!   6-commit plan Wave 4 was built across.
 //!
 //! File:line evidence for every legacy pattern this design reuses
 //! (device/queue ownership shape, MSAA lifecycle, hand-rolled LRU

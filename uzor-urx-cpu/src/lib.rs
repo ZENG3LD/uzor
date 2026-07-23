@@ -22,6 +22,26 @@
 //!   §5) — content between the two composites as ONE translucent unit
 //!   (correct group opacity/blending), not each primitive fading
 //!   independently against whatever's already drawn.
+//! - `gradient.rs` (URX Wave 4 Commit 1,
+//!   `nemo/docs/uzor-engines/plans/urx-wave4-vello-parity-design-2026-07-25.md`
+//!   §0.1/§2.2) — three targeted correctness fixes: `FillRect` gradient
+//!   fills now consult the rounded-clip mask (previously silently
+//!   ignored `radii`); the gradient's own axis/center/radius/angles now
+//!   transform with the rect (previously anchored to the untransformed
+//!   frame); the module doc's stale "Sweep deferred" claim corrected
+//!   (Sweep was already fully implemented). `build_lut`/`sample_stops`/
+//!   `premul`/`lerp_u8`/`apply_spread`/`hash_stops`/`stop_rgba8` are now
+//!   thin callers of the pure-function extraction in
+//!   `uzor-urx-core::gradient_lut` — same "shared canonical
+//!   implementation" discipline as Wave 2's glyph-key extraction, so
+//!   `uzor-urx-wgpu`'s `GradientLutAtlas` builds byte-identical LUTs.
+//! - `image_reg.rs` (URX Wave 4 Commit 1, design §0.4) — now a thin
+//!   `pub use uzor_urx_image::*;` re-export shim; the actual
+//!   `ImageData`/`ImageRegistry`/registry functions moved verbatim to
+//!   the new shared crate `uzor-urx-image` (mirrors the `uzor-urx-glyph`
+//!   precedent from Wave 2) so `uzor-urx-wgpu` can consume the SAME
+//!   `ImageId` allocation without depending on this crate directly —
+//!   call sites at this same `crate::image_reg::*` path are unchanged.
 //!
 //! ## Future
 //!

@@ -70,6 +70,26 @@
 //! curve-flattening-tolerance-under-scale limitation below is
 //! UNCHANGED by this commit — still open, still disclosed, not fixed.
 //!
+//! **Wave 4 CLOSED at Commits 5+6** (design §9/§10) — the parity
+//! harness (`uzor-urx-wgpu/tests/{fixtures,parity}.rs`) gained 6 new
+//! CPU-vs-GPU cases (Radial/Sweep gradients, per-corner radii, a
+//! rotated rect, a scaled-stroke-width regression proof, rotated
+//! images) plus 3 GPU-only correctness tests (rotated-rect corners,
+//! Commit 4's own `renderer.rs` test; a sheared rect; a gradient on
+//! `StrokePath`) — measurement surfaced three genuinely new,
+//! previously-undocumented CPU-side findings along the way, all
+//! disclosed in their respective fixtures' doc comments rather than
+//! silently worked around: (1) CPU's rounded-clip MASK mis-places
+//! itself under a genuine rotation (worse than the already-documented
+//! bbox-approximation, §0.3); (2) CPU never renders a real gradient on
+//! anything but `FillRect`; (3) an ODD stroke width recreates the
+//! integer-grid-alignment worst case for the border BAND's own derived
+//! edges even under the established `.5`-offset rect convention. None
+//! of these are `uzor-urx-cpu` bugs this wave fixes (off-limits) — each
+//! is either avoided at the fixture level or (case 2) moved to a
+//! GPU-only correctness test instead of a CPU comparison that could
+//! never meaningfully pass.
+//!
 //! ## Tessellation-cache transform semantics — honest write-up (design
 //! item 3 investigation, Wave 1; stroke-width UPDATE Wave 4 Commit 4)
 //!

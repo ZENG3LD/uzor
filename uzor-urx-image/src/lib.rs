@@ -26,6 +26,16 @@
 //! Memory bound: caller responsible (clear handles when done). LRU
 //! eviction could be layered on later — for now consumers control
 //! lifetimes explicitly via `unregister_image`.
+//!
+//! Wave 4 status at close (Commits 2-6): `uzor-urx-wgpu`'s
+//! `image_cache::NativeImageCache` (non-optional dependency on this
+//! crate) resolves `ImageId`s registered here into per-image GPU
+//! textures; `DrawCommand::Image` (`uzor-urx-core::scene`) is now
+//! rendered for real on both `uzor-urx-cpu` (`image_draw.rs`, already
+//! live) and `uzor-urx-wgpu` (`encode.rs::encode_image` +
+//! `pipelines::image`, Commit 3) against this SAME registry — verified
+//! end-to-end by the parity fixture `image_axis_aligned_and_rotated`
+//! (`uzor-urx-wgpu/tests/{fixtures,parity}.rs`, Commit 5).
 
 use std::sync::{Arc, Mutex};
 

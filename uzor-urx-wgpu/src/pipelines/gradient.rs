@@ -20,6 +20,15 @@
 //! zero interpolation between entries, and this pipeline reproduces
 //! that exactly rather than letting bilinear/anisotropic filtering
 //! blend between two adjacent, semantically-unrelated LUT rows).
+//!
+//! Wave 4 status at close (Commits 4-6): mesh vertices reproject
+//! through the full affine (Commit 4, see `v0`'s own doc below);
+//! parity fixtures `radial_gradient_rect`/`sweep_gradient_rect`/
+//! `gradient_on_stroke_path_star_gpu_only_correctness` (Commit 5,
+//! `uzor-urx-wgpu/tests/{fixtures,parity}.rs`) exercise this pipeline
+//! end-to-end — the last one GPU-only, having surfaced a genuinely new
+//! finding that CPU never renders a real gradient on anything but
+//! `FillRect` (see that fixture's own doc comment).
 
 use bytemuck::{Pod, Zeroable};
 
@@ -27,7 +36,10 @@ use bytemuck::{Pod, Zeroable};
 /// (design §2.3's exact layout).
 ///
 /// Memory layout (64 bytes):
-/// - v0:          8 bytes  ([f32; 2] device-space triangle vertex, post translate+scale project)
+/// - v0:          8 bytes  ([f32; 2] device-space triangle vertex, post
+///   FULL-affine `project_local` — translate+scale-only through Wave 4
+///   Commit 3, upgraded to the full 6-coefficient affine in Commit 4,
+///   design §5.4)
 /// - v1:          8 bytes  ([f32; 2])
 /// - v2:          8 bytes  ([f32; 2])
 /// - p0:          8 bytes  ([f32; 2] Radial: end_center device-space; Sweep: center device-space)

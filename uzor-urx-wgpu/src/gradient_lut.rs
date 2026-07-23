@@ -23,6 +23,15 @@
 //! CPU's own zero-interpolation `lut_sample` exactly, not merely
 //! approximately.
 //!
+//! Wave 4 status at close (Commit 5): `radial_gradient_rect`/
+//! `sweep_gradient_rect` (`uzor-urx-wgpu/tests/{fixtures,parity}.rs`)
+//! exercise this atlas end-to-end through the full `NativeUrxRenderer`,
+//! confirmed byte-identical against CPU's own LUT for the exact
+//! concentric case and — for Sweep's full-circle `Extend::Repeat`
+//! span, which crosses the angle-wrap boundary — within the widened
+//! `_GRADIENT` tolerance tier the wrap-boundary rounding divergence
+//! this module's own doc anticipates.
+//!
 //! ## Never-evict-this-frame invariant (design §2.2, same shape as
 //! `atlas::NativeGlyphAtlas`)
 //!

@@ -75,6 +75,13 @@
 //! touched this frame), returning `None` when no such candidate exists
 //! rather than silently evicting something an already-processed batch
 //! in the SAME frame is still relying on.
+//!
+//! Wave 4 status at close (Commit 5): `image_axis_aligned_and_rotated`
+//! (`uzor-urx-wgpu/tests/{fixtures,parity}.rs`) exercises `get_or_upload`
+//! end-to-end through the full `NativeUrxRenderer` against the shared
+//! `uzor_urx_image` registry, alongside the earlier device-gated unit
+//! tests in this file (hit/miss/eviction against synthetic
+//! `ImageData`).
 
 use std::collections::HashMap;
 

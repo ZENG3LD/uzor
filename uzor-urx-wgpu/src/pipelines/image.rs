@@ -38,6 +38,14 @@
 //! (rotate the LOCAL centered half-extent around the quad's own center
 //! before placing vertices) — landing on different commits is a
 //! scheduling detail, not a design inconsistency.
+//!
+//! Wave 4 status at close (Commit 5): the parity fixture
+//! `image_axis_aligned_and_rotated` (`uzor-urx-wgpu/tests/{fixtures,
+//! parity}.rs`) exercises both the axis-aligned and rotated placement
+//! paths together with the shared `uzor_urx_image` registry, gated by
+//! the `_IMAGE` tolerance tier (bilinear-vs-CPU-1:1-fast-path
+//! divergence, plus the rotated instance's own CPU-bbox-vs-true-shape
+//! mismatch, design §0.3/§9).
 
 use bytemuck::{Pod, Zeroable};
 
