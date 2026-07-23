@@ -21,6 +21,17 @@
 //! (`EncodedFrame::has_rounded_clip == true`) pass, which by
 //! construction always carries a stencil attachment (design §2.5:
 //! arming is a frame-wide decision, made before any pass opens).
+//!
+//! **Wave 3 Commit 3**: mask-write batches replayed into a freshly-
+//! opened blend layer (the Risk-4 replay of every currently-active
+//! rounded-clip frame, `encode.rs`'s `ClipStack::active_rounded_frames_for_replay`)
+//! are ordinary `FrameOp::Draw(Batch { kind: BatchKind::StencilMask(_),
+//! .. })` entries in the op stream — the multi-pass executor
+//! (`renderer::replay_ops`) replays them exactly like any other batch,
+//! with no special-casing for "this mask write happens to be inside a
+//! layer" at all; they simply land in whichever pass is current at
+//! that point in the scan (the just-opened layer's own pass, since
+//! they're emitted immediately after that layer's `PushLayer` marker).
 
 use crate::pipelines::path::{tri_instance_layout, TriInstance};
 

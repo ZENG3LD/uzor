@@ -9,7 +9,7 @@
 //! the background rect forces both backends to composite over an
 //! identical opaque ground and actually exercises blend semantics.
 
-use uzor_urx_core::math::{Affine, BezPath, Brush, Color, Gradient, Rect, Vec2};
+use uzor_urx_core::math::{Affine, BezPath, BlendMode, Brush, Color, Gradient, Rect, RoundedRect, Vec2};
 use uzor_urx_core::scene::{DrawCommand, FillRule, LineCap, LineJoin, Scene, Stroke};
 
 pub const CANVAS: u32 = 256;
@@ -546,5 +546,130 @@ pub fn glyph_run_two_letters() -> Scene {
         transform: Affine::translate((0.0, 130.0)),
         text: None,
     });
+    scene
+}
+
+// ── Wave 3 Commit 4: rounded-clip + blend-layer fixtures ──────────
+//
+// `docs/uzor-engines/plans/urx-wave3-clip-blend-design-2026-07-25.md`
+// §6. All three fixtures below reuse the SAME `.5`-sub-pixel-offset
+// and single-shared-background conventions established above.
+
+/// The bbox-vs-real-shape acceptance case (design §6.1) — geometry
+/// copied verbatim from the design doc's own sketch. A large radius
+/// (40) keeps the bbox-corner-cut area generous. Fills the WHOLE clip
+/// bbox: under a bbox-approx clip every pixel here would show fill
+/// color; under a real rounded clip, the 4 corner triangles must show
+/// BACKGROUND instead — this is the fixture's whole point, and the
+/// SAME scene this crate's own `renderer.rs` GPU test
+/// (`rounded_clip_corner_is_background_and_center_is_fill`, Wave 3
+/// Commit 2) already proved renders correctly on real hardware; this
+/// fixture puts it through the full CPU-vs-native parity harness too.
+pub fn rounded_clip_content_crosses_corner() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    scene.push(DrawCommand::PushClipRoundedRect {
+        rect: RoundedRect::new(50.5, 50.5, 200.5, 200.5, 40.0),
+        transform: Affine::IDENTITY,
+    });
+    scene.push(DrawCommand::FillRect {
+        rect: Rect::new(50.5, 50.5, 200.5, 200.5),
+        radii: None,
+        brush: solid(220, 60, 60, 255),
+        transform: Affine::IDENTITY,
+    });
+    scene.push(DrawCommand::PopClip);
+    scene
+}
+
+/// Nested rounded+rect clip (design §6.2): `PushClipRect(outer)` →
+/// `PushClipRoundedRect(inner, nested)` → one content rect that pokes
+/// outside BOTH the inner shape's rounded corners AND the outer rect's
+/// bounds entirely → `PopClip` (inner) → `PopClip` (outer). A single
+/// oversized content rect (rather than one sized to stay inside the
+/// outer bound) deliberately exercises BOTH clip mechanisms against
+/// the SAME draw call: the inner rounded clip must cut its corners,
+/// the outer plain-rect clip must independently cut anything beyond
+/// its own bounds, and the two must compose (intersect), not override
+/// each other.
+///
+/// Probe geometry (matches this fixture's 3 named regions in
+/// `tests/parity.rs`):
+/// - (a) `(128, 128)`: dead center of the inner rounded shape's flat
+///   interior — visible (fill color).
+/// - (b) `(62, 62)`: 1.5px in from the inner bbox's own top-left
+///   corner `(60.5, 60.5)` — inside the OUTER rect's bounds, but
+///   ~10.3px outside the inner shape's actual corner ARC (centered at
+///   `(90.5, 90.5)`, radius 30) — must be clipped by the ROUNDED
+///   mechanism specifically (a bbox-only approximation would
+///   incorrectly show fill color here, since this point IS inside the
+///   inner bbox and the outer rect both).
+/// - (c) `(15, 15)`: outside the outer rect's bounds (`x0 = 30.5`)
+///   entirely — must be clipped by the plain-rect `clip_rect`
+///   mechanism, proving the outer level is independently enforced.
+pub fn nested_rounded_and_rect_clip() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    scene.push(DrawCommand::PushClipRect { rect: Rect::new(30.5, 30.5, 226.5, 226.5), transform: Affine::IDENTITY });
+    scene.push(DrawCommand::PushClipRoundedRect {
+        rect: RoundedRect::new(60.5, 60.5, 196.5, 196.5, 30.0),
+        transform: Affine::IDENTITY,
+    });
+    // Deliberately larger than BOTH the inner rounded bbox and the
+    // outer rect — pokes past every side of both.
+    scene.push(DrawCommand::FillRect {
+        rect: Rect::new(10.5, 10.5, 246.5, 246.5),
+        radii: None,
+        brush: solid(220, 60, 60, 255),
+        transform: Affine::IDENTITY,
+    });
+    scene.push(DrawCommand::PopClip); // inner rounded
+    scene.push(DrawCommand::PopClip); // outer rect
+    scene
+}
+
+/// Two overlapping translucent rects, same params in BOTH variants
+/// below — the ONLY difference is whether they're wrapped in a blend
+/// layer (design §6.3). Shared so `blend_layer_group`/
+/// `blend_layer_group_reference_no_layer` are provably drawing
+/// IDENTICAL content, isolating "wrapped in a layer or not" as the
+/// only variable.
+fn overlapping_pair(scene: &mut Scene) {
+    scene.push(DrawCommand::FillRect {
+        rect: Rect::new(60.0, 60.0, 180.0, 180.0),
+        radii: None,
+        brush: solid(220, 30, 30, 200),
+        transform: Affine::IDENTITY,
+    });
+    scene.push(DrawCommand::FillRect {
+        rect: Rect::new(110.0, 110.0, 230.0, 230.0),
+        radii: None,
+        brush: solid(30, 60, 220, 200),
+        transform: Affine::IDENTITY,
+    });
+}
+
+/// `overlapping_pair` wrapped in a `PushBlendLayer{alpha: 0.6}` (design
+/// §6.3) — the grouped-composite case: content isolated a coherent
+/// unit, THEN scaled by 0.6 as one single translucent group before
+/// hitting the background, rather than each rect fading independently.
+pub fn blend_layer_group() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    scene.push(DrawCommand::PushBlendLayer { mode: BlendMode::default(), alpha: 0.6, transform: Affine::IDENTITY });
+    overlapping_pair(&mut scene);
+    scene.push(DrawCommand::PopBlendLayer);
+    scene
+}
+
+/// The SAME `overlapping_pair`, drawn directly with NO layer wrapper
+/// and no alpha multiplier (design §6.3) — the reference scene the
+/// isolation-differs tests compare against (each rect fades
+/// independently against whatever's already drawn, rather than as one
+/// grouped unit).
+pub fn blend_layer_group_reference_no_layer() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    overlapping_pair(&mut scene);
     scene
 }

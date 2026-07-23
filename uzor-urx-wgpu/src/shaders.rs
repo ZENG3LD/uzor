@@ -7,8 +7,11 @@
 //!
 //! Wave 1 Commit 1 shipped `QUAD_SHADER_NATIVE`. Commit 2 added
 //! `LINE_SHADER_NATIVE`. Commit 3 added `PATH_SHADER_NATIVE`. Wave 2
-//! Commit 2 added `GLYPH_SHADER_NATIVE`. Wave 3 Commit 2 adds
-//! `STENCIL_MASK_SHADER_NATIVE`.
+//! Commit 2 added `GLYPH_SHADER_NATIVE`. Wave 3 Commit 2 added
+//! `STENCIL_MASK_SHADER_NATIVE`. Wave 3 Commit 3 adds
+//! `BLEND_COMPOSITE_SHADER_NATIVE`
+//! (`docs/uzor-engines/plans/urx-wave3-clip-blend-design-2026-07-25.md`
+//! §3.6).
 
 /// Quad shader — filled/bordered rounded rectangles with SDF AA.
 ///

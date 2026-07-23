@@ -42,6 +42,22 @@ const MAX_DIFFERING_FRACTION: f64 = 0.02; // 2% of pixels may exceed edge tolera
 const CHANNEL_TOLERANCE_EDGE_TEXT: i32 = 48; // 2x the shape budget (24)
 const MAX_DIFFERING_FRACTION_TEXT: f64 = 0.04; // 2x the shape budget (0.02)
 
+/// Rounded-clip-specific per-case override (Wave 3 design §2.6) —
+/// wider than the base shape tier (24/2%) since stencil+4x-MSAA (4
+/// discrete per-sample coverage levels) is structurally coarser than
+/// CPU's continuous analytic distance-field coverage mask
+/// (`uzor-urx-cpu/src/rounded.rs::build_mask_sdf`) at a rounded-clip
+/// boundary specifically; narrower than text's 48/4% since this stacks
+/// only ONE extra divergence source (a quantized per-sample stencil
+/// test) rather than three stacked ones (bilinear atlas resampling +
+/// MSAA supersampling + two different premultiplication arithmetic
+/// regimes, see the `_TEXT` doc comment above). Scoped to the clip
+/// fixtures below ONLY via `ParityCase::edge_tolerance`/
+/// `max_differing_fraction` — the shared shape/text constants above
+/// stay untouched.
+const CHANNEL_TOLERANCE_EDGE_CLIP: i32 = 32;
+const MAX_DIFFERING_FRACTION_CLIP: f64 = 0.03;
+
 /// Native readback target format — non-sRGB, avoids the degamma step
 /// a `*Srgb` format would force before comparing against `Pixmap`'s
 /// linear-premultiplied bytes (design §7).
@@ -364,6 +380,112 @@ fn parity_clip_rect_stack() {
         // accidentally cut CONTENT that's legitimately inside the
         // active clip.
         interior_probes: &[(128, 55), (80, 80), (128, 100)],
+        ..Default::default()
+    });
+}
+
+// ── Wave 3 Commit 4: rounded-clip + blend-layer parity cases ─────
+
+/// The bbox-vs-real-shape acceptance case (design §6.1) — see
+/// `fixtures::rounded_clip_content_crosses_corner`'s doc comment. Uses
+/// the `_CLIP` tolerance tier (this module's doc comment) since the
+/// whole-image sweep necessarily includes the rounded boundary's own
+/// pixel band, where stencil+4x-MSAA's coarser (4-level) graduation
+/// legitimately diverges from CPU's continuous analytic mask (design
+/// §2.6).
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_rounded_clip_content_crosses_corner() {
+    run_case(ParityCase {
+        name: "rounded_clip_content_crosses_corner",
+        scene: fixtures::rounded_clip_content_crosses_corner(),
+        // (52, 52): deep in the top-left CORNER-CUT region — MUST be
+        // background; a bbox-approx clip gets this exact pixel wrong
+        // (fill color), which is the whole point of the fixture.
+        // (125, 125): dead center — fill color under either mechanism,
+        // a sanity probe.
+        interior_probes: &[(52, 52), (125, 125)],
+        edge_tolerance: CHANNEL_TOLERANCE_EDGE_CLIP,
+        max_differing_fraction: MAX_DIFFERING_FRACTION_CLIP,
+    });
+}
+
+/// Nested rounded+rect clip (design §6.2) — see
+/// `fixtures::nested_rounded_and_rect_clip`'s doc comment for the full
+/// derivation of probes (a)/(b)/(c). Same `_CLIP` tolerance tier as
+/// the single-rounded-clip case above (the nested-rect boundary itself
+/// is a hard binary cut on BOTH backends, no extra divergence source;
+/// the inner rounded boundary is the only one that needs the wider
+/// budget).
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_nested_rounded_and_rect_clip() {
+    run_case(ParityCase {
+        name: "nested_rounded_and_rect_clip",
+        scene: fixtures::nested_rounded_and_rect_clip(),
+        // (a) (128, 128): dead center of the inner rounded shape's
+        // flat interior — visible fill color.
+        // (b) (62, 62): inside the outer rect, ~10.3px outside the
+        // inner shape's own corner ARC — must be clipped by the
+        // ROUNDED mechanism specifically (proves real stencil, not
+        // bbox, for the nested case).
+        // (c) (15, 15): outside the outer rect entirely — must be
+        // clipped by the plain-rect `clip_rect` mechanism, proving the
+        // two clip levels compose rather than one overriding the
+        // other.
+        interior_probes: &[(128, 128), (62, 62), (15, 15)],
+        edge_tolerance: CHANNEL_TOLERANCE_EDGE_CLIP,
+        max_differing_fraction: MAX_DIFFERING_FRACTION_CLIP,
+    });
+}
+
+/// Blend-layer group (design §6.3) — standard CPU-vs-native parity,
+/// proving both backends agree on the CORRECT grouped-composite
+/// numeric result (not just that both happen to produce the SAME
+/// wrong direct-draw answer — the dedicated isolation-differs proofs
+/// that rule that out independently on EACH backend already exist:
+/// `uzor-urx-cpu/tests/blend_layer.rs::blend_layer_isolation_differs_from_direct_draw`
+/// (CPU) and `uzor-urx-wgpu/src/renderer.rs`'s own
+/// `#[cfg(test)] mod tests::blend_layer_group_differs_from_the_same_content_with_no_layer`
+/// (native, added Wave 3 Commit 3 — verified NOT duplicated here per
+/// the coordinator's explicit instruction).
+///
+/// This case ALSO does a cheap, same-fixture isolation sanity check
+/// (CPU layered vs CPU reference, inline below, not a separate
+/// `#[test]`) — the only call site for
+/// `fixtures::blend_layer_group_reference_no_layer` in this crate,
+/// giving `blend_layer_group`'s EXACT overlap-region numbers (not just
+/// the differently-sized rects the CPU crate's own unit test uses) one
+/// more free confirmation that the layer path is load-bearing on this
+/// specific fixture before the CPU-vs-native comparison runs.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_blend_layer_group() {
+    let layered_scene = fixtures::blend_layer_group();
+    let reference_scene = fixtures::blend_layer_group_reference_no_layer();
+    let width = fixtures::CANVAS;
+    let height = fixtures::CANVAS;
+
+    let cpu_layered = render_cpu(&layered_scene, width, height);
+    let cpu_reference = render_cpu(&reference_scene, width, height);
+    let probe_idx = ((140u32 * width + 140u32) * 4) as usize;
+    let cpu_layered_px = &cpu_layered[probe_idx..probe_idx + 4];
+    let cpu_reference_px = &cpu_reference[probe_idx..probe_idx + 4];
+    assert!(
+        max_channel_diff(cpu_layered_px, cpu_reference_px) > 8,
+        "CPU's own layered vs reference must differ meaningfully at the overlap probe on THIS fixture \
+         (otherwise PushBlendLayer degraded to identity): layered={cpu_layered_px:?} reference={cpu_reference_px:?}"
+    );
+
+    run_case(ParityCase {
+        name: "blend_layer_group",
+        scene: layered_scene,
+        // (140, 140): inside BOTH overlapping rects — the grouped-
+        // composite OVERLAP region. (70, 70): inside the first rect
+        // `(60,60)-(180,180)` only, outside the second
+        // `(110,110)-(230,230)` — a single-shape region within the
+        // SAME layer.
+        interior_probes: &[(140, 140), (70, 70)],
         ..Default::default()
     });
 }

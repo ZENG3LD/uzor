@@ -16,6 +16,18 @@
 //! `Stencil8` attachment is perfectly valid on its own, no companion
 //! single-sample buffer needed (unlike color, which must resolve to be
 //! presentable/sampleable elsewhere).
+//!
+//! **Wave 3 Commit 3**: this type is no longer root-only — each
+//! `renderer::BlendLayerTarget` owns its OWN `StencilTarget` sibling
+//! (design §3.4 Risk 4), `ensure`'d independently at that layer's own
+//! viewport-matched size whenever a frame is armed. `Load`/`Store`
+//! (not `Clear`/`Discard`) apply across a PAUSE of a layer's pass (a
+//! nested `PushLayer` opening deeper), so a layer's accumulated
+//! rounded-clip nesting depth survives being paused and resumed —
+//! `Clear(0)` only ever happens on that specific target's FIRST open
+//! (`renderer::OpenKind::First`), matching the "fresh all-zero buffer
+//! is the base case" invariant this type's `ensure` doc comment
+//! already establishes for the root.
 pub(crate) struct StencilTarget {
     view: Option<wgpu::TextureView>,
     width: u32,

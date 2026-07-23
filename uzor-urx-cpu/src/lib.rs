@@ -14,6 +14,14 @@
 //! - Primitives: `FillRect`, `StrokeRect`, `Line`, `PushClipRect`,
 //!   `PopClip` (initial slice — text + image added when consumers
 //!   need them across all backends)
+//! - `PushClipRoundedRect`/`PopClip` — real per-pixel rounded-clip
+//!   coverage masks (`rounded.rs`)
+//! - `PushBlendLayer`/`PopBlendLayer` — real offscreen-pixmap group
+//!   isolation (`blend.rs`, URX Wave 3 Commit 1,
+//!   `nemo/docs/uzor-engines/plans/urx-wave3-clip-blend-design-2026-07-25.md`
+//!   §5) — content between the two composites as ONE translucent unit
+//!   (correct group opacity/blending), not each primitive fading
+//!   independently against whatever's already drawn.
 //!
 //! ## Future
 //!
