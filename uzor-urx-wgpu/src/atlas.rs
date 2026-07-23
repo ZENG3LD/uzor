@@ -64,11 +64,6 @@ use uzor_urx_glyph::{GlyphBitmap, GlyphKey};
 /// One packed glyph's placement inside the atlas texture.
 struct AtlasSlot {
     alloc_id: AllocId,
-    /// x, y, w, h in atlas texel space (the UNPADDED glyph rect — 1px
-    /// inside the padded `etagere` allocation on every side). Read back
-    /// by this module's own tests to prove the placement math; consumed
-    /// for real by a future perfwatch/debug surface (not yet, Commit 1).
-    px_rect: [u32; 4],
     /// x, y, w, h in `[0, 1]` UV space — what `GlyphInstance` bakes in.
     uv_rect: [f32; 4],
     /// Frame tick this slot was last touched (inserted OR hit) on.
@@ -87,12 +82,16 @@ struct PendingUpload {
 /// Read-only atlas telemetry — hit/miss/eviction/entry counts (design
 /// §3, same shape family as `TessCacheStats`, plus `evictions` since
 /// this cache has a real per-slot eviction path `TessCache` doesn't).
+/// `pub` (re-exported from `lib.rs`, same convention as
+/// `TessCacheStats`) — `NativeUrxRenderer::glyph_atlas_stats()`
+/// (Wave 2 Commit 2) returns this, so it must be at least as visible
+/// as that `pub fn`.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct AtlasStats {
-    pub(crate) entries: usize,
-    pub(crate) hits: u64,
-    pub(crate) misses: u64,
-    pub(crate) evictions: u64,
+pub struct AtlasStats {
+    pub entries: usize,
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
 }
 
 /// Owns the glyph atlas `R8Unorm` texture, its group-1 bind group
@@ -261,7 +260,7 @@ impl NativeGlyphAtlas {
         ];
 
         self.pending.push(PendingUpload { px_rect, alpha: bitmap.alpha.clone() });
-        self.slots.insert(key, AtlasSlot { alloc_id: alloc.id, px_rect, uv_rect, tick: self.tick });
+        self.slots.insert(key, AtlasSlot { alloc_id: alloc.id, uv_rect, tick: self.tick });
         self.stats.entries = self.slots.len();
 
         Some(uv_rect)
@@ -366,9 +365,9 @@ mod tests {
 
         let first = atlas.get_or_insert(k, &bm).expect("first insert must succeed in an empty 256x256 atlas");
         assert_eq!(atlas.pending.len(), 1, "first insert queues exactly one upload");
-        let slot = atlas.slots.get(&k).expect("insert must have created a slot");
-        assert_eq!(slot.px_rect[2], bm.width, "px_rect must carry the UNPADDED glyph width");
-        assert_eq!(slot.px_rect[3], bm.height, "px_rect must carry the UNPADDED glyph height");
+        let queued = &atlas.pending[0];
+        assert_eq!(queued.px_rect[2], bm.width, "queued upload's px_rect must carry the UNPADDED glyph width");
+        assert_eq!(queued.px_rect[3], bm.height, "queued upload's px_rect must carry the UNPADDED glyph height");
 
         let second = atlas.get_or_insert(k, &bm).expect("repeat key must hit, not fail");
         assert_eq!(first, second, "repeat key returns the SAME uv_rect");

@@ -5,8 +5,9 @@
 //! same `Uniforms` bind group (group 0, binding 0) carrying
 //! `screen_size` in physical pixels.
 //!
-//! Commit 1 shipped `QUAD_SHADER_NATIVE`. Commit 2 added
-//! `LINE_SHADER_NATIVE`. Commit 3 adds `PATH_SHADER_NATIVE`.
+//! Wave 1 Commit 1 shipped `QUAD_SHADER_NATIVE`. Commit 2 added
+//! `LINE_SHADER_NATIVE`. Commit 3 added `PATH_SHADER_NATIVE`. Wave 2
+//! Commit 2 adds `GLYPH_SHADER_NATIVE`.
 
 /// Quad shader — filled/bordered rounded rectangles with SDF AA.
 ///
@@ -357,5 +358,113 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let a = in.color.a;
     if a <= 0.0 { discard; }
     return vec4<f32>(in.color.rgb * a, a);
+}
+"#;
+
+/// Glyph shader — textured quads sampling `NativeGlyphAtlas`'s R8
+/// coverage texture (design §5). Two real deviations from legacy's
+/// `GLYPH_SHADER` (`uzor-render-wgpu-instanced/src/shaders.rs:114-179`),
+/// both required by this crate's premultiplied-blend doctrine:
+///
+/// 1. **TriangleList, not TriangleStrip.** Every native pipeline in
+///    this crate uses `PrimitiveTopology::TriangleList` + a 6-vertex
+///    procedural quad (the same `quad_vert_pos`-shaped helper Quad/Line
+///    use, copied here — not imported, WGSL has no cross-shader-module
+///    imports in this crate's inline-string style).
+/// 2. **Premultiply BOTH rgb and alpha in the fragment shader**, not a
+///    straight `vec4(color.rgb, color.a * alpha)` output. Legacy emits
+///    straight alpha, correct only paired with legacy's straight-alpha
+///    blend state; this pipeline's blend state is premultiplied (Quad's
+///    `premultiplied_blend_state()`), so both channels must be
+///    premultiplied here — matching every other native shader's
+///    "straight-in, premultiply-in-shader" convention.
+///
+/// **Clip-rect discard against the ABSOLUTE screen position**
+/// (`in.clip_pos.xy`, the `@builtin(position)` output) — same
+/// convention as `QUAD_SHADER_NATIVE`'s `px_abs` (a separate `uv`
+/// varying carries the LOCAL atlas-sample coordinate, analogous to
+/// Quad's rect-local `frag_pos`; the two must never be conflated, this
+/// shader keeps them as two distinct fields for exactly that reason).
+///
+/// **Sampler**: `wgpu::FilterMode::Linear` mag/min, `Nearest` mipmap —
+/// identical to legacy's atlas sampler (`text_atlas.rs:69-75`), set up
+/// by `NativeGlyphAtlas::new` (Wave 2 Commit 1). 1px padding on every
+/// glyph allocation (`atlas.rs::get_or_insert`) prevents this filter
+/// from bleeding a neighbour glyph's coverage into an edge sample.
+pub const GLYPH_SHADER_NATIVE: &str = r#"
+struct Uniforms {
+    screen_size: vec2<f32>,
+};
+@group(0) @binding(0)
+var<uniform> uniforms: Uniforms;
+
+@group(1) @binding(0) var atlas_tex:     texture_2d<f32>;
+@group(1) @binding(1) var atlas_sampler: sampler;
+
+// Instance data — must match GlyphInstance in pipelines/glyph.rs (56 bytes).
+struct GlyphInstance {
+    @location(0) pos:         vec2<f32>,
+    @location(1) size:        vec2<f32>,
+    @location(2) uv_pos:      vec2<f32>,
+    @location(3) uv_size:     vec2<f32>,
+    @location(4) color_packed: u32,
+    @location(5) _pad0:       f32,
+    @location(6) clip_rect:   vec4<f32>,
+};
+
+struct VertexOut {
+    @builtin(position) clip_pos: vec4<f32>,
+    @location(0) uv:        vec2<f32>,
+    @location(1) color:     vec4<f32>,
+    @location(2) clip_rect: vec4<f32>,
+};
+
+fn quad_vert_pos(vertex_index: u32) -> vec2<f32> {
+    let xs = array<f32, 6>(0.0, 1.0, 0.0,  1.0, 1.0, 0.0);
+    let ys = array<f32, 6>(0.0, 0.0, 1.0,  0.0, 1.0, 1.0);
+    return vec2<f32>(xs[vertex_index], ys[vertex_index]);
+}
+
+@vertex
+fn vs_main(
+    @builtin(vertex_index) vertex_index: u32,
+    instance: GlyphInstance,
+) -> VertexOut {
+    let uv_local = quad_vert_pos(vertex_index);
+    let px = instance.pos + uv_local * instance.size;
+
+    let ndc = vec2<f32>(
+        px.x / uniforms.screen_size.x *  2.0 - 1.0,
+        px.y / uniforms.screen_size.y * -2.0 + 1.0,
+    );
+
+    var out: VertexOut;
+    out.clip_pos  = vec4<f32>(ndc, 0.0, 1.0);
+    out.uv        = instance.uv_pos + uv_local * instance.uv_size;
+    out.color     = unpack4x8unorm(instance.color_packed);
+    out.clip_rect = instance.clip_rect;
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    let px_abs = in.clip_pos.xy;
+    let cr = in.clip_rect;
+    if px_abs.x < cr.x || px_abs.y < cr.y
+       || px_abs.x > cr.x + cr.z || px_abs.y > cr.y + cr.w {
+        discard;
+    }
+    let coverage = textureSample(atlas_tex, atlas_sampler, in.uv).r;
+    if coverage < 0.0039 { discard; } // < 1/255 — same early-out legacy uses
+
+    // Premultiply BOTH rgb and alpha here — `in.color` arrives STRAIGHT
+    // (non-premultiplied brush colour, `GlyphInstance.color`); the
+    // pipeline's blend state expects a premultiplied fragment output
+    // (design §5, same discipline as Quad/Line/Path).
+    let premul_rgb = in.color.rgb * in.color.a;
+    let out_rgb = premul_rgb * coverage;
+    let out_a   = in.color.a * coverage;
+    if out_a <= 0.0 { discard; }
+    return vec4<f32>(out_rgb, out_a);
 }
 "#;

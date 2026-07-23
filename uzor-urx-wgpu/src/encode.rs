@@ -1,23 +1,35 @@
 //! `Scene` → native-pipeline instance encoder.
 //!
-//! Commit 1 covered `FillRect`/`StrokeRect` (`Brush::Solid` — gradient/
-//! image degrade to a first-stop/transparent solid, counted). Commit 2
-//! added `Line` and the painter's-order batching machinery (`Batch`/
-//! `BatchKind`) that keeps Quad/Line draws interleaved correctly.
-//! Commit 3 adds `FillPath`/`StrokePath` (lyon tessellation via
-//! `TessCache`) and routes `FillRect{Brush::Gradient(Linear), radii}`
-//! through the same tessellated-triangle path with real per-vertex
-//! gradient colour (design §5) — the ONLY `FillRect` gradient kind
-//! that gets full support in Wave 1; `Radial`/`Sweep` still degrade to
-//! solid, and gradients on `Line`/`FillPath`/`StrokePath` still
-//! degrade to first-stop solid (design: "only FillRect gets gradients
-//! in Wave 1"). Commit 4 adds the real `ClipStack` (`PushClipRect`/
-//! `PopClip` feed every instance's `clip_rect` field; `PushClipRoundedRect`
-//! degrades to its bounding rect) and finalizes the degrade-label
-//! inventory for every `DrawCommand` variant this crate doesn't render
-//! natively yet (`GlyphRun` — Wave 2, `Image` — Wave 4, blend layers —
-//! Wave 3). Every unimplemented `DrawCommand` variant is a counted,
-//! never-silent degrade via `uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES`
+//! Wave 1 Commit 1 covered `FillRect`/`StrokeRect` (`Brush::Solid` —
+//! gradient/image degrade to a first-stop/transparent solid, counted).
+//! Commit 2 added `Line` and the painter's-order batching machinery
+//! (`Batch`/`BatchKind`) that keeps Quad/Line draws interleaved
+//! correctly. Commit 3 added `FillPath`/`StrokePath` (lyon
+//! tessellation via `TessCache`) and routes
+//! `FillRect{Brush::Gradient(Linear), radii}` through the same
+//! tessellated-triangle path with real per-vertex gradient colour
+//! (design §5) — the ONLY `FillRect` gradient kind that gets full
+//! support in Wave 1; `Radial`/`Sweep` still degrade to solid, and
+//! gradients on `Line`/`FillPath`/`StrokePath` still degrade to
+//! first-stop solid (design: "only FillRect gets gradients in Wave
+//! 1"). Commit 4 added the real `ClipStack` (`PushClipRect`/`PopClip`
+//! feed every instance's `clip_rect` field; `PushClipRoundedRect`
+//! degrades to its bounding rect) and finalized the degrade-label
+//! inventory for every `DrawCommand` variant this crate didn't render
+//! natively yet (`GlyphRun`, `Image` — Wave 4, blend layers — Wave 3).
+//!
+//! **Wave 2 Commit 2** closes `GlyphRun` (`encode_glyph_run`,
+//! `docs/uzor-engines/plans/urx-wave2-native-glyph-atlas-design-2026-07-25.md`
+//! §6) — per-glyph subpixel-binned atlas lookup via
+//! `crate::atlas::NativeGlyphAtlas`, rasterised through
+//! `uzor_urx_glyph::rasterise_glyph` (the SAME rasteriser
+//! `uzor-urx-cpu`'s `GlyphRun` arm uses). `encode_scene` gains an
+//! `atlas: Option<&mut NativeGlyphAtlas>` parameter — see that
+//! function's doc comment for why it's `Option` rather than the
+//! design's literal `&mut` (a deliberate, disclosed deviation).
+//!
+//! Every unimplemented `DrawCommand` variant is a counted, never-silent
+//! degrade via `uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES`
 //! with a `native_*` `kind` tag.
 //!
 //! ## Tessellation-cache transform semantics — honest write-up (design
@@ -106,10 +118,12 @@ use uzor_urx_core::math::{
     Affine, BezPath, Brush, Color, ColorStops, Extend, Gradient, GradientKind, Rect, RoundedRect,
     RoundedRectRadii, Vec2,
 };
-use uzor_urx_core::metrics_keys::{KEY_RENDER_PRIMITIVES, KEY_RENDER_SKIPPED_NONFINITE};
-use uzor_urx_core::scene::{DrawCommand, FillRule, LineCap, Scene, Stroke};
+use uzor_urx_core::metrics_keys::{KEY_RENDER_GLYPH_INSTANCES, KEY_RENDER_PRIMITIVES, KEY_RENDER_SKIPPED_NONFINITE};
+use uzor_urx_core::scene::{DrawCommand, FillRule, FontId, Glyph, LineCap, Scene, Stroke};
 use uzor_urx_core::validate::{validate_command, ValidationIssue};
 
+use crate::atlas::NativeGlyphAtlas;
+use crate::pipelines::glyph::GlyphInstance;
 use crate::pipelines::line::LineInstance;
 use crate::pipelines::path::TriInstance;
 use crate::pipelines::quad::{pack_rgba8, QuadInstance};
@@ -122,6 +136,7 @@ pub(crate) enum BatchKind {
     Quad,
     Line,
     Triangle,
+    Glyph,
 }
 
 /// A contiguous run of same-kind instances in painter's-order scan
@@ -147,6 +162,7 @@ pub(crate) struct EncodedFrame {
     pub(crate) quads: Vec<QuadInstance>,
     pub(crate) lines: Vec<LineInstance>,
     pub(crate) triangles: Vec<TriInstance>,
+    pub(crate) glyphs: Vec<GlyphInstance>,
     pub(crate) batches: Vec<Batch>,
 }
 
@@ -167,6 +183,12 @@ impl EncodedFrame {
         let start = self.triangles.len() as u32;
         self.triangles.push(instance);
         self.bump_batch(BatchKind::Triangle, start);
+    }
+
+    fn push_glyph(&mut self, instance: GlyphInstance) {
+        let start = self.glyphs.len() as u32;
+        self.glyphs.push(instance);
+        self.bump_batch(BatchKind::Glyph, start);
     }
 
     /// Extend the current batch if its kind matches, else open a new
@@ -356,7 +378,30 @@ fn corner_radius_uniform(radii: &Option<[f32; 4]>) -> f32 {
     }
 }
 
-pub(crate) fn encode_scene(scene: &Scene, viewport: Viewport, tess_cache: &mut TessCache) -> EncodedFrame {
+/// `atlas` is `Option<&mut NativeGlyphAtlas>` rather than the design's
+/// literal `&mut NativeGlyphAtlas` (design §6) — a deliberate,
+/// disclosed deviation. `NativeGlyphAtlas` only exists device-backed
+/// (its texture/bind-group-layout/bind-group are real GPU resources,
+/// `atlas.rs::NativeGlyphAtlas::new`); a hard `&mut` parameter would
+/// force EVERY one of this module's ~30 pre-existing Wave-1 unit tests
+/// (`FillRect`/`Line`/`FillPath`/clip-stack — none of which ever touch
+/// a glyph) to also acquire a headless GPU device just to call
+/// `encode_scene`, turning them all `#[ignore]`-gated. `Option` keeps
+/// every one of those tests exactly as fast/device-free as before
+/// (they pass `None`, which is provably safe: none of them ever emit
+/// `DrawCommand::GlyphRun`). `NativeUrxRenderer::render_into_encoder`
+/// (Commit 2) always has a live `self.glyph_atlas` and always passes
+/// `Some(&mut self.glyph_atlas)` — `None` is a test-only state, never
+/// reachable from production. See `encode_glyph_run`'s doc comment for
+/// how a `None` atlas is handled if a glyph ever DOES successfully
+/// rasterise under it (defensive-only; unreachable in practice and in
+/// every test this commit adds).
+pub(crate) fn encode_scene(
+    scene: &Scene,
+    viewport: Viewport,
+    tess_cache: &mut TessCache,
+    mut atlas: Option<&mut NativeGlyphAtlas>,
+) -> EncodedFrame {
     let mut frame = EncodedFrame::default();
     let mut clip = ClipStack::new(viewport);
 
@@ -385,7 +430,19 @@ pub(crate) fn encode_scene(scene: &Scene, viewport: Viewport, tess_cache: &mut T
                 degrade("native_rounded_clip_to_rect_bbox");
             }
             DrawCommand::PopClip => clip.pop(),
-            DrawCommand::GlyphRun { .. } => degrade("native_glyph_run_not_yet_implemented"),
+            DrawCommand::GlyphRun { glyphs, font, font_size, brush, transform, text: _ } => {
+                let Some(clip_rect) = active_clip(&clip) else { continue };
+                encode_glyph_run(
+                    &mut frame,
+                    atlas.as_deref_mut(),
+                    *font,
+                    *font_size,
+                    glyphs,
+                    brush,
+                    transform,
+                    clip_rect,
+                );
+            }
             DrawCommand::Image { .. } => degrade("native_image_not_yet_implemented"),
             DrawCommand::PushBlendLayer { .. } | DrawCommand::PopBlendLayer => {
                 degrade("native_blend_layer_not_yet_implemented");
@@ -800,6 +857,114 @@ fn encode_stroke_path(
     emit_solid_mesh(frame, &mesh, transform, packed_color(color), clip_rect);
 }
 
+/// `GlyphRun` → one `GlyphInstance` per successfully-placed glyph
+/// (design §6). Rasterises through `uzor_urx_glyph::rasterise_glyph` —
+/// the SAME function `uzor-urx-cpu`'s `GlyphRun` arm uses via
+/// `draw_glyph_run` — so both backends composite byte-identical swash
+/// bitmaps; they diverge only in what happens to that bitmap
+/// afterward (bilinear GPU sampling + MSAA here vs. a direct 1:1 texel
+/// copy on CPU).
+///
+/// **Translate-ONLY transform** — deliberately matches
+/// `uzor-urx-cpu`'s own `GlyphRun` arm (`uzor-urx-cpu/src/backend.rs:
+/// 209-210`), which extracts ONLY `coeffs[4]/[5]` and never reads
+/// scale at all for text (unlike Quad/Line/Path's translate+SCALE
+/// decomposition elsewhere in this file). Matched here on purpose so
+/// Wave 2 does not introduce a NEW cross-backend divergence by being
+/// "more correct" on just one backend — a future wave that gives CPU
+/// real transform-aware text scaling must update this arm too, or
+/// reintroduce the gap.
+///
+/// **`atlas: None` + a glyph that successfully rasterises**: counted
+/// under the same `native_glyph_atlas_full_this_frame` label as a
+/// genuine full-atlas miss (both mean "no atlas slot backs this
+/// glyph, for whatever reason") rather than panicking — this state is
+/// unreachable from `NativeUrxRenderer::render_into_encoder` (always
+/// supplies `Some`) and never exercised by this crate's own tests
+/// either (every test that reaches a successful rasterise supplies a
+/// real, device-backed atlas), but "never happens in practice" is not
+/// a licence to panic on scene content, matching this file's
+/// established policy for every other primitive.
+fn encode_glyph_run(
+    frame: &mut EncodedFrame,
+    atlas: Option<&mut NativeGlyphAtlas>,
+    font: FontId,
+    font_size: f32,
+    glyphs: &[Glyph],
+    brush: &Brush,
+    transform: &Affine,
+    clip_rect: [f32; 4],
+) {
+    let (color, kind) = resolve_brush_color(brush);
+    match kind {
+        // Same sibling pattern as Line/StrokeRect/FillPath/StrokePath
+        // (Wave 1 Commit 4) — a GlyphRun's `brush: Brush` is the same
+        // general type, so it MAY carry a gradient/image brush even
+        // though no real producer does yet; never a silent gap.
+        BrushKind::Gradient => degrade("native_glyphrun_gradient_to_solid"),
+        BrushKind::Image => degrade("native_glyphrun_image_to_solid"),
+        BrushKind::Solid => {}
+    }
+    let packed = packed_color(color); // STRAIGHT, non-premultiplied — the shader premultiplies (design §5)
+
+    let coeffs = transform.as_coeffs();
+    let (tx, ty) = (coeffs[4] as f32, coeffs[5] as f32);
+
+    let mut atlas = atlas;
+    for g in glyphs {
+        let px = tx + g.x;
+        let py = ty + g.y;
+        let subpx = uzor_urx_glyph::subpixel_bin_for_x(px);
+        let key = uzor_urx_glyph::GlyphKey::new(font, g.glyph_id, font_size, subpx);
+
+        let bitmap = match uzor_urx_glyph::rasterise_glyph(font, g.glyph_id as u16, font_size, subpx) {
+            Ok(bm) => bm,
+            Err(_) => {
+                // Per-glyph skip, run continues for the rest — an
+                // intentional, documented improvement over CPU's own
+                // `draw_glyph_run`, which returns on the FIRST failing
+                // glyph via `?` and silently abandons the rest of the
+                // run (design §8).
+                degrade("native_glyph_rasterise_failed");
+                continue;
+            }
+        };
+        if bitmap.width == 0 || bitmap.height == 0 {
+            continue; // whitespace glyph — nothing to draw, not a degrade
+        }
+
+        let Some(uv_rect) = atlas.as_deref_mut().and_then(|a| a.get_or_insert(key, &bitmap)) else {
+            degrade("native_glyph_atlas_full_this_frame");
+            continue;
+        };
+
+        // dst_x0/dst_y0: copied line-for-line from
+        // `uzor_urx_glyph::draw_glyph_run` (`lib.rs:254,257`) — x
+        // FLOORS, y ROUNDS (swash's `top` is glyph-height-above-baseline;
+        // bitmap top-left = baseline_y - top). Getting this asymmetry
+        // backwards would shift every glyph, uniformly, by up to 1px
+        // (design risk 4).
+        let dst_x0 = px.floor() + bitmap.left as f32;
+        let dst_y0 = py.round() - bitmap.top as f32;
+
+        frame.push_glyph(GlyphInstance {
+            pos: [dst_x0, dst_y0],
+            size: [bitmap.width as f32, bitmap.height as f32],
+            uv_pos: [uv_rect[0], uv_rect[1]],
+            uv_size: [uv_rect[2], uv_rect[3]],
+            color: packed,
+            _pad0: 0.0,
+            clip_rect,
+        });
+    }
+    // Same counter + semantic ("glyph instances composited")
+    // `uzor_urx_glyph::draw_glyph_run` already increments (design §6) —
+    // reused rather than inventing a second key. Counts the whole
+    // run's glyph count, not just the successfully-placed ones (same
+    // shape as the CPU-side call this mirrors).
+    metrics::counter!(KEY_RENDER_GLYPH_INSTANCES).increment(glyphs.len() as u64);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -817,7 +982,7 @@ mod tests {
     fn fill_rect_solid_emits_one_quad() {
         let mut scene = Scene::new();
         scene.fill_rect_solid(Rect::new(10.0, 10.0, 50.0, 50.0), Color::from_rgba8(255, 0, 0, 255));
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert_eq!(frame.quads.len(), 1);
         assert_eq!(frame.quads[0].pos, [10.0, 10.0]);
         assert_eq!(frame.quads[0].size, [40.0, 40.0]);
@@ -833,7 +998,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(0, 255, 0, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert_eq!(frame.quads.len(), 1);
         assert!((frame.quads[0].corner_radius - 8.0).abs() < 0.01);
     }
@@ -848,7 +1013,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert_eq!(frame.quads.len(), 1);
         assert_eq!(frame.quads[0].color, 0);
         assert!((frame.quads[0].border_width - 3.0).abs() < 0.01);
@@ -865,7 +1030,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert!(frame.quads.is_empty());
     }
 
@@ -878,7 +1043,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert!(frame.quads.is_empty());
     }
 
@@ -891,7 +1056,7 @@ mod tests {
             2.0,
             Color::from_rgba8(255, 255, 255, 255),
         );
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert!(frame.quads.is_empty());
         assert_eq!(frame.lines.len(), 1);
         assert_eq!(frame.lines[0].start, [0.0, 0.0]);
@@ -909,7 +1074,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::scale(2.0),
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert_eq!(frame.lines.len(), 1);
         assert_eq!(frame.lines[0].end, [20.0, 0.0]);
         assert!((frame.lines[0].width - 8.0).abs() < 0.01, "width should scale 2x with the transform");
@@ -924,7 +1089,7 @@ mod tests {
             0.0,
             Color::from_rgba8(255, 255, 255, 255),
         );
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert!(frame.lines.is_empty());
     }
 
@@ -938,7 +1103,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert_eq!(frame.lines[0].cap_flags, 0.0);
     }
 
@@ -952,7 +1117,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert_eq!(frame.lines[0].cap_flags, 3.0);
     }
 
@@ -966,7 +1131,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         // Degrades to round (flag 0) — counted via `native_line_square_cap_to_round`
         // (asserting on the global metrics recorder isn't wired in this
         // crate's unit tests; the geometry-level effect is what we can verify).
@@ -987,7 +1152,7 @@ mod tests {
         );
         scene.fill_rect_solid(Rect::new(0.0, 30.0, 10.0, 40.0), Color::from_rgba8(255, 255, 0, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert_eq!(frame.quads.len(), 3);
         assert_eq!(frame.lines.len(), 1);
         assert_eq!(frame.batches.len(), 3, "batches: {:?}", frame.batches);
@@ -1014,7 +1179,7 @@ mod tests {
         scene.fill_rect_solid(Rect::new(0.0, 20.0, 10.0, 30.0), Color::from_rgba8(0, 255, 0, 255));
         scene.line_solid(Vec2 { x: 0.0, y: 40.0 }, Vec2 { x: 10.0, y: 40.0 }, 2.0, Color::from_rgba8(255, 255, 0, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert_eq!(frame.batches.len(), 4);
         let kinds: Vec<BatchKind> = frame.batches.iter().map(|b| b.kind).collect();
         assert_eq!(kinds, vec![BatchKind::Quad, BatchKind::Line, BatchKind::Quad, BatchKind::Line]);
@@ -1035,7 +1200,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(10, 20, 30, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert!(!frame.triangles.is_empty());
         assert_eq!(frame.batches.len(), 1);
         assert_eq!(frame.batches[0].kind, BatchKind::Triangle);
@@ -1058,7 +1223,7 @@ mod tests {
             brush: Brush::Solid(Color::from_rgba8(10, 20, 30, 255)),
             transform: Affine::IDENTITY,
         });
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert!(frame.triangles.is_empty());
     }
 
@@ -1080,7 +1245,7 @@ mod tests {
             transform: Affine::IDENTITY,
         });
 
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert_eq!(frame.batches.len(), 3);
         let kinds: Vec<BatchKind> = frame.batches.iter().map(|b| b.kind).collect();
         assert_eq!(kinds, vec![BatchKind::Quad, BatchKind::Line, BatchKind::Triangle]);
@@ -1172,7 +1337,7 @@ mod tests {
         scene.push(DrawCommand::PopClip);
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(0, 0, 255, 255));
 
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 20.0, 20.0], "rect under the pushed clip");
         assert_eq!(frame.lines[0].clip_rect, [10.0, 10.0, 20.0, 20.0], "line under the pushed clip");
         assert_eq!(
@@ -1193,7 +1358,7 @@ mod tests {
             transform: Affine::IDENTITY,
         });
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         // Bounding-rect approximation — the ROUNDED rect's plain bbox
         // is [10,10,20,20], same as a plain `PushClipRect` would give.
         assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 20.0, 20.0]);
@@ -1218,7 +1383,7 @@ mod tests {
         });
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
         // No matching PopClip.
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert_eq!(frame.quads.len(), 1);
         assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 10.0, 10.0]);
     }
@@ -1242,11 +1407,109 @@ mod tests {
             transform: Affine::IDENTITY,
         });
 
-        let frame = encode_scene(&scene, viewport(), &mut cache());
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None);
         assert!(frame.quads.is_empty());
         assert!(frame.lines.is_empty());
         assert!(frame.triangles.is_empty());
         assert!(frame.batches.is_empty());
+    }
+
+    // ── Wave 2 Commit 2: GlyphRun ─────────────────────────────────────
+    //
+    // The two tests below construct a real, device-backed
+    // `NativeGlyphAtlas` — `encode_scene`'s `atlas` parameter only
+    // does something observable (places a `GlyphInstance`, populates
+    // `frame.glyphs`) once a glyph actually rasterises AND finds atlas
+    // room, both of which require a real font + a real atlas. They are
+    // `#[ignore]`-gated per this crate's established GPU-test
+    // convention (`atlas.rs`'s own tests). The unregistered-font and
+    // gradient-brush-degrade tests deliberately do NOT need any of
+    // this — see `metrics_recorder_proof` below.
+
+    /// Headless wgpu device — mirrors `atlas.rs::tests::test_device`
+    /// (same wgpu-29 shape, same graceful-skip-if-no-adapter policy).
+    fn test_device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            force_fallback_adapter: false,
+            compatible_surface: None,
+        }))
+        .ok()?;
+        pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("uzor-urx-wgpu-encode-test"),
+            required_features: wgpu::Features::empty(),
+            required_limits: wgpu::Limits::default(),
+            memory_hints: wgpu::MemoryHints::default(),
+            trace: wgpu::Trace::Off,
+            experimental_features: wgpu::ExperimentalFeatures::default(),
+        }))
+        .ok()
+    }
+
+    /// Register a real font (DejaVuSans, same asset + glyph ids the
+    /// parity fixture uses) — CPU-only, no device needed. Each call
+    /// mints a fresh `FontId`; harmless to call once per test.
+    fn registered_font() -> FontId {
+        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../uzor-fonts/fonts/DejaVuSans.ttf"))
+            .expect("uzor-fonts ships DejaVuSans.ttf for exactly this kind of test-only registration");
+        uzor_urx_glyph::register_font(bytes).expect("DejaVuSans.ttf is a valid font")
+    }
+
+    #[test]
+    #[ignore = "needs a headless GPU adapter"]
+    fn glyphrun_with_registered_font_emits_plausible_instances() {
+        let Some((device, _queue)) = test_device() else { return };
+        let mut atlas = NativeGlyphAtlas::new(&device, 256, 256);
+        atlas.begin_frame();
+
+        let font = registered_font();
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::GlyphRun {
+            glyphs: vec![Glyph { glyph_id: 36, x: 0.0, y: 0.0 }, Glyph { glyph_id: 37, x: 20.0, y: 0.0 }],
+            font,
+            font_size: 32.0,
+            brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+            transform: Affine::translate((10.0, 10.0)),
+            text: None,
+        });
+
+        let frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas));
+        assert_eq!(frame.glyphs.len(), 2, "both glyphs should have rasterised + placed successfully");
+        for g in &frame.glyphs {
+            assert!(g.size[0] > 0.0 && g.size[1] > 0.0, "a real glyph bitmap must have a positive size");
+            assert!(g.uv_size[0] > 0.0 && g.uv_size[1] > 0.0, "a placed glyph must have a non-zero atlas UV rect");
+        }
+        assert_eq!(frame.batches.len(), 1);
+        assert_eq!(frame.batches[0].kind, BatchKind::Glyph);
+    }
+
+    #[test]
+    #[ignore = "needs a headless GPU adapter"]
+    fn glyph_batches_coalesce_and_interleave_with_quad_batches() {
+        let Some((device, _queue)) = test_device() else { return };
+        let mut atlas = NativeGlyphAtlas::new(&device, 256, 256);
+        atlas.begin_frame();
+
+        let font = registered_font();
+        let mut scene = Scene::new();
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 10.0, 10.0), Color::from_rgba8(255, 0, 0, 255));
+        scene.push(DrawCommand::GlyphRun {
+            glyphs: vec![Glyph { glyph_id: 36, x: 0.0, y: 0.0 }, Glyph { glyph_id: 37, x: 20.0, y: 0.0 }],
+            font,
+            font_size: 32.0,
+            brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+            transform: Affine::translate((0.0, 40.0)),
+            text: None,
+        });
+        scene.fill_rect_solid(Rect::new(50.0, 50.0, 60.0, 60.0), Color::from_rgba8(0, 255, 0, 255));
+
+        let frame = encode_scene(&scene, viewport(), &mut cache(), Some(&mut atlas));
+        assert_eq!(frame.glyphs.len(), 2, "both glyphs must have placed for this to be a meaningful coalescing test");
+        assert_eq!(frame.batches.len(), 3, "Quad, then Glyph (both glyphs coalesced into ONE batch), then Quad");
+        let kinds: Vec<BatchKind> = frame.batches.iter().map(|b| b.kind).collect();
+        assert_eq!(kinds, vec![BatchKind::Quad, BatchKind::Glyph, BatchKind::Quad]);
+        assert_eq!(frame.batches[1].count, 2, "both glyphs from the one GlyphRun must coalesce into a single batch");
     }
 
     // ── Commit 4: metrics-recorder-backed degrade-counter proof ──────
@@ -1329,11 +1592,68 @@ mod tests {
                     ),
                     transform: Affine::IDENTITY,
                 });
-                let _frame = encode_scene(&scene, viewport(), &mut cache());
+                let _frame = encode_scene(&scene, viewport(), &mut cache(), None);
             });
 
             let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_rounded_clip_to_rect_bbox");
             assert_eq!(value, 1, "the degrade counter must have actually incremented, not just avoided a panic");
+        }
+
+        // ── Wave 2 Commit 2: GlyphRun degrade proofs ─────────────────
+        //
+        // Both tests below use an UNREGISTERED `FontId` deliberately —
+        // `rasterise_glyph` fails for every glyph before
+        // `encode_glyph_run` ever calls `atlas.get_or_insert`, so these
+        // stay 100% device-free (`atlas: None` is provably safe here,
+        // see `encode_scene`'s doc comment) while still exercising the
+        // REAL brush-kind-degrade + per-glyph-rasterise-failure code
+        // paths, not a mock of them.
+
+        #[test]
+        fn glyphrun_with_unregistered_font_counts_rasterise_failed_and_emits_nothing() {
+            let recorder = TestRecorder::default();
+            metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::GlyphRun {
+                    glyphs: vec![
+                        uzor_urx_core::scene::Glyph { glyph_id: 1, x: 0.0, y: 0.0 },
+                        uzor_urx_core::scene::Glyph { glyph_id: 2, x: 10.0, y: 0.0 },
+                    ],
+                    font: uzor_urx_core::scene::FontId(u64::MAX), // never registered
+                    font_size: 32.0,
+                    brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+                    transform: Affine::IDENTITY,
+                    text: None,
+                });
+                let frame = encode_scene(&scene, viewport(), &mut cache(), None);
+                assert_eq!(frame.glyphs.len(), 0, "no glyph should have been placed — the font was never registered");
+            });
+
+            let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_glyph_rasterise_failed");
+            assert_eq!(value, 2, "one native_glyph_rasterise_failed per glyph in the run");
+        }
+
+        #[test]
+        fn glyphrun_gradient_brush_degrades_to_solid_without_panicking() {
+            let recorder = TestRecorder::default();
+            metrics::with_local_recorder(&recorder, || {
+                let gradient = Gradient::new_linear((0.0, 0.0), (10.0, 0.0))
+                    .with_stops([(0.0f32, Color::from_rgba8(0, 0, 0, 255)), (1.0f32, Color::from_rgba8(255, 255, 255, 255))]);
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::GlyphRun {
+                    glyphs: vec![uzor_urx_core::scene::Glyph { glyph_id: 1, x: 0.0, y: 0.0 }],
+                    font: uzor_urx_core::scene::FontId(u64::MAX - 1), // never registered — rasterise fails harmlessly
+                    font_size: 32.0,
+                    brush: Brush::Gradient(gradient),
+                    transform: Affine::IDENTITY,
+                    text: None,
+                });
+                // Must not panic — that's the primary assertion here.
+                let _frame = encode_scene(&scene, viewport(), &mut cache(), None);
+            });
+
+            let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_glyphrun_gradient_to_solid");
+            assert_eq!(value, 1, "the gradient-brush degrade counter must fire exactly once per GlyphRun");
         }
     }
 }

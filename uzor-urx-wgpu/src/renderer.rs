@@ -15,9 +15,11 @@ use wgpu::util::DeviceExt;
 
 use uzor_urx_core::config::UrxConfig;
 
+use crate::atlas::{AtlasStats, NativeGlyphAtlas};
 use crate::encode::{self, BatchKind};
 use crate::msaa::MsaaTarget;
 use crate::native_error::NativeRenderError;
+use crate::pipelines::glyph::GlyphPipeline;
 use crate::pipelines::line::LinePipeline;
 use crate::pipelines::path::PathPipeline;
 use crate::pipelines::quad::QuadPipeline;
@@ -39,11 +41,12 @@ struct Uniforms {
 }
 
 /// Owns every native-pipeline GPU resource: the Quad SDF pipeline
-/// (Commit 1), the Line/capsule pipeline (Commit 2), and the Path/
-/// triangle pipeline (Commit 3) — the shared uniform bind group
-/// (group 0, `screen_size`), the MSAA offscreen color target (exact-
-/// match reallocation on resize, see `msaa.rs`'s module doc), and the
-/// tessellation cache.
+/// (Wave 1 Commit 1), the Line/capsule pipeline (Commit 2), the Path/
+/// triangle pipeline (Commit 3), and the Glyph pipeline + its
+/// `NativeGlyphAtlas` (Wave 2 Commit 2) — the shared uniform bind
+/// group (group 0, `screen_size`), the MSAA offscreen color target
+/// (exact-match reallocation on resize, see `msaa.rs`'s module doc),
+/// the tessellation cache, and the glyph atlas.
 pub struct NativeUrxRenderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -53,12 +56,14 @@ pub struct NativeUrxRenderer {
     quad: QuadPipeline,
     line: LinePipeline,
     path: PathPipeline,
+    glyph: GlyphPipeline,
 
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
 
     msaa: MsaaTarget,
     tess_cache: TessCache,
+    glyph_atlas: NativeGlyphAtlas,
 }
 
 impl NativeUrxRenderer {
@@ -94,11 +99,11 @@ impl NativeUrxRenderer {
     /// own module doc).
     ///
     /// `cfg` is read ONCE, here, at construction — every knob this
-    /// renderer consumes from it (currently just
-    /// `path_tess_cache_cap`) is baked into the owned resource it
-    /// configures (`TessCache::with_cap`) and is NOT hot-swappable for
-    /// the lifetime of this renderer. Re-construct to pick up a
-    /// changed config.
+    /// renderer consumes from it (`path_tess_cache_cap`,
+    /// `wgpu_glyph_atlas_w`/`_h`) is baked into the owned resource it
+    /// configures (`TessCache::with_cap`, `NativeGlyphAtlas::new`) and
+    /// is NOT hot-swappable for the lifetime of this renderer.
+    /// Re-construct to pick up a changed config.
     pub fn with_config(
         device: wgpu::Device,
         queue: wgpu::Queue,
@@ -138,6 +143,12 @@ impl NativeUrxRenderer {
         let quad = QuadPipeline::new(&device, format, sample_count, &uniform_bgl);
         let line = LinePipeline::new(&device, format, sample_count, &uniform_bgl);
         let path = PathPipeline::new(&device, format, sample_count, &uniform_bgl);
+        // The atlas must be built BEFORE the Glyph pipeline — the
+        // pipeline's layout borrows the atlas's `BindGroupLayout` at
+        // pipeline-creation time (design §4), fixed for the pipeline's
+        // lifetime (this crate has no atlas-resize path).
+        let glyph_atlas = NativeGlyphAtlas::new(&device, cfg.wgpu_glyph_atlas_w, cfg.wgpu_glyph_atlas_h);
+        let glyph = GlyphPipeline::new(&device, format, sample_count, &uniform_bgl, glyph_atlas.bind_group_layout());
         let msaa = MsaaTarget::new(sample_count, format);
         let tess_cache = TessCache::with_cap(cfg.path_tess_cache_cap);
 
@@ -149,10 +160,12 @@ impl NativeUrxRenderer {
             quad,
             line,
             path,
+            glyph,
             uniform_buffer,
             uniform_bind_group,
             msaa,
             tess_cache,
+            glyph_atlas,
         }
     }
 
@@ -178,6 +191,14 @@ impl NativeUrxRenderer {
         self.tess_cache.stats()
     }
 
+    /// Read-only glyph-atlas telemetry — hit/miss/eviction/entry counts
+    /// (Wave 2 design §3/§9 Commit 3, pulled forward into Commit 2 —
+    /// a 3-line accessor, no reason to defer it). Not a hot-path cost:
+    /// four `usize`/`u64` loads.
+    pub fn glyph_atlas_stats(&self) -> AtlasStats {
+        self.glyph_atlas.stats()
+    }
+
     /// Walk `scene.commands`, encode into the Quad pipeline's instance
     /// buffer, and render into `view` (resolving through the MSAA
     /// target first when `sample_count > 1`). Never panics on scene
@@ -201,13 +222,24 @@ impl NativeUrxRenderer {
 
         self.resize(viewport.width, viewport.height);
 
-        let frame = encode::encode_scene(scene, viewport, &mut self.tess_cache);
+        // Advance the atlas's per-frame tick BEFORE walking the scene —
+        // every `get_or_insert` this frame stamps its slot with the NEW
+        // tick, which is what makes the never-evict-this-frame
+        // invariant work (`atlas.rs`'s module doc).
+        self.glyph_atlas.begin_frame();
+        let frame = encode::encode_scene(scene, viewport, &mut self.tess_cache, Some(&mut self.glyph_atlas));
 
         let uniforms = Uniforms { screen_size: [viewport.width as f32, viewport.height as f32], _pad: [0.0; 2] };
         self.queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
         self.quad.upload(&self.device, &self.queue, &frame.quads);
         self.line.upload(&self.device, &self.queue, &frame.lines);
         self.path.upload(&self.device, &self.queue, &frame.triangles);
+        self.glyph.upload(&self.device, &self.queue, &frame.glyphs);
+        // Drain every glyph bitmap queued by this frame's `encode_scene`
+        // call into the atlas texture — after encode returns (every
+        // glyph this frame has already been placed) and before the
+        // render pass begins (so it samples up-to-date contents).
+        self.glyph_atlas.flush_uploads(&self.queue);
 
         // `sample_count > 1`: render into the MSAA color target and let
         // the pass epilogue hardware-resolve into the caller's `view`
@@ -274,6 +306,13 @@ impl NativeUrxRenderer {
                             current = Some(BatchKind::Triangle);
                         }
                         self.path.draw_range(&mut pass, batch.start, batch.count);
+                    }
+                    BatchKind::Glyph => {
+                        if current != Some(BatchKind::Glyph) {
+                            self.glyph.bind(&mut pass, self.glyph_atlas.bind_group());
+                            current = Some(BatchKind::Glyph);
+                        }
+                        self.glyph.draw_range(&mut pass, batch.start, batch.count);
                     }
                 }
             }
