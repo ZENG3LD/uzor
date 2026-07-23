@@ -75,6 +75,15 @@ path = "src/l4/figures_demo.rs"
 name = "text-kinetics-demo"
 path = "src/l4/text_kinetics_demo.rs"
 
+# Typography reference demo — THE text-weight/gamma calibration
+# fixture (owner redirect 2026-07-24: l3-dashboard retired from the
+# reference gate, this replaces it). H1/H2 headings, real-pipeline body
+# paragraphs (uzor_text::layout_text/draw_paragraph), a muted label row,
+# a numbers table — all through RenderContext::fill_text.
+[[bin]]
+name = "typography-demo"
+path = "src/l4/typography_demo.rs"
+
 # URX render-family profiling rigs (Phase 0+).
 # Pinned reference scene + agent HTTP backend switch + FPS readout.
 # Used to A/B every backend (vello_gpu, instanced_wgpu, vello_hybrid,

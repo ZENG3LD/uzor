@@ -132,13 +132,23 @@ fn swash_cache() -> &'static Mutex<SwashCache> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ShaperFontId(cosmic_text::fontdb::ID);
 
-/// One shaped glyph within a [`GlyphSegment`] — `(x, y)` is the
-/// ABSOLUTE pen position in the text's own local coordinate space (pen
-/// origin at `(0, 0)`, y already carries the run's baseline
-/// `run.line_y` — same convention `text_to_path_uncached`'s
-/// `pen_x`/`pen_y` already use), before the caller's own
+/// One shaped glyph within a [`GlyphSegment`] — `(x, y)` is the pen
+/// position in the text's own local coordinate space, with `y`
+/// normalized so the FIRST shaped line's own baseline is exactly
+/// `0.0` (only a genuinely multi-line, `\n`-containing shape call ever
+/// sees a nonzero `y`, carrying that later line's correct offset
+/// relative to the first) — this is what lets the caller's own
 /// `fill_text(text, x, y)` origin / text-align / text-baseline offset
-/// is applied on top.
+/// be applied on top and land EXACTLY at `y` for the overwhelmingly
+/// common single-line case, matching `uzor-render-vello-cpu`'s own
+/// (always-zero, pure-transform) convention. **Not** raw
+/// `cosmic_text::LayoutRun::line_y` (which is buffer-relative and
+/// nonzero even for line 0 — roughly one font-ascent — unlike
+/// `text_to_path_uncached`'s own still-unnormalized `pen_y`, a
+/// pre-existing, separate discrepancy in that vector-outline fallback
+/// path, out of this fix's own scope). Found + fixed 2026-07-24 via
+/// `typography-demo`'s `row_ink_profile` fixture (urx-cpu vs
+/// vello-cpu text-line y-positions, ~13-27px offset before this fix).
 #[derive(Debug, Clone, Copy)]
 pub struct ShapedGlyph {
     pub glyph_id: u32,
@@ -233,9 +243,37 @@ pub fn shape_glyph_runs(text: &str, font: &str) -> Vec<GlyphSegment> {
     }
     let mut segments: Vec<InProgress> = Vec::new();
 
+    // `run.line_y` is cosmic-text's OWN buffer-relative baseline y (for
+    // line 0, roughly the font's ascent above the buffer's top — NOT
+    // zero), never the caller's own target origin. `ShapedGlyph::y`'s
+    // own doc comment says the caller's `fill_text(text, x, y)` origin
+    // is applied "on top" of this value, which is only correct if line
+    // 0's own `line_y` is itself `0.0` — cosmic-text's is not. Left
+    // unnormalized, every `fill_text` call rendered through
+    // `uzor-render-urx`'s `GlyphRun` path (its one consumer) landed
+    // roughly one font-ascent LOWER than its caller's real target `y`
+    // (both `uzor-urx-cpu` and the native wgpu backend read the same
+    // baked-in scene `y`, so they agreed with EACH OTHER while both
+    // disagreed with `uzor-render-vello-cpu`, which always renders at
+    // `y_glyph = 0` / pure transform-y). Found + measured 2026-07-24
+    // via `typography-demo`'s `row_ink_profile` fixture: urx-cpu vs
+    // vello-cpu text-line ink bands were offset by ~13-27px, tracking
+    // each element's own font size almost exactly (Roboto's ascent
+    // metric is ~0.93em) — the root cause of the owner's "squashed
+    // vertically" report, independent of and larger than the
+    // `TextBaseline::Alphabetic` mishandling fixed the same pass.
+    // Subtracting the FIRST run's own `line_y` makes a single-line call
+    // (`draw_paragraph`'s own one-`fill_text`-per-cluster convention,
+    // and every plain heading/label call) land exactly at the caller's
+    // `y` — while a genuinely multi-line (`\n`-containing) call still
+    // gets each subsequent line's correct relative offset, since only
+    // the shared baseline is removed, not the per-line deltas.
+    let mut first_line_y: Option<f32> = None;
+
     for run in buf.layout_runs() {
         let line_text = run.text;
-        let pen_y = run.line_y;
+        let baseline_y = *first_line_y.get_or_insert(run.line_y);
+        let pen_y = run.line_y - baseline_y;
 
         for glyph in run.glyphs {
             let font_id = ShaperFontId(glyph.font_id);

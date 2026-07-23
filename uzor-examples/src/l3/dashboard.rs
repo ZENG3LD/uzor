@@ -4825,6 +4825,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[cfg(test)]
+// LEGACY, owner-retired from the reference gate 2026-07-24: l3-dashboard
+// is a legacy interface, no longer compared against vello/native as part
+// of the standing parity gate. `typography-demo` (`l4/typography_demo.rs`)
+// replaces this module's role for the text-weight/gamma calibration arc;
+// force_graph 2D/3D-overlay remain the other reference-gate rows. This
+// code stays in the tree (still exercises real content through the URX
+// GlyphRun path) but its two tests are `#[ignore]`d with that reason
+// below -- do not fold them back into a routine gate run.
 mod screenshot_diff {
     use uzor_examples::parity_harness::{
         attach_headless_window, compare_tight, dump_comparison_pngs, record_via_urx_ctx, render_via_urx_cpu,
@@ -4940,7 +4948,8 @@ mod screenshot_diff {
     /// Byte-tight urx-native-vs-urx-cpu leg (design §4.4) -- hard,
     /// automated gate, same tolerance tier `figures_demo` proved.
     #[test]
-    #[ignore = "needs a headless GPU adapter"]
+    #[ignore = "legacy, owner-retired from the reference gate 2026-07-24 -- l3-dashboard is out of the standing parity \
+                gate; also needs a headless GPU adapter"]
     fn l3_dashboard_frame_native_matches_cpu_within_the_base_tier() {
         let scene = record_via_urx_ctx(WIDTH, HEIGHT, |ctx| {
             let mut state = build_fixture_l3_state(WIDTH, HEIGHT);
@@ -4980,7 +4989,8 @@ mod screenshot_diff {
     /// comparison PNGs unconditionally for human review, never a computed
     /// threshold.
     #[test]
-    #[ignore = "needs a headless GPU adapter; dumps PNGs for human review, not a hard gate"]
+    #[ignore = "legacy, owner-retired from the reference gate 2026-07-24 -- l3-dashboard is out of the standing parity \
+                gate; also needs a headless GPU adapter; dumps PNGs for human review, not a hard gate"]
     fn l3_dashboard_frame_native_vs_vello_visual_dump() {
         let vello = render_via_vello_cpu(WIDTH, HEIGHT, |ctx| {
             let mut state = build_fixture_l3_state(WIDTH, HEIGHT);

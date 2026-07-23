@@ -766,11 +766,22 @@ impl TextRenderer for UrxRenderContext {
             TextAlign::Right  => -total_w,
             _ => 0.0,
         };
+        // Exhaustive match (no `_` wildcard) — `TextBaseline::Alphabetic`
+        // used to silently fall into a wildcard arm that applied
+        // `Middle`'s offset (an extra `size * 0.35` shift downward).
+        // "Alphabetic" means the caller's own `y` IS ALREADY the
+        // baseline (standard Canvas2D/CSS definition) — correct offset
+        // is `0.0`, same as `Bottom`. `uzor-render-vello-cpu` had the
+        // IDENTICAL bug (fixed the same pass, 2026-07-24, while
+        // calibrating the typography fixture's line positions against
+        // it) — fixing only one side would have introduced a NEW
+        // baseline disagreement between the two legs instead of
+        // removing one.
         let y_off = match self.text_baseline {
-            TextBaseline::Top    => self.font_info.size as f64 * 0.8,
-            TextBaseline::Middle => self.font_info.size as f64 * 0.35,
-            TextBaseline::Bottom => 0.0,
-            _ => self.font_info.size as f64 * 0.35,
+            TextBaseline::Top        => self.font_info.size as f64 * 0.8,
+            TextBaseline::Middle     => self.font_info.size as f64 * 0.35,
+            TextBaseline::Bottom     => 0.0,
+            TextBaseline::Alphabetic => 0.0,
         };
         let text_xform = KAffine::translate((x + x_off, y + y_off));
         let combined   = self.transform * text_xform;

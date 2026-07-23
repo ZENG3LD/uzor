@@ -866,11 +866,24 @@ impl TextRenderer for VelloCpuRenderContext {
             TextAlign::Right  => -text_width,
             _                 => 0.0,
         };
+        // Exhaustive match (no `_` wildcard) — `TextBaseline::Alphabetic`
+        // used to silently fall into a wildcard arm that applied
+        // `Middle`'s offset, i.e. an extra `size * 0.35` shift downward.
+        // "Alphabetic" means the caller's own `y` coordinate ALREADY IS
+        // the baseline (the standard Canvas2D/CSS definition) — the
+        // correct offset is `0.0`, matching `Bottom`'s own value, not
+        // `Middle`'s. Found + fixed 2026-07-24 while comparing this
+        // leg's line positions against `uzor-render-urx`'s own
+        // (identically-bugged, also fixed this same pass) glyph-run
+        // rendering for the typography calibration fixture — this is
+        // the crate whose OWN Alphabetic-baseline text (e.g.
+        // `uzor-text::draw_paragraph`, which explicitly sets
+        // `TextBaseline::Alphabetic` per line) was silently mispositioned.
         let y_off = match self.text_baseline {
-            TextBaseline::Top    => font_info.size * 0.8,
-            TextBaseline::Middle => font_info.size * 0.35,
-            TextBaseline::Bottom => 0.0,
-            _                    => font_info.size * 0.35,
+            TextBaseline::Top       => font_info.size * 0.8,
+            TextBaseline::Middle    => font_info.size * 0.35,
+            TextBaseline::Bottom    => 0.0,
+            TextBaseline::Alphabetic => 0.0,
         };
 
         let Some(primary_ref) = to_font_ref(primary_font) else { return };
