@@ -11,6 +11,7 @@ categories  = ["graphics", "rendering"]
 
 [dependencies]
 uzor-urx-core              = { workspace = true }
+uzor-urx-glyph             = { workspace = true }
 uzor-render-wgpu-instanced = { workspace = true }
 uzor                       = { workspace = true }
 metrics = "0.24"
@@ -28,6 +29,12 @@ thiserror = "1"
 # crate (`uzor-render-wgpu-instanced/Cargo.toml:18-19`).
 lyon_tessellation = "1.0"
 lyon_path         = "1.0"
+# Native glyph atlas rectangle packing (Wave 2 Commit 1) — same version
+# pin as the legacy crate (`uzor-render-wgpu-instanced/Cargo.toml:17`).
+# NOT optional (design risk 7): a GPU 2D UI pipeline without text
+# support isn't a realistic consumer, unlike `uzor-urx-cpu`'s opt-in
+# `glyph` feature (headless/export use cases can skip it).
+etagere = "0.2"
 
 [dev-dependencies]
 # Headless-GPU parity harness (Wave 1) — same versions as the sibling

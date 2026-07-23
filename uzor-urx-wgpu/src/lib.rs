@@ -57,6 +57,18 @@
 //! ```
 
 pub mod adapter;
+// `NativeGlyphAtlas` is fully implemented (Wave 2 Commit 1) but not yet
+// constructed by any non-test code — `renderer.rs`/`pipelines/glyph.rs`
+// wire it into `NativeUrxRenderer` in Commit 2 (design §9). Until then,
+// nothing outside this module's own `#[cfg(test)]` unit tests ever
+// calls it, so the module is scoped to test builds only — this is
+// exactly the same "dead until the next commit wires it in" situation
+// Wave 1's pipelines never had (each of THEIR commits built AND wired
+// its pipeline together); `#[cfg(test)]` here is the honest fix rather
+// than an `#[allow(dead_code)]` suppression. Commit 2 removes this cfg
+// gate the moment real (non-test) code starts constructing one.
+#[cfg(test)]
+mod atlas;
 mod encode;
 mod msaa;
 pub mod native_error;

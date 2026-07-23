@@ -103,15 +103,29 @@ pub struct UrxConfig {
     /// `64 << 20` (64 MiB).
     pub region_cache_budget_bytes: u64,
 
-    // ── WGPU native pipelines (Wave 1) ──────────────────────────────
+    // ── WGPU native pipelines ───────────────────────────────────────
 
     /// `uzor-urx-wgpu`'s native Path pipeline tessellation-mesh LRU cap
     /// (entries) — see `uzor-urx-wgpu/src/tessellate.rs::TessCache`.
     /// Same hand-rolled-LRU shape as `gradient_lut_cap`/`rounded_mask_cap`
     /// above, just consumed by the WGPU family instead of the CPU one.
     /// Read at `NativeUrxRenderer` construction only — not hot-swappable
-    /// (the cache doesn't resize itself mid-session). Default `256`.
+    /// (the cache doesn't resize itself mid-session). Wave 1. Default
+    /// `256`.
     pub path_tess_cache_cap: usize,
+    /// `uzor-urx-wgpu`'s native glyph atlas texture width/height (px) —
+    /// see `uzor-urx-wgpu/src/atlas.rs::NativeGlyphAtlas`. Same default
+    /// as the legacy crate's proven atlas size
+    /// (`uzor-render-wgpu-instanced/src/renderer.rs`'s `ATLAS_SIZE`).
+    /// Validated via the same `ConfigError::InvalidAtlasDim` convention
+    /// `hybrid_atlas_w/h` already use below (not a new variant — same
+    /// "atlas dims must be 1..=16384" rule, a different atlas). Read at
+    /// `NativeUrxRenderer` construction only — not hot-swappable (no
+    /// atlas-resize path is designed; see `atlas.rs`'s module doc).
+    /// Wave 2. Default `2048`.
+    pub wgpu_glyph_atlas_w: u32,
+    /// See [`Self::wgpu_glyph_atlas_w`]. Wave 2. Default `2048`.
+    pub wgpu_glyph_atlas_h: u32,
 
     // ── SIMD ───────────────────────────────────────────────────────
 
@@ -182,6 +196,8 @@ impl Default for UrxConfig {
             glyph_cache_cap: 1024,
             region_cache_budget_bytes: 64 << 20,
             path_tess_cache_cap: 256,
+            wgpu_glyph_atlas_w: 2048,
+            wgpu_glyph_atlas_h: 2048,
             simd_level: SimdLevel::Native,
             hybrid_atlas_w: 2048,
             hybrid_atlas_h: 2048,
@@ -249,6 +265,12 @@ impl UrxConfig {
             return Err(ConfigError::InvalidAtlasDim(
                 self.hybrid_atlas_w, self.hybrid_atlas_h));
         }
+        if self.wgpu_glyph_atlas_w == 0 || self.wgpu_glyph_atlas_h == 0
+            || self.wgpu_glyph_atlas_w > 16384 || self.wgpu_glyph_atlas_h > 16384
+        {
+            return Err(ConfigError::InvalidAtlasDim(
+                self.wgpu_glyph_atlas_w, self.wgpu_glyph_atlas_h));
+        }
         if self.rounded_mask_max_dim > 16384 {
             return Err(ConfigError::RoundedMaskTooLarge(self.rounded_mask_max_dim));
         }
@@ -280,6 +302,8 @@ impl UrxConfigBuilder {
     setter!(glyph_cache_cap, usize);
     setter!(region_cache_budget_bytes, u64);
     setter!(path_tess_cache_cap, usize);
+    setter!(wgpu_glyph_atlas_w, u32);
+    setter!(wgpu_glyph_atlas_h, u32);
     setter!(simd_level, SimdLevel);
     setter!(hybrid_atlas_w, u32);
     setter!(hybrid_atlas_h, u32);
@@ -322,6 +346,10 @@ mod tests {
         // chosen to match the sibling `gradient_lut_cap`/`rounded_mask_cap`
         // convention exactly.
         assert_eq!(c.path_tess_cache_cap, 256);
+        // Wave-2-introduced — default matches the legacy crate's proven
+        // atlas size.
+        assert_eq!(c.wgpu_glyph_atlas_w, 2048);
+        assert_eq!(c.wgpu_glyph_atlas_h, 2048);
         assert_eq!(c.simd_level, SimdLevel::Native);
         assert_eq!(c.hybrid_atlas_w, 2048);
         assert_eq!(c.hybrid_atlas_h, 2048);
@@ -377,6 +405,18 @@ mod tests {
     #[test]
     fn validate_rejects_oversize_atlas() {
         let c = UrxConfig { hybrid_atlas_w: 32_000, ..Default::default() };
+        assert!(matches!(c.validate(), Err(ConfigError::InvalidAtlasDim(_, _))));
+    }
+
+    #[test]
+    fn validate_rejects_oversize_glyph_atlas() {
+        let c = UrxConfig { wgpu_glyph_atlas_w: 32_000, ..Default::default() };
+        assert!(matches!(c.validate(), Err(ConfigError::InvalidAtlasDim(_, _))));
+    }
+
+    #[test]
+    fn validate_rejects_zero_glyph_atlas() {
+        let c = UrxConfig { wgpu_glyph_atlas_h: 0, ..Default::default() };
         assert!(matches!(c.validate(), Err(ConfigError::InvalidAtlasDim(_, _))));
     }
 

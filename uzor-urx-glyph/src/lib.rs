@@ -35,6 +35,36 @@ pub struct GlyphKey {
     pub subpx_x:     u8,
 }
 
+impl GlyphKey {
+    /// Extracted from `rasterise_glyph`'s inline key construction
+    /// (URX Wave 2 design §0) — pure extraction, zero behavior change.
+    /// Takes `glyph_id: u32` to match
+    /// `uzor_urx_core::scene::Glyph::glyph_id`'s type directly, so
+    /// callers outside this crate (e.g. `uzor-urx-wgpu`'s native
+    /// atlas) never need to hand-duplicate the narrowing rule.
+    pub fn new(font: FontId, glyph_id: u32, px_size: f32, subpx_x: u8) -> Self {
+        Self {
+            font,
+            glyph_id: glyph_id as u16,
+            px_size_x64: (px_size * 64.0).round() as u32,
+            subpx_x: subpx_x & 3,
+        }
+    }
+}
+
+/// Bin a pen x-position into one of 4 horizontal subpixel phases.
+///
+/// Extracted from `draw_glyph_run`'s inline `frac`/`subpx` calc (URX
+/// Wave 2 design §0) — pure extraction, zero behavior change.
+/// `uzor-urx-wgpu`'s encode-time atlas lookup needs the IDENTICAL
+/// formula this crate's own CPU compositor uses, so both backends
+/// rasterise (and therefore atlas-key) the same glyph at the same
+/// subpixel phase for the same pen position.
+pub fn subpixel_bin_for_x(px: f32) -> u8 {
+    let frac = (px - px.floor()).max(0.0).min(1.0);
+    ((frac * 4.0).floor() as u8) & 3
+}
+
 #[derive(Debug)]
 pub struct GlyphBitmap {
     pub width:    u32,
@@ -146,8 +176,7 @@ pub fn rasterise_glyph(
     px_size:  f32,
     subpx_x:  u8,
 ) -> Result<GlyphBitmapArc, GlyphError> {
-    let px_x64 = (px_size * 64.0).round() as u32;
-    let key = GlyphKey { font, glyph_id, px_size_x64: px_x64, subpx_x: subpx_x & 3 };
+    let key = GlyphKey::new(font, glyph_id as u32, px_size, subpx_x);
 
     {
         let mut g = CACHE.write().unwrap();
@@ -219,8 +248,7 @@ pub fn draw_glyph_run(
     for g in glyphs {
         let px = origin_x + g.x;
         let py = origin_y + g.y;
-        let frac = (px - px.floor()).max(0.0).min(1.0);
-        let subpx = (frac * 4.0).floor() as u8 & 3;
+        let subpx = subpixel_bin_for_x(px);
         let bm = rasterise_glyph(font, g.glyph_id as u16, font_size, subpx)?;
         if bm.width == 0 || bm.height == 0 { continue; }
         let dst_x0 = (px.floor() as i32) + bm.left;
