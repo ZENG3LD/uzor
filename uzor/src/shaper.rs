@@ -109,7 +109,194 @@ fn swash_cache() -> &'static Mutex<SwashCache> {
     SC.get_or_init(|| Mutex::new(SwashCache::new()))
 }
 
-// ── Public API ────────────────────────────────────────────────────────────────
+// ── Glyph-id shaping (backs URX's `DrawCommand::GlyphRun`) ────────────────────
+//
+// `measure_glyphs`/`text_to_path` above only ever expose CLUSTER-level
+// metrics or flattened outline commands — neither carries the raw
+// per-glyph `(font_id, glyph_id)` a glyph-ATLAS-based renderer needs.
+// cosmic-text's own `LayoutGlyph` already carries both directly
+// (`glyph_id: u16`, `font_id: fontdb::ID` — confirmed by direct read of
+// `cosmic-text-0.12.1/src/layout.rs`); `text_to_path_uncached` below
+// even threads the SAME `glyph_id` into `SwashCache::get_outline_commands`
+// today (via `physical.cache_key.glyph_id`) to build its own outlines —
+// this module exposes that already-shaped value directly instead of
+// only its downstream outline-command byproduct.
+
+/// Opaque per-process font identity for glyph-id-based rendering paths
+/// (URX's `DrawCommand::GlyphRun`) — wraps cosmic-text's own `fontdb::ID`
+/// so callers never need `cosmic-text`/`fontdb` as a direct dependency
+/// (this crate is the only place that type is named). Stable for the
+/// lifetime of the process — `font_system()` is a process-wide
+/// `OnceLock` singleton, never rebuilt, so the same `ShaperFontId`
+/// always resolves to the same font.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ShaperFontId(cosmic_text::fontdb::ID);
+
+/// One shaped glyph within a [`GlyphSegment`] — `(x, y)` is the
+/// ABSOLUTE pen position in the text's own local coordinate space (pen
+/// origin at `(0, 0)`, y already carries the run's baseline
+/// `run.line_y` — same convention `text_to_path_uncached`'s
+/// `pen_x`/`pen_y` already use), before the caller's own
+/// `fill_text(text, x, y)` origin / text-align / text-baseline offset
+/// is applied on top.
+#[derive(Debug, Clone, Copy)]
+pub struct ShapedGlyph {
+    pub glyph_id: u32,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// One contiguous same-font run of shaped glyphs. A font-FALLBACK
+/// boundary (e.g. Latin text falling back to an emoji/CJK face
+/// mid-string) always starts a NEW segment, never straddles one —
+/// mirrors how every other glyph-id consumer in this workspace already
+/// handles per-run font switches (`uzor-render-vello-cpu`'s own
+/// `resolve_glyphs_with_fallback` + `run_font_index`-contiguous
+/// grouping, `context.rs:897-909`).
+#[derive(Debug, Clone)]
+pub struct GlyphSegment {
+    pub font: ShaperFontId,
+    pub font_size: f32,
+    pub glyphs: Vec<ShapedGlyph>,
+    /// Reconstructed source substring for JUST this segment's glyphs
+    /// (byte-range span across the segment, not the whole `fill_text`
+    /// call's string) — the `DrawCommand::GlyphRun::text` companion
+    /// field's own documented purpose: "backends that take `&str`" (a
+    /// legacy, currently-unused consumer class per
+    /// `uzor_urx_core::scene::DrawCommand::GlyphRun`'s own doc comment
+    /// — populated anyway since it's cheap and keeps the IR
+    /// round-trip-friendly, per that same doc comment's "producers
+    /// SHOULD set it" guidance).
+    pub text: String,
+}
+
+/// Shape `text` in `font`, returning glyph ids + positions grouped into
+/// contiguous same-font [`GlyphSegment`]s. Unlike [`measure_glyphs`],
+/// this does NOT merge ligature clusters (no cluster string is needed
+/// for a pure rendering path — merging exists there only for cursor/
+/// selection math) and is NOT cached (glyph-id lists are cheap to
+/// regenerate; callers needing caching own their own policy, matching
+/// `uzor_urx_glyph::draw_glyph_run`'s own "caller decides caching"
+/// convention).
+///
+/// `font` is a CSS shorthand, e.g. `"bold 16px Inter"`. Empty text
+/// returns an empty `Vec` immediately.
+pub fn shape_glyph_runs(text: &str, font: &str) -> Vec<GlyphSegment> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+
+    let info = parse_css_font(font);
+    let font_size = info.size;
+
+    let family_name: &str = match info.family {
+        FontFamily::Roboto        => "Roboto",
+        FontFamily::PtRootUi      => "PT Root UI",
+        FontFamily::JetBrainsMono => "JetBrains Mono",
+    };
+
+    let Ok(mut fs) = font_system().lock() else {
+        return Vec::new();
+    };
+
+    let metrics = Metrics::new(font_size, font_size * 1.2);
+    let mut buf = Buffer::new_empty(metrics);
+    buf.set_size(&mut fs, Some(f32::MAX), Some(f32::MAX));
+    buf.set_wrap(&mut fs, Wrap::None);
+
+    let attrs = Attrs::new()
+        .family(Family::Name(family_name))
+        .weight(if info.bold {
+            cosmic_text::Weight::BOLD
+        } else {
+            cosmic_text::Weight::NORMAL
+        })
+        .style(if info.italic {
+            cosmic_text::Style::Italic
+        } else {
+            cosmic_text::Style::Normal
+        });
+
+    buf.set_text(&mut fs, text, attrs, Shaping::Advanced);
+    buf.shape_until_scroll(&mut fs, false);
+
+    // Each in-progress segment: (font, font_size, byte-range span within
+    // its OWN line's text, that line's text, glyphs-so-far). The byte
+    // range grows in place as same-font glyphs are appended; the final
+    // substring is sliced once, when the segment closes.
+    struct InProgress {
+        font: ShaperFontId,
+        font_size: f32,
+        range: std::ops::Range<usize>,
+        line_text: String,
+        glyphs: Vec<ShapedGlyph>,
+    }
+    let mut segments: Vec<InProgress> = Vec::new();
+
+    for run in buf.layout_runs() {
+        let line_text = run.text;
+        let pen_y = run.line_y;
+
+        for glyph in run.glyphs {
+            let font_id = ShaperFontId(glyph.font_id);
+            let shaped = ShapedGlyph { glyph_id: glyph.glyph_id as u32, x: glyph.x, y: pen_y };
+
+            let mut extended_open_segment = false;
+            if let Some(seg) = segments.last_mut() {
+                if seg.font == font_id && seg.line_text == line_text {
+                    seg.range.start = seg.range.start.min(glyph.start);
+                    seg.range.end = seg.range.end.max(glyph.end);
+                    seg.glyphs.push(shaped);
+                    extended_open_segment = true;
+                }
+            }
+            if !extended_open_segment {
+                segments.push(InProgress {
+                    font: font_id,
+                    font_size: glyph.font_size,
+                    range: glyph.start..glyph.end,
+                    line_text: line_text.to_string(),
+                    glyphs: vec![shaped],
+                });
+            }
+        }
+    }
+
+    segments
+        .into_iter()
+        .map(|s| GlyphSegment {
+            font: s.font,
+            font_size: s.font_size,
+            glyphs: s.glyphs,
+            text: s.line_text.get(s.range).unwrap_or_default().to_string(),
+        })
+        .collect()
+}
+
+/// Raw font bytes for a `ShaperFontId` — `None` only if the process-wide
+/// font system's database somehow no longer has the face (should not
+/// happen for any id `shape_glyph_runs` itself returned in the SAME
+/// process). Callers use this ONCE per distinct `ShaperFontId` to
+/// register it with their own glyph-id rasteriser (e.g.
+/// `uzor_urx_glyph::register_font`), caching the resulting handle
+/// themselves — this function does no caching of its own beyond
+/// `fontdb`'s own internal in-memory storage (the embedded font set is
+/// loaded once via `load_font_data`, never memory-mapped from disk —
+/// see `font_system()`'s own doc comment).
+pub fn font_bytes_for(id: ShaperFontId) -> Option<Vec<u8>> {
+    let fs = font_system().lock().ok()?;
+    fs.db().with_face_data(id.0, |data, _face_index| data.to_vec())
+}
+
+/// First (English US, per `fontdb::FaceInfo::families`'s own doc
+/// comment) family name for a `ShaperFontId` — lets a caller apply
+/// family-specific policy (e.g. "this is the color-emoji face, which a
+/// monochrome-coverage glyph rasteriser can't render — fall back to
+/// vector-outline text for this segment instead").
+pub fn font_family_for(id: ShaperFontId) -> Option<String> {
+    let fs = font_system().lock().ok()?;
+    fs.db().face(id.0).and_then(|face| face.families.first().map(|(name, _)| name.clone()))
+}
 
 /// Shape `text` in `font` and return per-cluster [`GlyphMetric`] values.
 ///
@@ -672,5 +859,67 @@ mod tests {
     #[test]
     fn wrapped_empty_text_is_empty() {
         assert!(measure_glyphs_wrapped("", FONT, 100.0).is_empty());
+    }
+
+    // ── shape_glyph_runs (URX GlyphRun bridging) ──────────────────────
+
+    #[test]
+    fn shape_glyph_runs_empty_text_is_empty() {
+        assert!(shape_glyph_runs("", FONT).is_empty());
+    }
+
+    #[test]
+    fn shape_glyph_runs_single_font_text_is_one_segment() {
+        let segments = shape_glyph_runs("Hello", FONT);
+        assert_eq!(segments.len(), 1, "plain ASCII text in one font must stay one segment");
+        let seg = &segments[0];
+        assert_eq!(seg.glyphs.len(), 5, "one glyph per character, no ligatures in \"Hello\"");
+        assert_eq!(seg.text, "Hello");
+        // glyph_id 0 is always .notdef -- a real font must never resolve
+        // ASCII letters to it.
+        assert!(seg.glyphs.iter().all(|g| g.glyph_id != 0), "no glyph should resolve to .notdef for plain ASCII text");
+    }
+
+    #[test]
+    fn shape_glyph_runs_x_positions_are_monotonically_increasing_for_ltr_text() {
+        let segments = shape_glyph_runs("Hello", FONT);
+        let seg = &segments[0];
+        for w in seg.glyphs.windows(2) {
+            assert!(w[1].x >= w[0].x, "LTR glyph pen positions must not go backwards: {} then {}", w[0].x, w[1].x);
+        }
+    }
+
+    #[test]
+    fn shape_glyph_runs_font_bytes_for_returns_a_real_font_file() {
+        let segments = shape_glyph_runs("Hello", FONT);
+        let bytes = font_bytes_for(segments[0].font).expect("Roboto must resolve to real font bytes");
+        // TrueType/OpenType files start with a 4-byte version tag —
+        // 0x00010000 (TrueType) or "OTTO" (CFF-flavoured). Either way,
+        // a real font file is comfortably larger than a few KB.
+        assert!(bytes.len() > 1024, "a real font file must be more than 1KB, got {}", bytes.len());
+    }
+
+    #[test]
+    fn shape_glyph_runs_font_family_for_reports_roboto() {
+        let segments = shape_glyph_runs("Hello", FONT);
+        let family = font_family_for(segments[0].font).expect("Roboto must resolve to a family name");
+        assert_eq!(family, "Roboto");
+    }
+
+    #[test]
+    fn shape_glyph_runs_is_deterministic_across_calls() {
+        let a = shape_glyph_runs("Hello, world!", FONT);
+        let b = shape_glyph_runs("Hello, world!", FONT);
+        assert_eq!(a.len(), b.len());
+        for (sa, sb) in a.iter().zip(b.iter()) {
+            assert_eq!(sa.font, sb.font);
+            assert_eq!(sa.text, sb.text);
+            assert_eq!(sa.glyphs.len(), sb.glyphs.len());
+            for (ga, gb) in sa.glyphs.iter().zip(sb.glyphs.iter()) {
+                assert_eq!(ga.glyph_id, gb.glyph_id);
+                assert_eq!(ga.x, gb.x);
+                assert_eq!(ga.y, gb.y);
+            }
+        }
     }
 }

@@ -10,6 +10,9 @@
 //! style + current transform. Backend reads the `Scene` once and
 //! rasterises in painter's order — no statefulness leaks across `Scene`.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use kurbo::{
     Affine as KAffine, BezPath, Cap, Join, Point as KPoint, Rect as KRect, Shape, Vec2,
 };
@@ -19,7 +22,7 @@ use peniko::{
 };
 
 use uzor_urx_core::scene::{
-    DrawCommand, FillRule, LineCap as UrxLineCap, LineJoin as UrxLineJoin, Scene,
+    DrawCommand, FillRule, FontId, Glyph, LineCap as UrxLineCap, LineJoin as UrxLineJoin, Scene,
     Stroke as UrxStroke,
 };
 
@@ -665,6 +668,87 @@ impl BatchPainter for UrxRenderContext {
     }
 }
 
+// ── GlyphRun bridging (URX text-gamma follow-up, 2026-07-24) ───────────────
+//
+// `fill_text` used to ALWAYS render text as a vector-outline path
+// (`DrawCommand::FillPath`) — see the historical note kept on
+// `fill_path_segment`'s own doc comment for why that was the original
+// choice and why it's no longer a structural blocker. It now emits
+// `DrawCommand::GlyphRun` (the SAME hinted-swash atlas path the crate-
+// level parity suite already proves byte-tight CPU-vs-native, glyph
+// fixture 0.000%) whenever it safely can, falling back to the outline
+// path only for the two cases that genuinely cannot map onto a
+// glyph-id run — both counted, never silent (see `emit_text_segments`
+// and `fill_text`'s own transform check).
+
+/// Process-wide cache: `uzor::shaper::ShaperFontId` (cosmic-text's own
+/// per-face identity) -> `uzor_urx_glyph::FontId` (URX's own glyph-atlas
+/// registry identity). `uzor_urx_glyph::register_font` mints a NEW,
+/// distinct `FontId` on every call (not idempotent by content — see its
+/// own doc comment) — without this cache, drawing the same font twice
+/// would register it twice, breaking `GlyphKey`-based atlas/LRU cache
+/// reuse across draws (every `GlyphKey` embeds the `FontId`, so two
+/// registrations of the byte-identical font would never hit each
+/// other's cached rasterisations).
+fn font_id_cache() -> &'static Mutex<HashMap<uzor::shaper::ShaperFontId, FontId>> {
+    static CACHE: OnceLock<Mutex<HashMap<uzor::shaper::ShaperFontId, FontId>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Resolve (registering into `uzor_urx_glyph`'s registry on first use)
+/// the `FontId` for a shaped segment's font. `None` only if the
+/// process-wide font database somehow no longer has the face, or
+/// `register_font` rejects bytes that JUST successfully shaped text via
+/// cosmic-text moments earlier (should not happen either way — a
+/// defensive `None`, not an expected outcome).
+///
+/// Holds the cache's lock across the ENTIRE check-then-register-then-
+/// insert sequence (never releases it between the miss check and the
+/// insert) — a `check, unlock, register, re-lock, insert` version of
+/// this function would race two concurrent callers seeing the SAME
+/// miss and each registering (and caching) their OWN distinct `FontId`
+/// for the byte-identical font, silently defeating the whole point of
+/// this cache (confirmed empirically: an earlier check-then-insert
+/// version of this function passed in isolation but flaked under
+/// `cargo test`'s default parallel-thread execution).
+fn resolve_font_id(shaper_font: uzor::shaper::ShaperFontId) -> Option<FontId> {
+    let mut cache = font_id_cache().lock().ok()?;
+    if let Some(&id) = cache.get(&shaper_font) {
+        return Some(id);
+    }
+    let bytes = uzor::shaper::font_bytes_for(shaper_font)?;
+    let id = uzor_urx_glyph::register_font(bytes).ok()?;
+    cache.insert(shaper_font, id);
+    Some(id)
+}
+
+/// Family names in this workspace's EMBEDDED font set whose glyphs a
+/// monochrome-coverage rasteriser (`uzor_urx_glyph::draw_glyph_run`,
+/// `swash::zeno::Format::Alpha`-only — see its own module doc: "COLR/
+/// CBDT/CBLC colour glyphs — deferred") cannot represent. Only
+/// `uzor_fonts::NOTO_COLOR_EMOJI` qualifies (the embedded `NOTO_EMOJI`
+/// — no "Color" — is a plain monochrome outline font and renders
+/// through `GlyphRun` exactly like any other face).
+const COLOR_GLYPH_FAMILIES: &[&str] = &["Noto Color Emoji"];
+
+fn is_color_glyph_font(shaper_font: uzor::shaper::ShaperFontId) -> bool {
+    uzor::shaper::font_family_for(shaper_font)
+        .is_some_and(|family| COLOR_GLYPH_FAMILIES.contains(&family.as_str()))
+}
+
+/// `DrawCommand::GlyphRun`'s `transform` is translate-ONLY downstream —
+/// both `uzor-urx-cpu::draw_glyph_run` and `uzor-urx-wgpu::encode_glyph_run`
+/// extract ONLY the translation component (design's own deliberate
+/// CPU/GPU parity choice, Wave 2). A non-identity LINEAR part (scale /
+/// rotate / shear) on the CURRENT canvas transform can't be represented
+/// that way — `fill_text` checks this before choosing the `GlyphRun`
+/// path (falls back to the vector-outline path, counted, when false).
+fn is_translation_only(t: KAffine) -> bool {
+    let c = t.as_coeffs();
+    const EPS: f64 = 1e-6;
+    (c[0] - 1.0).abs() < EPS && c[1].abs() < EPS && c[2].abs() < EPS && (c[3] - 1.0).abs() < EPS
+}
+
 // ── TextRenderer ───────────────────────────────────────────────────────────
 
 impl TextRenderer for UrxRenderContext {
@@ -674,18 +758,7 @@ impl TextRenderer for UrxRenderContext {
 
     fn fill_text(&mut self, text: &str, x: f64, y: f64) {
         if text.is_empty() { return; }
-        // urx_core::DrawCommand::GlyphRun expects pre-shaped glyph_ids, but
-        // uzor::shaper exposes cluster-level metrics (GlyphMetric has
-        // `x_offset/advance`, not `glyph_id`). To get a working text path
-        // through the URX pipeline today, render text as a vector outline
-        // path via `shaper::text_to_path` (SVG path string) → kurbo::BezPath
-        // → DrawCommand::FillPath. This honours the current fill brush +
-        // transform exactly like any other shape.
-        //
-        // The outline coordinates are in font-em-units scaled by font size
-        // already (uzor::shaper does that internally), with baseline at y=0.
-        // We apply the requested baseline / text-align via an extra
-        // translation on top of the user transform.
+
         let font_str = font_string(&self.font_info);
         let total_w  = self.measure_text(text);
         let x_off = match self.text_align {
@@ -699,32 +772,113 @@ impl TextRenderer for UrxRenderContext {
             TextBaseline::Bottom => 0.0,
             _ => self.font_info.size as f64 * 0.35,
         };
-
-        let svg = uzor::shaper::text_to_path(text, &font_str);
-        if svg.is_empty() { return; }
-        let path = match BezPath::from_svg(&svg) {
-            Ok(p) => p,
-            Err(_) => return,
-        };
-
         let text_xform = KAffine::translate((x + x_off, y + y_off));
         let combined   = self.transform * text_xform;
 
+        if !is_translation_only(self.transform) {
+            metrics::counter!(
+                uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+                "kind" => "urx_filltext_glyphrun_transform_fallback",
+            ).increment(1);
+            self.fill_text_as_path(text, &font_str, combined);
+            return;
+        }
+
+        let segments = uzor::shaper::shape_glyph_runs(text, &font_str);
+        if segments.is_empty() {
+            // Nothing shaped (e.g. whitespace-only text) — nothing to
+            // fall back to either; same silent no-op Canvas2D itself
+            // has for invisible content.
+            return;
+        }
+
         if let Some(sh) = self.shadow.clone() {
-            self.scene.push(DrawCommand::FillPath {
-                path: path.clone(),
-                rule: FillRule::NonZero,
-                brush: PenikoBrush::Solid(apply_alpha(sh.color, self.global_alpha)),
-                transform: combined.then_translate(Vec2::new(sh.dx, sh.dy)),
-            });
+            let shadow_xform = combined.then_translate(Vec2::new(sh.dx, sh.dy));
+            let shadow_brush = PenikoBrush::Solid(apply_alpha(sh.color, self.global_alpha));
+            self.emit_text_segments(&segments, &font_str, shadow_brush, shadow_xform);
         }
         let brush = self.effective_fill_brush();
-        self.scene.push(DrawCommand::FillPath {
-            path,
-            rule: FillRule::NonZero,
-            brush,
-            transform: combined,
-        });
+        self.emit_text_segments(&segments, &font_str, brush, combined);
+    }
+}
+
+impl UrxRenderContext {
+    /// Emit one `DrawCommand::GlyphRun` per segment (registering/caching
+    /// a `FontId` for each distinct font on first use). Color-glyph
+    /// segments (`is_color_glyph_font`) and segments whose font bytes
+    /// are unexpectedly unavailable both fall back to the vector-outline
+    /// path for JUST that segment — shifted to the segment's own
+    /// starting pen position — never silently dropped (both counted).
+    fn emit_text_segments(
+        &mut self,
+        segments: &[uzor::shaper::GlyphSegment],
+        font_str: &str,
+        brush: PenikoBrush,
+        transform: KAffine,
+    ) {
+        for seg in segments {
+            let seg_origin_x = seg.glyphs.first().map(|g| g.x as f64).unwrap_or(0.0);
+
+            if is_color_glyph_font(seg.font) {
+                metrics::counter!(
+                    uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+                    "kind" => "urx_filltext_glyphrun_color_font_fallback",
+                ).increment(1);
+                self.fill_path_segment(&seg.text, font_str, brush.clone(), transform.then_translate(Vec2::new(seg_origin_x, 0.0)));
+                continue;
+            }
+
+            let Some(font_id) = resolve_font_id(seg.font) else {
+                metrics::counter!(
+                    uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+                    "kind" => "urx_filltext_glyphrun_font_bytes_unavailable",
+                ).increment(1);
+                self.fill_path_segment(&seg.text, font_str, brush.clone(), transform.then_translate(Vec2::new(seg_origin_x, 0.0)));
+                continue;
+            };
+
+            let glyphs: Vec<Glyph> =
+                seg.glyphs.iter().map(|g| Glyph { glyph_id: g.glyph_id, x: g.x, y: g.y }).collect();
+            self.scene.push(DrawCommand::GlyphRun {
+                glyphs,
+                font: font_id,
+                font_size: seg.font_size,
+                brush: brush.clone(),
+                transform,
+                text: Some(seg.text.clone()),
+            });
+        }
+    }
+
+    /// Whole-call vector-outline fallback (non-translation transform
+    /// case) — same shadow-then-main sequencing `fill_text` always used
+    /// before this change.
+    fn fill_text_as_path(&mut self, text: &str, font_str: &str, transform: KAffine) {
+        if let Some(sh) = self.shadow.clone() {
+            let shadow_xform = transform.then_translate(Vec2::new(sh.dx, sh.dy));
+            self.fill_path_segment(text, font_str, PenikoBrush::Solid(apply_alpha(sh.color, self.global_alpha)), shadow_xform);
+        }
+        let brush = self.effective_fill_brush();
+        self.fill_path_segment(text, font_str, brush, transform);
+    }
+
+    /// Render `text` as a vector-outline path via `shaper::text_to_path`
+    /// (SVG path string) → `kurbo::BezPath` → `DrawCommand::FillPath`.
+    /// This was `fill_text`'s ONLY path before this change — `uzor::shaper`
+    /// exposed cluster-level metrics only (`GlyphMetric` has
+    /// `x_offset/advance`, not a raw `glyph_id`), so there was no glyph
+    /// identity to build a `DrawCommand::GlyphRun` from. That gap closed
+    /// when `uzor::shaper::shape_glyph_runs` was added (cosmic-text's own
+    /// `LayoutGlyph.glyph_id`/`.font_id` were ALWAYS available internally
+    /// — `text_to_path_uncached` already threads the same `glyph_id`
+    /// into `SwashCache::get_outline_commands` to build ITS OWN outlines
+    /// — just never surfaced to a caller before). This function now
+    /// serves only the two genuinely-can't-map cases above.
+    fn fill_path_segment(&mut self, text: &str, font_str: &str, brush: PenikoBrush, transform: KAffine) {
+        let svg = uzor::shaper::text_to_path(text, font_str);
+        if svg.is_empty() { return; }
+        let Ok(path) = BezPath::from_svg(&svg) else { return; };
+        self.scene.push(DrawCommand::FillPath { path, rule: FillRule::NonZero, brush, transform });
     }
 }
 
@@ -937,5 +1091,115 @@ mod tests {
         rc.bezier_curve_to(30.0, 30.0, 40.0, 40.0, 50.0, 50.0);
         rc.stroke();
         let _ = ctx.take_scene();
+    }
+
+    // ── GlyphRun bridging (2026-07-24 follow-up) ─────────────────────
+
+    /// The whole point of this change: plain text under an identity/
+    /// translation-only transform must emit `GlyphRun`, never
+    /// `FillPath`, now.
+    #[test]
+    fn fill_text_emits_glyph_run_not_fillpath() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(200, 100);
+        ctx.set_fill_color("#ffffff");
+        TextRenderer::set_font(&mut ctx, "16px Roboto");
+        TextRenderer::fill_text(&mut ctx, "Hello", 10.0, 20.0);
+        let scene = ctx.take_scene();
+        assert_eq!(scene.commands.len(), 1, "one segment (one font) -> exactly one GlyphRun");
+        match &scene.commands[0] {
+            DrawCommand::GlyphRun { glyphs, font_size, text, .. } => {
+                assert_eq!(glyphs.len(), 5, "one glyph per character, no ligatures in \"Hello\"");
+                assert_eq!(*font_size, 16.0);
+                assert_eq!(text.as_deref(), Some("Hello"));
+            }
+            other => panic!("expected GlyphRun, got {:?}", other),
+        }
+    }
+
+    /// The `GlyphRun`'s own `transform` must carry the full `(x, y)`
+    /// origin translation `fill_text` was called with (plus the
+    /// baseline offset) — same contract `FillPath`'s transform used to
+    /// carry, since CPU/GPU both read `coeffs[4]/[5]` off this value.
+    #[test]
+    fn fill_text_glyph_run_transform_carries_the_origin() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(200, 100);
+        ctx.set_fill_color("#ffffff");
+        TextRenderer::set_font(&mut ctx, "16px Roboto");
+        TextRenderer::set_text_baseline(&mut ctx, TextBaseline::Top);
+        TextRenderer::fill_text(&mut ctx, "Hi", 30.0, 40.0);
+        let scene = ctx.take_scene();
+        match &scene.commands[0] {
+            DrawCommand::GlyphRun { transform, .. } => {
+                let c = transform.as_coeffs();
+                assert_eq!(c[4], 30.0);
+                assert!((c[5] - (40.0 + 16.0 * 0.8)).abs() < 1e-6, "Top baseline offset must be added: got {}", c[5]);
+            }
+            other => panic!("expected GlyphRun, got {:?}", other),
+        }
+    }
+
+    /// Repeated `fill_text` calls with the SAME font must reuse the
+    /// SAME `FontId` — proves the `font_id_cache` actually caches
+    /// (never mints a second registration for a font already seen).
+    #[test]
+    fn fill_text_reuses_the_same_font_id_across_calls() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(200, 100);
+        ctx.set_fill_color("#ffffff");
+        TextRenderer::set_font(&mut ctx, "16px Roboto");
+        TextRenderer::fill_text(&mut ctx, "AB", 0.0, 20.0);
+        TextRenderer::fill_text(&mut ctx, "CD", 0.0, 40.0);
+        let scene = ctx.take_scene();
+        assert_eq!(scene.commands.len(), 2);
+        let font_id = |cmd: &DrawCommand| match cmd {
+            DrawCommand::GlyphRun { font, .. } => *font,
+            other => panic!("expected GlyphRun, got {:?}", other),
+        };
+        assert_eq!(font_id(&scene.commands[0]), font_id(&scene.commands[1]), "same font across two calls must reuse the SAME FontId");
+    }
+
+    /// A non-identity linear transform (scale) can't be represented by
+    /// `GlyphRun`'s translate-only downstream contract — must fall back
+    /// to `FillPath`, not silently drop the scale.
+    #[test]
+    fn fill_text_falls_back_to_fillpath_under_a_scale_transform() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(200, 100);
+        ctx.set_fill_color("#ffffff");
+        Painter::scale(&mut ctx, 2.0, 2.0);
+        TextRenderer::set_font(&mut ctx, "16px Roboto");
+        TextRenderer::fill_text(&mut ctx, "Hi", 10.0, 20.0);
+        let scene = ctx.take_scene();
+        assert_eq!(scene.commands.len(), 1);
+        assert!(matches!(scene.commands[0], DrawCommand::FillPath { .. }), "scaled text must fall back to FillPath, not silently drop the scale");
+    }
+
+    /// Shadow pre-pass still emits (as `GlyphRun` now, matching the
+    /// main draw) BEFORE the main glyph run — same ordering the old
+    /// FillPath shadow pre-pass used.
+    #[test]
+    fn fill_text_with_shadow_emits_shadow_then_main_glyph_run() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(200, 100);
+        ctx.set_fill_color("#ffffff");
+        Effects::set_shadow(&mut ctx, 2.0, 2.0, 0.0, "#000000");
+        TextRenderer::set_font(&mut ctx, "16px Roboto");
+        TextRenderer::fill_text(&mut ctx, "Hi", 10.0, 20.0);
+        let scene = ctx.take_scene();
+        assert_eq!(scene.commands.len(), 2, "shadow pre-pass + main draw");
+        assert!(matches!(scene.commands[0], DrawCommand::GlyphRun { .. }));
+        assert!(matches!(scene.commands[1], DrawCommand::GlyphRun { .. }));
+    }
+
+    #[test]
+    fn empty_text_emits_nothing() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(200, 100);
+        TextRenderer::set_font(&mut ctx, "16px Roboto");
+        TextRenderer::fill_text(&mut ctx, "", 10.0, 20.0);
+        let scene = ctx.take_scene();
+        assert!(scene.commands.is_empty());
     }
 }
