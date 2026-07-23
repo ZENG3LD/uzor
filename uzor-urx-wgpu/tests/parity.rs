@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use uzor_urx_core::scene::Scene;
 use uzor_urx_cpu::{CpuBackend, Pixmap};
-use uzor_urx_wgpu::{NativeUrxRenderer, Viewport};
+use uzor_urx_wgpu::{NativeRenderError, NativeUrxRenderer, Viewport};
 
 const CHANNEL_TOLERANCE_EDGE: i32 = 24; // ~9% of 255 — AA-edge slack.
 const CHANNEL_TOLERANCE_INTERIOR: i32 = 2; // rounding-only slack.
@@ -289,6 +289,100 @@ fn parity_tessellated_path_star() {
         // the stroke band, away from both its endpoints' round joins.
         interior_probes: &[(70, 140), (70, 109), (190, 110)],
     });
+}
+
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_clip_rect_stack() {
+    run_case(ParityCase {
+        name: "clip_rect_stack",
+        scene: fixtures::clip_rect_stack(),
+        // (128, 55): between outer and inner clip levels — only the
+        // outer-level teal band is visible here.
+        // (80, 80): inside the outer clip but OUTSIDE the inner one,
+        // in a spot the (clipped-away) orange rect would otherwise
+        // reach — must show plain BACKGROUND if inner-clip wiring is
+        // correct on the Quad instance type.
+        // (128, 100): inside the inner clip, on the yellow FillPath
+        // triangle (topmost layer there) — proves clip_rect doesn't
+        // accidentally cut CONTENT that's legitimately inside the
+        // active clip.
+        interior_probes: &[(128, 55), (80, 80), (128, 100)],
+    });
+}
+
+/// Design §8 commit 4 gate (item 5): `NativeRenderError::ZeroViewport`
+/// needs no device at all to trigger (the check is the very first
+/// thing `render_into_encoder` does), but constructing a
+/// `NativeUrxRenderer` in the first place still needs one — so this
+/// lives here, in the GPU-gated file, rather than as a true no-device
+/// lib unit test.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn native_render_error_zero_viewport() {
+    let Some((device, queue)) = common::init_device() else {
+        eprintln!("native_render_error_zero_viewport: no GPU/software adapter available; skipping");
+        return;
+    };
+    let mut renderer = NativeUrxRenderer::new(device.clone(), queue.clone(), NATIVE_FORMAT);
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("uzor-urx-wgpu-zero-viewport-target"),
+        size: wgpu::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: NATIVE_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let scene = fixtures::resize_sanity_scene(4);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let err = renderer
+        .render_into_encoder(&scene, &mut encoder, &view, Viewport { width: 0, height: 0 })
+        .expect_err("a zero-area viewport must be rejected");
+    assert!(
+        matches!(err, NativeRenderError::ZeroViewport { width: 0, height: 0 }),
+        "expected ZeroViewport{{0,0}}, got {err:?}"
+    );
+}
+
+/// `NativeRenderError::FormatMismatch` — build the renderer for one
+/// format, hand it a view created from a texture of a DIFFERENT
+/// format.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn native_render_error_format_mismatch() {
+    let Some((device, queue)) = common::init_device() else {
+        eprintln!("native_render_error_format_mismatch: no GPU/software adapter available; skipping");
+        return;
+    };
+    let mut renderer = NativeUrxRenderer::new(device.clone(), queue.clone(), NATIVE_FORMAT);
+
+    // A format the renderer was NOT built for.
+    const MISMATCHED_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
+    assert_ne!(NATIVE_FORMAT, MISMATCHED_FORMAT, "test setup: formats must actually differ");
+
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("uzor-urx-wgpu-format-mismatch-target"),
+        size: wgpu::Extent3d { width: 4, height: 4, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: MISMATCHED_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let scene = fixtures::resize_sanity_scene(4);
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    let err = renderer
+        .render_into_encoder(&scene, &mut encoder, &view, Viewport { width: 4, height: 4 })
+        .expect_err("a mismatched-format view must be rejected");
+    assert!(
+        matches!(err, NativeRenderError::FormatMismatch { expected } if expected == NATIVE_FORMAT),
+        "expected FormatMismatch{{expected: {NATIVE_FORMAT:?}}}, got {err:?}"
+    );
 }
 
 /// Design §8 commit 3 gate: render the SAME renderer instance at

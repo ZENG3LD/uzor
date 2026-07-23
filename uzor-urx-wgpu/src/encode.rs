@@ -11,10 +11,14 @@
 //! that gets full support in Wave 1; `Radial`/`Sweep` still degrade to
 //! solid, and gradients on `Line`/`FillPath`/`StrokePath` still
 //! degrade to first-stop solid (design: "only FillRect gets gradients
-//! in Wave 1"). Every unimplemented `DrawCommand` variant is a
-//! counted, never-silent degrade via
-//! `uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES` with a
-//! `native_*` `kind` tag.
+//! in Wave 1"). Commit 4 adds the real `ClipStack` (`PushClipRect`/
+//! `PopClip` feed every instance's `clip_rect` field; `PushClipRoundedRect`
+//! degrades to its bounding rect) and finalizes the degrade-label
+//! inventory for every `DrawCommand` variant this crate doesn't render
+//! natively yet (`GlyphRun` — Wave 2, `Image` — Wave 4, blend layers —
+//! Wave 3). Every unimplemented `DrawCommand` variant is a counted,
+//! never-silent degrade via `uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES`
+//! with a `native_*` `kind` tag.
 //!
 //! ## Tessellation-cache transform semantics — honest write-up (design
 //! item 3 investigation)
@@ -178,6 +182,88 @@ impl EncodedFrame {
     }
 }
 
+/// CPU-side clip stack, computed at encode time (design §5) — same
+/// intersection semantics as `uzor-urx-cpu::clip::ClipStack`'s plain-
+/// rect entries (`push_rect`/`current`): a `Vec<[x,y,w,h]>`, root =
+/// full viewport, intersect-with-current-top on every push, guarded
+/// pop (root is never popped). Unlike the CPU reference, this stack
+/// has no rounded-mask entry variant — `PushClipRoundedRect` degrades
+/// to its bounding rect (Wave 3 owns real stencil clip), matching the
+/// legacy adapter's own `wgpu_rounded_clip_to_rect_bbox` policy
+/// (`adapter.rs:227-230`) under a distinct `native_*` label.
+///
+/// **CPU clip-edge AA finding**: `uzor-urx-cpu`'s `ClipStack::coverage`
+/// (`clip.rs:34-39`) does a HARD binary in/out test for plain `Rect`
+/// entries, but that method is only reachable via `pixel_coverage()`,
+/// which every CPU rasteriser (`fill_rect_aa`, `fill_path_aa`,
+/// `stroke_line_aa_with_caps`) only calls when a MASK (rounded-clip)
+/// entry is present (`ClipStack::all_rect()` gate). For a plain-rect-
+/// only clip stack — the ONLY kind this native path supports — every
+/// CPU primitive instead intersects its own float bounding box against
+/// `clip.current()` (a plain float `Rect`) and feeds the result through
+/// the SAME analytic per-pixel coverage function used for the shape's
+/// own edges (`fill.rs::axis_coverage`). So CPU's clip boundary gets a
+/// SOFT, sub-pixel-accurate AA transition, same as any other edge —
+/// while this native path's fragment-shader clip test
+/// (`if px < cr.x || ... { discard; }`) is a HARD binary cut. This is
+/// the same "two different AA algorithms" class of divergence as
+/// every other Wave 1 finding — expected to show up only as a thin
+/// 1px seam along each clip boundary in the whole-image sweep, not at
+/// any interior probe placed away from a clip edge.
+struct ClipStack {
+    stack: Vec<[f32; 4]>,
+}
+
+impl ClipStack {
+    fn new(viewport: Viewport) -> Self {
+        Self { stack: vec![[0.0, 0.0, viewport.width as f32, viewport.height as f32]] }
+    }
+
+    /// Current active clip rect (top of stack). The stack is seeded
+    /// with the root entry in `new` and that entry is never popped, so
+    /// this never panics.
+    fn current(&self) -> [f32; 4] {
+        *self.stack.last().expect("ClipStack is seeded with a root entry that is never popped")
+    }
+
+    /// Intersect `r` (already in device space) with the current top
+    /// and push the result — mirrors `uzor-urx-cpu::clip::ClipStack::push_rect`'s
+    /// intersection (`clip.rs:73-82`), just carrying `[x,y,w,h]`
+    /// instead of a `kurbo::Rect`.
+    fn push_rect_device(&mut self, r: [f32; 4]) {
+        let cur = self.current();
+        let x0 = cur[0].max(r[0]);
+        let y0 = cur[1].max(r[1]);
+        let x1 = (cur[0] + cur[2]).min(r[0] + r[2]);
+        let y1 = (cur[1] + cur[3]).min(r[1] + r[3]);
+        self.stack.push([x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)]);
+    }
+
+    /// Guarded pop — the root entry (index 0) is never removed, so an
+    /// unbalanced (extra) `PopClip` is a defensive no-op rather than a
+    /// panic, same policy as the legacy adapter's `clip_depth` guard
+    /// (`adapter.rs:233-238`).
+    fn pop(&mut self) {
+        if self.stack.len() > 1 {
+            self.stack.pop();
+        }
+    }
+}
+
+/// `None` when the current clip has zero area — callers should elide
+/// the primitive entirely (design commit 4 item 3: a zero-area clip
+/// makes anything under it invisible by construction, so encoding an
+/// instance for it would be pure waste, not a degrade).
+#[inline]
+fn active_clip(clip: &ClipStack) -> Option<[f32; 4]> {
+    let r = clip.current();
+    if r[2] <= 0.0 || r[3] <= 0.0 {
+        None
+    } else {
+        Some(r)
+    }
+}
+
 /// Translate + uniform-scale decomposition (design §5) — the native
 /// path drops shear/rotation (`c[1]`/`c[2]`) for Wave 1, matching the
 /// legacy adapter's own known Wave-4 gap (`adapter.rs:311-323`). A
@@ -272,9 +358,7 @@ fn corner_radius_uniform(radii: &Option<[f32; 4]>) -> f32 {
 
 pub(crate) fn encode_scene(scene: &Scene, viewport: Viewport, tess_cache: &mut TessCache) -> EncodedFrame {
     let mut frame = EncodedFrame::default();
-    // Wave 1 has no native clip stack yet (commit 4) — every instance
-    // gets the full viewport as its clip rect.
-    let full_clip = [0.0f32, 0.0, viewport.width as f32, viewport.height as f32];
+    let mut clip = ClipStack::new(viewport);
 
     for cmd in &scene.commands {
         // Same "silent skip + counter" policy as `uzor-urx-cpu`
@@ -287,31 +371,44 @@ pub(crate) fn encode_scene(scene: &Scene, viewport: Viewport, tess_cache: &mut T
         }
 
         match cmd {
-            DrawCommand::FillRect { rect, radii, brush, transform } => {
-                encode_fill_rect(&mut frame, tess_cache, *rect, radii, brush, transform, full_clip);
+            DrawCommand::PushClipRect { rect, transform } => {
+                let (x0, y0, w, h, _, _) = transform_rect(*rect, transform);
+                clip.push_rect_device([x0 as f32, y0 as f32, w as f32, h as f32]);
             }
-            DrawCommand::StrokeRect { rect, radii, stroke, brush, transform } => {
-                encode_stroke_rect(&mut frame, *rect, radii, stroke, brush, transform, full_clip);
+            DrawCommand::PushClipRoundedRect { rect, transform } => {
+                // Bounding-rect approximation (Wave 3 owns real
+                // stencil clip) — the rounded rect's OWN bbox still
+                // needs the same transform + intersection treatment
+                // as a plain `PushClipRect`.
+                let (x0, y0, w, h, _, _) = transform_rect(rect.rect(), transform);
+                clip.push_rect_device([x0 as f32, y0 as f32, w as f32, h as f32]);
+                degrade("native_rounded_clip_to_rect_bbox");
             }
-            DrawCommand::Line { from, to, stroke, brush, transform } => {
-                encode_line(&mut frame, *from, *to, stroke, brush, transform, full_clip);
-            }
-            DrawCommand::FillPath { path, rule, brush, transform } => {
-                encode_fill_path(&mut frame, tess_cache, path, *rule, brush, transform, full_clip);
-            }
-            DrawCommand::StrokePath { path, stroke, brush, transform } => {
-                encode_stroke_path(&mut frame, tess_cache, path, stroke, brush, transform, full_clip);
-            }
+            DrawCommand::PopClip => clip.pop(),
             DrawCommand::GlyphRun { .. } => degrade("native_glyph_run_not_yet_implemented"),
             DrawCommand::Image { .. } => degrade("native_image_not_yet_implemented"),
-            DrawCommand::PushClipRect { .. } => degrade("native_clip_not_yet_implemented"),
-            DrawCommand::PushClipRoundedRect { .. } => degrade("native_clip_not_yet_implemented"),
-            // Nothing was ever pushed onto a (non-existent) native clip
-            // stack this commit, so there is nothing to balance/pop —
-            // the corresponding push already counted its own degrade.
-            DrawCommand::PopClip => {}
             DrawCommand::PushBlendLayer { .. } | DrawCommand::PopBlendLayer => {
                 degrade("native_blend_layer_not_yet_implemented");
+            }
+            DrawCommand::FillRect { rect, radii, brush, transform } => {
+                let Some(clip_rect) = active_clip(&clip) else { continue };
+                encode_fill_rect(&mut frame, tess_cache, *rect, radii, brush, transform, clip_rect);
+            }
+            DrawCommand::StrokeRect { rect, radii, stroke, brush, transform } => {
+                let Some(clip_rect) = active_clip(&clip) else { continue };
+                encode_stroke_rect(&mut frame, *rect, radii, stroke, brush, transform, clip_rect);
+            }
+            DrawCommand::Line { from, to, stroke, brush, transform } => {
+                let Some(clip_rect) = active_clip(&clip) else { continue };
+                encode_line(&mut frame, *from, *to, stroke, brush, transform, clip_rect);
+            }
+            DrawCommand::FillPath { path, rule, brush, transform } => {
+                let Some(clip_rect) = active_clip(&clip) else { continue };
+                encode_fill_path(&mut frame, tess_cache, path, *rule, brush, transform, clip_rect);
+            }
+            DrawCommand::StrokePath { path, stroke, brush, transform } => {
+                let Some(clip_rect) = active_clip(&clip) else { continue };
+                encode_stroke_path(&mut frame, tess_cache, path, stroke, brush, transform, clip_rect);
             }
         }
     }
@@ -1029,5 +1126,214 @@ mod tests {
         // Before the start — Pad should clamp to the first stop.
         let before = gradient_vertex_color([-50.0, 0.0], &pos, axis, axis_len_sq, &stops, Extend::Pad);
         assert_eq!(before.to_rgba8().r, 0);
+    }
+
+    // ── Commit 4: ClipStack ─────────────────────────────────────────
+
+    #[test]
+    fn clip_stack_root_is_full_viewport_and_never_pops() {
+        let mut clip = ClipStack::new(viewport());
+        assert_eq!(clip.current(), [0.0, 0.0, 100.0, 100.0]);
+        clip.pop(); // no matching push — must be a no-op, not a panic.
+        assert_eq!(clip.current(), [0.0, 0.0, 100.0, 100.0]);
+    }
+
+    #[test]
+    fn clip_stack_push_intersects_with_current_top() {
+        let mut clip = ClipStack::new(viewport());
+        clip.push_rect_device([10.0, 10.0, 60.0, 60.0]); // -> [10,10,60,60] (root is [0,0,100,100])
+        assert_eq!(clip.current(), [10.0, 10.0, 60.0, 60.0]);
+        // Nested push partially outside the current top — must clip to
+        // the INTERSECTION, not the pushed rect verbatim.
+        clip.push_rect_device([40.0, 40.0, 60.0, 60.0]); // pushed = [40,40]..[100,100]; current = [10,10]..[70,70]
+        assert_eq!(clip.current(), [40.0, 40.0, 30.0, 30.0]); // intersection = [40,40]..[70,70]
+        clip.pop();
+        assert_eq!(clip.current(), [10.0, 10.0, 60.0, 60.0], "pop must restore the PREVIOUS top exactly");
+    }
+
+    #[test]
+    fn clip_stack_disjoint_push_yields_zero_area() {
+        let mut clip = ClipStack::new(viewport());
+        clip.push_rect_device([0.0, 0.0, 10.0, 10.0]);
+        clip.push_rect_device([50.0, 50.0, 10.0, 10.0]); // no overlap with [0,0,10,10]
+        let cur = clip.current();
+        assert!(cur[2] <= 0.0 || cur[3] <= 0.0, "disjoint push must intersect to zero area: {cur:?}");
+    }
+
+    #[test]
+    fn push_clip_rect_feeds_every_subsequent_instance() {
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::PushClipRect {
+            rect: Rect::new(10.0, 10.0, 30.0, 30.0),
+            transform: Affine::IDENTITY,
+        });
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
+        scene.line_solid(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 50.0, y: 50.0 }, 2.0, Color::from_rgba8(0, 255, 0, 255));
+        scene.push(DrawCommand::PopClip);
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 5.0, 5.0), Color::from_rgba8(0, 0, 255, 255));
+
+        let frame = encode_scene(&scene, viewport(), &mut cache());
+        assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 20.0, 20.0], "rect under the pushed clip");
+        assert_eq!(frame.lines[0].clip_rect, [10.0, 10.0, 20.0, 20.0], "line under the pushed clip");
+        assert_eq!(
+            frame.quads[1].clip_rect,
+            [0.0, 0.0, 100.0, 100.0],
+            "rect encoded AFTER PopClip must see the full viewport again"
+        );
+    }
+
+    #[test]
+    fn push_clip_rounded_rect_degrades_to_bbox_and_still_clips() {
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::PushClipRoundedRect {
+            rect: uzor_urx_core::math::RoundedRect::from_rect(
+                Rect::new(10.0, 10.0, 30.0, 30.0),
+                uzor_urx_core::math::RoundedRectRadii::new(5.0, 5.0, 5.0, 5.0),
+            ),
+            transform: Affine::IDENTITY,
+        });
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
+        let frame = encode_scene(&scene, viewport(), &mut cache());
+        // Bounding-rect approximation — the ROUNDED rect's plain bbox
+        // is [10,10,20,20], same as a plain `PushClipRect` would give.
+        assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 20.0, 20.0]);
+    }
+
+    /// Port of the legacy adapter's `adapt_balances_clip_stack`
+    /// (`adapter.rs:436-446`) shape, adapted to the native encoder's
+    /// chosen semantics: an unbalanced `PushClipRect` with no matching
+    /// `PopClip` does NOT panic, and — unlike the legacy adapter, which
+    /// force-restores at scene end so nothing downstream is affected —
+    /// this encoder has no "end of scene" cleanup step, so the pushed
+    /// clip stays ACTIVE for every instance encoded after it, for the
+    /// rest of the frame. Documented here as the chosen behaviour, not
+    /// an oversight: a scene is a fixed, one-shot command list: there
+    /// is no "downstream" beyond its own end to protect.
+    #[test]
+    fn unbalanced_push_clip_rect_stays_active_for_the_rest_of_the_frame_no_panic() {
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::PushClipRect {
+            rect: Rect::new(10.0, 10.0, 20.0, 20.0),
+            transform: Affine::IDENTITY,
+        });
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 100.0, 100.0), Color::from_rgba8(255, 0, 0, 255));
+        // No matching PopClip.
+        let frame = encode_scene(&scene, viewport(), &mut cache());
+        assert_eq!(frame.quads.len(), 1);
+        assert_eq!(frame.quads[0].clip_rect, [10.0, 10.0, 10.0, 10.0]);
+    }
+
+    #[test]
+    fn zero_area_clip_elides_every_instance_type_without_a_degrade() {
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((20.0, 0.0));
+        path.line_to((10.0, 20.0));
+        path.close_path();
+
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::PushClipRect { rect: Rect::new(0.0, 0.0, 0.0, 0.0), transform: Affine::IDENTITY });
+        scene.fill_rect_solid(Rect::new(0.0, 0.0, 10.0, 10.0), Color::from_rgba8(255, 0, 0, 255));
+        scene.line_solid(Vec2 { x: 0.0, y: 0.0 }, Vec2 { x: 10.0, y: 0.0 }, 2.0, Color::from_rgba8(0, 0, 255, 255));
+        scene.push(DrawCommand::FillPath {
+            path,
+            rule: FillRule::NonZero,
+            brush: Brush::Solid(Color::from_rgba8(10, 20, 30, 255)),
+            transform: Affine::IDENTITY,
+        });
+
+        let frame = encode_scene(&scene, viewport(), &mut cache());
+        assert!(frame.quads.is_empty());
+        assert!(frame.lines.is_empty());
+        assert!(frame.triangles.is_empty());
+        assert!(frame.batches.is_empty());
+    }
+
+    // ── Commit 4: metrics-recorder-backed degrade-counter proof ──────
+    //
+    // `metrics-util`'s `DebuggingRecorder` is NOT used anywhere in this
+    // workspace (grepped — no hits), so there is no existing pattern to
+    // mirror. Rather than pull in a new dev-dependency for one test,
+    // this uses `metrics::with_local_recorder` — already part of the
+    // crate's EXISTING `metrics = "0.24"` dependency (no new dep at
+    // all) — with a small hand-rolled `Recorder` that records counter
+    // values into a `Mutex<HashMap<Key, Arc<AtomicU64>>>`. This proves
+    // at least one degrade counter (`native_rounded_clip_to_rect_bbox`)
+    // actually increments, not just that the encoder doesn't panic.
+    mod metrics_recorder_proof {
+        use std::collections::HashMap;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        use metrics::{Counter, CounterFn, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit};
+
+        struct RecordedCounter(AtomicU64);
+        impl CounterFn for RecordedCounter {
+            fn increment(&self, value: u64) {
+                self.0.fetch_add(value, Ordering::SeqCst);
+            }
+            fn absolute(&self, value: u64) {
+                self.0.store(value, Ordering::SeqCst);
+            }
+        }
+
+        #[derive(Default)]
+        struct TestRecorder {
+            counters: Mutex<HashMap<Key, Arc<RecordedCounter>>>,
+        }
+
+        impl TestRecorder {
+            /// Sum of every counter registered under `metric_name` whose
+            /// labels include `kind == label` — matches how
+            /// `metrics::counter!(KEY, "kind" => label)` registers.
+            fn value_for(&self, metric_name: &str, label: &str) -> u64 {
+                let map = self.counters.lock().unwrap_or_else(|e| e.into_inner());
+                map.iter()
+                    .filter(|(key, _)| {
+                        key.name() == metric_name && key.labels().any(|l| l.key() == "kind" && l.value() == label)
+                    })
+                    .map(|(_, counter)| counter.0.load(Ordering::SeqCst))
+                    .sum()
+            }
+        }
+
+        impl Recorder for TestRecorder {
+            fn describe_counter(&self, _key: KeyName, _unit: Option<Unit>, _description: SharedString) {}
+            fn describe_gauge(&self, _key: KeyName, _unit: Option<Unit>, _description: SharedString) {}
+            fn describe_histogram(&self, _key: KeyName, _unit: Option<Unit>, _description: SharedString) {}
+
+            fn register_counter(&self, key: &Key, _metadata: &Metadata<'_>) -> Counter {
+                let mut map = self.counters.lock().unwrap_or_else(|e| e.into_inner());
+                let handle = map.entry(key.clone()).or_insert_with(|| Arc::new(RecordedCounter(AtomicU64::new(0))));
+                Counter::from_arc(handle.clone())
+            }
+            fn register_gauge(&self, _key: &Key, _metadata: &Metadata<'_>) -> Gauge {
+                Gauge::noop()
+            }
+            fn register_histogram(&self, _key: &Key, _metadata: &Metadata<'_>) -> Histogram {
+                Histogram::noop()
+            }
+        }
+
+        use super::*;
+
+        #[test]
+        fn rounded_clip_bbox_degrade_counter_actually_increments() {
+            let recorder = TestRecorder::default();
+            metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::PushClipRoundedRect {
+                    rect: uzor_urx_core::math::RoundedRect::from_rect(
+                        Rect::new(10.0, 10.0, 30.0, 30.0),
+                        uzor_urx_core::math::RoundedRectRadii::new(5.0, 5.0, 5.0, 5.0),
+                    ),
+                    transform: Affine::IDENTITY,
+                });
+                let _frame = encode_scene(&scene, viewport(), &mut cache());
+            });
+
+            let value = recorder.value_for(KEY_RENDER_PRIMITIVES, "native_rounded_clip_to_rect_bbox");
+            assert_eq!(value, 1, "the degrade counter must have actually incremented, not just avoided a panic");
+        }
     }
 }

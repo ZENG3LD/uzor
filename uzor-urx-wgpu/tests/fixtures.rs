@@ -376,6 +376,92 @@ pub fn tessellated_path_star() -> Scene {
     scene
 }
 
+/// Nested `PushClipRect`/`PopClip` around overlapping fills, a line,
+/// and a path — proves the `clip_rect` field is wired correctly on
+/// all 3 native instance types (design §7 fixture list), and that
+/// nested clip levels intersect correctly (design §5 `ClipStack`).
+///
+/// Layout (all coordinates `.5`-offset per the established
+/// convention):
+/// - Outer clip: `(40.5,40.5)..(216.5,216.5)`.
+/// - A teal band drawn while ONLY the outer clip is active — visible
+///   in the "ring" between the outer and inner clip levels, never
+///   touched by the inner clip.
+/// - Inner clip: `(90.5,90.5)..(166.5,166.5)` (nested inside the
+///   outer one).
+/// - An orange `FillRect`, a magenta `Line`, and a yellow `FillPath`
+///   (triangle) — every one of them deliberately POKES OUTSIDE the
+///   inner clip's bounds on at least one side, so each must be
+///   visibly CUT to the inner clip's 76x76 region if `clip_rect`
+///   wiring is correct on that instance type.
+///
+/// **CPU clip-edge AA finding** (see `encode.rs`'s `ClipStack` doc
+/// comment for the full mechanism): for a plain-rect-only clip stack
+/// (this fixture never pushes a rounded clip), `uzor-urx-cpu` computes
+/// clip boundaries via the SAME analytic per-pixel coverage function
+/// used for a shape's own edges (soft AA), while this native pipeline's
+/// fragment-shader clip test is a hard binary discard. Probes below sit
+/// comfortably away from every clip boundary for exactly this reason;
+/// the thin 1px seam along each clip edge is expected to show up only
+/// in the whole-image sweep, same class of divergence as every other
+/// Wave 1 fixture.
+pub fn clip_rect_stack() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+
+    scene.push(DrawCommand::PushClipRect {
+        rect: Rect::new(40.5, 40.5, 216.5, 216.5),
+        transform: Affine::IDENTITY,
+    });
+
+    // Outer-level-only content: a thin band near the top of the outer
+    // clip, entirely above the inner clip's y-range — this is what
+    // shows in the "ring" between outer and inner clip levels.
+    scene.push(DrawCommand::FillRect {
+        rect: Rect::new(45.5, 45.5, 211.5, 66.5),
+        radii: None,
+        brush: solid(40, 150, 150, 255),
+        transform: Affine::IDENTITY,
+    });
+
+    scene.push(DrawCommand::PushClipRect {
+        rect: Rect::new(90.5, 90.5, 166.5, 166.5),
+        transform: Affine::IDENTITY,
+    });
+
+    // Pokes outside the inner clip on all 4 sides.
+    scene.push(DrawCommand::FillRect {
+        rect: Rect::new(70.5, 70.5, 186.5, 186.5),
+        radii: None,
+        brush: solid(230, 140, 30, 255),
+        transform: Affine::IDENTITY,
+    });
+    // Pokes outside the inner clip on the left/right.
+    scene.push(DrawCommand::Line {
+        from: Vec2 { x: 60.5, y: 128.5 },
+        to: Vec2 { x: 200.5, y: 128.5 },
+        stroke: Stroke { width: 10.0, cap: LineCap::Butt, ..Stroke::default() },
+        brush: solid(200, 30, 200, 255),
+        transform: Affine::IDENTITY,
+    });
+    // Pokes outside the inner clip on the top/bottom.
+    let mut triangle = BezPath::new();
+    triangle.move_to((110.5, 60.5));
+    triangle.line_to((150.5, 60.5));
+    triangle.line_to((130.5, 200.5));
+    triangle.close_path();
+    scene.push(DrawCommand::FillPath {
+        path: triangle,
+        rule: FillRule::NonZero,
+        brush: solid(230, 230, 60, 255),
+        transform: Affine::IDENTITY,
+    });
+
+    scene.push(DrawCommand::PopClip); // back to outer clip
+    scene.push(DrawCommand::PopClip); // back to full viewport
+    scene
+}
+
 /// A trivially-scalable scene (opaque background + one centered solid
 /// rect spanning the middle 50% of the canvas) — used ONLY by the
 /// resize-sanity test (design §8 commit 3 gate: render 64x64 ->
