@@ -37,7 +37,10 @@ pub(crate) const fn pack_rgba8(rgba: [u8; 4]) -> u32 {
 /// - border_color:  4 bytes  (u32, packed RGBA8)
 /// - corner_radius: 4 bytes  (f32)
 /// - border_width:  4 bytes  (f32)
-/// - _pad0:         8 bytes  (reserved — Wave 4 rotation angle, design §3)
+/// - _pad0:         8 bytes  (`_pad0[0]` = rotation angle in radians,
+///   Wave 4 Commit 4, design §5.3 — a similarity transform's rotation
+///   component, applied around the rect's own center in the vertex
+///   shader; `_pad0[1]` remains reserved)
 /// - clip_rect:    16 bytes  ([f32; 4])
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Pod, Zeroable)]

@@ -51,8 +51,27 @@
 //! degrade via `uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES`
 //! with a `native_*` `kind` tag.
 //!
+//! **Wave 4 Commit 4** (design §0.2/§5/§6) closes the two structural
+//! gaps the "Tessellation-cache transform semantics" section right
+//! below used to document as open: (1) stroke width is now
+//! DEVICE-CONSTANT under scale on every mechanism (Quad SDF, Line SDF,
+//! Path tessellation via `tess_stroke_scaled`'s local-width pre-scale),
+//! matching CPU exactly; (2) `project_local`'s mesh reprojection is now
+//! the FULL 6-coefficient affine, not translate+scale-only — closing
+//! the last asymmetry `transform_gradient_params`'s own doc comment
+//! used to flag. `decompose_similarity` (introduced Commit 3 for
+//! `encode_image`) now ALSO drives `FillRect`/`StrokeRect`'s own
+//! Quad-SDF-vs-Triangle-pipeline routing decision (§5.2): a similarity
+//! transform with uniform radii stays on the fast rotation-capable Quad
+//! SDF (`_pad0[0]` now carries the rotation angle, §5.3); a genuine
+//! shear/reflection OR non-uniform per-corner radii routes through the
+//! Triangle pipeline instead (§6.2), closing
+//! `native_per_corner_radii_uniform_approx` entirely. The
+//! curve-flattening-tolerance-under-scale limitation below is
+//! UNCHANGED by this commit — still open, still disclosed, not fixed.
+//!
 //! ## Tessellation-cache transform semantics — honest write-up (design
-//! item 3 investigation)
+//! item 3 investigation, Wave 1; stroke-width UPDATE Wave 4 Commit 4)
 //!
 //! `uzor-urx-cpu::path::stroke_path_aa` transforms the PATH POINTS
 //! through the full affine (translation/scale/rotation/shear all
@@ -64,25 +83,26 @@
 //! the transform's scale.
 //!
 //! This crate's `TessCache` (design §6) tessellates in LOCAL
-//! (pre-transform) space — `stroke.width` is fed to lyon as a LOCAL
-//! geometric quantity (`tessellate.rs::tessellate_stroke`), and the
-//! resulting mesh (including that baked-in width) is re-projected
-//! through the frame's translate+scale at replay (`emit_solid_mesh`
-//! below). Under a non-1.0 scale this means the NATIVE pipeline's
-//! apparent on-screen stroke width SCALES with the transform, while
-//! CPU's stays constant — a genuine, structural semantic difference
-//! between the two backends for scaled `StrokePath` content. Every
-//! Wave 1 fixture uses `Affine::IDENTITY` (scale 1.0), so this
-//! difference is inert today; flagged here for the record rather than
-//! papered over, per the coordinator's explicit ask. The same applies
-//! to curve-flattening tolerance: CPU adapts its flatten tolerance to
-//! the transform's scale (`path.rs::screen_flatten_tolerance`) so a
-//! zoomed-in curve stays smooth; this crate tessellates once at a
-//! fixed LOCAL tolerance (`tessellate::TESS_TOLERANCE_PX`), so a
-//! heavily-scaled-up cached mesh could look faceted on screen — again
-//! a real, currently-untested (identity-transform-only fixtures)
-//! architecture limitation of the local-space caching design, not
-//! something this commit invents.
+//! (pre-transform) space. Through Wave 1-3, `stroke.width` was fed to
+//! lyon as a raw LOCAL geometric quantity, so the NATIVE pipeline's
+//! apparent on-screen stroke width scaled with the transform while
+//! CPU's stayed constant — a genuine, structural semantic difference,
+//! inert only because every fixture through Wave 3 used
+//! `Affine::IDENTITY`. **Wave 4 Commit 4 closes this**: `tess_cache`
+//! callers now pre-divide `stroke.width` by the transform's own average
+//! scale magnitude before tessellating (`tess_stroke_scaled`), so the
+//! reprojected mesh's on-screen width comes out device-constant,
+//! matching CPU exactly (the Quad-SDF/Line-SDF mechanisms simply stopped
+//! multiplying by scale at all, being analytic rather than
+//! cache-based). The curve-flattening-tolerance gap is UNCHANGED and
+//! still open: CPU adapts its flatten tolerance to the transform's
+//! scale (`path.rs::screen_flatten_tolerance`) so a zoomed-in curve
+//! stays smooth; this crate tessellates once at a fixed LOCAL tolerance
+//! (`tessellate::TESS_TOLERANCE_PX`), so a heavily-scaled-up cached mesh
+//! could look faceted on screen — a real, currently-untested (no
+//! fixture zooms a cached path enough to notice) architecture limitation
+//! of the local-space caching design, explicitly NOT fixed this wave
+//! (design §5.4).
 //!
 //! ## Gradient-routing finding (design item 5 investigation)
 //!
@@ -108,10 +128,11 @@
 //! (`LinearGradientPosition.start/end`) DIRECTLY against screen-space
 //! pixel coordinates — it never applies `transform` to the gradient
 //! axis at all (only to `rect`). This native pipeline applies the SAME
-//! translate+scale decomposition to both the rect's tessellated mesh
-//! AND the gradient axis, which is more correct under a future non-
-//! identity transform but is, again, a difference from CPU's literal
-//! behaviour — invisible at `Affine::IDENTITY` (every Wave 1 fixture).
+//! transform (translate+scale through Wave 3; the FULL affine as of
+//! Wave 4 Commit 4, §5.4) to both the rect's tessellated mesh AND the
+//! gradient axis, which is more correct under a non-identity transform
+//! but is, again, a difference from CPU's literal behaviour — invisible
+//! at `Affine::IDENTITY` (every Wave 1-3 fixture).
 //!
 //! Stop interpolation: CPU builds a dense 256-entry LUT by lerping
 //! PREMULTIPLIED sRGB stop bytes per-pixel
@@ -453,16 +474,17 @@ enum ClipFrame {
         /// `TessCache` Wave 1 built for gradient-routed `FillRect`, no
         /// new cache.
         mesh: Arc<TessMesh>,
-        /// Projection coefficients captured at PUSH time — the eventual
-        /// `PopClip` re-projects the SAME mesh through these, not
-        /// whatever transform happens to be active at pop time (there
-        /// isn't one — `PopClip` carries no transform of its own — but
-        /// documented for the same "replay contract" reason
-        /// `emit_solid_mesh` documents its own coefficients).
-        sx: f64,
-        sy: f64,
-        tx: f64,
-        ty: f64,
+        /// Full affine transform captured at PUSH time (Wave 4 Commit 4,
+        /// design §5.4) — replaces the earlier translate+scale-only
+        /// `sx/sy/tx/ty` quadruple now that `project_local`/
+        /// `emit_stencil_mask_batch` reproject through the full 6-coeff
+        /// affine. The eventual `PopClip`/blend-layer-replay re-projects
+        /// the SAME mesh through this SAME `Affine`, not whatever
+        /// transform happens to be active later (there isn't one —
+        /// `PopClip` carries no transform of its own — but documented
+        /// for the same "replay contract" reason `emit_solid_mesh`
+        /// documents its own coefficients).
+        transform: Affine,
     },
 }
 
@@ -525,15 +547,7 @@ impl ClipStack {
     /// of `ClipStack` to keep this type free of any `EncodedFrame`
     /// dependency — pure bookkeeping, same separation of concerns as
     /// Wave 1's `ClipStack`).
-    fn push_rounded_rect_device(
-        &mut self,
-        r: [f32; 4],
-        mesh: Arc<TessMesh>,
-        sx: f64,
-        sy: f64,
-        tx: f64,
-        ty: f64,
-    ) -> u32 {
+    fn push_rounded_rect_device(&mut self, r: [f32; 4], mesh: Arc<TessMesh>, transform: Affine) -> u32 {
         let cur = self.current();
         let x0 = cur[0].max(r[0]);
         let y0 = cur[1].max(r[1]);
@@ -542,27 +556,27 @@ impl ClipStack {
         let rect_device = [x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)];
         self.rounded_depth += 1;
         let depth = self.rounded_depth;
-        self.stack.push(ClipFrame::Rounded { rect_device, stencil_depth: depth, mesh, sx, sy, tx, ty });
+        self.stack.push(ClipFrame::Rounded { rect_device, stencil_depth: depth, mesh, transform });
         depth
     }
 
     /// Guarded pop — the root entry (index 0) is never removed, so an
     /// unbalanced (extra) `PopClip` is a defensive no-op rather than a
     /// panic, same policy as the legacy adapter's `clip_depth` guard
-    /// (`adapter.rs:233-238`). Returns `Some((mesh, sx, sy, tx, ty,
+    /// (`adapter.rs:233-238`). Returns `Some((mesh, transform,
     /// stencil_depth))` when the popped frame was `Rounded` — the
     /// caller emits the matching `MaskOp::Decrement` batch from it
     /// (gated on `stencil_depth`, the scope's OWN depth, design §2.4);
     /// `None` for a `Rect` pop (nothing stencil-related to undo) or an
     /// underflow no-op.
-    fn pop(&mut self) -> Option<(Arc<TessMesh>, f64, f64, f64, f64, u32)> {
+    fn pop(&mut self) -> Option<(Arc<TessMesh>, Affine, u32)> {
         if self.stack.len() <= 1 {
             return None;
         }
         match self.stack.pop().expect("length > 1 checked above") {
-            ClipFrame::Rounded { mesh, sx, sy, tx, ty, stencil_depth, rect_device: _ } => {
+            ClipFrame::Rounded { mesh, transform, stencil_depth, rect_device: _ } => {
                 self.rounded_depth -= 1;
-                Some((mesh, sx, sy, tx, ty, stencil_depth))
+                Some((mesh, transform, stencil_depth))
             }
             ClipFrame::Rect(_) => None,
         }
@@ -577,7 +591,7 @@ impl ClipStack {
     /// shape as `pop()`'s `Some` case) so the caller emits one decrement
     /// batch per entry, counted `native_rounded_clip_force_closed_at_scene_end`
     /// (never silent — same doctrine as the blend-layer force-close).
-    fn force_close_all_rounded(&mut self) -> Vec<(Arc<TessMesh>, f64, f64, f64, f64, u32)> {
+    fn force_close_all_rounded(&mut self) -> Vec<(Arc<TessMesh>, Affine, u32)> {
         let mut closed = Vec::new();
         while let Some(entry) = self.pop() {
             closed.push(entry);
@@ -598,22 +612,22 @@ impl ClipStack {
     /// at all — it just replays `Draw(StencilMask)` batches like any
     /// other, which happen to land in the newly-opened layer's pass
     /// because that's whichever pass is current when they're processed.
-    /// Returns `(mesh, sx, sy, tx, ty, stencil_depth, parent_bbox)` per
+    /// Returns `(mesh, transform, stencil_depth, parent_bbox)` per
     /// active frame — `parent_bbox` is frame `i`'s OWN parent's bbox
     /// (`self.stack[i-1]`'s `current()`-equivalent value), exactly what
     /// `emit_stencil_mask_batch`'s original increment used as
     /// `clip_rect` (`stack[0]` is always the root `Rect` frame, never
     /// `Rounded`, so `i - 1` is always in bounds for any `Rounded` frame
     /// found).
-    fn active_rounded_frames_for_replay(&self) -> Vec<(Arc<TessMesh>, f64, f64, f64, f64, u32, [f32; 4])> {
+    fn active_rounded_frames_for_replay(&self) -> Vec<(Arc<TessMesh>, Affine, u32, [f32; 4])> {
         let mut out = Vec::new();
         for i in 0..self.stack.len() {
-            if let ClipFrame::Rounded { mesh, sx, sy, tx, ty, stencil_depth, .. } = &self.stack[i] {
+            if let ClipFrame::Rounded { mesh, transform, stencil_depth, .. } = &self.stack[i] {
                 let parent_bbox = match &self.stack[i - 1] {
                     ClipFrame::Rect(r) => *r,
                     ClipFrame::Rounded { rect_device, .. } => *rect_device,
                 };
-                out.push((mesh.clone(), *sx, *sy, *tx, *ty, *stencil_depth, parent_bbox));
+                out.push((mesh.clone(), *transform, *stencil_depth, parent_bbox));
             }
         }
         out
@@ -777,12 +791,23 @@ fn transform_rect(rect: Rect, t: &Affine) -> (f64, f64, f64, f64, f64, f64) {
     (x0, y0, x1 - x0, y1 - y0, sx.abs(), sy.abs())
 }
 
-/// Project a LOCAL-space point through the translate+scale
-/// decomposition — the same operation `tessellate.rs`'s cached meshes
-/// need applied at every replay.
+/// Project a LOCAL-space point through the FULL 6-coefficient affine
+/// `t` — Wave 4 Commit 4 upgrade (design §5.4) from the earlier
+/// translate+scale-only decomposition. `kurbo::Affine`'s own
+/// `Mul<Point>` impl computes exactly `(a*x+c*y+e, b*x+d*y+f)`, the
+/// SAME full formula `transform_point_full` manually replicates for
+/// gradient PARAMETERS — this closes that function's own documented
+/// "shape doesn't rotate, params do" asymmetry (see
+/// `transform_gradient_params`'s doc comment, updated below) by making
+/// mesh reprojection use the identical math. Every call site that used
+/// to pre-decompose via `decompose_translate_scale` now passes
+/// `transform` straight through — a strict generalization (translate+
+/// scale is the special case `b == c == 0`), so every existing
+/// identity/translate/uniform-scale fixture is byte-identical.
 #[inline]
-fn project_local(p: [f32; 2], sx: f64, sy: f64, tx: f64, ty: f64) -> [f32; 2] {
-    [(p[0] as f64 * sx + tx) as f32, (p[1] as f64 * sy + ty) as f32]
+fn project_local(p: [f32; 2], t: &Affine) -> [f32; 2] {
+    let mapped = *t * Point::new(p[0] as f64, p[1] as f64);
+    [mapped.x as f32, mapped.y as f32]
 }
 
 /// Apply the FULL 2x3 affine `t` to a single point — mirrors
@@ -910,22 +935,70 @@ fn packed_color(c: Color) -> u32 {
     pack_rgba8([p.r, p.g, p.b, p.a])
 }
 
-/// Single radius for the SDF (Wave 1 approximation for the Quad
-/// pipeline — per-corner radii land in Wave 4 there). Emits
-/// `native_per_corner_radii_uniform_approx` when the four radii
-/// actually differ, so the approximation is never silent. NOT used by
-/// the gradient-routed path below — that path tessellates a REAL
-/// `RoundedRect` and supports true per-corner radii for free.
-fn corner_radius_uniform(radii: &Option<[f32; 4]>) -> f32 {
+/// `Some(r)` when `radii` is absent (implicit `0.0`) or all four
+/// corners share one value — the fast Quad SDF path (design §6) stays
+/// eligible. `None` when radii are genuinely non-uniform — the caller
+/// routes to the Triangle pipeline instead (§6.2's `rect_bez_path`
+/// true per-corner tessellation), closing
+/// `native_per_corner_radii_uniform_approx` ENTIRELY (Wave 4 Commit 4
+/// — there is no longer an approximation left to degrade about, so
+/// this function no longer emits any counter itself; the caller's
+/// shear-routing branch already owns the one telemetry counter this
+/// whole routing decision needs, `native_rect_shear_to_triangle_pipeline`).
+fn uniform_radius(radii: &Option<[f32; 4]>) -> Option<f32> {
     match radii {
-        None => 0.0,
+        None => Some(0.0),
         Some(r) => {
             if r.iter().any(|v| (*v - r[0]).abs() > 0.01) {
-                degrade("native_per_corner_radii_uniform_approx");
+                None
+            } else {
+                Some(r[0].max(0.0))
             }
-            r[0].max(0.0)
         }
     }
+}
+
+/// The rect's own center point — normalization-independent (kurbo's
+/// `Rect::center` is a plain midpoint of `x0/x1`/`y0/y1`, correct
+/// regardless of whether the rect is stored with `x0 <= x1`). Shared by
+/// the Quad-SDF FillRect/StrokeRect placement below and
+/// `encode_image`'s identical recipe (Wave 4 Commit 3) — both need "the
+/// TRUE device-space center under the full affine," not an axis-aligned
+/// bbox center.
+#[inline]
+fn rect_center(rect: Rect) -> Point {
+    rect.center()
+}
+
+/// Local (pre-tessellation) stroke width to feed the tessellator so
+/// that, after the mesh is reprojected through the FULL transform at
+/// replay (`emit_solid_mesh`/`emit_gradient_mesh`), the resulting
+/// on-screen stroke width comes out DEVICE-CONSTANT — matching CPU's
+/// own device-space-constant stroke-width semantic (design §0.2: CPU
+/// applies `stroke.width` AFTER transforming points, never scaling the
+/// width itself). `affine_scale_factors` gives a valid magnitude for
+/// ANY affine, including a genuine shear — used here unconditionally
+/// (every Triangle-routed stroke, gradient or solid, non-uniform-radii
+/// or sheared, needs the same unification, not just the Quad-SDF
+/// similarity case).
+fn local_stroke_width(stroke_width: f32, transform: &Affine) -> f32 {
+    let (sx, sy) = affine_scale_factors(transform);
+    let avg_scale = ((sx.abs() + sy.abs()) * 0.5).max(1e-6);
+    (stroke_width as f64 / avg_scale) as f32
+}
+
+/// Tessellate `path` for `stroke`, pre-dividing `stroke.width` by the
+/// transform's own average scale magnitude (design §0.2) before handing
+/// it to `tess_cache.get_or_insert_stroke` — the ADJUSTED width is what
+/// `TessKey::for_stroke` hashes (not the raw `stroke.width`), so the
+/// cache naturally re-keys per distinct effective scale (the disclosed
+/// cost design §0.2 accepts). ONE shared call site for every
+/// Triangle-routed stroke (`StrokePath`, gradient-brushed `StrokeRect`,
+/// non-uniform-radii/sheared solid `StrokeRect`) so the unification
+/// can't accidentally apply to only some of them.
+fn tess_stroke_scaled(tess_cache: &mut TessCache, path: &BezPath, stroke: &Stroke, transform: &Affine) -> Arc<TessMesh> {
+    let adjusted = Stroke { width: local_stroke_width(stroke.width, transform), ..*stroke };
+    tess_cache.get_or_insert_stroke(path, &adjusted)
 }
 
 /// `atlas` is `Option<&mut NativeGlyphAtlas>` rather than the design's
@@ -964,10 +1037,7 @@ fn corner_radius_uniform(radii: &Option<[f32; 4]>) -> f32 {
 fn emit_stencil_mask_batch(
     frame: &mut EncodedFrame,
     mesh: &TessMesh,
-    sx: f64,
-    sy: f64,
-    tx: f64,
-    ty: f64,
+    transform: &Affine,
     clip_rect: [f32; 4],
     op: MaskOp,
     gate_ref: u32,
@@ -976,9 +1046,9 @@ fn emit_stencil_mask_batch(
     for tri in &mesh.triangles {
         frame.push_stencil_mask(
             TriInstance {
-                v0: project_local(tri[0], sx, sy, tx, ty),
-                v1: project_local(tri[1], sx, sy, tx, ty),
-                v2: project_local(tri[2], sx, sy, tx, ty),
+                v0: project_local(tri[0], transform),
+                v1: project_local(tri[1], transform),
+                v2: project_local(tri[2], transform),
                 color0: DUMMY_COLOR,
                 color1: DUMMY_COLOR,
                 color2: DUMMY_COLOR,
@@ -1040,38 +1110,19 @@ pub(crate) fn encode_scene(
                 let parent_clip_rect = clip.current(); // gate for the mask write below
                 let path = (*rect).into_path(crate::tessellate::TESS_TOLERANCE_PX);
                 let mesh = tess_cache.get_or_insert_fill(&path, FillRule::NonZero);
-                let (sx, sy, tx, ty) = decompose_translate_scale(transform);
                 let parent_depth = clip.rounded_depth();
-                let new_depth = clip.push_rounded_rect_device(
-                    [x0 as f32, y0 as f32, w as f32, h as f32],
-                    mesh.clone(),
-                    sx,
-                    sy,
-                    tx,
-                    ty,
-                );
+                let new_depth =
+                    clip.push_rounded_rect_device([x0 as f32, y0 as f32, w as f32, h as f32], mesh.clone(), *transform);
                 debug_assert_eq!(new_depth, parent_depth + 1, "push must increment depth by exactly 1");
-                emit_stencil_mask_batch(
-                    &mut frame,
-                    &mesh,
-                    sx,
-                    sy,
-                    tx,
-                    ty,
-                    parent_clip_rect,
-                    MaskOp::Increment,
-                    parent_depth,
-                );
+                emit_stencil_mask_batch(&mut frame, &mesh, transform, parent_clip_rect, MaskOp::Increment, parent_depth);
                 frame.has_rounded_clip = true;
             }
             DrawCommand::PopClip => {
-                if let Some((mesh, sx, sy, tx, ty, depth)) = clip.pop() {
+                if let Some((mesh, transform, depth)) = clip.pop() {
                     // The parent scope's bbox is whatever `clip.current()`
                     // is NOW, after the pop already happened above.
                     let parent_clip_rect = clip.current();
-                    emit_stencil_mask_batch(
-                        &mut frame, &mesh, sx, sy, tx, ty, parent_clip_rect, MaskOp::Decrement, depth,
-                    );
+                    emit_stencil_mask_batch(&mut frame, &mesh, &transform, parent_clip_rect, MaskOp::Decrement, depth);
                 }
             }
             DrawCommand::GlyphRun { glyphs, font, font_size, brush, transform, text: _ } => {
@@ -1114,16 +1165,11 @@ pub(crate) fn encode_scene(
                         // SAME nesting depth the enclosing scope already
                         // established, without the executor needing to
                         // know anything about `ClipStack` at all.
-                        for (mesh, sx, sy, tx, ty, stencil_depth, parent_bbox) in
-                            clip.active_rounded_frames_for_replay()
-                        {
+                        for (mesh, transform, stencil_depth, parent_bbox) in clip.active_rounded_frames_for_replay() {
                             emit_stencil_mask_batch(
                                 &mut frame,
                                 &mesh,
-                                sx,
-                                sy,
-                                tx,
-                                ty,
+                                &transform,
                                 parent_bbox,
                                 MaskOp::Increment,
                                 stencil_depth - 1,
@@ -1206,9 +1252,9 @@ pub(crate) fn encode_scene(
     // gets a synthetic decrement here, so the stencil buffer never
     // carries a stale nonzero value into whatever comes after this
     // (already-malformed) frame. Never silent.
-    for (mesh, sx, sy, tx, ty, depth) in clip.force_close_all_rounded() {
+    for (mesh, transform, depth) in clip.force_close_all_rounded() {
         let parent_clip_rect = clip.current();
-        emit_stencil_mask_batch(&mut frame, &mesh, sx, sy, tx, ty, parent_clip_rect, MaskOp::Decrement, depth);
+        emit_stencil_mask_batch(&mut frame, &mesh, &transform, parent_clip_rect, MaskOp::Decrement, depth);
         degrade("native_rounded_clip_force_closed_at_scene_end");
     }
 
@@ -1234,7 +1280,7 @@ fn encode_fill_rect(
     clip_rect: [f32; 4],
 ) {
     match brush {
-        Brush::Solid(c) => encode_fill_rect_quad(frame, rect, radii, *c, transform, clip_rect),
+        Brush::Solid(c) => encode_fill_rect_solid(frame, tess_cache, rect, radii, *c, transform, clip_rect),
         Brush::Gradient(g) => {
             let path = rect_bez_path(rect, radii);
             let mesh = tess_cache.get_or_insert_fill(&path, FillRule::NonZero);
@@ -1251,31 +1297,57 @@ fn encode_fill_rect(
     }
 }
 
-fn encode_fill_rect_quad(
+/// Solid-brush `FillRect` routing (design §5.2/§6.2): uniform radii (or
+/// none) AND a similarity transform (no shear/reflection) stays on the
+/// fast Quad SDF path — now rotation-capable (§5.3, rotation angle
+/// baked into `_pad0[0]`). Anything else (non-uniform radii, OR a
+/// shear/reflection transform) routes through the Triangle pipeline via
+/// `rect_bez_path`'s true per-corner tessellation — the SAME mesh the
+/// gradient-routed case already builds for a rounded rect, zero new
+/// pipeline machinery. `native_rect_shear_to_triangle_pipeline` is
+/// telemetry, not a degrade (design §8: "a scene-content-derived
+/// routing signal") — it fires ONLY for the shear branch, never for the
+/// non-uniform-radii branch (that one is a closed, zero-cost capability
+/// upgrade with nothing to report).
+fn encode_fill_rect_solid(
     frame: &mut EncodedFrame,
+    tess_cache: &mut TessCache,
     rect: Rect,
     radii: &Option<[f32; 4]>,
     color: Color,
     transform: &Affine,
     clip_rect: [f32; 4],
 ) {
-    let (x0, y0, w, h, sx, sy) = transform_rect(rect, transform);
-    if w <= 0.0 || h <= 0.0 {
-        return;
-    }
-    let scale = ((sx + sy) * 0.5) as f32;
-    let corner_radius = corner_radius_uniform(radii) * scale;
+    if let Some(uniform_r) = uniform_radius(radii) {
+        if let Some((sx, sy, angle, _, _)) = decompose_similarity(transform) {
+            let normalized = rect.abs();
+            let w = normalized.width() * sx;
+            let h = normalized.height() * sy;
+            if w <= 0.0 || h <= 0.0 {
+                return;
+            }
+            let scale = ((sx + sy) * 0.5) as f32;
+            let center = transform_point_full(transform, rect_center(normalized));
+            let pos = [(center.x - w * 0.5) as f32, (center.y - h * 0.5) as f32];
 
-    frame.push_quad(QuadInstance {
-        pos: [x0 as f32, y0 as f32],
-        size: [w as f32, h as f32],
-        color: packed_color(color),
-        border_color: 0,
-        corner_radius,
-        border_width: 0.0,
-        _pad0: [0.0; 2],
-        clip_rect,
-    });
+            frame.push_quad(QuadInstance {
+                pos,
+                size: [w as f32, h as f32],
+                color: packed_color(color),
+                border_color: 0,
+                corner_radius: uniform_r * scale,
+                border_width: 0.0,
+                _pad0: [angle as f32, 0.0],
+                clip_rect,
+            });
+            return;
+        }
+        degrade("native_rect_shear_to_triangle_pipeline");
+    }
+
+    let path = rect_bez_path(rect, radii);
+    let mesh = tess_cache.get_or_insert_fill(&path, FillRule::NonZero);
+    emit_solid_mesh(frame, &mesh, transform, packed_color(color), clip_rect);
 }
 
 /// Build a LOCAL-space rect `BezPath` — a real `RoundedRect` when
@@ -1420,25 +1492,16 @@ struct GradientDeviceParams {
 /// unreachable here — `emit_gradient_mesh`'s own Linear arm returns
 /// before this function is ever called for it.
 ///
-/// **Disclosed, one-commit-lived asymmetry**: this function computes
-/// FULL affine params (translation + non-uniform scale + ROTATION),
-/// exactly matching CPU's own gradient-parameter fix — but the
-/// TESSELLATED MESH these params accompany (`emit_gradient_mesh`,
-/// below) is still reprojected via `project_local`'s translate+scale-
-/// ONLY decomposition (Commit 4's §5.4 upgrades that to full affine).
-/// Under a transform with a genuine rotation component, this means the
-/// gradient's colour FIELD would rotate while the shape's own OUTLINE
-/// does not — a real, temporary inconsistency, but: (a) inert for
-/// every existing fixture (none combines a gradient with a rotating
-/// transform — the same "provably safe" finding Commit 1 already
-/// established for CPU's twin fix), (b) mirrors an EXISTING, accepted
-/// CPU-side gap of the identical shape (design §0.3: CPU's own
-/// `fill_rect_aa` never renders a genuinely rotated rect either, while
-/// CPU's gradient-param fix — Commit 1 — is ALSO full affine; CPU has
-/// carried this same params-rotate/shape-doesn't split since Commit 1
-/// landed), and (c) resolves itself for free the moment Commit 4's
-/// `project_local` upgrade lands, since this function's own math
-/// doesn't need to change at all.
+/// **Commit 3→4 asymmetry, now CLOSED**: Commit 3 computed these
+/// params via full affine while the TESSELLATED MESH these params
+/// accompany (`emit_gradient_mesh`, below) was still reprojected via
+/// `project_local`'s translate+scale-ONLY decomposition — a disclosed,
+/// one-commit-lived gap (a rotating transform would rotate the colour
+/// FIELD without rotating the shape's own outline). Commit 4's §5.4
+/// upgrade makes `project_local` apply the SAME full affine this
+/// function already used, so shape and gradient field now rotate
+/// together — this function's own math didn't need to change at all,
+/// exactly as anticipated.
 fn transform_gradient_params(kind: &GradientKind, extend: Extend, transform: &Affine) -> GradientDeviceParams {
     let extend_bits: u32 = match extend {
         Extend::Pad => 0,
@@ -1513,12 +1576,11 @@ fn emit_gradient_lut_triangles(
     };
 
     let params = transform_gradient_params(&gradient.kind, gradient.extend, transform);
-    let (sx, sy, tx, ty) = decompose_translate_scale(transform);
     for tri in &mesh.triangles {
         frame.push_gradient(GradientInstance {
-            v0: project_local(tri[0], sx, sy, tx, ty),
-            v1: project_local(tri[1], sx, sy, tx, ty),
-            v2: project_local(tri[2], sx, sy, tx, ty),
+            v0: project_local(tri[0], transform),
+            v1: project_local(tri[1], transform),
+            v2: project_local(tri[2], transform),
             p0: params.p0,
             p1: params.p1,
             p2: params.p2,
@@ -1549,7 +1611,6 @@ fn emit_gradient_mesh(
 ) {
     match &gradient.kind {
         GradientKind::Linear(pos) => {
-            let (sx, sy, tx, ty) = decompose_translate_scale(transform);
             let axis = (pos.end.x - pos.start.x, pos.end.y - pos.start.y);
             let axis_len_sq = axis.0 * axis.0 + axis.1 * axis.1;
 
@@ -1558,9 +1619,9 @@ fn emit_gradient_mesh(
                 let c1 = gradient_vertex_color(tri[1], pos, axis, axis_len_sq, &gradient.stops, gradient.extend);
                 let c2 = gradient_vertex_color(tri[2], pos, axis, axis_len_sq, &gradient.stops, gradient.extend);
                 frame.push_triangle(TriInstance {
-                    v0: project_local(tri[0], sx, sy, tx, ty),
-                    v1: project_local(tri[1], sx, sy, tx, ty),
-                    v2: project_local(tri[2], sx, sy, tx, ty),
+                    v0: project_local(tri[0], transform),
+                    v1: project_local(tri[1], transform),
+                    v2: project_local(tri[2], transform),
                     color0: packed_color(c0),
                     color1: packed_color(c1),
                     color2: packed_color(c2),
@@ -1598,6 +1659,17 @@ fn emit_gradient_mesh(
 /// `native_strokerect_gradient_to_solid` entirely. `Solid`/`Image` stay
 /// on the fast Quad SDF path exactly as before (Image still degrades
 /// to a fully-transparent border colour, unchanged, design §4.1).
+/// Routing mirrors `encode_fill_rect_solid` (design §5.2/§6.2): uniform
+/// radii AND a similarity transform stays on Quad SDF — now with
+/// stroke-width unification (§0.2: `border_width` is fed `stroke.width`
+/// directly, NEVER scaled by the transform, matching CPU's
+/// device-space-constant semantic). Anything else (non-uniform radii,
+/// shear/reflection, or a Gradient brush — which always tessellates
+/// regardless, design §2.5) routes through the Triangle pipeline via
+/// `tess_stroke_scaled`, which applies the SAME width-unification at
+/// the LOCAL-space pre-scale stage instead (§0.2's Path-pipeline
+/// recipe) since that mesh gets reprojected through the full transform
+/// rather than carrying a device-constant scalar field.
 fn encode_stroke_rect(
     frame: &mut EncodedFrame,
     tess_cache: &mut TessCache,
@@ -1609,12 +1681,13 @@ fn encode_stroke_rect(
     transform: &Affine,
     clip_rect: [f32; 4],
 ) {
+    if stroke.width <= 0.0 {
+        return;
+    }
+
     if let Brush::Gradient(g) = brush {
-        if stroke.width <= 0.0 {
-            return;
-        }
         let path = rect_bez_path(rect, radii);
-        let mesh = tess_cache.get_or_insert_stroke(&path, stroke);
+        let mesh = tess_stroke_scaled(tess_cache, &path, stroke, transform);
         emit_gradient_mesh(frame, lut, &mesh, g, transform, clip_rect);
         return;
     }
@@ -1624,36 +1697,55 @@ fn encode_stroke_rect(
         degrade("native_strokerect_image_to_solid");
     }
 
-    let (x0, y0, w, h, sx, sy) = transform_rect(rect, transform);
-    if w <= 0.0 || h <= 0.0 {
-        return;
-    }
-    let scale = ((sx + sy) * 0.5) as f32;
-    let corner_radius = corner_radius_uniform(radii) * scale;
-    let border_width = (stroke.width * scale).max(0.0);
-    if border_width <= 0.0 {
-        return;
+    if let Some(uniform_r) = uniform_radius(radii) {
+        if let Some((sx, sy, angle, _, _)) = decompose_similarity(transform) {
+            let normalized = rect.abs();
+            let w = normalized.width() * sx;
+            let h = normalized.height() * sy;
+            if w <= 0.0 || h <= 0.0 {
+                return;
+            }
+            let scale = ((sx + sy) * 0.5) as f32;
+            let center = transform_point_full(transform, rect_center(normalized));
+            let pos = [(center.x - w * 0.5) as f32, (center.y - h * 0.5) as f32];
+            let border_width = stroke.width.max(0.0); // §0.2: device-constant, no scale multiply
+
+            frame.push_quad(QuadInstance {
+                pos,
+                size: [w as f32, h as f32],
+                // Fully transparent fill — a StrokeRect draws only the
+                // border band; see the centered-border fragment-shader
+                // formula.
+                color: 0,
+                border_color: packed_color(color),
+                corner_radius: uniform_r * scale,
+                border_width,
+                _pad0: [angle as f32, 0.0],
+                clip_rect,
+            });
+            return;
+        }
+        degrade("native_rect_shear_to_triangle_pipeline");
     }
 
-    frame.push_quad(QuadInstance {
-        pos: [x0 as f32, y0 as f32],
-        size: [w as f32, h as f32],
-        // Fully transparent fill — a StrokeRect draws only the border
-        // band; see the centered-border fragment-shader formula.
-        color: 0,
-        border_color: packed_color(color),
-        corner_radius,
-        border_width,
-        _pad0: [0.0; 2],
-        clip_rect,
-    });
+    let path = rect_bez_path(rect, radii);
+    let mesh = tess_stroke_scaled(tess_cache, &path, stroke, transform);
+    emit_solid_mesh(frame, &mesh, transform, packed_color(color), clip_rect);
 }
 
-/// `Line` → `LineInstance`. Cap mapping (design §3):
-/// `LineCap::Round` → `cap_flags 0` (round-round — the Scene IR's
-/// `Stroke.cap` is one style for the whole segment, not per-endpoint,
-/// so there's no finer round/butt split to preserve).
-/// `LineCap::Butt` → `cap_flags 3` (butt-both).
+/// `Line` → `LineInstance`. Endpoints transform through the FULL affine
+/// (design §5.2 — CPU already does this, `stroke_line_aa_with_caps`'s
+/// `transform_point`; a line has no "shape" to rotate independently of
+/// its own endpoints, so there's no similarity-vs-shear branch here at
+/// all, unlike Rect). Width is now DEVICE-CONSTANT (design §0.2: the
+/// `* scale` multiplication is deleted entirely, matching CPU's own
+/// stroke-width semantic — `stroke.width` is used exactly as given,
+/// never scaled by the transform).
+///
+/// Cap mapping (design §3): `LineCap::Round` → `cap_flags 0`
+/// (round-round — the Scene IR's `Stroke.cap` is one style for the
+/// whole segment, not per-endpoint, so there's no finer round/butt
+/// split to preserve). `LineCap::Butt` → `cap_flags 3` (butt-both).
 /// `LineCap::Square` is a pre-existing gap shared with `uzor-urx-cpu`
 /// (neither reference implementation renders square caps today) —
 /// degrades to Round, counted `native_line_square_cap_to_round`.
@@ -1673,11 +1765,11 @@ fn encode_line(
         BrushKind::Solid => {}
     }
 
-    let (sx, sy, tx, ty) = decompose_translate_scale(transform);
-    let start = [(from.x * sx + tx) as f32, (from.y * sy + ty) as f32];
-    let end = [(to.x * sx + tx) as f32, (to.y * sy + ty) as f32];
-    let scale = ((sx.abs() + sy.abs()) * 0.5) as f32;
-    let width = (stroke.width * scale).max(0.0);
+    let from_p = transform_point_full(transform, Point::new(from.x, from.y));
+    let to_p = transform_point_full(transform, Point::new(to.x, to.y));
+    let start = [from_p.x as f32, from_p.y as f32];
+    let end = [to_p.x as f32, to_p.y as f32];
+    let width = stroke.width.max(0.0); // §0.2: device-constant, no scale multiply
     if width <= 0.0 {
         return;
     }
@@ -1705,7 +1797,8 @@ fn encode_line(
 
 /// Emit every triangle of a (already tessellated, LOCAL-space) mesh as
 /// a flat-shaded `TriInstance` (`color0 == color1 == color2`),
-/// re-projected through the frame's translate+scale.
+/// re-projected through the frame's FULL affine transform (design
+/// §5.4, Wave 4 Commit 4 — was translate+scale-only through Commit 3).
 fn emit_solid_mesh(
     frame: &mut EncodedFrame,
     mesh: &crate::tessellate::TessMesh,
@@ -1713,12 +1806,11 @@ fn emit_solid_mesh(
     packed: u32,
     clip_rect: [f32; 4],
 ) {
-    let (sx, sy, tx, ty) = decompose_translate_scale(transform);
     for tri in &mesh.triangles {
         frame.push_triangle(TriInstance {
-            v0: project_local(tri[0], sx, sy, tx, ty),
-            v1: project_local(tri[1], sx, sy, tx, ty),
-            v2: project_local(tri[2], sx, sy, tx, ty),
+            v0: project_local(tri[0], transform),
+            v1: project_local(tri[1], transform),
+            v2: project_local(tri[2], transform),
             color0: packed,
             color1: packed,
             color2: packed,
@@ -1758,7 +1850,10 @@ fn encode_fill_path(
 /// Routing (design §2.5): `Gradient` (any kind) routes through
 /// `emit_gradient_mesh`, fed the SAME mesh `get_or_insert_stroke`
 /// already builds for the solid-stroke case, closing
-/// `native_strokepath_gradient_to_solid` entirely.
+/// `native_strokepath_gradient_to_solid` entirely. Always tessellated
+/// (no similarity-vs-shear branch — a path has no bbox-based fast path
+/// to begin with), so it always goes through `tess_stroke_scaled`'s
+/// width unification (design §0.2).
 fn encode_stroke_path(
     frame: &mut EncodedFrame,
     tess_cache: &mut TessCache,
@@ -1773,7 +1868,7 @@ fn encode_stroke_path(
         return;
     }
     if let Brush::Gradient(g) = brush {
-        let mesh = tess_cache.get_or_insert_stroke(path, stroke);
+        let mesh = tess_stroke_scaled(tess_cache, path, stroke, transform);
         emit_gradient_mesh(frame, lut, &mesh, g, transform, clip_rect);
         return;
     }
@@ -1781,7 +1876,7 @@ fn encode_stroke_path(
     if matches!(kind, BrushKind::Image) {
         degrade("native_strokepath_image_to_solid");
     }
-    let mesh = tess_cache.get_or_insert_stroke(path, stroke);
+    let mesh = tess_stroke_scaled(tess_cache, path, stroke, transform);
     emit_solid_mesh(frame, &mesh, transform, packed_color(color), clip_rect);
 }
 
@@ -2042,6 +2137,68 @@ mod tests {
         assert!((frame.quads[0].corner_radius - 8.0).abs() < 0.01);
     }
 
+    // ── Wave 4 Commit 4: full affine + stroke-width unification + ────
+    // ── per-corner radii routing ──────────────────────────────────────
+
+    /// Design §0.2's central regression proof: a `StrokeRect`'s
+    /// `border_width` must be IDENTICAL at 1x and 2x scale (device-
+    /// space-constant), even though the rect's own `size` legitimately
+    /// scales — matching CPU's semantic (width applied AFTER
+    /// transforming points, never itself scaled).
+    #[test]
+    fn stroke_rect_border_width_stays_device_constant_at_2x_scale() {
+        let stroke_rect = |transform: Affine| DrawCommand::StrokeRect {
+            rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+            radii: None,
+            stroke: SceneStroke { width: 3.0, ..SceneStroke::default() },
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 255)),
+            transform,
+        };
+
+        let mut scene_1x = Scene::new();
+        scene_1x.push(stroke_rect(Affine::IDENTITY));
+        let frame_1x = encode_scene(&scene_1x, viewport(), &mut cache(), None, None, max_depth());
+
+        let mut scene_2x = Scene::new();
+        scene_2x.push(stroke_rect(Affine::scale(2.0)));
+        let frame_2x = encode_scene(&scene_2x, viewport(), &mut cache(), None, None, max_depth());
+
+        assert_eq!(frame_1x.quads.len(), 1);
+        assert_eq!(frame_2x.quads.len(), 1);
+        assert!((frame_1x.quads[0].border_width - 3.0).abs() < 0.01);
+        assert!(
+            (frame_1x.quads[0].border_width - frame_2x.quads[0].border_width).abs() < 0.01,
+            "border_width must be DEVICE-CONSTANT regardless of transform scale: 1x={} 2x={}",
+            frame_1x.quads[0].border_width,
+            frame_2x.quads[0].border_width
+        );
+        // The rect ITSELF still scales — only the stroke width doesn't.
+        assert_eq!(frame_2x.quads[0].size, [80.0, 80.0]);
+    }
+
+    /// Design §5.2/§5.3: a similarity transform (pure rotation, no
+    /// shear/reflection) with UNIFORM radii stays on the fast Quad SDF
+    /// path — batch inspection proves it never falls through to the
+    /// Triangle pipeline, and the rotation angle lands in `_pad0[0]`.
+    #[test]
+    fn rotated_uniform_radius_rect_routes_through_quad_sdf_not_triangle() {
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::FillRect {
+            rect: Rect::new(10.0, 10.0, 30.0, 30.0),
+            radii: Some([4.0, 4.0, 4.0, 4.0]),
+            brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
+            transform: Affine::rotate(std::f64::consts::FRAC_PI_4),
+        });
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
+        assert_eq!(frame.quads.len(), 1, "a similarity transform with UNIFORM radii must stay on Quad SDF");
+        assert!(frame.triangles.is_empty(), "must NOT route through the Triangle pipeline");
+        assert!(
+            (frame.quads[0]._pad0[0] - std::f64::consts::FRAC_PI_4 as f32).abs() < 0.001,
+            "rotation angle must be baked into _pad0[0]: got {}",
+            frame.quads[0]._pad0[0]
+        );
+    }
+
     #[test]
     fn stroke_rect_emits_transparent_fill_with_border() {
         let mut scene = Scene::new();
@@ -2103,8 +2260,14 @@ mod tests {
         assert!((frame.lines[0].width - 2.0).abs() < 0.01);
     }
 
+    /// Wave 4 Commit 4 (design §0.2): stroke width is now DEVICE-
+    /// CONSTANT under scale, matching CPU's own semantic — this test
+    /// used to assert the OPPOSITE (width scaling 2x with the
+    /// transform), which was the pre-Commit-4, GPU-only-consistent-with-
+    /// itself behavior the design doc explicitly requires changing.
+    /// Endpoints still transform through the full affine, unaffected.
     #[test]
-    fn line_width_scales_with_transform() {
+    fn line_width_stays_device_constant_under_scale() {
         let mut scene = Scene::new();
         scene.push(DrawCommand::Line {
             from: Vec2 { x: 0.0, y: 0.0 },
@@ -2115,8 +2278,11 @@ mod tests {
         });
         let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth());
         assert_eq!(frame.lines.len(), 1);
-        assert_eq!(frame.lines[0].end, [20.0, 0.0]);
-        assert!((frame.lines[0].width - 8.0).abs() < 0.01, "width should scale 2x with the transform");
+        assert_eq!(frame.lines[0].end, [20.0, 0.0], "endpoints still transform through the full affine");
+        assert!(
+            (frame.lines[0].width - 4.0).abs() < 0.01,
+            "stroke width must stay DEVICE-CONSTANT under scale (design §0.2), not scale to 8.0"
+        );
     }
 
     #[test]
@@ -3170,10 +3336,12 @@ mod tests {
             assert_eq!(recorder.value_for(KEY_RENDER_PRIMITIVES, "native_blend_layer_compose_to_srcover"), 1);
         }
 
-        /// Design §5's shear/rotation drop, extended to blend layers: a
-        /// non-identity `PushBlendLayer::transform` is counted (never
-        /// silently applied OR silently ignored) — mirrors the existing
-        /// `decompose_translate_scale` finding for `FillRect`/`Line`.
+        /// `PushBlendLayer::transform` still drops ANY non-identity value
+        /// entirely (Wave 3 design §0.2 — unaffected by Wave 4's §5
+        /// full-affine work, which only extends `FillRect`/`StrokeRect`/
+        /// `Line`/`Image`, not blend-layer transforms) — a non-identity
+        /// value is counted (never silently applied OR silently
+        /// ignored), `native_blend_layer_transform_ignored`.
         #[test]
         fn blend_layer_non_identity_transform_is_counted() {
             let recorder = TestRecorder::default();
@@ -3235,6 +3403,66 @@ mod tests {
                 encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
             });
             assert_eq!(recorder.value_for(KEY_RENDER_PRIMITIVES, "gradient_radial_focal_degraded"), 1);
+        }
+
+        // ── Wave 4 Commit 4: routing telemetry proofs ─────────────────
+
+        /// A genuine shear (columns not orthogonal) routes a Solid
+        /// `FillRect` through the Triangle pipeline instead of Quad SDF
+        /// (design §5.2), counting the telemetry-only (never a real
+        /// degrade — the shape renders CORRECTLY either way)
+        /// `native_rect_shear_to_triangle_pipeline` label exactly once.
+        #[test]
+        fn sheared_rect_routes_through_triangle_pipeline_and_counts_telemetry() {
+            let recorder = TestRecorder::default();
+            let frame = metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::FillRect {
+                    rect: Rect::new(10.0, 10.0, 30.0, 30.0),
+                    radii: None,
+                    brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
+                    transform: Affine::new([1.0, 0.0, 0.5, 1.0, 0.0, 0.0]), // genuine shear
+                });
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+            });
+            assert!(frame.quads.is_empty(), "a sheared transform must NOT route through Quad SDF");
+            assert!(!frame.triangles.is_empty(), "must route through the Triangle pipeline instead");
+            assert_eq!(recorder.value_for(KEY_RENDER_PRIMITIVES, "native_rect_shear_to_triangle_pipeline"), 1);
+        }
+
+        /// Design §6.2's closure proof: non-uniform per-corner radii
+        /// route through the Triangle pipeline and — unlike Wave 1-3 —
+        /// NO degrade counter fires at all. `native_per_corner_radii_uniform_approx`
+        /// is fully CLOSED (design §8): there's no longer an
+        /// approximation to report. The shear telemetry must ALSO stay
+        /// silent here since the transform is `IDENTITY` — this proves
+        /// the two routing reasons (non-uniform radii vs. shear) are
+        /// independently gated, not conflated into one counter.
+        #[test]
+        fn non_uniform_radii_rect_routes_through_triangle_pipeline_without_any_degrade() {
+            let recorder = TestRecorder::default();
+            let frame = metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::FillRect {
+                    rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                    radii: Some([4.0, 40.0, 4.0, 40.0]), // deliberately non-uniform
+                    brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
+                    transform: Affine::IDENTITY,
+                });
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth())
+            });
+            assert!(frame.quads.is_empty(), "non-uniform radii must NOT route through Quad SDF");
+            assert!(!frame.triangles.is_empty(), "must route through the Triangle pipeline instead");
+            assert_eq!(
+                recorder.value_for(KEY_RENDER_PRIMITIVES, "native_rect_shear_to_triangle_pipeline"),
+                0,
+                "non-uniform radii under an IDENTITY (non-shear) transform must not count the shear telemetry"
+            );
+            assert_eq!(
+                recorder.value_for(KEY_RENDER_PRIMITIVES, "native_per_corner_radii_uniform_approx"),
+                0,
+                "the approximation counter is fully CLOSED — must never fire again"
+            );
         }
 
         /// An unregistered `ImageId` is a clean, honest miss — no

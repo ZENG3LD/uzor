@@ -32,15 +32,26 @@
 //! crate family already accepts elsewhere.
 //!
 //! `TessMesh` stores triangles in LOCAL (pre-transform) space —
-//! `encode.rs` re-projects through the current frame's translate+scale
-//! decomposition every time a cached mesh is replayed. See
-//! `encode.rs`'s module doc for the honest write-up of what this
-//! caching choice costs relative to `uzor-urx-cpu`'s per-call
-//! transform-then-stroke semantics (stroke width + curve flattening
-//! tolerance both behave differently under non-uniform/non-identity
-//! transforms — irrelevant to every Wave 1 fixture, which is
-//! identity-transform only, but a real, documented Wave 1 architecture
-//! limitation).
+//! `encode.rs`'s `project_local` re-projects through the current
+//! frame's FULL 6-coefficient affine transform every time a cached mesh
+//! is replayed (Wave 4 Commit 4, design §5.4 — was a translate+scale-
+//! only decomposition through Wave 1-3). See `encode.rs`'s module doc
+//! for the honest write-up of what this caching choice still costs
+//! relative to `uzor-urx-cpu`'s per-call transform-then-stroke
+//! semantics: curve-flattening tolerance is still a FIXED local-space
+//! constant (`TESS_TOLERANCE_PX` below), unlike CPU's transform-scale-
+//! adaptive tolerance — a real, disclosed, NOT-fixed-this-wave
+//! limitation (design §5.4). Stroke width, by contrast, IS now unified
+//! (design §0.2): `TessKey::for_stroke` doesn't change shape at all —
+//! it still just hashes whatever `Stroke.width` it's handed — but
+//! `encode.rs`'s callers (`tess_stroke_scaled`) now feed it a width
+//! ALREADY pre-divided by the transform's own average scale magnitude,
+//! so that after this cache's mesh is reprojected through the full
+//! transform at replay, the resulting on-screen stroke width comes out
+//! DEVICE-CONSTANT, matching CPU's own semantic. This makes the cache
+//! re-key per distinct effective scale for stroked content — a
+//! disclosed, bounded cost (see `encode.rs`'s `tess_stroke_scaled` doc
+//! comment), not a change to this module's own API.
 
 use std::sync::Arc;
 

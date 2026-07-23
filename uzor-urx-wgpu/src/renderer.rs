@@ -1134,6 +1134,91 @@ mod tests {
         assert_eq!(px(125, 125), [220, 60, 60, 255], "center of the rounded clip must show the fill color");
     }
 
+    // ── Wave 4 Commit 4: rotated-rect GPU-only correctness probe ─────
+    //
+    // CPU cannot render a genuinely rotated rect at all (design §0.3 —
+    // `fill_rect_aa` snaps to the axis-aligned bbox of the transformed
+    // corners), so this has no CPU parity counterpart; it directly
+    // proves the Quad-SDF rotation math (`shaders.rs::QUAD_SHADER_NATIVE`)
+    // is right by hand-computing which screen points an 80x80 square,
+    // rotated 45 degrees about its own center, must and must not cover,
+    // then reading back real rendered pixels.
+    #[test]
+    #[ignore = "needs a headless GPU adapter"]
+    fn rotated_uniform_radius_rect_corner_regions_render_correctly() {
+        let Some((device, queue)) = test_device() else { return };
+        const NATIVE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+        const SIZE: u32 = 256;
+
+        // sample_count = 1 — exact, filter-free readback (see the
+        // blend-layer test's own doc comment for why): every probe
+        // below is chosen with a solid multi-pixel margin from the true
+        // edge, so MSAA wouldn't actually matter here, but an exact
+        // readback removes any doubt.
+        let mut renderer = NativeUrxRenderer::with_sample_count(device.clone(), queue.clone(), NATIVE_FORMAT, 1);
+
+        use uzor_urx_core::math::{Affine, Brush, Color, Rect};
+        use uzor_urx_core::scene::{DrawCommand, Scene};
+
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::FillRect {
+            rect: Rect::new(0.0, 0.0, SIZE as f64, SIZE as f64),
+            radii: None,
+            brush: Brush::Solid(Color::from_rgba8(32, 32, 32, 255)),
+            transform: Affine::IDENTITY,
+        });
+        // An 80x80 square centered at (128,128), rotated 45 degrees
+        // about its OWN center (`rotate_about` — the center stays fixed).
+        scene.push(DrawCommand::FillRect {
+            rect: Rect::new(88.0, 88.0, 168.0, 168.0),
+            radii: None,
+            brush: Brush::Solid(Color::from_rgba8(220, 60, 60, 255)),
+            transform: Affine::rotate_about(std::f64::consts::FRAC_PI_4, (128.0, 128.0)),
+        });
+
+        let (target, view) = make_target(&device, NATIVE_FORMAT, SIZE);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        renderer
+            .render_into_encoder(&scene, &mut encoder, &view, Viewport { width: SIZE, height: SIZE })
+            .expect("a well-formed rotated-rect scene must not error");
+        queue.submit(Some(encoder.finish()));
+
+        let pixels = readback_rgba(&device, &queue, &target, SIZE, SIZE);
+        let px = |x: u32, y: u32| -> [u8; 4] {
+            let i = ((y * SIZE + x) * 4) as usize;
+            [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+        };
+
+        assert_eq!(px(128, 128), [220, 60, 60, 255], "dead center must be fill regardless of rotation");
+
+        // Screen offset (35,-35) from center (i.e. absolute (163,93)):
+        // INSIDE the un-rotated 40-half-extent axis-aligned square, but
+        // its inverse-rotated local coordinate is (0,-49.5) — OUTSIDE
+        // the true 45-degree-rotated square by a solid ~9.5px margin.
+        // A renderer that rotates the mesh but evaluates the SDF
+        // against the RAW (un-rotated) screen offset — the exact bug
+        // found and fixed in this design's own WGSL sketch, see
+        // `shaders.rs::QUAD_SHADER_NATIVE`'s doc comment — would
+        // incorrectly show FILL here.
+        assert_eq!(
+            px(163, 93),
+            [32, 32, 32, 255],
+            "must be background: inside the UN-rotated bbox but outside the TRUE rotated shape"
+        );
+        // Screen offset (50,0) from center (absolute (178,128)):
+        // OUTSIDE the un-rotated 40-half-extent square along +x, but
+        // its inverse-rotated local coordinate is (35.36,-35.36) —
+        // INSIDE the true rotated square by a solid ~4.6px margin. The
+        // same bug class as above would incorrectly show BACKGROUND
+        // here (the opposite failure direction), since a naive
+        // non-rotated SDF check rejects this point outright.
+        assert_eq!(
+            px(178, 128),
+            [220, 60, 60, 255],
+            "must be fill: outside the UN-rotated bbox but inside the TRUE rotated shape"
+        );
+    }
+
     // ── Wave 3 Commit 3: the multi-pass blend-layer executor ─────────
     //
     // Design risk 2's dedicated gate: a nested layer scene must not

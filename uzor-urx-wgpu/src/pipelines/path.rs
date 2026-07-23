@@ -11,6 +11,13 @@
 //! **per-vertex** colour instead and lets the rasteriser interpolate
 //! it for free via the `vec4<f32>` vertex→fragment varying.
 //!
+//! `v0`/`v1`/`v2` are re-projected from LOCAL (pre-transform) mesh
+//! space through the frame's FULL 6-coefficient affine at replay time
+//! (`encode.rs::project_local`, Wave 4 Commit 4, design §5.4) — was a
+//! translate+scale-only decomposition through Wave 1-3. This module's
+//! own `TriInstance`/`PathPipeline` are unaffected: they just carry
+//! whatever device-space vertices `encode.rs` computes.
+//!
 //! `PATH_SHADER_NATIVE` deliberately has NO barycentric edge AA —
 //! that per-triangle-independent edge fade is the literal mechanism of
 //! the legacy crate's internal-tessellation-seam bug (design §4 "AA

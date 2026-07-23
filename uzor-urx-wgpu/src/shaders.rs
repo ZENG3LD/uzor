@@ -9,11 +9,12 @@
 //! `LINE_SHADER_NATIVE`. Commit 3 added `PATH_SHADER_NATIVE`. Wave 2
 //! Commit 2 added `GLYPH_SHADER_NATIVE`. Wave 3 Commit 2 added
 //! `STENCIL_MASK_SHADER_NATIVE`. Wave 3 Commit 3 added
-//! `BLEND_COMPOSITE_SHADER_NATIVE`. Wave 4 Commit 3 adds
+//! `BLEND_COMPOSITE_SHADER_NATIVE`. Wave 4 Commit 3 added
 //! `GRADIENT_SHADER_NATIVE` (Radial/Sweep per-fragment LUT eval) and
-//! `IMAGE_SHADER_NATIVE` (textured quad + rotation)
+//! `IMAGE_SHADER_NATIVE` (textured quad + rotation). Wave 4 Commit 4
+//! adds rotation to `QUAD_SHADER_NATIVE`'s vertex stage (design §5.3)
 //! (`docs/uzor-engines/plans/urx-wave4-vello-parity-design-2026-07-25.md`
-//! §2.3/§4.3).
+//! §2.3/§4.3/§5.3).
 
 /// Quad shader — filled/bordered rounded rectangles with SDF AA.
 ///
@@ -36,6 +37,57 @@
 ///    second time (that double-counts coverage and silently halves it
 ///    at `fill.a == 0`, exactly the StrokeRect case). Required by the
 ///    premultiplied blend state this pipeline is built with (design §7).
+///
+/// **Wave 4 Commit 4 — rotation** (design §5.3): `_pad0.x` now carries
+/// a similarity transform's rotation angle in radians (`encode.rs`'s
+/// `encode_fill_rect_solid`/`encode_stroke_rect`). The vertex shader
+/// rotates the CENTERED, pre-rotation local offset (`local`) around the
+/// rect's own center to build the actual device-space vertex position
+/// (`px`) — but the SDF-facing `frag_pos` varying is built from `local`
+/// ITSELF, never from the rotated offset. This is a deliberate,
+/// verified correction of this design's own WGSL sketch (§5.3), which
+/// used `rotated + padded_size * 0.5` for `frag_pos`: (a) it should be
+/// `local + instance.size * 0.5` (`half`, not `padded_size * 0.5` —
+/// the design's own arithmetic reduces to a `+aa_pad` offset error
+/// against the pre-rotation formula it must stay a no-op extension of
+/// at `rotation == 0.0`); (b) using `rotated` instead of `local` as the
+/// SDF's input is a genuine correctness bug, not just an off-by-`aa_pad`
+/// slip — concretely, for a 45-degree-rotated zero-radius square, the
+/// design's own formula evaluates the corner vertex `(5,-5)` (exactly
+/// on the shape boundary, `dist == 0`) at `rotated == (7.07, 0)`,
+/// which the SDF reports as `dist ≈ 2.07` (OUTSIDE by 2 units) — the
+/// design's sketch would visibly clip/round the rotated rect's corners
+/// incorrectly. The reason `local` (not `rotated`) is correct: since
+/// `px = center + rotated(local)` is an AFFINE function of the vertex's
+/// own `uv`, and `local` is ALSO an affine function of that same `uv`,
+/// the rasterizer's barycentric interpolation of the `local`-derived
+/// varying at any fragment INSIDE the rotated triangle exactly
+/// reproduces `R⁻¹ * (that fragment's own screen position − center)` —
+/// precisely the un-rotated local coordinate `sdf_rounded_rect` needs
+/// (same "affine interpolation is exact" argument as the Linear
+/// gradient, design §2.1, and as the Radial/Sweep gradient's own
+/// device-space-`@builtin(position)` recipe, design §2.3/§2.4 — three
+/// independent instances of the identical mathematical fact in this one
+/// file). Passing `rotated` instead recovers `R * R⁻¹ * (px − center) =
+/// (px − center)` — the RAW, un-rotated screen offset — which silently
+/// clips the rotated mesh back down to the ORIGINAL axis-aligned
+/// footprint, behaviorally indistinguishable from "rotation doesn't
+/// visually apply at all" for the SDF's own shape/AA decision (even
+/// though the submitted triangle geometry really is rotated). Verified
+/// by `renderer.rs`'s `rotated_uniform_radius_rect_corner_regions_render_correctly`
+/// GPU probe, whose two discriminating pixel probes were chosen
+/// specifically because they'd read the WRONG colour under this exact
+/// bug.
+///
+/// **AA pad under rotation** (design §5.3's own open question, "the AA
+/// pad must account for rotation... the design addresses this"):
+/// resolved for free by padding in LOCAL (pre-rotation) space — `local`
+/// is built from `padded_size` (already `size` inflated by `aa_pad` on
+/// every side) BEFORE the rotation matrix is applied, so rotating the
+/// WHOLE padded quad rigidly preserves every local-space margin exactly
+/// (Euclidean rotation preserves distances/perpendicular offsets) — the
+/// rotated padded quad covers the rotated shape + border + AA fringe by
+/// construction, with zero rotation-specific padding logic needed.
 pub const QUAD_SHADER_NATIVE: &str = r#"
 struct Uniforms {
     screen_size: vec2<f32>,
@@ -51,7 +103,7 @@ struct QuadInstance {
     @location(3) border_packed: u32,
     @location(4) corner_radius: f32,
     @location(5) border_width:  f32,
-    @location(6) _pad0:         vec2<f32>,
+    @location(6) _pad0:         vec2<f32>,   // .x = rotation (radians, Wave 4 §5.3); .y reserved
     @location(7) clip_rect:     vec4<f32>,
 };
 
@@ -83,12 +135,23 @@ fn vs_main(
     // to cover that extension (plus a 1px AA fringe), not just a fixed
     // 1px like the legacy inset-only shader.
     let aa_pad = max(1.0, instance.border_width * 0.5 + 1.0);
-    let padded_pos  = instance.pos  - vec2<f32>(aa_pad, aa_pad);
     let padded_size = instance.size + vec2<f32>(aa_pad * 2.0, aa_pad * 2.0);
+    let half        = instance.size * 0.5;
+    let center      = instance.pos + half;
 
-    let uv = quad_vert_pos(vertex_index);
-    let px = padded_pos + uv * padded_size;
-    let frag_pos = px - instance.pos;
+    // Centered, PRE-rotation local offset — an AFFINE function of `uv`
+    // (see this shader's own doc comment for the full "why `local`, not
+    // `rotated`" derivation, including the design-doc bug this corrects).
+    let uv    = quad_vert_pos(vertex_index);
+    let local = uv * padded_size - padded_size * 0.5;
+
+    let rotation = instance._pad0.x;
+    let cs = cos(rotation);
+    let sn = sin(rotation);
+    let rotated = vec2<f32>(local.x * cs - local.y * sn, local.x * sn + local.y * cs);
+
+    let px       = center + rotated;   // actual device-space vertex position — the rotated geometry
+    let frag_pos = local + half;       // rect-LOCAL (un-rotated) SDF coordinate — reduces EXACTLY to the pre-rotation formula at rotation == 0.0
 
     let ndc = vec2<f32>(
         px.x / uniforms.screen_size.x *  2.0 - 1.0,
