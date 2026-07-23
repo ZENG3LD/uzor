@@ -12,6 +12,10 @@ categories  = ["graphics", "rendering"]
 [dependencies]
 uzor-urx-core              = { workspace = true }
 uzor-urx-glyph             = { workspace = true }
+# Shared image registry (Wave 4 §0.4) — NOT optional, same reasoning as
+# `uzor-urx-glyph`'s non-optional status above (design risk 7: a GPU 2D
+# UI pipeline without image support isn't a realistic consumer).
+uzor-urx-image             = { workspace = true }
 uzor-render-wgpu-instanced = { workspace = true }
 uzor                       = { workspace = true }
 metrics = "0.24"

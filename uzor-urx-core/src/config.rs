@@ -138,6 +138,32 @@ pub struct UrxConfig {
     /// equivalent time (`CpuBackend::render`'s `LayerStack::new`) —
     /// not hot-swappable mid-frame. Wave 3. Default `8`.
     pub blend_layer_max_depth: usize,
+    /// `uzor-urx-wgpu`'s native gradient LUT atlas row count — see
+    /// `uzor-urx-wgpu/src/gradient_lut.rs::GradientLutAtlas`. The
+    /// texture is fixed at 256 columns (matching
+    /// `uzor_urx_core::gradient_lut::LUT_SIZE`, one column per LUT
+    /// entry); this knob is the OTHER dimension — how many distinct
+    /// gradients' LUTs can be resident at once (one per row). Smaller
+    /// than the glyph atlas's slot count by design (design §2.2's own
+    /// reasoning): distinct SIMULTANEOUS gradients in one frame is
+    /// typically far smaller than distinct glyphs. Validated like the
+    /// other atlas dims (`ConfigError::InvalidGradientLutRows`) — `0`
+    /// rows means every `get_or_insert` fails unconditionally, almost
+    /// certainly a config bug rather than an intended "disable" (a
+    /// scene with no Radial/Sweep gradient already pays zero cost).
+    /// Read at `NativeUrxRenderer` construction only — not hot-
+    /// swappable (no atlas-resize path, same as `wgpu_glyph_atlas_w/h`).
+    /// Wave 4. Default `64`.
+    pub wgpu_gradient_lut_rows: u32,
+    /// `uzor-urx-wgpu`'s native per-image texture cache cap (resident
+    /// images) — see `uzor-urx-wgpu/src/image_cache.rs::NativeImageCache`.
+    /// Count-bound, not area-bound (per design §4.2: "images can be
+    /// large — no atlas packing"); each resident image is its own full
+    /// `wgpu::Texture`, evicted whole via the same tick-based
+    /// never-evict-this-frame LRU discipline as the glyph atlas/
+    /// gradient LUT. Read at `NativeUrxRenderer` construction only —
+    /// not hot-swappable. Wave 4. Default `64`.
+    pub wgpu_image_cache_cap: usize,
 
     // ── SIMD ───────────────────────────────────────────────────────
 
@@ -211,6 +237,8 @@ impl Default for UrxConfig {
             wgpu_glyph_atlas_w: 2048,
             wgpu_glyph_atlas_h: 2048,
             blend_layer_max_depth: 8,
+            wgpu_gradient_lut_rows: 64,
+            wgpu_image_cache_cap: 64,
             simd_level: SimdLevel::Native,
             hybrid_atlas_w: 2048,
             hybrid_atlas_h: 2048,
@@ -245,6 +273,10 @@ pub enum ConfigError {
     /// intended "disable" (there is no dedicated disable knob; a
     /// scene that never uses `PushBlendLayer` already pays zero cost).
     InvalidBlendLayerDepth(usize),
+    /// `wgpu_gradient_lut_rows` was `0` or exceeded the `1..=16384`
+    /// texture-dimension safety cap every other atlas dim in this
+    /// struct already enforces.
+    InvalidGradientLutRows(u32),
 }
 
 impl std::fmt::Display for ConfigError {
@@ -260,6 +292,8 @@ impl std::fmt::Display for ConfigError {
                 write!(f, "rounded_mask_max_dim must be ≤ 16384 (got {})", d),
             ConfigError::InvalidBlendLayerDepth(d) =>
                 write!(f, "blend_layer_max_depth must be > 0 (got {})", d),
+            ConfigError::InvalidGradientLutRows(r) =>
+                write!(f, "wgpu_gradient_lut_rows must be 1..=16384 (got {})", r),
         }
     }
 }
@@ -297,6 +331,9 @@ impl UrxConfig {
         if self.blend_layer_max_depth == 0 {
             return Err(ConfigError::InvalidBlendLayerDepth(self.blend_layer_max_depth));
         }
+        if self.wgpu_gradient_lut_rows == 0 || self.wgpu_gradient_lut_rows > 16384 {
+            return Err(ConfigError::InvalidGradientLutRows(self.wgpu_gradient_lut_rows));
+        }
         Ok(())
     }
 }
@@ -328,6 +365,8 @@ impl UrxConfigBuilder {
     setter!(wgpu_glyph_atlas_w, u32);
     setter!(wgpu_glyph_atlas_h, u32);
     setter!(blend_layer_max_depth, usize);
+    setter!(wgpu_gradient_lut_rows, u32);
+    setter!(wgpu_image_cache_cap, usize);
     setter!(simd_level, SimdLevel);
     setter!(hybrid_atlas_w, u32);
     setter!(hybrid_atlas_h, u32);
@@ -377,6 +416,10 @@ mod tests {
         // Wave-3-introduced — shared symmetrically by both backends'
         // `LayerStack` equivalents.
         assert_eq!(c.blend_layer_max_depth, 8);
+        // Wave-4-introduced — GradientLutAtlas row count / image cache
+        // cap, both `uzor-urx-wgpu`-only.
+        assert_eq!(c.wgpu_gradient_lut_rows, 64);
+        assert_eq!(c.wgpu_image_cache_cap, 64);
         assert_eq!(c.simd_level, SimdLevel::Native);
         assert_eq!(c.hybrid_atlas_w, 2048);
         assert_eq!(c.hybrid_atlas_h, 2048);
@@ -463,6 +506,29 @@ mod tests {
     fn blend_layer_max_depth_settable_via_builder() {
         let c = UrxConfig::builder().blend_layer_max_depth(3).build().unwrap();
         assert_eq!(c.blend_layer_max_depth, 3);
+    }
+
+    #[test]
+    fn validate_rejects_zero_gradient_lut_rows() {
+        let c = UrxConfig { wgpu_gradient_lut_rows: 0, ..Default::default() };
+        assert!(matches!(c.validate(), Err(ConfigError::InvalidGradientLutRows(0))));
+    }
+
+    #[test]
+    fn validate_rejects_oversize_gradient_lut_rows() {
+        let c = UrxConfig { wgpu_gradient_lut_rows: 20_000, ..Default::default() };
+        assert!(matches!(c.validate(), Err(ConfigError::InvalidGradientLutRows(20_000))));
+    }
+
+    #[test]
+    fn gradient_lut_rows_and_image_cache_cap_settable_via_builder() {
+        let c = UrxConfig::builder()
+            .wgpu_gradient_lut_rows(16)
+            .wgpu_image_cache_cap(8)
+            .build()
+            .unwrap();
+        assert_eq!(c.wgpu_gradient_lut_rows, 16);
+        assert_eq!(c.wgpu_image_cache_cap, 8);
     }
 
     #[test]

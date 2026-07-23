@@ -96,6 +96,16 @@ pub mod adapter;
 // gone.
 mod atlas;
 mod encode;
+// `GradientLutAtlas`/`NativeImageCache` are greenfield (URX Wave 4
+// Commit 2, `docs/uzor-engines/plans/urx-wave4-vello-parity-design-2026-07-25.md`
+// §2.2/§4.2) — nothing outside their own unit tests constructs one yet
+// (wired into `NativeUrxRenderer`/`encode.rs` in Commit 3), so both
+// modules are `#[cfg(test)]`-gated for now, same precedent as Wave 2
+// Commit 1's `atlas` module (see that mod's own doc comment above).
+#[cfg(test)]
+mod gradient_lut;
+#[cfg(test)]
+mod image_cache;
 mod msaa;
 pub mod native_error;
 mod pipelines;
