@@ -16,6 +16,37 @@
 //!    harness (`tests/parity.rs`) until the Wave 5 cutover flips
 //!    production traffic onto it.
 //!
+//! ## Native pipelines (Wave 1)
+//!
+//! [`NativeUrxRenderer`] is the whole of the native path: it owns the
+//! Quad SDF (`pipelines::quad`), Line/capsule (`pipelines::line`), and
+//! Path/triangle (`pipelines::path`) `wgpu::RenderPipeline`s, the
+//! `ClipStack`-driven `Scene` → instance encoder (`encode`), the lyon
+//! tessellation LRU (`tessellate`), and the MSAA offscreen target
+//! (`msaa`). Construct via [`NativeUrxRenderer::new`] (defaults) or
+//! [`NativeUrxRenderer::with_config`] (accepts a
+//! `uzor_urx_core::config::UrxConfig` — currently only
+//! `path_tess_cache_cap` is consumed here); drive one frame via
+//! [`NativeUrxRenderer::render_into_encoder`].
+//!
+//! Two documents are the ground truth for this design, in reading
+//! order:
+//! - `nemo/docs/uzor-engines/plan-urx-family-parity-2026-07-24.md` —
+//!   the wave-scope plan (why URX has 3 sibling backends — CPU/WGPU/
+//!   Hybrid — and what "parity" means across them; Wave 1's place in
+//!   that sequence).
+//! - `nemo/docs/uzor-engines/plans/urx-wave1-native-pipelines-design-2026-07-25.md` —
+//!   THIS crate's design: module layout, instance struct layouts, the
+//!   AA-scheme decision (SDF for Quad/Line, MSAA-only — no
+//!   barycentric edge AA — for Path), the pixel-parity harness spec,
+//!   and the 5-commit plan this crate was built across (each commit's
+//!   own module docs cite the specific design section it implements).
+//!
+//! File:line evidence for every legacy pattern this design reuses
+//! (device/queue ownership shape, MSAA lifecycle, hand-rolled LRU
+//! shape, etc.) lives in the sibling research doc:
+//! `nemo/docs/uzor-engines/research/urx-wave1-crate-map-2026-07-25.md`.
+//!
 //! ## Legacy API
 //!
 //! ```ignore

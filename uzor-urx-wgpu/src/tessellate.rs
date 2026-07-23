@@ -188,9 +188,14 @@ pub struct TessCacheStats {
     pub misses: u64,
 }
 
-/// Hardcoded this commit (design §6) — the `UrxConfig` knob
-/// (`path_tess_cache_cap`) lands in Commit 5.
-const TESS_CACHE_CAP: usize = 256;
+/// Default cap (entries) for the test-only `TessCache::new` — same
+/// value as `UrxConfig::default().path_tess_cache_cap` (Commit 5 wires
+/// the real config knob through `NativeUrxRenderer::with_config`;
+/// `NativeUrxRenderer::new`/`with_sample_count` go through
+/// `UrxConfig::default()`, so this test-only constant and that default
+/// can never silently drift apart in practice).
+#[cfg(test)]
+const TESS_CACHE_DEFAULT_CAP: usize = 256;
 
 /// Hand-rolled LRU — same shape as `uzor-urx-glyph::GlyphLru`:
 /// `Vec<(key, value, tick)>` + linear scan + `swap_remove` of the
@@ -204,8 +209,17 @@ pub(crate) struct TessCache {
 }
 
 impl TessCache {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
-        Self { entries: Vec::new(), tick: 0, cap: TESS_CACHE_CAP, hits: 0, misses: 0 }
+        Self::with_cap(TESS_CACHE_DEFAULT_CAP)
+    }
+
+    /// Construct with an explicit cap — what
+    /// `NativeUrxRenderer::with_config` uses, reading
+    /// `UrxConfig::path_tess_cache_cap`. The cap is read once here and
+    /// never revisited: this cache is NOT hot-swappable mid-session.
+    pub(crate) fn with_cap(cap: usize) -> Self {
+        Self { entries: Vec::new(), tick: 0, cap, hits: 0, misses: 0 }
     }
 
     fn get(&mut self, key: TessKey) -> Option<Arc<TessMesh>> {
@@ -480,5 +494,39 @@ mod tests {
         let after = cache.stats();
         assert_eq!(after.hits, before.hits + 1, "p0 should still be cached (most recently used)");
         assert_eq!(after.entries, 2, "cap of 2 must never be exceeded");
+    }
+
+    /// Commit 5 item 5: a custom `UrxConfig` with a small
+    /// `path_tess_cache_cap` must actually cap the cache — this is the
+    /// exact `TessCache::with_cap(cfg.path_tess_cache_cap)` call
+    /// `NativeUrxRenderer::with_config` makes, just without the GPU
+    /// device that constructor also needs (this cache is pure CPU-side
+    /// data, so the config-to-cap wiring is fully testable here).
+    #[test]
+    fn tess_cache_respects_a_custom_config_cap() {
+        // `UrxConfig` is `#[non_exhaustive]` — the builder is the only
+        // way to construct a non-default config from outside `uzor-urx-core`.
+        let cfg = uzor_urx_core::config::UrxConfig::builder().path_tess_cache_cap(2).build_unchecked();
+        let mut cache = TessCache::with_cap(cfg.path_tess_cache_cap);
+
+        let mut p0 = BezPath::new();
+        p0.move_to(Point::new(0.0, 0.0));
+        p0.line_to(Point::new(1.0, 0.0));
+        p0.line_to(Point::new(0.0, 1.0));
+        p0.close_path();
+        let mut p1 = p0.clone();
+        p1.line_to(Point::new(1.0, 1.0));
+        let mut p2 = p0.clone();
+        p2.line_to(Point::new(2.0, 2.0));
+
+        let _ = cache.get_or_insert_fill(&p0, FillRule::NonZero); // miss 1
+        let _ = cache.get_or_insert_fill(&p1, FillRule::NonZero); // miss 2 — cap (2) reached
+        assert_eq!(cache.stats().entries, 2);
+
+        // 3rd distinct path — must evict rather than grow past the cap.
+        let _ = cache.get_or_insert_fill(&p2, FillRule::NonZero);
+        let stats = cache.stats();
+        assert_eq!(stats.entries, 2, "cap from UrxConfig::path_tess_cache_cap=2 must never be exceeded");
+        assert_eq!(stats.misses, 3);
     }
 }

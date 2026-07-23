@@ -13,6 +13,8 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
+use uzor_urx_core::config::UrxConfig;
+
 use crate::encode::{self, BatchKind};
 use crate::msaa::MsaaTarget;
 use crate::native_error::NativeRenderError;
@@ -63,7 +65,8 @@ impl NativeUrxRenderer {
     /// Default 4x MSAA (`uzor-urx-3d`'s `MSAA_SAMPLE_COUNT`,
     /// `uzor-urx-3d/src/pipeline.rs:392`) — the MSAA plumbing is wired
     /// completely from Commit 1 (coordinator Amendment A), not deferred
-    /// to Commit 3.
+    /// to Commit 3. Uses `UrxConfig::default()` — see [`Self::with_config`]
+    /// to tune the tessellation-cache cap or any other family-wide knob.
     pub fn new(device: wgpu::Device, queue: wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         Self::with_sample_count(device, queue, format, 4)
     }
@@ -71,12 +74,37 @@ impl NativeUrxRenderer {
     /// `sample_count = 1` disables MSAA — the render pass then draws
     /// straight into the caller's view with no resolve step. Any other
     /// value arms MSAA at exactly that sample count for every pipeline
-    /// built by this renderer.
+    /// built by this renderer. Uses `UrxConfig::default()`.
     pub fn with_sample_count(
         device: wgpu::Device,
         queue: wgpu::Queue,
         format: wgpu::TextureFormat,
         sample_count: u32,
+    ) -> Self {
+        Self::with_config(device, queue, format, sample_count, &UrxConfig::default())
+    }
+
+    /// The full constructor — every other constructor delegates here.
+    /// Naming matches `uzor_urx_cpu::CpuBackend::with_config`'s house
+    /// style (a config-accepting sibling of the config-less
+    /// convenience constructors), extended with this renderer's own
+    /// GPU-specific parameters (`device`/`queue`/`format`/`sample_count`)
+    /// that `UrxConfig` deliberately doesn't own (it's a plain-data,
+    /// backend-agnostic struct shared with the CPU family — see its
+    /// own module doc).
+    ///
+    /// `cfg` is read ONCE, here, at construction — every knob this
+    /// renderer consumes from it (currently just
+    /// `path_tess_cache_cap`) is baked into the owned resource it
+    /// configures (`TessCache::with_cap`) and is NOT hot-swappable for
+    /// the lifetime of this renderer. Re-construct to pick up a
+    /// changed config.
+    pub fn with_config(
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        format: wgpu::TextureFormat,
+        sample_count: u32,
+        cfg: &UrxConfig,
     ) -> Self {
         let sample_count = sample_count.max(1);
 
@@ -111,7 +139,7 @@ impl NativeUrxRenderer {
         let line = LinePipeline::new(&device, format, sample_count, &uniform_bgl);
         let path = PathPipeline::new(&device, format, sample_count, &uniform_bgl);
         let msaa = MsaaTarget::new(sample_count, format);
-        let tess_cache = TessCache::new();
+        let tess_cache = TessCache::with_cap(cfg.path_tess_cache_cap);
 
         Self {
             device,

@@ -103,6 +103,16 @@ pub struct UrxConfig {
     /// `64 << 20` (64 MiB).
     pub region_cache_budget_bytes: u64,
 
+    // ── WGPU native pipelines (Wave 1) ──────────────────────────────
+
+    /// `uzor-urx-wgpu`'s native Path pipeline tessellation-mesh LRU cap
+    /// (entries) — see `uzor-urx-wgpu/src/tessellate.rs::TessCache`.
+    /// Same hand-rolled-LRU shape as `gradient_lut_cap`/`rounded_mask_cap`
+    /// above, just consumed by the WGPU family instead of the CPU one.
+    /// Read at `NativeUrxRenderer` construction only — not hot-swappable
+    /// (the cache doesn't resize itself mid-session). Default `256`.
+    pub path_tess_cache_cap: usize,
+
     // ── SIMD ───────────────────────────────────────────────────────
 
     /// Force a specific SIMD level, or `Native` (default) to let the
@@ -171,6 +181,7 @@ impl Default for UrxConfig {
             rounded_mask_max_dim: 4096,
             glyph_cache_cap: 1024,
             region_cache_budget_bytes: 64 << 20,
+            path_tess_cache_cap: 256,
             simd_level: SimdLevel::Native,
             hybrid_atlas_w: 2048,
             hybrid_atlas_h: 2048,
@@ -268,6 +279,7 @@ impl UrxConfigBuilder {
     setter!(rounded_mask_max_dim, u32);
     setter!(glyph_cache_cap, usize);
     setter!(region_cache_budget_bytes, u64);
+    setter!(path_tess_cache_cap, usize);
     setter!(simd_level, SimdLevel);
     setter!(hybrid_atlas_w, u32);
     setter!(hybrid_atlas_h, u32);
@@ -306,6 +318,10 @@ mod tests {
         assert_eq!(c.rounded_mask_max_dim, 4096);
         assert_eq!(c.glyph_cache_cap, 1024);
         assert_eq!(c.region_cache_budget_bytes, 64 << 20);
+        // Wave-1-introduced (not an original 1.4.1 constant) — default
+        // chosen to match the sibling `gradient_lut_cap`/`rounded_mask_cap`
+        // convention exactly.
+        assert_eq!(c.path_tess_cache_cap, 256);
         assert_eq!(c.simd_level, SimdLevel::Native);
         assert_eq!(c.hybrid_atlas_w, 2048);
         assert_eq!(c.hybrid_atlas_h, 2048);
