@@ -1,12 +1,18 @@
 //! Path rasterisation — fill (scanline AET + winding) and stroke
 //! (per-segment capsule + round joins/caps).
 //!
-//! Fill uses a classic Active-Edge-Table:
-//!   * edges bucketed by `ceil(y_min)` → activated when scanline reaches them
-//!   * each edge appears in AET exactly once, x_at advanced in place
+//! Fill uses a classic Active-Edge-Table, sampled at [`VERTICAL_SUBSAMPLES`]
+//! sub-scanlines per pixel row (see that constant's own doc comment for
+//! why one sample per row isn't enough for thin, steeply-sloped content
+//! like a small rotated glyph stroke):
+//!   * edges bucketed by their first active sub-scanline → activated when
+//!     the AET reaches them
+//!   * each edge appears in the AET exactly once per sub-scanline it's
+//!     active on, x_at advanced in place
 //!   * retain while `y_max > sample_y`; drop otherwise
-//!   * spans emitted by winding rule (NonZero / EvenOdd)
-//!   * per-span horizontal AA via shared `axis_coverage`
+//!   * spans emitted by winding rule (NonZero / EvenOdd) per sub-scanline
+//!   * per-span horizontal AA via shared `axis_coverage`, averaged across
+//!     all sub-scanlines before blending a row once
 //!
 //! Flatten tolerance is applied in screen-space: the tolerance handed to
 //! `kurbo::flatten` is `0.25 / max_scale` so a 2× zoomed path still stays
@@ -32,6 +38,45 @@ use uzor_urx_core::scene::{FillRule, LineCap, LineJoin, Stroke};
 
 const FLATTEN_TOLERANCE_PX: f64 = 0.25;
 const CLOSE_EPS: f64 = 1e-6;
+
+/// Vertical supersample count for [`fill_path_aa`]'s scanline coverage.
+///
+/// The AET fill takes ONE sample height per pixel row (`sample_y = py +
+/// 0.5`) and anti-aliases only the HORIZONTAL span edges via
+/// `axis_coverage` (module doc's own "per-span horizontal AA" — by
+/// design, and correct for the common case this rasterizer was tuned
+/// against: axis-aligned/gently-sloped UI shapes, where a near-
+/// horizontal edge essentially never occurs). A thin (sub-2px-wide),
+/// STEEPLY or NEAR-HORIZONTALLY sloped edge — exactly what a small
+/// rotated glyph stroke presents, since a round letterform's tangent
+/// sweeps through every angle and a 45° rotation reliably lines some of
+/// it up near-horizontal — breaks that assumption: single-sample-per-row
+/// vertical resolution can miss/mis-hit a stroke narrower than 1px in
+/// the row's OWN vertical direction, which reads as torn/piled/doubled
+/// strokes (root-caused 2026-07-25 against a `uzor-figures`
+/// `LabelOverflow::Rotate(45)` proof: `urx-cpu`'s rendering of a small
+/// rotated axis label was geometrically correct — right anchor/tilt —
+/// but glyph CONTENT was mangled, while tiny-skia/vello-cpu, both true
+/// 2D-analytic/multi-sample rasterizers, stayed legible; a controlled
+/// size sweep at 11/22/44px showed the defect shrinking as glyph (hence
+/// stroke width in device pixels) grew — the signature of a vertical-
+/// resolution artifact, not a flattening-tolerance or path-emission bug:
+/// tightening `FLATTEN_TOLERANCE_PX` 6x in isolation measurably changed
+/// nothing).
+///
+/// 4x vertical supersampling (each row split into 4 sub-scanlines,
+/// coverage averaged) bounds the same row-center-sampling error to
+/// ±1/8px instead of ±1/2px — small enough that even an 11px glyph's
+/// ~1px-wide stroke renders legibly, confirmed by the regenerated size-
+/// sweep proof. Scoped to THIS function only (`fill_rect_aa`/
+/// `stroke_path_aa` use their own, already-2D-correct or capsule-based
+/// coverage and don't share this failure mode) — the perf cost (up to
+/// 4x the edge-activation/winding work per fill) is confined to generic
+/// path fills (glyph-outline fallback, pie/sankey/dag curves, stroke-
+/// joint triangles), never the axis-aligned rect fill every bar chart's
+/// bars go through (`compare_baselines`'s own bench doc: "path
+/// rendering... not measured here — separate concern").
+const VERTICAL_SUBSAMPLES: usize = 4;
 
 #[derive(Debug, Clone, Copy)]
 struct Edge {
@@ -126,10 +171,17 @@ pub(crate) fn fill_path_aa(
     let iy1 = (visible.y1.ceil()  as i64).min(h);
     if ix0 >= ix1 || iy0 >= iy1 { return; }
 
-    // Build edges + per-row activation buckets.
+    // Build edges + per-SUB-SCANLINE activation buckets. Each pixel row is
+    // sampled `VERTICAL_SUBSAMPLES` times (see that constant's own doc
+    // comment for why) — the activation grid is built at that finer
+    // granularity so an edge whose `y_min` falls partway through a row
+    // still activates on its own correct sub-scanline, not the whole row.
     let row_count = (iy1 - iy0) as usize;
+    let ss = VERTICAL_SUBSAMPLES;
+    let sub_h = 1.0 / ss as f64;
+    let total_sub_rows = row_count * ss;
     let mut all_edges: Vec<Edge> = Vec::with_capacity(segments.len());
-    let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); row_count];
+    let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); total_sub_rows];
     for (p0, p1) in &segments {
         if (p1.y - p0.y).abs() < 1e-9 { continue; } // skip horizontal
         let (y0, y1, x0, _x1, dir) = if p0.y < p1.y {
@@ -142,10 +194,13 @@ pub(crate) fn fill_path_aa(
         } else {
             (p0.x - p1.x) / (p0.y - p1.y)
         };
-        // Activate on first scanline with sample_y > y_min, i.e. py such
-        // that py + 0.5 > y0  →  py >= ceil(y0 - 0.5).
-        let activate_py = (y0 - 0.5).ceil() as i64;
-        if activate_py >= iy1 || y1 <= y0 { continue; }
+        // Activate on the first sub-scanline with sample_y > y_min, i.e.
+        // the smallest `vr` (0-based sub-row index from `iy0`) such that
+        // `iy0 + vr*sub_h + sub_h/2 > y0` — the same
+        // "ceil(value - half_step)" activation technique the pre-existing
+        // one-sample-per-row code used, generalized to `sub_h` steps.
+        let activate_vr = ((y0 - iy0 as f64) / sub_h - 0.5).ceil().max(0.0) as i64;
+        if activate_vr >= total_sub_rows as i64 || y1 <= y0 { continue; }
         let edge_idx = all_edges.len() as u32;
         all_edges.push(Edge {
             y_min: y0,
@@ -154,8 +209,8 @@ pub(crate) fn fill_path_aa(
             dx_dy,
             dir,
         });
-        let bi = (activate_py.max(iy0) - iy0) as usize;
-        if bi < row_count {
+        let bi = activate_vr as usize;
+        if bi < total_sub_rows {
             buckets[bi].push(edge_idx);
         }
     }
@@ -168,78 +223,97 @@ pub(crate) fn fill_path_aa(
     let use_mask = !clip.all_rect();
 
     let mut active: Vec<Edge> = Vec::with_capacity(16);
+    // Per-row coverage accumulator (sum of 0..=255 `h_cov` samples across
+    // all `ss` sub-scanlines) — reused across rows, cleared at the start
+    // of each. Indexed by `px - ix0`.
+    let row_w = (ix1 - ix0) as usize;
+    let mut row_accum: Vec<u32> = vec![0; row_w];
 
     for py in iy0 .. iy1 {
-        let sample_y = py as f64 + 0.5;
+        for c in row_accum.iter_mut() { *c = 0; }
 
-        // Drop edges whose y_max has been crossed.
-        active.retain(|e| e.y_max > sample_y);
+        for sub in 0 .. ss {
+            let vr = (py - iy0) as usize * ss + sub;
+            let sample_y = iy0 as f64 + vr as f64 * sub_h + sub_h * 0.5;
 
-        // Activate edges scheduled for this row.
-        for &eidx in &buckets[(py - iy0) as usize] {
-            let mut e = all_edges[eidx as usize];
-            e.x_at = e.x_at + (sample_y - e.y_min) * e.dx_dy;
-            active.push(e);
-        }
+            // Drop edges whose y_max has been crossed.
+            active.retain(|e| e.y_max > sample_y);
 
-        if active.is_empty() { continue; }
-
-        // Insertion sort by x_at (active is small & near-sorted).
-        for i in 1..active.len() {
-            let mut j = i;
-            while j > 0 && active[j - 1].x_at > active[j].x_at {
-                active.swap(j - 1, j);
-                j -= 1;
+            // Activate edges scheduled for this sub-scanline.
+            for &eidx in &buckets[vr] {
+                let mut e = all_edges[eidx as usize];
+                e.x_at = e.x_at + (sample_y - e.y_min) * e.dx_dy;
+                active.push(e);
             }
-        }
 
-        // Walk by winding rule.
-        let mut winding: i32 = 0;
-        let mut span_start: Option<f64> = None;
-        for edge in active.iter() {
-            let prev = winding;
-            winding += edge.dir;
-            let was_inside = match rule {
-                FillRule::NonZero => prev != 0,
-                FillRule::EvenOdd => (prev & 1) != 0,
-            };
-            let now_inside = match rule {
-                FillRule::NonZero => winding != 0,
-                FillRule::EvenOdd => (winding & 1) != 0,
-            };
-            if !was_inside && now_inside {
-                span_start = Some(edge.x_at);
-            } else if was_inside && !now_inside {
-                if let Some(s) = span_start.take() {
-                    let e_x = edge.x_at;
-                    let span_x0 = s.max(clip_x0).max(ix0 as f64);
-                    let span_x1 = e_x.min(clip_x1).min(ix1 as f64);
-                    if span_x1 > span_x0 {
-                        let ipx0 = span_x0.floor() as i64;
-                        let ipx1 = (span_x1.ceil() as i64).min(w);
-                        for px in ipx0 .. ipx1 {
-                            let h_cov = crate::fill::axis_coverage(
-                                px as f64, px as f64 + 1.0,
-                                span_x0, span_x1,
-                            );
-                            if h_cov == 0 { continue; }
-                            let mut cov = h_cov;
-                            if use_mask {
-                                let m = clip.pixel_coverage(px, py);
-                                cov = ((cov as u32 * m as u32 + 127) / 255) as u8;
-                                if cov == 0 { continue; }
+            if active.is_empty() { continue; }
+
+            // Insertion sort by x_at (active is small & near-sorted).
+            for i in 1..active.len() {
+                let mut j = i;
+                while j > 0 && active[j - 1].x_at > active[j].x_at {
+                    active.swap(j - 1, j);
+                    j -= 1;
+                }
+            }
+
+            // Walk by winding rule.
+            let mut winding: i32 = 0;
+            let mut span_start: Option<f64> = None;
+            for edge in active.iter() {
+                let prev = winding;
+                winding += edge.dir;
+                let was_inside = match rule {
+                    FillRule::NonZero => prev != 0,
+                    FillRule::EvenOdd => (prev & 1) != 0,
+                };
+                let now_inside = match rule {
+                    FillRule::NonZero => winding != 0,
+                    FillRule::EvenOdd => (winding & 1) != 0,
+                };
+                if !was_inside && now_inside {
+                    span_start = Some(edge.x_at);
+                } else if was_inside && !now_inside {
+                    if let Some(s) = span_start.take() {
+                        let e_x = edge.x_at;
+                        let span_x0 = s.max(clip_x0).max(ix0 as f64);
+                        let span_x1 = e_x.min(clip_x1).min(ix1 as f64);
+                        if span_x1 > span_x0 {
+                            let ipx0 = span_x0.floor() as i64;
+                            let ipx1 = (span_x1.ceil() as i64).min(w);
+                            for px in ipx0 .. ipx1 {
+                                let h_cov = crate::fill::axis_coverage(
+                                    px as f64, px as f64 + 1.0,
+                                    span_x0, span_x1,
+                                );
+                                if h_cov == 0 { continue; }
+                                row_accum[(px - ix0) as usize] += h_cov as u32;
                             }
-                            let src = premul_scale(premul, cov);
-                            pixmap.blend_pixel(px as u32, py as u32, src);
                         }
                     }
                 }
             }
+
+            // Advance x_at for the next sub-scanline.
+            for e in active.iter_mut() {
+                e.x_at += e.dx_dy * sub_h;
+            }
         }
 
-        // Advance x_at for next scanline.
-        for e in active.iter_mut() {
-            e.x_at += e.dx_dy;
+        // Blend this row once — average the `ss` sub-scanline coverage
+        // samples, then apply the clip mask exactly as the pre-existing
+        // single-sample code did.
+        for px in ix0 .. ix1 {
+            let raw = row_accum[(px - ix0) as usize];
+            if raw == 0 { continue; }
+            let mut cov = ((raw + ss as u32 / 2) / ss as u32).min(255) as u8;
+            if use_mask {
+                let m = clip.pixel_coverage(px, py);
+                cov = ((cov as u32 * m as u32 + 127) / 255) as u8;
+                if cov == 0 { continue; }
+            }
+            let src = premul_scale(premul, cov);
+            pixmap.blend_pixel(px as u32, py as u32, src);
         }
     }
 }

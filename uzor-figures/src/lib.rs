@@ -1311,6 +1311,44 @@ mod proof_tests {
         assert!(diff.all_within_budget(), "LabelOverflow::Rotate(45): structural backend divergence beyond the generous AA/text tolerance");
     }
 
+    /// Size sweep for the rotated-label glyph-CONTENT defect (owner
+    /// report, 2026-07-25): `urx-cpu`'s rendering of `"category-0"`
+    /// rotated 45° was geometrically correct (right anchor/tilt) on all
+    /// three legs but visually MANGLED (piled/doubled strokes) on
+    /// `urx-cpu` alone at typical 11px axis-label scale, while
+    /// tiny-skia/vello-cpu stayed legible. Renders the SAME string at
+    /// 11/22/44px — one composite per size — to distinguish a
+    /// rasterization/flattening-tolerance defect (which cleans up as the
+    /// glyph gets bigger) from a geometry/emission defect (which stays
+    /// broken regardless of scale). Draws `fill_text` directly (not
+    /// through `BarFigure`) for exact control of font size.
+    #[test]
+    fn label_rotation_size_sweep_diagnostic() {
+        let theme = FigureTheme::dark();
+        let panel_w = 220.0;
+        let panel_h = 160.0;
+        for size in [11.0_f64, 22.0, 44.0] {
+            let render = ThreeLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
+                ctx.set_fill_color(&theme.background);
+                ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
+                ctx.set_fill_color(&theme.label_color);
+                ctx.set_font(&format!("{size}px Roboto"));
+                ctx.save();
+                ctx.translate(panel_w * 0.35, panel_h * 0.65);
+                ctx.rotate(-std::f64::consts::FRAC_PI_4);
+                ctx.fill_text("category-0", 0.0, 0.0);
+                ctx.restore();
+            });
+            let diff = ThreeLegDiff::compute(&render, ChannelTolerance::default());
+            for line in diff.report_lines() {
+                println!("[label-rotation-sweep {size}px] {line}");
+            }
+            let name = format!("figures_label_rotation_sweep_{size:.0}px_backends.png");
+            uzor_proof_harness::write_composite_png(&render, &out_dir().join(&name))
+                .expect("label-rotation size-sweep composite should write");
+        }
+    }
+
     /// Minimal `save() -> translate() -> rotate() -> fill_rect() ->
     /// restore()` regression — the exact composition sequence
     /// `guide::axis::draw_x_axis_impl`'s `LabelOverflow::Rotate` branch
