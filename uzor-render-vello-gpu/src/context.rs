@@ -721,16 +721,23 @@ impl<'a> Painter for VelloGpuRenderContext<'a> {
         }
     }
 
+    // Canvas-style incremental CTM: a later `translate`/`rotate`/`scale`
+    // call is expressed in the LOCAL frame the earlier calls already
+    // established (`self * Op`, kurbo's `pre_*` family), NOT the outer/
+    // world frame (`Op * self`, `then_*`) — see `uzor-render-tiny-skia`'s
+    // identically-shaped `Painter::translate`/`rotate`/`scale` (the
+    // reference-correct backend) and this crate's own new
+    // `translate_then_rotate_matches_local_frame_composition` test below.
     fn translate(&mut self, x: f64, y: f64) {
-        self.transform = self.transform.then_translate((x, y).into());
+        self.transform = self.transform.pre_translate((x, y).into());
     }
 
     fn rotate(&mut self, angle: f64) {
-        self.transform = self.transform.then_rotate(angle);
+        self.transform = self.transform.pre_rotate(angle);
     }
 
     fn scale(&mut self, x: f64, y: f64) {
-        self.transform = self.transform.then_scale_non_uniform(x, y);
+        self.transform = self.transform.pre_scale_non_uniform(x, y);
     }
 
     fn set_fill_color(&mut self, color: &str) {
@@ -1786,5 +1793,64 @@ mod tests {
             UzorRect { x: 0.0, y: 0.0, width: 8.0, height: 8.0 },
         );
         assert!(!drew, "freed target must no longer be drawable");
+    }
+
+    // -----------------------------------------------------------------
+    // Transform-composition regression (canvas-style incremental CTM)
+    // -----------------------------------------------------------------
+    //
+    // Root-caused defect: `translate`/`rotate`/`scale` used to compose via
+    // kurbo's `then_*` family (`Op * self` — the operation applied in the
+    // OUTER/world frame, after everything already accumulated). A
+    // `translate` followed by a `rotate` on a non-identity transform must
+    // instead compose LOCAL-frame (`self * Op`, kurbo's `pre_*` family) —
+    // exactly the semantics `uzor-render-tiny-skia`'s reference-correct
+    // `Painter::translate`/`rotate`/`scale` already use. This test pins
+    // the exact expected device-space mapping of a known local point so a
+    // regression to `then_*` fails immediately, with no rendering
+    // required.
+    #[test]
+    fn translate_then_rotate_matches_local_frame_composition() {
+        let mut root = Scene::new();
+        let mut ctx = VelloGpuRenderContext::new(&mut root, 0.0, 0.0);
+
+        // ctx.save()/translate(10, 0)/rotate(90deg) — a point drawn
+        // locally at (5, 0) after these two calls must land at device
+        // (10, 5): rotate(90deg) first turns local (5,0) into (0,5) in
+        // the frame `translate` already established, THEN that frame's
+        // own (10, 0) offset is added.
+        ctx.translate(10.0, 0.0);
+        ctx.rotate(std::f64::consts::FRAC_PI_2);
+
+        let p = ctx.transform * kurbo::Point::new(5.0, 0.0);
+        assert!((p.x - 10.0).abs() < 1e-9, "x mismatch: got {p:?}");
+        assert!((p.y - 5.0).abs() < 1e-9, "y mismatch: got {p:?}");
+
+        // A `then_*`-composed (world-frame) regression would instead
+        // rotate the ALREADY-translated point about the origin, landing
+        // at device (0, 10) — pinning the wrong-answer shape too so a
+        // silent revert is unambiguous, not just "some other number."
+        assert!(
+            (p.x - 0.0).abs() > 1.0 || (p.y - 10.0).abs() > 1.0,
+            "result matches the WRONG (then_*, world-frame) composition"
+        );
+    }
+
+    #[test]
+    fn translate_then_scale_matches_local_frame_composition() {
+        let mut root = Scene::new();
+        let mut ctx = VelloGpuRenderContext::new(&mut root, 0.0, 0.0);
+
+        // ctx.translate(10, 20)/scale(2, 3) — matches Canvas2D semantics:
+        // local (0,0) -> device (10,20); local (5,5) -> device
+        // (10 + 2*5, 20 + 3*5) = (20, 35).
+        ctx.translate(10.0, 20.0);
+        ctx.scale(2.0, 3.0);
+
+        let origin = ctx.transform * kurbo::Point::new(0.0, 0.0);
+        assert!((origin.x - 10.0).abs() < 1e-9 && (origin.y - 20.0).abs() < 1e-9);
+
+        let p = ctx.transform * kurbo::Point::new(5.0, 5.0);
+        assert!((p.x - 20.0).abs() < 1e-9 && (p.y - 35.0).abs() < 1e-9, "got {p:?}");
     }
 }

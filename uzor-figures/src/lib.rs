@@ -1311,6 +1311,85 @@ mod proof_tests {
         assert!(diff.all_within_budget(), "LabelOverflow::Rotate(45): structural backend divergence beyond the generous AA/text tolerance");
     }
 
+    /// Minimal `save() -> translate() -> rotate() -> fill_rect() ->
+    /// restore()` regression — the exact composition sequence
+    /// `guide::axis::draw_x_axis_impl`'s `LabelOverflow::Rotate` branch
+    /// (and every other rotated-content caller) issues, with a big-area
+    /// filled RECT standing in for the thin rotated text label above.
+    ///
+    /// This is the GATED numeric assertion the transform-composition
+    /// audit specifically asked for: a `translate`/`rotate` composed in
+    /// the wrong (world-frame, kurbo `then_*`) order smears/mispositions
+    /// the WHOLE rect off its correct screen location on any backend
+    /// still doing that — a large, contiguous fraction of the canvas
+    /// flips from "matches" to "differs."
+    /// [`label_rotation_multi_backend_divergence_proof`] above did NOT
+    /// catch the original defect this way — a rotated TEXT label's own
+    /// ink is too small an area fraction of the canvas to push
+    /// `differing_fraction` past [`uzor_proof_harness::
+    /// STRUCTURAL_DEFECT_FRACTION`] even fully mispositioned, which is
+    /// exactly why that defect needed manual PNG inspection to root-cause
+    /// rather than tripping this crate's own existing multi-backend
+    /// budget gate. That test stays the eyeball/PNG composite; this one
+    /// is the number a CI run can actually fail on.
+    ///
+    /// **Gates ONLY `tiny_skia_vs_vello_cpu`, not the full
+    /// [`ThreeLegDiff::all_within_budget`]** — a real, disclosed, UNRELATED
+    /// limitation was found while calibrating this test: `uzor-urx-cpu`'s
+    /// `fill_rect_aa` snaps a rotated rect to the axis-aligned bounding box
+    /// of its transformed corners instead of rasterizing the true rotated
+    /// quad (`uzor-urx-wgpu/src/renderer.rs`'s own design §0.3 note,
+    /// pre-existing and out of this audit's scope). That means
+    /// `tiny_skia_vs_urx_cpu`/`vello_cpu_vs_urx_cpu` carry a persistent
+    /// ~9-10% differing-fraction floor for ANY rotated rect regardless of
+    /// whether translate/rotate compose correctly (measured empirically:
+    /// 0.0944 on the FIXED code, vs. 0.1294-0.1607 on the pre-fix `then_*`
+    /// code — too narrow a margin for a robust gate). `tiny-skia` and
+    /// `vello-cpu` both rasterize a genuinely rotated rect fill (no such
+    /// approximation), so that pair alone is the clean, confound-free
+    /// signal: `0.0000` fixed vs. `0.1294` broken — an unambiguous margin.
+    /// The other two pairs are still computed and printed for visibility.
+    ///
+    /// **Uses a dedicated, TIGHTER tolerance, not
+    /// [`ChannelTolerance::default`]** — this scene is a single isolated
+    /// rect on a plain background (no dense text/gradient content to set
+    /// [`uzor_proof_harness::STRUCTURAL_DEFECT_FRACTION`]'s generous
+    /// `0.35` whole-figure budget), and the measured signal (`0.0000`
+    /// fixed vs. `0.1294` broken for the confound-free `tiny_skia_vs_
+    /// vello_cpu` pair — see doc comment above) never gets close to
+    /// `0.35` either way, so that generic budget cannot distinguish
+    /// fixed from broken here. `0.05` sits comfortably between the two
+    /// measured values.
+    #[test]
+    fn translate_rotate_fill_rect_multi_backend_regression_proof() {
+        let panel = 400.0;
+        let render = ThreeLegRender::capture(panel as u32, panel as u32, |ctx| {
+            ctx.set_fill_color("#101010");
+            ctx.fill_rect(0.0, 0.0, panel, panel);
+            ctx.save();
+            ctx.set_fill_color("#33aaff");
+            ctx.translate(200.0, 200.0);
+            ctx.rotate(std::f64::consts::FRAC_PI_4);
+            ctx.fill_rect(0.0, 0.0, 140.0, 100.0);
+            ctx.restore();
+        });
+        let tol = ChannelTolerance {
+            edge: uzor_proof_harness::STRUCTURAL_EDGE_TOLERANCE,
+            max_differing_fraction: 0.05,
+        };
+        let diff = ThreeLegDiff::compute(&render, tol);
+        for line in diff.report_lines() {
+            println!("[translate-rotate-rect] {line}");
+        }
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_translate_rotate_rect_backends.png"))
+            .expect("translate-rotate-rect multi-backend composite should write");
+        assert!(
+            diff.tiny_skia_vs_vello_cpu.within_budget,
+            "save->translate->rotate->fill_rect->restore: tiny-skia vs vello-cpu structural divergence \
+             — a mispositioned rotated rect (wrong transform-composition order)"
+        );
+    }
+
     /// Text-heavy proof — the same seeded 3-tile KPI row as
     /// `kpi_tile_row_renders_to_a_valid_png` (big headline numbers +
     /// colored deltas + a sparkline + `Currency`/`Percent`/`Si`
