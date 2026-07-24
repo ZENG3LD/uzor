@@ -81,6 +81,9 @@ pub struct BarFigure {
     /// via [`BarFigure::with_annotations`]. Empty (the default) reproduces
     /// the original behavior exactly (see [`crate::guide::annotation`]).
     annotations: Vec<Annotation>,
+    /// Inner padding (fraction of each band's width) — see
+    /// [`BarFigure::with_band_padding`]. Defaults to [`BAND_PADDING`].
+    band_padding: f64,
 }
 
 impl BarFigure {
@@ -97,7 +100,16 @@ impl BarFigure {
     /// [`LegendPosition::Top`] unless overridden via
     /// [`BarFigure::with_legend`].
     pub fn with_series(categories: Vec<String>, series: Vec<BarSeries>, mode: BarMode) -> Self {
-        Self { categories, series, mode, title: None, show_value_labels: false, legend_position: None, annotations: Vec::new() }
+        Self {
+            categories,
+            series,
+            mode,
+            title: None,
+            show_value_labels: false,
+            legend_position: None,
+            annotations: Vec::new(),
+            band_padding: BAND_PADDING,
+        }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
@@ -127,6 +139,17 @@ impl BarFigure {
     /// draw function itself doesn't forbid it.
     pub fn with_annotations(mut self, annotations: Vec<Annotation>) -> Self {
         self.annotations = annotations;
+        self
+    }
+
+    /// Override this figure's band inner padding (fraction of each band's
+    /// own width used as the gap between bands, clamped `0.0..=0.9` by
+    /// [`BandScale::new`]) — the "bar width ratio" a caller couldn't
+    /// previously reach despite [`BandScale::new`] already accepting an
+    /// arbitrary value. Default (unset) is [`BAND_PADDING`], byte-identical
+    /// to this figure's own pre-existing constant.
+    pub fn with_band_padding(mut self, padding: f64) -> Self {
+        self.band_padding = padding;
         self
     }
 
@@ -176,7 +199,7 @@ impl BarFigure {
     /// for zero categories — an empty band trivially hit-tests to
     /// nothing). Exposed for the same reason as [`BarFigure::plot_area`].
     pub fn band_scale(&self) -> BandScale {
-        BandScale::new(self.categories.clone(), BAND_PADDING)
+        BandScale::new(self.categories.clone(), self.band_padding)
     }
 
     /// `(sum of positive values, sum of negative values)` for category `i`
@@ -361,7 +384,7 @@ impl BarFigure {
                     if let Some(i) = hit::bar_index_at(&area, &band, hx) {
                         if self.series.len() <= 1 {
                             let (x0, x1) = area.x_band(&band, i);
-                            ctx.set_fill_color("#ffffff");
+                            ctx.set_fill_color(&theme.highlight);
                             ctx.set_global_alpha(HOVER_HIGHLIGHT_ALPHA);
                             ctx.fill_rect(x0, area.rect.y, (x1 - x0).max(0.0), area.rect.height);
                             ctx.set_global_alpha(1.0);
@@ -377,7 +400,7 @@ impl BarFigure {
                                     let (x0, x1) = area.x_band(&band, i);
                                     if let Some(si) = hit::bar_series_at(x0, x1, self.series.len(), hx) {
                                         let (sx0, sx1) = crate::mark::rect::sub_band_range(x0, x1, self.series.len(), si);
-                                        ctx.set_fill_color("#ffffff");
+                                        ctx.set_fill_color(&theme.highlight);
                                         ctx.set_global_alpha(HOVER_HIGHLIGHT_ALPHA);
                                         ctx.fill_rect(sx0, area.rect.y, (sx1 - sx0).max(0.0), area.rect.height);
                                         ctx.set_global_alpha(1.0);
@@ -391,7 +414,7 @@ impl BarFigure {
                                     if let Some(si) = hit::stacked_series_at(&segments, hy) {
                                         let (x0, x1) = area.x_band(&band, i);
                                         let (top, bottom) = segments[si];
-                                        ctx.set_fill_color("#ffffff");
+                                        ctx.set_fill_color(&theme.highlight);
                                         ctx.set_global_alpha(HOVER_HIGHLIGHT_ALPHA);
                                         ctx.fill_rect(x0, top.min(bottom), (x1 - x0).max(0.0), (bottom - top).abs());
                                         ctx.set_global_alpha(1.0);
@@ -448,6 +471,18 @@ mod tests {
     fn with_legend_overrides_the_auto_default_even_for_a_single_series() {
         let figure = BarFigure::new(cats(2), vec![1.0, 2.0]).with_legend(LegendPosition::Right);
         assert_eq!(figure.resolved_legend_position(), Some(LegendPosition::Right));
+    }
+
+    #[test]
+    fn default_band_padding_matches_the_pre_existing_constant() {
+        let figure = BarFigure::new(cats(2), vec![1.0, 2.0]);
+        assert!((figure.band_scale().padding - BAND_PADDING).abs() < 1e-9);
+    }
+
+    #[test]
+    fn with_band_padding_overrides_the_default_and_is_reflected_in_the_band_scale() {
+        let figure = BarFigure::new(cats(2), vec![1.0, 2.0]).with_band_padding(0.6);
+        assert!((figure.band_scale().padding - 0.6).abs() < 1e-9);
     }
 
     #[test]

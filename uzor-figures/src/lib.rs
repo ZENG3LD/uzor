@@ -56,10 +56,11 @@ pub use figure::{
     boxplot_stats, quartile, uniform_thin_indices, BarFigure, BarMode, BarSeries, BoxplotFigure, BoxplotStats, CurveFigure, CurveSeries,
     DagEdge, DagFigure, DagNode, HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, PieFigure, PieSlice, PointRadius, SankeyFigure,
     SankeyLink, SankeyNode, ScatterFigure, ScatterPoint, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind,
-    WHISKER_IQR_MULTIPLIER,
+    YDomainPolicy, WHISKER_IQR_MULTIPLIER,
 };
 pub use guide::annotation::{draw_annotation_overlays, draw_annotation_underlays, Annotation};
-pub use guide::axis::{draw_x_axis_formatted, draw_y_axis_formatted};
+pub use guide::axis::{draw_x_axis_formatted, draw_x_axis_weighted, draw_y_axis_formatted, draw_y_axis_weighted, AxisTickWeightStyle};
+pub use guide::grid::{draw_x_grid_weighted, draw_y_grid_weighted, GridTickWeightStyle};
 pub use guide::colorbar::{draw_colorbar, measure_colorbar, ColorbarSize};
 pub use guide::labeler::{anchor_candidates, place_labels, OccupancyBitmap};
 pub use guide::legend::{LegendEntry, LegendPosition};
@@ -907,5 +908,101 @@ mod proof_tests {
         .expect("dag figure should render");
         assert_eq!(decoded_png_dims(&bytes), (DAG_WIDTH, DAG_HEIGHT));
         write_proof_png("figures_dag.png", &bytes);
+    }
+
+    // ── Engine-strengthening WAVE 1, Tier A — before/after proofs ───────
+
+    /// Item A1 (hover/selection highlight): LEFT panel reproduces the
+    /// pre-fix bug literally — `FigureTheme::light`'s own `highlight`
+    /// field overridden back to the old hardcoded `"#ffffff"` literal
+    /// every figure's hover paint used directly — over the SAME light
+    /// (white) background, the hover overlay is imperceptible. RIGHT
+    /// panel is the REAL, fixed `FigureTheme::light()` (default
+    /// `highlight` now contrasts against white). Both panels render
+    /// through the IDENTICAL `BarFigure::render_with` call with an
+    /// identical hover position — only `theme.highlight` differs.
+    #[test]
+    fn item_a1_highlight_before_after_light_theme_hover_proof() {
+        let figure = seeded_bar_figure();
+        let panel_w = 400.0;
+        let panel_h = 300.0;
+
+        let mut before_theme = FigureTheme::light();
+        before_theme.highlight = "#ffffff".to_owned(); // reproduces the pre-fix literal
+
+        let after_theme = FigureTheme::light(); // the real fix
+
+        let area = figure.plot_area(Rect::new(0.0, 0.0, panel_w, panel_h));
+        let band = figure.band_scale();
+        let (bx0, bx1) = area.x_band(&band, 3);
+        let hover_px = ((bx0 + bx1) / 2.0, (area.rect.y + area.rect.bottom()) / 2.0);
+        let overlay = FigureOverlay { hover_px: Some(hover_px), brush: None, focus: None };
+
+        let spec = ExportSpec { width_px: (panel_w * 2.0) as u32, height_px: panel_h as u32, dpr: 1.0, background: None };
+        let bytes = render_to_png(&spec, |ctx| {
+            figure.render_with(ctx, Rect::new(0.0, 0.0, panel_w, panel_h), &before_theme, &overlay);
+            let shifted_hover = FigureOverlay { hover_px: Some((hover_px.0 + panel_w, hover_px.1)), brush: None, focus: None };
+            figure.render_with(ctx, Rect::new(panel_w, 0.0, panel_w, panel_h), &after_theme, &shifted_hover);
+        })
+        .expect("A1 highlight before/after proof should render");
+        assert_eq!(decoded_png_dims(&bytes), ((panel_w * 2.0) as u32, panel_h as u32));
+        write_proof_png("figures_a1_highlight_before_after.png", &bytes);
+    }
+
+    /// Item A5 (TimeScale tick-weight wiring): LEFT panel drives the
+    /// PRE-EXISTING, unchanged `guide::axis::draw_x_axis`/`guide::grid::
+    /// draw_x_grid` (still available, byte-identical to before this
+    /// wave) over a 3-year `TimeScale` domain — every tick (including a
+    /// real January-1st year boundary) renders with identical stroke
+    /// width/tick length. RIGHT panel drives the NEW `draw_x_axis_
+    /// weighted`/`draw_x_grid_weighted` over the SAME scale/domain — the
+    /// year-boundary tick now draws visibly longer/heavier than an
+    /// ordinary month tick.
+    #[test]
+    fn item_a5_timescale_axis_weight_before_after_proof() {
+        use crate::coord::PlotArea;
+        use crate::guide::axis::{self, AxisTickWeightStyle};
+        use crate::guide::grid::{self, GridTickWeightStyle};
+
+        // A ~1-month window straddling a real Jan-1 boundary (day-level
+        // tick cadence at this span) — the single tick landing exactly on
+        // 2023-01-01T00:00:00Z classifies as `TickMarkWeight::Year`
+        // (outranks Day), surrounded by ordinary day ticks, at a large
+        // enough panel/tick-length scale that the visual difference is
+        // obvious by eye, not just provable in pixels.
+        const DAY_SECS: f64 = 86_400.0;
+        let jan1_2023 = 1_672_531_200.0; // 2023-01-01T00:00:00Z
+        let scale = TimeScale::new(jan1_2023 - 15.0 * DAY_SECS, jan1_2023 + 15.0 * DAY_SECS);
+
+        let theme = FigureTheme::dark();
+        let panel_w = 700.0;
+        let panel_h = 220.0;
+        let plot_rect = Rect::new(20.0, 20.0, panel_w - 40.0, panel_h - 60.0);
+        let area = PlotArea::new(plot_rect);
+
+        let spec = ExportSpec { width_px: (panel_w * 2.0) as u32, height_px: panel_h as u32, dpr: 1.0, background: None };
+        let bytes = render_to_png(&spec, |ctx| {
+            // BEFORE — the pre-existing flat draw: every day tick (incl.
+            // the Jan-1 year boundary) renders with the identical tick
+            // length/stroke width.
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
+            grid::draw_x_grid(ctx, &area, &scale, &theme, 12);
+            axis::draw_x_axis(ctx, &area, &scale, &theme, 12);
+
+            // AFTER — the new weighted entry points, same scale/domain:
+            // the Jan-1 tick now draws visibly longer/heavier than its
+            // neighboring day ticks.
+            ctx.save();
+            ctx.translate(panel_w, 0.0);
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
+            grid::draw_x_grid_weighted(ctx, &area, &scale, &theme, 12, &GridTickWeightStyle::default());
+            axis::draw_x_axis_weighted(ctx, &area, &scale, &theme, 12, &AxisTickWeightStyle::default());
+            ctx.restore();
+        })
+        .expect("A5 TimeScale axis-weight before/after proof should render");
+        assert_eq!(decoded_png_dims(&bytes), ((panel_w * 2.0) as u32, panel_h as u32));
+        write_proof_png("figures_a5_timescale_axis_weight_before_after.png", &bytes);
     }
 }

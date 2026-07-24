@@ -86,4 +86,33 @@ pub trait Scale {
         };
         linear::format_value(v, step)
     }
+
+    /// Optional per-tick "how visually important is this boundary"
+    /// classifier — `None` by default (every scale except [`TimeScale`],
+    /// which overrides this with [`time::boundary_weight`]). Exists so a
+    /// GENERIC axis/grid caller ([`crate::guide::axis::draw_x_axis_weighted`]/
+    /// [`crate::guide::grid::draw_x_grid_weighted`] and their Y-axis
+    /// counterparts) can style a major/medium calendar boundary distinctly
+    /// from a minor one WITHOUT downcasting to a concrete scale type — the
+    /// "tested hierarchy computed and thrown away" gap: [`TimeScale`]'s own
+    /// [`time::TickMarkWeight`] hierarchy was fully built and unit-tested
+    /// but never consulted by the shared axis/grid guides every
+    /// `CurveFigure::with_x_scale(TimeScale)`/`ScatterFigure::
+    /// with_x_scale(TimeScale)` actually renders through. Every scale that
+    /// keeps the default (`None`) renders EXACTLY as before through the
+    /// weighted entry points too — see those functions' own doc comments.
+    fn tick_weight(&self, _v: f64) -> Option<time::TickMarkWeight> {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tick_weight_defaults_to_none_for_a_scale_that_does_not_override_it() {
+        let scale = LinearScale::new(0.0, 100.0);
+        assert_eq!(scale.tick_weight(50.0), None, "a non-time scale must report no tick weight, leaving weighted axis/grid rendering unaffected");
+    }
 }

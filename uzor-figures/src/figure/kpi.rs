@@ -83,27 +83,27 @@ impl KpiFigure {
         self.sparkline.len() >= 2
     }
 
-    /// Derive a scaled font string from `theme.label_font` (e.g.
-    /// `"11px sans-serif"` -> `"bold 28px sans-serif"`) — this crate's
-    /// [`FigureTheme`] carries exactly one font size (its own small guide/
-    /// label text); a KPI headline number needs a visibly larger weight
-    /// class no existing theme field carries. Expects the SAME `"<N>px
-    /// <family...>"` shape every [`FigureTheme::label_font`] in this crate
-    /// already uses — when the first token isn't a valid `px` size (a
-    /// malformed/unexpected theme), the WHOLE family falls back to a
-    /// literal `"sans-serif"` rather than misreading an arbitrary token as
-    /// the family — never panics either way.
+    /// Compose a scaled font string at `size_px` (e.g. `"bold 28px
+    /// Georgia"`) from `family` — this crate's [`FigureTheme`] carries
+    /// exactly one font SIZE meant for its own small guide/label text
+    /// ([`FigureTheme::label_font`]); a KPI headline number needs a
+    /// visibly larger weight class no existing size field carries.
+    ///
+    /// **Bug fixed, not a config default**: this previously took
+    /// `theme.label_font`'s own COMPOSED CSS string (`"<N>px <family>"`)
+    /// and re-derived the family by STRING-PARSING it, silently
+    /// discarding the family on any shape other than that exact one
+    /// (`"bold 11px Georgia"` — a leading weight token — made the parse
+    /// fail and fell back to a literal `"sans-serif"`, a real, silent
+    /// data-loss bug on any non-default theme). `family` is now
+    /// [`FigureTheme::label_font_family`] — a dedicated, ALREADY-bare
+    /// field the theme carries directly, never re-derived from a display
+    /// string. `family` is used VERBATIM, whatever it is (a caller
+    /// supplying a garbled family string gets a garbled font, which is
+    /// the caller's own bug to fix, not this function's to paper over).
     ///
     /// [`FigureTheme::label_font`]: crate::theme::FigureTheme::label_font
-    fn scaled_font(label_font: &str, size_px: f64, bold: bool) -> String {
-        let mut tokens = label_font.split_whitespace();
-        let first_is_size = tokens.next().is_some_and(|t| t.strip_suffix("px").is_some_and(|n| n.parse::<f64>().is_ok()));
-        let family = if first_is_size {
-            let rest: Vec<&str> = tokens.collect();
-            if rest.is_empty() { "sans-serif".to_owned() } else { rest.join(" ") }
-        } else {
-            "sans-serif".to_owned()
-        };
+    fn scaled_font(family: &str, size_px: f64, bold: bool) -> String {
         if bold {
             format!("bold {size_px}px {family}")
         } else {
@@ -132,9 +132,9 @@ impl KpiFigure {
 
         let label_font = theme.label_font.clone();
         let value_font_size = (text_h * 0.42).clamp(16.0, 40.0);
-        let value_font = Self::scaled_font(&label_font, value_font_size, true);
+        let value_font = Self::scaled_font(&theme.label_font_family, value_font_size, true);
         let delta_font_size = (text_h * 0.16).clamp(11.0, 16.0);
-        let delta_font = Self::scaled_font(&label_font, delta_font_size, false);
+        let delta_font = Self::scaled_font(&theme.label_font_family, delta_font_size, false);
 
         let mut cursor_y = inner.y;
 
@@ -266,14 +266,41 @@ mod tests {
     }
 
     #[test]
-    fn scaled_font_extracts_the_family_and_applies_bold_and_size() {
-        assert_eq!(KpiFigure::scaled_font("11px sans-serif", 28.0, true), "bold 28px sans-serif");
-        assert_eq!(KpiFigure::scaled_font("11px sans-serif", 13.0, false), "13px sans-serif");
+    fn scaled_font_composes_the_given_family_at_the_requested_size_and_weight() {
+        assert_eq!(KpiFigure::scaled_font("sans-serif", 28.0, true), "bold 28px sans-serif");
+        assert_eq!(KpiFigure::scaled_font("sans-serif", 13.0, false), "13px sans-serif");
     }
 
     #[test]
-    fn scaled_font_falls_back_to_sans_serif_for_a_malformed_theme_font() {
-        assert_eq!(KpiFigure::scaled_font("garbage", 20.0, true), "bold 20px sans-serif");
+    fn scaled_font_no_longer_re_parses_a_composed_css_font_string_bug_fix() {
+        // The pre-fix bug: `scaled_font` used to take `theme.label_font`
+        // (a COMPOSED "<N>px <family>" string) and re-derive the family by
+        // string-parsing it — any shape other than a leading bare `<N>px`
+        // token (e.g. a leading weight keyword) silently discarded the
+        // real family, falling back to "sans-serif". `scaled_font` now
+        // takes the theme's own dedicated `label_font_family` field
+        // directly, so a non-trivial family composes correctly regardless
+        // of what `label_font`'s own display string looks like.
+        assert_eq!(KpiFigure::scaled_font("Georgia", 28.0, true), "bold 28px Georgia");
+        assert_eq!(KpiFigure::scaled_font("'Times New Roman', serif", 13.0, false), "13px 'Times New Roman', serif");
+    }
+
+    #[test]
+    fn render_smoke_with_a_non_trivial_theme_font_string_and_family() {
+        // An end-to-end regression guard for the bug fix above: a theme
+        // whose `label_font` is a shape the OLD parser would have
+        // mishandled (a leading "bold" weight token) must still render
+        // without panicking, using its own `label_font_family` verbatim.
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let mut theme = FigureTheme::dark();
+        theme.label_font = "bold 11px Georgia".to_owned();
+        theme.label_font_family = "Georgia".to_owned();
+
+        let figure = KpiFigure::new("Revenue", 128_400.0).with_previous_value(110_000.0);
+        let spec = ExportSpec { width_px: 220, height_px: 120, dpr: 1.0, background: None };
+        let result = render_to_png(&spec, |ctx| figure.render(ctx, Rect::new(0.0, 0.0, 220.0, 120.0), &theme));
+        assert!(result.is_ok());
     }
 
     #[test]

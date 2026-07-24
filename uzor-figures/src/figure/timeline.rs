@@ -425,7 +425,7 @@ impl TimelineFigure {
         let e = &self.events[i];
         let (top, bottom) = area.y_band(lanes, e.lane);
 
-        ctx.set_fill_color("#ffffff");
+        ctx.set_fill_color(&theme.highlight);
         ctx.set_global_alpha(HOVER_HIGHLIGHT_ALPHA);
         match e.end_ts {
             Some(end_ts) => {

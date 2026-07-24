@@ -170,15 +170,29 @@ pub fn layout_connectors(steps: &[WaterfallStep], area: &PlotArea, band: &BandSc
 pub struct WaterfallFigure {
     pub items: Vec<WaterfallItem>,
     title: Option<String>,
+    /// Inner padding (fraction of each band's width) — see
+    /// [`WaterfallFigure::with_band_padding`]. Defaults to [`BAND_PADDING`].
+    band_padding: f64,
 }
 
 impl WaterfallFigure {
     pub fn new(items: Vec<WaterfallItem>) -> Self {
-        Self { items, title: None }
+        Self { items, title: None, band_padding: BAND_PADDING }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
+        self
+    }
+
+    /// Override this figure's band inner padding (fraction of each band's
+    /// own width used as the gap between bands, clamped `0.0..=0.9` by
+    /// [`BandScale::new`]) — the "bar width ratio" a caller couldn't
+    /// previously reach despite [`BandScale::new`] already accepting an
+    /// arbitrary value. Default (unset) is [`BAND_PADDING`], byte-identical
+    /// to this figure's own pre-existing constant.
+    pub fn with_band_padding(mut self, padding: f64) -> Self {
+        self.band_padding = padding;
         self
     }
 
@@ -201,7 +215,7 @@ impl WaterfallFigure {
 
     /// This figure's own category band scale, one band per item.
     pub fn band_scale(&self) -> BandScale {
-        BandScale::new(self.items.iter().map(|i| i.label.clone()).collect(), BAND_PADDING)
+        BandScale::new(self.items.iter().map(|i| i.label.clone()).collect(), self.band_padding)
     }
 
     /// This figure's own resolved running-sum steps.
@@ -288,7 +302,7 @@ impl WaterfallFigure {
                 if hit::hit_zone(&area, hx, hy) == HitZone::Plot {
                     if let Some(i) = hit::bar_index_at(&area, &band, hx) {
                         if let (Some(bar), Some(item), Some(step)) = (bars.get(i), self.items.get(i), steps.get(i)) {
-                            ctx.set_fill_color("#ffffff");
+                            ctx.set_fill_color(&theme.highlight);
                             ctx.set_global_alpha(HOVER_HIGHLIGHT_ALPHA);
                             ctx.fill_rect(bar.x0, bar.top_px, (bar.x1 - bar.x0).max(0.0), (bar.bottom_px - bar.top_px).max(0.0));
                             ctx.set_global_alpha(1.0);
@@ -427,6 +441,20 @@ mod tests {
         let y = LinearScale::nice(0.0, 5.0, 5);
         let area = PlotArea::new(Rect::new(0.0, 0.0, 100.0, 100.0));
         assert!(layout_connectors(&steps, &area, &band, &y).is_empty());
+    }
+
+    #[test]
+    fn default_band_padding_matches_the_pre_existing_constant() {
+        let items = vec![item("only", 5.0, WaterfallKind::Total)];
+        let figure = WaterfallFigure::new(items);
+        assert!((figure.band_scale().padding - BAND_PADDING).abs() < 1e-9);
+    }
+
+    #[test]
+    fn with_band_padding_overrides_the_default_and_is_reflected_in_the_band_scale() {
+        let items = vec![item("only", 5.0, WaterfallKind::Total)];
+        let figure = WaterfallFigure::new(items).with_band_padding(0.5);
+        assert!((figure.band_scale().padding - 0.5).abs() < 1e-9);
     }
 
     #[test]

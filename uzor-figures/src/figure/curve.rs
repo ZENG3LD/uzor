@@ -18,8 +18,10 @@ use uzor::render::RenderContext;
 use uzor::types::Rect;
 
 use crate::coord::PlotArea;
-use crate::figure::FigureOverlay;
+use crate::figure::{FigureOverlay, YDomainPolicy};
 use crate::guide::annotation::{draw_annotation_overlays, draw_annotation_underlays, Annotation};
+use crate::guide::axis::AxisTickWeightStyle;
+use crate::guide::grid::GridTickWeightStyle;
 use crate::guide::legend::{self, LegendEntry, LegendPosition};
 use crate::guide::{axis, crosshair, grid, tooltip};
 use crate::interact::hit::{self, HitZone};
@@ -74,6 +76,9 @@ pub struct CurveFigure {
     /// reproduces the original behavior exactly (see
     /// [`crate::guide::annotation`]).
     annotations: Vec<Annotation>,
+    /// This figure's own Y-domain zero-baseline policy — see
+    /// [`CurveFigure::with_y_domain_policy`].
+    y_domain_policy: YDomainPolicy,
 }
 
 impl CurveFigure {
@@ -92,7 +97,16 @@ impl CurveFigure {
     /// [`LegendPosition::Right`] unless overridden via
     /// [`CurveFigure::with_legend`].
     pub fn with_series(series: Vec<CurveSeries>) -> Self {
-        Self { series, title: None, fill: false, x_scale_override: None, legend_position: None, downsample_max: None, annotations: Vec::new() }
+        Self {
+            series,
+            title: None,
+            fill: false,
+            x_scale_override: None,
+            legend_position: None,
+            downsample_max: None,
+            annotations: Vec::new(),
+            y_domain_policy: YDomainPolicy::default(),
+        }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
@@ -155,6 +169,24 @@ impl CurveFigure {
     /// other optional capability on this figure.
     pub fn with_annotations(mut self, annotations: Vec<Annotation>) -> Self {
         self.annotations = annotations;
+        self
+    }
+
+    /// This figure's Y-domain zero-baseline policy — see
+    /// [`YDomainPolicy`]. Default (unset) is [`YDomainPolicy::ForceZero`],
+    /// byte-identical to this figure's own pre-existing behavior (the Y
+    /// domain always folded its `fold` seed at `(0.0, 0.0)`, unconditionally
+    /// widening to include zero — a real audit finding: a plain, unfilled
+    /// line chart got the SAME forced-zero treatment a bar/filled-area
+    /// legitimately needs, with no opt-out, unlike
+    /// [`crate::figure::ScatterFigure`]/[`crate::figure::BoxplotFigure`],
+    /// which both deliberately never force zero). Set
+    /// [`YDomainPolicy::FitData`] to fit the domain to the data's own
+    /// extent only — the conventional line-chart behavior every reference
+    /// library (D3, Highcharts, TradingView) uses by default, reserving
+    /// forced zero-baselining for bars/filled areas.
+    pub fn with_y_domain_policy(mut self, policy: YDomainPolicy) -> Self {
+        self.y_domain_policy = policy;
         self
     }
 
@@ -240,11 +272,16 @@ impl CurveFigure {
         if self.total_points() < 2 {
             return None;
         }
-        let (y_min, y_max) = self
-            .series
-            .iter()
-            .flat_map(|s| s.points.iter())
-            .fold((0.0_f64, 0.0_f64), |(mn, mx), &(_, py)| (mn.min(py), mx.max(py)));
+        // Seed the fold at `(0.0, 0.0)` under `ForceZero` (unconditionally
+        // widens the domain to include zero) or at the data's own extreme
+        // extent under `FitData` (never pulls zero in) — see
+        // `with_y_domain_policy`'s own doc comment.
+        let seed = match self.y_domain_policy {
+            YDomainPolicy::ForceZero => (0.0_f64, 0.0_f64),
+            YDomainPolicy::FitData => (f64::INFINITY, f64::NEG_INFINITY),
+        };
+        let (y_min, y_max) =
+            self.series.iter().flat_map(|s| s.points.iter()).fold(seed, |(mn, mx), &(_, py)| (mn.min(py), mx.max(py)));
         Some(LinearScale::nice(y_min, y_max, TARGET_Y_TICKS))
     }
 
@@ -311,7 +348,15 @@ impl CurveFigure {
         };
 
         if let (Some(x_scale), Some(y_scale)) = (x_scale, self.y_scale()) {
-            grid::draw_x_grid(ctx, &area, x_scale, theme, TARGET_X_TICKS);
+            // Weighted entry points: a real render-output change ONLY when
+            // `x_scale` is a `TimeScale` (`Scale::tick_weight` reports
+            // `Some`) — every other X scale (the auto-computed
+            // `LinearScale`) renders byte-identically to the unweighted
+            // `draw_x_grid`/`draw_x_axis`, see `guide::grid`/`guide::axis`'s
+            // own regression tests for the proof. Closes the "TimeScale's
+            // tested tick-weight hierarchy never reaches the shared axis/
+            // grid guides" audit finding for this figure's own X axis.
+            grid::draw_x_grid_weighted(ctx, &area, x_scale, theme, TARGET_X_TICKS, &GridTickWeightStyle::default());
             grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
 
             // Annotation FILLS (the only underlay: `HBand`'s own shaded
@@ -341,7 +386,7 @@ impl CurveFigure {
 
             draw_annotation_overlays(ctx, &area, x_scale, &y_scale, theme, &self.annotations);
 
-            axis::draw_x_axis(ctx, &area, x_scale, theme, TARGET_X_TICKS);
+            axis::draw_x_axis_weighted(ctx, &area, x_scale, theme, TARGET_X_TICKS, &AxisTickWeightStyle::default());
             axis::draw_y_axis(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
 
             if let Some((hx, hy)) = overlay.hover_px {
@@ -450,6 +495,23 @@ mod tests {
         assert!(x.max >= 10.0, "x domain must contain series a's rightmost point");
         assert!(y.min <= -5.0, "y domain must contain series a's lowest point");
         assert!(y.max >= 40.0, "y domain must contain series b's highest point");
+    }
+
+    #[test]
+    fn default_y_domain_policy_forces_a_zero_baseline_unchanged_from_before() {
+        // Every point sits well above zero — the default (unset) policy
+        // must still pull the domain down to include 0.0, exactly the
+        // pre-existing behavior every caller today already relies on.
+        let figure = CurveFigure::new(vec![(0.0, 100.0), (1.0, 110.0)]);
+        let y = figure.y_scale().expect("2 points");
+        assert!(y.min <= 0.0, "default policy must force a zero baseline, got min={}", y.min);
+    }
+
+    #[test]
+    fn fit_data_y_domain_policy_never_forces_a_zero_baseline() {
+        let figure = CurveFigure::new(vec![(0.0, 100.0), (1.0, 110.0)]).with_y_domain_policy(YDomainPolicy::FitData);
+        let y = figure.y_scale().expect("2 points");
+        assert!(y.min > 0.0, "FitData policy must fit the data, never force a zero baseline, got min={}", y.min);
     }
 
     #[test]

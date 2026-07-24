@@ -424,7 +424,7 @@ impl PieFigure {
 
             if hovered == Some(i) {
                 build_wedge_path(ctx, &layout, slice);
-                ctx.set_fill_color("#ffffff");
+                ctx.set_fill_color(&theme.highlight);
                 ctx.set_global_alpha(HOVER_HIGHLIGHT_ALPHA);
                 ctx.fill();
                 ctx.set_global_alpha(1.0);

@@ -133,6 +133,9 @@ pub struct BoxplotFigure {
     pub categories: Vec<String>,
     pub samples: Vec<Vec<f64>>,
     pub title: Option<String>,
+    /// Inner padding (fraction of each band's width) — see
+    /// [`BoxplotFigure::with_band_padding`]. Defaults to [`BAND_PADDING`].
+    band_padding: f64,
 }
 
 impl BoxplotFigure {
@@ -142,11 +145,22 @@ impl BoxplotFigure {
     /// entry beyond `categories.len()` is never reached (the band scale is
     /// built from `categories` alone).
     pub fn new(categories: Vec<String>, samples: Vec<Vec<f64>>) -> Self {
-        Self { categories, samples, title: None }
+        Self { categories, samples, title: None, band_padding: BAND_PADDING }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
+        self
+    }
+
+    /// Override this figure's band inner padding (fraction of each band's
+    /// own width used as the gap between bands, clamped `0.0..=0.9` by
+    /// [`BandScale::new`]) — the "bar width ratio" a caller couldn't
+    /// previously reach despite [`BandScale::new`] already accepting an
+    /// arbitrary value. Default (unset) is [`BAND_PADDING`], byte-identical
+    /// to this figure's own pre-existing constant.
+    pub fn with_band_padding(mut self, padding: f64) -> Self {
+        self.band_padding = padding;
         self
     }
 
@@ -168,7 +182,7 @@ impl BoxplotFigure {
 
     /// This figure's own category band scale.
     pub fn band_scale(&self) -> BandScale {
-        BandScale::new(self.categories.clone(), BAND_PADDING)
+        BandScale::new(self.categories.clone(), self.band_padding)
     }
 
     /// This category's own resolved stats, `None` for an empty/missing
@@ -298,7 +312,7 @@ impl BoxplotFigure {
                 if let Some((hx, hy)) = overlay.hover_px {
                     if hit::hit_zone(&area, hx, hy) == HitZone::Plot {
                         if hit::bar_index_at(&area, &band, hx) == Some(i) {
-                            ctx.set_fill_color("#ffffff");
+                            ctx.set_fill_color(&theme.highlight);
                             ctx.set_global_alpha(HOVER_HIGHLIGHT_ALPHA);
                             ctx.fill_rect(x0, area.rect.y, (x1 - x0).max(0.0), area.rect.height);
                             ctx.set_global_alpha(1.0);
@@ -415,6 +429,18 @@ mod tests {
         let stats = boxplot_stats(&samples).expect("non-empty");
         assert_eq!(stats.outliers, vec![-200.0]);
         assert!(stats.whisker_low > -200.0);
+    }
+
+    #[test]
+    fn default_band_padding_matches_the_pre_existing_constant() {
+        let figure = BoxplotFigure::new(vec!["a".to_owned()], vec![vec![1.0, 2.0, 3.0]]);
+        assert!((figure.band_scale().padding - BAND_PADDING).abs() < 1e-9);
+    }
+
+    #[test]
+    fn with_band_padding_overrides_the_default_and_is_reflected_in_the_band_scale() {
+        let figure = BoxplotFigure::new(vec!["a".to_owned()], vec![vec![1.0, 2.0, 3.0]]).with_band_padding(0.45);
+        assert!((figure.band_scale().padding - 0.45).abs() < 1e-9);
     }
 
     #[test]

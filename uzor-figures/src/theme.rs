@@ -11,6 +11,20 @@ pub struct FigureTheme {
     pub grid_color: String,
     pub label_color: String,
     pub label_font: String,
+    /// Bare font family (e.g. `"sans-serif"`, `"Georgia"`, `"'Times New
+    /// Roman', serif"`) — no size/weight tokens. Exists so a figure that
+    /// needs a DIFFERENT size/weight of the SAME family (today, only
+    /// [`crate::figure::KpiFigure`]'s headline number) can compose a new
+    /// CSS font string directly from this field instead of re-parsing
+    /// [`FigureTheme::label_font`]'s own composed string — a real bug
+    /// found in [`crate::figure::kpi::KpiFigure`]'s pre-existing
+    /// `scaled_font` helper, which silently discarded the family on any
+    /// `label_font` shape other than the exact `"<N>px <family>"` this
+    /// crate's own [`FigureTheme::dark`]/`light` happen to produce (e.g.
+    /// `"bold 11px Georgia"` degraded to a literal `"sans-serif"`).
+    /// [`FigureTheme::label_font`] itself is unaffected — every other
+    /// figure keeps using it verbatim.
+    pub label_font_family: String,
     /// Deterministic per-series color assignment — figures index into
     /// this by series/category position, same convention as
     /// `uzor-graph::render::category_color`'s hashed lookup.
@@ -23,6 +37,17 @@ pub struct FigureTheme {
     /// Semantic "bad"/decrease color — [`crate::figure::WaterfallFigure`]'s
     /// negative-delta bars.
     pub negative: String,
+    /// Hover/selection highlight color — every figure's own translucent
+    /// "brighten the hovered mark" overlay (bars/scatter/waterfall/
+    /// boxplot/pie/timeline/heatmap) and hover-outline paint through THIS
+    /// field instead of a hardcoded `"#ffffff"` literal (a real bug: white
+    /// at low alpha over [`FigureTheme::light`]'s own white background was
+    /// visually imperceptible — every figure was silently broken on hover
+    /// under the light theme). [`FigureTheme::dark`] keeps the pre-existing
+    /// white (still correct there — white already contrasted against a
+    /// dark background); [`FigureTheme::light`] picks a value that
+    /// contrasts against a WHITE background instead.
+    pub highlight: String,
 }
 
 /// The 10-color categorical palette shared with `uzor-graph`.
@@ -34,6 +59,16 @@ const PALETTE: [&str; 10] = [
 /// part of the SAME visual identity, not a second unrelated palette.
 const POSITIVE_COLOR: &str = "#5cb87a";
 const NEGATIVE_COLOR: &str = "#e0555a";
+/// [`FigureTheme::dark`]'s own hover/selection highlight — unchanged from
+/// the pre-existing hardcoded literal every figure used directly (white
+/// still contrasts correctly against a dark background, so the dark
+/// theme's own visual behavior is byte-identical after this fix).
+const HIGHLIGHT_DARK: &str = "#ffffff";
+/// [`FigureTheme::light`]'s own hover/selection highlight — a dark navy,
+/// chosen to contrast against `FigureTheme::light`'s own `"#ffffff"`
+/// background at the same low alpha every figure's hover overlay already
+/// paints at (white-on-white was the actual bug this field fixes).
+const HIGHLIGHT_LIGHT: &str = "#1a1a2e";
 
 impl FigureTheme {
     /// Dark theme — matches `force-graph-demo`'s `#0d0f14` canvas
@@ -45,9 +80,11 @@ impl FigureTheme {
             grid_color: "#22262f".to_owned(),
             label_color: "#9aa0ac".to_owned(),
             label_font: "11px sans-serif".to_owned(),
+            label_font_family: "sans-serif".to_owned(),
             palette: PALETTE.iter().map(|&s| s.to_owned()).collect(),
             positive: POSITIVE_COLOR.to_owned(),
             negative: NEGATIVE_COLOR.to_owned(),
+            highlight: HIGHLIGHT_DARK.to_owned(),
         }
     }
 
@@ -59,9 +96,11 @@ impl FigureTheme {
             grid_color: "#eceff3".to_owned(),
             label_color: "#4a5060".to_owned(),
             label_font: "11px sans-serif".to_owned(),
+            label_font_family: "sans-serif".to_owned(),
             palette: PALETTE.iter().map(|&s| s.to_owned()).collect(),
             positive: POSITIVE_COLOR.to_owned(),
             negative: NEGATIVE_COLOR.to_owned(),
+            highlight: HIGHLIGHT_LIGHT.to_owned(),
         }
     }
 }
@@ -86,5 +125,32 @@ mod tests {
     #[test]
     fn default_is_dark() {
         assert_eq!(FigureTheme::default().background, FigureTheme::dark().background);
+    }
+
+    #[test]
+    fn highlight_color_differs_from_the_background_in_every_built_in_theme() {
+        // The actual bug this field fixes: `FigureTheme::light`'s own
+        // background is `"#ffffff"` — a hover overlay painted at the same
+        // literal `"#ffffff"` (the pre-fix hardcoded value every figure
+        // used directly) is imperceptible at low alpha. Every built-in
+        // theme's own `highlight` must be a genuinely different color
+        // from its own `background`.
+        for theme in [FigureTheme::dark(), FigureTheme::light()] {
+            assert_ne!(
+                theme.highlight.to_ascii_lowercase(),
+                theme.background.to_ascii_lowercase(),
+                "highlight must contrast against the background, got highlight={} background={}",
+                theme.highlight,
+                theme.background
+            );
+        }
+    }
+
+    #[test]
+    fn dark_theme_highlight_is_unchanged_from_the_pre_fix_literal() {
+        // The dark theme's own hover/selection color was never actually
+        // broken (white already contrasts against a dark background) — a
+        // regression guard that this fix doesn't change dark-theme output.
+        assert_eq!(FigureTheme::dark().highlight, "#ffffff");
     }
 }

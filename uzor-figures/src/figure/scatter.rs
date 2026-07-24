@@ -42,6 +42,8 @@ use uzor::types::Rect;
 use crate::coord::PlotArea;
 use crate::figure::FigureOverlay;
 use crate::guide::annotation::{draw_annotation_overlays, draw_annotation_underlays, Annotation};
+use crate::guide::axis::AxisTickWeightStyle;
+use crate::guide::grid::GridTickWeightStyle;
 use crate::guide::{axis, grid, tooltip};
 use crate::interact::hit::{self, HitZone};
 use crate::mark::point::draw_points_sized;
@@ -305,7 +307,11 @@ impl ScatterFigure {
         };
 
         if let (Some(x_scale), Some(y_scale)) = (x_scale, self.y_scale()) {
-            grid::draw_x_grid(ctx, &area, x_scale, theme, TARGET_X_TICKS);
+            // Weighted entry point: a real render-output change ONLY when
+            // `x_scale` is a `TimeScale` — see `CurveFigure::render_with`'s
+            // own identical comment for the full reasoning + regression
+            // proof.
+            grid::draw_x_grid_weighted(ctx, &area, x_scale, theme, TARGET_X_TICKS, &GridTickWeightStyle::default());
             grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
 
             // Annotation FILLS (the only underlay: `HBand`'s own shaded
@@ -349,7 +355,7 @@ impl ScatterFigure {
                                 x_scale,
                                 &y_scale,
                                 &[(p.x, p.y, r + HOVER_HIGHLIGHT_EXTRA_RADIUS)],
-                                &MarkStyle { color: "#ffffff".to_owned(), fill_alpha: HOVER_HIGHLIGHT_ALPHA, ..Default::default() },
+                                &MarkStyle { color: theme.highlight.clone(), fill_alpha: HOVER_HIGHLIGHT_ALPHA, ..Default::default() },
                             );
 
                             let y_step = nice_step(y_scale.max - y_scale.min, TARGET_Y_TICKS as f64);
@@ -364,7 +370,7 @@ impl ScatterFigure {
                 }
             }
 
-            axis::draw_x_axis(ctx, &area, x_scale, theme, TARGET_X_TICKS);
+            axis::draw_x_axis_weighted(ctx, &area, x_scale, theme, TARGET_X_TICKS, &AxisTickWeightStyle::default());
             axis::draw_y_axis(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
         }
 

@@ -175,6 +175,21 @@ pub struct Theme {
 /// than panic mid-page.
 const FALLBACK_FONT: FontFileRef = FontFileRef { family: FontFamily::Roboto, bold: false, italic: false };
 
+/// Bare CSS family name for `family` — mirrors `uzor_text::FontSpec`'s own
+/// private `family_name()` (the two crates share `uzor::fonts::FontFamily`
+/// but neither the type itself nor `FontSpec` exposes a public
+/// family-name-only accessor), needed here so
+/// [`Theme::figure_theme`]'s own `label_font_family` field carries a bare
+/// family string independent of `label_spec.to_css_font()`'s composed
+/// `"<weight> <size>px <family>"` shape.
+fn font_family_name(family: FontFamily) -> &'static str {
+    match family {
+        FontFamily::Roboto => "Roboto",
+        FontFamily::PtRootUi => "PT Root UI",
+        FontFamily::JetBrainsMono => "JetBrains Mono",
+    }
+}
+
 impl Theme {
     fn resolve_font_role(&self, role: FontRole) -> ResolvedFontRole {
         let (idx, size_px) = match role {
@@ -240,6 +255,13 @@ impl Theme {
             grid_color: self.color_hex(tokens.grid_color),
             label_color: self.color_hex(tokens.label_color),
             label_font: label_spec.to_css_font(),
+            // Bare family name only (no size/weight tokens) — resolved
+            // through the SAME `label` role `label_spec` above already
+            // derived from, so a figure that needs a differently-sized
+            // variant of the SAME family (currently only `KpiFigure`'s
+            // headline number) never has to re-parse `label_font`'s own
+            // composed CSS string.
+            label_font_family: font_family_name(label.file.family).to_owned(),
             palette: self.brand.categorical_palette.iter().map(|c| format!("#{:06x}", c & 0xff_ffff)).collect(),
             // `positive`/`negative` (business-chart semantic colors, added
             // additively to `uzor_figures::FigureTheme` for
@@ -249,6 +271,12 @@ impl Theme {
             // green/red hues) — never a second, unrelated color source.
             positive: self.brand.categorical_palette.get(2).map(|c| format!("#{:06x}", c & 0xff_ffff)).unwrap_or_else(|| "#5cb87a".to_owned()),
             negative: self.brand.categorical_palette.get(7).map(|c| format!("#{:06x}", c & 0xff_ffff)).unwrap_or_else(|| "#e0555a".to_owned()),
+            // Hover/selection highlight — this theme carries no dedicated
+            // brand role for it (no figure block in this crate's own
+            // showcase drives a hover overlay), so it resolves to the
+            // theme's own `ColorRole::Accent` (a real, already-resolved
+            // brand color, never a second hardcoded literal).
+            highlight: self.color_hex(ColorRole::Accent),
         }
     }
 
@@ -384,5 +412,21 @@ mod tests {
         theme.design.body_font = 99; // deliberately out of range
         let spec = theme.font_spec(FontRole::Body); // must not panic
         assert_eq!(spec.family, FontFamily::Roboto);
+    }
+
+    #[test]
+    fn figure_theme_label_font_family_is_bare_never_carries_a_size_token() {
+        let theme = Theme::light_report();
+        let figure_theme = theme.figure_theme();
+        assert!(!figure_theme.label_font_family.contains("px"), "label_font_family must be a bare family name, got {}", figure_theme.label_font_family);
+        assert!(figure_theme.label_font.ends_with(&figure_theme.label_font_family), "label_font's own composed string must end with the same bare family");
+    }
+
+    #[test]
+    fn figure_theme_highlight_resolves_through_the_theme_never_a_hardcoded_literal() {
+        let light = Theme::light_report();
+        let dark = Theme::dark_deck();
+        assert_eq!(light.figure_theme().highlight, light.color_hex(ColorRole::Accent));
+        assert_eq!(dark.figure_theme().highlight, dark.color_hex(ColorRole::Accent));
     }
 }

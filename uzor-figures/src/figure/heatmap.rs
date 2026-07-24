@@ -235,7 +235,7 @@ impl HeatmapFigure {
         if let Some((hx, hy)) = overlay.hover_px {
             if let Some(i) = hit_test_cell(&layout, hx, hy) {
                 if let Some(cell) = layout.cells.get(i) {
-                    ctx.set_stroke_color("#ffffff");
+                    ctx.set_stroke_color(&theme.highlight);
                     ctx.set_stroke_width(HOVER_STROKE_WIDTH);
                     ctx.stroke_rect(cell.rect.x, cell.rect.y, cell.rect.width, cell.rect.height);
 

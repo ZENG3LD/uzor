@@ -540,6 +540,14 @@ impl Scale for TimeScale {
         let (_, month, day, hour, minute, _second) = timestamp_to_date(secs);
         format!("{day} {} {hour:02}:{minute:02}", MONTH_NAMES[(month - 1) as usize])
     }
+
+    /// Real per-tick calendar-boundary classification — see [`Scale::
+    /// tick_weight`]'s own doc comment for why this hook exists on the
+    /// trait at all (a generic axis/grid caller styling major/minor ticks
+    /// without downcasting).
+    fn tick_weight(&self, v: f64) -> Option<TickMarkWeight> {
+        Some(boundary_weight(v.floor() as i64))
+    }
 }
 
 #[cfg(test)]
@@ -749,5 +757,16 @@ mod tests {
         let t = ts(2024, 3, 15, 9, 5, 0);
         let scale = TimeScale::new(t - 3600.0, t + 3600.0);
         assert_eq!(scale.format_value(t), "15 Mar 09:05");
+    }
+
+    #[test]
+    fn scale_trait_tick_weight_matches_boundary_weight_directly() {
+        // `Scale::tick_weight` is the generic hook `guide::axis`/
+        // `guide::grid`'s weighted entry points consult through `&dyn
+        // Scale` — must agree with `boundary_weight` called directly.
+        let jan1 = ts(2024, 1, 1, 0, 0, 0);
+        let scale: &dyn Scale = &TimeScale::new(jan1 - 3600.0, jan1 + 3600.0);
+        assert_eq!(scale.tick_weight(jan1), Some(boundary_weight(jan1 as i64)));
+        assert_eq!(scale.tick_weight(jan1), Some(TickMarkWeight::Year));
     }
 }

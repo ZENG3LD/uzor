@@ -89,6 +89,33 @@ pub struct FigureOverlay<'a> {
     pub focus: Option<&'a FocusSet>,
 }
 
+/// How a figure's own auto-computed Y domain treats the zero baseline —
+/// shared vocabulary so a caller reasons about "does this figure force
+/// zero" identically regardless of which figure it's configuring.
+/// [`crate::figure::CurveFigure::with_y_domain_policy`] is currently the
+/// only builder exposing it (default [`YDomainPolicy::ForceZero`]
+/// reproduces this crate's own pre-existing forced-zero behavior
+/// byte-for-byte — see that builder's own doc comment for why zero
+/// forcing was never actually optional before this).
+///
+/// [`crate::figure::ScatterFigure`]/[`crate::figure::BoxplotFigure`]'s own
+/// Y domains are ALREADY, unconditionally, [`YDomainPolicy::FitData`]
+/// (their own module docs explain why a bar/area's height-from-zero
+/// convention doesn't apply to a point/box's position) — named here as
+/// the SAME vocabulary for documentation purposes; neither figure has a
+/// builder to change it, since nothing today asks for the opposite on
+/// either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum YDomainPolicy {
+    /// Always widen the domain to include `0.0` — a bar/filled-area's
+    /// height encodes area-from-zero.
+    #[default]
+    ForceZero,
+    /// Fit the domain to the data's own extent only, never pulling in
+    /// zero — a line/point/box's position does not encode area-from-zero.
+    FitData,
+}
+
 /// Left inset (px) of a figure's own title from `rect.x` — see
 /// [`draw_title`]'s own doc comment for why this is larger than the
 /// pre-existing `8.0`.
