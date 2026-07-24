@@ -84,10 +84,6 @@ struct SavedState {
     /// How many `PushClipRect`/`PushClipRoundedRect` ops were emitted at
     /// this save level. `restore()` emits matching `PopClip`s.
     clip_pushes:   u32,
-    /// Active fill gradient (next `fill()` consumes it once, then it's
-    /// cleared back to the solid colour). Mirrors the Canvas2D
-    /// "createLinearGradient" pattern.
-    fill_gradient: Option<Gradient>,
 }
 
 #[derive(Clone)]
@@ -133,9 +129,6 @@ pub struct UrxRenderContext {
     /// Current Canvas2D-style path buffer.
     path: BezPath,
 
-    /// Active fill gradient — consumed by the next `fill()` then cleared.
-    fill_gradient: Option<Gradient>,
-
     /// Drop shadow (optional). Emitted as a translated pre-pass before the
     /// main draw on `fill_rect` / `fill` / `fill_text` ops.
     shadow: Option<ShadowState>,
@@ -166,7 +159,6 @@ impl UrxRenderContext {
             text_baseline: TextBaseline::Middle,
             blend_mode:    UzorBlendMode::Normal,
             path:          BezPath::new(),
-            fill_gradient: None,
             shadow:        None,
             clip_pushes:   0,
             state_stack:   Vec::new(),
@@ -202,7 +194,6 @@ impl UrxRenderContext {
         self.height = height;
         self.transform = KAffine::IDENTITY;
         self.path.truncate(0);
-        self.fill_gradient = None;
         self.shadow = None;
         self.clip_pushes = 0;
         self.state_stack.clear();
@@ -221,32 +212,64 @@ impl UrxRenderContext {
 
     // ── Internal helpers ───────────────────────────────────────────────────
 
-    fn effective_fill_brush(&mut self) -> PenikoBrush {
-        if let Some(g) = self.fill_gradient.take() {
-            // Gradients carry their stops' alpha already; respect global_alpha
-            // by scaling each stop. Cheap clone — gradients are small.
-            if self.global_alpha < 1.0 {
-                let stops_vec: Vec<ColorStop> = g
-                    .stops
-                    .iter()
-                    .map(|s| ColorStop {
-                        offset: s.offset,
-                        color:  s.color.multiply_alpha(self.global_alpha as f32),
-                    })
-                    .collect();
-                let mut g2 = g.clone();
-                g2.stops = ColorStops::from(stops_vec.as_slice());
-                PenikoBrush::Gradient(g2)
-            } else {
-                PenikoBrush::Gradient(g)
-            }
-        } else {
-            PenikoBrush::Solid(apply_alpha(self.fill_color, self.global_alpha))
-        }
+    fn effective_fill_brush(&self) -> PenikoBrush {
+        PenikoBrush::Solid(apply_alpha(self.fill_color, self.global_alpha))
     }
 
     fn effective_stroke_brush(&self) -> PenikoBrush {
         PenikoBrush::Solid(apply_alpha(self.stroke_color, self.global_alpha))
+    }
+
+    /// Alpha-scale a freshly-built [`Gradient`] by `global_alpha` (a
+    /// gradient's stops carry their own per-stop alpha already;
+    /// `global_alpha` composes on top, same as `effective_fill_brush`'s
+    /// solid-color path applies it via [`apply_alpha`]). Used ONLY by
+    /// `GradientPainter`'s two entry points below — unlike the old
+    /// `fill_gradient`-stash design, no state survives past the single
+    /// call that builds this brush (see `fill_linear_gradient`'s own doc
+    /// comment for why the stash was removed entirely).
+    fn gradient_brush(&self, g: Gradient) -> PenikoBrush {
+        if self.global_alpha < 1.0 {
+            let stops_vec: Vec<ColorStop> = g
+                .stops
+                .iter()
+                .map(|s| ColorStop {
+                    offset: s.offset,
+                    color:  s.color.multiply_alpha(self.global_alpha as f32),
+                })
+                .collect();
+            let mut g2 = g.clone();
+            g2.stops = ColorStops::from(stops_vec.as_slice());
+            PenikoBrush::Gradient(g2)
+        } else {
+            PenikoBrush::Gradient(g)
+        }
+    }
+
+    /// Shared draw core for `fill()` and the two `GradientPainter` entry
+    /// points below — emits the shadow pre-pass (if any) then the main
+    /// `FillPath` for the CURRENT path buffer, using `brush`. No-op on
+    /// an empty path (Canvas2D semantics: filling nothing draws
+    /// nothing). Does NOT clear `self.path` — matches `fill()`'s
+    /// pre-existing behaviour (only `begin_path()` clears it, so a
+    /// caller CAN fill the same path twice, e.g. once solid then once
+    /// with a gradient, same as Canvas2D's own `fill()` contract).
+    fn emit_fill_path(&mut self, brush: PenikoBrush) {
+        if self.path.elements().is_empty() { return; }
+        if let Some(sh) = self.shadow.clone() {
+            self.scene.push(DrawCommand::FillPath {
+                path:      self.path.clone(),
+                rule:      FillRule::NonZero,
+                brush:     PenikoBrush::Solid(apply_alpha(sh.color, self.global_alpha)),
+                transform: self.transform.then_translate(Vec2::new(sh.dx, sh.dy)),
+            });
+        }
+        self.scene.push(DrawCommand::FillPath {
+            path: self.path.clone(),
+            rule: FillRule::NonZero,
+            brush,
+            transform: self.transform,
+        });
     }
 
     fn current_stroke(&self) -> UrxStroke {
@@ -258,8 +281,12 @@ impl UrxRenderContext {
         }
     }
 
-    /// Emit a fill rect (with optional rounded radii). Honours active
-    /// shadow + fill gradient.
+    /// Emit a fill rect (with optional rounded radii). Honours the
+    /// active shadow + current solid `fill_color` — a gradient fill
+    /// goes through `GradientPainter::fill_linear_gradient`/
+    /// `fill_radial_gradient` instead, which paint the CURRENT PATH
+    /// directly (Canvas2D's `rect()` + `fill_linear_gradient()` idiom,
+    /// see that method's own doc comment), not this rect-shorthand path.
     fn emit_fill_rect(&mut self, x: f64, y: f64, w: f64, h: f64, radii: Option<[f32; 4]>) {
         let rect = KRect::new(x, y, x + w, y + h);
         if let Some(sh) = self.shadow.clone() {
@@ -328,7 +355,6 @@ impl Painter for UrxRenderContext {
             text_baseline: self.text_baseline,
             blend_mode:    self.blend_mode,
             clip_pushes:   self.clip_pushes,
-            fill_gradient: self.fill_gradient.clone(),
         });
         // Track new pushes at the new level — popped on restore.
         self.clip_pushes = 0;
@@ -352,7 +378,6 @@ impl Painter for UrxRenderContext {
             self.text_baseline = s.text_baseline;
             self.blend_mode    = s.blend_mode;
             self.clip_pushes   = s.clip_pushes;
-            self.fill_gradient = s.fill_gradient;
         }
     }
 
@@ -488,22 +513,8 @@ impl Painter for UrxRenderContext {
     }
 
     fn fill(&mut self) {
-        if self.path.elements().is_empty() { return; }
-        if let Some(sh) = self.shadow.clone() {
-            self.scene.push(DrawCommand::FillPath {
-                path:      self.path.clone(),
-                rule:      FillRule::NonZero,
-                brush:     PenikoBrush::Solid(apply_alpha(sh.color, self.global_alpha)),
-                transform: self.transform.then_translate(Vec2::new(sh.dx, sh.dy)),
-            });
-        }
         let brush = self.effective_fill_brush();
-        self.scene.push(DrawCommand::FillPath {
-            path:      self.path.clone(),
-            rule:      FillRule::NonZero,
-            brush,
-            transform: self.transform,
-        });
+        self.emit_fill_path(brush);
     }
 }
 
@@ -588,14 +599,32 @@ fn build_gradient_stops(stops: &[(f32, &str)]) -> ColorStops {
 }
 
 impl GradientPainter for UrxRenderContext {
+    /// Paints the CURRENT path (built via `begin_path()`/`rect()`/etc.,
+    /// same as `fill()`) with a linear gradient — immediately, not
+    /// stashed for a later `fill()` call. This matches EVERY other uzor
+    /// backend's own `GradientPainter` impl (`uzor-render-tiny-skia`,
+    /// `uzor-render-vello-{cpu,gpu,hybrid}` all take the path, tessellate/
+    /// rasterise it, and consume it right here — see their own
+    /// `fill_linear_gradient` bodies) and the documented contract
+    /// `uzor::core::render::svg::draw_svg_multicolor` relies on ("vello's
+    /// fill()/stroke()/fill_linear_gradient() consume the path").
+    ///
+    /// A prior version of this method stashed the gradient into a
+    /// `self.fill_gradient: Option<Gradient>` field for the NEXT `fill()`
+    /// call to consume — which meant a caller that (correctly, per every
+    /// other backend's contract) never called a separate `fill()`
+    /// afterward painted NOTHING here, and the stashed gradient then
+    /// leaked into whatever fill-brush-consuming call came next (a
+    /// `fill_rect`/`fill()`/glyph draw with its own, unrelated solid
+    /// color got silently painted with this gradient instead). That
+    /// field is gone entirely now — there is no pending state left to
+    /// leak, structurally, not just by convention.
     fn fill_linear_gradient(
         &mut self,
         stops: &[(f32, &str)],
         x1: f64, y1: f64, x2: f64, y2: f64,
     ) {
-        // Stash the gradient so the next `fill()` (or fill_rect) consumes it
-        // — matches the Canvas2D `createLinearGradient → ctx.fillStyle =
-        // gradient → ctx.fill()` pattern that uzor's other backends honour.
+        if stops.is_empty() { return; }
         let kind = LinearGradientPosition {
             start: KPoint::new(x1, y1),
             end:   KPoint::new(x2, y2),
@@ -606,15 +635,19 @@ impl GradientPainter for UrxRenderContext {
             extend: Extend::Pad,
             ..Gradient::default()
         };
-        self.fill_gradient = Some(g);
+        let brush = self.gradient_brush(g);
+        self.emit_fill_path(brush);
     }
 
+    /// Same immediate-consume contract as `fill_linear_gradient` above —
+    /// see that method's own doc comment for the full reasoning.
     fn fill_radial_gradient(
         &mut self,
         cx: f64, cy: f64, r: f64,
         stops: &[(f32, &str)],
         _x: f64, _y: f64, _w: f64, _h: f64,
     ) {
+        if stops.is_empty() { return; }
         let kind = RadialGradientPosition {
             start_center: KPoint::new(cx, cy),
             start_radius: 0.0,
@@ -627,7 +660,8 @@ impl GradientPainter for UrxRenderContext {
             extend: Extend::Pad,
             ..Gradient::default()
         };
-        self.fill_gradient = Some(g);
+        let brush = self.gradient_brush(g);
+        self.emit_fill_path(brush);
     }
 }
 
@@ -1017,6 +1051,99 @@ mod tests {
         let scene = ctx.take_scene();
         assert_eq!(scene.commands.len(), 1);
         assert!(matches!(scene.commands[0], DrawCommand::FillPath { .. }));
+    }
+
+    // ── GradientPainter (bug fix 2026-07-25: gradient fills were never
+    // emitted + leaked into the next fill-brush-consuming call) ─────────
+
+    /// `fill_linear_gradient` must emit exactly one `FillPath` carrying
+    /// a `Brush::Gradient` (not a bare no-op that leaves the shape
+    /// unpainted, and not a stashed no-command state waiting for a
+    /// caller to separately call `fill()`).
+    #[test]
+    fn fill_linear_gradient_emits_a_gradient_fillpath() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        ctx.begin_path();
+        ctx.rect(0.0, 0.0, 20.0, 10.0);
+        GradientPainter::fill_linear_gradient(
+            &mut ctx,
+            &[(0.0, "#ff0000"), (1.0, "#0000ff")],
+            0.0, 0.0, 20.0, 0.0,
+        );
+        let scene = ctx.take_scene();
+        assert_eq!(scene.commands.len(), 1, "the gradient fill must emit its own draw command, not silently no-op");
+        match &scene.commands[0] {
+            DrawCommand::FillPath { brush, .. } => {
+                assert!(matches!(brush, PenikoBrush::Gradient(_)), "expected a Gradient brush, got {:?}", brush);
+            }
+            other => panic!("expected FillPath, got {:?}", other),
+        }
+    }
+
+    /// Same immediate-emit contract for `fill_radial_gradient`.
+    #[test]
+    fn fill_radial_gradient_emits_a_gradient_fillpath() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        ctx.begin_path();
+        ctx.rect(0.0, 0.0, 20.0, 20.0);
+        GradientPainter::fill_radial_gradient(
+            &mut ctx,
+            10.0, 10.0, 10.0,
+            &[(0.0, "#ff0000"), (1.0, "#0000ff")],
+            0.0, 0.0, 20.0, 20.0,
+        );
+        let scene = ctx.take_scene();
+        assert_eq!(scene.commands.len(), 1);
+        match &scene.commands[0] {
+            DrawCommand::FillPath { brush, .. } => {
+                assert!(matches!(brush, PenikoBrush::Gradient(_)), "expected a Gradient brush, got {:?}", brush);
+            }
+            other => panic!("expected FillPath, got {:?}", other),
+        }
+    }
+
+    /// The defect's own reported shape: a gradient fill followed by an
+    /// UNRELATED solid fill must leave the solid fill with its OWN
+    /// color — never the gradient (the exact leak the coordinator saw
+    /// on `figures_heatmap_backends.png`'s `"36.00"` tick label,
+    /// painted in the colorbar gradient's first-stop orange instead of
+    /// the theme's white). With the `fill_gradient` stash field removed
+    /// entirely, there is no state left to leak — this test pins that.
+    #[test]
+    fn gradient_fill_does_not_leak_into_the_next_solid_fill() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+
+        // First: a gradient-filled rect (mirrors uzor-figures's colorbar:
+        // begin_path -> rect -> fill_linear_gradient, no separate fill()).
+        ctx.begin_path();
+        ctx.rect(0.0, 0.0, 20.0, 10.0);
+        GradientPainter::fill_linear_gradient(
+            &mut ctx,
+            &[(0.0, "#ff8000"), (1.0, "#000000")],
+            0.0, 0.0, 20.0, 0.0,
+        );
+
+        // Second: an UNRELATED solid-color fill (mirrors the colorbar's
+        // own next call — `ctx.set_fill_color(&theme.label_color);
+        // ctx.fill_text(...)`, which routes through `effective_fill_brush`
+        // exactly like a plain `fill()` would).
+        ctx.set_fill_color("#ffffff");
+        ctx.begin_path();
+        ctx.rect(30.0, 0.0, 10.0, 10.0);
+        Painter::fill(&mut ctx);
+
+        let scene = ctx.take_scene();
+        assert_eq!(scene.commands.len(), 2);
+        assert!(matches!(scene.commands[0], DrawCommand::FillPath { brush: PenikoBrush::Gradient(_), .. }));
+        match &scene.commands[1] {
+            DrawCommand::FillPath { brush: PenikoBrush::Solid(c), .. } => {
+                assert_eq!(*c, Color::from_rgba8(255, 255, 255, 255), "the second fill must use ITS OWN white, not the gradient's orange leaking through");
+            }
+            other => panic!("expected a solid-white FillPath, got {:?}", other),
+        }
     }
 
     #[test]

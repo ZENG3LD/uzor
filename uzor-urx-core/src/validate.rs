@@ -8,9 +8,10 @@
 //!
 //! This module provides:
 //!
-//! - [`is_finite_rect`] / [`is_finite_affine`] / [`is_finite_vec2`] —
-//!   `O(1)` checks that callers can use at the backend entry point to
-//!   silently skip non-finite primitives and bump a metrics counter.
+//! - [`is_finite_rect`] / [`is_finite_affine`] / [`is_finite_vec2`] /
+//!   [`is_finite_point`] / [`is_finite_bezpath`] — `O(1)`/`O(path len)`
+//!   checks that callers can use at the backend entry point to silently
+//!   skip non-finite primitives and bump a metrics counter.
 //! - [`Scene::validate`] (via inherent method on the type) — opt-in
 //!   pre-flight that returns a list of bad primitives without
 //!   rendering. Useful in tests / fuzz harnesses; never called on the
@@ -20,13 +21,38 @@
 //! these checks is upstream's bug, not ours, but our policy is
 //! "silent skip + counter" rather than "crash the frame".
 
-use crate::math::{Affine, Rect, RoundedRect, Vec2};
+use crate::math::{Affine, BezPath, Point, Rect, RoundedRect, Vec2};
 use crate::scene::{DrawCommand, Scene};
 
 /// True iff every coordinate of the rect is finite (no NaN, no ±Inf).
 #[inline]
 pub fn is_finite_rect(r: Rect) -> bool {
     r.x0.is_finite() && r.y0.is_finite() && r.x1.is_finite() && r.y1.is_finite()
+}
+
+/// True iff both coordinates of the point are finite.
+#[inline]
+pub fn is_finite_point(p: Point) -> bool {
+    p.x.is_finite() && p.y.is_finite()
+}
+
+/// True iff every control/end point of every element in the path is
+/// finite. `FillPath`/`StrokePath`'s own path geometry used to be
+/// completely UNCHECKED by [`validate_command`] (only their `transform`
+/// was) — a NaN/Inf point INSIDE the path itself slipped straight
+/// through to `uzor-urx-wgpu`'s lyon tessellator, which hard-`assert!`s
+/// every point is finite and panics (`uzor-urx-cpu`'s scanline
+/// rasteriser never hit this because it has no such assertion, so the
+/// gap was invisible there).
+#[inline]
+pub fn is_finite_bezpath(path: &BezPath) -> bool {
+    use kurbo::PathEl;
+    path.elements().iter().all(|el| match *el {
+        PathEl::MoveTo(p) | PathEl::LineTo(p) => is_finite_point(p),
+        PathEl::QuadTo(c, p) => is_finite_point(c) && is_finite_point(p),
+        PathEl::CurveTo(c1, c2, p) => is_finite_point(c1) && is_finite_point(c2) && is_finite_point(p),
+        PathEl::ClosePath => true,
+    })
 }
 
 /// True iff every coefficient of the affine matrix is finite.
@@ -110,9 +136,16 @@ pub fn validate_command(cmd: &DrawCommand) -> Result<(), ValidationIssue> {
             }
             Ok(())
         }
-        DrawCommand::FillPath { path: _, rule: _, brush: _, transform }
-        | DrawCommand::StrokePath { path: _, stroke: _, brush: _, transform } => {
-            if !is_finite_affine(*transform) {
+        DrawCommand::FillPath { path, rule: _, brush: _, transform } => {
+            if !is_finite_affine(*transform) || !is_finite_bezpath(path) {
+                return Err(ValidationIssue::NonFinite);
+            }
+            Ok(())
+        }
+        DrawCommand::StrokePath { path, stroke, brush: _, transform } => {
+            if !is_finite_affine(*transform) || !is_finite_bezpath(path)
+                || !stroke.width.is_finite() || !stroke.miter_limit.is_finite()
+            {
                 return Err(ValidationIssue::NonFinite);
             }
             Ok(())
@@ -234,6 +267,110 @@ mod tests {
         let cmd = DrawCommand::FillRect {
             rect: Rect::new(0.0, 0.0, 10.0, 10.0),
             radii: None,
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
+            transform: Affine::IDENTITY,
+        };
+        assert!(validate_command(&cmd).is_ok());
+    }
+
+    // ── FillPath/StrokePath path-point validation (bug fix: these used
+    // to only check `transform`, letting a NaN/Inf point INSIDE the
+    // path itself slip through to uzor-urx-wgpu's lyon tessellator,
+    // which hard-panics — see `is_finite_bezpath`'s own doc comment) ──
+
+    #[test]
+    fn finite_bezpath_accepts_normal_path() {
+        let mut p = BezPath::new();
+        p.move_to(Point::new(0.0, 0.0));
+        p.line_to(Point::new(10.0, 0.0));
+        p.curve_to(Point::new(10.0, 5.0), Point::new(5.0, 10.0), Point::new(0.0, 10.0));
+        p.close_path();
+        assert!(is_finite_bezpath(&p));
+    }
+
+    #[test]
+    fn finite_bezpath_rejects_nan_line_to() {
+        let mut p = BezPath::new();
+        p.move_to(Point::new(0.0, 0.0));
+        p.line_to(Point::new(f64::NAN, 10.0));
+        assert!(!is_finite_bezpath(&p));
+    }
+
+    #[test]
+    fn finite_bezpath_rejects_inf_in_a_curve_control_point() {
+        let mut p = BezPath::new();
+        p.move_to(Point::new(0.0, 0.0));
+        p.curve_to(Point::new(f64::INFINITY, 0.0), Point::new(10.0, 10.0), Point::new(0.0, 10.0));
+        assert!(!is_finite_bezpath(&p));
+    }
+
+    #[test]
+    fn finite_bezpath_rejects_nan_in_a_quad_end_point() {
+        let mut p = BezPath::new();
+        p.move_to(Point::new(0.0, 0.0));
+        p.quad_to(Point::new(5.0, 5.0), Point::new(f64::NAN, 10.0));
+        assert!(!is_finite_bezpath(&p));
+    }
+
+    fn nan_fill_path() -> BezPath {
+        let mut p = BezPath::new();
+        p.move_to(Point::new(0.0, 0.0));
+        p.line_to(Point::new(f64::NAN, 10.0));
+        p.line_to(Point::new(10.0, 10.0));
+        p.close_path();
+        p
+    }
+
+    #[test]
+    fn validate_command_flags_nan_point_inside_a_fill_path() {
+        let cmd = DrawCommand::FillPath {
+            path: nan_fill_path(),
+            rule: crate::scene::FillRule::NonZero,
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
+            transform: Affine::IDENTITY,
+        };
+        assert_eq!(
+            validate_command(&cmd),
+            Err(ValidationIssue::NonFinite),
+            "a NaN point INSIDE the path (not just the transform) must be caught"
+        );
+    }
+
+    #[test]
+    fn validate_command_flags_nan_point_inside_a_stroke_path() {
+        let cmd = DrawCommand::StrokePath {
+            path: nan_fill_path(),
+            stroke: crate::scene::Stroke::default(),
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
+            transform: Affine::IDENTITY,
+        };
+        assert_eq!(validate_command(&cmd), Err(ValidationIssue::NonFinite));
+    }
+
+    #[test]
+    fn validate_command_flags_nonfinite_stroke_width_on_a_stroke_path() {
+        let mut p = BezPath::new();
+        p.move_to(Point::new(0.0, 0.0));
+        p.line_to(Point::new(10.0, 10.0));
+        let cmd = DrawCommand::StrokePath {
+            path: p,
+            stroke: crate::scene::Stroke { width: f32::NAN, ..crate::scene::Stroke::default() },
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
+            transform: Affine::IDENTITY,
+        };
+        assert_eq!(validate_command(&cmd), Err(ValidationIssue::NonFinite));
+    }
+
+    #[test]
+    fn validate_command_accepts_a_finite_fill_path() {
+        let mut p = BezPath::new();
+        p.move_to(Point::new(0.0, 0.0));
+        p.line_to(Point::new(10.0, 0.0));
+        p.line_to(Point::new(10.0, 10.0));
+        p.close_path();
+        let cmd = DrawCommand::FillPath {
+            path: p,
+            rule: crate::scene::FillRule::NonZero,
             brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
             transform: Affine::IDENTITY,
         };

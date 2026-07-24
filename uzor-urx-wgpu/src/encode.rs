@@ -3232,6 +3232,20 @@ mod tests {
                     .map(|(_, counter)| counter.0.load(Ordering::SeqCst))
                     .sum()
             }
+
+            /// Sum of every counter registered under `metric_name`,
+            /// regardless of labels — for LABEL-LESS counters like
+            /// `KEY_RENDER_SKIPPED_NONFINITE` (`encode_scene`'s own
+            /// `metrics::counter!(KEY_RENDER_SKIPPED_NONFINITE)` call
+            /// carries no `"kind"` label, unlike every `degrade()` call
+            /// `value_for` above is built for).
+            fn total_for(&self, metric_name: &str) -> u64 {
+                let map = self.counters.lock().unwrap_or_else(|e| e.into_inner());
+                map.iter()
+                    .filter(|(key, _)| key.name() == metric_name)
+                    .map(|(_, counter)| counter.0.load(Ordering::SeqCst))
+                    .sum()
+            }
         }
 
         impl Recorder for TestRecorder {
@@ -3681,6 +3695,104 @@ mod tests {
                 "a 64x64 atlas cannot hold 80 unique glyph rects — entries ({}) must be well short of 80",
                 stats.entries
             );
+        }
+
+        // ── Bug fix (2026-07-25): FillPath/StrokePath non-finite path ──
+        // ── points used to reach lyon's tessellator and hard-panic ──────
+        //
+        // `uzor_urx_core::validate::validate_command`'s `FillPath`/
+        // `StrokePath` arms used to check ONLY `transform`, completely
+        // ignoring the path's own points — a NaN/Inf coordinate INSIDE
+        // the path slipped past this loop's `if let Err(NonFinite) =
+        // validate_command(cmd) { .. continue }` guard (this file, top
+        // of `encode_scene`) and reached `tessellate::build_lyon_path`,
+        // which feeds points straight into lyon's path builder — lyon
+        // hard-`assert!`s every point is finite and panics.
+        // `uzor-urx-cpu`'s scanline rasteriser has no such assertion, so
+        // the identical scene degraded silently there instead — this
+        // backend is the one that actually panicked. Fixed at the
+        // `validate_command` level (`uzor-urx-core::validate`'s own new
+        // `is_finite_bezpath`), which this file's pre-existing skip-and-
+        // count wiring picks up with NO change needed here.
+
+        #[test]
+        fn nonfinite_fill_path_point_is_skipped_not_panicked_and_counts_the_metric() {
+            let recorder = TestRecorder::default();
+            let frame = metrics::with_local_recorder(&recorder, || {
+                let mut path = BezPath::new();
+                path.move_to(Point::new(0.0, 0.0));
+                path.line_to(Point::new(f64::NAN, 10.0));
+                path.line_to(Point::new(10.0, 10.0));
+                path.close_path();
+
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::FillPath {
+                    path,
+                    rule: FillRule::NonZero,
+                    brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
+                    transform: Affine::IDENTITY,
+                });
+                // Must not panic — the pre-fix code path panics inside
+                // `tessellate::build_lyon_path`'s call into lyon before
+                // this call even returns.
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
+            });
+
+            assert!(frame.triangles.is_empty(), "the non-finite path must contribute NO geometry");
+            assert_eq!(
+                recorder.total_for(KEY_RENDER_SKIPPED_NONFINITE),
+                1,
+                "the shared skip-and-count policy must fire exactly once"
+            );
+        }
+
+        #[test]
+        fn nonfinite_stroke_path_point_is_skipped_not_panicked_and_counts_the_metric() {
+            let recorder = TestRecorder::default();
+            let frame = metrics::with_local_recorder(&recorder, || {
+                let mut path = BezPath::new();
+                path.move_to(Point::new(0.0, 0.0));
+                path.line_to(Point::new(10.0, f64::INFINITY));
+
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::StrokePath {
+                    path,
+                    stroke: SceneStroke { width: 2.0, ..SceneStroke::default() },
+                    brush: Brush::Solid(Color::from_rgba8(0, 255, 0, 255)),
+                    transform: Affine::IDENTITY,
+                });
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
+            });
+
+            assert!(frame.triangles.is_empty(), "the non-finite path must contribute NO geometry");
+            assert_eq!(recorder.total_for(KEY_RENDER_SKIPPED_NONFINITE), 1);
+        }
+
+        /// A NaN/Inf cmd must not derail an otherwise-valid scene — the
+        /// SAME "skip just the bad one, keep going" contract
+        /// `uzor-urx-cpu`'s own adversarial suite pins
+        /// (`valid_cmds_still_paint_after_bad_cmd`).
+        #[test]
+        fn nonfinite_fill_path_does_not_block_a_later_valid_command() {
+            let recorder = TestRecorder::default();
+            let frame = metrics::with_local_recorder(&recorder, || {
+                let mut bad_path = BezPath::new();
+                bad_path.move_to(Point::new(0.0, 0.0));
+                bad_path.line_to(Point::new(f64::NAN, 10.0));
+
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::FillPath {
+                    path: bad_path,
+                    rule: FillRule::NonZero,
+                    brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
+                    transform: Affine::IDENTITY,
+                });
+                scene.fill_rect_solid(Rect::new(0.0, 0.0, 10.0, 10.0), Color::from_rgba8(0, 255, 0, 255));
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
+            });
+
+            assert_eq!(frame.quads.len(), 1, "the valid FillRect after the bad path must still render");
+            assert_eq!(recorder.total_for(KEY_RENDER_SKIPPED_NONFINITE), 1);
         }
     }
 }
