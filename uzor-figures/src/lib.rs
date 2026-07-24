@@ -90,10 +90,11 @@ mod proof_tests {
     use crate::theme::FigureTheme;
     use crate::transform::lttb;
     use crate::{
-        Annotation, BarFigure, BarMode, BarSeries, BoxplotFigure, CurveFigure, CurveSeries, DagEdge, DagFigure, DagNode, FocusSet,
-        GapPolicy, HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, LabelOverflow, LegendEntry, LegendPosition, LegendSymbol,
-        MarkStyle, NumberFormat, PieFigure, PieSlice, PointRadius, SankeyFigure, SankeyLink, SankeyNode, ScatterFigure, ScatterPoint,
-        TimeScale, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind,
+        Annotation, BarFigure, BarMode, BarSeries, BoxplotFigure, ColorScale, CurveFigure, CurveSeries, DagEdge, DagFigure, DagNode,
+        FocusSet, GapPolicy, HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, LabelOverflow, LegendEntry, LegendPosition,
+        LegendSymbol, LinearScale, MarkStyle, NumberFormat, PieFigure, PieSlice, PlotArea, PointRadius, SankeyFigure, SankeyLink,
+        SankeyNode, ScatterFigure, ScatterPoint, TimeScale, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind,
+        draw_annotation_overlays, draw_annotation_underlays, draw_colorbar,
     };
 
     const WIDTH: u32 = 800;
@@ -1508,5 +1509,421 @@ mod proof_tests {
         uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_heatmap_backends.png"))
             .expect("heatmap multi-backend composite should write");
         assert!(diff.all_within_budget(), "heatmap: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    // ── Whole-catalog five-leg sweep (owner brief, 2026-07-25) ──────────
+    //
+    // The eight proofs above only ever converted FOUR scenes (GapPolicy/
+    // curve, label-rotation/bar, KPI, heatmap) — every other figure kind
+    // and every guide that renders independently of a full figure had
+    // NEVER been driven through more than tiny-skia. Each proof below
+    // reuses the SAME seeded fixture (or, for a guide, a small dedicated
+    // scene calling that guide's own draw fn directly, not through a
+    // whole figure) its single-backend sibling already established —
+    // same "additive, same fixtures, new render path" discipline the
+    // section above documents — chosen specifically to exercise each
+    // figure/guide's own distinctive primitive mix (arcs, ribbons,
+    // whiskers, layered nodes+edges, event marks, connectors, gradients,
+    // ...) rather than re-testing the bar/rect/text primitives the
+    // existing four scenes already cover.
+
+    /// Boxplot proof — whisker/box/outlier-point primitive mix (the same
+    /// seeded 4-group fixture as `boxplot_figure_renders_to_a_valid_png`,
+    /// incl. its deliberate high outlier and `n == 3` edge-case group).
+    #[test]
+    fn boxplot_multi_backend_divergence_proof() {
+        let figure = seeded_boxplot_figure();
+        let theme = FigureTheme::dark();
+        let render = MultiLegRender::capture(WIDTH, HEIGHT, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64), &theme);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[boxplot] {line}");
+        }
+        print_urx_gpu_degrades("boxplot", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_boxplot_backends.png"))
+            .expect("boxplot multi-backend composite should write");
+        assert!(diff.all_within_budget(), "boxplot: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// DAG proof — layered rounded-box nodes + cubic-bezier edges with
+    /// direction arrowheads (the same seeded 15-node/4-layer fixture as
+    /// `dag_figure_renders_to_a_valid_png`).
+    #[test]
+    fn dag_multi_backend_divergence_proof() {
+        let figure = seeded_dag_figure();
+        let theme = FigureTheme::dark();
+        let render = MultiLegRender::capture(DAG_WIDTH, DAG_HEIGHT, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, DAG_WIDTH as f64, DAG_HEIGHT as f64), &theme);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[dag] {line}");
+        }
+        print_urx_gpu_degrades("dag", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_dag_backends.png"))
+            .expect("dag multi-backend composite should write");
+        assert!(diff.all_within_budget(), "dag: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// Histogram proof — binned-bar primitive mix (the same seeded
+    /// 500-sample/20-bin fixture as `histogram_figure_renders_to_a_valid_png`).
+    #[test]
+    fn histogram_multi_backend_divergence_proof() {
+        let figure = seeded_histogram_figure();
+        let theme = FigureTheme::dark();
+        let render = MultiLegRender::capture(WIDTH, HEIGHT, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64), &theme);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[histogram] {line}");
+        }
+        print_urx_gpu_degrades("histogram", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_histogram_backends.png"))
+            .expect("histogram multi-backend composite should write");
+        assert!(diff.all_within_budget(), "histogram: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// Pie proof — hand-built cubic-bezier wedge arcs + a discrete legend
+    /// (the same seeded 6-slice fixture as `pie_figure_renders_to_a_valid_png`)
+    /// — `figure::pie::append_arc`'s own module docs already flag a real
+    /// `uzor-render-tiny-skia::arc_to_cubics` kappa-constant bug found via
+    /// this exact wedge-arc shape, worked around locally; this proof is
+    /// the first time that primitive is driven through every OTHER leg.
+    #[test]
+    fn pie_multi_backend_divergence_proof() {
+        let figure = PieFigure::new(seeded_pie_slices()).with_title("Revenue by product — multi-backend").with_legend(LegendPosition::Right);
+        let theme = FigureTheme::dark();
+        let render = MultiLegRender::capture(WIDTH, HEIGHT, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64), &theme);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[pie] {line}");
+        }
+        print_urx_gpu_degrades("pie", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_pie_backends.png"))
+            .expect("pie multi-backend composite should write");
+        assert!(diff.all_within_budget(), "pie: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// Sankey proof — cubic-bezier ribbon bands between staged node columns
+    /// (the same seeded 3-stage/7-node/8-link fixture, incl. its
+    /// deliberate conservation leak, as `sankey_figure_renders_to_a_valid_png`).
+    #[test]
+    fn sankey_multi_backend_divergence_proof() {
+        let figure = seeded_sankey_figure();
+        let theme = FigureTheme::dark();
+        let render = MultiLegRender::capture(SANKEY_WIDTH, SANKEY_HEIGHT, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, SANKEY_WIDTH as f64, SANKEY_HEIGHT as f64), &theme);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[sankey] {line}");
+        }
+        print_urx_gpu_degrades("sankey", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_sankey_backends.png"))
+            .expect("sankey multi-backend composite should write");
+        assert!(diff.all_within_budget(), "sankey: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// Scatter proof — a value-sized point cloud plus the `HBand`/`Callout`
+    /// annotation layer drawn interleaved with marks (the same seeded
+    /// ~180-point fixture as `scatter_figure_renders_to_a_valid_png`).
+    #[test]
+    fn scatter_multi_backend_divergence_proof() {
+        let figure = seeded_scatter_figure();
+        let theme = FigureTheme::dark();
+        let render = MultiLegRender::capture(WIDTH, HEIGHT, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64), &theme);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[scatter] {line}");
+        }
+        print_urx_gpu_degrades("scatter", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_scatter_backends.png"))
+            .expect("scatter multi-backend composite should write");
+        assert!(diff.all_within_budget(), "scatter: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// Timeline proof — point-event circle markers + interval-event rounded
+    /// bars across a calendar `TimeScale` X-axis / lane `BandScale` Y-axis
+    /// (the same seeded ~12-event/3-lane fixture as
+    /// `timeline_figure_renders_to_a_valid_png`).
+    #[test]
+    fn timeline_multi_backend_divergence_proof() {
+        let figure = seeded_timeline_figure();
+        let theme = FigureTheme::dark();
+        let render = MultiLegRender::capture(TIMELINE_WIDTH, TIMELINE_HEIGHT, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, TIMELINE_WIDTH as f64, TIMELINE_HEIGHT as f64), &theme);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[timeline] {line}");
+        }
+        print_urx_gpu_degrades("timeline", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_timeline_backends.png"))
+            .expect("timeline multi-backend composite should write");
+        assert!(diff.all_within_budget(), "timeline: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// Waterfall proof — grounded/floating bars plus thin arrival-level
+    /// connector lines (the same seeded 8-item "revenue walk" fixture as
+    /// `waterfall_figure_renders_to_a_valid_png`).
+    #[test]
+    fn waterfall_multi_backend_divergence_proof() {
+        let figure = seeded_waterfall_figure();
+        let theme = FigureTheme::dark();
+        let render = MultiLegRender::capture(WIDTH, HEIGHT, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64), &theme);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[waterfall] {line}");
+        }
+        print_urx_gpu_degrades("waterfall", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_waterfall_backends.png"))
+            .expect("waterfall multi-backend composite should write");
+        assert!(diff.all_within_budget(), "waterfall: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    // ── Guides that render independently of a whole figure ──────────────
+    //
+    // `legend`/`colorbar`/`annotation`/`crosshair`/`tooltip`/`grid`/`axis`
+    // each have their own real draw fn, callable directly against a bare
+    // `PlotArea`/`ColorScale` — every scene below calls that fn DIRECTLY
+    // (never through a full `BarFigure`/`HeatmapFigure`/...), so a
+    // divergence surfaced here is attributable to the guide's own
+    // primitive alone, not confounded by whichever figure happens to host
+    // it elsewhere.
+
+    const GRID_WIDTH: u32 = 420;
+    const GRID_HEIGHT: u32 = 280;
+
+    /// `grid` proof — `draw_x_grid`/`draw_y_grid` alone (thin gridline
+    /// strokes only, no axis ticks/labels/title chrome) over a bare
+    /// `LinearScale` x `LinearScale` plot area.
+    #[test]
+    fn grid_guide_multi_backend_divergence_proof() {
+        let theme = FigureTheme::dark();
+        let plot_rect = Rect::new(20.0, 20.0, GRID_WIDTH as f64 - 40.0, GRID_HEIGHT as f64 - 40.0);
+        let area = PlotArea::new(plot_rect);
+        let x_scale = LinearScale::new(0.0, 100.0);
+        let y_scale = LinearScale::new(0.0, 50.0);
+
+        let render = MultiLegRender::capture(GRID_WIDTH, GRID_HEIGHT, |ctx| {
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, GRID_WIDTH as f64, GRID_HEIGHT as f64);
+            crate::guide::grid::draw_x_grid(ctx, &area, &x_scale, &theme, 6);
+            crate::guide::grid::draw_y_grid(ctx, &area, &y_scale, &theme, 5);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[grid] {line}");
+        }
+        print_urx_gpu_degrades("grid", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_grid_guide_backends.png"))
+            .expect("grid guide multi-backend composite should write");
+        assert!(diff.all_within_budget(), "grid: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    const AXIS_WIDTH: u32 = 420;
+    const AXIS_HEIGHT: u32 = 280;
+
+    /// `axis` proof — `draw_x_axis`/`draw_y_axis` alone (axis line + tick
+    /// marks + tick-label text, no gridlines) over the same plot-area
+    /// shape as the `grid` proof above, so the two primitives can be
+    /// eyeballed side by side without either confounding the other.
+    #[test]
+    fn axis_guide_multi_backend_divergence_proof() {
+        let theme = FigureTheme::dark();
+        let plot_rect = Rect::new(50.0, 20.0, AXIS_WIDTH as f64 - 70.0, AXIS_HEIGHT as f64 - 60.0);
+        let area = PlotArea::new(plot_rect);
+        let x_scale = LinearScale::new(0.0, 100.0);
+        let y_scale = LinearScale::new(0.0, 50.0);
+
+        let render = MultiLegRender::capture(AXIS_WIDTH, AXIS_HEIGHT, |ctx| {
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, AXIS_WIDTH as f64, AXIS_HEIGHT as f64);
+            crate::guide::axis::draw_x_axis(ctx, &area, &x_scale, &theme, 6);
+            crate::guide::axis::draw_y_axis(ctx, &area, &y_scale, &theme, 5);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[axis] {line}");
+        }
+        print_urx_gpu_degrades("axis", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_axis_guide_backends.png"))
+            .expect("axis guide multi-backend composite should write");
+        assert!(diff.all_within_budget(), "axis: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    const LEGEND_WIDTH: u32 = 260;
+    const LEGEND_HEIGHT: u32 = 220;
+
+    /// `legend` proof — `draw_legend` alone at `LegendPosition::Right`
+    /// (greedy column-wrap), with all three `LegendSymbol` swatch shapes
+    /// present (square/line/circle) so a swatch-shape defect on any one
+    /// leg is directly visible.
+    #[test]
+    fn legend_guide_multi_backend_divergence_proof() {
+        let theme = FigureTheme::dark();
+        let entries = vec![
+            LegendEntry { label: "revenue".to_owned(), color: theme.palette[0].clone(), symbol: LegendSymbol::Square },
+            LegendEntry { label: "signal".to_owned(), color: theme.palette[1].clone(), symbol: LegendSymbol::Line },
+            LegendEntry { label: "sample".to_owned(), color: theme.palette[2].clone(), symbol: LegendSymbol::Circle },
+            LegendEntry { label: "forecast".to_owned(), color: theme.palette[3 % theme.palette.len()].clone(), symbol: LegendSymbol::Line },
+        ];
+
+        let render = MultiLegRender::capture(LEGEND_WIDTH, LEGEND_HEIGHT, |ctx| {
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, LEGEND_WIDTH as f64, LEGEND_HEIGHT as f64);
+            let rect = Rect::new(10.0, 10.0, LEGEND_WIDTH as f64 - 20.0, LEGEND_HEIGHT as f64 - 20.0);
+            crate::guide::legend::draw_legend(ctx, rect, &theme, &entries, LegendPosition::Right);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[legend] {line}");
+        }
+        print_urx_gpu_degrades("legend", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_legend_guide_backends.png"))
+            .expect("legend guide multi-backend composite should write");
+        assert!(diff.all_within_budget(), "legend: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    const COLORBAR_WIDTH: u32 = 160;
+    const COLORBAR_HEIGHT: u32 = 280;
+
+    /// `colorbar` proof — `draw_colorbar` alone (a real `GradientPainter`
+    /// linear-gradient fill via `ColorScale::diverging`'s own stop list) —
+    /// the exact primitive `render-urx`'s gradient-fill-never-emitted/
+    /// leaking defect and the GPU Linear-gradient dropped-intermediate-
+    /// stop defect were both found through, isolated here from a full
+    /// heatmap's own grid-cell content.
+    #[test]
+    fn colorbar_guide_multi_backend_divergence_proof() {
+        let theme = FigureTheme::dark();
+        let scale = ColorScale::diverging(-10.0, 0.0, 10.0);
+
+        let render = MultiLegRender::capture(COLORBAR_WIDTH, COLORBAR_HEIGHT, |ctx| {
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, COLORBAR_WIDTH as f64, COLORBAR_HEIGHT as f64);
+            let rect = Rect::new(20.0, 20.0, COLORBAR_WIDTH as f64 - 40.0, COLORBAR_HEIGHT as f64 - 40.0);
+            draw_colorbar(ctx, rect, &theme, &scale);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[colorbar] {line}");
+        }
+        print_urx_gpu_degrades("colorbar", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_colorbar_guide_backends.png"))
+            .expect("colorbar guide multi-backend composite should write");
+        assert!(diff.all_within_budget(), "colorbar: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    const ANNOTATION_WIDTH: u32 = 500;
+    const ANNOTATION_HEIGHT: u32 = 320;
+
+    /// `annotation` proof — `draw_annotation_underlays`/
+    /// `draw_annotation_overlays` alone, all four `Annotation` variants at
+    /// once (`HBand` fill/label, `HLine`/`VLine` dashed reference lines,
+    /// `Callout` leader+box), with a stand-in filled rect painted BETWEEN
+    /// the two passes (the same "a mark" convention this guide's own unit
+    /// tests use) so the underlay-before/overlay-after layering is
+    /// actually visible, not just asserted.
+    #[test]
+    fn annotation_guide_multi_backend_divergence_proof() {
+        let theme = FigureTheme::dark();
+        let plot_rect = Rect::new(30.0, 20.0, ANNOTATION_WIDTH as f64 - 60.0, ANNOTATION_HEIGHT as f64 - 60.0);
+        let area = PlotArea::new(plot_rect);
+        let x_scale = LinearScale::new(0.0, 100.0);
+        let y_scale = LinearScale::new(0.0, 50.0);
+        let annotations = vec![
+            Annotation::HBand { low: 12.0, high: 28.0, color: None, label: Some("target range".to_owned()) },
+            Annotation::HLine { value: 40.0, color: None, label: Some("threshold".to_owned()) },
+            Annotation::VLine { value: 70.0, color: None, label: Some("event".to_owned()) },
+            Annotation::Callout { x: 60.0, y: 20.0, text: "notable reading".to_owned() },
+        ];
+
+        let render = MultiLegRender::capture(ANNOTATION_WIDTH, ANNOTATION_HEIGHT, |ctx| {
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, ANNOTATION_WIDTH as f64, ANNOTATION_HEIGHT as f64);
+            draw_annotation_underlays(ctx, &area, &y_scale, &theme, &annotations);
+            ctx.set_fill_color(&theme.palette[0]);
+            let mark_x = area.x(&x_scale, 40.0);
+            let mark_y = area.y(&y_scale, 32.0);
+            ctx.fill_rect(mark_x, mark_y, 30.0, 60.0);
+            draw_annotation_overlays(ctx, &area, &x_scale, &y_scale, &theme, &annotations);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[annotation] {line}");
+        }
+        print_urx_gpu_degrades("annotation", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_annotation_guide_backends.png"))
+            .expect("annotation guide multi-backend composite should write");
+        assert!(diff.all_within_budget(), "annotation: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    const CROSSHAIR_WIDTH: u32 = 420;
+    const CROSSHAIR_HEIGHT: u32 = 280;
+
+    /// `crosshair` proof — `draw_crosshair` alone (dashed vertical+
+    /// horizontal hair-lines through a resolved domain point, plus small
+    /// axis-cursor labels), drawn over a plain grid for spatial context.
+    #[test]
+    fn crosshair_guide_multi_backend_divergence_proof() {
+        let theme = FigureTheme::dark();
+        let plot_rect = Rect::new(30.0, 20.0, CROSSHAIR_WIDTH as f64 - 60.0, CROSSHAIR_HEIGHT as f64 - 60.0);
+        let area = PlotArea::new(plot_rect);
+        let x_scale = LinearScale::new(0.0, 100.0);
+        let y_scale = LinearScale::new(0.0, 50.0);
+
+        let render = MultiLegRender::capture(CROSSHAIR_WIDTH, CROSSHAIR_HEIGHT, |ctx| {
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, CROSSHAIR_WIDTH as f64, CROSSHAIR_HEIGHT as f64);
+            crate::guide::grid::draw_x_grid(ctx, &area, &x_scale, &theme, 6);
+            crate::guide::grid::draw_y_grid(ctx, &area, &y_scale, &theme, 5);
+            crate::guide::crosshair::draw_crosshair(ctx, &area, &theme, 55.0, 28.0, &x_scale, &y_scale);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[crosshair] {line}");
+        }
+        print_urx_gpu_degrades("crosshair", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_crosshair_guide_backends.png"))
+            .expect("crosshair guide multi-backend composite should write");
+        assert!(diff.all_within_budget(), "crosshair: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    const TOOLTIP_WIDTH: u32 = 260;
+    const TOOLTIP_HEIGHT: u32 = 160;
+
+    /// `tooltip` proof — `draw_tooltip` alone (opaque box + key/value
+    /// two-column row list), the flip-to-fit box every hover/callout path
+    /// in this crate shares.
+    #[test]
+    fn tooltip_guide_multi_backend_divergence_proof() {
+        let theme = FigureTheme::dark();
+        let bounds = Rect::new(0.0, 0.0, TOOLTIP_WIDTH as f64, TOOLTIP_HEIGHT as f64);
+        let lines: Vec<(String, String)> =
+            vec![("category".to_owned(), "north".to_owned()), ("value".to_owned(), "42.0".to_owned()), ("delta".to_owned(), "+3.5%".to_owned())];
+
+        let render = MultiLegRender::capture(TOOLTIP_WIDTH, TOOLTIP_HEIGHT, |ctx| {
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, TOOLTIP_WIDTH as f64, TOOLTIP_HEIGHT as f64);
+            crate::guide::tooltip::draw_tooltip(ctx, &theme, (TOOLTIP_WIDTH as f64 * 0.5, TOOLTIP_HEIGHT as f64 * 0.5), &lines, bounds);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[tooltip] {line}");
+        }
+        print_urx_gpu_degrades("tooltip", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_tooltip_guide_backends.png"))
+            .expect("tooltip guide multi-backend composite should write");
+        assert!(diff.all_within_budget(), "tooltip: structural backend divergence beyond the generous AA/text tolerance");
     }
 }
