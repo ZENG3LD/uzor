@@ -40,7 +40,7 @@ use uzor::render::RenderContext;
 use uzor::types::Rect;
 
 use crate::coord::PlotArea;
-use crate::figure::FigureOverlay;
+use crate::figure::{resolve_tick_count, FigureOverlay, MarginPolicy, TickCountPolicy};
 use crate::guide::annotation::{draw_annotation_overlays, draw_annotation_underlays, Annotation};
 use crate::guide::axis::AxisTickWeightStyle;
 use crate::guide::grid::GridTickWeightStyle;
@@ -146,11 +146,30 @@ pub struct ScatterFigure {
     x_scale_override: Option<Box<dyn Scale>>,
     thin_max: Option<usize>,
     annotations: Vec<Annotation>,
+    /// This figure's own left-margin sizing policy — see
+    /// [`ScatterFigure::with_margin_policy`].
+    margin_policy: MarginPolicy,
+    /// This figure's own X tick-count policy — see
+    /// [`ScatterFigure::with_x_tick_policy`].
+    x_tick_policy: TickCountPolicy,
+    /// This figure's own Y tick-count policy — see
+    /// [`ScatterFigure::with_y_tick_policy`].
+    y_tick_policy: TickCountPolicy,
 }
 
 impl ScatterFigure {
     pub fn new(points: Vec<ScatterPoint>) -> Self {
-        Self { points, title: None, radius: PointRadius::default(), x_scale_override: None, thin_max: None, annotations: Vec::new() }
+        Self {
+            points,
+            title: None,
+            radius: PointRadius::default(),
+            x_scale_override: None,
+            thin_max: None,
+            annotations: Vec::new(),
+            margin_policy: MarginPolicy::default(),
+            x_tick_policy: TickCountPolicy::Fixed(TARGET_X_TICKS),
+            y_tick_policy: TickCountPolicy::Fixed(TARGET_Y_TICKS),
+        }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
@@ -191,6 +210,32 @@ impl ScatterFigure {
         self
     }
 
+    /// Override this figure's left-margin sizing policy — see
+    /// [`MarginPolicy`]'s own docs. Default (unset) is
+    /// [`MarginPolicy::Measured`].
+    pub fn with_margin_policy(mut self, policy: MarginPolicy) -> Self {
+        self.margin_policy = policy;
+        self
+    }
+
+    /// Override this figure's X tick-count policy — see
+    /// [`TickCountPolicy`]'s own docs. Default (unset) is
+    /// `TickCountPolicy::Fixed(6)`, byte-identical to this figure's
+    /// pre-existing constant.
+    pub fn with_x_tick_policy(mut self, policy: TickCountPolicy) -> Self {
+        self.x_tick_policy = policy;
+        self
+    }
+
+    /// Override this figure's Y tick-count policy — see
+    /// [`TickCountPolicy`]'s own docs. Default (unset) is
+    /// `TickCountPolicy::Fixed(5)`, byte-identical to this figure's
+    /// pre-existing constant.
+    pub fn with_y_tick_policy(mut self, policy: TickCountPolicy) -> Self {
+        self.y_tick_policy = policy;
+        self
+    }
+
     fn base_plot_rect(&self, rect: Rect) -> Rect {
         let title_h = if self.title.is_some() { TITLE_HEIGHT } else { 0.0 };
         Rect::new(
@@ -203,7 +248,10 @@ impl ScatterFigure {
 
     /// This figure's plot-area transform for `rect` — same reason as every
     /// other figure's `plot_area` accessor (external hover routing needs
-    /// the EXACT transform this figure renders with).
+    /// the EXACT transform this figure renders with). **Does not account
+    /// for [`MarginPolicy::Measured`] widening the left margin** — same
+    /// ctx-less-accessor caveat documented on
+    /// [`crate::figure::BarFigure::plot_area`].
     pub fn plot_area(&self, rect: Rect) -> PlotArea {
         PlotArea::new(self.base_plot_rect(rect))
     }
@@ -296,7 +344,21 @@ impl ScatterFigure {
         ctx.set_fill_color(&theme.background);
         ctx.fill_rect(rect.x, rect.y, rect.width, rect.height);
 
-        let base_rect = self.base_plot_rect(rect);
+        // Resolve this render's own left margin + tick counts BEFORE
+        // building the plot rect — see `CurveFigure::render_with`'s own
+        // identical non-circularity reasoning.
+        let y_scale_for_layout = self.y_scale();
+        let title_h = if self.title.is_some() { TITLE_HEIGHT } else { 0.0 };
+        let plot_height_estimate = (rect.height - title_h - MARGIN_BOTTOM).max(0.0);
+        let target_y_ticks = resolve_tick_count(self.y_tick_policy, plot_height_estimate);
+        let margin_left = match (&y_scale_for_layout, self.margin_policy) {
+            (Some(y_scale), MarginPolicy::Measured) => MARGIN_LEFT.max(axis::measure_y_axis_gutter(ctx, y_scale, theme, target_y_ticks)),
+            _ => MARGIN_LEFT,
+        };
+        let plot_width_estimate = (rect.width - margin_left - MARGIN_RIGHT).max(0.0);
+        let target_x_ticks = resolve_tick_count(self.x_tick_policy, plot_width_estimate);
+
+        let base_rect = Rect::new(rect.x + margin_left, rect.y + title_h, plot_width_estimate, plot_height_estimate);
         let area = PlotArea::new(base_rect);
 
         let computed_x_scale = if self.x_scale_override.is_none() { self.x_scale() } else { None };
@@ -306,13 +368,13 @@ impl ScatterFigure {
             (None, None) => None,
         };
 
-        if let (Some(x_scale), Some(y_scale)) = (x_scale, self.y_scale()) {
+        if let (Some(x_scale), Some(y_scale)) = (x_scale, y_scale_for_layout) {
             // Weighted entry point: a real render-output change ONLY when
             // `x_scale` is a `TimeScale` — see `CurveFigure::render_with`'s
             // own identical comment for the full reasoning + regression
             // proof.
-            grid::draw_x_grid_weighted(ctx, &area, x_scale, theme, TARGET_X_TICKS, &GridTickWeightStyle::default());
-            grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
+            grid::draw_x_grid_weighted(ctx, &area, x_scale, theme, target_x_ticks, &GridTickWeightStyle::default());
+            grid::draw_y_grid(ctx, &area, &y_scale, theme, target_y_ticks);
 
             // Annotation FILLS (the only underlay: `HBand`'s own shaded
             // rect) paint UNDER the data points — the typical "shaded zone
@@ -358,10 +420,10 @@ impl ScatterFigure {
                                 &MarkStyle { color: theme.highlight.clone(), fill_alpha: HOVER_HIGHLIGHT_ALPHA, ..Default::default() },
                             );
 
-                            let y_step = nice_step(y_scale.max - y_scale.min, TARGET_Y_TICKS as f64);
+                            let y_step = nice_step(y_scale.max - y_scale.min, target_y_ticks as f64);
                             let mut lines = vec![("x".to_owned(), x_scale.format_value(p.x)), ("y".to_owned(), format_value(p.y, y_step))];
                             if let Some(v) = p.value {
-                                let v_step = value_domain.map(|(lo, hi)| nice_step(hi - lo, TARGET_Y_TICKS as f64)).unwrap_or(1.0);
+                                let v_step = value_domain.map(|(lo, hi)| nice_step(hi - lo, target_y_ticks as f64)).unwrap_or(1.0);
                                 lines.push(("value".to_owned(), format_value(v, v_step)));
                             }
                             tooltip::draw_tooltip(ctx, theme, (sx, sy), &lines, area.rect);
@@ -370,8 +432,8 @@ impl ScatterFigure {
                 }
             }
 
-            axis::draw_x_axis_weighted(ctx, &area, x_scale, theme, TARGET_X_TICKS, &AxisTickWeightStyle::default());
-            axis::draw_y_axis(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
+            axis::draw_x_axis_weighted(ctx, &area, x_scale, theme, target_x_ticks, &AxisTickWeightStyle::default());
+            axis::draw_y_axis(ctx, &area, &y_scale, theme, target_y_ticks);
         }
 
         if let Some(title) = &self.title {
@@ -517,6 +579,46 @@ mod tests {
         let result = render_to_png(&spec, |ctx| {
             figure.render(ctx, Rect::new(0.0, 0.0, 200.0, 150.0), &theme);
         });
+        assert!(result.is_ok());
+    }
+
+    // ── MarginPolicy / TickCountPolicy (items 2 + 3) ────────────────────
+
+    #[test]
+    fn default_policies_match_the_pre_existing_constants() {
+        let figure = ScatterFigure::new(Vec::new());
+        assert_eq!(figure.margin_policy, MarginPolicy::Measured);
+        assert_eq!(figure.x_tick_policy, TickCountPolicy::Fixed(TARGET_X_TICKS));
+        assert_eq!(figure.y_tick_policy, TickCountPolicy::Fixed(TARGET_Y_TICKS));
+    }
+
+    #[test]
+    fn measured_margin_widens_for_a_deliberately_wide_y_label() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let points = vec![ScatterPoint::new(0.0, 1.0), ScatterPoint::new(1.0, 999_999_999.0)];
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+
+        let fixed = ScatterFigure::new(points.clone()).with_margin_policy(MarginPolicy::Fixed);
+        let measured = ScatterFigure::new(points).with_margin_policy(MarginPolicy::Measured);
+        let fixed_png = render_to_png(&spec, |ctx| fixed.render(ctx, rect, &theme)).expect("fixed render");
+        let measured_png = render_to_png(&spec, |ctx| measured.render(ctx, rect, &theme)).expect("measured render");
+        assert_ne!(fixed_png, measured_png, "Measured must render differently once a wide Y label would otherwise clip under Fixed");
+    }
+
+    #[test]
+    fn adaptive_tick_policy_renders_without_panicking() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let points: Vec<ScatterPoint> = (0..40).map(|i| ScatterPoint::new(i as f64, ((i * 13) % 29) as f64)).collect();
+        let figure = ScatterFigure::new(points)
+            .with_x_tick_policy(TickCountPolicy::Adaptive { min: 2, max: 25 })
+            .with_y_tick_policy(TickCountPolicy::Adaptive { min: 2, max: 25 });
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 500, height_px: 300, dpr: 1.0, background: None };
+        let result = render_to_png(&spec, |ctx| figure.render(ctx, Rect::new(0.0, 0.0, 500.0, 300.0), &theme));
         assert!(result.is_ok());
     }
 }

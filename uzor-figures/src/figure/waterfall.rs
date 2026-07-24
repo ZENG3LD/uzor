@@ -27,7 +27,7 @@ use uzor::render::RenderContext;
 use uzor::types::Rect;
 
 use crate::coord::PlotArea;
-use crate::figure::FigureOverlay;
+use crate::figure::{resolve_tick_count, FigureOverlay, MarginPolicy, TickCountPolicy};
 use crate::guide::{axis, grid, tooltip};
 use crate::interact::hit::{self, HitZone};
 use crate::mark::text::draw_label_centered;
@@ -173,11 +173,23 @@ pub struct WaterfallFigure {
     /// Inner padding (fraction of each band's width) — see
     /// [`WaterfallFigure::with_band_padding`]. Defaults to [`BAND_PADDING`].
     band_padding: f64,
+    /// This figure's own left-margin sizing policy — see
+    /// [`WaterfallFigure::with_margin_policy`].
+    margin_policy: MarginPolicy,
+    /// This figure's own Y tick-count policy — see
+    /// [`WaterfallFigure::with_y_tick_policy`].
+    y_tick_policy: TickCountPolicy,
 }
 
 impl WaterfallFigure {
     pub fn new(items: Vec<WaterfallItem>) -> Self {
-        Self { items, title: None, band_padding: BAND_PADDING }
+        Self {
+            items,
+            title: None,
+            band_padding: BAND_PADDING,
+            margin_policy: MarginPolicy::default(),
+            y_tick_policy: TickCountPolicy::Fixed(TARGET_Y_TICKS),
+        }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
@@ -196,6 +208,23 @@ impl WaterfallFigure {
         self
     }
 
+    /// Override this figure's left-margin sizing policy — see
+    /// [`MarginPolicy`]'s own docs. Default (unset) is
+    /// [`MarginPolicy::Measured`].
+    pub fn with_margin_policy(mut self, policy: MarginPolicy) -> Self {
+        self.margin_policy = policy;
+        self
+    }
+
+    /// Override this figure's Y tick-count policy — see
+    /// [`TickCountPolicy`]'s own docs. Default (unset) is
+    /// `TickCountPolicy::Fixed(5)`, byte-identical to this figure's
+    /// pre-existing constant.
+    pub fn with_y_tick_policy(mut self, policy: TickCountPolicy) -> Self {
+        self.y_tick_policy = policy;
+        self
+    }
+
     fn base_plot_rect(&self, rect: Rect) -> Rect {
         let title_h = if self.title.is_some() { TITLE_HEIGHT } else { 0.0 };
         Rect::new(
@@ -208,7 +237,10 @@ impl WaterfallFigure {
 
     /// This figure's plot-area transform for `rect` — same reason as every
     /// other figure's `plot_area` accessor (external hover routing needs
-    /// the EXACT transform this figure renders with).
+    /// the EXACT transform this figure renders with). **Does not account
+    /// for [`MarginPolicy::Measured`] widening the left margin** — same
+    /// ctx-less-accessor caveat documented on
+    /// [`crate::figure::BarFigure::plot_area`].
     pub fn plot_area(&self, rect: Rect) -> PlotArea {
         PlotArea::new(self.base_plot_rect(rect))
     }
@@ -258,14 +290,30 @@ impl WaterfallFigure {
         ctx.set_fill_color(&theme.background);
         ctx.fill_rect(rect.x, rect.y, rect.width, rect.height);
 
-        let area = self.plot_area(rect);
-
         if let Some(y_scale) = self.y_scale() {
             let band = self.band_scale();
             let steps = self.steps();
-            let step_for_fmt = nice_step(y_scale.max - y_scale.min, TARGET_Y_TICKS as f64);
 
-            grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
+            // Resolve this render's own left margin + Y tick count BEFORE
+            // building the plot rect — see `CurveFigure::render_with`'s
+            // own identical non-circularity reasoning.
+            let title_h = if self.title.is_some() { TITLE_HEIGHT } else { 0.0 };
+            let plot_height_estimate = (rect.height - title_h - MARGIN_BOTTOM).max(0.0);
+            let target_y_ticks = resolve_tick_count(self.y_tick_policy, plot_height_estimate);
+            let margin_left = match self.margin_policy {
+                MarginPolicy::Measured => MARGIN_LEFT.max(axis::measure_y_axis_gutter(ctx, &y_scale, theme, target_y_ticks)),
+                MarginPolicy::Fixed => MARGIN_LEFT,
+            };
+            let area = PlotArea::new(Rect::new(
+                rect.x + margin_left,
+                rect.y + title_h,
+                (rect.width - margin_left - MARGIN_RIGHT).max(0.0),
+                plot_height_estimate,
+            ));
+
+            let step_for_fmt = nice_step(y_scale.max - y_scale.min, target_y_ticks as f64);
+
+            grid::draw_y_grid(ctx, &area, &y_scale, theme, target_y_ticks);
 
             let bars = layout_bars(&steps, &area, &band, &y_scale);
             for bar in &bars {
@@ -319,7 +367,7 @@ impl WaterfallFigure {
             }
 
             axis::draw_x_axis(ctx, &area, &band, theme, band.len());
-            axis::draw_y_axis(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
+            axis::draw_y_axis(ctx, &area, &y_scale, theme, target_y_ticks);
         }
 
         if let Some(title) = &self.title {
@@ -466,5 +514,47 @@ mod tests {
             figure.render(ctx, Rect::new(0.0, 0.0, 300.0, 200.0), &theme);
         });
         assert!(result.is_ok(), "an empty waterfall figure must render without panicking");
+    }
+
+    // ── MarginPolicy / TickCountPolicy (items 2 + 3) ────────────────────
+
+    #[test]
+    fn default_policies_match_the_pre_existing_constant() {
+        let figure = WaterfallFigure::new(vec![item("only", 5.0, WaterfallKind::Total)]);
+        assert_eq!(figure.margin_policy, MarginPolicy::Measured);
+        assert_eq!(figure.y_tick_policy, TickCountPolicy::Fixed(TARGET_Y_TICKS));
+    }
+
+    #[test]
+    fn measured_margin_widens_for_a_deliberately_wide_y_label() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let items = vec![item("start", 999_999_999.0, WaterfallKind::Total)];
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+
+        let fixed = WaterfallFigure::new(items.clone()).with_margin_policy(MarginPolicy::Fixed);
+        let measured = WaterfallFigure::new(items).with_margin_policy(MarginPolicy::Measured);
+        let fixed_png = render_to_png(&spec, |ctx| fixed.render(ctx, rect, &theme)).expect("fixed render");
+        let measured_png = render_to_png(&spec, |ctx| measured.render(ctx, rect, &theme)).expect("measured render");
+        assert_ne!(fixed_png, measured_png, "Measured must render differently once a wide Y label would otherwise clip under Fixed");
+    }
+
+    #[test]
+    fn adaptive_y_tick_policy_renders_without_panicking() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let items = vec![
+            item("start", 100.0, WaterfallKind::Total),
+            item("gain", 20.0, WaterfallKind::Delta),
+            item("loss", -15.0, WaterfallKind::Delta),
+            item("end", 0.0, WaterfallKind::Total),
+        ];
+        let figure = WaterfallFigure::new(items).with_y_tick_policy(TickCountPolicy::Adaptive { min: 2, max: 15 });
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 400, height_px: 300, dpr: 1.0, background: None };
+        let result = render_to_png(&spec, |ctx| figure.render(ctx, Rect::new(0.0, 0.0, 400.0, 300.0), &theme));
+        assert!(result.is_ok());
     }
 }

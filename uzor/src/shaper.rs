@@ -506,34 +506,49 @@ fn text_to_path_uncached(text: &str, font: &str) -> String {
                 continue;
             };
 
+            // Coordinates keep 2 decimal places (NOT rounded to whole
+            // integers, the pre-existing behavior) — integer rounding
+            // discards essentially all sub-pixel shape detail at a
+            // typical UI font size (an 11px glyph's own outline spans
+            // only ~10 units total, so two genuinely distinct points a
+            // fraction of a unit apart collapse onto the SAME integer,
+            // degrading e.g. a `t`'s crossbar or an `L`'s foot into a
+            // corrupted, visually-different letterform — found
+            // 2026-07-25 while proving `uzor-figures`' rotated-label
+            // fallback, which routes small axis-label text through this
+            // exact function). `str::parse::<f32>()` (every consumer:
+            // this crate's own `parse_glyph_outline_path`-equivalent
+            // callers, `kurbo::BezPath::from_svg`) accepts a decimal
+            // token exactly like an integer one — not a breaking change
+            // to the string's own grammar, only its numeric precision.
             for cmd in cmds {
                 match *cmd {
                     Command::MoveTo(p) => {
-                        let x = (pen_x + p.x).round() as i32;
-                        let y = (pen_y - p.y).round() as i32;
+                        let x = pen_x + p.x;
+                        let y = pen_y - p.y;
                         if !d.is_empty() { d.push(' '); }
-                        d.push_str(&format!("M {x} {y}"));
+                        d.push_str(&format!("M {x:.2} {y:.2}"));
                     }
                     Command::LineTo(p) => {
-                        let x = (pen_x + p.x).round() as i32;
-                        let y = (pen_y - p.y).round() as i32;
-                        d.push_str(&format!(" L {x} {y}"));
+                        let x = pen_x + p.x;
+                        let y = pen_y - p.y;
+                        d.push_str(&format!(" L {x:.2} {y:.2}"));
                     }
                     Command::QuadTo(c, p) => {
-                        let cx = (pen_x + c.x).round() as i32;
-                        let cy = (pen_y - c.y).round() as i32;
-                        let x  = (pen_x + p.x).round() as i32;
-                        let y  = (pen_y - p.y).round() as i32;
-                        d.push_str(&format!(" Q {cx} {cy} {x} {y}"));
+                        let cx = pen_x + c.x;
+                        let cy = pen_y - c.y;
+                        let x  = pen_x + p.x;
+                        let y  = pen_y - p.y;
+                        d.push_str(&format!(" Q {cx:.2} {cy:.2} {x:.2} {y:.2}"));
                     }
                     Command::CurveTo(c1, c2, p) => {
-                        let c1x = (pen_x + c1.x).round() as i32;
-                        let c1y = (pen_y - c1.y).round() as i32;
-                        let c2x = (pen_x + c2.x).round() as i32;
-                        let c2y = (pen_y - c2.y).round() as i32;
-                        let x   = (pen_x + p.x).round() as i32;
-                        let y   = (pen_y - p.y).round() as i32;
-                        d.push_str(&format!(" C {c1x} {c1y} {c2x} {c2y} {x} {y}"));
+                        let c1x = pen_x + c1.x;
+                        let c1y = pen_y - c1.y;
+                        let c2x = pen_x + c2.x;
+                        let c2y = pen_y - c2.y;
+                        let x   = pen_x + p.x;
+                        let y   = pen_y - p.y;
+                        d.push_str(&format!(" C {c1x:.2} {c1y:.2} {c2x:.2} {c2y:.2} {x:.2} {y:.2}"));
                     }
                     Command::Close => {
                         d.push_str(" Z");

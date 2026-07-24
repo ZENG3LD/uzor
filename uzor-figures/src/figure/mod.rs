@@ -46,7 +46,7 @@ pub use boxplot::{boxplot_stats, quartile, BoxplotFigure, BoxplotStats, WHISKER_
 pub use curve::{CurveFigure, CurveSeries};
 pub use dag::{hit_test_dag_node, layout_dag, DagEdge, DagEdgeGeom, DagFigure, DagLayout, DagNode};
 pub use heatmap::{hit_test_cell, layout_heatmap, HeatmapCell, HeatmapFigure, HeatmapLayout};
-pub use histogram::{bin, Bin, HistogramFigure};
+pub use histogram::{bin, resolve_bin_count, Bin, BinPolicy, HistogramFigure};
 pub use kpi::KpiFigure;
 pub use pie::{hit_test_slice, layout_pie, resolve_slices, PieFigure, PieLayout, PieSlice, PieSliceGeom};
 pub use sankey::{hit_test_node, layout_sankey, LabelSide, RibbonGeom, SankeyFigure, SankeyLayout, SankeyLink, SankeyNode};
@@ -114,6 +114,87 @@ pub enum YDomainPolicy {
     /// Fit the domain to the data's own extent only, never pulling in
     /// zero — a line/point/box's position does not encode area-from-zero.
     FitData,
+}
+
+/// How a figure sizes its own fixed axis-gutter margin (e.g.
+/// `CurveFigure`'s `MARGIN_LEFT`) against what its actual tick labels
+/// would measure — shared vocabulary, same role [`YDomainPolicy`] plays
+/// for the zero-baseline question.
+///
+/// Unlike every other policy enum in this crate (which defaults to
+/// reproducing OLD behavior, because the alternative is a genuine render
+/// CHANGE), [`MarginPolicy::Measured`] is the default here: it computes
+/// `max(fixed constant, measured widest label extent)`, so the margin can
+/// only GROW past its own fixed floor, never shrink or shift below it — a
+/// figure that never had a clipping label renders byte-identically to
+/// [`MarginPolicy::Fixed`]. It carries none of the "silently changes
+/// existing output" risk this crate's binding doctrine reserves for a
+/// real default flip, because it can only fix an already-broken case (a
+/// label that would otherwise draw past the plot rect's own edge — see
+/// the audit's own B2 finding), never touch a render that wasn't already
+/// broken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MarginPolicy {
+    /// Always use this figure's own fixed constant margin, regardless of
+    /// what the actual tick labels would measure — byte-identical to this
+    /// crate's pre-existing behavior (a label wider than the reserved
+    /// margin was free to draw straight past the plot rect's own edge,
+    /// undetected).
+    Fixed,
+    /// `max(fixed constant, measured widest label extent)` — see this
+    /// enum's own doc comment for why this is the default.
+    #[default]
+    Measured,
+}
+
+/// How a figure resolves the tick COUNT it requests from its own
+/// continuous scale(s) — shared vocabulary for the
+/// `TARGET_X_TICKS`/`TARGET_Y_TICKS` constants named in the audit's B3
+/// finding. Unlike [`MarginPolicy`], [`TickCountPolicy::Adaptive`] DOES
+/// change rendered output relative to today's flat constant (a wider plot
+/// requests more ticks) — so, following this crate's binding doctrine,
+/// [`TickCountPolicy::Fixed`] (at each figure's own pre-existing constant)
+/// stays the default; a caller opts into `Adaptive` explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TickCountPolicy {
+    /// Always request exactly `usize` ticks, regardless of the figure's
+    /// own rendered plot size — byte-identical to this crate's
+    /// pre-existing behavior.
+    Fixed(usize),
+    /// Derive the target tick count from the plot's own available pixel
+    /// extent (see [`resolve_tick_count`]), clamped to `[min, max]`. A
+    /// professional axis (D3's own `ticks()`, Vega-Lite's auto tick count)
+    /// scales its own density to the actual rendered size instead of
+    /// requesting the same fixed count for a 200px sparkline and a
+    /// 2000px full-page figure.
+    Adaptive { min: usize, max: usize },
+}
+
+/// Minimum px budget per tick under [`TickCountPolicy::Adaptive`] — e.g. a
+/// 600px-wide plot allows `600 / 70 ≈ 8` ticks before clamping to `max`.
+pub const MIN_PX_PER_TICK: f64 = 70.0;
+
+/// Resolve a target tick count from `policy` and `available_px` (the
+/// plot rect's own width for an X axis, height for a Y axis) — the
+/// generic entry point a figure's own `render_with` calls in place of
+/// reading a flat `TARGET_X_TICKS`/`TARGET_Y_TICKS` constant directly.
+///
+/// [`TickCountPolicy::Fixed`] ignores `available_px` entirely (today's
+/// behavior, reproduced byte-for-byte). [`TickCountPolicy::Adaptive`]
+/// derives `available_px / MIN_PX_PER_TICK`, floored at `1`, then clamps
+/// to `[min, max]` (both floored at `1` too — a degenerate `min: 0` still
+/// requests at least one tick, matching every scale's own "an axis with
+/// data still draws something" convention).
+pub fn resolve_tick_count(policy: TickCountPolicy, available_px: f64) -> usize {
+    match policy {
+        TickCountPolicy::Fixed(n) => n,
+        TickCountPolicy::Adaptive { min, max } => {
+            let min = min.max(1);
+            let max = max.max(min);
+            let raw = (available_px / MIN_PX_PER_TICK).floor().max(1.0) as usize;
+            raw.clamp(min, max)
+        }
+    }
 }
 
 /// Left inset (px) of a figure's own title from `rect.x` — see

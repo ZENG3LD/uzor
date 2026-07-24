@@ -345,7 +345,11 @@ impl PieFigure {
         resolved
             .iter()
             .enumerate()
-            .map(|(i, s)| LegendEntry { label: s.label.clone(), color: theme.palette[i % theme.palette.len()].clone() })
+            .map(|(i, s)| LegendEntry {
+                label: s.label.clone(),
+                color: theme.palette[i % theme.palette.len()].clone(),
+                symbol: crate::guide::legend::LegendSymbol::Square,
+            })
             .collect()
     }
 
@@ -372,7 +376,7 @@ impl PieFigure {
 
         let (plot_rect, legend_rect) = match legend_position {
             Some(pos) if !legend_entries.is_empty() => {
-                let size = legend::measure_legend(ctx, theme, &legend_entries, pos, base_rect.width);
+                let size = legend::measure_legend(ctx, theme, &legend_entries, pos, base_rect.width, base_rect.height);
                 match pos {
                     LegendPosition::Top => {
                         let reserved = size.height + LEGEND_GAP;

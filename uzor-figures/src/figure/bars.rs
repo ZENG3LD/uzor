@@ -16,8 +16,9 @@ use uzor::render::RenderContext;
 use uzor::types::Rect;
 
 use crate::coord::PlotArea;
-use crate::figure::FigureOverlay;
+use crate::figure::{resolve_tick_count, FigureOverlay, MarginPolicy, TickCountPolicy};
 use crate::guide::annotation::{draw_annotation_overlays, draw_annotation_underlays, Annotation};
+use crate::guide::axis::LabelOverflow;
 use crate::guide::legend::{self, LegendEntry, LegendPosition};
 use crate::guide::{axis, grid, tooltip};
 use crate::interact::hit::{self, HitZone};
@@ -84,6 +85,15 @@ pub struct BarFigure {
     /// Inner padding (fraction of each band's width) — see
     /// [`BarFigure::with_band_padding`]. Defaults to [`BAND_PADDING`].
     band_padding: f64,
+    /// This figure's own left-margin sizing policy — see
+    /// [`BarFigure::with_margin_policy`].
+    margin_policy: MarginPolicy,
+    /// This figure's own Y tick-count policy — see
+    /// [`BarFigure::with_y_tick_policy`].
+    y_tick_policy: TickCountPolicy,
+    /// This figure's own X-axis label-collision policy — see
+    /// [`BarFigure::with_label_overflow`].
+    label_overflow: LabelOverflow,
 }
 
 impl BarFigure {
@@ -109,6 +119,9 @@ impl BarFigure {
             legend_position: None,
             annotations: Vec::new(),
             band_padding: BAND_PADDING,
+            margin_policy: MarginPolicy::default(),
+            y_tick_policy: TickCountPolicy::Fixed(TARGET_Y_TICKS),
+            label_overflow: LabelOverflow::default(),
         }
     }
 
@@ -153,6 +166,37 @@ impl BarFigure {
         self
     }
 
+    /// Override this figure's left-margin sizing policy — see
+    /// [`MarginPolicy`]'s own docs. Default (unset) is
+    /// [`MarginPolicy::Measured`].
+    pub fn with_margin_policy(mut self, policy: MarginPolicy) -> Self {
+        self.margin_policy = policy;
+        self
+    }
+
+    /// Override this figure's Y tick-count policy — see
+    /// [`TickCountPolicy`]'s own docs. Default (unset) is
+    /// `TickCountPolicy::Fixed(5)`, byte-identical to this figure's
+    /// pre-existing constant. This figure's X axis is a
+    /// [`BandScale`] (one tick per category, always — see
+    /// [`crate::scale::band::BandScale::ticks`]'s own docs), so no X
+    /// tick-count policy applies here.
+    pub fn with_y_tick_policy(mut self, policy: TickCountPolicy) -> Self {
+        self.y_tick_policy = policy;
+        self
+    }
+
+    /// Override this figure's X-axis label-collision policy — see
+    /// [`LabelOverflow`]'s own docs. Default (unset) is
+    /// [`LabelOverflow::Skip`], byte-identical to this figure's
+    /// pre-existing greedy-skip behavior. A `BarFigure` with many
+    /// categories or long category names is the audit's own named
+    /// example for this item.
+    pub fn with_label_overflow(mut self, overflow: LabelOverflow) -> Self {
+        self.label_overflow = overflow;
+        self
+    }
+
     /// Resolved legend position for this render: an explicit
     /// [`BarFigure::with_legend`] override, or auto-[`LegendPosition::Top`]
     /// when there's more than one series, or `None` otherwise.
@@ -164,7 +208,11 @@ impl BarFigure {
         self.series
             .iter()
             .enumerate()
-            .map(|(i, s)| LegendEntry { label: s.name.clone(), color: theme.palette[i % theme.palette.len()].clone() })
+            .map(|(i, s)| LegendEntry {
+                label: s.name.clone(),
+                color: theme.palette[i % theme.palette.len()].clone(),
+                symbol: crate::guide::legend::LegendSymbol::Square,
+            })
             .collect()
     }
 
@@ -183,14 +231,15 @@ impl BarFigure {
     /// driving hover/click routing from outside needs to hit-test through
     /// the EXACT same transform this figure renders with.
     ///
-    /// **Does not account for a legend.** Measuring one needs live text
-    /// metrics (a `&mut dyn RenderContext`), which this ctx-less accessor
-    /// doesn't have — kept this way so every existing single-series,
-    /// legend-less external caller stays byte-compatible.
-    /// [`BarFigure::render_with`] measures + shrinks the SAME base rect
-    /// internally via its own `ctx`, so a multi-series figure's own
-    /// hover/tooltip/legend stay mutually consistent within one
-    /// `render_with` call regardless.
+    /// **Does not account for a legend, nor for [`MarginPolicy::Measured`]/
+    /// [`LabelOverflow::Rotate`]/`Auto` growing the margins.** Measuring
+    /// any of those needs live text metrics (a `&mut dyn RenderContext`),
+    /// which this ctx-less accessor doesn't have — kept this way so every
+    /// existing single-series, legend-less external caller stays
+    /// byte-compatible. [`BarFigure::render_with`] measures + shrinks the
+    /// SAME base rect internally via its own `ctx`, so a multi-series
+    /// figure's own hover/tooltip/legend stay mutually consistent within
+    /// one `render_with` call regardless.
     pub fn plot_area(&self, rect: Rect) -> PlotArea {
         PlotArea::new(self.base_plot_rect(rect))
     }
@@ -267,11 +316,11 @@ impl BarFigure {
             .collect()
     }
 
-    fn hover_tooltip_lines(&self, i: usize, si: usize, y_scale: &LinearScale) -> Vec<(String, String)> {
+    fn hover_tooltip_lines(&self, i: usize, si: usize, y_scale: &LinearScale, target_y_ticks: usize) -> Vec<(String, String)> {
         let category = self.categories.get(i).cloned().unwrap_or_default();
         let series_name = self.series.get(si).map(|s| s.name.clone()).unwrap_or_default();
         let value = self.series.get(si).and_then(|s| s.values.get(i)).copied().unwrap_or(0.0);
-        let step = nice_step(y_scale.max - y_scale.min, TARGET_Y_TICKS as f64);
+        let step = nice_step(y_scale.max - y_scale.min, target_y_ticks as f64);
         vec![("category".to_owned(), category), ("series".to_owned(), series_name), ("value".to_owned(), format_value(value, step))]
     }
 
@@ -292,13 +341,33 @@ impl BarFigure {
         ctx.set_fill_color(&theme.background);
         ctx.fill_rect(rect.x, rect.y, rect.width, rect.height);
 
-        let base_rect = self.base_plot_rect(rect);
+        // Resolve this render's own margins + Y tick count BEFORE building
+        // the plot rect — see `CurveFigure::render_with`'s own identical
+        // comment for the full non-circularity reasoning; here
+        // `margin_bottom` ALSO varies (under `LabelOverflow::Rotate`/
+        // `Auto`), resolved first since neither it nor `band`/`y_scale`
+        // depend on anything downstream of it.
+        let band = self.band_scale();
+        let y_scale_for_layout = self.y_scale();
+        let title_h = if self.title.is_some() { TITLE_HEIGHT } else { 0.0 };
+        let margin_bottom = match self.label_overflow {
+            LabelOverflow::Skip => MARGIN_BOTTOM,
+            LabelOverflow::Rotate(degrees) => MARGIN_BOTTOM.max(axis::measure_rotated_x_axis_gutter(ctx, &band, theme, band.len(), degrees)),
+            LabelOverflow::Auto => MARGIN_BOTTOM.max(axis::measure_rotated_x_axis_gutter(ctx, &band, theme, band.len(), axis::AUTO_ROTATE_DEGREES)),
+        };
+        let plot_height_estimate = (rect.height - title_h - margin_bottom).max(0.0);
+        let target_y_ticks = resolve_tick_count(self.y_tick_policy, plot_height_estimate);
+        let margin_left = match (&y_scale_for_layout, self.margin_policy) {
+            (Some(y_scale), MarginPolicy::Measured) => MARGIN_LEFT.max(axis::measure_y_axis_gutter(ctx, y_scale, theme, target_y_ticks)),
+            _ => MARGIN_LEFT,
+        };
+        let base_rect = Rect::new(rect.x + margin_left, rect.y + title_h, (rect.width - margin_left - MARGIN_RIGHT).max(0.0), plot_height_estimate);
         let legend_position = self.resolved_legend_position();
         let legend_entries = if legend_position.is_some() { self.legend_entries(theme) } else { Vec::new() };
 
         let (plot_rect, legend_rect) = match legend_position {
             Some(pos) if !legend_entries.is_empty() => {
-                let size = legend::measure_legend(ctx, theme, &legend_entries, pos, base_rect.width);
+                let size = legend::measure_legend(ctx, theme, &legend_entries, pos, base_rect.width, base_rect.height);
                 match pos {
                     LegendPosition::Top => {
                         let reserved = size.height + LEGEND_GAP;
@@ -328,10 +397,8 @@ impl BarFigure {
 
         let area = PlotArea::new(plot_rect);
 
-        if let Some(y_scale) = self.y_scale() {
-            let band = self.band_scale();
-
-            grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
+        if let Some(y_scale) = y_scale_for_layout {
+            grid::draw_y_grid(ctx, &area, &y_scale, theme, target_y_ticks);
 
             // Annotation FILLS (the only underlay: `HBand`'s own shaded
             // rect) paint UNDER the bars (over the grid, under the data) —
@@ -358,7 +425,7 @@ impl BarFigure {
 
             if self.show_value_labels {
                 if let Some(single) = self.series.first().filter(|_| self.series.len() == 1) {
-                    let step = nice_step(y_scale.max - y_scale.min, TARGET_Y_TICKS as f64);
+                    let step = nice_step(y_scale.max - y_scale.min, target_y_ticks as f64);
                     for (i, &value) in single.values.iter().enumerate().take(band.len()) {
                         let (x0, x1) = area.x_band(&band, i);
                         let label_y = area.y(&y_scale, value) - 6.0;
@@ -391,7 +458,7 @@ impl BarFigure {
 
                             let category = self.categories.get(i).cloned().unwrap_or_default();
                             let value = self.series.first().and_then(|s| s.values.get(i)).copied().unwrap_or(0.0);
-                            let step = nice_step(y_scale.max - y_scale.min, TARGET_Y_TICKS as f64);
+                            let step = nice_step(y_scale.max - y_scale.min, target_y_ticks as f64);
                             let lines = vec![("category".to_owned(), category), ("value".to_owned(), format_value(value, step))];
                             tooltip::draw_tooltip(ctx, theme, (hx, hy), &lines, area.rect);
                         } else {
@@ -405,7 +472,7 @@ impl BarFigure {
                                         ctx.fill_rect(sx0, area.rect.y, (sx1 - sx0).max(0.0), area.rect.height);
                                         ctx.set_global_alpha(1.0);
 
-                                        let lines = self.hover_tooltip_lines(i, si, &y_scale);
+                                        let lines = self.hover_tooltip_lines(i, si, &y_scale, target_y_ticks);
                                         tooltip::draw_tooltip(ctx, theme, (hx, hy), &lines, area.rect);
                                     }
                                 }
@@ -419,7 +486,7 @@ impl BarFigure {
                                         ctx.fill_rect(x0, top.min(bottom), (x1 - x0).max(0.0), (bottom - top).abs());
                                         ctx.set_global_alpha(1.0);
 
-                                        let lines = self.hover_tooltip_lines(i, si, &y_scale);
+                                        let lines = self.hover_tooltip_lines(i, si, &y_scale, target_y_ticks);
                                         tooltip::draw_tooltip(ctx, theme, (hx, hy), &lines, area.rect);
                                     }
                                 }
@@ -429,8 +496,8 @@ impl BarFigure {
                 }
             }
 
-            axis::draw_x_axis(ctx, &area, &band, theme, band.len());
-            axis::draw_y_axis(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
+            axis::draw_x_axis_overflow(ctx, &area, &band, theme, band.len(), self.label_overflow);
+            axis::draw_y_axis(ctx, &area, &y_scale, theme, target_y_ticks);
         }
 
         if let Some((legend_rect, pos)) = legend_rect {
@@ -633,5 +700,63 @@ mod tests {
             figure.render(ctx, rect, &theme);
         });
         assert!(result.is_ok());
+    }
+
+    // ── MarginPolicy / TickCountPolicy / LabelOverflow (items 2, 3, 4) ──
+
+    #[test]
+    fn default_policies_match_the_pre_existing_constants_and_behavior() {
+        let figure = BarFigure::new(cats(3), vec![1.0, 2.0, 3.0]);
+        assert_eq!(figure.margin_policy, MarginPolicy::Measured);
+        assert_eq!(figure.y_tick_policy, TickCountPolicy::Fixed(TARGET_Y_TICKS));
+        assert_eq!(figure.label_overflow, LabelOverflow::Skip);
+    }
+
+    #[test]
+    fn measured_margin_widens_for_a_deliberately_wide_y_label() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+
+        let fixed = BarFigure::new(cats(3), vec![1.0, 2.0, 999_999_999.0]).with_margin_policy(MarginPolicy::Fixed);
+        let measured = BarFigure::new(cats(3), vec![1.0, 2.0, 999_999_999.0]).with_margin_policy(MarginPolicy::Measured);
+        let fixed_png = render_to_png(&spec, |ctx| fixed.render(ctx, rect, &theme)).expect("fixed render");
+        let measured_png = render_to_png(&spec, |ctx| measured.render(ctx, rect, &theme)).expect("measured render");
+        assert_ne!(fixed_png, measured_png, "Measured must render differently once a wide Y label would otherwise clip under Fixed");
+    }
+
+    #[test]
+    fn with_label_overflow_rotate_renders_without_panicking_and_grows_the_bottom_margin() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let categories: Vec<String> = (0..10).map(|i| format!("long-category-name-{i}")).collect();
+        let values: Vec<f64> = (0..10).map(|i| (i + 1) as f64).collect();
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+
+        let skip = BarFigure::new(categories.clone(), values.clone());
+        let rotated = BarFigure::new(categories, values).with_label_overflow(LabelOverflow::Rotate(45.0));
+        let skip_png = render_to_png(&spec, |ctx| skip.render(ctx, rect, &theme)).expect("skip render");
+        let rotated_png = render_to_png(&spec, |ctx| rotated.render(ctx, rect, &theme)).expect("rotate render");
+        assert_ne!(skip_png, rotated_png, "LabelOverflow::Rotate must render visibly differently from the default Skip for many long categories");
+    }
+
+    #[test]
+    fn default_label_overflow_renders_byte_identical_to_the_pre_existing_axis_call() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let figure = BarFigure::new(cats(4), vec![3.0, 7.0, 2.0, 9.0]);
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        // Fixed margin policy + default (Skip) label overflow reproduces
+        // the pre-existing behavior byte-for-byte, since neither ever
+        // changes the drawn output for short category labels/values.
+        let png_a = render_to_png(&spec, |ctx| figure.render(ctx, rect, &theme)).expect("render a");
+        let png_b = render_to_png(&spec, |ctx| figure.render(ctx, rect, &theme)).expect("render b");
+        assert_eq!(png_a, png_b, "rendering the same figure twice must be deterministic");
     }
 }

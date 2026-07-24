@@ -10,18 +10,17 @@
 //! overrun `avail_width` (same greedy left-to-right discipline
 //! [`crate::guide::axis`]'s own label-collision skip uses, just wrapping
 //! instead of dropping — a legend entry is never silently omitted).
-//! [`LegendPosition::Right`] stacks entries in one column, one per row,
-//! sized to the widest label — it does not itself wrap by height (no
-//! `avail_height` is threaded through this guide; a caller with a hard
-//! height budget is a later concern no current figure needs).
+//! [`LegendPosition::Right`] stacks entries in one column, wrapping to
+//! additional COLUMNS once they would overrun `avail_height` (the vertical
+//! counterpart of [`LegendPosition::Top`]/`Bottom`'s own row-wrap — closes
+//! a real defect: a many-series legend used to grow past the figure's own
+//! bottom edge with no fallback at all).
 //!
-//! Every entry's swatch is a small filled square (never a line sample) —
-//! one shape shared by every figure kind (`BarFigure`/`CurveFigure`) keeps
-//! this guide free of per-figure-kind branching; a curve series' legend
-//! swatch reads perfectly well as "this series' own color," same as a bar
-//! series' swatch does.
+//! Each entry's own swatch shape follows [`LegendEntry::symbol`] — a
+//! filled square, a short line stroke, or a filled circle (see
+//! [`LegendSymbol`]'s own docs for which mark kind each suits).
 
-use uzor::render::{RenderContext, TextAlign, TextBaseline};
+use uzor::render::{CircleBatch, RenderContext, TextAlign, TextBaseline};
 use uzor::types::Rect;
 
 use crate::theme::FigureTheme;
@@ -32,12 +31,32 @@ const ENTRY_GAP: f64 = 16.0;
 const ROW_GAP: f64 = 6.0;
 const PAD: f64 = 8.0;
 
+/// The swatch shape drawn for one [`LegendEntry`] — matches the actual
+/// mark kind the entry represents, closing the audit's own B5 finding
+/// (every legend swatch used to be an unconditional filled square, even
+/// for a line series, a visible mismatch against the on-screen mark).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LegendSymbol {
+    /// A small filled square — suits a bar/area/waterfall series (the
+    /// mark itself is a filled region). THE DEFAULT: byte-identical to
+    /// this crate's pre-existing (and, before this item, only) swatch
+    /// shape.
+    #[default]
+    Square,
+    /// A short horizontal line stroke — suits a line/curve series.
+    Line,
+    /// A filled circle — suits a point/scatter series.
+    Circle,
+}
+
 /// One legend row: a series/category name plus its swatch color (CSS hex,
-/// same convention as [`crate::mark::MarkStyle::color`]).
+/// same convention as [`crate::mark::MarkStyle::color`]) and its swatch
+/// shape ([`LegendSymbol`]).
 #[derive(Debug, Clone)]
 pub struct LegendEntry {
     pub label: String,
     pub color: String,
+    pub symbol: LegendSymbol,
 }
 
 /// Where a legend sits relative to its figure's plot rect.
@@ -83,12 +102,38 @@ fn row_counts(ctx: &mut dyn RenderContext, entries: &[LegendEntry], inner_width:
     counts
 }
 
-/// Measure `entries` laid out at `position` within `avail_width` px — call
-/// BEFORE painting; the figure then shrinks its plot rect by the result
-/// (+ its own gap constant) before computing anything else that depends on
-/// the plot rect (design law #1). Empty `entries` measures to
-/// [`LegendSize::default`] (nothing to reserve).
-pub fn measure_legend(ctx: &mut dyn RenderContext, theme: &FigureTheme, entries: &[LegendEntry], position: LegendPosition, avail_width: f64) -> LegendSize {
+/// Greedy top-to-bottom column-wrap for [`LegendPosition::Right`]: how
+/// many entries land in column 0, column 1, ... within `avail_height` px
+/// — the vertical counterpart of [`row_counts`]. An entry count that
+/// still doesn't fit even a single row within `avail_height` still gets
+/// its own one-entry column rather than looping forever (same "force it
+/// in" degrade [`row_counts`] already documents). Empty `entries` (or
+/// `entry_count == 0`) returns a single empty column.
+fn column_counts(row_height: f64, entry_count: usize, avail_height: f64) -> Vec<usize> {
+    if entry_count == 0 {
+        return vec![0];
+    }
+    let inner_height = (avail_height - PAD * 2.0).max(row_height);
+    let per_column = (((inner_height + ROW_GAP) / (row_height + ROW_GAP)).floor() as usize).max(1);
+    let mut counts = Vec::new();
+    let mut remaining = entry_count;
+    while remaining > 0 {
+        let take = remaining.min(per_column);
+        counts.push(take);
+        remaining -= take;
+    }
+    counts
+}
+
+/// Measure `entries` laid out at `position` within `avail_width` x
+/// `avail_height` px — call BEFORE painting; the figure then shrinks its
+/// plot rect by the result (+ its own gap constant) before computing
+/// anything else that depends on the plot rect (design law #1).
+/// `avail_height` is consulted ONLY by [`LegendPosition::Right`] (`Top`/
+/// `Bottom` wrap by `avail_width` instead, same as before this parameter
+/// existed). Empty `entries` measures to [`LegendSize::default`] (nothing
+/// to reserve).
+pub fn measure_legend(ctx: &mut dyn RenderContext, theme: &FigureTheme, entries: &[LegendEntry], position: LegendPosition, avail_width: f64, avail_height: f64) -> LegendSize {
     if entries.is_empty() {
         return LegendSize::default();
     }
@@ -98,9 +143,11 @@ pub fn measure_legend(ctx: &mut dyn RenderContext, theme: &FigureTheme, entries:
     match position {
         LegendPosition::Right => {
             let widest_label = entries.iter().map(|e| ctx.measure_text(&e.label)).fold(0.0_f64, f64::max);
-            let width = PAD * 2.0 + SWATCH_SIZE + SWATCH_LABEL_GAP + widest_label;
-            let rows = entries.len();
-            let height = PAD * 2.0 + row_height * rows as f64 + ROW_GAP * rows.saturating_sub(1) as f64;
+            let column_width = PAD * 2.0 + SWATCH_SIZE + SWATCH_LABEL_GAP + widest_label;
+            let counts = column_counts(row_height, entries.len(), avail_height);
+            let rows_in_tallest_column = counts.iter().copied().max().unwrap_or(0);
+            let height = PAD * 2.0 + row_height * rows_in_tallest_column as f64 + ROW_GAP * rows_in_tallest_column.saturating_sub(1) as f64;
+            let width = column_width * counts.len() as f64 + ENTRY_GAP * counts.len().saturating_sub(1) as f64;
             LegendSize { width, height }
         }
         LegendPosition::Top | LegendPosition::Bottom => {
@@ -112,9 +159,37 @@ pub fn measure_legend(ctx: &mut dyn RenderContext, theme: &FigureTheme, entries:
     }
 }
 
+/// Paint one entry's own swatch (its shape per [`LegendEntry::symbol`]) at
+/// `(x, row_center)`, `x` being the swatch's own LEFT edge.
+fn draw_swatch(ctx: &mut dyn RenderContext, entry: &LegendEntry, x: f64, row_center: f64) {
+    match entry.symbol {
+        LegendSymbol::Square => {
+            ctx.set_fill_color(&entry.color);
+            ctx.fill_rect(x, row_center - SWATCH_SIZE / 2.0, SWATCH_SIZE, SWATCH_SIZE);
+        }
+        LegendSymbol::Line => {
+            ctx.set_stroke_color(&entry.color);
+            ctx.set_stroke_width(2.0);
+            ctx.set_line_dash(&[]);
+            ctx.begin_path();
+            ctx.move_to(x, row_center);
+            ctx.line_to(x + SWATCH_SIZE, row_center);
+            ctx.stroke();
+        }
+        LegendSymbol::Circle => {
+            let circle = CircleBatch { cx: x + SWATCH_SIZE / 2.0, cy: row_center, r: SWATCH_SIZE / 2.0 };
+            ctx.draw_circle_batch(&[circle], &entry.color);
+        }
+    }
+}
+
 /// Paint `entries` into `rect` at `position` — `rect` must be exactly what
 /// [`measure_legend`] sized (the figure's own shrink-and-place step), so
-/// the SAME [`row_counts`] wrap decision applies to both. No-op for empty
+/// the SAME [`row_counts`]/[`column_counts`] wrap decision applies to
+/// both. `rect.height` is this function's own `avail_height` for
+/// [`LegendPosition::Right`]'s column-wrap (already carried by `rect`, no
+/// separate parameter needed — `rect.height` is exactly what a figure's
+/// own render pass reserves, e.g. `base_rect.height`). No-op for empty
 /// `entries`.
 pub fn draw_legend(ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureTheme, entries: &[LegendEntry], position: LegendPosition) {
     if entries.is_empty() {
@@ -127,12 +202,21 @@ pub fn draw_legend(ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureTheme,
 
     match position {
         LegendPosition::Right => {
-            for (i, entry) in entries.iter().enumerate() {
-                let row_center = rect.y + PAD + i as f64 * (row_height + ROW_GAP) + row_height / 2.0;
-                ctx.set_fill_color(&entry.color);
-                ctx.fill_rect(rect.x + PAD, row_center - SWATCH_SIZE / 2.0, SWATCH_SIZE, SWATCH_SIZE);
-                ctx.set_fill_color(&theme.label_color);
-                ctx.fill_text(&entry.label, rect.x + PAD + SWATCH_SIZE + SWATCH_LABEL_GAP, row_center);
+            let widest_label = entries.iter().map(|e| ctx.measure_text(&e.label)).fold(0.0_f64, f64::max);
+            let column_width = PAD * 2.0 + SWATCH_SIZE + SWATCH_LABEL_GAP + widest_label;
+            let counts = column_counts(row_height, entries.len(), rect.height);
+            let mut idx = 0usize;
+            let mut cursor_x = rect.x + PAD;
+            for count in &counts {
+                for row in 0..*count {
+                    let entry = &entries[idx];
+                    let row_center = rect.y + PAD + row as f64 * (row_height + ROW_GAP) + row_height / 2.0;
+                    draw_swatch(ctx, entry, cursor_x, row_center);
+                    ctx.set_fill_color(&theme.label_color);
+                    ctx.fill_text(&entry.label, cursor_x + SWATCH_SIZE + SWATCH_LABEL_GAP, row_center);
+                    idx += 1;
+                }
+                cursor_x += column_width + ENTRY_GAP;
             }
         }
         LegendPosition::Top | LegendPosition::Bottom => {
@@ -145,8 +229,7 @@ pub fn draw_legend(ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureTheme,
                 for _ in 0..*count {
                     let entry = &entries[idx];
                     let label_w = ctx.measure_text(&entry.label);
-                    ctx.set_fill_color(&entry.color);
-                    ctx.fill_rect(cursor_x, row_center - SWATCH_SIZE / 2.0, SWATCH_SIZE, SWATCH_SIZE);
+                    draw_swatch(ctx, entry, cursor_x, row_center);
                     ctx.set_fill_color(&theme.label_color);
                     ctx.fill_text(&entry.label, cursor_x + SWATCH_SIZE + SWATCH_LABEL_GAP, row_center);
                     cursor_x += SWATCH_SIZE + SWATCH_LABEL_GAP + label_w + ENTRY_GAP;
@@ -163,7 +246,9 @@ mod tests {
     use uzor_export::{render_to_png, ExportSpec};
 
     fn seeded_entries(n: usize) -> Vec<LegendEntry> {
-        (0..n).map(|i| LegendEntry { label: format!("Series {i} label"), color: format!("#{i:02x}{i:02x}{i:02x}") }).collect()
+        (0..n)
+            .map(|i| LegendEntry { label: format!("Series {i} label"), color: format!("#{i:02x}{i:02x}{i:02x}"), symbol: LegendSymbol::Square })
+            .collect()
     }
 
     #[test]
@@ -172,7 +257,7 @@ mod tests {
         let spec = ExportSpec { width_px: 10, height_px: 10, dpr: 1.0, background: None };
         let mut size = LegendSize::default();
         render_to_png(&spec, |ctx| {
-            size = measure_legend(ctx, &theme, &[], LegendPosition::Top, 400.0);
+            size = measure_legend(ctx, &theme, &[], LegendPosition::Top, 400.0, 300.0);
         })
         .expect("render");
         assert_eq!(size, LegendSize::default());
@@ -186,8 +271,8 @@ mod tests {
         let mut wide_height = 0.0_f64;
         let mut narrow_height = 0.0_f64;
         render_to_png(&spec, |ctx| {
-            wide_height = measure_legend(ctx, &theme, &entries, LegendPosition::Top, 900.0).height;
-            narrow_height = measure_legend(ctx, &theme, &entries, LegendPosition::Top, 90.0).height;
+            wide_height = measure_legend(ctx, &theme, &entries, LegendPosition::Top, 900.0, 300.0).height;
+            narrow_height = measure_legend(ctx, &theme, &entries, LegendPosition::Top, 90.0, 300.0).height;
         })
         .expect("render");
         assert!(
@@ -197,11 +282,11 @@ mod tests {
     }
 
     #[test]
-    fn measure_legend_right_width_is_swatch_plus_widest_label() {
+    fn measure_legend_right_width_is_swatch_plus_widest_label_for_a_single_column() {
         let theme = FigureTheme::dark();
         let entries = vec![
-            LegendEntry { label: "a".to_owned(), color: "#111111".to_owned() },
-            LegendEntry { label: "a much longer series label".to_owned(), color: "#222222".to_owned() },
+            LegendEntry { label: "a".to_owned(), color: "#111111".to_owned(), symbol: LegendSymbol::Square },
+            LegendEntry { label: "a much longer series label".to_owned(), color: "#222222".to_owned(), symbol: LegendSymbol::Square },
         ];
         let spec = ExportSpec { width_px: 10, height_px: 10, dpr: 1.0, background: None };
         let mut size = LegendSize::default();
@@ -209,7 +294,7 @@ mod tests {
         render_to_png(&spec, |ctx| {
             ctx.set_font(&theme.label_font);
             widest_label_w = entries.iter().map(|e| ctx.measure_text(&e.label)).fold(0.0_f64, f64::max);
-            size = measure_legend(ctx, &theme, &entries, LegendPosition::Right, 400.0);
+            size = measure_legend(ctx, &theme, &entries, LegendPosition::Right, 400.0, 500.0);
         })
         .expect("render");
         let expected_width = PAD * 2.0 + SWATCH_SIZE + SWATCH_LABEL_GAP + widest_label_w;
@@ -217,23 +302,47 @@ mod tests {
     }
 
     #[test]
-    fn measure_legend_right_height_stacks_one_row_per_entry_never_wrapping() {
+    fn measure_legend_right_height_stacks_one_row_per_entry_when_avail_height_is_generous() {
         let theme = FigureTheme::dark();
         let entries = seeded_entries(4);
         let spec = ExportSpec { width_px: 10, height_px: 10, dpr: 1.0, background: None };
         let mut size = LegendSize::default();
         render_to_png(&spec, |ctx| {
-            size = measure_legend(ctx, &theme, &entries, LegendPosition::Right, 50.0);
+            size = measure_legend(ctx, &theme, &entries, LegendPosition::Right, 1000.0, 1000.0);
         })
         .expect("render");
-        // A Right legend never wraps by width — narrowing `avail_width`
-        // must not change its (entries-count-driven) height at all.
+        // Narrowing avail_WIDTH (not height) must not change a generous
+        // single-column layout at all.
         let mut size_wide = LegendSize::default();
         render_to_png(&spec, |ctx| {
-            size_wide = measure_legend(ctx, &theme, &entries, LegendPosition::Right, 1000.0);
+            size_wide = measure_legend(ctx, &theme, &entries, LegendPosition::Right, 50.0, 1000.0);
         })
         .expect("render");
         assert!((size.height - size_wide.height).abs() < 1e-9);
+    }
+
+    #[test]
+    fn measure_legend_right_wraps_to_a_second_column_when_avail_height_is_short() {
+        // The audit's own B9 defect: a many-series Right legend used to
+        // grow past its own avail_height with no wrap at all. A short
+        // avail_height must now produce a SHORTER measured height (capped
+        // by the column-wrap) and a WIDER measured width (a second
+        // column), never silently exceed avail_height's own row budget.
+        let theme = FigureTheme::dark();
+        let entries = seeded_entries(10);
+        let spec = ExportSpec { width_px: 10, height_px: 10, dpr: 1.0, background: None };
+        let mut tall_size = LegendSize::default();
+        let mut short_size = LegendSize::default();
+        render_to_png(&spec, |ctx| {
+            tall_size = measure_legend(ctx, &theme, &entries, LegendPosition::Right, 400.0, 2000.0);
+            short_size = measure_legend(ctx, &theme, &entries, LegendPosition::Right, 400.0, 80.0);
+        })
+        .expect("render");
+        assert!(
+            short_size.height < tall_size.height,
+            "a short avail_height must wrap into more columns, capping the reserved height below the tall single-column case"
+        );
+        assert!(short_size.width > tall_size.width, "wrapping into more columns must reserve MORE total width than a single column");
     }
 
     #[test]
@@ -243,11 +352,59 @@ mod tests {
         let spec = ExportSpec { width_px: 400, height_px: 200, dpr: 1.0, background: None };
         for position in [LegendPosition::Top, LegendPosition::Bottom, LegendPosition::Right] {
             let result = render_to_png(&spec, |ctx| {
-                let size = measure_legend(ctx, &theme, &entries, position, 380.0);
+                let size = measure_legend(ctx, &theme, &entries, position, 380.0, 180.0);
                 let rect = Rect::new(10.0, 10.0, if position == LegendPosition::Right { size.width } else { 380.0 }, size.height.max(1.0));
                 draw_legend(ctx, rect, &theme, &entries, position);
             });
             assert!(result.is_ok(), "draw_legend must render cleanly at {position:?}");
         }
+    }
+
+    #[test]
+    fn draw_legend_right_wraps_into_a_second_column_and_never_exceeds_rect_height() {
+        let theme = FigureTheme::dark();
+        let entries = seeded_entries(10);
+        // A rect deliberately too short to fit every entry as one column.
+        let rect = Rect::new(10.0, 10.0, 300.0, 80.0);
+        let spec = ExportSpec { width_px: 400, height_px: 200, dpr: 1.0, background: None };
+        let result = render_to_png(&spec, |ctx| {
+            draw_legend(ctx, rect, &theme, &entries, LegendPosition::Right);
+        });
+        assert!(result.is_ok(), "a short Right rect must still render every entry (wrapped into columns) without panicking");
+    }
+
+    #[test]
+    fn every_legend_symbol_renders_without_panicking() {
+        let theme = FigureTheme::dark();
+        let entries = vec![
+            LegendEntry { label: "square".to_owned(), color: "#4d90fe".to_owned(), symbol: LegendSymbol::Square },
+            LegendEntry { label: "line".to_owned(), color: "#e0703c".to_owned(), symbol: LegendSymbol::Line },
+            LegendEntry { label: "circle".to_owned(), color: "#5cb87a".to_owned(), symbol: LegendSymbol::Circle },
+        ];
+        let spec = ExportSpec { width_px: 400, height_px: 200, dpr: 1.0, background: None };
+        let result = render_to_png(&spec, |ctx| {
+            let size = measure_legend(ctx, &theme, &entries, LegendPosition::Top, 380.0, 180.0);
+            draw_legend(ctx, Rect::new(10.0, 10.0, 380.0, size.height), &theme, &entries, LegendPosition::Top);
+        });
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn square_and_line_and_circle_symbols_render_visibly_differently() {
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 100, height_px: 60, dpr: 1.0, background: None };
+        let render_one = |symbol: LegendSymbol| {
+            let entries = vec![LegendEntry { label: "x".to_owned(), color: "#4d90fe".to_owned(), symbol }];
+            render_to_png(&spec, |ctx| {
+                draw_legend(ctx, Rect::new(0.0, 0.0, 100.0, 60.0), &theme, &entries, LegendPosition::Top);
+            })
+            .expect("render")
+        };
+        let square = render_one(LegendSymbol::Square);
+        let line = render_one(LegendSymbol::Line);
+        let circle = render_one(LegendSymbol::Circle);
+        assert_ne!(square, line, "a Square swatch must render differently from a Line swatch");
+        assert_ne!(square, circle, "a Square swatch must render differently from a Circle swatch");
+        assert_ne!(line, circle, "a Line swatch must render differently from a Circle swatch");
     }
 }

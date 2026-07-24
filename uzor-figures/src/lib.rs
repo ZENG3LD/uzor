@@ -53,20 +53,24 @@ pub mod transform;
 
 pub use coord::PlotArea;
 pub use figure::{
-    boxplot_stats, quartile, uniform_thin_indices, BarFigure, BarMode, BarSeries, BoxplotFigure, BoxplotStats, CurveFigure, CurveSeries,
-    DagEdge, DagFigure, DagNode, HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, PieFigure, PieSlice, PointRadius, SankeyFigure,
-    SankeyLink, SankeyNode, ScatterFigure, ScatterPoint, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind,
-    YDomainPolicy, WHISKER_IQR_MULTIPLIER,
+    boxplot_stats, quartile, resolve_bin_count, resolve_tick_count, uniform_thin_indices, BarFigure, BarMode, BarSeries, BinPolicy,
+    BoxplotFigure, BoxplotStats, CurveFigure, CurveSeries, DagEdge, DagFigure, DagNode, HeatmapFigure, HistogramFigure, FigureOverlay,
+    KpiFigure, MarginPolicy, PieFigure, PieSlice, PointRadius, SankeyFigure, SankeyLink, SankeyNode, ScatterFigure, ScatterPoint,
+    TickCountPolicy, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind, YDomainPolicy, MIN_PX_PER_TICK,
+    WHISKER_IQR_MULTIPLIER,
 };
 pub use guide::annotation::{draw_annotation_overlays, draw_annotation_underlays, Annotation};
-pub use guide::axis::{draw_x_axis_formatted, draw_x_axis_weighted, draw_y_axis_formatted, draw_y_axis_weighted, AxisTickWeightStyle};
+pub use guide::axis::{
+    draw_x_axis_formatted, draw_x_axis_overflow, draw_x_axis_weighted, draw_y_axis_formatted, draw_y_axis_weighted, measure_rotated_x_axis_gutter,
+    measure_y_axis_gutter, rotated_label_extent, AxisTickWeightStyle, LabelOverflow, AUTO_ROTATE_DEGREES, AUTO_ROTATE_DROP_THRESHOLD,
+};
 pub use guide::grid::{draw_x_grid_weighted, draw_y_grid_weighted, GridTickWeightStyle};
 pub use guide::colorbar::{draw_colorbar, measure_colorbar, ColorbarSize};
 pub use guide::labeler::{anchor_candidates, place_labels, OccupancyBitmap};
-pub use guide::legend::{LegendEntry, LegendPosition};
+pub use guide::legend::{LegendEntry, LegendPosition, LegendSymbol};
 pub use guide::wrap::{truncate_ellipsis, wrap_text};
 pub use interact::{BrushState, FocusSet, HitZone, HoverInfo, SelectionBus, FigureInputAction, FigureOutputAction};
-pub use mark::MarkStyle;
+pub use mark::{GapPolicy, LineCap, LineJoin, MarkStyle};
 pub use scale::{BandScale, ColorScale, LinearScale, LogScale, NumberFormat, Scale, Tick, TimeScale};
 pub use theme::FigureTheme;
 pub use transform::lttb;
@@ -87,9 +91,9 @@ mod proof_tests {
     use crate::transform::lttb;
     use crate::{
         Annotation, BarFigure, BarMode, BarSeries, BoxplotFigure, CurveFigure, CurveSeries, DagEdge, DagFigure, DagNode, FocusSet,
-        HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, LegendPosition, NumberFormat, PieFigure, PieSlice, PointRadius,
-        SankeyFigure, SankeyLink, SankeyNode, ScatterFigure, ScatterPoint, TimeScale, TimelineEvent, TimelineFigure, WaterfallFigure,
-        WaterfallItem, WaterfallKind,
+        GapPolicy, HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, LabelOverflow, LegendEntry, LegendPosition, LegendSymbol,
+        MarkStyle, NumberFormat, PieFigure, PieSlice, PointRadius, SankeyFigure, SankeyLink, SankeyNode, ScatterFigure, ScatterPoint,
+        TimeScale, TimelineEvent, TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind,
     };
 
     const WIDTH: u32 = 800;
@@ -1004,5 +1008,175 @@ mod proof_tests {
         .expect("A5 TimeScale axis-weight before/after proof should render");
         assert_eq!(decoded_png_dims(&bytes), ((panel_w * 2.0) as u32, panel_h as u32));
         write_proof_png("figures_a5_timescale_axis_weight_before_after.png", &bytes);
+    }
+
+    /// Wave 2 item 1 (`mark::GapPolicy`): LEFT panel reproduces the
+    /// PRE-EXISTING defect directly — a raw `ctx.stroke_polyline` call fed
+    /// screen points with a NaN coordinate baked in (exactly what
+    /// `draw_polyline`'s own body did before this item, zero non-finite
+    /// handling at all). RIGHT panel is the same domain series through the
+    /// real, fixed `mark::line::draw_polyline` under its own DEFAULT
+    /// `GapPolicy::Break` — the line visibly breaks exactly at the missing
+    /// sample instead of whatever the backend happens to do with a raw NaN
+    /// coordinate.
+    #[test]
+    fn item_1_gap_policy_before_after_proof() {
+        use crate::coord::PlotArea;
+        use crate::mark::line::draw_polyline;
+        use crate::scale::LinearScale;
+
+        let theme = FigureTheme::dark();
+        let panel_w = 400.0;
+        let panel_h = 250.0;
+        let plot_rect = Rect::new(30.0, 20.0, panel_w - 60.0, panel_h - 60.0);
+        let area = PlotArea::new(plot_rect);
+        let x = LinearScale::new(0.0, 10.0);
+        let y = LinearScale::new(0.0, 10.0);
+
+        // A deliberate interior gap (NaN at index 4 of 9) — same fixture
+        // shape the item's own gate calls for ("NaN in the middle").
+        let points: Vec<(f64, f64)> =
+            vec![(0.0, 2.0), (1.0, 5.0), (2.0, 3.0), (3.0, 7.0), (f64::NAN, f64::NAN), (5.0, 6.0), (6.0, 2.0), (7.0, 8.0), (8.0, 4.0)];
+
+        let spec = ExportSpec { width_px: (panel_w * 2.0) as u32, height_px: panel_h as u32, dpr: 1.0, background: None };
+        let bytes = render_to_png(&spec, |ctx| {
+            // BEFORE — the raw backend path `draw_polyline`'s own body used
+            // to call directly, no non-finite handling at all.
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
+            let raw_screen: Vec<(f64, f64)> = points.iter().map(|&(px, py)| (area.x(&x, px), area.y(&y, py))).collect();
+            ctx.stroke_polyline(&raw_screen, &theme.palette[0], 2.0);
+
+            // AFTER — `draw_polyline` under its own default `GapPolicy::
+            // Break`: the line splits into two independently-drawn runs,
+            // a visible gap exactly at the missing sample.
+            ctx.save();
+            ctx.translate(panel_w, 0.0);
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
+            let style = MarkStyle { color: theme.palette[0].clone(), stroke_width: 2.0, gap_policy: GapPolicy::Break, ..Default::default() };
+            draw_polyline(ctx, &area, &x, &y, &points, &style);
+            ctx.restore();
+        })
+        .expect("item 1 gap-policy before/after proof should render");
+        assert_eq!(decoded_png_dims(&bytes), ((panel_w * 2.0) as u32, panel_h as u32));
+        write_proof_png("figures_item1_gap_policy_before_after.png", &bytes);
+    }
+
+    /// Wave 2 item 4 (`guide::axis::LabelOverflow`): LEFT panel is a
+    /// `BarFigure` over 10 long category names under the DEFAULT
+    /// `LabelOverflow::Skip` — the pre-existing greedy-skip rule drops
+    /// most colliding labels. RIGHT panel is the SAME figure/data under
+    /// `LabelOverflow::Rotate(45.0)` — every label renders, rotated.
+    #[test]
+    fn item_4_label_rotation_before_after_proof() {
+        let categories: Vec<String> = (0..8).map(|i| format!("category-{i}")).collect();
+        let values: Vec<f64> = (0..8).map(|i| 10.0 + (i as f64 * 6.0) % 40.0).collect();
+        let panel_w = 450.0;
+        let panel_h = 300.0;
+        let theme = FigureTheme::dark();
+
+        let skip_figure = BarFigure::new(categories.clone(), values.clone()).with_title("LabelOverflow::Skip (default)");
+        let rotated_figure =
+            BarFigure::new(categories, values).with_label_overflow(LabelOverflow::Rotate(45.0)).with_title("LabelOverflow::Rotate(45)");
+
+        let spec = ExportSpec { width_px: (panel_w * 2.0) as u32, height_px: panel_h as u32, dpr: 1.0, background: None };
+        let bytes = render_to_png(&spec, |ctx| {
+            skip_figure.render(ctx, Rect::new(0.0, 0.0, panel_w, panel_h), &theme);
+            rotated_figure.render(ctx, Rect::new(panel_w, 0.0, panel_w, panel_h), &theme);
+        })
+        .expect("item 4 label-rotation before/after proof should render");
+        assert_eq!(decoded_png_dims(&bytes), ((panel_w * 2.0) as u32, panel_h as u32));
+        write_proof_png("figures_item4_label_rotation_before_after.png", &bytes);
+    }
+
+    /// Wave 2 item 5a (`guide::legend::LegendSymbol`): LEFT panel manually
+    /// paints every legend entry as the PRE-EXISTING unconditional filled
+    /// square, even for a curve (line) series — the audit's own B5 defect
+    /// (a legend swatch shape that doesn't match the actual on-screen
+    /// mark). RIGHT panel draws the SAME entries through the real,
+    /// per-mark-kind `LegendSymbol` (`Line` for the curve series).
+    #[test]
+    fn item_5a_legend_swatch_before_after_proof() {
+        use crate::guide::legend::{draw_legend, measure_legend};
+
+        let theme = FigureTheme::dark();
+        let panel_w = 300.0;
+        let panel_h = 140.0;
+
+        let before_entries = vec![
+            LegendEntry { label: "revenue".to_owned(), color: theme.palette[0].clone(), symbol: LegendSymbol::Square },
+            LegendEntry { label: "forecast".to_owned(), color: theme.palette[1].clone(), symbol: LegendSymbol::Square },
+        ];
+        let after_entries = vec![
+            LegendEntry { label: "revenue".to_owned(), color: theme.palette[0].clone(), symbol: LegendSymbol::Line },
+            LegendEntry { label: "forecast".to_owned(), color: theme.palette[1].clone(), symbol: LegendSymbol::Line },
+        ];
+
+        let spec = ExportSpec { width_px: (panel_w * 2.0) as u32, height_px: panel_h as u32, dpr: 1.0, background: None };
+        let bytes = render_to_png(&spec, |ctx| {
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
+            let size = measure_legend(ctx, &theme, &before_entries, LegendPosition::Top, panel_w, panel_h);
+            draw_legend(ctx, Rect::new(10.0, 10.0, panel_w - 20.0, size.height), &theme, &before_entries, LegendPosition::Top);
+
+            ctx.save();
+            ctx.translate(panel_w, 0.0);
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
+            let size = measure_legend(ctx, &theme, &after_entries, LegendPosition::Top, panel_w, panel_h);
+            draw_legend(ctx, Rect::new(10.0, 10.0, panel_w - 20.0, size.height), &theme, &after_entries, LegendPosition::Top);
+            ctx.restore();
+        })
+        .expect("item 5a legend-swatch before/after proof should render");
+        assert_eq!(decoded_png_dims(&bytes), ((panel_w * 2.0) as u32, panel_h as u32));
+        write_proof_png("figures_item5a_legend_swatch_before_after.png", &bytes);
+    }
+
+    /// Wave 2 item 5b (`guide::legend::LegendPosition::Right` height wrap):
+    /// LEFT panel simulates the PRE-EXISTING defect — a 10-entry `Right`
+    /// legend measured/drawn against an effectively unbounded height
+    /// (`avail_height` far larger than the panel itself), so every entry
+    /// stacks in one column and visibly overruns the panel's own bottom
+    /// edge. RIGHT panel measures/draws the SAME 10 entries against the
+    /// panel's own REAL height — the fixed column-wrap keeps every entry
+    /// inside the panel.
+    #[test]
+    fn item_5b_legend_right_wrap_before_after_proof() {
+        use crate::guide::legend::{draw_legend, measure_legend};
+
+        let theme = FigureTheme::dark();
+        let panel_w = 260.0;
+        let panel_h = 160.0;
+        let entries: Vec<LegendEntry> = (0..10)
+            .map(|i| LegendEntry { label: format!("series {i}"), color: theme.palette[i % theme.palette.len()].clone(), symbol: LegendSymbol::Square })
+            .collect();
+
+        let spec = ExportSpec { width_px: (panel_w * 2.0) as u32, height_px: panel_h as u32, dpr: 1.0, background: None };
+        let bytes = render_to_png(&spec, |ctx| {
+            // BEFORE — the pre-existing defect: `avail_height` far beyond
+            // the panel's own real height reproduces the OLD unbounded
+            // single-column behavior (every entry drawn at its own
+            // one-column position regardless of the panel's real bottom
+            // edge — the actual overrun `draw_legend` used to have no
+            // fallback for).
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
+            let unbounded_size = measure_legend(ctx, &theme, &entries, LegendPosition::Right, panel_w, 5000.0);
+            draw_legend(ctx, Rect::new(5.0, 5.0, unbounded_size.width, 5000.0), &theme, &entries, LegendPosition::Right);
+
+            // AFTER — measured/drawn against the panel's own real height:
+            // the column-wrap keeps every entry inside the visible panel.
+            ctx.save();
+            ctx.translate(panel_w, 0.0);
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
+            let fixed_size = measure_legend(ctx, &theme, &entries, LegendPosition::Right, panel_w, panel_h - 10.0);
+            draw_legend(ctx, Rect::new(5.0, 5.0, fixed_size.width, panel_h - 10.0), &theme, &entries, LegendPosition::Right);
+            ctx.restore();
+        })
+        .expect("item 5b legend-right-wrap before/after proof should render");
+        assert_eq!(decoded_png_dims(&bytes), ((panel_w * 2.0) as u32, panel_h as u32));
+        write_proof_png("figures_item5b_legend_right_wrap_before_after.png", &bytes);
     }
 }

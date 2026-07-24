@@ -160,6 +160,117 @@ fn parse_css_font(font_str: &str) -> FontInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Rotated/sheared text fallback
+// ---------------------------------------------------------------------------
+//
+// `fill_text`'s own fast path (below) rasterizes each glyph as an
+// axis-aligned bitmap blit and positions it by reading ONLY `tx`/`ty`/`sx`/
+// `sy` off the active `Transform` — it never reads `kx`/`ky` (the terms
+// that encode rotation/shear), so a `ctx.rotate(...)` call has ZERO
+// effect on `fill_text`'s own output (found 2026-07-25, live-diagnosed via
+// a `uzor-figures` `LabelOverflow::Rotate` proof PNG rendering completely
+// unrotated, overlapping text). This is NOT a caller-side geometry bug —
+// `uzor-render-urx`'s own `fill_text` already hit and fixed the identical
+// defect for itself (see that crate's `is_translation_only` fallback):
+// when the active transform carries rotation/shear, render the glyph
+// outlines as a real vector PATH instead of a raster blit — `Pixmap::
+// fill_path` (used by every other shape in this backend, e.g. `fill()`)
+// DOES apply the full affine transform, since path-fill is this crate's
+// own fundamental, unconditional vector-drawing primitive; only the
+// specialized bitmap-blit glyph renderer took the rotation-blind
+// shortcut.
+
+/// `true` when `t` carries any rotation/shear component (`kx`/`ky`
+/// non-zero) — the exact condition under which `fill_text`'s fast raster
+/// path silently drops the rotation, so it must fall back to
+/// [`fill_text_as_path_impl`] instead.
+fn has_rotation_or_shear(t: Transform) -> bool {
+    const EPS: f32 = 1e-6;
+    t.kx.abs() > EPS || t.ky.abs() > EPS
+}
+
+/// Re-compose a CSS font shorthand string from an already-parsed
+/// [`FontInfo`] — the inverse of [`parse_css_font`], needed because
+/// `uzor::shaper::text_to_path` takes a CSS string, not a `FontInfo`.
+/// Mirrors `uzor-render-urx`'s own identically-shaped `font_string`
+/// helper (same 3 bundled families, same shorthand grammar).
+fn font_css_string(info: &FontInfo) -> String {
+    let family = match info.family {
+        FontFamily::Roboto => "Roboto",
+        FontFamily::PtRootUi => "PT Root UI",
+        FontFamily::JetBrainsMono => "JetBrains Mono",
+    };
+    let mut parts: Vec<String> = Vec::with_capacity(4);
+    if info.italic {
+        parts.push("italic".to_owned());
+    }
+    if info.bold {
+        parts.push("bold".to_owned());
+    }
+    parts.push(format!("{}px", info.size));
+    parts.push(family.to_owned());
+    parts.join(" ")
+}
+
+/// Parse the RESTRICTED SVG path grammar `uzor::shaper::text_to_path`
+/// emits (`M`/`L`/`Q`/`C`/`Z` only, always absolute, always
+/// whitespace-separated integer coordinates — see that function's own
+/// doc comment/implementation) into a `tiny_skia::Path`. Deliberately NOT
+/// a general SVG path parser (no relative commands, no arcs — a font
+/// glyph outline never needs either) — used only by
+/// [`fill_text_as_path_impl`]. Returns `None` for empty input, an
+/// unrecognized command, or a malformed coordinate (bailing rather than
+/// mis-rendering).
+fn parse_glyph_outline_path(svg: &str) -> Option<Path> {
+    let mut pb = PathBuilder::new();
+    let mut has_point = false;
+    let mut tokens = svg.split_whitespace();
+
+    fn next_f32<'a>(tokens: &mut impl Iterator<Item = &'a str>) -> Option<f32> {
+        tokens.next()?.parse().ok()
+    }
+
+    while let Some(tok) = tokens.next() {
+        match tok {
+            "M" => {
+                let x = next_f32(&mut tokens)?;
+                let y = next_f32(&mut tokens)?;
+                pb.move_to(x, y);
+                has_point = true;
+            }
+            "L" => {
+                let x = next_f32(&mut tokens)?;
+                let y = next_f32(&mut tokens)?;
+                pb.line_to(x, y);
+            }
+            "Q" => {
+                let cx = next_f32(&mut tokens)?;
+                let cy = next_f32(&mut tokens)?;
+                let x = next_f32(&mut tokens)?;
+                let y = next_f32(&mut tokens)?;
+                pb.quad_to(cx, cy, x, y);
+            }
+            "C" => {
+                let c1x = next_f32(&mut tokens)?;
+                let c1y = next_f32(&mut tokens)?;
+                let c2x = next_f32(&mut tokens)?;
+                let c2y = next_f32(&mut tokens)?;
+                let x = next_f32(&mut tokens)?;
+                let y = next_f32(&mut tokens)?;
+                pb.cubic_to(c1x, c1y, c2x, c2y, x, y);
+            }
+            "Z" => pb.close(),
+            _ => return None, // unrecognized command — bail, never mis-render
+        }
+    }
+
+    if !has_point {
+        return None;
+    }
+    pb.finish()
+}
+
+// ---------------------------------------------------------------------------
 // Process-wide glyph raster cache
 // ---------------------------------------------------------------------------
 //
@@ -830,6 +941,44 @@ impl TinySkiaCpuRenderContext {
         dst[2] = ((cb as u32 * alpha + dst[2] as u32 * inv + 127) / 255) as u8;
         dst[3] = (alpha + dst[3] as u32 * inv / 255).min(255) as u8;
     }
+
+    /// `fill_text`'s own rotation/shear-aware fallback — see this module's
+    /// top-level "Rotated/sheared text fallback" doc comment for why this
+    /// exists. Renders `text`'s own glyph OUTLINES as a real vector path
+    /// (via `uzor::shaper::text_to_path` + [`parse_glyph_outline_path`])
+    /// instead of the fast path's per-glyph raster blit — `Pixmap::
+    /// fill_path` applies the FULL active `self.transform` (rotation/shear
+    /// included), the same generic path-fill pipeline every other shape in
+    /// this backend already goes through.
+    ///
+    /// `x_off`/`y_off` are the SAME text-align/baseline offsets `fill_text`
+    /// itself already computed (so both code paths agree on where "the
+    /// pen" sits relative to the caller's own `x`/`y`); `x`/`y` are
+    /// `fill_text`'s own original arguments, unmodified.
+    fn fill_text_as_path_impl(&mut self, text: &str, font_info: &FontInfo, x_off: f64, y_off: f64, x: f64, y: f64) {
+        let svg = uzor::shaper::text_to_path(text, &font_css_string(font_info));
+        if svg.is_empty() {
+            return;
+        }
+        let Some(local_path) = parse_glyph_outline_path(&svg) else { return };
+
+        // Position the LOCAL glyph-outline path at the caller's own pen
+        // origin BEFORE applying the ambient `self.transform` — mirrors
+        // `text_transform`/`combined` in `uzor-render-vello-cpu`/
+        // `uzor-render-urx`'s own `fill_text` (same offset convention,
+        // same reason: `self.transform` alone is the camera/rotation, the
+        // text's own on-screen position is baked into the path first).
+        let position = Transform::from_translate((x + x_off) as f32, (y + y_off) as f32);
+        let Some(path) = local_path.transform(position) else { return };
+
+        if self.shadow.is_some() {
+            self.draw_shadow_for_path(&path);
+        }
+        let paint = self.fill_paint();
+        let transform = self.transform;
+        let clip = self.current_clip.clone();
+        self.pixmap.fill_path(&path, &paint, FillRule::Winding, transform, clip.as_ref());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1092,6 +1241,16 @@ impl TextRenderer for TinySkiaCpuRenderContext {
             TextBaseline::Bottom     => 0.0,
             TextBaseline::Alphabetic => 0.0,
         };
+
+        // See this module's own "Rotated/sheared text fallback" doc
+        // comment: the raster blit below is rotation/shear-blind by
+        // construction (reads only `tx`/`ty`/`sx`/`sy`), so a `ctx.
+        // rotate()`/shear'd transform must go through the vector-path
+        // fallback instead.
+        if has_rotation_or_shear(self.transform) {
+            self.fill_text_as_path_impl(text, &font_info, x_off as f64, y_off as f64, x, y);
+            return;
+        }
 
         let color = self.effective_fill_color();
         let cr = (color.red()   * 255.0) as u8;

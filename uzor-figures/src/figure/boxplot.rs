@@ -32,7 +32,7 @@ use uzor::render::{CircleBatch, RenderContext};
 use uzor::types::Rect;
 
 use crate::coord::PlotArea;
-use crate::figure::FigureOverlay;
+use crate::figure::{resolve_tick_count, FigureOverlay, MarginPolicy, TickCountPolicy};
 use crate::guide::{axis, grid, tooltip};
 use crate::interact::hit::{self, HitZone};
 use crate::scale::linear::{format_value, nice_step};
@@ -136,6 +136,12 @@ pub struct BoxplotFigure {
     /// Inner padding (fraction of each band's width) — see
     /// [`BoxplotFigure::with_band_padding`]. Defaults to [`BAND_PADDING`].
     band_padding: f64,
+    /// This figure's own left-margin sizing policy — see
+    /// [`BoxplotFigure::with_margin_policy`].
+    margin_policy: MarginPolicy,
+    /// This figure's own Y tick-count policy — see
+    /// [`BoxplotFigure::with_y_tick_policy`].
+    y_tick_policy: TickCountPolicy,
 }
 
 impl BoxplotFigure {
@@ -145,7 +151,14 @@ impl BoxplotFigure {
     /// entry beyond `categories.len()` is never reached (the band scale is
     /// built from `categories` alone).
     pub fn new(categories: Vec<String>, samples: Vec<Vec<f64>>) -> Self {
-        Self { categories, samples, title: None, band_padding: BAND_PADDING }
+        Self {
+            categories,
+            samples,
+            title: None,
+            band_padding: BAND_PADDING,
+            margin_policy: MarginPolicy::default(),
+            y_tick_policy: TickCountPolicy::Fixed(TARGET_Y_TICKS),
+        }
     }
 
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
@@ -164,6 +177,23 @@ impl BoxplotFigure {
         self
     }
 
+    /// Override this figure's left-margin sizing policy — see
+    /// [`MarginPolicy`]'s own docs. Default (unset) is
+    /// [`MarginPolicy::Measured`].
+    pub fn with_margin_policy(mut self, policy: MarginPolicy) -> Self {
+        self.margin_policy = policy;
+        self
+    }
+
+    /// Override this figure's Y tick-count policy — see
+    /// [`TickCountPolicy`]'s own docs. Default (unset) is
+    /// `TickCountPolicy::Fixed(5)`, byte-identical to this figure's
+    /// pre-existing constant.
+    pub fn with_y_tick_policy(mut self, policy: TickCountPolicy) -> Self {
+        self.y_tick_policy = policy;
+        self
+    }
+
     fn base_plot_rect(&self, rect: Rect) -> Rect {
         let title_h = if self.title.is_some() { TITLE_HEIGHT } else { 0.0 };
         Rect::new(
@@ -175,7 +205,10 @@ impl BoxplotFigure {
     }
 
     /// This figure's plot-area transform for `rect` — same reason as every
-    /// other figure's `plot_area` accessor.
+    /// other figure's `plot_area` accessor. **Does not account for
+    /// [`MarginPolicy::Measured`] widening the left margin** — same
+    /// ctx-less-accessor caveat documented on
+    /// [`crate::figure::BarFigure::plot_area`].
     pub fn plot_area(&self, rect: Rect) -> PlotArea {
         PlotArea::new(self.base_plot_rect(rect))
     }
@@ -228,15 +261,31 @@ impl BoxplotFigure {
         ctx.set_fill_color(&theme.background);
         ctx.fill_rect(rect.x, rect.y, rect.width, rect.height);
 
-        let area = self.plot_area(rect);
-
         if let Some(y_scale) = self.y_scale() {
             let band = self.band_scale();
-            grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
+
+            // Resolve this render's own left margin + Y tick count BEFORE
+            // building the plot rect — see `CurveFigure::render_with`'s
+            // own identical non-circularity reasoning.
+            let title_h = if self.title.is_some() { TITLE_HEIGHT } else { 0.0 };
+            let plot_height_estimate = (rect.height - title_h - MARGIN_BOTTOM).max(0.0);
+            let target_y_ticks = resolve_tick_count(self.y_tick_policy, plot_height_estimate);
+            let margin_left = match self.margin_policy {
+                MarginPolicy::Measured => MARGIN_LEFT.max(axis::measure_y_axis_gutter(ctx, &y_scale, theme, target_y_ticks)),
+                MarginPolicy::Fixed => MARGIN_LEFT,
+            };
+            let area = PlotArea::new(Rect::new(
+                rect.x + margin_left,
+                rect.y + title_h,
+                (rect.width - margin_left - MARGIN_RIGHT).max(0.0),
+                plot_height_estimate,
+            ));
+
+            grid::draw_y_grid(ctx, &area, &y_scale, theme, target_y_ticks);
 
             let box_color = theme.palette[0].clone();
             let outlier_color = theme.palette[1].clone();
-            let step = nice_step(y_scale.max - y_scale.min, TARGET_Y_TICKS as f64);
+            let step = nice_step(y_scale.max - y_scale.min, target_y_ticks as f64);
 
             for i in 0..band.len() {
                 let Some(stats) = self.stats_for(i) else { continue };
@@ -334,7 +383,7 @@ impl BoxplotFigure {
             }
 
             axis::draw_x_axis(ctx, &area, &band, theme, band.len());
-            axis::draw_y_axis(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
+            axis::draw_y_axis(ctx, &area, &y_scale, theme, target_y_ticks);
         }
 
         if let Some(title) = &self.title {
@@ -493,6 +542,44 @@ mod tests {
         let result = render_to_png(&spec, |ctx| {
             figure.render_with(ctx, rect, &theme, &overlay);
         });
+        assert!(result.is_ok());
+    }
+
+    // ── MarginPolicy / TickCountPolicy (items 2 + 3) ────────────────────
+
+    #[test]
+    fn default_policies_match_the_pre_existing_constant() {
+        let figure = BoxplotFigure::new(vec!["a".to_owned()], vec![vec![1.0, 2.0, 3.0]]);
+        assert_eq!(figure.margin_policy, MarginPolicy::Measured);
+        assert_eq!(figure.y_tick_policy, TickCountPolicy::Fixed(TARGET_Y_TICKS));
+    }
+
+    #[test]
+    fn measured_margin_widens_for_a_deliberately_wide_y_label() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let samples = vec![vec![1.0, 500_000_000.0, 999_999_999.0, 2.0, 3.0]];
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+
+        let fixed = BoxplotFigure::new(vec!["a".to_owned()], samples.clone()).with_margin_policy(MarginPolicy::Fixed);
+        let measured = BoxplotFigure::new(vec!["a".to_owned()], samples).with_margin_policy(MarginPolicy::Measured);
+        let fixed_png = render_to_png(&spec, |ctx| fixed.render(ctx, rect, &theme)).expect("fixed render");
+        let measured_png = render_to_png(&spec, |ctx| measured.render(ctx, rect, &theme)).expect("measured render");
+        assert_ne!(fixed_png, measured_png, "Measured must render differently once a wide Y label would otherwise clip under Fixed");
+    }
+
+    #[test]
+    fn adaptive_y_tick_policy_renders_without_panicking() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let categories: Vec<String> = (0..3).map(|i| format!("group-{i}")).collect();
+        let samples: Vec<Vec<f64>> = (0..3).map(|g| (0..20).map(|i| (g * 10 + i) as f64).collect()).collect();
+        let figure = BoxplotFigure::new(categories, samples).with_y_tick_policy(TickCountPolicy::Adaptive { min: 2, max: 15 });
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 400, height_px: 300, dpr: 1.0, background: None };
+        let result = render_to_png(&spec, |ctx| figure.render(ctx, Rect::new(0.0, 0.0, 400.0, 300.0), &theme));
         assert!(result.is_ok());
     }
 }

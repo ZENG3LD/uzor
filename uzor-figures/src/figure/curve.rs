@@ -18,7 +18,7 @@ use uzor::render::RenderContext;
 use uzor::types::Rect;
 
 use crate::coord::PlotArea;
-use crate::figure::{FigureOverlay, YDomainPolicy};
+use crate::figure::{resolve_tick_count, FigureOverlay, MarginPolicy, TickCountPolicy, YDomainPolicy};
 use crate::guide::annotation::{draw_annotation_overlays, draw_annotation_underlays, Annotation};
 use crate::guide::axis::AxisTickWeightStyle;
 use crate::guide::grid::GridTickWeightStyle;
@@ -79,6 +79,15 @@ pub struct CurveFigure {
     /// This figure's own Y-domain zero-baseline policy — see
     /// [`CurveFigure::with_y_domain_policy`].
     y_domain_policy: YDomainPolicy,
+    /// This figure's own left-margin sizing policy — see
+    /// [`CurveFigure::with_margin_policy`].
+    margin_policy: MarginPolicy,
+    /// This figure's own X tick-count policy — see
+    /// [`CurveFigure::with_x_tick_policy`].
+    x_tick_policy: TickCountPolicy,
+    /// This figure's own Y tick-count policy — see
+    /// [`CurveFigure::with_y_tick_policy`].
+    y_tick_policy: TickCountPolicy,
 }
 
 impl CurveFigure {
@@ -106,6 +115,9 @@ impl CurveFigure {
             downsample_max: None,
             annotations: Vec::new(),
             y_domain_policy: YDomainPolicy::default(),
+            margin_policy: MarginPolicy::default(),
+            x_tick_policy: TickCountPolicy::Fixed(TARGET_X_TICKS),
+            y_tick_policy: TickCountPolicy::Fixed(TARGET_Y_TICKS),
         }
     }
 
@@ -190,6 +202,32 @@ impl CurveFigure {
         self
     }
 
+    /// Override this figure's left-margin sizing policy — see
+    /// [`MarginPolicy`]'s own docs. Default (unset) is
+    /// [`MarginPolicy::Measured`].
+    pub fn with_margin_policy(mut self, policy: MarginPolicy) -> Self {
+        self.margin_policy = policy;
+        self
+    }
+
+    /// Override this figure's X tick-count policy — see
+    /// [`TickCountPolicy`]'s own docs. Default (unset) is
+    /// `TickCountPolicy::Fixed(6)`, byte-identical to this figure's
+    /// pre-existing constant.
+    pub fn with_x_tick_policy(mut self, policy: TickCountPolicy) -> Self {
+        self.x_tick_policy = policy;
+        self
+    }
+
+    /// Override this figure's Y tick-count policy — see
+    /// [`TickCountPolicy`]'s own docs. Default (unset) is
+    /// `TickCountPolicy::Fixed(5)`, byte-identical to this figure's
+    /// pre-existing constant.
+    pub fn with_y_tick_policy(mut self, policy: TickCountPolicy) -> Self {
+        self.y_tick_policy = policy;
+        self
+    }
+
     /// The exact point set this figure draws AND hit-tests for `s` this
     /// render — LTTB-downsampled to [`CurveFigure::downsample_max`] when
     /// `s` exceeds that budget, borrowed verbatim otherwise (see
@@ -213,7 +251,11 @@ impl CurveFigure {
         self.series
             .iter()
             .enumerate()
-            .map(|(i, s)| LegendEntry { label: s.name.clone(), color: theme.palette[i % theme.palette.len()].clone() })
+            .map(|(i, s)| LegendEntry {
+                label: s.name.clone(),
+                color: theme.palette[i % theme.palette.len()].clone(),
+                symbol: crate::guide::legend::LegendSymbol::Line,
+            })
             .collect()
     }
 
@@ -237,8 +279,14 @@ impl CurveFigure {
     /// (design law #1: one transform, shared, never recomputed
     /// independently elsewhere).
     ///
-    /// **Does not account for a legend** — same ctx-less-accessor
-    /// reasoning documented on [`crate::figure::BarFigure::plot_area`].
+    /// **Does not account for a legend, nor for [`MarginPolicy::Measured`]
+    /// widening the left margin past [`MARGIN_LEFT`]** — same
+    /// ctx-less-accessor reasoning documented on
+    /// [`crate::figure::BarFigure::plot_area`] (both need live text
+    /// metrics from a real `&mut dyn RenderContext`, which this accessor
+    /// doesn't have). `render_with` measures + widens the SAME base rect
+    /// internally via its own `ctx`, so this figure's own hover/tooltip
+    /// stay mutually consistent within one `render_with` call regardless.
     pub fn plot_area(&self, rect: Rect) -> PlotArea {
         PlotArea::new(self.base_plot_rect(rect))
     }
@@ -301,13 +349,31 @@ impl CurveFigure {
         ctx.set_fill_color(&theme.background);
         ctx.fill_rect(rect.x, rect.y, rect.width, rect.height);
 
-        let base_rect = self.base_plot_rect(rect);
+        // Resolve this render's own left margin + tick counts BEFORE
+        // building the plot rect (`MarginPolicy::Measured`/
+        // `TickCountPolicy::Adaptive` both need the plot's own geometry,
+        // but neither depends on anything the plot rect itself depends on
+        // beyond the fixed constants below — never circular). `y_scale`
+        // is `Copy` (`LinearScale`), so computing it once here and reusing
+        // it below costs nothing extra.
+        let y_scale_for_layout = self.y_scale();
+        let title_h = if self.title.is_some() { TITLE_HEIGHT } else { 0.0 };
+        let plot_height_estimate = (rect.height - title_h - MARGIN_BOTTOM).max(0.0);
+        let target_y_ticks = resolve_tick_count(self.y_tick_policy, plot_height_estimate);
+        let margin_left = match (&y_scale_for_layout, self.margin_policy) {
+            (Some(y_scale), MarginPolicy::Measured) => MARGIN_LEFT.max(axis::measure_y_axis_gutter(ctx, y_scale, theme, target_y_ticks)),
+            _ => MARGIN_LEFT,
+        };
+        let plot_width_estimate = (rect.width - margin_left - MARGIN_RIGHT).max(0.0);
+        let target_x_ticks = resolve_tick_count(self.x_tick_policy, plot_width_estimate);
+
+        let base_rect = Rect::new(rect.x + margin_left, rect.y + title_h, plot_width_estimate, plot_height_estimate);
         let legend_position = self.resolved_legend_position();
         let legend_entries = if legend_position.is_some() { self.legend_entries(theme) } else { Vec::new() };
 
         let (plot_rect, legend_rect) = match legend_position {
             Some(pos) if !legend_entries.is_empty() => {
-                let size = legend::measure_legend(ctx, theme, &legend_entries, pos, base_rect.width);
+                let size = legend::measure_legend(ctx, theme, &legend_entries, pos, base_rect.width, base_rect.height);
                 match pos {
                     LegendPosition::Top => {
                         let reserved = size.height + LEGEND_GAP;
@@ -347,7 +413,7 @@ impl CurveFigure {
             (None, None) => None,
         };
 
-        if let (Some(x_scale), Some(y_scale)) = (x_scale, self.y_scale()) {
+        if let (Some(x_scale), Some(y_scale)) = (x_scale, y_scale_for_layout) {
             // Weighted entry points: a real render-output change ONLY when
             // `x_scale` is a `TimeScale` (`Scale::tick_weight` reports
             // `Some`) — every other X scale (the auto-computed
@@ -356,8 +422,8 @@ impl CurveFigure {
             // own regression tests for the proof. Closes the "TimeScale's
             // tested tick-weight hierarchy never reaches the shared axis/
             // grid guides" audit finding for this figure's own X axis.
-            grid::draw_x_grid_weighted(ctx, &area, x_scale, theme, TARGET_X_TICKS, &GridTickWeightStyle::default());
-            grid::draw_y_grid(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
+            grid::draw_x_grid_weighted(ctx, &area, x_scale, theme, target_x_ticks, &GridTickWeightStyle::default());
+            grid::draw_y_grid(ctx, &area, &y_scale, theme, target_y_ticks);
 
             // Annotation FILLS (the only underlay: `HBand`'s own shaded
             // rect) paint UNDER the series — the typical "shaded zone sits
@@ -386,8 +452,8 @@ impl CurveFigure {
 
             draw_annotation_overlays(ctx, &area, x_scale, &y_scale, theme, &self.annotations);
 
-            axis::draw_x_axis_weighted(ctx, &area, x_scale, theme, TARGET_X_TICKS, &AxisTickWeightStyle::default());
-            axis::draw_y_axis(ctx, &area, &y_scale, theme, TARGET_Y_TICKS);
+            axis::draw_x_axis_weighted(ctx, &area, x_scale, theme, target_x_ticks, &AxisTickWeightStyle::default());
+            axis::draw_y_axis(ctx, &area, &y_scale, theme, target_y_ticks);
 
             if let Some((hx, hy)) = overlay.hover_px {
                 if hit::hit_zone(&area, hx, hy) == HitZone::Plot {
@@ -415,7 +481,7 @@ impl CurveFigure {
                         // (e.g. TimeScale, whose domain is Unix seconds; a
                         // raw-timestamp tooltip label was a known Phase B
                         // gap, closed by `TimeScale`'s own override).
-                        let y_step = nice_step(y_scale.max - y_scale.min, TARGET_Y_TICKS as f64);
+                        let y_step = nice_step(y_scale.max - y_scale.min, target_y_ticks as f64);
                         let mut lines = vec![("x".to_owned(), x_scale.format_value(data_x))];
                         if self.series.len() > 1 {
                             lines.push(("series".to_owned(), self.series[si].name.clone()));
@@ -561,5 +627,85 @@ mod tests {
             figure.render_with(ctx, rect, &theme, &overlay);
         });
         assert!(result.is_ok());
+    }
+
+    // ── MarginPolicy / TickCountPolicy (items 2 + 3) ────────────────────
+
+    #[test]
+    fn default_margin_policy_is_measured_and_default_tick_policies_match_the_pre_existing_constants() {
+        let figure = CurveFigure::new(vec![(0.0, 0.0), (1.0, 1.0)]);
+        assert_eq!(figure.margin_policy, MarginPolicy::Measured);
+        assert_eq!(figure.x_tick_policy, TickCountPolicy::Fixed(TARGET_X_TICKS));
+        assert_eq!(figure.y_tick_policy, TickCountPolicy::Fixed(TARGET_Y_TICKS));
+    }
+
+    #[test]
+    fn measured_margin_renders_byte_identically_to_fixed_for_ordinary_short_labels() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let points = vec![(0.0, 1.0), (1.0, 5.0), (2.0, 3.0), (3.0, 8.0)];
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+
+        let fixed = CurveFigure::new(points.clone()).with_margin_policy(MarginPolicy::Fixed);
+        let measured = CurveFigure::new(points).with_margin_policy(MarginPolicy::Measured);
+        let fixed_png = render_to_png(&spec, |ctx| fixed.render(ctx, rect, &theme)).expect("fixed render");
+        let measured_png = render_to_png(&spec, |ctx| measured.render(ctx, rect, &theme)).expect("measured render");
+        assert_eq!(fixed_png, measured_png, "Measured must not change output when short Y labels already fit the fixed margin");
+    }
+
+    #[test]
+    fn measured_margin_widens_and_shifts_the_plot_for_a_deliberately_wide_y_label() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        // A huge value forces a wide formatted tick label (many grouped
+        // digits) that would not fit the pre-existing fixed MARGIN_LEFT.
+        let points = vec![(0.0, 1.0), (1.0, 999_999_999.0)];
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+
+        let fixed = CurveFigure::new(points.clone()).with_margin_policy(MarginPolicy::Fixed);
+        let measured = CurveFigure::new(points).with_margin_policy(MarginPolicy::Measured);
+        let fixed_png = render_to_png(&spec, |ctx| fixed.render(ctx, rect, &theme)).expect("fixed render");
+        let measured_png = render_to_png(&spec, |ctx| measured.render(ctx, rect, &theme)).expect("measured render");
+        assert_ne!(fixed_png, measured_png, "Measured must render differently once a wide Y label would otherwise clip under Fixed");
+    }
+
+    #[test]
+    fn adaptive_tick_policy_requests_more_ticks_for_a_wider_plot() {
+        assert_eq!(
+            crate::figure::resolve_tick_count(TickCountPolicy::Fixed(6), 100.0),
+            6,
+            "Fixed must ignore available_px entirely"
+        );
+        let narrow = crate::figure::resolve_tick_count(TickCountPolicy::Adaptive { min: 2, max: 20 }, 140.0);
+        let wide = crate::figure::resolve_tick_count(TickCountPolicy::Adaptive { min: 2, max: 20 }, 1400.0);
+        assert!(wide > narrow, "a wider plot must resolve to MORE adaptive ticks (narrow={narrow}, wide={wide})");
+    }
+
+    #[test]
+    fn adaptive_tick_policy_renders_without_panicking_and_a_default_fixed_render_stays_unaffected() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let points: Vec<(f64, f64)> = (0..50).map(|i| (i as f64, (i as f64 * 1.7).sin() * 10.0 + 20.0)).collect();
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 600, height_px: 300, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 600.0, 300.0);
+
+        let fixed_default = CurveFigure::new(points.clone());
+        let adaptive = CurveFigure::new(points.clone())
+            .with_x_tick_policy(TickCountPolicy::Adaptive { min: 2, max: 30 })
+            .with_y_tick_policy(TickCountPolicy::Adaptive { min: 2, max: 30 });
+
+        let default_png = render_to_png(&spec, |ctx| fixed_default.render(ctx, rect, &theme)).expect("default render");
+        let adaptive_result = render_to_png(&spec, |ctx| adaptive.render(ctx, rect, &theme));
+        assert!(adaptive_result.is_ok(), "an adaptive tick policy must render without panicking");
+
+        // A plain `CurveFigure::new` (Fixed at the pre-existing constants)
+        // must be completely unaffected by this item's own new fields.
+        let unaffected_png = render_to_png(&spec, |ctx| CurveFigure::new(points).render(ctx, rect, &theme)).expect("render");
+        assert_eq!(default_png, unaffected_png);
     }
 }

@@ -112,6 +112,213 @@ pub(crate) fn resolve_tick_style(weight: Option<TickMarkWeight>, style: &AxisTic
     }
 }
 
+/// Measure the pixel gutter a Y axis over `scale` (drawn via
+/// [`draw_y_axis`]) actually needs — `TICK_LENGTH + LABEL_GAP` plus the
+/// widest generated tick label's own measured text width. A figure under
+/// [`crate::figure::MarginPolicy::Measured`] widens its own fixed left
+/// margin to `max(fixed, this)` so a label can never draw past the plot
+/// rect's own left edge (the audit's own B2 finding: [`draw_y_axis`]
+/// draws every label right-aligned with NO width check against the
+/// margin reserved for it). Empty `scale.ticks(target_ticks)` measures to
+/// `0.0` (nothing to reserve).
+pub fn measure_y_axis_gutter(ctx: &mut dyn RenderContext, scale: &dyn Scale, theme: &FigureTheme, target_ticks: usize) -> f64 {
+    let ticks = scale.ticks(target_ticks);
+    if ticks.is_empty() {
+        return 0.0;
+    }
+    ctx.set_font(&theme.label_font);
+    let widest = ticks.iter().map(|t| ctx.measure_text(&t.label)).fold(0.0_f64, f64::max);
+    TICK_LENGTH + LABEL_GAP + widest
+}
+
+/// Axis bounding-box `(width, height)` of a `width` x `height` label
+/// rectangle rotated by `degrees` around its own anchor — the standard
+/// AABB-of-a-rotated-rectangle formula, used by [`LabelOverflow::Rotate`]/
+/// `Auto`'s own margin sizing ([`measure_rotated_x_axis_gutter`]) and unit
+/// tested in isolation from any render call.
+pub fn rotated_label_extent(width: f64, height: f64, degrees: f64) -> (f64, f64) {
+    let (s, c) = degrees.to_radians().sin_cos();
+    ((width * c).abs() + (height * s).abs(), (width * s).abs() + (height * c).abs())
+}
+
+/// How [`draw_x_axis_overflow`] handles a tick label that would collide
+/// with its neighbor under the plain greedy left-to-right skip
+/// [`draw_x_axis`] always uses — see this module's own top-level doc
+/// comment for that skip's exact rule. A `BarFigure`/`HistogramFigure`
+/// X-axis with many categories or long category names silently drops
+/// most of its own labels under that rule with no fallback — the audit's
+/// own B4 finding.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum LabelOverflow {
+    /// DEFAULT — reproduces [`draw_x_axis`]'s own greedy-skip rule exactly
+    /// (a colliding label is dropped, never crowded).
+    #[default]
+    Skip,
+    /// Rotate EVERY tick label by `degrees` (matching
+    /// [`uzor::render::RenderContext::rotate`]'s own sign convention)
+    /// around its own tick anchor instead of skipping a colliding one —
+    /// via `ctx.save()`/`translate()`/`rotate()`/`restore()` (already
+    /// exposed by [`RenderContext`], never called from this module before
+    /// this item). A rotated label's own horizontal footprint shrinks
+    /// (see [`rotated_label_extent`]), so every label draws — no
+    /// collision skip needed.
+    Rotate(f64),
+    /// Try the plain greedy-skip pass first (via a dry run, not an actual
+    /// draw); if it would drop more than [`AUTO_ROTATE_DROP_THRESHOLD`] of
+    /// the tick set, rotate the WHOLE axis at [`AUTO_ROTATE_DEGREES`]
+    /// instead. A caller wanting an exact angle should use
+    /// [`LabelOverflow::Rotate`] directly.
+    Auto,
+}
+
+/// The rotation angle (degrees) [`LabelOverflow::Auto`] falls back to when
+/// the plain greedy-skip pass would drop too many labels — exported so a
+/// caller sizing its own bottom margin for `Auto` (which cannot know in
+/// advance whether a rotate will actually trigger — see
+/// [`measure_rotated_x_axis_gutter`]'s own doc comment) can reserve
+/// against the SAME angle this module resolves to.
+pub const AUTO_ROTATE_DEGREES: f64 = 45.0;
+
+/// The fraction of ticks the plain greedy-skip pass must drop before
+/// [`LabelOverflow::Auto`] switches to a rotated draw.
+pub const AUTO_ROTATE_DROP_THRESHOLD: f64 = 0.5;
+
+/// Extra bottom-margin (px) an X axis over `scale` needs to fit its OWN
+/// widest tick label rotated by `degrees` — [`measure_y_axis_gutter`]'s
+/// bottom-axis counterpart, used by a figure sizing its own `MARGIN_BOTTOM`
+/// under [`LabelOverflow::Rotate`]/`Auto`.
+///
+/// For [`LabelOverflow::Auto`] specifically: since whether a rotate
+/// actually triggers depends on the plot's own rendered width (only known
+/// once the margin itself is already committed — a chicken-and-egg a
+/// figure's own margin-sizing pass cannot resolve), a figure reserves
+/// this SAME rotated extent conservatively whenever `Auto` is configured,
+/// regardless of whether the eventual draw ends up rotating or not.
+/// Reserving slightly more than strictly needed is a harmless, safe
+/// over-allocation; reserving too little (assuming `Auto` will never
+/// rotate) risks the exact clipping this item exists to prevent.
+pub fn measure_rotated_x_axis_gutter(ctx: &mut dyn RenderContext, scale: &dyn Scale, theme: &FigureTheme, target_ticks: usize, degrees: f64) -> f64 {
+    let ticks = scale.ticks(target_ticks);
+    if ticks.is_empty() {
+        return 0.0;
+    }
+    ctx.set_font(&theme.label_font);
+    let widest_w = ticks.iter().map(|t| ctx.measure_text(&t.label)).fold(0.0_f64, f64::max);
+    let row_h = ticks.iter().map(|t| ctx.text_bounds(&t.label, &theme.label_font).h).fold(0.0_f64, f64::max).max(1.0);
+    let (_, rotated_h) = rotated_label_extent(widest_w, row_h, degrees);
+    TICK_LENGTH + LABEL_GAP + rotated_h + LABEL_GAP
+}
+
+/// Dry-run the plain greedy-skip pass over `ticks` (already positioned via
+/// `area`/`scale`) and return the fraction that would be DROPPED — shared
+/// by [`draw_x_axis_overflow`]'s own [`LabelOverflow::Auto`] branch. Reads
+/// `ctx.measure_text` only (no drawing), so it's safe to call before
+/// committing to a final draw pass.
+fn greedy_skip_drop_fraction(ctx: &mut dyn RenderContext, area: &PlotArea, scale: &dyn Scale, ticks: &[Tick]) -> f64 {
+    if ticks.is_empty() {
+        return 0.0;
+    }
+    let mut drawn = 0usize;
+    let mut last_label_right = f64::MIN;
+    for tick in ticks {
+        let x = area.x(scale, tick.value);
+        let half_w = ctx.measure_text(&tick.label) / 2.0;
+        if x - half_w < last_label_right + LABEL_GAP {
+            continue;
+        }
+        drawn += 1;
+        last_label_right = x + half_w;
+    }
+    1.0 - (drawn as f64 / ticks.len() as f64)
+}
+
+/// Same as [`draw_x_axis`], but resolves per-label collision through
+/// `overflow` instead of always skipping — see [`LabelOverflow`]'s own
+/// docs. [`LabelOverflow::Skip`] (the default) renders byte-identically
+/// to [`draw_x_axis`].
+pub fn draw_x_axis_overflow(ctx: &mut dyn RenderContext, area: &PlotArea, scale: &dyn Scale, theme: &FigureTheme, target_ticks: usize, overflow: LabelOverflow) {
+    let ticks = scale.ticks(target_ticks);
+    if ticks.is_empty() {
+        return;
+    }
+
+    let axis_y = area.rect.bottom();
+    ctx.set_stroke_color(&theme.axis_color);
+    ctx.set_stroke_width(1.0);
+    ctx.set_line_dash(&[]);
+    ctx.begin_path();
+    ctx.move_to(area.rect.x, axis_y);
+    ctx.line_to(area.rect.right(), axis_y);
+    ctx.stroke();
+
+    ctx.set_font(&theme.label_font);
+
+    let rotate_degrees = match overflow {
+        LabelOverflow::Skip => None,
+        LabelOverflow::Rotate(degrees) => Some(degrees),
+        LabelOverflow::Auto => {
+            if greedy_skip_drop_fraction(ctx, area, scale, &ticks) > AUTO_ROTATE_DROP_THRESHOLD {
+                Some(AUTO_ROTATE_DEGREES)
+            } else {
+                None
+            }
+        }
+    };
+
+    match rotate_degrees {
+        None => {
+            // Byte-identical to `draw_x_axis`'s own greedy-skip loop.
+            ctx.set_text_align(TextAlign::Center);
+            ctx.set_text_baseline(TextBaseline::Top);
+            let mut last_label_right = f64::MIN;
+            for tick in &ticks {
+                let x = area.x(scale, tick.value);
+                ctx.set_stroke_color(&theme.axis_color);
+                ctx.begin_path();
+                ctx.move_to(x, axis_y);
+                ctx.line_to(x, axis_y + TICK_LENGTH);
+                ctx.stroke();
+                let half_w = ctx.measure_text(&tick.label) / 2.0;
+                if x - half_w < last_label_right + LABEL_GAP {
+                    continue;
+                }
+                ctx.set_fill_color(&theme.label_color);
+                ctx.fill_text(&tick.label, x, axis_y + TICK_LENGTH + LABEL_GAP);
+                last_label_right = x + half_w;
+            }
+        }
+        Some(degrees) => {
+            // Every label rotates, anchored at its own tick x — no
+            // collision skip needed (see `LabelOverflow::Rotate`'s own
+            // doc comment).
+            // Anchor at the label's own TOP-RIGHT corner (`Right` align +
+            // `Top` baseline, both evaluated in the LOCAL pre-rotation
+            // frame) — after the `-degrees` rotation this corner sits
+            // closest to the tick, with the rest of the label swinging
+            // down and to the left, entirely BELOW `axis_y` (never
+            // overlapping the plot's own baseline/gridline). The
+            // conventional D3/Chart.js rotated-tick-label anchor.
+            ctx.set_text_align(TextAlign::Right);
+            ctx.set_text_baseline(TextBaseline::Top);
+            for tick in &ticks {
+                let x = area.x(scale, tick.value);
+                ctx.set_stroke_color(&theme.axis_color);
+                ctx.begin_path();
+                ctx.move_to(x, axis_y);
+                ctx.line_to(x, axis_y + TICK_LENGTH);
+                ctx.stroke();
+
+                ctx.save();
+                ctx.translate(x, axis_y + TICK_LENGTH + LABEL_GAP);
+                ctx.rotate(-degrees.to_radians());
+                ctx.set_fill_color(&theme.label_color);
+                ctx.fill_text(&tick.label, 0.0, 0.0);
+                ctx.restore();
+            }
+        }
+    }
+}
+
 /// Best-effort tick "step" derived from the first two ticks — same
 /// "derive a display step from the scale's own ticks" convention
 /// [`Scale::format_value`]'s default impl and [`crate::guide::crosshair`]'s
@@ -468,5 +675,143 @@ mod tests {
         let spec = ExportSpec { width_px: 600, height_px: 250, dpr: 1.0, background: None };
         let result = render_to_png(&spec, |ctx| draw_x_axis_weighted(ctx, &area(), &scale, &theme, 6, &style));
         assert!(result.is_ok());
+    }
+
+    // ── Measured Y-axis gutter (item 2) ─────────────────────────────────
+
+    #[test]
+    fn measure_y_axis_gutter_grows_for_a_deliberately_wide_label() {
+        let theme = FigureTheme::dark();
+        let narrow_scale = LinearScale::new(0.0, 9.0);
+        let wide_scale = LinearScale::new(0.0, 999_999_999.0);
+        let spec = ExportSpec { width_px: 10, height_px: 10, dpr: 1.0, background: None };
+        let mut narrow_gutter = 0.0_f64;
+        let mut wide_gutter = 0.0_f64;
+        render_to_png(&spec, |ctx| {
+            narrow_gutter = measure_y_axis_gutter(ctx, &narrow_scale, &theme, 5);
+            wide_gutter = measure_y_axis_gutter(ctx, &wide_scale, &theme, 5);
+        })
+        .expect("render");
+        assert!(wide_gutter > narrow_gutter, "a wider tick label must measure a larger gutter (narrow={narrow_gutter}, wide={wide_gutter})");
+    }
+
+    #[test]
+    fn measure_y_axis_gutter_is_zero_for_an_empty_tick_set() {
+        let theme = FigureTheme::dark();
+        let band = crate::scale::BandScale::new(Vec::new(), 0.1);
+        let spec = ExportSpec { width_px: 10, height_px: 10, dpr: 1.0, background: None };
+        let mut gutter = -1.0_f64;
+        render_to_png(&spec, |ctx| gutter = measure_y_axis_gutter(ctx, &band, &theme, 5)).expect("render");
+        assert_eq!(gutter, 0.0);
+    }
+
+    // ── Rotated label extent + overflow (item 4) ────────────────────────
+
+    #[test]
+    fn rotated_label_extent_at_zero_degrees_is_the_original_box() {
+        let (w, h) = rotated_label_extent(40.0, 12.0, 0.0);
+        assert!((w - 40.0).abs() < 1e-9);
+        assert!((h - 12.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rotated_label_extent_at_ninety_degrees_swaps_width_and_height() {
+        let (w, h) = rotated_label_extent(40.0, 12.0, 90.0);
+        assert!((w - 12.0).abs() < 1e-6);
+        assert!((h - 40.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rotated_label_extent_at_forty_five_degrees_is_narrower_than_the_full_width() {
+        let (w, _h) = rotated_label_extent(40.0, 12.0, 45.0);
+        assert!(w < 40.0, "a 45-degree rotation must reduce the label's own horizontal footprint below its unrotated width");
+    }
+
+    #[test]
+    fn draw_x_axis_overflow_skip_renders_byte_identical_to_draw_x_axis() {
+        let theme = FigureTheme::dark();
+        let scale = LinearScale::new(0.0, 1_000.0);
+        let spec = ExportSpec { width_px: 400, height_px: 200, dpr: 1.0, background: None };
+        let plain = render_to_png(&spec, |ctx| draw_x_axis(ctx, &area(), &scale, &theme, 6)).expect("plain render");
+        let overflow = render_to_png(&spec, |ctx| draw_x_axis_overflow(ctx, &area(), &scale, &theme, 6, LabelOverflow::Skip)).expect("overflow render");
+        assert_eq!(plain, overflow, "LabelOverflow::Skip must render byte-identically to draw_x_axis");
+    }
+
+    #[test]
+    fn draw_x_axis_overflow_rotate_renders_without_panicking_and_differs_from_skip() {
+        let theme = FigureTheme::dark();
+        // Long category-like labels over a narrow band so the plain
+        // greedy-skip pass would drop most of them.
+        let categories: Vec<String> = (0..12).map(|i| format!("category-name-{i}")).collect();
+        let band = crate::scale::BandScale::new(categories, 0.1);
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let skip = render_to_png(&spec, |ctx| draw_x_axis_overflow(ctx, &area(), &band, &theme, band.len(), LabelOverflow::Skip)).expect("skip render");
+        let rotated =
+            render_to_png(&spec, |ctx| draw_x_axis_overflow(ctx, &area(), &band, &theme, band.len(), LabelOverflow::Rotate(45.0))).expect("rotate render");
+        assert_ne!(rotated, skip, "a rotated draw must render visibly differently from the plain skip draw");
+    }
+
+    #[test]
+    fn draw_x_axis_overflow_auto_rotates_when_labels_would_mostly_collide() {
+        let theme = FigureTheme::dark();
+        let categories: Vec<String> = (0..12).map(|i| format!("category-name-{i}")).collect();
+        let band = crate::scale::BandScale::new(categories, 0.1);
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let auto = render_to_png(&spec, |ctx| draw_x_axis_overflow(ctx, &area(), &band, &theme, band.len(), LabelOverflow::Auto)).expect("auto render");
+        let rotated =
+            render_to_png(&spec, |ctx| draw_x_axis_overflow(ctx, &area(), &band, &theme, band.len(), LabelOverflow::Rotate(AUTO_ROTATE_DEGREES))).expect("rotate render");
+        assert_eq!(auto, rotated, "Auto must fall back to Rotate(AUTO_ROTATE_DEGREES) when most labels would collide");
+    }
+
+    #[test]
+    fn draw_x_axis_overflow_auto_matches_skip_when_labels_comfortably_fit() {
+        let theme = FigureTheme::dark();
+        let scale = LinearScale::new(0.0, 5.0);
+        let spec = ExportSpec { width_px: 600, height_px: 200, dpr: 1.0, background: None };
+        let auto = render_to_png(&spec, |ctx| draw_x_axis_overflow(ctx, &area(), &scale, &theme, 5, LabelOverflow::Auto)).expect("auto render");
+        let skip = render_to_png(&spec, |ctx| draw_x_axis_overflow(ctx, &area(), &scale, &theme, 5, LabelOverflow::Skip)).expect("skip render");
+        assert_eq!(auto, skip, "Auto must resolve to the plain skip draw when few, short labels already fit");
+    }
+
+    #[test]
+    fn measure_rotated_x_axis_gutter_grows_with_the_rotation_angle_up_to_ninety_degrees() {
+        let theme = FigureTheme::dark();
+        let categories: Vec<String> = (0..3).map(|i| format!("category-name-{i}")).collect();
+        let band = crate::scale::BandScale::new(categories, 0.1);
+        let spec = ExportSpec { width_px: 10, height_px: 10, dpr: 1.0, background: None };
+        let mut flat = 0.0_f64;
+        let mut rotated = 0.0_f64;
+        render_to_png(&spec, |ctx| {
+            flat = measure_rotated_x_axis_gutter(ctx, &band, &theme, band.len(), 0.0);
+            rotated = measure_rotated_x_axis_gutter(ctx, &band, &theme, band.len(), 90.0);
+        })
+        .expect("render");
+        assert!(rotated > flat, "a 90-degree rotated gutter must reserve more height than an unrotated (0-degree) one");
+    }
+
+    /// The item's own explicit gate: a figure sizing its bottom margin
+    /// under `LabelOverflow::Rotate(45.0)` (the actual angle used by
+    /// `BarFigure`/`HistogramFigure`'s own before/after proof) must
+    /// reserve MORE height than the flat `TICK_LENGTH + LABEL_GAP`
+    /// baseline every unrotated axis reserves — so a rotated label's own
+    /// bounding box never overflows past a margin sized as if it were
+    /// still horizontal.
+    #[test]
+    fn measure_rotated_x_axis_gutter_at_forty_five_degrees_exceeds_the_unrotated_baseline() {
+        let theme = FigureTheme::dark();
+        let categories: Vec<String> = (0..8).map(|i| format!("category-{i}")).collect();
+        let band = crate::scale::BandScale::new(categories, 0.1);
+        let spec = ExportSpec { width_px: 10, height_px: 10, dpr: 1.0, background: None };
+        let mut unrotated_baseline = 0.0_f64;
+        let mut rotated_45 = 0.0_f64;
+        render_to_png(&spec, |ctx| {
+            unrotated_baseline = TICK_LENGTH + LABEL_GAP;
+            rotated_45 = measure_rotated_x_axis_gutter(ctx, &band, &theme, band.len(), 45.0);
+        })
+        .expect("render");
+        assert!(
+            rotated_45 > unrotated_baseline,
+            "a 45-degree rotated gutter ({rotated_45}) must reserve more height than the flat unrotated baseline ({unrotated_baseline})"
+        );
     }
 }

@@ -61,6 +61,9 @@ pub fn hit_zone(area: &PlotArea, x: f64, y: f64) -> HitZone {
 pub fn nearest_point_x(area: &PlotArea, xscale: &dyn Scale, yscale: &dyn Scale, points: &[(f64, f64)], px: f64) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (i, &(dx, dy)) in points.iter().enumerate() {
+        if !dx.is_finite() || !dy.is_finite() {
+            continue; // a missing (NaN/±inf) sample was never actually drawn — see mark::GapPolicy
+        }
         let screen_y = area.y(yscale, dy);
         if screen_y < area.rect.y - 1e-6 || screen_y > area.rect.bottom() + 1e-6 {
             continue;
@@ -104,6 +107,9 @@ pub fn bar_index_at(area: &PlotArea, band: &BandScale, px: f64) -> Option<usize>
 pub fn nearest_point_xy(area: &PlotArea, xscale: &dyn Scale, yscale: &dyn Scale, points: &[(f64, f64)], px: f64, py: f64) -> Option<usize> {
     let mut best: Option<(usize, f64)> = None;
     for (i, &(dx, dy)) in points.iter().enumerate() {
+        if !dx.is_finite() || !dy.is_finite() {
+            continue; // a missing (NaN/±inf) sample was never actually drawn — see mark::GapPolicy
+        }
         let sx = area.x(xscale, dx);
         let sy = area.y(yscale, dy);
         let dist = ((sx - px).powi(2) + (sy - py).powi(2)).sqrt();
@@ -125,6 +131,9 @@ pub fn nearest_point_x_multi(area: &PlotArea, xscale: &dyn Scale, yscale: &dyn S
     let mut best: Option<(usize, usize, f64)> = None;
     for (si, points) in series.iter().enumerate() {
         for (pi, &(dx, dy)) in points.iter().enumerate() {
+            if !dx.is_finite() || !dy.is_finite() {
+                continue; // a missing (NaN/±inf) sample was never actually drawn — see mark::GapPolicy
+            }
             let screen_y = area.y(yscale, dy);
             if screen_y < area.rect.y - 1e-6 || screen_y > area.rect.bottom() + 1e-6 {
                 continue;
@@ -294,6 +303,43 @@ mod tests {
         let xscale = LinearScale::new(0.0, 20.0);
         let yscale = LinearScale::new(0.0, 10.0);
         assert_eq!(nearest_point_xy(&a, &xscale, &yscale, &[], 50.0, 50.0), None);
+    }
+
+    #[test]
+    fn nearest_point_x_skips_a_non_finite_sample_instead_of_corrupting_the_distance_comparison() {
+        // A NaN sample first in the array must never "win" the greedy
+        // `best.map_or(true, ...)` comparison (every subsequent `dist <
+        // NaN` compares false, which would otherwise pin the NaN
+        // candidate forever) — the real bug B1 names.
+        let a = PlotArea::new(Rect::new(0.0, 0.0, 200.0, 100.0));
+        let xscale = LinearScale::new(0.0, 20.0);
+        let yscale = LinearScale::new(0.0, 10.0);
+        let points = [(f64::NAN, f64::NAN), (10.0, 5.0), (0.0, 0.0)];
+        let px = a.x(&xscale, 10.0);
+        assert_eq!(nearest_point_x(&a, &xscale, &yscale, &points, px), Some(1), "the finite nearest point must win, never the leading NaN");
+    }
+
+    #[test]
+    fn nearest_point_xy_skips_non_finite_samples() {
+        let a = PlotArea::new(Rect::new(0.0, 0.0, 200.0, 100.0));
+        let xscale = LinearScale::new(0.0, 20.0);
+        let yscale = LinearScale::new(0.0, 10.0);
+        let points = [(f64::NAN, f64::NAN), (10.0, 5.0)];
+        let px = a.x(&xscale, 10.0);
+        let py = a.y(&yscale, 5.0);
+        assert_eq!(nearest_point_xy(&a, &xscale, &yscale, &points, px, py), Some(1));
+    }
+
+    #[test]
+    fn nearest_point_x_multi_skips_non_finite_samples_across_series() {
+        let a = PlotArea::new(Rect::new(0.0, 0.0, 200.0, 100.0));
+        let xscale = LinearScale::new(0.0, 20.0);
+        let yscale = LinearScale::new(0.0, 10.0);
+        let series_a: Vec<(f64, f64)> = vec![(f64::NAN, f64::NAN), (0.0, 0.0)];
+        let series_b: Vec<(f64, f64)> = vec![(10.0, 5.0)];
+        let series: Vec<&[(f64, f64)]> = vec![&series_a, &series_b];
+        let px = a.x(&xscale, 10.0);
+        assert_eq!(nearest_point_x_multi(&a, &xscale, &yscale, &series, px), Some((1, 0)));
     }
 
     #[test]
