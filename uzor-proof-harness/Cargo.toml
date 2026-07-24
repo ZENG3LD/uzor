@@ -1,0 +1,23 @@
+[package]
+name = "uzor-proof-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Dev-only multi-backend (tiny-skia / vello-cpu / urx-cpu) headless proof-render harness: drives one RenderContext-driven draw closure through all three CPU rasterizer families, reports pairwise pixel-diff fractions, and writes a labelled side-by-side composite PNG. Promoted out of uzor-examples/src/parity_harness.rs (URX Wave 6) so any publish = false engine crate (uzor-figures first) can reach it as a dev-dependency without adding a runtime dependency to its own [dependencies]."
+publish = false
+
+[dependencies]
+uzor = { workspace = true }
+uzor-render-tiny-skia = { workspace = true }
+uzor-render-vello-cpu = { workspace = true }
+uzor-render-urx = { workspace = true }
+uzor-urx-core = { workspace = true }
+# `glyph` — without it `uzor-urx-cpu`'s `DrawCommand::GlyphRun` arm
+# silently no-ops (uzor-urx-cpu/src/backend.rs:111-115,147) and
+# unrotated text would render as ENTIRELY MISSING on the urx-cpu leg —
+# a harness misconfiguration masquerading as a real backend defect, not
+# an actual divergence finding.
+uzor-urx-cpu = { workspace = true, features = ["glyph"] }
+png = "0.17"

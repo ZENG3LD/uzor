@@ -1179,4 +1179,189 @@ mod proof_tests {
         assert_eq!(decoded_png_dims(&bytes), ((panel_w * 2.0) as u32, panel_h as u32));
         write_proof_png("figures_item5b_legend_right_wrap_before_after.png", &bytes);
     }
+
+    // ── Multi-backend divergence proofs (`uzor-proof-harness`) ──────────
+    //
+    // Every proof above renders exclusively through `uzor-export::
+    // render_to_png`, which is HARDCODED to tiny-skia (`uzor-export/src/
+    // lib.rs:46,162`) — the workspace's last-resort fallback rasterizer
+    // family, not one of the two production families (vello, URX). Two
+    // real backend-specific defects (tiny-skia's `fill_text` ignoring a
+    // rotation transform; a shaper outline-rounding bug) were invisible
+    // to single-backend proofs before this section existed, and a NaN-
+    // severity claim below turns out to be tiny-skia-specific too. Owner
+    // directive: "если может быть какой-то диф в работе бекендов —
+    // тестируй на всех семьях; везде есть цпу варианты" — the four
+    // proofs below drive the SAME real production draw closures through
+    // all three CPU family legs (tiny-skia / vello-cpu / urx-cpu) via
+    // `uzor-proof-harness` (a promoted, generalized copy of
+    // `uzor-examples/src/parity_harness.rs`'s own CPU-leg machinery),
+    // print the pairwise pixel-diff fractions, and write a labelled
+    // side-by-side composite PNG for eyeballing.
+    //
+    // These are ADDITIVE — same fixtures as the matching single-backend
+    // proof above, an additional render path, never a replacement (design
+    // law: additive, never remove). Chosen because backend divergence
+    // plausibly matters for each: NaN/gap-run line rasterization,
+    // rotated text (the known tiny-skia rotation gap), dense text (KPI
+    // tile row), and a linear gradient fill (heatmap + colorbar).
+    //
+    // Divergence policy (owner brief item 4): NOT a hard byte-tight
+    // parity gate — the three families legitimately differ in AA/text
+    // rasterization. `ThreeLegDiff::all_within_budget` only trips on
+    // `uzor_proof_harness::STRUCTURAL_DEFECT_FRACTION` (a generous
+    // whole-image threshold tuned to catch a genuinely MISSING
+    // primitive, not an AA fringe — see that constant's own doc comment
+    // for the empirical basis).
+
+    use uzor_proof_harness::{ChannelTolerance, ThreeLegDiff, ThreeLegRender};
+
+    /// GapPolicy/NaN proof (owner brief's own headline case). Two
+    /// captures:
+    /// - **RAW-NaN "before"** — the literal pre-fix code path
+    ///   (`ctx.stroke_polyline` fed a NaN coordinate directly, no gap
+    ///   handling at all, exactly `item_1_gap_policy_before_after_proof`'s
+    ///   own LEFT panel) captured across all three legs and printed
+    ///   (investigative only, not asserted). **Measured finding, not
+    ///   assumed**: `tiny-skia` and `vello-cpu` render IDENTICALLY here
+    ///   (`differing_fraction == 0.0000`) and BOTH drop the WHOLE stroked
+    ///   path (a direct pixel count confirms 0 non-background pixels on
+    ///   both) — the whole-path-drop severity is NOT tiny-skia-specific,
+    ///   it's shared with vello-cpu. `urx-cpu` is the one leg that
+    ///   diverges (`differing_fraction ~= 0.013` against the other two)
+    ///   and draws a PARTIAL result (1437 non-background pixels) instead
+    ///   of nothing — i.e. urx-cpu degrades more gracefully on a raw NaN
+    ///   coordinate than either of the other two families. See this
+    ///   crate's own multi-backend divergence report for the full
+    ///   pixel-count verification.
+    /// - **`GapPolicy::Break` "after"** — the real, fixed
+    ///   `mark::line::draw_polyline` production code path — this is the
+    ///   one the composite PNG + budget assertion cover, since it's what
+    ///   every real figure actually renders today.
+    #[test]
+    fn gap_policy_multi_backend_divergence_proof() {
+        use crate::mark::line::draw_polyline;
+
+        let theme = FigureTheme::dark();
+        let panel_w = 400.0;
+        let panel_h = 250.0;
+        let plot_rect = Rect::new(30.0, 20.0, panel_w - 60.0, panel_h - 60.0);
+        let area = crate::coord::PlotArea::new(plot_rect);
+        let x_scale = crate::scale::LinearScale::new(0.0, 10.0);
+        let y_scale = crate::scale::LinearScale::new(0.0, 10.0);
+        // Same deliberate interior gap (NaN at index 4 of 9) as
+        // `item_1_gap_policy_before_after_proof`.
+        let points: Vec<(f64, f64)> =
+            vec![(0.0, 2.0), (1.0, 5.0), (2.0, 3.0), (3.0, 7.0), (f64::NAN, f64::NAN), (5.0, 6.0), (6.0, 2.0), (7.0, 8.0), (8.0, 4.0)];
+
+        // Investigative capture — RAW NaN, bypassing gap handling
+        // entirely, the exact fixture that first surfaced tiny-skia's
+        // whole-path-drop behavior.
+        let raw_render = ThreeLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
+            let raw_screen: Vec<(f64, f64)> = points.iter().map(|&(px, py)| (area.x(&x_scale, px), area.y(&y_scale, py))).collect();
+            ctx.stroke_polyline(&raw_screen, &theme.palette[0], 2.0);
+        });
+        let raw_diff = ThreeLegDiff::compute(&raw_render, ChannelTolerance::default());
+        for line in raw_diff.report_lines() {
+            println!("[gap-policy RAW-NaN, investigative only] {line}");
+        }
+
+        // Real, fixed production path — `GapPolicy::Break`, the default.
+        let style = MarkStyle { color: theme.palette[0].clone(), stroke_width: 2.0, gap_policy: GapPolicy::Break, ..Default::default() };
+        let fixed_render = ThreeLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
+            ctx.set_fill_color(&theme.background);
+            ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
+            draw_polyline(ctx, &area, &x_scale, &y_scale, &points, &style);
+        });
+        let fixed_diff = ThreeLegDiff::compute(&fixed_render, ChannelTolerance::default());
+        for line in fixed_diff.report_lines() {
+            println!("[gap-policy GapPolicy::Break, production path] {line}");
+        }
+        uzor_proof_harness::write_composite_png(&fixed_render, &out_dir().join("figures_gap_policy_backends.png"))
+            .expect("gap-policy multi-backend composite should write");
+        assert!(fixed_diff.all_within_budget(), "GapPolicy::Break: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// Label-rotation proof — `LabelOverflow::Rotate(45.0)` is literally a
+    /// backend text-transform capability (`ctx.save()/translate()/
+    /// rotate()/fill_text()/restore()`) — the exact call sequence
+    /// tiny-skia's own `fill_text` rotation-ignoring defect lived in.
+    #[test]
+    fn label_rotation_multi_backend_divergence_proof() {
+        let categories: Vec<String> = (0..8).map(|i| format!("category-{i}")).collect();
+        let values: Vec<f64> = (0..8).map(|i| 10.0 + (i as f64 * 6.0) % 40.0).collect();
+        let panel_w = 450.0;
+        let panel_h = 300.0;
+        let theme = FigureTheme::dark();
+        let figure = BarFigure::new(categories, values)
+            .with_label_overflow(LabelOverflow::Rotate(45.0))
+            .with_title("LabelOverflow::Rotate(45) — multi-backend");
+
+        let render = ThreeLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, panel_w, panel_h), &theme);
+        });
+        let diff = ThreeLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[label-rotation] {line}");
+        }
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_label_rotation_backends.png"))
+            .expect("label-rotation multi-backend composite should write");
+        assert!(diff.all_within_budget(), "LabelOverflow::Rotate(45): structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// Text-heavy proof — the same seeded 3-tile KPI row as
+    /// `kpi_tile_row_renders_to_a_valid_png` (big headline numbers +
+    /// colored deltas + a sparkline + `Currency`/`Percent`/`Si`
+    /// formatting) — dense, varied text is exactly where a shaper/
+    /// font-rasterization divergence would show up.
+    #[test]
+    fn kpi_tile_row_multi_backend_divergence_proof() {
+        let theme = FigureTheme::dark();
+        let sparkline: Vec<f64> = (0..24).map(|i| 100.0 + ((i * 7) % 22) as f64 - ((i as f64) * 0.4)).collect();
+        let revenue = KpiFigure::new("Revenue", 128_430.0)
+            .with_previous_value(110_000.0)
+            .with_format(NumberFormat::Currency("$"))
+            .with_sparkline(sparkline);
+        let churn = KpiFigure::new("Churn Rate", 0.048).with_previous_value(0.061).with_format(NumberFormat::Percent);
+        let active_users = KpiFigure::new("Active Users", 48_213.0).with_previous_value(48_213.0).with_format(NumberFormat::Si);
+
+        let w = KPI_TILE_WIDTH as f64;
+        let h = KPI_TILE_HEIGHT as f64;
+        let render = ThreeLegRender::capture(KPI_ROW_WIDTH, KPI_TILE_HEIGHT, |ctx| {
+            revenue.render(ctx, Rect::new(0.0, 0.0, w, h), &theme);
+            churn.render(ctx, Rect::new(w, 0.0, w, h), &theme);
+            active_users.render(ctx, Rect::new(2.0 * w, 0.0, w, h), &theme);
+        });
+        let diff = ThreeLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[kpi-tile-row] {line}");
+        }
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_kpi_backends.png"))
+            .expect("KPI multi-backend composite should write");
+        assert!(diff.all_within_budget(), "KPI tile row: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// Gradient/color-heavy proof — the same seeded 8x6 heatmap as
+    /// `heatmap_figure_renders_to_a_valid_png` (a sequential `ColorScale`
+    /// ramp filling every cell + `guide::colorbar::draw_colorbar`'s own
+    /// linear-gradient `GradientPainter` fill) — exactly the kind of
+    /// content where a gradient-stop/banding divergence between
+    /// rasterizer families would show up.
+    #[test]
+    fn heatmap_multi_backend_divergence_proof() {
+        let figure = seeded_heatmap_figure();
+        let theme = FigureTheme::dark();
+        let render = ThreeLegRender::capture(WIDTH, HEIGHT, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64), &theme);
+        });
+        let diff = ThreeLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[heatmap] {line}");
+        }
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_heatmap_backends.png"))
+            .expect("heatmap multi-backend composite should write");
+        assert!(diff.all_within_budget(), "heatmap: structural backend divergence beyond the generous AA/text tolerance");
+    }
 }

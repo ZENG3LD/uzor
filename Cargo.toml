@@ -62,6 +62,11 @@ members = [
     "uzor-text",
     # Typographic composition + slicing engine (Arc 4 — scene model, compose, pages/slides/frames)
     "uzor-typeset",
+    # Dev-only multi-backend (tiny-skia/vello-cpu/urx-cpu) headless proof
+    # harness — promoted out of uzor-examples/src/parity_harness.rs so
+    # uzor-figures (and later uzor-text/uzor-typeset) can reach it as a
+    # dev-dependency without a runtime dep in their own [dependencies].
+    "uzor-proof-harness",
     # Layered demos
     "uzor-examples",
 ]
@@ -106,5 +111,6 @@ uzor-urx-wgpu-full = { version = "1.4.18", path = "./uzor-urx-wgpu-full" }
 uzor-urx-3d = { version = "1.4.18", path = "./uzor-urx-3d" }
 uzor-urx-physics = { version = "1.4.18", path = "./uzor-urx-physics" }
 uzor-render-urx = { version = "1.4.18", path = "./uzor-render-urx" }
+uzor-proof-harness = { version = "1.4.18", path = "./uzor-proof-harness" }
 serde = { version = "1.0", features = ["derive"] }
 
