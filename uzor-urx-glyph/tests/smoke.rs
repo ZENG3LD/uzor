@@ -34,7 +34,7 @@ fn glyph_run_paints_pixels() {
         Glyph { glyph_id: 36, x: 10.0, y: 0.0 },
         Glyph { glyph_id: 37, x: 40.0, y: 0.0 },
     ];
-    draw_glyph_run(&mut buf, 200, 60, 0.0, 40.0, &glyphs, font, 32.0, [255, 255, 255, 255], None)
+    draw_glyph_run(&mut buf, 200, 60, 0.0, 40.0, &glyphs, font, 32.0, [255, 255, 255, 255], None, None)
         .expect("draw glyph run");
     let painted: usize = buf.chunks_exact(4)
         .filter(|c| c[3] > 0)
@@ -57,11 +57,11 @@ fn glyph_run_with_identity_gamma_lut_matches_no_lut_byte_for_byte() {
     let identity_lut = uzor_urx_core::text_gamma::build_text_gamma_lut(&[1.0, 1.0]);
 
     let mut buf_none = vec![0u8; 200 * 60 * 4];
-    draw_glyph_run(&mut buf_none, 200, 60, 0.0, 40.0, &glyphs, font, 32.0, [200, 40, 40, 255], None)
+    draw_glyph_run(&mut buf_none, 200, 60, 0.0, 40.0, &glyphs, font, 32.0, [200, 40, 40, 255], None, None)
         .expect("draw glyph run (gamma_lut: None)");
 
     let mut buf_identity = vec![0u8; 200 * 60 * 4];
-    draw_glyph_run(&mut buf_identity, 200, 60, 0.0, 40.0, &glyphs, font, 32.0, [200, 40, 40, 255], Some(&identity_lut))
+    draw_glyph_run(&mut buf_identity, 200, 60, 0.0, 40.0, &glyphs, font, 32.0, [200, 40, 40, 255], Some(&identity_lut), None)
         .expect("draw glyph run (gamma_lut: Some(identity))");
 
     assert_eq!(buf_none, buf_identity, "an identity (gamma=1.0) LUT must be a byte-exact no-op vs gamma_lut: None");

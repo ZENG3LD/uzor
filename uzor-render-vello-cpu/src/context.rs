@@ -923,9 +923,17 @@ impl TextRenderer for VelloCpuRenderContext {
                 };
                 ctx.set_paint(if is_color_emoji { white } else { fill_color });
                 let glyphs = run.iter().map(|g| Glyph { id: g.glyph_id, x: g.x, y: 0.0 });
+                // Aligned to `uzor-render-vello-gpu`'s own convention
+                // (`.hint(!is_color_emoji)`, `context.rs`/`text.rs`) —
+                // both are vello-family rasterisers and should agree.
+                // This crate hardcoded `.hint(false)` unconditionally
+                // until the Wave 7 tail tech-debt sweep (2026-07-24)
+                // found the disagreement while investigating why URX's
+                // own swash-based CPU text (`.hint(true)`) read
+                // differently from this leg's vello_cpu text.
                 ctx.glyph_run(resources, font)
                     .font_size(font_size)
-                    .hint(false)
+                    .hint(!is_color_emoji)
                     .normalized_coords(&[])
                     .fill_glyphs(glyphs);
             }

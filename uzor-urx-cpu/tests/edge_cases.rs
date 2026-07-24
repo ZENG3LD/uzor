@@ -12,9 +12,9 @@ use uzor_urx_cpu::{CpuBackend, Pixmap};
 
 const W: u32 = 64;
 const H: u32 = 32;
-const RED:   Color = Color { r: 255, g: 0, b: 0, a: 255 };
-const BLUE:  Color = Color { r: 0, g: 0, b: 255, a: 255 };
-const GREEN: Color = Color { r: 0, g: 255, b: 0, a: 255 };
+const RED:   Color = Color::from_rgba8(255, 0, 0, 255);
+const BLUE:  Color = Color::from_rgba8(0, 0, 255, 255);
+const GREEN: Color = Color::from_rgba8(0, 255, 0, 255);
 
 fn render(scene: &Scene, w: u32, h: u32) -> Pixmap {
     let mut p = Pixmap::new(w, h);
@@ -134,9 +134,9 @@ fn adversarial_overdraw_collapses_via_bg_replacement() {
     // test, but we CAN verify correctness: only the LAST color shows.
     let mut s = Scene::new();
     let colors = [
-        Color { r: 200, g: 100, b: 50, a: 255 },
-        Color { r: 50, g: 200, b: 100, a: 255 },
-        Color { r: 100, g: 50, b: 200, a: 255 },
+        Color::from_rgba8(200, 100, 50, 255),
+        Color::from_rgba8(50, 200, 100, 255),
+        Color::from_rgba8(100, 50, 200, 255),
     ];
     for i in 0..200 {
         s.fill_rect_solid(
@@ -176,7 +176,7 @@ fn render_twice_into_same_pixmap_is_deterministic() {
     for i in 0..30 {
         s.fill_rect_solid(
             Rect::new(i as f64, 0.0, i as f64 + 1.0, H as f64),
-            Color { r: (i * 8) as u8, g: 100, b: 50, a: 200 },
+            Color::from_rgba8((i * 8) as u8, 100, 50, 200),
         );
     }
     let mut p1 = Pixmap::new(W, H);
@@ -210,7 +210,7 @@ fn full_overdraw_with_alpha_doesnt_overflow() {
     for _ in 0..100 {
         s.fill_rect_solid(
             Rect::new(0.0, 0.0, W as f64, H as f64),
-            Color { r: 10, g: 10, b: 10, a: 25 },
+            Color::from_rgba8(10, 10, 10, 25),
         );
     }
     let p = render(&s, W, H);

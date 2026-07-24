@@ -13,7 +13,7 @@ fn rect_cmd(x: f64, y: f64, w: f64, h: f64, rgba: [u8; 4]) -> DrawCommand {
     DrawCommand::FillRect {
         rect: Rect::new(x, y, x + w, y + h),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(rgba[0], rgba[1], rgba[2], rgba[3])),
+        brush: Brush::Solid(Color::from_rgba8(rgba[0], rgba[1], rgba[2], rgba[3])),
         transform: Affine::IDENTITY,
     }
 }

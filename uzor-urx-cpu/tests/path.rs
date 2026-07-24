@@ -34,7 +34,7 @@ fn fill_path_triangle_interior() {
     scene.push(DrawCommand::FillPath {
         path: tri,
         rule: FillRule::NonZero,
-        brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -59,7 +59,7 @@ fn fill_path_rect_matches_fill_rect() {
     sp.push(DrawCommand::FillPath {
         path: make_rect_path(8.0, 8.0, 16.0, 16.0),
         rule: FillRule::NonZero,
-        brush: Brush::Solid(Color::rgba8(0, 0, 255, 255)),
+        brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&sp, &mut p_path).unwrap();
@@ -68,7 +68,7 @@ fn fill_path_rect_matches_fill_rect() {
     sr.push(DrawCommand::FillRect {
         rect: Rect::new(8.0, 8.0, 24.0, 24.0),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(0, 0, 255, 255)),
+        brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&sr, &mut p_rect).unwrap();
@@ -103,7 +103,7 @@ fn fill_path_even_odd_creates_hole() {
     scene.push(DrawCommand::FillPath {
         path,
         rule: FillRule::EvenOdd,
-        brush: Brush::Solid(Color::rgba8(0, 255, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(0, 255, 0, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -124,7 +124,7 @@ fn stroke_path_traces_outline() {
     scene.push(DrawCommand::StrokePath {
         path: tri,
         stroke: Stroke { width: 2.0, ..Stroke::default() },
-        brush: Brush::Solid(Color::rgba8(0, 0, 255, 255)),
+        brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -159,7 +159,7 @@ fn fill_path_concave_star_no_holes_inside() {
     scene.push(DrawCommand::FillPath {
         path,
         rule: FillRule::NonZero,
-        brush: Brush::Solid(Color::rgba8(255, 200, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 200, 0, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -203,7 +203,7 @@ fn fill_path_three_disjoint_subpaths_nonzero() {
     scene.push(DrawCommand::FillPath {
         path,
         rule: FillRule::NonZero,
-        brush: Brush::Solid(Color::rgba8(0, 200, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(0, 200, 0, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -232,7 +232,7 @@ fn fill_path_scale_transform_stays_subpixel() {
     scene.push(DrawCommand::FillPath {
         path: tri,
         rule: FillRule::NonZero,
-        brush: Brush::Solid(Color::rgba8(0, 0, 200, 255)),
+        brush: Brush::Solid(Color::from_rgba8(0, 0, 200, 255)),
         transform: Affine::scale(4.0),
     });
     s().render(&scene, &mut p).unwrap();
@@ -253,7 +253,7 @@ fn fill_path_empty_path_does_not_panic() {
     scene.push(DrawCommand::FillPath {
         path,
         rule: FillRule::NonZero,
-        brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -276,7 +276,7 @@ fn fill_path_horizontal_sliver_renders_or_skips_no_artifacts() {
     scene.push(DrawCommand::FillPath {
         path,
         rule: FillRule::NonZero,
-        brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -300,7 +300,7 @@ fn fill_path_with_transform_translates() {
     s1.push(DrawCommand::FillPath {
         path: tri.clone(),
         rule: FillRule::NonZero,
-        brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
         transform: Affine::translate((5.0, 5.0)),
     });
     s().render(&s1, &mut p1).unwrap();
@@ -310,7 +310,7 @@ fn fill_path_with_transform_translates() {
     s2.push(DrawCommand::FillPath {
         path: tri,
         rule: FillRule::NonZero,
-        brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
         transform: Affine::translate((15.0, 15.0)),
     });
     s().render(&s2, &mut p2).unwrap();

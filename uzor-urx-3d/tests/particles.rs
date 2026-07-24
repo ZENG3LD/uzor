@@ -76,7 +76,7 @@ fn particles_die_after_lifetime() {
 #[test]
 #[ignore]
 fn gpu_draw_brightens_centre_of_emitter() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
         force_fallback_adapter: false,

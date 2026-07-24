@@ -172,7 +172,7 @@ fn histogram(counts: &[u32]) -> [usize; 6] {
 }
 
 fn init_device() -> Option<(wgpu::Device, wgpu::Queue, wgpu::AdapterInfo)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference:       wgpu::PowerPreference::HighPerformance,
         force_fallback_adapter: false,

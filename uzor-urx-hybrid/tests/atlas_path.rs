@@ -12,7 +12,7 @@ use uzor_urx_cpu::Pixmap;
 use uzor_urx_hybrid::{HybridBackend, QuadInstance, RegionAtlas, AtlasUpsertResult};
 
 fn init_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference:       wgpu::PowerPreference::LowPower,
         force_fallback_adapter: false,

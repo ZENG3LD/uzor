@@ -1,7 +1,7 @@
 //! Gradient brush tests — linear + radial.
 
 use uzor_urx_core::math::{
-    Affine, Brush, Color, ColorStop, ColorStops, Extend, Gradient, GradientKind, Point, Rect,
+    Affine, Brush, Color, ColorStop, Extend, Gradient, GradientKind, Point, RadialGradientPosition, Rect,
 };
 use uzor_urx_core::scene::{DrawCommand, Scene};
 use uzor_urx_cpu::{CpuBackend, Pixmap};
@@ -10,14 +10,14 @@ fn s() -> CpuBackend { CpuBackend::new() }
 
 fn make_linear(start: Point, end: Point, stops: Vec<ColorStop>) -> Brush {
     let mut g = Gradient::new_linear(start, end);
-    g.stops = stops.into_iter().collect::<ColorStops>();
+    g.stops = stops.as_slice().into();
     g.extend = Extend::Pad;
     Brush::Gradient(g)
 }
 
 fn make_radial(center: Point, radius: f32, stops: Vec<ColorStop>) -> Brush {
     let mut g = Gradient::new_radial(center, radius);
-    g.stops = stops.into_iter().collect::<ColorStops>();
+    g.stops = stops.as_slice().into();
     g.extend = Extend::Pad;
     Brush::Gradient(g)
 }
@@ -30,8 +30,8 @@ fn linear_red_to_blue_left_to_right() {
         Point::new(0.0, 0.0),
         Point::new(100.0, 0.0),
         vec![
-            ColorStop { offset: 0.0, color: Color::rgba8(255, 0, 0, 255) },
-            ColorStop { offset: 1.0, color: Color::rgba8(0, 0, 255, 255) },
+            ColorStop { offset: 0.0, color: Color::from_rgba8(255, 0, 0, 255).into() },
+            ColorStop { offset: 1.0, color: Color::from_rgba8(0, 0, 255, 255).into() },
         ],
     );
     let mut scene = Scene::new();
@@ -63,8 +63,8 @@ fn linear_pad_extends_outside() {
         Point::new(25.0, 0.0),
         Point::new(75.0, 0.0),
         vec![
-            ColorStop { offset: 0.0, color: Color::rgba8(0, 255, 0, 255) },   // start green
-            ColorStop { offset: 1.0, color: Color::rgba8(255, 0, 255, 255) }, // end magenta
+            ColorStop { offset: 0.0, color: Color::from_rgba8(0, 255, 0, 255).into() },   // start green
+            ColorStop { offset: 1.0, color: Color::from_rgba8(255, 0, 255, 255).into() }, // end magenta
         ],
     );
     let mut scene = Scene::new();
@@ -91,8 +91,8 @@ fn radial_center_is_inner_stop() {
         Point::new(30.0, 30.0),
         25.0,
         vec![
-            ColorStop { offset: 0.0, color: Color::rgba8(255, 255, 0, 255) },
-            ColorStop { offset: 1.0, color: Color::rgba8(0, 0, 0, 255) },
+            ColorStop { offset: 0.0, color: Color::from_rgba8(255, 255, 0, 255).into() },
+            ColorStop { offset: 1.0, color: Color::from_rgba8(0, 0, 0, 255).into() },
         ],
     );
     let mut scene = Scene::new();
@@ -120,9 +120,9 @@ fn linear_extend_repeat_cycles() {
     let mut p = Pixmap::new(100, 4);
     let mut g = Gradient::new_linear(Point::new(0.0, 0.0), Point::new(20.0, 0.0));
     g.stops = vec![
-        ColorStop { offset: 0.0, color: Color::rgba8(255, 0, 0, 255) },
-        ColorStop { offset: 1.0, color: Color::rgba8(0, 0, 255, 255) },
-    ].into_iter().collect::<ColorStops>();
+        ColorStop { offset: 0.0, color: Color::from_rgba8(255, 0, 0, 255).into() },
+        ColorStop { offset: 1.0, color: Color::from_rgba8(0, 0, 255, 255).into() },
+    ].as_slice().into();
     g.extend = Extend::Repeat;
     let brush = Brush::Gradient(g);
     let mut scene = Scene::new();
@@ -148,9 +148,9 @@ fn linear_extend_reflect_pingpongs() {
     let mut p = Pixmap::new(80, 4);
     let mut g = Gradient::new_linear(Point::new(0.0, 0.0), Point::new(20.0, 0.0));
     g.stops = vec![
-        ColorStop { offset: 0.0, color: Color::rgba8(255, 0, 0, 255) },
-        ColorStop { offset: 1.0, color: Color::rgba8(0, 0, 255, 255) },
-    ].into_iter().collect::<ColorStops>();
+        ColorStop { offset: 0.0, color: Color::from_rgba8(255, 0, 0, 255).into() },
+        ColorStop { offset: 1.0, color: Color::from_rgba8(0, 0, 255, 255).into() },
+    ].as_slice().into();
     g.extend = Extend::Reflect;
     let brush = Brush::Gradient(g);
     let mut scene = Scene::new();
@@ -178,10 +178,10 @@ fn linear_multistop_three_colors() {
     let mut p = Pixmap::new(100, 4);
     let mut g = Gradient::new_linear(Point::new(0.0, 0.0), Point::new(100.0, 0.0));
     g.stops = vec![
-        ColorStop { offset: 0.0, color: Color::rgba8(255, 0, 0, 255) },
-        ColorStop { offset: 0.5, color: Color::rgba8(0, 255, 0, 255) },
-        ColorStop { offset: 1.0, color: Color::rgba8(0, 0, 255, 255) },
-    ].into_iter().collect::<ColorStops>();
+        ColorStop { offset: 0.0, color: Color::from_rgba8(255, 0, 0, 255).into() },
+        ColorStop { offset: 0.5, color: Color::from_rgba8(0, 255, 0, 255).into() },
+        ColorStop { offset: 1.0, color: Color::from_rgba8(0, 0, 255, 255).into() },
+    ].as_slice().into();
     let brush = Brush::Gradient(g);
     let mut scene = Scene::new();
     scene.push(DrawCommand::FillRect {
@@ -207,9 +207,9 @@ fn sweep_gradient_paints_full_circle() {
     let mut p = Pixmap::new(60, 60);
     let mut g = Gradient::new_sweep(Point::new(30.0, 30.0), -std::f32::consts::PI, std::f32::consts::PI);
     g.stops = vec![
-        ColorStop { offset: 0.0, color: Color::rgba8(255, 0, 0, 255) },
-        ColorStop { offset: 1.0, color: Color::rgba8(0, 0, 255, 255) },
-    ].into_iter().collect::<ColorStops>();
+        ColorStop { offset: 0.0, color: Color::from_rgba8(255, 0, 0, 255).into() },
+        ColorStop { offset: 1.0, color: Color::from_rgba8(0, 0, 255, 255).into() },
+    ].as_slice().into();
     let brush = Brush::Gradient(g);
     let mut scene = Scene::new();
     scene.push(DrawCommand::FillRect {
@@ -238,14 +238,14 @@ fn focal_radial_falls_back_to_concentric() {
     // approximation + bump a counter; verify rendering is non-empty.
     let mut p = Pixmap::new(60, 60);
     let mut g = Gradient::new_radial(Point::new(30.0, 30.0), 25.0);
-    if let GradientKind::Radial { start_center, start_radius, .. } = &mut g.kind {
+    if let GradientKind::Radial(RadialGradientPosition { start_center, start_radius, .. }) = &mut g.kind {
         *start_center = Point::new(20.0, 20.0);
         *start_radius = 5.0;
     }
     g.stops = vec![
-        ColorStop { offset: 0.0, color: Color::rgba8(255, 255, 0, 255) },
-        ColorStop { offset: 1.0, color: Color::rgba8(0, 0, 0, 255) },
-    ].into_iter().collect::<ColorStops>();
+        ColorStop { offset: 0.0, color: Color::from_rgba8(255, 255, 0, 255).into() },
+        ColorStop { offset: 1.0, color: Color::from_rgba8(0, 0, 0, 255).into() },
+    ].as_slice().into();
     let brush = Brush::Gradient(g);
     let mut scene = Scene::new();
     scene.push(DrawCommand::FillRect {
@@ -274,8 +274,8 @@ fn linear_lut_cached_across_renders() {
             Point::new(0.0, 0.0),
             Point::new(50.0, 0.0),
             vec![
-                ColorStop { offset: 0.0, color: Color::rgba8(100, 200, 50, 255) },
-                ColorStop { offset: 1.0, color: Color::rgba8(255, 100, 200, 255) },
+                ColorStop { offset: 0.0, color: Color::from_rgba8(100, 200, 50, 255).into() },
+                ColorStop { offset: 1.0, color: Color::from_rgba8(255, 100, 200, 255).into() },
             ],
         );
         let mut sc = Scene::new();

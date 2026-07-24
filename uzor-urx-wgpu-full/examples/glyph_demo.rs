@@ -189,7 +189,9 @@ fn upload_r8_atlas(
         for row in 0..atlas_h as usize {
             let src_start = row * atlas_w as usize;
             let dst_start = row * row_stride as usize;
-            mapped[dst_start..dst_start + atlas_w as usize]
+            // wgpu 29: `BufferViewMut` no longer derefs to `[u8]` — see
+            // `uzor-urx-wgpu-full/tests/glyph_render.rs`'s identical fix.
+            mapped.slice(dst_start..dst_start + atlas_w as usize)
                 .copy_from_slice(&data[src_start..src_start + atlas_w as usize]);
         }
     }
@@ -290,7 +292,7 @@ fn readback_texture(
 }
 
 fn init_device() -> Option<(wgpu::Device, wgpu::Queue, wgpu::AdapterInfo)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference:       wgpu::PowerPreference::HighPerformance,
         force_fallback_adapter: false,

@@ -54,7 +54,7 @@ fn to_scene(rects: &[(f32, f32, f32, f32, [u8; 4])]) -> UrxScene {
         s.push(DrawCommand::FillRect {
             rect: Rect::new(x as f64, y as f64, (x + sx) as f64, (y + sy) as f64),
             radii: None,
-            brush: Brush::Solid(Color::rgba8(c[0], c[1], c[2], c[3])),
+            brush: Brush::Solid(Color::from_rgba8(c[0], c[1], c[2], c[3])),
             transform: Affine::IDENTITY,
         });
     }
@@ -92,7 +92,8 @@ fn bench_vello_cpu(b: &mut criterion::Bencher, rects: &[(f32, f32, f32, f32, [u8
         }
         let mut p = VPixmap::new(W as u16, H as u16);
         ctx.flush();
-        ctx.render_to_pixmap(&mut p);
+        let mut resources = vello_cpu::Resources::new();
+        ctx.render_to_pixmap(&mut resources, &mut p);
         black_box(p);
     });
 }

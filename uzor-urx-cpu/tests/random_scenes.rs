@@ -57,7 +57,7 @@ fn random_scene(rng: &mut Rng, n_cmds: usize) -> Scene {
                 let a  = rng.next_u8();
                 s.fill_rect_solid(
                     Rect::new(x0, y0, x0 + w, y0 + h),
-                    Color::rgba8(r, g, b, a),
+                    Color::from_rgba8(r, g, b, a),
                 );
             }
             1 => {
@@ -70,7 +70,7 @@ fn random_scene(rng: &mut Rng, n_cmds: usize) -> Scene {
                     rect: Rect::new(x0, y0, x0 + w, y0 + h),
                     radii: None,
                     stroke: Stroke { width: rng.next_f32_range(0.5, 4.0), ..Stroke::default() },
-                    brush: Brush::Solid(Color::rgba8(rng.next_u8(), rng.next_u8(), rng.next_u8(), 255)),
+                    brush: Brush::Solid(Color::from_rgba8(rng.next_u8(), rng.next_u8(), rng.next_u8(), 255)),
                     transform: Affine::IDENTITY,
                 });
             }
@@ -87,7 +87,7 @@ fn random_scene(rng: &mut Rng, n_cmds: usize) -> Scene {
                 s.commands.push(DrawCommand::Line {
                     from, to,
                     stroke: Stroke { width: rng.next_f32_range(0.5, 3.0), ..Stroke::default() },
-                    brush: Brush::Solid(Color::rgba8(rng.next_u8(), rng.next_u8(), rng.next_u8(), 255)),
+                    brush: Brush::Solid(Color::from_rgba8(rng.next_u8(), rng.next_u8(), rng.next_u8(), 255)),
                     transform: Affine::IDENTITY,
                 });
             }
@@ -101,7 +101,7 @@ fn random_scene(rng: &mut Rng, n_cmds: usize) -> Scene {
                 s.commands.push(DrawCommand::FillRect {
                     rect: Rect::new(x0, y0, x0 + w, y0 + h),
                     radii: Some([r, r, r, r]),
-                    brush: Brush::Solid(Color::rgba8(rng.next_u8(), rng.next_u8(), rng.next_u8(), rng.next_u8())),
+                    brush: Brush::Solid(Color::from_rgba8(rng.next_u8(), rng.next_u8(), rng.next_u8(), rng.next_u8())),
                     transform: Affine::IDENTITY,
                 });
             }
@@ -121,7 +121,7 @@ fn random_scene(rng: &mut Rng, n_cmds: usize) -> Scene {
                     let cy = rng.next_f32_range(0.0, H as f32) as f64;
                     s.fill_rect_solid(
                         Rect::new(cx, cy, cx + 5.0, cy + 5.0),
-                        Color::rgba8(rng.next_u8(), rng.next_u8(), rng.next_u8(), 200),
+                        Color::from_rgba8(rng.next_u8(), rng.next_u8(), rng.next_u8(), 200),
                     );
                 }
                 s.commands.push(DrawCommand::PopClip);
@@ -169,7 +169,7 @@ fn tile_path_matches_scanline_on_random_fill_rect_scenes() {
             let a = if rng.bool() { 255 } else { 128 };
             scene.fill_rect_solid(
                 Rect::new(x0, y0, x0 + w, y0 + h),
-                Color::rgba8(rng.next_u8(), rng.next_u8(), rng.next_u8(), a),
+                Color::from_rgba8(rng.next_u8(), rng.next_u8(), rng.next_u8(), a),
             );
         }
         let mut p_scan = Pixmap::new(W, H);
@@ -219,7 +219,7 @@ fn parallel_deterministic_on_random_scenes() {
             let y0 = rng.next_f32_range(0.0, 256.0) as f64;
             scene.fill_rect_solid(
                 Rect::new(x0, y0, x0 + 4.0, y0 + 4.0),
-                Color::rgba8(rng.next_u8(), rng.next_u8(), rng.next_u8(), 255),
+                Color::from_rgba8(rng.next_u8(), rng.next_u8(), rng.next_u8(), 255),
             );
         }
         let mut p_serial = Pixmap::new(256, 256);

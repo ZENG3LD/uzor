@@ -17,7 +17,7 @@ fn heavy_scene(x: f64, y: f64) -> Scene {
     s.push(DrawCommand::FillRect {
         rect: Rect::new(x, y, x + 200.0, y + 150.0),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(33, 38, 45, 255)),
+        brush: Brush::Solid(Color::from_rgba8(33, 38, 45, 255)),
         transform: Affine::IDENTITY,
     });
     // grid
@@ -28,7 +28,7 @@ fn heavy_scene(x: f64, y: f64) -> Scene {
             s.push(DrawCommand::FillRect {
                 rect: Rect::new(px, py, px + 8.0, py + 20.0),
                 radii: None,
-                brush: Brush::Solid(Color::rgba8(88, 166, 255,
+                brush: Brush::Solid(Color::from_rgba8(88, 166, 255,
                                                   ((cx + ry) as u8).wrapping_mul(20))),
                 transform: Affine::IDENTITY,
             });

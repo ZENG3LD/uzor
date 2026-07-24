@@ -17,12 +17,12 @@ fn dense_scene(n: usize) -> Scene {
     for i in 0..n {
         let x = (i as f64) % (W as f64);
         let y = ((i as f64) / (W as f64)).floor() % (H as f64);
-        let c = Color {
-            r: (i & 0xff) as u8,
-            g: ((i >> 4) & 0xff) as u8,
-            b: ((i >> 8) & 0xff) as u8,
-            a: 255,
-        };
+        let c = Color::from_rgba8(
+            (i & 0xff) as u8,
+            ((i >> 4) & 0xff) as u8,
+            ((i >> 8) & 0xff) as u8,
+            255,
+        );
         s.fill_rect_solid(Rect::new(x, y, x + 4.0, y + 4.0), c);
     }
     s

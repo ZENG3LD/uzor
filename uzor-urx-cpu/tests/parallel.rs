@@ -20,7 +20,7 @@ fn heavy_scene(w: f64, h: f64) -> Scene {
     s.push(DrawCommand::FillRect {
         rect: Rect::new(0.0, 0.0, w, h),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(13, 17, 23, 255)),
+        brush: Brush::Solid(Color::from_rgba8(13, 17, 23, 255)),
         transform: Affine::IDENTITY,
     });
     // 600 small rects scattered
@@ -30,7 +30,7 @@ fn heavy_scene(w: f64, h: f64) -> Scene {
         s.push(DrawCommand::FillRect {
             rect: Rect::new(x, y, x + 20.0, y + 20.0),
             radii: None,
-            brush: Brush::Solid(Color::rgba8(
+            brush: Brush::Solid(Color::from_rgba8(
                 ((i * 11) & 255) as u8,
                 ((i * 53) & 255) as u8,
                 ((i * 97) & 255) as u8,
@@ -47,7 +47,7 @@ fn heavy_scene(w: f64, h: f64) -> Scene {
             rect: Rect::new(x, y, x + 80.0, y + 60.0),
             radii: None,
             stroke: Stroke { width: 2.0, ..Stroke::default() },
-            brush: Brush::Solid(Color::rgba8(58, 166, 255, 200)),
+            brush: Brush::Solid(Color::from_rgba8(58, 166, 255, 200)),
             transform: Affine::IDENTITY,
         });
     }
@@ -59,7 +59,7 @@ fn heavy_scene(w: f64, h: f64) -> Scene {
             from: Vec2 { x: x0, y: y0 },
             to:   Vec2 { x: x0 + 100.0, y: y0 + 40.0 },
             stroke: Stroke { width: 1.5, ..Stroke::default() },
-            brush: Brush::Solid(Color::rgba8(210, 153, 34, 220)),
+            brush: Brush::Solid(Color::from_rgba8(210, 153, 34, 220)),
             transform: Affine::IDENTITY,
         });
     }

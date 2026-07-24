@@ -7,6 +7,7 @@
 pub use kurbo::{Affine, BezPath, Point, Rect, Size, Vec2, RoundedRect, RoundedRectRadii};
 pub use peniko::{
     BlendMode, Brush, Color, ColorStop, ColorStops, Compose, Extend, Gradient, GradientKind, Mix,
+    LinearGradientPosition, RadialGradientPosition,
 };
 
 /// A linear-space RGBA color (8-bit per channel) — convenient for callers

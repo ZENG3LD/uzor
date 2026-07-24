@@ -26,7 +26,7 @@ const H: u32 = 64;
 const SURFACE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 fn init_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference:       wgpu::PowerPreference::LowPower,
         force_fallback_adapter: false,
@@ -112,7 +112,7 @@ fn full_gpu_engine_renders_single_red_region() {
     let mut engine = UrxEngine::new_full_gpu(W, H);
     let mut scene = Scene::new();
     // Scene-local coordinates: fills the FULL region (40×40 area).
-    scene.fill_rect_solid(Rect::new(0.0, 0.0, 40.0, 40.0), Color::rgba8(255, 0, 0, 255));
+    scene.fill_rect_solid(Rect::new(0.0, 0.0, 40.0, 40.0), Color::from_rgba8(255, 0, 0, 255));
     engine.upsert_region(
         RegionId(0),
         scene,
@@ -195,7 +195,7 @@ fn full_gpu_engine_returns_too_small_buf_error() {
     for i in 0..16 {
         let mut scene = Scene::new();
         scene.fill_rect_solid(Rect::new(0.0, 0.0, 10.0, 10.0),
-            Color::rgba8(((i * 16) & 0xff) as u8, 0, 0, 255));
+            Color::from_rgba8(((i * 16) & 0xff) as u8, 0, 0, 255));
         engine.upsert_region(
             RegionId(i as u64),
             scene,

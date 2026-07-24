@@ -93,7 +93,7 @@ impl App {
         let cube_bodies = Self::seed_stack(&mut world);
         Self {
             window: None,
-            instance: wgpu::Instance::new(&wgpu::InstanceDescriptor::default()),
+            instance: wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle()),
             surface: None,
             device: None,
             queue: None,
@@ -250,13 +250,18 @@ impl App {
         ) else { return };
 
         let frame_start = Instant::now();
+        // wgpu 29: `get_current_texture()` returns `CurrentSurfaceTexture`
+        // directly (no longer `Result<SurfaceTexture, SurfaceError>`) —
+        // `Success`/`Suboptimal` both carry a usable `SurfaceTexture`,
+        // `Lost`/`Outdated` keep this arm's old reconfigure-and-retry
+        // behavior, everything else keeps the old fallthrough log+return.
         let frame = match surface.get_current_texture() {
-            Ok(f) => f,
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
                 surface.configure(device, config);
                 return;
             }
-            Err(e) => { eprintln!("surface err: {:?}", e); return; }
+            other => { eprintln!("surface err: {:?}", other); return; }
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
 

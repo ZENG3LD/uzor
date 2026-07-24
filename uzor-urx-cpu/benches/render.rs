@@ -30,7 +30,7 @@ fn build_scene(w: u32, h: u32, n_rects: usize) -> Scene {
         s.push(DrawCommand::FillRect {
             rect: Rect::new(x, y, x + sx, y + sy),
             radii: None,
-            brush: Brush::Solid(Color::rgba8(r, g, b, 200)),
+            brush: Brush::Solid(Color::from_rgba8(r, g, b, 200)),
             transform: Affine::IDENTITY,
         });
     }

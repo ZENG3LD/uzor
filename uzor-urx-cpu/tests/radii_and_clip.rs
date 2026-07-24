@@ -17,7 +17,7 @@ fn fill_rect_with_radii_clips_corners() {
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(0.0, 0.0, 40.0, 40.0),
         radii: Some([10.0; 4]),
-        brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -42,7 +42,7 @@ fn fill_rect_radii_zero_renders_like_plain_rect() {
         s.push(DrawCommand::FillRect {
             rect: Rect::new(2.0, 2.0, 18.0, 18.0),
             radii,
-            brush: Brush::Solid(Color::rgba8(50, 150, 200, 255)),
+            brush: Brush::Solid(Color::from_rgba8(50, 150, 200, 255)),
             transform: Affine::IDENTITY,
         });
         s
@@ -65,7 +65,7 @@ fn transform_axis_aligned_handles_rotation() {
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(0.0, 0.0, 8.0, 8.0),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(0, 255, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(0, 255, 0, 255)),
         transform: rot,
     });
     s().render(&scene, &mut p).unwrap();
@@ -101,7 +101,7 @@ fn parallel_rejects_path_command() {
     scene.push(DrawCommand::FillPath {
         path,
         rule: FillRule::NonZero,
-        brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
         transform: Affine::IDENTITY,
     });
     let err = uzor_urx_cpu::render_parallel(&scene, &mut p, 0)
@@ -118,10 +118,11 @@ fn parallel_rejects_gradient_brush() {
     use uzor_urx_core::math::{ColorStop, ColorStops, Gradient, Point};
     let mut p = Pixmap::new(20, 20);
     let mut g = Gradient::new_linear(Point::new(0.0, 0.0), Point::new(20.0, 0.0));
-    g.stops = vec![
-        ColorStop { offset: 0.0, color: Color::rgba8(255, 0, 0, 255) },
-        ColorStop { offset: 1.0, color: Color::rgba8(0, 0, 255, 255) },
-    ].into_iter().collect::<ColorStops>();
+    let stops = vec![
+        ColorStop { offset: 0.0, color: Color::from_rgba8(255, 0, 0, 255).into() },
+        ColorStop { offset: 1.0, color: Color::from_rgba8(0, 0, 255, 255).into() },
+    ];
+    g.stops = ColorStops::from(stops.as_slice());
     let mut scene = Scene::new();
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(0.0, 0.0, 20.0, 20.0),

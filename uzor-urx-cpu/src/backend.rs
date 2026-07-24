@@ -278,6 +278,32 @@ impl CpuBackend {
                         // `render_with_gamma_lut`'s own doc comment);
                         // `None` is `draw_glyph_run`'s zero-added-cost
                         // path.
+                        //
+                        // Clip fix (2026-07-24): `GlyphRun` was the ONLY
+                        // primitive in this match that never threaded
+                        // `&clip` through — every other arm
+                        // (FillRect/StrokeRect/Line/FillPath/StrokePath/
+                        // Image) already does. Same two-tier shape as
+                        // `fill_rect_aa`'s own `use_mask = !clip.all_rect()`
+                        // split: `bounds` (from `clip.current()`) is a
+                        // cheap per-pixel bbox test that alone is exact
+                        // for the common plain-rect-clip case; `mask` (a
+                        // closure over `clip.pixel_coverage`) only gets
+                        // built — and only gets called inside
+                        // `draw_glyph_run`'s own pixel loop — when a
+                        // rounded clip is actually on the stack.
+                        let clip_current = clip.current();
+                        let clip_bounds = (
+                            clip_current.x0 as f32,
+                            clip_current.y0 as f32,
+                            clip_current.x1 as f32,
+                            clip_current.y1 as f32,
+                        );
+                        let clip_sampler = |px: i64, py: i64| clip.pixel_coverage(px, py);
+                        let glyph_clip = uzor_urx_glyph::GlyphClip {
+                            bounds: clip_bounds,
+                            mask: (!clip.all_rect()).then_some(&clip_sampler as &dyn Fn(i64, i64) -> u8),
+                        };
                         let _ = uzor_urx_glyph::draw_glyph_run(
                             target.pixels_mut(),
                             pw, ph,
@@ -287,6 +313,7 @@ impl CpuBackend {
                             *font_size,
                             [rgba.r, rgba.g, rgba.b, rgba.a],
                             gamma_lut,
+                            Some(glyph_clip),
                         );
                     }
                     #[cfg(not(feature = "glyph"))]

@@ -18,7 +18,7 @@ const W: u32 = 1920;
 const H: u32 = 1080;
 
 fn init_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::HighPerformance,
         force_fallback_adapter: false,
@@ -49,7 +49,7 @@ fn build_region_pixmap(w: u32, h: u32, seed: u32) -> Pixmap {
         s.push(DrawCommand::FillRect {
             rect: Rect::new(x, y, (x + sx).min(w as f64), (y + sy).min(h as f64)),
             radii: None,
-            brush: Brush::Solid(Color::rgba8(r, g, b, 200)),
+            brush: Brush::Solid(Color::from_rgba8(r, g, b, 200)),
             transform: Affine::IDENTITY,
         });
     }

@@ -33,28 +33,28 @@ fn make_scene(force_scalar: bool) -> Scene {
     s.push(DrawCommand::FillRect {
         rect: Rect::new(5.0, 5.0, 50.0, 50.0),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
         transform: Affine::IDENTITY,
     });
     // Edge case 2: rect with sub-pixel edges, half-alpha.
     s.push(DrawCommand::FillRect {
         rect: Rect::new(60.5, 10.3, 95.7, 60.9),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(0, 255, 0, 128)),
+        brush: Brush::Solid(Color::from_rgba8(0, 255, 0, 128)),
         transform: Affine::IDENTITY,
     });
     // Edge case 3: rect overlapping prior fills (blend on top).
     s.push(DrawCommand::FillRect {
         rect: Rect::new(40.0, 30.0, 90.0, 60.0),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(0, 100, 200, 180)),
+        brush: Brush::Solid(Color::from_rgba8(0, 100, 200, 180)),
         transform: Affine::IDENTITY,
     });
     // Edge case 4: thin sliver < 1 px tall.
     s.push(DrawCommand::FillRect {
         rect: Rect::new(100.0, 70.5, 180.0, 70.9),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(255, 255, 255, 200)),
+        brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 200)),
         transform: Affine::IDENTITY,
     });
     if force_scalar {

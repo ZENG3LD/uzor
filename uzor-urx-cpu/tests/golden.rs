@@ -22,7 +22,7 @@ fn make_reference_scene(viewport_w: f64, viewport_h: f64) -> Scene {
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(0.0, 0.0, viewport_w, viewport_h),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(13, 17, 23, 255)),
+        brush: Brush::Solid(Color::from_rgba8(13, 17, 23, 255)),
         transform: Affine::IDENTITY,
     });
 
@@ -32,7 +32,7 @@ fn make_reference_scene(viewport_w: f64, viewport_h: f64) -> Scene {
         scene.push(DrawCommand::FillRect {
             rect: Rect::new(x, 60.0, x + 200.0, 140.0),
             radii: None,
-            brush: Brush::Solid(Color::rgba8(r, g, b, 255)),
+            brush: Brush::Solid(Color::from_rgba8(r, g, b, 255)),
             transform: Affine::IDENTITY,
         });
     }
@@ -43,7 +43,7 @@ fn make_reference_scene(viewport_w: f64, viewport_h: f64) -> Scene {
             rect: Rect::new(x, 160.0, x + 200.0, 240.0),
             radii: None,
             stroke: Stroke { width: 3.0, ..Stroke::default() },
-            brush: Brush::Solid(Color::rgba8(r, g, b, 255)),
+            brush: Brush::Solid(Color::from_rgba8(r, g, b, 255)),
             transform: Affine::IDENTITY,
         });
     }
@@ -51,7 +51,7 @@ fn make_reference_scene(viewport_w: f64, viewport_h: f64) -> Scene {
     for i in 0..10 {
         let x0 = 20.0 + (i as f64) * 70.0;
         let x1 = x0 + 60.0;
-        let color = if i & 1 == 0 { Color::rgba8(210, 153, 34, 255) } else { Color::rgba8(188, 140, 255, 255) };
+        let color = if i & 1 == 0 { Color::from_rgba8(210, 153, 34, 255) } else { Color::from_rgba8(188, 140, 255, 255) };
         scene.push(DrawCommand::Line {
             from: Vec2 { x: x0, y: 280.0 },
             to:   Vec2 { x: x1, y: 330.0 },
@@ -65,7 +65,7 @@ fn make_reference_scene(viewport_w: f64, viewport_h: f64) -> Scene {
         for cx in 0..40 {
             let x = 20.0 + (cx as f64) * 16.0;
             let y = 360.0 + (ry as f64) * 16.0;
-            let color = if (cx + ry) & 1 == 0 { Color::rgba8(22, 27, 34, 255) } else { Color::rgba8(33, 38, 45, 255) };
+            let color = if (cx + ry) & 1 == 0 { Color::from_rgba8(22, 27, 34, 255) } else { Color::from_rgba8(33, 38, 45, 255) };
             scene.push(DrawCommand::FillRect {
                 rect: Rect::new(x, y, x + 14.0, y + 14.0),
                 radii: None,

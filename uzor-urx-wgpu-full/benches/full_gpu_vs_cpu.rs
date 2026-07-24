@@ -91,14 +91,14 @@ fn build_cpu_scene(n: u32) -> Scene {
         let b  = (rng() & 0xff) as u8;
         scene.fill_rect_solid(
             Rect::new(x0 as f64, y0 as f64, (x0 + w) as f64, (y0 + h) as f64),
-            Color::rgba8(r, g, b, 255),
+            Color::from_rgba8(r, g, b, 255),
         );
     }
     scene
 }
 
 fn init_device() -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference:       wgpu::PowerPreference::HighPerformance,
         force_fallback_adapter: false,
@@ -304,6 +304,10 @@ fn bench_full_gpu_mixed(c: &mut Criterion) {
         wgpu::Extent3d { width: 64, height: 64, depth_or_array_layers: 1 },
     );
     let atlas_view = atlas_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    // `dispatch_full`'s image-atlas param — this bench's own cmd mix
+    // never uses image commands, so a dummy is correct here, same as
+    // `bench_full_gpu`'s own `dummy_img_view_d` above.
+    let (_dummy_img_d, dummy_img_view_d) = TilePipeline::dummy_image_atlas(&device);
 
     let mut g = c.benchmark_group("full_gpu_mixed_dispatch_only");
     g.sample_size(50);

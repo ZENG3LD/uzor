@@ -78,7 +78,7 @@ fn bench_rect_row_full(c: &mut Criterion) {
         s.push(DrawCommand::FillRect {
             rect: Rect::new(0.5, 0.0, n as f64 - 0.5, 1.0),
             radii: None,
-            brush: Brush::Solid(Color::rgba8(120, 60, 90, 200)),
+            brush: Brush::Solid(Color::from_rgba8(120, 60, 90, 200)),
             transform: Affine::IDENTITY,
         });
         let backend = CpuBackend::new();

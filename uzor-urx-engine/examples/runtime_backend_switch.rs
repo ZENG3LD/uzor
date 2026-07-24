@@ -81,7 +81,7 @@ fn run_scene_with_backend(backend: Backend) -> f64 {
         let mut scene = Scene::new();
         scene.fill_rect_solid(
             Rect::new(0.0, 0.0, 160.0, 110.0),
-            Color::rgba8(
+            Color::from_rgba8(
                 ((i * 37) & 0xff) as u8,
                 ((i * 71) & 0xff) as u8,
                 ((i * 113) & 0xff) as u8,

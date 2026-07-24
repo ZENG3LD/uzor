@@ -97,7 +97,7 @@ fn build_minimal_triangle_gltf(dir: &PathBuf) -> PathBuf {
 #[test]
 #[ignore]
 fn load_minimal_triangle_yields_pbr_node() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
         force_fallback_adapter: false,
@@ -140,7 +140,7 @@ fn load_minimal_triangle_yields_pbr_node() {
 
 #[test]
 fn loader_rejects_missing_file() {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let adapter = match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
         power_preference: wgpu::PowerPreference::LowPower,
         force_fallback_adapter: false,

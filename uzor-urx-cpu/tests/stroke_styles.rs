@@ -19,7 +19,7 @@ fn render_corner(join: LineJoin) -> Pixmap {
     scene.push(DrawCommand::StrokePath {
         path,
         stroke: Stroke { width: 8.0, miter_limit: 10.0, join, cap: LineCap::Butt },
-        brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -62,7 +62,7 @@ fn miter_paints_more_pixels_than_bevel() {
         scene.push(DrawCommand::StrokePath {
             path,
             stroke: Stroke { width: 6.0, miter_limit: 20.0, join, cap: LineCap::Butt },
-            brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+            brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
             transform: Affine::IDENTITY,
         });
         s().render(&scene, &mut p).unwrap();
@@ -98,7 +98,7 @@ fn miter_limit_falls_back_to_bevel_at_sharp_angle() {
         scene.push(DrawCommand::StrokePath {
             path,
             stroke: Stroke { width: 8.0, miter_limit, join, cap: LineCap::Butt },
-            brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+            brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
             transform: Affine::IDENTITY,
         });
         s().render(&scene, &mut p).unwrap();
@@ -122,7 +122,7 @@ fn round_cap_extends_endpoint() {
         scene.push(DrawCommand::StrokePath {
             path,
             stroke: Stroke { width: 8.0, miter_limit: 10.0, join: LineJoin::Round, cap },
-            brush: Brush::Solid(Color::rgba8(0, 0, 200, 255)),
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 200, 255)),
             transform: Affine::IDENTITY,
         });
         s().render(&scene, &mut p).unwrap();
@@ -152,7 +152,7 @@ fn sub_pixel_stroke_width_does_not_panic() {
     scene.push(DrawCommand::StrokePath {
         path,
         stroke: Stroke { width: 0.3, ..Stroke::default() },
-        brush: Brush::Solid(Color::rgba8(255, 255, 255, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();

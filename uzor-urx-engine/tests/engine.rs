@@ -28,7 +28,7 @@ fn fresh_engine_has_no_paint() {
 fn upsert_region_marks_dirty() {
     let mut e = UrxEngine::new_cpu(100, 100);
     let id = RegionId(1);
-    e.upsert_region(id, rect_scene(10.0, 10.0, 50.0, 50.0, Color::rgba8(255, 0, 0, 255)),
+    e.upsert_region(id, rect_scene(10.0, 10.0, 50.0, 50.0, Color::from_rgba8(255, 0, 0, 255)),
                     Rect::new(10.0, 10.0, 60.0, 60.0), RenderCadence::Static);
     let dr = e.needs_paint().expect("must need paint");
     let bbox = dr.bbox().unwrap();
@@ -39,7 +39,7 @@ fn upsert_region_marks_dirty() {
 fn render_clears_dirty() {
     let mut e = UrxEngine::new_cpu(100, 100);
     let id = RegionId(1);
-    e.upsert_region(id, rect_scene(10.0, 10.0, 50.0, 50.0, Color::rgba8(255, 0, 0, 255)),
+    e.upsert_region(id, rect_scene(10.0, 10.0, 50.0, 50.0, Color::from_rgba8(255, 0, 0, 255)),
                     Rect::new(10.0, 10.0, 60.0, 60.0), RenderCadence::Static);
     let mut p = Pixmap::new(100, 100);
     let stats = e.render(RenderTarget::Cpu(&mut p)).unwrap();
@@ -52,7 +52,7 @@ fn render_clears_dirty() {
 fn second_render_is_idle() {
     let mut e = UrxEngine::new_cpu(100, 100);
     let id = RegionId(1);
-    e.upsert_region(id, rect_scene(10.0, 10.0, 50.0, 50.0, Color::rgba8(255, 0, 0, 255)),
+    e.upsert_region(id, rect_scene(10.0, 10.0, 50.0, 50.0, Color::from_rgba8(255, 0, 0, 255)),
                     Rect::new(10.0, 10.0, 60.0, 60.0), RenderCadence::Static);
     let mut p = Pixmap::new(100, 100);
     e.render(RenderTarget::Cpu(&mut p)).unwrap();
@@ -66,7 +66,7 @@ fn second_render_is_idle() {
 fn mark_dirty_brings_back_paint() {
     let mut e = UrxEngine::new_cpu(100, 100);
     let id = RegionId(1);
-    e.upsert_region(id, rect_scene(10.0, 10.0, 50.0, 50.0, Color::rgba8(255, 0, 0, 255)),
+    e.upsert_region(id, rect_scene(10.0, 10.0, 50.0, 50.0, Color::from_rgba8(255, 0, 0, 255)),
                     Rect::new(10.0, 10.0, 60.0, 60.0), RenderCadence::Static);
     let mut p = Pixmap::new(100, 100);
     e.render(RenderTarget::Cpu(&mut p)).unwrap();
@@ -83,7 +83,7 @@ fn transform_only_does_not_re_raster_in_engine_dirty_view() {
     // rasterisation and only re-blit the texture at the new transform.
     let mut e = UrxEngine::new_cpu(100, 100);
     let id = RegionId(1);
-    e.upsert_region(id, rect_scene(0.0, 0.0, 30.0, 30.0, Color::rgba8(0, 255, 0, 255)),
+    e.upsert_region(id, rect_scene(0.0, 0.0, 30.0, 30.0, Color::from_rgba8(0, 255, 0, 255)),
                     Rect::new(0.0, 0.0, 30.0, 30.0), RenderCadence::Static);
     let mut p = Pixmap::new(100, 100);
     e.render(RenderTarget::Cpu(&mut p)).unwrap();
@@ -99,7 +99,7 @@ fn transform_only_does_not_re_raster_in_engine_dirty_view() {
 fn remove_region_marks_footprint_dirty() {
     let mut e = UrxEngine::new_cpu(100, 100);
     let id = RegionId(7);
-    e.upsert_region(id, rect_scene(0.0, 0.0, 30.0, 30.0, Color::rgba8(0, 0, 255, 255)),
+    e.upsert_region(id, rect_scene(0.0, 0.0, 30.0, 30.0, Color::from_rgba8(0, 0, 255, 255)),
                     Rect::new(0.0, 0.0, 30.0, 30.0), RenderCadence::Static);
     let mut p = Pixmap::new(100, 100);
     e.render(RenderTarget::Cpu(&mut p)).unwrap();
@@ -112,7 +112,7 @@ fn remove_region_marks_footprint_dirty() {
 fn backend_mismatch_returns_error() {
     let mut e = UrxEngine::new_cpu(50, 50);
     let id = RegionId(1);
-    e.upsert_region(id, rect_scene(0.0, 0.0, 20.0, 20.0, Color::rgba8(255, 0, 0, 255)),
+    e.upsert_region(id, rect_scene(0.0, 0.0, 20.0, 20.0, Color::from_rgba8(255, 0, 0, 255)),
                     Rect::new(0.0, 0.0, 20.0, 20.0), RenderCadence::Static);
     // Engine is Cpu; passing a Wgpu target would error. But the Wgpu
     // variant only exists with the wgpu feature; pure CPU consumers
@@ -129,9 +129,9 @@ fn invalidate_all_marks_window_full() {
     let mut e = UrxEngine::new_cpu(640, 480);
     let id1 = RegionId(1);
     let id2 = RegionId(2);
-    e.upsert_region(id1, rect_scene(0.0, 0.0, 100.0, 100.0, Color::rgba8(255, 0, 0, 255)),
+    e.upsert_region(id1, rect_scene(0.0, 0.0, 100.0, 100.0, Color::from_rgba8(255, 0, 0, 255)),
                     Rect::new(0.0, 0.0, 100.0, 100.0), RenderCadence::Static);
-    e.upsert_region(id2, rect_scene(200.0, 200.0, 100.0, 100.0, Color::rgba8(0, 255, 0, 255)),
+    e.upsert_region(id2, rect_scene(200.0, 200.0, 100.0, 100.0, Color::from_rgba8(0, 255, 0, 255)),
                     Rect::new(200.0, 200.0, 300.0, 300.0), RenderCadence::Static);
     let mut p = Pixmap::new(640, 480);
     e.render(RenderTarget::Cpu(&mut p)).unwrap();

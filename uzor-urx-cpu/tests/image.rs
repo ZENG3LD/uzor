@@ -120,7 +120,7 @@ fn image_premul_alpha_blend_on_existing_pixels() {
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(0.0, 0.0, 20.0, 20.0),
         radii: None,
-        brush: uzor_urx_core::math::Brush::Solid(uzor_urx_core::math::Color::rgba8(255, 0, 0, 255)),
+        brush: uzor_urx_core::math::Brush::Solid(uzor_urx_core::math::Color::from_rgba8(255, 0, 0, 255)),
         transform: Affine::IDENTITY,
     });
     // Half-alpha green image on top.

@@ -544,7 +544,7 @@ impl GpuState {
         let w = size.width.max(64);
         let h = size.height.max(64);
 
-        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface  = instance.create_surface(window.clone()).expect("surface");
         let adapter  = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference:       wgpu::PowerPreference::HighPerformance,
@@ -958,17 +958,17 @@ impl GpuState {
             let body_h = (r.half * 2.0) as f64;
             scene.fill_rect_solid(
                 UxRect::new(0.0, 0.0, body_w, body_h),
-                Color::rgba8(r.color[0], r.color[1], r.color[2], r.color[3]),
+                Color::from_rgba8(r.color[0], r.color[1], r.color[2], r.color[3]),
             );
             // L1 selected → bright white inner band painted on top.
             if r.selected {
                 scene.fill_rect_solid(
                     UxRect::new(2.0, 2.0, body_w - 2.0, 6.0),
-                    Color::rgba8(255, 255, 255, 255),
+                    Color::from_rgba8(255, 255, 255, 255),
                 );
                 scene.fill_rect_solid(
                     UxRect::new(2.0, body_h - 6.0, body_w - 2.0, body_h - 2.0),
-                    Color::rgba8(255, 255, 255, 255),
+                    Color::from_rgba8(255, 255, 255, 255),
                 );
             }
             self.engine.upsert_region(
@@ -987,7 +987,7 @@ impl GpuState {
                 uzor_urx_core::math::Vec2 { x: s_m.p0[0] as f64, y: s_m.p0[1] as f64 },
                 uzor_urx_core::math::Vec2 { x: s_m.p1[0] as f64, y: s_m.p1[1] as f64 },
                 s_m.width,
-                Color::rgba8(s_m.color[0], s_m.color[1], s_m.color[2], s_m.color[3]),
+                Color::from_rgba8(s_m.color[0], s_m.color[1], s_m.color[2], s_m.color[3]),
             );
             // Stroke bbox in screen space — inflate by half width.
             let hw = (s_m.width * 0.5).max(1.0) as f64;
@@ -1010,7 +1010,7 @@ impl GpuState {
         for p_m in sc.polylines.iter() {
             if p_m.points.len() < 2 { continue; }
             let mut scene = Scene::new();
-            let color = Color::rgba8(p_m.color[0], p_m.color[1], p_m.color[2], p_m.color[3]);
+            let color = Color::from_rgba8(p_m.color[0], p_m.color[1], p_m.color[2], p_m.color[3]);
             for w in p_m.points.windows(2) {
                 let a = w[0]; let b = w[1];
                 scene.line_solid(
@@ -1056,7 +1056,7 @@ impl GpuState {
             scene.commands.push(DrawCommand::StrokePath {
                 path,
                 stroke,
-                brush: Brush::Solid(Color::rgba8(b.color[0], b.color[1], b.color[2], b.color[3])),
+                brush: Brush::Solid(Color::from_rgba8(b.color[0], b.color[1], b.color[2], b.color[3])),
                 transform: Affine::IDENTITY,
             });
 
@@ -1089,7 +1089,7 @@ impl GpuState {
             scene.commands.push(DrawCommand::FillPath {
                 path,
                 rule: uzor_urx_core::scene::FillRule::NonZero,
-                brush: Brush::Solid(Color::rgba8(
+                brush: Brush::Solid(Color::from_rgba8(
                     f_m.color[0], f_m.color[1], f_m.color[2], f_m.color[3],
                 )),
                 transform: Affine::IDENTITY,
@@ -1117,11 +1117,21 @@ impl GpuState {
         // is ignored — the actual texture is the demo's procedural
         // checkerboard, bound through image_atlas_view.
         for im in sc.images.iter() {
-            let dummy_img = peniko::Image::new(
-                peniko::Blob::new(std::sync::Arc::new(Vec::<u8>::new())),
-                peniko::Format::Rgba8,
-                1, 1,
-            );
+            // peniko rename: `Image` -> `ImageData`, `Format` ->
+            // `ImageFormat`; `Brush::Image`'s generic param is now
+            // `ImageBrush<ImageData>` (image + sampler), not a bare
+            // `ImageData` — this dummy is ignored either way (see the
+            // comment above), so `ImageSampler::default()` is fine.
+            let dummy_img = peniko::ImageBrush {
+                image: peniko::ImageData {
+                    data: peniko::Blob::new(std::sync::Arc::new(Vec::<u8>::new())),
+                    format: peniko::ImageFormat::Rgba8,
+                    alpha_type: peniko::ImageAlphaType::Alpha,
+                    width: 1,
+                    height: 1,
+                },
+                sampler: peniko::ImageSampler::default(),
+            };
             let mut scene = Scene::new();
             scene.commands.push(DrawCommand::FillRect {
                 rect: UxRect::new(im.bbox[0] as f64, im.bbox[1] as f64,
@@ -1162,7 +1172,7 @@ impl GpuState {
             for s in &mg.stops {
                 color_stops.push(uzor_urx_core::math::ColorStop {
                     offset: s[0].clamp(0.0, 1.0),
-                    color:  Color::rgba8(
+                    color:  Color::from_rgba8(
                         s[1].clamp(0.0, 255.0) as u8,
                         s[2].clamp(0.0, 255.0) as u8,
                         s[3].clamp(0.0, 255.0) as u8,
@@ -1171,10 +1181,12 @@ impl GpuState {
                 });
             }
             let gradient = uzor_urx_core::math::Gradient {
-                kind: uzor_urx_core::math::GradientKind::Linear {
-                    start: uzor_urx_core::math::Point::new(sx, sy),
-                    end:   uzor_urx_core::math::Point::new(ex, ey),
-                },
+                kind: uzor_urx_core::math::GradientKind::Linear(
+                    uzor_urx_core::math::LinearGradientPosition {
+                        start: uzor_urx_core::math::Point::new(sx, sy),
+                        end:   uzor_urx_core::math::Point::new(ex, ey),
+                    },
+                ),
                 stops: color_stops,
                 ..Default::default()
             };
@@ -1210,10 +1222,14 @@ impl GpuState {
 
     fn render_frame(&mut self) {
         let frame_t = Instant::now();
+        // wgpu 29: `get_current_texture()` returns `CurrentSurfaceTexture`
+        // directly (no longer `Result<SurfaceTexture, SurfaceError>`) —
+        // see `uzor-urx-3d/examples/studio_demo.rs`'s own identical fix
+        // for the full variant mapping.
         let frame = match self.surface.get_current_texture() {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("surface error: {e:?}");
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            other => {
+                eprintln!("surface error: {other:?}");
                 self.surface.configure(&self.device, &self.config);
                 return;
             }

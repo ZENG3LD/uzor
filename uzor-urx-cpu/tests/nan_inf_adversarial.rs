@@ -9,8 +9,8 @@ use uzor_urx_cpu::{CpuBackend, Pixmap};
 
 const W: u32 = 64;
 const H: u32 = 32;
-const RED:   Color = Color { r: 255, g: 0, b: 0, a: 255 };
-const GREEN: Color = Color { r: 0, g: 255, b: 0, a: 255 };
+const RED:   Color = Color::from_rgba8(255, 0, 0, 255);
+const GREEN: Color = Color::from_rgba8(0, 255, 0, 255);
 
 fn render(scene: &Scene) -> Pixmap {
     let mut p = Pixmap::new(W, H);

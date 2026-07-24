@@ -238,6 +238,28 @@ pub fn configured_text_gamma_lut() -> &'static uzor_urx_core::text_gamma::TextGa
     })
 }
 
+/// Per-pixel clip test for [`draw_glyph_run`] — kept generic (a plain
+/// bounds rect + an optional sampler closure, not a hard dependency on
+/// any specific clip-stack TYPE) so this crate stays backend-agnostic.
+/// `uzor-urx-cpu::CpuBackend` is the one real caller, adapting its own
+/// `ClipStack` to this shape at the call site (`clip.current()` for
+/// `bounds`, `|px, py| clip.pixel_coverage(px, py)` for `mask`) rather
+/// than this crate depending on `uzor-urx-cpu` at all.
+pub struct GlyphClip<'a> {
+    /// Clip's current axis-aligned bounding rect in pixel space,
+    /// half-open per axis (`[x0, x1) x [y0, y1)`) — a cheap per-pixel
+    /// bbox test that alone is EXACT when the active clip is plain
+    /// rects (no rounded clip on the stack). `(x0, y0, x1, y1)`.
+    pub bounds: (f32, f32, f32, f32),
+    /// Per-pixel coverage sampler (`0..=255`), present only when a
+    /// rounded clip is active — mirrors every other CPU primitive's own
+    /// `use_mask = !clip.all_rect()` split (`fill_rect_aa`/
+    /// `stroke_rect_aa`/etc. all skip the equivalent per-pixel call
+    /// entirely for the common plain-rect-clip case, `bounds` alone
+    /// being exact there). `None` here is that same fast path.
+    pub mask: Option<&'a dyn Fn(i64, i64) -> u8>,
+}
+
 /// Composite a pre-shaped glyph run onto a premul RGBA8 pixel buffer.
 /// Caller supplies the buffer + width/height + pen origin. Each glyph
 /// is rasterised at the supplied font_size with subpx_x derived from
@@ -251,6 +273,17 @@ pub fn configured_text_gamma_lut() -> &'static uzor_urx_core::text_gamma::TextGa
 /// remaps every glyph's raw swash coverage byte through `lut[bin]`
 /// before the existing premultiply math — URX text-gamma compositing
 /// design, 2026-07-26, §2.4.
+///
+/// `clip` — `None` renders unclipped (every caller before 2026-07-24
+/// got exactly this; `uzor-urx-glyph/tests/smoke.rs`'s own direct
+/// calls still do). `Some(c)` honors `c.bounds` as a cheap bbox test
+/// per touched pixel, plus `c.mask` (if present) as a per-pixel
+/// coverage multiplier — the fix for the bug where `GlyphRun` was the
+/// only `uzor-urx-cpu` primitive that ignored `ClipStack` entirely
+/// (every other arm — `FillRect`/`StrokeRect`/`Line`/`FillPath`/
+/// `StrokePath`/`Image` — already threads `&clip` through; this arm's
+/// call into this crate carried no clip information at all before this
+/// param existed).
 pub fn draw_glyph_run(
     pixels:    &mut [u8],
     buf_w:     u32,
@@ -262,6 +295,7 @@ pub fn draw_glyph_run(
     font_size: f32,
     color:     [u8; 4],
     gamma_lut: Option<&uzor_urx_core::text_gamma::TextGammaLut>,
+    clip:      Option<GlyphClip<'_>>,
 ) -> Result<(), GlyphError> {
     let a = color[3] as u32;
     let premul_color = [
@@ -286,11 +320,24 @@ pub fn draw_glyph_run(
         for gy in 0..bm.height as i32 {
             let dy = dst_y0 + gy;
             if dy < 0 || dy as u32 >= buf_h { continue; }
+            if let Some(c) = &clip {
+                if (dy as f32) < c.bounds.1 || (dy as f32) >= c.bounds.3 { continue; }
+            }
             for gx in 0..bm.width as i32 {
                 let dx = dst_x0 + gx;
                 if dx < 0 || dx as u32 >= buf_w { continue; }
+                if let Some(c) = &clip {
+                    if (dx as f32) < c.bounds.0 || (dx as f32) >= c.bounds.2 { continue; }
+                }
                 let mut mask = bm.alpha[(gy as u32 * bm.width + gx as u32) as usize] as u32;
                 if mask == 0 { continue; }
+                if let Some(c) = &clip {
+                    if let Some(sampler) = c.mask {
+                        let mask_cov = sampler(dx as i64, dy as i64) as u32;
+                        mask = (mask * mask_cov + 127) / 255;
+                        if mask == 0 { continue; }
+                    }
+                }
                 if let (Some(lut), Some(bin)) = (gamma_lut, gamma_bin) {
                     mask = lut[bin][mask as usize] as u32;
                 }

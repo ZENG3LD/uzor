@@ -20,7 +20,7 @@ fn aligned_fill_rect_solid_inside() {
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(4.0, 4.0, 20.0, 20.0),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -39,7 +39,7 @@ fn fill_rect_half_alpha_premul() {
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(0.0, 0.0, 8.0, 8.0),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(255, 0, 0, 128)),
+        brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 128)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -58,7 +58,7 @@ fn aa_edges_have_partial_coverage() {
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(2.5, 2.5, 13.5, 13.5),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(255, 255, 255, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -84,7 +84,7 @@ fn clip_rect_excludes_outside() {
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(0.0, 0.0, 20.0, 20.0),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(0, 255, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(0, 255, 0, 255)),
         transform: Affine::IDENTITY,
     });
     scene.push(DrawCommand::PopClip);
@@ -105,7 +105,7 @@ fn stroke_rect_draws_4_bands() {
         rect: Rect::new(4.0, 4.0, 16.0, 16.0),
         radii: None,
         stroke: Stroke { width: 2.0, ..Stroke::default() },
-        brush: Brush::Solid(Color::rgba8(0, 0, 255, 255)),
+        brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -129,7 +129,7 @@ fn line_horizontal_paints_pixels() {
         from: Vec2 { x: 2.0, y: 10.0 },
         to:   Vec2 { x: 18.0, y: 10.0 },
         stroke: Stroke { width: 2.0, ..Stroke::default() },
-        brush: Brush::Solid(Color::rgba8(0, 255, 255, 255)),
+        brush: Brush::Solid(Color::from_rgba8(0, 255, 255, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -148,13 +148,13 @@ fn src_over_blend_red_then_blue() {
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(0.0, 0.0, 8.0, 8.0),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
         transform: Affine::IDENTITY,
     });
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(0.0, 0.0, 8.0, 8.0),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(0, 0, 255, 128)),
+        brush: Brush::Solid(Color::from_rgba8(0, 0, 255, 128)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();

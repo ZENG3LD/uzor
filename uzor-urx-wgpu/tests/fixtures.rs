@@ -549,6 +549,60 @@ pub fn glyph_run_two_letters() -> Scene {
     scene
 }
 
+/// `GlyphRun` under an active `PushClipRect` that PARTIALLY clips the
+/// text (Wave 7 tail clip fix, 2026-07-24: `uzor-urx-cpu`'s `GlyphRun`
+/// arm previously ignored `ClipStack` entirely — every other primitive
+/// — `FillRect`/`StrokeRect`/`Line`/`FillPath`/`StrokePath`/`Image` —
+/// already threaded `&clip` through it). Reuses
+/// [`glyph_run_two_letters`] wholesale (byte-identical font/glyph/pen
+/// geometry, so its own three already-proven "deep in stroke, no AA
+/// edge" probe points — see `tests/parity.rs::parity_glyph_run_two_letters`'s
+/// own doc comment — carry over unchanged) and splices in a clip rect
+/// whose right edge (`x=100`) falls INSIDE glyph 37's own ink, between
+/// its two known probes `(97,105)` (kept visible, `x=97 < 100`) and
+/// `(102,110)` (clipped away, `x=102 >= 100`) — genuinely partially
+/// clipping that glyph rather than fully hiding or fully showing it.
+/// A plain rect clip is a hard binary scissor test on BOTH backends
+/// (`ClipStack::coverage`'s `Rect` arm: `0` or `255`, no AA at all) —
+/// unlike a rounded clip, there is no extra boundary-AA divergence
+/// source here, so this fixture stays on the base `_TEXT` tolerance
+/// tier (same as the unclipped fixture) rather than needing the wider
+/// `_CLIP` tier.
+pub fn glyph_run_clipped_by_rect() -> Scene {
+    let mut scene = glyph_run_two_letters();
+    scene.commands.insert(1, DrawCommand::PushClipRect {
+        rect: Rect::new(0.0, 0.0, 100.0, CANVAS as f64),
+        transform: Affine::IDENTITY,
+    });
+    scene.push(DrawCommand::PopClip);
+    scene
+}
+
+/// `GlyphRun` under an active `PushClipRoundedRect` (Wave 7 tail clip
+/// fix) — same two-letter scene, wrapped in the SAME clip shape
+/// `rounded_clip_content_crosses_corner` already uses
+/// (`RoundedRect(50.5, 50.5, 200.5, 200.5, 40.0)`), chosen so its
+/// top-left corner's own cut genuinely overlaps glyph 36's ink —
+/// unlike a clip shape positioned to avoid the glyphs entirely, this
+/// one has real teeth: a per-pixel diff scan against the PRE-FIX code
+/// (a throwaway scratch test, since removed) found a stable,
+/// fully-saturated (`diff=255`) divergence region there — e.g.
+/// `(47, 115)`: `cpu=[255,255,255,255]` (raw unclipped glyph ink)
+/// vs `native=[0,0,0,255]` (correctly clipped background). See
+/// `tests/parity.rs::parity_glyph_run_clipped_by_rounded_rect`'s own
+/// doc comment for the full probe derivation (that `(47, 115)` point,
+/// plus 3 more sanity probes reused from [`glyph_run_two_letters`]
+/// proving the REST of the run still composites normally).
+pub fn glyph_run_clipped_by_rounded_rect() -> Scene {
+    let mut scene = glyph_run_two_letters();
+    scene.commands.insert(1, DrawCommand::PushClipRoundedRect {
+        rect: RoundedRect::new(50.5, 50.5, 200.5, 200.5, 40.0),
+        transform: Affine::IDENTITY,
+    });
+    scene.push(DrawCommand::PopClip);
+    scene
+}
+
 // ── Wave 3 Commit 4: rounded-clip + blend-layer fixtures ──────────
 //
 // `docs/uzor-engines/plans/urx-wave3-clip-blend-design-2026-07-25.md`

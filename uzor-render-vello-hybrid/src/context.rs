@@ -898,11 +898,21 @@ impl TextRenderer for VelloHybridRenderContext {
             TextAlign::Right  => -text_width,
             _                 => 0.0,
         };
+        // Exhaustive match (no `_` wildcard) — `TextBaseline::Alphabetic`
+        // used to silently fall into a wildcard arm that applied
+        // `Middle`'s offset, i.e. an extra `size * 0.35` shift downward.
+        // "Alphabetic" means the caller's own `y` coordinate ALREADY IS
+        // the baseline (the standard Canvas2D/CSS definition) — the
+        // correct offset is `0.0`, matching `Bottom`'s own value, not
+        // `Middle`'s. `uzor-render-vello-cpu` and `uzor-render-urx` had
+        // the IDENTICAL bug (fixed 2026-07-24 during the typography
+        // calibration fixture pass) — this crate's own copy was found
+        // and closed the same way in the Wave 7 tail tech-debt sweep.
         let y_off = match self.text_baseline {
-            TextBaseline::Top    => font_info.size * 0.8,
-            TextBaseline::Middle => font_info.size * 0.35,
-            TextBaseline::Bottom => 0.0,
-            _                    => font_info.size * 0.35,
+            TextBaseline::Top        => font_info.size * 0.8,
+            TextBaseline::Middle     => font_info.size * 0.35,
+            TextBaseline::Bottom     => 0.0,
+            TextBaseline::Alphabetic => 0.0,
         };
 
         let Some(primary_ref) = to_font_ref(primary_font) else { return };
@@ -937,7 +947,11 @@ impl TextRenderer for VelloHybridRenderContext {
                 };
                 s.set_paint(if is_color_emoji { white } else { fill_color });
                 let glyphs = run.iter().map(|g| Glyph { id: g.glyph_id, x: g.x, y: 0.0 });
-                s.glyph_run(resources, font).font_size(font_size).hint(false).normalized_coords(&[]).fill_glyphs(glyphs);
+                // Aligned to `uzor-render-vello-gpu`'s own convention
+                // (`.hint(!is_color_emoji)`) — same family, same fix as
+                // `uzor-render-vello-cpu`'s identical `.hint(false)`
+                // found in the Wave 7 tail tech-debt sweep (2026-07-24).
+                s.glyph_run(resources, font).font_size(font_size).hint(!is_color_emoji).normalized_coords(&[]).fill_glyphs(glyphs);
             }
             s.set_transform(self.transform);
         }

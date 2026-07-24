@@ -20,7 +20,7 @@ fn first_render_is_miss_second_is_hit_after_transform_only() {
     let mut e = UrxEngine::new_cpu(200, 200);
     let id = RegionId(1);
     e.upsert_region(id,
-        rect_scene(20.0, 20.0, 60.0, 60.0, Color::rgba8(255, 0, 0, 255)),
+        rect_scene(20.0, 20.0, 60.0, 60.0, Color::from_rgba8(255, 0, 0, 255)),
         Rect::new(20.0, 20.0, 80.0, 80.0),
         RenderCadence::Static);
 
@@ -43,7 +43,7 @@ fn high_hz_region_bypasses_cache() {
     let mut e = UrxEngine::new_cpu(200, 200);
     let id = RegionId(1);
     e.upsert_region(id,
-        rect_scene(0.0, 0.0, 20.0, 20.0, Color::rgba8(0, 255, 0, 255)),
+        rect_scene(0.0, 0.0, 20.0, 20.0, Color::from_rgba8(0, 255, 0, 255)),
         Rect::new(0.0, 0.0, 20.0, 20.0),
         RenderCadence::HighHz);
 
@@ -66,7 +66,7 @@ fn cache_eviction_when_over_budget() {
         let id = RegionId(i);
         let x = (i as f64) * 200.0;
         e.upsert_region(id,
-            rect_scene(x, 0.0, 100.0, 100.0, Color::rgba8(255, 255, 255, 255)),
+            rect_scene(x, 0.0, 100.0, 100.0, Color::from_rgba8(255, 255, 255, 255)),
             Rect::new(x, 0.0, x + 100.0, 100.0),
             RenderCadence::Static);
         e.render(RenderTarget::Cpu(&mut p)).unwrap();
@@ -83,7 +83,7 @@ fn content_dirty_re_rasters_and_replaces_cache() {
     let mut e = UrxEngine::new_cpu(100, 100);
     let id = RegionId(1);
     e.upsert_region(id,
-        rect_scene(10.0, 10.0, 30.0, 30.0, Color::rgba8(255, 0, 0, 255)),
+        rect_scene(10.0, 10.0, 30.0, 30.0, Color::from_rgba8(255, 0, 0, 255)),
         Rect::new(10.0, 10.0, 40.0, 40.0),
         RenderCadence::Static);
 
@@ -94,7 +94,7 @@ fn content_dirty_re_rasters_and_replaces_cache() {
     // Now upsert a NEW scene for the same region — should re-raster
     // (cache miss again) and replace the cache entry.
     e.upsert_region(id,
-        rect_scene(10.0, 10.0, 30.0, 30.0, Color::rgba8(0, 255, 0, 255)),
+        rect_scene(10.0, 10.0, 30.0, 30.0, Color::from_rgba8(0, 255, 0, 255)),
         Rect::new(10.0, 10.0, 40.0, 40.0),
         RenderCadence::Static);
     let s2 = e.render(RenderTarget::Cpu(&mut p)).unwrap();
@@ -110,7 +110,7 @@ fn invalidate_all_clears_cache() {
         let id = RegionId(i);
         e.upsert_region(id,
             rect_scene((i as f64) * 20.0, 0.0, 18.0, 18.0,
-                       Color::rgba8(255, 0, 0, 255)),
+                       Color::from_rgba8(255, 0, 0, 255)),
             Rect::new((i as f64) * 20.0, 0.0, (i as f64) * 20.0 + 18.0, 18.0),
             RenderCadence::Static);
     }

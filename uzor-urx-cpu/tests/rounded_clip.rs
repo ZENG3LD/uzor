@@ -22,7 +22,7 @@ fn rounded_clip_excludes_corners() {
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(0.0, 0.0, 40.0, 40.0),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(0, 255, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(0, 255, 0, 255)),
         transform: Affine::IDENTITY,
     });
     scene.push(DrawCommand::PopClip);
@@ -53,7 +53,7 @@ fn rounded_clip_pop_restores() {
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(10.0, 10.0, 30.0, 30.0),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(255, 0, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
         transform: Affine::IDENTITY,
     });
     scene.push(DrawCommand::PopClip);
@@ -61,7 +61,7 @@ fn rounded_clip_pop_restores() {
     scene.push(DrawCommand::FillRect {
         rect: Rect::new(0.0, 0.0, 5.0, 5.0),
         radii: None,
-        brush: Brush::Solid(Color::rgba8(0, 255, 0, 255)),
+        brush: Brush::Solid(Color::from_rgba8(0, 255, 0, 255)),
         transform: Affine::IDENTITY,
     });
     s().render(&scene, &mut p).unwrap();
@@ -93,7 +93,7 @@ fn rounded_clip_mask_is_cached() {
         sc.push(DrawCommand::FillRect {
             rect: Rect::new(0.0, 0.0, 50.0, 50.0),
             radii: None,
-            brush: Brush::Solid(Color::rgba8(50, 100, 200, 255)),
+            brush: Brush::Solid(Color::from_rgba8(50, 100, 200, 255)),
             transform: Affine::IDENTITY,
         });
         sc.push(DrawCommand::PopClip);

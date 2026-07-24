@@ -12,7 +12,7 @@
 //! uzor-urx-cpu/` was empty before this commit's changes; the failure
 //! is present on the already-committed HEAD, nothing needed stashing).
 //! Root cause: a stale `peniko`/`color` crate API
-//! (`Color::rgba8(...)` and direct `.r`/`.g`/`.b`/`.a` field access —
+//! (`Color::from_rgba8(...)` and direct `.r`/`.g`/`.b`/`.a` field access —
 //! neither exists on the pinned `color = "0.3.3"` `AlphaColor`; the
 //! current API is `Color::from_rgba8(...)` / `.to_rgba8()`, which is
 //! what every OTHER healthy file in this workspace already uses) plus,

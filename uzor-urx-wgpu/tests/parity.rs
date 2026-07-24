@@ -581,6 +581,78 @@ fn parity_glyph_run_two_letters() {
     });
 }
 
+/// Wave 7 tail clip fix (2026-07-24): `GlyphRun` under an active
+/// `PushClipRect` that PARTIALLY clips one glyph — see
+/// `fixtures::glyph_run_clipped_by_rect`'s own doc comment for the
+/// exact probe derivation. Before the fix, `uzor-urx-cpu` painted
+/// glyph 37's ink straight through the clip boundary while the native
+/// backend correctly scissored it — this fixture's `(102, 110)` probe
+/// (just past the clip's `x=100` edge) is exactly the pixel that
+/// would have caught that: CPU would have shown glyph ink there,
+/// native plain background, a real (not tolerance-noise) divergence.
+/// Base `_TEXT` tier — a plain rect clip is a hard binary cut on both
+/// backends, no extra AA divergence source (see that fixture's own
+/// doc comment).
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_glyph_run_clipped_by_rect() {
+    run_case(ParityCase {
+        name: "glyph_run_clipped_by_rect",
+        scene: fixtures::glyph_run_clipped_by_rect(),
+        // (56, 97): glyph 36, fully inside the clip — visible ink on
+        // both backends. (97, 105): glyph 37, just inside the clip
+        // edge (x=97 < 100) — still visible. (102, 110): glyph 37,
+        // just past the clip edge (x=102 >= 100) — must be plain
+        // background on BOTH backends; this is the exact probe a
+        // regression of the bug this fixture exists for would flip.
+        interior_probes: &[(56, 97), (97, 105), (102, 110)],
+        edge_tolerance: CHANNEL_TOLERANCE_EDGE_TEXT,
+        max_differing_fraction: MAX_DIFFERING_FRACTION_TEXT,
+    });
+}
+
+/// Wave 7 tail clip fix: `GlyphRun` under an active
+/// `PushClipRoundedRect` — see `fixtures::glyph_run_clipped_by_rounded_rect`'s
+/// own doc comment. Proves CPU's `ClipStack` MASK-sampling path (a
+/// rounded clip, unlike a plain rect, pushes a `ClipEntry::Mask` — the
+/// analytic SDF coverage `uzor-urx-glyph::GlyphClip::mask` now samples
+/// per-pixel) agrees with the native stencil path for glyph compositing
+/// specifically, not just the plain-rect-bounds case
+/// `parity_glyph_run_clipped_by_rect` above already covers. This fixture
+/// reuses `rounded_clip_content_crosses_corner`'s own exact, already-
+/// proven clip shape (`RoundedRect(50.5, 50.5, 200.5, 200.5, 40.0)`),
+/// positioned so its top-left corner cut genuinely overlaps glyph 36's
+/// own ink — confirmed empirically (a throwaway per-pixel diff scan
+/// against the PRE-FIX code, since removed) to produce a stable,
+/// fully-saturated divergence region (`diff=255`, e.g. `cpu=[255;3]`
+/// vs `native=[0;3]` at `(47,115)`) before this Wave 7 tail commit;
+/// after the fix, both backends agree there too. Probes:
+/// - `(56, 97)`: outside the corner's own r×r test box at all (governed
+///   by the plain left-edge test only) — comfortably visible, unaffected
+///   by the corner cut, a sanity check that fixes to `_TEXT` tier
+///   text-only divergence, not clip-only.
+/// - `(97, 105)`, `(102, 110)`: `~16-23px` from the corner center,
+///   deep inside the circle — visible, another sanity check that the
+///   REST of the run still composites normally under an active mask.
+/// - `(47, 115)`: inside the corner's own cut region — must be plain
+///   BACKGROUND on both backends; this is the exact probe a regression
+///   of the fix would flip back to showing raw (unclipped) glyph ink.
+/// Uses the `_CLIP` tolerance tier for the whole-image sweep (this
+/// fixture DOES cross a real rounded-corner boundary, unlike the
+/// plain-rect-clip fixture above) — same reasoning as
+/// `rounded_clip_content_crosses_corner`'s own tier choice.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_glyph_run_clipped_by_rounded_rect() {
+    run_case(ParityCase {
+        name: "glyph_run_clipped_by_rounded_rect",
+        scene: fixtures::glyph_run_clipped_by_rounded_rect(),
+        interior_probes: &[(56, 97), (97, 105), (102, 110), (47, 115)],
+        edge_tolerance: CHANNEL_TOLERANCE_EDGE_CLIP,
+        max_differing_fraction: MAX_DIFFERING_FRACTION_CLIP,
+    });
+}
+
 /// URX text-gamma design (2026-07-26), §6 Commit 1 gate / §8 testing
 /// plan: re-run the SAME Wave 2 glyph fixture with
 /// `UrxConfig::text_gamma_enabled: true` on BOTH the CPU and native
