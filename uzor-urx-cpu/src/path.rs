@@ -138,6 +138,50 @@ pub(crate) fn fill_path_aa(
     color:  Color,
     transform: &Affine,
 ) {
+    let premul = color_to_premul(color);
+    fill_path_generic(pixmap, clip, path, rule, transform, |_, _| premul);
+}
+
+/// Same scanline/coverage/AA machinery as [`fill_path_aa`] (see this
+/// module's own doc comment, incl. [`VERTICAL_SUBSAMPLES`]'s 4x
+/// vertical supersampling), but sources the fill colour PER PIXEL from
+/// a [`crate::gradient::GradientSampler`] instead of one flat
+/// premultiplied colour — coordinator's 2026-07-25 fix: a `FillPath`
+/// with a `Brush::Gradient` used to flatten unconditionally to the
+/// brush's first stop (`color::brush_to_color`), the same fallback
+/// EVERY non-`FillRect` primitive on this backend still uses for a
+/// gradient brush; `FillRect` was the only command that ever consulted
+/// a real gradient. The gradient colour is evaluated per PIXEL (not
+/// per sub-scanline) — coverage and colour are independent concerns,
+/// the same split `fill_rect_gradient_aa` already uses.
+pub(crate) fn fill_path_gradient_aa(
+    pixmap: &mut Pixmap,
+    clip:   &ClipStack,
+    path:   &BezPath,
+    rule:   FillRule,
+    gradient: &uzor_urx_core::math::Gradient,
+    transform: &Affine,
+) {
+    let sampler = crate::gradient::GradientSampler::new(gradient, transform);
+    fill_path_generic(pixmap, clip, path, rule, transform, |cx, cy| sampler.sample_premul(cx, cy));
+}
+
+/// Shared scanline fill core for [`fill_path_aa`]/[`fill_path_gradient_aa`]
+/// — everything through per-pixel COVERAGE (the AET scan, the 4x
+/// vertical supersampling, horizontal `axis_coverage` AA, the
+/// rounded-clip mask consult) is IDENTICAL for a solid or gradient
+/// fill; only the colour differs, resolved by `color_at` once per
+/// touched pixel at its DEVICE-space centre (`px + 0.5, py + 0.5`) —
+/// never per sub-scanline, matching `fill_rect_gradient_aa`'s own
+/// "coverage and colour are orthogonal" structure.
+fn fill_path_generic<F: FnMut(f32, f32) -> [u8; 4]>(
+    pixmap: &mut Pixmap,
+    clip:   &ClipStack,
+    path:   &BezPath,
+    rule:   FillRule,
+    transform: &Affine,
+    mut color_at: F,
+) {
     if path.elements().is_empty() { return; }
 
     let k_xform = KAffine::new(transform.as_coeffs());
@@ -216,7 +260,6 @@ pub(crate) fn fill_path_aa(
     }
     if all_edges.is_empty() { return; }
 
-    let premul = color_to_premul(color);
     let cur_clip = clip.current();
     let clip_x0 = cur_clip.x0;
     let clip_x1 = cur_clip.x1;
@@ -312,6 +355,7 @@ pub(crate) fn fill_path_aa(
                 cov = ((cov as u32 * m as u32 + 127) / 255) as u8;
                 if cov == 0 { continue; }
             }
+            let premul = color_at(px as f32 + 0.5, py as f32 + 0.5);
             let src = premul_scale(premul, cov);
             pixmap.blend_pixel(px as u32, py as u32, src);
         }

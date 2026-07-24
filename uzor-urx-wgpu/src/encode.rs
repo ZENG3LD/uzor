@@ -1,5 +1,16 @@
 //! `Scene` → native-pipeline instance encoder.
 //!
+//! **Coordinator fix, 2026-07-25**: `FillPath`/`StrokePath`/
+//! `StrokeRect` + `Brush::Gradient` were already routed through
+//! `emit_gradient_mesh` (Wave 4), but Linear gradients of 3+ stops
+//! rendered wrong on ALL of them (including `FillRect`) — see
+//! `transform_gradient_params`'s own doc comment for the root cause
+//! (per-vertex barycentric interpolation silently skips interior
+//! stops) and the fix (Linear now joins Radial/Sweep on the
+//! per-fragment LUT path). The historical Wave 1-4 narrative below is
+//! preserved as written; the paragraphs it still applies to are
+//! unaffected by this fix.
+//!
 //! Wave 1 Commit 1 covered `FillRect`/`StrokeRect` (`Brush::Solid` —
 //! gradient/image degrade to a first-stop/transparent solid, counted).
 //! Commit 2 added `Line` and the painter's-order batching machinery
@@ -157,25 +168,28 @@
 //! Stop interpolation: CPU builds a dense 256-entry LUT by lerping
 //! PREMULTIPLIED sRGB stop bytes per-pixel
 //! (`uzor-urx-cpu/src/gradient.rs`'s module doc: "interpolate in
-//! linear-premul space"). This pipeline evaluates STRAIGHT
-//! (non-premultiplied) colour at each tessellation VERTEX only and
-//! lets the rasteriser's barycentric interpolation carry it across
-//! each triangle, premultiplying once in the fragment shader — the
-//! same "straight-in, premultiply-in-shader" convention Quad/Line
-//! already use. Straight-lerp and premultiplied-lerp are
-//! mathematically IDENTICAL when alpha is constant across the
-//! gradient (premultiplied = straight × a constant, and lerp commutes
-//! with constant scaling) — `linear_gradient_rect`'s fixture therefore
-//! uses two fully-opaque stops, sidestepping this real algorithmic
-//! difference cleanly rather than hoping the tolerance budget absorbs
-//! it. A future gradient with varying alpha would need this
-//! documented and probed more carefully (design risk 5 already
-//! anticipates exactly this).
+//! linear-premul space"). **UPDATE, coordinator 2026-07-25**: this
+//! pipeline used to evaluate STRAIGHT colour at each tessellation
+//! VERTEX only (Linear kind) and let the rasteriser's barycentric
+//! interpolation carry it across each triangle — described here as
+//! "mathematically IDENTICAL to CPU's LUT lerp when alpha is
+//! constant." That claim is true ONLY for a 2-stop gradient (where
+//! `color(t)` genuinely is one affine function); it silently breaks
+//! for 3+ stops, because a rect's own tessellation carries no vertex
+//! at any interior stop boundary, so barycentric interpolation
+//! reproduces only a straight fade between whichever two colours
+//! happen to sit at the shape's own corners — every intermediate stop
+//! (a common case: any multi-hue colour-scale ramp) silently vanishes.
+//! Linear now samples the SAME per-fragment 256-entry LUT
+//! Radial/Sweep already use (`transform_gradient_params`'s own doc
+//! comment has the full writeup + the measured before/after) — this
+//! closes the gap AND makes CPU/GPU byte-closer (same LUT bytes, same
+//! rounded-index sampling, no separate straight/premultiplied
+//! interpolation regime to reconcile).
 
 use kurbo::Shape as _;
-use peniko::LinearGradientPosition;
 use uzor_urx_core::math::{
-    Affine, BezPath, BlendMode, Brush, Color, ColorStops, Compose, Extend, Gradient, GradientKind, Mix, Point, Rect,
+    Affine, BezPath, BlendMode, Brush, Color, Compose, Extend, Gradient, GradientKind, Mix, Point, Rect,
     RoundedRect, RoundedRectRadii, Vec2,
 };
 use uzor_urx_core::metrics_keys::{KEY_RENDER_GLYPH_INSTANCES, KEY_RENDER_PRIMITIVES, KEY_RENDER_SKIPPED_NONFINITE};
@@ -317,9 +331,11 @@ pub(crate) struct EncodedFrame {
     /// Mask-write geometry (design §2/§4) — a SEPARATE buffer from
     /// `triangles`; `StencilMask` batches index into this one.
     pub(crate) stencil_masks: Vec<TriInstance>,
-    /// Radial/Sweep gradient-mesh triangles (Wave 4 Commit 3, design
-    /// §2.3) — `BatchKind::Gradient` batches index into this one.
-    /// Linear gradients stay on `triangles` (unchanged, design §2.1).
+    /// Linear/Radial/Sweep gradient-mesh triangles (Wave 4 Commit 3,
+    /// design §2.3; Linear joined Radial/Sweep here 2026-07-25 — see
+    /// `transform_gradient_params`'s own doc comment) —
+    /// `BatchKind::Gradient` batches index into this one. A
+    /// gradient-brushed shape never lands in `triangles` any more.
     pub(crate) gradients: Vec<GradientInstance>,
     /// `DrawCommand::Image` quads (Wave 4 Commit 3, design §4.3) —
     /// `BatchKind::Image(id)` batches index into this one.
@@ -1411,99 +1427,7 @@ fn rect_bez_path(rect: Rect, radii: &Option<[f32; 4]>) -> BezPath {
     path
 }
 
-/// Fold a raw gradient parameter `t` into `[0, 1]` per the spread mode
-/// — copied formula-for-formula from `uzor-urx-cpu::gradient::apply_spread`
-/// so a future non-`Pad` fixture still matches CPU's folding exactly.
-fn apply_spread(t: f32, mode: Extend) -> f32 {
-    match mode {
-        Extend::Pad => t.clamp(0.0, 1.0),
-        Extend::Repeat => {
-            let f = t - t.floor();
-            if f < 0.0 {
-                f + 1.0
-            } else {
-                f
-            }
-        }
-        Extend::Reflect => {
-            let m = (t.rem_euclid(2.0) - 1.0).abs();
-            1.0 - m
-        }
-    }
-}
-
-/// Straight (non-premultiplied) sRGB byte quad for a stop — same
-/// conversion `uzor-urx-cpu::gradient::stop_rgba8` uses, minus the
-/// premultiply step (this crate premultiplies once in the fragment
-/// shader; see this module's doc comment).
-fn stop_rgba8(stop: &peniko::ColorStop) -> [u8; 4] {
-    let p = stop.color.to_alpha_color::<peniko::color::Srgb>().to_rgba8();
-    [p.r, p.g, p.b, p.a]
-}
-
-#[inline]
-fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    let r = (a as f32) * (1.0 - t) + (b as f32) * t;
-    r.round().clamp(0.0, 255.0) as u8
-}
-
-/// Sample a stop sequence at parameter `t` — same bracket-search +
-/// lerp shape as `uzor-urx-cpu::gradient::sample_stops`, but returns a
-/// STRAIGHT (non-premultiplied) colour (see this module's doc comment
-/// for why that's the right choice for this pipeline's convention).
-fn sample_gradient_straight(stops: &ColorStops, t: f32) -> Color {
-    if stops.is_empty() {
-        return Color::from_rgba8(0, 0, 0, 0);
-    }
-    let last = stops.len() - 1;
-    if stops.len() == 1 || t <= stops[0].offset {
-        let [r, g, b, a] = stop_rgba8(&stops[0]);
-        return Color::from_rgba8(r, g, b, a);
-    }
-    if t >= stops[last].offset {
-        let [r, g, b, a] = stop_rgba8(&stops[last]);
-        return Color::from_rgba8(r, g, b, a);
-    }
-    for w in stops.windows(2) {
-        let s0 = &w[0];
-        let s1 = &w[1];
-        if t >= s0.offset && t <= s1.offset {
-            let span = s1.offset - s0.offset;
-            let local = if span.abs() < 1e-9 { 0.0 } else { (t - s0.offset) / span };
-            let c0 = stop_rgba8(s0);
-            let c1 = stop_rgba8(s1);
-            return Color::from_rgba8(
-                lerp_u8(c0[0], c1[0], local),
-                lerp_u8(c0[1], c1[1], local),
-                lerp_u8(c0[2], c1[2], local),
-                lerp_u8(c0[3], c1[3], local),
-            );
-        }
-    }
-    let [r, g, b, a] = stop_rgba8(&stops[last]);
-    Color::from_rgba8(r, g, b, a)
-}
-
-/// Evaluate the gradient colour at a LOCAL-space mesh vertex by
-/// projecting it onto the gradient axis (design §5).
-fn gradient_vertex_color(
-    p: [f32; 2],
-    pos: &LinearGradientPosition,
-    axis: (f64, f64),
-    axis_len_sq: f64,
-    stops: &ColorStops,
-    extend: Extend,
-) -> Color {
-    let t_raw = if axis_len_sq < 1e-9 {
-        0.0
-    } else {
-        ((p[0] as f64 - pos.start.x) * axis.0 + (p[1] as f64 - pos.start.y) * axis.1) / axis_len_sq
-    };
-    let t = apply_spread(t_raw as f32, extend);
-    sample_gradient_straight(stops, t)
-}
-
-/// Device-space Radial/Sweep gradient parameters, ready to bake
+/// Device-space Linear/Radial/Sweep gradient parameters, ready to bake
 /// straight into a `GradientInstance` (design §2.3/§2.4). Computed
 /// ONCE per draw command, not per vertex/fragment.
 struct GradientDeviceParams {
@@ -1513,12 +1437,32 @@ struct GradientDeviceParams {
     kind_extend: u32,
 }
 
-/// Transform a Radial/Sweep gradient's own parameters through the SAME
-/// full-affine math CPU's Commit-1 gradient-axis fix uses
+/// Transform a Linear/Radial/Sweep gradient's own parameters through
+/// the SAME full-affine math CPU's Commit-1 gradient-axis fix uses
 /// (`transform_point_full`/`affine_scale_factors`/`affine_rotation_angle`
-/// — design §0.1b/§2.4, "commit 1 parity"). `GradientKind::Linear` is
-/// unreachable here — `emit_gradient_mesh`'s own Linear arm returns
-/// before this function is ever called for it.
+/// — design §0.1b/§2.4, "commit 1 parity").
+///
+/// **Linear join, coordinator's own fix (2026-07-25)**: design §2.1
+/// kept Linear on a per-VERTEX `TriInstance` colour + barycentric
+/// interpolation, reasoning "barycentric interpolation of an affine
+/// function is exact." That reasoning is only true when `color(t)`
+/// ITSELF is affine — a straight 2-stop lerp. For a gradient with 3+
+/// stops (e.g. an OKLCH colour-scale ramp), `color(t)` is
+/// PIECEWISE-affine, and a rect's own tessellation (typically just its
+/// 4 corners / 2 triangles) carries no vertex at any interior stop
+/// boundary — the rasteriser then linearly interpolates only between
+/// whatever two corner colours happen to exist, silently skipping
+/// every intermediate hue. Measured directly: a 12-stop linear
+/// gradient painted through `FillPath` (`uzor-figures`' colorbar
+/// widget) rendered as a flat top-to-bottom fade through only the
+/// first/last stop's hues on this pipeline, while CPU (`uzor-urx-cpu`,
+/// pixel-exact LUT sampling) and every other backend showed the true
+/// yellow→green→cyan→navy ramp. Linear now joins Radial/Sweep on the
+/// SAME per-FRAGMENT LUT path (`emit_gradient_lut_triangles`) — `t` is
+/// still an affine function of position for Linear, so per-fragment
+/// eval is not merely "also correct," it's free of the LUT's 256-level
+/// quantization band Radial/Sweep already accept, and now correctly
+/// samples every stop regardless of tessellation coarseness.
 ///
 /// **Commit 3→4 asymmetry, now CLOSED**: Commit 3 computed these
 /// params via full affine while the TESSELLATED MESH these params
@@ -1529,7 +1473,7 @@ struct GradientDeviceParams {
 /// upgrade makes `project_local` apply the SAME full affine this
 /// function already used, so shape and gradient field now rotate
 /// together — this function's own math didn't need to change at all,
-/// exactly as anticipated.
+/// exactly as anticipated. Linear's join above inherits this for free.
 fn transform_gradient_params(kind: &GradientKind, extend: Extend, transform: &Affine) -> GradientDeviceParams {
     let extend_bits: u32 = match extend {
         Extend::Pad => 0,
@@ -1558,16 +1502,31 @@ fn transform_gradient_params(kind: &GradientKind, extend: Extend, transform: &Af
                 kind_extend: 1u32 | (extend_bits << 2),
             }
         }
-        GradientKind::Linear(_) => unreachable!(
-            "Linear stays on the per-vertex TriInstance path — emit_gradient_mesh's own Linear arm returns \
-             before transform_gradient_params is ever called for it"
-        ),
+        GradientKind::Linear(pos) => {
+            // p0 = device-space start; (p1, p2) = device-space axis
+            // vector (end - start) — the fragment shader recomputes
+            // `axis_len_sq = dot(axis, axis)` itself rather than
+            // carrying a 5th float, since `GradientInstance` has
+            // exactly 4 spare floats after `v0`/`v1`/`v2` (design
+            // §2.3's fixed 64-byte layout; see `GradientInstance`'s own
+            // doc comment).
+            let start = transform_point_full(transform, pos.start);
+            let end = transform_point_full(transform, pos.end);
+            GradientDeviceParams {
+                p0: [start.x as f32, start.y as f32],
+                p1: (end.x - start.x) as f32,
+                p2: (end.y - start.y) as f32,
+                kind_extend: 2u32 | (extend_bits << 2), // kind bits = 2 (Linear)
+            }
+        }
     }
 }
 
 /// Shared "resolve a LUT row, then emit one `GradientInstance` per
-/// mesh triangle" tail for BOTH Radial and Sweep — factored out so
-/// `emit_gradient_mesh`'s per-kind arms only need their own
+/// mesh triangle" tail for all three gradient kinds (Linear/Radial/
+/// Sweep, coordinator's 2026-07-25 Linear join — see
+/// `transform_gradient_params`'s own doc comment for why) — factored
+/// out so `emit_gradient_mesh`'s per-kind arms only need their own
 /// kind-specific pre-check (Radial's focal-degrade counter) before
 /// falling into this common path.
 ///
@@ -1576,8 +1535,8 @@ fn transform_gradient_params(kind: &GradientKind, extend: Extend, transform: &Af
 /// the full rationale) — a defensive-only, production-unreachable
 /// state (`NativeUrxRenderer::render_into_encoder` always supplies
 /// `Some`) that exists purely so this module's ~30+ device-free unit
-/// tests (none of which exercise Radial/Sweep) don't need a headless
-/// GPU device just to call `encode_scene`.
+/// tests (none of which build a real `GradientLutAtlas`) don't need a
+/// headless GPU device just to call `encode_scene`.
 ///
 /// **LUT full this frame** (`get_or_insert` returns `None` — every row
 /// already touched this frame, design §2.2's never-evict-this-frame
@@ -1623,12 +1582,13 @@ fn emit_gradient_lut_triangles(
 /// as the single entry point every gradient-brushed, tessellated draw
 /// command routes through (design §2.4): `FillRect`, `FillPath`,
 /// `StrokePath`, `StrokeRect` (design §2.5's routing table — all 4 now
-/// get real Radial/Sweep, not just Linear-on-FillRect). Dispatches per
-/// `gradient.kind`: Linear stays on the EXISTING per-vertex `TriInstance`
-/// path, completely unchanged (design §2.1 — barycentric interpolation
-/// of an affine function is mathematically exact, migrating it would
-/// be pure churn); Radial/Sweep go through the NEW per-triangle
-/// `GradientInstance` + per-fragment LUT eval (design §2.3).
+/// get real Linear/Radial/Sweep). Dispatches through the SAME
+/// per-triangle `GradientInstance` + per-fragment LUT eval for all 3
+/// kinds (design §2.3) — Linear no longer takes a separate per-vertex
+/// `TriInstance` path (coordinator's 2026-07-25 fix, see
+/// `transform_gradient_params`'s own doc comment for the multi-stop
+/// undersampling bug this closes; Radial's own focal-degrade counter
+/// stays the one kind-specific pre-check).
 fn emit_gradient_mesh(
     frame: &mut EncodedFrame,
     lut: Option<&mut GradientLutAtlas>,
@@ -1637,47 +1597,21 @@ fn emit_gradient_mesh(
     transform: &Affine,
     clip_rect: [f32; 4],
 ) {
-    match &gradient.kind {
-        GradientKind::Linear(pos) => {
-            let axis = (pos.end.x - pos.start.x, pos.end.y - pos.start.y);
-            let axis_len_sq = axis.0 * axis.0 + axis.1 * axis.1;
-
-            for tri in &mesh.triangles {
-                let c0 = gradient_vertex_color(tri[0], pos, axis, axis_len_sq, &gradient.stops, gradient.extend);
-                let c1 = gradient_vertex_color(tri[1], pos, axis, axis_len_sq, &gradient.stops, gradient.extend);
-                let c2 = gradient_vertex_color(tri[2], pos, axis, axis_len_sq, &gradient.stops, gradient.extend);
-                frame.push_triangle(TriInstance {
-                    v0: project_local(tri[0], transform),
-                    v1: project_local(tri[1], transform),
-                    v2: project_local(tri[2], transform),
-                    color0: packed_color(c0),
-                    color1: packed_color(c1),
-                    color2: packed_color(c2),
-                    _pad0: 0.0,
-                    clip_rect,
-                });
-            }
-        }
-        GradientKind::Radial(pos) => {
-            // Focal-vs-concentric check at ENCODE TIME (design §2.6) —
-            // the identical formula CPU's Commit-1 fix uses, so the
-            // SAME counter fires under the SAME condition on both
-            // backends: genuine byte-parity, not "both wrong in the
-            // same direction by coincidence." UNPREFIXED — a shared,
-            // backend-agnostic label (matches CPU's own
-            // `gradient_radial_focal_degraded`, never
-            // `native_gradient_radial_focal_degraded`).
-            let dx_c = (pos.end_center.x - pos.start_center.x).abs();
-            let dy_c = (pos.end_center.y - pos.start_center.y).abs();
-            if dx_c > 0.5 || dy_c > 0.5 || pos.start_radius.abs() > 0.5 {
-                degrade("gradient_radial_focal_degraded");
-            }
-            emit_gradient_lut_triangles(frame, lut, mesh, gradient, transform, clip_rect);
-        }
-        GradientKind::Sweep(_) => {
-            emit_gradient_lut_triangles(frame, lut, mesh, gradient, transform, clip_rect);
+    if let GradientKind::Radial(pos) = &gradient.kind {
+        // Focal-vs-concentric check at ENCODE TIME (design §2.6) — the
+        // identical formula CPU's Commit-1 fix uses, so the SAME
+        // counter fires under the SAME condition on both backends:
+        // genuine byte-parity, not "both wrong in the same direction
+        // by coincidence." UNPREFIXED — a shared, backend-agnostic
+        // label (matches CPU's own `gradient_radial_focal_degraded`,
+        // never `native_gradient_radial_focal_degraded`).
+        let dx_c = (pos.end_center.x - pos.start_center.x).abs();
+        let dy_c = (pos.end_center.y - pos.start_center.y).abs();
+        if dx_c > 0.5 || dy_c > 0.5 || pos.start_radius.abs() > 0.5 {
+            degrade("gradient_radial_focal_degraded");
         }
     }
+    emit_gradient_lut_triangles(frame, lut, mesh, gradient, transform, clip_rect);
 }
 
 /// Routing (design §2.5): `Gradient` (any kind) now routes through the
@@ -2135,6 +2069,7 @@ fn encode_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use peniko::{ColorStops, LinearGradientPosition};
     use uzor_urx_core::scene::Stroke as SceneStroke;
 
     fn viewport() -> Viewport {
@@ -2499,46 +2434,57 @@ mod tests {
         assert_eq!(kinds, vec![BatchKind::Quad, BatchKind::Line, BatchKind::Triangle]);
     }
 
+    /// `transform_gradient_params`'s Linear arm (coordinator's
+    /// 2026-07-25 join, see that function's own doc comment) under
+    /// `Affine::IDENTITY`: `p0` == the gradient's own `start`, `(p1,
+    /// p2)` == the raw `end - start` axis vector, kind bits == 2.
     #[test]
-    fn gradient_vertex_projection_matches_analytic_t() {
-        // Axis from (0,0) to (10,0); a vertex at x=5 should project to t=0.5.
-        let pos = LinearGradientPosition { start: kurbo::Point::new(0.0, 0.0), end: kurbo::Point::new(10.0, 0.0) };
-        let axis = (pos.end.x - pos.start.x, pos.end.y - pos.start.y);
-        let axis_len_sq = axis.0 * axis.0 + axis.1 * axis.1;
-        let stops = ColorStops::from(
-            &[
-                peniko::ColorStop::from((0.0f32, Color::from_rgba8(0, 0, 0, 255))),
-                peniko::ColorStop::from((1.0f32, Color::from_rgba8(255, 255, 255, 255))),
-            ][..],
-        );
-        let mid = gradient_vertex_color([5.0, 0.0], &pos, axis, axis_len_sq, &stops, Extend::Pad);
-        let bytes = mid.to_rgba8();
-        assert!((bytes.r as i32 - 128).abs() <= 2, "midpoint should be ~50% gray, got r={}", bytes.r);
-
-        let start_color = gradient_vertex_color([0.0, 0.0], &pos, axis, axis_len_sq, &stops, Extend::Pad);
-        assert_eq!(start_color.to_rgba8().r, 0);
-
-        let end_color = gradient_vertex_color([10.0, 0.0], &pos, axis, axis_len_sq, &stops, Extend::Pad);
-        assert_eq!(end_color.to_rgba8().r, 255);
+    fn linear_gradient_device_params_identity_transform() {
+        let kind = GradientKind::Linear(LinearGradientPosition {
+            start: kurbo::Point::new(3.0, 4.0),
+            end: kurbo::Point::new(13.0, 24.0),
+        });
+        let params = transform_gradient_params(&kind, Extend::Pad, &Affine::IDENTITY);
+        assert_eq!(params.p0, [3.0, 4.0]);
+        assert_eq!(params.p1, 10.0);
+        assert_eq!(params.p2, 20.0);
+        assert_eq!(params.kind_extend & 3, 2, "Linear kind bits must be 2");
     }
 
+    /// A pure translation moves `p0` (the gradient's start point) but
+    /// leaves the axis vector `(p1, p2)` unchanged — matches CPU's own
+    /// `transform_point_full` semantics exactly (a translation cancels
+    /// out of any point-minus-point difference).
     #[test]
-    fn gradient_pad_clamps_outside_axis() {
-        let pos = LinearGradientPosition { start: kurbo::Point::new(0.0, 0.0), end: kurbo::Point::new(10.0, 0.0) };
-        let axis = (pos.end.x - pos.start.x, pos.end.y - pos.start.y);
-        let axis_len_sq = axis.0 * axis.0 + axis.1 * axis.1;
-        let stops = ColorStops::from(
-            &[
-                peniko::ColorStop::from((0.0f32, Color::from_rgba8(0, 0, 0, 255))),
-                peniko::ColorStop::from((1.0f32, Color::from_rgba8(255, 255, 255, 255))),
-            ][..],
-        );
-        // Past the end of the axis — Pad should clamp to the last stop.
-        let beyond = gradient_vertex_color([50.0, 0.0], &pos, axis, axis_len_sq, &stops, Extend::Pad);
-        assert_eq!(beyond.to_rgba8().r, 255);
-        // Before the start — Pad should clamp to the first stop.
-        let before = gradient_vertex_color([-50.0, 0.0], &pos, axis, axis_len_sq, &stops, Extend::Pad);
-        assert_eq!(before.to_rgba8().r, 0);
+    fn linear_gradient_device_params_translated() {
+        let kind = GradientKind::Linear(LinearGradientPosition {
+            start: kurbo::Point::new(0.0, 0.0),
+            end: kurbo::Point::new(10.0, 0.0),
+        });
+        let t = Affine::translate((5.0, 7.0));
+        let params = transform_gradient_params(&kind, Extend::Pad, &t);
+        assert_eq!(params.p0, [5.0, 7.0], "start must move WITH the translation");
+        assert_eq!(params.p1, 10.0, "axis is translation-invariant");
+        assert_eq!(params.p2, 0.0, "axis is translation-invariant");
+    }
+
+    /// A rotation must rotate the gradient's own axis WITH the shape —
+    /// the exact bug this join closes for GPU (the old per-vertex path
+    /// evaluated `t` against untransformed LOCAL coordinates, silently
+    /// wrong under any rotation/scale, matching CPU's own pre-Wave-4
+    /// defect; see `transform_gradient_params`'s doc comment).
+    #[test]
+    fn linear_gradient_device_params_rotated_axis_rotates_with_the_shape() {
+        let kind = GradientKind::Linear(LinearGradientPosition {
+            start: kurbo::Point::new(0.0, 0.0),
+            end: kurbo::Point::new(10.0, 0.0),
+        });
+        let t = Affine::rotate(std::f64::consts::FRAC_PI_2);
+        let params = transform_gradient_params(&kind, Extend::Pad, &t);
+        let mag = (params.p1 * params.p1 + params.p2 * params.p2).sqrt();
+        assert!((mag - 10.0).abs() < 0.01, "axis length must be preserved under rotation, got {mag}");
+        assert!(params.p1.abs() < 0.01, "a 90-degree rotation must turn the (10,0) axis onto the y-axis, got p1={}", params.p1);
+        assert!(params.p2.abs() > 9.9, "a 90-degree rotation must turn the (10,0) axis onto the y-axis, got p2={}", params.p2);
     }
 
     // ── Wave 4 Commit 3: Radial/Sweep gradients ──────────────────────

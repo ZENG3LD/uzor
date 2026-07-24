@@ -764,17 +764,92 @@ fn parity_sweep_gradient_rect() {
     });
 }
 
-/// "Gradient StrokeRect/FillPath/StrokePath closes for free" (design
-/// §2.5/§9) — GPU-ONLY, no CPU comparison. See
+/// `FillPath` over a non-rect star, 3-stop Linear gradient — the
+/// closed multi-stop-undersampling bug (see
+/// `fixtures::linear_gradient_fill_path_star`'s doc comment and
+/// `uzor-urx-wgpu/src/encode.rs::transform_gradient_params`'s own doc
+/// comment for the full before/after). Both probes sit deep inside the
+/// star's own 18px inner-radius disc — a genuinely-agreeing-shape
+/// case, base tolerance tier (byte-identical LUT bytes on both
+/// backends, no wrap boundary crossed).
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_linear_gradient_fill_path_star() {
+    run_case(ParityCase {
+        name: "linear_gradient_fill_path_star",
+        scene: fixtures::linear_gradient_fill_path_star(),
+        // Axis runs y=88.5 (red, t=0) -> y=168.5 (blue, t=1) through
+        // green at y=128.5 (t=0.5). (128, 115): t=(115-88.5)/80≈0.331
+        // — red-toward-green. (128, 142): t=(142-88.5)/80≈0.669 —
+        // green-toward-blue. Both points are 13.5px from the star's
+        // own center (128.5,128.5), safely inside its 18px inner
+        // radius.
+        interior_probes: &[(128, 115), (128, 142)],
+        ..Default::default()
+    });
+}
+
+/// Radial counterpart of [`parity_linear_gradient_fill_path_star`] —
+/// see `fixtures::radial_gradient_fill_path_star`'s doc comment.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn parity_radial_gradient_fill_path_star() {
+    run_case(ParityCase {
+        name: "radial_gradient_fill_path_star",
+        scene: fixtures::radial_gradient_fill_path_star(),
+        // (128, 128): dead center, t=0 (yellow). (128, 145): 16.5px
+        // from center, t=16.5/18≈0.917 (near-black) — still inside the
+        // star's own 18px inner radius.
+        interior_probes: &[(128, 128), (128, 145)],
+        ..Default::default()
+    });
+}
+
+/// Neither new `FillPath`-gradient fixture above should EVER count a
+/// degrade — the whole point of the coordinator's 2026-07-25 fix is
+/// that `FillPath` + `Brush::Gradient` renders for real on GPU (routed
+/// since Wave 4) without falling back to `native_fillpath_gradient_to_solid`
+/// or any sibling label. End-to-end proof through the full
+/// `NativeUrxRenderer`, not just the `encode.rs` unit-test level.
+#[test]
+#[ignore = "needs a GPU/software adapter; run with --ignored"]
+fn fill_path_gradient_star_never_counts_a_degrade() {
+    let recorder = metrics_probe::TestRecorder::default();
+    let width = fixtures::CANVAS;
+    let height = fixtures::CANVAS;
+    let rendered = metrics::with_local_recorder(&recorder, || {
+        let linear = render_native(&fixtures::linear_gradient_fill_path_star(), width, height);
+        let radial = render_native(&fixtures::radial_gradient_fill_path_star(), width, height);
+        linear.and(radial)
+    });
+    if rendered.is_none() {
+        eprintln!("fill_path_gradient_star_never_counts_a_degrade: no GPU/software adapter available; skipping");
+        return;
+    }
+    for label in [
+        "native_fillpath_gradient_to_solid",
+        "native_fillpath_image_to_solid",
+        "native_gradient_lut_full_this_frame",
+    ] {
+        assert_eq!(
+            recorder.value_for(KEY_RENDER_PRIMITIVES, label),
+            0,
+            "FillPath gradient star fixtures must never count '{label}'"
+        );
+    }
+}
+
+/// "Gradient StrokeRect/StrokePath closes for free" (design §2.5/§9) —
+/// GPU-ONLY, no CPU comparison. See
 /// `fixtures::gradient_on_stroke_path_star`'s doc comment for the THIRD
-/// previously-undocumented finding this measurement surfaced: CPU never
-/// renders a real gradient on anything but `FillRect` (`Line`/
-/// `StrokeRect`/`FillPath`/`StrokePath` all flatten to `brush_to_color`
-/// unconditionally), so there is no meaningful CPU baseline to compare
-/// against here — the SAME class of "no CPU comparison possible"
-/// reasoning as the rotated-rect/sheared-rect cases (§0.3), just from a
-/// different root cause (a CPU brush-resolution gap, not a
-/// transform-approximation gap).
+/// previously-undocumented finding this measurement surfaced: CPU
+/// never rendered a real gradient on anything but `FillRect` at the
+/// time (`Line`/`StrokeRect`/`FillPath`/`StrokePath` all flattened to
+/// `brush_to_color` unconditionally) — **`FillPath` was CLOSED
+/// separately, coordinator 2026-07-25** (see
+/// `parity_linear_gradient_fill_path_star`, now a REAL cross-backend
+/// parity case, not GPU-only). `StrokePath` stays GPU-only here — this
+/// crate's own CPU scope this pass was `FillPath` alone.
 #[test]
 #[ignore = "needs a GPU/software adapter; run with --ignored"]
 fn gradient_on_stroke_path_star_gpu_only_correctness() {

@@ -158,9 +158,146 @@ fn affine_rotation_angle(t: &Affine) -> f64 {
     c[1].atan2(c[0])
 }
 
-/// Fill a rect with a gradient brush. Walker entry — dispatches to
-/// linear/radial/sweep scanline routines. Returns true if the brush was
-/// recognised and rendered.
+/// Per-pixel gradient colour evaluator — the shared engine behind
+/// [`fill_rect_gradient_aa`] AND `path::fill_path_gradient_aa`
+/// (coordinator's 2026-07-25 fix: a `FillPath` with a `Brush::Gradient`
+/// used to flatten unconditionally to `color::brush_to_color`'s
+/// first-stop fallback, matching every OTHER non-`FillRect` primitive
+/// on this backend — `FillRect` was the ONLY command that ever
+/// consulted a real gradient). Building the sampler ONCE per fill call
+/// (`GradientSampler::new`, never per pixel) mirrors
+/// `uzor-urx-wgpu::encode::transform_gradient_params`'s own "resolve
+/// device-space params once per draw command" discipline — this is the
+/// SAME per-kind setup `fill_rect_gradient_aa` used to inline directly;
+/// extracting it here is what lets a path fill reuse it verbatim
+/// instead of forking a second copy of the linear/radial/sweep math.
+#[derive(Clone)]
+pub(crate) struct GradientSampler {
+    lut: GradientLutArc,
+    extend: Extend,
+    kind: SamplerKind,
+}
+
+#[derive(Clone, Copy)]
+enum SamplerKind {
+    /// Degenerate axis (zero-length Linear) — always the first stop's
+    /// premultiplied colour, regardless of position. Same fallback
+    /// `fill_rect_gradient_aa` used inline before this extraction.
+    Solid([u8; 4]),
+    Linear { start_x: f32, start_y: f32, dx: f32, dy: f32, inv_d2: f32 },
+    Radial { cx: f32, cy: f32, inv_r: f32 },
+    Sweep { cx: f32, cy: f32, start_angle: f32, inv_span: f32 },
+}
+
+impl GradientSampler {
+    /// Resolve `gradient`'s LUT + per-kind device-space parameters
+    /// against `transform` — same math `fill_rect_gradient_aa` used to
+    /// compute inline per kind (Wave 4 §0.1(b): anchors/radius/angles
+    /// transformed through the SAME affine as the shape, via
+    /// [`transform_point_full`]), moved verbatim into one shared
+    /// constructor.
+    pub(crate) fn new(gradient: &Gradient, transform: &Affine) -> Self {
+        let lut = get_lut(&gradient.stops, gradient.extend);
+        let kind = match gradient.kind {
+            // peniko 0.6: GradientKind variants are tuple-wrapped over position structs.
+            GradientKind::Linear(peniko::LinearGradientPosition { start, end }) => {
+                let start = transform_point_full(transform, start);
+                let end = transform_point_full(transform, end);
+                let dx = (end.x - start.x) as f32;
+                let dy = (end.y - start.y) as f32;
+                let d2 = dx * dx + dy * dy;
+                if d2 < 1e-9 {
+                    let c = gradient.stops.first().map(premul).unwrap_or([0, 0, 0, 0]);
+                    SamplerKind::Solid(c)
+                } else {
+                    SamplerKind::Linear {
+                        start_x: start.x as f32,
+                        start_y: start.y as f32,
+                        dx,
+                        dy,
+                        inv_d2: 1.0 / d2,
+                    }
+                }
+            }
+            GradientKind::Radial(peniko::RadialGradientPosition { start_center, start_radius, end_center, end_radius }) => {
+                // Honest scope: only concentric (start_center ≈
+                // end_center AND start_radius ≈ 0) is exact. For focal
+                // variants we approximate as concentric on
+                // `end_center / end_radius` and bump a "degraded"
+                // counter so dashboards see it — same shared,
+                // UNPREFIXED `gradient_radial_focal_degraded` label
+                // `uzor-urx-wgpu`'s own encoder emits under the SAME
+                // condition (genuine cross-backend byte-parity on the
+                // counter, not two independently-invented labels).
+                let dx_c = (end_center.x - start_center.x).abs();
+                let dy_c = (end_center.y - start_center.y).abs();
+                if dx_c > 0.5 || dy_c > 0.5 || start_radius.abs() > 0.5 {
+                    metrics::counter!(
+                        uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
+                        "kind" => "gradient_radial_focal_degraded"
+                    ).increment(1);
+                }
+                let center = transform_point_full(transform, end_center);
+                let (sx, sy) = affine_scale_factors(transform);
+                let radius = ((end_radius as f64 * (sx + sy) * 0.5).max(1e-3)) as f32;
+                SamplerKind::Radial { cx: center.x as f32, cy: center.y as f32, inv_r: 1.0 / radius }
+            }
+            GradientKind::Sweep(peniko::SweepGradientPosition { center, start_angle, end_angle }) => {
+                let center = transform_point_full(transform, center);
+                let rot = affine_rotation_angle(transform) as f32;
+                let start_angle = start_angle + rot;
+                let end_angle = end_angle + rot;
+                let mut span = end_angle - start_angle;
+                if span.abs() < 1e-6 {
+                    span = std::f32::consts::TAU; // full circle default
+                }
+                SamplerKind::Sweep {
+                    cx: center.x as f32,
+                    cy: center.y as f32,
+                    start_angle,
+                    inv_span: 1.0 / span,
+                }
+            }
+        };
+        Self { lut, extend: gradient.extend, kind }
+    }
+
+    /// Evaluate the premultiplied colour at pixel-centre device
+    /// coordinates `(cx, cy)` — same per-pixel formulas
+    /// `fill_rect_gradient_aa` used to run inline, one call per touched
+    /// pixel. Coverage/masking is the CALLER's job (both callers apply
+    /// it identically via `scale_premul` — see `fill_rect_gradient_aa`
+    /// and `path::fill_path_gradient_aa`).
+    #[inline]
+    pub(crate) fn sample_premul(&self, cx: f32, cy: f32) -> [u8; 4] {
+        match self.kind {
+            SamplerKind::Solid(c) => c,
+            SamplerKind::Linear { start_x, start_y, dx, dy, inv_d2 } => {
+                let t_raw = ((cx - start_x) * dx + (cy - start_y) * dy) * inv_d2;
+                let t = apply_spread(t_raw, self.extend);
+                lut_sample(&self.lut, t)
+            }
+            SamplerKind::Radial { cx: rcx, cy: rcy, inv_r } => {
+                let dx = cx - rcx;
+                let dy = cy - rcy;
+                let dist = (dx * dx + dy * dy).sqrt();
+                let t = apply_spread(dist * inv_r, self.extend);
+                lut_sample(&self.lut, t)
+            }
+            SamplerKind::Sweep { cx: scx, cy: scy, start_angle, inv_span } => {
+                let dx = cx - scx;
+                let dy = cy - scy;
+                let ang = dy.atan2(dx);
+                let t = apply_spread((ang - start_angle) * inv_span, self.extend);
+                lut_sample(&self.lut, t)
+            }
+        }
+    }
+}
+
+/// Fill a rect with a gradient brush. Walker entry — builds a
+/// [`GradientSampler`] once, then walks every visible pixel. Returns
+/// true if the brush was recognised and rendered.
 pub(crate) fn fill_rect_gradient_aa(
     pixmap: &mut Pixmap,
     clip:   &ClipStack,
@@ -181,7 +318,7 @@ pub(crate) fn fill_rect_gradient_aa(
     let iy1 = (visible.y1.ceil()  as i64).min(h);
     if ix0 >= ix1 || iy0 >= iy1 { return true; }
 
-    let lut = get_lut(&gradient.stops, gradient.extend);
+    let sampler = GradientSampler::new(gradient, transform);
     // Wave 4 §0.1(a): fold the active rounded-clip mask into per-pixel
     // coverage, exactly mirroring `fill.rs:57,76-78`'s `use_mask`
     // pattern — a `FillRect{radii: Some(_), brush: Gradient(_)}` pushes
@@ -189,143 +326,23 @@ pub(crate) fn fill_rect_gradient_aa(
     // consulted it before this fix.
     let use_mask = !clip.all_rect();
 
-    match gradient.kind {
-        // peniko 0.6: GradientKind variants are tuple-wrapped over position structs.
-        GradientKind::Linear(peniko::LinearGradientPosition { start, end }) => {
-            // Wave 4 §0.1(b): the gradient axis is transformed through
-            // the SAME affine as `rect` — untransformed axis + a
-            // transformed rect was the bug (silently correct only
-            // under `Affine::IDENTITY`).
-            let start = transform_point_full(transform, start);
-            let end = transform_point_full(transform, end);
-            // dot(d, d) — squared gradient axis length.
-            let dx = end.x - start.x;
-            let dy = end.y - start.y;
-            let d2 = (dx * dx + dy * dy) as f32;
-            if d2 < 1e-9 {
-                // Degenerate — fill with stop[0].
-                let c = gradient.stops.first()
-                    .map(premul)
-                    .unwrap_or([0, 0, 0, 0]);
-                fill_solid(pixmap, clip, use_mask, ix0, iy0, ix1, iy1, &visible, c);
-                return true;
+    for py in iy0 .. iy1 {
+        let v_cov = crate::fill::axis_coverage(py as f64, py as f64 + 1.0, visible.y0, visible.y1);
+        if v_cov == 0 { continue; }
+        let cy = py as f32 + 0.5;
+        for px in ix0 .. ix1 {
+            let h_cov = crate::fill::axis_coverage(px as f64, px as f64 + 1.0, visible.x0, visible.x1);
+            if h_cov == 0 { continue; }
+            let cx = px as f32 + 0.5;
+            let sample = sampler.sample_premul(cx, cy);
+            let mut cov = ((h_cov as u32 * v_cov as u32 + 127) / 255) as u8;
+            if use_mask {
+                let mask_cov = clip.pixel_coverage(px, py);
+                cov = ((cov as u32 * mask_cov as u32 + 127) / 255) as u8;
+                if cov == 0 { continue; }
             }
-            let inv_d2 = 1.0 / d2;
-            for py in iy0 .. iy1 {
-                let v_cov = crate::fill::axis_coverage(py as f64, py as f64 + 1.0, visible.y0, visible.y1);
-                if v_cov == 0 { continue; }
-                let cy = py as f32 + 0.5;
-                let py_dy = cy - start.y as f32;
-                for px in ix0 .. ix1 {
-                    let h_cov = crate::fill::axis_coverage(px as f64, px as f64 + 1.0, visible.x0, visible.x1);
-                    if h_cov == 0 { continue; }
-                    let cx = px as f32 + 0.5;
-                    let px_dx = cx - start.x as f32;
-                    let t_raw = (px_dx * dx as f32 + py_dy * dy as f32) * inv_d2;
-                    let t = apply_spread(t_raw, gradient.extend);
-                    let sample = lut_sample(&lut, t);
-                    let mut cov = ((h_cov as u32 * v_cov as u32 + 127) / 255) as u8;
-                    if use_mask {
-                        let mask_cov = clip.pixel_coverage(px, py);
-                        cov = ((cov as u32 * mask_cov as u32 + 127) / 255) as u8;
-                        if cov == 0 { continue; }
-                    }
-                    let sample = if cov < 255 { scale_premul(sample, cov) } else { sample };
-                    pixmap.blend_pixel(px as u32, py as u32, sample);
-                }
-            }
-        }
-        GradientKind::Radial(peniko::RadialGradientPosition { start_center, start_radius, end_center, end_radius }) => {
-            // Honest scope: only concentric (start_center ≈ end_center
-            // AND start_radius ≈ 0) is exact. For focal variants we
-            // approximate as concentric on `end_center / end_radius`
-            // and bump a "degraded" counter so dashboards see it. A
-            // proper two-point conical solver lands when a consumer
-            // produces real focal gradients (Lottie, SVG complex).
-            let dx_c = (end_center.x - start_center.x).abs();
-            let dy_c = (end_center.y - start_center.y).abs();
-            let focal = dx_c > 0.5 || dy_c > 0.5 || start_radius.abs() > 0.5;
-            if focal {
-                metrics::counter!(
-                    uzor_urx_core::metrics_keys::KEY_RENDER_PRIMITIVES,
-                    "kind" => "gradient_radial_focal_degraded"
-                ).increment(1);
-            }
-            // Wave 4 §0.1(b): transform end_center + scale end_radius
-            // by the affine's average axis scale — same "collapse
-            // anisotropic scale to one scalar" convention already used
-            // for stroke width elsewhere in this family (design §0.2).
-            let center = transform_point_full(transform, end_center);
-            let (sx, sy) = affine_scale_factors(transform);
-            let cx = center.x as f32;
-            let cy = center.y as f32;
-            let radius = ((end_radius as f64 * (sx + sy) * 0.5).max(1e-3)) as f32;
-            let inv_r = 1.0 / radius;
-            for py in iy0 .. iy1 {
-                let v_cov = crate::fill::axis_coverage(py as f64, py as f64 + 1.0, visible.y0, visible.y1);
-                if v_cov == 0 { continue; }
-                let pcy = py as f32 + 0.5 - cy;
-                let pcy2 = pcy * pcy;
-                for px in ix0 .. ix1 {
-                    let h_cov = crate::fill::axis_coverage(px as f64, px as f64 + 1.0, visible.x0, visible.x1);
-                    if h_cov == 0 { continue; }
-                    let pcx = px as f32 + 0.5 - cx;
-                    let dist = (pcx * pcx + pcy2).sqrt();
-                    let t_raw = dist * inv_r;
-                    let t = apply_spread(t_raw, gradient.extend);
-                    let sample = lut_sample(&lut, t);
-                    let mut cov = ((h_cov as u32 * v_cov as u32 + 127) / 255) as u8;
-                    if use_mask {
-                        let mask_cov = clip.pixel_coverage(px, py);
-                        cov = ((cov as u32 * mask_cov as u32 + 127) / 255) as u8;
-                        if cov == 0 { continue; }
-                    }
-                    let sample = if cov < 255 { scale_premul(sample, cov) } else { sample };
-                    pixmap.blend_pixel(px as u32, py as u32, sample);
-                }
-            }
-        }
-        GradientKind::Sweep(peniko::SweepGradientPosition { center, start_angle, end_angle }) => {
-            // Angular gradient — t = (angle - start) / (end - start),
-            // wrapped per spread mode. atan2 per pixel; not vectorised
-            // yet but fine for typical sweep usage (small radial pies
-            // / circular progress bars).
-            //
-            // Wave 4 §0.1(b): transform `center` and add the affine's
-            // rotation component to both angles.
-            let center = transform_point_full(transform, center);
-            let rot = affine_rotation_angle(transform) as f32;
-            let cx = center.x as f32;
-            let cy = center.y as f32;
-            let start_angle = start_angle + rot;
-            let end_angle = end_angle + rot;
-            let mut span = end_angle - start_angle;
-            if span.abs() < 1e-6 {
-                span = std::f32::consts::TAU; // full circle default
-            }
-            let inv_span = 1.0 / span;
-            for py in iy0 .. iy1 {
-                let v_cov = crate::fill::axis_coverage(py as f64, py as f64 + 1.0, visible.y0, visible.y1);
-                if v_cov == 0 { continue; }
-                let pcy = py as f32 + 0.5 - cy;
-                for px in ix0 .. ix1 {
-                    let h_cov = crate::fill::axis_coverage(px as f64, px as f64 + 1.0, visible.x0, visible.x1);
-                    if h_cov == 0 { continue; }
-                    let pcx = px as f32 + 0.5 - cx;
-                    let ang = pcy.atan2(pcx);
-                    let t_raw = (ang - start_angle) * inv_span;
-                    let t = apply_spread(t_raw, gradient.extend);
-                    let sample = lut_sample(&lut, t);
-                    let mut cov = ((h_cov as u32 * v_cov as u32 + 127) / 255) as u8;
-                    if use_mask {
-                        let mask_cov = clip.pixel_coverage(px, py);
-                        cov = ((cov as u32 * mask_cov as u32 + 127) / 255) as u8;
-                        if cov == 0 { continue; }
-                    }
-                    let sample = if cov < 255 { scale_premul(sample, cov) } else { sample };
-                    pixmap.blend_pixel(px as u32, py as u32, sample);
-                }
-            }
+            let sample = if cov < 255 { scale_premul(sample, cov) } else { sample };
+            pixmap.blend_pixel(px as u32, py as u32, sample);
         }
     }
     true
@@ -342,32 +359,6 @@ fn scale_premul(rgba: [u8; 4], cov: u8) -> [u8; 4] {
     ]
 }
 
-fn fill_solid(
-    pixmap: &mut Pixmap,
-    clip: &ClipStack,
-    use_mask: bool,
-    ix0: i64, iy0: i64, ix1: i64, iy1: i64,
-    visible: &Rect,
-    color: [u8; 4],
-) {
-    for py in iy0 .. iy1 {
-        let v_cov = crate::fill::axis_coverage(py as f64, py as f64 + 1.0, visible.y0, visible.y1);
-        if v_cov == 0 { continue; }
-        for px in ix0 .. ix1 {
-            let h_cov = crate::fill::axis_coverage(px as f64, px as f64 + 1.0, visible.x0, visible.x1);
-            if h_cov == 0 { continue; }
-            let mut cov = ((h_cov as u32 * v_cov as u32 + 127) / 255) as u8;
-            if use_mask {
-                let mask_cov = clip.pixel_coverage(px, py);
-                cov = ((cov as u32 * mask_cov as u32 + 127) / 255) as u8;
-                if cov == 0 { continue; }
-            }
-            let src = scale_premul(color, cov);
-            pixmap.blend_pixel(px as u32, py as u32, src);
-        }
-    }
-}
-
 /// Top-level entry — checks if the Brush is a Gradient and dispatches.
 /// Returns `Some(true)` if a gradient was rendered, `Some(false)` if
 /// it was a degenerate / unsupported variant (caller falls back to
@@ -381,6 +372,30 @@ pub(crate) fn try_fill_rect_gradient(
 ) -> Option<bool> {
     match brush {
         Brush::Gradient(g) => Some(fill_rect_gradient_aa(pixmap, clip, rect, g, transform)),
+        _ => None,
+    }
+}
+
+/// Same dispatch contract as [`try_fill_rect_gradient`], for a generic
+/// path fill — coordinator's 2026-07-25 fix (see [`GradientSampler`]'s
+/// own doc comment). Delegates to `path::fill_path_gradient_aa`, which
+/// runs the SAME scanline/coverage machinery `path::fill_path_aa` does
+/// (including its 4x vertical supersampling), just sourcing colour
+/// per-pixel from a [`GradientSampler`] instead of one flat premultiplied
+/// colour.
+pub(crate) fn try_fill_path_gradient(
+    pixmap: &mut Pixmap,
+    clip:   &ClipStack,
+    path:   &uzor_urx_core::math::BezPath,
+    rule:   uzor_urx_core::scene::FillRule,
+    brush:  &Brush,
+    transform: &Affine,
+) -> Option<bool> {
+    match brush {
+        Brush::Gradient(g) => {
+            crate::path::fill_path_gradient_aa(pixmap, clip, path, rule, g, transform);
+            Some(true)
+        }
         _ => None,
     }
 }

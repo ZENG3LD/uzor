@@ -10,7 +10,8 @@
 //! Commit 2 added `GLYPH_SHADER_NATIVE`. Wave 3 Commit 2 added
 //! `STENCIL_MASK_SHADER_NATIVE`. Wave 3 Commit 3 added
 //! `BLEND_COMPOSITE_SHADER_NATIVE`. Wave 4 Commit 3 added
-//! `GRADIENT_SHADER_NATIVE` (Radial/Sweep per-fragment LUT eval) and
+//! `GRADIENT_SHADER_NATIVE` (Radial/Sweep per-fragment LUT eval, Linear
+//! joined 2026-07-25 — see that shader's own doc comment) and
 //! `IMAGE_SHADER_NATIVE` (textured quad + rotation). Wave 4 Commit 4
 //! adds rotation to `QUAD_SHADER_NATIVE`'s vertex stage (design §5.3)
 //! (`docs/uzor-engines/plans/urx-wave4-vello-parity-design-2026-07-25.md`
@@ -720,13 +721,16 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// Radial/Sweep gradient shader — per-FRAGMENT LUT evaluation (design
-/// §2.1/§2.3, Wave 4 Commit 3). `p0`/`p1`/`p2`/`kind_extend`/`lut_row`
-/// are baked at ENCODE time (already device-space, already the same
-/// transform math CPU's own Commit-1 gradient fix uses) — the shader
-/// never recomputes a scale/rotation, it only evaluates `t` from the
-/// ALREADY-transformed params against the rasteriser-interpolated
-/// `@builtin(position)`.
+/// Linear/Radial/Sweep gradient shader — per-FRAGMENT LUT evaluation
+/// (design §2.1/§2.3, Wave 4 Commit 3; Linear joined 2026-07-25 — see
+/// `encode.rs::transform_gradient_params`'s doc comment for why: the
+/// old per-vertex `TriInstance` path silently dropped every
+/// intermediate stop of a 3+-stop Linear gradient on ordinary coarse
+/// tessellation). `p0`/`p1`/`p2`/`kind_extend`/`lut_row` are baked at
+/// ENCODE time (already device-space, already the same transform math
+/// CPU's own Commit-1 gradient fix uses) — the shader never recomputes
+/// a scale/rotation, it only evaluates `t` from the ALREADY-transformed
+/// params against the rasteriser-interpolated `@builtin(position)`.
 ///
 /// ## `apply_spread` — formula-order fidelity with
 /// `uzor_urx_core::gradient_lut::apply_spread` (Rust)
@@ -854,10 +858,26 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
         // unconditionally, never start_center/start_radius.
         let d = distance(px_abs, in.p0);
         t = apply_spread(d / max(in.p1, 1e-3), extend);
-    } else {
+    } else if kind == 1u {
         let ang  = atan2(px_abs.y - in.p0.y, px_abs.x - in.p0.x);
         let span = select(in.p2 - in.p1, 6.283185307179586, abs(in.p2 - in.p1) < 1e-6);
         t = apply_spread((ang - in.p1) / span, extend);
+    } else {
+        // Linear (kind == 2u) — `p0` = device-space start, `(p1, p2)`
+        // = device-space axis (end - start); `t = dot(p - start, axis)
+        // / dot(axis, axis)`, the same affine projection CPU's
+        // `fill_rect_gradient_aa` and this crate's OLD per-vertex path
+        // both used, now evaluated per FRAGMENT so every stop —  not
+        // just whichever two colours happened to land at a mesh
+        // vertex — is sampled correctly (see this shader's own doc
+        // comment / `encode.rs::transform_gradient_params`).
+        let axis = vec2<f32>(in.p1, in.p2);
+        let axis_len_sq = dot(axis, axis);
+        var t_raw: f32 = 0.0;
+        if axis_len_sq > 1e-9 {
+            t_raw = dot(px_abs - in.p0, axis) / axis_len_sq;
+        }
+        t = apply_spread(t_raw, extend);
     }
     let col = i32(clamp(round(t * 255.0), 0.0, 255.0));
     // Exact integer-coordinate fetch — NO linear filtering (design

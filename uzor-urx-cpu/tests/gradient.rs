@@ -1,9 +1,9 @@
 //! Gradient brush tests — linear + radial.
 
 use uzor_urx_core::math::{
-    Affine, Brush, Color, ColorStop, Extend, Gradient, GradientKind, Point, RadialGradientPosition, Rect,
+    Affine, BezPath, Brush, Color, ColorStop, Extend, Gradient, GradientKind, Point, RadialGradientPosition, Rect,
 };
-use uzor_urx_core::scene::{DrawCommand, Scene};
+use uzor_urx_core::scene::{DrawCommand, FillRule, Scene};
 use uzor_urx_cpu::{CpuBackend, Pixmap};
 
 fn s() -> CpuBackend { CpuBackend::new() }
@@ -294,4 +294,125 @@ fn linear_lut_cached_across_renders() {
     p1.pixels().hash(&mut h1);
     p2.pixels().hash(&mut h2);
     assert_eq!(h1.finish(), h2.finish(), "same gradient → identical pixels");
+}
+
+// ── FillPath gradients (coordinator 2026-07-25 fix) ─────────────────
+//
+// Before this fix, `DrawCommand::FillPath { brush: Brush::Gradient(_),
+// .. }` ALWAYS flattened to `color::brush_to_color`'s first-stop
+// fallback — `FillRect` was the only command that ever rendered a real
+// gradient. These tests exercise a genuinely NON-RECT path (a 5-point
+// star, matching `uzor-urx-wgpu`'s own `star_path` fixture shape) so a
+// naive "route to fill_rect_gradient_aa's rect math" shortcut couldn't
+// silently pass — both probe points sit safely inside the star's own
+// inscribed inner-radius disc (never near a concave point) so shape
+// coverage is never in question, only the gradient colour.
+
+/// 5-point star centered at `(cx, cy)` — same generator as
+/// `uzor-urx-wgpu/tests/fixtures.rs::star_path` (kept independent, not
+/// shared, since this crate has no dependency on that one).
+fn star_path(cx: f64, cy: f64, r_outer: f64, r_inner: f64) -> BezPath {
+    use std::f64::consts::{FRAC_PI_2, PI};
+    let mut path = BezPath::new();
+    for i in 0..10 {
+        let angle = -FRAC_PI_2 + (i as f64) * PI / 5.0;
+        let r = if i % 2 == 0 { r_outer } else { r_inner };
+        let x = cx + r * angle.cos();
+        let y = cy + r * angle.sin();
+        if i == 0 {
+            path.move_to((x, y));
+        } else {
+            path.line_to((x, y));
+        }
+    }
+    path.close_path();
+    path
+}
+
+#[test]
+fn fill_path_linear_gradient_star_shows_varying_colors_along_axis() {
+    let mut p = Pixmap::new(120, 120);
+    let path = star_path(60.0, 60.0, 50.0, 20.0);
+    // 3-stop vertical gradient: red (top) -> green (mid) -> blue
+    // (bottom) — a real multi-stop ramp, not just a 2-point lerp.
+    let brush = make_linear(
+        Point::new(60.0, 10.0),
+        Point::new(60.0, 110.0),
+        vec![
+            ColorStop { offset: 0.0, color: Color::from_rgba8(255, 0, 0, 255).into() },
+            ColorStop { offset: 0.5, color: Color::from_rgba8(0, 255, 0, 255).into() },
+            ColorStop { offset: 1.0, color: Color::from_rgba8(0, 0, 255, 255).into() },
+        ],
+    );
+    let mut scene = Scene::new();
+    scene.push(DrawCommand::FillPath { path, rule: FillRule::NonZero, brush, transform: Affine::IDENTITY });
+    s().render(&scene, &mut p).unwrap();
+
+    // Both probes are 15px from the star's own center, well inside the
+    // 20px inner-radius disc — guaranteed fill coverage regardless of
+    // the star's concave points.
+    let above_center = p.get_pixel(60, 45); // t = 0.35: red-toward-green
+    let below_center = p.get_pixel(60, 75); // t = 0.65: green-toward-blue
+    assert_ne!(
+        above_center, below_center,
+        "a FillPath gradient must vary along its axis, not flatten to one colour \
+         (above={above_center:?}, below={below_center:?})"
+    );
+    // Not the flat first-stop fallback (pure red) at EITHER probe.
+    assert!(
+        !(above_center[0] > 200 && above_center[1] < 30 && above_center[2] < 30),
+        "above-center probe must not be the flat first-stop red, got {above_center:?}"
+    );
+    // Above-center is closer to red/green (more red than below).
+    assert!(above_center[0] > below_center[0], "above-center should carry more red than below-center, got {above_center:?} vs {below_center:?}");
+    // Below-center is closer to green/blue (more blue than above).
+    assert!(below_center[2] > above_center[2], "below-center should carry more blue than above-center, got {below_center:?} vs {above_center:?}");
+}
+
+#[test]
+fn fill_path_radial_gradient_star_shows_varying_colors_from_center() {
+    let mut p = Pixmap::new(120, 120);
+    let path = star_path(60.0, 60.0, 50.0, 20.0);
+    let brush = make_radial(
+        Point::new(60.0, 60.0),
+        20.0,
+        vec![
+            ColorStop { offset: 0.0, color: Color::from_rgba8(255, 255, 0, 255).into() }, // yellow center
+            ColorStop { offset: 1.0, color: Color::from_rgba8(0, 0, 0, 255).into() },     // black edge
+        ],
+    );
+    let mut scene = Scene::new();
+    scene.push(DrawCommand::FillPath { path, rule: FillRule::NonZero, brush, transform: Affine::IDENTITY });
+    s().render(&scene, &mut p).unwrap();
+
+    let center = p.get_pixel(60, 60);
+    let near_edge = p.get_pixel(60, 78); // 18px out — inside the 20px inner-radius disc, near the gradient's own radius
+    assert_ne!(center, near_edge, "a FillPath radial gradient must vary with distance from center, got {center:?} at both");
+    assert!(center[0] > 200 && center[1] > 200, "center should be near-yellow, got {center:?}");
+    assert!(near_edge[0] < 80 && near_edge[1] < 80, "near-edge should be near-black, got {near_edge:?}");
+}
+
+#[test]
+fn fill_path_gradient_respects_the_true_star_shape_not_its_bbox() {
+    // A probe OUTSIDE the star's own points but INSIDE its bounding
+    // box must stay background — proves the gradient path shares the
+    // real AET scanline coverage, not a naive rect/bbox fill.
+    let mut p = Pixmap::new(120, 120);
+    let path = star_path(60.0, 60.0, 50.0, 20.0);
+    let brush = make_linear(
+        Point::new(60.0, 10.0),
+        Point::new(60.0, 110.0),
+        vec![
+            ColorStop { offset: 0.0, color: Color::from_rgba8(255, 0, 0, 255).into() },
+            ColorStop { offset: 1.0, color: Color::from_rgba8(0, 0, 255, 255).into() },
+        ],
+    );
+    let mut scene = Scene::new();
+    scene.push(DrawCommand::FillPath { path, rule: FillRule::NonZero, brush, transform: Affine::IDENTITY });
+    s().render(&scene, &mut p).unwrap();
+
+    // A concave notch between two star points, near the bbox but
+    // outside the star's own outline.
+    let notch = p.get_pixel(15, 60);
+    assert_eq!(notch[3], 0, "a point in the star's own concave notch must stay transparent background, got {notch:?}");
 }

@@ -834,6 +834,61 @@ pub fn gradient_on_stroke_path_star() -> Scene {
     scene
 }
 
+/// Coordinator's 2026-07-25 fix — `FillPath` over a genuinely NON-RECT
+/// shape (the same 5-point star generator as every other star fixture
+/// above), filled with a 3-STOP Linear gradient. This is the exact
+/// class of scene that surfaced BOTH halves of the closed bug:
+/// `uzor-urx-cpu`'s `FillPath` arm previously flattened ANY gradient
+/// brush to `brush_to_color`'s first stop unconditionally (`FillRect`
+/// was the only command that ever rendered a real one); this native
+/// pipeline's own Linear-gradient mesh emitter (`emit_gradient_mesh`,
+/// closed since Wave 4 for the ROUTING) evaluated colour per-VERTEX
+/// then let the rasteriser barycentric-interpolate it across each
+/// triangle — mathematically exact for 2 stops, but silently WRONG
+/// for 3+ (a rect's own 2-triangle tessellation carries no vertex at
+/// any interior stop boundary, so the middle stop's colour never
+/// appeared). Both are now fixed: CPU samples a real
+/// [`crate::gradient::GradientSampler`]-equivalent per pixel, GPU
+/// joined Radial/Sweep's per-FRAGMENT LUT pipeline — see
+/// `uzor-urx-wgpu/src/encode.rs::transform_gradient_params`'s own doc
+/// comment for the measured before/after. Both probes sit inside the
+/// star's own 18px inner-radius inscribed disc (never near a concave
+/// point or an AA edge), so this is a genuinely-agreeing-shape case —
+/// base shape tolerance tier, same reasoning `radial_gradient_rect`'s
+/// own doc comment already establishes for byte-identical LUT
+/// sampling on both backends.
+pub fn linear_gradient_fill_path_star() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    let path = star_path(128.5, 128.5, 45.0, 18.0);
+    let gradient = Gradient::new_linear((128.5, 88.5), (128.5, 168.5)).with_stops([
+        (0.0f32, Color::from_rgba8(230, 60, 60, 255)),
+        (0.5f32, Color::from_rgba8(60, 200, 60, 255)),
+        (1.0f32, Color::from_rgba8(60, 90, 230, 255)),
+    ]);
+    scene.push(DrawCommand::FillPath { path, rule: FillRule::NonZero, brush: Brush::Gradient(gradient), transform: Affine::IDENTITY });
+    scene
+}
+
+/// Radial counterpart of [`linear_gradient_fill_path_star`] — same
+/// star shape, a concentric Radial `Brush::Gradient` on `FillPath`
+/// instead. Radial's per-fragment routing was already correct on GPU
+/// pre-fix (only Linear had the barycentric-interpolation defect); this
+/// fixture exists to prove CPU's NEW `FillPath` gradient dispatch
+/// (`try_fill_path_gradient`) handles every `GradientKind`, not just
+/// Linear.
+pub fn radial_gradient_fill_path_star() -> Scene {
+    let mut scene = Scene::new();
+    push_background(&mut scene);
+    let path = star_path(128.5, 128.5, 45.0, 18.0);
+    let gradient = Gradient::new_radial((128.5, 128.5), 18.0).with_stops([
+        (0.0f32, Color::from_rgba8(255, 255, 0, 255)),
+        (1.0f32, Color::from_rgba8(0, 0, 0, 255)),
+    ]);
+    scene.push(DrawCommand::FillPath { path, rule: FillRule::NonZero, brush: Brush::Gradient(gradient), transform: Affine::IDENTITY });
+    scene
+}
+
 /// `FillRect`, `radii: Some([4.0, 40.0, 4.0, 40.0])` (design's own
 /// literal example, deliberately non-uniform — `top_left=4,
 /// top_right=40, bottom_right=4, bottom_left=40` per kurbo's

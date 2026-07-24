@@ -1,16 +1,24 @@
-//! Gradient (Radial + Sweep) per-fragment-eval pipeline — real
-//! per-fragment LUT sampling, NOT the per-vertex mechanism Linear uses
-//! (URX Wave 4 Commit 3,
+//! Gradient (Linear + Radial + Sweep) per-fragment-eval pipeline —
+//! real per-fragment LUT sampling for all three kinds (URX Wave 4
+//! Commit 3,
 //! `docs/uzor-engines/plans/urx-wave4-vello-parity-design-2026-07-25.md`
-//! §2.1/§2.3). See that section for WHY Radial/Sweep need a genuinely
-//! different mechanism from Linear's existing `TriInstance`-based
-//! per-vertex-colour path: `t` is an AFFINE function of position for
-//! Linear (barycentric interpolation reproduces it exactly), but is
-//! NOT affine for Radial (`distance(p, center)/radius`) or Sweep
-//! (`atan2(...)`) — interpolating their VALUES across a triangle
-//! visibly facets/bands, so the shape gets tessellated (same as
-//! Linear/solid fills) while the COLOUR is computed once per FRAGMENT
-//! instead.
+//! §2.1/§2.3; Linear joined 2026-07-25). Radial (`distance(p,
+//! center)/radius`) and Sweep (`atan2(...)`) are NOT affine functions
+//! of position — interpolating their VALUES across a triangle visibly
+//! facets/bands, so per-fragment eval was always required for them.
+//! Linear's `t` IS an affine function of position, so the design
+//! originally kept it on a per-VERTEX `TriInstance`-based colour +
+//! barycentric-interpolation path, reasoning that was "mathematically
+//! exact." That reasoning only holds when `color(t)` is itself affine
+//! — a straight 2-stop lerp. For 3+ stops `color(t)` is
+//! PIECEWISE-affine, and an ordinary shape's own tessellation (often
+//! just a rect's 4 corners) carries no vertex at any interior stop
+//! boundary, so the old path silently faded straight between whichever
+//! two colours happened to land at the mesh's corners — every
+//! intermediate stop vanished. Linear now shares this SAME pipeline;
+//! see `encode.rs::transform_gradient_params`'s doc comment for the
+//! measured before/after and the exact device-param packing (`p0` =
+//! start, `(p1, p2)` = the axis vector `end - start`).
 //!
 //! `GradientPipeline` needs 2 bind-group-layouts, same shape as
 //! `GlyphPipeline`/`BlendCompositePipeline`: group 0 the shared uniform
@@ -28,12 +36,14 @@
 //! `uzor-urx-wgpu/tests/{fixtures,parity}.rs`) exercise this pipeline
 //! end-to-end — the last one GPU-only, having surfaced a genuinely new
 //! finding that CPU never renders a real gradient on anything but
-//! `FillRect` (see that fixture's own doc comment).
+//! `FillRect` (see that fixture's own doc comment; CLOSED separately,
+//! coordinator 2026-07-25 — `uzor-urx-cpu::path::fill_path_aa` now
+//! evaluates gradients too, see that crate's own `gradient.rs`).
 
 use bytemuck::{Pod, Zeroable};
 
-/// A Radial/Sweep gradient-mesh triangle instance — 64 bytes packed
-/// (design §2.3's exact layout).
+/// A Linear/Radial/Sweep gradient-mesh triangle instance — 64 bytes
+/// packed (design §2.3's exact layout; Linear joined 2026-07-25).
 ///
 /// Memory layout (64 bytes):
 /// - v0:          8 bytes  ([f32; 2] device-space triangle vertex, post
@@ -42,10 +52,10 @@ use bytemuck::{Pod, Zeroable};
 ///   design §5.4)
 /// - v1:          8 bytes  ([f32; 2])
 /// - v2:          8 bytes  ([f32; 2])
-/// - p0:          8 bytes  ([f32; 2] Radial: end_center device-space; Sweep: center device-space)
-/// - p1:          4 bytes  (f32 — Radial: end_radius, device-scaled; Sweep: start_angle + rotation offset)
-/// - p2:          4 bytes  (f32 — Sweep: end_angle + rotation offset; Radial: unused, 0.0)
-/// - kind_extend: 4 bytes  (u32 — bits[0:1] kind (0=Radial,1=Sweep); bits[2:3] extend (0=Pad,1=Repeat,2=Reflect))
+/// - p0:          8 bytes  ([f32; 2] Linear: device-space `start`; Radial: end_center device-space; Sweep: center device-space)
+/// - p1:          4 bytes  (f32 — Linear: device-space axis `end.x - start.x`; Radial: end_radius, device-scaled; Sweep: start_angle + rotation offset)
+/// - p2:          4 bytes  (f32 — Linear: device-space axis `end.y - start.y`; Sweep: end_angle + rotation offset; Radial: unused, 0.0)
+/// - kind_extend: 4 bytes  (u32 — bits[0:1] kind (0=Radial,1=Sweep,2=Linear); bits[2:3] extend (0=Pad,1=Repeat,2=Reflect))
 /// - lut_row:     4 bytes  (u32 — row index into `GradientLutAtlas`)
 /// - clip_rect:  16 bytes  ([f32; 4])
 ///

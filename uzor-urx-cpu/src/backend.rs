@@ -248,8 +248,19 @@ impl CpuBackend {
                     stroke_line_aa(target, &clip, *from, *to, stroke.width, color, transform);
                 }
                 DrawCommand::FillPath { path, rule, brush, transform } => {
-                    let color = brush_to_color(brush);
                     let target = layer_stack.current_target(pixmap);
+                    // Coordinator's 2026-07-25 fix: a real gradient now
+                    // renders on `FillPath`, mirroring `FillRect`'s own
+                    // `try_fill_rect_gradient` dispatch pattern above —
+                    // see `crate::gradient::GradientSampler`'s doc
+                    // comment for why every OTHER primitive still falls
+                    // back to `brush_to_color`'s first-stop colour.
+                    if matches!(brush, uzor_urx_core::math::Brush::Gradient(_)) {
+                        if crate::gradient::try_fill_path_gradient(target, &clip, path, *rule, brush, transform).is_some() {
+                            continue;
+                        }
+                    }
+                    let color = brush_to_color(brush);
                     crate::path::fill_path_aa(target, &clip, path, *rule, color, transform);
                 }
                 DrawCommand::StrokePath { path, stroke, brush, transform } => {
