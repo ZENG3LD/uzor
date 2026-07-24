@@ -100,50 +100,111 @@ pub fn compare_tight(a: &[u8], b: &[u8], tol: ChannelTolerance) -> DiffReport {
     DiffReport { differing_fraction, max_channel_diff: max_diff, within_budget: differing_fraction <= tol.max_differing_fraction }
 }
 
-/// Every pairwise [`DiffReport`] across the three legs of a
-/// [`crate::render::ThreeLegRender`].
+/// Every pairwise [`DiffReport`] across a [`crate::render::MultiLegRender`]'s
+/// available legs.
+///
+/// The three CPU-only pairs are always [`Some`]-equivalent — those three
+/// legs always render, so those three fields are plain [`DiffReport`],
+/// never optional (preserves the exact field shape/names every existing
+/// caller of the pre-GPU `ThreeLegDiff` already used). Every pair
+/// touching a GPU leg is [`Option`] — `None` on a GPU-less machine,
+/// mirroring exactly which legs [`crate::render::MultiLegRender::legs`]
+/// lists. Two of the seven GPU-touching pairs are the WITHIN-FAMILY
+/// CPU-vs-GPU comparisons (`vello_cpu_vs_vello_gpu`, `urx_cpu_vs_urx_gpu`)
+/// — the new axis this crate's GPU legs exist to measure: since
+/// `urx_cpu`/`urx_gpu` both rasterize the SAME recorded `Scene` (one
+/// `UrxRenderContext` recording, two backends), a divergence on THAT pair
+/// specifically is purely rasterisation, never a recording difference.
 #[derive(Debug, Clone, Copy)]
-pub struct ThreeLegDiff {
+pub struct MultiLegDiff {
     pub tiny_skia_vs_vello_cpu: DiffReport,
     pub tiny_skia_vs_urx_cpu: DiffReport,
     pub vello_cpu_vs_urx_cpu: DiffReport,
+    pub tiny_skia_vs_vello_gpu: Option<DiffReport>,
+    pub tiny_skia_vs_urx_gpu: Option<DiffReport>,
+    /// Within-family: vello-cpu vs vello-gpu — same recording API
+    /// (`VelloGpuRenderContext`/`VelloCpuRenderContext` both build a
+    /// `vello`-family scene from the same draw closure), different
+    /// rasteriser (compute pipeline vs scanline).
+    pub vello_cpu_vs_vello_gpu: Option<DiffReport>,
+    pub vello_cpu_vs_urx_gpu: Option<DiffReport>,
+    pub vello_gpu_vs_urx_cpu: Option<DiffReport>,
+    pub vello_gpu_vs_urx_gpu: Option<DiffReport>,
+    /// Within-family: urx-cpu vs urx-gpu — both rasterize the exact SAME
+    /// recorded `Scene` (one `UrxRenderContext` recording pass feeds
+    /// both), so any divergence here is purely a rasterisation
+    /// difference (SDF/scanline vs MSAA/analytic), never a recording
+    /// discrepancy.
+    pub urx_cpu_vs_urx_gpu: Option<DiffReport>,
 }
 
-impl ThreeLegDiff {
-    /// Compute every pairwise [`compare_tight`] across `render`'s three
-    /// legs.
-    pub fn compute(render: &crate::render::ThreeLegRender, tol: ChannelTolerance) -> Self {
+impl MultiLegDiff {
+    /// Compute every pairwise [`compare_tight`] across `render`'s
+    /// available legs.
+    pub fn compute(render: &crate::render::MultiLegRender, tol: ChannelTolerance) -> Self {
+        let vello_gpu = render.vello_gpu.as_deref();
+        let urx_gpu = render.urx_gpu.as_ref().map(|r| r.pixels.as_slice());
         Self {
             tiny_skia_vs_vello_cpu: compare_tight(&render.tiny_skia, &render.vello_cpu, tol),
             tiny_skia_vs_urx_cpu: compare_tight(&render.tiny_skia, &render.urx_cpu, tol),
             vello_cpu_vs_urx_cpu: compare_tight(&render.vello_cpu, &render.urx_cpu, tol),
+            tiny_skia_vs_vello_gpu: vello_gpu.map(|g| compare_tight(&render.tiny_skia, g, tol)),
+            tiny_skia_vs_urx_gpu: urx_gpu.map(|g| compare_tight(&render.tiny_skia, g, tol)),
+            vello_cpu_vs_vello_gpu: vello_gpu.map(|g| compare_tight(&render.vello_cpu, g, tol)),
+            vello_cpu_vs_urx_gpu: urx_gpu.map(|g| compare_tight(&render.vello_cpu, g, tol)),
+            vello_gpu_vs_urx_cpu: vello_gpu.map(|g| compare_tight(g, &render.urx_cpu, tol)),
+            vello_gpu_vs_urx_gpu: match (vello_gpu, urx_gpu) {
+                (Some(a), Some(b)) => Some(compare_tight(a, b, tol)),
+                _ => None,
+            },
+            urx_cpu_vs_urx_gpu: urx_gpu.map(|g| compare_tight(&render.urx_cpu, g, tol)),
         }
     }
 
-    /// `true` only when EVERY pairwise comparison is within its own
-    /// [`ChannelTolerance::max_differing_fraction`] budget.
+    /// `true` only when EVERY AVAILABLE pairwise comparison is within its
+    /// own [`ChannelTolerance::max_differing_fraction`] budget — a pair
+    /// touching a skipped GPU leg is simply not checked (`None` never
+    /// fails the budget), so this gate stays meaningful (and green) on a
+    /// GPU-less machine, just narrower.
     pub fn all_within_budget(&self) -> bool {
-        self.tiny_skia_vs_vello_cpu.within_budget && self.tiny_skia_vs_urx_cpu.within_budget && self.vello_cpu_vs_urx_cpu.within_budget
+        let opt_ok = |d: Option<DiffReport>| d.map_or(true, |r| r.within_budget);
+        self.tiny_skia_vs_vello_cpu.within_budget
+            && self.tiny_skia_vs_urx_cpu.within_budget
+            && self.vello_cpu_vs_urx_cpu.within_budget
+            && opt_ok(self.tiny_skia_vs_vello_gpu)
+            && opt_ok(self.tiny_skia_vs_urx_gpu)
+            && opt_ok(self.vello_cpu_vs_vello_gpu)
+            && opt_ok(self.vello_cpu_vs_urx_gpu)
+            && opt_ok(self.vello_gpu_vs_urx_cpu)
+            && opt_ok(self.vello_gpu_vs_urx_gpu)
+            && opt_ok(self.urx_cpu_vs_urx_gpu)
     }
 
-    /// One human-readable line per pair — printed by every converted
-    /// proof test (`cargo test -- --nocapture`) so the measured numbers
-    /// surface directly, without a human having to re-derive them.
-    pub fn report_lines(&self) -> [String; 3] {
-        [
-            format!(
-                "tiny-skia vs vello-cpu: differing_fraction={:.4} max_channel_diff={}",
-                self.tiny_skia_vs_vello_cpu.differing_fraction, self.tiny_skia_vs_vello_cpu.max_channel_diff
-            ),
-            format!(
-                "tiny-skia vs urx-cpu:   differing_fraction={:.4} max_channel_diff={}",
-                self.tiny_skia_vs_urx_cpu.differing_fraction, self.tiny_skia_vs_urx_cpu.max_channel_diff
-            ),
-            format!(
-                "vello-cpu vs urx-cpu:   differing_fraction={:.4} max_channel_diff={}",
-                self.vello_cpu_vs_urx_cpu.differing_fraction, self.vello_cpu_vs_urx_cpu.max_channel_diff
-            ),
-        ]
+    /// One human-readable line per AVAILABLE pair — printed by every
+    /// converted proof test (`cargo test -- --nocapture`) so the
+    /// measured numbers surface directly, without a human having to
+    /// re-derive them. A pair touching a skipped GPU leg is simply
+    /// absent from this list.
+    pub fn report_lines(&self) -> Vec<String> {
+        let line = |label: &str, d: DiffReport| format!("{label}: differing_fraction={:.4} max_channel_diff={}", d.differing_fraction, d.max_channel_diff);
+        let mut lines = vec![
+            line("tiny-skia vs vello-cpu", self.tiny_skia_vs_vello_cpu),
+            line("tiny-skia vs urx-cpu  ", self.tiny_skia_vs_urx_cpu),
+            line("vello-cpu vs urx-cpu  ", self.vello_cpu_vs_urx_cpu),
+        ];
+        let mut push_opt = |label: &str, d: Option<DiffReport>| {
+            if let Some(d) = d {
+                lines.push(line(label, d));
+            }
+        };
+        push_opt("tiny-skia vs vello-gpu", self.tiny_skia_vs_vello_gpu);
+        push_opt("tiny-skia vs urx-gpu  ", self.tiny_skia_vs_urx_gpu);
+        push_opt("vello-cpu vs vello-gpu (WITHIN-FAMILY)", self.vello_cpu_vs_vello_gpu);
+        push_opt("vello-cpu vs urx-gpu  ", self.vello_cpu_vs_urx_gpu);
+        push_opt("vello-gpu vs urx-cpu  ", self.vello_gpu_vs_urx_cpu);
+        push_opt("vello-gpu vs urx-gpu  ", self.vello_gpu_vs_urx_gpu);
+        push_opt("urx-cpu   vs urx-gpu (WITHIN-FAMILY)", self.urx_cpu_vs_urx_gpu);
+        lines
     }
 }
 

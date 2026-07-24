@@ -1193,11 +1193,15 @@ mod proof_tests {
     // directive: "если может быть какой-то диф в работе бекендов —
     // тестируй на всех семьях; везде есть цпу варианты" — the four
     // proofs below drive the SAME real production draw closures through
-    // all three CPU family legs (tiny-skia / vello-cpu / urx-cpu) via
-    // `uzor-proof-harness` (a promoted, generalized copy of
-    // `uzor-examples/src/parity_harness.rs`'s own CPU-leg machinery),
-    // print the pairwise pixel-diff fractions, and write a labelled
-    // side-by-side composite PNG for eyeballing.
+    // every available backend leg (`uzor-proof-harness::MultiLegRender`
+    // — tiny-skia / vello-cpu / urx-cpu always, plus vello-gpu / urx-gpu
+    // when a GPU/software adapter is available, gracefully skipped
+    // otherwise) via `uzor-proof-harness` (a promoted, generalized copy
+    // of `uzor-examples/src/parity_harness.rs`'s own CPU-leg machinery,
+    // extended with the two GPU legs per a later owner follow-up: "могут
+    // ли быть расхождения на гпу? надо бы тоже включить их"), print the
+    // pairwise pixel-diff fractions, and write a labelled family-grouped
+    // composite PNG for eyeballing.
     //
     // These are ADDITIVE — same fixtures as the matching single-backend
     // proof above, an additional render path, never a replacement (design
@@ -1207,14 +1211,34 @@ mod proof_tests {
     // tile row), and a linear gradient fill (heatmap + colorbar).
     //
     // Divergence policy (owner brief item 4): NOT a hard byte-tight
-    // parity gate — the three families legitimately differ in AA/text
-    // rasterization. `ThreeLegDiff::all_within_budget` only trips on
+    // parity gate — independent rasterizer families (and, now, a CPU vs
+    // GPU pipeline within the SAME family) legitimately differ in AA/
+    // text rasterization. `MultiLegDiff::all_within_budget` only trips on
     // `uzor_proof_harness::STRUCTURAL_DEFECT_FRACTION` (a generous
     // whole-image threshold tuned to catch a genuinely MISSING
     // primitive, not an AA fringe — see that constant's own doc comment
-    // for the empirical basis).
+    // for the empirical basis), checked only across whichever pairs
+    // actually rendered on this machine.
 
-    use uzor_proof_harness::{ChannelTolerance, ThreeLegDiff, ThreeLegRender};
+    use uzor_proof_harness::{ChannelTolerance, MultiLegDiff, MultiLegRender};
+
+    /// Print every URX GPU degrade counter that fired while rasterising
+    /// `render`'s scene (empty when the leg was skipped, or when
+    /// nothing degraded) — owner brief item 6: "for the URX GPU leg,
+    /// also report whether any degrade counters fired during these
+    /// scenes... a fired counter on an ordinary figure scene is a
+    /// finding."
+    fn print_urx_gpu_degrades(proof_label: &str, render: &MultiLegRender) {
+        match &render.urx_gpu {
+            None => println!("[{proof_label}] urx-gpu degrade counters: leg skipped, no adapter"),
+            Some(r) if r.degrades.is_empty() => println!("[{proof_label}] urx-gpu degrade counters: none fired"),
+            Some(r) => {
+                for (kind, count) in &r.degrades {
+                    println!("[{proof_label}] urx-gpu degrade counter FIRED: {kind} x{count}");
+                }
+            }
+        }
+    }
 
     /// GapPolicy/NaN proof (owner brief's own headline case). Two
     /// captures:
@@ -1257,28 +1281,29 @@ mod proof_tests {
         // Investigative capture — RAW NaN, bypassing gap handling
         // entirely, the exact fixture that first surfaced tiny-skia's
         // whole-path-drop behavior.
-        let raw_render = ThreeLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
+        let raw_render = MultiLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
             ctx.set_fill_color(&theme.background);
             ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
             let raw_screen: Vec<(f64, f64)> = points.iter().map(|&(px, py)| (area.x(&x_scale, px), area.y(&y_scale, py))).collect();
             ctx.stroke_polyline(&raw_screen, &theme.palette[0], 2.0);
         });
-        let raw_diff = ThreeLegDiff::compute(&raw_render, ChannelTolerance::default());
+        let raw_diff = MultiLegDiff::compute(&raw_render, ChannelTolerance::default());
         for line in raw_diff.report_lines() {
             println!("[gap-policy RAW-NaN, investigative only] {line}");
         }
 
         // Real, fixed production path — `GapPolicy::Break`, the default.
         let style = MarkStyle { color: theme.palette[0].clone(), stroke_width: 2.0, gap_policy: GapPolicy::Break, ..Default::default() };
-        let fixed_render = ThreeLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
+        let fixed_render = MultiLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
             ctx.set_fill_color(&theme.background);
             ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
             draw_polyline(ctx, &area, &x_scale, &y_scale, &points, &style);
         });
-        let fixed_diff = ThreeLegDiff::compute(&fixed_render, ChannelTolerance::default());
+        let fixed_diff = MultiLegDiff::compute(&fixed_render, ChannelTolerance::default());
         for line in fixed_diff.report_lines() {
             println!("[gap-policy GapPolicy::Break, production path] {line}");
         }
+        print_urx_gpu_degrades("gap-policy GapPolicy::Break, production path", &fixed_render);
         uzor_proof_harness::write_composite_png(&fixed_render, &out_dir().join("figures_gap_policy_backends.png"))
             .expect("gap-policy multi-backend composite should write");
         assert!(fixed_diff.all_within_budget(), "GapPolicy::Break: structural backend divergence beyond the generous AA/text tolerance");
@@ -1299,13 +1324,14 @@ mod proof_tests {
             .with_label_overflow(LabelOverflow::Rotate(45.0))
             .with_title("LabelOverflow::Rotate(45) — multi-backend");
 
-        let render = ThreeLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
+        let render = MultiLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
             figure.render(ctx, Rect::new(0.0, 0.0, panel_w, panel_h), &theme);
         });
-        let diff = ThreeLegDiff::compute(&render, ChannelTolerance::default());
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
         for line in diff.report_lines() {
             println!("[label-rotation] {line}");
         }
+        print_urx_gpu_degrades("label-rotation", &render);
         uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_label_rotation_backends.png"))
             .expect("label-rotation multi-backend composite should write");
         assert!(diff.all_within_budget(), "LabelOverflow::Rotate(45): structural backend divergence beyond the generous AA/text tolerance");
@@ -1328,7 +1354,7 @@ mod proof_tests {
         let panel_w = 220.0;
         let panel_h = 160.0;
         for size in [11.0_f64, 22.0, 44.0] {
-            let render = ThreeLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
+            let render = MultiLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
                 ctx.set_fill_color(&theme.background);
                 ctx.fill_rect(0.0, 0.0, panel_w, panel_h);
                 ctx.set_fill_color(&theme.label_color);
@@ -1339,7 +1365,7 @@ mod proof_tests {
                 ctx.fill_text("category-0", 0.0, 0.0);
                 ctx.restore();
             });
-            let diff = ThreeLegDiff::compute(&render, ChannelTolerance::default());
+            let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
             for line in diff.report_lines() {
                 println!("[label-rotation-sweep {size}px] {line}");
             }
@@ -1372,7 +1398,7 @@ mod proof_tests {
     /// is the number a CI run can actually fail on.
     ///
     /// **Gates ONLY `tiny_skia_vs_vello_cpu`, not the full
-    /// [`ThreeLegDiff::all_within_budget`]** — a real, disclosed, UNRELATED
+    /// [`MultiLegDiff::all_within_budget`]** — a real, disclosed, UNRELATED
     /// limitation was found while calibrating this test: `uzor-urx-cpu`'s
     /// `fill_rect_aa` snaps a rotated rect to the axis-aligned bounding box
     /// of its transformed corners instead of rasterizing the true rotated
@@ -1401,7 +1427,7 @@ mod proof_tests {
     #[test]
     fn translate_rotate_fill_rect_multi_backend_regression_proof() {
         let panel = 400.0;
-        let render = ThreeLegRender::capture(panel as u32, panel as u32, |ctx| {
+        let render = MultiLegRender::capture(panel as u32, panel as u32, |ctx| {
             ctx.set_fill_color("#101010");
             ctx.fill_rect(0.0, 0.0, panel, panel);
             ctx.save();
@@ -1415,7 +1441,7 @@ mod proof_tests {
             edge: uzor_proof_harness::STRUCTURAL_EDGE_TOLERANCE,
             max_differing_fraction: 0.05,
         };
-        let diff = ThreeLegDiff::compute(&render, tol);
+        let diff = MultiLegDiff::compute(&render, tol);
         for line in diff.report_lines() {
             println!("[translate-rotate-rect] {line}");
         }
@@ -1446,15 +1472,16 @@ mod proof_tests {
 
         let w = KPI_TILE_WIDTH as f64;
         let h = KPI_TILE_HEIGHT as f64;
-        let render = ThreeLegRender::capture(KPI_ROW_WIDTH, KPI_TILE_HEIGHT, |ctx| {
+        let render = MultiLegRender::capture(KPI_ROW_WIDTH, KPI_TILE_HEIGHT, |ctx| {
             revenue.render(ctx, Rect::new(0.0, 0.0, w, h), &theme);
             churn.render(ctx, Rect::new(w, 0.0, w, h), &theme);
             active_users.render(ctx, Rect::new(2.0 * w, 0.0, w, h), &theme);
         });
-        let diff = ThreeLegDiff::compute(&render, ChannelTolerance::default());
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
         for line in diff.report_lines() {
             println!("[kpi-tile-row] {line}");
         }
+        print_urx_gpu_degrades("kpi-tile-row", &render);
         uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_kpi_backends.png"))
             .expect("KPI multi-backend composite should write");
         assert!(diff.all_within_budget(), "KPI tile row: structural backend divergence beyond the generous AA/text tolerance");
@@ -1470,13 +1497,14 @@ mod proof_tests {
     fn heatmap_multi_backend_divergence_proof() {
         let figure = seeded_heatmap_figure();
         let theme = FigureTheme::dark();
-        let render = ThreeLegRender::capture(WIDTH, HEIGHT, |ctx| {
+        let render = MultiLegRender::capture(WIDTH, HEIGHT, |ctx| {
             figure.render(ctx, Rect::new(0.0, 0.0, WIDTH as f64, HEIGHT as f64), &theme);
         });
-        let diff = ThreeLegDiff::compute(&render, ChannelTolerance::default());
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
         for line in diff.report_lines() {
             println!("[heatmap] {line}");
         }
+        print_urx_gpu_degrades("heatmap", &render);
         uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_heatmap_backends.png"))
             .expect("heatmap multi-backend composite should write");
         assert!(diff.all_within_budget(), "heatmap: structural backend divergence beyond the generous AA/text tolerance");

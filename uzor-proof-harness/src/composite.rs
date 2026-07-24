@@ -1,9 +1,19 @@
-//! Labelled side-by-side composite PNG writer.
+//! Labelled composite PNG writer.
 //!
-//! Stitches a [`ThreeLegRender`]'s three panels into ONE image — tiny-skia
-//! | vello-cpu | urx-cpu, left to right, each with its own text header —
-//! so a human eyeballs backend divergence in a single file instead of
-//! three separate ones. The panel header itself is rendered through
+//! Stitches a [`MultiLegRender`]'s available panels into ONE image, each
+//! with its own text header, so a human eyeballs backend divergence in a
+//! single file instead of five separate ones. Family-grouped 3-column x
+//! 2-row grid (col0 = tiny-skia, col1 = vello family, col2 = urx family;
+//! row0 = CPU, row1 = GPU) rather than one wide 5-panel row — this puts
+//! each family's CPU/GPU pair in directly adjacent panels, the layout
+//! that best serves the NEW within-family divergence axis the GPU legs
+//! exist to catch (see `crate::compare::MultiLegDiff`'s own module doc).
+//! Reading the grid column-by-column, top-then-bottom, reproduces the
+//! exact tiny-skia / vello-cpu / vello-gpu / urx-cpu / urx-gpu order.
+//! `tiny-skia` has no GPU sibling — its own bottom cell, and any skipped
+//! GPU leg's cell, is left as plain background: no placeholder, no
+//! header, matching [`MultiLegRender::legs`]'s own "only what actually
+//! rendered" convention. The panel header itself is rendered through
 //! `tiny-skia` (already this crate's own dependency, no extra font/text
 //! library needed) — a fixed, deterministic label strip, not part of the
 //! compared scene content.
@@ -13,12 +23,17 @@ use std::path::Path;
 
 use uzor::render::{RenderContext, TextAlign, TextBaseline};
 
-use crate::render::ThreeLegRender;
+use crate::render::MultiLegRender;
 
 /// Height, in pixels, of the label strip painted above each panel.
 const HEADER_HEIGHT: u32 = 28;
-/// Horizontal gap, in pixels, between adjacent panels.
+/// Gap, in pixels, between adjacent panels (both horizontal, between
+/// columns, and vertical, between the CPU/GPU rows).
 const PANEL_GAP: u32 = 8;
+/// Grid shape: tiny-skia | vello family | urx family, CPU row over GPU
+/// row.
+const GRID_COLS: u32 = 3;
+const GRID_ROWS: u32 = 2;
 /// Composite background (also the header strip's own fill) — a plain
 /// dark neutral, deliberately distinct from any theme this crate's
 /// callers render with, so the panel boundary/gutter is unambiguous.
@@ -95,13 +110,24 @@ fn unpremultiply(buf: &mut [u8]) {
     }
 }
 
-/// Write `render`'s three panels (tiny-skia | vello-cpu | urx-cpu),
-/// each with its own text header, side by side into one PNG at `path`.
-pub fn write_composite_png(render: &ThreeLegRender, path: &Path) -> Result<(), CompositeError> {
+/// Write `render`'s available panels, each with its own text header,
+/// into one family-grouped composite PNG at `path` — see this module's
+/// own doc comment for the exact grid layout.
+pub fn write_composite_png(render: &MultiLegRender, path: &Path) -> Result<(), CompositeError> {
     let panel_w = render.width;
     let panel_h = render.height;
-    let total_w = panel_w * 3 + PANEL_GAP * 2;
-    let total_h = HEADER_HEIGHT + panel_h;
+    let total_w = panel_w * GRID_COLS + PANEL_GAP * (GRID_COLS - 1);
+    let row_h = HEADER_HEIGHT + panel_h;
+    let total_h = row_h * GRID_ROWS + PANEL_GAP * (GRID_ROWS - 1);
+
+    // `grid[col][row]` — `None` cells (tiny-skia's own missing GPU
+    // sibling, or an unavailable GPU leg) stay plain background: no
+    // placeholder, no header.
+    let grid: [[Option<(&str, &[u8])>; 2]; 3] = [
+        [Some(("tiny-skia", render.tiny_skia.as_slice())), None],
+        [Some(("vello-cpu", render.vello_cpu.as_slice())), render.vello_gpu.as_deref().map(|px| ("vello-gpu", px))],
+        [Some(("urx-cpu", render.urx_cpu.as_slice())), render.urx_gpu.as_ref().map(|r| ("urx-gpu", r.pixels.as_slice()))],
+    ];
 
     let mut composite = vec![0u8; (total_w * total_h * 4) as usize];
     // Fill the gutters/background first (`COMPOSITE_BG`, straight RGB —
@@ -112,11 +138,15 @@ pub fn write_composite_png(render: &ThreeLegRender, path: &Path) -> Result<(), C
         px.copy_from_slice(&[bg[0], bg[1], bg[2], 255]);
     }
 
-    for (i, (label, pixels)) in render.legs().into_iter().enumerate() {
-        let panel_x = i as u32 * (panel_w + PANEL_GAP);
-        let header = render_header_label(panel_w, label);
-        blit(&mut composite, total_w, panel_x, 0, &header, panel_w, HEADER_HEIGHT);
-        blit(&mut composite, total_w, panel_x, HEADER_HEIGHT, pixels, panel_w, panel_h);
+    for (col_idx, col) in grid.iter().enumerate() {
+        let panel_x = col_idx as u32 * (panel_w + PANEL_GAP);
+        for (row_idx, cell) in col.iter().enumerate() {
+            let Some((label, pixels)) = cell else { continue };
+            let panel_y = row_idx as u32 * (row_h + PANEL_GAP);
+            let header = render_header_label(panel_w, label);
+            blit(&mut composite, total_w, panel_x, panel_y, &header, panel_w, HEADER_HEIGHT);
+            blit(&mut composite, total_w, panel_x, panel_y + HEADER_HEIGHT, pixels, panel_w, panel_h);
+        }
     }
 
     unpremultiply(&mut composite);
@@ -150,11 +180,16 @@ fn parse_hex_rgb(hex: &str) -> [u8; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::ThreeLegRender;
+    use crate::render::MultiLegRender;
 
+    /// Composite geometry is FIXED (`GRID_COLS x GRID_ROWS`) regardless
+    /// of GPU availability — a skipped GPU leg leaves its own cell
+    /// blank, it never shrinks the canvas. Same test, same assertion
+    /// shape as the pre-GPU three-panel version; only the expected
+    /// dimensions grew from `3 panels x 1 row` to `3 panels x 2 rows`.
     #[test]
     fn write_composite_png_produces_a_correctly_sized_valid_png() {
-        let render = ThreeLegRender::capture(6, 6, |ctx| {
+        let render = MultiLegRender::capture(6, 6, |ctx| {
             ctx.set_fill_color("#3366ff");
             ctx.fill_rect(0.0, 0.0, 6.0, 6.0);
         });
@@ -166,8 +201,8 @@ mod tests {
         let decoder = png::Decoder::new(bytes.as_slice());
         let reader = decoder.read_info().expect("valid PNG header");
         let info = reader.info();
-        assert_eq!(info.width, 6 * 3 + PANEL_GAP * 2);
-        assert_eq!(info.height, HEADER_HEIGHT + 6);
+        assert_eq!(info.width, 6 * GRID_COLS + PANEL_GAP * (GRID_COLS - 1));
+        assert_eq!(info.height, (HEADER_HEIGHT + 6) * GRID_ROWS + PANEL_GAP * (GRID_ROWS - 1));
 
         let _ = std::fs::remove_file(&path);
     }
