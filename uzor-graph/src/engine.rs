@@ -1384,8 +1384,35 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
                 self.modifiers = *modifiers;
                 self.on_key_up(*key)
             }
+            // 2D quality audit A2 / graph-strengthening arc G1.4: a lost
+            // `PointerUp` (mouse released outside the window — `uzor-window-
+            // desktop` has no pointer-capture call anywhere, confirmed by
+            // grep) otherwise wedges `PointerMode::DraggingNode`/
+            // `PanningCamera`/`BoxSelecting` forever: `alpha_target` stays
+            // raised, `is_hot()` never returns `false` again, and a dragged
+            // node ghost-follows the cursor if it re-enters the canvas with
+            // no button held. Both events finalize whatever gesture is in
+            // progress exactly as a real `PointerUp` at the last known
+            // pointer position would, by calling the SAME `on_pointer_up`
+            // body — not a parallel cleanup path that could drift from it.
+            PlatformEvent::PointerLeft => self.cancel_pointer_gesture(),
+            PlatformEvent::WindowFocused(false) => self.cancel_pointer_gesture(),
             _ => false,
         }
+    }
+
+    /// Finalize any in-progress drag/pan/box-select at
+    /// [`Self::last_pointer_screen`] — see [`Self::on_event`]'s
+    /// `PointerLeft`/`WindowFocused(false)` arms for why this exists. A
+    /// no-op (`false`, event not consumed) while [`PointerMode::Idle`], so
+    /// a spurious `PointerLeft`/defocus with nothing in progress doesn't
+    /// spuriously mark the canvas dirty.
+    fn cancel_pointer_gesture(&mut self) -> bool {
+        if matches!(self.mode, PointerMode::Idle) {
+            return false;
+        }
+        let (x, y) = self.last_pointer_screen;
+        self.on_pointer_up(x, y)
     }
 
     /// A mapped nav key going down (Wave 2.5): a direct user key-press is
@@ -1479,6 +1506,15 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
             self.layout.set_alpha_target(DRAG_ALPHA_TARGET);
             self.reheat(DRAG_ALPHA_TARGET);
         } else {
+            // 2D quality audit A1 / graph-strengthening arc G1.5: a
+            // background pan is real-time user input, so it wins over any
+            // in-flight PROGRAMMATIC camera transition — the same rule
+            // `on_key_down` already applies for the keyboard-nav channel
+            // (see that method's own doc comment). Without this,
+            // `advance_camera_transition`'s unconditional per-tick write
+            // (`engine.rs`) fights the user's own drag every frame until
+            // the animation finishes.
+            self.camera_transition = None;
             self.mode = PointerMode::PanningCamera { last: (x, y), total: 0.0 };
         }
         self.dirty = true;
@@ -1632,6 +1668,12 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
         if !self.canvas_rect.contains(self.last_pointer_screen.0, self.last_pointer_screen.1) {
             return false;
         }
+        // Same "live user input supersedes a running animation" rule as
+        // `on_key_down`/`on_pointer_down`'s background-pan branch — see
+        // their doc comments. A wheel-zoom mid-`zoom_to_fit`/`zoom_to_node`
+        // must win immediately, not fight the animation for the rest of
+        // its duration.
+        self.camera_transition = None;
         let factor = (1.0 + dy * ZOOM_SENSITIVITY).clamp(0.8, 1.25);
         self.camera.zoom_at(self.last_pointer_screen, self.canvas_rect, factor);
         self.dirty = true;
@@ -2531,5 +2573,100 @@ mod tests {
         assert_eq!(visible, [root, l0, l2].into_iter().collect());
         assert!(!visible.contains(&l1), "l1 fails the filter even though it's in the local BFS set");
         assert!(!visible.contains(&l3));
+    }
+
+    // ── Graph-strengthening arc G1.4: lost PointerUp ────────────────────
+    //
+    // 2D quality audit A2: `uzor-window-desktop` has no pointer-capture
+    // call anywhere, so a `PointerUp` after the cursor leaves the window
+    // can simply never arrive. `PlatformEvent::PointerLeft`/
+    // `WindowFocused(false)` must finalize whatever gesture is in progress
+    // exactly as a real `PointerUp` at the last known pointer position
+    // would.
+
+    #[test]
+    fn pointer_left_finalizes_a_background_pan_exactly_like_a_pointer_up_would() {
+        let mut engine = empty_engine_with_canvas(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.on_event(&PlatformEvent::PointerDown { x: 300.0, y: 300.0, button: MouseButton::Left });
+        engine.on_event(&PlatformEvent::PointerMoved { x: 340.0, y: 300.0 });
+        assert!(matches!(engine.mode, PointerMode::PanningCamera { .. }), "fixture sanity: must genuinely be panning");
+
+        assert!(engine.on_event(&PlatformEvent::PointerLeft));
+
+        assert!(matches!(engine.mode, PointerMode::Idle), "PointerLeft must finalize the in-progress pan, same as a real PointerUp");
+    }
+
+    #[test]
+    fn window_defocus_finalizes_an_in_progress_node_drag_and_leaves_it_sticky_pinned() {
+        let (mut engine, a, _b) = two_node_chain_engine();
+        engine.on_event(&PlatformEvent::PointerDown { x: 100.0, y: 100.0, button: MouseButton::Left });
+        assert!(matches!(engine.mode, PointerMode::DraggingNode), "fixture sanity: must genuinely be dragging node a");
+        assert!(engine.layout.alpha_target() > 0.0, "a drag must hold the sustained alpha target while in progress");
+
+        assert!(engine.on_event(&PlatformEvent::WindowFocused(false)));
+
+        assert!(matches!(engine.mode, PointerMode::Idle), "losing window focus must finalize the in-progress node drag");
+        assert_eq!(engine.selected, Some(a), "a node drag must select the dragged node on finalize, same as a real PointerUp");
+        assert!(engine.is_pinned(a), "the default Sticky drag-end policy must leave the node pinned where the drag left it");
+        assert_eq!(engine.layout.alpha_target(), 0.0, "drag-end must clear the sustained alpha target regardless of how the drag ended");
+    }
+
+    #[test]
+    fn window_refocus_true_is_not_a_gesture_cancel() {
+        let mut engine = empty_engine_with_canvas(Rect::new(0.0, 0.0, 800.0, 600.0));
+        engine.on_event(&PlatformEvent::PointerDown { x: 300.0, y: 300.0, button: MouseButton::Left });
+        assert!(matches!(engine.mode, PointerMode::PanningCamera { .. }));
+
+        assert!(!engine.on_event(&PlatformEvent::WindowFocused(true)), "gaining focus is not a drag-cancel and must not be consumed as one");
+
+        assert!(matches!(engine.mode, PointerMode::PanningCamera { .. }), "gaining focus must not disturb an in-progress pan");
+    }
+
+    #[test]
+    fn pointer_left_with_nothing_in_progress_is_a_no_op() {
+        let mut engine = empty_engine_with_canvas(Rect::new(0.0, 0.0, 800.0, 600.0));
+        assert!(matches!(engine.mode, PointerMode::Idle));
+
+        assert!(!engine.on_event(&PlatformEvent::PointerLeft), "PointerLeft with no gesture in progress must not be reported as consumed");
+    }
+
+    // ── Graph-strengthening arc G1.5: camera input vs. an in-flight
+    // programmatic camera transition ─────────────────────────────────────
+
+    #[test]
+    fn a_background_pan_started_mid_camera_transition_clears_the_transition_immediately() {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        let canvas = Rect::new(0.0, 0.0, 800.0, 600.0);
+        engine.set_canvas_rect(canvas);
+        engine.seed_positions(&[(120.0, 40.0)]);
+        engine.pin_node(a);
+        assert!(engine.zoom_to_node(a, 500.0, Some(3.0)));
+        assert!(engine.camera_transitioning());
+
+        // A background point, far from the seeded node, so this starts a
+        // pan rather than a node drag.
+        engine.on_event(&PlatformEvent::PointerDown { x: 5.0, y: 5.0, button: MouseButton::Left });
+
+        assert!(!engine.camera_transitioning(), "starting a background pan must clear an in-flight camera transition");
+    }
+
+    #[test]
+    fn a_scroll_mid_camera_transition_clears_the_transition_immediately() {
+        let mut graph = Graph::new();
+        let a = graph.push_node((), "a", "x", 4.0);
+        let mut engine: TestEngine = GraphEngine::new(graph, ForceDirectedLayout::default());
+        let canvas = Rect::new(0.0, 0.0, 800.0, 600.0);
+        engine.set_canvas_rect(canvas);
+        engine.seed_positions(&[(120.0, 40.0)]);
+        engine.pin_node(a);
+        engine.on_event(&PlatformEvent::PointerMoved { x: 400.0, y: 300.0 });
+        assert!(engine.zoom_to_node(a, 500.0, Some(3.0)));
+        assert!(engine.camera_transitioning());
+
+        engine.on_event(&PlatformEvent::Scroll { dx: 0.0, dy: -1.0 });
+
+        assert!(!engine.camera_transitioning(), "a wheel-zoom must clear an in-flight camera transition");
     }
 }

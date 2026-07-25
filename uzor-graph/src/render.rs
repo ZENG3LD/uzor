@@ -134,12 +134,19 @@ pub struct DrawContext<'a> {
 /// [`FocusSet`]. Edges touching a node hidden by cluster collapse
 /// (`ctx.hidden`) are skipped entirely — `draw_cluster_edges` draws the
 /// aggregated substitute for those. Returns the number of edges drawn.
+///
+/// Bracketed in `render.save()`/`render.restore()` (2D quality audit A5 /
+/// graph-strengthening arc G1.3) — `draw_line_batch` mutates persistent
+/// stroke color/width state with no restore of its own, and this function
+/// also flips the line-cap style; without the bracket that state leaks
+/// past this call into whatever the caller paints next.
 pub fn draw_edges<N, E>(
     render: &mut dyn RenderContext,
     graph: &Graph<N, E>,
     particles: &[Particle],
     ctx: &DrawContext<'_>,
 ) -> usize {
+    render.save();
     let visible_set: HashSet<NodeIndex> = ctx.visible.iter().copied().collect();
     let mut segments: Vec<LineSegment> = Vec::new();
     let mut dim_segments: Vec<LineSegment> = Vec::new();
@@ -180,6 +187,7 @@ pub fn draw_edges<N, E>(
         render.draw_line_batch(&segments, "#7c8496", 1.7);
     }
     render.set_line_cap("butt");
+    render.restore();
     drawn
 }
 
@@ -239,20 +247,49 @@ fn labels_to_draw<N, E>(graph: &Graph<N, E>, particles: &[Particle], ctx: &DrawC
 /// color from [`category_color`]), plus a selection/hover ring and
 /// label-LOD labels (Wave 2.3 — `crate::label_grid`'s sigma `LabelGrid`
 /// port, alpha boosted by degree). Returns node/label draw counts.
+///
+/// Honours `ctx.hidden` directly (graph-strengthening arc G1.4) — a node
+/// hidden by cluster collapse/local-subgraph/filter is skipped even if
+/// present in `ctx.visible`, mirroring [`draw_edges`]'s own
+/// `ctx.hidden.contains(...)` check. Production always pre-filters
+/// `ctx.visible` upstream (`GraphEngine::refresh_visible`), so this is
+/// normally a no-op — but relying on the caller to have done that made
+/// this function an API footgun (see `uzor-graph/CLAUDE.md`'s
+/// graph-strengthening-arc entry): a caller building `visible` the
+/// obvious way, without independently threading the exclusion set
+/// through it too, got stacked circles at one pixel with `draw_edges`
+/// silently disagreeing. Measured before choosing this over a debug
+/// assert: an extra `HashSet::contains` per node costs ~0ns when `hidden`
+/// is empty and ~5-7ns/node even at 50k nodes / 10k hidden (an order of
+/// magnitude past this crate's own "large graph" scale) — negligible
+/// against a 16.6ms frame budget, so consistency with `draw_edges` won
+/// over a caller-pre-filtered contract.
+///
+/// Bracketed in `render.save()`/`render.restore()` (2D quality audit A5 /
+/// graph-strengthening arc G1.3) — `draw_circle_batch` mutates persistent
+/// fill-color state, and the ring/label passes below mutate stroke color/
+/// width and font with no restore of their own; without the bracket that
+/// state leaks past this call into whatever the caller paints next.
 pub fn draw_nodes<N, E>(
     render: &mut dyn RenderContext,
     graph: &Graph<N, E>,
     particles: &[Particle],
     ctx: &DrawContext<'_>,
 ) -> NodeDrawStats {
+    render.save();
     let mut by_color: HashMap<&'static str, Vec<CircleBatch>> = HashMap::new();
     let mut dim: Vec<CircleBatch> = Vec::new();
+    let mut nodes_drawn = 0usize;
 
     for &id in ctx.visible {
+        if ctx.hidden.contains(&id) {
+            continue;
+        }
         let (Some(p), Some(node)) = (particles.get(id.index()), graph.get_node(id)) else { continue };
         let (sx, sy) = ctx.camera.world_to_screen((p.x as f64, p.y as f64), ctx.viewport);
         let r = ctx.camera.node_screen_radius(node.radius);
         let circle = CircleBatch { cx: sx, cy: sy, r };
+        nodes_drawn += 1;
         if ctx.focus.is_active() && !ctx.focus.is_selected(u64::from(id)) {
             dim.push(circle);
         } else {
@@ -265,6 +302,24 @@ pub fn draw_nodes<N, E>(
         render.draw_circle_batch(&dim, "#6b7280");
         render.set_global_alpha(1.0);
     }
+    // Deterministic paint order (graph-strengthening arc G1.3, five-leg
+    // harness finding — the audits missed this, the harness caught it):
+    // `HashMap` iteration order is NOT deterministic, and `by_color` is
+    // rebuilt fresh every call, so the OLD `for (color, circles) in
+    // &by_color` iterated colors in an order that could differ frame to
+    // frame. Whenever two nodes of DIFFERENT categories overlap on
+    // screen — routine in a force graph — which one painted on top
+    // flickered between frames, and any pixel proof of an overlapping
+    // scene was irreproducible. Fixed via `BTreeMap` (lexicographic hex
+    // color order) instead of a per-node z-order: a real z-order (e.g.
+    // largest-radius-first) would need one draw call per node, defeating
+    // the whole point of this color-batching pass. Lexicographic order is
+    // arbitrary but STABLE — every category's own batch always paints in
+    // the same relative order, so overlap resolution is reproducible,
+    // which is what the harness/pixel-proof gate actually needs; it is
+    // not claimed to be a meaningful z-order (e.g. "important categories
+    // on top").
+    let by_color: std::collections::BTreeMap<&'static str, Vec<CircleBatch>> = by_color.into_iter().collect();
     for (color, circles) in &by_color {
         render.draw_circle_batch(circles, color);
     }
@@ -278,6 +333,9 @@ pub fn draw_nodes<N, E>(
     let mut labels_drawn = 0usize;
 
     for &id in ctx.visible {
+        if ctx.hidden.contains(&id) {
+            continue;
+        }
         let (Some(p), Some(node)) = (particles.get(id.index()), graph.get_node(id)) else { continue };
         let (sx, sy) = ctx.camera.world_to_screen((p.x as f64, p.y as f64), ctx.viewport);
         let r = ctx.camera.node_screen_radius(node.radius);
@@ -326,7 +384,8 @@ pub fn draw_nodes<N, E>(
         }
     }
 
-    NodeDrawStats { nodes_drawn: ctx.visible.len(), labels_drawn }
+    render.restore();
+    NodeDrawStats { nodes_drawn, labels_drawn }
 }
 
 const CLUSTER_ACCENT: &str = "#c9a94e";
@@ -336,12 +395,17 @@ const CLUSTER_ACCENT: &str = "#c9a94e";
 /// for a heavier aggregate), replacing the N raw overlapping lines
 /// [`draw_edges`] already excludes via `ctx.hidden`. Returns the number
 /// of synthetic edges drawn.
+///
+/// Bracketed in `render.save()`/`render.restore()` (2D quality audit A5 /
+/// graph-strengthening arc G1.3) — `draw_line_batch` mutates persistent
+/// stroke color/width state with no restore of its own.
 pub fn draw_cluster_edges(
     render: &mut dyn RenderContext,
     particles: &[Particle],
     ctx: &DrawContext<'_>,
     clusters: &ClusterRegistry,
 ) -> usize {
+    render.save();
     let mut drawn = 0;
     for cluster in clusters.collapsed_clusters() {
         let Some(rep) = particles.get(cluster.representative.index()) else { continue };
@@ -354,6 +418,7 @@ pub fn draw_cluster_edges(
             drawn += 1;
         }
     }
+    render.restore();
     drawn
 }
 
@@ -373,6 +438,7 @@ pub fn draw_cluster_supernodes<N, E>(
     ctx: &DrawContext<'_>,
     clusters: &ClusterRegistry,
 ) -> usize {
+    render.save();
     let mut drawn = 0;
     for cluster in clusters.collapsed_clusters() {
         let rep = cluster.representative;
@@ -393,6 +459,7 @@ pub fn draw_cluster_supernodes<N, E>(
         fill_text_with_halo(render, &format!("×{}", cluster.member_count()), sx + r + 10.0, sy + 4.0, "#f0e6c0", ctx.label_halo);
         drawn += 1;
     }
+    render.restore();
     drawn
 }
 
@@ -419,6 +486,13 @@ pub struct HoverCardInfo<'a> {
 /// hover tooltips; `bounds` is the graph canvas's own viewport, so the
 /// card never clips past the canvas edge even in a multi-panel layout.
 pub fn draw_hover_card(render: &mut dyn RenderContext, anchor_px: (f64, f64), info: &HoverCardInfo<'_>, bounds: Rect) {
+    // `draw_tooltip` itself already brackets its own state (font/text-
+    // align/baseline) in `save()`/`restore()` — this bracket is
+    // additionally applied here so every public entry point in this
+    // module keeps the SAME guarantee independent of what its own
+    // implementation happens to delegate to (2D quality audit A5 /
+    // graph-strengthening arc G1.3).
+    render.save();
     let lines = [
         ("label".to_owned(), info.label.to_owned()),
         ("category".to_owned(), info.category.to_owned()),
@@ -426,6 +500,7 @@ pub fn draw_hover_card(render: &mut dyn RenderContext, anchor_px: (f64, f64), in
         ("pinned".to_owned(), info.pinned.to_string()),
     ];
     draw_tooltip(render, &FigureTheme::dark(), anchor_px, &lines, bounds);
+    render.restore();
 }
 
 const BOX_SELECT_FILL: &str = "#4d90fe";
@@ -439,6 +514,11 @@ const BOX_SELECT_BORDER_WIDTH: f64 = 1.0;
 /// screen-space (see [`crate::engine::GraphEngine::box_select_rect`]) —
 /// this function is pure paint, no selection logic of its own.
 pub fn draw_box_select_rect(render: &mut dyn RenderContext, rect: Rect) {
+    // 2D quality audit A5 / graph-strengthening arc G1.3 — this function
+    // leaves stroke color/width behind with no restore of its own
+    // (`set_global_alpha` is the one property it already reset back to
+    // `1.0` unprompted).
+    render.save();
     render.set_global_alpha(BOX_SELECT_FILL_ALPHA);
     render.set_fill_color(BOX_SELECT_FILL);
     render.fill_rect(rect.x, rect.y, rect.width, rect.height);
@@ -446,6 +526,7 @@ pub fn draw_box_select_rect(render: &mut dyn RenderContext, rect: Rect) {
     render.set_stroke_color(BOX_SELECT_BORDER);
     render.set_stroke_width(BOX_SELECT_BORDER_WIDTH);
     render.stroke_rect(rect.x, rect.y, rect.width, rect.height);
+    render.restore();
 }
 
 #[cfg(test)]
@@ -460,6 +541,11 @@ mod tests {
     use super::*;
     use crate::graph::Graph;
     use crate::particle::Particle;
+    // `StateTrackingContext`/`ColorOrderRecorder` below call `Painter`/
+    // `TextRenderer` methods directly on a concrete type (not through
+    // `&mut dyn RenderContext`, which the trait-object dispatch every
+    // production call site uses) — the traits must be in scope for that.
+    use uzor::render::{Painter, TextRenderer};
 
     type G = Graph<(), ()>;
 
@@ -578,5 +664,411 @@ mod tests {
         for _ in 0..5 {
             assert_eq!(labels_to_draw(&graph, &particles, &ctx), first, "identical state must yield an identical label set every call");
         }
+    }
+
+    // ── Graph-strengthening arc G1.3: no save()/restore() anywhere in the
+    // render layer + nondeterministic node-color paint order ────────────
+    //
+    // `StateTrackingContext` is a REAL `save`/`restore` stack (unlike
+    // `RecordingRenderContext`'s no-op pair in `engine3d.rs`'s test
+    // module, which exists only to record `fill_text` calls) — its
+    // `restore()` genuinely pops back to whatever `PaintState` was live at
+    // the matching `save()`, so a bracketed draw fn that leaks nothing
+    // leaves `state` byte-identical to what it was before the call, and a
+    // fn missing its bracket (or missing a `restore()` on some path) does
+    // not.
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct PaintState {
+        font: String,
+        fill_color: String,
+        stroke_color: String,
+        stroke_width: f64,
+        global_alpha: f64,
+        text_align: uzor::render::TextAlign,
+        text_baseline: uzor::render::TextBaseline,
+        line_cap: String,
+        line_join: String,
+    }
+
+    impl Default for PaintState {
+        fn default() -> Self {
+            Self {
+                font: String::new(),
+                fill_color: String::new(),
+                stroke_color: String::new(),
+                stroke_width: 1.0,
+                global_alpha: 1.0,
+                text_align: uzor::render::TextAlign::default(),
+                text_baseline: uzor::render::TextBaseline::default(),
+                line_cap: "butt".to_owned(),
+                line_join: "miter".to_owned(),
+            }
+        }
+    }
+
+    struct StateTrackingContext {
+        state: PaintState,
+        stack: Vec<PaintState>,
+    }
+
+    impl StateTrackingContext {
+        fn new() -> Self {
+            Self { state: PaintState::default(), stack: Vec::new() }
+        }
+    }
+
+    impl uzor::render::Painter for StateTrackingContext {
+        fn save(&mut self) {
+            self.stack.push(self.state.clone());
+        }
+        fn restore(&mut self) {
+            if let Some(s) = self.stack.pop() {
+                self.state = s;
+            }
+        }
+        fn translate(&mut self, _x: f64, _y: f64) {}
+        fn rotate(&mut self, _angle: f64) {}
+        fn scale(&mut self, _x: f64, _y: f64) {}
+        fn set_fill_color(&mut self, color: &str) {
+            self.state.fill_color = color.to_owned();
+        }
+        fn set_global_alpha(&mut self, alpha: f64) {
+            self.state.global_alpha = alpha;
+        }
+        fn set_stroke_color(&mut self, color: &str) {
+            self.state.stroke_color = color.to_owned();
+        }
+        fn set_stroke_width(&mut self, width: f64) {
+            self.state.stroke_width = width;
+        }
+        fn set_line_dash(&mut self, _pattern: &[f64]) {}
+        fn set_line_cap(&mut self, cap: &str) {
+            self.state.line_cap = cap.to_owned();
+        }
+        fn set_line_join(&mut self, join: &str) {
+            self.state.line_join = join.to_owned();
+        }
+        fn begin_path(&mut self) {}
+        fn move_to(&mut self, _x: f64, _y: f64) {}
+        fn line_to(&mut self, _x: f64, _y: f64) {}
+        fn close_path(&mut self) {}
+        fn rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+        fn arc(&mut self, _cx: f64, _cy: f64, _r: f64, _s: f64, _e: f64) {}
+        fn ellipse(&mut self, _cx: f64, _cy: f64, _rx: f64, _ry: f64, _rot: f64, _s: f64, _e: f64) {}
+        fn quadratic_curve_to(&mut self, _cpx: f64, _cpy: f64, _x: f64, _y: f64) {}
+        fn bezier_curve_to(&mut self, _cp1x: f64, _cp1y: f64, _cp2x: f64, _cp2y: f64, _x: f64, _y: f64) {}
+        fn stroke(&mut self) {}
+        fn fill(&mut self) {}
+    }
+    impl uzor::render::TextRenderer for StateTrackingContext {
+        fn set_font(&mut self, font: &str) {
+            self.state.font = font.to_owned();
+        }
+        fn set_text_align(&mut self, align: uzor::render::TextAlign) {
+            self.state.text_align = align;
+        }
+        fn set_text_baseline(&mut self, baseline: uzor::render::TextBaseline) {
+            self.state.text_baseline = baseline;
+        }
+        fn fill_text(&mut self, _text: &str, _x: f64, _y: f64) {}
+        fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {}
+    }
+    impl uzor::render::TextMetrics for StateTrackingContext {
+        fn measure_text(&self, _text: &str) -> f64 {
+            0.0
+        }
+        fn text_bounds(&self, _text: &str, _font: &str) -> uzor::render::TextBounds {
+            uzor::render::TextBounds { x: 0.0, y: 0.0, w: 0.0, h: 0.0, ascent: 0.0, descent: 0.0 }
+        }
+    }
+    impl uzor::render::Masking for StateTrackingContext {
+        fn clip(&mut self) {}
+    }
+    impl uzor::render::Effects for StateTrackingContext {}
+    impl uzor::render::ShapeHelpers for StateTrackingContext {
+        fn fill_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+        fn stroke_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+    }
+    impl uzor::render::GradientPainter for StateTrackingContext {}
+    impl uzor::render::UiEffectHelpers for StateTrackingContext {}
+    impl uzor::render::BatchPainter for StateTrackingContext {}
+    impl uzor::render::RenderContext for StateTrackingContext {
+        fn dpr(&self) -> f64 {
+            1.0
+        }
+    }
+
+    /// Triangle `a-b-c` (all overlapping at the same screen position — the
+    /// exact "two nodes of different categories overlap" scenario fix G1.3
+    /// targets) plus a 2-member cluster `{d, e}` collapsed, with `d`
+    /// carrying one cross-cluster edge to `a` (so `draw_cluster_edges`/
+    /// `draw_cluster_supernodes` both have something real to draw, not
+    /// just an empty no-op loop).
+    fn overlap_fixture() -> (G, Vec<Particle>, ClusterRegistry, crate::cluster::GroupId, NodeIndex, NodeIndex, NodeIndex) {
+        let mut graph = G::new();
+        let a = graph.push_node((), "a", "red", 6.0);
+        let b = graph.push_node((), "b", "blue", 6.0);
+        let c = graph.push_node((), "c", "green", 6.0);
+        let d = graph.push_node((), "d", "amber", 4.0);
+        let e = graph.push_node((), "e", "amber", 4.0);
+        graph.push_edge(a, b, 1.0, ());
+        graph.push_edge(b, c, 1.0, ());
+        graph.push_edge(d, a, 1.0, ());
+
+        let mut particles = vec![Particle::default(); graph.node_count()];
+        for p in particles.iter_mut().take(3) {
+            *p = Particle::at(0.0, 0.0); // a, b, c all coincide on screen.
+        }
+        particles[d.index()] = Particle::at(200.0, 0.0);
+        particles[e.index()] = Particle::at(220.0, 0.0);
+
+        let mut clusters = ClusterRegistry::default();
+        let cluster_id = clusters.define(&graph, vec![d, e]).expect("non-empty cluster");
+        assert!(clusters.collapse(cluster_id, &mut graph, &mut particles));
+
+        (graph, particles, clusters, cluster_id, a, b, c)
+    }
+
+    fn draw_ctx_for<'a>(
+        camera: &'a Camera2D,
+        viewport: Rect,
+        visible: &'a [NodeIndex],
+        focus: &'a FocusSet,
+        selection: &'a BTreeSet<NodeIndex>,
+        hovered: Option<NodeIndex>,
+        hidden: &'a HashSet<NodeIndex>,
+        forced: &'a HashSet<NodeIndex>,
+    ) -> DrawContext<'a> {
+        DrawContext {
+            camera,
+            viewport,
+            visible,
+            focus,
+            selection,
+            hovered,
+            hidden,
+            label_density: label_grid::DEFAULT_LABEL_DENSITY,
+            label_halo: crate::engine::DEFAULT_LABEL_HALO,
+            forced_labels: forced,
+        }
+    }
+
+    /// The state-leak gate itself: EVERY public draw fn in this module
+    /// must leave `RenderContext`'s paint state (font/fill/stroke/alpha/
+    /// text-align/baseline/line-cap/line-join) byte-identical to what it
+    /// was immediately before the call — a draw-output test alone (the
+    /// tests above) cannot catch this, since a state leak produces no
+    /// wrong PIXEL in the SAME frame, only a corrupted starting state for
+    /// whatever paints next.
+    #[test]
+    fn every_public_draw_fn_leaves_the_render_context_paint_state_unchanged() {
+        let (graph, particles, clusters, _cluster_id, a, b, _c) = overlap_fixture();
+        let camera = Camera2D::default();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let visible: Vec<NodeIndex> = graph.nodes().map(|(id, _)| id).collect();
+        let focus = FocusSet::empty();
+        let mut selection = BTreeSet::new();
+        selection.insert(a);
+        let hidden: HashSet<NodeIndex> = HashSet::new();
+        let forced: HashSet<NodeIndex> = HashSet::new();
+        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, Some(b), &hidden, &forced);
+
+        let mut render = StateTrackingContext::new();
+        // A caller-set state distinct from every default this module's own
+        // draw calls happen to use, so the test can't pass by coincidence
+        // (a bracket-less leaked call would land on one of THIS module's
+        // own literals, e.g. `"#ffffff"`/`"11px sans-serif"`, not silently
+        // reproduce the caller's own prior state).
+        render.set_font("20px serif");
+        render.set_fill_color("#123456");
+        render.set_stroke_color("#abcdef");
+        render.set_stroke_width(9.0);
+        render.set_global_alpha(0.42);
+        render.set_text_align(uzor::render::TextAlign::Right);
+        render.set_text_baseline(uzor::render::TextBaseline::Bottom);
+        render.set_line_cap("square");
+        render.set_line_join("bevel");
+        let caller_state = render.state.clone();
+
+        draw_edges(&mut render, &graph, &particles, &ctx);
+        assert_eq!(render.state, caller_state, "draw_edges must not leak paint state past its own call");
+
+        draw_nodes(&mut render, &graph, &particles, &ctx);
+        assert_eq!(render.state, caller_state, "draw_nodes must not leak paint state past its own call");
+
+        draw_cluster_edges(&mut render, &particles, &ctx, &clusters);
+        assert_eq!(render.state, caller_state, "draw_cluster_edges must not leak paint state past its own call");
+
+        draw_cluster_supernodes(&mut render, &graph, &particles, &ctx, &clusters);
+        assert_eq!(render.state, caller_state, "draw_cluster_supernodes must not leak paint state past its own call");
+
+        let info = HoverCardInfo { label: "b", category: "blue", degree: 1, pinned: false };
+        draw_hover_card(&mut render, (400.0, 300.0), &info, viewport);
+        assert_eq!(render.state, caller_state, "draw_hover_card must not leak paint state past its own call");
+
+        draw_box_select_rect(&mut render, Rect::new(10.0, 10.0, 50.0, 50.0));
+        assert_eq!(render.state, caller_state, "draw_box_select_rect must not leak paint state past its own call");
+    }
+
+    /// Determinism gate for the fixed nondeterministic-paint-order defect
+    /// (graph-strengthening arc G1.3): rendering the SAME overlapping-node
+    /// scene twice (fresh `by_color: HashMap` rebuilt each call, per
+    /// `draw_nodes`'s own doc comment) must issue the identical SEQUENCE
+    /// of `draw_circle_batch` color batches both times — before the
+    /// `BTreeMap` fix, `HashMap` iteration order was merely unspecified
+    /// PER PROCESS RUN (stable within one run, since Rust's default hasher
+    /// is seeded once at process start) — this test can't observe
+    /// cross-run nondeterminism directly, so it instead asserts the
+    /// STRUCTURAL property the fix actually guarantees: the batch color
+    /// sequence is lexicographic (`BTreeMap` order), which is what makes
+    /// repeated renders — and repeated PROCESS runs — reproducible.
+    #[derive(Default)]
+    struct ColorOrderRecorder {
+        state: PaintState,
+        stack: Vec<PaintState>,
+        circle_batch_colors: Vec<String>,
+    }
+    impl uzor::render::Painter for ColorOrderRecorder {
+        fn save(&mut self) {
+            self.stack.push(self.state.clone());
+        }
+        fn restore(&mut self) {
+            if let Some(s) = self.stack.pop() {
+                self.state = s;
+            }
+        }
+        fn translate(&mut self, _x: f64, _y: f64) {}
+        fn rotate(&mut self, _angle: f64) {}
+        fn scale(&mut self, _x: f64, _y: f64) {}
+        fn set_fill_color(&mut self, color: &str) {
+            self.state.fill_color = color.to_owned();
+        }
+        fn set_global_alpha(&mut self, alpha: f64) {
+            self.state.global_alpha = alpha;
+        }
+        fn set_stroke_color(&mut self, color: &str) {
+            self.state.stroke_color = color.to_owned();
+        }
+        fn set_stroke_width(&mut self, width: f64) {
+            self.state.stroke_width = width;
+        }
+        fn set_line_dash(&mut self, _pattern: &[f64]) {}
+        fn set_line_cap(&mut self, cap: &str) {
+            self.state.line_cap = cap.to_owned();
+        }
+        fn set_line_join(&mut self, join: &str) {
+            self.state.line_join = join.to_owned();
+        }
+        fn begin_path(&mut self) {}
+        fn move_to(&mut self, _x: f64, _y: f64) {}
+        fn line_to(&mut self, _x: f64, _y: f64) {}
+        fn close_path(&mut self) {}
+        fn rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+        fn arc(&mut self, _cx: f64, _cy: f64, _r: f64, _s: f64, _e: f64) {}
+        fn ellipse(&mut self, _cx: f64, _cy: f64, _rx: f64, _ry: f64, _rot: f64, _s: f64, _e: f64) {}
+        fn quadratic_curve_to(&mut self, _cpx: f64, _cpy: f64, _x: f64, _y: f64) {}
+        fn bezier_curve_to(&mut self, _cp1x: f64, _cp1y: f64, _cp2x: f64, _cp2y: f64, _x: f64, _y: f64) {}
+        fn stroke(&mut self) {}
+        fn fill(&mut self) {}
+    }
+    impl uzor::render::TextRenderer for ColorOrderRecorder {
+        fn set_font(&mut self, font: &str) {
+            self.state.font = font.to_owned();
+        }
+        fn set_text_align(&mut self, align: uzor::render::TextAlign) {
+            self.state.text_align = align;
+        }
+        fn set_text_baseline(&mut self, baseline: uzor::render::TextBaseline) {
+            self.state.text_baseline = baseline;
+        }
+        fn fill_text(&mut self, _text: &str, _x: f64, _y: f64) {}
+        fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {}
+    }
+    impl uzor::render::TextMetrics for ColorOrderRecorder {
+        fn measure_text(&self, _text: &str) -> f64 {
+            0.0
+        }
+        fn text_bounds(&self, _text: &str, _font: &str) -> uzor::render::TextBounds {
+            uzor::render::TextBounds { x: 0.0, y: 0.0, w: 0.0, h: 0.0, ascent: 0.0, descent: 0.0 }
+        }
+    }
+    impl uzor::render::Masking for ColorOrderRecorder {
+        fn clip(&mut self) {}
+    }
+    impl uzor::render::Effects for ColorOrderRecorder {}
+    impl uzor::render::ShapeHelpers for ColorOrderRecorder {
+        fn fill_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+        fn stroke_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+    }
+    impl uzor::render::GradientPainter for ColorOrderRecorder {}
+    impl uzor::render::UiEffectHelpers for ColorOrderRecorder {}
+    impl uzor::render::BatchPainter for ColorOrderRecorder {
+        fn draw_circle_batch(&mut self, circles: &[uzor::render::CircleBatch], color: &str) {
+            if circles.is_empty() {
+                return;
+            }
+            self.circle_batch_colors.push(color.to_owned());
+        }
+    }
+    impl uzor::render::RenderContext for ColorOrderRecorder {
+        fn dpr(&self) -> f64 {
+            1.0
+        }
+    }
+
+    #[test]
+    fn draw_nodes_paints_color_batches_in_deterministic_lexicographic_order_across_repeated_calls() {
+        let (graph, particles, _clusters, _cluster_id, a, b, c) = overlap_fixture();
+        let camera = Camera2D::default();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        // Only the 3 coincident, differently-categorized nodes — the exact
+        // "two nodes of DIFFERENT categories overlap on screen" scenario
+        // the fix's own doc comment names.
+        let visible: Vec<NodeIndex> = vec![a, b, c];
+        let focus = FocusSet::empty();
+        let selection = BTreeSet::new();
+        let hidden = HashSet::new();
+        let forced = HashSet::new();
+        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, None, &hidden, &forced);
+
+        let mut first_order: Option<Vec<String>> = None;
+        for _ in 0..5 {
+            let mut render = ColorOrderRecorder::default();
+            draw_nodes(&mut render, &graph, &particles, &ctx);
+            assert_eq!(render.circle_batch_colors.len(), 3, "3 distinct categories must paint 3 separate batches");
+            let mut sorted = render.circle_batch_colors.clone();
+            sorted.sort();
+            assert_eq!(render.circle_batch_colors, sorted, "the batch color sequence must already be lexicographically ordered (BTreeMap, not HashMap)");
+            match &first_order {
+                None => first_order = Some(render.circle_batch_colors),
+                Some(expected) => assert_eq!(&render.circle_batch_colors, expected, "repeated calls over unchanged state must paint colors in the identical order every time"),
+            }
+        }
+    }
+
+    /// Graph-strengthening arc G1.4: `draw_nodes` must honor `ctx.hidden`
+    /// directly, not merely rely on the caller having pre-filtered
+    /// `ctx.visible` — a hidden node present in `visible` (the footgun
+    /// shape the audit named) must draw neither a circle nor a label.
+    #[test]
+    fn draw_nodes_skips_a_node_present_in_visible_but_also_in_hidden() {
+        let (graph, particles, _clusters, _cluster_id, a, b, _c) = overlap_fixture();
+        let camera = Camera2D::default();
+        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+        // `b` is in `visible` (the caller "forgot" to pre-filter it) AND
+        // in `hidden` — `draw_nodes` must still skip it.
+        let visible: Vec<NodeIndex> = vec![a, b];
+        let focus = FocusSet::empty();
+        let selection = BTreeSet::new();
+        let hidden: HashSet<NodeIndex> = [b].into_iter().collect();
+        let forced = HashSet::new();
+        let ctx = draw_ctx_for(&camera, viewport, &visible, &focus, &selection, None, &hidden, &forced);
+
+        let mut render = ColorOrderRecorder::default();
+        let stats = draw_nodes(&mut render, &graph, &particles, &ctx);
+
+        assert_eq!(stats.nodes_drawn, 1, "the hidden node must not be counted as drawn");
+        assert_eq!(render.circle_batch_colors.len(), 1, "the hidden node's category batch must never be issued");
     }
 }

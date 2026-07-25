@@ -680,8 +680,33 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 self.modifiers = *modifiers;
                 false
             }
+            // Graph-strengthening arc G1.4 — the 3D mirror of the 2D
+            // engine's own `on_event` fix (`engine.rs`): a lost
+            // `PointerUp` (mouse released outside the window) otherwise
+            // wedges `Pointer3DMode::Orbiting`/`Panning`/`Dragging`/
+            // `BoxSelecting` forever. Finalizes exactly as a real
+            // `PointerUp` at the last known pointer position would, via
+            // the SAME `on_pointer_up` body.
+            PlatformEvent::PointerLeft => self.cancel_pointer_gesture(viewport),
+            PlatformEvent::WindowFocused(false) => self.cancel_pointer_gesture(viewport),
             _ => false,
         }
+    }
+
+    /// Finalize any in-progress orbit/pan/node-drag/box-select at
+    /// [`Self::last_pointer_screen`] — see [`Self::on_event`]'s
+    /// `PointerLeft`/`WindowFocused(false)` arms. A no-op (`false`) while
+    /// [`Pointer3DMode::Idle`]. A `Panning` gesture must release with the
+    /// SAME button that started it (`on_pointer_up`'s own contract) — read
+    /// straight from the live mode rather than guessing `Left`.
+    fn cancel_pointer_gesture(&mut self, viewport: Rect) -> bool {
+        let button = match self.mode {
+            Pointer3DMode::Idle => return false,
+            Pointer3DMode::Panning { button, .. } => button,
+            _ => MouseButton::Left,
+        };
+        let (x, y) = self.last_pointer_screen;
+        self.on_pointer_up(x, y, button, viewport)
     }
 
     /// Shift-held left-drag pans; a plain left-drag starting ON a node
@@ -779,6 +804,13 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
                 return true;
             }
         }
+        // Graph-strengthening arc G1.6 (3D mirror of 2D's `engine.rs`
+        // background-pan fix): real-time user input wins over an
+        // in-flight PROGRAMMATIC dimension transition — without this,
+        // `advance_dimension_transition`'s unconditional per-tick camera
+        // write fights the user's own orbit-drag every frame until the
+        // transition completes.
+        self.dim_transition = None;
         self.mode = Pointer3DMode::Orbiting { last: (x, y), total: 0.0 };
         true
     }
@@ -793,6 +825,8 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         if !viewport.contains(x, y) {
             return false;
         }
+        // Same rule as the `Orbiting` branch above — see its own comment.
+        self.dim_transition = None;
         self.mode = Pointer3DMode::Panning { last: (x, y), button };
         true
     }
@@ -1075,6 +1109,9 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
         if !viewport.contains(self.last_pointer_screen.0, self.last_pointer_screen.1) {
             return false;
         }
+        // Same "live user input supersedes a running animation" rule as
+        // the `Orbiting`/`Panning` gesture-start sites above.
+        self.dim_transition = None;
         let factor = (1.0 - dy as f32 * DOLLY_SENSITIVITY).clamp(DOLLY_FACTOR_MIN, DOLLY_FACTOR_MAX);
         self.camera.dolly(factor);
         true
@@ -1093,6 +1130,14 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// distance rather than an arbitrary [`Camera3D::fit_bounds`] result.
     pub fn fit_view(&mut self, aspect: f32) {
         let Some((min, max)) = particle_aabb(&self.particles) else { return };
+        // Graph-strengthening arc G1.6: an explicit user-requested fit
+        // (Home/F, or the `fit_view_3d` agent action) is real-time input
+        // too — clear any in-flight dimension transition first, same rule
+        // as the pointer/scroll gesture-start sites in `on_pointer_down`/
+        // `on_pan_pointer_down`/`on_scroll` above, so this write isn't
+        // immediately overwritten by `advance_dimension_transition`'s own
+        // unconditional per-tick camera write on the very next `tick()`.
+        self.dim_transition = None;
         let half_diagonal = (max - min).length() * 0.5;
         if self.particles.len() < FIT_VIEW_MIN_NODES || half_diagonal < FIT_VIEW_MIN_HALF_DIAGONAL {
             self.camera.target = (min + max) * 0.5;
@@ -1660,8 +1705,22 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// `wgpu::Device`/`Renderer3D` renders this via
     /// [`pick3d::request_gpu_pick`] instead of the ordinary
     /// [`GraphEngine3D::build_scene`] Lit scene.
+    ///
+    /// **Graph-strengthening arc G1.2**: now shares the SAME `hidden`
+    /// exclusion set (`compute_excluded_nodes_3d`) as
+    /// [`GraphEngine3D::build_scene`]/[`GraphEngine3D::pick_candidates`] —
+    /// before this fix, every graph node got an id-pass sphere
+    /// unconditionally, so a cluster-collapsed/local-excluded/filtered
+    /// node's invisible sphere could occlude a visible node's own pixel in
+    /// the id-pass. Also reads [`GraphEngine3D::render_particles`] (the
+    /// z-scaled snapshot every other whole-slice render/pick consumer
+    /// reads — see that method's own doc comment) instead of the raw,
+    /// un-eased `self.particles`, so the id-pass renders the SAME
+    /// mid-dimension-transition positions the visible scene does.
     pub fn build_id_pass_scene(&self) -> Scene3D {
-        crate::render3d::build_id_pass_scene(&self.graph, &self.particles, &self.id_pass_mesh)
+        let hidden = self.compute_excluded_nodes_3d();
+        let render_particles = self.render_particles();
+        crate::render3d::build_id_pass_scene(&self.graph, &render_particles, &self.id_pass_mesh, &hidden)
     }
 
     /// Current GPU-pick escalation threshold (Wave 4) — see
@@ -1709,10 +1768,31 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// already acted on it (a deliberate Wave 4 scope decision, see
     /// `uzor-graph/CLAUDE.md`'s own divergence log). A no-op if no GPU
     /// pick is currently in flight (stale/duplicate feed).
+    ///
+    /// **Graph-strengthening arc G1.2 — belt-and-braces guard.**
+    /// [`GraphEngine3D::build_id_pass_scene`] now excludes every hidden
+    /// node from the id-pass texture at RENDER time, so a FRESH GPU
+    /// readback can no longer name a node outside [`GraphEngine3D::
+    /// pick_candidates`]. But the readback resolves asynchronously — the
+    /// request is fired from `on_pointer_moved`, the id-pass texture is
+    /// rendered and read back by the caller, and this method is only
+    /// called once that round trip completes, typically 1-2 frames later
+    /// (per this method's own doc comment above). If a cluster collapsed,
+    /// the local-subgraph root changed, or the filter changed in that
+    /// window, `r` can still name a node that was eligible when the
+    /// REQUEST was made but no longer is by the time the RESULT arrives.
+    /// A stale `Some(node)` outside the CURRENT `pick_candidates()` is
+    /// therefore dropped — `hovered` keeps whatever the synchronous CPU
+    /// pick already set it to for this frame, rather than being pulled
+    /// back onto a node that just became invisible.
     pub fn apply_gpu_pick_result(&mut self, result: Option<NodeIndex>) {
         self.gpu_pick_pipeline.complete(result);
         if let Some(r) = self.gpu_pick_pipeline.poll_consume() {
-            self.hovered = r;
+            match r {
+                Some(node) if self.pick_candidates().contains(&node) => self.hovered = Some(node),
+                Some(_) => {}
+                None => self.hovered = None,
+            }
         }
     }
 
@@ -1882,6 +1962,16 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
     /// this is a direct walk of `crate::render3d`'s `GridLine`s rather
     /// than a `label_grid::LabelGrid` pass.
     pub fn draw_overlay(&self, render: &mut dyn RenderContext, camera: &PerspectiveCamera, viewport: Rect) -> OverlayDrawStats {
+        // 3D quality audit A1 / graph-strengthening arc G1.3 — this
+        // whole overlay pass (labels, grid tick labels, cluster "×N"
+        // labels, selection rings) mutates font/stroke/global-alpha state
+        // with no restore of its own; `draw_hover_card`/`draw_box_select_rect`
+        // below bracket THEMSELVES but a caller has no guarantee about
+        // what this function's OWN direct `set_*` calls leave behind.
+        // Bracketed here so `draw_overlay` gives the same "leaves the
+        // context exactly as it found it" guarantee every other public
+        // draw entry point in this crate now does.
+        render.save();
         // Dimension-transition wave: every projection below (cluster
         // label, selection ring, hover card) reads the SAME `z`-scaled
         // render position `GraphEngine3D::visible_labels` already uses
@@ -1981,6 +2071,7 @@ impl<N, E, L: Layout> GraphEngine3D<N, E, L> {
             crate::render::draw_box_select_rect(render, rect);
         }
 
+        render.restore();
         OverlayDrawStats { labels_drawn, grid_labels_drawn, cluster_labels_drawn, selection_rings_drawn, hover_card_drawn }
     }
 
@@ -2067,6 +2158,10 @@ pub struct OverlayDrawStats {
 mod tests {
     use super::*;
     use crate::graph::Graph;
+    // `StateTrackingContext3D` below calls `Painter`/`TextRenderer`
+    // methods directly on a concrete type (not through `&mut dyn
+    // RenderContext`) — the traits must be in scope for that.
+    use uzor::render::{Painter, TextRenderer};
 
     // ── `RecordingRenderContext` — Wave 4's `draw_overlay` test double ──
     //
@@ -2143,6 +2238,137 @@ mod tests {
     impl uzor::render::UiEffectHelpers for RecordingRenderContext {}
     impl uzor::render::BatchPainter for RecordingRenderContext {}
     impl uzor::render::RenderContext for RecordingRenderContext {
+        fn dpr(&self) -> f64 {
+            1.0
+        }
+    }
+
+    // ── Graph-strengthening arc G1.3: `draw_overlay`'s own state-leak
+    // gate ───────────────────────────────────────────────────────────────
+    //
+    // `RecordingRenderContext` above has NO-OP `save`/`restore` (it exists
+    // only to record `fill_text` calls) — it cannot prove a bracket
+    // actually restores anything. `StateTrackingContext3D` is a REAL
+    // `save`/`restore` stack (mirrors `render.rs`'s own
+    // `StateTrackingContext` test mock 1:1) so `restore()` genuinely pops
+    // back to whatever `PaintState` was live at the matching `save()`.
+
+    #[derive(Clone, Debug, PartialEq)]
+    struct PaintState {
+        font: String,
+        fill_color: String,
+        stroke_color: String,
+        stroke_width: f64,
+        global_alpha: f64,
+        text_align: uzor::render::TextAlign,
+        text_baseline: uzor::render::TextBaseline,
+        line_cap: String,
+        line_join: String,
+    }
+
+    impl Default for PaintState {
+        fn default() -> Self {
+            Self {
+                font: String::new(),
+                fill_color: String::new(),
+                stroke_color: String::new(),
+                stroke_width: 1.0,
+                global_alpha: 1.0,
+                text_align: uzor::render::TextAlign::default(),
+                text_baseline: uzor::render::TextBaseline::default(),
+                line_cap: "butt".to_owned(),
+                line_join: "miter".to_owned(),
+            }
+        }
+    }
+
+    struct StateTrackingContext3D {
+        state: PaintState,
+        stack: Vec<PaintState>,
+    }
+
+    impl StateTrackingContext3D {
+        fn new() -> Self {
+            Self { state: PaintState::default(), stack: Vec::new() }
+        }
+    }
+
+    impl uzor::render::Painter for StateTrackingContext3D {
+        fn save(&mut self) {
+            self.stack.push(self.state.clone());
+        }
+        fn restore(&mut self) {
+            if let Some(s) = self.stack.pop() {
+                self.state = s;
+            }
+        }
+        fn translate(&mut self, _x: f64, _y: f64) {}
+        fn rotate(&mut self, _angle: f64) {}
+        fn scale(&mut self, _x: f64, _y: f64) {}
+        fn set_fill_color(&mut self, color: &str) {
+            self.state.fill_color = color.to_owned();
+        }
+        fn set_global_alpha(&mut self, alpha: f64) {
+            self.state.global_alpha = alpha;
+        }
+        fn set_stroke_color(&mut self, color: &str) {
+            self.state.stroke_color = color.to_owned();
+        }
+        fn set_stroke_width(&mut self, width: f64) {
+            self.state.stroke_width = width;
+        }
+        fn set_line_dash(&mut self, _pattern: &[f64]) {}
+        fn set_line_cap(&mut self, cap: &str) {
+            self.state.line_cap = cap.to_owned();
+        }
+        fn set_line_join(&mut self, join: &str) {
+            self.state.line_join = join.to_owned();
+        }
+        fn begin_path(&mut self) {}
+        fn move_to(&mut self, _x: f64, _y: f64) {}
+        fn line_to(&mut self, _x: f64, _y: f64) {}
+        fn close_path(&mut self) {}
+        fn rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+        fn arc(&mut self, _cx: f64, _cy: f64, _r: f64, _s: f64, _e: f64) {}
+        fn ellipse(&mut self, _cx: f64, _cy: f64, _rx: f64, _ry: f64, _rot: f64, _s: f64, _e: f64) {}
+        fn quadratic_curve_to(&mut self, _cpx: f64, _cpy: f64, _x: f64, _y: f64) {}
+        fn bezier_curve_to(&mut self, _cp1x: f64, _cp1y: f64, _cp2x: f64, _cp2y: f64, _x: f64, _y: f64) {}
+        fn stroke(&mut self) {}
+        fn fill(&mut self) {}
+    }
+    impl uzor::render::TextRenderer for StateTrackingContext3D {
+        fn set_font(&mut self, font: &str) {
+            self.state.font = font.to_owned();
+        }
+        fn set_text_align(&mut self, align: uzor::render::TextAlign) {
+            self.state.text_align = align;
+        }
+        fn set_text_baseline(&mut self, baseline: uzor::render::TextBaseline) {
+            self.state.text_baseline = baseline;
+        }
+        fn fill_text(&mut self, _text: &str, _x: f64, _y: f64) {}
+        fn stroke_text(&mut self, _text: &str, _x: f64, _y: f64) {}
+    }
+    impl uzor::render::TextMetrics for StateTrackingContext3D {
+        fn measure_text(&self, _text: &str) -> f64 {
+            0.0
+        }
+        fn text_bounds(&self, _text: &str, _font: &str) -> uzor::render::TextBounds {
+            uzor::render::TextBounds { x: 0.0, y: 0.0, w: 0.0, h: 0.0, ascent: 0.0, descent: 0.0 }
+        }
+    }
+    impl uzor::render::Masking for StateTrackingContext3D {
+        fn clip(&mut self) {}
+    }
+    impl uzor::render::Effects for StateTrackingContext3D {}
+    impl uzor::render::ShapeHelpers for StateTrackingContext3D {
+        fn fill_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+        fn stroke_rect(&mut self, _x: f64, _y: f64, _w: f64, _h: f64) {}
+    }
+    impl uzor::render::GradientPainter for StateTrackingContext3D {}
+    impl uzor::render::UiEffectHelpers for StateTrackingContext3D {}
+    impl uzor::render::BatchPainter for StateTrackingContext3D {}
+    impl uzor::render::RenderContext for StateTrackingContext3D {
         fn dpr(&self) -> f64 {
             1.0
         }
@@ -2614,6 +2840,64 @@ mod tests {
         assert!(!stats.hover_card_drawn, "no hover, no card — draw_overlay must not paint a hover card without a hovered node");
     }
 
+    /// Graph-strengthening arc G1.3 — `draw_overlay`'s own state-leak
+    /// gate, the 3D mirror of `render.rs`'s
+    /// `every_public_draw_fn_leaves_the_render_context_paint_state_unchanged`.
+    /// Exercises every branch that touches paint state in one call
+    /// (ordinary labels, the grid overlay, a cluster "×N" label, a
+    /// selection ring, a hover card, AND a live box-select rubber band)
+    /// so a bracket that only wraps SOME of them still fails this test.
+    #[test]
+    fn draw_overlay_leaves_the_render_context_paint_state_unchanged() {
+        let mut engine = spread_triangle_engine();
+        engine.set_label_density(100.0);
+        engine.set_grid_enabled(true);
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+
+        // Cluster "×N" label branch.
+        let cluster_id = engine.define_cluster(vec![NodeIndex(1), NodeIndex(2)]).expect("non-empty cluster");
+        assert!(engine.collapse_cluster(cluster_id));
+
+        // Selection-ring branch.
+        engine.select(NodeIndex(0));
+
+        // Live box-select rubber-band branch. `on_pointer_moved` also
+        // re-runs hover-pick unconditionally (Tier B6 of the 2D audit —
+        // out of this arc's own scope), so this must run BEFORE the
+        // hover-card branch below, not after, or it clobbers `hovered`
+        // with whatever the box-select drag's own endpoint happens to
+        // ray-pick (background, in this fixture).
+        engine.modifiers = uzor::input::ModifierKeys::shift();
+        engine.on_event(&PlatformEvent::PointerDown { x: 5.0, y: 5.0, button: uzor::input::MouseButton::Left }, viewport);
+        engine.on_event(&PlatformEvent::PointerMoved { x: 60.0, y: 40.0 }, viewport);
+        assert!(engine.box_select_rect().is_some(), "fixture sanity: a box-select must genuinely be in progress");
+
+        // Hover-card branch.
+        engine.hovered = Some(NodeIndex(0));
+
+        let mut render = StateTrackingContext3D::new();
+        // A caller-set state distinct from every default this function's
+        // own draw calls happen to use, so the test can't pass by
+        // coincidence.
+        render.set_font("20px serif");
+        render.set_fill_color("#123456");
+        render.set_stroke_color("#abcdef");
+        render.set_stroke_width(9.0);
+        render.set_global_alpha(0.42);
+        render.set_text_align(uzor::render::TextAlign::Right);
+        render.set_text_baseline(uzor::render::TextBaseline::Bottom);
+        render.set_line_cap("square");
+        render.set_line_join("bevel");
+        let caller_state = render.state.clone();
+
+        let stats = engine.draw_overlay(&mut render, &camera, viewport);
+        assert!(stats.labels_drawn > 0 && stats.hover_card_drawn, "fixture sanity: draw_overlay must genuinely have painted labels and a hover card");
+
+        assert_eq!(render.state, caller_state, "draw_overlay must not leak paint state past its own call");
+    }
+
     // ── Wave 4: GPU color-ID picking escalation ─────────────────────────
 
     #[test]
@@ -2688,6 +2972,39 @@ mod tests {
         assert_eq!(engine.hovered(), before, "feeding a stray GPU result with no request in flight must not touch hovered");
     }
 
+    /// Graph-strengthening arc G1.2 belt-and-braces guard: the id-pass
+    /// scene now excludes hidden nodes at RENDER time, but the GPU
+    /// readback is asynchronous (request now, result 1-2 frames later per
+    /// this method's own doc comment) — a local-subgraph/filter/cluster
+    /// change in that window can make a request-time-eligible node no
+    /// longer eligible by the time the result arrives. `apply_gpu_pick_result`
+    /// must drop a stale `Some(node)` outside the CURRENT
+    /// `pick_candidates()` rather than pulling `hovered` back onto it.
+    #[test]
+    fn apply_gpu_pick_result_rejects_a_stale_result_naming_a_node_the_current_pick_candidates_no_longer_include() {
+        let mut engine = spread_triangle_engine();
+        engine.set_gpu_pick_threshold(2);
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        engine.on_event(&PlatformEvent::PointerMoved { x: 200.0, y: 150.0 }, viewport);
+        assert!(engine.gpu_pick_pending());
+        let hovered_before_result = engine.hovered();
+
+        // The async gap this guard exists for: a local-subgraph
+        // restriction excludes node 2 between the GPU-pick REQUEST above
+        // and the RESULT arriving below.
+        engine.set_local_root(Some(NodeIndex(0)), Some(0));
+        assert!(!engine.pick_candidates().contains(&NodeIndex(2)), "fixture sanity: node 2 must actually be excluded now");
+
+        engine.apply_gpu_pick_result(Some(NodeIndex(2)));
+
+        assert!(!engine.gpu_pick_pending(), "the stale result must still consume the in-flight request");
+        assert_eq!(
+            engine.hovered(),
+            hovered_before_result,
+            "a stale GPU result naming a now-excluded node must be dropped, not applied to hovered"
+        );
+    }
+
     #[test]
     fn build_id_pass_scene_emits_one_unlit_node_per_graph_node() {
         let engine = spread_triangle_engine();
@@ -2697,6 +3014,21 @@ mod tests {
         assert_eq!(scene.nodes.len(), 3);
         assert!(scene.nodes.iter().all(|n| !n.is_lit()), "the id-pass must use Unlit geometry");
         assert_eq!(scene.clear_color, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    /// Graph-strengthening arc G1.2: a cluster-hidden node must not emit
+    /// an id-pass sphere — mirrors `render3d::build_id_pass_scene_emits_no_node_for_a_hidden_node`
+    /// but exercised through the real engine (`compute_excluded_nodes_3d`
+    /// wiring, not the bare `render3d` function in isolation).
+    #[test]
+    fn build_id_pass_scene_excludes_a_node_hidden_by_a_collapsed_cluster() {
+        let mut engine = spread_triangle_engine();
+        let id = engine.define_cluster(vec![NodeIndex(1), NodeIndex(2)]).expect("non-empty cluster");
+        assert!(engine.collapse_cluster(id));
+
+        let scene = engine.build_id_pass_scene();
+
+        assert_eq!(scene.nodes.len(), 2, "the collapsed cluster's non-representative member must not get an id-pass sphere");
     }
 
     // ── Owner-ordered live fix: 3D node drag ────────────────────────────
@@ -3727,5 +4059,109 @@ mod tests {
             last = now;
         }
         assert!(last.abs() < 1e-4);
+    }
+
+    // ── Graph-strengthening arc G1.6: camera input vs. an in-flight
+    // dimension transition (3D mirror of the 2D engine's own G1.5 fix) ──
+
+    #[test]
+    fn a_background_orbit_drag_started_mid_transition_clears_the_transition_immediately() {
+        let mut engine = engine_with_z_spread();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        engine.start_transition(TransitionDirection::In, 600.0);
+        assert!(engine.transition_active());
+
+        // A corner far from every fixture node — background, not a node hit.
+        engine.on_event(&PlatformEvent::PointerDown { x: 2.0, y: 2.0, button: uzor::input::MouseButton::Left }, viewport);
+
+        assert!(!engine.transition_active(), "starting a background orbit-drag must clear an in-flight dimension transition");
+    }
+
+    #[test]
+    fn a_middle_drag_pan_started_mid_transition_clears_the_transition_immediately() {
+        let mut engine = engine_with_z_spread();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        engine.start_transition(TransitionDirection::In, 600.0);
+        assert!(engine.transition_active());
+
+        engine.on_event(&PlatformEvent::PointerDown { x: 2.0, y: 2.0, button: uzor::input::MouseButton::Middle }, viewport);
+
+        assert!(!engine.transition_active(), "starting a middle-drag pan must clear an in-flight dimension transition");
+    }
+
+    #[test]
+    fn a_wheel_dolly_mid_transition_clears_the_transition_immediately() {
+        let mut engine = engine_with_z_spread();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        engine.on_event(&PlatformEvent::PointerMoved { x: 200.0, y: 150.0 }, viewport);
+        engine.start_transition(TransitionDirection::In, 600.0);
+        assert!(engine.transition_active());
+
+        engine.on_event(&PlatformEvent::Scroll { dx: 0.0, dy: -1.0 }, viewport);
+
+        assert!(!engine.transition_active(), "a wheel-dolly must clear an in-flight dimension transition");
+    }
+
+    #[test]
+    fn an_explicit_fit_view_mid_transition_clears_the_transition_immediately() {
+        let mut engine = engine_with_z_spread();
+        engine.start_transition(TransitionDirection::In, 600.0);
+        assert!(engine.transition_active());
+
+        engine.fit_view(4.0 / 3.0);
+
+        assert!(!engine.transition_active(), "an explicit fit_view() call must clear an in-flight dimension transition");
+    }
+
+    // ── Graph-strengthening arc G1.4: lost PointerUp (3D mirror) ────────
+
+    #[test]
+    fn pointer_left_finalizes_an_in_progress_orbit_exactly_like_a_pointer_up_would() {
+        let mut engine = engine_with_z_spread();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        engine.on_event(&PlatformEvent::PointerDown { x: 2.0, y: 2.0, button: uzor::input::MouseButton::Left }, viewport);
+        assert!(matches!(engine.mode, Pointer3DMode::Orbiting { .. }), "fixture sanity: must genuinely be orbiting");
+
+        assert!(engine.on_event(&PlatformEvent::PointerLeft, viewport));
+
+        assert!(matches!(engine.mode, Pointer3DMode::Idle), "PointerLeft must finalize the in-progress orbit, same as a real PointerUp");
+    }
+
+    #[test]
+    fn window_defocus_finalizes_an_in_progress_node_drag_and_leaves_it_pinned() {
+        let mut engine = spread_triangle_engine();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let aspect = (viewport.width / viewport.height) as f32;
+        let camera = engine.camera(aspect);
+        let (sx, sy) = pick3d::project_world_to_screen(&camera, Vec3::new(-40.0, 0.0, 0.0), viewport).expect("node 0 projects inside the default orbit view");
+        engine.on_event(&PlatformEvent::PointerDown { x: sx, y: sy, button: uzor::input::MouseButton::Left }, viewport);
+        assert!(matches!(engine.mode, Pointer3DMode::Dragging { .. }), "fixture sanity: must genuinely be dragging node 0");
+
+        assert!(engine.on_event(&PlatformEvent::WindowFocused(false), viewport));
+
+        assert!(matches!(engine.mode, Pointer3DMode::Idle), "losing window focus must finalize the in-progress node drag");
+        assert_eq!(engine.selected(), Some(NodeIndex(0)), "a node drag must select the dragged node on finalize, same as a real PointerUp");
+        assert!(engine.particles[0].is_pinned_3d(), "the STICKY drag-end policy must leave the node pinned where the drag left it");
+    }
+
+    #[test]
+    fn window_refocus_true_is_not_a_gesture_cancel() {
+        let mut engine = engine_with_z_spread();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        engine.on_event(&PlatformEvent::PointerDown { x: 2.0, y: 2.0, button: uzor::input::MouseButton::Left }, viewport);
+        assert!(matches!(engine.mode, Pointer3DMode::Orbiting { .. }));
+
+        assert!(!engine.on_event(&PlatformEvent::WindowFocused(true), viewport), "gaining focus is not a drag-cancel and must not be consumed as one");
+
+        assert!(matches!(engine.mode, Pointer3DMode::Orbiting { .. }), "gaining focus must not disturb an in-progress orbit");
+    }
+
+    #[test]
+    fn pointer_left_with_nothing_in_progress_is_a_no_op() {
+        let mut engine = engine_with_z_spread();
+        let viewport = Rect::new(0.0, 0.0, 400.0, 300.0);
+        assert!(matches!(engine.mode, Pointer3DMode::Idle));
+
+        assert!(!engine.on_event(&PlatformEvent::PointerLeft, viewport), "PointerLeft with no gesture in progress must not be reported as consumed");
     }
 }

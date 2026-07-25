@@ -978,12 +978,34 @@ pub fn build_id_pass_mesh(rings: u32, slices: u32) -> Mesh {
 /// `node_count` bounds check (not exact byte alignment) is what actually
 /// guarantees a background pixel is never mistaken for a real node — see
 /// that function's own doc comment.
-pub fn build_id_pass_scene<N, E>(graph: &Graph<N, E>, particles: &[Particle], id_pass_mesh: &Arc<Mesh>) -> Scene3D {
+///
+/// **Graph-strengthening arc G1.2**: `hidden` (cluster-collapse ∪
+/// local-subgraph ∪ filter exclusion — the SAME union
+/// [`GraphEngine3D::compute_excluded_nodes_3d`] feeds
+/// [`build_node_instances`]/[`build_edge_instances`] from) is now a
+/// required parameter — before this fix the id-pass scene included EVERY
+/// graph node unconditionally, so a node invisible in the real rendered
+/// scene (collapsed into a cluster, excluded by a local-subgraph
+/// restriction or a filter) still painted a real, decodable-`NodeIndex`
+/// sphere into the id-pass texture and could occlude a visible node's own
+/// pixel there — a GPU pick could resolve to a `NodeIndex` the user could
+/// never have clicked via CPU picking (`pick_candidates()` already
+/// excludes it). Mirrors [`build_node_instances`]'s own `hidden` filter
+/// exactly, including "a hidden node emits no instance at all."
+pub fn build_id_pass_scene<N, E>(
+    graph: &Graph<N, E>,
+    particles: &[Particle],
+    id_pass_mesh: &Arc<Mesh>,
+    hidden: &HashSet<NodeIndex>,
+) -> Scene3D {
     let mut scene = Scene3D::new();
     scene.clear_color = [1.0, 1.0, 1.0, 1.0];
     scene.nodes = graph
         .nodes()
         .filter_map(|(id, node)| {
+            if hidden.contains(&id) {
+                return None;
+            }
             let p = particles.get(id.index())?;
             Some(
                 Node::new(id_pass_mesh.clone())
@@ -1292,7 +1314,7 @@ mod tests {
         let particles = vec![Particle::at3(1.0, 2.0, 3.0), Particle::at3(-4.0, 0.0, 5.0)];
         let id_pass_mesh = Arc::new(build_id_pass_mesh(4, 4));
 
-        let scene = build_id_pass_scene(&graph, &particles, &id_pass_mesh);
+        let scene = build_id_pass_scene(&graph, &particles, &id_pass_mesh, &HashSet::new());
 
         assert_eq!(scene.clear_color, [1.0, 1.0, 1.0, 1.0]);
         assert_eq!(scene.nodes.len(), 2);
@@ -1301,6 +1323,27 @@ mod tests {
         assert_eq!(scene.nodes[0].translation, Vec3::new(1.0, 2.0, 3.0));
         assert_eq!(scene.nodes[1].color_tint, encode_node_id_tint(b));
         assert_eq!(scene.nodes[1].translation, Vec3::new(-4.0, 0.0, 5.0));
+    }
+
+    /// Graph-strengthening arc G1.2: a hidden node (cluster-collapsed,
+    /// local-subgraph-excluded, or filter-excluded) must emit NO id-pass
+    /// sphere at all — before this fix it always did, so its invisible
+    /// sphere could occlude a visible node's own pixel in the id-pass and
+    /// a GPU pick could resolve to a `NodeIndex` the user could never have
+    /// clicked via CPU picking.
+    #[test]
+    fn build_id_pass_scene_emits_no_node_for_a_hidden_node() {
+        let mut graph = DemoGraph::new();
+        let a = graph.push_node((), "a", "x", 2.0);
+        let b = graph.push_node((), "b", "x", 2.0);
+        let particles = vec![Particle::at3(1.0, 2.0, 3.0), Particle::at3(-4.0, 0.0, 5.0)];
+        let id_pass_mesh = Arc::new(build_id_pass_mesh(4, 4));
+        let hidden: HashSet<NodeIndex> = [b].into_iter().collect();
+
+        let scene = build_id_pass_scene(&graph, &particles, &id_pass_mesh, &hidden);
+
+        assert_eq!(scene.nodes.len(), 1, "the hidden node must not emit an id-pass sphere");
+        assert_eq!(scene.nodes[0].color_tint, encode_node_id_tint(a), "the remaining visible node must still be present and correctly tinted");
     }
 
     // ── Wave 5: 3D reference grid + axis tick labels ────────────────────
