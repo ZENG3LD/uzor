@@ -84,6 +84,15 @@ pub struct ForceParams3D {
     /// is the identical formula generalized to `(x, y, z)`, so the same
     /// measured headroom applies.
     pub max_displacement_per_tick: f32,
+    /// Wave G4 fix — 3D mirror of
+    /// [`super::force_directed::ForceParams::weighted_links`]. See that
+    /// field's own doc comment for the render/simulation-inconsistency
+    /// rationale and the doctrine-preserving default.
+    pub weighted_links: bool,
+    /// Wave G4 fix — 3D mirror of
+    /// [`super::force_directed::ForceParams::mass_from_degree`]. See that
+    /// field's own doc comment.
+    pub mass_from_degree: bool,
 }
 
 /// Default for [`ForceParams3D::max_displacement_per_tick`] — 3D mirror
@@ -114,6 +123,8 @@ impl Default for ForceParams3D {
             min_split_dist2: barnes_hut_3d::MIN_SPLIT_DIST2,
             min_cell_size: barnes_hut_3d::MIN_CELL_SIZE,
             max_displacement_per_tick: DEFAULT_MAX_DISPLACEMENT_PER_TICK_3D,
+            weighted_links: false,
+            mass_from_degree: false,
         }
     }
 }
@@ -145,6 +156,13 @@ fn positions_are_degenerate_3d(particles: &[Particle]) -> bool {
     particles
         .iter()
         .all(|p| (p.x - x0).abs() <= DEGENERACY_EPS && (p.y - y0).abs() <= DEGENERACY_EPS && (p.z - z0).abs() <= DEGENERACY_EPS)
+}
+
+/// Per-particle repulsive "mass"/charge derived from graph degree — 3D
+/// mirror of `super::force_directed::degree_masses`. See that function's
+/// own doc comment.
+fn degree_masses_3d(degree: &[u32], n: usize) -> Vec<f32> {
+    (0..n).map(|i| 1.0 + degree.get(i).copied().unwrap_or(0) as f32).collect()
 }
 
 /// Deterministic golden-angle phyllotaxis seed, generalized to 3D as an
@@ -234,15 +252,19 @@ impl Layout for ForceDirectedLayout3D {
 
         let mut force = vec![(0f32, 0f32, 0f32); n];
 
+        // Wave G4 fix: degree-scaled repulsive mass, opt-in via
+        // `mass_from_degree` — 3D mirror of the 2D layout's own tick().
+        let masses = self.params.mass_from_degree.then(|| degree_masses_3d(topo.degree, n));
+
         // Wave G1 fix: keep the octree (not just its output) so collision
         // can reuse it below instead of either being disabled or building
         // a second tree.
         let ot = if n > self.params.brute_force_threshold {
-            let ot = Octree::build(particles, self.params.min_split_dist2, self.params.min_cell_size);
+            let ot = Octree::build_weighted(particles, masses.as_deref(), self.params.min_split_dist2, self.params.min_cell_size);
             ot.accumulate_forces(particles, self.params.theta, self.params.charge_strength, self.params.min_dist2, &mut force);
             Some(ot)
         } else {
-            barnes_hut_3d::apply_repulsion_brute_force_3d(particles, self.params.charge_strength, self.params.min_dist2, &mut force);
+            barnes_hut_3d::apply_repulsion_brute_force_3d(particles, self.params.charge_strength, self.params.min_dist2, masses.as_deref(), &mut force);
             None
         };
 
@@ -257,7 +279,15 @@ impl Layout for ForceDirectedLayout3D {
             let dz = particles[b].z - particles[a].z;
             let dist = (dx * dx + dy * dy + dz * dz).sqrt().max(0.01);
             let ideal = self.params.link_distance;
-            let diff = (dist - ideal) / dist * self.params.link_strength;
+            // Wave G4 fix: `SimEdge::weight` modulates the link spring's
+            // own strength, opt-in via `weighted_links` — 3D mirror of
+            // the 2D layout's own tick().
+            let link_strength = if self.params.weighted_links {
+                self.params.link_strength * e.weight.max(0.0)
+            } else {
+                self.params.link_strength
+            };
+            let diff = (dist - ideal) / dist * link_strength;
             let fx = dx * diff;
             let fy = dy * diff;
             let fz = dz * diff;
@@ -367,7 +397,7 @@ impl Layout for ForceDirectedLayout3D {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::SimEdge;
+    use crate::graph::{NodeIndex, SimEdge};
 
     fn topo<'a>(node_count: usize, edges: &'a [SimEdge], degree: &'a [u32], radii: Vec<f32>) -> SimTopology<'a> {
         SimTopology { node_count, edges, degree, radii }
@@ -700,5 +730,175 @@ mod tests {
             layout_disabled.tick(&t, &mut particles_disabled, 1.0 / 60.0);
         }
         assert_eq!(particles_default, particles_disabled, "the default clamp must be a complete no-op for an ordinary simulation");
+    }
+
+    // ── Wave G4 item 2 — `weighted_links` (3D mirror) ──
+
+    /// 3D mirror of `force_directed::tests::
+    /// weighted_links_default_false_ignores_edge_weight_variance`.
+    #[test]
+    fn weighted_links_default_false_ignores_edge_weight_variance() {
+        let degree = vec![1u32; 2];
+        let params = ForceParams3D {
+            charge_strength: 0.0,
+            center_strength: 0.0,
+            collision: false,
+            seed_degenerate_positions: false,
+            ..ForceParams3D::default()
+        };
+
+        let mut particles_light = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(100.0, 0.0, 0.0)];
+        let mut layout_light = ForceDirectedLayout3D::new(params);
+        let edges_light = vec![SimEdge { from: NodeIndex(0), to: NodeIndex(1), weight: 1.0 }];
+        let t_light = topo(2, &edges_light, &degree, vec![4.0; 2]);
+
+        let mut particles_heavy = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(100.0, 0.0, 0.0)];
+        let mut layout_heavy = ForceDirectedLayout3D::new(params);
+        let edges_heavy = vec![SimEdge { from: NodeIndex(0), to: NodeIndex(1), weight: 5.0 }];
+        let t_heavy = topo(2, &edges_heavy, &degree, vec![4.0; 2]);
+
+        for _ in 0..10 {
+            layout_light.tick(&t_light, &mut particles_light, 1.0 / 60.0);
+            layout_heavy.tick(&t_heavy, &mut particles_heavy, 1.0 / 60.0);
+        }
+        assert_eq!(particles_light, particles_heavy, "weighted_links defaults to false — edge weight must have zero effect on the sim");
+    }
+
+    /// 3D mirror of `force_directed::tests::
+    /// weighted_links_true_scales_the_link_forces_strength_by_edge_weight`.
+    #[test]
+    fn weighted_links_true_scales_the_link_forces_strength_by_edge_weight() {
+        let degree = vec![1u32; 2];
+        let params = ForceParams3D {
+            charge_strength: 0.0,
+            center_strength: 0.0,
+            collision: false,
+            seed_degenerate_positions: false,
+            weighted_links: true,
+            ..ForceParams3D::default()
+        };
+
+        let mut particles_light = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(100.0, 0.0, 0.0)];
+        let mut layout_light = ForceDirectedLayout3D::new(params);
+        let edges_light = vec![SimEdge { from: NodeIndex(0), to: NodeIndex(1), weight: 1.0 }];
+        let t_light = topo(2, &edges_light, &degree, vec![4.0; 2]);
+        layout_light.tick(&t_light, &mut particles_light, 1.0 / 60.0);
+
+        let mut particles_heavy = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(100.0, 0.0, 0.0)];
+        let mut layout_heavy = ForceDirectedLayout3D::new(params);
+        let edges_heavy = vec![SimEdge { from: NodeIndex(0), to: NodeIndex(1), weight: 5.0 }];
+        let t_heavy = topo(2, &edges_heavy, &degree, vec![4.0; 2]);
+        layout_heavy.tick(&t_heavy, &mut particles_heavy, 1.0 / 60.0);
+
+        let speed_light = (particles_light[0].vx.powi(2) + particles_light[0].vy.powi(2) + particles_light[0].vz.powi(2)).sqrt();
+        let speed_heavy = (particles_heavy[0].vx.powi(2) + particles_heavy[0].vy.powi(2) + particles_heavy[0].vz.powi(2)).sqrt();
+        assert!(speed_light > 1e-6, "sanity: the light edge must produce SOME motion to compare against");
+        assert!(
+            (speed_heavy - 5.0 * speed_light).abs() < speed_light * 0.01,
+            "a 5x-heavier edge weight must pull almost exactly 5x harder: light={speed_light} heavy={speed_heavy}"
+        );
+    }
+
+    // ── Wave G4 item 3 — `mass_from_degree` (3D mirror) ──
+
+    /// [`degree_masses_3d`] direct gate — 3D mirror of
+    /// `force_directed::tests::degree_masses_gives_a_higher_degree_particle_more_repulsive_mass`.
+    #[test]
+    fn degree_masses_3d_gives_a_higher_degree_particle_more_repulsive_mass() {
+        let degree = vec![10u32, 0, 3];
+        let masses = degree_masses_3d(&degree, 3);
+        assert_eq!(masses, vec![11.0, 1.0, 4.0]);
+    }
+
+    /// 3D mirror of `force_directed::tests::
+    /// mass_from_degree_default_false_ignores_degree_variance`.
+    #[test]
+    fn mass_from_degree_default_false_ignores_degree_variance() {
+        let edges: Vec<SimEdge> = Vec::new();
+        let degree_uniform = vec![0u32, 0, 0];
+        let degree_skewed = vec![50u32, 0, 0];
+        let params = ForceParams3D { collision: false, seed_degenerate_positions: false, ..ForceParams3D::default() };
+        let make_particles = || vec![Particle::at3(-100.0, 0.0, 0.0), Particle::at3(100.0, 0.0, 0.0), Particle::at3(0.0, 0.0, 0.0)];
+
+        let mut particles_uniform = make_particles();
+        let mut layout_uniform = ForceDirectedLayout3D::new(params);
+        let t_uniform = topo(3, &edges, &degree_uniform, vec![4.0; 3]);
+
+        let mut particles_skewed = make_particles();
+        let mut layout_skewed = ForceDirectedLayout3D::new(params);
+        let t_skewed = topo(3, &edges, &degree_skewed, vec![4.0; 3]);
+
+        layout_uniform.tick(&t_uniform, &mut particles_uniform, 1.0 / 60.0);
+        layout_skewed.tick(&t_skewed, &mut particles_skewed, 1.0 / 60.0);
+
+        assert_eq!(particles_uniform, particles_skewed, "mass_from_degree defaults to false — degree variance must have zero effect on the sim");
+    }
+
+    /// 3D mirror of `force_directed::tests::
+    /// mass_from_degree_default_false_ignores_degree_variance_through_the_tree_path_too`.
+    #[test]
+    fn mass_from_degree_default_false_ignores_degree_variance_through_the_tree_path_too() {
+        let edges: Vec<SimEdge> = Vec::new();
+        let degree_uniform = vec![0u32, 0, 0];
+        let degree_skewed = vec![50u32, 0, 0];
+        let params =
+            ForceParams3D { collision: false, seed_degenerate_positions: false, brute_force_threshold: 2, ..ForceParams3D::default() };
+        let make_particles = || vec![Particle::at3(-100.0, 0.0, 0.0), Particle::at3(100.0, 0.0, 0.0), Particle::at3(0.0, 0.0, 0.0)];
+
+        let mut particles_uniform = make_particles();
+        let mut layout_uniform = ForceDirectedLayout3D::new(params);
+        let t_uniform = topo(3, &edges, &degree_uniform, vec![4.0; 3]);
+
+        let mut particles_skewed = make_particles();
+        let mut layout_skewed = ForceDirectedLayout3D::new(params);
+        let t_skewed = topo(3, &edges, &degree_skewed, vec![4.0; 3]);
+
+        layout_uniform.tick(&t_uniform, &mut particles_uniform, 1.0 / 60.0);
+        layout_skewed.tick(&t_skewed, &mut particles_skewed, 1.0 / 60.0);
+
+        assert_eq!(particles_uniform, particles_skewed, "mass_from_degree=false must be a no-op via the tree path too");
+    }
+
+    /// 3D mirror of `force_directed::tests::
+    /// mass_from_degree_true_makes_a_higher_degree_hub_repel_a_probe_more_strongly_than_a_leaf`.
+    #[test]
+    fn mass_from_degree_true_makes_a_higher_degree_hub_repel_a_probe_more_strongly_than_a_leaf() {
+        let edges: Vec<SimEdge> = Vec::new();
+        let degree = vec![50u32, 0, 0];
+        let params =
+            ForceParams3D { collision: false, seed_degenerate_positions: false, mass_from_degree: true, ..ForceParams3D::default() };
+        let mut particles = vec![Particle::at3(-100.0, 0.0, 0.0), Particle::at3(100.0, 0.0, 0.0), Particle::at3(0.0, 0.0, 0.0)];
+        let mut layout = ForceDirectedLayout3D::new(params);
+        let t = topo(3, &edges, &degree, vec![4.0; 3]);
+
+        layout.tick(&t, &mut particles, 1.0 / 60.0);
+
+        assert!(particles[2].vx > 0.0, "the probe must be pushed away from the higher-mass hub, not stay put: vx={}", particles[2].vx);
+    }
+
+    /// 3D mirror of `force_directed::tests::
+    /// mass_from_degree_true_produces_the_same_asymmetric_push_via_the_tree_path_above_the_threshold`.
+    #[test]
+    fn mass_from_degree_true_produces_the_same_asymmetric_push_via_the_tree_path_above_the_threshold() {
+        let edges: Vec<SimEdge> = Vec::new();
+        let degree = vec![50u32, 0, 0];
+        let params = ForceParams3D {
+            collision: false,
+            seed_degenerate_positions: false,
+            mass_from_degree: true,
+            brute_force_threshold: 2,
+            ..ForceParams3D::default()
+        };
+        let mut particles = vec![Particle::at3(-100.0, 0.0, 0.0), Particle::at3(100.0, 0.0, 0.0), Particle::at3(0.0, 0.0, 0.0)];
+        let mut layout = ForceDirectedLayout3D::new(params);
+        let t = topo(3, &edges, &degree, vec![4.0; 3]);
+
+        layout.tick(&t, &mut particles, 1.0 / 60.0);
+
+        assert!(
+            particles[2].vx > 0.0,
+            "the tree path must apply the same degree-scaled repulsion as brute force: vx={}",
+            particles[2].vx
+        );
     }
 }

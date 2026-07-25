@@ -1632,7 +1632,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
                 .collect();
 
             self.mode = PointerMode::DraggingNode;
-            self.drag.start(hit, (x, y));
+            self.drag.start(hit);
             // Pin-during-drag for EVERY moved member (d3-force canon —
             // `fx`/`fy` are the ONLY pin primitive, drag-in-progress and
             // an explicit persistent pin share the same mechanism),
@@ -1668,7 +1668,6 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
 
         match self.mode {
             PointerMode::DraggingNode => {
-                self.drag.update((x, y));
                 if self.drag.dragging_node().is_some() {
                     self.apply_drag_shift((x, y));
                 }
@@ -1723,7 +1722,7 @@ impl<N, E, L: Layout> GraphEngine<N, E, L> {
     fn on_pointer_up(&mut self, x: f64, y: f64) -> bool {
         match self.mode {
             PointerMode::DraggingNode => {
-                if let Some((anchor, _response)) = self.drag.stop() {
+                if let Some(anchor) = self.drag.stop() {
                     let policy = self.drag_end_policy;
                     let was_group = self.drag_was_group;
                     // Wave 2.4: every MEMBER of the drag set pins/unpins

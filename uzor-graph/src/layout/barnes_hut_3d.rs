@@ -56,26 +56,34 @@ const CELL_ACCEPTANCE_MIN_DIST: f32 = 0.001;
 /// combines with other forces in the same buffer). `min_dist2` is the
 /// softening floor — was [`MIN_DIST2`] read directly, now a caller-
 /// supplied parameter (graph-strengthening arc Wave G2b).
-pub fn apply_repulsion_brute_force_3d(particles: &[Particle], strength: f32, min_dist2: f32, out: &mut [(f32, f32, f32)]) {
+///
+/// `masses` — 3D mirror of `barnes_hut::apply_repulsion_brute_force`'s
+/// own Wave G4 fix (see
+/// [`super::force_directed_3d::ForceParams3D::mass_from_degree`]); see
+/// that function's own doc comment for the "force on i scales with j's
+/// own mass" convention and why `None` (the default, uniform masses) is
+/// byte-identical to the pre-existing plain `strength / d2`.
+pub fn apply_repulsion_brute_force_3d(particles: &[Particle], strength: f32, min_dist2: f32, masses: Option<&[f32]>, out: &mut [(f32, f32, f32)]) {
     let n = particles.len();
+    let mass_of = |i: usize| masses.and_then(|m| m.get(i)).copied().unwrap_or(1.0);
     for i in 0..n {
         let (xi, yi, zi) = (particles[i].x, particles[i].y, particles[i].z);
+        let mass_i = mass_of(i);
         for j in (i + 1)..n {
             let dx = xi - particles[j].x;
             let dy = yi - particles[j].y;
             let dz = zi - particles[j].z;
             let d2 = (dx * dx + dy * dy + dz * dz).max(min_dist2);
             let d = d2.sqrt();
-            let f = strength / d2;
-            let fx = dx / d * f;
-            let fy = dy / d * f;
-            let fz = dz / d * f;
-            out[i].0 += fx;
-            out[i].1 += fy;
-            out[i].2 += fz;
-            out[j].0 -= fx;
-            out[j].1 -= fy;
-            out[j].2 -= fz;
+            let mass_j = mass_of(j);
+            let f_on_i = strength * mass_j / d2;
+            let f_on_j = strength * mass_i / d2;
+            out[i].0 += dx / d * f_on_i;
+            out[i].1 += dy / d * f_on_i;
+            out[i].2 += dz / d * f_on_i;
+            out[j].0 -= dx / d * f_on_j;
+            out[j].1 -= dy / d * f_on_j;
+            out[j].2 -= dz / d * f_on_j;
         }
     }
 }
@@ -141,11 +149,12 @@ impl OctBounds {
 
 enum NodeContent {
     Empty,
-    /// `indices` (Wave G1 fix) — verbatim 3D port of
-    /// `barnes_hut::NodeContent::Leaf`'s own `indices` field; see its doc
-    /// comment for why this is additive to the pre-existing
+    /// `entries` (Wave G1 fix, extended Wave G4) — verbatim 3D port of
+    /// `barnes_hut::NodeContent::Leaf`'s own `entries` field; see its doc
+    /// comment for why each entry carries its own mass (not just its
+    /// index) and why that's additive to the pre-existing
     /// `x`/`y`/`z`/`mass` repulsion-only fields.
-    Leaf { x: f32, y: f32, z: f32, mass: f32, indices: Vec<u32> },
+    Leaf { x: f32, y: f32, z: f32, mass: f32, entries: Vec<(u32, f32)> },
     Internal { children: Box<[OctNode; 8]> },
 }
 
@@ -172,9 +181,9 @@ impl OctNode {
 
         match &mut self.content {
             NodeContent::Empty => {
-                self.content = NodeContent::Leaf { x, y, z, mass, indices: vec![index] };
+                self.content = NodeContent::Leaf { x, y, z, mass, entries: vec![(index, mass)] };
             }
-            NodeContent::Leaf { x: lx, y: ly, z: lz, mass: lmass, indices } => {
+            NodeContent::Leaf { x: lx, y: ly, z: lz, mass: lmass, entries } => {
                 // Coincident (or indistinguishably close) points can never
                 // be separated by subdividing — cluster collapse pins whole
                 // member stacks onto one centroid, so this is a normal
@@ -184,16 +193,16 @@ impl OctNode {
                 let (dx, dy, dz) = (x - *lx, y - *ly, z - *lz);
                 if dx * dx + dy * dy + dz * dz <= min_split_dist2 || self.bounds.size <= min_cell_size {
                     *lmass += mass;
-                    indices.push(index);
+                    entries.push((index, mass));
                     return;
                 }
                 let (lx, ly, lz) = (*lx, *ly, *lz);
                 // Verbatim 3D port of `barnes_hut::QuadNode::insert`'s own
                 // re-homing loop — see its doc comment for why reinserting
-                // each prior index individually at mass `1.0` is
-                // numerically identical to the old single aggregate-mass
-                // insert.
-                let prior_indices = std::mem::take(indices);
+                // each prior entry at ITS OWN mass (not a hardcoded `1.0`,
+                // Wave G4 fix) is numerically identical to the old single
+                // aggregate-mass insert.
+                let prior_entries = std::mem::take(entries);
                 let mut children = [
                     OctNode::new_empty(self.bounds.child_bounds(0)),
                     OctNode::new_empty(self.bounds.child_bounds(1)),
@@ -205,8 +214,8 @@ impl OctNode {
                     OctNode::new_empty(self.bounds.child_bounds(7)),
                 ];
                 let prior_octant = self.bounds.octant(lx, ly, lz);
-                for prior_index in prior_indices {
-                    children[prior_octant].insert(lx, ly, lz, 1.0, prior_index, min_split_dist2, min_cell_size);
+                for (prior_index, prior_mass) in prior_entries {
+                    children[prior_octant].insert(lx, ly, lz, prior_mass, prior_index, min_split_dist2, min_cell_size);
                 }
                 children[self.bounds.octant(x, y, z)].insert(x, y, z, mass, index, min_split_dist2, min_cell_size);
                 self.content = NodeContent::Internal { children: Box::new(children) };
@@ -245,7 +254,7 @@ impl OctNode {
     fn collect_within(&self, qx: f32, qy: f32, qz: f32, r: f32, out: &mut Vec<u32>) {
         match &self.content {
             NodeContent::Empty => {}
-            NodeContent::Leaf { indices, .. } => out.extend_from_slice(indices),
+            NodeContent::Leaf { entries, .. } => out.extend(entries.iter().map(|(idx, _)| *idx)),
             NodeContent::Internal { children } => {
                 for child in children.iter() {
                     if child.bounds.intersects_sphere(qx, qy, qz, r) {
@@ -278,8 +287,22 @@ pub struct Octree {
 impl Octree {
     /// `min_split_dist2`/`min_cell_size` were [`MIN_SPLIT_DIST2`]/
     /// [`MIN_CELL_SIZE`] read directly — now caller-supplied parameters
-    /// (graph-strengthening arc Wave G2b).
+    /// (graph-strengthening arc Wave G2b). Every particle inserts at a
+    /// uniform mass of `1.0` — see [`Octree::build_weighted`] for a
+    /// per-particle mass, this is a thin call-through to it with
+    /// `masses: None`.
     pub fn build(particles: &[Particle], min_split_dist2: f32, min_cell_size: f32) -> Self {
+        Self::build_weighted(particles, None, min_split_dist2, min_cell_size)
+    }
+
+    /// Same tree build as [`Octree::build`], but ingests each particle's
+    /// own MASS from `masses[i]` instead of the uniform `1.0`
+    /// [`Octree::build`] applies to every particle — 3D mirror of
+    /// `barnes_hut::Quadtree::build_weighted` (Wave G4 fix, see
+    /// [`super::force_directed_3d::ForceParams3D::mass_from_degree`]).
+    /// `None`, or an index beyond `masses`' own length, falls back to the
+    /// uniform `1.0` default.
+    pub fn build_weighted(particles: &[Particle], masses: Option<&[f32]>, min_split_dist2: f32, min_cell_size: f32) -> Self {
         if particles.is_empty() {
             return Self { root: None };
         }
@@ -297,7 +320,8 @@ impl Octree {
         let bounds = OctBounds { min_x, min_y, min_z, size };
         let mut root = OctNode::new_empty(bounds);
         for (i, p) in particles.iter().enumerate() {
-            root.insert(p.x, p.y, p.z, 1.0, i as u32, min_split_dist2, min_cell_size);
+            let mass = masses.and_then(|m| m.get(i)).copied().unwrap_or(1.0);
+            root.insert(p.x, p.y, p.z, mass, i as u32, min_split_dist2, min_cell_size);
         }
         Self { root: Some(root) }
     }
@@ -442,7 +466,7 @@ mod tests {
         let strength = 400.0;
 
         let mut brute = vec![(0f32, 0f32, 0f32); particles.len()];
-        apply_repulsion_brute_force_3d(&particles, strength, MIN_DIST2, &mut brute);
+        apply_repulsion_brute_force_3d(&particles, strength, MIN_DIST2, None, &mut brute);
 
         let ot = Octree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
         let mut approx = vec![(0f32, 0f32, 0f32); particles.len()];
@@ -472,7 +496,7 @@ mod tests {
         let strength = 400.0;
 
         let mut brute = vec![(0f32, 0f32, 0f32); particles.len()];
-        apply_repulsion_brute_force_3d(&particles, strength, MIN_DIST2, &mut brute);
+        apply_repulsion_brute_force_3d(&particles, strength, MIN_DIST2, None, &mut brute);
 
         let ot = Octree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
         let mut approx = vec![(0f32, 0f32, 0f32); particles.len()];
@@ -621,5 +645,50 @@ mod tests {
                 tree[i]
             );
         }
+    }
+
+    /// Wave G4 gate — 3D mirror of
+    /// `barnes_hut::tests::build_weighted_with_none_masses_matches_build_exactly`.
+    #[test]
+    fn build_weighted_with_none_masses_matches_build_exactly() {
+        let particles = deterministic_particles_3d(40);
+        let plain = Octree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
+        let weighted = Octree::build_weighted(&particles, None, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
+        let mut out_plain = vec![(0f32, 0f32, 0f32); particles.len()];
+        let mut out_weighted = vec![(0f32, 0f32, 0f32); particles.len()];
+        plain.accumulate_forces(&particles, DEFAULT_THETA, 400.0, MIN_DIST2, &mut out_plain);
+        weighted.accumulate_forces(&particles, DEFAULT_THETA, 400.0, MIN_DIST2, &mut out_weighted);
+        assert_eq!(out_plain, out_weighted, "None masses must reproduce the uniform-1.0 default exactly");
+    }
+
+    /// Wave G4 regression gate — 3D mirror of
+    /// `barnes_hut::tests::build_weighted_preserves_each_entrys_own_mass_through_a_later_split`.
+    /// See that test's own doc comment for the full mass-loss-on-split
+    /// defect this proves is closed.
+    #[test]
+    fn build_weighted_preserves_each_entrys_own_mass_through_a_later_split() {
+        let particles = vec![Particle::at3(0.0, 0.0, 0.0), Particle::at3(0.0, 0.0, 0.0), Particle::at3(500.0, 500.0, 500.0)];
+        let masses = vec![2.0f32, 5.0, 1.0];
+        let strength = 100.0;
+        let ot = Octree::build_weighted(&particles, Some(&masses), MIN_SPLIT_DIST2, MIN_CELL_SIZE);
+
+        let mut out = vec![(0f32, 0f32, 0f32); particles.len()];
+        ot.accumulate_forces(&particles, 1e-9, strength, MIN_DIST2, &mut out);
+
+        let mut expected = (0.0f32, 0.0f32, 0.0f32);
+        apply_point(500.0, 500.0, 500.0, 0.0, 0.0, 0.0, 7.0, strength, MIN_DIST2, &mut expected);
+        let diff =
+            ((out[2].0 - expected.0).powi(2) + (out[2].1 - expected.1).powi(2) + (out[2].2 - expected.2).powi(2)).sqrt();
+        let mag = (expected.0 * expected.0 + expected.1 * expected.1 + expected.2 * expected.2).sqrt();
+        assert!(
+            diff <= mag * 0.02,
+            "the far particle must feel the merged (0,0,0) pair as one mass-7.0 point: got {:?}, expected {expected:?}",
+            out[2]
+        );
+
+        let mut buggy = (0.0f32, 0.0f32, 0.0f32);
+        apply_point(500.0, 500.0, 500.0, 0.0, 0.0, 0.0, 2.0, strength, MIN_DIST2, &mut buggy);
+        let buggy_diff = ((out[2].0 - buggy.0).powi(2) + (out[2].1 - buggy.1).powi(2) + (out[2].2 - buggy.2).powi(2)).sqrt();
+        assert!(buggy_diff > mag * 0.3, "the fixed and buggy answers must be clearly distinguishable, not coincidentally close");
     }
 }

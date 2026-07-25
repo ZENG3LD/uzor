@@ -67,22 +67,38 @@ const CELL_ACCEPTANCE_MIN_DIST: f32 = 0.001;
 /// combines with other forces in the same buffer). `min_dist2` is the
 /// softening floor — was the private [`MIN_DIST2`] constant, now a
 /// caller-supplied parameter (graph-strengthening arc Wave G2b).
-pub fn apply_repulsion_brute_force(particles: &[Particle], strength: f32, min_dist2: f32, out: &mut [(f32, f32)]) {
+///
+/// `masses` (Wave G4 fix — [`super::force_directed::ForceParams::mass_from_degree`])
+/// is the brute-force sibling of [`Quadtree::build_weighted`]'s own
+/// per-particle mass: `None`, or an index beyond `masses`' own length,
+/// falls back to the uniform `1.0` every particle used before this
+/// parameter existed. The force ON `i` scales with `j`'s own mass, and
+/// the force ON `j` scales with `i`'s own mass — matching
+/// [`apply_point`]'s existing "the OTHER point's mass" convention the
+/// tree path already implements (and d3-force's own
+/// `forceManyBody().strength(fn)` per-node-strength semantics), NOT a
+/// symmetric Newton's-third-law product. With uniform masses (`None`,
+/// the default) `strength * mass_j == strength * mass_i`, so this is
+/// byte-identical to a plain `strength / d2` — the pre-existing
+/// behavior for every caller that doesn't opt in.
+pub fn apply_repulsion_brute_force(particles: &[Particle], strength: f32, min_dist2: f32, masses: Option<&[f32]>, out: &mut [(f32, f32)]) {
     let n = particles.len();
+    let mass_of = |i: usize| masses.and_then(|m| m.get(i)).copied().unwrap_or(1.0);
     for i in 0..n {
         let (xi, yi) = (particles[i].x, particles[i].y);
+        let mass_i = mass_of(i);
         for j in (i + 1)..n {
             let dx = xi - particles[j].x;
             let dy = yi - particles[j].y;
             let d2 = (dx * dx + dy * dy).max(min_dist2);
             let d = d2.sqrt();
-            let f = strength / d2;
-            let fx = dx / d * f;
-            let fy = dy / d * f;
-            out[i].0 += fx;
-            out[i].1 += fy;
-            out[j].0 -= fx;
-            out[j].1 -= fy;
+            let mass_j = mass_of(j);
+            let f_on_i = strength * mass_j / d2;
+            let f_on_j = strength * mass_i / d2;
+            out[i].0 += dx / d * f_on_i;
+            out[i].1 += dy / d * f_on_i;
+            out[j].0 -= dx / d * f_on_j;
+            out[j].1 -= dy / d * f_on_j;
         }
     }
 }
@@ -135,17 +151,32 @@ impl QuadBounds {
 
 enum NodeContent {
     Empty,
-    /// `indices` (Wave G1 fix) — every particle index ever merged into
-    /// this leaf, in insertion order. Additive to the pre-existing
-    /// `x`/`y`/`mass` (still the ONLY fields [`QuadNode::accumulate`]'s
-    /// repulsion pass reads, byte-identical to before this field
-    /// existed) — needed because a merge collapses several particles
-    /// onto one approximate point-mass for the repulsion force, but
+    /// `entries` (Wave G1 fix, extended Wave G4) — every `(particle
+    /// index, that particle's OWN mass)` ever merged into this leaf, in
+    /// insertion order. Additive to the pre-existing `x`/`y`/`mass`
+    /// (still the ONLY fields [`QuadNode::accumulate`]'s repulsion pass
+    /// reads, byte-identical to before this field existed) — needed
+    /// because a merge collapses several particles onto one approximate
+    /// point-mass for the repulsion force, but
     /// [`QuadNode::collect_within`]'s collision query still needs each
     /// individual particle's OWN identity (and, via that index, its real
     /// position from the caller's own particle slice) to resolve
     /// collisions between them.
-    Leaf { x: f32, y: f32, mass: f32, indices: Vec<u32> },
+    ///
+    /// Wave G4: was `indices: Vec<u32>` — index only, no per-particle
+    /// mass. That was silently correct only because every caller of
+    /// [`Quadtree::build`] inserted at a uniform mass of `1.0`: on a
+    /// later leaf split, [`QuadNode::insert`]'s re-homing loop re-inserts
+    /// each merged index at a HARDCODED `1.0`, which is a real mass-loss
+    /// bug the instant [`Quadtree::build_weighted`] (Wave G4 — see
+    /// [`super::force_directed::ForceParams::mass_from_degree`]) feeds in
+    /// non-uniform per-particle masses: two coincident particles with
+    /// DIFFERENT masses, merged into one leaf, then split apart by a
+    /// third non-coincident point arriving, would both silently re-home
+    /// at mass `1.0` — discarding whatever real mass either one carried.
+    /// Storing each entry's own mass alongside its index is what makes
+    /// the split path recover it exactly instead of guessing `1.0`.
+    Leaf { x: f32, y: f32, mass: f32, entries: Vec<(u32, f32)> },
     Internal { children: Box<[QuadNode; 4]> },
 }
 
@@ -170,9 +201,9 @@ impl QuadNode {
 
         match &mut self.content {
             NodeContent::Empty => {
-                self.content = NodeContent::Leaf { x, y, mass, indices: vec![index] };
+                self.content = NodeContent::Leaf { x, y, mass, entries: vec![(index, mass)] };
             }
-            NodeContent::Leaf { x: lx, y: ly, mass: lmass, indices } => {
+            NodeContent::Leaf { x: lx, y: ly, mass: lmass, entries } => {
                 // Coincident (or indistinguishably close) points can never
                 // be separated by subdividing — cluster collapse pins whole
                 // member stacks onto one centroid, so this is a normal
@@ -182,21 +213,23 @@ impl QuadNode {
                 let (dx, dy) = (x - *lx, y - *ly);
                 if dx * dx + dy * dy <= min_split_dist2 || self.bounds.size <= min_cell_size {
                     *lmass += mass;
-                    indices.push(index);
+                    entries.push((index, mass));
                     return;
                 }
                 let (lx, ly) = (*lx, *ly);
-                // Every previously-merged index is re-homed into whichever
+                // Every previously-merged entry is re-homed into whichever
                 // child `(lx, ly)` — the merged leaf's own approximate
-                // point — falls into. Reinserted one at a time at mass
-                // `1.0` each (every caller of `Quadtree::build` inserts at
-                // a uniform mass of `1.0` — see that method) rather than as
-                // one aggregate `insert(lx, ly, lmass)` call, so each
-                // individual particle keeps its own index; the resulting
-                // `mass`/center-of-mass is numerically IDENTICAL either way
-                // (inserting N copies of the same point sequentially
-                // accumulates to the same total as one N-mass insert).
-                let prior_indices = std::mem::take(indices);
+                // point — falls into, at ITS OWN original mass (Wave G4
+                // fix — see `NodeContent::Leaf`'s own doc comment for why
+                // this can no longer be a hardcoded `1.0` now that
+                // `Quadtree::build_weighted` can feed in non-uniform
+                // per-particle masses) rather than as one aggregate
+                // `insert(lx, ly, lmass)` call, so each individual particle
+                // keeps its own index AND mass; the resulting `mass`/
+                // center-of-mass is numerically IDENTICAL either way
+                // (inserting each entry's own mass sequentially accumulates
+                // to the same total as one aggregate-mass insert).
+                let prior_entries = std::mem::take(entries);
                 let mut children = [
                     QuadNode::new_empty(self.bounds.child_bounds(0)),
                     QuadNode::new_empty(self.bounds.child_bounds(1)),
@@ -204,8 +237,8 @@ impl QuadNode {
                     QuadNode::new_empty(self.bounds.child_bounds(3)),
                 ];
                 let prior_quadrant = self.bounds.quadrant(lx, ly);
-                for prior_index in prior_indices {
-                    children[prior_quadrant].insert(lx, ly, 1.0, prior_index, min_split_dist2, min_cell_size);
+                for (prior_index, prior_mass) in prior_entries {
+                    children[prior_quadrant].insert(lx, ly, prior_mass, prior_index, min_split_dist2, min_cell_size);
                 }
                 children[self.bounds.quadrant(x, y)].insert(x, y, mass, index, min_split_dist2, min_cell_size);
                 self.content = NodeContent::Internal { children: Box::new(children) };
@@ -247,7 +280,7 @@ impl QuadNode {
     fn collect_within(&self, qx: f32, qy: f32, r: f32, out: &mut Vec<u32>) {
         match &self.content {
             NodeContent::Empty => {}
-            NodeContent::Leaf { indices, .. } => out.extend_from_slice(indices),
+            NodeContent::Leaf { entries, .. } => out.extend(entries.iter().map(|(idx, _)| *idx)),
             NodeContent::Internal { children } => {
                 for child in children.iter() {
                     if child.bounds.intersects_circle(qx, qy, r) {
@@ -278,8 +311,22 @@ pub struct Quadtree {
 impl Quadtree {
     /// `min_split_dist2`/`min_cell_size` were the private [`MIN_SPLIT_DIST2`]/
     /// [`MIN_CELL_SIZE`] constants — now caller-supplied parameters (graph-
-    /// strengthening arc Wave G2b).
+    /// strengthening arc Wave G2b). Every particle inserts at a uniform
+    /// mass of `1.0` — see [`Quadtree::build_weighted`] for a per-particle
+    /// mass, this is a thin call-through to it with `masses: None`.
     pub fn build(particles: &[Particle], min_split_dist2: f32, min_cell_size: f32) -> Self {
+        Self::build_weighted(particles, None, min_split_dist2, min_cell_size)
+    }
+
+    /// Same tree build as [`Quadtree::build`], but ingests each
+    /// particle's own MASS from `masses[i]` instead of the uniform `1.0`
+    /// [`Quadtree::build`] applies to every particle (Wave G4 fix — see
+    /// [`super::force_directed::ForceParams::mass_from_degree`], the
+    /// caller that actually opts into non-uniform masses). `None`, or an
+    /// index beyond `masses`' own length, falls back to the uniform `1.0`
+    /// default — a caller supplying no masses (or a partial slice) sees
+    /// byte-identical output to [`Quadtree::build`].
+    pub fn build_weighted(particles: &[Particle], masses: Option<&[f32]>, min_split_dist2: f32, min_cell_size: f32) -> Self {
         if particles.is_empty() {
             return Self { root: None };
         }
@@ -294,7 +341,8 @@ impl Quadtree {
         let bounds = QuadBounds { min_x, min_y, size };
         let mut root = QuadNode::new_empty(bounds);
         for (i, p) in particles.iter().enumerate() {
-            root.insert(p.x, p.y, 1.0, i as u32, min_split_dist2, min_cell_size);
+            let mass = masses.and_then(|m| m.get(i)).copied().unwrap_or(1.0);
+            root.insert(p.x, p.y, mass, i as u32, min_split_dist2, min_cell_size);
         }
         Self { root: Some(root) }
     }
@@ -414,7 +462,7 @@ mod tests {
         let strength = 400.0;
 
         let mut brute = vec![(0f32, 0f32); particles.len()];
-        apply_repulsion_brute_force(&particles, strength, MIN_DIST2, &mut brute);
+        apply_repulsion_brute_force(&particles, strength, MIN_DIST2, None, &mut brute);
 
         let qt = Quadtree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
         let mut approx = vec![(0f32, 0f32); particles.len()];
@@ -446,7 +494,7 @@ mod tests {
         let strength = 400.0;
 
         let mut brute = vec![(0f32, 0f32); particles.len()];
-        apply_repulsion_brute_force(&particles, strength, MIN_DIST2, &mut brute);
+        apply_repulsion_brute_force(&particles, strength, MIN_DIST2, None, &mut brute);
 
         let qt = Quadtree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
         let mut approx = vec![(0f32, 0f32); particles.len()];
@@ -528,5 +576,68 @@ mod tests {
             diff <= mag * 0.05,
             "coincident stack should act as one 8-mass point: got {probe:?}, expected {expected:?}"
         );
+    }
+
+    /// Wave G4 gate: [`Quadtree::build_weighted`] with `masses: None`
+    /// must be byte-identical to [`Quadtree::build`] — `build` is a thin
+    /// call-through, not a second implementation that could drift.
+    #[test]
+    fn build_weighted_with_none_masses_matches_build_exactly() {
+        let particles = deterministic_particles(40);
+        let plain = Quadtree::build(&particles, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
+        let weighted = Quadtree::build_weighted(&particles, None, MIN_SPLIT_DIST2, MIN_CELL_SIZE);
+        let mut out_plain = vec![(0f32, 0f32); particles.len()];
+        let mut out_weighted = vec![(0f32, 0f32); particles.len()];
+        plain.accumulate_forces(&particles, DEFAULT_THETA, 400.0, MIN_DIST2, &mut out_plain);
+        weighted.accumulate_forces(&particles, DEFAULT_THETA, 400.0, MIN_DIST2, &mut out_weighted);
+        assert_eq!(out_plain, out_weighted, "None masses must reproduce the uniform-1.0 default exactly");
+    }
+
+    /// Wave G4 regression gate — proves the real defect
+    /// [`super::force_directed::ForceParams::mass_from_degree`] would
+    /// have shipped with, had `NodeContent::Leaf`'s re-homing loop stayed
+    /// on a hardcoded mass of `1.0` per entry: two coincident particles
+    /// with DIFFERENT masses (2.0 and 5.0) are first merged into one
+    /// leaf, then forced to re-home into a child (via
+    /// `QuadNode::insert`'s split path) by a third, distant, non-
+    /// coincident particle arriving. A query from that third particle
+    /// must feel the merged pair as ONE mass-7.0 point (2.0 + 5.0) — a
+    /// re-homing bug that dropped each entry's own mass back to `1.0`
+    /// would instead read mass 2.0 (1.0 + 1.0), a easily-distinguished,
+    /// understated force. `theta` is set vanishingly small so the query
+    /// is forced to descend past the root's own (always-correct,
+    /// unaffected by this bug) aggregate mass and read the SPECIFIC
+    /// child leaf's own mass field directly.
+    #[test]
+    fn build_weighted_preserves_each_entrys_own_mass_through_a_later_split() {
+        let particles = vec![Particle::at(0.0, 0.0), Particle::at(0.0, 0.0), Particle::at(500.0, 500.0)];
+        let masses = vec![2.0f32, 5.0, 1.0];
+        let strength = 100.0;
+        let qt = Quadtree::build_weighted(&particles, Some(&masses), MIN_SPLIT_DIST2, MIN_CELL_SIZE);
+
+        let mut out = vec![(0f32, 0f32); particles.len()];
+        // Vanishingly small theta: `bounds.size / d < theta` never accepts
+        // an internal cell's coarse aggregate, forcing full descent to
+        // the leaves the split actually produced.
+        qt.accumulate_forces(&particles, 1e-9, strength, MIN_DIST2, &mut out);
+
+        let mut expected = (0.0f32, 0.0f32);
+        apply_point(500.0, 500.0, 0.0, 0.0, 7.0, strength, MIN_DIST2, &mut expected);
+        let diff = ((out[2].0 - expected.0).powi(2) + (out[2].1 - expected.1).powi(2)).sqrt();
+        let mag = (expected.0 * expected.0 + expected.1 * expected.1).sqrt();
+        assert!(
+            diff <= mag * 0.02,
+            "the far particle must feel the merged (0,0) pair as one mass-7.0 point: got {:?}, expected {expected:?}",
+            out[2]
+        );
+
+        // The buggy (hardcoded-1.0-per-entry) reading would be mass 2.0,
+        // not 7.0 — a >3x understated force, nowhere near the 2% band
+        // above. Assert the buggy answer is CLEARLY distinguishable so
+        // this test would actually fail if the fix regressed.
+        let mut buggy = (0.0f32, 0.0f32);
+        apply_point(500.0, 500.0, 0.0, 0.0, 2.0, strength, MIN_DIST2, &mut buggy);
+        let buggy_diff = ((out[2].0 - buggy.0).powi(2) + (out[2].1 - buggy.1).powi(2)).sqrt();
+        assert!(buggy_diff > mag * 0.3, "the fixed and buggy answers must be clearly distinguishable, not coincidentally close");
     }
 }

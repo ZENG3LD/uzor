@@ -1,39 +1,42 @@
-//! Node drag/pin lifecycle built on uzor's native `WidgetResponse` drag
-//! model (`drag_started`/`dragged`/`drag_total`, `Sense`) — NOT a
-//! bespoke `bool dragging; (f64, f64) drag_last; f64 drag_total` machine
-//! (the rejected MVP's actual pattern).
+//! Bare node drag/pin lifecycle — tracks at most one anchor node while a
+//! drag gesture is in progress.
 //!
-//! The graph canvas itself is driven by raw `PlatformEvent`s dispatched
-//! through `App::on_event` — uzor's own documented escape hatch for
-//! canvas bodies too free-form for the widget tree (hundreds of moving
-//! node positions can't each be a registered `InputCoordinator` widget).
-//! But the *drag bookkeeping* reuses uzor's real `InputState`/
-//! `DragState`/`create_response` machinery instead of reinventing it:
-//! [`DragController`] feeds raw pointer positions into a genuine
-//! `InputState` and lets `create_response` derive a genuine
-//! `WidgetResponse` from it, the same function every native uzor widget
-//! uses.
-
-use uzor::input::{create_response, InputState, MouseButton, PointerDragState, Sense, WidgetResponse};
-use uzor::types::{Rect, WidgetId};
+//! **Graph-strengthening arc, Wave G4** — this module used to build a
+//! genuine `WidgetResponse` via uzor's `InputState`/`create_response`
+//! machinery on every single drag frame (`start`/`update`), framed as
+//! "reusing uzor's real drag model instead of reinventing it." In
+//! practice the response was computed and then thrown away: the real
+//! drag math (`GraphEngine::apply_drag_shift`) always reprojected the
+//! cursor's ABSOLUTE screen position through `Camera2D::screen_to_world`
+//! directly, never read `response.drag_delta`/`drag_total`, and
+//! `stop()`'s own returned `WidgetResponse` half was discarded at its one
+//! call site (`if let Some((anchor, _response)) = self.drag.stop()`).
+//!
+//! Deleted rather than wired in — a delta-based `WidgetResponse` doesn't
+//! actually serve this controller's need any better. Group-drag's
+//! per-member `offset_from_anchor` (`engine.rs`'s `DragMember`) is a
+//! FIXED offset added to the anchor's CURRENT absolute world position
+//! every tick, not a running delta — so even if `drag_delta` were
+//! consumed, it would have to be converted right back into an absolute
+//! world-space reprojection to be useful here, at which point it adds a
+//! second, redundant math path over calling `screen_to_world` once,
+//! not a simplification. `DragController`/`create_response` had zero
+//! outside callers (grep-confirmed across the workspace — `uzor-examples`
+//! never references either), so nothing beyond this crate's own
+//! `engine.rs` is affected.
+//!
+//! What's left is exactly the state `on_pointer_up` actually needs:
+//! which node (if any) is the current drag's anchor, so it can be
+//! selected/pinned on release. `PointerMode::DraggingNode` (`engine.rs`)
+//! is a unit variant that carries no node of its own — this is the one
+//! place that identity lives.
 
 use crate::graph::NodeIndex;
 
-/// Drag/pin lifecycle for at most one node at a time.
+/// Which node (if any) is the current drag's anchor.
+#[derive(Default)]
 pub struct DragController {
     node: Option<NodeIndex>,
-    input: InputState,
-    response: WidgetResponse,
-}
-
-impl Default for DragController {
-    fn default() -> Self {
-        Self {
-            node: None,
-            input: InputState::new(),
-            response: WidgetResponse::default(),
-        }
-    }
 }
 
 impl DragController {
@@ -41,65 +44,14 @@ impl DragController {
         self.node
     }
 
-    pub fn response(&self) -> &WidgetResponse {
-        &self.response
-    }
-
-    /// Begin dragging `node`, pointer currently at `screen_pos`.
-    pub fn start(&mut self, node: NodeIndex, screen_pos: (f64, f64)) {
+    /// Begin dragging `node`.
+    pub fn start(&mut self, node: NodeIndex) {
         self.node = Some(node);
-        self.input = InputState::new();
-        self.input.pointer.pos = Some(screen_pos);
-        self.input.pointer.button_down = Some(MouseButton::Left);
-        self.input.drag = Some(PointerDragState::new(screen_pos, screen_pos, MouseButton::Left));
-
-        self.response = create_response(
-            WidgetId::from("graph-node-drag"),
-            Rect::new(0.0, 0.0, 0.0, 0.0),
-            Sense::CLICK_AND_DRAG,
-            &self.input,
-            false,
-            false,
-        );
-        self.response.drag_started = true;
-        self.response.dragged = true;
     }
 
-    /// Update the in-progress drag with the pointer's new screen
-    /// position. No-op if nothing is being dragged.
-    pub fn update(&mut self, screen_pos: (f64, f64)) {
-        if self.node.is_none() {
-            return;
-        }
-        self.input.pointer.prev_pos = self.input.pointer.pos;
-        self.input.pointer.pos = Some(screen_pos);
-        if let Some(drag) = self.input.drag.as_mut() {
-            drag.update(screen_pos.0, screen_pos.1);
-        }
-
-        self.response = create_response(
-            WidgetId::from("graph-node-drag"),
-            Rect::new(0.0, 0.0, 0.0, 0.0),
-            Sense::CLICK_AND_DRAG,
-            &self.input,
-            true,
-            false,
-        );
-        if let Some(drag) = &self.input.drag {
-            self.response.dragged = true;
-            self.response.drag_delta = drag.delta;
-            self.response.drag_total = drag.total_delta;
-        }
-    }
-
-    /// End the drag. Returns the released node and the final
-    /// `WidgetResponse` (`drag_stopped = true`), or `None` if nothing
+    /// End the drag. Returns the released node, or `None` if nothing
     /// was being dragged.
-    pub fn stop(&mut self) -> Option<(NodeIndex, WidgetResponse)> {
-        let node = self.node.take()?;
-        self.response.dragged = false;
-        self.response.drag_stopped = true;
-        self.input.drag = None;
-        Some((node, self.response.clone()))
+    pub fn stop(&mut self) -> Option<NodeIndex> {
+        self.node.take()
     }
 }

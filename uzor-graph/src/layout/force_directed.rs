@@ -120,6 +120,38 @@ pub struct ForceParams {
     /// input still lands bounded in the low tens of thousands of world
     /// units instead of unbounded.
     pub max_displacement_per_tick: f32,
+    /// Wave G4 fix — [`crate::graph::SimEdge::weight`] is read as
+    /// meaningful by the RENDER layer (`render3d.rs`'s
+    /// `edge_width_scale`: a heavier edge draws thicker) but was silently
+    /// ignored by both force layouts — `link_distance`/`link_strength`
+    /// applied identically to every edge regardless of its own weight, a
+    /// render/simulation inconsistency (the same field means "thicker
+    /// line" visually and "nothing at all" physically). When `true`, an
+    /// edge's own `link_strength` contribution is scaled by
+    /// `weight.max(0.0)` (weight `1.0` — the implicit weight every
+    /// pre-existing edge carries — is the identity multiplier, so a
+    /// uniformly-weighted graph is byte-identical whether this is `true`
+    /// or `false`). Default `false` — this CHANGES layout output for any
+    /// graph with non-uniform edge weights, so per doctrine it ships as
+    /// an opt-in, not a silent behavior flip; see
+    /// `uzor-graph/CLAUDE.md`'s Wave G4 entry for the before/after
+    /// description reported to the owner.
+    pub weighted_links: bool,
+    /// Wave G4 fix — [`crate::graph::SimTopology::degree`] is computed
+    /// (`Graph::degree`) but was never read by any layout; tree insertion
+    /// always used a hardcoded mass of `1.0`, so a high-degree hub
+    /// repelled exactly as weakly as a degree-0 leaf. Every mature
+    /// force-layout (d3-force's `forceManyBody().strength(d => k * (1 +
+    /// d.degree))`, ForceAtlas2's degree-scaled repulsion) scales
+    /// repulsion by degree instead. When `true`, particle `i`'s repulsive
+    /// mass/charge becomes `1.0 + degree[i]` (both the Barnes-Hut tree
+    /// path and the brute-force path below `brute_force_threshold` — see
+    /// [`degree_masses`]) instead of the uniform `1.0` every particle
+    /// used before this field existed. Default `false` — a real,
+    /// visible layout-output change for any graph with degree variance,
+    /// so per doctrine it ships opt-in; see `uzor-graph/CLAUDE.md`'s Wave
+    /// G4 entry for the before/after description reported to the owner.
+    pub mass_from_degree: bool,
 }
 
 /// Default for [`ForceParams::max_displacement_per_tick`] — see that
@@ -150,6 +182,8 @@ impl Default for ForceParams {
             min_split_dist2: barnes_hut::MIN_SPLIT_DIST2,
             min_cell_size: barnes_hut::MIN_CELL_SIZE,
             max_displacement_per_tick: DEFAULT_MAX_DISPLACEMENT_PER_TICK,
+            weighted_links: false,
+            mass_from_degree: false,
         }
     }
 }
@@ -182,6 +216,18 @@ fn positions_are_degenerate(particles: &[Particle]) -> bool {
     }
     let (x0, y0) = (particles[0].x, particles[0].y);
     particles.iter().all(|p| (p.x - x0).abs() <= DEGENERACY_EPS && (p.y - y0).abs() <= DEGENERACY_EPS)
+}
+
+/// Per-particle repulsive "mass"/charge derived from graph degree — Wave
+/// G4 fix, used only when [`ForceParams::mass_from_degree`] is enabled.
+/// A degree-0 leaf keeps the pre-existing uniform mass of `1.0`; a
+/// higher-degree hub gets proportionally MORE repulsive charge. `n` is
+/// `particles.len()`, not `degree.len()` — a caller's `degree` slice
+/// shorter than the particle count (shouldn't happen for a well-formed
+/// [`SimTopology`], but this stays a defensive lookup rather than a
+/// panic) falls back to `0` for any missing index.
+fn degree_masses(degree: &[u32], n: usize) -> Vec<f32> {
+    (0..n).map(|i| 1.0 + degree.get(i).copied().unwrap_or(0) as f32).collect()
 }
 
 /// Deterministic golden-angle phyllotaxis spiral seed — no RNG, matching
@@ -263,16 +309,23 @@ impl Layout for ForceDirectedLayout {
 
         let mut force = vec![(0f32, 0f32); n];
 
+        // Wave G4 fix: degree-scaled repulsive mass, opt-in via
+        // `mass_from_degree` — see that field's own doc comment. Computed
+        // once and shared by whichever repulsion path actually runs below
+        // so a graph's own physics doesn't discontinuously change
+        // depending on which side of `brute_force_threshold` it falls on.
+        let masses = self.params.mass_from_degree.then(|| degree_masses(topo.degree, n));
+
         // Wave G1 fix: the quadtree built for the above-threshold
         // repulsion path is KEPT (not dropped) so collision can reuse it
         // below instead of either being disabled or building a second
         // tree.
         let qt = if n > self.params.brute_force_threshold {
-            let qt = Quadtree::build(particles, self.params.min_split_dist2, self.params.min_cell_size);
+            let qt = Quadtree::build_weighted(particles, masses.as_deref(), self.params.min_split_dist2, self.params.min_cell_size);
             qt.accumulate_forces(particles, self.params.theta, self.params.charge_strength, self.params.min_dist2, &mut force);
             Some(qt)
         } else {
-            barnes_hut::apply_repulsion_brute_force(particles, self.params.charge_strength, self.params.min_dist2, &mut force);
+            barnes_hut::apply_repulsion_brute_force(particles, self.params.charge_strength, self.params.min_dist2, masses.as_deref(), &mut force);
             None
         };
 
@@ -286,7 +339,16 @@ impl Layout for ForceDirectedLayout {
             let dy = particles[b].y - particles[a].y;
             let dist = (dx * dx + dy * dy).sqrt().max(0.01);
             let ideal = self.params.link_distance;
-            let diff = (dist - ideal) / dist * self.params.link_strength;
+            // Wave G4 fix: `SimEdge::weight` modulates the link spring's
+            // own strength, opt-in via `weighted_links` — see that
+            // field's own doc comment. Weight `1.0` (the implicit weight
+            // of any pre-existing edge) is the identity multiplier.
+            let link_strength = if self.params.weighted_links {
+                self.params.link_strength * e.weight.max(0.0)
+            } else {
+                self.params.link_strength
+            };
+            let diff = (dist - ideal) / dist * link_strength;
             let fx = dx * diff;
             let fy = dy * diff;
             force[a].0 += fx;
@@ -882,5 +944,187 @@ mod tests {
             layout_disabled.tick(&t, &mut particles_disabled, 1.0 / 60.0);
         }
         assert_eq!(particles_default, particles_disabled, "the default clamp must be a complete no-op for an ordinary simulation");
+    }
+
+    // ── Wave G4 item 2 — `weighted_links` ──
+
+    /// Wave G4 gate: `weighted_links` defaults to `false` — an edge's own
+    /// `weight` must have ZERO effect on the sim unless a caller opts in,
+    /// preserving today's behavior (the audit's own finding: the render
+    /// layer treats `edge.weight` as meaningful, the layout layer
+    /// silently discarded it — this default keeps that discard as the
+    /// out-of-the-box behavior, doctrine 1).
+    #[test]
+    fn weighted_links_default_false_ignores_edge_weight_variance() {
+        let degree = vec![1u32; 2];
+        let params = ForceParams { charge_strength: 0.0, center_strength: 0.0, collision: false, seed_degenerate_positions: false, ..ForceParams::default() };
+
+        let mut particles_light = vec![Particle::at(0.0, 0.0), Particle::at(100.0, 0.0)];
+        let mut layout_light = ForceDirectedLayout::new(params);
+        let edges_light = vec![SimEdge { from: NodeIndex(0), to: NodeIndex(1), weight: 1.0 }];
+        let t_light = topo(2, &edges_light, &degree, vec![4.0; 2]);
+
+        let mut particles_heavy = vec![Particle::at(0.0, 0.0), Particle::at(100.0, 0.0)];
+        let mut layout_heavy = ForceDirectedLayout::new(params);
+        let edges_heavy = vec![SimEdge { from: NodeIndex(0), to: NodeIndex(1), weight: 5.0 }];
+        let t_heavy = topo(2, &edges_heavy, &degree, vec![4.0; 2]);
+
+        for _ in 0..10 {
+            layout_light.tick(&t_light, &mut particles_light, 1.0 / 60.0);
+            layout_heavy.tick(&t_heavy, &mut particles_heavy, 1.0 / 60.0);
+        }
+        assert_eq!(particles_light, particles_heavy, "weighted_links defaults to false — edge weight must have zero effect on the sim");
+    }
+
+    /// Wave G4 gate: `weighted_links: true` actually modulates the link
+    /// spring's own strength by `SimEdge::weight` — proven by an isolated
+    /// single-edge, no-repulsion/no-center fixture where the link spring
+    /// is the ONLY force acting, so the resulting velocity is an exact
+    /// linear multiple of the edge's own weight.
+    #[test]
+    fn weighted_links_true_scales_the_link_forces_strength_by_edge_weight() {
+        let degree = vec![1u32; 2];
+        let params = ForceParams {
+            charge_strength: 0.0,
+            center_strength: 0.0,
+            collision: false,
+            seed_degenerate_positions: false,
+            weighted_links: true,
+            ..ForceParams::default()
+        };
+
+        let mut particles_light = vec![Particle::at(0.0, 0.0), Particle::at(100.0, 0.0)];
+        let mut layout_light = ForceDirectedLayout::new(params);
+        let edges_light = vec![SimEdge { from: NodeIndex(0), to: NodeIndex(1), weight: 1.0 }];
+        let t_light = topo(2, &edges_light, &degree, vec![4.0; 2]);
+        layout_light.tick(&t_light, &mut particles_light, 1.0 / 60.0);
+
+        let mut particles_heavy = vec![Particle::at(0.0, 0.0), Particle::at(100.0, 0.0)];
+        let mut layout_heavy = ForceDirectedLayout::new(params);
+        let edges_heavy = vec![SimEdge { from: NodeIndex(0), to: NodeIndex(1), weight: 5.0 }];
+        let t_heavy = topo(2, &edges_heavy, &degree, vec![4.0; 2]);
+        layout_heavy.tick(&t_heavy, &mut particles_heavy, 1.0 / 60.0);
+
+        let speed_light = (particles_light[0].vx.powi(2) + particles_light[0].vy.powi(2)).sqrt();
+        let speed_heavy = (particles_heavy[0].vx.powi(2) + particles_heavy[0].vy.powi(2)).sqrt();
+        assert!(speed_light > 1e-6, "sanity: the light edge must produce SOME motion to compare against");
+        assert!(
+            (speed_heavy - 5.0 * speed_light).abs() < speed_light * 0.01,
+            "a 5x-heavier edge weight must pull almost exactly 5x harder: light={speed_light} heavy={speed_heavy}"
+        );
+    }
+
+    // ── Wave G4 item 3 — `mass_from_degree` ──
+
+    /// [`degree_masses`] direct gate: a degree-0 leaf keeps mass `1.0`
+    /// (the pre-existing uniform default); a degree-N node's mass is
+    /// `1.0 + N`.
+    #[test]
+    fn degree_masses_gives_a_higher_degree_particle_more_repulsive_mass() {
+        let degree = vec![10u32, 0, 3];
+        let masses = degree_masses(&degree, 3);
+        assert_eq!(masses, vec![11.0, 1.0, 4.0]);
+    }
+
+    /// Wave G4 gate: `mass_from_degree` defaults to `false` — degree
+    /// variance must have zero effect on the sim (preserves today's
+    /// behavior, doctrine 1), through the BRUTE-FORCE repulsion path
+    /// (`n` below the default `brute_force_threshold`).
+    #[test]
+    fn mass_from_degree_default_false_ignores_degree_variance() {
+        let edges: Vec<SimEdge> = Vec::new();
+        let degree_uniform = vec![0u32, 0, 0];
+        let degree_skewed = vec![50u32, 0, 0];
+        let params = ForceParams { collision: false, seed_degenerate_positions: false, ..ForceParams::default() };
+        let make_particles = || vec![Particle::at(-100.0, 0.0), Particle::at(100.0, 0.0), Particle::at(0.0, 0.0)];
+
+        let mut particles_uniform = make_particles();
+        let mut layout_uniform = ForceDirectedLayout::new(params);
+        let t_uniform = topo(3, &edges, &degree_uniform, vec![4.0; 3]);
+
+        let mut particles_skewed = make_particles();
+        let mut layout_skewed = ForceDirectedLayout::new(params);
+        let t_skewed = topo(3, &edges, &degree_skewed, vec![4.0; 3]);
+
+        layout_uniform.tick(&t_uniform, &mut particles_uniform, 1.0 / 60.0);
+        layout_skewed.tick(&t_skewed, &mut particles_skewed, 1.0 / 60.0);
+
+        assert_eq!(particles_uniform, particles_skewed, "mass_from_degree defaults to false — degree variance must have zero effect on the sim");
+    }
+
+    /// Same gate as above, through the BARNES-HUT TREE repulsion path
+    /// (`brute_force_threshold` overridden below `n`) — degree-scaled
+    /// mass must stay a no-op on that path too when the flag is off,
+    /// since [`ForceDirectedLayout::tick`] shares one `masses` value
+    /// between both repulsion paths.
+    #[test]
+    fn mass_from_degree_default_false_ignores_degree_variance_through_the_tree_path_too() {
+        let edges: Vec<SimEdge> = Vec::new();
+        let degree_uniform = vec![0u32, 0, 0];
+        let degree_skewed = vec![50u32, 0, 0];
+        let params = ForceParams { collision: false, seed_degenerate_positions: false, brute_force_threshold: 2, ..ForceParams::default() };
+        let make_particles = || vec![Particle::at(-100.0, 0.0), Particle::at(100.0, 0.0), Particle::at(0.0, 0.0)];
+
+        let mut particles_uniform = make_particles();
+        let mut layout_uniform = ForceDirectedLayout::new(params);
+        let t_uniform = topo(3, &edges, &degree_uniform, vec![4.0; 3]);
+
+        let mut particles_skewed = make_particles();
+        let mut layout_skewed = ForceDirectedLayout::new(params);
+        let t_skewed = topo(3, &edges, &degree_skewed, vec![4.0; 3]);
+
+        layout_uniform.tick(&t_uniform, &mut particles_uniform, 1.0 / 60.0);
+        layout_skewed.tick(&t_skewed, &mut particles_skewed, 1.0 / 60.0);
+
+        assert_eq!(particles_uniform, particles_skewed, "mass_from_degree=false must be a no-op via the tree path too");
+    }
+
+    /// Wave G4 gate: `mass_from_degree: true` actually makes a
+    /// higher-degree hub repel more strongly than a same-distance leaf —
+    /// a hub at `(-100, 0)` (degree 50) and a leaf at `(100, 0)` (degree
+    /// 0) are EQUIDISTANT from a probe at the origin; with uniform mass
+    /// their repulsion on the probe cancels exactly (symmetric
+    /// magnitude, opposite direction). A nonzero, positive
+    /// (away-from-the-heavier-hub) probe velocity after one tick proves
+    /// the hub's higher degree genuinely repels harder — brute-force
+    /// path (`n` below the default threshold).
+    #[test]
+    fn mass_from_degree_true_makes_a_higher_degree_hub_repel_a_probe_more_strongly_than_a_leaf() {
+        let edges: Vec<SimEdge> = Vec::new();
+        let degree = vec![50u32, 0, 0];
+        let params =
+            ForceParams { collision: false, seed_degenerate_positions: false, mass_from_degree: true, ..ForceParams::default() };
+        let mut particles = vec![Particle::at(-100.0, 0.0), Particle::at(100.0, 0.0), Particle::at(0.0, 0.0)];
+        let mut layout = ForceDirectedLayout::new(params);
+        let t = topo(3, &edges, &degree, vec![4.0; 3]);
+
+        layout.tick(&t, &mut particles, 1.0 / 60.0);
+
+        assert!(particles[2].vx > 0.0, "the probe must be pushed away from the higher-mass hub, not stay put: vx={}", particles[2].vx);
+    }
+
+    /// Same gate as above, through the BARNES-HUT TREE repulsion path.
+    #[test]
+    fn mass_from_degree_true_produces_the_same_asymmetric_push_via_the_tree_path_above_the_threshold() {
+        let edges: Vec<SimEdge> = Vec::new();
+        let degree = vec![50u32, 0, 0];
+        let params = ForceParams {
+            collision: false,
+            seed_degenerate_positions: false,
+            mass_from_degree: true,
+            brute_force_threshold: 2,
+            ..ForceParams::default()
+        };
+        let mut particles = vec![Particle::at(-100.0, 0.0), Particle::at(100.0, 0.0), Particle::at(0.0, 0.0)];
+        let mut layout = ForceDirectedLayout::new(params);
+        let t = topo(3, &edges, &degree, vec![4.0; 3]);
+
+        layout.tick(&t, &mut particles, 1.0 / 60.0);
+
+        assert!(
+            particles[2].vx > 0.0,
+            "the tree path must apply the same degree-scaled repulsion as brute force: vx={}",
+            particles[2].vx
+        );
     }
 }
