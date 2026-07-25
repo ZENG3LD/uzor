@@ -300,6 +300,18 @@ where
                 if let Some(v) = action.args.get("brute_force_threshold").and_then(Value::as_u64) {
                     params.brute_force_threshold = v as usize;
                 }
+                if let Some(v) = action.args.get("normalize_fps").and_then(Value::as_f64) {
+                    params.normalize_fps = v as f32;
+                }
+                if let Some(v) = action.args.get("max_step").and_then(Value::as_f64) {
+                    params.max_step = v as f32;
+                }
+                if let Some(v) = action.args.get("settle_displacement_eps").and_then(Value::as_f64) {
+                    params.settle_displacement_eps = v as f32;
+                }
+                if let Some(v) = action.args.get("seed_degenerate_positions").and_then(Value::as_bool) {
+                    params.seed_degenerate_positions = v;
+                }
                 self.set_force_params(params);
                 AgentActionReply::ok_with_log(json!({ "forces": force_params_json(&params) }))
             }
@@ -500,6 +512,10 @@ fn force_params_json(p: &ForceParams) -> Value {
         "collision": p.collision,
         "collision_strength": p.collision_strength,
         "brute_force_threshold": p.brute_force_threshold,
+        "normalize_fps": p.normalize_fps,
+        "max_step": p.max_step,
+        "settle_displacement_eps": p.settle_displacement_eps,
+        "seed_degenerate_positions": p.seed_degenerate_positions,
     })
 }
 

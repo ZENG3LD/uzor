@@ -33,6 +33,28 @@ const MIN_SPLIT_DIST2: f32 = 1e-8;
 /// halvings to separate.
 const MIN_CELL_SIZE: f32 = 1e-3;
 
+/// Floor on the distance-to-center-of-mass used by [`QuadNode::accumulate`]'s
+/// θ (multipole acceptance) ratio test — a DIFFERENT floor from
+/// [`MIN_DIST2`], not a duplicate of it, even though both guard "a
+/// distance used as a divisor" (Wave G1 fix — the two were previously an
+/// unnamed inline `0.001` sitting next to the named `MIN_DIST2`, exactly
+/// the kind of drift that manufactures a twin disagreement if either is
+/// ever tuned without noticing the other). [`MIN_DIST2`] softens the
+/// PHYSICAL force magnitude at a 1.0-world-unit floor — large enough to
+/// materially cap repulsion between near-coincident particles.
+/// [`CELL_ACCEPTANCE_MIN_DIST`] only prevents an exact `0/0` when a query
+/// point sits precisely at a cell's own center of mass — it stays three
+/// orders of magnitude smaller than `MIN_DIST2.sqrt()` (`1.0`) on
+/// purpose: raising it to `MIN_DIST2`'s scale would make the θ test
+/// accept coarser (less accurate) cell approximations for any query point
+/// within 1 world unit of a cell's center of mass, silently degrading
+/// Barnes-Hut accuracy in exactly the regime (near-coincident query vs.
+/// cell) where the approximation is already weakest. Unifying the two
+/// would be a physics-output change (doctrine: never change rendered
+/// output silently) — so they stay distinct, now both named and
+/// cross-documented instead of one being an anonymous magic number.
+const CELL_ACCEPTANCE_MIN_DIST: f32 = 0.001;
+
 /// O(n²) reference implementation. Accumulates repulsion force into
 /// `out[i]` for every particle `i` (does not clear `out` first — caller
 /// combines with other forces in the same buffer).
@@ -85,11 +107,36 @@ impl QuadBounds {
         };
         QuadBounds { min_x: self.min_x + ox, min_y: self.min_y + oy, size: half }
     }
+
+    /// Whether this cell's AABB comes within `r` of `(cx, cy)` — the
+    /// standard clamp-to-box AABB/circle intersection test. Used by
+    /// [`QuadNode::collect_within`] (Wave G1 fix) to prune subtrees a
+    /// collision range-query can't possibly reach, the same pruning
+    /// principle θ already uses for repulsion.
+    fn intersects_circle(&self, cx: f32, cy: f32, r: f32) -> bool {
+        let max_x = self.min_x + self.size;
+        let max_y = self.min_y + self.size;
+        let nearest_x = cx.clamp(self.min_x, max_x);
+        let nearest_y = cy.clamp(self.min_y, max_y);
+        let dx = cx - nearest_x;
+        let dy = cy - nearest_y;
+        dx * dx + dy * dy <= r * r
+    }
 }
 
 enum NodeContent {
     Empty,
-    Leaf { x: f32, y: f32, mass: f32 },
+    /// `indices` (Wave G1 fix) — every particle index ever merged into
+    /// this leaf, in insertion order. Additive to the pre-existing
+    /// `x`/`y`/`mass` (still the ONLY fields [`QuadNode::accumulate`]'s
+    /// repulsion pass reads, byte-identical to before this field
+    /// existed) — needed because a merge collapses several particles
+    /// onto one approximate point-mass for the repulsion force, but
+    /// [`QuadNode::collect_within`]'s collision query still needs each
+    /// individual particle's OWN identity (and, via that index, its real
+    /// position from the caller's own particle slice) to resolve
+    /// collisions between them.
+    Leaf { x: f32, y: f32, mass: f32, indices: Vec<u32> },
     Internal { children: Box<[QuadNode; 4]> },
 }
 
@@ -106,7 +153,7 @@ impl QuadNode {
         Self { bounds, mass: 0.0, com_x: 0.0, com_y: 0.0, content: NodeContent::Empty }
     }
 
-    fn insert(&mut self, x: f32, y: f32, mass: f32) {
+    fn insert(&mut self, x: f32, y: f32, mass: f32, index: u32) {
         let new_mass = self.mass + mass;
         self.com_x = (self.com_x * self.mass + x * mass) / new_mass;
         self.com_y = (self.com_y * self.mass + y * mass) / new_mass;
@@ -114,9 +161,9 @@ impl QuadNode {
 
         match &mut self.content {
             NodeContent::Empty => {
-                self.content = NodeContent::Leaf { x, y, mass };
+                self.content = NodeContent::Leaf { x, y, mass, indices: vec![index] };
             }
-            NodeContent::Leaf { x: lx, y: ly, mass: lmass } => {
+            NodeContent::Leaf { x: lx, y: ly, mass: lmass, indices } => {
                 // Coincident (or indistinguishably close) points can never
                 // be separated by subdividing — cluster collapse pins whole
                 // member stacks onto one centroid, so this is a normal
@@ -126,21 +173,36 @@ impl QuadNode {
                 let (dx, dy) = (x - *lx, y - *ly);
                 if dx * dx + dy * dy <= MIN_SPLIT_DIST2 || self.bounds.size <= MIN_CELL_SIZE {
                     *lmass += mass;
+                    indices.push(index);
                     return;
                 }
-                let (lx, ly, lmass) = (*lx, *ly, *lmass);
+                let (lx, ly) = (*lx, *ly);
+                // Every previously-merged index is re-homed into whichever
+                // child `(lx, ly)` — the merged leaf's own approximate
+                // point — falls into. Reinserted one at a time at mass
+                // `1.0` each (every caller of `Quadtree::build` inserts at
+                // a uniform mass of `1.0` — see that method) rather than as
+                // one aggregate `insert(lx, ly, lmass)` call, so each
+                // individual particle keeps its own index; the resulting
+                // `mass`/center-of-mass is numerically IDENTICAL either way
+                // (inserting N copies of the same point sequentially
+                // accumulates to the same total as one N-mass insert).
+                let prior_indices = std::mem::take(indices);
                 let mut children = [
                     QuadNode::new_empty(self.bounds.child_bounds(0)),
                     QuadNode::new_empty(self.bounds.child_bounds(1)),
                     QuadNode::new_empty(self.bounds.child_bounds(2)),
                     QuadNode::new_empty(self.bounds.child_bounds(3)),
                 ];
-                children[self.bounds.quadrant(lx, ly)].insert(lx, ly, lmass);
-                children[self.bounds.quadrant(x, y)].insert(x, y, mass);
+                let prior_quadrant = self.bounds.quadrant(lx, ly);
+                for prior_index in prior_indices {
+                    children[prior_quadrant].insert(lx, ly, 1.0, prior_index);
+                }
+                children[self.bounds.quadrant(x, y)].insert(x, y, mass, index);
                 self.content = NodeContent::Internal { children: Box::new(children) };
             }
             NodeContent::Internal { children } => {
-                children[self.bounds.quadrant(x, y)].insert(x, y, mass);
+                children[self.bounds.quadrant(x, y)].insert(x, y, mass, index);
             }
         }
     }
@@ -148,18 +210,39 @@ impl QuadNode {
     fn accumulate(&self, x: f32, y: f32, theta: f32, strength: f32, out: &mut (f32, f32)) {
         match &self.content {
             NodeContent::Empty => {}
-            NodeContent::Leaf { x: lx, y: ly, mass } => {
+            NodeContent::Leaf { x: lx, y: ly, mass, .. } => {
                 apply_point(x, y, *lx, *ly, *mass, strength, out);
             }
             NodeContent::Internal { children } => {
                 let dx = x - self.com_x;
                 let dy = y - self.com_y;
-                let d = (dx * dx + dy * dy).sqrt().max(0.001);
+                let d = (dx * dx + dy * dy).sqrt().max(CELL_ACCEPTANCE_MIN_DIST);
                 if self.bounds.size / d < theta {
                     apply_point(x, y, self.com_x, self.com_y, self.mass, strength, out);
                 } else {
                     for child in children.iter() {
                         child.accumulate(x, y, theta, strength, out);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Spatial range query (Wave G1 fix) — appends every particle index
+    /// whose leaf comes within `r` of `(qx, qy)` to `out`. Conservative by
+    /// construction: a subtree is only skipped when its WHOLE bounding
+    /// cell is farther than `r` away everywhere, so this can over-report
+    /// (return an index whose exact position turns out to be farther than
+    /// `r`) but never under-report — callers (collision resolution) still
+    /// run an exact distance check on every returned candidate.
+    fn collect_within(&self, qx: f32, qy: f32, r: f32, out: &mut Vec<u32>) {
+        match &self.content {
+            NodeContent::Empty => {}
+            NodeContent::Leaf { indices, .. } => out.extend_from_slice(indices),
+            NodeContent::Internal { children } => {
+                for child in children.iter() {
+                    if child.bounds.intersects_circle(qx, qy, r) {
+                        child.collect_within(qx, qy, r, out);
                     }
                 }
             }
@@ -198,8 +281,8 @@ impl Quadtree {
         let size = (max_x - min_x).max(max_y - min_y).max(1.0) * 1.01;
         let bounds = QuadBounds { min_x, min_y, size };
         let mut root = QuadNode::new_empty(bounds);
-        for p in particles {
-            root.insert(p.x, p.y, 1.0);
+        for (i, p) in particles.iter().enumerate() {
+            root.insert(p.x, p.y, 1.0, i as u32);
         }
         Self { root: Some(root) }
     }
@@ -214,6 +297,81 @@ impl Quadtree {
             out[i].0 += acc.0;
             out[i].1 += acc.1;
         }
+    }
+
+    /// Tree-accelerated collision resolution (Wave G1 fix) — the
+    /// spatial-partitioned sibling of
+    /// [`super::force_directed::apply_collision`]'s O(n²) brute-force
+    /// loop, used above `brute_force_threshold` so collision never has to
+    /// be disabled for a large particle count. Reuses THIS tree — already
+    /// built for repulsion this same tick — rather than constructing a
+    /// second spatial index. Proven (not just claimed) to produce the
+    /// SAME resolution as the brute-force path by
+    /// `force_directed::tests::tree_collision_resolution_matches_brute_force_on_a_fixture_with_deliberate_overlaps`.
+    pub fn apply_collision(&self, particles: &[Particle], radii: &[f32], strength: f32, out: &mut [(f32, f32)]) {
+        let Some(root) = &self.root else { return };
+        let n = particles.len();
+        if n < 2 {
+            return;
+        }
+        // Any candidate whose collision disc could possibly reach particle
+        // `i` lies within `radii[i] + max_radius` of it (the largest ANY
+        // other particle's own radius could be) — a fixed, safe
+        // over-approximation of the true per-pair reach, cheap to compute
+        // once per tick. Folding from `1.0` (not `0.0`) keeps this in sync
+        // with the `radii.get(i).unwrap_or(1.0)` fallback used everywhere
+        // else in this function, in case `radii` is shorter than
+        // `particles` for some caller.
+        let max_radius = radii.iter().copied().fold(1.0f32, f32::max);
+        let mut candidates: Vec<u32> = Vec::new();
+        for i in 0..n {
+            let query_radius = radii.get(i).copied().unwrap_or(1.0) + max_radius;
+            candidates.clear();
+            root.collect_within(particles[i].x, particles[i].y, query_radius, &mut candidates);
+            for &j_u32 in &candidates {
+                let j = j_u32 as usize;
+                // Each unordered pair is resolved exactly once, from the
+                // lower-indexed particle's own query — matching
+                // `apply_collision`'s `for j in (i+1)..n` pairing exactly
+                // (every genuine collision pair is symmetric: if `j` is
+                // reachable from `i`'s query radius, `i` is equally
+                // reachable from `j`'s, since both radii are bounded by
+                // the same `max_radius`).
+                if j <= i {
+                    continue;
+                }
+                collision_pair_force(i, j, particles, radii, strength, out);
+            }
+        }
+    }
+}
+
+/// Exact pairwise collision resolution for one particle pair — shared by
+/// the brute-force O(n²) path
+/// ([`super::force_directed::apply_collision`]) and the tree-accelerated
+/// path ([`Quadtree::apply_collision`]) so the two can never numerically
+/// drift apart (Wave G1 fix).
+pub(crate) fn collision_pair_force(i: usize, j: usize, particles: &[Particle], radii: &[f32], strength: f32, out: &mut [(f32, f32)]) {
+    let dx = particles[j].x - particles[i].x;
+    let dy = particles[j].y - particles[i].y;
+    let dist2 = dx * dx + dy * dy;
+    let min_dist = radii.get(i).copied().unwrap_or(1.0) + radii.get(j).copied().unwrap_or(1.0);
+    if dist2 <= 1e-6 {
+        // Coincident positions — deterministic nudge so they don't stay
+        // locked together forever.
+        out[i].0 -= 0.5;
+        out[j].0 += 0.5;
+        return;
+    }
+    if dist2 < min_dist * min_dist {
+        let dist = dist2.sqrt();
+        let overlap = (min_dist - dist) * strength;
+        let nx = dx / dist;
+        let ny = dy / dist;
+        out[i].0 -= nx * overlap * 0.5;
+        out[i].1 -= ny * overlap * 0.5;
+        out[j].0 += nx * overlap * 0.5;
+        out[j].1 += ny * overlap * 0.5;
     }
 }
 
