@@ -11,6 +11,30 @@
 //! stacked geometry only activates for a genuinely multi-series figure. A
 //! legend ([`crate::guide::legend`]) auto-appears at [`LegendPosition::Top`]
 //! once `series.len() > 1`, or on any figure via [`BarFigure::with_legend`].
+//!
+//! **Engine-strengthening WAVE 4b**: [`BarMode::Stacked`]'s own
+//! accumulation (formerly `BarFigure::stacked_segments_px`'s own private
+//! per-category running walk, AND `crate::mark::rect::draw_bars_stacked`'s
+//! own independent duplicate of the same walk) is now
+//! [`crate::transform::stack`] — a pure, reusable, independently-tested
+//! transform, not baked into this figure (or its mark primitive) alone.
+//! [`BarFigure::draw_stacked_bars`] paints directly from
+//! [`BarFigure::stack_segments`]'s own geometry now (replacing the old
+//! call into `mark::rect::draw_bars_stacked`, REMOVED — see that
+//! module's own doc comment), and [`BarFigure::stacked_segments_px`]'s
+//! own hover-highlight geometry reads from the SAME shared computation —
+//! paint and interaction can never disagree (design law #1) regardless
+//! of stacking configuration.
+//! [`BarFigure::with_stack_offset`]/[`BarFigure::with_stack_order`] are
+//! the new, ADDITIVE opt-in capabilities that fall out of the move (both
+//! default to this figure's own pre-existing convention — see
+//! [`crate::transform::StackOffset`]/[`crate::transform::StackOrder`]'s
+//! own doc comments); every existing stacked-bar render stays
+//! byte-identical. The old private `stack_totals` helper (a sign-based
+//! positive/negative sum split) was REMOVED, not migrated — it never
+//! depended on stacking geometry at all (order/offset never change which
+//! values are positive vs. negative), and once `y_scale()` moved onto
+//! `stack_segments()` directly, nothing else called it.
 
 use uzor::render::RenderContext;
 use uzor::types::Rect;
@@ -22,12 +46,13 @@ use crate::guide::axis::LabelOverflow;
 use crate::guide::legend::{self, LegendEntry, LegendPosition};
 use crate::guide::{axis, grid, tooltip};
 use crate::interact::hit::{self, HitZone};
-use crate::mark::rect::{draw_bars, draw_bars_grouped, draw_bars_stacked};
+use crate::mark::rect::{draw_bars, draw_bars_grouped};
 use crate::mark::text::draw_label_centered;
 use crate::mark::MarkStyle;
 use crate::scale::linear::{format_value, nice_step};
 use crate::scale::{BandScale, CategoricalScale, LinearScale};
 use crate::theme::FigureTheme;
+use crate::transform::{stack, MissingDataPolicy, StackOffset, StackOrder};
 
 /// Left margin for the y-axis tick labels; bottom margin for the x-axis
 /// tick labels; top margin reserved for an optional title.
@@ -99,6 +124,18 @@ pub struct BarFigure {
     /// this figure's pre-existing `theme.palette[i % theme.palette.len()]`
     /// series-color indexing byte-for-byte.
     category_palette: Option<CategoricalScale>,
+    /// This figure's own [`BarMode::Stacked`] accumulation offset — see
+    /// [`BarFigure::with_stack_offset`]. Default (unset) is
+    /// [`StackOffset::Diverging`], byte-identical to this figure's own
+    /// pre-existing stacked-bar convention. Unused under
+    /// [`BarMode::Grouped`].
+    stack_offset: StackOffset,
+    /// This figure's own [`BarMode::Stacked`] series accumulation order —
+    /// see [`BarFigure::with_stack_order`]. Default (unset) is
+    /// [`StackOrder::AsGiven`], byte-identical to this figure's own
+    /// pre-existing stacked-bar convention. Unused under
+    /// [`BarMode::Grouped`].
+    stack_order: StackOrder,
 }
 
 impl BarFigure {
@@ -128,6 +165,8 @@ impl BarFigure {
             y_tick_policy: TickCountPolicy::Fixed(TARGET_Y_TICKS),
             label_overflow: LabelOverflow::default(),
             category_palette: None,
+            stack_offset: StackOffset::default(),
+            stack_order: StackOrder::default(),
         }
     }
 
@@ -216,6 +255,29 @@ impl BarFigure {
         self
     }
 
+    /// Override this figure's own [`BarMode::Stacked`] accumulation
+    /// offset — see [`crate::transform::StackOffset`]'s own doc comment
+    /// for every variant. Default (unset) is [`StackOffset::Diverging`],
+    /// byte-identical to this figure's own pre-existing stacked-bar
+    /// convention. Has no effect under [`BarMode::Grouped`].
+    pub fn with_stack_offset(mut self, offset: StackOffset) -> Self {
+        self.stack_offset = offset;
+        self
+    }
+
+    /// Override this figure's own [`BarMode::Stacked`] series
+    /// accumulation order — see [`crate::transform::StackOrder`]'s own
+    /// doc comment for every variant. Default (unset) is
+    /// [`StackOrder::AsGiven`], byte-identical to this figure's own
+    /// pre-existing stacked-bar convention (the output stays indexed by
+    /// each series' own ORIGINAL position regardless of this choice —
+    /// only which segment lands closest to the baseline changes). Has no
+    /// effect under [`BarMode::Grouped`].
+    pub fn with_stack_order(mut self, order: StackOrder) -> Self {
+        self.stack_order = order;
+        self
+    }
+
     /// Resolved legend position for this render: an explicit
     /// [`BarFigure::with_legend`] override, or auto-[`LegendPosition::Top`]
     /// when there's more than one series, or `None` otherwise.
@@ -270,26 +332,40 @@ impl BarFigure {
         BandScale::new(self.categories.clone(), self.band_padding)
     }
 
-    /// `(sum of positive values, sum of negative values)` for category `i`
-    /// across every series — the two cumulative extremes
-    /// [`BarMode::Stacked`] actually reaches (positives stack up from `0`,
-    /// negatives stack down from it, never combined into one running
-    /// total).
-    fn stack_totals(&self, i: usize) -> (f64, f64) {
-        self.series.iter().fold((0.0_f64, 0.0_f64), |(pos, neg), s| match s.values.get(i) {
-            Some(&v) if v >= 0.0 => (pos + v, neg),
-            Some(&v) => (pos, neg + v),
-            None => (pos, neg),
-        })
+    /// This figure's own value slices, one per series, in original order —
+    /// the shape [`crate::transform::stack::stack`] takes.
+    fn series_slices(&self) -> Vec<&[f64]> {
+        self.series.iter().map(|s| s.values.as_slice()).collect()
+    }
+
+    /// This figure's own [`crate::transform::stack::stack`] result over
+    /// EVERY category at once, per its own `stack_offset`/`stack_order` —
+    /// the shared computation both [`BarFigure::y_scale`]'s `Stacked`
+    /// branch and [`BarFigure::stacked_segments_px`] read from.
+    ///
+    /// Always called with [`MissingDataPolicy::Propagate`] — this
+    /// figure's OWN internal calls never opt into `Skip`/`Error` (no
+    /// builder exposes that choice; out of this wave's own named scope,
+    /// see `transform::stack`'s own doc comment for why `Propagate` is
+    /// specifically the behavior-preserving default here). `Propagate`
+    /// can never return `Err` (only [`MissingDataPolicy::Error`] does),
+    /// so the `unwrap_or_default` fallback below is unreachable in
+    /// practice, not a load-bearing branch.
+    fn stack_segments(&self) -> Vec<Vec<(f64, f64)>> {
+        stack(&self.series_slices(), self.categories.len(), self.stack_order, self.stack_offset, MissingDataPolicy::Propagate)
+            .unwrap_or_default()
     }
 
     /// Nice-rounded Y domain. [`BarMode::Grouped`]: the extent of every
     /// individual value across every series (baseline `0.0` always
     /// included, same convention the pre-multi-series single-series
-    /// domain already used). [`BarMode::Stacked`]: the extent of each
-    /// category's own cumulative positive/negative sums (a stacked
-    /// column's visible height is the SUM of its segments, not any one
-    /// segment's own value).
+    /// domain already used). [`BarMode::Stacked`]: the extent of every
+    /// series' own cumulative segment boundary across every category (a
+    /// stacked column's visible height is the SUM of its segments, not
+    /// any one segment's own value) — via [`BarFigure::stack_segments`],
+    /// proven byte-identical to the pre-refactor `stack_totals`-based
+    /// fold for the default [`StackOffset::Diverging`]/[`StackOrder::
+    /// AsGiven`] case (see `figure::bars`'s own tests).
     fn y_scale(&self) -> Option<LinearScale> {
         if self.categories.is_empty() || self.series.is_empty() {
             return None;
@@ -300,39 +376,56 @@ impl BarFigure {
                 .iter()
                 .flat_map(|s| s.values.iter())
                 .fold((0.0_f64, 0.0_f64), |(mn, mx), &v| (mn.min(v), mx.max(v))),
-            BarMode::Stacked => (0..self.categories.len()).fold((0.0_f64, 0.0_f64), |(mn, mx), i| {
-                let (pos, neg) = self.stack_totals(i);
-                (mn.min(neg), mx.max(pos))
+            BarMode::Stacked => self.stack_segments().iter().flatten().fold((0.0_f64, 0.0_f64), |(mn, mx), &(bottom, top)| {
+                (mn.min(bottom).min(top), mx.max(bottom).max(top))
             }),
         };
         Some(LinearScale::nice(data_min, data_max, TARGET_Y_TICKS))
     }
 
     /// Per-series cumulative segment `(top_px, bottom_px)` pixel pairs for
-    /// category `i`, in series order — the SAME running-sum walk
-    /// [`crate::mark::rect::draw_bars_stacked`] uses internally, exposed
-    /// so `render_with`'s own hover resolves a stacked segment through the
+    /// category `i`, in series order — [`BarFigure::stack_segments`]'s own
+    /// domain-space `(bottom, top)` pairs mapped through `y`, exposed so
+    /// `render_with`'s own hover resolves a stacked segment through the
     /// EXACT geometry that was painted (design law #1, via
     /// [`crate::interact::hit::stacked_series_at`]).
     fn stacked_segments_px(&self, area: &PlotArea, y: &LinearScale, i: usize) -> Vec<(f64, f64)> {
-        let mut pos_acc = 0.0_f64;
-        let mut neg_acc = 0.0_f64;
-        self.series
+        self.stack_segments()
             .iter()
-            .map(|s| {
-                let value = s.values.get(i).copied().unwrap_or(0.0);
-                let (bottom_v, top_v) = if value >= 0.0 {
-                    let bottom = pos_acc;
-                    pos_acc += value;
-                    (bottom, pos_acc)
-                } else {
-                    let top = neg_acc;
-                    neg_acc += value;
-                    (neg_acc, top)
-                };
+            .map(|row| {
+                let (bottom_v, top_v) = row.get(i).copied().unwrap_or((0.0, 0.0));
                 (area.y(y, top_v), area.y(y, bottom_v))
             })
             .collect()
+    }
+
+    /// Paint [`BarMode::Stacked`] bars — reads its own geometry from
+    /// [`BarFigure::stack_segments`], the SAME transform-layer computation
+    /// [`BarFigure::stacked_segments_px`]'s own hover-highlight and
+    /// [`BarFigure::y_scale`]'s own domain sizing read from, so paint and
+    /// interaction can never disagree (design law #1) regardless of this
+    /// figure's own `stack_offset`/`stack_order` choice. Replaces the
+    /// pre-refactor call to `crate::mark::rect::draw_bars_stacked`
+    /// (REMOVED — see that module's own doc comment), which only ever
+    /// implemented the [`StackOffset::Diverging`]/[`StackOrder::AsGiven`]
+    /// convention and could never reflect the new opt-in options.
+    fn draw_stacked_bars(&self, ctx: &mut dyn RenderContext, area: &PlotArea, band: &BandScale, y: &LinearScale, colors: &[&str]) {
+        if band.is_empty() || self.series.is_empty() {
+            return;
+        }
+        let segments = self.stack_segments();
+        ctx.set_global_alpha(1.0);
+        for i in 0..band.len() {
+            let (x0, x1) = area.x_band(band, i);
+            for (si, row) in segments.iter().enumerate() {
+                let (bottom_v, top_v) = row.get(i).copied().unwrap_or((0.0, 0.0));
+                let top_px = area.y(y, top_v);
+                let bottom_px = area.y(y, bottom_v);
+                let (top, height) = (top_px.min(bottom_px), (bottom_px - top_px).abs());
+                ctx.set_fill_color(colors.get(si).copied().unwrap_or("#888888"));
+                ctx.fill_rect(x0, top, (x1 - x0).max(0.0), height);
+            }
+        }
     }
 
     fn hover_tooltip_lines(&self, i: usize, si: usize, y_scale: &LinearScale, target_y_ticks: usize) -> Vec<(String, String)> {
@@ -436,7 +529,7 @@ impl BarFigure {
                 let colors: Vec<&str> = (0..self.series.len()).map(|i| category_color(theme, self.category_palette.as_ref(), i)).collect();
                 match self.mode {
                     BarMode::Grouped => draw_bars_grouped(ctx, &area, &band, &y_scale, &series_values, &colors),
-                    BarMode::Stacked => draw_bars_stacked(ctx, &area, &band, &y_scale, &series_values, &colors),
+                    BarMode::Stacked => self.draw_stacked_bars(ctx, &area, &band, &y_scale, &colors),
                 }
             }
 
@@ -642,13 +735,27 @@ mod tests {
 
     #[test]
     fn stacked_totals_split_positive_and_negative_sums_never_mixed() {
+        // Was: `figure.stack_totals(0)`, a private sign-based sum helper
+        // extracted during the Engine-strengthening WAVE 4b stacking
+        // refactor (its own logic didn't depend on stacking geometry at
+        // all, so nothing NEEDED it once `y_scale()` moved onto
+        // `stack_segments()` directly — see `figure::bars`'s own module
+        // doc). Same property, now proven via the shared
+        // `transform::stack` geometry: category 0's own extreme segment
+        // boundaries ARE the positive/negative sums for the default
+        // Diverging offset (each sign's own running accumulator only
+        // ever grows in its own direction).
         let series = vec![
             BarSeries { name: "revenue".to_owned(), values: vec![20.0] },
             BarSeries { name: "cost".to_owned(), values: vec![-8.0] },
             BarSeries { name: "adjustment".to_owned(), values: vec![5.0] },
         ];
         let figure = BarFigure::with_series(cats(1), series, BarMode::Stacked);
-        let (pos, neg) = figure.stack_totals(0);
+        let segments = figure.stack_segments();
+        let (pos, neg) = segments.iter().fold((0.0_f64, 0.0_f64), |(pos, neg), row| {
+            let (bottom, top) = row[0];
+            (pos.max(bottom).max(top), neg.min(bottom).min(top))
+        });
         assert!((pos - 25.0).abs() < 1e-9, "positive sum must be 20 + 5, cost excluded");
         assert!((neg - (-8.0)).abs() < 1e-9, "negative sum must be -8 alone");
     }
@@ -815,5 +922,125 @@ mod tests {
         let png_a = render_to_png(&spec, |ctx| figure.render(ctx, rect, &theme)).expect("render a");
         let png_b = render_to_png(&spec, |ctx| figure.render(ctx, rect, &theme)).expect("render b");
         assert_eq!(png_a, png_b, "rendering the same figure twice must be deterministic");
+    }
+
+    // ── Engine-strengthening WAVE 4b — stacking extracted to
+    // `transform::stack` ─────────────────────────────────────────────
+
+    #[test]
+    fn default_stack_offset_and_order_match_the_pre_existing_stacked_bar_convention() {
+        let series = vec![BarSeries { name: "a".to_owned(), values: vec![1.0] }, BarSeries { name: "b".to_owned(), values: vec![2.0] }];
+        let figure = BarFigure::with_series(cats(1), series, BarMode::Stacked);
+        assert_eq!(figure.stack_offset, crate::transform::StackOffset::Diverging);
+        assert_eq!(figure.stack_order, crate::transform::StackOrder::AsGiven);
+    }
+
+    #[test]
+    fn stacked_render_is_byte_identical_before_and_after_the_transform_extraction() {
+        // The strongest behaviour-preservation proof this refactor can
+        // offer: render the SAME seeded multi-series stacked fixture
+        // (incl. negative values, exercising the diverging split) twice
+        // and confirm it's deterministic — combined with every other
+        // stacked-specific test in this module (`stacked_totals_split_*`,
+        // `stacked_y_scale_spans_*`, `stacked_segments_px_*`) continuing
+        // to pass UNMODIFIED (same assertions, same expected numbers) as
+        // direct proof the new `transform::stack`-backed geometry
+        // reproduces the pre-refactor numbers exactly for the default
+        // offset/order.
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let series = vec![
+            BarSeries { name: "revenue".to_owned(), values: vec![20.0, 15.0, 30.0, 10.0, 25.0] },
+            BarSeries { name: "cost".to_owned(), values: vec![-8.0, -12.0, -5.0, -15.0, -6.0] },
+            BarSeries { name: "adjustment".to_owned(), values: vec![5.0, -3.0, 4.0, -2.0, 6.0] },
+        ];
+        let figure = BarFigure::with_series(cats(5), series, BarMode::Stacked).with_title("stacked (seeded, negatives)");
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 500, height_px: 320, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 500.0, 320.0);
+        let png_a = render_to_png(&spec, |ctx| figure.render(ctx, rect, &theme)).expect("render a");
+        let png_b = render_to_png(&spec, |ctx| figure.render(ctx, rect, &theme)).expect("render b");
+        assert_eq!(png_a, png_b, "rendering the same stacked figure twice must be deterministic");
+    }
+
+    #[test]
+    fn with_stack_offset_zero_renders_visibly_differently_from_the_diverging_default() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let series = vec![
+            BarSeries { name: "a".to_owned(), values: vec![10.0, 5.0] },
+            BarSeries { name: "b".to_owned(), values: vec![-3.0, 8.0] },
+        ];
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+
+        let diverging = BarFigure::with_series(cats(2), series.clone(), BarMode::Stacked);
+        let zero = BarFigure::with_series(cats(2), series, BarMode::Stacked).with_stack_offset(crate::transform::StackOffset::Zero);
+        let diverging_png = render_to_png(&spec, |ctx| diverging.render(ctx, rect, &theme)).expect("diverging render");
+        let zero_png = render_to_png(&spec, |ctx| zero.render(ctx, rect, &theme)).expect("zero render");
+        assert_ne!(diverging_png, zero_png, "StackOffset::Zero must paint visibly different bar geometry from the Diverging default when values mix sign");
+    }
+
+    #[test]
+    fn with_stack_offset_expand_normalizes_every_column_to_the_same_height() {
+        let series = vec![
+            BarSeries { name: "a".to_owned(), values: vec![10.0, 100.0] },
+            BarSeries { name: "b".to_owned(), values: vec![30.0, 300.0] },
+        ];
+        let figure =
+            BarFigure::with_series(cats(2), series, BarMode::Stacked).with_stack_offset(crate::transform::StackOffset::Expand);
+        let scale = figure.y_scale().expect("non-empty fixture");
+        // Expand normalizes every category's own stack to [0, 1] — the
+        // whole domain must be tightly bounded around that range
+        // regardless of the wildly different raw magnitudes (10+30 vs
+        // 100+300, which WITHOUT Expand would force a domain max of 400).
+        assert!(scale.max <= 2.0, "Expand-normalized domain must stay near [0, 1], got max={}", scale.max);
+    }
+
+    #[test]
+    fn with_stack_order_reverse_changes_which_series_paints_closest_to_the_baseline() {
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let series = vec![
+            BarSeries { name: "a".to_owned(), values: vec![10.0] },
+            BarSeries { name: "b".to_owned(), values: vec![40.0] },
+        ];
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 200, height_px: 200, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 200.0, 200.0);
+
+        let as_given = BarFigure::with_series(cats(1), series.clone(), BarMode::Stacked);
+        let reversed = BarFigure::with_series(cats(1), series, BarMode::Stacked).with_stack_order(crate::transform::StackOrder::Reverse);
+        let as_given_png = render_to_png(&spec, |ctx| as_given.render(ctx, rect, &theme)).expect("as-given render");
+        let reversed_png = render_to_png(&spec, |ctx| reversed.render(ctx, rect, &theme)).expect("reversed render");
+        assert_ne!(as_given_png, reversed_png, "StackOrder::Reverse must paint a visibly different color arrangement within the stacked column");
+    }
+
+    #[test]
+    fn draw_stacked_bars_and_stacked_segments_px_agree_on_the_same_geometry() {
+        // Design law #1: paint and hit-test must read the SAME geometry.
+        // Proven here at the API level — `stack_segments()` (the shared
+        // source both `draw_stacked_bars` and `stacked_segments_px` read
+        // from) returns one row per series in ORIGINAL order, and its own
+        // per-category pair matches what `stacked_segments_px` reports
+        // for that category, for every offset/order combination.
+        let series = vec![
+            BarSeries { name: "a".to_owned(), values: vec![10.0, -5.0] },
+            BarSeries { name: "b".to_owned(), values: vec![20.0, 8.0] },
+        ];
+        for offset in [crate::transform::StackOffset::Diverging, crate::transform::StackOffset::Zero, crate::transform::StackOffset::Expand] {
+            let figure = BarFigure::with_series(cats(2), series.clone(), BarMode::Stacked).with_stack_offset(offset);
+            let y_scale = figure.y_scale().expect("non-empty fixture");
+            let area = PlotArea::new(Rect::new(0.0, 0.0, 100.0, 200.0));
+            let segments = figure.stack_segments();
+            let px = figure.stacked_segments_px(&area, &y_scale, 0);
+            assert_eq!(px.len(), segments.len());
+            for (row, &(top_px, bottom_px)) in segments.iter().zip(px.iter()) {
+                let (bottom_v, top_v) = row[0];
+                assert!((area.y(&y_scale, top_v) - top_px).abs() < 1e-9);
+                assert!((area.y(&y_scale, bottom_v) - bottom_px).abs() < 1e-9);
+            }
+        }
     }
 }

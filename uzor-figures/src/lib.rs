@@ -77,7 +77,17 @@ pub use scale::{
     Scale, SymlogScale, ThresholdScale, Tick, TickPriority, TimeScale,
 };
 pub use theme::FigureTheme;
-pub use transform::lttb;
+// `bin`/`Bin`/`BinPolicy`/`resolve_bin_count` are NOT re-listed here even
+// though they now live in `transform::bin` — they're already reachable
+// at this crate's root via the `figure::{...}` block above (histogram's
+// own `pub use crate::transform::bin::{...}` re-export chain, kept for
+// full backward path compatibility — see `transform::bin`'s own module
+// doc). Re-listing the SAME items under a second `pub use` here would be
+// a duplicate-name conflict, not a genuine second export.
+pub use transform::{
+    bin_by_count, cumsum, ema, lttb, normalize, percent_of_total, quantile, rolling_mean, rolling_median, rollup, rollup_with, running_max,
+    running_min, sort_index_by_value, stack, z_score, EdgePolicy, MissingDataPolicy, Reducer, StackOffset, StackOrder, TransformError,
+};
 
 #[cfg(test)]
 mod proof_tests {
@@ -2152,5 +2162,64 @@ mod proof_tests {
         uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_wave4a_categorical_palette_backends.png"))
             .expect("categorical palette multi-backend composite should write");
         assert!(diff.all_within_budget(), "categorical palette pie figure: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    // ── Engine-strengthening WAVE 4b (the data transform layer) —
+    // multi-backend proofs for the two figures wired to the new
+    // `transform` layer ──────────────────────────────────────────────
+
+    /// Stacked-bar proof — the SAME seeded 3-series/5-category negative-
+    /// value fixture as `stacked_bar_figure_renders_to_a_valid_png`,
+    /// driven through every backend leg. `BarMode::Stacked`'s own
+    /// geometry now flows through [`crate::transform::stack::stack`]
+    /// (see `figure::bars`'s own module doc for the full refactor) —
+    /// this is the "wire the refactor through a real consumer, proven
+    /// across every render backend" half of that item's own gate, the
+    /// SAME discipline `histogram_multi_backend_divergence_proof` already
+    /// established for the binning refactor below.
+    #[test]
+    fn stacked_bar_multi_backend_divergence_proof() {
+        let figure = seeded_stacked_bar_figure();
+        let theme = FigureTheme::dark();
+        let render = MultiLegRender::capture(MULTISERIES_WIDTH, MULTISERIES_HEIGHT, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, MULTISERIES_WIDTH as f64, MULTISERIES_HEIGHT as f64), &theme);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[stacked-bar] {line}");
+        }
+        print_urx_gpu_degrades("stacked-bar", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_wave4b_stacked_bar_backends.png"))
+            .expect("stacked-bar multi-backend composite should write");
+        assert!(diff.all_within_budget(), "stacked bar (transform::stack-backed): structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// Stacked-bar OPTION proof — the same fixture, two panels: LEFT the
+    /// pre-existing [`crate::transform::StackOffset::Diverging`] default
+    /// (byte-identical to every stacked-bar render before this wave),
+    /// RIGHT the NEW opt-in [`crate::transform::StackOffset::Zero`] —
+    /// visibly different bar geometry once negative values are involved,
+    /// proving the additive option is real and reachable, not just a
+    /// library-only capability nothing ever renders.
+    #[test]
+    fn stacked_bar_offset_option_multi_backend_divergence_proof() {
+        let diverging = seeded_stacked_bar_figure().with_title("StackOffset::Diverging (default)");
+        let zero = seeded_stacked_bar_figure().with_title("StackOffset::Zero (opt-in)").with_stack_offset(crate::transform::StackOffset::Zero);
+        let theme = FigureTheme::dark();
+        let panel_w = MULTISERIES_WIDTH as f64;
+        let panel_h = MULTISERIES_HEIGHT as f64;
+
+        let render = MultiLegRender::capture((panel_w * 2.0) as u32, panel_h as u32, |ctx| {
+            diverging.render(ctx, Rect::new(0.0, 0.0, panel_w, panel_h), &theme);
+            zero.render(ctx, Rect::new(panel_w, 0.0, panel_w, panel_h), &theme);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[stacked-bar-offset-option] {line}");
+        }
+        print_urx_gpu_degrades("stacked-bar-offset-option", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_wave4b_stacked_bar_offset_option_backends.png"))
+            .expect("stacked-bar offset-option multi-backend composite should write");
+        assert!(diff.all_within_budget(), "stacked bar offset option: structural backend divergence beyond the generous AA/text tolerance");
     }
 }

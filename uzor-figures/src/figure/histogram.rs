@@ -1,13 +1,20 @@
 //! `HistogramFigure` — equal-width binning over a nice-rounded domain,
-//! rendered as a [`BandFigure`](super::bars)-style bar chart. Binning is a
-//! pure, independently-testable transform ([`bin`]) — no rendering
-//! involved.
+//! rendered as a [`BandFigure`](super::bars)-style bar chart. Binning
+//! itself (Engine-strengthening WAVE 4b) is now [`crate::transform::bin`]
+//! — a pure, independently-testable, REUSABLE transform (not entangled
+//! with painting, and no longer private to this figure) — re-exported
+//! here (`bin`/`resolve_bin_count`/`Bin`/`BinPolicy`) so every existing
+//! `uzor_figures::figure::histogram::{...}`/`uzor_figures::{...}` import
+//! path keeps resolving unchanged. See `transform::bin`'s own module doc
+//! for the one disclosed signature change this move made (`bin`'s own
+//! free function now takes a [`BinPolicy`] directly, not a raw
+//! `bin_count: usize` — that raw-count entry point is [`crate::transform::
+//! bin::bin_by_count`] now).
 
 use uzor::render::RenderContext;
 use uzor::types::Rect;
 
 use crate::coord::PlotArea;
-use crate::figure::boxplot::quartile;
 use crate::figure::{resolve_tick_count, FigureOverlay, MarginPolicy, TickCountPolicy};
 use crate::guide::axis::LabelOverflow;
 use crate::guide::{axis, grid};
@@ -16,6 +23,8 @@ use crate::mark::MarkStyle;
 use crate::scale::linear::format_value;
 use crate::scale::{BandScale, LinearScale, Scale};
 use crate::theme::FigureTheme;
+
+pub use crate::transform::bin::{bin, resolve_bin_count, Bin, BinPolicy};
 
 const MARGIN_LEFT: f64 = 48.0;
 const MARGIN_RIGHT: f64 = 8.0;
@@ -26,124 +35,6 @@ const TARGET_Y_TICKS: usize = 5;
 /// histogram with one label per bar is unreadable regardless of
 /// available width.
 const MAX_X_LABELS: usize = 10;
-
-/// One equal-width bin: its `[start, end)` domain range and sample count.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Bin {
-    pub range: (f64, f64),
-    pub count: usize,
-}
-
-/// Bin `samples` into `bin_count` equal-width bins spanning a nice-rounded
-/// domain around the data extent.
-///
-/// - Empty `samples` -> empty result (nothing to bin).
-/// - All-equal samples (including a single sample) -> the domain widens to
-///   `[v, v + 1)` so bin width stays non-zero; every sample lands in bin 0.
-/// - `bin_count` is floored at 1.
-pub fn bin(samples: &[f64], bin_count: usize) -> Vec<Bin> {
-    let bin_count = bin_count.max(1);
-    if samples.is_empty() {
-        return Vec::new();
-    }
-
-    let (data_min, data_max) = samples
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), &v| (mn.min(v), mx.max(v)));
-    if !data_min.is_finite() || !data_max.is_finite() {
-        return Vec::new();
-    }
-
-    let (domain_min, domain_max) =
-        if (data_max - data_min).abs() < f64::EPSILON { (data_min, data_min + 1.0) } else { (data_min, data_max) };
-
-    let width = (domain_max - domain_min) / bin_count as f64;
-    let mut bins: Vec<Bin> = (0..bin_count)
-        .map(|i| Bin { range: (domain_min + i as f64 * width, domain_min + (i + 1) as f64 * width), count: 0 })
-        .collect();
-
-    for &v in samples {
-        let idx = (((v - domain_min) / width) as usize).min(bin_count - 1);
-        bins[idx].count += 1;
-    }
-    bins
-}
-
-/// How [`HistogramFigure`] resolves its own bin COUNT — see
-/// [`HistogramFigure::new`]'s own doc comment for the gap this closes
-/// (every mainstream histogram implementation — matplotlib `bins='auto'`,
-/// numpy `histogram_bin_edges`, R's `hist()` — picks a sane default bin
-/// count from the data itself; before this enum existed, a caller with no
-/// domain intuition about bin count had no help at all).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BinPolicy {
-    /// Always use the caller-supplied bin count — byte-identical to this
-    /// crate's pre-existing (and, before this item, only) behavior. THE
-    /// DEFAULT: [`HistogramFigure::new`] still takes an explicit
-    /// `bin_count` and resolves to this variant, so every existing caller
-    /// keeps its exact output unchanged.
-    Manual(usize),
-    /// Sturges' rule: `ceil(log2(n)) + 1` — the simplest, most widely
-    /// taught automatic rule (R's own `hist()` default); best suited to a
-    /// small, roughly-normal sample count.
-    Sturges,
-    /// Freedman-Diaconis' rule: `bin_width = 2 * IQR / n^(1/3)`, converted
-    /// to a bin count via `ceil(data_range / bin_width)` — robust to
-    /// outliers (sizes the bin width from the IQR, not the full range),
-    /// the rule matplotlib's own `bins='auto'` prefers for larger,
-    /// real-world (non-normal) datasets. Reuses
-    /// [`crate::figure::boxplot::quartile`], already exported and exactly
-    /// the Q1/Q3 machinery this rule needs.
-    FreedmanDiaconis,
-    /// Scott's rule: `bin_width = 3.49 * stddev / n^(1/3)` — asymptotically
-    /// optimal for roughly-normal data (minimizes integrated mean squared
-    /// error against a Gaussian reference), converted to a bin count the
-    /// same way as [`BinPolicy::FreedmanDiaconis`].
-    Scott,
-}
-
-/// Resolve a bin count from `policy` over `samples` — the pure function
-/// [`HistogramFigure::bin_count`] calls, independently testable against
-/// known datasets. Every automatic rule floors at `1` bin (matching
-/// [`bin`]'s own floor) and falls back to `1` for fewer than 2 samples (no
-/// meaningful spread to derive a rule from).
-pub fn resolve_bin_count(policy: BinPolicy, samples: &[f64]) -> usize {
-    let n = samples.len();
-    match policy {
-        BinPolicy::Manual(count) => count.max(1),
-        _ if n < 2 => 1,
-        BinPolicy::Sturges => (((n as f64).log2().ceil()) as usize + 1).max(1),
-        BinPolicy::FreedmanDiaconis => {
-            let Some((q1, _, q3)) = quartile(samples) else { return 1 };
-            let iqr = q3 - q1;
-            let (data_min, data_max) = samples.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), &v| (mn.min(v), mx.max(v)));
-            let range = data_max - data_min;
-            if iqr <= 0.0 || range <= 0.0 {
-                return 1;
-            }
-            let bin_width = 2.0 * iqr / (n as f64).cbrt();
-            if bin_width <= 0.0 {
-                return 1;
-            }
-            (range / bin_width).ceil().max(1.0) as usize
-        }
-        BinPolicy::Scott => {
-            let mean = samples.iter().sum::<f64>() / n as f64;
-            let variance = samples.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n as f64;
-            let stddev = variance.sqrt();
-            let (data_min, data_max) = samples.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(mn, mx), &v| (mn.min(v), mx.max(v)));
-            let range = data_max - data_min;
-            if stddev <= 0.0 || range <= 0.0 {
-                return 1;
-            }
-            let bin_width = 3.49 * stddev / (n as f64).cbrt();
-            if bin_width <= 0.0 {
-                return 1;
-            }
-            (range / bin_width).ceil().max(1.0) as usize
-        }
-    }
-}
 
 /// A histogram over raw `samples`, binned at render time via its own
 /// [`BinPolicy`] (default: the caller-supplied manual count — see
@@ -270,7 +161,7 @@ impl HistogramFigure {
         ctx.set_fill_color(&theme.background);
         ctx.fill_rect(rect.x, rect.y, rect.width, rect.height);
 
-        let bins = bin(&self.samples, self.bin_count());
+        let bins = bin(&self.samples, self.bin_policy);
         if !bins.is_empty() {
             // Bin edges labeled at the bin width's own precision — a
             // histogram over small fractional data shouldn't collapse
@@ -345,124 +236,17 @@ impl HistogramFigure {
 mod tests {
     use super::*;
 
-    #[test]
-    fn empty_samples_produce_no_bins() {
-        assert!(bin(&[], 10).is_empty());
-    }
-
-    #[test]
-    fn single_value_lands_in_one_bin_with_full_count() {
-        let bins = bin(&[5.0], 4);
-        assert_eq!(bins.len(), 4);
-        let total: usize = bins.iter().map(|b| b.count).sum();
-        assert_eq!(total, 1);
-        assert_eq!(bins[0].count, 1);
-    }
-
-    #[test]
-    fn all_equal_samples_land_in_one_bin_with_full_count() {
-        let samples = vec![3.0, 3.0, 3.0, 3.0];
-        let bins = bin(&samples, 5);
-        assert_eq!(bins.len(), 5);
-        let total: usize = bins.iter().map(|b| b.count).sum();
-        assert_eq!(total, samples.len());
-        assert_eq!(bins[0].count, samples.len());
-    }
-
-    #[test]
-    fn every_sample_is_counted_exactly_once() {
-        let samples: Vec<f64> = (0..100).map(|i| i as f64 * 0.37).collect();
-        let bins = bin(&samples, 10);
-        let total: usize = bins.iter().map(|b| b.count).sum();
-        assert_eq!(total, samples.len());
-    }
-
-    #[test]
-    fn max_value_sample_lands_in_the_last_bin_not_out_of_range() {
-        // The sample equal to the data max computes a fractional index
-        // exactly at `bin_count` (`(4.0 - 0.0) / 1.0 == 4`, one past the
-        // last valid index `3`) without the `.min(bin_count - 1)` clamp —
-        // verify it lands in the last bin instead of panicking.
-        let bins = bin(&[0.0, 4.0], 4);
-        assert_eq!(bins.len(), 4);
-        assert_eq!(bins[0].count, 1);
-        assert_eq!(bins[3].count, 1);
-        assert_eq!(bins[1].count, 0);
-        assert_eq!(bins[2].count, 0);
-    }
-
-    #[test]
-    fn bin_count_floors_at_one() {
-        let bins = bin(&[1.0, 2.0, 3.0], 0);
-        assert_eq!(bins.len(), 1);
-        assert_eq!(bins[0].count, 3);
-    }
-
-    // ── BinPolicy (item 6) ───────────────────────────────────────────────
-
-    #[test]
-    fn manual_policy_always_returns_the_caller_supplied_count_regardless_of_data() {
-        let samples = vec![1.0, 2.0, 3.0, 4.0, 5.0, 100.0];
-        assert_eq!(resolve_bin_count(BinPolicy::Manual(7), &samples), 7);
-        assert_eq!(resolve_bin_count(BinPolicy::Manual(0), &samples), 1, "Manual must floor at 1, matching bin()'s own floor");
-    }
+    // Low-level `bin_by_count`/`resolve_bin_count`/`BinPolicy` golden
+    // tests moved verbatim to `transform::bin`'s own test module (Engine-
+    // strengthening WAVE 4b — see that module's own doc comment for the
+    // full "why" of the move). This module keeps only `HistogramFigure`-
+    // LEVEL behavior: the byte-identical-default proof and the
+    // render-without-panicking sweep across every `BinPolicy` variant.
 
     #[test]
     fn new_defaults_to_manual_bin_policy_byte_identical_to_pre_existing_behavior() {
         let figure = HistogramFigure::new(vec![1.0, 2.0, 3.0, 4.0, 5.0], 5);
         assert_eq!(figure.bin_count(), 5, "HistogramFigure::new must still resolve to exactly the caller-supplied bin_count");
-    }
-
-    #[test]
-    fn sturges_matches_the_hand_computed_golden_for_a_known_dataset() {
-        // n = 4: ceil(log2(4)) + 1 = ceil(2.0) + 1 = 3 (log2(4) is exact in
-        // f64 since 4 is a power of two — no rounding-boundary risk).
-        let samples = vec![1.0, 2.0, 3.0, 4.0];
-        assert_eq!(resolve_bin_count(BinPolicy::Sturges, &samples), 3);
-    }
-
-    #[test]
-    fn freedman_diaconis_matches_the_hand_computed_golden_for_a_known_dataset() {
-        // n = 4, same fixture `boxplot::quartile`'s own numpy golden uses:
-        // Q1 = 1.75, Q3 = 3.25 -> IQR = 1.5. bin_width = 2*1.5 / 4^(1/3)
-        // = 3 / 1.5874... ~= 1.8902. data range = 3.0.
-        // bin_count = ceil(3.0 / 1.8902) = ceil(1.5875) = 2.
-        let samples = vec![1.0, 2.0, 3.0, 4.0];
-        assert_eq!(resolve_bin_count(BinPolicy::FreedmanDiaconis, &samples), 2);
-    }
-
-    #[test]
-    fn scott_matches_the_hand_computed_golden_for_a_known_dataset() {
-        // n = 4: mean = 2.5, population variance = 1.25, stddev ~=
-        // 1.11803. bin_width = 3.49 * 1.11803 / 4^(1/3) ~= 2.4586.
-        // bin_count = ceil(3.0 / 2.4586) = ceil(1.2202) = 2.
-        let samples = vec![1.0, 2.0, 3.0, 4.0];
-        assert_eq!(resolve_bin_count(BinPolicy::Scott, &samples), 2);
-    }
-
-    #[test]
-    fn a_larger_roughly_uniform_dataset_gets_a_wider_sturges_bin_count() {
-        // n = 100: ceil(log2(100)) + 1 = ceil(6.6439) + 1 = 7 + 1 = 8.
-        let samples: Vec<f64> = (0..100).map(|i| i as f64).collect();
-        assert_eq!(resolve_bin_count(BinPolicy::Sturges, &samples), 8);
-    }
-
-    #[test]
-    fn every_automatic_rule_falls_back_to_one_bin_for_degenerate_all_equal_data() {
-        // Zero IQR/stddev must never divide by zero or produce a NaN/0
-        // bin count.
-        let samples = vec![7.0; 20];
-        for policy in [BinPolicy::Sturges, BinPolicy::FreedmanDiaconis, BinPolicy::Scott] {
-            assert_eq!(resolve_bin_count(policy, &samples), if policy == BinPolicy::Sturges { 6 } else { 1 });
-        }
-    }
-
-    #[test]
-    fn every_automatic_rule_falls_back_to_one_bin_for_fewer_than_two_samples() {
-        for policy in [BinPolicy::Sturges, BinPolicy::FreedmanDiaconis, BinPolicy::Scott] {
-            assert_eq!(resolve_bin_count(policy, &[]), 1);
-            assert_eq!(resolve_bin_count(policy, &[42.0]), 1);
-        }
     }
 
     #[test]

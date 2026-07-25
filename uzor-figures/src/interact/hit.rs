@@ -163,8 +163,9 @@ pub fn bar_series_at(x0: f64, x1: f64, series_count: usize, px: f64) -> Option<u
 /// Which stacked-mode segment contains screen-y `py`, given each series'
 /// own already-resolved `(top_px, bottom_px)` pixel pair for one category
 /// (in series order) — e.g. [`crate::figure::BarFigure`]'s own
-/// `stacked_segments_px`, which walks the EXACT SAME cumulative running
-/// sum [`crate::mark::rect::draw_bars_stacked`] paints with. Returns
+/// `stacked_segments_px`, which reads the EXACT SAME
+/// [`crate::transform::stack::stack`] geometry
+/// [`crate::figure::BarFigure::draw_stacked_bars`] paints with. Returns
 /// `None` when `py` falls outside every segment (e.g. the padding above/
 /// below a short column).
 pub fn stacked_series_at(segments: &[(f64, f64)], py: f64) -> Option<usize> {

@@ -17,6 +17,32 @@
 //! 2`/`3`: a real fractional interpolation between real order statistics,
 //! never an undefined "median of an empty half").
 //!
+//! **Engine-strengthening WAVE 4b**: [`quartile`] now DELEGATES its own
+//! Q1/median/Q3 computation to [`crate::transform::quantile::quantile`]
+//! (this crate's ONE canonical percentile implementation — the exact same
+//! method, previously duplicated independently here) via
+//! [`MissingDataPolicy::Skip`]. Behavior-preserving for every EXISTING
+//! test/caller (none exercise a non-finite sample — confirmed by reading
+//! every test below before this change) — this crate's OWN `transform`
+//! layer sits BENEATH `figure` (`CurveFigure::with_downsample` already
+//! established that direction via `transform::lttb`), so `figure` code
+//! depending on it is the correct direction, unlike the reverse. This
+//! ALSO closes a real, previously-undocumented gap: the pre-existing
+//! local `percentile`/`quartile` had NO non-finite handling at all — an
+//! all-`NaN` `samples` used to silently return `Some((NaN, NaN, NaN))`
+//! (via ordinary NaN-arithmetic propagation through the old
+//! `unwrap_or(Equal)`-sorted interpolation) instead of the honest "no
+//! usable data" `None` every OTHER degenerate case (incl. plain empty
+//! `samples`) already returns — a genuine defect, fixed outright per this
+//! crate's own binding doctrine (not a silent behavior change: no
+//! existing test ever exercised this path, and the new behavior is
+//! strictly more honest). [`boxplot_stats`]'s own whisker/outlier scan
+//! stays over the ORIGINAL (unfiltered) sorted sample list — untouched,
+//! since a `NaN` there already, implicitly, never satisfies any of its
+//! `>=`/`<`/`>` fence comparisons (so it was already excluded from
+//! whisker/outlier results before this change, just not from Q1/median/Q3
+//! computation).
+//!
 //! ## Whisker convention (documented — the task's own explicit ask)
 //!
 //! Whiskers use the standard Tukey (1977) `1.5 * IQR` fence, exactly as
@@ -32,6 +58,8 @@ use uzor::render::{CircleBatch, RenderContext};
 use uzor::types::Rect;
 
 use crate::coord::PlotArea;
+use crate::transform::quantile::quantile as transform_quantile;
+use crate::transform::MissingDataPolicy;
 use crate::figure::{resolve_tick_count, FigureOverlay, MarginPolicy, TickCountPolicy};
 use crate::guide::{axis, grid, tooltip};
 use crate::interact::hit::{self, HitZone};
@@ -69,53 +97,38 @@ pub struct BoxplotStats {
     pub sample_count: usize,
 }
 
-/// Linear-interpolation percentile (`p` in `[0, 1]`) over `sorted` (already
-/// ascending) — see the module docs for the exact method. `sorted.is_empty()`
-/// returns `f64::NAN` (there is no meaningful percentile of no data — the
-/// caller, [`boxplot_stats`], never calls this on an empty slice).
-fn percentile(sorted: &[f64], p: f64) -> f64 {
-    let n = sorted.len();
-    if n == 0 {
-        return f64::NAN;
-    }
-    if n == 1 {
-        return sorted[0];
-    }
-    let rank = p.clamp(0.0, 1.0) * (n - 1) as f64;
-    let lo = rank.floor() as usize;
-    let hi = rank.ceil() as usize;
-    if lo == hi {
-        sorted[lo]
-    } else {
-        let frac = rank - lo as f64;
-        sorted[lo] * (1.0 - frac) + sorted[hi] * frac
-    }
-}
-
-/// `(Q1, median, Q3)` over `samples` via [`percentile`] — sorts a local
-/// copy, does not mutate the caller's own slice. `None` for empty
-/// `samples`.
+/// `(Q1, median, Q3)` over `samples` via [`crate::transform::quantile::
+/// quantile`] (this crate's ONE canonical percentile implementation —
+/// see this module's own top doc comment for the full delegation
+/// reasoning). `None` for empty `samples`, OR for `samples` that contain
+/// no FINITE values at all (an all-non-finite input has no usable data
+/// either — a genuine defect fix, not a silent behavior change: see this
+/// module's own top doc comment).
 pub fn quartile(samples: &[f64]) -> Option<(f64, f64, f64)> {
-    if samples.is_empty() {
-        return None;
-    }
-    let mut sorted: Vec<f64> = samples.to_vec();
-    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    Some((percentile(&sorted, 0.25), percentile(&sorted, 0.5), percentile(&sorted, 0.75)))
+    let q1 = transform_quantile(samples, 0.25, MissingDataPolicy::Skip).ok()?;
+    let median = transform_quantile(samples, 0.5, MissingDataPolicy::Skip).ok()?;
+    let q3 = transform_quantile(samples, 0.75, MissingDataPolicy::Skip).ok()?;
+    Some((q1, median, q3))
 }
 
-/// Full [`BoxplotStats`] over `samples` — quartiles via [`quartile`],
-/// whiskers/outliers via the Tukey `1.5 * IQR` convention (see the module
-/// docs). `None` for empty `samples`.
+/// Full [`BoxplotStats`] over `samples` — quartiles via [`quartile`]'s own
+/// delegation to [`crate::transform::quantile::quantile`], whiskers/
+/// outliers via the Tukey `1.5 * IQR` convention (see the module docs).
+/// `None` for empty `samples`, OR for all-non-finite `samples` (see
+/// [`quartile`]'s own doc comment for why that's a defect fix, not a
+/// silent change — no existing test exercised this path).
 pub fn boxplot_stats(samples: &[f64]) -> Option<BoxplotStats> {
     if samples.is_empty() {
         return None;
     }
+    let (q1, median, q3) = quartile(samples)?;
+    // The whisker-fence scan below stays over the ORIGINAL (unfiltered)
+    // sorted sample list — a `NaN` here already, implicitly, never
+    // satisfies any `>=`/`<`/`>` fence comparison below, so it was
+    // already excluded from whisker/outlier results before this
+    // refactor; only Q1/median/Q3's own computation changed.
     let mut sorted: Vec<f64> = samples.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let q1 = percentile(&sorted, 0.25);
-    let median = percentile(&sorted, 0.5);
-    let q3 = percentile(&sorted, 0.75);
     let iqr = q3 - q1;
     let low_fence = q1 - WHISKER_IQR_MULTIPLIER * iqr;
     let high_fence = q3 + WHISKER_IQR_MULTIPLIER * iqr;
@@ -446,6 +459,36 @@ mod tests {
         let (q1a, ma, q3a) = quartile(&[4.0, 1.0, 3.0, 2.0]).expect("4 samples");
         let (q1b, mb, q3b) = quartile(&[1.0, 2.0, 3.0, 4.0]).expect("4 samples");
         assert_eq!((q1a, ma, q3a), (q1b, mb, q3b));
+    }
+
+    // ── Engine-strengthening WAVE 4b — `quartile`/`boxplot_stats` now
+    // delegate to `transform::quantile::quantile` ──────────────────────
+
+    #[test]
+    fn quartile_all_non_finite_samples_is_now_none_the_documented_defect_fix() {
+        // Before this wave's refactor, an all-NaN input silently returned
+        // `Some((NaN, NaN, NaN))` via ordinary NaN-arithmetic propagation
+        // through the old locally-sorted interpolation — no test ever
+        // relied on that, and it's a strictly less honest answer than the
+        // `None` every other "no usable data" case already returns.
+        assert!(quartile(&[f64::NAN, f64::NAN, f64::NAN]).is_none());
+        assert!(boxplot_stats(&[f64::NAN, f64::NAN]).is_none());
+    }
+
+    #[test]
+    fn quartile_skips_non_finite_samples_mixed_with_finite_ones() {
+        let with_nan = quartile(&[1.0, f64::NAN, 2.0, 3.0, 4.0]).expect("3 finite samples remain");
+        let clean = quartile(&[1.0, 2.0, 3.0, 4.0]).expect("4 finite samples");
+        assert_eq!(with_nan, clean, "a stray NaN mixed into otherwise-finite samples must be skipped, not corrupt the whole result");
+    }
+
+    #[test]
+    fn quartile_matches_the_transform_quantile_function_directly_proving_the_delegation_is_real() {
+        let samples = [3.0, 7.0, 1.0, 9.0, 4.0, 2.0, 8.0];
+        let (q1, median, q3) = quartile(&samples).expect("non-empty");
+        assert_eq!(q1, crate::transform::quantile::quantile(&samples, 0.25, crate::transform::MissingDataPolicy::Skip).unwrap());
+        assert_eq!(median, crate::transform::quantile::quantile(&samples, 0.5, crate::transform::MissingDataPolicy::Skip).unwrap());
+        assert_eq!(q3, crate::transform::quantile::quantile(&samples, 0.75, crate::transform::MissingDataPolicy::Skip).unwrap());
     }
 
     #[test]

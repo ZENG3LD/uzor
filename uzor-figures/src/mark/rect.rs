@@ -1,10 +1,26 @@
 //! `draw_bars` — vertical bars over a [`BandScale`] x-axis and any `y`
-//! [`Scale`]. `draw_bars_grouped`/`draw_bars_stacked` are the
-//! multi-series counterparts (`crate::figure::BarFigure`'s own
-//! `BarMode::{Grouped, Stacked}`) — both still draw through the SAME
-//! `[`PlotArea`]`/`[`BandScale`] transform `draw_bars` uses, just with an
-//! extra per-category sub-division ([`sub_band_range`]) or a cumulative
-//! running-sum walk layered on top.
+//! [`Scale`]. `draw_bars_grouped` is the grouped-multi-series counterpart
+//! (`crate::figure::BarFigure`'s own `BarMode::Grouped`) — still draws
+//! through the SAME [`PlotArea`]/[`BandScale`] transform `draw_bars`
+//! uses, just with an extra per-category sub-division
+//! ([`sub_band_range`]).
+//!
+//! **`draw_bars_stacked` REMOVED (Engine-strengthening WAVE 4b)** — its
+//! own cumulative running-sum walk hardcoded exactly ONE stacking
+//! convention (positive-up/negative-down, series accumulated in given
+//! order) with no way to express any other. That logic is now
+//! [`crate::transform::stack::stack`] (a reusable, independently-tested
+//! transform with THREE offset conventions and four order choices, not
+//! one) — [`crate::figure::BarFigure::draw_stacked_bars`] reads its own
+//! `(bottom, top)` domain pairs directly from
+//! [`crate::figure::BarFigure::stack_segments`] and paints them, rather
+//! than recomputing the walk a second time here. No other caller in this
+//! workspace ever called `draw_bars_stacked` directly (confirmed by a
+//! workspace-wide grep before removal) — this crate is `publish = false`
+//! (incubating engine; `uzor/CLAUDE.md`'s own hard-cutover convention),
+//! so removing rather than keeping a now-redundant, offset/order-blind
+//! duplicate carries none of the "breaks a real external caller" risk a
+//! published crate's API removal would.
 
 use uzor::render::RenderContext;
 
@@ -110,50 +126,6 @@ pub fn draw_bars_grouped(
                 if value_px <= baseline_px { (value_px, baseline_px - value_px) } else { (baseline_px, value_px - baseline_px) };
             ctx.set_fill_color(colors.get(si).copied().unwrap_or("#888888"));
             ctx.fill_rect(sx0, top, (sx1 - sx0).max(0.0), height);
-        }
-    }
-}
-
-/// Draw stacked multi-series bars: within each category band, series
-/// segments stack cumulatively — positive values stack UPWARD from the
-/// zero baseline, negative values stack DOWNWARD from it (standard
-/// finance-chart convention; a category with both positive and negative
-/// series never mixes them into one running total). `series_values[s][i]`
-/// is series `s`'s value for category `i`, same missing-index-skips
-/// convention as [`draw_bars_grouped`].
-pub fn draw_bars_stacked(
-    ctx: &mut dyn RenderContext,
-    area: &PlotArea,
-    band: &BandScale,
-    y: &dyn Scale,
-    series_values: &[&[f64]],
-    colors: &[&str],
-) {
-    if band.is_empty() || series_values.is_empty() {
-        return;
-    }
-
-    ctx.set_global_alpha(1.0);
-    for i in 0..band.len() {
-        let (x0, x1) = area.x_band(band, i);
-        let mut pos_acc = 0.0_f64;
-        let mut neg_acc = 0.0_f64;
-        for (si, values) in series_values.iter().enumerate() {
-            let Some(&value) = values.get(i) else { continue };
-            let (bottom_value, top_value) = if value >= 0.0 {
-                let bottom = pos_acc;
-                pos_acc += value;
-                (bottom, pos_acc)
-            } else {
-                let top = neg_acc;
-                neg_acc += value;
-                (neg_acc, top)
-            };
-            let top_px = area.y(y, top_value);
-            let bottom_px = area.y(y, bottom_value);
-            let (top, height) = (top_px.min(bottom_px), (bottom_px - top_px).abs());
-            ctx.set_fill_color(colors.get(si).copied().unwrap_or("#888888"));
-            ctx.fill_rect(x0, top, (x1 - x0).max(0.0), height);
         }
     }
 }
