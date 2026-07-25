@@ -19,15 +19,24 @@
 //!
 //! Every hit-test in [`hit`] goes through [`crate::coord::PlotArea`] —
 //! design law #1, the same transform every mark/guide draws with.
+//!
+//! [`viewport`] (engine-strengthening arc Wave 5, 2026-07-26) adds a THIRD
+//! gesture family — pan/zoom/fit over a scale's own DOMAIN (not MLC's
+//! bar-index) — following the exact same "small, independently-testable,
+//! caller-owned state a figure only ever BORROWS" shape [`brush::BrushState`]/
+//! [`focus::FocusSet`] already establish; see that module's own top-level
+//! docs for the full design.
 
 pub mod action;
 pub mod brush;
 pub mod focus;
 pub mod hit;
 pub mod link;
+pub mod viewport;
 
 pub use action::{FigureInputAction, FigureOutputAction};
 pub use brush::BrushState;
 pub use focus::FocusSet;
 pub use hit::HitZone;
 pub use link::{HoverInfo, SelectionBus};
+pub use viewport::{windowed_scale, OverscrollPolicy, Viewport, ViewportConfig};

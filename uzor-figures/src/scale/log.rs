@@ -127,6 +127,12 @@ impl Scale for LogScale {
             TickPriority::Minor
         }
     }
+
+    /// A plain `LogScale::new(min, max)` — see [`Scale::windowed`]'s own
+    /// doc comment for the seam this serves.
+    fn windowed(&self, min: f64, max: f64) -> Option<Box<dyn Scale>> {
+        Some(Box::new(LogScale::new(min, max)))
+    }
 }
 
 #[cfg(test)]
@@ -208,5 +214,12 @@ mod tests {
         let priorities: Vec<TickPriority> = ticks.iter().map(|t| scale.tick_priority(t.value)).collect();
         assert!(priorities.contains(&TickPriority::Major), "expected at least one Major decade tick, got {priorities:?}");
         assert!(priorities.contains(&TickPriority::Minor), "expected at least one Minor subdivision tick, got {priorities:?}");
+    }
+
+    #[test]
+    fn windowed_rebuilds_a_log_scale_over_the_given_bounds() {
+        let scale = LogScale::new(1.0, 100_000.0);
+        let windowed = scale.windowed(10.0, 1000.0).expect("LogScale supports windowing");
+        assert_eq!(windowed.domain(), (10.0, 1000.0));
     }
 }

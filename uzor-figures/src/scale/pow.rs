@@ -101,6 +101,13 @@ impl Scale for PowScale {
     fn tick_priority(&self, v: f64) -> TickPriority {
         LinearScale::new(self.min, self.max).tick_priority(v)
     }
+
+    /// Preserves this scale's own `exponent` (a per-scale CONFIG choice,
+    /// not part of the domain being windowed) — see [`Scale::windowed`]'s
+    /// own doc comment for the seam this serves.
+    fn windowed(&self, min: f64, max: f64) -> Option<Box<dyn Scale>> {
+        Some(Box::new(PowScale::new(min, max, self.exponent)))
+    }
 }
 
 #[cfg(test)]
@@ -192,5 +199,17 @@ mod tests {
         assert_eq!(pow.tick_priority(0.0), linear.tick_priority(0.0));
         assert_eq!(pow.tick_priority(0.0), TickPriority::Major);
         assert_eq!(pow.tick_priority(50.0), TickPriority::Minor);
+    }
+
+    #[test]
+    fn windowed_preserves_the_exponent() {
+        let scale = PowScale::sqrt(0.0, 1000.0);
+        let windowed = scale.windowed(10.0, 20.0).expect("PowScale supports windowing");
+        assert_eq!(windowed.domain(), (10.0, 20.0));
+        // `map`'s own shape (not just the domain bounds) must reflect the
+        // SAME exponent — a windowed scale that silently reset to a
+        // linear (exponent 1.0) mapping would be a real regression.
+        let rebuilt = PowScale::new(10.0, 20.0, 0.5);
+        assert!((windowed.map(15.0) - rebuilt.map(15.0)).abs() < 1e-12);
     }
 }

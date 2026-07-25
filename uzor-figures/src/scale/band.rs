@@ -60,6 +60,16 @@ impl BandScale {
 }
 
 impl Scale for BandScale {
+    // `windowed` (pan/zoom over a domain window — see [`crate::interact::
+    // viewport::Viewport`]'s own docs) is DELIBERATELY left at the trait
+    // default (`None`) — a categorical axis's "domain" is a bare index
+    // count `[0, category_count)`, and a fractional window over category
+    // POSITIONS (e.g. "show categories 3.4..8.2") has no clean interaction
+    // with this scale's own per-category `band_range`/padding math the way
+    // a continuous scale's window does. Windowing a long category list
+    // ("show categories N..M of 50") is a real, different feature deserving
+    // its own design (closer to pagination than to continuous pan/zoom) —
+    // out of scope for the engine-strengthening arc's Wave 5 viewport pass.
     fn domain(&self) -> (f64, f64) {
         (0.0, self.categories.len() as f64)
     }
@@ -139,5 +149,13 @@ mod tests {
         let ticks = scale.ticks(2); // target_count ignored by design
         assert_eq!(ticks.len(), 5);
         assert_eq!(ticks[2].label, "c2");
+    }
+
+    #[test]
+    fn windowed_is_deliberately_not_overridden() {
+        // Documents the decision in `impl Scale for BandScale`'s own doc
+        // comment — a categorical axis has no Viewport wiring this pass.
+        let scale = BandScale::new(cats(5), 0.1);
+        assert!(scale.windowed(1.0, 3.0).is_none());
     }
 }

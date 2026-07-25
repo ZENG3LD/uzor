@@ -25,6 +25,7 @@ use crate::guide::grid::GridTickWeightStyle;
 use crate::guide::legend::{self, LegendEntry, LegendPosition};
 use crate::guide::{axis, crosshair, grid, tooltip};
 use crate::interact::hit::{self, HitZone};
+use crate::interact::viewport::Viewport;
 use crate::mark::area::draw_area;
 use crate::mark::line::draw_polyline;
 use crate::mark::point::draw_points;
@@ -348,7 +349,71 @@ impl CurveFigure {
     /// + an (x, y[, series]) tooltip. `overlay.brush`/`overlay.focus` are
     /// not consumed by this figure — linked-brush highlighting is a
     /// bars/histogram concern in V2 (see [`crate::figure::FigureOverlay`]).
+    ///
+    /// Equivalent to `render_with_viewport(ctx, rect, theme, overlay,
+    /// None)` — see that method's own doc comment for the opt-in viewport
+    /// (pan/zoom/fit) entry point this figure gained in Wave 5. Passing
+    /// `None` here reproduces this method's pre-Wave-5 output byte-for-byte.
     pub fn render_with(&self, ctx: &mut dyn RenderContext, rect: Rect, theme: &FigureTheme, overlay: &FigureOverlay<'_>) {
+        self.render_with_viewport(ctx, rect, theme, overlay, None);
+    }
+
+    /// Same as [`CurveFigure::render_with`], but additionally resolves this
+    /// figure's X domain through `x_viewport`'s own visible WINDOW (see
+    /// [`crate::interact::viewport::Viewport`]'s own module docs for the
+    /// window model) instead of the auto-computed/overridden scale's own
+    /// FULL extent. `x_viewport: None` (what [`CurveFigure::render_with`]
+    /// always passes) reproduces this method's output byte-for-byte —
+    /// proven by
+    /// `render_with_viewport_with_no_viewport_matches_render_with` below.
+    ///
+    /// Windowing only takes effect when this figure's own X scale (the
+    /// auto-computed [`LinearScale`], or a [`CurveFigure::with_x_scale`]
+    /// override) itself supports it via [`crate::scale::Scale::windowed`]
+    /// — every scale kind this crate ships DOES (`LinearScale`/`LogScale`/
+    /// `SymlogScale`/`PowScale`/[`crate::scale::TimeScale`]); a
+    /// hypothetical `Scale` implementor that doesn't override `windowed`
+    /// simply renders UNWINDOWED (`x_viewport` has no effect for it),
+    /// never panics.
+    ///
+    /// Ticks/grid/axis labels re-derive from the WINDOWED scale
+    /// automatically — every draw call below already takes `&dyn Scale`,
+    /// so nothing downstream needed to change to "know about" a viewport
+    /// (design law #1: one shared transform/scale interface). A viewport
+    /// window can legitimately place some of this figure's own points
+    /// outside the visible plot rect (the un-panned/zoomed remainder of
+    /// the series) — this method clips the series draw pass to the plot
+    /// rect whenever windowing is actually active, so those points' own
+    /// stroke/fill never bleed past the plot rect into the axis-label
+    /// margin (never clipped when `x_viewport` is `None`, so
+    /// `render_with`'s own call path pays zero extra cost and renders
+    /// identically to before this method existed).
+    ///
+    /// **The Y domain is NOT windowed** — [`CurveFigure::y_scale`] always
+    /// computes the FULL data extent regardless of `x_viewport`'s state.
+    /// Auto-fitting Y to only the currently-visible (post-X-window) points
+    /// is a `ScaleMode::Auto`/`Focus`-shaped concern (Wave 3 of
+    /// `nemo/docs/uzor-engines/plans/engine-strengthening-arc-2026-07-24.md`,
+    /// not built yet) layered ON TOP of a windowed X — this method
+    /// deliberately leaves that seam alone rather than half-building it.
+    ///
+    /// **The caller owns keeping `x_viewport`'s own
+    /// [`Viewport::data_domain`] in sync** with this figure's real X
+    /// extent (e.g. call `x_viewport.set_data_domain(figure.x_scale()
+    /// .unwrap().domain())` whenever the underlying series changes) — the
+    /// same "recomputed fresh every render, from whatever `self.series`
+    /// currently holds" contract [`CurveFigure::x_scale`] already places
+    /// on any external caller reacting to new data. This method never
+    /// mutates a borrowed `&Viewport` itself (single-writer discipline,
+    /// matching [`crate::interact::viewport`]'s own design rule).
+    pub fn render_with_viewport(
+        &self,
+        ctx: &mut dyn RenderContext,
+        rect: Rect,
+        theme: &FigureTheme,
+        overlay: &FigureOverlay<'_>,
+        x_viewport: Option<&Viewport>,
+    ) {
         ctx.set_fill_color(&theme.background);
         ctx.fill_rect(rect.x, rect.y, rect.width, rect.height);
 
@@ -373,11 +438,19 @@ impl CurveFigure {
         // margin measurement AND the render loop's own X scale) costs
         // nothing extra and removes a duplicate computation.
         let computed_x_scale = if self.x_scale_override.is_none() { self.x_scale() } else { None };
-        let x_scale: Option<&dyn Scale> = match (&self.x_scale_override, &computed_x_scale) {
+        let base_x_scale: Option<&dyn Scale> = match (&self.x_scale_override, &computed_x_scale) {
             (Some(s), _) => Some(s.as_ref()),
             (None, Some(s)) => Some(s),
             (None, None) => None,
         };
+        // Apply an optional viewport WINDOW on top of the full-domain
+        // scale — see this method's own doc comment for the seam. Every
+        // margin/tick/grid/axis/hover computation below reads `x_scale`
+        // exactly as it did before `x_viewport` existed; it just may now
+        // be a windowed scale rather than the full-domain one.
+        let windowed_x_scale: Option<Box<dyn Scale>> =
+            x_viewport.zip(base_x_scale).and_then(|(vp, scale)| crate::interact::viewport::windowed_scale(scale, vp));
+        let x_scale: Option<&dyn Scale> = windowed_x_scale.as_deref().or(base_x_scale);
 
         let title_h = if self.title.is_some() { TITLE_HEIGHT } else { 0.0 };
         let plot_height_estimate = (rect.height - title_h - MARGIN_BOTTOM).max(0.0);
@@ -468,6 +541,18 @@ impl CurveFigure {
             // hover never resolves to a point that isn't actually drawn).
             let rendered: Vec<std::borrow::Cow<'_, [(f64, f64)]>> = self.series.iter().map(|s| self.rendered_points(s)).collect();
 
+            // A viewport window can legitimately place points OUTSIDE the
+            // visible plot rect — clip the series draw pass so those
+            // points' own stroke/fill never bleed past the plot rect into
+            // the axis-label margin. `windowed_x_scale.is_some()` is
+            // `false` whenever `x_viewport` is `None` (`render_with`'s own
+            // call path), so this is a complete no-op there — proven by
+            // `render_with_viewport_with_no_viewport_matches_render_with`.
+            let clip_active = windowed_x_scale.is_some();
+            if clip_active {
+                ctx.save();
+                ctx.clip_rect(area.rect.x, area.rect.y, area.rect.width, area.rect.height);
+            }
             for (i, s) in rendered.iter().enumerate() {
                 let color = theme.palette[i % theme.palette.len()].clone();
                 let style = MarkStyle { color, ..Default::default() };
@@ -476,6 +561,9 @@ impl CurveFigure {
                     draw_area(ctx, &area, x_scale, &y_scale, s, &fill_style);
                 }
                 draw_polyline(ctx, &area, x_scale, &y_scale, s, &style);
+            }
+            if clip_active {
+                ctx.restore();
             }
 
             draw_annotation_overlays(ctx, &area, x_scale, &y_scale, theme, &self.annotations);
@@ -750,5 +838,219 @@ mod tests {
         // must be completely unaffected by this item's own new fields.
         let unaffected_png = render_to_png(&spec, |ctx| CurveFigure::new(points).render(ctx, rect, &theme)).expect("render");
         assert_eq!(default_png, unaffected_png);
+    }
+
+    // ── Wave 5 (Viewport pan/zoom/fit) ──────────────────────────────────
+
+    use crate::interact::viewport::Viewport;
+
+    fn viewport_fixture_points() -> Vec<(f64, f64)> {
+        (0..100).map(|i| (i as f64, ((i as f64) * 0.3).sin() * 20.0 + 50.0)).collect()
+    }
+
+    #[test]
+    fn render_with_viewport_with_no_viewport_matches_render_with() {
+        // The binding doctrine's own gate: `x_viewport: None` must
+        // reproduce `render_with`'s output byte-for-byte.
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let figure = CurveFigure::new(viewport_fixture_points()).with_title("viewport-none");
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 400, height_px: 250, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 400.0, 250.0);
+
+        let via_render_with = render_to_png(&spec, |ctx| figure.render_with(ctx, rect, &theme, &FigureOverlay::default())).expect("render_with");
+        let via_viewport_none =
+            render_to_png(&spec, |ctx| figure.render_with_viewport(ctx, rect, &theme, &FigureOverlay::default(), None)).expect("render_with_viewport(None)");
+        assert_eq!(via_render_with, via_viewport_none, "render_with_viewport(.., None) must be byte-identical to render_with");
+
+        // And `render()` itself (the plain V1 entry point) must ALSO be
+        // completely unaffected by this figure gaining viewport support.
+        let via_render = render_to_png(&spec, |ctx| figure.render(ctx, rect, &theme)).expect("render");
+        assert_eq!(via_render_with, via_render);
+    }
+
+    #[test]
+    fn a_zoomed_viewport_narrows_the_rendered_x_domain() {
+        // Not just "renders without panicking" — actually resolves a
+        // NARROWER windowed scale than the figure's own full auto domain.
+        let figure = CurveFigure::new(viewport_fixture_points());
+        let full_domain = figure.x_scale().expect("100 points").domain();
+
+        let mut vp = Viewport::new(full_domain);
+        let (full_min, full_max) = full_domain;
+        let focal = (full_min + full_max) / 2.0;
+        vp.zoom_at(focal, 5.0);
+        let window = vp.window();
+
+        assert!(window.1 - window.0 < full_max - full_min, "a zoomed viewport must produce a window narrower than the full domain");
+
+        use uzor_export::{render_to_png, ExportSpec};
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 400, height_px: 250, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 400.0, 250.0);
+        let zoomed = render_to_png(&spec, |ctx| {
+            figure.render_with_viewport(ctx, rect, &theme, &FigureOverlay::default(), Some(&vp));
+        })
+        .expect("zoomed render");
+        let unzoomed = render_to_png(&spec, |ctx| figure.render(ctx, rect, &theme)).expect("unzoomed render");
+        assert_ne!(zoomed, unzoomed, "a genuinely zoomed viewport must render visibly differently from the unwindowed full-domain render");
+    }
+
+    #[test]
+    fn a_panned_viewport_renders_differently_from_the_unpanned_window() {
+        let figure = CurveFigure::new(viewport_fixture_points());
+        let full_domain = figure.x_scale().expect("100 points").domain();
+
+        let mut vp = Viewport::new(full_domain);
+        let (full_min, full_max) = full_domain;
+        vp.zoom_at((full_min + full_max) / 2.0, 4.0); // narrow first, so there's room to pan
+        let before_pan_window = vp.window();
+
+        use uzor_export::{render_to_png, ExportSpec};
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 400, height_px: 250, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 400.0, 250.0);
+        let pre_pan = render_to_png(&spec, |ctx| figure.render_with_viewport(ctx, rect, &theme, &FigureOverlay::default(), Some(&vp))).expect("pre-pan render");
+
+        vp.pan((full_max - full_min) * 0.1);
+        assert_ne!(vp.window(), before_pan_window, "pan must actually move the window for this test to prove anything");
+        let post_pan = render_to_png(&spec, |ctx| figure.render_with_viewport(ctx, rect, &theme, &FigureOverlay::default(), Some(&vp))).expect("post-pan render");
+
+        assert_ne!(pre_pan, post_pan, "panning the viewport must change the rendered output");
+    }
+
+    #[test]
+    fn fit_to_data_after_zoom_restores_the_exact_full_domain_and_renders_correctly() {
+        // `fit_to_data`'s own domain-level correctness claim: after a real
+        // zoom, it restores `window() == data_domain()` EXACTLY (not
+        // "close to"), and the windowed scale built from that window
+        // resolves to the SAME (min, max) the figure's own unwindowed
+        // scale would. NOT asserted as a byte-identical PNG: even with an
+        // identical domain, `render_with_viewport` still wraps the series
+        // draw pass in `save()/clip_rect()/restore()` whenever a viewport
+        // is present at all (see that method's own doc comment) — a
+        // rasterizer's own edge-antialiasing at a clip boundary can
+        // legitimately differ by a few subpixel values from a completely
+        // unclipped draw of the identical geometry, the same class of
+        // "real backend differs at the pixel level despite being logically
+        // correct" this crate's own multi-backend proof section already
+        // documents (see `lib.rs`'s "Divergence policy" doctrine) — a
+        // stricter byte-equality claim here would be an overclaim.
+        let figure = CurveFigure::new(viewport_fixture_points());
+        let full_domain = figure.x_scale().expect("100 points").domain();
+
+        let mut vp = Viewport::new(full_domain);
+        vp.zoom_at((full_domain.0 + full_domain.1) / 2.0, 6.0);
+        assert_ne!(vp.window(), full_domain, "the zoom must actually narrow the window for this test to prove anything");
+        vp.fit_to_data();
+        assert_eq!(vp.window(), full_domain, "fit_to_data must restore the exact full data domain");
+
+        let windowed = full_scale_domain_via_windowed(&figure, &vp);
+        assert_eq!(windowed, full_domain, "the windowed scale built from a fit-to-data viewport must resolve the SAME domain as the unwindowed figure");
+
+        use uzor_export::{render_to_png, ExportSpec};
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 400, height_px: 250, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 400.0, 250.0);
+        let result = render_to_png(&spec, |ctx| figure.render_with_viewport(ctx, rect, &theme, &FigureOverlay::default(), Some(&vp)));
+        assert!(result.is_ok(), "a viewport fit back to the full data domain must still render without panicking");
+    }
+
+    /// Resolve the SAME windowed `Scale` `render_with_viewport` would build
+    /// for `figure`'s auto-computed X domain under `vp` — a direct,
+    /// non-rendering proof that the windowing math itself is correct,
+    /// independent of any rasterizer-level pixel comparison.
+    fn full_scale_domain_via_windowed(figure: &CurveFigure, vp: &Viewport) -> (f64, f64) {
+        let base = figure.x_scale().expect("figure must have a domain");
+        let (window_min, window_max) = vp.window();
+        Scale::windowed(&base, window_min, window_max).expect("LinearScale supports windowing").domain()
+    }
+
+    #[test]
+    fn a_deeply_zoomed_viewport_re_derives_a_denser_tick_set() {
+        // Ticks must re-derive for the visible window (never bypass the
+        // shared tick machinery) — a deep zoom into a small sub-range
+        // must produce ticks with a visibly finer step than the full,
+        // unzoomed domain's own ticks.
+        let figure = CurveFigure::new(viewport_fixture_points());
+        let full_domain = figure.x_scale().expect("100 points").domain();
+        let full_scale = LinearScale::new(full_domain.0, full_domain.1);
+        let full_ticks = full_scale.ticks(TARGET_X_TICKS);
+        let full_step = if full_ticks.len() >= 2 { (full_ticks[1].value - full_ticks[0].value).abs() } else { 1.0 };
+
+        let mut vp = Viewport::new(full_domain);
+        vp.zoom_at((full_domain.0 + full_domain.1) / 2.0, 20.0);
+        let (w_min, w_max) = vp.window();
+        let windowed_scale = LinearScale::new(w_min, w_max);
+        let windowed_ticks = windowed_scale.ticks(TARGET_X_TICKS);
+        let windowed_step = if windowed_ticks.len() >= 2 { (windowed_ticks[1].value - windowed_ticks[0].value).abs() } else { 1.0 };
+
+        assert!(
+            windowed_step < full_step,
+            "a deeply zoomed window must re-derive a finer tick step than the full domain (full_step={full_step}, windowed_step={windowed_step})"
+        );
+
+        // And the real render path must actually route through this
+        // windowed (finer) tick set, not the full domain's own.
+        use uzor_export::{render_to_png, ExportSpec};
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 400, height_px: 250, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 400.0, 250.0);
+        let result = render_to_png(&spec, |ctx| {
+            figure.render_with_viewport(ctx, rect, &theme, &FigureOverlay::default(), Some(&vp));
+        });
+        assert!(result.is_ok(), "a deeply zoomed viewport must still render without panicking");
+    }
+
+    #[test]
+    fn viewport_with_a_time_scale_override_windows_in_real_calendar_time() {
+        // The exact claim the MLC-harvest doc's own domain-vs-bar-index
+        // distinction is about: a Viewport pans/zooms a TimeScale-backed
+        // CurveFigure in real UTC seconds, never an array/bar position.
+        use crate::scale::TimeScale;
+
+        const ANCHOR: f64 = 1_704_067_200.0; // 2024-01-01T00:00:00Z
+        const DAY_SECS: f64 = 86_400.0;
+        let points: Vec<(f64, f64)> = (0..90).map(|i| (ANCHOR + i as f64 * DAY_SECS, ((i as f64) * 0.2).sin() * 10.0 + 30.0)).collect();
+        let x_min = points[0].0;
+        let x_max = points[points.len() - 1].0;
+        let figure = CurveFigure::new(points).with_x_scale(TimeScale::new(x_min, x_max));
+
+        let mut vp = Viewport::new((x_min, x_max));
+        // Zoom into a real 10-day window, anchored at day 30.
+        let focal = ANCHOR + 30.0 * DAY_SECS;
+        vp.zoom_at(focal, 9.0);
+        let (w_min, w_max) = vp.window();
+        assert!(w_max - w_min < 15.0 * DAY_SECS, "a zoomed TimeScale viewport must window down to roughly a 10-day span, got {} seconds", w_max - w_min);
+
+        use uzor_export::{render_to_png, ExportSpec};
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 500, height_px: 300, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 500.0, 300.0);
+        let zoomed = render_to_png(&spec, |ctx| figure.render_with_viewport(ctx, rect, &theme, &FigureOverlay::default(), Some(&vp))).expect("zoomed time render");
+        let full = render_to_png(&spec, |ctx| figure.render(ctx, rect, &theme)).expect("full time render");
+        assert_ne!(zoomed, full, "a real calendar-time zoom must render visibly differently from the full 90-day view");
+    }
+
+    #[test]
+    fn viewport_on_a_figure_with_fewer_than_two_points_renders_without_panicking() {
+        // Degenerate case: an empty/single-point figure never resolves an
+        // X scale at all (`x_scale()` returns `None`), so a viewport must
+        // be a harmless no-op rather than panicking on a missing domain.
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 200, height_px: 150, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 200.0, 150.0);
+        let vp = Viewport::new((0.0, 1.0));
+
+        let empty = CurveFigure::new(Vec::new());
+        let result = render_to_png(&spec, |ctx| empty.render_with_viewport(ctx, rect, &theme, &FigureOverlay::default(), Some(&vp)));
+        assert!(result.is_ok(), "an empty figure with a viewport must render without panicking");
+
+        let single = CurveFigure::new(vec![(5.0, 5.0)]);
+        let result = render_to_png(&spec, |ctx| single.render_with_viewport(ctx, rect, &theme, &FigureOverlay::default(), Some(&vp)));
+        assert!(result.is_ok(), "a single-point figure with a viewport must render without panicking");
     }
 }

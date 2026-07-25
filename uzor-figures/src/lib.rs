@@ -27,7 +27,17 @@
 //! - A figure registry/IR (mlc's `ChartTypeDef`+`DrawOps` two-table
 //!   pattern) — figures here are hand-composed, not registry-dispatched.
 //! - Animation / keyed data-join (enter/update/exit).
-//! - Zoom/pan (V2 shipped hover + one 1D brush only — see `interact`).
+//! - `ScaleMode` (Manual/Auto/Focus runtime auto-range policy) and axis
+//!   position/visibility/formatter configurability — engine-strengthening
+//!   arc Wave 3, not built yet. [`interact::viewport::Viewport::windowed`]
+//!   (via [`scale::Scale::windowed`]) is the seam that work is expected to
+//!   reuse — see [`Viewport`]'s own module docs.
+//!
+//! Zoom/pan/fit (engine-strengthening arc Wave 5, 2026-07-26) landed as
+//! [`Viewport`] — a stateful, DOMAIN-based (not bar-index) visible-window
+//! model over [`scale::Scale::windowed`], opt-in via
+//! [`figure::CurveFigure::render_with_viewport`]. See [`interact::viewport`]'s
+//! own module docs for the full design.
 //!
 //! Every mark/guide/figure function is a pure, stateless draw over
 //! borrowed data (design law #3) — this crate holds no owned render
@@ -70,7 +80,10 @@ pub use guide::colorbar::{draw_colorbar, draw_discrete_colorbar, measure_colorba
 pub use guide::labeler::{anchor_candidates, place_labels, OccupancyBitmap};
 pub use guide::legend::{entries_from_class_scale, LegendEntry, LegendPosition, LegendSymbol};
 pub use guide::wrap::{truncate_ellipsis, wrap_text};
-pub use interact::{BrushState, FocusSet, HitZone, HoverInfo, SelectionBus, FigureInputAction, FigureOutputAction};
+pub use interact::{
+    windowed_scale, BrushState, FigureInputAction, FigureOutputAction, FocusSet, HitZone, HoverInfo, OverscrollPolicy, SelectionBus,
+    Viewport, ViewportConfig,
+};
 pub use mark::{GapPolicy, LineCap, LineJoin, MarkStyle};
 pub use scale::{
     BandScale, CategoricalScale, ClassScale, ColorScale, LinearScale, LogScale, NumberFormat, PowScale, QuantileScale, QuantizeScale,
@@ -107,9 +120,9 @@ mod proof_tests {
         Annotation, BarFigure, BarMode, BarSeries, BoxplotFigure, CategoricalScale, ClassScale, ColorScale, CurveFigure, CurveSeries,
         DagEdge, DagFigure, DagNode, FocusSet, GapPolicy, HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, LabelOverflow,
         LegendEntry, LegendPosition, LegendSymbol, LinearScale, LogScale, MarkStyle, NumberFormat, PieFigure, PieSlice, PlotArea, PointRadius,
-        QuantizeScale, SankeyFigure, SankeyLink, SankeyNode, ScatterFigure, ScatterPoint, SymlogScale, TimeScale, TimelineEvent,
-        TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind, draw_annotation_overlays, draw_annotation_underlays, draw_colorbar,
-        draw_discrete_colorbar, entries_from_class_scale, measure_discrete_colorbar,
+        QuantizeScale, SankeyFigure, SankeyLink, SankeyNode, Scale, ScatterFigure, ScatterPoint, SymlogScale, TimeScale, TimelineEvent,
+        TimelineFigure, Viewport, WaterfallFigure, WaterfallItem, WaterfallKind, draw_annotation_overlays, draw_annotation_underlays,
+        draw_colorbar, draw_discrete_colorbar, entries_from_class_scale, measure_discrete_colorbar,
     };
 
     const WIDTH: u32 = 800;
@@ -2221,5 +2234,182 @@ mod proof_tests {
         uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_wave4b_stacked_bar_offset_option_backends.png"))
             .expect("stacked-bar offset-option multi-backend composite should write");
         assert!(diff.all_within_budget(), "stacked bar offset option: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    // ── Engine-strengthening WAVE 5 (Viewport pan/zoom/fit) — multi-
+    // backend proofs ────────────────────────────────────────────────────
+
+    const VIEWPORT_PANEL_WIDTH: f64 = 420.0;
+    const VIEWPORT_PANEL_HEIGHT: f64 = 300.0;
+
+    /// Deterministic 120-point fixture spanning a wide, ordinary numeric X
+    /// range — fixed formula, no RNG/time. Shared by every Wave 5 proof
+    /// below so the "unwindowed vs. windowed" panels are always the SAME
+    /// underlying series.
+    fn seeded_viewport_curve_figure() -> CurveFigure {
+        let points: Vec<(f64, f64)> = (0..120)
+            .map(|i| {
+                let x = i as f64 * 5.0;
+                let y = (x * 0.02).sin() * 30.0 + ((i * 7) % 13) as f64 - 6.0 + 50.0;
+                (x, y)
+            })
+            .collect();
+        CurveFigure::new(points)
+    }
+
+    /// **Zoom proof.** LEFT: the figure's own unwindowed full-domain
+    /// render. RIGHT: the SAME figure through a [`crate::interact::viewport::Viewport`]
+    /// zoomed 8x around the domain's own center — a real
+    /// [`CurveFigure::render_with_viewport`] call, not a synthetic crop.
+    #[test]
+    fn viewport_zoom_multi_backend_divergence_proof() {
+        let figure = seeded_viewport_curve_figure().with_title("full domain (no viewport)");
+        let full_domain = figure.x_scale().expect("120 points").domain();
+        let zoomed_figure = seeded_viewport_curve_figure().with_title("zoomed 8x (Viewport)");
+
+        let mut vp = Viewport::new(full_domain);
+        vp.zoom_at((full_domain.0 + full_domain.1) / 2.0, 8.0);
+
+        let render = MultiLegRender::capture((VIEWPORT_PANEL_WIDTH * 2.0) as u32, VIEWPORT_PANEL_HEIGHT as u32, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, VIEWPORT_PANEL_WIDTH, VIEWPORT_PANEL_HEIGHT), &theme_for_viewport_proofs());
+            zoomed_figure.render_with_viewport(
+                ctx,
+                Rect::new(VIEWPORT_PANEL_WIDTH, 0.0, VIEWPORT_PANEL_WIDTH, VIEWPORT_PANEL_HEIGHT),
+                &theme_for_viewport_proofs(),
+                &FigureOverlay::default(),
+                Some(&vp),
+            );
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[viewport-zoom] {line}");
+        }
+        print_urx_gpu_degrades("viewport-zoom", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_wave5_viewport_zoom_backends.png"))
+            .expect("viewport-zoom multi-backend composite should write");
+        assert!(diff.all_within_budget(), "viewport zoom: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// **Pan proof.** LEFT: a zoomed viewport window. RIGHT: the SAME
+    /// zoom level, panned 60% of a window-span to the right — proves pan
+    /// moves the visible window (not just zoom).
+    #[test]
+    fn viewport_pan_multi_backend_divergence_proof() {
+        let figure_before = seeded_viewport_curve_figure().with_title("zoomed (before pan)");
+        let figure_after = seeded_viewport_curve_figure().with_title("panned right (after pan)");
+        let full_domain = figure_before.x_scale().expect("120 points").domain();
+
+        let mut vp_before = Viewport::new(full_domain);
+        vp_before.zoom_at((full_domain.0 + full_domain.1) / 2.0, 5.0);
+        let mut vp_after = vp_before;
+        vp_after.pan(vp_after.span() * 0.6);
+
+        let render = MultiLegRender::capture((VIEWPORT_PANEL_WIDTH * 2.0) as u32, VIEWPORT_PANEL_HEIGHT as u32, |ctx| {
+            figure_before.render_with_viewport(
+                ctx,
+                Rect::new(0.0, 0.0, VIEWPORT_PANEL_WIDTH, VIEWPORT_PANEL_HEIGHT),
+                &theme_for_viewport_proofs(),
+                &FigureOverlay::default(),
+                Some(&vp_before),
+            );
+            figure_after.render_with_viewport(
+                ctx,
+                Rect::new(VIEWPORT_PANEL_WIDTH, 0.0, VIEWPORT_PANEL_WIDTH, VIEWPORT_PANEL_HEIGHT),
+                &theme_for_viewport_proofs(),
+                &FigureOverlay::default(),
+                Some(&vp_after),
+            );
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[viewport-pan] {line}");
+        }
+        print_urx_gpu_degrades("viewport-pan", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_wave5_viewport_pan_backends.png"))
+            .expect("viewport-pan multi-backend composite should write");
+        assert!(diff.all_within_budget(), "viewport pan: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// **Fit-to-data proof.** LEFT: a deeply zoomed viewport window.
+    /// RIGHT: the SAME viewport after [`crate::interact::viewport::Viewport::fit_to_data`]
+    /// — must look identical to the plain unwindowed render (own
+    /// `viewport_reset_and_fit_domain_correctness` regression in
+    /// `figure::curve` proves the underlying domain math; this composite
+    /// is the visual counterpart).
+    #[test]
+    fn viewport_fit_to_data_multi_backend_divergence_proof() {
+        let figure_zoomed = seeded_viewport_curve_figure().with_title("zoomed 12x (before fit)");
+        let figure_fit = seeded_viewport_curve_figure().with_title("fit_to_data (after fit)");
+        let full_domain = figure_zoomed.x_scale().expect("120 points").domain();
+
+        let mut vp_zoomed = Viewport::new(full_domain);
+        vp_zoomed.zoom_at((full_domain.0 + full_domain.1) / 2.0, 12.0);
+        let mut vp_fit = vp_zoomed;
+        vp_fit.fit_to_data();
+
+        let render = MultiLegRender::capture((VIEWPORT_PANEL_WIDTH * 2.0) as u32, VIEWPORT_PANEL_HEIGHT as u32, |ctx| {
+            figure_zoomed.render_with_viewport(
+                ctx,
+                Rect::new(0.0, 0.0, VIEWPORT_PANEL_WIDTH, VIEWPORT_PANEL_HEIGHT),
+                &theme_for_viewport_proofs(),
+                &FigureOverlay::default(),
+                Some(&vp_zoomed),
+            );
+            figure_fit.render_with_viewport(
+                ctx,
+                Rect::new(VIEWPORT_PANEL_WIDTH, 0.0, VIEWPORT_PANEL_WIDTH, VIEWPORT_PANEL_HEIGHT),
+                &theme_for_viewport_proofs(),
+                &FigureOverlay::default(),
+                Some(&vp_fit),
+            );
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[viewport-fit-to-data] {line}");
+        }
+        print_urx_gpu_degrades("viewport-fit-to-data", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_wave5_viewport_fit_backends.png"))
+            .expect("viewport-fit-to-data multi-backend composite should write");
+        assert!(diff.all_within_budget(), "viewport fit-to-data: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// **Tick re-derivation under zoom proof.** LEFT: the full domain's
+    /// own sparse ticks (a wide numeric range). RIGHT: a deep zoom into a
+    /// small sub-window — the axis must show a visibly DENSER (finer-step)
+    /// tick set re-derived from the WINDOW, never the leftover ticks from
+    /// the full domain (the item this crate's own audit named: "ticks must
+    /// re-derive for the visible window... the viewport must feed them,
+    /// not bypass them").
+    #[test]
+    fn viewport_dense_tick_redive_under_zoom_multi_backend_divergence_proof() {
+        let figure_full = seeded_viewport_curve_figure().with_title("full domain (sparse ticks)");
+        let figure_zoomed = seeded_viewport_curve_figure().with_title("deep zoom (dense re-derived ticks)");
+        let full_domain = figure_full.x_scale().expect("120 points").domain();
+
+        let mut vp = Viewport::new(full_domain);
+        vp.zoom_at((full_domain.0 + full_domain.1) / 2.0, 25.0);
+
+        let render = MultiLegRender::capture((VIEWPORT_PANEL_WIDTH * 2.0) as u32, VIEWPORT_PANEL_HEIGHT as u32, |ctx| {
+            figure_full.render(ctx, Rect::new(0.0, 0.0, VIEWPORT_PANEL_WIDTH, VIEWPORT_PANEL_HEIGHT), &theme_for_viewport_proofs());
+            figure_zoomed.render_with_viewport(
+                ctx,
+                Rect::new(VIEWPORT_PANEL_WIDTH, 0.0, VIEWPORT_PANEL_WIDTH, VIEWPORT_PANEL_HEIGHT),
+                &theme_for_viewport_proofs(),
+                &FigureOverlay::default(),
+                Some(&vp),
+            );
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[viewport-dense-tick-redive] {line}");
+        }
+        print_urx_gpu_degrades("viewport-dense-tick-redive", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_wave5_viewport_dense_ticks_backends.png"))
+            .expect("viewport-dense-tick-redive multi-backend composite should write");
+        assert!(diff.all_within_budget(), "viewport dense-tick re-derivation: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    fn theme_for_viewport_proofs() -> FigureTheme {
+        FigureTheme::dark()
     }
 }

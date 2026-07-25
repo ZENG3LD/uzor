@@ -214,6 +214,12 @@ impl Scale for LinearScale {
             TickPriority::Minor
         }
     }
+
+    /// A plain `LinearScale::new(min, max)` — see [`Scale::windowed`]'s
+    /// own doc comment for the seam this serves.
+    fn windowed(&self, min: f64, max: f64) -> Option<Box<dyn Scale>> {
+        Some(Box::new(LinearScale::new(min, max)))
+    }
 }
 
 #[cfg(test)]
@@ -310,5 +316,12 @@ mod tests {
         let scale = LinearScale::new(-100.0, 100.0);
         assert_eq!(scale.tick_priority(50.0), TickPriority::Minor);
         assert_eq!(scale.tick_priority(-50.0), TickPriority::Minor);
+    }
+
+    #[test]
+    fn windowed_rebuilds_a_linear_scale_over_the_given_bounds() {
+        let scale = LinearScale::new(0.0, 1000.0);
+        let windowed = scale.windowed(200.0, 300.0).expect("LinearScale supports windowing");
+        assert_eq!(windowed.domain(), (200.0, 300.0));
     }
 }

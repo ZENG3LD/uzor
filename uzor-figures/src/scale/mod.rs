@@ -176,6 +176,35 @@ pub trait Scale {
     fn tick_priority(&self, _v: f64) -> TickPriority {
         TickPriority::Minor
     }
+
+    /// Construct a NEW scale of the SAME concrete kind as `self`, with
+    /// domain `(min, max)` in place of this scale's own — the hook a
+    /// [`crate::interact::viewport::Viewport`]-driven figure uses to
+    /// render a DOMAIN WINDOW (whatever pan/zoom currently shows) instead
+    /// of this scale's own full extent (see that module's own docs for
+    /// the window model this closes the "NOT in this crate yet: zoom/pan"
+    /// gap with). `None` (the default) means this scale kind hasn't opted
+    /// in — every scale kind THIS crate ships overrides it
+    /// ([`crate::scale::LinearScale`]/[`crate::scale::LogScale`]/
+    /// [`crate::scale::SymlogScale`]/[`crate::scale::PowScale`]/
+    /// [`crate::scale::TimeScale`]; [`crate::scale::BandScale`]
+    /// deliberately does NOT — see that scale's own doc comment for why
+    /// categorical windowing is out of scope this pass). Nothing calls
+    /// this method before this item existed, so adding the default
+    /// changes NO existing behavior for any scale that doesn't override
+    /// it.
+    ///
+    /// This is also the seam a future `ScaleMode` (Manual/Auto/Focus
+    /// runtime auto-range policy — `nemo/docs/uzor-engines/plans/
+    /// engine-strengthening-arc-2026-07-24.md` Wave 3, NOT built yet) is
+    /// expected to reuse: resolving "what scale should this frame actually
+    /// render with" is the SAME "rebuild this scale's own kind over a
+    /// different `(min, max)`" operation whether the new bounds came from
+    /// a [`crate::interact::viewport::Viewport`]'s pan/zoom state or from
+    /// an auto-range recompute over the currently-visible data.
+    fn windowed(&self, _min: f64, _max: f64) -> Option<Box<dyn Scale>> {
+        None
+    }
 }
 
 #[cfg(test)]

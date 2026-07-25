@@ -156,6 +156,14 @@ impl Scale for SymlogScale {
             TickPriority::Minor
         }
     }
+
+    /// Preserves this scale's own `linear_threshold` (the linear/log
+    /// crossover magnitude is a per-scale CONFIG choice, not part of the
+    /// domain being windowed) — see [`Scale::windowed`]'s own doc comment
+    /// for the seam this serves.
+    fn windowed(&self, min: f64, max: f64) -> Option<Box<dyn Scale>> {
+        Some(Box::new(SymlogScale::with_linear_threshold(min, max, self.linear_threshold)))
+    }
 }
 
 /// Decimal precision for a tick at magnitude `v` — inside the linear zone
@@ -362,6 +370,15 @@ mod tests {
         for v in [0.25, -0.5, 0.75] {
             assert_eq!(scale.tick_priority(v), TickPriority::Minor, "linear-zone interior tick {v} must report Minor priority");
         }
+    }
+
+    #[test]
+    fn windowed_rebuilds_a_symlog_scale_over_the_given_bounds_preserving_linear_threshold() {
+        let scale = SymlogScale::with_linear_threshold(-1_000_000.0, 1_000_000.0, 50.0);
+        let windowed = scale.windowed(-500.0, 500.0).expect("SymlogScale supports windowing");
+        assert_eq!(windowed.domain(), (-500.0, 500.0));
+        let downcast_check = SymlogScale::with_linear_threshold(-500.0, 500.0, 50.0);
+        assert!((windowed.map(100.0) - downcast_check.map(100.0)).abs() < 1e-12, "windowed must preserve the ORIGINAL linear_threshold, not reset to the default");
     }
 
     #[test]

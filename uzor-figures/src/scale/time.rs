@@ -569,6 +569,15 @@ impl Scale for TimeScale {
             TickPriority::Minor
         }
     }
+
+    /// A plain `TimeScale::new(min_ts, max_ts)` — see [`Scale::windowed`]'s
+    /// own doc comment for the seam this serves. This is the concrete
+    /// case the harvest doc's own domain-vs-bar-index distinction is
+    /// about: a [`crate::interact::viewport::Viewport`] windows this
+    /// scale in real UTC SECONDS, never a bar/array position.
+    fn windowed(&self, min: f64, max: f64) -> Option<Box<dyn Scale>> {
+        Some(Box::new(TimeScale::new(min, max)))
+    }
 }
 
 #[cfg(test)]
@@ -800,5 +809,15 @@ mod tests {
         assert_eq!(scale.tick_priority(jan1_2024), TickPriority::Major, "a Year boundary must report Major priority");
         assert_eq!(scale.tick_priority(feb1_2024), TickPriority::Major, "a Month boundary must report Major priority");
         assert_eq!(scale.tick_priority(jan2_2024), TickPriority::Minor, "an ordinary Day boundary must report Minor priority");
+    }
+
+    #[test]
+    fn windowed_rebuilds_a_time_scale_over_the_given_unix_second_bounds() {
+        let jan1_2024 = ts(2024, 1, 1, 0, 0, 0);
+        let scale = TimeScale::new(jan1_2024, jan1_2024 + 90.0 * 86_400.0);
+        let window_start = jan1_2024 + 10.0 * 86_400.0;
+        let window_end = jan1_2024 + 20.0 * 86_400.0;
+        let windowed = scale.windowed(window_start, window_end).expect("TimeScale supports windowing");
+        assert_eq!(windowed.domain(), (window_start, window_end));
     }
 }
