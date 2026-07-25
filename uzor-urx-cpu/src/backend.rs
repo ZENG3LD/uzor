@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use uzor_urx_core::math::{Affine, Brush, Rect};
+use uzor_urx_core::math::{Affine, BezPath, Brush, Rect};
 use uzor_urx_core::scene::{DrawCommand, Scene};
 use uzor_urx_core::validate::{validate_command, ValidationIssue};
 
@@ -228,6 +228,9 @@ impl CpuBackend {
                         if r.iter().any(|v| *v > 0.0) {
                             // Round-corner stroke = stroke a flattened
                             // rounded path (uses scanline + capsules).
+                            // `stroke_path_aa` itself is dash-aware, so a
+                            // dashed rounded StrokeRect is already
+                            // correctly handled here with no extra branch.
                             let rr = uzor_urx_core::math::RoundedRect::from_rect(
                                 *rect,
                                 uzor_urx_core::math::RoundedRectRadii::new(
@@ -240,12 +243,32 @@ impl CpuBackend {
                             continue;
                         }
                     }
-                    stroke_rect_aa(target, &clip, *rect, stroke.width, color, transform);
+                    if stroke.dash.is_some() {
+                        // The fast `stroke_rect_aa` capsule path has no
+                        // notion of dashing — route a dashed plain rect
+                        // through the SAME dash-aware `stroke_path_aa`
+                        // the rounded case above already uses.
+                        let path = crate::path::rect_outline_path(*rect);
+                        crate::path::stroke_path_aa(target, &clip, &path, stroke, color, transform);
+                    } else {
+                        stroke_rect_aa(target, &clip, *rect, stroke.width, color, transform);
+                    }
                 }
                 DrawCommand::Line { from, to, stroke, brush, transform } => {
                     let color = brush_to_color(brush);
                     let target = layer_stack.current_target(pixmap);
-                    stroke_line_aa(target, &clip, *from, *to, stroke.width, color, transform);
+                    if stroke.dash.is_some() {
+                        // Same routing as the dashed StrokeRect arm above
+                        // — the fast `stroke_line_aa` capsule path can't
+                        // dash, so build a 2-point path and let
+                        // `stroke_path_aa` do the (dash-aware) work.
+                        let mut path = BezPath::new();
+                        path.move_to((from.x, from.y));
+                        path.line_to((to.x, to.y));
+                        crate::path::stroke_path_aa(target, &clip, &path, stroke, color, transform);
+                    } else {
+                        stroke_line_aa(target, &clip, *from, *to, stroke.width, color, transform);
+                    }
                 }
                 DrawCommand::FillPath { path, rule, brush, transform } => {
                     let target = layer_stack.current_target(pixmap);

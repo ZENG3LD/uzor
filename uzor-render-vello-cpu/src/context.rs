@@ -299,6 +299,15 @@ struct SavedState {
     fill_color:   Color,
     line_cap:     Cap,
     line_join:    Join,
+    /// Current dash pattern (Canvas2D's `setLineDash`) — `None` is a
+    /// plain solid stroke. Local/user-space lengths; `kurbo::Stroke`'s
+    /// own `dash_pattern`/`dash_offset` are applied by
+    /// `vello_common::flatten::expand_stroke` in the PATH's own
+    /// coordinate space, before `vello_cpu`'s `set_transform` affine is
+    /// applied to the resulting outline — so the active CTM scales the
+    /// dash pattern the same way it scales stroke width and path
+    /// geometry, matching `tiny-skia`'s own dashing order.
+    line_dash:    Option<Vec<f64>>,
     global_alpha: f64,
     font_info:    FontInfo,
     text_align:   TextAlign,
@@ -344,6 +353,8 @@ pub struct VelloCpuRenderContext {
     fill_color:   Color,
     line_cap:     Cap,
     line_join:    Join,
+    /// See `SavedState::line_dash`'s own doc comment.
+    line_dash:    Option<Vec<f64>>,
     global_alpha: f64,
     font_info:    FontInfo,
     text_align:   TextAlign,
@@ -419,6 +430,7 @@ impl VelloCpuRenderContext {
             fill_color:   Color::from_rgba8(0, 0, 0, 0),
             line_cap:     Cap::Butt,
             line_join:    Join::Miter,
+            line_dash:    None,
             global_alpha: 1.0,
             font_info:    FontInfo::default(),
             text_align:   TextAlign::Left,
@@ -514,13 +526,17 @@ impl VelloCpuRenderContext {
 
     /// Build a `kurbo::Stroke` from the current stroke state.
     fn current_stroke(&self) -> Stroke {
+        let dash_pattern: kurbo::Dashes = match &self.line_dash {
+            Some(pattern) => pattern.iter().copied().collect(),
+            None => Default::default(),
+        };
         Stroke {
             width:       self.stroke_width,
             join:        self.line_join,
             miter_limit: 4.0,
             start_cap:   self.line_cap,
             end_cap:     self.line_cap,
-            dash_pattern: Default::default(),
+            dash_pattern,
             dash_offset:  0.0,
         }
     }
@@ -569,6 +585,7 @@ impl VelloCpuRenderContext {
             fill_color:   self.fill_color,
             line_cap:     self.line_cap,
             line_join:    self.line_join,
+            line_dash:    self.line_dash.clone(),
             global_alpha: self.global_alpha,
             font_info:    self.font_info.clone(),
             text_align:   self.text_align,
@@ -586,6 +603,7 @@ impl VelloCpuRenderContext {
         self.fill_color   = s.fill_color;
         self.line_cap     = s.line_cap;
         self.line_join    = s.line_join;
+        self.line_dash    = s.line_dash.clone();
         self.global_alpha = s.global_alpha;
         self.font_info    = s.font_info.clone();
         self.text_align   = s.text_align;
@@ -680,11 +698,22 @@ impl Painter for VelloCpuRenderContext {
         }
     }
 
-    fn set_line_dash(&mut self, _pattern: &[f64]) {
-        // vello_cpu's Stroke has a dash_pattern field (smallvec-based), but
-        // constructing a dashed stroke requires the Stroke builder pattern.
-        // Dash support is a known limitation of this backend; calls are silently
-        // accepted to keep the interface compatible.
+    fn set_line_dash(&mut self, pattern: &[f64]) {
+        // The old comment here claimed constructing a dashed
+        // `kurbo::Stroke` "requires the Stroke builder pattern" as if
+        // that were a blocker — checked against the pinned `kurbo`
+        // 0.13.1 source: `dash_pattern`/`dash_offset` are PLAIN PUBLIC
+        // fields (`kurbo::stroke::Stroke`), already set via a struct
+        // literal exactly like every other field `current_stroke`
+        // builds below. No builder rework needed, no shared dasher
+        // needed either — `vello_common::flatten::stroke` (what
+        // `vello_cpu::RenderContext::stroke_path` calls internally)
+        // already runs `kurbo::stroke_with`, which expands
+        // `dash_pattern`/`dash_offset` into the stroked outline BEFORE
+        // `set_transform`'s affine is applied — the same dash-before-
+        // transform order `tiny-skia`'s `StrokeDash` uses (see
+        // `SavedState::line_dash`'s own doc comment).
+        self.line_dash = if pattern.is_empty() { None } else { Some(pattern.to_vec()) };
     }
 
     fn set_line_cap(&mut self, cap: &str) {
@@ -1566,5 +1595,78 @@ mod tests {
 
         let p = ctx.transform * kurbo::Point::new(5.0, 5.0);
         assert!((p.x - 20.0).abs() < 1e-9 && (p.y - 35.0).abs() < 1e-9, "got {p:?}");
+    }
+
+    // ── Dash pattern wiring (defect fix: `set_line_dash` used to be a
+    // silent no-op — every dashed stroke rendered solid) ──────────────
+
+    #[test]
+    fn set_line_dash_populates_current_strokes_dash_pattern() {
+        let mut ctx = VelloCpuRenderContext::new(1.0);
+        ctx.set_line_dash(&[5.0, 3.0]);
+        let stroke = ctx.current_stroke();
+        assert_eq!(stroke.dash_pattern.as_slice(), &[5.0, 3.0]);
+        assert_eq!(stroke.dash_offset, 0.0);
+    }
+
+    #[test]
+    fn set_line_dash_empty_pattern_clears_a_previously_set_dash() {
+        let mut ctx = VelloCpuRenderContext::new(1.0);
+        ctx.set_line_dash(&[5.0, 3.0]);
+        ctx.set_line_dash(&[]);
+        let stroke = ctx.current_stroke();
+        assert!(stroke.dash_pattern.is_empty());
+    }
+
+    #[test]
+    fn save_restore_preserves_the_dash_pattern() {
+        let mut ctx = VelloCpuRenderContext::new(1.0);
+        ctx.save();
+        ctx.set_line_dash(&[5.0, 3.0]);
+        ctx.restore();
+        // `set_line_dash` happened AFTER `save()`, so `restore()` must
+        // pop it back to "no dash" — same save/restore contract every
+        // other stroke-state field on this context already honours.
+        assert!(ctx.current_stroke().dash_pattern.is_empty());
+    }
+
+    /// A dashed stroke must rasterize to MULTIPLE disjoint ink runs
+    /// along the line, not one continuous solid run — the exact defect
+    /// this fix closes (`set_line_dash` was previously a no-op, so
+    /// every dashed reference-line/crosshair guide rendered solid on
+    /// this backend).
+    #[test]
+    fn dashed_stroke_rasterizes_to_multiple_disjoint_ink_runs() {
+        const W: u16 = 100;
+        const H: u16 = 10;
+        let mut ctx = VelloCpuRenderContext::new(1.0);
+        ctx.begin_frame(W as u32, H as u32);
+        ctx.set_fill_color("#000000");
+        ShapeHelpers::fill_rect(&mut ctx, 0.0, 0.0, W as f64, H as f64);
+        ctx.set_stroke_color("#ffffff");
+        ctx.set_stroke_width(4.0);
+        ctx.set_line_dash(&[10.0, 10.0]);
+        ctx.begin_path();
+        ctx.move_to(0.0, 5.0);
+        ctx.line_to(W as f64, 5.0);
+        Painter::stroke(&mut ctx);
+
+        let mut buf = vec![0u8; W as usize * H as usize * 4];
+        ctx.render_to_pixmap_rgba8(&mut buf, W, H);
+
+        // Walk the stroke's own row and count transitions into a
+        // "covered" (bright, premultiplied-white) run.
+        let y = 5usize;
+        let mut runs = 0usize;
+        let mut was_covered = false;
+        for x in 0..W as usize {
+            let idx = (y * W as usize + x) * 4;
+            let covered = buf[idx] > 128;
+            if covered && !was_covered {
+                runs += 1;
+            }
+            was_covered = covered;
+        }
+        assert!(runs >= 3, "expected multiple disjoint dash runs along the stroke, got {runs} run(s)");
     }
 }

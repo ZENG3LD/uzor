@@ -8,12 +8,26 @@
 use crate::math::{Affine, BezPath, BlendMode, Brush, Color, Rect, RoundedRect, Vec2};
 
 /// Stroke parameters for line/path stroking.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// Not `Copy` (the `dash` field owns a `Vec`) — every pre-existing
+/// construction site across urx-cpu/urx-wgpu/render-urx uses the
+/// `Stroke { .., ..Stroke::default() }` functional-update form (never a
+/// positional tuple), which keeps compiling unchanged since `dash`
+/// defaults to `None`; the one call site that used to dereference a
+/// `&Stroke` to copy it (`uzor-urx-wgpu/src/encode.rs::tess_stroke_scaled`)
+/// now clones instead — `Option<Dash>::None`'s own `Clone` is a plain
+/// tag copy, no heap traffic, so the overwhelmingly common no-dash case
+/// stays cheap.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Stroke {
     pub width:     f32,
     pub miter_limit: f32,
     pub join:      LineJoin,
     pub cap:       LineCap,
+    /// Dash pattern, if any. `None` (the default) is a plain solid
+    /// stroke — see [`Dash`]'s own doc comment for the pattern/phase
+    /// shape and coordinate-space contract.
+    pub dash:      Option<Dash>,
 }
 
 impl Default for Stroke {
@@ -23,8 +37,38 @@ impl Default for Stroke {
             miter_limit: 10.0,
             join: LineJoin::Miter,
             cap: LineCap::Butt,
+            dash: None,
         }
     }
+}
+
+/// Dash pattern for a stroke — the SVG/Canvas2D model: alternating
+/// on/off segment lengths (`pattern[0]` = first "on" run) walked
+/// cyclically along the stroked geometry's own arc length, starting
+/// `phase` units into the first entry (Canvas2D's `lineDashOffset`).
+///
+/// **Coordinate space**: `pattern`/`phase` are in the SAME (pre-
+/// transform, local/user-space) units as the owning `DrawCommand`'s own
+/// geometry — the command's `transform` scales the whole dashed result
+/// exactly like it scales the path itself. This is checked against
+/// `tiny-skia`'s own `StrokeDash` (this workspace's known-correct
+/// reference: `tiny-skia` dashes a path in ITS OWN coordinate space
+/// before the affine transform is applied, per `Pixmap::stroke_path`'s
+/// own `(path, paint, stroke, transform, clip)` argument order) —
+/// dashing at the LOCAL-space geometry level, before any per-backend
+/// transform/projection step, reproduces that same CTM-scales-the-dash-
+/// pattern behavior on every URX backend without each one needing its
+/// own transform-aware arc-length walk.
+///
+/// An odd-length `pattern` is walked TWICE per Canvas2D's own
+/// `setLineDash` spec (`[a, b, c]` behaves as `[a, b, c, a, b, c]`) —
+/// `uzor_urx_core::dash::dash_path` (this crate's shared dasher, reused
+/// by every URX backend) honours this via `kurbo::dash`'s own identical
+/// rule; callers never need to double the array themselves.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dash {
+    pub pattern: Vec<f32>,
+    pub phase:   f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

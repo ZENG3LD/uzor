@@ -22,8 +22,8 @@ use peniko::{
 };
 
 use uzor_urx_core::scene::{
-    DrawCommand, FillRule, FontId, Glyph, LineCap as UrxLineCap, LineJoin as UrxLineJoin, Scene,
-    Stroke as UrxStroke,
+    Dash as UrxDash, DrawCommand, FillRule, FontId, Glyph, LineCap as UrxLineCap,
+    LineJoin as UrxLineJoin, Scene, Stroke as UrxStroke,
 };
 
 use uzor::fonts::{self, FontFamily};
@@ -76,6 +76,14 @@ struct SavedState {
     stroke_width:  f64,
     line_cap:      Cap,
     line_join:     Join,
+    /// Current dash pattern (Canvas2D's `setLineDash`) — `None` is a
+    /// plain solid stroke. Local/user-space lengths, same coordinate
+    /// space `stroke_width` and every path coordinate already use — see
+    /// `uzor_urx_core::scene::Dash`'s own doc comment for why that
+    /// space is the correct one (the emitted `DrawCommand`'s own
+    /// `transform` field scales the pattern the same way it scales the
+    /// rest of the geometry).
+    line_dash:     Option<Vec<f64>>,
     global_alpha:  f64,
     font_info:     FontInfo,
     text_align:    TextAlign,
@@ -120,6 +128,8 @@ pub struct UrxRenderContext {
     stroke_width:  f64,
     line_cap:      Cap,
     line_join:     Join,
+    /// See `SavedState::line_dash`'s own doc comment.
+    line_dash:     Option<Vec<f64>>,
     global_alpha:  f64,
     font_info:     FontInfo,
     text_align:    TextAlign,
@@ -153,6 +163,7 @@ impl UrxRenderContext {
             stroke_width:  1.0,
             line_cap:      Cap::Butt,
             line_join:     Join::Miter,
+            line_dash:     None,
             global_alpha:  1.0,
             font_info:     FontInfo::default(),
             text_align:    TextAlign::Left,
@@ -278,6 +289,14 @@ impl UrxRenderContext {
             miter_limit: 4.0,
             cap:         to_urx_cap(self.line_cap),
             join:        to_urx_join(self.line_join),
+            dash:        self.line_dash.as_ref().map(|pattern| UrxDash {
+                pattern: pattern.iter().map(|&v| v as f32).collect(),
+                // Canvas2D's `lineDashOffset` has no `Painter`-trait
+                // setter (only `set_line_dash(pattern)` exists) — every
+                // dash always starts at phase 0 until the trait grows
+                // one.
+                phase: 0.0,
+            }),
         }
     }
 
@@ -349,6 +368,7 @@ impl Painter for UrxRenderContext {
             stroke_width:  self.stroke_width,
             line_cap:      self.line_cap,
             line_join:     self.line_join,
+            line_dash:     self.line_dash.clone(),
             global_alpha:  self.global_alpha,
             font_info:     self.font_info.clone(),
             text_align:    self.text_align,
@@ -372,6 +392,7 @@ impl Painter for UrxRenderContext {
             self.stroke_width  = s.stroke_width;
             self.line_cap      = s.line_cap;
             self.line_join     = s.line_join;
+            self.line_dash     = s.line_dash;
             self.global_alpha  = s.global_alpha;
             self.font_info     = s.font_info;
             self.text_align    = s.text_align;
@@ -402,10 +423,13 @@ impl Painter for UrxRenderContext {
     fn set_stroke_color(&mut self, color: &str) { self.stroke_color = parse_color(color); }
     fn set_stroke_width(&mut self, width: f64) { self.stroke_width = width; }
     fn set_global_alpha(&mut self, alpha: f64) { self.global_alpha = alpha.clamp(0.0, 1.0); }
-    fn set_line_dash(&mut self, _pattern: &[f64]) {
-        // urx_core::Stroke has no dash field yet — consumers requesting
-        // dashes through Painter currently get a solid stroke. Tracked
-        // upstream; when DrawCommand learns dashes, wire here.
+    fn set_line_dash(&mut self, pattern: &[f64]) {
+        // Canvas2D semantics: an empty pattern clears dashing back to a
+        // solid stroke (mirrors `uzor-render-tiny-skia::set_line_dash`'s
+        // identical `is_empty()` check — the reference-correct backend
+        // this crate's own `current_stroke` doc comments already point
+        // to elsewhere in this file).
+        self.line_dash = if pattern.is_empty() { None } else { Some(pattern.to_vec()) };
     }
     fn set_line_cap(&mut self, cap: &str) {
         self.line_cap = match cap {
@@ -1020,6 +1044,47 @@ mod tests {
                 assert_eq!(rect.y1, 60.0);
             }
             other => panic!("expected FillRect, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_line_dash_carries_the_pattern_onto_the_emitted_stroke_path() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        ctx.set_stroke_color("#ffffff");
+        Painter::set_line_dash(&mut ctx, &[5.0, 3.0]);
+        ctx.begin_path();
+        ctx.move_to(0.0, 0.0);
+        ctx.line_to(10.0, 0.0);
+        Painter::stroke(&mut ctx);
+        let scene = ctx.take_scene();
+        assert_eq!(scene.commands.len(), 1);
+        match &scene.commands[0] {
+            DrawCommand::StrokePath { stroke, .. } => {
+                let dash = stroke.dash.as_ref().expect("dashed stroke() must carry a Some(Dash)");
+                assert_eq!(dash.pattern, vec![5.0, 3.0]);
+            }
+            other => panic!("expected StrokePath, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_line_dash_empty_clears_a_previously_set_pattern() {
+        let mut ctx = UrxRenderContext::new(1.0);
+        ctx.begin_frame(100, 100);
+        ctx.set_stroke_color("#ffffff");
+        Painter::set_line_dash(&mut ctx, &[5.0, 3.0]);
+        Painter::set_line_dash(&mut ctx, &[]);
+        ctx.begin_path();
+        ctx.move_to(0.0, 0.0);
+        ctx.line_to(10.0, 0.0);
+        Painter::stroke(&mut ctx);
+        let scene = ctx.take_scene();
+        match &scene.commands[0] {
+            DrawCommand::StrokePath { stroke, .. } => {
+                assert!(stroke.dash.is_none(), "an empty pattern must clear dashing back to solid");
+            }
+            other => panic!("expected StrokePath, got {:?}", other),
         }
     }
 

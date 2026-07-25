@@ -38,6 +38,10 @@
 //!   `uzor-urx-wgpu`'s native glyph pipeline (GPU) so a LUT built from
 //!   the same curve is byte-identical on both backends (URX text-gamma
 //!   compositing design, 2026-07-26, §2.3 Commit 1).
+//! - [`dash`] — shared dash-pattern geometry expansion (`Stroke.dash` ->
+//!   a multi-subpath `BezPath`), reused by `uzor-urx-cpu`'s capsule
+//!   stroker and `uzor-urx-wgpu`'s lyon tessellation path so both
+//!   backends dash off the exact same `kurbo::dash`-derived geometry.
 
 pub mod math;
 pub mod scene;
@@ -50,6 +54,7 @@ pub mod validate;
 pub mod config;
 pub mod gradient_lut;
 pub mod text_gamma;
+pub mod dash;
 
 /// wgpu::PipelineCache disk persistence helpers (opt-in feature
 /// `pipeline-cache`). Adds wgpu as a direct dep when enabled.
@@ -60,7 +65,8 @@ pub mod pipeline_cache;
 pub mod pipeline_cache;
 
 pub use math::{Affine, BezPath, Point, Rect, Size, Vec2};
-pub use scene::{DrawCommand, FillRule, Glyph, ImageId, Scene, Stroke};
+pub use scene::{Dash, DrawCommand, FillRule, Glyph, ImageId, Scene, Stroke};
+pub use dash::dash_path;
 pub use dirty::{DirtyRect, DirtyState};
 pub use region::{CacheKey, CachedRegion, RegionId};
 pub use skeleton::{SkeletonFrame, SkeletonSpec};

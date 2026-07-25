@@ -22,7 +22,7 @@
 //! "silent skip + counter" rather than "crash the frame".
 
 use crate::math::{Affine, BezPath, Point, Rect, RoundedRect, Vec2};
-use crate::scene::{DrawCommand, Scene};
+use crate::scene::{Dash, DrawCommand, Scene};
 
 /// True iff every coordinate of the rect is finite (no NaN, no ±Inf).
 #[inline]
@@ -90,6 +90,21 @@ pub fn is_finite_radii_opt(r: &Option<[f32; 4]>) -> bool {
     }
 }
 
+/// True iff `Stroke.dash` is either absent, or every `pattern` entry
+/// plus `phase` is finite. Does NOT reject a negative/all-zero
+/// `pattern` here — `uzor_urx_core::dash::dash_path`'s own
+/// `is_valid_pattern` already degrades those to "no dashing" safely
+/// (never panics), so this check stays scoped to the same NaN/±Inf
+/// class every other `is_finite_*` helper in this module guards
+/// against, not a duplicate of that separate, already-safe fallback.
+#[inline]
+pub fn is_finite_dash_opt(d: &Option<Dash>) -> bool {
+    match d {
+        None => true,
+        Some(dash) => dash.phase.is_finite() && dash.pattern.iter().all(|v| v.is_finite()),
+    }
+}
+
 /// Verdict for one primitive inspected by [`validate_command`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValidationIssue {
@@ -121,6 +136,7 @@ pub fn validate_command(cmd: &DrawCommand) -> Result<(), ValidationIssue> {
                 || !is_finite_radii_opt(radii)
                 || !stroke.width.is_finite()
                 || !stroke.miter_limit.is_finite()
+                || !is_finite_dash_opt(&stroke.dash)
             {
                 return Err(ValidationIssue::NonFinite);
             }
@@ -131,6 +147,7 @@ pub fn validate_command(cmd: &DrawCommand) -> Result<(), ValidationIssue> {
                 || !is_finite_affine(*transform)
                 || !stroke.width.is_finite()
                 || !stroke.miter_limit.is_finite()
+                || !is_finite_dash_opt(&stroke.dash)
             {
                 return Err(ValidationIssue::NonFinite);
             }
@@ -145,6 +162,7 @@ pub fn validate_command(cmd: &DrawCommand) -> Result<(), ValidationIssue> {
         DrawCommand::StrokePath { path, stroke, brush: _, transform } => {
             if !is_finite_affine(*transform) || !is_finite_bezpath(path)
                 || !stroke.width.is_finite() || !stroke.miter_limit.is_finite()
+                || !is_finite_dash_opt(&stroke.dash)
             {
                 return Err(ValidationIssue::NonFinite);
             }
@@ -359,6 +377,40 @@ mod tests {
             transform: Affine::IDENTITY,
         };
         assert_eq!(validate_command(&cmd), Err(ValidationIssue::NonFinite));
+    }
+
+    #[test]
+    fn validate_command_flags_nan_in_a_dash_pattern_on_a_stroke_path() {
+        let mut p = BezPath::new();
+        p.move_to(Point::new(0.0, 0.0));
+        p.line_to(Point::new(10.0, 10.0));
+        let cmd = DrawCommand::StrokePath {
+            path: p,
+            stroke: crate::scene::Stroke {
+                dash: Some(crate::scene::Dash { pattern: vec![10.0, f32::NAN], phase: 0.0 }),
+                ..crate::scene::Stroke::default()
+            },
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
+            transform: Affine::IDENTITY,
+        };
+        assert_eq!(validate_command(&cmd), Err(ValidationIssue::NonFinite));
+    }
+
+    #[test]
+    fn validate_command_accepts_a_finite_dash_pattern() {
+        let mut p = BezPath::new();
+        p.move_to(Point::new(0.0, 0.0));
+        p.line_to(Point::new(10.0, 10.0));
+        let cmd = DrawCommand::StrokePath {
+            path: p,
+            stroke: crate::scene::Stroke {
+                dash: Some(crate::scene::Dash { pattern: vec![5.0, 3.0], phase: 1.0 }),
+                ..crate::scene::Stroke::default()
+            },
+            brush: Brush::Solid(Color::from_rgba8(0, 0, 0, 255)),
+            transform: Affine::IDENTITY,
+        };
+        assert!(validate_command(&cmd).is_ok());
     }
 
     #[test]

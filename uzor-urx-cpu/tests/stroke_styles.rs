@@ -18,7 +18,7 @@ fn render_corner(join: LineJoin) -> Pixmap {
     let mut scene = Scene::new();
     scene.push(DrawCommand::StrokePath {
         path,
-        stroke: Stroke { width: 8.0, miter_limit: 10.0, join, cap: LineCap::Butt },
+        stroke: Stroke { width: 8.0, miter_limit: 10.0, join, cap: LineCap::Butt, dash: None },
         brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
         transform: Affine::IDENTITY,
     });
@@ -61,7 +61,7 @@ fn miter_paints_more_pixels_than_bevel() {
         let mut scene = Scene::new();
         scene.push(DrawCommand::StrokePath {
             path,
-            stroke: Stroke { width: 6.0, miter_limit: 20.0, join, cap: LineCap::Butt },
+            stroke: Stroke { width: 6.0, miter_limit: 20.0, join, cap: LineCap::Butt, dash: None },
             brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
             transform: Affine::IDENTITY,
         });
@@ -97,7 +97,7 @@ fn miter_limit_falls_back_to_bevel_at_sharp_angle() {
         let mut scene = Scene::new();
         scene.push(DrawCommand::StrokePath {
             path,
-            stroke: Stroke { width: 8.0, miter_limit, join, cap: LineCap::Butt },
+            stroke: Stroke { width: 8.0, miter_limit, join, cap: LineCap::Butt, dash: None },
             brush: Brush::Solid(Color::from_rgba8(255, 0, 0, 255)),
             transform: Affine::IDENTITY,
         });
@@ -121,7 +121,7 @@ fn round_cap_extends_endpoint() {
         let mut scene = Scene::new();
         scene.push(DrawCommand::StrokePath {
             path,
-            stroke: Stroke { width: 8.0, miter_limit: 10.0, join: LineJoin::Round, cap },
+            stroke: Stroke { width: 8.0, miter_limit: 10.0, join: LineJoin::Round, cap, dash: None },
             brush: Brush::Solid(Color::from_rgba8(0, 0, 200, 255)),
             transform: Affine::IDENTITY,
         });

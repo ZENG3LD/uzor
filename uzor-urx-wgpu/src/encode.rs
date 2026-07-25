@@ -1030,11 +1030,42 @@ fn local_stroke_width(stroke_width: f32, transform: &Affine) -> f32 {
 /// cache naturally re-keys per distinct effective scale (the disclosed
 /// cost design §0.2 accepts). ONE shared call site for every
 /// Triangle-routed stroke (`StrokePath`, gradient-brushed `StrokeRect`,
-/// non-uniform-radii/sheared solid `StrokeRect`) so the unification
-/// can't accidentally apply to only some of them.
+/// non-uniform-radii/sheared/dashed solid `StrokeRect`, dashed `Line`)
+/// so the unification can't accidentally apply to only some of them.
+///
+/// `..stroke.clone()` (not `..*stroke`) — `Stroke` stopped being `Copy`
+/// once `dash: Option<Dash>` (a `Vec`-backed field) landed; see
+/// `uzor_urx_core::scene::Stroke`'s own doc comment. Every caller of
+/// this fn already resolved dashing (if any) into `path`'s own geometry
+/// beforehand via [`resolve_dash`] and passes a `dash: None` stroke, so
+/// this clone is cheap in practice (`Option::None`'s own `Clone` is a
+/// plain tag copy), not a hidden per-call heap allocation.
 fn tess_stroke_scaled(tess_cache: &mut TessCache, path: &BezPath, stroke: &Stroke, transform: &Affine) -> Arc<TessMesh> {
-    let adjusted = Stroke { width: local_stroke_width(stroke.width, transform), ..*stroke };
+    let adjusted = Stroke { width: local_stroke_width(stroke.width, transform), ..stroke.clone() };
     tess_cache.get_or_insert_stroke(path, &adjusted)
+}
+
+/// If `stroke` carries a dash pattern, expand `path`'s own LOCAL-space
+/// geometry into its dashed multi-subpath form via
+/// `uzor_urx_core::dash::dash_path` (see that fn's own doc comment —
+/// dashing happens BEFORE this backend's width/transform unification,
+/// matching tiny-skia's CTM-scales-the-pattern semantic) and return it
+/// paired with a dash-STRIPPED `Stroke` clone (the dashing has already
+/// been "spent" into the returned path, so nothing downstream needs to
+/// see `stroke.dash` again — in particular `TessKey::for_stroke` never
+/// needs to hash it, since the DASHED geometry itself already
+/// differentiates the cache key from the undashed path). Returns
+/// `path.clone()` + `stroke.clone()` unchanged when there's no dash —
+/// the common case, still one clone either way since `Stroke` isn't
+/// `Copy` (see `tess_stroke_scaled`'s own doc comment).
+fn resolve_dash(path: &BezPath, stroke: &Stroke) -> (BezPath, Stroke) {
+    match &stroke.dash {
+        Some(dash) => {
+            let dashed = uzor_urx_core::dash::dash_path(path, dash);
+            (dashed, Stroke { dash: None, ..stroke.clone() })
+        }
+        None => (path.clone(), stroke.clone()),
+    }
 }
 
 /// `atlas` is `Option<&mut NativeGlyphAtlas>` rather than the design's
@@ -1252,7 +1283,7 @@ pub(crate) fn encode_scene(
             }
             DrawCommand::Line { from, to, stroke, brush, transform } => {
                 let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
-                encode_line(&mut frame, *from, *to, stroke, brush, transform, clip_rect);
+                encode_line(&mut frame, tess_cache, *from, *to, stroke, brush, transform, clip_rect);
             }
             DrawCommand::FillPath { path, rule, brush, transform } => {
                 let Some(clip_rect) = active_clip(&clip, &mut frame) else { continue };
@@ -1649,7 +1680,8 @@ fn encode_stroke_rect(
 
     if let Brush::Gradient(g) = brush {
         let path = rect_bez_path(rect, radii);
-        let mesh = tess_stroke_scaled(tess_cache, &path, stroke, transform);
+        let (path, stroke) = resolve_dash(&path, stroke);
+        let mesh = tess_stroke_scaled(tess_cache, &path, &stroke, transform);
         emit_gradient_mesh(frame, lut, &mesh, g, transform, clip_rect);
         return;
     }
@@ -1659,39 +1691,48 @@ fn encode_stroke_rect(
         degrade("native_strokerect_image_to_solid");
     }
 
-    if let Some(uniform_r) = uniform_radius(radii) {
-        if let Some((sx, sy, angle, _, _)) = decompose_similarity(transform) {
-            let normalized = rect.abs();
-            let w = normalized.width() * sx;
-            let h = normalized.height() * sy;
-            if w <= 0.0 || h <= 0.0 {
+    // The fast Quad-SDF border path (below) has no notion of dashing —
+    // a dashed StrokeRect (rounded or not) always routes through the
+    // Triangle pipeline via `rect_bez_path` + `resolve_dash`, the same
+    // way a sheared transform or non-uniform radii already do.
+    if stroke.dash.is_none() {
+        if let Some(uniform_r) = uniform_radius(radii) {
+            if let Some((sx, sy, angle, _, _)) = decompose_similarity(transform) {
+                let normalized = rect.abs();
+                let w = normalized.width() * sx;
+                let h = normalized.height() * sy;
+                if w <= 0.0 || h <= 0.0 {
+                    return;
+                }
+                let scale = ((sx + sy) * 0.5) as f32;
+                let center = transform_point_full(transform, rect_center(normalized));
+                let pos = [(center.x - w * 0.5) as f32, (center.y - h * 0.5) as f32];
+                let border_width = stroke.width.max(0.0); // §0.2: device-constant, no scale multiply
+
+                frame.push_quad(QuadInstance {
+                    pos,
+                    size: [w as f32, h as f32],
+                    // Fully transparent fill — a StrokeRect draws only the
+                    // border band; see the centered-border fragment-shader
+                    // formula.
+                    color: 0,
+                    border_color: packed_color(color),
+                    corner_radius: uniform_r * scale,
+                    border_width,
+                    _pad0: [angle as f32, 0.0],
+                    clip_rect,
+                });
                 return;
             }
-            let scale = ((sx + sy) * 0.5) as f32;
-            let center = transform_point_full(transform, rect_center(normalized));
-            let pos = [(center.x - w * 0.5) as f32, (center.y - h * 0.5) as f32];
-            let border_width = stroke.width.max(0.0); // §0.2: device-constant, no scale multiply
-
-            frame.push_quad(QuadInstance {
-                pos,
-                size: [w as f32, h as f32],
-                // Fully transparent fill — a StrokeRect draws only the
-                // border band; see the centered-border fragment-shader
-                // formula.
-                color: 0,
-                border_color: packed_color(color),
-                corner_radius: uniform_r * scale,
-                border_width,
-                _pad0: [angle as f32, 0.0],
-                clip_rect,
-            });
-            return;
+            degrade("native_rect_shear_to_triangle_pipeline");
         }
-        degrade("native_rect_shear_to_triangle_pipeline");
+    } else {
+        degrade("native_strokerect_dash_to_triangle_pipeline");
     }
 
     let path = rect_bez_path(rect, radii);
-    let mesh = tess_stroke_scaled(tess_cache, &path, stroke, transform);
+    let (path, stroke) = resolve_dash(&path, stroke);
+    let mesh = tess_stroke_scaled(tess_cache, &path, &stroke, transform);
     emit_solid_mesh(frame, &mesh, transform, packed_color(color), clip_rect);
 }
 
@@ -1713,6 +1754,7 @@ fn encode_stroke_rect(
 /// degrades to Round, counted `native_line_square_cap_to_round`.
 fn encode_line(
     frame: &mut EncodedFrame,
+    tess_cache: &mut TessCache,
     from: Vec2,
     to: Vec2,
     stroke: &Stroke,
@@ -1727,14 +1769,32 @@ fn encode_line(
         BrushKind::Solid => {}
     }
 
-    let from_p = transform_point_full(transform, Point::new(from.x, from.y));
-    let to_p = transform_point_full(transform, Point::new(to.x, to.y));
-    let start = [from_p.x as f32, from_p.y as f32];
-    let end = [to_p.x as f32, to_p.y as f32];
     let width = stroke.width.max(0.0); // §0.2: device-constant, no scale multiply
     if width <= 0.0 {
         return;
     }
+
+    if stroke.dash.is_some() {
+        // The fast `LineInstance` capsule shader has no notion of
+        // dashing — build a 2-point LOCAL-space path and route through
+        // the SAME Triangle pipeline `encode_stroke_path` uses (always
+        // solid-color here — a plain `Line` never supports gradients at
+        // all, degraded to solid above already; the dashed case doesn't
+        // grow that pre-existing gap).
+        degrade("native_line_dash_to_triangle_pipeline");
+        let mut path = BezPath::new();
+        path.move_to(Point::new(from.x, from.y));
+        path.line_to(Point::new(to.x, to.y));
+        let (path, stroke) = resolve_dash(&path, stroke);
+        let mesh = tess_stroke_scaled(tess_cache, &path, &stroke, transform);
+        emit_solid_mesh(frame, &mesh, transform, packed_color(color), clip_rect);
+        return;
+    }
+
+    let from_p = transform_point_full(transform, Point::new(from.x, from.y));
+    let to_p = transform_point_full(transform, Point::new(to.x, to.y));
+    let start = [from_p.x as f32, from_p.y as f32];
+    let end = [to_p.x as f32, to_p.y as f32];
 
     let cap_flags = match stroke.cap {
         LineCap::Round => 0.0,
@@ -1829,8 +1889,9 @@ fn encode_stroke_path(
     if stroke.width <= 0.0 {
         return;
     }
+    let (path, stroke) = resolve_dash(path, stroke);
     if let Brush::Gradient(g) = brush {
-        let mesh = tess_stroke_scaled(tess_cache, path, stroke, transform);
+        let mesh = tess_stroke_scaled(tess_cache, &path, &stroke, transform);
         emit_gradient_mesh(frame, lut, &mesh, g, transform, clip_rect);
         return;
     }
@@ -1838,7 +1899,7 @@ fn encode_stroke_path(
     if matches!(kind, BrushKind::Image) {
         degrade("native_strokepath_image_to_solid");
     }
-    let mesh = tess_stroke_scaled(tess_cache, path, stroke, transform);
+    let mesh = tess_stroke_scaled(tess_cache, &path, &stroke, transform);
     emit_solid_mesh(frame, &mesh, transform, packed_color(color), clip_rect);
 }
 
@@ -2274,6 +2335,135 @@ mod tests {
         );
         let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
         assert!(frame.lines.is_empty());
+    }
+
+    // ── Dash pattern (defect fix: `Stroke.dash` used to be silently
+    // dropped — every dashed Line/StrokeRect/StrokePath rasterized
+    // solid). A dashed primitive has no fast Quad-SDF/Line-instance
+    // representation, so it always routes through the Triangle
+    // pipeline (same routing convention a sheared transform / non-
+    // uniform radii already use) — these tests prove the routing AND
+    // that the resulting mesh actually has GAPS (multiple disjoint
+    // x-ranges of triangle coverage), not just "some triangles."
+
+    fn max_x_span_covering(triangles: &[TriInstance], probe_x: f32) -> bool {
+        // True iff ANY triangle's own x-extent straddles `probe_x` —
+        // used to prove a specific x-position IS or ISN'T covered by
+        // the dashed mesh, i.e. that gaps are real geometry gaps, not
+        // just "fewer triangles overall."
+        triangles.iter().any(|t| {
+            let xs = [t.v0[0], t.v1[0], t.v2[0]];
+            let (min_x, max_x) = xs.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &x| (lo.min(x), hi.max(x)));
+            probe_x >= min_x && probe_x <= max_x
+        })
+    }
+
+    #[test]
+    fn dashed_line_routes_through_triangle_pipeline_not_the_fast_line_batch() {
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::Line {
+            from: Vec2 { x: 0.0, y: 0.0 },
+            to: Vec2 { x: 100.0, y: 0.0 },
+            stroke: SceneStroke {
+                width: 4.0,
+                dash: Some(uzor_urx_core::scene::Dash { pattern: vec![10.0, 10.0], phase: 0.0 }),
+                ..SceneStroke::default()
+            },
+            brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+            transform: Affine::IDENTITY,
+        });
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
+        assert!(frame.lines.is_empty(), "a dashed Line must NOT use the fast (dash-blind) LineInstance path");
+        assert!(!frame.triangles.is_empty(), "must route through the Triangle pipeline instead");
+
+        // Pattern [10, 10] starting at x=0: "on" 0-10, "off" 10-20,
+        // "on" 20-30, ... — x=5 (mid-first-on) must be covered, x=15
+        // (mid-first-off) must NOT be, x=25 (mid-second-on) must be
+        // covered again — proves multiple DISJOINT ink runs, not one
+        // shorter continuous run.
+        assert!(max_x_span_covering(&frame.triangles, 5.0), "x=5 (an 'on' dash run) must be covered");
+        assert!(!max_x_span_covering(&frame.triangles, 15.0), "x=15 (an 'off' gap) must NOT be covered");
+        assert!(max_x_span_covering(&frame.triangles, 25.0), "x=25 (the next 'on' run) must be covered again");
+    }
+
+    #[test]
+    fn dashed_stroke_rect_routes_through_triangle_pipeline_not_the_fast_quad_path() {
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::StrokeRect {
+            rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+            radii: None,
+            stroke: SceneStroke {
+                width: 3.0,
+                dash: Some(uzor_urx_core::scene::Dash { pattern: vec![8.0, 8.0], phase: 0.0 }),
+                ..SceneStroke::default()
+            },
+            brush: Brush::Solid(Color::from_rgba8(0, 255, 0, 255)),
+            transform: Affine::IDENTITY,
+        });
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
+        assert!(frame.quads.is_empty(), "a dashed StrokeRect must NOT use the fast (dash-blind) Quad SDF border path");
+        assert!(!frame.triangles.is_empty(), "must route through the Triangle pipeline instead");
+    }
+
+    #[test]
+    fn dashed_stroke_path_produces_disjoint_mesh_regions() {
+        let mut path = BezPath::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.line_to(Point::new(100.0, 0.0));
+        let mut scene = Scene::new();
+        scene.push(DrawCommand::StrokePath {
+            path,
+            stroke: SceneStroke {
+                width: 4.0,
+                dash: Some(uzor_urx_core::scene::Dash { pattern: vec![10.0, 10.0], phase: 0.0 }),
+                ..SceneStroke::default()
+            },
+            brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+            transform: Affine::IDENTITY,
+        });
+        let frame = encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false);
+        assert!(!frame.triangles.is_empty());
+        assert!(max_x_span_covering(&frame.triangles, 5.0), "an 'on' dash run must be covered");
+        assert!(!max_x_span_covering(&frame.triangles, 15.0), "an 'off' gap must NOT be covered");
+        assert!(max_x_span_covering(&frame.triangles, 25.0), "the next 'on' run must be covered again");
+    }
+
+    #[test]
+    fn dashed_line_scales_the_dash_period_with_the_ctm() {
+        // Same coordinate-space contract as CPU (see `uzor_urx_core::
+        // scene::Dash`'s own doc comment): a 2x scale must double the
+        // ON-SCREEN dash period, so a gap position that's covered
+        // unscaled must become UNCOVERED at 2x scale (its device-space
+        // x moved from inside an "on" run to inside the now-wider "off"
+        // gap that immediately follows it).
+        let dashed_line = |transform: Affine| DrawCommand::Line {
+            from: Vec2 { x: 0.0, y: 0.0 },
+            to: Vec2 { x: 100.0, y: 0.0 },
+            stroke: SceneStroke {
+                width: 4.0,
+                dash: Some(uzor_urx_core::scene::Dash { pattern: vec![10.0, 10.0], phase: 0.0 }),
+                ..SceneStroke::default()
+            },
+            brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+            transform,
+        };
+
+        let mut scene_1x = Scene::new();
+        scene_1x.push(dashed_line(Affine::IDENTITY));
+        let frame_1x = encode_scene(&scene_1x, viewport(), &mut cache(), None, None, max_depth(), false);
+        // Local x=8 sits inside the first "on" run (0-10) at 1x.
+        assert!(max_x_span_covering(&frame_1x.triangles, 8.0), "x=8 must be covered at 1x (still inside the first 'on' run)");
+
+        let mut scene_2x = Scene::new();
+        scene_2x.push(dashed_line(Affine::scale(2.0)));
+        let frame_2x = encode_scene(&scene_2x, viewport(), &mut cache(), None, None, max_depth(), false);
+        // At 2x, the pattern is dashed in LOCAL space first (local x=8
+        // is still inside the first local "on" run 0-10), then the
+        // WHOLE dashed geometry is projected through the 2x transform
+        // — so device x=16 (screen position of local x=8) must be
+        // covered too, proving the dash geometry (not just the path)
+        // was scaled along with everything else.
+        assert!(max_x_span_covering(&frame_2x.triangles, 16.0), "device x=16 (2x of local x=8) must be covered at 2x scale");
     }
 
     #[test]
@@ -3431,6 +3621,52 @@ mod tests {
             assert!(frame.quads.is_empty(), "a sheared transform must NOT route through Quad SDF");
             assert!(!frame.triangles.is_empty(), "must route through the Triangle pipeline instead");
             assert_eq!(recorder.value_for(KEY_RENDER_PRIMITIVES, "native_rect_shear_to_triangle_pipeline"), 1);
+        }
+
+        #[test]
+        fn dashed_line_counts_the_dash_to_triangle_routing_telemetry() {
+            let recorder = TestRecorder::default();
+            let frame = metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::Line {
+                    from: Vec2 { x: 0.0, y: 0.0 },
+                    to: Vec2 { x: 100.0, y: 0.0 },
+                    stroke: SceneStroke {
+                        width: 4.0,
+                        dash: Some(uzor_urx_core::scene::Dash { pattern: vec![10.0, 10.0], phase: 0.0 }),
+                        ..SceneStroke::default()
+                    },
+                    brush: Brush::Solid(Color::from_rgba8(255, 255, 255, 255)),
+                    transform: Affine::IDENTITY,
+                });
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
+            });
+            assert!(frame.lines.is_empty());
+            assert!(!frame.triangles.is_empty());
+            assert_eq!(recorder.value_for(KEY_RENDER_PRIMITIVES, "native_line_dash_to_triangle_pipeline"), 1);
+        }
+
+        #[test]
+        fn dashed_stroke_rect_counts_the_dash_to_triangle_routing_telemetry() {
+            let recorder = TestRecorder::default();
+            let frame = metrics::with_local_recorder(&recorder, || {
+                let mut scene = Scene::new();
+                scene.push(DrawCommand::StrokeRect {
+                    rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                    radii: None,
+                    stroke: SceneStroke {
+                        width: 3.0,
+                        dash: Some(uzor_urx_core::scene::Dash { pattern: vec![8.0, 8.0], phase: 0.0 }),
+                        ..SceneStroke::default()
+                    },
+                    brush: Brush::Solid(Color::from_rgba8(0, 255, 0, 255)),
+                    transform: Affine::IDENTITY,
+                });
+                encode_scene(&scene, viewport(), &mut cache(), None, None, max_depth(), false)
+            });
+            assert!(frame.quads.is_empty());
+            assert!(!frame.triangles.is_empty());
+            assert_eq!(recorder.value_for(KEY_RENDER_PRIMITIVES, "native_strokerect_dash_to_triangle_pipeline"), 1);
         }
 
         /// Design §6.2's closure proof: non-uniform per-corner radii

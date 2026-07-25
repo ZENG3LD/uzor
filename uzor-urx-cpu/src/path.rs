@@ -362,6 +362,22 @@ fn fill_path_generic<F: FnMut(f32, f32) -> [u8; 4]>(
     }
 }
 
+/// LOCAL-space 4-corner rect outline as a closed `BezPath` — the plain
+/// (non-rounded) counterpart to the `RoundedRect::into_path` call
+/// `backend.rs`'s own rounded `StrokeRect` arm already uses. Only
+/// needed so a DASHED, non-rounded `StrokeRect` can route through
+/// [`stroke_path_aa`] (which knows how to dash) instead of the fast,
+/// dash-blind `stroke_rect_aa` capsule path.
+pub(crate) fn rect_outline_path(rect: Rect) -> BezPath {
+    let mut path = BezPath::new();
+    path.move_to((rect.x0, rect.y0));
+    path.line_to((rect.x1, rect.y0));
+    path.line_to((rect.x1, rect.y1));
+    path.line_to((rect.x0, rect.y1));
+    path.close_path();
+    path
+}
+
 static STROKE_STYLE_WARNED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn stroke_path_aa(
@@ -373,6 +389,25 @@ pub(crate) fn stroke_path_aa(
     transform: &Affine,
 ) {
     if path.elements().is_empty() || stroke.width <= 0.0 { return; }
+
+    // Dash split happens FIRST, on `path`'s own LOCAL (pre-transform)
+    // geometry — `uzor_urx_core::dash::dash_path`'s own doc comment
+    // explains why local-space is the correct coordinate system (CTM
+    // must scale the dash pattern the same way it scales the path
+    // itself, matching tiny-skia). The rest of this function is
+    // UNCHANGED below: it flattens+device-transforms+capsule-strokes
+    // whatever `BezPath` it's handed, dashed or not, one subpath (one
+    // `MoveTo`-delimited chain) at a time — `dash_path`'s own output is
+    // just a `BezPath` with more, shorter subpaths.
+    let dashed_owned;
+    let path: &BezPath = match &stroke.dash {
+        Some(dash) => {
+            dashed_owned = uzor_urx_core::dash::dash_path(path, dash);
+            &dashed_owned
+        }
+        None => path,
+    };
+    if path.elements().is_empty() { return; }
 
     // Collect screen-space segments first (separately per subpath) so
     // we can spot interior joints vs endpoints, then run the joiner.

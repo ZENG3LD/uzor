@@ -43,6 +43,13 @@ pub fn render_parallel(
     // is currently linked through pixmap not strip. Silently skipping
     // them as the prior code did produced invisible bugs in consumer
     // output. Surface the limitation explicitly.
+    //
+    // A DASHED `StrokeRect`/`Line` is rejected the same way: dashing
+    // routes through `crate::path::stroke_path_aa` (see `backend.rs`'s
+    // own sequential-path routing), which this strip renderer's own
+    // per-strip loop below never calls — `FillPath`/`StrokePath` are
+    // already unsupported here for the same "needs the real path
+    // pipeline" reason.
     for (i, cmd) in scene.commands.iter().enumerate() {
         match cmd {
             DrawCommand::FillPath { .. }
@@ -53,11 +60,18 @@ pub fn render_parallel(
             | DrawCommand::PopBlendLayer => {
                 return Err(RenderError::ParallelUnsupported(i));
             }
-            DrawCommand::FillRect { brush, .. }
-            | DrawCommand::StrokeRect { brush, .. }
-            | DrawCommand::Line { brush, .. } => {
+            DrawCommand::FillRect { brush, .. } => {
                 if matches!(brush, uzor_urx_core::math::Brush::Gradient(_)
                                   | uzor_urx_core::math::Brush::Image(_)) {
+                    return Err(RenderError::ParallelUnsupported(i));
+                }
+            }
+            DrawCommand::StrokeRect { brush, stroke, .. }
+            | DrawCommand::Line { brush, stroke, .. } => {
+                if matches!(brush, uzor_urx_core::math::Brush::Gradient(_)
+                                  | uzor_urx_core::math::Brush::Image(_))
+                    || stroke.dash.is_some()
+                {
                     return Err(RenderError::ParallelUnsupported(i));
                 }
             }
