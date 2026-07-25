@@ -95,7 +95,23 @@ pub struct Frame<'a> {
 /// AND its column's `x`, never a second position formula in `render.rs`).
 #[derive(Clone)]
 pub struct PlacedTableCell<'a> {
+    /// This cell's own STARTING grid column (typography track T3: the
+    /// grid-resolved column, never a literal array index once spanning is
+    /// involved — see `crate::compose::table_layout`'s own module doc).
+    /// Named `column_index` (not renamed to `col_start`) so every pre-T3
+    /// reader of this field keeps compiling unchanged — a non-spanning
+    /// cell's own resolved starting column IS its literal position, byte-
+    /// identical to what this field already meant before T3.
     pub column_index: usize,
+    /// How many grid columns this cell's own `rect` covers (typography
+    /// track T3) — `1` for every pre-T3 cell.
+    pub col_span: usize,
+    /// How many grid ROWS this cell's own `rect` covers downward from
+    /// [`PlacedTableRow`] it's attached to (typography track T3) — `1`
+    /// for every pre-T3 cell. Always fully resolvable within the SAME
+    /// placed fragment (see `compose::table_layout`'s own doc comment for
+    /// why a rowspan never crosses a page/region boundary).
+    pub row_span: usize,
     pub rect: Rect,
     pub content: Vec<PlacedBlock<'a>>,
 }
@@ -105,6 +121,15 @@ pub struct PlacedTableCell<'a> {
 pub struct PlacedTableRow<'a> {
     pub rect: Rect,
     pub cells: Vec<PlacedTableCell<'a>>,
+    /// `true` when a rowspan cell either starts on this row or passes
+    /// THROUGH it from an earlier row (typography track T3) — `render`'s
+    /// own gridline pass skips this row's own whole-row-width stroke when
+    /// `true` (it would otherwise draw a spurious horizontal line through
+    /// a merged cell's own interior; per-cell strokes still draw every
+    /// real border correctly either way). Always `false` for every table
+    /// that never uses `row_span > 1` anywhere — byte-identical gridline
+    /// painting for every pre-T3 table.
+    pub spans_row: bool,
 }
 
 /// A table's placement within ONE [`Frame`] — see [`PlacedBlock::table_placement`].

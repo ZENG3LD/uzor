@@ -2,6 +2,7 @@
 //! [`crate::region::RegionSequence`], producing one
 //! [`crate::region::Frame`] per region consumed (design doc §3.2).
 
+mod baseline_grid;
 mod flow;
 mod island_layout;
 pub mod keep_break;

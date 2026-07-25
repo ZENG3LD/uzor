@@ -369,11 +369,25 @@ fn draw_image_placeholder(ctx: &mut dyn RenderContext, rect: Rect) {
 /// cell's already-placed content. Gridlines are never gated by `layers`
 /// (see [`DrawLayers`]'s own doc comment) — only nested paragraph content
 /// is.
+///
+/// Typography track T3 (cell spanning): a row's own whole-row-width
+/// stroke (`row.rect`) is skipped when [`PlacedTableRow::spans_row`] is
+/// `true` — for a fully-populated (non-spanning) row this stroke is
+/// already 100% redundant with the union of that row's own cells' 4-sided
+/// strokes (proven by inspection: a row's own top/bottom/left/right edges
+/// are exactly the union of its cells' own edges when every column has a
+/// cell), so skipping it changes NOTHING for any table that never uses
+/// `row_span > 1` anywhere; for a row a rowspan starts on or passes
+/// through, drawing it WOULD paint a spurious horizontal line straight
+/// through a merged cell's own interior — a genuine defect this
+/// track fixes outright, not a debatable default.
 fn draw_table_placement(ctx: &mut dyn RenderContext, table: &TablePlacement<'_>, default_color: &str, figure_theme: &FigureTheme, layers: DrawLayers) {
     ctx.set_stroke_color(default_color);
     ctx.set_stroke_width(1.0);
     for row in &table.rows {
-        ctx.stroke_rect(row.rect.x, row.rect.y, row.rect.width, row.rect.height);
+        if !row.spans_row {
+            ctx.stroke_rect(row.rect.x, row.rect.y, row.rect.width, row.rect.height);
+        }
         for cell in &row.cells {
             ctx.stroke_rect(cell.rect.x, cell.rect.y, cell.rect.width, cell.rect.height);
             for inner in &cell.content {
@@ -416,6 +430,8 @@ mod tests {
     use std::path::PathBuf;
 
     use uzor::fonts::FontFamily;
+    use uzor::render::RenderContext;
+    use uzor::types::Rect;
     use uzor_export::{render_to_png, render_to_svg, ExportSpec};
     use uzor_text::{BreakStrategy, CosmicShaper, FontSpec, Hyphenation, Paragraph, ParagraphAlign, StyledRun};
 
@@ -1552,5 +1568,253 @@ mod tests {
         let bytes = render_to_png(&spec, |ctx| draw_page(ctx, &pages[0], &theme)).expect("island left/right demo render should succeed");
         assert_eq!(decoded_png_dims(&bytes), (PAGE_W, PAGE_H));
         write_proof_png("typeset_layout_island_left_right.png", &bytes);
+    }
+
+    /// Typography track T3 (cell spanning) — headless proof: a grouped
+    /// header (a `row_span: 2` "Metric" label beside a `col_span: 3`
+    /// "Quarterly Figures" title, above 3 real sub-headers Q1/Q2/Q3) atop
+    /// enough seeded body rows that the table splits across 2 pages with
+    /// `TableBlock::header_repeat(true)` — proving the WHOLE 2-row grouped
+    /// header (not just row 0) repeats correctly on the continuation
+    /// page, [`crate::region::PlacedTableRow::spans_row`] reaches all the
+    /// way through real `slice_pages` output (so `render.rs`'s own
+    /// gridline fix is actually exercised, not just unit-tested in
+    /// isolation), and every body row's own label is conserved EXACTLY
+    /// ONCE across the split.
+    #[test]
+    fn seeded_grouped_header_table_with_rowspan_splits_across_two_pages_with_a_correct_repeated_header() {
+        use crate::scene::{ColumnSpec, TableBlock, TableCell, TableRow};
+
+        const PAGE_W: u32 = 595;
+        const PAGE_H: u32 = 320;
+        const HEADER_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 13.0, bold: true, italic: false };
+        const BODY_CELL_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 13.0, bold: false, italic: false };
+        const TITLE_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 18.0, bold: true, italic: false };
+
+        let master = PageMaster::new(PAGE_W as f64, PAGE_H as f64, Margins::uniform(30.0));
+        let body_width = master.body_rect().width;
+
+        let title_run = [StyledRun::new("Grouped-Header Table (colspan + rowspan) — Typography Track T3 Proof", TITLE_FONT)];
+
+        let metric_run = [StyledRun::new("Metric", HEADER_FONT)];
+        let metric_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&metric_run, f64::MAX)))];
+        let quarter_run = [StyledRun::new("Quarterly Figures (seeded)", HEADER_FONT)];
+        let quarter_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&quarter_run, f64::MAX)))];
+        let q1_run = [StyledRun::new("Q1", HEADER_FONT)];
+        let q1_head_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&q1_run, f64::MAX)))];
+        let q2_run = [StyledRun::new("Q2", HEADER_FONT)];
+        let q2_head_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&q2_run, f64::MAX)))];
+        let q3_run = [StyledRun::new("Q3", HEADER_FONT)];
+        let q3_head_nodes = [BlockNode::new(Block::Paragraph(Paragraph::new(&q3_run, f64::MAX)))];
+
+        let header_row0_cells = [TableCell::new(&metric_nodes).with_row_span(2), TableCell::new(&quarter_nodes).with_col_span(3)];
+        let header_row1_cells = [TableCell::new(&q1_head_nodes), TableCell::new(&q2_head_nodes), TableCell::new(&q3_head_nodes)];
+
+        // Seeded body rows — enough at this fixture's own PAGE_H to force
+        // the table across exactly 2 pages.
+        const BODY_LABELS: [&str; 10] =
+            ["Revenue", "Cost of goods", "Gross margin", "Operating expense", "EBITDA", "Depreciation", "Interest", "Tax", "Net income", "Free cash flow"];
+        let row_count = BODY_LABELS.len();
+
+        let q1_vals: Vec<String> = (0..row_count).map(|i| format!("{:.0}", 100_000.0 + i as f64 * 12_345.0)).collect();
+        let q2_vals: Vec<String> = (0..row_count).map(|i| format!("{:.0}", (100_000.0 + i as f64 * 12_345.0) * 1.08)).collect();
+        let q3_vals: Vec<String> = (0..row_count).map(|i| format!("{:.0}", (100_000.0 + i as f64 * 12_345.0) * 1.15)).collect();
+
+        let label_runs: Vec<[StyledRun<'_>; 1]> = BODY_LABELS.iter().map(|s| [StyledRun::new(s, BODY_CELL_FONT)]).collect();
+        let q1_runs: Vec<[StyledRun<'_>; 1]> = q1_vals.iter().map(|s| [StyledRun::new(s.as_str(), BODY_CELL_FONT)]).collect();
+        let q2_runs: Vec<[StyledRun<'_>; 1]> = q2_vals.iter().map(|s| [StyledRun::new(s.as_str(), BODY_CELL_FONT)]).collect();
+        let q3_runs: Vec<[StyledRun<'_>; 1]> = q3_vals.iter().map(|s| [StyledRun::new(s.as_str(), BODY_CELL_FONT)]).collect();
+
+        let label_nodes: Vec<[BlockNode<'_>; 1]> = label_runs.iter().map(|r| [BlockNode::new(Block::Paragraph(Paragraph::new(r, f64::MAX)))]).collect();
+        let q1_nodes: Vec<[BlockNode<'_>; 1]> = q1_runs.iter().map(|r| [BlockNode::new(Block::Paragraph(Paragraph::new(r, f64::MAX)))]).collect();
+        let q2_nodes: Vec<[BlockNode<'_>; 1]> = q2_runs.iter().map(|r| [BlockNode::new(Block::Paragraph(Paragraph::new(r, f64::MAX)))]).collect();
+        let q3_nodes: Vec<[BlockNode<'_>; 1]> = q3_runs.iter().map(|r| [BlockNode::new(Block::Paragraph(Paragraph::new(r, f64::MAX)))]).collect();
+
+        let body_row_cells: Vec<[TableCell<'_>; 4]> =
+            (0..row_count).map(|i| [TableCell::new(&label_nodes[i]), TableCell::new(&q1_nodes[i]), TableCell::new(&q2_nodes[i]), TableCell::new(&q3_nodes[i])]).collect();
+
+        let mut all_rows: Vec<TableRow<'_>> = vec![TableRow::new(&header_row0_cells), TableRow::new(&header_row1_cells)];
+        for cells in &body_row_cells {
+            all_rows.push(TableRow::new(cells));
+        }
+
+        let columns = [ColumnSpec::Fixed(150.0), ColumnSpec::Auto, ColumnSpec::Auto, ColumnSpec::Auto];
+        let table = TableBlock::new(&columns, &all_rows).with_header_repeat(true);
+
+        let flow = vec![
+            BlockNode::new(Block::Paragraph(Paragraph::new(&title_run, body_width))),
+            BlockNode::new(Block::Spacer(12.0)),
+            BlockNode::new(Block::Table(table)),
+        ];
+
+        let style = ComposeStyle::new(0.0, BODY_CELL_FONT);
+        let shaper = CosmicShaper::headless();
+        let pages = slice_pages(&flow, &master, &style, &shaper);
+        assert_eq!(pages.len(), 2, "fixture must be tuned to split the table across exactly 2 pages, got {}", pages.len());
+
+        // The rowspan's own `spans_row` flag must reach real
+        // `slice_pages` output, not just the unit-level fixtures in
+        // `compose::table_layout`'s own tests.
+        let any_spans_row = pages.iter().flat_map(|p| p.frame.blocks.iter()).filter_map(|b| b.table_placement.as_ref()).flat_map(|t| t.rows.iter()).any(|r| r.spans_row);
+        assert!(any_spans_row, "the grouped header's own rowspan must mark at least one REAL placed row as spans_row");
+
+        // Every column-0 cell across both pages: exactly 2 "Metric"
+        // occurrences (the real header + the repeated one), and every
+        // body label exactly once — never dropped, never duplicated by
+        // the header-repeat split.
+        let mut column0_texts: Vec<String> = Vec::new();
+        for page in &pages {
+            if let Some(t) = page.frame.blocks.iter().find_map(|b| b.table_placement.as_ref()) {
+                for row in &t.rows {
+                    if let Some(cell) = row.cells.iter().find(|c| c.column_index == 0) {
+                        let text: String = cell.content.iter().filter_map(|b| b.paragraph_layout.as_ref()).flat_map(|l| l.glyphs.iter().map(|g| g.cluster.as_str())).collect();
+                        column0_texts.push(text);
+                    }
+                }
+            }
+        }
+        let metric_count = column0_texts.iter().filter(|t| t.as_str() == "Metric").count();
+        assert_eq!(metric_count, 2, "the grouped header's own rowspan label must repeat exactly once on the continuation page (real + repeated = 2)");
+        let body_texts: Vec<&String> = column0_texts.iter().filter(|t| t.as_str() != "Metric").collect();
+        assert_eq!(body_texts.len(), row_count, "every body row's own label must appear exactly once across however many pages the table spans");
+        for label in &BODY_LABELS {
+            assert_eq!(body_texts.iter().filter(|t| t.as_str() == *label).count(), 1, "label {label} must appear exactly once, never dropped or duplicated by the header-repeat split");
+        }
+
+        let theme = crate::style::Theme::light_report();
+        let spec = ExportSpec { width_px: PAGE_W, height_px: PAGE_H, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+        for (i, page) in pages.iter().enumerate() {
+            let bytes = render_to_png(&spec, |ctx| draw_page(ctx, page, &theme)).expect("grouped-header table proof render should succeed");
+            assert_eq!(decoded_png_dims(&bytes), (PAGE_W, PAGE_H));
+            write_proof_png(&format!("typeset_t3_grouped_header_page{}.png", i + 1), &bytes);
+        }
+    }
+
+    /// TEST-ONLY debug overlay for the T2 proof below: a thin horizontal
+    /// ruler line at every `pitch` step from `grid_origin` down to
+    /// `page_height` — paints via the EXISTING `RenderContext::fill_rect`
+    /// primitive (design law 6, no new drawing API), purely so a human
+    /// eyeballing the proof PNG can see directly whether a text baseline
+    /// lands on it.
+    fn draw_grid_ruler(ctx: &mut dyn RenderContext, page_width: u32, page_height: u32, grid_origin: f64, pitch: f64) {
+        ctx.set_fill_color("#ff000055");
+        let mut y = grid_origin;
+        while y < page_height as f64 {
+            ctx.fill_rect(0.0, y, page_width as f64, 0.6);
+            y += pitch;
+        }
+    }
+
+    /// Typography track T2 (baseline grid) — headless proof: the SAME
+    /// mixed heading/body/figure 2-column fixture rendered TWICE — once
+    /// with the baseline grid OFF (the default), once ON — both with
+    /// [`draw_grid_ruler`]'s own thin horizontal guide painted at every
+    /// grid-pitch step, so a human can see DIRECTLY whether text
+    /// baselines land on it. Opened both: `typeset_t2_baseline_grid_off.
+    /// png` shows the SECOND column's own body rows starting at a
+    /// noticeably different vertical offset than column 1's (columns
+    /// don't share a grid), and the paragraph immediately after the
+    /// figure sits off the ruler; `typeset_t2_baseline_grid_on.png`
+    /// shows EVERY body row baseline (both columns) landing exactly on a
+    /// ruler line, including the row right after the figure — design law
+    /// 8: a single screenshot is never proof, hence the OFF/ON pair.
+    #[test]
+    fn seeded_two_column_baseline_grid_off_vs_on_proof() {
+        use crate::scene::{Block, BlockSizing, FigureBlock, TypesetFigure};
+        use uzor_figures::FigureTheme;
+
+        struct StubFigure;
+        impl TypesetFigure for StubFigure {
+            fn render(&self, ctx: &mut dyn RenderContext, rect: Rect, _theme: &FigureTheme) {
+                ctx.set_fill_color("#c8d6e5ff");
+                ctx.fill_rect(rect.x, rect.y, rect.width, rect.height);
+            }
+        }
+
+        const PAGE_W: u32 = 620;
+        const PAGE_H: u32 = 400;
+        const PITCH: f64 = 18.0;
+        const HEADING_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 20.0, bold: true, italic: false };
+        const BODY_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 13.0, bold: false, italic: false };
+
+        let master = PageMaster::new(PAGE_W as f64, PAGE_H as f64, Margins::uniform(24.0)).with_columns(2, 20.0);
+        let column_width = master.column_width();
+
+        let heading_run = [StyledRun::new("T2 — Baseline Grid Proof", HEADING_FONT)];
+        let body_texts: Vec<String> = (0..16).map(|i| format!("Row {i}.")).collect();
+        let body_runs: Vec<[StyledRun<'_>; 1]> = body_texts.iter().map(|t| [StyledRun::new(t.as_str(), BODY_FONT)]).collect();
+        let stub = StubFigure;
+
+        let mut flow: Vec<BlockNode<'_>> = vec![
+            BlockNode::new(Block::Paragraph(Paragraph::new(&heading_run, column_width))),
+            BlockNode::new(Block::Spacer(10.0)),
+        ];
+        for run in &body_runs[..6] {
+            flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(run, column_width))));
+        }
+        flow.push(BlockNode::new(Block::Figure(FigureBlock::new(&stub, BlockSizing::FixedHeight(97.0)))));
+        for run in &body_runs[6..] {
+            flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(run, column_width))));
+        }
+
+        let shaper = CosmicShaper::headless();
+        let theme = crate::style::Theme::light_report();
+        let spec = ExportSpec { width_px: PAGE_W, height_px: PAGE_H, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+        let grid_origin = master.body_rect().y;
+
+        let style_off = ComposeStyle::new(8.0, BODY_FONT);
+        let pages_off = slice_pages(&flow, &master, &style_off, &shaper);
+        assert_eq!(pages_off.len(), 1, "fixture must be tuned to fit on one page, got {}", pages_off.len());
+        let bytes_off = render_to_png(&spec, |ctx| {
+            draw_page(ctx, &pages_off[0], &theme);
+            draw_grid_ruler(ctx, PAGE_W, PAGE_H, grid_origin, PITCH);
+        })
+        .expect("grid-off proof render should succeed");
+        assert_eq!(decoded_png_dims(&bytes_off), (PAGE_W, PAGE_H));
+        write_proof_png("typeset_t2_baseline_grid_off.png", &bytes_off);
+
+        let style_on = ComposeStyle::new(8.0, BODY_FONT).with_baseline_grid(PITCH);
+        let pages_on = slice_pages(&flow, &master, &style_on, &shaper);
+        // Grid ON may consume MORE vertical space than the ungridded
+        // layout (every snap only ever pushes content FORWARD, never
+        // back) — this fixture's own extra page, if any, is an accepted
+        // consequence of that, not a bug; only the first page's own
+        // content is what this proof visualizes.
+        let bytes_on = render_to_png(&spec, |ctx| {
+            draw_page(ctx, &pages_on[0], &theme);
+            draw_grid_ruler(ctx, PAGE_W, PAGE_H, grid_origin, PITCH);
+        })
+        .expect("grid-on proof render should succeed");
+        assert_eq!(decoded_png_dims(&bytes_on), (PAGE_W, PAGE_H));
+        write_proof_png("typeset_t2_baseline_grid_on.png", &bytes_on);
+
+        // Data-level proof alongside the visual one: every ON-mode
+        // paragraph baseline is grid-aligned; the OFF-mode fixture is
+        // NOT (otherwise the visual contrast above would show nothing).
+        let grid_baselines: Vec<f64> = pages_on[0]
+            .frame
+            .blocks
+            .iter()
+            .chain(pages_on[0].extra_frames.iter().flat_map(|f| f.blocks.iter()))
+            .filter_map(|b| b.paragraph_layout.as_ref().map(|l| b.rect.y + l.lines[0].baseline_y))
+            .collect();
+        for y in &grid_baselines {
+            let remainder = (y - grid_origin).rem_euclid(PITCH);
+            assert!(remainder.min(PITCH - remainder) < 1e-3, "ON-mode baseline {y} must land on the grid");
+        }
+        let off_baselines: Vec<f64> = pages_off[0]
+            .frame
+            .blocks
+            .iter()
+            .chain(pages_off[0].extra_frames.iter().flat_map(|f| f.blocks.iter()))
+            .filter_map(|b| b.paragraph_layout.as_ref().map(|l| b.rect.y + l.lines[0].baseline_y))
+            .collect();
+        assert!(
+            off_baselines.iter().any(|y| {
+                let remainder = (y - grid_origin).rem_euclid(PITCH);
+                remainder.min(PITCH - remainder) > 1.0
+            }),
+            "the OFF-mode fixture must NOT already coincidentally sit on the grid, or the visual contrast would prove nothing"
+        );
     }
 }

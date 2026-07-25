@@ -1,13 +1,15 @@
-//! [`TableBlock`] — two-pass column sizing table (design doc §3.5).
-//!
-//! P1 scope narrowing (report, not silent): the design doc's own
-//! `TableCell` sketch carries `col_span`/`row_span` fields; this phase's
-//! task brief scopes tables to plain grids only (no spanning), and per
-//! this crate's "no field nothing reads" convention (matches P0's own
-//! divergence notes), those two fields are NOT added here — a future
-//! phase that needs spanning gains them non-breaking (a builder default
-//! of `1` keeps every P1 call site unaffected) once a real span-aware
-//! layout consumer needs them.
+//! [`TableBlock`] — two-pass column sizing table (design doc §3.5), now
+//! with cell spanning (typography track T3 — grouped headers/merged
+//! cells): [`TableCell::col_span`]/[`TableCell::row_span`], the two
+//! fields P1's own divergence log deliberately left out ("a future phase
+//! that needs spanning gains them non-breaking ... once a real
+//! span-aware layout consumer needs them" — this is that phase).
+//! `col_span`/`row_span` both default to `1` via [`TableCell::new`], so
+//! every pre-T3 call site (none of which ever calls
+//! [`TableCell::with_col_span`]/[`TableCell::with_row_span`]) is
+//! byte-for-byte unaffected — see `compose::table_layout`'s own module
+//! docs for the grid-resolution/width-distribution/rowspan-height
+//! algorithm this enables.
 //!
 //! Cell content is `&'a [BlockNode<'a>]` (paragraphs this phase, per the
 //! task brief — a cell CAN hold any block kind the type allows, but only
@@ -33,11 +35,41 @@ pub enum ColumnSpec {
 /// One table cell.
 pub struct TableCell<'a> {
     pub content: &'a [BlockNode<'a>],
+    /// How many logical grid columns this cell covers, starting at
+    /// whatever column [`crate::compose::table_layout`]'s own grid
+    /// resolution assigns it (never a literal array index once spanning
+    /// cells are involved — see that module's own doc comment). `1` (the
+    /// default, set by [`TableCell::new`]) is the pre-T3 "one cell, one
+    /// column" behavior, unchanged. `0` is treated as `1` (a builder
+    /// input floor, never a fallible surface).
+    pub col_span: usize,
+    /// How many logical grid ROWS this cell covers downward from the row
+    /// it's authored on. `1` (the default) is the pre-T3 behavior. `0` is
+    /// treated as `1`, same floor as `col_span`.
+    pub row_span: usize,
 }
 
 impl<'a> TableCell<'a> {
     pub fn new(content: &'a [BlockNode<'a>]) -> Self {
-        Self { content }
+        Self { content, col_span: 1, row_span: 1 }
+    }
+
+    /// Builder: this cell covers `col_span` logical grid columns
+    /// (grouped-header case, e.g. a header cell spanning 3 sub-columns).
+    pub fn with_col_span(mut self, col_span: usize) -> Self {
+        self.col_span = col_span.max(1);
+        self
+    }
+
+    /// Builder: this cell covers `row_span` logical grid rows downward
+    /// (merged-cell case). See `compose::table_layout`'s own module doc
+    /// for how a rowspan crossing a page break is handled (it never does
+    /// — a rowspan is atomic across region/page boundaries, exactly like
+    /// this crate's existing row-atomic table splitting already treats a
+    /// single row).
+    pub fn with_row_span(mut self, row_span: usize) -> Self {
+        self.row_span = row_span.max(1);
+        self
     }
 }
 

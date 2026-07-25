@@ -79,10 +79,11 @@
 use uzor::types::Rect;
 use uzor_text::{layout_paragraph, FontSpec, LineShaper, Paragraph, ParagraphLayout};
 
+use super::baseline_grid::{start_delta, trailing_extra};
 use super::island_layout::{island_placement_rect, island_strip_rects};
 use super::keep_break::BreakControl;
 use super::list_layout::{items_fitting, list_total_height, measure_list_items, place_list_items, ComposedListItem};
-use super::table_layout::{measure_and_layout_table, place_table_rows, rows_fitting, table_total_height, ComposedRow};
+use super::table_layout::{header_group_height, measure_and_layout_table, place_table_rows, rows_fitting, table_total_height, ComposedRow};
 use super::{lines_fitting, slice_layout_lines, widow_orphan_count};
 use crate::region::{Frame, PlacedBlock, RegionSequence};
 use crate::scene::{resolve_block_ids, Block, BlockId, BlockNode};
@@ -118,6 +119,17 @@ pub struct ComposeStyle {
     /// possible either) — the widow half. `0` disables. Same default/
     /// override shape as [`ComposeStyle::min_orphan_lines`].
     pub min_widow_lines: usize,
+    /// Typography track T2 — baseline grid / vertical rhythm: the
+    /// document/page-level grid pitch (typically the body leading) every
+    /// FRESH flow block's own grid-relevant edge snaps forward to.
+    /// `None` (the default via [`ComposeStyle::new`]/[`ComposeStyle::
+    /// from_theme`]) is fully OFF — every existing document renders
+    /// byte-identically, since every grid code path in `compose::flow` is
+    /// gated behind `Some(pitch)`. See `compose::baseline_grid`'s own
+    /// module doc comment for the exact snapping model (what snaps, how
+    /// `paragraph_spacing` interacts, how a block that genuinely cannot
+    /// fit the grid degrades). Set via [`ComposeStyle::with_baseline_grid`].
+    pub baseline_grid: Option<f64>,
 }
 
 impl ComposeStyle {
@@ -127,6 +139,7 @@ impl ComposeStyle {
             default_font,
             min_orphan_lines: DEFAULT_MIN_WIDOW_ORPHAN_LINES,
             min_widow_lines: DEFAULT_MIN_WIDOW_ORPHAN_LINES,
+            baseline_grid: None,
         }
     }
 
@@ -144,6 +157,7 @@ impl ComposeStyle {
             default_font: theme.font_spec(crate::style::FontRole::Body),
             min_orphan_lines: DEFAULT_MIN_WIDOW_ORPHAN_LINES,
             min_widow_lines: DEFAULT_MIN_WIDOW_ORPHAN_LINES,
+            baseline_grid: None,
         }
     }
 
@@ -156,6 +170,18 @@ impl ComposeStyle {
     /// Builder: override the default widow-control minimum (`0` disables).
     pub fn with_min_widow_lines(mut self, min_widow_lines: usize) -> Self {
         self.min_widow_lines = min_widow_lines;
+        self
+    }
+
+    /// Builder: opt into the baseline grid (typography track T2) at
+    /// `pitch` — typically the body leading. `pitch <= 0.0` is treated as
+    /// disabling the grid (`None`), the same defensive floor every other
+    /// degenerate-input guard in this crate already uses, rather than a
+    /// fallible surface (a zero/negative pitch would otherwise divide by
+    /// zero or loop forever inside `compose::baseline_grid`'s own
+    /// rounding math).
+    pub fn with_baseline_grid(mut self, pitch: f64) -> Self {
+        self.baseline_grid = if pitch > 0.0 { Some(pitch) } else { None };
         self
     }
 }
@@ -290,6 +316,52 @@ fn place_into_region<'a>(
 
     while *block_idx < flow.len() {
         let node = &flow[*block_idx];
+
+        // Baseline grid (typography track T2): a FRESH (non-continuation)
+        // block's own grid-relevant edge is snapped forward BEFORE any
+        // fit/lookahead decision below ever reads `cursor_y` — every
+        // downstream check (`ForceBefore`/`AvoidAfter`/`Island`/the
+        // per-kind match) must see the POST-snap cursor, never a stale
+        // pre-snap one.
+        //
+        // "Fresh" means "no content of THIS block has been placed in an
+        // earlier region yet" — NOT simply `*progress == InProgress::None`:
+        // the Paragraph/Table/List arms below all populate `*progress`
+        // BEFORE their own "does anything fit at all" check runs, so a
+        // block that gets deferred WHOLE (zero lines/rows/items fit,
+        // `overflow = Some(node)`) already carries a `next_line`/
+        // `next_row`/`next_item == 0` progress value by the time this
+        // SAME node is reconsidered fresh on the NEXT region — genuinely
+        // atomic kinds (`Spacer`/`Figure`/`Image`/`Island`) never touch
+        // `*progress` ahead of their own fit check, so `InProgress::None`
+        // alone is exactly right for them. `Block::Spacer` is
+        // deliberately excluded either way (an explicit gap is never
+        // grid-snapped). See `compose::baseline_grid`'s own module doc
+        // for the full snapping model.
+        if let Some(pitch) = style.baseline_grid {
+            let is_fresh = match &*progress {
+                InProgress::None => true,
+                InProgress::Paragraph { next_line, .. } => *next_line == 0,
+                InProgress::Table { next_row, .. } => *next_row == 0,
+                InProgress::List { next_item, .. } => *next_item == 0,
+            };
+            if is_fresh && !matches!(node.kind, Block::Spacer(_)) {
+                let offset = match (&node.kind, &*progress) {
+                    // Already measured by an earlier (deferred-whole)
+                    // attempt at a previous region — reuse it verbatim
+                    // (design law 1: one measure path) rather than
+                    // re-running `layout_paragraph` a second time.
+                    (Block::Paragraph(_), InProgress::Paragraph { layout, .. }) => layout.lines.first().map_or(0.0, |l| l.baseline_y),
+                    (Block::Paragraph(p), _) => {
+                        let full = layout_paragraph(&Paragraph { max_width: region_rect.width, ..*p }, shaper);
+                        full.lines.first().map_or(0.0, |l| l.baseline_y)
+                    }
+                    _ => 0.0,
+                };
+                cursor_y += start_delta(cursor_y, region_rect.y, pitch, offset);
+            }
+        }
+
         let remaining_height = (region_bottom - cursor_y).max(0.0);
         let region_has_content = !blocks.is_empty();
 
@@ -357,7 +429,21 @@ fn place_into_region<'a>(
                     // left-then-right fill order).
                 }
 
-                cursor_y = band_bottom + style.paragraph_spacing;
+                // Baseline grid (T2): the island's own placed rect keeps
+                // its NATURAL `island_height` (never stretched) — only
+                // the RESUME position (where full-width content picks up
+                // below the island's own band) rounds up to the next
+                // grid line, exactly like every other non-text block's
+                // own trailing-height rounding below. Strip geometry
+                // above (already computed from the UNROUNDED
+                // `band_bottom`) is unaffected — a strip only ever hugs
+                // the island's own real band, never a decorative padding
+                // zone.
+                let resume_y = match style.baseline_grid {
+                    Some(pitch) => band_bottom + trailing_extra(region_rect.y, region_bottom, band_bottom, pitch),
+                    None => band_bottom,
+                };
+                cursor_y = resume_y + style.paragraph_spacing;
                 if force_after {
                     break;
                 }
@@ -486,6 +572,14 @@ fn place_into_region<'a>(
                         table_placement: None,
                         list_placement: None,
                     });
+                    // Baseline grid (T2): a non-text block never stretches
+                    // its own placed `rect` — only the CURSOR's own
+                    // trailing gap grows, rounding this block's own
+                    // bottom edge up to the next grid line so whatever
+                    // follows in this SAME frame starts back on grid.
+                    if let Some(pitch) = style.baseline_grid {
+                        cursor_y += trailing_extra(region_rect.y, region_bottom, cursor_y, pitch);
+                    }
                     cursor_y += style.paragraph_spacing;
                     *block_idx += 1;
                     *progress = InProgress::None;
@@ -508,6 +602,14 @@ fn place_into_region<'a>(
                         table_placement: None,
                         list_placement: None,
                     });
+                    // Baseline grid (T2): a non-text block never stretches
+                    // its own placed `rect` — only the CURSOR's own
+                    // trailing gap grows, rounding this block's own
+                    // bottom edge up to the next grid line so whatever
+                    // follows in this SAME frame starts back on grid.
+                    if let Some(pitch) = style.baseline_grid {
+                        cursor_y += trailing_extra(region_rect.y, region_bottom, cursor_y, pitch);
+                    }
                     cursor_y += style.paragraph_spacing;
                     *block_idx += 1;
                     *progress = InProgress::None;
@@ -549,8 +651,7 @@ fn place_into_region<'a>(
                 // `table.header_repeat` is on — the table's own FIRST
                 // fragment never reserves (it already starts with the
                 // real header row).
-                let header_reserved =
-                    if table.header_repeat && next_row > 0 { rows.first().map_or(0.0, |r| r.height) } else { 0.0 };
+                let header_reserved = if table.header_repeat && next_row > 0 { header_group_height(rows) } else { 0.0 };
                 let count = rows_fitting(rows, next_row, remaining_height, !region_has_content, header_reserved);
                 if count == 0 {
                     overflow = Some(node);
@@ -580,6 +681,13 @@ fn place_into_region<'a>(
                 });
 
                 if next_row + count >= total_rows {
+                    // Baseline grid (T2): only when the table finishes
+                    // IN THIS fragment — a continuation's own trailing
+                    // gap is irrelevant (nothing else places in this
+                    // region afterward; the region simply ends).
+                    if let Some(pitch) = style.baseline_grid {
+                        cursor_y += trailing_extra(region_rect.y, region_bottom, cursor_y, pitch);
+                    }
                     cursor_y += style.paragraph_spacing;
                     *block_idx += 1;
                     *progress = InProgress::None;
@@ -638,6 +746,12 @@ fn place_into_region<'a>(
                 });
 
                 if next_item + count >= total_items {
+                    // Baseline grid (T2): same "only round when this
+                    // fragment finishes the block" convention as Table's
+                    // own arm above.
+                    if let Some(pitch) = style.baseline_grid {
+                        cursor_y += trailing_extra(region_rect.y, region_bottom, cursor_y, pitch);
+                    }
                     cursor_y += style.paragraph_spacing;
                     *block_idx += 1;
                     *progress = InProgress::None;
@@ -928,6 +1042,57 @@ mod tests {
         assert!(matches!(figure_placement.kind, Block::Figure(_)));
         assert_eq!(figure_placement.rect.height, FIGURE_HEIGHT, "a deferred figure is never squashed to fit — full height preserved");
         assert_eq!(figure_placement.rect.y, 0.0, "the figure starts at the top of the fresh region");
+    }
+
+    /// Typography track T2 (baseline grid): a `Block::Figure` with a
+    /// deliberately ODD (non-grid-multiple) height rounds its own
+    /// CONSUMED height up to the next whole grid step — so the paragraph
+    /// immediately following it still lands on the shared grid — isolated
+    /// to ONE region/column, independent of `slice::pages`'s own larger
+    /// 2-column integration proof.
+    #[test]
+    fn baseline_grid_rounds_a_figures_trailing_height_so_the_following_paragraph_lands_on_grid() {
+        use crate::scene::{BlockSizing, FigureBlock, TypesetFigure};
+        use uzor::render::RenderContext;
+        use uzor_figures::FigureTheme;
+
+        struct StubFigure;
+        impl TypesetFigure for StubFigure {
+            fn render(&self, _ctx: &mut dyn RenderContext, _rect: Rect, _theme: &FigureTheme) {}
+        }
+
+        const PITCH: f64 = 20.0;
+        let font = uzor_text::FontSpec::new(FontFamily::Roboto, 14.0);
+        let body_run = [StyledRun::new("After the figure.", font)];
+        let stub = StubFigure;
+
+        let flow = [
+            BlockNode::new(Block::Figure(FigureBlock::new(&stub, BlockSizing::FixedHeight(97.0)))), // deliberately not a multiple of PITCH
+            BlockNode::new(Block::Paragraph(Paragraph::new(&body_run, 300.0))),
+        ];
+        let shaper = CosmicShaper::headless();
+
+        let style_off = ComposeStyle::new(6.0, font);
+        let mut regions_off = PageRegionSequence::new(Rect::new(0.0, 0.0, 300.0, 500.0));
+        let frames_off = compose(&flow, &mut regions_off, &style_off, &shaper);
+        let body_off = frames_off[0].blocks.iter().find(|b| matches!(b.kind, Block::Paragraph(_))).expect("body paragraph placed");
+        let baseline_off = body_off.rect.y + body_off.paragraph_layout.as_ref().expect("paragraph layout present").lines[0].baseline_y;
+        let remainder_off = baseline_off.rem_euclid(PITCH);
+        assert!(remainder_off.min(PITCH - remainder_off) > 1.0, "the UN-gridded baseline must not already coincidentally land on the grid, or the ON case below would prove nothing");
+
+        let style_on = ComposeStyle::new(6.0, font).with_baseline_grid(PITCH);
+        let mut regions_on = PageRegionSequence::new(Rect::new(0.0, 0.0, 300.0, 500.0));
+        let frames_on = compose(&flow, &mut regions_on, &style_on, &shaper);
+        let body_on = frames_on[0].blocks.iter().find(|b| matches!(b.kind, Block::Paragraph(_))).expect("body paragraph placed");
+        let baseline_on = body_on.rect.y + body_on.paragraph_layout.as_ref().expect("paragraph layout present").lines[0].baseline_y;
+        let remainder_on = baseline_on.rem_euclid(PITCH);
+        assert!(remainder_on.min(PITCH - remainder_on) < 1e-3, "the paragraph after the odd-height figure must land on grid, got baseline {baseline_on} (remainder {remainder_on})");
+
+        // The figure's own placed rect keeps its NATURAL height — grid
+        // rounding never stretches the figure's own box, only the
+        // trailing cursor gap after it.
+        let figure_on = frames_on[0].blocks.iter().find(|b| matches!(b.kind, Block::Figure(_))).expect("figure placed");
+        assert_eq!(figure_on.rect.height, 97.0, "grid rounding must never stretch a figure's own placed rect — only the cursor advances further");
     }
 
     /// `AvoidAfter` ("keep-with-next"): a heading paragraph immediately

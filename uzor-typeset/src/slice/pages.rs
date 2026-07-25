@@ -1106,4 +1106,128 @@ mod tests {
         assert!(fp.clamped, "a footnote taller than its own reserved zone must report clamped, never silently fit");
         assert!(!fp.frame.blocks.is_empty(), "the overflowing footnote must still be VISIBLY placed, never dropped");
     }
+
+    /// This document's own absolute first-line baseline for every REAL
+    /// (non-empty) placed `Block::Paragraph`, across every page and both
+    /// `frame`/`extra_frames` — the T2 proof's own shared measurement.
+    fn collect_paragraph_baselines(pages: &[Page<'_>]) -> Vec<f64> {
+        pages
+            .iter()
+            .flat_map(|p| p.frame.blocks.iter().chain(p.extra_frames.iter().flat_map(|f| f.blocks.iter())))
+            .filter_map(|b| {
+                let layout = b.paragraph_layout.as_ref()?;
+                let line = layout.lines.first()?;
+                Some(b.rect.y + line.baseline_y)
+            })
+            .collect()
+    }
+
+    /// Typography track T2 (baseline grid) — the headline proof: a
+    /// 2-column master, a heading, several body paragraphs, a
+    /// `Block::Figure` with a deliberately ODD height (`133.0`, not a
+    /// multiple of the fixture's own `PITCH`), then more body paragraphs
+    /// after it — enough content that it spills from column 1 into
+    /// column 2. With the grid ON (`PITCH` deliberately unrelated to any
+    /// fixture font's own natural leading, so alignment can only come
+    /// from real snapping, never coincidence), EVERY placed paragraph's
+    /// own first-line baseline — in BOTH columns, before AND after the
+    /// odd-height figure — lands on the SAME shared absolute grid line
+    /// set (`(baseline_y - grid_origin) mod PITCH ≈ 0`): the literal
+    /// "adjacent columns share a line grid" claim this track exists to
+    /// prove, plus proof that a non-text block's own height-rounding
+    /// keeps later text on-grid too. With the grid OFF (the default, no
+    /// `.with_baseline_grid` call), composing the IDENTICAL fixture
+    /// reproduces byte-identical geometry to a second, fully independent
+    /// `ComposeStyle::new` run of the SAME flow — this track's own
+    /// "never change rendered output silently" gate, exercised directly
+    /// (not merely inferred from the rest of this crate's unmodified
+    /// suite staying green).
+    #[test]
+    fn two_column_master_shares_one_baseline_grid_across_both_columns_when_enabled() {
+        use crate::scene::{Block, BlockSizing, FigureBlock, TypesetFigure};
+        use uzor::render::RenderContext;
+        use uzor_figures::FigureTheme;
+
+        struct StubFigure;
+        impl TypesetFigure for StubFigure {
+            fn render(&self, _ctx: &mut dyn RenderContext, _rect: Rect, _theme: &FigureTheme) {}
+        }
+
+        const PITCH: f64 = 18.0; // deliberately not a multiple of the fixture fonts' own line heights
+        const HEADING_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 21.0, bold: true, italic: false };
+        const BODY_FONT: FontSpec = FontSpec { family: FontFamily::Roboto, size_px: 13.0, bold: false, italic: false };
+        const FIGURE_HEIGHT: f64 = 133.0; // deliberately NOT a multiple of PITCH
+
+        let master = PageMaster::new(620.0, 310.0, Margins::uniform(30.0)).with_columns(2, 20.0);
+        let column_width = master.column_width();
+
+        let heading_run = [StyledRun::new("Grid Section", HEADING_FONT)];
+        // Deliberately SHORT, single-line body paragraphs — this proof
+        // targets the documented guarantee ("a FRESH block's own first
+        // line snaps"), not a mid-paragraph continuation fragment's own
+        // un-snapped later lines (a separate, already-documented
+        // limitation — see `compose::baseline_grid`'s own module doc,
+        // "typically the body leading" note). Enough of them still
+        // overflow this fixture's own deliberately short column.
+        let body_texts: Vec<String> = (0..16).map(|i| format!("Row {i}.")).collect();
+        let body_runs: Vec<[StyledRun<'_>; 1]> = body_texts.iter().map(|t| [StyledRun::new(t.as_str(), BODY_FONT)]).collect();
+        let stub = StubFigure;
+
+        let mut flow: Vec<BlockNode<'_>> = vec![
+            BlockNode::new(Block::Paragraph(Paragraph::new(&heading_run, column_width))),
+            BlockNode::new(Block::Spacer(10.0)),
+        ];
+        for run in &body_runs[..6] {
+            flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(run, column_width))));
+        }
+        flow.push(BlockNode::new(Block::Figure(FigureBlock::new(&stub, BlockSizing::FixedHeight(FIGURE_HEIGHT)))));
+        for run in &body_runs[6..] {
+            flow.push(BlockNode::new(Block::Paragraph(Paragraph::new(run, column_width))));
+        }
+
+        let shaper = CosmicShaper::headless();
+        let grid_origin = master.body_rect().y;
+
+        // OFF (the default) — byte-identical geometry to an independent
+        // second compose of the SAME flow: this track changes NOTHING on
+        // the disabled path.
+        let style_off_a = ComposeStyle::new(8.0, BODY_FONT);
+        let style_off_b = ComposeStyle::new(8.0, BODY_FONT);
+        let pages_off_a = slice_pages(&flow, &master, &style_off_a, &shaper);
+        let pages_off_b = slice_pages(&flow, &master, &style_off_b, &shaper);
+        assert_eq!(pages_off_a.len(), pages_off_b.len());
+        for (a, b) in pages_off_a.iter().zip(pages_off_b.iter()) {
+            let a_rects: Vec<Rect> = a.frame.blocks.iter().chain(a.extra_frames.iter().flat_map(|f| f.blocks.iter())).map(|p| p.rect).collect();
+            let b_rects: Vec<Rect> = b.frame.blocks.iter().chain(b.extra_frames.iter().flat_map(|f| f.blocks.iter())).map(|p| p.rect).collect();
+            assert_eq!(a_rects, b_rects, "grid OFF (the default) must reproduce byte-identical geometry — this track changes nothing on the disabled path");
+        }
+
+        // Sanity: the UN-gridded layout must NOT already coincidentally
+        // land every baseline on `PITCH`'s own grid — otherwise the ON
+        // assertion below would prove nothing.
+        let off_baselines = collect_paragraph_baselines(&pages_off_a);
+        assert!(
+            off_baselines.iter().any(|y| {
+                let remainder = (y - grid_origin).rem_euclid(PITCH);
+                remainder.min(PITCH - remainder) > 1.0
+            }),
+            "fixture must be tuned so the UN-gridded layout does NOT already coincidentally land every baseline on the grid"
+        );
+
+        // ON — every placed paragraph's own first-line baseline, in
+        // EITHER column, before AND after the odd-height figure, lands
+        // on the shared grid.
+        let style_on = ComposeStyle::new(8.0, BODY_FONT).with_baseline_grid(PITCH);
+        let pages_on = slice_pages(&flow, &master, &style_on, &shaper);
+        assert!(pages_on.iter().any(|p| !p.extra_frames.is_empty()), "fixture must be tuned so content actually spills into column 2");
+
+        let on_baselines = collect_paragraph_baselines(&pages_on);
+        assert!(on_baselines.len() >= 10, "fixture must place enough paragraphs to meaningfully exercise the grid, got {}", on_baselines.len());
+        for y in &on_baselines {
+            let local = y - grid_origin;
+            let remainder = local.rem_euclid(PITCH);
+            let distance_to_grid = remainder.min(PITCH - remainder);
+            assert!(distance_to_grid < 1e-3, "baseline at absolute y={y} (local={local}) must land on a shared grid multiple of {PITCH}, off by {distance_to_grid}");
+        }
+    }
 }
