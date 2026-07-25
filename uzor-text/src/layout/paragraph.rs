@@ -1,9 +1,8 @@
 //! [`layout_paragraph`] — Phase 2 multi-run entry point: rich spans +
 //! [`crate::model::InlineBox`] + baseline pass over a [`Paragraph`].
 
-use crate::linebreak::knuth_plass::GLUE_SHRINK_RATIO;
 use crate::linebreak::BreakStrategy;
-use crate::model::{InlineBox, Paragraph, ParagraphAlign, StyledRun};
+use crate::model::{InlineBox, Paragraph, ParagraphAlign, ProtrusionTable, StyledRun};
 use crate::shape::LineShaper;
 
 use super::baseline::resolve_line_metrics;
@@ -40,6 +39,20 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
     let mut boxes = Vec::new();
     let mut y_top = 0.0_f64;
     let last_index = packed.len() - 1;
+    // Typography track T4 (protrusion): per-line "does this edge actually
+    // sit flush against the margin" signal, indexed by `line_index` —
+    // needed at the very end (`apply_protrusion`, after every line is
+    // built) but computed HERE, inline, since it depends on `can_justify`
+    // (below), which is itself only known per-line inside this loop. NOT
+    // stored on `LineBox` itself: `LineBox` is a public struct a sibling
+    // crate (`uzor-typeset::compose::paragraph_split::slice_layout_lines`)
+    // constructs via an EXHAUSTIVE field-by-field literal (no `..`
+    // functional-update spread) — adding a field there would be a breaking
+    // change to a crate this task is explicitly forbidden from touching.
+    // A local, parallel `Vec<bool>` carries the identical "property of the
+    // line" information the coordinator asked for without that risk.
+    let mut line_flush_start: Vec<bool> = Vec::with_capacity(packed.len());
+    let mut line_flush_end: Vec<bool> = Vec::with_capacity(packed.len());
 
     for (line_index, line_atoms) in packed.into_iter().enumerate() {
         let natural_width: f64 = line_atoms.iter().map(greedy::atom_width).sum();
@@ -51,6 +64,30 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
             && line_index != last_index
             && glue_count > 0
             && paragraph.max_width.is_finite();
+        // Typography track T4: a margin-flush signal per edge, per line.
+        // START (left): flush for every line under `Left`/`Justify` — both
+        // always resolve `align_shift == 0.0` (see the match below),
+        // INCLUDING a `Justify` paragraph's own ragged LAST line (Justify
+        // never loosens the LEFT edge, only the right). `Right`/`Center`
+        // shift the whole line away from the left margin, so neither is
+        // ever start-flush. END (right): flush only for a line that was
+        // ACTUALLY stretched to the measure (`can_justify` — already
+        // excludes the last line and any line with no glue to stretch) or
+        // for `Right` align (which, by construction, always sets every
+        // line's right edge at exactly `max_width` when finite — there is
+        // no "ragged" case under `Right`). A line that merely falls short
+        // of `max_width` (the common `Left`/`Center` case, and a
+        // `Justify` paragraph's own last line) is never end-flush —
+        // hanging punctuation past a margin the line's own text never
+        // reached would visibly detach it from its own word.
+        let end_flush = match paragraph.align {
+            ParagraphAlign::Right => paragraph.max_width.is_finite(),
+            ParagraphAlign::Justify => can_justify,
+            ParagraphAlign::Left | ParagraphAlign::Center => false,
+        };
+        let start_flush = matches!(paragraph.align, ParagraphAlign::Left | ParagraphAlign::Justify);
+        line_flush_start.push(start_flush);
+        line_flush_end.push(end_flush);
         // Shrink (never stretch) applies regardless of alignment: a
         // `BreakStrategy::KnuthPlass` line may be chosen slightly over
         // `max_width` on the strength of its interword glue's shrink
@@ -63,7 +100,12 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
         let needs_shrink =
             !can_justify && line_index != last_index && glue_count > 0 && paragraph.max_width.is_finite() && natural_width > paragraph.max_width;
         let glue_extras = if can_justify || needs_shrink {
-            glue_extras_for_line(&line_atoms, glue_count, (paragraph.max_width - natural_width) / glue_count as f64)
+            glue_extras_for_line(
+                &line_atoms,
+                glue_count,
+                (paragraph.max_width - natural_width) / glue_count as f64,
+                paragraph.line_break_params.glue_shrink_ratio,
+            )
         } else {
             vec![0.0; glue_count]
         };
@@ -132,11 +174,137 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
         y_top += line_metrics.height;
     }
 
+    if let Some(table) = paragraph.protrusion {
+        apply_protrusion(&mut glyphs, &lines, &line_flush_start, &line_flush_end, table);
+    }
+
     let width = lines.iter().map(|l| l.content_width).fold(0.0_f64, f64::max);
     let height = lines.last().map(|l| l.y_top + l.height).unwrap_or(0.0);
     let decorations = build_decoration_spans(&glyphs, paragraph.runs);
 
     ParagraphLayout { glyphs, lines, boxes, decorations, width, height }
+}
+
+/// Typography track T4 (microtypography, hanging punctuation): shift each
+/// line's own FIRST/LAST rendered glyph — if that glyph is a single
+/// character present in `table`, AND that specific edge of that specific
+/// line is actually set flush against the margin (`flush_start[line_index]`/
+/// `flush_end[line_index]` — see [`layout_paragraph`]'s own inline
+/// computation of both, immediately above where they're collected) — by
+/// its own `start`/`end` protrusion factor, expressed as a fraction of
+/// THAT glyph's own already-resolved `advance` (never a fixed px value —
+/// a bold/larger run's wider comma hangs a proportionally wider amount
+/// than a small caption's).
+///
+/// **The flush gate is load-bearing, not decorative** (found + fixed
+/// after an owner review of the first version's own proof PNG, which
+/// applied the shift unconditionally): a line whose text merely falls
+/// short of `max_width` — the paragraph's own ragged LAST line under
+/// `Justify`, or any line at all under plain `Left`/`Center` — has no
+/// margin at that edge to hang past; shifting its own trailing glyph
+/// there only pulls it away from the word it belongs to, visibly
+/// detaching it (the exact defect: "line after line ." with a stray gap
+/// before the period, instead of "line after line.").
+///
+/// A pure geometry post-process over the ALREADY fully-resolved `glyphs`
+/// (baseline, justify/shrink, alignment — every earlier pass in this
+/// function already ran): only the affected glyph's own `x` moves; every
+/// OTHER glyph's `x` was computed independently of any other glyph's PAINT
+/// position (only from its own run's advances), so this can never desync
+/// anything downstream of it.
+///
+/// **Scoped, honestly reported** (see [`ProtrusionTable`]'s own doc
+/// comment, and this function's own doc comment continuation below the
+/// flush-gate note): this does NOT change which atoms
+/// [`crate::layout::greedy::pack_lines`]/
+/// [`crate::linebreak::knuth_plass::pack_lines`] chose to end/start a line
+/// — those FIT decisions are untouched; only the already-decided edge
+/// glyph's own PAINT position moves, AND — new limitation, reported
+/// explicitly, not silently — the interword glue on a `Justify`-stretched
+/// line was ALREADY distributed (by the per-line loop above, before this
+/// function ever runs) against the FULL, un-discounted natural width. Real
+/// TeX-style protrusion reduces a protruding edge character's EFFECTIVE
+/// width before that stretch/shrink target is computed, so the remaining
+/// glue absorbs a hair more/less. This function's own paint-time-only
+/// shift does not do that: the glue on an affected line is stretched
+/// exactly as if no character were about to hang, then the edge glyph is
+/// shifted past the margin on top. The resulting per-gap discrepancy is
+/// `(protruding character's own advance * factor) / glue_count` — for a
+/// typical period/comma (~10-12px at 16px body text) across a realistic
+/// 6-10-gap line, on the order of ~1-2px per gap, likely SUBLIMINAL at
+/// ordinary body-text sizes but not zero, and potentially more noticeable
+/// on a short, few-word justified line or at a larger display size.
+/// Feeding protrusion into the justification step for real would mean
+/// threading a per-line "discount the trailing/leading protruding
+/// character's width by `factor * advance` before computing `raw` (the
+/// Justify stretch target)" adjustment into the SAME per-line loop above —
+/// straightforward there — AND into BOTH breaker algorithms' own fit/
+/// badness math (`greedy::pack_lines`'s width comparison,
+/// `knuth_plass::span_metrics`'s width/stretch/shrink), so a candidate
+/// line's FIT decision also credits the discount consistently with how it
+/// will eventually render — the deeper "applied during line breaking"
+/// integration this crate's own protrusion doc comment already scoped OUT
+/// of this pass for the same reason (real work across two independently-
+/// evolving DP implementations, for a sub-pixel-scale visual refinement
+/// on top of the already-delivered "hangs past the margin" win).
+fn apply_protrusion(glyphs: &mut [GlyphLayout], lines: &[LineBox], flush_start: &[bool], flush_end: &[bool], table: &ProtrusionTable) {
+    let mut first_idx: Vec<Option<usize>> = vec![None; lines.len()];
+    let mut last_idx: Vec<Option<usize>> = vec![None; lines.len()];
+    for (i, g) in glyphs.iter().enumerate() {
+        if g.cluster.is_empty() {
+            continue; // ligature continuation — carries no independent extent
+        }
+        if let Some(slot) = first_idx.get_mut(g.line_index) {
+            slot.get_or_insert(i);
+        }
+        if let Some(slot) = last_idx.get_mut(g.line_index) {
+            *slot = Some(i);
+        }
+    }
+
+    for line_index in 0..lines.len() {
+        if flush_start.get(line_index).copied().unwrap_or(false) {
+            if let Some(i) = first_idx[line_index] {
+                protrude_start(&mut glyphs[i], table);
+            }
+        }
+        if flush_end.get(line_index).copied().unwrap_or(false) {
+            if let Some(i) = last_idx[line_index] {
+                protrude_end(&mut glyphs[i], table);
+            }
+        }
+    }
+}
+
+fn protrude_start(glyph: &mut GlyphLayout, table: &ProtrusionTable) {
+    if let Some(ch) = single_char(&glyph.cluster) {
+        let factors = table.get(ch);
+        if factors.start > 0.0 {
+            glyph.x -= factors.start * glyph.advance;
+        }
+    }
+}
+
+fn protrude_end(glyph: &mut GlyphLayout, table: &ProtrusionTable) {
+    if let Some(ch) = single_char(&glyph.cluster) {
+        let factors = table.get(ch);
+        if factors.end > 0.0 {
+            glyph.x += factors.end * glyph.advance;
+        }
+    }
+}
+
+/// `Some(c)` iff `s` is exactly one character (never a multi-codepoint
+/// cluster/ligature) — protrusion only ever applies to a single, literal
+/// punctuation character, matching [`ProtrusionTable`]'s own `char` key.
+fn single_char(s: &str) -> Option<char> {
+    let mut chars = s.chars();
+    let c = chars.next()?;
+    if chars.next().is_none() {
+        Some(c)
+    } else {
+        None
+    }
 }
 
 /// `true` for a non-glue [`Atom::Text`] spanning exactly one glyph — a
@@ -179,9 +347,10 @@ fn protected_glue_mask(line_atoms: &[Atom]) -> Vec<bool> {
 /// beside a one-letter word ([`protected_glue_mask`]) is exempt —
 /// pinned at its own full natural width — and the whole deficit is
 /// redistributed across the REMAINING glues only (still capped at
-/// [`GLUE_SHRINK_RATIO`] of their own narrowest natural width, same
-/// floor the pre-fix code already used, just scoped to the regular
-/// glues now). Known, previously-unfixed bug this closes: uniformly
+/// `shrink_ratio` — [`crate::model::Paragraph::line_break_params`]'s own
+/// `glue_shrink_ratio`, typography track T5 — of their own narrowest
+/// natural width, same floor the pre-fix code already used, just scoped
+/// to the regular glues now). Known, previously-unfixed bug this closes: uniformly
 /// shrinking every glue by an equal fraction is fine in general, but for
 /// a short, common one-letter conjunction ("а"/"и"/"в") sitting between
 /// two ordinary, ink-dense letters, that SAME fractional shrink reads as
@@ -195,7 +364,7 @@ fn protected_glue_mask(line_atoms: &[Atom]) -> Vec<bool> {
 /// `raw` (stretch) is untouched: a WIDER gap around a short word never
 /// collapses anything, so every glue — protected or not — stretches
 /// identically, exactly like the pre-fix behavior.
-fn glue_extras_for_line(line_atoms: &[Atom], glue_count: usize, raw: f64) -> Vec<f64> {
+fn glue_extras_for_line(line_atoms: &[Atom], glue_count: usize, raw: f64, shrink_ratio: f64) -> Vec<f64> {
     if raw >= 0.0 {
         return vec![raw; glue_count];
     }
@@ -215,13 +384,13 @@ fn glue_extras_for_line(line_atoms: &[Atom], glue_count: usize, raw: f64) -> Vec
         // would leave the deficit nowhere to go, so fall back to the
         // ORIGINAL uniform-shrink behavior rather than leaving an
         // over-full line completely un-shrunk.
-        let floor = -(glue_widths.iter().copied().fold(f64::MAX, f64::min) * GLUE_SHRINK_RATIO);
+        let floor = -(glue_widths.iter().copied().fold(f64::MAX, f64::min) * shrink_ratio);
         return vec![raw.max(floor); glue_count];
     }
 
     let min_regular_width =
         glue_widths.iter().zip(&protected).filter_map(|(&w, &p)| (!p).then_some(w)).fold(f64::MAX, f64::min);
-    let floor = -(min_regular_width * GLUE_SHRINK_RATIO);
+    let floor = -(min_regular_width * shrink_ratio);
     let per_regular = (deficit / regular_count as f64).max(floor);
 
     protected.iter().map(|&p| if p { 0.0 } else { per_regular }).collect()
@@ -796,5 +965,180 @@ mod tests {
         assert_eq!(layout.decorations.len(), 2, "the box must split the underline into two spans, never one span crossing its gap");
         assert!(layout.decorations[0].x_end <= layout.boxes[0].x + 1e-6, "the first span must end at/before the box");
         assert!(layout.decorations[1].x_start >= layout.boxes[0].x + layout.boxes[0].width - 1e-6, "the second span must start at/after the box");
+    }
+
+    // ── Typography track T4: protrusion / hanging punctuation (2026-07-25) ──
+
+    /// T4's own required proof: a JUSTIFIED paragraph with protrusion ON
+    /// must place the protruding punctuation PAST the measure — the
+    /// trailing period of a non-last (justify-stretched) line's own last
+    /// glyph must land with `x + advance` exceeding `max_width` by EXACTLY
+    /// the period's own configured fraction (`ProtrusionFactors::end_only(1.0)`
+    /// — its full own advance).
+    #[test]
+    fn protrusion_on_a_justified_line_hangs_the_trailing_period_past_the_measure_by_the_expected_fraction() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        // A forced break (`\n`) right after a period makes line 0 END in
+        // "." while NOT being the paragraph's last line — Justify still
+        // stretches it to reach `max_width` exactly (the "measure" this
+        // test protrudes past).
+        let text = "One two three four five.\nA second short line follows this one.";
+        let runs = [StyledRun::new(text, font)];
+        let max_width = 260.0;
+        let shaper = CosmicShaper::headless();
+
+        let without = Paragraph::new(&runs, max_width).with_align(ParagraphAlign::Justify);
+        let without_layout = layout_paragraph(&without, &shaper);
+        assert!(without_layout.lines.len() >= 2, "fixture must produce at least two lines via the forced break");
+        let without_last =
+            without_layout.glyphs.iter().filter(|g| g.line_index == 0).last().expect("first line must have glyphs");
+        assert_eq!(without_last.cluster, ".", "fixture's first line must end in a period");
+        let measure_edge = without_last.x + without_last.advance;
+        assert!((measure_edge - max_width).abs() < 1.0, "justify must stretch the non-last first line to reach max_width, got {measure_edge}");
+
+        let table = ProtrusionTable::default_punctuation();
+        let with = Paragraph::new(&runs, max_width).with_align(ParagraphAlign::Justify).with_protrusion(&table);
+        let with_layout = layout_paragraph(&with, &shaper);
+        let with_last = with_layout.glyphs.iter().filter(|g| g.line_index == 0).last().expect("first line must have glyphs");
+        assert_eq!(with_last.cluster, ".");
+
+        let rendered_edge = with_last.x + with_last.advance;
+        assert!(rendered_edge > max_width, "the period must hang PAST the measure, got {rendered_edge} vs max_width {max_width}");
+        let overhang = rendered_edge - measure_edge;
+        assert!(
+            (overhang - with_last.advance).abs() < 1e-6,
+            "period (ProtrusionFactors::end_only(1.0)) must hang past the measure by EXACTLY its own full advance, got overhang={overhang} advance={}",
+            with_last.advance
+        );
+    }
+
+    /// T4's other required proof: an EMPTY (all-zero-factor) protrusion
+    /// table must be a true no-op — byte-identical output to no table at
+    /// all (`protrusion: None`, the default). Combined with
+    /// `apply_protrusion` only ever being invoked when `paragraph.
+    /// protrusion.is_some()`, this is the structural half of "protrusion
+    /// OFF is byte-identical to today": every pre-T4 caller (which never
+    /// touches `protrusion`, so it's `None`) skips `apply_protrusion`
+    /// entirely, and even if it somehow ran with zero factors, the math
+    /// itself changes nothing either.
+    #[test]
+    fn protrusion_none_and_an_explicit_empty_table_produce_byte_identical_output() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let text = "A justified paragraph with a trailing period, and a comma, too.";
+        let runs = [StyledRun::new(text, font)];
+        let max_width = 220.0;
+        let shaper = CosmicShaper::headless();
+
+        let none_paragraph = Paragraph::new(&runs, max_width).with_align(ParagraphAlign::Justify);
+        assert_eq!(none_paragraph.protrusion, None, "T4 regression floor: default is no protrusion");
+        let none_layout = layout_paragraph(&none_paragraph, &shaper);
+
+        let empty_table = ProtrusionTable::new();
+        let empty_paragraph = Paragraph::new(&runs, max_width).with_align(ParagraphAlign::Justify).with_protrusion(&empty_table);
+        let empty_layout = layout_paragraph(&empty_paragraph, &shaper);
+
+        assert_eq!(none_layout, empty_layout, "an empty (all-zero) protrusion table must be a true no-op — identical output to no table at all");
+    }
+
+    /// Protrusion never touches a MIDDLE glyph — only the first/last
+    /// rendered glyph of each line moves, even when a protrusion-table
+    /// character (a comma) sits in the middle of a line.
+    #[test]
+    fn protrusion_never_shifts_a_mid_line_glyph_even_if_it_is_a_table_character() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let text = "First, middle, last.";
+        let runs = [StyledRun::new(text, font)];
+        let max_width = 1000.0; // one line
+        let shaper = CosmicShaper::headless();
+
+        let without = Paragraph::new(&runs, max_width);
+        let without_layout = layout_paragraph(&without, &shaper);
+        assert_eq!(without_layout.lines.len(), 1);
+
+        let table = ProtrusionTable::default_punctuation();
+        let with = Paragraph::new(&runs, max_width).with_protrusion(&table);
+        let with_layout = layout_paragraph(&with, &shaper);
+
+        assert_eq!(without_layout.glyphs.len(), with_layout.glyphs.len());
+        let last_i = without_layout.glyphs.len() - 1;
+        for i in 0..without_layout.glyphs.len() {
+            if i == 0 || i == last_i {
+                continue; // the two edge glyphs are exactly what protrusion is allowed to move
+            }
+            assert_eq!(
+                without_layout.glyphs[i].x, with_layout.glyphs[i].x,
+                "glyph {i} ({:?}) is neither the first nor last glyph of its line — protrusion must never move it",
+                without_layout.glyphs[i].cluster
+            );
+        }
+    }
+
+    /// **RE-PROVE, per owner review of `text_t4_protrusion_off_vs_on.png`**:
+    /// protrusion must NEVER touch the paragraph's own ragged (non-flush)
+    /// FINAL line. Before the flush-gate fix, `apply_protrusion` fired
+    /// unconditionally on every line's own edge glyph, including a
+    /// `Justify` paragraph's own conventionally-ragged last line — visibly
+    /// detaching its trailing period from its word ("line after line ."
+    /// instead of "line after line."), exactly what the owner caught by
+    /// eye. Every glyph on the LAST line must be byte-identical (`x` in
+    /// particular) between protrusion ON and OFF — the SAME multi-line,
+    /// auto-wrapped Justify+KnuthPlass fixture the visual proof PNG uses,
+    /// so this is a direct regression guard for that exact PNG. A second
+    /// assertion (an EARLIER, genuinely-flush line's own trailing glyph
+    /// still DOES move) proves this isn't merely "protrusion silently
+    /// does nothing at all" masquerading as a pass.
+    #[test]
+    fn protrusion_never_shifts_glyphs_on_the_paragraphs_own_ragged_final_line() {
+        use crate::linebreak::BreakStrategy;
+
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let text = "Good typography is invisible, or nearly so: a well-set \
+            paragraph reads evenly, without ragged holes or crowded lines. \
+            Hanging punctuation lets a period, comma, or hyphen protrude \
+            slightly past the measure, so the column's right-hand edge \
+            reads flush instead of ragged, line after line.";
+        let runs = [StyledRun::new(text, font)];
+        let max_width = 320.0;
+        let shaper = CosmicShaper::headless();
+
+        let without =
+            Paragraph::new(&runs, max_width).with_align(ParagraphAlign::Justify).with_break_strategy(BreakStrategy::KnuthPlass);
+        let without_layout = layout_paragraph(&without, &shaper);
+        assert!(without_layout.lines.len() > 3, "fixture must wrap to several lines");
+        let last_line_index = without_layout.lines.len() - 1;
+
+        let table = ProtrusionTable::default_punctuation();
+        let with = Paragraph::new(&runs, max_width)
+            .with_align(ParagraphAlign::Justify)
+            .with_break_strategy(BreakStrategy::KnuthPlass)
+            .with_protrusion(&table);
+        let with_layout = layout_paragraph(&with, &shaper);
+        assert_eq!(with_layout.lines.len(), without_layout.lines.len(), "protrusion must not change the line count");
+
+        let without_last_line: Vec<&GlyphLayout> = without_layout.glyphs.iter().filter(|g| g.line_index == last_line_index).collect();
+        let with_last_line: Vec<&GlyphLayout> = with_layout.glyphs.iter().filter(|g| g.line_index == last_line_index).collect();
+        assert_eq!(without_last_line.len(), with_last_line.len());
+        for (a, b) in without_last_line.iter().zip(with_last_line.iter()) {
+            assert_eq!(a.cluster, b.cluster);
+            assert_eq!(
+                a.x, b.x,
+                "the paragraph's own ragged final line must be BYTE-IDENTICAL between protrusion on/off — cluster {:?} moved from {} to {}",
+                a.cluster, a.x, b.x
+            );
+        }
+
+        // Regression floor for the fix itself: an EARLIER, genuinely
+        // justified line's own trailing glyph still DOES move — proves
+        // this test can distinguish "correctly gated" from "protrusion
+        // silently stopped doing anything at all."
+        let moved_on_an_earlier_line = (0..last_line_index).any(|line_index| {
+            let a = without_layout.glyphs.iter().filter(|g| g.line_index == line_index).last();
+            let b = with_layout.glyphs.iter().filter(|g| g.line_index == line_index).last();
+            matches!((a, b), (Some(a), Some(b)) if (a.x - b.x).abs() > 1e-6)
+        });
+        assert!(
+            moved_on_an_earlier_line,
+            "at least one non-final (justified) line's own trailing glyph must still protrude, or this test can't tell 'correctly gated' apart from 'silently broken'"
+        );
     }
 }

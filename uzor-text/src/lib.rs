@@ -31,6 +31,8 @@ pub mod linebreak;
 pub mod measure;
 pub mod model;
 pub mod shape;
+#[cfg(test)]
+mod tnum_audit;
 
 pub use draw::{draw_decorations, draw_layout, draw_paragraph};
 pub use kinetics::{build_morph, sample, sample_layout, GlyphState, MorphTransition};
@@ -38,7 +40,10 @@ pub use layout::{
     align_lines, layout_paragraph, layout_text, Align, DecorationKind, DecorationSpan, GlyphLayout, LineBox, ParagraphLayout,
     PlacedInlineBox,
 };
-pub use linebreak::{BreakStrategy, Hyphenation};
+pub use linebreak::{BreakStrategy, Hyphenation, LineBreakParams};
 pub use measure::paragraph_intrinsic_size;
-pub use model::{FontSpec, InlineBox, InlineBoxKind, InlineBoxSlot, Paragraph, ParagraphAlign, StyledRun, TextDecoration, VerticalAlign};
+pub use model::{
+    FontSpec, InlineBox, InlineBoxKind, InlineBoxSlot, Paragraph, ParagraphAlign, ProtrusionFactors, ProtrusionTable, StyledRun,
+    TextDecoration, VerticalAlign,
+};
 pub use shape::{CosmicShaper, LineShaper};

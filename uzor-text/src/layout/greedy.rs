@@ -325,7 +325,7 @@ mod tests {
         // Splice right after run 0's full text ("before"), before run 1
         // ("after") starts.
         let slots = [InlineBoxSlot::new(0, "before".len(), InlineBox::in_flow(1, 10.0, 10.0))];
-        let paragraph = Paragraph { runs: &runs, inline_boxes: &slots, align: Default::default(), line_height: None, max_width: 1000.0, break_strategy: Default::default(), hyphenation: Default::default(), max_consecutive_hyphens: Default::default() };
+        let paragraph = Paragraph { runs: &runs, inline_boxes: &slots, align: Default::default(), line_height: None, max_width: 1000.0, break_strategy: Default::default(), hyphenation: Default::default(), max_consecutive_hyphens: Default::default(), line_break_params: Default::default(), protrusion: None };
         let shaper = CosmicShaper::headless();
 
         let atoms = build_atom_stream(&paragraph, &shaper);
@@ -341,7 +341,7 @@ mod tests {
     fn pack_lines_never_starts_a_line_with_leading_whitespace() {
         let font = FontSpec::new(FontFamily::Roboto, 16.0);
         let runs = [StyledRun::new("one two three", font)];
-        let paragraph = Paragraph { runs: &runs, inline_boxes: &[], align: Default::default(), line_height: None, max_width: 40.0, break_strategy: Default::default(), hyphenation: Default::default(), max_consecutive_hyphens: Default::default() };
+        let paragraph = Paragraph { runs: &runs, inline_boxes: &[], align: Default::default(), line_height: None, max_width: 40.0, break_strategy: Default::default(), hyphenation: Default::default(), max_consecutive_hyphens: Default::default(), line_break_params: Default::default(), protrusion: None };
         let shaper = CosmicShaper::headless();
 
         let atoms = build_atom_stream(&paragraph, &shaper);
@@ -361,7 +361,7 @@ mod tests {
     fn pack_lines_places_a_single_overflowing_atom_alone_rather_than_panicking() {
         let font = FontSpec::new(FontFamily::Roboto, 16.0);
         let runs = [StyledRun::new("Supercalifragilisticexpialidocious short", font)];
-        let paragraph = Paragraph { runs: &runs, inline_boxes: &[], align: Default::default(), line_height: None, max_width: 30.0, break_strategy: Default::default(), hyphenation: Default::default(), max_consecutive_hyphens: Default::default() };
+        let paragraph = Paragraph { runs: &runs, inline_boxes: &[], align: Default::default(), line_height: None, max_width: 30.0, break_strategy: Default::default(), hyphenation: Default::default(), max_consecutive_hyphens: Default::default(), line_break_params: Default::default(), protrusion: None };
         let shaper = CosmicShaper::headless();
 
         let atoms = build_atom_stream(&paragraph, &shaper);

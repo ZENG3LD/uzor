@@ -33,3 +33,13 @@ hypher = "0.1.7"
 uzor-export = { path = "../uzor-export" }
 uzor-render-tiny-skia = { workspace = true }
 png = "0.17"
+# Typography track T1 (2026-07-25): reads raw `hmtx` digit advances directly
+# from each embedded font file to measure whether `tnum` (tabular figures)
+# is a real gap for the fonts this workspace ships — see `tnum_audit`'s own
+# module doc. Dev-only (a measurement/regression test, never a runtime
+# dependency); already resolved in this workspace's own `Cargo.lock` (pulled
+# transitively by cosmic-text/rustybuzz/fontdue/swash), so this adds no new
+# supply-chain surface, only a direct dependency edge on an already-vetted
+# version.
+ttf-parser = "0.25"
+uzor-fonts = { workspace = true }

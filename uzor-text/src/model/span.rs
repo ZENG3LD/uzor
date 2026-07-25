@@ -5,7 +5,8 @@
 use super::decoration::{TextDecoration, VerticalAlign};
 use super::inline_box::InlineBoxSlot;
 use super::font_spec::FontSpec;
-use crate::linebreak::{BreakStrategy, Hyphenation};
+use super::protrusion::ProtrusionTable;
+use crate::linebreak::{BreakStrategy, Hyphenation, LineBreakParams};
 
 /// One styled run of text within a [`Paragraph`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -121,6 +122,23 @@ pub struct Paragraph<'a> {
     /// unchanged (see that module's own doc comment for why the
     /// unconstrained code path is untouched, not merely reproduced).
     pub max_consecutive_hyphens: Option<u8>,
+    /// Line-breaking tuning knobs (typography track T5) —
+    /// [`crate::linebreak::knuth_plass`]'s DP demerits/glue ratios and
+    /// [`crate::linebreak::hyphenate`]'s hyphenation-minimums, all exposed
+    /// through one struct (see [`LineBreakParams`]'s own doc comment for
+    /// why hyphenation LANGUAGE already had this builder-surface treatment
+    /// but these numeric knobs didn't, until now). `LineBreakParams::default`
+    /// reproduces every pre-T5 hardcoded constant exactly — every caller
+    /// that never touches this field gets byte-for-byte identical output.
+    pub line_break_params: LineBreakParams,
+    /// Character protrusion / hanging punctuation (typography track T4,
+    /// optical margin alignment) — `None` (the default) disables it
+    /// entirely, so every pre-T4 caller's rendered output is byte-for-byte
+    /// unchanged. `Some(table)` opts every line's own first/last rendered
+    /// glyph into [`ProtrusionTable::get`]'s per-character start/end
+    /// factors — see [`ProtrusionTable`]'s own doc comment for the
+    /// mechanism and the shipped `ProtrusionTable::default_punctuation`.
+    pub protrusion: Option<&'a ProtrusionTable>,
 }
 
 impl<'a> Paragraph<'a> {
@@ -136,6 +154,8 @@ impl<'a> Paragraph<'a> {
             break_strategy: BreakStrategy::default(),
             hyphenation: Hyphenation::default(),
             max_consecutive_hyphens: None,
+            line_break_params: LineBreakParams::default(),
+            protrusion: None,
         }
     }
 
@@ -175,6 +195,22 @@ impl<'a> Paragraph<'a> {
     /// [`Paragraph::max_consecutive_hyphens`]'s own doc comment.
     pub fn with_max_consecutive_hyphens(mut self, max: u8) -> Self {
         self.max_consecutive_hyphens = Some(max);
+        self
+    }
+
+    /// Builder: override the Knuth-Plass/hyphenation tuning knobs
+    /// (typography track T5) — or explicitly pin
+    /// [`LineBreakParams::default`], the default.
+    pub fn with_line_break_params(mut self, params: LineBreakParams) -> Self {
+        self.line_break_params = params;
+        self
+    }
+
+    /// Builder: opt into character protrusion / hanging punctuation
+    /// (typography track T4) via `table` — or leave `None`, the default
+    /// (no protrusion, byte-for-byte unchanged output).
+    pub fn with_protrusion(mut self, table: &'a ProtrusionTable) -> Self {
+        self.protrusion = Some(table);
         self
     }
 }
@@ -224,6 +260,8 @@ mod tests {
         assert_eq!(p.max_width, 200.0);
         assert_eq!(p.break_strategy, BreakStrategy::Greedy, "Phase 5 regression floor: default stays Greedy");
         assert_eq!(p.hyphenation, Hyphenation::None);
+        assert_eq!(p.line_break_params, LineBreakParams::default(), "T5 regression floor: default line-break params");
+        assert_eq!(p.protrusion, None, "T4 regression floor: default is no protrusion");
     }
 
     #[test]
@@ -244,5 +282,28 @@ mod tests {
             .with_hyphenation(Hyphenation::English);
         assert_eq!(p.break_strategy, BreakStrategy::KnuthPlass);
         assert_eq!(p.hyphenation, Hyphenation::English);
+    }
+
+    /// T5: `with_line_break_params` sets the field verbatim (no clamping/
+    /// normalization).
+    #[test]
+    fn paragraph_with_line_break_params_sets_the_expected_field() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let runs = [StyledRun::new("hi", font)];
+        let params = LineBreakParams { hyphen_penalty: 999.0, ..LineBreakParams::default() };
+        let p = Paragraph::new(&runs, 200.0).with_line_break_params(params);
+        assert_eq!(p.line_break_params, params);
+    }
+
+    /// T4: `with_protrusion` opts a paragraph into a caller-supplied table.
+    #[test]
+    fn paragraph_with_protrusion_sets_the_expected_field() {
+        use super::super::ProtrusionTable;
+
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let runs = [StyledRun::new("hi", font)];
+        let table = ProtrusionTable::default_punctuation();
+        let p = Paragraph::new(&runs, 200.0).with_protrusion(&table);
+        assert!(p.protrusion.is_some());
     }
 }

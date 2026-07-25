@@ -9,9 +9,11 @@
 mod decoration;
 mod font_spec;
 mod inline_box;
+mod protrusion;
 mod span;
 
 pub use decoration::{TextDecoration, VerticalAlign};
 pub use font_spec::FontSpec;
 pub use inline_box::{InlineBox, InlineBoxKind, InlineBoxSlot};
+pub use protrusion::{ProtrusionFactors, ProtrusionTable};
 pub use span::{Paragraph, ParagraphAlign, StyledRun};

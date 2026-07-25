@@ -15,28 +15,13 @@
 use std::collections::HashMap;
 
 use crate::layout::greedy::{self, Atom, AtomGlyph, TextAtom};
+use crate::linebreak::LineBreakParams;
 use crate::model::{FontSpec, Paragraph};
 use crate::shape::LineShaper;
 
 use super::hyphenate;
 use super::Hyphenation;
 
-/// Interword glue stretch/shrink as a fraction of its natural width — TeX's
-/// own conventional interword-space ratios (`stretch = w/2`, `shrink = w/3`).
-/// `pub(crate)`: [`crate::layout::paragraph`]'s glue-shrink render pass caps
-/// itself at this same ratio, so a line this module's DP scored as "shrink
-/// covers the gap" never renders with *more* compression than the cost
-/// model actually assumed (never full glue collapse to an unreadable
-/// zero-width space).
-const GLUE_STRETCH_RATIO: f64 = 0.5;
-pub(crate) const GLUE_SHRINK_RATIO: f64 = 1.0 / 3.0;
-/// Cost of a discretionary hyphenation break (Knuth's `\hyphenpenalty`,
-/// simplified here to one fixed constant rather than a tunable parameter).
-const HYPHEN_PENALTY: f64 = 50.0;
-/// Extra demerits when two consecutive chosen lines both end in a
-/// discretionary hyphen (Knuth's `\doublehyphendemerits`) — discourages a
-/// visual "staircase" of hyphens down the margin.
-const DOUBLE_HYPHEN_DEMERIT: f64 = 3000.0;
 /// Sentinel for a line with genuinely zero stretch/shrink to draw on (e.g. a
 /// single unbreakable atom alone on its own line) — large enough that the DP
 /// only ever routes through it when truly unavoidable, but still finite (no
@@ -125,8 +110,11 @@ fn trim_trailing_discardables(atoms: &[Atom]) -> &[Atom] {
 /// `(natural_width, stretch, shrink)` of `atoms` after
 /// [`trim_trailing_discardables`], adding `hyphen_width` when
 /// `ends_in_hyphen` (the discretionary hyphen glyph's width, contributed
-/// *only* when this break is actually chosen).
-fn span_metrics(atoms: &[Atom], hyphen_width: f64, ends_in_hyphen: bool) -> (f64, f64, f64) {
+/// *only* when this break is actually chosen). `params.glue_stretch_ratio`/
+/// `glue_shrink_ratio` (typography track T5) size interword glue's own
+/// stretch/shrink pool — [`LineBreakParams::default`] reproduces this
+/// module's pre-T5 hardcoded `0.5`/`1/3` ratios exactly.
+fn span_metrics(atoms: &[Atom], hyphen_width: f64, ends_in_hyphen: bool, params: LineBreakParams) -> (f64, f64, f64) {
     let trimmed = trim_trailing_discardables(atoms);
     let mut width = 0.0_f64;
     let mut stretch = 0.0_f64;
@@ -135,8 +123,8 @@ fn span_metrics(atoms: &[Atom], hyphen_width: f64, ends_in_hyphen: bool) -> (f64
         width += greedy::atom_width(atom);
         if let Atom::Text(t) = atom {
             if t.is_glue {
-                stretch += t.width * GLUE_STRETCH_RATIO;
-                shrink += t.width * GLUE_SHRINK_RATIO;
+                stretch += t.width * params.glue_stretch_ratio;
+                shrink += t.width * params.glue_shrink_ratio;
             }
         }
     }
@@ -237,18 +225,20 @@ fn shape_hyphen(font: &FontSpec, shaper: &dyn LineShaper) -> (AtomGlyph, f64) {
 }
 
 /// Knuth-Plass total-fit breaker: dynamic program over [`legal_breaks`],
-/// minimizing the sum of [`demerits`] (+ [`DOUBLE_HYPHEN_DEMERIT`] between
-/// two consecutive hyphen-ending lines) across the whole paragraph — the
-/// last line is scored via [`last_line_badness`] rather than [`badness`]
-/// (`\parfillskip`'s effect: infinite trailing stretch means an under-full
-/// final line is never penalized for falling short of `max_width`, but an
-/// over-full one still is — see that function's own doc for why the
-/// distinction matters).
+/// minimizing the sum of [`demerits`] (+ `paragraph.line_break_params.
+/// double_hyphen_demerit` between two consecutive hyphen-ending lines)
+/// across the whole paragraph — the last line is scored via
+/// [`last_line_badness`] rather than [`badness`] (`\parfillskip`'s effect:
+/// infinite trailing stretch means an under-full final line is never
+/// penalized for falling short of `max_width`, but an over-full one still
+/// is — see that function's own doc for why the distinction matters).
 ///
 /// When `paragraph.hyphenation` is anything but [`Hyphenation::None`],
 /// `atoms` is first expanded via [`hyphenate::expand_hyphenation`] into
 /// discretionary hyphen-fragment atoms (under that language's real
-/// hyph-utf8 pattern automaton, via `hypher`) before the DP runs.
+/// hyph-utf8 pattern automaton, via `hypher`, bounded by
+/// `paragraph.line_break_params.left_min`/`right_min` — typography track
+/// T5) before the DP runs.
 ///
 /// [`Paragraph::max_consecutive_hyphens`] (typography-gap WAVE 3) dispatches
 /// to a genuinely separate DP ([`pack_lines_with_hyphen_limit`]) rather than
@@ -260,8 +250,9 @@ pub(crate) fn pack_lines(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &d
     if atoms.is_empty() {
         return Vec::new();
     }
+    let params = paragraph.line_break_params;
     let atoms = if paragraph.hyphenation != Hyphenation::None {
-        hyphenate::expand_hyphenation(atoms, paragraph.hyphenation)
+        hyphenate::expand_hyphenation(atoms, paragraph.hyphenation, params.left_min, params.right_min)
     } else {
         atoms
     };
@@ -279,6 +270,7 @@ pub(crate) fn pack_lines(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &d
 /// happens to agree), not just an empirically-tested claim.
 fn pack_lines_unconstrained(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> Vec<Vec<Atom>> {
     let max_width = if paragraph.max_width.is_finite() { paragraph.max_width.max(1.0) } else { f64::MAX };
+    let params = paragraph.line_break_params;
     let candidates = legal_breaks(&atoms);
     let n = candidates.len();
     let mut hyphens = HyphenCache::new(paragraph, shaper);
@@ -304,13 +296,13 @@ fn pack_lines_unconstrained(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper:
             let ends_in_hyphen = matches!(slice.last(), Some(Atom::Text(t)) if t.hyphen_break);
             let hyphen_width =
                 if ends_in_hyphen { hyphens.get(run_index_of(&slice[slice.len() - 1])).1 } else { 0.0 };
-            let (width, stretch, shrink) = span_metrics(slice, hyphen_width, ends_in_hyphen);
+            let (width, stretch, shrink) = span_metrics(slice, hyphen_width, ends_in_hyphen, params);
 
             let b = if is_final { last_line_badness(width, max_width, shrink) } else { badness(width, max_width, stretch, shrink) };
-            let penalty = if ends_in_hyphen { HYPHEN_PENALTY } else { 0.0 };
+            let penalty = if ends_in_hyphen { params.hyphen_penalty } else { 0.0 };
             let mut d = demerits(b, penalty);
             if ends_in_hyphen && via_hyphen[i] {
-                d += DOUBLE_HYPHEN_DEMERIT;
+                d += params.double_hyphen_demerit;
             }
 
             let total = best[i] + d;
@@ -343,8 +335,9 @@ fn pack_lines_unconstrained(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper:
 /// Hard-constrained DP (typography-gap WAVE 3): a breakpoint sequence in
 /// which more than `limit` CONSECUTIVE lines end in a discretionary hyphen
 /// is INFEASIBLE — never reachable by the search, not merely
-/// demerit-discouraged the way [`DOUBLE_HYPHEN_DEMERIT`] already discourages
-/// exactly two in a row for the unconstrained case.
+/// demerit-discouraged the way `paragraph.line_break_params.
+/// double_hyphen_demerit` already discourages exactly two in a row for the
+/// unconstrained case.
 ///
 /// This needs a genuinely different DP shape, not a post-hoc filter over
 /// [`pack_lines_unconstrained`]'s own output: the single-state DP only ever
@@ -372,6 +365,7 @@ fn pack_lines_unconstrained(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper:
 /// convention.
 fn pack_lines_with_hyphen_limit(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &dyn LineShaper, limit: u8) -> Vec<Vec<Atom>> {
     let max_width = if paragraph.max_width.is_finite() { paragraph.max_width.max(1.0) } else { f64::MAX };
+    let params = paragraph.line_break_params;
     let candidates = legal_breaks(&atoms);
     let n = candidates.len();
     let mut hyphens = HyphenCache::new(paragraph, shaper);
@@ -394,10 +388,10 @@ fn pack_lines_with_hyphen_limit(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, sha
             let ends_in_hyphen = matches!(slice.last(), Some(Atom::Text(t)) if t.hyphen_break);
             let hyphen_width =
                 if ends_in_hyphen { hyphens.get(run_index_of(&slice[slice.len() - 1])).1 } else { 0.0 };
-            let (width, stretch, shrink) = span_metrics(slice, hyphen_width, ends_in_hyphen);
+            let (width, stretch, shrink) = span_metrics(slice, hyphen_width, ends_in_hyphen, params);
 
             let b = if is_final { last_line_badness(width, max_width, shrink) } else { badness(width, max_width, stretch, shrink) };
-            let penalty = if ends_in_hyphen { HYPHEN_PENALTY } else { 0.0 };
+            let penalty = if ends_in_hyphen { params.hyphen_penalty } else { 0.0 };
             let base_d = demerits(b, penalty);
 
             for r in 0..run_states {
@@ -417,7 +411,7 @@ fn pack_lines_with_hyphen_limit(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, sha
 
                 let mut d = base_d;
                 if ends_in_hyphen && r > 0 {
-                    d += DOUBLE_HYPHEN_DEMERIT;
+                    d += params.double_hyphen_demerit;
                 }
 
                 let total = best[i][r] + d;
@@ -496,7 +490,7 @@ fn reconstruct_lines(atoms: &[Atom], candidates: &[usize], path: &[usize], hyphe
 /// under this metric, by scoring greedy's (a different, non-optimal)
 /// grouping with the identical formula.
 #[cfg(test)]
-fn score_lines(lines: &[Vec<Atom>], max_width: f64) -> f64 {
+fn score_lines(lines: &[Vec<Atom>], max_width: f64, params: LineBreakParams) -> f64 {
     let max_width = if max_width.is_finite() { max_width.max(1.0) } else { f64::MAX };
     let last_index = lines.len().saturating_sub(1);
     let mut total = 0.0_f64;
@@ -508,17 +502,17 @@ fn score_lines(lines: &[Vec<Atom>], max_width: f64) -> f64 {
         for atom in line {
             if let Atom::Text(t) = atom {
                 if t.is_glue {
-                    stretch += t.width * GLUE_STRETCH_RATIO;
-                    shrink += t.width * GLUE_SHRINK_RATIO;
+                    stretch += t.width * params.glue_stretch_ratio;
+                    shrink += t.width * params.glue_shrink_ratio;
                 }
             }
         }
         let b = if i == last_index { last_line_badness(width, max_width, shrink) } else { badness(width, max_width, stretch, shrink) };
         let ends_in_hyphen = matches!(line.last(), Some(Atom::Text(t)) if t.hyphen_break);
-        let penalty = if ends_in_hyphen { HYPHEN_PENALTY } else { 0.0 };
+        let penalty = if ends_in_hyphen { params.hyphen_penalty } else { 0.0 };
         let mut d = demerits(b, penalty);
         if ends_in_hyphen && prev_hyphen {
-            d += DOUBLE_HYPHEN_DEMERIT;
+            d += params.double_hyphen_demerit;
         }
         total += d;
         prev_hyphen = ends_in_hyphen;
@@ -548,15 +542,32 @@ mod tests {
         })
     }
 
+    /// A single interword-glue atom of the given natural `width` — for
+    /// unit-testing [`span_metrics`]'s own stretch/shrink math directly
+    /// (typography track T5), independent of a full paragraph layout.
+    fn glue_atom(width: f64) -> Atom {
+        Atom::Text(TextAtom {
+            run_index: 0,
+            glyphs: vec![AtomGlyph { cluster: " ".to_string(), x: 0.0, y_offset: 0.0, advance: width, width }],
+            width,
+            ascent: 0.0,
+            descent: 0.0,
+            shape_font: FontSpec::default(),
+            is_glue: true,
+            hyphen_break: false,
+        })
+    }
+
     /// The pure demerits math: two consecutive hyphen-ending lines cost
     /// strictly more than the same lines with only one of them flagged,
-    /// all else held equal — [`DOUBLE_HYPHEN_DEMERIT`] is genuinely applied.
+    /// all else held equal — `double_hyphen_demerit` is genuinely applied.
     #[test]
     fn double_hyphen_demerit_penalizes_two_consecutive_hyphen_ending_lines() {
         let with_double = vec![vec![word_atom(true)], vec![word_atom(true)], vec![word_atom(false)]];
         let without_double = vec![vec![word_atom(true)], vec![word_atom(false)], vec![word_atom(false)]];
+        let params = LineBreakParams::default();
 
-        assert!(score_lines(&with_double, 1000.0) > score_lines(&without_double, 1000.0));
+        assert!(score_lines(&with_double, 1000.0, params) > score_lines(&without_double, 1000.0, params));
     }
 
     /// Sanity: Knuth-Plass is optimal for the objective it minimizes — its
@@ -582,8 +593,9 @@ mod tests {
 
         assert!(greedy_lines.len() > 1 && kp_lines.len() > 1, "fixture must wrap to multiple lines");
 
-        let greedy_score = score_lines(&greedy_lines, max_width);
-        let kp_score = score_lines(&kp_lines, max_width);
+        let params = LineBreakParams::default();
+        let greedy_score = score_lines(&greedy_lines, max_width, params);
+        let kp_score = score_lines(&kp_lines, max_width, params);
         assert!(
             kp_score <= greedy_score + 1e-6,
             "KP ({kp_score}) must be at most as costly as greedy's grouping ({greedy_score})"
@@ -645,10 +657,11 @@ mod tests {
         assert_eq!(paragraph.max_consecutive_hyphens, None);
         let shaper = CosmicShaper::headless();
 
+        let params = paragraph.line_break_params;
         let atoms_a = greedy::build_atom_stream(&paragraph, &shaper);
         let atoms_b = greedy::build_atom_stream(&paragraph, &shaper);
-        let expanded_a = hyphenate::expand_hyphenation(atoms_a, paragraph.hyphenation);
-        let expanded_b = hyphenate::expand_hyphenation(atoms_b, paragraph.hyphenation);
+        let expanded_a = hyphenate::expand_hyphenation(atoms_a, paragraph.hyphenation, params.left_min, params.right_min);
+        let expanded_b = hyphenate::expand_hyphenation(atoms_b, paragraph.hyphenation, params.left_min, params.right_min);
 
         let via_dispatch = pack_lines(expanded_a.clone(), &paragraph, &shaper);
         let via_direct = pack_lines_unconstrained(expanded_b, &paragraph, &shaper);
@@ -717,5 +730,147 @@ mod tests {
         assert!(unconstrained_run > 2, "fixture's own unconstrained run must exceed the limit under test");
         assert!(limited_run <= 2, "limited layout must never exceed the hard cap, got {limited_run}");
         assert!(limited_run < unconstrained_run, "the constraint must genuinely change the chosen breakpoints, got limited={limited_run} unconstrained={unconstrained_run}");
+    }
+
+    // ── Typography track T5: LineBreakParams (2026-07-25) ──────────────
+
+    /// `LineBreakParams::default()` reproduces this module's own pre-T5
+    /// hardcoded constants (former `HYPHEN_PENALTY = 50.0`,
+    /// `DOUBLE_HYPHEN_DEMERIT = 3000.0`, `GLUE_STRETCH_RATIO = 0.5`,
+    /// `GLUE_SHRINK_RATIO = 1/3`) and `hyphenate`'s own pre-T5
+    /// `LEFT_MIN`/`RIGHT_MIN` (`2`/`3`) EXACTLY — the numeric floor every
+    /// "byte-for-byte unchanged when unset" claim in this wave rests on.
+    #[test]
+    fn default_line_break_params_reproduce_the_hardcoded_constants_exactly() {
+        let p = LineBreakParams::default();
+        assert_eq!(p.hyphen_penalty, 50.0);
+        assert_eq!(p.double_hyphen_demerit, 3000.0);
+        assert_eq!(p.glue_stretch_ratio, 0.5);
+        assert_eq!(p.glue_shrink_ratio, 1.0 / 3.0);
+        assert_eq!(p.left_min, 2);
+        assert_eq!(p.right_min, 3);
+    }
+
+    /// T5's own required proof: a paragraph laid out with NON-default
+    /// penalties must break DIFFERENTLY than with defaults — the knob is
+    /// genuinely wired into the DP's own search, not a decorative field
+    /// nothing reads. A prohibitively high `hyphen_penalty` (dwarfing every
+    /// other term in the demerits formula) must eliminate every
+    /// hyphenation break the SAME fixture takes freely under default
+    /// params at the SAME narrow width — and change the line count, so
+    /// the difference is a real layout change, not just "no `-` glyph".
+    #[test]
+    fn non_default_hyphen_penalty_changes_which_breaks_knuth_plass_chooses() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let runs = [StyledRun::new(HYPHEN_DENSE_TEXT, font)];
+        let shaper = CosmicShaper::headless();
+
+        let default_paragraph =
+            Paragraph::new(&runs, HYPHEN_DENSE_WIDTH).with_break_strategy(BreakStrategy::KnuthPlass).with_hyphenation(Hyphenation::English);
+        let default_layout = layout_paragraph(&default_paragraph, &shaper);
+        assert!(default_layout.glyphs.iter().any(|g| g.cluster == "-"), "fixture must hyphenate freely under default params (regression floor)");
+
+        let harsh_params = LineBreakParams { hyphen_penalty: 1.0e8, ..LineBreakParams::default() };
+        let harsh_paragraph = Paragraph::new(&runs, HYPHEN_DENSE_WIDTH)
+            .with_break_strategy(BreakStrategy::KnuthPlass)
+            .with_hyphenation(Hyphenation::English)
+            .with_line_break_params(harsh_params);
+        let harsh_layout = layout_paragraph(&harsh_paragraph, &shaper);
+
+        assert!(
+            !harsh_layout.glyphs.iter().any(|g| g.cluster == "-"),
+            "a prohibitively high hyphen_penalty must eliminate every hyphen break this fixture otherwise takes freely"
+        );
+        assert_ne!(
+            default_layout.lines.len(),
+            harsh_layout.lines.len(),
+            "eliminating every hyphen break must genuinely change the line count — a real layout change, not decoration"
+        );
+    }
+
+    /// The second penalty knob, same "wired not decorative" proof: an
+    /// extreme `double_hyphen_demerit` must strictly shrink the longest
+    /// consecutive-hyphen run relative to the default, at a width where a
+    /// genuinely competitive lower-consecutive-hyphen alternative exists
+    /// (unlike the narrower `HYPHEN_DENSE_WIDTH` fixture, where nearly
+    /// every word structurally REQUIRES hyphenation regardless of demerit
+    /// — probed directly: `250.0` reduces `default_run=3` to `harsh_run=1`
+    /// while the total LINE COUNT stays identical (`8` both ways), proving
+    /// the demerit changed WHICH breakpoints were chosen, not merely how
+    /// many lines resulted).
+    #[test]
+    fn non_default_double_hyphen_demerit_reduces_consecutive_hyphen_runs() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let runs = [StyledRun::new(HYPHEN_DENSE_TEXT, font)];
+        let width = 250.0;
+        let shaper = CosmicShaper::headless();
+
+        let default_paragraph =
+            Paragraph::new(&runs, width).with_break_strategy(BreakStrategy::KnuthPlass).with_hyphenation(Hyphenation::English);
+        let default_layout = layout_paragraph(&default_paragraph, &shaper);
+        let default_run = max_consecutive_hyphen_lines(&default_layout);
+        assert!(default_run >= 2, "fixture must have a real consecutive-hyphen run under default params (regression floor), got {default_run}");
+
+        let harsh_params = LineBreakParams { double_hyphen_demerit: 1.0e9, ..LineBreakParams::default() };
+        let harsh_paragraph = Paragraph::new(&runs, width)
+            .with_break_strategy(BreakStrategy::KnuthPlass)
+            .with_hyphenation(Hyphenation::English)
+            .with_line_break_params(harsh_params);
+        let harsh_layout = layout_paragraph(&harsh_paragraph, &shaper);
+        let harsh_run = max_consecutive_hyphen_lines(&harsh_layout);
+
+        assert!(harsh_run < default_run, "a huge double_hyphen_demerit must strictly shrink the longest consecutive-hyphen run, got default={default_run} harsh={harsh_run}");
+        assert_eq!(default_layout.lines.len(), harsh_layout.lines.len(), "regression floor: the two layouts should differ in WHICH lines hyphenate, not in overall line count, at this width");
+    }
+
+    /// `glue_stretch_ratio`/`glue_shrink_ratio` (T5) are genuinely read by
+    /// [`span_metrics`] — a smaller ratio must shrink the returned
+    /// stretch/shrink pool proportionally (the exact pool the DP's own
+    /// badness scoring, and `layout::paragraph`'s render-time shrink cap,
+    /// are built on).
+    #[test]
+    fn non_default_glue_ratios_change_span_metrics_stretch_and_shrink() {
+        // A trailing glue atom alone would be trimmed by
+        // `trim_trailing_discardables` (matches `flush_line`'s own
+        // "trailing whitespace is never counted" convention) — a
+        // non-glue atom AFTER the glue keeps it in the measured span.
+        let atoms = vec![word_atom(false), glue_atom(20.0), word_atom(false)];
+        let default_params = LineBreakParams::default();
+        let (_, default_stretch, default_shrink) = span_metrics(&atoms, 0.0, false, default_params);
+
+        let tight_params = LineBreakParams { glue_stretch_ratio: 0.1, glue_shrink_ratio: 0.05, ..LineBreakParams::default() };
+        let (_, tight_stretch, tight_shrink) = span_metrics(&atoms, 0.0, false, tight_params);
+
+        assert!(tight_stretch < default_stretch, "a smaller glue_stretch_ratio must shrink the returned stretch pool, default={default_stretch} tight={tight_stretch}");
+        assert!(tight_shrink < default_shrink, "a smaller glue_shrink_ratio must shrink the returned shrink pool, default={default_shrink} tight={tight_shrink}");
+    }
+
+    /// `left_min`/`right_min` (T5) genuinely reach the DP end-to-end
+    /// through `paragraph.line_break_params` — a much wider bound must
+    /// suppress SOME hyphenation break the default bound takes on the same
+    /// fixture (proves the field is read all the way from `Paragraph`
+    /// through to the chosen layout, not merely by `hyphenate`'s own unit
+    /// tests in isolation).
+    #[test]
+    fn non_default_left_right_min_changes_the_laid_out_hyphenation() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let runs = [StyledRun::new(HYPHEN_DENSE_TEXT, font)];
+        let shaper = CosmicShaper::headless();
+
+        let default_paragraph =
+            Paragraph::new(&runs, HYPHEN_DENSE_WIDTH).with_break_strategy(BreakStrategy::KnuthPlass).with_hyphenation(Hyphenation::English);
+        let default_layout = layout_paragraph(&default_paragraph, &shaper);
+        let default_hyphens = default_layout.glyphs.iter().filter(|g| g.cluster == "-").count();
+        assert!(default_hyphens > 0, "fixture must hyphenate under default params (regression floor)");
+
+        let wide_params = LineBreakParams { left_min: 6, right_min: 6, ..LineBreakParams::default() };
+        let wide_paragraph = Paragraph::new(&runs, HYPHEN_DENSE_WIDTH)
+            .with_break_strategy(BreakStrategy::KnuthPlass)
+            .with_hyphenation(Hyphenation::English)
+            .with_line_break_params(wide_params);
+        let wide_layout = layout_paragraph(&wide_paragraph, &shaper);
+        let wide_hyphens = wide_layout.glyphs.iter().filter(|g| g.cluster == "-").count();
+
+        assert!(wide_hyphens < default_hyphens, "a much wider left_min/right_min must strictly reduce the laid-out hyphen count, default={default_hyphens} wide={wide_hyphens}");
     }
 }

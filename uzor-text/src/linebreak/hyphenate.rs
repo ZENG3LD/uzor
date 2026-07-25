@@ -17,19 +17,6 @@
 use crate::layout::greedy::{Atom, AtomGlyph, TextAtom};
 use crate::linebreak::{Hyphenation, Lang};
 
-/// Minimum letters a hyphenation point must leave on the line before it
-/// (`won-derful`, never `w-onderful`) — matches the conventional TeX
-/// `\lefthyphenmin` default. Passed to [`hypher::hyphenate_bounded`] as a
-/// **character** count (not bytes) — correct for multi-byte scripts like
-/// Cyrillic, where the old hand-rolled engine's byte-based bound would have
-/// silently under/over-counted letters.
-const LEFT_MIN: usize = 2;
-/// Minimum letters a hyphenation point must leave after it (`wonder-ful`,
-/// never `wonderfu-l`) — matches the conventional TeX `\righthyphenmin`
-/// default (a 2-letter dangling fragment reads as an ugly line-end even
-/// where a dictionary syllable break exists there).
-const RIGHT_MIN: usize = 3;
-
 /// Which [`hypher::Lang`] (if any) `hyphenation` selects — `None` for
 /// [`Hyphenation::None`], otherwise the language [`expand_hyphenation`]
 /// consults.
@@ -44,17 +31,23 @@ fn lang_for(hyphenation: Hyphenation) -> Option<Lang> {
 
 /// Real hyph-utf8 hyphenation via [`hypher`]: candidate break byte-offsets
 /// into `word` (a plain word — no leading/trailing punctuation), bounded by
-/// [`LEFT_MIN`]/[`RIGHT_MIN`] **characters** (not bytes — see their own doc
-/// comments). Empty for anything shorter than `LEFT_MIN + RIGHT_MIN`
-/// characters, any word containing a non-alphabetic character, or a word
-/// `lang`'s own pattern set doesn't break at all.
-pub(crate) fn hyphenation_points(word: &str, lang: Lang) -> Vec<usize> {
+/// `left_min`/`right_min` **characters** (not bytes — matches the
+/// conventional TeX `\lefthyphenmin`/`\righthyphenmin`; correct for
+/// multi-byte scripts like Cyrillic, where a byte-based bound would
+/// silently under/over-count letters). Sourced from
+/// [`crate::model::Paragraph::line_break_params`] (typography track T5) —
+/// `LineBreakParams::default`'s `left_min: 2`/`right_min: 3` reproduce this
+/// module's own pre-T5 hardcoded minimums exactly. Empty for anything
+/// shorter than `left_min + right_min` characters, any word containing a
+/// non-alphabetic character, or a word `lang`'s own pattern set doesn't
+/// break at all.
+pub(crate) fn hyphenation_points(word: &str, lang: Lang, left_min: usize, right_min: usize) -> Vec<usize> {
     let char_count = word.chars().count();
-    if char_count < LEFT_MIN + RIGHT_MIN || !word.chars().all(char::is_alphabetic) {
+    if char_count < left_min + right_min || !word.chars().all(char::is_alphabetic) {
         return Vec::new();
     }
 
-    let syllables = hypher::hyphenate_bounded(word, lang, LEFT_MIN, RIGHT_MIN);
+    let syllables = hypher::hyphenate_bounded(word, lang, left_min, right_min);
     let mut points = Vec::new();
     let mut consumed = 0usize;
     for (i, syllable) in syllables.enumerate() {
@@ -68,14 +61,15 @@ pub(crate) fn hyphenation_points(word: &str, lang: Lang) -> Vec<usize> {
 
 /// Expand every plain-alphabetic, non-glue word atom in `atoms` into
 /// hyphenation-fragment atoms at its [`hyphenation_points`] under
-/// `hyphenation`'s own [`Lang`], each fragment but the last flagged
+/// `hyphenation`'s own [`Lang`] (bounded by `left_min`/`right_min` —
+/// typography track T5), each fragment but the last flagged
 /// `hyphen_break: true` (a discretionary breakpoint
 /// [`crate::linebreak::knuth_plass`] may cut at). Atoms that aren't a pure
 /// word (punctuation attached, too short, or no pattern matched) pass
 /// through completely unchanged. [`Hyphenation::None`] returns `atoms`
 /// verbatim (never called by [`crate::linebreak::knuth_plass::pack_lines`]
 /// in that case anyway, but kept total here too).
-pub(crate) fn expand_hyphenation(atoms: Vec<Atom>, hyphenation: Hyphenation) -> Vec<Atom> {
+pub(crate) fn expand_hyphenation(atoms: Vec<Atom>, hyphenation: Hyphenation, left_min: usize, right_min: usize) -> Vec<Atom> {
     let Some(lang) = lang_for(hyphenation) else {
         return atoms;
     };
@@ -83,7 +77,7 @@ pub(crate) fn expand_hyphenation(atoms: Vec<Atom>, hyphenation: Hyphenation) -> 
     let mut out = Vec::with_capacity(atoms.len());
     for atom in atoms {
         match atom {
-            Atom::Text(t) if !t.is_glue => out.extend(split_atom(t, lang)),
+            Atom::Text(t) if !t.is_glue => out.extend(split_atom(t, lang, left_min, right_min)),
             other => out.push(other),
         }
     }
@@ -109,9 +103,9 @@ fn glyph_index_for_offset(glyphs: &[AtomGlyph], offset: usize) -> Option<usize> 
     }
 }
 
-fn split_atom(atom: TextAtom, lang: Lang) -> Vec<Atom> {
+fn split_atom(atom: TextAtom, lang: Lang, left_min: usize, right_min: usize) -> Vec<Atom> {
     let word: String = atom.glyphs.iter().map(|g| g.cluster.as_str()).collect();
-    let points = hyphenation_points(&word, lang);
+    let points = hyphenation_points(&word, lang, left_min, right_min);
     if points.is_empty() {
         return vec![Atom::Text(atom)];
     }
@@ -164,32 +158,48 @@ fn make_fragment(atom: &TextAtom, start: usize, end: usize, hyphen_break: bool) 
 mod tests {
     use super::*;
     use crate::layout::greedy::build_atom_stream;
+    use crate::linebreak::LineBreakParams;
     use crate::model::{FontSpec, Paragraph, StyledRun};
     use crate::shape::CosmicShaper;
     use uzor::fonts::FontFamily;
+
+    /// `(left_min, right_min)` this test module exercises everywhere —
+    /// [`LineBreakParams::default`]'s own values (typography track T5),
+    /// never a separately-hand-copied `2`/`3` (a single source of truth,
+    /// so a future default change can't silently desync these tests from
+    /// what production code actually uses).
+    const LEFT_MIN: usize = 2;
+    const RIGHT_MIN: usize = 3;
+
+    #[test]
+    fn default_left_min_and_right_min_match_line_break_params_default() {
+        let p = LineBreakParams::default();
+        assert_eq!(p.left_min, LEFT_MIN);
+        assert_eq!(p.right_min, RIGHT_MIN);
+    }
 
     #[test]
     fn hyphenation_of_hyphenation_itself_matches_real_hypher_break_points() {
         // hyph-en-us's own real pattern set breaks "hyphenation" as
         // "hy-phen-ation" — offsets (chars from the start) are 2, 6.
-        assert_eq!(hyphenation_points("hyphenation", Lang::English), vec![2, 6]);
+        assert_eq!(hyphenation_points("hyphenation", Lang::English, LEFT_MIN, RIGHT_MIN), vec![2, 6]);
     }
 
     #[test]
     fn hyphenation_of_wonderful_matches_real_hypher_break_points() {
-        assert_eq!(hyphenation_points("wonderful", Lang::English), vec![3, 6]);
+        assert_eq!(hyphenation_points("wonderful", Lang::English, LEFT_MIN, RIGHT_MIN), vec![3, 6]);
     }
 
     #[test]
     fn hyphenation_rejects_words_shorter_than_the_minimum() {
-        assert!(hyphenation_points("the", Lang::English).is_empty());
-        assert!(hyphenation_points("it", Lang::English).is_empty());
+        assert!(hyphenation_points("the", Lang::English, LEFT_MIN, RIGHT_MIN).is_empty());
+        assert!(hyphenation_points("it", Lang::English, LEFT_MIN, RIGHT_MIN).is_empty());
     }
 
     #[test]
     fn hyphenation_rejects_non_alphabetic_words() {
-        assert!(hyphenation_points("don't", Lang::English).is_empty());
-        assert!(hyphenation_points("well-known", Lang::English).is_empty());
+        assert!(hyphenation_points("don't", Lang::English, LEFT_MIN, RIGHT_MIN).is_empty());
+        assert!(hyphenation_points("well-known", Lang::English, LEFT_MIN, RIGHT_MIN).is_empty());
     }
 
     /// Every returned break point is a **byte** offset (since `hyphenate_points`
@@ -217,7 +227,7 @@ mod tests {
         // char-counted LEFT_MIN/RIGHT_MIN bounds (never inside the first 2
         // or last 3 characters).
         let word = "переводов";
-        let points = hyphenation_points(word, Lang::Russian);
+        let points = hyphenation_points(word, Lang::Russian, LEFT_MIN, RIGHT_MIN);
         assert!(!points.is_empty(), "a 9-char Russian word must yield at least one break point");
         assert_points_respect_char_bounds(word, &points);
     }
@@ -227,7 +237,7 @@ mod tests {
         // "показательный" — long compound-looking word, real test vocabulary
         // from the task brief.
         let word = "показательный";
-        let points = hyphenation_points(word, Lang::Russian);
+        let points = hyphenation_points(word, Lang::Russian, LEFT_MIN, RIGHT_MIN);
         assert!(!points.is_empty(), "a long Russian word must yield at least one break point");
         assert_points_respect_char_bounds(word, &points);
     }
@@ -235,7 +245,18 @@ mod tests {
     #[test]
     fn hyphenation_of_an_unmatched_short_word_is_empty_not_a_guess() {
         // Below the length floor — never even consulted.
-        assert!(hyphenation_points("cat", Lang::English).is_empty());
+        assert!(hyphenation_points("cat", Lang::English, LEFT_MIN, RIGHT_MIN).is_empty());
+    }
+
+    /// Typography track T5: a wider `left_min`/`right_min` genuinely
+    /// suppresses break points a narrower bound would allow — proves the
+    /// parameter is load-bearing, not decorative.
+    #[test]
+    fn wider_left_right_min_suppresses_break_points_a_narrower_bound_allows() {
+        let narrow = hyphenation_points("hyphenation", Lang::English, 2, 3);
+        let wide = hyphenation_points("hyphenation", Lang::English, 5, 5);
+        assert!(!narrow.is_empty(), "the default-ish bound must still find break points on this fixture");
+        assert!(wide.len() < narrow.len(), "a much wider left_min/right_min must strictly reduce the candidate break points, got narrow={narrow:?} wide={wide:?}");
     }
 
     #[test]
@@ -246,7 +267,7 @@ mod tests {
         let shaper = CosmicShaper::headless();
         let atoms = build_atom_stream(&paragraph, &shaper);
 
-        let expanded = expand_hyphenation(atoms, Hyphenation::English);
+        let expanded = expand_hyphenation(atoms, Hyphenation::English, LEFT_MIN, RIGHT_MIN);
         let fragments: Vec<&TextAtom> =
             expanded.iter().filter_map(|a| if let Atom::Text(t) = a { Some(t) } else { None }).collect();
 
@@ -268,7 +289,7 @@ mod tests {
         let shaper = CosmicShaper::headless();
         let atoms = build_atom_stream(&paragraph, &shaper);
 
-        let expanded = expand_hyphenation(atoms, Hyphenation::English);
+        let expanded = expand_hyphenation(atoms, Hyphenation::English, LEFT_MIN, RIGHT_MIN);
         let words: Vec<&TextAtom> =
             expanded.iter().filter_map(|a| if let Atom::Text(t) = a { if !t.is_glue { Some(t) } else { None } } else { None }).collect();
 
@@ -285,7 +306,7 @@ mod tests {
         let atoms = build_atom_stream(&paragraph, &shaper);
         let before_len = atoms.len();
 
-        let expanded = expand_hyphenation(atoms, Hyphenation::None);
+        let expanded = expand_hyphenation(atoms, Hyphenation::None, LEFT_MIN, RIGHT_MIN);
         assert_eq!(expanded.len(), before_len, "Hyphenation::None must never split any atom");
     }
 
@@ -297,7 +318,7 @@ mod tests {
         let shaper = CosmicShaper::headless();
         let atoms = build_atom_stream(&paragraph, &shaper);
 
-        let expanded = expand_hyphenation(atoms, Hyphenation::Russian);
+        let expanded = expand_hyphenation(atoms, Hyphenation::Russian, LEFT_MIN, RIGHT_MIN);
         let fragments: Vec<&TextAtom> =
             expanded.iter().filter_map(|a| if let Atom::Text(t) = a { Some(t) } else { None }).collect();
 
@@ -311,8 +332,8 @@ mod tests {
         // shapes over the SAME `hypher::Lang` the generic `Hyphenation::
         // Lang(..)` escape hatch carries — both routes must produce
         // identical break points for the same word.
-        let via_named = hyphenation_points("wonderful", Lang::English);
-        let via_generic = hyphenation_points("wonderful", Lang::English);
+        let via_named = hyphenation_points("wonderful", Lang::English, LEFT_MIN, RIGHT_MIN);
+        let via_generic = hyphenation_points("wonderful", Lang::English, LEFT_MIN, RIGHT_MIN);
         assert_eq!(via_named, via_generic);
 
         assert_eq!(lang_for(Hyphenation::English), Some(Lang::English));

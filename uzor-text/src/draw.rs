@@ -421,4 +421,106 @@ mod tests {
         assert_eq!(decoded_png_dims(&bytes), (WIDTH, HEIGHT));
         write_proof_png("text_wave2_decorations_spacing_script.png", &bytes);
     }
+
+    /// Typography track T4 headless proof: the SAME fixed paragraph,
+    /// justified via Knuth-Plass at a realistic body-text column width,
+    /// laid out with protrusion OFF (left column) vs. ON (right column,
+    /// [`crate::model::ProtrusionTable::default_punctuation`]) — a thin red
+    /// rule marks each column's own `max_width` (the "measure"), so the
+    /// OFF column's periods/commas sit flush against it while the ON
+    /// column's visibly cross it (design law 8: a side-by-side pair, not
+    /// one screenshot).
+    #[test]
+    fn protrusion_off_vs_on_side_by_side_renders_to_a_valid_png() {
+        use crate::linebreak::BreakStrategy;
+        use crate::model::ProtrusionTable;
+
+        const COL_WIDTH: f64 = 320.0;
+        const MARGIN: f64 = 24.0;
+        const GAP: f64 = 32.0;
+        const HEADER_H: f64 = 28.0;
+        const HEIGHT: u32 = 320;
+
+        let width = (MARGIN * 2.0 + COL_WIDTH * 2.0 + GAP).round() as u32;
+
+        let body_font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let label_font = FontSpec::new(FontFamily::Roboto, 14.0).bold();
+
+        // Fixed seeded fixture, deliberately dense with the punctuation
+        // T4's own default table covers (periods, commas, a hyphenated
+        // word, a quoted phrase) at a realistic body-text column width —
+        // design law 8: deterministic, no RNG.
+        const TEXT: &str = "Good typography is invisible, or nearly so: a well-set \
+            paragraph reads evenly, without ragged holes or crowded lines. \
+            Hanging punctuation, sometimes called \u{201C}optical margin \
+            alignment,\u{201D} lets a period, comma, or hyphen protrude \
+            slightly past the measure, so the column's right-hand edge \
+            reads flush instead of ragged, line after line.";
+
+        let table = ProtrusionTable::default_punctuation();
+        let shaper = CosmicShaper::headless();
+        let runs = [StyledRun::new(TEXT, body_font)];
+
+        let off_label_runs = [StyledRun::new("PROTRUSION OFF", label_font)];
+        let off_label_layout = layout_paragraph(&Paragraph::new(&off_label_runs, COL_WIDTH), &shaper);
+        let off_paragraph = Paragraph::new(&runs, COL_WIDTH).with_align(ParagraphAlign::Justify).with_break_strategy(BreakStrategy::KnuthPlass);
+        let off_layout = layout_paragraph(&off_paragraph, &shaper);
+
+        let on_label_runs = [StyledRun::new("PROTRUSION ON", label_font)];
+        let on_label_layout = layout_paragraph(&Paragraph::new(&on_label_runs, COL_WIDTH), &shaper);
+        let on_paragraph = Paragraph::new(&runs, COL_WIDTH)
+            .with_align(ParagraphAlign::Justify)
+            .with_break_strategy(BreakStrategy::KnuthPlass)
+            .with_protrusion(&table);
+        let on_layout = layout_paragraph(&on_paragraph, &shaper);
+
+        assert!(off_layout.lines.len() > 3, "fixture must wrap to several lines at this column width");
+        assert_eq!(off_layout.lines.len(), on_layout.lines.len(), "protrusion must not change the line count, only edge-glyph position (regression floor)");
+
+        // RE-PROVE (owner review, 2026-07-25): the paragraph's own ragged
+        // FINAL line — never justify-stretched, so never flush against the
+        // measure — must be BYTE-IDENTICAL between ON and OFF. This is the
+        // exact defect the owner caught by eye on an earlier version of
+        // this very PNG ("line after line ." with a stray gap before the
+        // period, instead of "line after line."); asserted here as data,
+        // not left to eyeballing alone (design law 8's own "one screenshot
+        // is never proof," applied to the proof's OWN correctness).
+        let last_line_index = off_layout.lines.len() - 1;
+        let off_last_line: Vec<&crate::layout::GlyphLayout> = off_layout.glyphs.iter().filter(|g| g.line_index == last_line_index).collect();
+        let on_last_line: Vec<&crate::layout::GlyphLayout> = on_layout.glyphs.iter().filter(|g| g.line_index == last_line_index).collect();
+        assert_eq!(off_last_line.len(), on_last_line.len(), "the final line must carry the same glyph count either way");
+        for (a, b) in off_last_line.iter().zip(on_last_line.iter()) {
+            assert_eq!(a.cluster, b.cluster);
+            assert_eq!(a.x, b.x, "final line must be byte-identical between protrusion on/off — {:?} moved from {} to {}", a.cluster, a.x, b.x);
+        }
+
+        let spec = ExportSpec { width_px: width, height_px: HEIGHT, dpr: 1.0, background: Some([255, 255, 255, 255]) };
+        let bytes = render_to_png(&spec, |ctx| {
+            let left_x = MARGIN;
+            let right_x = MARGIN + COL_WIDTH + GAP;
+            let body_y = 20.0 + HEADER_H;
+
+            draw_paragraph(ctx, (left_x, 20.0), &off_label_layout, "#111111", false);
+            draw_paragraph(ctx, (left_x, body_y), &off_layout, "#111111", false);
+            draw_paragraph(ctx, (right_x, 20.0), &on_label_layout, "#111111", false);
+            draw_paragraph(ctx, (right_x, body_y), &on_layout, "#111111", false);
+
+            // Margin rule at each column's own `max_width` (the measure) —
+            // makes the hanging punctuation crossing it (ON) vs. staying
+            // flush against it (OFF) visible by eye.
+            ctx.set_stroke_color("#ff0000ff");
+            ctx.set_stroke_width(1.0);
+            for col_x in [left_x, right_x] {
+                let rule_x = col_x + COL_WIDTH;
+                ctx.begin_path();
+                ctx.move_to(rule_x, body_y - 4.0);
+                ctx.line_to(rule_x, body_y + off_layout.height + 4.0);
+                ctx.stroke();
+            }
+        })
+        .expect("protrusion off-vs-on proof render should succeed");
+
+        assert_eq!(decoded_png_dims(&bytes), (width, HEIGHT));
+        write_proof_png("text_t4_protrusion_off_vs_on.png", &bytes);
+    }
 }
