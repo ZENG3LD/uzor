@@ -62,7 +62,8 @@ pub use figure::{
 pub use guide::annotation::{draw_annotation_overlays, draw_annotation_underlays, Annotation};
 pub use guide::axis::{
     draw_x_axis_formatted, draw_x_axis_overflow, draw_x_axis_weighted, draw_y_axis_formatted, draw_y_axis_weighted, measure_rotated_x_axis_gutter,
-    measure_y_axis_gutter, rotated_label_extent, AxisTickWeightStyle, LabelOverflow, AUTO_ROTATE_DEGREES, AUTO_ROTATE_DROP_THRESHOLD,
+    measure_x_axis_extreme_overhang, measure_y_axis_gutter, rotated_label_extent, AxisTickWeightStyle, LabelOverflow, AUTO_ROTATE_DEGREES,
+    AUTO_ROTATE_DROP_THRESHOLD,
 };
 pub use guide::grid::{draw_x_grid_weighted, draw_y_grid_weighted, GridTickWeightStyle};
 pub use guide::colorbar::{draw_colorbar, draw_discrete_colorbar, measure_colorbar, measure_discrete_colorbar, ColorbarSize};
@@ -73,7 +74,7 @@ pub use interact::{BrushState, FocusSet, HitZone, HoverInfo, SelectionBus, Figur
 pub use mark::{GapPolicy, LineCap, LineJoin, MarkStyle};
 pub use scale::{
     BandScale, CategoricalScale, ClassScale, ColorScale, LinearScale, LogScale, NumberFormat, PowScale, QuantileScale, QuantizeScale,
-    Scale, SymlogScale, ThresholdScale, Tick, TimeScale,
+    Scale, SymlogScale, ThresholdScale, Tick, TickPriority, TimeScale,
 };
 pub use theme::FigureTheme;
 pub use transform::lttb;
@@ -95,7 +96,7 @@ mod proof_tests {
     use crate::{
         Annotation, BarFigure, BarMode, BarSeries, BoxplotFigure, CategoricalScale, ClassScale, ColorScale, CurveFigure, CurveSeries,
         DagEdge, DagFigure, DagNode, FocusSet, GapPolicy, HeatmapFigure, HistogramFigure, FigureOverlay, KpiFigure, LabelOverflow,
-        LegendEntry, LegendPosition, LegendSymbol, LinearScale, MarkStyle, NumberFormat, PieFigure, PieSlice, PlotArea, PointRadius,
+        LegendEntry, LegendPosition, LegendSymbol, LinearScale, LogScale, MarkStyle, NumberFormat, PieFigure, PieSlice, PlotArea, PointRadius,
         QuantizeScale, SankeyFigure, SankeyLink, SankeyNode, ScatterFigure, ScatterPoint, SymlogScale, TimeScale, TimelineEvent,
         TimelineFigure, WaterfallFigure, WaterfallItem, WaterfallKind, draw_annotation_overlays, draw_annotation_underlays, draw_colorbar,
         draw_discrete_colorbar, entries_from_class_scale, measure_discrete_colorbar,
@@ -1980,6 +1981,52 @@ mod proof_tests {
         uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_wave4a_symlog_backends.png"))
             .expect("symlog-scale multi-backend composite should write");
         assert!(diff.all_within_budget(), "symlog X-axis CurveFigure: structural backend divergence beyond the generous AA/text tolerance");
+    }
+
+    /// Deterministic 40-point fixture, X log-spaced across 5 decades
+    /// (`1 .. 100,000`) — fixed formula, no RNG.
+    fn seeded_dense_log_curve_figure() -> CurveFigure {
+        let mut running = 0.0;
+        let points: Vec<(f64, f64)> = (0..40_i32)
+            .map(|i| {
+                let t = i as f64 / 39.0;
+                let x = 10.0_f64.powf(t * 5.0); // 1 .. 100,000, log-spaced
+                let step = ((i * 17 + 5) % 23) as f64 - 11.0;
+                running += step;
+                (x, running)
+            })
+            .collect();
+        let x_min = points.first().map(|p| p.0).unwrap_or(1.0);
+        let x_max = points.last().map(|p| p.0).unwrap_or(1.0);
+        CurveFigure::new(points)
+            .with_title("LogScale X-axis (seeded, dense — decade labels survive densification)")
+            .with_x_scale(LogScale::new(x_min, x_max))
+    }
+
+    /// `LogScale` priority-aware label-skip proof — a deliberately
+    /// NARROW panel over a 5-decade domain (5 decades at `TARGET_X_TICKS
+    /// == 6` triggers 2x/5x subdivisions too, per `LogScale::ticks`' own
+    /// cadence rule — 15 candidate ticks total) forces real label
+    /// collisions; every decade boundary must still read, only
+    /// intermediate 2x/5x subdivisions ever drop.
+    #[test]
+    fn log_scale_dense_decade_labels_survive_multi_backend_divergence_proof() {
+        let figure = seeded_dense_log_curve_figure();
+        let theme = FigureTheme::dark();
+        let panel_w = 420.0;
+        let panel_h = 320.0;
+
+        let render = MultiLegRender::capture(panel_w as u32, panel_h as u32, |ctx| {
+            figure.render(ctx, Rect::new(0.0, 0.0, panel_w, panel_h), &theme);
+        });
+        let diff = MultiLegDiff::compute(&render, ChannelTolerance::default());
+        for line in diff.report_lines() {
+            println!("[log-scale-dense] {line}");
+        }
+        print_urx_gpu_degrades("log-scale-dense", &render);
+        uzor_proof_harness::write_composite_png(&render, &out_dir().join("figures_wave4a_dense_log_backends.png"))
+            .expect("dense log-scale multi-backend composite should write");
+        assert!(diff.all_within_budget(), "dense LogScale X-axis CurveFigure: structural backend divergence beyond the generous AA/text tolerance");
     }
 
     /// Deterministic 10-category fixture spanning `[0, 100)` — fixed

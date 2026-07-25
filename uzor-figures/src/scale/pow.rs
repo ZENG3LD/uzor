@@ -7,7 +7,7 @@
 //! over-emphasize large values (area grows with the SQUARE of radius).
 
 use super::linear::LinearScale;
-use super::{Scale, Tick};
+use super::{Scale, Tick, TickPriority};
 
 /// `exponent = 1.0` (the fallback [`PowScale::new`] uses for a non-finite
 /// caller argument) reproduces plain linear mapping exactly — a
@@ -93,6 +93,14 @@ impl Scale for PowScale {
     fn ticks(&self, target_count: usize) -> Vec<Tick> {
         LinearScale::new(self.min, self.max).ticks(target_count)
     }
+
+    /// Delegates to the SAME [`LinearScale`] over `[min, max]` used by
+    /// [`PowScale::ticks`] above — zero is [`TickPriority::Major`] when
+    /// it's an actually-generated tick AND the domain spans it, matching
+    /// [`LinearScale::tick_priority`]'s own opt-in reasoning.
+    fn tick_priority(&self, v: f64) -> TickPriority {
+        LinearScale::new(self.min, self.max).tick_priority(v)
+    }
 }
 
 #[cfg(test)]
@@ -175,5 +183,14 @@ mod tests {
         let pow = PowScale::sqrt(0.0, 1000.0);
         let linear = LinearScale::new(0.0, 1000.0);
         assert_eq!(pow.ticks(5), linear.ticks(5), "PowScale ticks must be identical to LinearScale ticks over the same domain — only the mapping differs");
+    }
+
+    #[test]
+    fn tick_priority_matches_a_plain_linear_scale_over_the_same_domain() {
+        let pow = PowScale::new(-100.0, 100.0, 0.5);
+        let linear = LinearScale::new(-100.0, 100.0);
+        assert_eq!(pow.tick_priority(0.0), linear.tick_priority(0.0));
+        assert_eq!(pow.tick_priority(0.0), TickPriority::Major);
+        assert_eq!(pow.tick_priority(50.0), TickPriority::Minor);
     }
 }

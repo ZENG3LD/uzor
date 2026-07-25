@@ -280,7 +280,10 @@ impl CurveFigure {
     /// independently elsewhere).
     ///
     /// **Does not account for a legend, nor for [`MarginPolicy::Measured`]
-    /// widening the left margin past [`MARGIN_LEFT`]** — same
+    /// widening the left OR right margin past [`MARGIN_LEFT`]/
+    /// [`MARGIN_RIGHT`]** (the latter now ALSO grows for a wide X-axis
+    /// extreme-tick label overhang, see
+    /// [`crate::guide::axis::measure_x_axis_extreme_overhang`]) — same
     /// ctx-less-accessor reasoning documented on
     /// [`crate::figure::BarFigure::plot_area`] (both need live text
     /// metrics from a real `&mut dyn RenderContext`, which this accessor
@@ -357,14 +360,49 @@ impl CurveFigure {
         // is `Copy` (`LinearScale`), so computing it once here and reusing
         // it below costs nothing extra.
         let y_scale_for_layout = self.y_scale();
+        // The auto-computed nice-linear X domain only needs to exist when
+        // no override was supplied. Resolved HERE (before margins) rather
+        // than after the plot rect is built (as it used to be) — neither
+        // `self.x_scale_override` nor `self.x_scale()` depends on the
+        // plot's own pixel geometry (`x_scale()` sizes its own nice()
+        // domain off `TARGET_X_TICKS`, the fixed constant, same
+        // already-documented "domain sizing stays off the fixed constant,
+        // only the DRAWN tick count adapts" convention `TickCountPolicy::
+        // Adaptive`'s own doc comment establishes) — so computing it once
+        // here and reusing it below (both for the new X-extreme-overhang
+        // margin measurement AND the render loop's own X scale) costs
+        // nothing extra and removes a duplicate computation.
+        let computed_x_scale = if self.x_scale_override.is_none() { self.x_scale() } else { None };
+        let x_scale: Option<&dyn Scale> = match (&self.x_scale_override, &computed_x_scale) {
+            (Some(s), _) => Some(s.as_ref()),
+            (None, Some(s)) => Some(s),
+            (None, None) => None,
+        };
+
         let title_h = if self.title.is_some() { TITLE_HEIGHT } else { 0.0 };
         let plot_height_estimate = (rect.height - title_h - MARGIN_BOTTOM).max(0.0);
         let target_y_ticks = resolve_tick_count(self.y_tick_policy, plot_height_estimate);
+        // X-extreme overhang: how far the X axis's OWN leftmost/rightmost
+        // tick label (center-aligned under its own tick) extends past its
+        // own tick position — measured at `TARGET_X_TICKS` (the same
+        // fixed constant `x_scale()`'s own nice-domain sizing uses, not
+        // the plot-width-dependent adaptive count — computing THAT here
+        // would be circular, since it needs the margin this measurement
+        // itself feeds into). See `axis::measure_x_axis_extreme_overhang`'s
+        // own doc comment for why this is a DIFFERENT gap than
+        // `measure_y_axis_gutter` already covers.
+        let x_overhang = x_scale.map(|s| axis::measure_x_axis_extreme_overhang(ctx, s, theme, TARGET_X_TICKS)).unwrap_or((0.0, 0.0));
         let margin_left = match (&y_scale_for_layout, self.margin_policy) {
-            (Some(y_scale), MarginPolicy::Measured) => MARGIN_LEFT.max(axis::measure_y_axis_gutter(ctx, y_scale, theme, target_y_ticks)),
+            (Some(y_scale), MarginPolicy::Measured) => {
+                MARGIN_LEFT.max(axis::measure_y_axis_gutter(ctx, y_scale, theme, target_y_ticks)).max(x_overhang.0)
+            }
             _ => MARGIN_LEFT,
         };
-        let plot_width_estimate = (rect.width - margin_left - MARGIN_RIGHT).max(0.0);
+        let margin_right = match self.margin_policy {
+            MarginPolicy::Measured => MARGIN_RIGHT.max(x_overhang.1),
+            MarginPolicy::Fixed => MARGIN_RIGHT,
+        };
+        let plot_width_estimate = (rect.width - margin_left - margin_right).max(0.0);
         let target_x_ticks = resolve_tick_count(self.x_tick_policy, plot_width_estimate);
 
         let base_rect = Rect::new(rect.x + margin_left, rect.y + title_h, plot_width_estimate, plot_height_estimate);
@@ -402,16 +440,6 @@ impl CurveFigure {
         };
 
         let area = PlotArea::new(plot_rect);
-
-        // The auto-computed nice-linear X domain only needs to exist when
-        // no override was supplied — skip computing it otherwise (it would
-        // be thrown away unused).
-        let computed_x_scale = if self.x_scale_override.is_none() { self.x_scale() } else { None };
-        let x_scale: Option<&dyn Scale> = match (&self.x_scale_override, &computed_x_scale) {
-            (Some(s), _) => Some(s.as_ref()),
-            (None, Some(s)) => Some(s),
-            (None, None) => None,
-        };
 
         if let (Some(x_scale), Some(y_scale)) = (x_scale, y_scale_for_layout) {
             // Weighted entry points: a real render-output change ONLY when
@@ -640,7 +668,18 @@ mod tests {
     }
 
     #[test]
-    fn measured_margin_renders_byte_identically_to_fixed_for_ordinary_short_labels() {
+    fn measured_margin_grows_the_right_margin_to_protect_the_rightmost_x_label_from_clipping() {
+        // Superseded claim, corrected: this fixture's short Y labels never
+        // needed the LEFT margin to grow, but `MARGIN_RIGHT` (8.0px) is
+        // narrower than ANY real numeric label's own half-width — before
+        // `guide::axis::measure_x_axis_extreme_overhang` existed, NOTHING
+        // protected the rightmost X tick's own label from clipping past
+        // the plot rect's right edge, for even this ordinary,
+        // unremarkable dataset (the owner-reported defect: a symlog
+        // axis's own extreme label clipping in a narrow proof panel was
+        // the visible symptom, but the underlying gap was general, not
+        // symlog-specific). `Measured` must now render differently from
+        // `Fixed` to reserve that room.
         use uzor_export::{render_to_png, ExportSpec};
 
         let points = vec![(0.0, 1.0), (1.0, 5.0), (2.0, 3.0), (3.0, 8.0)];
@@ -652,8 +691,12 @@ mod tests {
         let measured = CurveFigure::new(points).with_margin_policy(MarginPolicy::Measured);
         let fixed_png = render_to_png(&spec, |ctx| fixed.render(ctx, rect, &theme)).expect("fixed render");
         let measured_png = render_to_png(&spec, |ctx| measured.render(ctx, rect, &theme)).expect("measured render");
-        assert_eq!(fixed_png, measured_png, "Measured must not change output when short Y labels already fit the fixed margin");
+        assert_ne!(
+            fixed_png, measured_png,
+            "Measured must widen the right margin to protect the rightmost X label from the clipping Fixed's own tiny MARGIN_RIGHT allows"
+        );
     }
+
 
     #[test]
     fn measured_margin_widens_and_shifts_the_plot_for_a_deliberately_wide_y_label() {

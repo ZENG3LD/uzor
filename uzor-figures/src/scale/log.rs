@@ -7,7 +7,7 @@
 //! same non-positive-domain floor, "price" vocabulary removed.
 
 use super::linear::format_value;
-use super::{Scale, Tick};
+use super::{Scale, Tick, TickPriority};
 
 /// Floor applied to any domain value before taking its log10 — guards
 /// `log(0)`/`log(negative)` without needing callers to pre-validate their
@@ -109,6 +109,24 @@ impl Scale for LogScale {
         }
         out
     }
+
+    /// A DECADE boundary (an exact power of ten — `mult == 1.0` in
+    /// [`LogScale::ticks`]' own subdivision loop above) is
+    /// [`TickPriority::Major`]; a 2x/5x subdivision tick is
+    /// [`TickPriority::Minor`]. No [`TickPriority::Critical`] tier here —
+    /// a log scale has no zero-crossing concept (`log(0)` is undefined,
+    /// see [`LogScale::safe_min`]).
+    fn tick_priority(&self, v: f64) -> TickPriority {
+        if v <= 0.0 || !v.is_finite() {
+            return TickPriority::Minor;
+        }
+        let log10 = v.log10();
+        if (log10 - log10.round()).abs() < 1e-6 {
+            TickPriority::Major
+        } else {
+            TickPriority::Minor
+        }
+    }
 }
 
 #[cfg(test)]
@@ -156,5 +174,39 @@ mod tests {
         // (1, 2, 5) should appear alongside the decade boundary itself.
         assert!(ticks.iter().any(|t| (t.value - 2.0).abs() < 1e-9));
         assert!(ticks.iter().any(|t| (t.value - 5.0).abs() < 1e-9));
+    }
+
+    // ── tick_priority (decade labels survive densification) ────────────
+
+    #[test]
+    fn decade_boundaries_report_major_priority() {
+        let scale = LogScale::new(1.0, 100_000.0);
+        for v in [1.0, 10.0, 100.0, 1_000.0, 10_000.0, 100_000.0] {
+            assert_eq!(scale.tick_priority(v), TickPriority::Major, "decade boundary {v} must report Major priority");
+        }
+    }
+
+    #[test]
+    fn subdivision_ticks_report_minor_priority() {
+        let scale = LogScale::new(1.0, 10.0);
+        for v in [2.0, 5.0] {
+            assert_eq!(scale.tick_priority(v), TickPriority::Minor, "a 2x/5x subdivision tick {v} must report Minor priority");
+        }
+    }
+
+    #[test]
+    fn non_positive_value_reports_minor_priority_never_panics() {
+        let scale = LogScale::new(1.0, 100.0);
+        assert_eq!(scale.tick_priority(-5.0), TickPriority::Minor);
+        assert_eq!(scale.tick_priority(0.0), TickPriority::Minor);
+    }
+
+    #[test]
+    fn a_dense_log_axis_generated_tick_set_contains_both_major_and_minor_priorities() {
+        let scale = LogScale::new(1.0, 10.0);
+        let ticks = scale.ticks(6);
+        let priorities: Vec<TickPriority> = ticks.iter().map(|t| scale.tick_priority(t.value)).collect();
+        assert!(priorities.contains(&TickPriority::Major), "expected at least one Major decade tick, got {priorities:?}");
+        assert!(priorities.contains(&TickPriority::Minor), "expected at least one Minor subdivision tick, got {priorities:?}");
     }
 }

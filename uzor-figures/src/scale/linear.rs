@@ -7,7 +7,7 @@
 //! float-accumulation drift over many ticks), with all "price" vocabulary
 //! removed: this is generic axis-tick math, not a trading concept.
 
-use super::{Scale, Tick};
+use super::{Scale, Tick, TickPriority};
 
 /// Multiplier ladder for "nice" tick steps: walking `base * [2, 2.5, 2]`
 /// repeatedly produces the familiar 1, 2, 5, 10, 20, 50, 100, ... cadence.
@@ -195,6 +195,25 @@ impl Scale for LinearScale {
         }
         out
     }
+
+    /// `0.0` is [`TickPriority::Major`] WHEN it's an actually-generated
+    /// tick value AND this scale's own domain genuinely spans zero — the
+    /// zero baseline is a real anchor a caller may reasonably not want
+    /// silently dropped, but (unlike [`crate::scale::SymlogScale`], whose
+    /// entire reason for existing is keeping zero legible) this is an
+    /// OPT-IN-by-construction protection, not a guaranteed-present tick:
+    /// a `LinearScale` never manufactures a zero tick that its own
+    /// `ticks()` wouldn't otherwise generate. Every other value is
+    /// [`TickPriority::Minor`] — this override changes NOTHING for a
+    /// domain that never crosses zero, or for any tick other than zero
+    /// itself.
+    fn tick_priority(&self, v: f64) -> TickPriority {
+        if v.abs() < 1e-9 && self.min <= 0.0 && self.max >= 0.0 {
+            TickPriority::Major
+        } else {
+            TickPriority::Minor
+        }
+    }
 }
 
 #[cfg(test)]
@@ -270,5 +289,26 @@ mod tests {
         assert_eq!(scale.map(5.0), 0.5);
         let ticks = scale.ticks(5);
         assert_eq!(ticks.len(), 1);
+    }
+
+    // ── tick_priority (opt-in zero anchor) ──────────────────────────────
+
+    #[test]
+    fn zero_reports_major_priority_when_the_domain_spans_it() {
+        let scale = LinearScale::new(-100.0, 100.0);
+        assert_eq!(scale.tick_priority(0.0), TickPriority::Major);
+    }
+
+    #[test]
+    fn zero_reports_minor_priority_when_the_domain_does_not_span_it() {
+        let scale = LinearScale::new(10.0, 100.0);
+        assert_eq!(scale.tick_priority(0.0), TickPriority::Minor, "zero is not even in this domain — must not be elevated");
+    }
+
+    #[test]
+    fn non_zero_values_always_report_minor_priority() {
+        let scale = LinearScale::new(-100.0, 100.0);
+        assert_eq!(scale.tick_priority(50.0), TickPriority::Minor);
+        assert_eq!(scale.tick_priority(-50.0), TickPriority::Minor);
     }
 }

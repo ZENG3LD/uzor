@@ -27,7 +27,7 @@
 //! scale kind exists.
 
 use super::linear::{format_value, nice_step};
-use super::{Scale, Tick};
+use super::{Scale, Tick, TickPriority};
 
 /// Default `C` (the linear/log crossover magnitude) — matches d3's own
 /// `scaleSymlog` default of `1`.
@@ -136,6 +136,25 @@ impl Scale for SymlogScale {
         values.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
 
         values.into_iter().map(|v| Tick { value: v, label: format_value(v, tick_step_for(v, lt)) }).collect()
+    }
+
+    /// The zero crossing is [`TickPriority::Critical`] (the single most
+    /// semantically important boundary on a symlog axis — the whole
+    /// reason this scale kind exists is to keep zero legible while
+    /// spanning orders of magnitude either side of it); any tick at or
+    /// beyond the linear/log crossover magnitude is a decade boundary
+    /// (every log-zone tick this scale's own [`SymlogScale::ticks`]
+    /// generates is, by construction, an exact power of ten — see
+    /// [`decade_ticks`]) and is [`TickPriority::Major`]; every other tick
+    /// (strictly inside the linear zone) is [`TickPriority::Minor`].
+    fn tick_priority(&self, v: f64) -> TickPriority {
+        if v.abs() < 1e-9 {
+            TickPriority::Critical
+        } else if v.abs() >= self.linear_threshold - 1e-9 {
+            TickPriority::Major
+        } else {
+            TickPriority::Minor
+        }
     }
 }
 
@@ -319,5 +338,41 @@ mod tests {
     fn tick_weight_defaults_to_none() {
         let scale = SymlogScale::new(-100.0, 100.0);
         assert_eq!(scale.tick_weight(0.0), None);
+    }
+
+    // ── tick_priority (zero-drop defect fix) ────────────────────────────
+
+    #[test]
+    fn zero_crossing_reports_critical_priority() {
+        let scale = SymlogScale::new(-1_000_000.0, 1_000_000.0);
+        assert_eq!(scale.tick_priority(0.0), TickPriority::Critical);
+    }
+
+    #[test]
+    fn decade_boundaries_report_major_priority() {
+        let scale = SymlogScale::new(-1_000_000.0, 1_000_000.0);
+        for v in [1.0, 10.0, 100.0, 1_000.0, -1.0, -10.0, -1_000_000.0] {
+            assert_eq!(scale.tick_priority(v), TickPriority::Major, "decade boundary {v} must report Major priority");
+        }
+    }
+
+    #[test]
+    fn linear_zone_interior_ticks_report_minor_priority() {
+        let scale = SymlogScale::new(-1_000_000.0, 1_000_000.0);
+        for v in [0.25, -0.5, 0.75] {
+            assert_eq!(scale.tick_priority(v), TickPriority::Minor, "linear-zone interior tick {v} must report Minor priority");
+        }
+    }
+
+    #[test]
+    fn every_generated_tick_over_a_wide_signed_domain_resolves_a_priority_and_zero_is_critical() {
+        // The end-to-end regression this whole item exists for: a REAL
+        // generated tick set over a wide signed domain must contain a
+        // Critical zero tick among its own priorities.
+        let scale = SymlogScale::new(-1_000_000.0, 1_000_000.0);
+        let ticks = scale.ticks(6);
+        let priorities: Vec<TickPriority> = ticks.iter().map(|t| scale.tick_priority(t.value)).collect();
+        assert!(priorities.contains(&TickPriority::Critical), "the generated tick set must include a Critical (zero) priority, got {priorities:?}");
+        assert!(priorities.contains(&TickPriority::Major), "the generated tick set must include at least one Major (decade) priority, got {priorities:?}");
     }
 }

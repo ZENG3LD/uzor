@@ -249,7 +249,10 @@ impl ScatterFigure {
     /// This figure's plot-area transform for `rect` — same reason as every
     /// other figure's `plot_area` accessor (external hover routing needs
     /// the EXACT transform this figure renders with). **Does not account
-    /// for [`MarginPolicy::Measured`] widening the left margin** — same
+    /// for [`MarginPolicy::Measured`] widening the left OR right margin**
+    /// (the latter now ALSO grows for a wide X-axis extreme-tick label
+    /// overhang, see
+    /// [`crate::guide::axis::measure_x_axis_extreme_overhang`]) — same
     /// ctx-less-accessor caveat documented on
     /// [`crate::figure::BarFigure::plot_area`].
     pub fn plot_area(&self, rect: Rect) -> PlotArea {
@@ -346,27 +349,42 @@ impl ScatterFigure {
 
         // Resolve this render's own left margin + tick counts BEFORE
         // building the plot rect — see `CurveFigure::render_with`'s own
-        // identical non-circularity reasoning.
+        // identical non-circularity reasoning. `x_scale` is resolved
+        // HERE (before margins, not after the plot rect as it used to
+        // be) for the SAME reason `CurveFigure::render_with` now does —
+        // it's needed to measure the X-extreme-overhang margin growth
+        // below, and reused as-is for the render loop further down.
         let y_scale_for_layout = self.y_scale();
-        let title_h = if self.title.is_some() { TITLE_HEIGHT } else { 0.0 };
-        let plot_height_estimate = (rect.height - title_h - MARGIN_BOTTOM).max(0.0);
-        let target_y_ticks = resolve_tick_count(self.y_tick_policy, plot_height_estimate);
-        let margin_left = match (&y_scale_for_layout, self.margin_policy) {
-            (Some(y_scale), MarginPolicy::Measured) => MARGIN_LEFT.max(axis::measure_y_axis_gutter(ctx, y_scale, theme, target_y_ticks)),
-            _ => MARGIN_LEFT,
-        };
-        let plot_width_estimate = (rect.width - margin_left - MARGIN_RIGHT).max(0.0);
-        let target_x_ticks = resolve_tick_count(self.x_tick_policy, plot_width_estimate);
-
-        let base_rect = Rect::new(rect.x + margin_left, rect.y + title_h, plot_width_estimate, plot_height_estimate);
-        let area = PlotArea::new(base_rect);
-
         let computed_x_scale = if self.x_scale_override.is_none() { self.x_scale() } else { None };
         let x_scale: Option<&dyn Scale> = match (&self.x_scale_override, &computed_x_scale) {
             (Some(s), _) => Some(s.as_ref()),
             (None, Some(s)) => Some(s),
             (None, None) => None,
         };
+
+        let title_h = if self.title.is_some() { TITLE_HEIGHT } else { 0.0 };
+        let plot_height_estimate = (rect.height - title_h - MARGIN_BOTTOM).max(0.0);
+        let target_y_ticks = resolve_tick_count(self.y_tick_policy, plot_height_estimate);
+        // See `CurveFigure::render_with`'s own identical comment for why
+        // this is measured at `TARGET_X_TICKS` (not the plot-width-
+        // dependent adaptive count — circular) and why it's a DIFFERENT
+        // gap than `measure_y_axis_gutter` already covers.
+        let x_overhang = x_scale.map(|s| axis::measure_x_axis_extreme_overhang(ctx, s, theme, TARGET_X_TICKS)).unwrap_or((0.0, 0.0));
+        let margin_left = match (&y_scale_for_layout, self.margin_policy) {
+            (Some(y_scale), MarginPolicy::Measured) => {
+                MARGIN_LEFT.max(axis::measure_y_axis_gutter(ctx, y_scale, theme, target_y_ticks)).max(x_overhang.0)
+            }
+            _ => MARGIN_LEFT,
+        };
+        let margin_right = match self.margin_policy {
+            MarginPolicy::Measured => MARGIN_RIGHT.max(x_overhang.1),
+            MarginPolicy::Fixed => MARGIN_RIGHT,
+        };
+        let plot_width_estimate = (rect.width - margin_left - margin_right).max(0.0);
+        let target_x_ticks = resolve_tick_count(self.x_tick_policy, plot_width_estimate);
+
+        let base_rect = Rect::new(rect.x + margin_left, rect.y + title_h, plot_width_estimate, plot_height_estimate);
+        let area = PlotArea::new(base_rect);
 
         if let (Some(x_scale), Some(y_scale)) = (x_scale, y_scale_for_layout) {
             // Weighted entry point: a real render-output change ONLY when
@@ -606,6 +624,30 @@ mod tests {
         let fixed_png = render_to_png(&spec, |ctx| fixed.render(ctx, rect, &theme)).expect("fixed render");
         let measured_png = render_to_png(&spec, |ctx| measured.render(ctx, rect, &theme)).expect("measured render");
         assert_ne!(fixed_png, measured_png, "Measured must render differently once a wide Y label would otherwise clip under Fixed");
+    }
+
+    #[test]
+    fn measured_margin_grows_the_right_margin_to_protect_the_rightmost_x_label_from_clipping() {
+        // See `CurveFigure`'s own identical test for the full reasoning —
+        // `MARGIN_RIGHT` (8.0px) is narrower than any real numeric
+        // label's own half-width, so `Measured` must widen it to protect
+        // the rightmost X tick's own label from clipping even for this
+        // ordinary, unremarkable dataset.
+        use uzor_export::{render_to_png, ExportSpec};
+
+        let points = vec![ScatterPoint::new(0.0, 1.0), ScatterPoint::new(1.0, 5.0), ScatterPoint::new(2.0, 3.0), ScatterPoint::new(3.0, 8.0)];
+        let theme = FigureTheme::dark();
+        let spec = ExportSpec { width_px: 300, height_px: 200, dpr: 1.0, background: None };
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+
+        let fixed = ScatterFigure::new(points.clone()).with_margin_policy(MarginPolicy::Fixed);
+        let measured = ScatterFigure::new(points).with_margin_policy(MarginPolicy::Measured);
+        let fixed_png = render_to_png(&spec, |ctx| fixed.render(ctx, rect, &theme)).expect("fixed render");
+        let measured_png = render_to_png(&spec, |ctx| measured.render(ctx, rect, &theme)).expect("measured render");
+        assert_ne!(
+            fixed_png, measured_png,
+            "Measured must widen the right margin to protect the rightmost X label from the clipping Fixed's own tiny MARGIN_RIGHT allows"
+        );
     }
 
     #[test]

@@ -88,7 +88,7 @@
 //!   6-months-apart tick still classifies as `Month` unless it also
 //!   happens to be January 1st, which classifies `Year`).
 
-use super::{Scale, Tick};
+use super::{Scale, Tick, TickPriority};
 
 // =============================================================================
 // Time constants (seconds)
@@ -548,6 +548,27 @@ impl Scale for TimeScale {
     fn tick_weight(&self, v: f64) -> Option<TickMarkWeight> {
         Some(boundary_weight(v.floor() as i64))
     }
+
+    /// Reuses the SAME [`boundary_weight`] classification
+    /// [`TimeScale::tick_weight`] already computes — a Year/Month
+    /// boundary is [`TickPriority::Major`] (protected from
+    /// `guide::axis`'s label-collision skip the same way it's already
+    /// styled distinctly under the `_weighted` entry points), every
+    /// coarser-than-Day tick (Day/Hour/Minute/Second) is
+    /// [`TickPriority::Minor`] — the generalization this item's own
+    /// defect fix asked for: "every scale declares tick importance, not
+    /// just TimeScale" now literally includes `TimeScale` itself in the
+    /// SAME priority-aware skip every other scale opts into, so a real
+    /// Year/Month boundary can no longer lose a label-collision to an
+    /// adjacent Day tick even on this figure's own DEFAULT (unweighted)
+    /// axis draw.
+    fn tick_priority(&self, v: f64) -> TickPriority {
+        if boundary_weight(v.floor() as i64).is_major() {
+            TickPriority::Major
+        } else {
+            TickPriority::Minor
+        }
+    }
 }
 
 #[cfg(test)]
@@ -768,5 +789,16 @@ mod tests {
         let scale: &dyn Scale = &TimeScale::new(jan1 - 3600.0, jan1 + 3600.0);
         assert_eq!(scale.tick_weight(jan1), Some(boundary_weight(jan1 as i64)));
         assert_eq!(scale.tick_weight(jan1), Some(TickMarkWeight::Year));
+    }
+
+    #[test]
+    fn tick_priority_marks_year_and_month_boundaries_major_everything_else_minor() {
+        let scale = TimeScale::new(1_704_067_200.0, 1_704_067_200.0 + 62.0 * 86_400.0);
+        let jan1_2024 = ts(2024, 1, 1, 0, 0, 0);
+        let feb1_2024 = ts(2024, 2, 1, 0, 0, 0);
+        let jan2_2024 = ts(2024, 1, 2, 0, 0, 0);
+        assert_eq!(scale.tick_priority(jan1_2024), TickPriority::Major, "a Year boundary must report Major priority");
+        assert_eq!(scale.tick_priority(feb1_2024), TickPriority::Major, "a Month boundary must report Major priority");
+        assert_eq!(scale.tick_priority(jan2_2024), TickPriority::Minor, "an ordinary Day boundary must report Minor priority");
     }
 }

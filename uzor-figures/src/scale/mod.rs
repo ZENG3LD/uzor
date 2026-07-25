@@ -62,6 +62,38 @@ pub struct Tick {
     pub label: String,
 }
 
+/// How strongly [`crate::guide::axis`]'s label-COLLISION skip should
+/// PROTECT this tick's own label from being dropped when it overlaps a
+/// neighbor — a SEPARATE, independent concern from [`Scale::tick_weight`]'s
+/// existing visual-STYLE weight ([`crate::guide::axis::AxisTickWeightStyle`]'s
+/// tick length/stroke width/major label color, a rendering-LOOK question
+/// only reachable through the OPT-IN `_weighted` entry points).
+/// [`TickPriority`] governs WHICH label survives a collision on the
+/// DEFAULT, always-on entry points (`draw_x_axis`/`draw_y_axis`/
+/// `draw_x_axis_overflow`) — a rendering-CORRECTNESS question: the defect
+/// this type fixes is a [`crate::scale::SymlogScale`] axis silently
+/// dropping its own `0.0` zero-crossing tick to a merely-intermediate
+/// neighbor, with no notion that some ticks matter more than others. See
+/// [`crate::guide::axis::resolve_label_priority`] for the exact
+/// three-tier degrade order this drives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TickPriority {
+    /// Absolute must-keep — dropped only if it would collide with
+    /// ANOTHER `Critical` tick (in practice at most one per axis: the
+    /// zero crossing on a scale whose domain spans zero).
+    Critical,
+    /// Protected — dropped only once neither a `Critical` tick nor a
+    /// higher-preference `Major` neighbor already claims the space (see
+    /// [`crate::guide::axis::resolve_label_priority`]'s own "extremes
+    /// preferred" tie-break for the rare case where majors alone still
+    /// collide).
+    Major,
+    /// Ordinary — every scale's DEFAULT (see [`Scale::tick_priority`]'s
+    /// own doc comment), and the FIRST tier dropped once labels collide.
+    #[default]
+    Minor,
+}
+
 /// Domain <-> normalized-range mapping, shared by every mark/guide draw
 /// function through [`crate::coord::PlotArea`] — design law #1 (one
 /// transform for render, and for any future hit-test).
@@ -125,6 +157,25 @@ pub trait Scale {
     fn tick_weight(&self, _v: f64) -> Option<time::TickMarkWeight> {
         None
     }
+
+    /// This tick's own label-collision priority — see [`TickPriority`]'s
+    /// own doc comment for the full "why this exists" reasoning.
+    /// `Minor` by default for every scale. With EVERY tick reporting the
+    /// same tier (this default, or any scale that never overrides it),
+    /// [`crate::guide::axis::resolve_label_priority`] provably degenerates
+    /// to EXACTLY this crate's pre-existing plain left-to-right greedy
+    /// skip — proven by that function's own
+    /// `uniform_priority_matches_the_plain_greedy_skip` regression test —
+    /// so this method existing changes NOTHING for a scale that doesn't
+    /// opt in. [`crate::scale::SymlogScale`] (zero crossing +decade
+    /// boundaries), [`crate::scale::LogScale`] (decade boundaries),
+    /// [`crate::scale::LinearScale`]/[`crate::scale::PowScale`] (zero,
+    /// only when it's an actually-generated tick), and [`TimeScale`]
+    /// (reusing its own [`time::boundary_weight`] hierarchy) all override
+    /// this.
+    fn tick_priority(&self, _v: f64) -> TickPriority {
+        TickPriority::Minor
+    }
 }
 
 #[cfg(test)]
@@ -135,5 +186,11 @@ mod tests {
     fn tick_weight_defaults_to_none_for_a_scale_that_does_not_override_it() {
         let scale = LinearScale::new(0.0, 100.0);
         assert_eq!(scale.tick_weight(50.0), None, "a non-time scale must report no tick weight, leaving weighted axis/grid rendering unaffected");
+    }
+
+    #[test]
+    fn tick_priority_defaults_to_minor_for_a_scale_that_does_not_override_it() {
+        let scale = BandScale::new(vec!["a".to_owned()], 0.1);
+        assert_eq!(scale.tick_priority(0.0), TickPriority::Minor, "a scale that doesn't override tick_priority must report Minor for every tick");
     }
 }
