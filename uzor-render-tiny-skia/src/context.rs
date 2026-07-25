@@ -360,9 +360,26 @@ fn rasterize_cached(family: FontFamily, bold: bool, italic: bool, ch: char, px: 
 }
 
 // ---------------------------------------------------------------------------
-// Text width measurement via fontdue
+// Text width measurement via fontdue — rasterization-only escape hatch
 // ---------------------------------------------------------------------------
 
+/// Sum of fontdue's own per-glyph `advance_width` — the RAW, un-kerned
+/// advance this backend's own [`fill_text`](TextRenderer::fill_text) pen
+/// walk still uses to place each rasterized glyph bitmap (fontdue has no
+/// GPOS kerning support at all — it never applies it during rasterization
+/// either, so this is genuinely raster-accurate for THIS backend's own
+/// paint pipeline).
+///
+/// **No longer** the width [`TextMetrics::measure_text`]/[`TextMetrics::
+/// text_bounds`] report — both now delegate to [`uzor::shaper`] (real
+/// GPOS kerning via cosmic-text), the SAME canonical source every other
+/// shaper-backed backend in this workspace measures through, so a
+/// layout decision (margin sizing, label-collision placement) never
+/// disagrees by backend. This function stays as the internal
+/// rasterization-pen-advance implementation detail only — call it
+/// directly (not through the trait) if a caller genuinely needs THIS
+/// backend's own raster-accurate advance instead of the cross-backend
+/// canonical one.
 fn measure_text_width(text: &str, font_info: &FontInfo) -> f64 {
     let mut width = 0.0f32;
     for ch in text.chars() {
@@ -1326,14 +1343,28 @@ impl TextRenderer for TinySkiaCpuRenderContext {
 // ---------------------------------------------------------------------------
 
 impl TextMetrics for TinySkiaCpuRenderContext {
+    /// Delegates to [`uzor::shaper`] (cosmic-text) — see this module's own
+    /// top-of-crate divergence note (`measure_text_width`'s doc comment)
+    /// for why: fontdue's own per-glyph advance sum never applies GPOS
+    /// kerning, so it disagreed with every OTHER backend in this
+    /// workspace (all of which already measure `measure_text_glyphs`/
+    /// `measure_text_wrapped`/`text_to_path` through the SAME shaper) —
+    /// a real cross-backend layout divergence, not just a cosmetic
+    /// rendering difference (`uzor-figures`' `guide::labeler` collision
+    /// pass feeds a backend's own `measure_text` result directly into a
+    /// pass/fail occupancy check, so a few tenths of a pixel of kerning
+    /// drift could flip which candidate slot a label claims).
     fn measure_text(&self, text: &str) -> f64 {
-        measure_text_width(text, &self.font_info)
+        let font_str = font_css_string(&self.font_info);
+        let glyphs = uzor::shaper::measure_glyphs(text, &font_str);
+        glyphs.last().map(|g| g.x_offset + g.advance).unwrap_or(0.0)
     }
 
     fn text_bounds(&self, text: &str, font: &str) -> TextBounds {
         let font_info = parse_css_font(font);
         let px = font_info.size;
-        let w = measure_text_width(text, &font_info);
+        let glyphs = uzor::shaper::measure_glyphs(text, font);
+        let w = glyphs.last().map(|g| g.x_offset + g.advance).unwrap_or(0.0);
         let fontdue_font = get_font(font_info.family, font_info.bold, font_info.italic);
         let (ascent, descent) = fontdue_font
             .horizontal_line_metrics(px)

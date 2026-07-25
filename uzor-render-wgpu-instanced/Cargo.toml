@@ -9,7 +9,12 @@ description = "High-performance instanced wgpu rendering backend"
 readme = "../README.md"
 
 [dependencies]
-uzor = { workspace = true }
+# `shaper` feature: this backend's own `TextMetrics::measure_text`/
+# `text_bounds` delegate to `uzor::shaper` (cosmic-text) for real GPOS
+# kerning — see context.rs's own divergence note on `measure_text_internal`.
+# No new dependency cost: this crate already pulls in `cosmic-text`
+# directly (below) for its own real glyph-atlas rasterization pipeline.
+uzor = { workspace = true, features = ["shaper"] }
 wgpu = "29"
 bytemuck = { version = "1", features = ["derive"] }
 cosmic-text = "0.12"

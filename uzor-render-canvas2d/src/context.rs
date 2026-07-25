@@ -304,8 +304,27 @@ impl TextRenderer for Canvas2dRenderContext {
 }
 
 // ---------------------------------------------------------------------------
-// TextMetrics
+// TextMetrics — DELIBERATELY stays on the browser's own `measureText`,
+// not `uzor::shaper`
 // ---------------------------------------------------------------------------
+//
+// Every native backend (tiny-skia, vello-gpu/cpu/hybrid, wgpu-instanced)
+// now delegates `measure_text`/`text_bounds` to `uzor::shaper` (cosmic-
+// text) instead of its own rasterizer-native (fontdue/skrifa) advance
+// sum — see each of their own `context.rs`'s divergence notes — because
+// each one's own bundled-font measurement disagreed with the OTHER
+// native backends over real GPOS kerning, a genuine cross-backend
+// layout bug. This backend is EXCLUDED from that fix on purpose: its
+// `fill_text` paints through the SAME browser Canvas2D engine
+// `measure_text` reads here — both already agree with EACH OTHER by
+// construction (same engine, same installed/system fonts, same
+// fallback chain), which cosmic-text's bundled-only font set (Roboto/
+// PT Root UI/JetBrains Mono, no system fonts) cannot promise to match.
+// Routing this backend's own measurement through cosmic-text would
+// REPLACE a correct, self-consistent (paint == measure) backend with a
+// self-INCONSISTENT one (paint via the browser's real font stack,
+// measure via a different, bundled-only one) — worse than the
+// cross-backend divergence being fixed elsewhere, not better.
 
 impl TextMetrics for Canvas2dRenderContext {
     fn measure_text(&self, text: &str) -> f64 {

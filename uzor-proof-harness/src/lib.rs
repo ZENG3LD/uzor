@@ -44,6 +44,8 @@
 mod compare;
 mod composite;
 mod render;
+#[cfg(test)]
+mod text_metrics_parity;
 mod urx_degrade_recorder;
 
 pub use compare::{compare_tight, ChannelTolerance, DiffReport, MultiLegDiff, STRUCTURAL_DEFECT_FRACTION, STRUCTURAL_EDGE_TOLERANCE};

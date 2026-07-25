@@ -279,10 +279,39 @@ fn parse_css_font(font_str: &str) -> FontInfo {
     }
 }
 
+/// Re-compose a CSS font shorthand string from an already-parsed
+/// [`FontInfo`] — the inverse of [`parse_css_font`], needed because
+/// [`uzor::shaper::measure_glyphs`] takes a CSS string, not a `FontInfo`.
+/// Mirrors `uzor-render-tiny-skia`'s own identically-shaped
+/// `font_css_string` helper (same 3 bundled families, same shorthand
+/// grammar).
+fn font_css_string(info: &FontInfo) -> String {
+    let family = match info.family {
+        FontFamily::Roboto        => "Roboto",
+        FontFamily::PtRootUi      => "PT Root UI",
+        FontFamily::JetBrainsMono => "JetBrains Mono",
+    };
+    let mut parts: Vec<String> = Vec::with_capacity(4);
+    if info.italic { parts.push("italic".into()); }
+    if info.bold   { parts.push("bold".into()); }
+    parts.push(format!("{}px", info.size));
+    parts.push(family.into());
+    parts.join(" ")
+}
+
 // ---------------------------------------------------------------------------
-// Text metrics via skrifa
+// Text metrics via skrifa — rasterization-only escape hatch
 // ---------------------------------------------------------------------------
 
+/// Sum of skrifa's own raw glyph `advance_width` — the un-kerned advance
+/// this backend's own [`fill_text`](uzor::render::TextRenderer::
+/// fill_text) pen walk still uses to place each rasterized glyph. **No
+/// longer** the width [`TextMetrics::measure_text`]/[`TextMetrics::
+/// text_bounds`] report — both now delegate to [`uzor::shaper`] (real
+/// GPOS kerning via cosmic-text), the SAME canonical source every other
+/// shaper-backed backend in this workspace measures through, so a
+/// layout decision never disagrees by backend. Kept as the internal
+/// rasterization pen-advance implementation detail only.
 fn measure_text_width(text: &str, font_info: &FontInfo) -> f64 {
     let font = get_font(font_info.family, font_info.bold, font_info.italic);
     let Some(font_ref) = to_font_ref(font) else {
@@ -974,16 +1003,28 @@ impl TextRenderer for VelloHybridRenderContext {
 // ---------------------------------------------------------------------------
 
 impl TextMetrics for VelloHybridRenderContext {
+    /// Delegates to [`uzor::shaper`] (cosmic-text) — see this module's
+    /// own `measure_text_width`'s doc comment for why: skrifa's raw
+    /// `advance_width` sum never applies GPOS kerning, so it disagreed
+    /// with every OTHER backend in this workspace (all of which already
+    /// measure `measure_text_glyphs`/`measure_text_wrapped`/
+    /// `text_to_path` through the SAME shaper) — a real cross-backend
+    /// layout divergence (`uzor-figures`' `guide::labeler` collision
+    /// pass feeds a backend's own `measure_text` result directly into a
+    /// pass/fail occupancy check).
     fn measure_text(&self, text: &str) -> f64 {
-        measure_text_width(text, &self.font_info)
+        let font_str = font_css_string(&self.font_info);
+        let glyphs = uzor::shaper::measure_glyphs(text, &font_str);
+        glyphs.last().map(|g| g.x_offset + g.advance).unwrap_or(0.0)
     }
 
     fn text_bounds(&self, text: &str, font: &str) -> TextBounds {
         let info = parse_css_font(font);
         let font_size = info.size as f32;
+        let glyphs = uzor::shaper::measure_glyphs(text, font);
+        let w = glyphs.last().map(|g| g.x_offset + g.advance).unwrap_or(0.0);
         let primary_font = get_font(info.family, info.bold, info.italic);
         let Some(font_ref) = to_font_ref(primary_font) else {
-            let w = text.chars().count() as f64 * info.size * 0.6;
             let ascent  = info.size * 0.9;
             let descent = info.size * 0.3;
             return TextBounds { x: 0.0, y: -ascent, w, h: ascent + descent, ascent, descent };
@@ -993,8 +1034,6 @@ impl TextMetrics for VelloHybridRenderContext {
         let metrics = font_ref.metrics(size, var_loc);
         let ascent  = metrics.ascent  as f64;
         let descent = (-metrics.descent) as f64;
-        let glyphs = resolve_glyphs_with_fallback(text, &font_ref, font_size);
-        let w = resolved_total_width(&glyphs) as f64;
         TextBounds {
             x: 0.0,
             y: -ascent,

@@ -31,8 +31,12 @@ animation = []
 # PNG icon decoding for AppBuilder::icon_from_png. On by default; turn off
 # if you don't ship `image` (e.g. minimal embedded builds).
 framework-png = ["dep:image"]
-# Real per-cluster text shaping via cosmic-text. Enabled by backends that
-# need cluster-correct measure_text_glyphs (tiny-skia, vello-gpu/cpu/hybrid).
+# Real per-cluster text shaping via cosmic-text. Enabled by every backend
+# whose `TextMetrics` impl needs to agree with every other backend's own
+# measurement (tiny-skia, vello-gpu/cpu/hybrid, wgpu-instanced) — the
+# canonical, backend-independent source `measure_text`/`text_bounds`/
+# `measure_text_glyphs`/`measure_text_wrapped`/`text_to_path` all
+# delegate through.
 shaper = ["dep:cosmic-text"]
 
 [dev-dependencies]

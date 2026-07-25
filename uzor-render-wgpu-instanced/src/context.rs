@@ -753,13 +753,27 @@ impl InstancedRenderContext {
         }
     }
 
-    /// Measure the pixel width of `text` using skrifa metrics.
+    /// Measure the pixel width of `text` using skrifa metrics — the RAW,
+    /// un-kerned advance-width sum.
     ///
     /// For each character, the primary Roboto font is tried first.  If Roboto
     /// returns `GlyphId(0)` (the .notdef / missing-glyph marker) the fallback
     /// fonts are tried in order: NotoSansSymbols2 then NotoEmoji.  This mirrors
     /// the per-glyph fallback that cosmic_text applies during rasterisation so
     /// that measured widths match rendered widths for symbol and emoji codepoints.
+    ///
+    /// **Only used internally** by [`TextRenderer::fill_text`]'s own
+    /// `estimated_width` (the `TextAlign::Center`/`Right` anchor
+    /// `renderer.rs::build_glyph_instances`' own cosmic-text-shaped
+    /// glyph run is positioned relative to — a pre-existing, documented
+    /// intra-backend approximation this fix does not touch: the actual
+    /// glyph positions are real cosmic-text kerned advances, but the
+    /// alignment ANCHOR is this un-kerned estimate). **No longer** the
+    /// width [`TextMetrics::measure_text`]/[`TextMetrics::text_bounds`]
+    /// report — both now delegate to [`uzor::shaper`] (real GPOS kerning
+    /// via cosmic-text), the SAME canonical source every other
+    /// shaper-backed backend in this workspace measures through, so a
+    /// layout decision never disagrees by backend.
     fn measure_text_internal(&self, text: &str) -> f32 {
         let Some(font_ref) = get_font_ref(self.font_family, self.font_bold, self.font_italic) else {
             return text.len() as f32 * self.font_size * 0.6;
@@ -969,16 +983,50 @@ impl TextRenderer for InstancedRenderContext {
 
 // ── TextMetrics ────────────────────────────────────────────────────────────
 
+/// Compose a CSS font shorthand string from `(family, bold, italic,
+/// size)` — needed because [`uzor::shaper::measure_glyphs`] takes a CSS
+/// string, not discrete font-state fields. Mirrors
+/// `uzor-render-tiny-skia`'s own identically-shaped `font_css_string`
+/// helper (same 3 bundled families, same shorthand grammar).
+fn font_css_string(family: FontFamily, bold: bool, italic: bool, size: f32) -> String {
+    let family_name = match family {
+        FontFamily::Roboto        => "Roboto",
+        FontFamily::PtRootUi      => "PT Root UI",
+        FontFamily::JetBrainsMono => "JetBrains Mono",
+    };
+    let mut parts: Vec<String> = Vec::with_capacity(4);
+    if italic { parts.push("italic".into()); }
+    if bold   { parts.push("bold".into()); }
+    parts.push(format!("{size}px"));
+    parts.push(family_name.into());
+    parts.join(" ")
+}
+
 impl TextMetrics for InstancedRenderContext {
+    /// Delegates to [`uzor::shaper`] (cosmic-text) — see
+    /// `measure_text_internal`'s own doc comment for why: skrifa's raw
+    /// `advance_width` sum never applies GPOS kerning, so it disagreed
+    /// with every OTHER backend in this workspace (all of which already
+    /// measure `measure_text_glyphs`/`measure_text_wrapped`/
+    /// `text_to_path` through the SAME shaper), AND with this backend's
+    /// OWN real rasterization pipeline (`renderer.rs::
+    /// build_glyph_instances` shapes every glyph run through cosmic-text
+    /// too) — a real cross-backend layout divergence, not just a
+    /// cosmetic rendering difference (`uzor-figures`' `guide::labeler`
+    /// collision pass feeds a backend's own `measure_text` result
+    /// directly into a pass/fail occupancy check).
     fn measure_text(&self, text: &str) -> f64 {
-        self.measure_text_internal(text) as f64
+        let font_str = font_css_string(self.font_family, self.font_bold, self.font_italic, self.font_size);
+        let glyphs = uzor::shaper::measure_glyphs(text, &font_str);
+        glyphs.last().map(|g| g.x_offset + g.advance).unwrap_or(0.0)
     }
 
     fn text_bounds(&self, text: &str, font: &str) -> TextBounds {
         let parsed = fonts::parse_css_font(font);
         let font_size = parsed.size;
+        let glyphs = uzor::shaper::measure_glyphs(text, font);
+        let w: f64 = glyphs.last().map(|g| g.x_offset + g.advance).unwrap_or(0.0);
         let Some(font_ref) = get_font_ref(parsed.family, parsed.bold, parsed.italic) else {
-            let w = text.chars().count() as f64 * font_size as f64 * 0.6;
             let ascent  = font_size as f64 * 0.9;
             let descent = font_size as f64 * 0.3;
             return TextBounds { x: 0.0, y: -ascent, w, h: ascent + descent, ascent, descent };
@@ -988,37 +1036,29 @@ impl TextMetrics for InstancedRenderContext {
         let metrics = font_ref.metrics(size, var_loc);
         let ascent  = metrics.ascent  as f64;
         let descent = (-metrics.descent) as f64;
-        // Reuse measure_text_internal by temporarily constructing with parsed font state.
-        // We can't mutate self, so compute width directly from skrifa glyph_metrics.
-        let glyph_metrics = font_ref.glyph_metrics(size, var_loc);
-        let charmap = font_ref.charmap();
-        let fallbacks = get_fallback_font_refs();
-        let w: f32 = text.chars().map(|ch| {
-            let gid = charmap.map(ch).unwrap_or_default();
-            if gid.to_u32() != 0 {
-                return glyph_metrics.advance_width(gid).unwrap_or_default();
-            }
-            for fb in &fallbacks {
-                if let Some(fb_ref) = fb {
-                    let fb_gid = fb_ref.charmap().map(ch).unwrap_or_default();
-                    if fb_gid.to_u32() != 0 {
-                        let fb_size = skrifa::instance::Size::new(font_size);
-                        let fb_var = skrifa::instance::LocationRef::default();
-                        return fb_ref.glyph_metrics(fb_size, fb_var)
-                            .advance_width(fb_gid).unwrap_or_default();
-                    }
-                }
-            }
-            font_size * 0.6
-        }).sum();
         TextBounds {
             x: 0.0,
             y: -ascent,
-            w: w as f64,
+            w,
             h: ascent + descent,
             ascent,
             descent,
         }
+    }
+
+    /// Real cluster shaping via cosmic-text — same pattern every other
+    /// shaper-backed backend in this workspace uses.
+    fn measure_text_glyphs(&self, text: &str, font: &str) -> Vec<uzor::render::GlyphMetric> {
+        uzor::shaper::measure_glyphs(text, font)
+    }
+
+    /// Real word-wrap via cosmic-text `Wrap::Word`.
+    fn measure_text_wrapped(&self, text: &str, font: &str, max_width: f64) -> Vec<uzor::render::WrappedLine> {
+        uzor::shaper::measure_glyphs_wrapped(text, font, max_width)
+    }
+
+    fn text_to_path(&self, text: &str, font: &str) -> String {
+        uzor::shaper::text_to_path(text, font)
     }
 }
 
