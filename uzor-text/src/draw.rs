@@ -466,49 +466,38 @@ mod tests {
         assert!(justified_line_count >= 3, "fixture must exercise several justified (non-last) lines for this to be a meaningful regression floor");
     }
 
-    /// Typography track T4, RE-PROVE (owner review, 2026-07-25): the
-    /// GENERAL case, reported honestly rather than hidden by only ever
-    /// testing a hand-picked clean fixture. [`crate::linebreak::knuth_plass`]
-    /// is a deliberately SIMPLIFIED single-pass Knuth-Plass DP (this
-    /// crate's own doc comment: "no looseness passes, no TeX fitness-class
-    /// tiering") — unlike real TeX's `\tolerance` mechanism, it never
-    /// treats "this candidate line's shrink NEED exceeds its render-time-
-    /// capped shrink CAPACITY" as infeasible, only as increasingly
-    /// EXPENSIVE (via `badness`'s own uncapped cubic growth). When every
-    /// alternative breakpoint arrangement across the WHOLE paragraph
-    /// scores worse in total demerits, the DP still picks this locally
-    /// overfull line — a real "overfull hbox" outcome, the same
-    /// PHENOMENON real TeX itself produces (and warns about) when no
-    /// feasible breakpoint set exists under its own tolerance. This is
-    /// PRE-EXISTING behavior (this module's own `CLAUDE.md` Phase 5
-    /// section already documented the general shape of it — "a genuinely
-    /// tight line may still render a few pixels past `max_width` in rare
-    /// cases" — before this task ever started) and is NOT something
-    /// typography track T4/T5 introduced: verified directly below by
-    /// reproducing it with [`crate::linebreak::LineBreakParams::default`]
-    /// (byte-identical pre-T5 constants) and WITH [`crate::linebreak::
-    /// Hyphenation::English`] enabled (ruling out "just give it more break
-    /// flexibility" as a one-line fix — this exact fixture was ALSO probed
-    /// with hyphenation on and produced the identical overshoot).
+    /// Typography track T6, FIXED (2026-07-25): the exact fixture that used
+    /// to pin the known "overfull hbox" limitation this module's own T4
+    /// re-prove pass discovered (see `crate::linebreak::knuth_plass`'s own
+    /// top doc comment for the full root-cause + fix writeup). Kept as its
+    /// own dedicated regression test, fixture text and column width BOTH
+    /// UNCHANGED from the original discovery, specifically so this test
+    /// PROVES the fix rather than merely asserting a fresh, different
+    /// "looks fine" fixture.
     ///
-    /// Numbers (probed 2026-07-25, `COL_WIDTH=320.0`, 16px Roboto,
-    /// `Hyphenation::English`): line 1 ("well-set paragraph reads evenly,
-    /// without ragged") has `natural_width=335.921875` against
-    /// `max_width=320.0` — a `15.921875`px shrink NEED across 5 interword
-    /// gaps (`~3.18`px/gap), but the render-time shrink CAP
-    /// (`glue_shrink_ratio=1/3` of the narrowest gap's own `~3.97`px
-    /// natural width, per [`crate::model::Paragraph::line_break_params`])
-    /// only affords `~1.32`px/gap (`~6.61`px total) — leaving the line
-    /// `9.307292`px over-full even after maximal render-time shrink. A
-    /// full fix (make the DP treat "need > capacity" as infeasible, not
-    /// merely expensive — closer to real TeX's own tolerance/overfull-hbox
-    /// semantics) is a genuine cost-model redesign affecting every
-    /// existing `KnuthPlass` caller, scoped OUT of this pass (a
-    /// side-effect discovery while re-proving T4, not itself T4 or T5's
-    /// own deliverable) — flagged here as a real, measured, follow-up-
-    /// worthy finding rather than silently left undiscovered.
+    /// **Before T6** (numbers from the original discovery, `COL_WIDTH=
+    /// 320.0`, 16px Roboto, `Hyphenation::English`): line 1 ("well-set
+    /// paragraph reads evenly, without ragged") had `natural_width=
+    /// 335.921875` against `max_width=320.0` — a `15.921875`px shrink NEED
+    /// across 5 interword gaps, but the render-time shrink CAP
+    /// (`glue_shrink_ratio=1/3` of the narrowest gap's own natural width)
+    /// only afforded `~6.61`px total, leaving the line `9.307292`px
+    /// over-full even after maximal render-time shrink — [`crate::
+    /// linebreak::knuth_plass`]'s DP still chose it because its uncapped
+    /// badness scored it as merely EXPENSIVE, never INFEASIBLE, and it
+    /// still won the whole paragraph's own total-demerits minimum.
+    ///
+    /// **After T6**: [`crate::linebreak::knuth_plass::pack_lines`]'s
+    /// primary, feasibility-gated DP pass now REJECTS that exact candidate
+    /// line outright (its own shrink need exceeds its own shrink capacity)
+    /// and finds a fully feasible alternative breaking instead — every
+    /// non-last justified line lands at EXACTLY `max_width`, zero
+    /// overshoot, and [`crate::layout::LineBreakDiagnostics::
+    /// overfull_fallback_used`] confirms the deliberate fallback never had
+    /// to fire (this fixture never was one of the genuinely-infeasible
+    /// cases the fallback exists for).
     #[test]
-    fn knuth_plass_can_choose_a_locally_overfull_justified_line_a_known_pre_existing_limitation() {
+    fn knuth_plass_no_longer_chooses_a_locally_overfull_justified_line_typography_track_t6_fix() {
         use crate::linebreak::{BreakStrategy, Hyphenation, LineBreakParams};
 
         const COL_WIDTH: f64 = 320.0;
@@ -523,8 +512,11 @@ mod tests {
             .with_break_strategy(BreakStrategy::KnuthPlass)
             .with_hyphenation(Hyphenation::English)
             .with_line_break_params(LineBreakParams::default()); // explicit: pre-T5 constants, unmodified
-        let layout = layout_paragraph(&paragraph, &shaper);
+        let (layout, diag) = crate::layout::layout_paragraph_diagnosed(&paragraph, &shaper);
         let last_index = layout.lines.len() - 1;
+
+        assert!(!diag.overfull_fallback_used, "this exact fixture must now be FULLY FEASIBLE under the primary DP pass — the deliberate overfull-hbox fallback must never fire for it");
+        assert_eq!(diag.overfull_line_count, 0, "zero lines may render past max_width — this is the whole point of the T6 fix");
 
         let max_overshoot = layout
             .lines
@@ -537,8 +529,8 @@ mod tests {
             .fold(f64::MIN, f64::max);
 
         assert!(
-            max_overshoot > 5.0,
-            "this fixture is EXPECTED to reproduce the known overfull-hbox outcome (a real, pre-existing KnuthPlass property, not a T4/T5 regression) — got max_overshoot={max_overshoot}, expected > 5.0px; if this now reads ~0, the underlying cost model changed and this test (and its own doc comment) need revisiting"
+            max_overshoot < 1e-6,
+            "the original 9.3px overshoot must now read ~0 — got max_overshoot={max_overshoot}; if this now reads > 0 again, typography track T6's feasibility fix regressed"
         );
     }
 

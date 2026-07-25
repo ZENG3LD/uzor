@@ -109,6 +109,20 @@ pub struct LineBreakParams {
     /// [`BreakStrategy::KnuthPlass`] output), so a line the DP scored as
     /// "shrink covers the gap" never renders with MORE compression than the
     /// cost model actually assumed.
+    ///
+    /// **Load-bearing for FEASIBILITY, not just cost (typography track T6,
+    /// 2026-07-25)** — [`knuth_plass`]'s own primary DP pass rejects any
+    /// candidate line whose shrink NEED exceeds this exact ratio's own pool
+    /// as INFEASIBLE, never merely expensive (see that module's own top doc
+    /// comment for the justification-overshoot fix this closes). Raising
+    /// `glue_shrink_ratio` widens the pool the strict pass
+    /// may draw on — permits tighter (more compressed) lines, and fewer
+    /// paragraphs fall through to the deliberate overfull-hbox fallback.
+    /// Lowering it narrows that pool — forces earlier/looser breaks, and
+    /// more paragraphs may need the fallback on a sufficiently unforgiving
+    /// column. `0.0` disables shrink-based feasibility entirely (only a
+    /// perfectly-fitting or under-full non-final line, or one relying on
+    /// stretch instead, is ever strictly feasible).
     pub glue_shrink_ratio: f64,
     /// Minimum letters a hyphenation point must leave BEFORE it (TeX's
     /// `\lefthyphenmin`), counted in characters (not bytes — see

@@ -11,11 +11,55 @@
 //! [`crate::linebreak::BreakStrategy`]; every downstream pass (baseline,
 //! alignment/justify, box placement) is untouched (design law 1: one
 //! measure path — KP only changes *where* the atom stream gets cut).
+//!
+//! ## Justification-overshoot fix (typography track T6, 2026-07-25)
+//!
+//! **The defect (measured, root-caused, pinned by a test in commit
+//! `e8425ec`):** on a justified paragraph, [`pack_lines`] could choose a
+//! candidate line whose required interword-glue SHRINK exceeded the
+//! render-time shrink CAPACITY [`crate::layout::layout_paragraph`]'s own
+//! glue-shrink pass can actually deliver (`params.glue_shrink_ratio` of
+//! each glue's own natural width) — [`badness`]'s cubic growth priced that
+//! candidate as merely EXPENSIVE, never INFEASIBLE, so it could still win
+//! the DP's own total-demerits minimum across the whole paragraph and
+//! render a few px past `max_width` with no signal at all. This is the
+//! classic TeX "overfull hbox" situation; real TeX at least REPORTS it —
+//! this crate used to silently overflow.
+//!
+//! **The fix mirrors TeX's own structure rather than inventing one:** a
+//! candidate line whose shrink NEED exceeds its own capacity is now
+//! REJECTED as a break candidate ([`badness_strict`]/
+//! [`last_line_badness_strict`], `f64::INFINITY` in that one case — see
+//! their own doc comments), and [`pack_lines_unconstrained`]/
+//! [`pack_lines_with_hyphen_limit`] both run this STRICT pass first. When a
+//! feasible full breaking exists (the overwhelming common case), that is
+//! the result — EVERY chosen line is guaranteed to fit within its own
+//! render-time shrink capacity, by construction, no epsilon-chasing
+//! required. Only when NO feasible breaking exists for the WHOLE paragraph
+//! (every possible line grouping has at least one line that can't be
+//! shrunk enough — e.g. a single unbreakable word alone on a line, wider
+//! than the column, with no glue to shrink at all) does this module fall
+//! back to the ORIGINAL, RELAXED, uncapped-badness DP ([`badness`]/
+//! [`last_line_badness`], unchanged from before this track — real TeX's
+//! own escape hatch is to emit an overfull line and warn; this is that,
+//! implemented deliberately rather than by accident) — signalled via
+//! [`crate::metrics_keys::KEY_LINEBREAK_OVERFULL_FALLBACK`] (this
+//! workspace's established `metrics` counter convention) and via
+//! [`crate::layout::LineBreakDiagnostics`] on the returned layout (see
+//! [`crate::layout::layout_paragraph_diagnosed`]).
+//!
+//! `params.glue_shrink_ratio` ([`LineBreakParams`]) is therefore now
+//! LOAD-BEARING for feasibility, not just a cost-model tuning knob: raising
+//! it widens the shrink pool the strict pass may draw on (permits tighter
+//! lines, fewer paragraphs fall through to the relaxed fallback); lowering
+//! it narrows that pool (forces earlier/more breaks, more paragraphs may
+//! need the fallback on a sufficiently unforgiving column).
 
 use std::collections::HashMap;
 
 use crate::layout::greedy::{self, Atom, AtomGlyph, TextAtom};
 use crate::linebreak::LineBreakParams;
+use crate::metrics_keys;
 use crate::model::{FontSpec, Paragraph};
 use crate::shape::LineShaper;
 
@@ -29,6 +73,13 @@ use super::Hyphenation;
 /// below, there's no ratio to even compute here (dividing by a zero pool).
 const NO_GLUE_BADNESS: f64 = 1.0e12;
 
+/// Tolerance for the shrink-capacity feasibility check
+/// ([`badness_strict`]/[`last_line_badness_strict`]) — absorbs
+/// floating-point summation noise across [`span_metrics`]'s own per-glue
+/// accumulation, not a "how close counts as an exact fit" decision (that's
+/// [`badness`]'s own, deliberately tighter, `1e-9`).
+const SHRINK_FEASIBILITY_EPSILON: f64 = 1e-6;
+
 /// Knuth's badness: `0.0` for an exact fit, rising *unbounded* as `100 *
 /// (needed/available)^3` toward whichever of stretch/shrink the line needs.
 /// Deliberately **not** capped at a fixed ceiling: capping it would make a
@@ -38,6 +89,12 @@ const NO_GLUE_BADNESS: f64 = 1.0e12;
 /// against any reasonable multi-line accumulation. A non-finite `target`
 /// (unconstrained width) is always `0.0` (matches
 /// [`crate::layout::greedy::pack_lines`]'s own convention).
+///
+/// **Only used by this module's own deliberate FALLBACK pass** (typography
+/// track T6, see this module's own top doc comment) — the PRIMARY pass uses
+/// [`badness_strict`] instead. Kept, unrenamed, as the ORIGINAL formula
+/// (byte-for-byte unchanged body) since [`score_lines`]'s own test-only
+/// demerits scoring also still uses it directly.
 fn badness(natural: f64, target: f64, stretch: f64, shrink: f64) -> f64 {
     if !target.is_finite() {
         return 0.0;
@@ -71,6 +128,9 @@ fn badness(natural: f64, target: f64, stretch: f64, shrink: f64) -> f64 {
 /// entire paragraph into one over-full line" as free (any path ending at
 /// the mandatory final breakpoint would look like a zero-badness "last
 /// line"), which defeats wrapping entirely.
+///
+/// Same "fallback-pass only" scope as [`badness`] — see [`last_line_badness_strict`]
+/// for the primary pass's own version.
 fn last_line_badness(natural: f64, target: f64, shrink: f64) -> f64 {
     if !target.is_finite() {
         return 0.0;
@@ -79,6 +139,69 @@ fn last_line_badness(natural: f64, target: f64, shrink: f64) -> f64 {
         0.0
     } else {
         badness(natural, target, 0.0, shrink)
+    }
+}
+
+/// Feasibility-gated badness (typography track T6, 2026-07-25) — identical
+/// to [`badness`] except a line whose SHRINK need exceeds its own render-
+/// time shrink CAPACITY (`shrink`, the exact pool [`span_metrics`] sizes via
+/// `params.glue_shrink_ratio`, matching the cap
+/// [`crate::layout::layout_paragraph`]'s own glue-shrink render pass
+/// enforces) scores `f64::INFINITY` — REJECTED as a break candidate, not
+/// merely priced in (mirrors real TeX's own `\tolerance` semantics: a
+/// requirement physically impossible to satisfy is infeasible, not just
+/// expensive). The STRETCH side is unaffected — a loose (under-full) line
+/// never causes visible overflow, so there is nothing to gate there; it
+/// keeps [`badness`]'s own `NO_GLUE_BADNESS` sentinel for "no stretch to
+/// draw on at all".
+///
+/// This is the PRIMARY pass's own badness function — see this module's top
+/// doc comment for the two-pass shape ([`pack_lines_unconstrained`]/
+/// [`pack_lines_with_hyphen_limit`] both try this first, falling back to
+/// [`badness`]'s relaxed formula only when no fully feasible breaking
+/// exists for the whole paragraph).
+fn badness_strict(natural: f64, target: f64, stretch: f64, shrink: f64) -> f64 {
+    if !target.is_finite() {
+        return 0.0;
+    }
+    let diff = target - natural;
+    if diff.abs() < 1e-9 {
+        return 0.0;
+    }
+    if diff > 0.0 {
+        if stretch <= 0.0 {
+            NO_GLUE_BADNESS
+        } else {
+            100.0 * (diff / stretch).powi(3)
+        }
+    } else {
+        let need = -diff;
+        if need > shrink + SHRINK_FEASIBILITY_EPSILON {
+            f64::INFINITY
+        } else if shrink <= 0.0 {
+            // `need` is within `SHRINK_FEASIBILITY_EPSILON` of zero here
+            // (the branch above already rejected anything larger) but
+            // `shrink` itself is exactly zero — avoid a `0.0/0.0` division
+            // below; this is the same "no pool to even compute a ratio
+            // from" case `badness`'s own `NO_GLUE_BADNESS` sentinel covers.
+            NO_GLUE_BADNESS
+        } else {
+            100.0 * (need / shrink).powi(3)
+        }
+    }
+}
+
+/// [`last_line_badness`]'s own feasibility-gated counterpart — see
+/// [`badness_strict`]'s doc comment for the shrink-capacity rule this
+/// applies via [`badness_strict`] itself.
+fn last_line_badness_strict(natural: f64, target: f64, shrink: f64) -> f64 {
+    if !target.is_finite() {
+        return 0.0;
+    }
+    if natural <= target {
+        0.0
+    } else {
+        badness_strict(natural, target, 0.0, shrink)
     }
 }
 
@@ -263,18 +386,40 @@ pub(crate) fn pack_lines(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &d
     }
 }
 
-/// The original (pre-WAVE-3) single-state DP — kept verbatim, byte-for-byte,
-/// as its own function so [`Paragraph::max_consecutive_hyphens`]'s documented
-/// "`None` (the default) ... byte-for-byte unchanged" guarantee is
-/// structural (the SAME code path runs, not a re-derivation that merely
-/// happens to agree), not just an empirically-tested claim.
-fn pack_lines_unconstrained(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> Vec<Vec<Atom>> {
-    let max_width = if paragraph.max_width.is_finite() { paragraph.max_width.max(1.0) } else { f64::MAX };
-    let params = paragraph.line_break_params;
-    let candidates = legal_breaks(&atoms);
-    let n = candidates.len();
-    let mut hyphens = HyphenCache::new(paragraph, shaper);
+/// Badness-function shape both [`run_unconstrained_dp`]/
+/// [`run_hyphen_limited_dp`] accept — see [`badness`]/[`badness_strict`]
+/// for the two concrete instantiations typography track T6 threads through
+/// (parameter names omitted: a plain `fn` pointer type, not itself a
+/// documented call site).
+type LineBadnessFn = fn(f64, f64, f64, f64) -> f64;
 
+/// Last-line badness-function shape — see [`last_line_badness`]/
+/// [`last_line_badness_strict`].
+type LastLineBadnessFn = fn(f64, f64, f64) -> f64;
+
+/// Shared DP core for [`pack_lines_unconstrained`] (typography track T6,
+/// 2026-07-25) — parameterized over which badness formula scores a
+/// candidate line, so the SAME loop body serves both the PRIMARY
+/// (feasibility-gated, [`badness_strict`]/[`last_line_badness_strict`]) and
+/// FALLBACK ([`badness`]/[`last_line_badness`], pre-T6-identical) passes —
+/// see this module's own top doc comment for the two-pass shape. Returns
+/// `None` when even the supplied formula can't reach the paragraph's own
+/// mandatory final breakpoint with a finite total: under the STRICT formula
+/// this means "no fully feasible breaking exists for this paragraph" (the
+/// caller then re-runs this SAME function with the RELAXED formula); under
+/// the RELAXED formula this is never reached in practice (every position is
+/// always reachable via SOME finite-cost path — matches this function's own
+/// pre-T6 "never reached" comment, moved here verbatim).
+fn run_unconstrained_dp(
+    atoms: &[Atom],
+    candidates: &[usize],
+    max_width: f64,
+    params: LineBreakParams,
+    hyphens: &mut HyphenCache<'_>,
+    line_badness: LineBadnessFn,
+    last_badness: LastLineBadnessFn,
+) -> Option<Vec<usize>> {
+    let n = candidates.len();
     let mut best = vec![f64::INFINITY; n];
     let mut via = vec![0usize; n];
     let mut via_hyphen = vec![false; n];
@@ -288,7 +433,7 @@ fn pack_lines_unconstrained(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper:
                 continue;
             }
             let c_i = candidates[i];
-            if spans_a_break(&atoms, c_i, c_j) {
+            if spans_a_break(atoms, c_i, c_j) {
                 continue;
             }
 
@@ -298,7 +443,10 @@ fn pack_lines_unconstrained(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper:
                 if ends_in_hyphen { hyphens.get(run_index_of(&slice[slice.len() - 1])).1 } else { 0.0 };
             let (width, stretch, shrink) = span_metrics(slice, hyphen_width, ends_in_hyphen, params);
 
-            let b = if is_final { last_line_badness(width, max_width, shrink) } else { badness(width, max_width, stretch, shrink) };
+            let b = if is_final { last_badness(width, max_width, shrink) } else { line_badness(width, max_width, stretch, shrink) };
+            if !b.is_finite() {
+                continue; // INFEASIBLE under this pass's own formula — never a legal transition
+            }
             let penalty = if ends_in_hyphen { params.hyphen_penalty } else { 0.0 };
             let mut d = demerits(b, penalty);
             if ends_in_hyphen && via_hyphen[i] {
@@ -315,10 +463,7 @@ fn pack_lines_unconstrained(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper:
     }
 
     if !best[n - 1].is_finite() {
-        // Never reached in practice (every j always has at least one finite
-        // predecessor by construction — see this module's `CLAUDE.md`
-        // notes) but a single-line fallback keeps this function total.
-        return vec![trim_trailing_discardables(&atoms).to_vec()];
+        return None;
     }
 
     let mut path = vec![n - 1];
@@ -328,8 +473,52 @@ fn pack_lines_unconstrained(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper:
         path.push(cur);
     }
     path.reverse();
+    Some(path)
+}
 
-    reconstruct_lines(&atoms, &candidates, &path, &mut hyphens)
+/// The original (pre-WAVE-3) single-state DP — kept as its own function so
+/// [`Paragraph::max_consecutive_hyphens`]'s documented "`None` (the
+/// default) ... byte-for-byte unchanged" guarantee is structural (the SAME
+/// code path runs, not a re-derivation that merely happens to agree), not
+/// just an empirically-tested claim.
+///
+/// Typography track T6 (2026-07-25): now runs [`run_unconstrained_dp`]
+/// TWICE, per this module's own top doc comment — the STRICT
+/// (feasibility-gated) pass first; only when NO fully feasible breaking
+/// exists for the whole paragraph does it fall back to the RELAXED
+/// (pre-T6-identical) pass, incrementing
+/// [`crate::metrics_keys::KEY_LINEBREAK_OVERFULL_FALLBACK`] as the
+/// deliberate degrade fires.
+fn pack_lines_unconstrained(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> Vec<Vec<Atom>> {
+    let max_width = if paragraph.max_width.is_finite() { paragraph.max_width.max(1.0) } else { f64::MAX };
+    let params = paragraph.line_break_params;
+    let candidates = legal_breaks(&atoms);
+    let mut hyphens = HyphenCache::new(paragraph, shaper);
+
+    if let Some(path) =
+        run_unconstrained_dp(&atoms, &candidates, max_width, params, &mut hyphens, badness_strict, last_line_badness_strict)
+    {
+        return reconstruct_lines(&atoms, &candidates, &path, &mut hyphens);
+    }
+
+    // No fully feasible breaking exists for this paragraph under the
+    // strict pass (e.g. a single unbreakable word alone on a line, wider
+    // than the column, with no glue to shrink at all) — the deliberate,
+    // TeX-style overfull-hbox fallback: re-run with the ORIGINAL, uncapped
+    // cost model (byte-for-byte unchanged from before this track) so the
+    // paragraph still wraps, signalling the degrade instead of letting it
+    // happen silently.
+    metrics::counter!(metrics_keys::KEY_LINEBREAK_OVERFULL_FALLBACK).increment(1);
+    match run_unconstrained_dp(&atoms, &candidates, max_width, params, &mut hyphens, badness, last_line_badness) {
+        Some(path) => reconstruct_lines(&atoms, &candidates, &path, &mut hyphens),
+        None => {
+            // Never reached in practice (every position is always
+            // reachable via SOME finite-cost path under the relaxed
+            // formula — see `run_unconstrained_dp`'s own doc comment) but
+            // a single-line fallback keeps this function total.
+            vec![trim_trailing_discardables(&atoms).to_vec()]
+        }
+    }
 }
 
 /// Hard-constrained DP (typography-gap WAVE 3): a breakpoint sequence in
@@ -363,13 +552,59 @@ fn pack_lines_unconstrained(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper:
 /// (including `limit == 0`, which forbids hyphen breaks entirely) — no
 /// fallible surface, matching this crate's own "no panic on the hot path"
 /// convention.
+///
+/// Typography track T6 (2026-07-25): the SAME two-pass shape
+/// [`pack_lines_unconstrained`] uses, applied via
+/// [`run_hyphen_limited_dp`] — a STRICT (feasibility-gated) pass first,
+/// falling back to the RELAXED (pre-T6-identical) pass, incrementing
+/// [`crate::metrics_keys::KEY_LINEBREAK_OVERFULL_FALLBACK`], only when NO
+/// fully feasible breaking exists under the hard hyphen-limit constraint
+/// EITHER.
 fn pack_lines_with_hyphen_limit(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, shaper: &dyn LineShaper, limit: u8) -> Vec<Vec<Atom>> {
     let max_width = if paragraph.max_width.is_finite() { paragraph.max_width.max(1.0) } else { f64::MAX };
     let params = paragraph.line_break_params;
     let candidates = legal_breaks(&atoms);
-    let n = candidates.len();
     let mut hyphens = HyphenCache::new(paragraph, shaper);
 
+    if let Some(path) =
+        run_hyphen_limited_dp(&atoms, &candidates, max_width, params, &mut hyphens, limit, badness_strict, last_line_badness_strict)
+    {
+        return reconstruct_lines(&atoms, &candidates, &path, &mut hyphens);
+    }
+
+    metrics::counter!(metrics_keys::KEY_LINEBREAK_OVERFULL_FALLBACK).increment(1);
+    match run_hyphen_limited_dp(&atoms, &candidates, max_width, params, &mut hyphens, limit, badness, last_line_badness) {
+        Some(path) => reconstruct_lines(&atoms, &candidates, &path, &mut hyphens),
+        None => {
+            // Never reached — state 0 is always feasible at every position
+            // under the relaxed formula (see this function's own top doc
+            // comment) — a single-line fallback keeps this function total
+            // regardless.
+            vec![trim_trailing_discardables(&atoms).to_vec()]
+        }
+    }
+}
+
+/// Shared DP core for [`pack_lines_with_hyphen_limit`] (typography track
+/// T6) — the identical "parameterize over which badness formula scores a
+/// candidate line" split [`run_unconstrained_dp`] uses, applied to the
+/// hard-hyphen-limit multi-state DP. Returns `None` under the exact same
+/// condition [`run_unconstrained_dp`] does (see its own doc comment) —
+/// here that can ALSO happen when the strict formula's own shrink-capacity
+/// rejection interacts with the hyphen-limit constraint (e.g. the ONLY
+/// breaking that respects `limit` also happens to be shrink-infeasible),
+/// not just via the hyphen-limit's own bookkeeping.
+fn run_hyphen_limited_dp(
+    atoms: &[Atom],
+    candidates: &[usize],
+    max_width: f64,
+    params: LineBreakParams,
+    hyphens: &mut HyphenCache<'_>,
+    limit: u8,
+    line_badness: LineBadnessFn,
+    last_badness: LastLineBadnessFn,
+) -> Option<Vec<usize>> {
+    let n = candidates.len();
     let run_states = limit as usize + 1;
     let mut best = vec![vec![f64::INFINITY; run_states]; n];
     let mut via = vec![vec![(0usize, 0usize); run_states]; n];
@@ -380,7 +615,7 @@ fn pack_lines_with_hyphen_limit(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, sha
         let is_final = c_j == atoms.len();
         for i in 0..j {
             let c_i = candidates[i];
-            if spans_a_break(&atoms, c_i, c_j) {
+            if spans_a_break(atoms, c_i, c_j) {
                 continue;
             }
 
@@ -390,7 +625,10 @@ fn pack_lines_with_hyphen_limit(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, sha
                 if ends_in_hyphen { hyphens.get(run_index_of(&slice[slice.len() - 1])).1 } else { 0.0 };
             let (width, stretch, shrink) = span_metrics(slice, hyphen_width, ends_in_hyphen, params);
 
-            let b = if is_final { last_line_badness(width, max_width, shrink) } else { badness(width, max_width, stretch, shrink) };
+            let b = if is_final { last_badness(width, max_width, shrink) } else { line_badness(width, max_width, stretch, shrink) };
+            if !b.is_finite() {
+                continue; // INFEASIBLE under this pass's own formula — never a legal transition
+            }
             let penalty = if ends_in_hyphen { params.hyphen_penalty } else { 0.0 };
             let base_d = demerits(b, penalty);
 
@@ -428,12 +666,7 @@ fn pack_lines_with_hyphen_limit(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, sha
         .filter(|&r| best[last][r].is_finite())
         .min_by(|&a, &b| best[last][a].partial_cmp(&best[last][b]).unwrap_or(std::cmp::Ordering::Equal));
 
-    let Some(best_r) = best_r else {
-        // Never reached — state 0 is always feasible at every position (see
-        // this function's own top doc comment) — a single-line fallback
-        // keeps this function total regardless.
-        return vec![trim_trailing_discardables(&atoms).to_vec()];
-    };
+    let best_r = best_r?;
 
     let mut path = vec![last];
     let mut cur = (last, best_r);
@@ -442,8 +675,7 @@ fn pack_lines_with_hyphen_limit(atoms: Vec<Atom>, paragraph: &Paragraph<'_>, sha
         path.push(cur.0);
     }
     path.reverse();
-
-    reconstruct_lines(&atoms, &candidates, &path, &mut hyphens)
+    Some(path)
 }
 
 /// Turn a chosen candidate-index `path` (both DP shapes' own reconstruction
@@ -525,7 +757,7 @@ mod tests {
     use super::*;
     use crate::layout::layout_paragraph;
     use crate::linebreak::BreakStrategy;
-    use crate::model::{FontSpec, StyledRun};
+    use crate::model::{FontSpec, ParagraphAlign, StyledRun};
     use crate::shape::CosmicShaper;
     use uzor::fonts::FontFamily;
 
@@ -757,21 +989,39 @@ mod tests {
     /// nothing reads. A prohibitively high `hyphen_penalty` (dwarfing every
     /// other term in the demerits formula) must eliminate every
     /// hyphenation break the SAME fixture takes freely under default
-    /// params at the SAME narrow width — and change the line count, so
-    /// the difference is a real layout change, not just "no `-` glyph".
+    /// params — and change the line count, so the difference is a real
+    /// layout change, not just "no `-` glyph".
+    ///
+    /// **Width RE-PROBED (typography track T6, 2026-07-25 — see
+    /// `crate::linebreak::knuth_plass`'s own top doc comment for the
+    /// justification-overshoot fix that changed this):** the ORIGINAL
+    /// `HYPHEN_DENSE_WIDTH` (150.0) no longer works for this test — at
+    /// that width, several of this fixture's own long words are wider
+    /// than the column even with maximal glue shrink and NO interior
+    /// glue at all (a single unbreakable word alone on its own line), so
+    /// hyphenating them is now STRUCTURALLY REQUIRED for the primary,
+    /// feasibility-gated DP pass to find ANY fully feasible breaking —
+    /// no `hyphen_penalty`, however large, can out-cost a literal
+    /// impossibility (this is in fact exactly the class of defect this
+    /// track fixes: before T6, such an unbreakable-without-hyphenation
+    /// word would have silently rendered past the column edge instead).
+    /// A wider width (`350.0`, probed directly) still hyphenates freely
+    /// under default params AND still has a genuinely competitive
+    /// non-hyphenated alternative, so a prohibitive penalty can still
+    /// choose it.
     #[test]
     fn non_default_hyphen_penalty_changes_which_breaks_knuth_plass_chooses() {
         let font = FontSpec::new(FontFamily::Roboto, 16.0);
         let runs = [StyledRun::new(HYPHEN_DENSE_TEXT, font)];
+        let width = 350.0;
         let shaper = CosmicShaper::headless();
 
-        let default_paragraph =
-            Paragraph::new(&runs, HYPHEN_DENSE_WIDTH).with_break_strategy(BreakStrategy::KnuthPlass).with_hyphenation(Hyphenation::English);
+        let default_paragraph = Paragraph::new(&runs, width).with_break_strategy(BreakStrategy::KnuthPlass).with_hyphenation(Hyphenation::English);
         let default_layout = layout_paragraph(&default_paragraph, &shaper);
         assert!(default_layout.glyphs.iter().any(|g| g.cluster == "-"), "fixture must hyphenate freely under default params (regression floor)");
 
         let harsh_params = LineBreakParams { hyphen_penalty: 1.0e8, ..LineBreakParams::default() };
-        let harsh_paragraph = Paragraph::new(&runs, HYPHEN_DENSE_WIDTH)
+        let harsh_paragraph = Paragraph::new(&runs, width)
             .with_break_strategy(BreakStrategy::KnuthPlass)
             .with_hyphenation(Hyphenation::English)
             .with_line_break_params(harsh_params);
@@ -793,16 +1043,29 @@ mod tests {
     /// consecutive-hyphen run relative to the default, at a width where a
     /// genuinely competitive lower-consecutive-hyphen alternative exists
     /// (unlike the narrower `HYPHEN_DENSE_WIDTH` fixture, where nearly
-    /// every word structurally REQUIRES hyphenation regardless of demerit
-    /// — probed directly: `250.0` reduces `default_run=3` to `harsh_run=1`
-    /// while the total LINE COUNT stays identical (`8` both ways), proving
-    /// the demerit changed WHICH breakpoints were chosen, not merely how
-    /// many lines resulted).
+    /// every word structurally REQUIRES hyphenation regardless of demerit).
+    ///
+    /// **Width RE-PROBED (typography track T6, 2026-07-25 — same
+    /// justification-overshoot fix, see `crate::linebreak::knuth_plass`'s
+    /// own top doc comment):** the original `250.0` no longer demonstrates
+    /// this knob — under the primary, feasibility-gated DP pass, `250.0`'s
+    /// own set of FULLY FEASIBLE breakings collapsed to (effectively) one,
+    /// so there is no genuinely competitive lower-consecutive-hyphen
+    /// alternative left for `double_hyphen_demerit` to select between
+    /// anymore (a real, expected consequence of correctly rejecting
+    /// over-capacity lines as infeasible rather than merely expensive —
+    /// fewer "roughly as good" alternatives survive at all). `400.0`
+    /// (probed directly) still has room: `default_run=2` -> `harsh_run=1`,
+    /// with the total LINE COUNT identical (`6` both ways), proving the
+    /// demerit changed WHICH breakpoints were chosen, not merely how many
+    /// lines resulted — the same shape the original `250.0` probe
+    /// demonstrated, just at a width where genuine choice still exists
+    /// post-fix.
     #[test]
     fn non_default_double_hyphen_demerit_reduces_consecutive_hyphen_runs() {
         let font = FontSpec::new(FontFamily::Roboto, 16.0);
         let runs = [StyledRun::new(HYPHEN_DENSE_TEXT, font)];
-        let width = 250.0;
+        let width = 400.0;
         let shaper = CosmicShaper::headless();
 
         let default_paragraph =
@@ -872,5 +1135,140 @@ mod tests {
         let wide_hyphens = wide_layout.glyphs.iter().filter(|g| g.cluster == "-").count();
 
         assert!(wide_hyphens < default_hyphens, "a much wider left_min/right_min must strictly reduce the laid-out hyphen count, default={default_hyphens} wide={wide_hyphens}");
+    }
+
+    // ── Typography track T6: justification-overshoot fix (2026-07-25) ──
+
+    /// A minimal test [`metrics::Recorder`] that counts how many times a
+    /// SPECIFIC key's counter is incremented (and by how much) — enough to
+    /// prove [`crate::metrics_keys::KEY_LINEBREAK_OVERFULL_FALLBACK`] is a
+    /// REAL, load-bearing signal, without pulling in a whole metrics-
+    /// snapshot crate (`uzor-urx-core::recorder`'s own `UrxRecorder` is the
+    /// workspace's full-featured version of the identical idea — this is
+    /// the minimal, test-local slice of it this one assertion needs).
+    struct CountingRecorder {
+        key: &'static str,
+        total: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    struct AtomicCounter(std::sync::Arc<std::sync::atomic::AtomicU64>);
+    impl metrics::CounterFn for AtomicCounter {
+        fn increment(&self, value: u64) {
+            self.0.fetch_add(value, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn absolute(&self, value: u64) {
+            self.0.store(value, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl metrics::Recorder for CountingRecorder {
+        fn describe_counter(&self, _key: metrics::KeyName, _unit: Option<metrics::Unit>, _description: metrics::SharedString) {}
+        fn describe_gauge(&self, _key: metrics::KeyName, _unit: Option<metrics::Unit>, _description: metrics::SharedString) {}
+        fn describe_histogram(&self, _key: metrics::KeyName, _unit: Option<metrics::Unit>, _description: metrics::SharedString) {}
+
+        fn register_counter(&self, key: &metrics::Key, _metadata: &metrics::Metadata<'_>) -> metrics::Counter {
+            if key.name() == self.key {
+                metrics::Counter::from_arc(std::sync::Arc::new(AtomicCounter(self.total.clone())))
+            } else {
+                metrics::Counter::noop()
+            }
+        }
+        fn register_gauge(&self, _key: &metrics::Key, _metadata: &metrics::Metadata<'_>) -> metrics::Gauge {
+            metrics::Gauge::noop()
+        }
+        fn register_histogram(&self, _key: &metrics::Key, _metadata: &metrics::Metadata<'_>) -> metrics::Histogram {
+            metrics::Histogram::noop()
+        }
+    }
+
+    /// A synthetic paragraph engineered so NO feasible breaking exists at
+    /// all: one single, genuinely unbreakable "word" (no interior spaces,
+    /// no hyphenation opportunities — `Hyphenation::None`), wider than the
+    /// column, with ZERO interword glue on its own only possible line to
+    /// draw shrink from. The primary, feasibility-gated DP pass ([`badness_strict`])
+    /// must reject this candidate outright (`need > shrink(0.0)` is always
+    /// true whenever `need > 0.0`); the deliberate, TeX-style overfull-hbox
+    /// FALLBACK must then fire — signalled both via
+    /// [`crate::metrics_keys::KEY_LINEBREAK_OVERFULL_FALLBACK`] (verified
+    /// here against a real, installed test [`metrics::Recorder`], not just
+    /// "doesn't panic") and via [`crate::layout::LineBreakDiagnostics`] on
+    /// the returned layout — and the paragraph must still render exactly
+    /// one, genuinely over-full, line rather than panicking or producing no
+    /// output at all.
+    #[test]
+    fn no_feasible_breaking_falls_back_and_signals_via_metrics_and_diagnostics() {
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        const TEXT: &str = "Supercalifragilisticexpialidocioussesquipedalianism";
+        let runs = [StyledRun::new(TEXT, font)];
+        let max_width = 50.0;
+        let paragraph = Paragraph::new(&runs, max_width).with_align(ParagraphAlign::Justify).with_break_strategy(BreakStrategy::KnuthPlass);
+        let shaper = CosmicShaper::headless();
+
+        let total = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let recorder = CountingRecorder { key: crate::metrics_keys::KEY_LINEBREAK_OVERFULL_FALLBACK, total: total.clone() };
+
+        let (layout, diag) =
+            metrics::with_local_recorder(&recorder, || crate::layout::layout_paragraph_diagnosed(&paragraph, &shaper));
+
+        assert_eq!(layout.lines.len(), 1, "one genuinely unbreakable word must still render as exactly one line, never panic or vanish");
+        assert!(diag.overfull_fallback_used, "no feasible breaking exists for this fixture — the deliberate overfull-hbox fallback must have fired");
+        assert_eq!(diag.overfull_line_count, 1);
+        assert!(total.load(std::sync::atomic::Ordering::SeqCst) >= 1, "the fallback must increment the metrics counter at least once — got {}", total.load(std::sync::atomic::Ordering::SeqCst));
+
+        let last_glyph = layout.glyphs.last().expect("the single unbreakable word must still produce real glyphs");
+        assert!(last_glyph.x + last_glyph.advance > max_width, "the fallback line must genuinely render past the measure (that's the whole point of it being flagged) — never silently clipped to fit");
+    }
+
+    /// Property-style sweep (typography track T6): across several distinct
+    /// texts and several column widths (a small, deterministic matrix —
+    /// this workspace has no property-testing crate dependency anywhere,
+    /// see this crate's own `tnum_audit` module for the established
+    /// "hand-rolled deterministic sweep table" convention this follows),
+    /// no justified `KnuthPlass` line's own rendered advance-end may exceed
+    /// `max_width` UNLESS [`crate::layout::LineBreakDiagnostics::
+    /// overfull_fallback_used`] is `true` for that specific layout — the
+    /// exact invariant this whole fix exists to guarantee.
+    #[test]
+    fn justified_lines_never_exceed_the_measure_unless_the_fallback_fired() {
+        const TEXTS: [&str; 4] = [
+            "Good typography is invisible, or nearly so: a well-set paragraph reads evenly, without ragged holes or crowded lines.",
+            "The quick brown fox jumps over the lazy dog and then keeps running further down the road without ever stopping for a rest.",
+            HYPHEN_DENSE_TEXT,
+            "Показательный документ подтверждает поддержку кириллического текста, а узкая колонка оправданного текста быстро показывает неравномерные промежутки между словами.",
+        ];
+        const WIDTHS: [f64; 9] = [60.0, 90.0, 120.0, 150.0, 180.0, 220.0, 260.0, 320.0, 400.0];
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        let shaper = CosmicShaper::headless();
+        let mut checked = 0usize;
+
+        for text in TEXTS {
+            let runs = [StyledRun::new(text, font)];
+            for &max_width in &WIDTHS {
+                for hyphenation in [Hyphenation::None, Hyphenation::English] {
+                    let paragraph = Paragraph::new(&runs, max_width)
+                        .with_align(ParagraphAlign::Justify)
+                        .with_break_strategy(BreakStrategy::KnuthPlass)
+                        .with_hyphenation(hyphenation);
+                    let (layout, diag) = crate::layout::layout_paragraph_diagnosed(&paragraph, &shaper);
+                    let last_index = layout.lines.len().saturating_sub(1);
+
+                    for line in &layout.lines {
+                        if line.line_index == last_index {
+                            continue; // the paragraph's own ragged last line is never justify-stretched — a different, already-covered question
+                        }
+                        let Some(last_glyph) = layout.glyphs.iter().filter(|g| g.line_index == line.line_index).last() else { continue };
+                        let advance_end = last_glyph.x + last_glyph.advance;
+                        checked += 1;
+                        assert!(
+                            advance_end <= max_width + 1e-6 || diag.overfull_fallback_used,
+                            "line {} of {text:?} at max_width={max_width} hyphenation={hyphenation:?} overshoots ({advance_end} > {max_width}) but overfull_fallback_used is false — the fix's own invariant is broken",
+                            line.line_index
+                        );
+                    }
+                }
+            }
+        }
+
+        assert!(checked > 50, "this sweep must exercise a real number of justified lines, got {checked}");
     }
 }

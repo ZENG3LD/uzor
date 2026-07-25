@@ -28,6 +28,13 @@ fastrand = "2"
 # all present in hypher's own shipped set (confirmed by inspecting its
 # Cargo.toml feature list directly — no fallback vendoring needed).
 hypher = "0.1.7"
+# Justification-overshoot fix (typography track T6, 2026-07-25): the
+# deliberate KnuthPlass overfull-hbox fallback (`linebreak::knuth_plass`)
+# is signalled via a counter, matching this workspace's own established
+# `metrics` counter convention (`uzor-urx-core`/`uzor-render-hub`/etc —
+# see `uzor-urx-core/Cargo.toml`'s own doc comment on this exact pin).
+# Same major.minor as every other workspace consumer of this crate.
+metrics = "0.24"
 
 [dev-dependencies]
 uzor-export = { path = "../uzor-export" }

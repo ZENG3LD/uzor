@@ -9,6 +9,47 @@ use super::baseline::resolve_line_metrics;
 use super::glyph_layout::{DecorationKind, DecorationSpan, GlyphLayout, LineBox, ParagraphLayout, PlacedInlineBox};
 use super::greedy::{self, Atom};
 
+/// Justification-overshoot fix (typography track T6, 2026-07-25): whether a
+/// [`layout_paragraph`]/[`layout_paragraph_diagnosed`] call had to render
+/// at least one line wider than `paragraph.max_width` — always the honest
+/// truth about the ACTUAL rendered output (measured post-shrink, from the
+/// same `content_width` [`LineBox::content_width`] already carries), never
+/// a proxy over [`crate::linebreak::knuth_plass`]'s own internal DP state.
+///
+/// A justified/`KnuthPlass` paragraph reaches `overfull_line_count > 0`
+/// only when [`crate::linebreak::knuth_plass::pack_lines`]'s own PRIMARY,
+/// feasibility-gated DP pass found NO fully feasible breaking for the whole
+/// paragraph and fell back to the deliberate, TeX-style "overfull hbox"
+/// pass (see that module's own doc comment) — every OTHER paragraph gets
+/// `overfull_fallback_used: false` structurally (the fixed defect this
+/// track closes: a candidate line whose shrink NEED exceeds its own
+/// render-time shrink CAPACITY is now rejected as infeasible rather than
+/// merely priced in, so a feasible breaking — when one exists — never
+/// overshoots at all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LineBreakDiagnostics {
+    /// `true` iff at least one returned line's rendered content exceeds
+    /// `paragraph.max_width` — the deliberate overfull-hbox fallback fired
+    /// (or, in principle, some other unrelated defect — this flag reports
+    /// the OBSERVED symptom, not "the fallback specifically ran", though in
+    /// this crate's current implementation the two coincide exactly for
+    /// [`BreakStrategy::KnuthPlass`], and [`BreakStrategy::Greedy`] never
+    /// sets it at all — see [`crate::layout::greedy::pack_lines`]'s own
+    /// documented invariant that it never produces an over-full non-last
+    /// line with glue on it).
+    pub overfull_fallback_used: bool,
+    /// How many of the returned layout's own lines are genuinely
+    /// over-full — `0` unless `overfull_fallback_used`.
+    pub overfull_line_count: usize,
+}
+
+/// Tolerance for [`LineBreakDiagnostics`]'s own "is this line over-full"
+/// check — absorbs floating-point summation noise across the per-line
+/// glue-extras accumulation below, not a visual/layout tolerance (compare
+/// [`crate::linebreak::knuth_plass`]'s own `SHRINK_FEASIBILITY_EPSILON`,
+/// the same order of magnitude for the identical reason).
+const OVERFULL_EPSILON: f64 = 1e-6;
+
 /// Lay out `paragraph`'s runs (+ any spliced [`InlineBox`]es), word-wrapped
 /// to `paragraph.max_width`, via `shaper`.
 ///
@@ -23,7 +64,36 @@ use super::greedy::{self, Atom};
 /// swaps in `crate::linebreak::knuth_plass`'s total-fit breaker. Every
 /// downstream step below (baseline resolution, alignment/justify, box
 /// placement) is identical either way.
+///
+/// A thin wrapper over [`layout_paragraph_diagnosed`] that discards its own
+/// [`LineBreakDiagnostics`] — kept as its OWN, byte-for-byte-unchanged
+/// public function (never folded into a tuple-returning signature) because
+/// this is the one function every existing caller across this workspace
+/// already calls, including `uzor-typeset` (a sibling crate this task is
+/// scoped to never edit) — see [`layout_paragraph_diagnosed`]'s own doc
+/// comment for why the diagnostic is a NEW, additive entry point instead of
+/// a new [`ParagraphLayout`] field (the same "sibling crate constructs this
+/// public struct via an exhaustive field literal" constraint
+/// [`apply_protrusion`]'s own doc comment already documents for
+/// [`LineBox`]).
 pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> ParagraphLayout {
+    layout_paragraph_diagnosed(paragraph, shaper).0
+}
+
+/// [`layout_paragraph`], plus a [`LineBreakDiagnostics`] reporting whether
+/// this call had to render an over-full line (typography track T6,
+/// 2026-07-25 — see that type's own doc comment for the full mechanism).
+///
+/// A genuinely NEW, additive public entry point rather than a breaking
+/// change to [`layout_paragraph`]'s own signature or a new field on
+/// [`ParagraphLayout`]: `ParagraphLayout` is constructed via an EXHAUSTIVE
+/// field-by-field literal in `uzor-typeset::compose::paragraph_split::
+/// slice_layout_lines` (a sibling crate this task's own scope forbids
+/// editing) — adding a field there would silently break that crate's own
+/// build. Every existing caller of [`layout_paragraph`] (in this crate and
+/// every downstream one) is completely unaffected; a caller that wants the
+/// diagnostic opts in by calling this function instead.
+pub fn layout_paragraph_diagnosed(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> (ParagraphLayout, LineBreakDiagnostics) {
     let atoms = greedy::build_atom_stream(paragraph, shaper);
     let packed = match paragraph.break_strategy {
         BreakStrategy::Greedy => greedy::pack_lines(atoms, paragraph.max_width),
@@ -31,7 +101,7 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
     };
 
     if packed.is_empty() {
-        return ParagraphLayout::default();
+        return (ParagraphLayout::default(), LineBreakDiagnostics::default());
     }
 
     let mut glyphs = Vec::new();
@@ -53,6 +123,16 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
     // line" information the coordinator asked for without that risk.
     let mut line_flush_start: Vec<bool> = Vec::with_capacity(packed.len());
     let mut line_flush_end: Vec<bool> = Vec::with_capacity(packed.len());
+    // Typography track T6 (justification-overshoot fix): counts lines
+    // whose OWN `content_width` (the same value pushed onto `LineBox`,
+    // computed pre-protrusion — see this loop's own `LineBox::push` call
+    // below) exceeds `paragraph.max_width`. Deliberately measured against
+    // the ACTUAL rendered width, never a proxy over the DP's own internal
+    // state, so this stays correct even for a mismatch this crate's own
+    // `glue_extras_for_line` doc comment already flags (the one-letter-word
+    // protected-glue exemption can make the REAL render-time shrink
+    // capacity narrower than what `knuth_plass::span_metrics` assumed).
+    let mut overfull_line_count = 0usize;
 
     for (line_index, line_atoms) in packed.into_iter().enumerate() {
         let natural_width: f64 = line_atoms.iter().map(greedy::atom_width).sum();
@@ -170,6 +250,10 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
             }
         }
 
+        if paragraph.max_width.is_finite() && content_width > paragraph.max_width + OVERFULL_EPSILON {
+            overfull_line_count += 1;
+        }
+
         lines.push(LineBox { line_index, y_top, baseline_y, height: line_metrics.height, content_width });
         y_top += line_metrics.height;
     }
@@ -182,7 +266,9 @@ pub fn layout_paragraph(paragraph: &Paragraph<'_>, shaper: &dyn LineShaper) -> P
     let height = lines.last().map(|l| l.y_top + l.height).unwrap_or(0.0);
     let decorations = build_decoration_spans(&glyphs, paragraph.runs);
 
-    ParagraphLayout { glyphs, lines, boxes, decorations, width, height }
+    let layout = ParagraphLayout { glyphs, lines, boxes, decorations, width, height };
+    let diagnostics = LineBreakDiagnostics { overfull_fallback_used: overfull_line_count > 0, overfull_line_count };
+    (layout, diagnostics)
 }
 
 /// Typography track T4 (microtypography, hanging punctuation): shift each
@@ -761,52 +847,70 @@ mod tests {
         assert!(layout.glyphs.iter().all(|g| g.x.is_finite() && g.y.is_finite()), "every glyph must land at a finite position");
     }
 
-    /// Regression fixture (verbatim, incl. width, from
+    /// Regression fixture, RE-BUILT (typography track T6, 2026-07-25 — see
+    /// `crate::linebreak::knuth_plass`'s own top doc comment for the
+    /// justification-overshoot fix this file documents the fallout of).
+    ///
+    /// The ORIGINAL fixture here (a Russian paragraph mirroring
     /// `uzor-typeset`'s own `typography_wave_ru_and_en_hyphenation_in_a_
-    /// narrow_justified_column` proof): a shrunk, justified line whose
-    /// single-letter conjunction "а" sits between "текста," and "узкая"
-    /// used to render with its OWN surrounding glue shrunk by the exact
-    /// same uniform fraction as every other glue on the line — which,
-    /// for this specific letter pairing, visually read as a full
-    /// collapse ("текста, аузкая", the two words touching) even though
-    /// the pixel math was perfectly uniform. Both glue atoms immediately
-    /// beside the one-letter "а" must now render at their own full,
-    /// UNSHRUNK natural width (`glue.advance`, exactly — the fix's own
-    /// floor is "0 shrink", not "less shrink"), while at least one OTHER
-    /// (non-adjacent) glue on the same line is still measurably
-    /// compressed below its own natural width — proving the fix
-    /// actually engaged (redistributed the deficit elsewhere) rather
-    /// than becoming a no-op that silently stopped shrinking anything.
+    /// narrow_justified_column` proof text/width verbatim) stopped
+    /// exercising this mechanism once the T6 feasibility fix landed:
+    /// probed directly (swept every 2px from 80 to 260), the specific
+    /// line carrying the standalone one-letter "а" NEVER lands on a
+    /// genuinely shrunk line anymore at ANY width in that range — the
+    /// primary, feasibility-gated DP pass now systematically prefers a
+    /// breaking where that particular segment is stretched (or an exact
+    /// fit) rather than over-full-then-shrunk, since a strictly cheaper,
+    /// fully feasible alternative exists nearby for THIS text. This is
+    /// not a defect: shrink usage elsewhere in the SAME corpus is
+    /// unaffected (confirmed directly — plenty of other lines in the
+    /// same paragraph, at other widths, still shrink normally), it is
+    /// simply that this ONE (text, width) pair no longer happens to
+    /// route through the specific over-full line the old fixture relied
+    /// on. A fresh, purpose-built ENGLISH fixture below (word lengths
+    /// probed directly, not guessed) reliably reproduces the identical
+    /// scenario this test exists to guard — a genuinely shrunk justified
+    /// line containing a one-letter word — under the NEW, fixed DP.
+    ///
+    /// A shrunk, justified line whose single-letter word "a" sits between
+    /// "along" and "road," must render with its OWN surrounding glue
+    /// UNSHRUNK (`glue.advance`, exactly — the pre-existing, unrelated
+    /// fix this test guards floors shrink at "0", never "less"), while at
+    /// least one OTHER (non-adjacent) glue on the same line is still
+    /// measurably compressed below its own natural width — proving the
+    /// fix actually engages (redistributes the deficit elsewhere) rather
+    /// than being a no-op that silently stopped shrinking anything.
     #[test]
     fn single_letter_word_glue_is_never_shrunk_even_on_a_tight_justified_line() {
-        let font = FontSpec::new(FontFamily::Roboto, 14.0);
-        const RU_TEXT: &str = "Показательный документ подтверждает поддержку кириллического текста, а узкая \
-            колонка оправданного текста быстро показывает неравномерные промежутки между словами, если \
-            настоящая расстановка переносов не подсказывает точку разрыва посреди длинного слова.";
-        let runs = [StyledRun::new(RU_TEXT, font)];
-        let max_width = 205.0; // uzor-typeset's typography_wave body width (595 - 40 - 350)
-        let paragraph = Paragraph::new(&runs, max_width)
-            .with_align(ParagraphAlign::Justify)
-            .with_break_strategy(BreakStrategy::KnuthPlass)
-            .with_hyphenation(Hyphenation::Russian);
+        let font = FontSpec::new(FontFamily::Roboto, 16.0);
+        // Exactly ONE standalone one-letter word ("a", between "along" and
+        // "road,") — deliberately not "...to a store..." too, which would
+        // give the `.find()` below two candidate lines to choose between
+        // (an earlier version of this fixture had that ambiguity and
+        // picked the WRONG — merely stretched, not shrunk — line).
+        const TEXT: &str = "Walking to my store downtown continues further along a road, then home.";
+        let runs = [StyledRun::new(TEXT, font)];
+        let max_width = 250.0; // probed directly: line 1 renders genuinely shrunk elsewhere, with "a"'s own glue exempt
+        let paragraph = Paragraph::new(&runs, max_width).with_align(ParagraphAlign::Justify).with_break_strategy(BreakStrategy::KnuthPlass);
         let shaper = CosmicShaper::headless();
-        let layout = layout_paragraph(&paragraph, &shaper);
+        let (layout, diag) = crate::layout::layout_paragraph_diagnosed(&paragraph, &shaper);
+        assert!(!diag.overfull_fallback_used, "this fixture must stay in the primary, feasibility-gated pass — a genuinely feasible, within-capacity shrink, not the deliberate overfull-hbox fallback");
 
-        // Find the line carrying the standalone one-letter "а" (never
-        // the "а" inside "текста"/"казывает"/etc — a glyph run whose OWN
+        // Find the line carrying the standalone one-letter "a" (never the
+        // "a" inside "along"/"road" etc — a glyph run whose OWN
         // line-relative neighbors are glue on both sides).
         let target_line = layout
             .lines
             .iter()
             .find(|line| {
                 let glyphs: Vec<&GlyphLayout> = layout.glyphs.iter().filter(|g| g.line_index == line.line_index).collect();
-                glyphs.windows(3).any(|w| w[0].cluster == " " && w[1].cluster == "а" && w[2].cluster == " ")
+                glyphs.windows(3).any(|w| w[0].cluster == " " && w[1].cluster == "a" && w[2].cluster == " ")
             })
-            .expect("fixture must wrap the standalone \"а\" onto some line");
+            .expect("fixture must wrap the standalone \"a\" onto some line");
 
         let mut glyphs: Vec<&GlyphLayout> = layout.glyphs.iter().filter(|g| g.line_index == target_line.line_index).collect();
         glyphs.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap());
-        let a_pos = glyphs.windows(3).position(|w| w[0].cluster == " " && w[1].cluster == "а" && w[2].cluster == " ").unwrap();
+        let a_pos = glyphs.windows(3).position(|w| w[0].cluster == " " && w[1].cluster == "a" && w[2].cluster == " ").unwrap();
         let glue_before = glyphs[a_pos];
         let a_glyph = glyphs[a_pos + 1];
         let glue_after = glyphs[a_pos + 2];
